@@ -14,6 +14,13 @@ import { CARD, BORDER, BLUE, BLUE_L, GREEN, GRAY, AMBER, FONT, bGray } from "./u
 
 export const card = { background: CARD, border: BORDER, borderRadius: 15, padding: 14 };
 
+/** How an actor reads. `system:pos_sale` is the till trigger naming itself; a
+ *  bare uid is an account, shown short because the whole string is noise on a
+ *  timeline and this app never claims to know which PERSON was at a device. */
+const actorText = (by) => (String(by).startsWith("system:")
+  ? String(by).slice(7).replace(/_/g, " ")
+  : `account ${String(by).slice(0, 6)}`);
+
 /** Product thumbnail, with the same shoe fallback DuplicatesTab uses. */
 export function Photo({ url, size = 54 }) {
   if (url) {
@@ -92,7 +99,17 @@ export function RowHistory({ row }) {
           <span style={{ color: "rgba(255,255,255,.35)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
             {String(l.at).slice(0, 16).replace("T", " ")}
           </span>
-          <span>{l.text}</span>
+          <span>
+            {l.text}
+            {/* "sent … BY WHOM" — clause 6 asks for it, so it is rendered.
+                A till or a trigger names itself ("system:pos_sale"); a person is
+                an auth uid, because anonymous auth carries no email and this
+                app's own convention is that attribution is an ACCOUNT, never a
+                name. Showing the account is the honest version of "by whom";
+                inventing a display name would not be.
+                (Spec-conformance review.) */}
+            {l.by ? <span style={{ color: "rgba(255,255,255,.35)" }}>{` · by ${actorText(l.by)}`}</span> : null}
+          </span>
         </li>
       ))}
     </ol>

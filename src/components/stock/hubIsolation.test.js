@@ -314,8 +314,12 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     // stamping its own clock.
     expect(a).toContain("at: order.createdAt,");
     expect(a.match(/source: "manual", orderId: order\.id, at: now,/g) || []).toHaveLength(1);
-    expect(a).toContain("orderId: order.id,\n        // The request-clearing patch, carried INTO the atomic update.");
-    expect(a).toMatch(/sendDisplayRow\(\{[\s\S]*?\n        at: now,\n      \}\)/);
+    // App.jsx hands the transition's own instant to the row writer, and hands
+    // the ORDER's instant for the request that preceded it. Matched on the
+    // named arguments rather than on a block of surrounding text, so a comment
+    // edit cannot break the pin and a dropped argument still does.
+    expect(a).toMatch(/sendDisplayRow\(\{[\s\S]{0,2000}?\bat: now,/);
+    expect(a).toMatch(/sendDisplayRow\(\{[\s\S]{0,2000}?\brequestedAt: order\.createdAt \|\| null,/);
     const store = src("./displayRowStore.js");
     expect(store).toContain('source: "display_refill", orderId, at: when,');
     expect(a).not.toMatch(/useDisplayRegister/);

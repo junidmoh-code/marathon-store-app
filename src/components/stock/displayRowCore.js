@@ -99,10 +99,17 @@ export const storeRowsPath = (store) => `${DISPLAY_ROWS_ROOT}/${seg(store)}`;
 
 /** A row is OPEN when it says so. Anything else — closed, malformed, missing —
  *  is not a display anyone should be told about. Read positively, so a field
- *  this module has never seen cannot accidentally count as open. */
+ *  this module has never seen cannot accidentally count as open.
+ *
+ *  A sizeKey of NOTHING BUT underscores is refused, not only the bare "_"
+ *  sentinel. The shared encoder turns "   " into "___" and ".." into "__", and
+ *  the till-side close refuses exactly that set — so a row carrying one would
+ *  read as open here and could never be closed by a sale, asserting a display
+ *  forever. The two predicates refuse the same set, and the fuzz's differential
+ *  test holds them together. (Senior-architect review.) */
 export function rowIsOpen(row) {
   return !!row && row.status === "open" && typeof row.sizeKey === "string"
-    && row.sizeKey.length > 0 && row.sizeKey !== "_";
+    && row.sizeKey.length > 0 && !/^_+$/.test(row.sizeKey);
 }
 
 /** Flatten the ledger → [row] with store/productId/rowId guaranteed present,
@@ -335,11 +342,16 @@ const evId = (what, stamp) => `${what}_${String(stamp).replace(/[.#$/[\]\s:]/g, 
  * @returns { ok, updates, rowId, closed: [rowId], message }
  */
 export function sendPlan({ rows, store, productId, productName = "", size, bookedHub,
-                          rowId, at, by = null, orderId = null, orderPatch = null, via = "send" }) {
+                          rowId, at, by = null, orderId = null, requestedAt = null,
+                          orderPatch = null, via = "send" }) {
   const raw = String(size ?? "").trim();
   const sizeKey = stockSizeKey(raw);
   if (!store || !productId) return { ok: false, message: "Store and product are required." };
-  if (!raw || sizeKey === "_") return { ok: false, message: "A display row needs the size the operator picked." };
+  // `/^_+$/`, not just "_": an all-underscore key is what the encoder makes of a
+  // size with no information in it, and a row carrying one could never be
+  // closed by a till. Refused at the WRITE side so it is never minted, as well
+  // as at the read side so an older one is never trusted.
+  if (!raw || /^_+$/.test(sizeKey)) return { ok: false, message: "A display row needs the size the operator picked." };
   if (!rowId) return { ok: false, message: "A display row needs an id." };
   if (!at) return { ok: false, message: "A display row needs the instant of the transition." };
 
@@ -354,7 +366,15 @@ export function sendPlan({ rows, store, productId, productName = "", size, booke
   }
 
   const events = {};
-  if (orderId) events[evId("requested", orderId)] = { at, what: "requested", by, detail: { orderId } };
+  // THE REQUEST HAPPENED WHEN IT WAS ASKED FOR, not when the pair went out.
+  // `requestedAt` is the order's own createdAt; without it every timeline read
+  // "requested and sent in the same minute", which is not a history, it is a
+  // decoration. Falls back to the send instant only when the caller genuinely
+  // has no earlier instant to give. (Spec-conformance review.)
+  if (orderId) {
+    const reqAt = requestedAt || at;
+    events[evId("requested", orderId)] = { at: reqAt, what: "requested", by: null, detail: { orderId } };
+  }
   events[evId("sent", at)] = { at, what: via === "send" ? "sent" : "registered", by, detail: { size: raw, orderId } };
 
   updates[rowPath(store, productId, rowId)] = {
@@ -455,7 +475,26 @@ export const closeEffectLine = (row) =>
 export const requestStoreFor = (order) =>
   (order?.displayPairRequest === true && order?.displayPairStore) || order?.destShop || null;
 
-/** Is this order an OPEN display request? */
+/**
+ * Is this order an OPEN display request?
+ *
+ * WHAT ACTUALLY CLOSES ONE, and it is worth being exact because the guard is
+ * only as good as this list:
+ *   • `displayRefillStatus` — the warehouse resolved the task (refilled, or
+ *     stock depleted). This is the ordinary end.
+ *   • `collected` / `out_of_stock` — the order left the lane.
+ *   • `cancelled: true` — nothing in this app writes that field today. It is
+ *     here because an order that is cancelled is not an open request under any
+ *     reading, and a guard that would keep fencing a cancelled request is worse
+ *     than one that reads a field that is usually absent. Named rather than
+ *     left to look load-bearing. (Spec-conformance review.)
+ *
+ * The residual, stated: a request that sits at `incoming` and is never resolved
+ * fences that wall until it goes. It is self-limiting — /orders ids are
+ * recycled daily, so a stale request is overwritten within a day — and the
+ * failure it causes is "you cannot ask twice today", which is the direction
+ * this guard exists to fail in.
+ */
 export function isOpenDisplayRequest(order) {
   if (!order || order.requestDisplayPartner !== true) return false;
   if (order.displayRefillStatus) return false;          // resolved: refilled / stockDepleted

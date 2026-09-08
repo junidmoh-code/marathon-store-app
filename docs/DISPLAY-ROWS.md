@@ -77,10 +77,50 @@ follows, fenced, and its failure is **reported**, never swallowed.
 |---|---|---|
 | 1 | ≤1 open display request per product per store | `displayRowCore.hasOpenDisplayRequest`, enforced in `App.jsx` checkout and in `displayRequestStore.raiseDisplayRequest` |
 | 2 | Send = ONE atomic write (close old, open new, clear request) | `displayRowCore.sendPlan` → `displayRowStore.sendDisplayRow`, called from `setDisplayRefillStatus` |
-| 3 | Close at sale, server-side, no POS change | `functions/displayRows/closeDisplayRowOnSale.js` + `lib.cjs` |
+| 3 | Close at sale, server-side, no POS change | `functions/displayRows/closeDisplayRowOnSale.js` + `lib.cjs` — see **Where a sale comes from** below |
 | 4 | Duplicate Displays tab | `DuplicateDisplaysTab.jsx` |
 | 5 | Unregistered Displays tab (wall walk + scan) | `UnregisteredDisplaysTab.jsx` |
 | 6 | Timeline on every row | `displayRowCore.rowTimeline`, `displayRowUi.RowHistory` |
+
+## Where a sale comes from — the thing that nearly defeated clause 3
+
+A `sold` movement's `from` is **not always the shop**. Measured live 2026-09-08
+over the newest 6,000 stock movements:
+
+| `from` | sized | one-size |
+|---|---|---|
+| marathon-pe | 1,539 | 258 |
+| trophy | 267 | 130 |
+| hub1 | 761 | — |
+| hub2 | 478 | — |
+| hub3 (Pine, out of scope) | 273 | — |
+
+So **1,806 in-scope sized sales carry a shop** and close directly, and **1,239
+carry a hub and no store at all**. A hub-sourced movement's whole field set is
+`{ actor, appliedAt, from, link:{saleId}, productId, qty, size, ts, type }`;
+`/sales/{saleId}` is empty for those ids, and `actor` cannot separate PE from
+Trophy (the manager account that rings both is scoped to `central`). All
+verified against live data.
+
+Ignoring them would leave two in five display sales standing on the record. So
+the hub branch **earns** its close from evidence, and a bare hub sale closes
+nothing (`resolveHubSale`, `lib.cjs`). Both conditions are required:
+
+1. **Exactly one** open row for this product at this size is booked at that hub,
+   across every display store. Two walls claiming a size 9 makes one sale
+   ambiguous, and an ambiguous close is a guess.
+2. **The hub cell is now empty.** A display unit stays booked at its hub (PR
+   #324, "displays are hub stock"), so if the cell is at zero and a row still
+   claims a unit of it is on a wall, the unit that sold *is* that unit.
+
+The cell read can race the write that applies the movement, and that race only
+ever makes the cell look **fuller**, so the failure mode is a missed close and
+never a wrong one. A refused close is logged with its reason
+(`closeDisplayRowOnSale: hub sale … closed nothing — …`) so it is visible.
+
+An inferred close records `detail.inferred` on its timeline entry and
+`closedVia: "pos_sale_hub"`, so a human can always see it was reasoned rather
+than observed.
 
 ## Deploy
 
@@ -135,5 +175,8 @@ placed inside the existing `"settings"` node.
   by the trigger. Widening that gate is an owner decision, not a code change.
 * **`marathon-pos-app`.** Untouched. The sale close fires off the
   `/stock_movements` record the till already writes.
+* **Clothing and one-size partner refills.** They mint no display row — their
+  size is the order's own and no human picks it, and a shoe-wall ledger full of
+  t-shirts is not a wall walk. They keep the display-slot write they always had.
 * **The existing Display Registry** (Hub 1 / Hub 2 tabs) and the **Display
   Records** cleanup tab (PR #575's register-vs-floor work). Both unchanged.

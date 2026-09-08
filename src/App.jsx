@@ -109,7 +109,7 @@ import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } fr
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRows, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow } from "./components/stock/displayRowStore";
 import { hasOpenDisplayRequest, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
@@ -11154,7 +11154,15 @@ function WarehouseView({ products = [], orders, onExit }) {
   // than a fetch at tap time, because a fetch at tap time is a read the
   // operator waits on with a shoe in their hand. Subscribed only while the
   // Refills tab is the one on screen.
-  const displayRows = useDisplayRows(mainTab === "refills");
+  //
+  // ITS READINESS IS LOAD-BEARING, not decoration. An unanswered subscription
+  // and an empty ledger are the same null, so a Send confirmed before the node
+  // has answered would close NOTHING and open a second row beside the one
+  // already there — manufacturing the exact duplicate the ledger exists to
+  // surface. The send refuses until it has actually been read.
+  // (Spec-conformance review.)
+  const displayRowsState = useDisplayRowsState(mainTab === "refills");
+  const displayRows = displayRowsState.value;
   const [filter, setFilter] = useState("incoming");
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
@@ -11980,16 +11988,44 @@ function WarehouseView({ products = [], orders, onExit }) {
     // displaySlotStoreFor: a display-pair PULL refills the wall of the store
     // that lost the pair (displayPairStore), which can differ from the ordering
     // shop. Classic partner orders keep destShop exactly as before.
+    // ── WHO GETS A ROW, AND WHO KEEPS THE OLD SLOT-ONLY PATH ────────────────
+    // The ledger is a SHOE WALL ledger. Two populations are deliberately not in
+    // it, and both keep the exact write they had before this change:
+    //
+    //   • CLOTHING and one-size partner refills. Their size is the order's own
+    //     and no human picks it, so minting a row would put a size on the
+    //     display record that nobody chose — the absolute rule, from the other
+    //     direction — and those rows would then show up on the Duplicate
+    //     Displays tab as shoe-wall work. (Spec-conformance review.)
+    //   • PINE, and anything else booked outside GATED_SNEAKER_HUBS. Hub 3 is
+    //     out of scope on every read surface here; writing rows it can never
+    //     show would be a ledger nobody maintains.
+    //
+    // Both still write the display SLOT exactly as they always did, so the
+    // count and the marker are unaffected for them.
     const rowStore = displaySlotStoreFor(order);
-    if (status === "refilled" && refillSize && rowStore && order.productId) {
+    const rowHub = order.displayRefillHub || order.placedAtHub || order.hub || null;
+    const rowEligible = productIsFootwear(resolveProductById(order.productId))
+      && GATED_SNEAKER_HUBS.includes(rowHub);
+    if (status === "refilled" && refillSize && rowStore && order.productId && rowEligible) {
+      // The ledger must have ANSWERED. See the subscription's own note.
+      if (!displayRowsState.settled || displayRowsState.error) {
+        window.alert("The display records have not loaded yet — give it a moment and tap Refilled again. Nothing was changed.");
+        return;
+      }
       const res = await sendDisplayRow({
         rows: displayRows,
         store: rowStore,
         productId: order.productId,
         productName: order.productName || "",
         size: String(refillSize),
-        bookedHub: order.displayRefillHub || order.placedAtHub || order.hub || null,
+        bookedHub: rowHub,
         orderId: order.id,
+        // The order's OWN instant for the "requested" timeline entry — the
+        // request happened when the customer asked, not when the pair went out.
+        // Stamping the send instant made every timeline read "requested and
+        // sent in the same minute". (Spec-conformance review.)
+        requestedAt: order.createdAt || null,
         // The request-clearing patch, carried INTO the atomic update.
         orderPatch: Object.fromEntries(Object.entries(patch).map(([k, v]) => [`orders/${order.id}/${k}`, v])),
         // `now` is the same instant the patch writes to displayRefilledAt,
@@ -12008,12 +12044,27 @@ function WarehouseView({ products = [], orders, onExit }) {
       }
       if (res.warning) console.warn(res.warning);
     } else {
-      // Stock Depleted, an undo, clothing, and a footwear refill with no size
-      // to record: a plain per-order write, exactly as before. (Product-level
+      // Stock Depleted, an undo, clothing, Pine, and a footwear refill with no
+      // size to record: the write this has always been. (Product-level
       // depletion blocking was retired — a "stock depleted" resolution no
       // longer flags the product un-orderable; it only resolves this task and
       // feeds Insights below.)
       updateOrder(order.id, patch);
+      // The display SLOT, byte-for-byte the write that was here before the
+      // ledger existed. Clothing and Pine partner refills still set the shop's
+      // slot, so the count card and the marker see exactly what they saw.
+      if (status === "refilled" && refillSize && rowStore && order.productId) {
+        setDisplaySlot({
+          store: rowStore, productId: order.productId,
+          productName: order.productName || "",
+          size: String(refillSize),
+          bookedHub: rowHub,
+          // `now` is the same instant this patch writes to displayRefilledAt,
+          // which is what displayPairCore's replay reads — one transition, one
+          // instant, whichever of the two records it.
+          source: "display_refill", orderId: order.id, at: now,
+        }).catch(() => {});
+      }
     }
 
     // Stock-deplete: append an insights_log entry so the Stock Depleted tab
@@ -19265,7 +19316,7 @@ function AppInner() {
   // or store-scoped grant); a viewer who no longer qualifies gets null and the
   // reset effect drops them home. Shell only — reads no data.
   else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} products={products} /> : null;
-  else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} orders={orders} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} orders={orders} ordersScope={myShop} onExit={() => setRole(null)} /> : null;
   // TEMPORARY — hub sneaker stock-take. `products` is passed (not re-read): App
   // already holds the catalogue, and the count view freezes it on entry.
   // viewer.stockRole is the STORED role, deliberately NOT the super-admin-widened

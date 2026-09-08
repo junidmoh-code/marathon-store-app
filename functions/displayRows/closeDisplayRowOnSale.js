@@ -37,7 +37,8 @@
 const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
-  classifyMovement, decideCloses, closeUpdates, leaseDecision,
+  classifyMovement, decideCloses, claimClose, resolveHubSale, leaseDecision, rowIsOpen,
+  DISPLAY_STORES,
 } = require("./lib.cjs");
 
 if (!admin.apps.length) {
@@ -49,7 +50,7 @@ if (!admin.apps.length) {
 const ROWS = "settings/displayRows";
 const META = "settings/displayRows_meta";
 
-const REASON = { sold: "sold", returned: "returned" };
+const REASON = { sold: "sold", sold_hub: "sold", returned: "returned" };
 
 exports.closeDisplayRowOnSale = onValueCreated(
   {
@@ -66,11 +67,51 @@ exports.closeDisplayRowOnSale = onValueCreated(
 
     const db = admin.database();
     const movementId = event.params.movementId;
-    const { store, productId, sizeKey, qty, kind } = hit;
+    const { productId, sizeKey, qty, kind } = hit;
+    let { store } = hit;
+    let closes;
+    let inferred = null;
 
-    // ── The rows for this (store, product). ONE keyed read, never the node. ──
-    const byRow = (await db.ref(`${ROWS}/${store}/${productId}`).get()).val();
-    const closes = decideCloses(byRow, sizeKey, qty);
+    if (kind === "sold_hub") {
+      // ── A SALE OUT OF A HUB CELL — the store is not on the movement ────────
+      // Sneakers sell from the hub, and a hub-sourced movement carries no shop
+      // (verified live: its whole field set is actor / appliedAt / from /
+      // link.saleId / productId / qty / size / ts / type, `/sales/{saleId}` is
+      // empty for these ids, and the manager account that rings both PE and
+      // Trophy is scoped to "central"). Two in five in-scope sized sales come
+      // through here, so ignoring them would leave the residual open.
+      //
+      // The close has to be EARNED — see resolveHubSale for the two conditions
+      // and for why a bare hub sale must never close anything. Reads are
+      // ordered so the cheap one comes first: the two stores' row nodes, and
+      // the stock cell only if a single candidate survives.
+      const perStore = {};
+      let candidates = 0;
+      for (const s of DISPLAY_STORES) {
+        // eslint-disable-next-line no-await-in-loop
+        const rows = (await db.ref(`${ROWS}/${s}/${productId}`).get()).val();
+        const open = decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER)
+          .filter(({ row }) => row.bookedHub === hit.hub);
+        if (open.length) { perStore[s] = open; candidates += open.length; }
+      }
+      if (!candidates) return;                       // nothing on any wall — the common case
+      const cellQty = (await db.ref(`stock/${hit.hub}/${productId}/${sizeKey}/qty`).get()).val();
+      const verdict = resolveHubSale({ openRowsByStore: perStore, cellQty });
+      if (!verdict.ok) {
+        // Deliberately loud in the log and silent in the data. A refusal here
+        // is the correct outcome, not a failure — but it is also the only place
+        // anyone could ever see WHY a display record did not close itself.
+        console.log(`closeDisplayRowOnSale: hub sale ${movementId} closed nothing — ${verdict.why}`);
+        return;
+      }
+      store = verdict.store;
+      inferred = verdict.why || "the hub cell is empty and one wall claims this size";
+      closes = (perStore[store] || []).filter((c) => c.rowId === verdict.rowId);
+    } else {
+      // ── The rows for this (store, product). ONE keyed read, never the node. ─
+      const byRow = (await db.ref(`${ROWS}/${store}/${productId}`).get()).val();
+      closes = decideCloses(byRow, sizeKey, qty);
+    }
     // Nothing on the wall to close — the overwhelmingly common case (an
     // ordinary shelf sale of a size no display is registered at). No lease is
     // claimed, so nothing is left behind for a product this trigger never
@@ -83,14 +124,53 @@ exports.closeDisplayRowOnSale = onValueCreated(
     const claim = await leaseRef.transaction((cur) => leaseDecision({ cur, nowMs }));
     if (!claim.committed) return;           // already done, or another execution holds it
 
+    // ── ONE CAS PER ROW, NOT ONE BLIND UPDATE ──────────────────────────────
+    // The lease dedupes replays of THIS movement. It says nothing about a
+    // SECOND movement: two tills selling the same shoe in the same size at the
+    // same shop within a second get two movement ids, two leases, and — with a
+    // plain read-then-update — both would read "2 open rows", both pick the
+    // oldest, and both close the SAME one. The second real sale would then
+    // close nothing and a row would stay open asserting a display that has
+    // gone. (Senior-architect review. The property fuzz could not have found
+    // this: it is a sequential walk, and this is a concurrency fault.)
+    //
+    // So each close is a transaction that commits only if the row is STILL
+    // open. A loser aborts and we move to the next candidate — which is the
+    // right answer, because there was another pair on that wall and it is the
+    // one that just sold. `wanted` bounds it by the units that actually moved;
+    // the candidate list is re-read once if the first pass runs out, because a
+    // concurrent close may have been landing while we were reading.
     const at = new Date(nowMs).toISOString();
-    const updates = {};
-    for (const { rowId } of closes) {
-      Object.assign(updates, closeUpdates(`${ROWS}/${store}/${productId}/${rowId}`, {
-        at, reason: REASON[kind], via: kind === "sold" ? "pos_sale" : "return_to_hub", movementId,
-      }));
+    const via = kind === "returned" ? "return_to_hub"
+      : kind === "sold_hub" ? "pos_sale_hub" : "pos_sale";
+    const closed = [];
+    let wanted = qty;
+    for (let pass = 0; pass < 2 && wanted > 0; pass++) {
+      // The retry pass RE-READS and takes the next candidate — but only for a
+      // close that was earned from the movement itself. An INFERRED hub close
+      // earned exactly ONE row, under conditions checked once; re-reading and
+      // taking "the next open row of that size" would walk straight past the
+      // uniqueness test that made the inference safe in the first place.
+      const candidates = pass === 0 ? closes
+        : inferred ? []
+        : decideCloses((await db.ref(`${ROWS}/${store}/${productId}`).get()).val(), sizeKey, wanted);
+      if (!candidates.length) break;
+      for (const { rowId } of candidates) {
+        if (wanted <= 0) break;
+        if (closed.includes(rowId)) continue;
+        // eslint-disable-next-line no-await-in-loop
+        const res = await db.ref(`${ROWS}/${store}/${productId}/${rowId}`).transaction(
+          (cur) => claimClose(cur, { at, reason: REASON[kind], via, movementId, inferred })
+        );
+        if (res.committed) { closed.push(rowId); wanted--; }
+      }
     }
-    await db.ref().update(updates);
+    // Every candidate was taken by a concurrent execution. Nothing to mirror,
+    // and the lease is marked done so this movement is not retried forever.
+    if (!closed.length) {
+      await leaseRef.update({ done: true, doneAt: Date.now(), closed: [] });
+      return;
+    }
 
     // ── The MIRROR. /settings/displaySlots is what the count, the shop marker
     // and offShelf read, and it must follow the ledger rather than lead it: the
@@ -99,9 +179,13 @@ exports.closeDisplayRowOnSale = onValueCreated(
     // clearing the slot there would tell the next counter nothing is out and
     // hand them a discrepancy that is not real.
     const after = (await db.ref(`${ROWS}/${store}/${productId}`).get()).val() || {};
-    const stillOpen = Object.values(after).filter(
-      (r) => r && r.status === "open" && typeof r.sizeKey === "string" && r.sizeKey && r.sizeKey !== "_"
-    );
+    // Sorted the same way the client sorts (oldest first), so the survivor the
+    // slot mirrors is the same row whichever side re-points it. It was
+    // `Object.values(...)` in RTDB key order, and `seed…` ids sort after `r…` —
+    // two writers would have picked different survivors. (Spec-conformance
+    // review.)
+    const stillOpen = Object.values(after).filter(rowIsOpen)
+      .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || "")));
     const slotRef = db.ref(`${ROWS.replace("displayRows", "displaySlots")}/${store}/${productId}`);
     if (stillOpen.length === 0) {
       // Tombstone, never delete — the same contract clearDisplaySlot keeps on
@@ -117,7 +201,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
                  at, by: `system:closeDisplayRowOnSale`, orderId: null, prevSize: cur.size || null };
       });
     } else {
-      const keep = stillOpen[stillOpen.length - 1];
+      const keep = stillOpen[stillOpen.length - 1];   // the NEWEST surviving row is what the wall shows now
       await slotRef.transaction((cur) => {
         if (cur && typeof cur.at === "string" && cur.at > at) return undefined;
         return {
@@ -128,6 +212,6 @@ exports.closeDisplayRowOnSale = onValueCreated(
       });
     }
 
-    await leaseRef.update({ done: true, doneAt: Date.now(), closed: closes.map((c) => c.rowId) });
+    await leaseRef.update({ done: true, doneAt: Date.now(), closed });
   }
 );

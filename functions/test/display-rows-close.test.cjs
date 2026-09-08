@@ -8,7 +8,7 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  classifyMovement, decideCloses, closeUpdates, leaseDecision, rowIsOpen,
+  classifyMovement, decideCloses, closeUpdates, claimClose, leaseDecision, rowIsOpen,
   stockSizeKey, encodeSizeKey, LEASE_MS, DISPLAY_STORES,
 } = require("../displayRows/lib.cjs");
 
@@ -21,7 +21,10 @@ test("a sale at a display store is a close", () => {
 });
 
 test("a sale ANYWHERE ELSE is ignored — this is the cheap early return", () => {
-  for (const from of ["hub1", "hub2", "central", "marathon-pine", "", null, undefined]) {
+  // hub1/hub2 are NOT here: sneakers sell from the hub, and those are handled
+  // as their own kind below. Everything else is a movement this trigger has no
+  // business reading a single extra byte for.
+  for (const from of ["central", "marathon-pine", "hub3", "in_transit", "", null, undefined]) {
     assert.equal(classifyMovement(sold({ from })), null, `from=${from}`);
   }
 });
@@ -127,4 +130,89 @@ test("the lease claims once, refuses a replay, and is stealable when stale", () 
   // A crashed execution must not wedge the movement forever.
   assert.deepEqual(leaseDecision({ cur: { at: now - LEASE_MS - 1, done: false }, nowMs: now }),
     { at: now, done: false });
+});
+
+// ─── HUB-SOURCED SALES — sneakers sell from the hub, not from the shop ───────
+// Measured live 2026-09-08 over the newest 6,000 stock movements:
+//   marathon-pe/sized 1539, trophy/sized 267  |  hub1/sized 761, hub2/sized 478
+// So two in five in-scope sized sales carry `from: hub1|hub2` and NO store.
+
+const { resolveHubSale } = require("../displayRows/lib.cjs");
+
+test("a hub-sourced sale is its own kind, carrying the hub and no store", () => {
+  const hit = classifyMovement({ type: "sold", from: "hub1", productId: "p1", size: "9", qty: 1 });
+  assert.equal(hit.kind, "sold_hub");
+  assert.equal(hit.hub, "hub1");
+  assert.equal(hit.store, null);
+});
+
+test("hub3 is NOT a hub-sourced display sale — Pine is out of scope", () => {
+  assert.equal(classifyMovement({ type: "sold", from: "hub3", productId: "p1", size: "9", qty: 1 }), null);
+});
+
+test("A BARE HUB SALE CLOSES NOTHING — the whole safety of the inference", () => {
+  // Hub 1 holds four size 9s and one is on Trophy's wall. An ordinary shelf
+  // sale is not the display, and closing Trophy's row would take a real
+  // display off the record.
+  const r = resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 3 });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /still holds 3/);
+});
+
+test("two walls claiming the size is ambiguous, and ambiguous is a refusal", () => {
+  const r = resolveHubSale({
+    openRowsByStore: { trophy: [{ rowId: "a" }], "marathon-pe": [{ rowId: "b" }] },
+    cellQty: 0,
+  });
+  assert.equal(r.ok, false);
+  assert.match(r.why, /not knowable/);
+});
+
+test("one wall, and the hub cell now empty: the sale could not have been anything else", () => {
+  assert.deepEqual(resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0 }),
+    { ok: true, store: "trophy", rowId: "a" });
+  // Negative cells happen (they clamp to 0 elsewhere); they are still empty.
+  assert.equal(resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: -1 }).ok, true);
+});
+
+test("an ABSENT cell is zero stock; an unreadable one is a refusal", () => {
+  // RTDB keeps no node for a cell holding nothing, and the Admin SDK throws on
+  // a failed read rather than handing back null — so null really is "none".
+  for (const cellQty of [null, undefined]) {
+    assert.equal(resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty }).ok, true,
+      `cellQty=${String(cellQty)}`);
+  }
+  // Anything else non-numeric is unknown, and unknown must never close a row.
+  for (const cellQty of [NaN, "lots", {}, []]) {
+    const r = resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty });
+    assert.equal(r.ok, false, `cellQty=${JSON.stringify(cellQty)}`);
+    assert.match(r.why, /could not be read/);
+  }
+});
+
+test("no open row at that hub is simply nothing to do", () => {
+  assert.equal(resolveHubSale({ openRowsByStore: {}, cellQty: 0 }).ok, false);
+  assert.equal(resolveHubSale({ openRowsByStore: { trophy: [] }, cellQty: 0 }).ok, false);
+});
+
+test("an inferred close records WHY on the row, so a human can see the reasoning", () => {
+  const out = claimClose({ status: "open", sizeKey: "9", events: {} },
+    { at: "2026-09-08T10:00:00.000Z", reason: "sold", via: "pos_sale_hub", movementId: "m1",
+      inferred: "the hub cell is empty and one wall claims this size" });
+  const ev = Object.values(out.events)[0];
+  assert.equal(ev.detail.inferred, "the hub cell is empty and one wall claims this size");
+  assert.equal(out.closedVia, "pos_sale_hub");
+  assert.equal(out.closedReason, "sold");
+});
+
+test("claimClose is a CAS — it refuses a row somebody else already closed", () => {
+  assert.equal(claimClose({ status: "closed", sizeKey: "9" }, { at: "x", reason: "sold", via: "v" }), undefined);
+  assert.equal(claimClose(null, { at: "x", reason: "sold", via: "v" }), undefined);
+  assert.equal(claimClose({ status: "open", sizeKey: "_" }, { at: "x", reason: "sold", via: "v" }), undefined);
+});
+
+test("an all-underscore sizeKey is never an open row, on this side too", () => {
+  assert.equal(rowIsOpen({ status: "open", sizeKey: "__" }), false);
+  assert.equal(rowIsOpen({ status: "open", sizeKey: "___" }), false);
+  assert.equal(rowIsOpen({ status: "open", sizeKey: "9" }), true);
 });

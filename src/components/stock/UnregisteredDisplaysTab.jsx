@@ -60,8 +60,10 @@ import { BORDER, BLUE_L, GREEN, RED, GRAY, AMBER, FONT, bGray, bBlue, input, tab
 const STORES = ["marathon-pe", "trophy"];
 const PAGE = 40;
 
-export default function UnregisteredDisplaysTab({ products = [], orders = [], isAdmin = false }) {
-  const [store, setStore] = useState(STORES[0]);
+export default function UnregisteredDisplaysTab({ products = [], orders = [], ordersScope = null, isAdmin = false }) {
+  // Default to the wall this device can actually vouch for. See the guard note
+  // on `canRequest` below.
+  const [store, setStore] = useState(() => (ordersScope && STORES.includes(ordersScope) ? ordersScope : STORES[0]));
   const [hub, setHub] = useState(GATED_SNEAKER_HUBS[0]);
   const [q, setQ] = useState("");
   const [brand, setBrand] = useState("");
@@ -104,6 +106,19 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], is
     if (!res.ok) { setNote({ tone: "err", text: `Could not register ${product.name}: ${res.message}` }); return; }
     setNote({ tone: "ok", text: `${product.name} size ${formatSize(size)} is now on the display record at ${labelFor(store)}. No stock moved.` });
   };
+
+  // ── THE ONE-REQUEST GUARD IS ONLY AS WIDE AS THE ORDER FEED ────────────────
+  // /orders is STORE-SCOPED at the rule layer for a shop-assigned user
+  // (useOrders(myShop) in App.jsx). A Trophy-scoped admin looking at Marathon
+  // PE's wall cannot see PE's open requests, so the "at most one open request
+  // per product per store" guard would pass on a request that already exists —
+  // and two pairs would be walked to the same wall.
+  //
+  // So the action is REFUSED rather than guessed. An unscoped admin (warehouse,
+  // super-admin) sees every order and can request for either wall; a
+  // shop-scoped one can request for their own. Registering what is already on
+  // the wall is unaffected — it reads no orders. (Spec-conformance review.)
+  const canRequest = !ordersScope || ordersScope === store;
 
   const notOnWall = async (product) => {
     setBusy(product.id); setNote(null);
@@ -210,7 +225,8 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], is
                   <button type="button" onClick={() => setActing(`scan:${scanned.product.id}`)} disabled={!!busy} style={bGray}>
                     On the wall
                   </button>
-                  <button type="button" onClick={() => notOnWall(scanned.product)} disabled={!!busy} style={bGray}>
+                  <button type="button" onClick={() => notOnWall(scanned.product)} disabled={!!busy || !canRequest}
+                    style={{ ...bGray, opacity: canRequest ? 1 : 0.5, cursor: canRequest ? "pointer" : "not-allowed" }}>
                     {busy === scanned.product.id ? "Requesting…" : "Not on the wall — request a display"}
                   </button>
                   <button type="button" onClick={() => setScanned(null)} disabled={!!busy} style={bGray}>Done</button>
@@ -220,6 +236,14 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], is
           </div>
         )}
       </div>
+
+      {!canRequest && (
+        <div style={{ ...card, borderColor: "rgba(251,191,36,.4)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
+          This device's order list only covers {labelFor(ordersScope)}, so it cannot see whether a display has
+          already been requested for {labelFor(store)}. <b>Register</b> works normally; <b>request a display</b> is
+          off for this wall, because asking twice would walk two pairs to it.
+        </div>
+      )}
 
       {note && (
         <div style={{ ...card, borderColor: toneColor[note.tone] || GREEN, color: toneColor[note.tone] || GREEN, fontSize: 13, fontWeight: 700 }}>
@@ -291,7 +315,9 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], is
                   On the wall
                 </button>
                 <button type="button" onClick={() => notOnWall(c.product || { id: c.productId, name: c.productName })}
-                  disabled={!!busy} style={{ ...bGray, opacity: busy ? 0.5 : 1 }}>
+                  disabled={!!busy || !canRequest}
+                  title={canRequest ? undefined : `Your order list only covers ${labelFor(ordersScope)}, so this device cannot tell whether a display has already been requested for ${labelFor(store)}.`}
+                  style={{ ...bGray, opacity: busy || !canRequest ? 0.5 : 1, cursor: canRequest ? "pointer" : "not-allowed" }}>
                   {busy === c.productId ? "Requesting…" : "Not on the wall — request a display"}
                 </button>
               </div>

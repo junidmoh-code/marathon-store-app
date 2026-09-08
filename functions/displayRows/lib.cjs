@@ -27,8 +27,10 @@
 // because "9.5" and "9,5" and " 9.5 " are the same shelf and three different
 // strings. The encoder is duplicated from src/utils/sizeKey.js the way
 // displayChecks/lib.cjs duplicates it — functions/ cannot import from src/ —
-// and functions/test/display-rows-sizekey.test.cjs differential-tests the two
-// copies over a shared corpus so a drift is a red test, not a silent mismatch.
+// and the two copies are differential-tested over a shared corpus by
+// src/components/stock/displayRowFuzz.test.js (it can require() this file;
+// nothing under functions/ can import from src/, so the test has to live on
+// that side). A drift is a red test, not a silent mismatch.
 //
 // ── ONE SALE MUST NOT CLOSE TWO PAIRS ────────────────────────────────────────
 // A movement of qty 1 closes AT MOST ONE row. When a wall has duplicates (the
@@ -67,8 +69,8 @@ const LEASE_MS = 5 * 60 * 1000;
 // in the character set. A first cut of this file trimmed and used a narrower
 // character class; it agreed on every size anybody types and disagreed on " 8"
 // and "Free Size", which is precisely the kind of near-miss a differential test
-// exists to catch. functions/test/display-rows-close.test.cjs runs both copies
-// over a shared corpus.
+// exists to catch. src/components/stock/displayRowFuzz.test.js runs both copies
+// over a shared corpus — from that side, because functions/ cannot import src/.
 const ILLEGAL_RTDB_CHARS = /[.#$[\]/\s]/g;
 
 function encodeSizeKey(size) {
@@ -102,6 +104,32 @@ function classifyMovement(m) {
   if (m.type === "sold" && DISPLAY_STORES.includes(m.from)) {
     return { kind: "sold", store: m.from, productId: m.productId, sizeKey, qty };
   }
+  // ── A SALE THAT CAME OUT OF A HUB CELL ─────────────────────────────────────
+  // Sneakers sell from the HUB, not from the shop. Measured over the newest
+  // 6,000 stock movements on 2026-09-08:
+  //
+  //     marathon-pe / sized 1539    hub1 / sized 761
+  //     trophy      / sized  267    hub2 / sized 478
+  //     (hub3 / sized 273 — Pine, out of scope)
+  //
+  // So the shop-sourced branch above catches 1,806 of the 3,045 in-scope sized
+  // sales and MISSES 1,239 of them. A trigger that only watched `from` = a shop
+  // would leave two in five display sales standing on the record forever, which
+  // is the residual this whole function exists to close.
+  //
+  // But a hub-sourced movement carries NO STORE. Its fields are exactly
+  // { actor, appliedAt, from, link:{saleId}, productId, qty, size, ts, type },
+  // `/sales/{saleId}` is empty for these ids, and `actor` cannot separate PE
+  // from Trophy (the manager account that rings both carries
+  // posAccess.storeIds ["central"]). All verified against live data — none of
+  // it is inferred from the code.
+  //
+  // So it is returned as its own kind and the trigger must EARN the close from
+  // evidence. See resolveHubSale below for the two conditions, and for why a
+  // bare hub sale must never close anything.
+  if (m.type === "sold" && DISPLAY_HUBS.includes(m.from)) {
+    return { kind: "sold_hub", hub: m.from, store: null, productId: m.productId, sizeKey, qty };
+  }
   // A display coming back off the wall: out of the SHOP, into a HUB.
   if (m.type === "transfer_out" && DISPLAY_STORES.includes(m.from) && DISPLAY_HUBS.includes(m.to)) {
     return { kind: "returned", store: m.from, productId: m.productId, sizeKey, qty };
@@ -109,10 +137,17 @@ function classifyMovement(m) {
   return null;
 }
 
-/** Positive test for an open row, matching src/components/stock/displayRowCore.js. */
+/** Positive test for an open row, matching src/components/stock/displayRowCore.js.
+ *
+ *  "_" is the one-size sentinel; a key of NOTHING BUT underscores says the same
+ *  thing in a longer form (the shared encoder turns "   " into "___" and ".."
+ *  into "__"). classifyMovement already refuses those, so a row carrying one
+ *  could never be closed by a sale — it would sit open forever asserting a
+ *  display no till can ever retire. The two predicates now refuse the same set.
+ *  (Senior-architect review.) */
 function rowIsOpen(row) {
   return !!row && row.status === "open" && typeof row.sizeKey === "string"
-    && row.sizeKey.length > 0 && row.sizeKey !== "_";
+    && row.sizeKey.length > 0 && !/^_+$/.test(row.sizeKey);
 }
 
 /**
@@ -132,9 +167,47 @@ function decideCloses(byRow, sizeKey, qty) {
   return open.slice(0, Math.max(0, Number(qty) || 0));
 }
 
+/**
+ * THE CLAIM — the transaction body that closes ONE row, or refuses.
+ *
+ * The lease dedupes REPLAYS OF ONE MOVEMENT. It does nothing about TWO
+ * MOVEMENTS: two tills selling the same shoe in the same size at the same shop
+ * within a second of each other get two movement ids, two leases, and — with a
+ * plain read-then-update — two executions that both read "2 open rows", both
+ * pick the oldest, and both close THE SAME ONE. The second real sale then
+ * closes nothing, and a row stays open asserting a display that has gone.
+ * (Senior-architect review; the fuzz could not have found it, being a
+ * sequential walk.)
+ *
+ * So the close is a CAS on the row itself: it commits only if the row is still
+ * open at the instant the transaction runs. The loser aborts and the caller
+ * moves to the next candidate, which is exactly the right answer — there WAS
+ * another pair on that wall, and it is the one that just sold.
+ */
+function claimClose(cur, { at, reason, via, movementId, inferred = null }) {
+  if (!rowIsOpen(cur)) return undefined;                 // someone else took it
+  const eventId = `closed_${String(at).replace(/[.#$/[\]\s:]/g, "-")}`;
+  return {
+    ...cur,
+    status: "closed",
+    closedAt: at,
+    closedBy: `system:${via}`,
+    closedReason: reason,
+    closedVia: via,
+    closedRef: movementId || null,
+    events: { ...(cur.events || {}), [eventId]: {
+      at, what: "closed", by: `system:${via}`,
+      detail: { reason, movementId: movementId || null, ...(inferred ? { inferred } : {}) },
+    } },
+  };
+}
+
 /** The field writes for ONE close, relative to the row's own path. Mirrors the
  *  client's closeFields — the same shape, so a row closed by the till and one
- *  closed by an operator are indistinguishable to every reader. */
+ *  closed by an operator are indistinguishable to every reader.
+ *
+ *  Kept and exercised because it IS the shape claimClose writes; the trigger
+ *  itself now goes through claimClose, which is the same fields under a CAS. */
 function closeUpdates(basePath, { at, reason, via, movementId }) {
   const eventId = `closed_${String(at).replace(/[.#$/[\]\s:]/g, "-")}`;
   return {
@@ -152,6 +225,65 @@ function closeUpdates(basePath, { at, reason, via, movementId }) {
 }
 
 /**
+ * A HUB-SOURCED SALE — which row, if any, it may close.
+ *
+ * A bare hub sale must never close a display record. Hub 1 holding four pairs
+ * of size 9 and one of them on Trophy's wall: an ordinary shelf sale of size 9
+ * is not the display, and closing Trophy's row on it would take a real display
+ * off the record and hand the next counter a discrepancy that is not real.
+ *
+ * The close is only ever taken when the sale COULD NOT HAVE BEEN ANYTHING ELSE.
+ * Two conditions, both required:
+ *
+ *   1. EXACTLY ONE open row for this product at this size is booked at this
+ *      hub, across every display store. Two walls each claiming a size 9 makes
+ *      one sale ambiguous, and an ambiguous close is a guess.
+ *   2. THE HUB CELL IS NOW EMPTY. A display unit stays BOOKED at its hub (PR
+ *      #324, "displays are hub stock" — displaySlots.js's own header). So if
+ *      the cell for that product and size is at zero and a row still claims a
+ *      unit of it is standing on a wall, the unit that just sold IS that unit.
+ *      There is nothing else it could have been.
+ *
+ * Cell qty is read AFTER the movement, and the read can race the write that
+ * applies it. That race only ever makes the cell look FULLER than it is, so the
+ * failure mode is a missed close, never a wrong one — the safe direction, and
+ * the wall walk and the duplicate tab both surface what is missed.
+ *
+ * @param openRowsByStore  { store: [{ rowId, row }] } — open rows for this
+ *                         product at this sizeKey, already filtered to rows
+ *                         booked at this hub.
+ * @param cellQty          /stock/{hub}/{productId}/{sizeKey}/qty, read now.
+ * → { store, rowId } | null, with `why` when it refuses.
+ */
+function resolveHubSale({ openRowsByStore, cellQty }) {
+  const candidates = [];
+  for (const [store, rows] of Object.entries(openRowsByStore || {})) {
+    for (const r of rows || []) candidates.push({ store, rowId: r.rowId });
+  }
+  if (candidates.length === 0) return { ok: false, why: "no open row at this hub for this size" };
+  if (candidates.length > 1) {
+    return { ok: false, why: `${candidates.length} walls claim this size — which one sold is not knowable` };
+  }
+  // An ABSENT cell is zero stock, not an unknown: RTDB has no node for a cell
+  // that holds nothing, and the Admin SDK throws on a failed read rather than
+  // returning null, so `null` here really does mean "the hub has none". Anything
+  // else that is not a finite number IS unknown, and unknown is a refusal —
+  // reading a garbage value as zero would close a real display.
+  // `Number(x)` is far too generous to lean on here: Number([]) and Number("")
+  // are both 0, so a garbage value would read as an empty shelf and close a
+  // real display. Only an actual number counts, and only null/undefined means
+  // "no cell". (Found by the test below, which passed [] in.)
+  const q = cellQty == null ? 0 : (typeof cellQty === "number" ? cellQty : NaN);
+  if (!Number.isFinite(q)) {
+    return { ok: false, why: "the hub's stock for this size could not be read, so the sale cannot be attributed" };
+  }
+  if (q > 0) {
+    return { ok: false, why: `the hub still holds ${q} of this size, so the sale need not have been the display` };
+  }
+  return { ok: true, ...candidates[0] };
+}
+
+/**
  * The lease decision — returns the record to write, or undefined to ABORT the
  * transaction (already done, or somebody else holds a fresh lease).
  * Same shape as displayChecks/lib.cjs processedClaimDecision, deliberately.
@@ -164,5 +296,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, leaseDecision,
 };

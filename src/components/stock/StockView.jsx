@@ -99,7 +99,7 @@ const TAB_GROUPS = [
   ["Displays", ["dupdisplays", "walldisplays", "displayrecs"]],
 ];
 
-export default function StockView({ products = [], orders = [], onExit }) {
+export default function StockView({ products = [], orders = [], ordersScope = null, onExit }) {
   const isWide = useWide(1024);
   const { permRecord, isSuperAdmin, hasPermission } = usePermissions();
   const registry = useLocations();
@@ -137,7 +137,7 @@ export default function StockView({ products = [], orders = [], onExit }) {
       {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
       {tab === "duplicates" && isAdmin && <StockErrorBoundary><DuplicatesTab products={products} registry={registry} /></StockErrorBoundary>}
       {tab === "dupdisplays" && isAdmin && <StockErrorBoundary><DuplicateDisplaysTab products={products} isAdmin={isAdmin} /></StockErrorBoundary>}
-      {tab === "walldisplays" && isAdmin && <StockErrorBoundary><UnregisteredDisplaysTab products={products} orders={orders} isAdmin={isAdmin} /></StockErrorBoundary>}
+      {tab === "walldisplays" && isAdmin && <StockErrorBoundary><UnregisteredDisplaysTab products={products} orders={orders} ordersScope={ordersScope} isAdmin={isAdmin} /></StockErrorBoundary>}
       {tab === "displayrecs" && isAdmin && <StockErrorBoundary><DisplayRecordsTab products={products} isAdmin={isAdmin} mode="records" /></StockErrorBoundary>}
     </>
   );
