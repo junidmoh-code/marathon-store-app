@@ -11,6 +11,7 @@ import { database, auth } from "../../firebase";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { STOCK_HOLD_ROOT } from "../../config/stockHold";
 import { DISPLAY_SLOTS_ROOT } from "./displaySlots";
+import { DISPLAY_ROWS_ROOT } from "./displayRowCore";
 import { HIDDEN_ROOT } from "./hiddenProductsCore";
 
 function useAuthReady() {
@@ -136,6 +137,30 @@ export function useDisplaySlots(enabled = true) {
 // (independent review, 2026-09-06). Those callers need the flag.
 export function useDisplaySlotsState(enabled = true) {
   return usePathState(DISPLAY_SLOTS_ROOT, enabled);
+}
+
+// /settings/displayRows → { store: { productId: { rowId: row } } } — the
+// DISPLAY ROW LEDGER (displayRowCore.js / displayRowStore.js are the writers).
+//
+// This is the node the two display cleanup tabs judge, and it is deliberately
+// read WHOLE, exactly as /settings/displaySlots is. Same shape, same scale
+// class: one record per display that has ever stood on a wall, three stores,
+// ~500 live rows plus their closed history. It is not a /stock-sized node and
+// it never becomes one — a closed row is small and a wall holds what a wall
+// holds.
+//
+// `enabled=false` skips the subscription entirely, so nothing streams until an
+// admin actually opens one of the two tabs.
+export function useDisplayRows(enabled = true) {
+  return usePath(DISPLAY_ROWS_ROOT, enabled);
+}
+
+// The same node WITH its readiness. The duplicate tab needs it: "no rows yet"
+// and "the subscription has not answered" look identical in an empty object,
+// and a screen that offers a CLOSE button must never offer one on the strength
+// of data it has not actually received.
+export function useDisplayRowsState(enabled = true) {
+  return usePathState(DISPLAY_ROWS_ROOT, enabled);
 }
 
 // /settings/hubSneakerCount/register/{hub} → { "pid__sizeKey": row } — the

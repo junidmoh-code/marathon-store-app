@@ -18,7 +18,8 @@ import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedP
 import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { productPhotoObjectPath } from "./utils/productPhotoPaths";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
-import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
+import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
+import { getTodayKey, getNextOrderNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
@@ -108,8 +109,10 @@ import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } fr
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRows, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { sendDisplayRow, closeDisplayRow } from "./components/stock/displayRowStore";
+import { hasOpenDisplayRequest, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -1937,21 +1940,11 @@ onValue(ref(database, ".info/serverTimeOffset"), (snap) => setServerTimeOffsetMs
 // keyed by their number (/orders/001), a re-issued number silently OVERWRITES
 // the earlier order. On 2026-07-17 this reset the counter 4 times and destroyed
 // 47 orders before the numbers were pinned to server time (PR #236).
-const getTodayKey = saTodayKey;
-
-async function getNextOrderNumber() {
-  const todayKey = getTodayKey();
-  const counterRef = ref(database, "orderCounter");
-  const txResult = await runTransaction(counterRef, (current) => {
-    if (!current || current.day !== todayKey) {
-      return { day: todayKey, counter: 1 };
-    }
-    const next = current.counter >= 999 ? 1 : current.counter + 1;
-    return { day: todayKey, counter: next };
-  });
-  const counter = txResult.snapshot.val()?.counter ?? 1;
-  return String(counter).padStart(3, "0");
-}
+// getTodayKey / getNextOrderNumber MOVED to src/utils/orderCounter.js
+// (2026-09-08), byte-identical, because the wall-walk "Request Display" raises
+// an ordinary display-partner request from the Stock section and needs the same
+// number space. Imported at the top of this file; nothing about the rule
+// changed, and a second copy of it is exactly what the note above warns about.
 
 // ─── SHOP-REFILL NUMBER COUNTER ───────────────────────────────────────────────
 // Clothing "Shop Refill" requests get their OWN daily counter, kept completely
@@ -9923,7 +9916,37 @@ function AssistantView({ products, onExit, orders = [] }) {
       // lines stay in the cart and get placed via the floating Place Refill
       // Request bar (different shape, no customer info).
       const customerCart = cart.filter(isCustomerLine);
+      // ── CLAUSE 1 — AT MOST ONE OPEN DISPLAY REQUEST PER PRODUCT PER STORE ──
+      // (Owner directive, 2026-09-08.) A second open request walks a second
+      // pair to a wall that is already getting one, and the operator sending
+      // them has no way to see the first from the refill card. The guard reads
+      // the orders this screen already streams — a guard that needs a round
+      // trip is a guard that gets skipped on a slow tab.
+      //
+      // It also fences the CURRENT BATCH against itself (`raisedHere`): two
+      // Display Partner lines for the same shoe in one cart are the same
+      // duplicate, and the live orders map cannot see the first one because it
+      // has not been written yet.
+      //
+      // The line is SKIPPED, not the checkout REFUSED — the rest of the
+      // customer's order is real and must go through. What was skipped is named
+      // afterwards, so nobody is left wondering.
+      const raisedHere = new Set();
+      const skippedRequests = [];
+      const alreadyRequested = (item) => {
+        if (!item.requestDisplayPartner) return false;
+        const store = (item.displayPairRequest === true && item.displayPairStore) || effectiveShop;
+        const k = `${store}::${item.product.id}`;
+        if (raisedHere.has(k) || hasOpenDisplayRequest(orders, { store, productId: item.product.id })) return true;
+        raisedHere.add(k);
+        return false;
+      };
       for (const item of customerCart) {
+        if (alreadyRequested(item)) {
+          skippedRequests.push(item);
+          setCart(prev => prev.filter(it => it !== item));
+          continue;
+        }
         const orderNum = await getNextOrderNumber();
         // Customer clothing orders route to the universe's CR hub (hub2 for
         // PE/Trophy, hub3 for Pine — CR_HUB_BY_UNIVERSE), where the clothing
@@ -10076,6 +10099,11 @@ function AssistantView({ products, onExit, orders = [] }) {
         // already-written lines with fresh order numbers. Object identity (not a
         // productId/size key) so qty>1 duplicate lines prune individually.
         setCart(prev => prev.filter(it => it !== item));
+      }
+      if (skippedRequests.length) {
+        const names = [...new Set(skippedRequests.map((i) => i.product.name))].join(", ");
+        alert(`A display partner is already on its way for ${names}, so it was not requested again. `
+          + `Everything else on this order was placed. The wall gets one pair, not two — ask again once this one arrives.`);
       }
       setLastOrders(placed);
       // Print the customer order slip(s) — one per order, in a single 80mm print
@@ -11120,6 +11148,13 @@ function TomorrowActionButton({ order, product, onOutcome }) {
 
 function WarehouseView({ products = [], orders, onExit }) {
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
+  // The display ROW LEDGER (/settings/displayRows). The send closes whatever is
+  // open for that wall in the same write that opens the new row, so it needs to
+  // know what IS open — and it must read it from a live subscription rather
+  // than a fetch at tap time, because a fetch at tap time is a read the
+  // operator waits on with a shoe in their hand. Subscribed only while the
+  // Refills tab is the one on screen.
+  const displayRows = useDisplayRows(mainTab === "refills");
   const [filter, setFilter] = useState("incoming");
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
@@ -11898,7 +11933,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // 'refilled' (display replenished) or 'stockDepleted' (no inventory left,
   // feeds Phase 11 Insights). displayRefilledBy stores the hub label
   // (anonymous auth has no email; selectedHub is the meaningful signal).
-  const setDisplayRefillStatus = (order, status, refillSize = null) => {
+  const setDisplayRefillStatus = async (order, status, refillSize = null) => {
     const now = serverNowIso();
     const patch = {
       displayRefillStatus: status,
@@ -11922,33 +11957,64 @@ function WarehouseView({ products = [], orders, onExit }) {
       // one label, never the refill itself.
       if (refillSize) {
         patch.displayRefillSize = String(refillSize);
-        // displaySlotStoreFor: a display-pair PULL refills the slot of the
-        // store whose floor lost the pair (displayPairStore), which can
-        // differ from the ordering shop. Classic partner orders keep
-        // destShop exactly as before.
-        if (displaySlotStoreFor(order) && order.productId) {
-          setDisplaySlot({
-            store: displaySlotStoreFor(order), productId: order.productId,
-            productName: order.productName || "",
-            size: String(refillSize),
-            bookedHub: order.displayRefillHub || order.placedAtHub || order.hub || null,
-            // `now` is the same instant this patch writes to displayRefilledAt,
-            // which is what displayPairCore's replay reads — one transition,
-            // one instant, whichever of the two records it.
-            source: "display_refill", orderId: order.id, at: now,
-          }).catch(() => {});
-        }
       }
     } else if (status === "stockDepleted") {
       patch.displayRefillStockDepletedAt = now;
       patch.displayRefilledAt            = null;
     }
 
-    // Resolve the refill task on the order. (Product-level depletion blocking
-    // was retired — a "stock depleted" resolution no longer flags the product
-    // un-orderable; it only resolves this task and feeds Insights below. So this
-    // is now a plain per-order write for both outcomes.)
-    updateOrder(order.id, patch);
+    // ── CLAUSE 2 — SEND IS ONE ATOMIC WRITE ────────────────────────────────
+    // The operator has picked a size and confirmed. In a SINGLE multi-path
+    // update: every open display row for this product at this wall is CLOSED
+    // (reason `replaced`, with the instant and the actor), the new row is
+    // OPENED at the picked size, and the request is cleared by carrying this
+    // very `patch` into the same update.
+    //
+    // It used to be two writes — the order patch, then a slot write — and the
+    // gap between them is exactly how a wall ends up with a request that is
+    // still asking and a record that has already moved on. The display SLOT
+    // stays its own fenced transaction inside sendDisplayRow (a multi-path
+    // update cannot carry a transaction, and the fence is load-bearing); the
+    // rows and the order move together.
+    //
+    // displaySlotStoreFor: a display-pair PULL refills the wall of the store
+    // that lost the pair (displayPairStore), which can differ from the ordering
+    // shop. Classic partner orders keep destShop exactly as before.
+    const rowStore = displaySlotStoreFor(order);
+    if (status === "refilled" && refillSize && rowStore && order.productId) {
+      const res = await sendDisplayRow({
+        rows: displayRows,
+        store: rowStore,
+        productId: order.productId,
+        productName: order.productName || "",
+        size: String(refillSize),
+        bookedHub: order.displayRefillHub || order.placedAtHub || order.hub || null,
+        orderId: order.id,
+        // The request-clearing patch, carried INTO the atomic update.
+        orderPatch: Object.fromEntries(Object.entries(patch).map(([k, v]) => [`orders/${order.id}/${k}`, v])),
+        // `now` is the same instant the patch writes to displayRefilledAt,
+        // which is what displayPairCore's replay reads — one transition, one
+        // instant, whichever record it is read from.
+        at: now,
+      });
+      if (!res.ok) {
+        // The atomic write failed, so NOTHING landed — not the rows, not the
+        // order. Falling through to a bare updateOrder here would resolve the
+        // task while the wall's record still shows the old pair, which is the
+        // split this change exists to remove. Tell the operator and stop.
+        console.warn(`Display send failed for #${order.id}: ${res.message}`);
+        window.alert(`The display record could not be saved (${res.message}). Nothing was changed — try again.`);
+        return;
+      }
+      if (res.warning) console.warn(res.warning);
+    } else {
+      // Stock Depleted, an undo, clothing, and a footwear refill with no size
+      // to record: a plain per-order write, exactly as before. (Product-level
+      // depletion blocking was retired — a "stock depleted" resolution no
+      // longer flags the product un-orderable; it only resolves this task and
+      // feeds Insights below.)
+      updateOrder(order.id, patch);
+    }
 
     // Stock-deplete: append an insights_log entry so the Stock Depleted tab
     // can show past-day counts. Without this, the tab only ever sees today's
@@ -11981,13 +12047,28 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Reverse a refill resolution — clears status + both timestamps + by-hub so
   // the task reappears in the active list. Leaves displayRefillScheduledAt
   // alone so the original 15-min window resumes from where it was.
-  const undoDisplayRefill = (order) => {
+  const undoDisplayRefill = async (order) => {
+    const now = serverNowIso();
+    // An undo says the pair did NOT go on the wall after all, so the row that
+    // send opened is CANCELLED — closed with a reason, never deleted. Without
+    // this the ledger would keep asserting a display that the operator has just
+    // taken back, and the Duplicate tab would show it as a second pair the next
+    // time a real one goes out. Found by the row's own requestOrderId; a row
+    // opened by a wall walk has none and is untouched.
+    const openForOrder = openRowsFor(displayRows, displaySlotStoreFor(order), order.productId)
+      .filter((r) => r.requestOrderId === order.id);
+    for (const row of openForOrder) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await closeDisplayRow({ rows: displayRows, row, reason: "cancelled", via: "undo",
+                                          detail: { reason: "cancelled", orderId: order.id }, at: now });
+      if (!res.ok) console.warn(`Undo could not close display row ${row.rowId}: ${res.message}`);
+    }
     updateOrder(order.id, {
       displayRefillStatus:          null,
       displayRefilledAt:            null,
       displayRefillStockDepletedAt: null,
       displayRefilledBy:            null,
-      updatedAt:                    serverNowIso(),
+      updatedAt:                    now,
     });
   };
 
@@ -12851,22 +12932,39 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
   // a warehouse. Pick, see it selected, then Send.
   const [sizeSheet, setSizeSheet] = useState(null);   // { order, options, picked }
 
-  // EVERY footwear refill asks which size is going ON THE DISPLAY NOW (owner
-  // bug report 2026-08-26). It used to ask only when the order carried no
-  // size — but the staged send ALWAYS stamps sentSize, so the sheet never
-  // appeared, and the system silently recorded the SENT size as the new
-  // display size when staff often put a different size out. The sent size is
-  // only the PRESELECTED suggestion (one extra tap when it happens to match);
-  // what staff confirm is what the display slot records. Falls back to the
-  // direct action only when the product declares no sizes to choose from.
+  // ── THE ABSOLUTE RULE: NOTHING PICKS THE DISPLAY SIZE BUT THE OPERATOR ─────
+  // (Owner directive, 2026-09-08 — no default, no last-used, no most-available,
+  // no auto-fill, and no pre-selection.)
+  //
+  // EVERY footwear refill asks which size is going ON THE DISPLAY NOW. It used
+  // to ask only when the order carried no size — the staged send always stamps
+  // sentSize, so the sheet never appeared and the SENT size was silently
+  // recorded as the display size while staff routinely put a different one out.
+  // That was fixed on 2026-08-26 by always asking, but the sent size was left
+  // PRESELECTED in the sheet, which is the same mistake wearing a smaller hat:
+  // a preselected answer is the one that gets confirmed, so the record still
+  // says "the size we sent" rather than "the size on the wall".
+  //
+  // So there is no `known` any more, at all. Not as a default, not as a
+  // highlight, not as a sort order. The sheet opens with nothing chosen and the
+  // Send button is dead until a human touches a size.
+  //
+  // A footwear order whose product declares NO sizes no longer falls through to
+  // a direct write either: it opens the sheet, which says the product has no
+  // sizes on record and offers no way through. Writing the order's size there
+  // would be exactly the guess this rule forbids, and a product with no sizes
+  // is a catalogue fault to fix, not a display record to invent.
+  //
+  // NON-FOOTWEAR IS UNCHANGED and is not an exception to the rule. A clothing
+  // partner order names one size and there is no second size to choose between,
+  // so nothing is being picked FOR the operator — there is nothing to pick. The
+  // rule governs the shoe wall, where the sheet is the whole point.
   const refillSizeChoices = (order) => {
-    const known = order.sentSize || order.size || null;
     const prod = resolveProductById(order.productId);
-    if (!productIsFootwear(prod)) return { needed: false, options: [], known };
+    if (!productIsFootwear(prod)) return { needed: false, options: [], known: order.sentSize || order.size || null };
     const options = (Array.isArray(prod?.sizes) ? prod.sizes : [])
       .map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
-    if (!options.length && known) return { needed: false, options: [], known };
-    return { needed: true, options, known };
+    return { needed: true, options, known: null };
   };
   const fmtWaiting = (iso) => {
     const ms = nowTick - new Date(iso).getTime();
@@ -13028,9 +13126,11 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
               <div style={{ display:"flex", gap:8 }}>
                 <button onClick={() => {
                           const sz = refillSizeChoices(order);
-                          // Footwear with no size on the order opens the confirm
-                          // sheet; everything else keeps the direct action.
-                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: sz.known && sz.options.includes(String(sz.known)) ? String(sz.known) : null });
+                          // Footwear ALWAYS opens the sheet, with NOTHING picked
+                          // (the absolute rule above). Clothing and one-size
+                          // items have no display size to record and keep the
+                          // direct action.
+                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: null });
                           else onSetStatus(order, "refilled", sz.known || null);
                         }}
                         style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
@@ -19165,7 +19265,7 @@ function AppInner() {
   // or store-scoped grant); a viewer who no longer qualifies gets null and the
   // reset effect drops them home. Shell only — reads no data.
   else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} products={products} /> : null;
-  else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} orders={orders} onExit={() => setRole(null)} /> : null;
   // TEMPORARY — hub sneaker stock-take. `products` is passed (not re-read): App
   // already holds the catalogue, and the count view freezes it on entry.
   // viewer.stockRole is the STORED role, deliberately NOT the super-admin-widened

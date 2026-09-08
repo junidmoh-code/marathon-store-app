@@ -302,10 +302,22 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     expect(a).toContain("repairedRef.current.add(k);");
     expect(a).not.toMatch(/repairedRef\.current\.delete/);
     expect(a).toContain("orderId: r.orderId, at: r.at");
-    // and the three exit writers stamp the transition's own instant
+    // and the three exit writers stamp the transition's own instant.
+    //
+    // The REFILL one moved (2026-09-08): the send now writes the display ROW
+    // ledger and the slot in one operation (displayRowStore.sendDisplayRow), so
+    // App.jsx passes the instant IN and the `source: "display_refill"` literal
+    // lives in the store. The property is unchanged and is still pinned, in
+    // both halves — App.jsx hands over `now`, and the store stamps that instant
+    // rather than call time. It is pinned in two files because it is now a fact
+    // about two files; asserting only the App half would let the store start
+    // stamping its own clock.
     expect(a).toContain("at: order.createdAt,");
     expect(a.match(/source: "manual", orderId: order\.id, at: now,/g) || []).toHaveLength(1);
-    expect(a.match(/source: "display_refill", orderId: order\.id, at: now,/g) || []).toHaveLength(1);
+    expect(a).toContain("orderId: order.id,\n        // The request-clearing patch, carried INTO the atomic update.");
+    expect(a).toMatch(/sendDisplayRow\(\{[\s\S]*?\n        at: now,\n      \}\)/);
+    const store = src("./displayRowStore.js");
+    expect(store).toContain('source: "display_refill", orderId, at: when,');
     expect(a).not.toMatch(/useDisplayRegister/);
     expect(a).not.toMatch(/hubSneakerCount\/register/);
   });
