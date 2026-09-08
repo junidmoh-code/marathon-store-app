@@ -10022,7 +10022,15 @@ function AssistantView({ products, onExit, orders = [] }) {
             placedHub, productType: isClothingCustomer ? "clothing" : (item.product.productType || "sneaker"),
             isPull: item.displayPairRequest === true,
             isPartnerRequest: item.requestDisplayPartner === true,
-            laneReady: displayLaneReady,
+            // BOTH LANES, not just the slots one. hub1DisplayUnits is built
+            // from displaySlotsLive, which is the durable slot node with the
+            // ORDER-lane exits replayed over it (slotsAfterOrderExits) — so
+            // before /orders answers it is the raw slot node, and a display
+            // sale whose best-effort slot clear was dropped still reads as
+            // live. Stamping that into a durable order record freezes a ghost
+            // location that the later repair cannot reach (independent review,
+            // 2026-09-08).
+            laneReady: displayLaneReady && ordersSettled,
           }),
           status: STATUS.INCOMING,
           createdAt: now,
@@ -12447,10 +12455,10 @@ function WarehouseView({ products = [], orders, onExit }) {
                       </span>
                       <div>
                         <div style={{ color:"#9DBCFF", fontSize:12, fontWeight:800, letterSpacing:".03em" }}>
-                          ONE OF THESE IS ON A DISPLAY at {floorNote.stores.map(st => labelFor(st)).join(" / ")}
+                          WAS ON A DISPLAY at {floorNote.stores.map(st => labelFor(st)).join(" / ")} when this was ordered{floorNote.when ? ` (${floorNote.when})` : ""}
                         </div>
                         <div style={{ color:"rgba(216,226,255,.72)", fontSize:11.5, fontWeight:600, marginTop:2 }}>
-                          If the shelf is empty, check the display wall before marking it out of stock. Any pair of this size is fine to send.
+                          If the shelf is empty, check there before marking it out of stock — but confirm it is still on the wall, and tell whoever keeps the display register if you take it.
                         </div>
                       </div>
                     </div>

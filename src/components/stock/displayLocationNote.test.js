@@ -21,7 +21,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import {
-  displayFloorsAtOrderTime, displayLocationNote, normaliseStores, DISPLAY_LANE_HUB,
+  displayFloorsAtOrderTime, displayLocationNote, normaliseStores, snapshotDate, DISPLAY_LANE_HUB,
 } from "./displayLocationNote";
 import { displayUnitsByCell } from "./displayPairCore";
 import { promisedKey } from "./availabilityCore";
@@ -123,8 +123,22 @@ describe("it never becomes the pull", () => {
 });
 
 describe("reading it back off an order", () => {
-  it("an order that carries floors gets the note", () => {
-    expect(displayLocationNote({ displayOnFloorAt: ["marathon-pe"] })).toEqual({ stores: ["marathon-pe"] });
+  it("an order that carries floors gets the note, dated from its own createdAt", () => {
+    const r = displayLocationNote({ displayOnFloorAt: ["marathon-pe"], createdAt: "2026-09-07T10:00:00.000Z" });
+    expect(r.stores).toEqual(["marathon-pe"]);
+    expect(r.when).toMatch(/2026/);
+  });
+  // ── THE TENSE, AND WHY IT IS PINNED ────────────────────────────────────────
+  // "IS on a display" asserts a present fact from a snapshot that may be days
+  // old when a picker reads it, and no later slot repair can reach a note
+  // already written into an order record. A card that cannot date its evidence
+  // must say so by omission rather than implying the claim is current.
+  it("an order with no readable date gets no date, not a wrong one", () => {
+    for (const bad of [undefined, null, "", "not a date", 0, {}, []]) {
+      expect(displayLocationNote({ displayOnFloorAt: ["trophy"], createdAt: bad }).when,
+        JSON.stringify(bad)).toBeNull();
+    }
+    expect(snapshotDate("2026-09-07T10:00:00.000Z")).toMatch(/2026/);
   });
   // ORDERS PLACED BEFORE THIS SHIPPED. They carry no field at all and must
   // render exactly as they do today — no note, no crash, no "undefined".
@@ -139,8 +153,8 @@ describe("reading it back off an order", () => {
   // keys. Both shapes must read identically or a note disappears from an order
   // nobody edited on purpose.
   it("the object shape RTDB returns for a sparse array reads the same as the array", () => {
-    expect(displayLocationNote({ displayOnFloorAt: { 0: "marathon-pe", 2: "trophy" } }))
-      .toEqual({ stores: ["marathon-pe", "trophy"] });
+    expect(displayLocationNote({ displayOnFloorAt: { 0: "marathon-pe", 2: "trophy" } }).stores)
+      .toEqual(["marathon-pe", "trophy"]);
   });
   it("junk in the list is dropped, not rendered", () => {
     expect(normaliseStores(["marathon-pe", "", "   ", null, 7, {}, "marathon-pe", "trophy"]))
@@ -195,8 +209,8 @@ describe("fuzz: the note is never wrong and never an instruction", () => {
 
               // 3. AND A NOTE ALWAYS SURVIVES THE ROUND TRIP through the field
               //    it is written to — the writer and the reader agree.
-              expect(displayLocationNote({ displayPairRequest: false, displayOnFloorAt: r }), at)
-                .toEqual({ stores: r });
+              expect(displayLocationNote({ displayPairRequest: false, displayOnFloorAt: r }).stores, at)
+                .toEqual(r);
             }
           }
         }
@@ -225,7 +239,11 @@ describe("the wiring in App.jsx", () => {
     expect(APP).toContain("displayUnits: hub1DisplayUnits[promisedKey(item.product.id, item.size)],");
     expect(APP).toContain("isPull: item.displayPairRequest === true,");
     expect(APP).toContain("isPartnerRequest: item.requestDisplayPartner === true,");
-    expect(APP).toContain("laneReady: displayLaneReady,");
+    // BOTH lanes. hub1DisplayUnits is the slot node with the ORDER-lane exits
+    // replayed over it, so before /orders answers a display sale whose
+    // best-effort slot clear was dropped still reads as live — and stamping
+    // that into a durable record freezes a ghost the later repair cannot reach.
+    expect(APP).toContain("laneReady: displayLaneReady && ordersSettled,");
   });
 
   // IT WRITES ONE FIELD. The point of the whole design is that nothing else on
@@ -248,6 +266,19 @@ describe("the wiring in App.jsx", () => {
   it("the card renders it on BOTH branches, beside the pull banner", () => {
     expect(APP.match(/\{displayPairBanner\}\{displayFloorBanner\}/g) || []).toHaveLength(2);
     expect(APP).toContain("const floorNote = displayLocationNote(order);");
+  });
+
+  // THE CARD REPORTS EVIDENCE AND ASKS. It must not tell a picker to take the
+  // pair off the wall: an ordinary send records NO display exit (the slot clear
+  // and the refill scheduling are both gated on requestDisplayPartner), so a
+  // note that invited it would strip a display and leave its slot standing.
+  it("the card never instructs a picker to take the display pair", () => {
+    expect(APP).not.toContain("Any pair of this size is fine to send");
+    expect(APP).toContain("WAS ON A DISPLAY at ");
+    expect(APP).toContain("confirm it is still on the wall");
+    // Past tense, dated from the order itself.
+    expect(APP).toContain("when this was ordered");
+    expect(APP).toContain("floorNote.when");
   });
 
   // AND THE SIZE GRID NEVER READS IT. The note is warehouse-side only; a tile

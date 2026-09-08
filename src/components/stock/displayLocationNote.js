@@ -32,8 +32,29 @@
 // That last distinction is the whole design. The amber pull banner names an
 // identified physical pair and instructs the picker to take THAT one; it can
 // do so because the pull flow reserved it. This note reserves nothing, so it
-// asserts nothing — it is advisory by construction, which is what makes it safe
-// to write from a snapshot that may be minutes stale by the time it is read.
+// asserts nothing.
+//
+// ── AND IT MUST NOT INVITE THE ONE THING NOTHING RECORDS ────────────────────
+// The first draft said "Any pair of this size is fine to send." That reads as
+// permission to take the pair off the wall — and an ORDINARY send records no
+// display exit at all: the slot clear at placement and the refill scheduling
+// are both gated on requestDisplayPartner, and displayPairCore's replay knows
+// only partner sales, pull reinstatements and replacements. So a picker who
+// followed that sentence would strip a display and leave its slot standing
+// against a shoe that had gone, and every later order would inherit the false
+// location (independent review, 2026-09-08).
+//
+// The note therefore reports EVIDENCE and asks for confirmation. It says where
+// the pair was recorded and WHEN, it asks the picker to check that it is still
+// there, and it asks them to say so if they take it. It does not tell anyone to
+// take anything. Closing the loop properly — capturing the display source at
+// dispatch and recording its exit — is the display source-of-truth job, and
+// this note is deliberately no substitute for it.
+//
+// THE TENSE MATTERS. "IS on a display" asserts a present fact from a snapshot
+// that may be days old by the time a picker reads it, and no later slot repair
+// can reach a note already written into an order record. "WAS … when this was
+// ordered", with the date, is the only claim the data supports.
 //
 // Pure and side-effect free, so the "a note is never an instruction" rules are
 // proved against the predicate the screen actually consults.
@@ -125,5 +146,17 @@ export function displayLocationNote(order) {
   // other path, must still only ever raise one of the two.
   if (!order || order.displayPairRequest === true) return null;
   const stores = normaliseStores(order.displayOnFloorAt);
-  return stores.length ? { stores } : null;
+  if (!stores.length) return null;
+  // WHEN the evidence was taken, from the order's own createdAt — no second
+  // field to drift out of step with it, and no field at all on the thousands of
+  // orders placed before this shipped. A card that cannot date its evidence
+  // says so by omission rather than implying the claim is current.
+  return { stores, when: snapshotDate(order.createdAt) };
+}
+
+/** The order's date, "8 Sep 2026", or null when it cannot be read. */
+export function snapshotDate(createdAt) {
+  const t = Date.parse(createdAt || "");
+  if (!Number.isFinite(t)) return null;
+  return new Date(t).toLocaleDateString("en-ZA", { day: "numeric", month: "short", year: "numeric" });
 }

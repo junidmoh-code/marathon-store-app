@@ -270,7 +270,7 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       displayRefillStatus: "refilled", displayRefillSize: "8",
                       displayRefilledAt: "2026-09-05T09:00:00.000Z", displayRefillHub: "hub2" }];
     expect(units(slots, orders)).toEqual({});                       // no longer hub1's
-    expect(displayUnitsByCell(slotsAfterOrderExits(slots, orders), "hub2")["p1::8"].units).toBe(1);
+    expect(displayUnitsByCell(slotsAfterOrderExits(slots, orders, NOW), "hub2")["p1::8"].units).toBe(1);
   });
 
   it("EQUAL INSTANTS are ranked, not left to array order", () => {
@@ -354,10 +354,23 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
     expect(Object.keys(units(slots, orders))).toEqual(["p1::6"]);   // untouched, no "p1::_"
   });
 
+  // ── THE CLOCK IS PINNED ON EVERY CALL, AND THAT IS NOT COSMETIC ───────────
+  // slotsAfterOrderExits defaults nowMs to serverNowMs(), and it only replays
+  // an exit whose order was created inside DISPLAY_EXIT_CREATE_MAX_AGE_MS
+  // (7 days). Eight calls in this file omitted that argument while asserting
+  // against fixtures dated 1 September, so they were quietly measured against
+  // the REAL calendar: green on 7 September, red from the 8th, when the
+  // fixtures aged past the bound and the replay stopped applying. The
+  // reference-stable path then returned the caller's own object and the
+  // prototype-pollution guard below read Object.prototype instead of null.
+  //
+  // A time bomb, not a product defect — but it had been red on main since #574
+  // and nothing was watching. NOW is the same instant `units()` has always
+  // passed; the fixtures now mean what they say whatever day it is.
   it("is a pure projection: no orders, no timestamps, no slots — all safe and unchanged", () => {
     const slots = slotAt("6", "2026-09-01T08:00:00.000Z");
-    expect(slotsAfterOrderExits(slots, [])).toBe(slots);       // nothing to apply, same object
-    expect(slotsAfterOrderExits(slots, null)).toBe(slots);
+    expect(slotsAfterOrderExits(slots, [], NOW)).toBe(slots);       // nothing to apply, same object
+    expect(slotsAfterOrderExits(slots, null, NOW)).toBe(slots);
     // And the healthy case is reference-stable too: /orders re-fires on every
     // till transaction, and a projection that changes nothing must not
     // invalidate every memo hanging off the slot map.
@@ -365,12 +378,12 @@ describe("slotsAfterOrderExits — a display that leaves the floor stops being m
                       createdAt: "2026-09-01T07:00:00.000Z",
                       displayRefillStatus: "refilled", displayRefillSize: "6",
                       displayRefilledAt: "2026-09-01T08:00:00.000Z", displayRefillHub: "hub1" }];
-    expect(slotsAfterOrderExits(slots, landed)).toBe(slots);
+    expect(slotsAfterOrderExits(slots, landed, NOW)).toBe(slots);
     // A `__proto__` store or product id is data, not a prototype assignment.
     const evil = { __proto__: { p1: { size: "6", sizeKey: "6", bookedHub: "hub1", at: "2026-01-01T00:00:00.000Z" } } };
-    expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed))).toBe(null);
-    expect(slotsAfterOrderExits(null, [])).toEqual({});
-    expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }])).toEqual({});
+    expect(Object.getPrototypeOf(slotsAfterOrderExits({ ...evil, ok: {} }, landed, NOW))).toBe(null);
+    expect(slotsAfterOrderExits(null, [], NOW)).toEqual({});
+    expect(slotsAfterOrderExits(undefined, [{ id: "1", productId: "p1", destShop: PE, requestDisplayPartner: true, createdAt: "2026-09-06T09:00:00.000Z" }], NOW)).toEqual({});
     // A slot with no `at` is a hand-written record; the replay leaves it alone
     // rather than guessing which came first.
     const noAt = { "marathon-pe": { p1: { size: "6", sizeKey: "6", bookedHub: "hub1" } } };
@@ -459,7 +472,7 @@ describe("displaySlotRepairs — the divergence as a write", () => {
         ? { ...cur, size: null, sizeKey: null, at: r.at }
         : { ...cur, size: r.size, sizeKey: r.size.replace(".", "_"), bookedHub: r.bookedHub, at: r.at };
     }
-    expect(displayUnitsByCell(applied, "hub1")).toEqual(displayUnitsByCell(slotsAfterOrderExits(slots, orders), "hub1"));
+    expect(displayUnitsByCell(applied, "hub1")).toEqual(displayUnitsByCell(slotsAfterOrderExits(slots, orders, NOW), "hub1"));
   });
   it("A STALE FENCE IS A REPAIR even when the state already matches", () => {
     // Reviewer's case: slot says size 8 at 10:00:01, the replacement to 8
@@ -500,7 +513,7 @@ describe("displaySlotRepairs — the divergence as a write", () => {
     const trophyFeed = [{ id: "410", productId: "p1", destShop: "trophy", requestDisplayPartner: true,
                           displayPairRequest: true, displayPairStore: PE, createdAt: T }];
     expect(displaySlotRepairs(slots, trophyFeed, NOW)).toEqual([]);
-    expect(Object.keys(displayUnitsByCell(slotsAfterOrderExits(slots, trophyFeed), "hub1"))).toEqual(["p1::8"]);
+    expect(Object.keys(displayUnitsByCell(slotsAfterOrderExits(slots, trophyFeed, NOW), "hub1"))).toEqual(["p1::8"]);
   });
 
   it("TWO ORDERS IN THE SAME MILLISECOND resolve the same way whatever the array order", () => {
