@@ -22,6 +22,7 @@ removed, so nothing has to be un-pasted.)
 | Path | Written by | Read by |
 |---|---|---|
 | `/push_assignments/{uid}` | the super-admin, and nobody else | the admin card |
+| `/push_hub_audience/hub3/{uid}` | the super-admin, and nobody else | the Cloud Function — **new 2026-09-08** |
 | `/push_hub_audience/{hub}/{uid}` | the super-admin, and nobody else | the Cloud Function (Admin SDK, bypasses rules) |
 
 ## The rules
@@ -34,6 +35,7 @@ removed, so nothing has to be un-pasted.)
     ".validate": "newData.hasChildren(['hub1','hub2','updatedAt'])",
     "hub1":      { ".validate": "newData.isBoolean()" },
     "hub2":      { ".validate": "newData.isBoolean()" },
+    "hub3":      { ".validate": "newData.isBoolean()" },
     "updatedAt": { ".validate": "newData.isNumber()" },
     "$other":    { ".validate": false }
   }
@@ -103,3 +105,51 @@ assign yourself to Hub 1, and check the console shows
 remove BOTH. If the console shows nothing, the paste did not publish or landed
 inside another node — the browser console will be logging
 `[push] assignment save failed`.
+
+
+## 2026-09-08 — Hub 3 (Pine) became assignable
+
+Pine was left out on the reasoning that it picks on its own floor. That is
+reversed. It was never a quiet exclusion: in the fourteen days to 2026-09-08 the
+live log holds **714 orders placed at hub3**, every one with a real `hub` of
+`"hub3"` and a `destShop` of `"marathon-pine"` — none refused as `no_hub` or
+`bad_hub`, none a refill. They passed every guard in the fan-out and arrived at
+an audience node that could never have had anybody in it.
+
+### What changed in the rule — one line
+
+A `hub3` child, validated as a boolean, inside `push_assignments/$uid`. Nothing
+else moves: both `.read` and `.write` still name only the super-admin, `$other`
+is still `false`, and `push_hub_audience` is untouched (its `$hub` wildcard
+already accepted `hub3`; only the code that writes there had to learn to).
+
+### Why `hub3` is NOT added to `hasChildren`
+
+**This is the compatibility hinge, and getting it wrong refuses every existing
+assignment.** `hasChildren(['hub1','hub2','updatedAt'])` stays exactly as it is.
+
+Every record written before today has three children and no `hub3`. Requiring
+`hub3` would make each of them invalid the moment anything touched it — and it
+would also refuse a write from any browser still running a cached two-hub
+bundle, which is a real state for as long as a service worker holds one.
+Listing `hub3` as an optional, type-checked child accepts **both** shapes:
+
+| record | `hasChildren` | `hub3` rule | `$other` | verdict |
+|---|---|---|---|---|
+| `{hub1,hub2,updatedAt}` (legacy) | ✅ | not present, nothing to check | ✅ | **accepted** |
+| `{hub1,hub2,hub3,updatedAt}` (new) | ✅ | boolean ✅ | ✅ | **accepted** |
+| `{hub1,hub2,hub3:"true",updatedAt}` | ✅ | **not a boolean** ❌ | — | rejected |
+| `{hub1,hub2,hub4,updatedAt}` | ✅ | — | **`$other` false** ❌ | rejected |
+| `{hub1,updatedAt}` | **❌** | — | — | rejected |
+
+There is no migration and none is needed: a legacy record reads as "not
+assigned to Hub 3" (`assignedHubs` counts only a real boolean `true`, so an
+absent child is false), and the next save from the card rewrites it in the new
+shape.
+
+### Order of operations
+
+**Paste this rule BEFORE the hosting deploy**, or the first Hub 3 assignment is
+refused. The reverse order is safe for everything except that one write, and it
+costs nothing: pasting early cannot break the two-hub card, because the old card
+never sends a `hub3` child and the rule does not require one.

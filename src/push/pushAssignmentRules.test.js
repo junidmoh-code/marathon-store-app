@@ -14,7 +14,7 @@
 // component) are all bypassable; this clause is not.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
-import { PUSH_ASSIGNMENTS_PATH, PUSH_HUB_AUDIENCE_PATH } from "./pushAssignments";
+import { PUSH_ASSIGNMENTS_PATH, PUSH_HUB_AUDIENCE_PATH, PUSH_HUBS } from "./pushAssignments";
 
 const DOC = readFileSync(new URL("../../PUSH-ASSIGNMENT-RULES-DEPLOY.md", import.meta.url), "utf8");
 const ADMIN_EMAIL = "gunidmoh@gmail.com";
@@ -55,15 +55,52 @@ describe("the rules that will be pasted", () => {
     });
   }
 
-  it("stores an assignment as a CLOSED shape: two booleans and a number", () => {
+  it("stores an assignment as a CLOSED shape: a boolean per hub and a number", () => {
     const rec = rules.push_assignments.$uid;
-    expect(rec[".validate"]).toContain("hasChildren(['hub1','hub2','updatedAt'])");
-    expect(rec.hub1[".validate"]).toContain("isBoolean()");
-    expect(rec.hub2[".validate"]).toContain("isBoolean()");
+    // Derived from PUSH_HUBS, so adding a hub to the code without adding it to
+    // the document Junid pastes fails HERE, before the write is refused live.
+    for (const hub of PUSH_HUBS) {
+      expect(rec[hub], `the rule must know about ${hub}`).toBeTruthy();
+      expect(rec[hub][".validate"]).toContain("isBoolean()");
+    }
     expect(rec.updatedAt[".validate"]).toContain("isNumber()");
     // Without this, anything a future bug or a console paste parks on a record
     // is stored and served forever.
     expect(rec.$other[".validate"]).toBe(false);
+  });
+
+  // ── THE COMPATIBILITY HINGE ───────────────────────────────────────────────
+  // Every record written before 2026-09-08 has hub1, hub2 and updatedAt and no
+  // hub3. If hub3 were REQUIRED, each of those becomes invalid the moment
+  // anything touches it, and so does a write from any browser still running a
+  // cached two-hub bundle — which a service worker can hold for a while. The
+  // required set must therefore stay at the three children every record has
+  // ever had, with the new hub optional and type-checked.
+  describe("a legacy two-hub record must still be writable", () => {
+    const required = () => {
+      const m = rules.push_assignments.$uid[".validate"].match(/hasChildren\(\[(.*?)\]\)/);
+      return JSON.parse(`[${m[1].replace(/'/g, '"')}]`);
+    };
+
+    it("requires exactly hub1, hub2 and updatedAt — the children every record has", () => {
+      expect(required().sort()).toEqual(["hub1", "hub2", "updatedAt"]);
+    });
+
+    it("does NOT require hub3 — that would refuse every assignment made so far", () => {
+      expect(required()).not.toContain("hub3");
+    });
+
+    it("but DOES type-check hub3 when it is present, so a string cannot land there", () => {
+      expect(rules.push_assignments.$uid.hub3[".validate"]).toContain("isBoolean()");
+    });
+
+    it("every hub beyond the required set is optional and validated", () => {
+      // Whatever PUSH_HUBS grows to, a new hub must arrive this way — declared,
+      // type-checked, and NOT added to hasChildren.
+      for (const hub of PUSH_HUBS.filter((h) => !required().includes(h))) {
+        expect(rules.push_assignments.$uid[hub][".validate"]).toContain("isBoolean()");
+      }
+    });
   });
 
   it("stores an index entry as a CLOSED shape too", () => {

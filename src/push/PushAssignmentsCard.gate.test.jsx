@@ -60,6 +60,7 @@ vi.mock("../firebase", () => ({ database: { fake: true } }));
 vi.mock("../utils/serverTime", () => ({ serverNowMs: () => 1_757_000_000_000 }));
 
 const PushAssignmentsCard = (await import("./PushAssignmentsCard.jsx")).default;
+const { PUSH_HUBS } = await import("./pushAssignments.js");
 
 const ADMIN = { uid: "admin-uid", email: "gunidmoh@gmail.com", displayName: "Junid" };
 const STAFF = { uid: "staff-uid", email: "rashid@marathon.internal" };
@@ -199,11 +200,14 @@ describe("the roster it shows", () => {
     expect(labels.join("|")).toContain("Chris");
   });
 
-  it("offers exactly Hub 1 and Hub 2 per staff row", async () => {
+  it("offers exactly one switch per hub in the closed list, per staff row", async () => {
     withWorld();
     const tree = await render({ authUser: ADMIN });
-    // 3 usable accounts × 2 hubs. The 4th uid is not a legal RTDB key.
-    expect(rowSwitches(tree)).toHaveLength(6);
+    // 3 usable accounts × every hub in PUSH_HUBS. The 4th uid is not a legal
+    // RTDB key. Derived from the list, so adding a hub cannot leave a row
+    // half-rendered, and the reason the number is what it is stays on screen.
+    expect(rowSwitches(tree)).toHaveLength(3 * PUSH_HUBS.length);
+    expect(rowSwitches(tree).map((n) => n.props["aria-label"]).join("|")).toContain("Hub 3 alerts for");
     expect(rowSwitches(tree).map((n) => n.props["aria-label"]).join("|")).not.toContain("Dawid");
   });
 
@@ -211,7 +215,9 @@ describe("the roster it shows", () => {
     withWorld();
     const tree = await render({ authUser: ADMIN });
     const ayanda = rowSwitches(tree).filter((n) => n.props["aria-label"].includes("Ayanda"));
-    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false]);
+    // hub1 on; hub2 explicitly false; hub3 ABSENT from this legacy-shaped
+    // record and therefore off — not unset-and-therefore-on.
+    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false, false]);
   });
 
   it("everyone else renders OFF — absence of a record is off, not unset", async () => {
@@ -248,9 +254,10 @@ describe("what a tap actually writes", () => {
     // ref(database) with no path — a ROOT multi-path update.
     expect(updateMock.mock.calls[0][0]).toEqual({ path: "" });
     expect(updateMock.mock.calls[0][1]).toEqual({
-      "push_assignments/u1": { hub1: true, hub2: false, updatedAt: 1_757_000_000_000 },
+      "push_assignments/u1": { hub1: true, hub2: false, hub3: false, updatedAt: 1_757_000_000_000 },
       "push_hub_audience/hub1/u1": { at: 1_757_000_000_000 },
       "push_hub_audience/hub2/u1": null,
+      "push_hub_audience/hub3/u1": null,
     });
   });
 
@@ -523,7 +530,7 @@ describe("only the newest load may write state", () => {
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
     expect(sw().props["aria-checked"], "a stale load must not put the switch back").toBe(true);
     expect(tree.root.findAll((n) => n.props && n.props.role === "switch"),
-      "and must not rebuild the list underneath it").toHaveLength(4);
+      "and must not rebuild the list underneath it").toHaveLength(2 * PUSH_HUBS.length);
   });
 });
 
@@ -579,27 +586,42 @@ describe("a truncated ROSTER raises its own banner", () => {
   // is only half the pin. Without this one, deleting the line that sets
   // rosterTruncated would remove the banner entirely and nothing would notice
   // — a short staff list would then be presented as the whole staff list.
-  const fullPages = (r) => {
+  // A node that never short-pages: every request comes back FULL with an
+  // advancing cursor, so readByKeyPages exhausts its real 200x25 budget rather
+  // than being handed `complete: false` directly. Asserting the flag would pin
+  // nothing; this is the honest route to the banner.
+  //
+  // The 5,000 records it yields are TILL LOGINS, so partitionRoster hides all
+  // but one and the render stays small. That is not a dodge — the paging,
+  // the cursor and the budget are all exercised for real, and the one visible
+  // row proves the roster still built. Rendering 5,000 x one-switch-per-hub
+  // instead cost this file 70 seconds and bought nothing.
+  const TILL = { stockRole: "pos", posAccess: { role: "cashier" } };
+  const fullPages = (r, real) => {
     const limit = r.constraints.find((c) => c.kind === "limitToFirst").value;
     const after = r.constraints.find((c) => c.kind === "startAfter");
     let n = after ? Number(after.value.slice(1)) + 1 : 0;
     const keys = Array.from({ length: limit }, () => `u${String(n++).padStart(8, "0")}`);
-    return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => ({ displayName: k }) })) return true; return false; } };
+    const val = (k) => (real && k === "u00000000" ? { displayName: "Ayanda" } : TILL);
+    return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => val(k) })) return true; return false; } };
   };
 
   it("says the list is short when /users runs out of pages, and does not blame the assignments", async () => {
     getMock.mockImplementation(async (r) => {
-      if (r.path === "users") return fullPages(r);
+      if (r.path === "users") return fullPages(r, true);
       return worldReader({})(r);
     });
-    const t = flattenTree(await render({ authUser: ADMIN }));
+    const tree = await render({ authUser: ADMIN });
+    const t = flattenTree(tree);
     expect(t, "the roster banner must fire").toContain("more staff accounts than this screen reads");
     expect(t, "the assignments read was fine").not.toContain("assignments could not be read");
+    expect(tree.root.findAll((n) => n.props && n.props.role === "switch"),
+      "the one non-till account still rendered").toHaveLength(PUSH_HUBS.length);
   });
 
   it("both banners stand together when both nodes are truncated, without contradicting each other", async () => {
     getMock.mockImplementation(async (r) => {
-      if (r.path === "users" || r.path === "push_assignments") return fullPages(r);
+      if (r.path === "users" || r.path === "push_assignments") return fullPages(r, true);
       return worldReader({})(r);
     });
     const t = flattenTree(await render({ authUser: ADMIN }));

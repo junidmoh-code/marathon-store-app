@@ -384,7 +384,8 @@ function PushAssignmentsAuthed({ onExit }) {
         <p style={{ fontSize: 13, lineHeight: 1.55, color: TEXT_2, margin: "0 0 18px" }}>
           Choose who is alerted when a shop places an order, and for which hub.
           Nobody is alerted unless you switch a hub on here — staff have no
-          setting of their own. Someone on both hubs hears about both.
+          setting of their own. Someone on more than one hub hears about each of
+          them.
         </p>
 
         {loadError && (
@@ -496,8 +497,7 @@ function PushAssignmentsAuthed({ onExit }) {
           “No device” means that person’s browser has never been given permission
           to show alerts, so nothing can reach them yet — assigning them stores
           the decision but sends nothing until they open the app on a device that
-          allows notifications. Pine (Hub&nbsp;3) orders are not covered: they are
-          picked on Pine’s own floor.
+          allows notifications.
         </p>
       </div>
     </div>

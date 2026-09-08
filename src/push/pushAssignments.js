@@ -19,7 +19,10 @@
 //
 // ── TWO PATHS, ONE WRITE ────────────────────────────────────────────────────
 //
-//   /push_assignments/{uid}        {hub1: bool, hub2: bool, updatedAt: number}
+//   /push_assignments/{uid}        one bool per hub in PUSH_HUBS, plus
+//                                  updatedAt: number. Records written before
+//                                  2026-09-08 carry no hub3 child; an absent
+//                                  hub reads as false and is never migrated.
 //        The DECISION. One record per assigned person, admin-write only. This
 //        is what the admin card renders, and the only place the answer to
 //        "who did Junid assign?" exists.
@@ -38,18 +41,30 @@
 // identical to the feature being broken — and an index entry with no record
 // would be someone being notified whom the card does not show.
 //
-// ── ONLY HUB 1 AND HUB 2 ────────────────────────────────────────────────────
-// These are the two hubs that pick and dispatch orders. Hub 3 is Pine, which
-// runs its own floor, and an order routed there resolves to nobody by
-// construction rather than by a special case. The list is CLOSED and it is what
-// makes a clear possible: an update always writes every hub in it, setting the
-// assigned ones and NULLING the rest, so a person moved from both hubs to Hub 1
-// actually stops hearing about Hub 2 instead of staying in an index nothing
-// knows to look in.
+// ── THREE HUBS, AND THE LIST IS THE ONLY PLACE THAT SAYS SO ─────────────────
+// Hub 1, Hub 2 and Hub 3 (Pine) all pick and dispatch orders, and all three are
+// assignable.
+//
+// Hub 3 was excluded at first on the reasoning that Pine picks on its own
+// floor, so an order routed there resolved to nobody by construction. That
+// decision is REVERSED (owner, 2026-09-08). It was not a quiet exclusion in
+// practice: over the fourteen days to 2026-09-08 the live log holds 714 orders
+// placed at hub3, every one of them carrying a real `hub` of "hub3" and a
+// destShop of "marathon-pine" — none refused as no_hub or bad_hub, none a
+// refill. They passed every guard in the fan-out and arrived at an audience
+// node that could never have anybody in it.
+//
+// The list is CLOSED and it is what makes a CLEAR possible: an update always
+// writes every hub in it, setting the assigned ones and NULLING the rest, so a
+// person moved from all three hubs to Hub 1 actually stops hearing about the
+// other two instead of staying in an index nothing knows to look in. Adding a
+// hub here is therefore the ONE edit that adds a hub — the record shape, the
+// index writes and the card's switches are all derived from it, so none of
+// them can be left behind half-done.
 
 // The hubs an assignment may name, and the words the card puts on them.
-export const PUSH_HUBS = Object.freeze(["hub1", "hub2"]);
-export const PUSH_HUB_LABEL = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2" });
+export const PUSH_HUBS = Object.freeze(["hub1", "hub2", "hub3"]);
+export const PUSH_HUB_LABEL = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" });
 
 export const PUSH_ASSIGNMENTS_PATH = "push_assignments";
 export const pushAssignmentPath = (uid) => `${PUSH_ASSIGNMENTS_PATH}/${uid}`;
@@ -99,12 +114,11 @@ export function isAssigned(record) {
  *
  * Paths are returned relative to the database ROOT, for `update(ref(db), …)`.
  *
- * An EMPTY hub list deletes the record outright rather than storing
- * {hub1:false, hub2:false}. Absence is the off state this whole module is built
- * on, so "off" must produce absence — storing a record full of falses would
- * leave a row on the card that reads as an assignment, and would mean two
- * different representations of the same answer for every later reader to agree
- * about.
+ * An EMPTY hub list deletes the record outright rather than storing a record
+ * full of falses. Absence is the off state this whole module is built on, so
+ * "off" must produce absence — a record of falses would leave a row on the card
+ * that reads as an assignment, and would mean two different representations of
+ * the same answer for every later reader to agree about.
  *
  * @param {string} uid
  * @param {string[]} hubs  any subset of PUSH_HUBS; unknown hubs are ignored
@@ -124,8 +138,16 @@ export function assignmentUpdates(uid, hubs, nowMs) {
     upd[pushHubAudienceEntryPath(hub, uid)] = want.has(hub) ? { at: nowMs } : null;
   }
 
+  // BUILT FROM PUSH_HUBS, never from a literal. This line used to name hub1
+  // and hub2 by hand while the index loop above iterated the list, so the two
+  // halves of one write disagreed about what a hub was the moment the list
+  // changed: adding Hub 3 would have written a hub3 index entry and an
+  // assignment record with no hub3 in it — the person would be notified, and
+  // the card would show their Hub 3 switch OFF, which is the one state this
+  // module exists to make impossible.
   upd[pushAssignmentPath(uid)] = want.size
-    ? { hub1: want.has("hub1"), hub2: want.has("hub2"), updatedAt: nowMs }
+    ? PUSH_HUBS.reduce((rec, hub) => { rec[hub] = want.has(hub); return rec; },
+                       { updatedAt: nowMs })
     : null;
 
   return upd;

@@ -75,14 +75,46 @@ describe("the three real answers", () => {
     expect(assignedHubs({ hub2: true, hub1: true })).toEqual(["hub1", "hub2"]);
   });
   it("a hub outside the closed list is not an assignment", () => {
-    expect(assignedHubs({ hub3: true, central: true })).toEqual([]);
+    expect(assignedHubs({ central: true, hubC: true, hub4: true })).toEqual([]);
+  });
+
+  // ── LEGACY RECORDS — WRITTEN BEFORE HUB 3 EXISTED ───────────────────────
+  // Every record stored before 2026-09-08 has exactly hub1, hub2 and
+  // updatedAt. It must read as "not assigned to Hub 3" — not throw, and above
+  // all not be treated as unset-and-therefore-yes. There is no migration and
+  // there does not need to be one: the next save from the card rewrites the
+  // record in the new shape.
+  it("a legacy two-hub record reads hub3 FALSE, and keeps the hubs it does name", () => {
+    expect(assignedHubs({ hub1: true, hub2: false, updatedAt: 1 })).toEqual(["hub1"]);
+    expect(assignedHubs({ hub1: true, hub2: true, updatedAt: 1 })).toEqual(["hub1", "hub2"]);
+    expect(assignedHubs({ hub1: false, hub2: false, updatedAt: 1 })).toEqual([]);
+  });
+
+  it("an ABSENT hub3 is never truthy — not undefined-as-yes, not a throw", () => {
+    for (const rec of [
+      { hub1: true, hub2: true, updatedAt: 1 },
+      { hub1: true },
+      { updatedAt: 1 },
+      {},
+    ]) {
+      expect(assignedHubs(rec)).not.toContain("hub3");
+    }
+  });
+
+  it("hub3 counts ONLY on a real boolean true, exactly like the other two", () => {
+    expect(assignedHubs({ hub3: true })).toEqual(["hub3"]);
+    for (const v of ["true", 1, "yes", {}, [], null, undefined, 0]) {
+      expect(assignedHubs({ hub3: v }), `hub3: ${JSON.stringify(v)}`).toEqual([]);
+    }
   });
 });
 
 describe("the hubs an assignment may name", () => {
-  it("is Hub 1 and Hub 2 — Pine runs its own floor", () => {
-    expect(PUSH_HUBS).toEqual(["hub1", "hub2"]);
-    expect(PUSH_HUBS).not.toContain("hub3");
+  it("is all three picking hubs — Pine included since 2026-09-08", () => {
+    expect(PUSH_HUBS).toEqual(["hub1", "hub2", "hub3"]);
+  });
+  it("does NOT include hubC — it is not a picking hub and has no audience", () => {
+    expect(PUSH_HUBS).not.toContain("hubC");
   });
   it("every hub has words a person can read", () => {
     for (const hub of PUSH_HUBS) expect(typeof PUSH_HUB_LABEL[hub]).toBe("string");
@@ -106,23 +138,53 @@ describe("paths", () => {
 describe("the write keeps the decision and the index in step", () => {
   const NOW = 1_757_000_000_000;
 
-  it("assigning both hubs writes the record AND both index entries", () => {
-    expect(assignmentUpdates("u1", ["hub1", "hub2"], NOW)).toEqual({
+  it("assigning every hub writes the record AND every index entry", () => {
+    expect(assignmentUpdates("u1", ["hub1", "hub2", "hub3"], NOW)).toEqual({
       "push_hub_audience/hub1/u1": { at: NOW },
       "push_hub_audience/hub2/u1": { at: NOW },
-      "push_assignments/u1": { hub1: true, hub2: true, updatedAt: NOW },
+      "push_hub_audience/hub3/u1": { at: NOW },
+      "push_assignments/u1": { hub1: true, hub2: true, hub3: true, updatedAt: NOW },
     });
   });
 
-  it("assigning ONE hub NULLS the other's index entry — otherwise it keeps firing", () => {
+  it("assigning ONE hub NULLS the others' index entries — otherwise they keep firing", () => {
     const upd = assignmentUpdates("u1", ["hub1"], NOW);
     expect(upd["push_hub_audience/hub1/u1"]).toEqual({ at: NOW });
     expect(upd["push_hub_audience/hub2/u1"]).toBe(null);
-    expect(upd["push_assignments/u1"]).toEqual({ hub1: true, hub2: false, updatedAt: NOW });
+    expect(upd["push_hub_audience/hub3/u1"]).toBe(null);
+    expect(upd["push_assignments/u1"]).toEqual({ hub1: true, hub2: false, hub3: false, updatedAt: NOW });
+  });
+
+  it("assigning ONLY Hub 3 is a first-class assignment, not a special case", () => {
+    const upd = assignmentUpdates("u1", ["hub3"], NOW);
+    expect(upd["push_hub_audience/hub3/u1"]).toEqual({ at: NOW });
+    expect(upd["push_hub_audience/hub1/u1"]).toBe(null);
+    expect(upd["push_hub_audience/hub2/u1"]).toBe(null);
+    expect(upd["push_assignments/u1"]).toEqual({ hub1: false, hub2: false, hub3: true, updatedAt: NOW });
+  });
+
+  it("THE RECORD AND THE INDEX NAME THE SAME HUBS — no half-added hub", () => {
+    // The record used to be a hand-written {hub1, hub2, updatedAt} literal
+    // while the index loop iterated PUSH_HUBS. Adding a hub to the list would
+    // then have written a hub3 index entry — so the person IS notified — and a
+    // record with no hub3 in it, so the card shows their Hub 3 switch off.
+    // This walks every subset, so it fails for any hub left out of either half.
+    const subsets = [[]];
+    for (const hub of PUSH_HUBS) for (const s of [...subsets]) subsets.push([...s, hub]);
+    for (const hubs of subsets) {
+      const upd = assignmentUpdates("u1", hubs, NOW);
+      const rec = upd["push_assignments/u1"];
+      for (const hub of PUSH_HUBS) {
+        const indexed = upd[`push_hub_audience/${hub}/u1`] !== null;
+        expect(indexed, `${hub} index for [${hubs}]`).toBe(hubs.includes(hub));
+        if (rec) expect(rec[hub], `${hub} record for [${hubs}]`).toBe(hubs.includes(hub));
+      }
+      if (rec) expect(Object.keys(rec).sort()).toEqual([...PUSH_HUBS, "updatedAt"].sort());
+    }
   });
 
   it("EVERY hub in the closed list is written on every save, set or nulled", () => {
-    for (const hubs of [[], ["hub1"], ["hub2"], ["hub1", "hub2"]]) {
+    for (const hubs of [[], ["hub1"], ["hub2"], ["hub3"], ["hub1", "hub2"], ["hub2", "hub3"], ["hub1", "hub2", "hub3"]]) {
       const upd = assignmentUpdates("u1", hubs, NOW);
       for (const hub of PUSH_HUBS) {
         expect(Object.prototype.hasOwnProperty.call(upd, `push_hub_audience/${hub}/u1`)).toBe(true);
@@ -134,18 +196,20 @@ describe("the write keeps the decision and the index in step", () => {
     expect(assignmentUpdates("u1", [], NOW)).toEqual({
       "push_hub_audience/hub1/u1": null,
       "push_hub_audience/hub2/u1": null,
+      "push_hub_audience/hub3/u1": null,
       "push_assignments/u1": null,
     });
   });
 
   it("an unknown hub is ignored rather than written as a path", () => {
-    const upd = assignmentUpdates("u1", ["hub3", "central", "hub1"], NOW);
+    const upd = assignmentUpdates("u1", ["hubC", "central", "hub1"], NOW);
     expect(Object.keys(upd).sort()).toEqual([
       "push_assignments/u1",
       "push_hub_audience/hub1/u1",
       "push_hub_audience/hub2/u1",
+      "push_hub_audience/hub3/u1",
     ]);
-    expect(upd["push_assignments/u1"]).toEqual({ hub1: true, hub2: false, updatedAt: NOW });
+    expect(upd["push_assignments/u1"]).toEqual({ hub1: true, hub2: false, hub3: false, updatedAt: NOW });
   });
 
   it("hubs that is not a list at all clears, rather than throwing mid-save", () => {
