@@ -192,6 +192,24 @@ describe("CLAUSE 2 — the send is ONE atomic write", () => {
     expect(plan.closed).toEqual(["old"]);
   });
 
+  // THE REQUESTED INSTANT IS THE ORDER'S, asserted on the PLAN, where the value
+  // actually lands. A source-regex test on App.jsx passed green while
+  // displayRowStore dropped the argument one file downstream — a pin that reads
+  // the caller and not the callee proves nothing about the value.
+  // (Independent second-brain review.)
+  it("stamps the REQUEST at the order's instant, not the send's", () => {
+    const plan = sendPlan({ ...base, size: "10", requestedAt: "2026-09-07T06:00:00.000Z" });
+    const fresh = plan.updates[rowPath("trophy", "p1", "new1")];
+    expect(Object.values(fresh.events).find((e) => e.what === "requested").at).toBe("2026-09-07T06:00:00.000Z");
+    expect(Object.values(fresh.events).find((e) => e.what === "sent").at).toBe(base.at);
+  });
+
+  it("falls back to the send instant only when there is genuinely no earlier one", () => {
+    const plan = sendPlan({ ...base, size: "10", requestedAt: null });
+    const fresh = plan.updates[rowPath("trophy", "p1", "new1")];
+    expect(Object.values(fresh.events).find((e) => e.what === "requested").at).toBe(base.at);
+  });
+
   it("carries the caller's request-clearing patch into the SAME update", () => {
     const plan = sendPlan({ ...base, size: "10", orderPatch: { "orders/042/displayRefillStatus": "refilled" } });
     expect(plan.updates["orders/042/displayRefillStatus"]).toBe("refilled");

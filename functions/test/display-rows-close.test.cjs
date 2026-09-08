@@ -137,7 +137,12 @@ test("the lease claims once, refuses a replay, and is stealable when stale", () 
 //   marathon-pe/sized 1539, trophy/sized 267  |  hub1/sized 761, hub2/sized 478
 // So two in five in-scope sized sales carry `from: hub1|hub2` and NO store.
 
-const { resolveHubSale } = require("../displayRows/lib.cjs");
+const { resolveHubSale, HUB_INFERENCE_MAX_AGE_MS } = require("../displayRows/lib.cjs");
+
+// Every hub-inference case needs an instant and a clock, because the FIRST
+// thing the inference checks is how old the sale is.
+const NOW = Date.parse("2026-09-08T10:00:00.000Z");
+const fresh = (o = {}) => ({ movementTs: new Date(NOW - 1000).toISOString(), nowMs: NOW, ...o });
 
 test("a hub-sourced sale is its own kind, carrying the hub and no store", () => {
   const hit = classifyMovement({ type: "sold", from: "hub1", productId: "p1", size: "9", qty: 1 });
@@ -154,45 +159,45 @@ test("A BARE HUB SALE CLOSES NOTHING — the whole safety of the inference", () 
   // Hub 1 holds four size 9s and one is on Trophy's wall. An ordinary shelf
   // sale is not the display, and closing Trophy's row would take a real
   // display off the record.
-  const r = resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 3 });
+  const r = resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 3 }));
   assert.equal(r.ok, false);
   assert.match(r.why, /still holds 3/);
 });
 
 test("two walls claiming the size is ambiguous, and ambiguous is a refusal", () => {
-  const r = resolveHubSale({
+  const r = resolveHubSale(fresh({
     openRowsByStore: { trophy: [{ rowId: "a" }], "marathon-pe": [{ rowId: "b" }] },
     cellQty: 0,
-  });
+  }));
   assert.equal(r.ok, false);
   assert.match(r.why, /not knowable/);
 });
 
 test("one wall, and the hub cell now empty: the sale could not have been anything else", () => {
-  assert.deepEqual(resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0 }),
+  assert.deepEqual(resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0 })),
     { ok: true, store: "trophy", rowId: "a" });
   // Negative cells happen (they clamp to 0 elsewhere); they are still empty.
-  assert.equal(resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: -1 }).ok, true);
+  assert.equal(resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: -1 })).ok, true);
 });
 
 test("an ABSENT cell is zero stock; an unreadable one is a refusal", () => {
   // RTDB keeps no node for a cell holding nothing, and the Admin SDK throws on
   // a failed read rather than handing back null — so null really is "none".
   for (const cellQty of [null, undefined]) {
-    assert.equal(resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty }).ok, true,
+    assert.equal(resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty })).ok, true,
       `cellQty=${String(cellQty)}`);
   }
   // Anything else non-numeric is unknown, and unknown must never close a row.
   for (const cellQty of [NaN, "lots", {}, []]) {
-    const r = resolveHubSale({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty });
+    const r = resolveHubSale(fresh({ openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty }));
     assert.equal(r.ok, false, `cellQty=${JSON.stringify(cellQty)}`);
     assert.match(r.why, /could not be read/);
   }
 });
 
 test("no open row at that hub is simply nothing to do", () => {
-  assert.equal(resolveHubSale({ openRowsByStore: {}, cellQty: 0 }).ok, false);
-  assert.equal(resolveHubSale({ openRowsByStore: { trophy: [] }, cellQty: 0 }).ok, false);
+  assert.equal(resolveHubSale(fresh({ openRowsByStore: {}, cellQty: 0 })).ok, false);
+  assert.equal(resolveHubSale(fresh({ openRowsByStore: { trophy: [] }, cellQty: 0 })).ok, false);
 });
 
 test("an inferred close records WHY on the row, so a human can see the reasoning", () => {
@@ -215,4 +220,48 @@ test("an all-underscore sizeKey is never an open row, on this side too", () => {
   assert.equal(rowIsOpen({ status: "open", sizeKey: "__" }), false);
   assert.equal(rowIsOpen({ status: "open", sizeKey: "___" }), false);
   assert.equal(rowIsOpen({ status: "open", sizeKey: "9" }), true);
+});
+
+
+// ── THE STALENESS BOUND — the fault that made the inference unsound ─────────
+// The cell is read NOW and describes an event that happened THEN. A cold start,
+// a redelivery or an offline-queue drain can put minutes between them, and in
+// those minutes a counter or a transfer can empty the cell for a reason that
+// has nothing to do with the sale.
+
+test("a sale older than the bound is refused, however clean the evidence looks", () => {
+  const one = { openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0 };
+  assert.equal(resolveHubSale({ ...one, movementTs: new Date(NOW - 1000).toISOString(), nowMs: NOW }).ok, true);
+  assert.equal(resolveHubSale({ ...one, movementTs: new Date(NOW - HUB_INFERENCE_MAX_AGE_MS + 1000).toISOString(), nowMs: NOW }).ok, true);
+  const late = resolveHubSale({ ...one, movementTs: new Date(NOW - HUB_INFERENCE_MAX_AGE_MS - 1).toISOString(), nowMs: NOW });
+  assert.equal(late.ok, false);
+  assert.match(late.why, /too long to attribute/);
+  // The 4-minute scenario from the review, explicitly.
+  const scenario = resolveHubSale({ ...one, movementTs: new Date(NOW - 5 * 60 * 1000).toISOString(), nowMs: NOW });
+  assert.equal(scenario.ok, false);
+});
+
+test("a sale with no readable instant is refused — unknown age is not fresh age", () => {
+  const one = { openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0, nowMs: NOW };
+  for (const movementTs of [null, undefined, "", "not a date", 12345]) {
+    const r = resolveHubSale({ ...one, movementTs });
+    assert.equal(r.ok, false, `ts=${String(movementTs)}`);
+    assert.match(r.why, /no readable instant/);
+  }
+});
+
+test("a sale stamped in the FUTURE is refused too — a wrong clock is not evidence", () => {
+  const r = resolveHubSale({
+    openRowsByStore: { trophy: [{ rowId: "a" }] }, cellQty: 0,
+    movementTs: new Date(NOW + 60 * 1000).toISOString(), nowMs: NOW,
+  });
+  assert.equal(r.ok, false);
+});
+
+test("TWO ROWS ON ONE WALL is ambiguous too, so a duplicated wall never auto-closes", () => {
+  const r = resolveHubSale(fresh({
+    openRowsByStore: { trophy: [{ rowId: "a" }, { rowId: "b" }] }, cellQty: 0,
+  }));
+  assert.equal(r.ok, false);
+  assert.match(r.why, /2 display records claim this size/);
 });

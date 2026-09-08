@@ -64,6 +64,35 @@ const DISPLAY_HUBS = ["hub1", "hub2"];
 
 const LEASE_MS = 5 * 60 * 1000;
 
+/**
+ * HOW OLD A SALE MAY BE AND STILL BE ATTRIBUTED FROM THE HUB CELL.
+ *
+ * The hub inference reads the cell NOW and reasons about an event that happened
+ * THEN. The gap between them is not bounded by anything in Cloud Functions: a
+ * cold start, a redelivery, a 60-second timeout and retry, or the mini's
+ * offline queue draining can all put minutes between the sale and this read.
+ *
+ * Minutes are enough to break the premise, and the break is silent:
+ *
+ *   hub1 size 9 holds two — one on the shelf, one booked as Trophy's display.
+ *   10:00  the SHELF pair sells. Cell → 1. This trigger is delayed.
+ *   10:04  a counter adjusts the cell, or an operator transfers the remaining
+ *          unit to hub2. Cell → 0.
+ *   10:05  the trigger finally reads: 0, one open row. It closes Trophy's row.
+ *
+ * Trophy's pair is still on the wall, and the record now says nothing is out
+ * there — which is the failure that ends in a counter posting a negative
+ * adjustment against a unit that exists. (Independent second-brain review; the
+ * earlier claim that "the race only ever makes the cell look FULLER" covered
+ * only the movement's own apply and was wrong about every later decrement.)
+ *
+ * Two minutes is chosen to cover an ordinary cold start and one redelivery
+ * while leaving no room for a human to touch the cell in between. A sale older
+ * than this is REFUSED and logged — a missed close, which the wall walk and the
+ * duplicate tab both surface, and never a wrong one.
+ */
+const HUB_INFERENCE_MAX_AGE_MS = 2 * 60 * 1000;
+
 // Size → the /stock cell key. Byte-identical to encodeSizeKey/stockSizeKey in
 // src/utils/sizeKey.js, INCLUDING the "Free Size" fold and the whitespace class
 // in the character set. A first cut of this file trimmed and used a narrower
@@ -255,14 +284,34 @@ function closeUpdates(basePath, { at, reason, via, movementId }) {
  * @param cellQty          /stock/{hub}/{productId}/{sizeKey}/qty, read now.
  * → { store, rowId } | null, with `why` when it refuses.
  */
-function resolveHubSale({ openRowsByStore, cellQty }) {
+function resolveHubSale({ openRowsByStore, cellQty, movementTs, nowMs }) {
+  // ── THE STALENESS BOUND, checked before anything else ─────────────────────
+  // See HUB_INFERENCE_MAX_AGE_MS. A movement with no readable instant is also
+  // refused: "we cannot tell how old this is" is not "it is fresh".
+  // A STRING, and only a string. `Date.parse(12345)` coerces to "12345" and
+  // parses it as the YEAR 12345 — a movement carrying epoch millis instead of
+  // an ISO instant would have read as fresh by three hundred centuries. Every
+  // live `sold` movement carries an ISO `ts`; anything else is unknown, and
+  // unknown is a refusal. (Found by the test below, which passed a number in.)
+  const ts = typeof movementTs === "string" ? Date.parse(movementTs) : NaN;
+  if (!Number.isFinite(ts)) return { ok: false, why: "the sale carries no readable instant, so its age cannot be judged" };
+  const age = Number(nowMs) - ts;
+  if (!(age >= 0 && age <= HUB_INFERENCE_MAX_AGE_MS)) {
+    return { ok: false, why: `the sale is ${Math.round(age / 1000)}s old — too long to attribute it from the hub's stock now` };
+  }
+
   const candidates = [];
   for (const [store, rows] of Object.entries(openRowsByStore || {})) {
     for (const r of rows || []) candidates.push({ store, rowId: r.rowId });
   }
   if (candidates.length === 0) return { ok: false, why: "no open row at this hub for this size" };
   if (candidates.length > 1) {
-    return { ok: false, why: `${candidates.length} walls claim this size — which one sold is not knowable` };
+    // Two rows on ONE wall land here too, so a duplicated wall's sales never
+    // close automatically — the residual persists exactly where it is already
+    // worst. That is the correct trade (a guess there would close a row a human
+    // is about to judge) and it is why the Duplicate Displays tab exists, but it
+    // is stated rather than left to be discovered.
+    return { ok: false, why: `${candidates.length} display records claim this size — which one sold is not knowable` };
   }
   // An ABSENT cell is zero stock, not an unknown: RTDB has no node for a cell
   // that holds nothing, and the Admin SDK throws on a failed read rather than
@@ -295,6 +344,6 @@ function leaseDecision({ cur, nowMs }) {
 }
 
 module.exports = {
-  DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS,
+  DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
   encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, leaseDecision,
 };

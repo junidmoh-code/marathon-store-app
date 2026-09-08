@@ -70,12 +70,19 @@ async function apply(updates) {
  * cleared by the same write that moves the rows.
  */
 export async function sendDisplayRow({ rows, store, productId, productName, size, bookedHub,
-                                       orderId = null, orderPatch = null, at = null }) {
+                                       orderId = null, requestedAt = null, orderPatch = null, at = null }) {
   try {
     const when = at || serverNowIso();
     const plan = sendPlan({
       rows, store, productId, productName, size, bookedHub,
-      rowId: rowIdFor(when), at: when, by: uid(), orderId, orderPatch, via: "send",
+      // `requestedAt` is the ORDER's own instant for the "requested" timeline
+      // entry. It was accepted by the caller and by sendPlan and DROPPED right
+      // here — not destructured, so never forwarded — which left every timeline
+      // reading "requested and sent in the same minute" while three comments
+      // said otherwise. The source test that "pinned" it read App.jsx only and
+      // was therefore vacuous; the pin now lives on the plan builder, where the
+      // value actually lands. (Independent second-brain review.)
+      rowId: rowIdFor(when), at: when, by: uid(), orderId, requestedAt, orderPatch, via: "send",
     });
     if (!plan.ok) return { ok: false, message: plan.message };
     await apply(plan.updates);
@@ -145,10 +152,18 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
     if (survivors.length === 0) {
       res = await clearDisplaySlot({ store: row.store, productId: row.productId, source: "manual", at: when });
     } else {
+      // The survivor's OWN provenance, not a blanket "registration". The slot's
+      // `source` and `orderId` are its audit trail (displaySlots.js's shape
+      // note), and rewriting a display_refill slot as a registration throws
+      // away which order put that pair on the wall.
+      // (Independent second-brain review.)
       const keep = survivors[survivors.length - 1];
       res = await setDisplaySlot({
         store: row.store, productId: row.productId, productName: keep.productName || "",
-        size: String(keep.size), bookedHub: keep.bookedHub || null, source: "registration", at: when,
+        size: String(keep.size), bookedHub: keep.bookedHub || null,
+        source: keep.openedVia === "send" ? "display_refill" : "registration",
+        orderId: keep.requestOrderId || null,
+        at: when,
       });
     }
     if (res && res.ok === false) warning = `The display record is closed, but the count's display slot could not be updated (${res.message || "write failed"}) — retry once.`;

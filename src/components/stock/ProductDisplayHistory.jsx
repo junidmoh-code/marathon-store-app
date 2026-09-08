@@ -15,18 +15,34 @@
 // shape of this question. So the display answer joins the stock answer instead
 // of being bolted onto a write surface nobody was asked to touch.
 //
-// ── COST ─────────────────────────────────────────────────────────────────────
-// One subscription to /settings/displayRows, and only while a product is
-// selected — the same node and the same scale class as /settings/displaySlots,
-// which several screens already stream. It is NOT a per-product read: RTDB
-// cannot index across stores, and three shallow store nodes are the whole node.
+// ── COST, STATED HONESTLY ────────────────────────────────────────────────────
+// One subscription to the WHOLE of /settings/displayRows, mounted only while a
+// product is selected and torn down when the operator taps Change.
+//
+// It is NOT the same scale class as /settings/displaySlots, and an earlier
+// version of this comment said it was. displaySlots holds one flat record per
+// (store, product) and is overwritten in place; displayRows KEEPS EVERY CLOSED
+// ROW FOREVER, each carrying its own events map, so it grows monotonically with
+// every send. Today that is ~460 open rows and no closed ones; at roughly a
+// dozen sends a day it is a few thousand small records a year, which is still a
+// small node — but it is a growing one, and the honest statement is "small and
+// growing", not "the same as the slot node". (Independent second-brain review.)
+//
+// If it ever stops being small the fix is a per-store read here (the Locator
+// knows no store, so it would have to read all three) or an archive of closed
+// rows older than a year. Neither is needed yet, and neither should be built
+// before the node is actually big.
+//
+// It cannot be a per-product read: RTDB cannot index across stores, and the
+// node is store-major.
 
 import React, { useMemo } from "react";
-import { allRows, rowIsOpen, rowTimeline, OPEN_VIA_TEXT, CLOSE_REASON_TEXT } from "./displayRowCore";
+import { allRows, rowIsOpen, OPEN_VIA_TEXT, CLOSE_REASON_TEXT } from "./displayRowCore";
+import { RowHistory } from "./displayRowUi";
 import { useDisplayRowsState } from "./useStock";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
-import { BORDER, BLUE_L, GREEN, GRAY, FONT } from "./ui";
+import { BORDER, GREEN, GRAY, FONT } from "./ui";
 
 export default function ProductDisplayHistory({ productId, registry }) {
   const { value: rows, settled } = useDisplayRowsState(!!productId);
@@ -70,16 +86,12 @@ export default function ProductDisplayHistory({ productId, registry }) {
                   {OPEN_VIA_TEXT[r.openedVia] || "source not recorded"}
                   {r.bookedHub ? ` · booked at ${labelFor(r.bookedHub, registry)}` : ""}
                 </div>
-                <ol style={{ margin: "7px 0 0", padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 3 }}>
-                  {rowTimeline(r).map((l, i) => (
-                    <li key={i} style={{ fontSize: 11.5, color: l.what === "closed" ? GRAY : BLUE_L, display: "flex", gap: 8 }}>
-                      <span style={{ color: "rgba(255,255,255,.3)", fontVariantNumeric: "tabular-nums", flexShrink: 0 }}>
-                        {String(l.at).slice(0, 16).replace("T", " ")}
-                      </span>
-                      <span>{l.text}</span>
-                    </li>
-                  ))}
-                </ol>
+                {/* THE SHARED timeline, not a third copy of it. This surface
+                    rendered its own list and left `by` out, so the product view
+                    silently dropped the "and by whom" half of clause 6 that the
+                    two tabs render. One component, one answer.
+                    (Independent second-brain review.) */}
+                <RowHistory row={r} />
               </div>
             );
           })}

@@ -12086,7 +12086,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Both still write the display SLOT exactly as they always did, so the
     // count and the marker are unaffected for them.
     const rowStore = displaySlotStoreFor(order);
-    const rowHub = order.displayRefillHub || order.placedAtHub || order.hub || null;
+    // `selectedHub` is last in the chain and it matters: the first three fields
+    // can be absent on an older order, or hold a SHOP id rather than a hub, and
+    // when they did, a genuine footwear display refill fell through the gate
+    // below and wrote a slot with no ledger row — invisible, with the two tabs
+    // then reading that wall as unregistered. The hub actually doing the refill
+    // is the truth of last resort, and it is the same value the patch already
+    // stamps as displayRefilledBy. (Independent second-brain review.)
+    const rowHub = order.displayRefillHub || order.placedAtHub || order.hub || selectedHub || null;
     const rowEligible = productIsFootwear(resolveProductById(order.productId))
       && GATED_SNEAKER_HUBS.includes(rowHub);
     if (status === "refilled" && refillSize && rowStore && order.productId && rowEligible) {
@@ -12182,6 +12189,17 @@ function WarehouseView({ products = [], orders, onExit }) {
   // alone so the original 15-min window resumes from where it was.
   const undoDisplayRefill = async (order) => {
     const now = serverNowIso();
+    // THE SAME READINESS GATE THE SEND HAS, for the same reason and in the
+    // opposite direction. An unanswered subscription and an empty ledger are
+    // the same null, so an undo before the node answers would find no rows,
+    // reset the order to unrefilled and leave the row OPEN — and the next send
+    // would then open a second beside it. The `console.warn` in the loop below
+    // could never fire, because the loop body never ran.
+    // (Independent second-brain review.)
+    if (!displayRowsState.settled || displayRowsState.error) {
+      window.alert("The display records have not loaded yet — give it a moment and undo again. Nothing was changed.");
+      return;
+    }
     // An undo says the pair did NOT go on the wall after all, so the row that
     // send opened is CANCELLED — closed with a reason, never deleted. Without
     // this the ledger would keep asserting a display that the operator has just

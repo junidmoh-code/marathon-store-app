@@ -68,9 +68,37 @@ exports.closeDisplayRowOnSale = onValueCreated(
     const db = admin.database();
     const movementId = event.params.movementId;
     const { productId, sizeKey, qty, kind } = hit;
+    const nowMs = Date.now();
     let { store } = hit;
     let closes;
     let inferred = null;
+
+    // ── THE LEASE IS CLAIMED BEFORE ANY ADJUDICATION ───────────────────────
+    //
+    // It used to be claimed only once there was work to do, which read as
+    // frugal and was wrong: a refusal wrote nothing, so a redelivered movement
+    // was re-adjudicated against a DIFFERENT world. The concrete failure —
+    // a hub sale refused because two walls claimed the size; an operator then
+    // closes one of them on the Duplicate tab as a correction; the same
+    // movement is redelivered, now finds exactly one candidate, and closes it
+    // on a premise that was explicitly rejected the first time.
+    // (Independent second-brain review.)
+    //
+    // A movement is adjudicated ONCE. The cost is one small write per sale of
+    // a real size at a display store or a gated hub — about 600 a day measured
+    // against live traffic, which is nothing.
+    //
+    // KEYED ON THE BUCKET THE MOVEMENT ITSELF NAMES, not on the store the
+    // inference resolves to: for a hub sale the store comes from the ledger,
+    // and the ledger moves, so a store-keyed lease could be taken twice under
+    // two different stores for one sale.
+    const leaseBucket = hit.store || hit.hub;
+    const leaseRef = db.ref(`${META}/${leaseBucket}/processed/${movementId}`);
+    const claim = await leaseRef.transaction((cur) => leaseDecision({ cur, nowMs }));
+    if (!claim.committed) return;           // already adjudicated, or another execution holds it
+    const done = (closedIds, why) => leaseRef.update({
+      done: true, doneAt: Date.now(), closed: closedIds, ...(why ? { refused: why } : {}),
+    });
 
     if (kind === "sold_hub") {
       // ── A SALE OUT OF A HUB CELL — the store is not on the movement ────────
@@ -90,18 +118,28 @@ exports.closeDisplayRowOnSale = onValueCreated(
       for (const s of DISPLAY_STORES) {
         // eslint-disable-next-line no-await-in-loop
         const rows = (await db.ref(`${ROWS}/${s}/${productId}`).get()).val();
+        // `bookedHub === hub` OR NO HUB AT ALL. A row with a null bookedHub is
+        // a real display that cannot name its hub (a seed row, or one written
+        // before the eligibility gate); excluding it from the CANDIDATE list
+        // also excluded it from the AMBIGUITY COUNT, so a wall whose row was
+        // an equally good explanation for the empty cell was silently ignored
+        // and the other wall's row was closed as "the only possibility".
+        // Counting them is what makes "there is nothing else it could have
+        // been" true rather than merely stated. (Independent second-brain
+        // review.)
         const open = decideCloses(rows, sizeKey, Number.MAX_SAFE_INTEGER)
-          .filter(({ row }) => row.bookedHub === hit.hub);
+          .filter(({ row }) => !row.bookedHub || row.bookedHub === hit.hub);
         if (open.length) { perStore[s] = open; candidates += open.length; }
       }
-      if (!candidates) return;                       // nothing on any wall — the common case
+      if (!candidates) { await done([], "no display record for this size at this hub"); return; }
       const cellQty = (await db.ref(`stock/${hit.hub}/${productId}/${sizeKey}/qty`).get()).val();
-      const verdict = resolveHubSale({ openRowsByStore: perStore, cellQty });
+      const verdict = resolveHubSale({ openRowsByStore: perStore, cellQty, movementTs: m.ts, nowMs });
       if (!verdict.ok) {
-        // Deliberately loud in the log and silent in the data. A refusal here
-        // is the correct outcome, not a failure — but it is also the only place
-        // anyone could ever see WHY a display record did not close itself.
+        // A refusal is the CORRECT outcome, not a failure — but it is recorded
+        // in both places a human might look: the log, and the lease itself, so
+        // "why did this display record not close?" is answerable after the fact.
         console.log(`closeDisplayRowOnSale: hub sale ${movementId} closed nothing — ${verdict.why}`);
+        await done([], verdict.why);
         return;
       }
       store = verdict.store;
@@ -112,27 +150,9 @@ exports.closeDisplayRowOnSale = onValueCreated(
       const byRow = (await db.ref(`${ROWS}/${store}/${productId}`).get()).val();
       closes = decideCloses(byRow, sizeKey, qty);
     }
-    // Nothing on the wall to close — the overwhelmingly common case (an
-    // ordinary shelf sale of a size no display is registered at). No lease is
-    // claimed, so nothing is left behind for a product this trigger never
-    // touched.
-    if (!closes.length) return;
-
-    // ── The lease. Claimed only once there is real work, and BEFORE the write.
-    //
-    // IT IS KEYED ON THE BUCKET THE MOVEMENT ITSELF NAMES, not on the store the
-    // inference resolved to. For a shop sale those are the same thing. For a
-    // HUB sale the store is decided from the ledger, and the ledger moves: a
-    // first delivery could resolve to Trophy and take Trophy's lease, and a
-    // redelivery minutes later — after a wall walk registered the same shoe at
-    // PE — could resolve to PE, find PE's lease absent, and close a SECOND row
-    // for one sale. Keying on the hub makes the second delivery find the lease
-    // it already took, whatever the ledger has done in between.
-    const leaseBucket = hit.store || hit.hub;
-    const leaseRef = db.ref(`${META}/${leaseBucket}/processed/${movementId}`);
-    const nowMs = Date.now();
-    const claim = await leaseRef.transaction((cur) => leaseDecision({ cur, nowMs }));
-    if (!claim.committed) return;           // already done, or another execution holds it
+    // Nothing on the wall to close — the overwhelmingly common case: an
+    // ordinary shelf sale of a size no display is registered at.
+    if (!closes.length) { await done([], "no display record for this product at this size"); return; }
 
     // ── ONE CAS PER ROW, NOT ONE BLIND UPDATE ──────────────────────────────
     // The lease dedupes replays of THIS movement. It says nothing about a
@@ -172,13 +192,28 @@ exports.closeDisplayRowOnSale = onValueCreated(
         const res = await db.ref(`${ROWS}/${store}/${productId}/${rowId}`).transaction(
           (cur) => claimClose(cur, { at, reason: REASON[kind], via, movementId, inferred })
         );
-        if (res.committed) { closed.push(rowId); wanted--; }
+        if (res.committed) { closed.push(rowId); wanted--; continue; }
+        // WHO BEAT US DECIDES WHETHER TO TRY THE NEXT ROW. The retry is right
+        // when another SALE took this row — there was a second pair on that
+        // wall and it is the one this sale is about. It is WRONG when a human
+        // took it: the Duplicate tab's "corrected" or an undo's "cancelled" is
+        // a person saying that record was never a pair leaving the wall, and
+        // walking on to close another row would turn one sale into two closes.
+        // (Independent second-brain review.)
+        const beat = res.snapshot && res.snapshot.val();
+        const bySale = beat && typeof beat.closedVia === "string"
+          && (beat.closedVia.startsWith("pos_sale") || beat.closedVia === "return_to_hub");
+        if (!bySale) {
+          console.log(`closeDisplayRowOnSale: ${movementId} stopped at ${rowId} — closed by ${beat && beat.closedVia}, which is a human correction, not a sale`);
+          wanted = 0;
+          break;
+        }
       }
     }
     // Every candidate was taken by a concurrent execution. Nothing to mirror,
     // and the lease is marked done so this movement is not retried forever.
     if (!closed.length) {
-      await leaseRef.update({ done: true, doneAt: Date.now(), closed: [] });
+      await done([], "every candidate row was taken by a concurrent execution");
       return;
     }
 
@@ -222,6 +257,6 @@ exports.closeDisplayRowOnSale = onValueCreated(
       });
     }
 
-    await leaseRef.update({ done: true, doneAt: Date.now(), closed });
+    await done(closed, null);
   }
 );

@@ -116,10 +116,40 @@ nothing (`resolveHubSale`, `lib.cjs`). Both conditions are required:
    #324, "displays are hub stock"), so if the cell is at zero and a row still
    claims a unit of it is on a wall, the unit that sold *is* that unit.
 
-The cell read can race the write that applies the movement, and that race only
-ever makes the cell look **fuller**, so the failure mode is a missed close and
-never a wrong one. A refused close is logged with its reason
-(`closeDisplayRowOnSale: hub sale … closed nothing — …`) so it is visible.
+Plus a third condition that the first cut did not have and needed:
+
+3. **The sale is under two minutes old** (`HUB_INFERENCE_MAX_AGE_MS`). The cell
+   is read *now* and describes an event that happened *then*, and nothing bounds
+   the gap — a cold start, a redelivery, a 60-second timeout retry or an
+   offline-queue drain can put minutes between them. Minutes are enough:
+
+   > hub1 size 9 holds two — one on the shelf, one booked as Trophy's display.
+   > 10:00 the **shelf** pair sells; cell → 1; the trigger is delayed.
+   > 10:04 a counter adjusts the cell, or an operator transfers the remaining
+   > unit to hub2; cell → 0.
+   > 10:05 the trigger reads 0, sees one open row, and closes Trophy's row —
+   > while Trophy's pair is still on the wall.
+
+   An earlier version of this document claimed "the race only ever makes the
+   cell look fuller". That covered only the movement's own apply and was wrong
+   about every later decrement. A sale with no readable ISO instant, or one
+   stamped in the future, is refused for the same reason.
+
+Every refusal is recorded in **both** places a person might look: the log, and
+the lease record itself (`refused: "<why>"`), so "why did this display record
+not close?" is answerable after the fact.
+
+**The lease is claimed before any adjudication**, not once there is work to do.
+A refusal that wrote nothing left the movement to be re-judged against a
+different world on redelivery — refused because two walls claimed the size, then
+an operator closes one of them as a correction, then the redelivery finds one
+candidate and closes it on a premise that was explicitly rejected. A movement is
+adjudicated once. Cost: one small write per in-scope sale, ~600/day.
+
+**A duplicated wall never auto-closes.** Two open rows for one size — on one wall
+or across two — is ambiguous, and ambiguous is a refusal. So the population the
+Duplicate Displays tab exists for is exactly the population whose sales need a
+human. That is the correct trade, and it is why the tab exists.
 
 An inferred close records `detail.inferred` on its timeline entry and
 `closedVia: "pos_sale_hub"`, so a human can always see it was reasoned rather

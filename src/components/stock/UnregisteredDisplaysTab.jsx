@@ -83,9 +83,20 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
     return m;
   }, [products]);
 
+  // BOTH SUBSCRIPTIONS MUST HAVE ANSWERED before a single candidate is offered.
+  // With the ledger unanswered, `openRowIndex` is empty and every shoe with hub
+  // stock reads as "no display record" — including the ones that HAVE one. An
+  // operator tapping "On the wall" on such a card would mint a SECOND open row
+  // beside the one that was already there, which is the duplicate this screen
+  // exists to prevent, created by the screen itself. `useStockCellsState` tends
+  // to settle later and hide it, and that is luck, not a guard.
+  // (Independent second-brain review.)
+  const ready = rowsLoaded && cellsLoaded;
   const candidates = useMemo(
-    () => unregisteredDisplayCandidates({ cells, rows, store, hub, productsById, isFootwear: isFootwearProduct }),
-    [cells, rows, store, hub, productsById]
+    () => (ready
+      ? unregisteredDisplayCandidates({ cells, rows, store, hub, productsById, isFootwear: isFootwearProduct })
+      : []),
+    [ready, cells, rows, store, hub, productsById]
   );
   const brands = useMemo(() => brandsOf(candidates), [candidates]);
   const filtered = useMemo(() => filterCandidates(candidates, { q, brand }), [candidates, q, brand]);
@@ -135,6 +146,9 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
   const onScanResolved = (product) => {
     setScanOpen(false);
     if (!product?.id) { setNote({ tone: "err", text: "That label did not resolve to a product on file." }); return; }
+    // "Not registered on this wall" read off an unanswered ledger is a lie the
+    // operator would act on. Refuse to answer rather than answer wrongly.
+    if (!rowsLoaded) { setNote({ tone: "err", text: "The display records have not loaded yet — scan again in a moment." }); return; }
     setScanned({ product, rows: openRowsFor(rows, store, product.id) });
   };
 
@@ -154,7 +168,7 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
               style={hub === h ? tabOn : tabOff}>{labelFor(h)}</button>
           ))}
           <div style={{ marginLeft: "auto", fontSize: 12, color: GRAY }}>
-            {rowsLoaded && cellsLoaded ? `${filtered.length} to check` : "Loading…"}
+            {ready ? `${filtered.length} to check` : "Loading…"}
           </div>
         </div>
         <p style={{ margin: "10px 0 0", fontSize: 13, color: "rgba(233,238,255,.72)", lineHeight: 1.5 }}>
@@ -269,7 +283,11 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
         )}
       </div>
 
-      {rowsLoaded && cellsLoaded && filtered.length === 0 && (
+      {!ready && (
+        <div style={{ ...card, color: GRAY, fontSize: 13 }}>Loading the display records…</div>
+      )}
+
+      {ready && filtered.length === 0 && (
         <div style={{ ...card, fontSize: 13, color: "rgba(233,238,255,.75)", lineHeight: 1.6 }}>
           <b style={{ color: GREEN }}>Nothing to check here.</b>
           <br /><br />
