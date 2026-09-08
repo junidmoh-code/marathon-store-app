@@ -459,6 +459,17 @@ describe("path segments refuse rather than collide", () => {
     expect(closeRowPlan({ row: { ...row(), productId: "p.1" }, at, reason: "sold" }).ok).toBe(false);
   });
 
+  // A NULL PATH MUST NEVER REACH A STRING. `${null}` is the literal "null", so
+  // an unguarded interpolation reads or writes `settings/displayRows/null/null`
+  // — a node belonging to nobody, which is worse than the collision the refusal
+  // replaced. Every builder returns null and every caller checks.
+  it("the builders return null rather than a path containing 'null'", () => {
+    for (const p of [rowPath("tro phy", "p1", "r1"), rowPath("trophy", "p.1", "r1"), storeRowsPath("p.1")]) {
+      expect(p).toBeNull();
+      expect(String(p)).not.toMatch(/displayRows/);
+    }
+  });
+
   it("and an unusable id simply has no rows, rather than reading somebody else's", () => {
     const l = ledger(row({ productId: "p_1" }));
     expect(openRowsFor(l, "trophy", "p_1")).toHaveLength(1);

@@ -48,7 +48,13 @@ const uid = () => auth.currentUser?.uid || null;
 /** Every row for one store — the tabs read the whole node through useDisplayRows;
  *  this is for scripts and for a targeted re-read after a write. */
 export async function loadStoreRows(store) {
-  return (await get(ref(database, storeRowsPath(store)))).val() || {};
+  const path = storeRowsPath(store);
+  // A refused segment yields a NULL path. Interpolating that into a string
+  // gives the literal "null" and reads a node that belongs to nobody, which is
+  // worse than the collision the refusal replaced. Every use of these path
+  // builders checks. (Self-review of the seg() change.)
+  if (!path) return {};
+  return (await get(ref(database, path))).val() || {};
 }
 
 export async function loadAllRows() {
@@ -87,6 +93,8 @@ async function rowsNow(store, productId) {
   // stop, put back on the other side of the same call.
   // (Adversarial review of the fix round.)
   const st = rowSegment(store), pid = rowSegment(productId);
+  // Same rule: refuse rather than build "settings/displayRows/null/null".
+  if (!st || !pid) return {};
   const byRow = (await get(ref(database, `${storeRowsPath(store)}/${pid}`))).val() || {};
   return { [st]: { [pid]: byRow } };
 }

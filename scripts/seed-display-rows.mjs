@@ -53,7 +53,7 @@ const admin = require("firebase-admin");
 admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
 const db = admin.database();
 
-const { openRowPlan, rowPath, rowSegment, slotIsLiveish } = await (async () => {
+const { openRowPlan, rowPath, slotIsLiveish } = await (async () => {
   const core = await import("../src/components/stock/displayRowCore.js");
   return { ...core, slotIsLiveish: (s) => !!s && typeof s.sizeKey === "string" && s.sizeKey && s.sizeKey !== "_" };
 })();
@@ -90,9 +90,11 @@ for (const [store, byPid] of Object.entries(slots)) {
     // orderId); the day it emits two, position would silently take a
     // close-field fragment and write it as a row.
     const rowId = `seed${String(at).replace(/[^0-9]/g, "")}`;
-    const row = plan.updates[rowPath(store, productId, rowId)];
+    const path = rowPath(store, productId, rowId);
+    if (!path) { console.warn(`skip ${store}/${productId}: an id cannot be an RTDB key`); continue; }
+    const row = plan.updates[path];
     if (!row) { console.warn(`skip ${store}/${productId}: the plan did not produce the expected row path`); continue; }
-    planned.push({ store, productId, rowId, row });
+    planned.push({ store, productId, rowId, path, row });
     seeded++;
     perStore[store] = (perStore[store] || 0) + 1;
   }
@@ -113,11 +115,12 @@ if (!APPLY) {
 // send that lands mid-migration wins and the seed steps aside rather than
 // adding a second row beside it.
 let wrote = 0, skipped = 0;
-for (const { store, productId, rowId, row } of planned) {
-  // SANITISED, like every other writer. The plan writes rowPath()'s segmented
-  // path; building this ref from the raw ids would write somewhere else, or
-  // throw out of db.ref() and abort the migration mid-run.
-  const ref = db.ref(`settings/displayRows/${rowSegment(store)}/${rowSegment(productId)}`);
+for (const { store, productId, rowId, path, row } of planned) {
+  // THE PLAN'S OWN PATH, minus the row id — never a string built from raw ids
+  // (which would write somewhere else) and never one built from a REFUSED
+  // segment (which would interpolate the literal "null"). Every id here already
+  // passed rowPath above, so this slice is safe by construction.
+  const ref = db.ref(path.slice(0, path.lastIndexOf("/")));
   // eslint-disable-next-line no-await-in-loop
   const res = await ref.transaction((cur) => (cur === null ? { [rowId]: row } : undefined));
   if (res.committed) wrote++; else skipped++;
