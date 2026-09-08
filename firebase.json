@@ -10,7 +10,7 @@
         "firebase-debug.*.log"
       ],
       "predeploy": [
-        "node scripts/deploy-preflight.mjs --functions"
+        "node scripts/deploy-preflight.mjs --git-only"
       ]
     }
   ],
@@ -108,9 +108,15 @@
     ]
   },
   "database": {
-    "rules": "database.rules.json"
+    "rules": "database.rules.json",
+    "predeploy": [
+      "node scripts/deploy-preflight.mjs --git-only"
+    ]
   },
   "storage": {
-    "rules": "storage.rules"
+    "rules": "storage.rules",
+    "predeploy": [
+      "node scripts/deploy-preflight.mjs --git-only"
+    ]
   }
 }

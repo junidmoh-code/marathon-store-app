@@ -10,6 +10,19 @@
 // Firebase CLI runs it before hosting AND before functions, and a non-zero exit
 // aborts the deploy.
 //
+// ── WHAT THIS CANNOT GUARD, STATED SO NOBODY ASSUMES OTHERWISE ─────────────
+//   · `firebase deploy --config <other.json>` — a different config has different
+//     hooks, or none. Unguardable by construction.
+//   · the Firebase Console — rules edits, uploads and rollbacks never touch this
+//     machine. Unguardable, and worth knowing during an incident.
+//   · A WORKTREE THAT HAS NOT PULLED THIS COMMIT. The guard ships as repo
+//     content, so a checkout still sitting on an older firebase.json has no
+//     predeploy key and runs nothing. Rolling this out means advancing the
+//     worktrees, not merely merging it.
+//   · preview channels: `hosting:channel:deploy` DOES run these hooks, so a
+//     feature branch behind main is refused there too. A preview is not
+//     production, so that is stricter than it needs to be — see the PR.
+//
 // ── WHY EACH REFUSAL IS A REFUSAL AND NOT A WARNING ─────────────────────────
 // This repo has ~150 git worktrees on one clone. Every one of these failures is
 // SILENT: the deploy succeeds, the output says nothing is wrong, and merged
@@ -33,14 +46,20 @@ export const REFUSAL = Object.freeze({
  * @param facts.liveKnown    whether this checkout contains that commit
  * @param facts.behindLive   how many commits the LIVE build has that HEAD lacks
  * @param facts.ackNoLive    the DEPLOY_PREFLIGHT_ACK_NO_LIVE escape hatch
- * @param facts.functionsOnly  a functions deploy: hosting liveness is not its subject
+ * @param facts.gitOnly      functions / database rules / storage rules: the git
+ *                           invariants apply, hosting liveness is not their subject
  * → { ok: true } | { ok: false, refusal }
  */
 export function preflightDecision(facts = {}) {
   const {
     dirty = "", behindMain = 0, liveSha = null, liveKnown = true,
-    behindLive = 0, ackNoLive = false, functionsOnly = false,
+    behindLive = 0, ackNoLive = false, gitOnly = false, functionsOnly = false,
   } = facts;
+  // `gitOnly` is the accurate name — functions, database rules and storage rules
+  // all reach here, and /version.json describes none of them. `functionsOnly` is
+  // kept as an alias because it was the first name and a stale caller passing it
+  // must not silently lose its scoping.
+  const noLiveness = gitOnly || functionsOnly;
 
   // 1. A dirty deploy cannot be reproduced, reverted or reasoned about. No
   //    override: this one is cheap to fix and expensive to have shipped.
@@ -54,7 +73,7 @@ export function preflightDecision(facts = {}) {
   // hosting bundle and says nothing about which code a function is running.
   // The two git invariants above still applied, and they are the load-bearing
   // ones.
-  if (functionsOnly) return { ok: true };
+  if (noLiveness) return { ok: true };
 
   // 3. Liveness unreadable. The carry-list is the point of the check, so this
   //    refuses — but it is the ONE case with an escape hatch, because a site

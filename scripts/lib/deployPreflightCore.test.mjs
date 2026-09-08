@@ -8,7 +8,7 @@ import { preflightDecision, liveShaFrom, REFUSAL } from "./deployPreflightCore.m
 
 const clean = {
   dirty: "", behindMain: 0, liveSha: "abc1234", liveKnown: true,
-  behindLive: 0, ackNoLive: false, functionsOnly: false,
+  behindLive: 0, ackNoLive: false, gitOnly: false,
 };
 
 describe("the two refusals that can never be overridden", () => {
@@ -23,8 +23,8 @@ describe("the two refusals that can never be overridden", () => {
   });
 
   it("and they refuse a FUNCTIONS deploy too — the git invariants are not hosting's", () => {
-    expect(preflightDecision({ ...clean, functionsOnly: true, dirty: " M x" }).refusal).toBe(REFUSAL.DIRTY);
-    expect(preflightDecision({ ...clean, functionsOnly: true, behindMain: 2 }).refusal).toBe(REFUSAL.BEHIND_MAIN);
+    expect(preflightDecision({ ...clean, gitOnly: true, dirty: " M x" }).refusal).toBe(REFUSAL.DIRTY);
+    expect(preflightDecision({ ...clean, gitOnly: true, behindMain: 2 }).refusal).toBe(REFUSAL.BEHIND_MAIN);
   });
 
   it("dirty is reported ahead of behind-main when both are true", () => {
@@ -59,9 +59,9 @@ describe("liveness", () => {
   });
 
   it("a functions deploy skips liveness entirely, unreadable or not", () => {
-    expect(preflightDecision({ ...clean, functionsOnly: true, liveSha: null }).ok).toBe(true);
-    expect(preflightDecision({ ...clean, functionsOnly: true, liveKnown: false }).ok).toBe(true);
-    expect(preflightDecision({ ...clean, functionsOnly: true, behindLive: 5 }).ok).toBe(true);
+    expect(preflightDecision({ ...clean, gitOnly: true, liveSha: null }).ok).toBe(true);
+    expect(preflightDecision({ ...clean, gitOnly: true, liveKnown: false }).ok).toBe(true);
+    expect(preflightDecision({ ...clean, gitOnly: true, behindLive: 5 }).ok).toBe(true);
   });
 });
 
@@ -86,7 +86,7 @@ describe("the happy path", () => {
   });
 
   it("...and a functions-only empty call passes, because liveness is not its subject", () => {
-    expect(preflightDecision({ functionsOnly: true }).ok).toBe(true);
+    expect(preflightDecision({ gitOnly: true }).ok).toBe(true);
   });
 });
 

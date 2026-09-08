@@ -43,13 +43,14 @@
 //
 // Usage (also runnable by hand):
 //     node scripts/deploy-preflight.mjs            # hosting + git checks
-//     node scripts/deploy-preflight.mjs --functions # git checks only
+//     node scripts/deploy-preflight.mjs --git-only  # git checks only (functions,
+//                                                  # database rules, storage rules)
 
 import { execSync } from "node:child_process";
 import { preflightDecision, liveShaFrom, REFUSAL } from "./lib/deployPreflightCore.mjs";
 
 const VERSION_URL = "https://marathon-club.web.app/version.json";
-const FUNCTIONS_ONLY = process.argv.includes("--functions");
+const GIT_ONLY = process.argv.includes("--git-only") || process.argv.includes("--functions");
 
 const sh = (cmd) => execSync(cmd, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
 const red = (s) => `\x1b[31m${s}\x1b[0m`;
@@ -98,8 +99,18 @@ console.log(`  tree   ${green("clean")}`);
 // ── 2. Is this checkout BEHIND origin/main? ─────────────────────────────────
 // The fetch is part of the check, not a courtesy: a stale remote ref would let
 // a stale checkout pass, which is exactly the failure this exists to stop.
+// THE DESTINATION IS EXPLICIT, and that is the whole point of this line.
+// `git fetch origin main` writes refs/remotes/origin/main only OPPORTUNISTICALLY
+// — when the ref happens to match this clone's configured `remote.origin.fetch`
+// refspec. A clone whose refspec has been narrowed (git remote set-branches,
+// partial-checkout tooling, and notably actions/checkout, which fetches a single
+// ref) exits 0, prints nothing, and leaves the tracking ref STALE. The behind
+// check would then read a stale ref and pass a stale checkout — the exact
+// failure this guard exists to stop, in the guard itself.
+// `+` so a force-pushed main is still tracked rather than erroring.
+// (Senior-architect review; reproduced against a narrowed refspec.)
 try {
-  execSync("git fetch --quiet origin main", { stdio: ["ignore", "pipe", "pipe"] });
+  execSync("git fetch --quiet origin +main:refs/remotes/origin/main", { stdio: ["ignore", "pipe", "pipe"] });
 } catch (err) {
   die("origin/main could not be fetched", [
     "The preflight cannot prove this checkout is current, so it refuses.",
@@ -131,8 +142,8 @@ if (preflightDecision({ behindMain: Number(behind) }).refusal === REFUSAL.BEHIND
 console.log(`  vs main ${green("up to date")}`);
 
 // ── 3. What would this deploy actually carry? ───────────────────────────────
-if (FUNCTIONS_ONLY) {
-  console.log(`  scope  functions (liveness of a function is not readable from version.json)`);
+if (GIT_ONLY) {
+  console.log(`  scope  git checks only — /version.json describes the hosting bundle and says\n         nothing about functions, database rules or storage rules`);
   console.log(green(bold("  ✓ preflight passed")));
   console.log("");
   process.exit(0);
