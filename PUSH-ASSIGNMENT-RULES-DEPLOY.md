@@ -147,9 +147,26 @@ assigned to Hub 3" (`assignedHubs` counts only a real boolean `true`, so an
 absent child is false), and the next save from the card rewrites it in the new
 shape.
 
-### Order of operations
+### 🚨 Order of operations — PASTE THIS BEFORE THE HOSTING DEPLOY
 
-**Paste this rule BEFORE the hosting deploy**, or the first Hub 3 assignment is
-refused. The reverse order is safe for everything except that one write, and it
-costs nothing: pasting early cannot break the two-hub card, because the old card
-never sends a `hub3` child and the rule does not require one.
+Not a preference. Get it wrong and **every save on the card fails, not just the
+Hub 3 ones.**
+
+The new card writes the whole record, so every save it makes now carries a
+`hub3` child — including a save that only turns Hub 1 on. Under the OLD rule
+`hub3` is not a declared child, so it falls through to `$other`, whose
+`.validate` is `false`, and the entire write is refused. The card degrades
+honestly (the row rolls back and the amber banner names this document) but
+nobody can change any assignment until the rule is published.
+
+Pasting FIRST cannot break anything. The old two-hub card never sends a `hub3`
+child, and the new rule does not require one — that is the whole point of
+leaving `hub3` out of `hasChildren`. So the safe order is:
+
+1. paste this rule and **Publish**
+2. deploy hosting
+3. open `/#admin/notifications` and check a Hub 3 switch saves
+
+If hosting somehow went out first, the fix is to paste the rule — nothing needs
+rolling back and no data is damaged, because every refused write was refused
+whole.
