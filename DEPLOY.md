@@ -1,12 +1,34 @@
 # Deploying Marathon Store
 
-**The whole thing is one command.** Everything below it is explanation you only
-need if something goes wrong.
+**Once the secret below is set, you never deploy by hand again.**
+`.github/workflows/deploy.yml` builds and deploys hosting on every push to
+`main`. It needs one GitHub secret, and until that exists every run fails at the
+last step with `Input required and not supplied: firebaseServiceAccount`.
+
+## Setting the secret (one time, no terminal)
+
+1. Firebase Console → ⚙️ **Project settings** → **Service accounts** →
+   **Generate new private key**. A `.json` file downloads.
+2. GitHub → this repo → **Settings** → **Secrets and variables** → **Actions** →
+   **New repository secret**.
+3. Name it exactly `FIREBASE_SERVICE_ACCOUNT`. Paste the **entire contents** of
+   that `.json` file as the value. Save.
+4. Re-run the failed job from the repo's **Actions** tab, or just push anything
+   to `main`.
+
+Treat that `.json` like a password — it can write to the live project. Never
+commit it to the repo.
+
+---
+
+## Deploying by hand
+
+Still works, and is the fallback if CI is down.
 
 Open the **Terminal** app (Spotlight → type "Terminal"), paste this, press enter:
 
 ```bash
-cd ~/Documents/marathon-store-app && git pull origin main && npm install && npm run build && firebase deploy --only hosting
+cd ~/Documents/marathon-store-app && git switch main && git pull --ff-only origin main && npm install && npm run build && firebase deploy --only hosting --project=marathon-club
 ```
 
 The first time, add `firebase login` before the deploy step — a browser window
@@ -14,12 +36,12 @@ opens, sign in as the Google account that owns the **marathon-club** project, cl
 Allow, come back to Terminal:
 
 ```bash
-cd ~/Documents/marathon-store-app && git pull origin main && npm install && npm run build && firebase login && firebase deploy --only hosting
+cd ~/Documents/marathon-store-app && git switch main && git pull --ff-only origin main && npm install && npm run build && firebase login && firebase deploy --only hosting --project=marathon-club
 ```
 
 It takes about a minute and ends with:
 
-```
+```text
 Hosting URL: https://marathon-club.web.app
 ```
 
@@ -35,10 +57,11 @@ These are not style preferences. Each one has destroyed or can destroy live data
 ### 1. Never run bare `firebase deploy`
 
 It deploys hosting **and functions and database rules** in one go. The functions
-part is the dangerous half — see below. Always scope it:
+part is the dangerous half — see below. Always scope it, and name the project
+rather than trusting whatever `firebase use` last pointed at:
 
 ```bash
-firebase deploy --only hosting
+firebase deploy --only hosting --project=marathon-club
 ```
 
 ### 2. Never run `firebase deploy --only functions`
@@ -108,13 +131,21 @@ a pull-to-refresh alone sometimes isn't enough.
 | Step | What it means |
 |---|---|
 | `cd ~/Documents/marathon-store-app` | move into the project folder |
-| `git pull origin main` | download the latest merged code |
+| `git switch main` | make sure you are on the main branch, not a half-finished one |
+| `git pull --ff-only origin main` | download the latest merged code, refusing anything messier |
 | `npm install` | fetch any new libraries that code needs |
 | `npm run build` | compile React into plain files in `dist/` |
-| `firebase deploy --only hosting` | upload `dist/` to Firebase's CDN |
+| `firebase deploy --only hosting --project=marathon-club` | upload `dist/` to Firebase's CDN, naming the project outright |
 
-`npm warn` lines during install are normal and can be ignored. Only `npm error`
-matters.
+`git switch main` and `--ff-only` are there on purpose: plain `git pull origin
+main` merges main into *whatever branch you happen to be on*, so a stale feature
+branch would get built and shipped. And `--project=marathon-club` beats relying
+on the local alias, which `firebase use` can silently repoint.
+
+Routine `npm warn deprecated` lines during install are normal. Warnings are not
+all noise, though — an `EBADENGINE` warning means your Node version doesn't match
+what a package expects, and that one is worth reading. The build itself is the
+real gate: if `npm run build` finishes, nothing is deployed that didn't compile.
 
 ---
 
@@ -122,8 +153,10 @@ matters.
 
 - **Project:** `marathon-club` (pinned in `.firebaserc`)
 - **Hosting site:** `marathon-club` → https://marathon-club.web.app
-  (`firebase.json` declares this one target; verify the target list before any
-  hosting deploy rather than assuming it from this note)
+  (`firebase.json` sets `hosting.site` directly and `.firebaserc` maps no deploy
+  target, so `firebase target` lists nothing here — check with
+  `firebase hosting:sites:list` before any hosting deploy rather than assuming
+  the site from this note)
 - **Firebase config:** `src/firebase.js`
 - **Database rules:** `database.rules.json`
 - **Cloud Functions:** `functions/` — shared with marathon-pos-app, see the
