@@ -9047,10 +9047,40 @@ function AssistantView({ products, onExit, orders = [] }) {
     () => slotsAfterOrderExits(displaySlots, ordersForExits),
     [displaySlots, ordersForExits]
   );
-  const hub1DisplayUnits = useMemo(
-    () => displayUnitsByCell(displaySlotsLive, "hub1"),
-    [displaySlotsLive]
-  );
+  // ── TWO LANES, TWO MAPS, AND THE NAMES SAY WHICH IS WHICH ─────────────────
+  // A display slot answers two different questions and they must not be
+  // conflated, because one of them can refuse a sale and the other cannot:
+  //
+  //   THE MARKER (informational). "Is a unit of this size standing on a shop
+  //   floor?" Every hub can answer it, because every hub's shops have walls.
+  //   It draws a glyph and nothing else — it nets nothing, gates nothing and
+  //   blocks nothing (#576).
+  //
+  //   THE PULL (contractual). "May this order name an identified physical pair
+  //   and instruct the warehouse to take it off a wall?" That is HUB 1 ONLY,
+  //   by construction: the pull is charged to hub1 in the allocation, the
+  //   checkout pre-flight verifies it against hub1, and pendingDisplayPullsByCell
+  //   is keyed pid::sizeKey with NO hub term — so it may only ever be netted
+  //   against a hub whose lane actually raises those claims. Netting it
+  //   anywhere else imports a Hub 1 claim's ✕ onto an unrelated cell.
+  //
+  // Before this the marker rode the pull lane's map and the pull lane's
+  // predicate, so it inherited hub1 scope it never needed — and Trophy's 113
+  // hub2-booked displays and every one of Pine's hub3 ones drew nothing at all,
+  // though each names a real shop and a real size (live census 2026-09-08).
+  // They are separate names now so that widening one can never quietly widen
+  // the other.
+  const displayUnitsByHub = useMemo(() => ({
+    hub1: displayUnitsByCell(displaySlotsLive, "hub1"),
+    hub2: displayUnitsByCell(displaySlotsLive, "hub2"),
+    hub3: displayUnitsByCell(displaySlotsLive, "hub3"),
+  }), [displaySlotsLive]);
+  // THE PULL LANE'S MAP. Hub 1, and it stays Hub 1 — the checkout pre-flight is
+  // its only reader. If the pull lane is ever extended to another hub, that
+  // change has to give pendingDisplayPullsByCell a real hub filter FIRST
+  // (displayPairCore's own header says so); widening the marker did not and
+  // must not be read as having done so.
+  const hub1DisplayUnits = displayUnitsByHub.hub1;
   // ── AND THE REPAIR IS PERSISTED, because the projection alone cannot hold ──
   // Two reasons a derived-only fix un-fixes itself, both found in review:
   //   • /orders IS EPHEMERAL — ids recycle daily. When the order that proves
@@ -9426,13 +9456,15 @@ function AssistantView({ products, onExit, orders = [] }) {
     consumedByHub: cartAllocation.consumed.get(`${p?.id}::${s}`) || null,
   });
   const sneakerHubOf = (p, s) => sneakerSourcing(p, s).hub;
-  // The display-pair lanes below are a HUB 1 build (hub1-scoped slots and
-  // register), so they keep their own narrower predicate rather than riding
-  // sneakerHubOf — a Hub 2 shoe must not be offered a Hub 1 display pair.
-  // It takes the size for the same reason everything else here does: after
+  // THE PULL LANE'S PREDICATE, and it is still only the pull lane's. A Hub 2
+  // shoe must never be offered a HUB 1 display pair: the pull is charged at
+  // hub1, verified at hub1 and netted at hub1. It takes the size because after
   // 2026-09-06 the serving hub is a per-size answer, and a lane that asked the
-  // product-level question would offer a Hub 1 display pair for a size Hub 1
-  // is no longer picking.
+  // product-level question would offer a Hub 1 pair for a size Hub 1 is no
+  // longer picking.
+  //
+  // The MARKER used to ride this too and no longer does — see
+  // sneakerDisplayInfo. Nothing about a glyph needs to be Hub 1's.
   const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";
   const sneakerAvail = (pid, size, hub = "hub1") =>
     cellAvailability({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: pid, size });
@@ -9505,8 +9537,21 @@ function AssistantView({ products, onExit, orders = [] }) {
   //
   // Same slots data the screen already streams; needs no availability read,
   // so no settled gate.
-  const sneakerDisplayInfo = (p, s) =>
-    (s && sneakerServedByHub1(p, s) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
+  // EVERY HUB'S WALLS, not just Hub 1's. The glyph answers "is a unit of this
+  // size standing on a shop floor", and the slot that answers it is the one
+  // booked at the hub THIS SIZE resolves to — Trophy's displays are booked
+  // hub2, Pine's hub3, and both are as real as PE's hub1 ones. Reading the
+  // serving hub's own map is what keeps that honest: a Hub 2 size is marked by
+  // a Hub 2 slot, never by a Hub 1 one, so the marker cannot claim a wall that
+  // has nothing to do with the shelf the pair would come off.
+  //
+  // Still appearance-only. It nets nothing into availability and the caller
+  // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph.
+  const sneakerDisplayInfo = (p, s) => {
+    if (!s) return null;
+    const hub = sneakerHubOf(p, s);
+    return hub ? (displayUnitsByHub[hub]?.[promisedKey(p.id, s)] || null) : null;
+  };
 
   // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
   // The greyed size chip used to be a dead end: a reason, and the sale walks

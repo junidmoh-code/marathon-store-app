@@ -339,15 +339,47 @@ describe("the display-pair lane did not follow the gate to Hub 2", () => {
     expect(app()).not.toContain("sneakerDisplayOnly");
     expect(app()).not.toContain("displayOnly(available");
   });
-  it("the glyph's own reader is hub1-scoped and appearance-only", () => {
-    // sneakerDisplayInfo asks hub1DisplayUnits, and only for a size Hub 1
-    // serves — the lane is hub1's, and a Hub 2 size must not inherit a marker
-    // from it.
-    // The predicate itself, byte-for-byte: widening it to "any gated hub" is
-    // the one-character edit that would put a Hub 1 glyph on a Hub 2 size.
+  // ── THE TWO LANES SPLIT, AND THIS FENCE SPLIT WITH THEM ───────────────────
+  // This used to say "the glyph's own reader is hub1-scoped", and that was the
+  // right fence while the marker rode the pull lane's map. It no longer does.
+  // A glyph answers "is a unit of this size on a shop floor" — every hub's
+  // shops have walls, and Trophy's displays are booked hub2, Pine's hub3.
+  // Keeping the marker on Hub 1 hid every one of them.
+  //
+  // What this fence is actually for survives intact and is now stated where it
+  // belongs: the PULL may not leave Hub 1. So the two are pinned apart.
+  it("the MARKER reads the hub that serves the size — every hub's walls, not just Hub 1's", () => {
+    expect(app()).toContain('const sneakerDisplayInfo = (p, s) => {');
+    // The serving hub's OWN map. Not hub1DisplayUnits, and not a merge of all
+    // three: a Hub 2 size marked by a Hub 1 slot would claim a wall that has
+    // nothing to do with the shelf the pair would come off.
+    expect(app()).toContain('return hub ? (displayUnitsByHub[hub]?.[promisedKey(p.id, s)] || null) : null;');
+    expect(app()).not.toContain('sneakerServedByHub1(p, s) ? hub1DisplayUnits');
+  });
+  it("…and every hub has its own map, built from the same slots by hub", () => {
+    for (const h of ["hub1", "hub2", "hub3"]) {
+      expect(app(), `no map for ${h}`).toContain(`${h}: displayUnitsByCell(displaySlotsLive, "${h}"),`);
+    }
+  });
+  // THE HALF THAT MAY NOT WIDEN. pendingDisplayPullsByCell is keyed
+  // pid::sizeKey with NO hub term, so it may only be netted against a hub whose
+  // lane actually raises those claims. The pull is charged at hub1, verified at
+  // hub1 and netted at hub1 — and widening the marker must not be mistaken for
+  // having widened this.
+  it("the PULL lane is still Hub 1's alone", () => {
     expect(app()).toContain('const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";');
-    expect(app()).toContain('const sneakerDisplayInfo = (p, s) =>');
-    expect(app()).toContain('(s && sneakerServedByHub1(p, s) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null)');
+    expect(app()).toContain('const hub1DisplayUnits = displayUnitsByHub.hub1;');
+    // Its map reaches exactly one reader: the checkout pre-flight that verifies
+    // a line already carrying displayPairRequest.
+    const uses = (app().match(/hub1DisplayUnits\[/g) || []).length;
+    expect(uses, "hub1DisplayUnits grew a second reader — check it is not the marker").toBe(1);
+    expect(app()).toContain('const d = hub1DisplayUnits[promisedKey(item.product.id, item.size)];');
+  });
+  it("and the pull claim map is netted into Hub 1's availability and nowhere else", () => {
+    expect(app()).toContain('mergePromised(hub1ReadyPromised, hub1PullPromised)');
+    expect(app()).toContain('const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);');
+    // One call, and it is hub1's.
+    expect((app().match(/pendingDisplayPullsByCell\(/g) || []).length).toBe(1);
   });
 });
 
