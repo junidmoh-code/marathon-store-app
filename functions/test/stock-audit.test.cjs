@@ -69,6 +69,19 @@ const REQUESTS = {
   // a sneaker — out of scope entirely
   r7: { requestingLocation: "marathon-pe", productId: "shoe", size: "9", status: "cancelled",
         cancelReason: "unfillable", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub1" } },
+  // Engine bookkeeping on cells NOTHING ELSE touches, so only the reason
+  // whitelist can keep them off the list. r4 above cannot prove that: its cell
+  // is already on the list as a negative, and first-writer-wins would mask an
+  // admitted tidy-up. (Found by the mutation harness — A3 came back PASS.)
+  r8: { requestingLocation: "marathon-pe", productId: "hood", size: "XL", status: "cancelled",
+        cancelReason: "already_in_stock", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
+  r9: { requestingLocation: "marathon-pe", productId: "hood", size: "XXL", status: "cancelled",
+        cancelReason: "order_lost", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
+  r10: { requestingLocation: "marathon-pe", productId: "hood", size: "XXXL", status: "cancelled",
+         cancelReason: "no_longer_needed", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
+  // fulfilled — the line arrived; there is nothing to check
+  r11: { requestingLocation: "marathon-pe", productId: "hood", size: "S", status: "fulfilled",
+         resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
 };
 
 const MOVEMENTS = [
@@ -167,7 +180,9 @@ test("out-of-stock list: sources, scope and the place the stock was supposed to 
   assert.equal(by[beltKey].sk, "_");
 
   // excluded: bookkeeping tidy-up, stale resolution, the other store, the sneaker
-  assert.equal(rows.some((r) => r.p === "hood" && r.r === "already_in_stock"), false);
+  for (const k of ["hood__XL__hub2", "hood__XXL__hub2", "hood__XXXL__hub2", "hood__S__hub2"]) {
+    assert.equal(by[k], undefined, `${k} is the engine tidying its own books — never a shelf walk`);
+  }
   assert.equal(rows.some((r) => r.k === "hood__S__hub2"), false);
   assert.equal(rows.some((r) => r.p === "shoe"), false);
   assert.equal(rows.some((r) => r.w === "trophy"), false);
