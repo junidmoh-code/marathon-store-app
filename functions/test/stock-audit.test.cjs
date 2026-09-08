@@ -72,8 +72,10 @@ const ORDERS = {
   // outside the lookback window
   "8": ord({ productId: "shoe", productName: "Air Force 1 White", size: "6",
              status: "out_of_stock", outOfStockAt: iso(40 * 3600e3) }),
-  // an ordinary order nobody was turned away from
-  "9": ord({ productId: "shoe", productName: "Air Force 1 White", size: "12", status: "incoming" }),
+  // an ordinary order nobody was turned away from — it has a createdAt like any
+  // order, so a guard that fell back to "any timestamp" would sweep it in
+  "9": ord({ productId: "shoe", productName: "Air Force 1 White", size: "12",
+             status: "incoming", createdAt: iso(1 * 3600e3) }),
   // hub named by the legacy `hub` field only
   "10": ord({ placedAtHub: null, hub: "hub3", productId: "boot", productName: "Timberland Motion 6",
               size: "9", status: "out_of_stock", outOfStockAt: iso(1 * 3600e3) }),
@@ -236,18 +238,30 @@ test("the cell key is /stock's own fold, so a half size names the cell that exis
   assert.equal(sa.stockSizeKey(" 8"), "_8");
   assert.equal(sa.stockSizeKey("Free Size"), "_");
   assert.equal(sa.stockSizeKey(null), "_");
-  const { rows } = sa.buildOutOfStock({
+  const half = sa.buildOutOfStock({
     hub: "hub1", nowMs: NOW, cfg: CFG, products: PRODUCTS,
     stock: { hub1: { shoe: { "5_5": { qty: 2 } } } },
     orders: { a: { productType: "sneaker", placedAtHub: "hub1", productId: "shoe",
                    productName: "AF1", size: "5.5", outOfStockAt: iso(3600e3) } },
-  });
-  assert.equal(rows[0].sk, "5_5", "the KEY is the cell's own");
-  assert.equal(rows[0].s, "5.5", "the LABEL is what the person holding the shoe reads");
+  }).rows;
+  assert.equal(half[0].sk, "5_5", "the KEY is the cell's own");
+  assert.equal(half[0].s, "5.5", "the LABEL is what the person holding the shoe reads");
+
+  // THE ACTUAL DIVERGENCE between the two encoders is whitespace and the
+  // synthetic "Free Size" label — both map "." to "_", so a half size cannot
+  // tell them apart. The engine's encoder TRIMS, so " 8" would name cell "8"
+  // while applyMovement wrote the units into "_8".
+  const rows = sa.buildOutOfStock({
+    hub: "hub1", nowMs: NOW, cfg: CFG, products: PRODUCTS,
+    stock: { hub1: { shoe: { _8: { qty: 4 }, 8: { qty: 0 } } } },
+    orders: { a: { productType: "sneaker", placedAtHub: "hub1", productId: "shoe",
+                   productName: "AF1", size: " 8", outOfStockAt: iso(3600e3) } },
+  }).rows;
+  assert.equal(rows[0].sk, "_8");
+  assert.equal(rows[0].q, 4, "the row must read the cell that actually holds the units");
   assert.equal(sa.sizeLabel("_"), "One size");
   assert.equal(sa.sizeLabel("ONE_SIZE"), "ONE_SIZE", "a broad underscore replace would mangle this");
   assert.equal(sa.sizeLabel("XXXL"), "XXXL");
-  assert.equal(rows[0].q, 2, "the row must read the cell that actually holds the units");
 });
 
 

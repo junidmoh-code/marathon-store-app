@@ -97,7 +97,7 @@ const MUTATIONS = [
   { id: "A4", file: LIB, nodeTests: LIB_TESTS,
     guard: "ONLY THE TWO ANSWERS — an ordinary order nobody was turned away from is not a check",
     from: `    const answer = UNAVAILABLE_ANSWERS.find((a) => o[a.field]);\n    if (!answer) continue;`,
-    to: `    const answer = UNAVAILABLE_ANSWERS.find((a) => o[a.field]) || UNAVAILABLE_ANSWERS[0];` },
+    to: `    const answer = UNAVAILABLE_ANSWERS.find((a) => o[a.field]) || { key: "out_of_stock", field: "createdAt" };` },
   { id: "A5", file: LIB, nodeTests: LIB_TESTS,
     guard: "the lookback window bounds the list — yesterday's trading, not every refusal ever recorded",
     from: `    if (!Number.isFinite(at) || at < since) continue;`, to: `    if (!Number.isFinite(at)) continue;` },
