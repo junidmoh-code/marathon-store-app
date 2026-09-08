@@ -574,6 +574,40 @@ describe("a PARTIAL assignment read is an unknown one, not an empty one", () => 
   });
 });
 
+describe("a truncated ROSTER raises its own banner", () => {
+  // The negative case above (an assignments-only truncation must NOT show this)
+  // is only half the pin. Without this one, deleting the line that sets
+  // rosterTruncated would remove the banner entirely and nothing would notice
+  // — a short staff list would then be presented as the whole staff list.
+  const fullPages = (r) => {
+    const limit = r.constraints.find((c) => c.kind === "limitToFirst").value;
+    const after = r.constraints.find((c) => c.kind === "startAfter");
+    let n = after ? Number(after.value.slice(1)) + 1 : 0;
+    const keys = Array.from({ length: limit }, () => `u${String(n++).padStart(8, "0")}`);
+    return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => ({ displayName: k }) })) return true; return false; } };
+  };
+
+  it("says the list is short when /users runs out of pages, and does not blame the assignments", async () => {
+    getMock.mockImplementation(async (r) => {
+      if (r.path === "users") return fullPages(r);
+      return worldReader({})(r);
+    });
+    const t = flattenTree(await render({ authUser: ADMIN }));
+    expect(t, "the roster banner must fire").toContain("more staff accounts than this screen reads");
+    expect(t, "the assignments read was fine").not.toContain("assignments could not be read");
+  });
+
+  it("both banners stand together when both nodes are truncated, without contradicting each other", async () => {
+    getMock.mockImplementation(async (r) => {
+      if (r.path === "users" || r.path === "push_assignments") return fullPages(r);
+      return worldReader({})(r);
+    });
+    const t = flattenTree(await render({ authUser: ADMIN }));
+    expect(t).toContain("more staff accounts than this screen reads");
+    expect(t).toContain("assignments could not be read");
+  });
+});
+
 describe("the FIRST refusal is the one reported", () => {
   it("even when that first rejection carries no reason at all", async () => {
     // `if (!firstRefusal)` tested the truthiness of what was stored rather
