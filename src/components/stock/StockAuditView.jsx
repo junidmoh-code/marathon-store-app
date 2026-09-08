@@ -1,21 +1,21 @@
 // ─── STOCK AUDIT — THE SCREEN ────────────────────────────────────────────────
-// Two tabs, a store chip row under each, and nothing else.
+// Two tabs. They do not share a scope, so they do not share a chip row either.
 //
-//   OUT OF STOCK   every clothing line that came back unavailable, each row
-//                  naming the PLACE the stock was supposed to be and the
-//                  quantity the system believed was there. That pair is the
-//                  whole point: a line rejected against a cell that still reads
-//                  seven is an overstated cell; a line the system calls empty
-//                  that the shelf actually holds is an understated one.
+//   OUT OF STOCK   per HUB, SNEAKERS. Every line a hub answered with "sold out"
+//                  or "coming tomorrow" — the two answers that send a customer
+//                  away — with the quantity that hub's own cell believed. Said
+//                  against a cell reading three, that is a phantom worth
+//                  walking to; against a cell reading zero it is a hub that is
+//                  genuinely out. The number is what tells them apart.
 //
-//   NOT SELLING    a rotating batch of the clothing this store holds, oldest
-//                  checked first, with two signals beside each row — sold in
-//                  the last 21 days, and a display registered here.
+//   NOT SELLING    per SHOP, CLOTHING. A rotating batch of the lines the shop
+//                  HOLDS and has NOT SOLD in three weeks — 30 at a time, three
+//                  mornings a week.
 //
-// READS: one node per store (/settings/stockAudit/{store}/latest), plus today's
-// results day-node so an actioned row does not come back. Nothing else. The
-// lists are computed once a day inside refillHealthScan, from data that run
-// already holds — see functions/stockAudit/dailyPass.cjs.
+// READS: one node for the selected hub or shop, plus that day's results so an
+// actioned row does not come back. Nothing else — not even /locations. The
+// lists are computed once a day inside refillHealthScan from data that run
+// already holds; see functions/stockAudit/dailyPass.cjs.
 //
 // There is no generate button, and there is not going to be one. The batch
 // rotates on its own three mornings a week; a list that only appears when
@@ -25,18 +25,18 @@ import React, { useEffect, useMemo, useState } from "react";
 import { CARD, BORDER, BLUE, BLUE_L, GRAY, GREEN, RED, AMBER, FONT, input, tabOn, tabOff } from "./ui";
 import { usePathState } from "./useStock";
 import { formatSize } from "../../utils/sizeLabel";
-import { AUDIT_STORES, snapshotPath, resultsPath, saDateOf, locationLabel } from "../../config/stockAudit";
+import { AUDIT_STORES, AUDIT_HUBS, snapshotPath, resultsPath, hubSnapshotPath, hubResultsPath, saDateOf, locationLabel } from "../../config/stockAudit";
 import { serverNowMs } from "../../utils/serverTime";
 import { recordOutOfStockOutcome, recordRotationOutcome } from "./stockAuditStore";
 
 // Short status words, not sentences. Staff need to know which shelf and what
 // the system thinks; they do not need a description of the mechanism.
+// The two answers a hub can give. Short words, not sentences: staff need to
+// know which shelf and what the system thinks, not a description of the
+// mechanism.
 const REASON = {
-  negative_cell: { text: "Negative", tone: RED },
-  rejected: { text: "Rejected", tone: AMBER },
-  unfillable: { text: "None upstream", tone: GRAY },
-  awaiting_upstream: { text: "Source empty", tone: GRAY },
-  open_source_empty: { text: "Waiting", tone: GRAY },
+  out_of_stock: { text: "Sold out", tone: RED },
+  coming_tomorrow: { text: "Tomorrow", tone: AMBER },
 };
 
 const chip = (on, tone = BLUE) => ({
@@ -108,14 +108,15 @@ function Empty({ text }) {
 // usePathState, not usePath: a store whose snapshot has never been written and
 // a store whose read was DENIED both come back null, and gating on `value !=
 // null` would leave the screen saying "loading" forever with no way out.
-function useStoreAudit(store, saDate) {
-  const snap = usePathState(snapshotPath(store), !!store);
-  const results = usePathState(resultsPath(store, saDate), !!store && !!saDate);
+function useAuditNode(path, resultPath) {
+  const snap = usePathState(path, !!path);
+  const results = usePathState(resultPath, !!resultPath);
   return { snap, results };
 }
 
 export default function StockAuditView({ onExit, actorRole = null }) {
   const [tab, setTab] = useState("oos");
+  const [hub, setHub] = useState(AUDIT_HUBS[0].id);
   const [store, setStore] = useState(AUDIT_STORES[0].id);
   const [mode, setMode] = useState("product");         // Tab B: product view / size view
 
@@ -140,7 +141,14 @@ export default function StockAuditView({ onExit, actorRole = null }) {
     return () => clearTimeout(t);
   }, [saDate]);
 
-  const { snap, results } = useStoreAudit(store, saDate);
+  // ONE subscription pair, following whichever tab is up. Keeping both alive
+  // would double the read for a list nobody is looking at.
+  const onHubs = tab === "oos";
+  const scope = onHubs ? hub : store;
+  const { snap, results } = useAuditNode(
+    onHubs ? hubSnapshotPath(hub) : snapshotPath(store),
+    onHubs ? hubResultsPath(hub, saDate) : resultsPath(store, saDate),
+  );
   const [busy, setBusy] = useState(null);        // the key currently being written
   const [note, setNote] = useState(null);        // { tone, text }
 
@@ -172,7 +180,7 @@ export default function StockAuditView({ onExit, actorRole = null }) {
   const oosRows = useMemo(
     () => (data?.oos?.rows || []).filter((r) => !done[r.k]),
     [data, done]
-  );
+  );  // eslint-disable-line react-hooks/exhaustive-deps
   const rotRows = useMemo(
     () => (data?.rotation?.rows || []).filter((r) => !done[r.p]),
     [data, done]
@@ -190,9 +198,14 @@ export default function StockAuditView({ onExit, actorRole = null }) {
         <button onClick={() => setTab("rot")} style={tab === "rot" ? tabOn : tabOff}>Not Selling</button>
       </div>
 
-      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-        {AUDIT_STORES.map((s) => (
-          <button key={s.id} onClick={() => setStore(s.id)} style={chip(store === s.id)}>{s.label}</button>
+      {/* The chip row belongs to the tab: hubs answer customers, shops hold the
+          clothing. Sharing one row would offer Trophy a hub list it has no
+          shelf for. */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {(onHubs ? AUDIT_HUBS : AUDIT_STORES).map((x) => (
+          <button key={x.id}
+            onClick={() => (onHubs ? setHub(x.id) : setStore(x.id))}
+            style={chip(scope === x.id)}>{x.label}</button>
         ))}
       </div>
 
@@ -221,7 +234,7 @@ export default function StockAuditView({ onExit, actorRole = null }) {
         : tab === "oos"
           ? <OutOfStock rows={oosRows} total={data.oos?.total || 0} truncated={!!data.oos?.truncated}
               busy={busy} canAct={resultsKnown} onAction={(row, outcome, actual) =>
-                act(row.k, () => recordOutOfStockOutcome({ store, row, outcome, actual, actorRole }))} />
+                act(row.k, () => recordOutOfStockOutcome({ hub, row, outcome, actual, actorRole }))} />
           : <NotSelling data={data} rows={rotRows} mode={mode} setMode={setMode}
               busy={busy} canAct={resultsKnown} onAction={(row, outcome, sizes) =>
                 act(row.p, () => recordRotationOutcome({ store, row, outcome, sizes, actorRole }))} />}
@@ -255,7 +268,10 @@ function OosRow({ r, busy, onAction }) {
       <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={nameStyle}>{r.n}</div>
-          <div style={subStyle}>{formatSize(r.s)} · {locationLabel(r.w)} · system {r.q}</div>
+          <div style={subStyle}>
+            {formatSize(r.s)} · {locationLabel(r.w)} · system {r.q}
+            {r.c > 1 ? ` · ${r.c} customers` : ""}
+          </div>
         </div>
         <span style={pill(meta.tone)}>{meta.text}</span>
       </div>
@@ -283,21 +299,13 @@ function OosRow({ r, busy, onAction }) {
 // looking for: a row shows "No sale" when it has not sold, and "No display"
 // when none is registered. A product that sold and is on display draws no
 // pills at all and needs no reading.
-function Signals({ sold, disp, slow, displayKnown = true }) {
-  return (
-    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-      {!sold && <span style={pill(AMBER)}>No sale</span>}
-      {/* A DARK SIGNAL IS NOT A NEGATIVE ONE. When the display read failed the
-          pass writes displaySignal "unavailable" and every `disp` is false —
-          so drawing the pill would put "No display" on every row in the batch
-          and read as a finding. Half of Tab B's whole purpose is the
-          difference between no-sale-with-a-display and no-sale-without one;
-          inventing the answer is worse than not showing it. The banner above
-          says the signal is missing, and the pill stays off. */}
-      {displayKnown && !disp && <span style={pill(GRAY)}>No display</span>}
-      {slow && <span style={pill(GREEN)}>Slow</span>}
-    </div>
-  );
+// EVERY row in this batch is a line that has not sold in three weeks — that is
+// what put it here — so a "No sale" pill on all thirty would say nothing. The
+// only badge left is the one that distinguishes rows: a line already confirmed
+// as correct-but-slow, which is settled and must not read as a fresh problem.
+function Signals({ slow }) {
+  if (!slow) return null;
+  return <span style={pill(GREEN)}>Slow</span>;
 }
 
 // The four outcomes. All of them stamp and send the product to the back of the
@@ -349,7 +357,6 @@ function RotationRow({ row, title, sub, signals, busy, onAction }) {
 // floor, and it should be recorded where the whole product is in view.
 // (Adversarial architecture review, PR #580.)
 function NotSelling({ data, rows, mode, setMode, busy, canAct, onAction }) {
-  const displayKnown = data.displaySignal !== "unavailable";
   const sizeRows = useMemo(
     () => rows.flatMap((r) => (r.z || []).map((z) => ({ ...z, p: r.p, n: r.n, slow: r.slow, key: `${r.p}__${z.sk}` }))),
     [rows]
@@ -360,9 +367,6 @@ function NotSelling({ data, rows, mode, setMode, busy, canAct, onAction }) {
         <button onClick={() => setMode("product")} style={mode === "product" ? tabOn : tabOff}>Products</button>
         <button onClick={() => setMode("size")} style={mode === "size" ? tabOn : tabOff}>Sizes</button>
       </div>
-      {!displayKnown && (
-        <div style={{ ...rowBox, color: AMBER, fontSize: 12.5, marginBottom: 10 }}>Display registrations could not be read.</div>
-      )}
       {/* An empty list has two very different meanings and they must not look
           the same: the batch was walked, or there was never anything in it. */}
       {!rows.length ? (
@@ -376,7 +380,7 @@ function NotSelling({ data, rows, mode, setMode, busy, canAct, onAction }) {
             ? rows.map((r) => (
                 <RotationRow key={r.p} row={r} busy={busy === r.p || !canAct} onAction={onAction}
                   title={r.n} sub={(r.z || []).map((z) => `${formatSize(z.s)} ${z.q}`).join(" · ")}
-                  signals={{ sold: r.sold, disp: r.disp, slow: r.slow, displayKnown }} />
+                  signals={{ slow: r.slow }} />
               ))
             : sizeRows.map((z) => (
                 <div key={z.key} style={rowBox}>
@@ -384,7 +388,7 @@ function NotSelling({ data, rows, mode, setMode, busy, canAct, onAction }) {
                     <div style={nameStyle}>{z.n}</div>
                     <div style={subStyle}>{formatSize(z.s)} · {z.q}</div>
                   </div>
-                  <Signals sold={z.sold} disp={z.disp} slow={z.slow} displayKnown={displayKnown} />
+                  <Signals slow={z.slow} />
                 </div>
               ))}
         </div>

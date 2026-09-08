@@ -1,24 +1,23 @@
 // ─── STOCK AUDIT — the once-a-day I/O pass ───────────────────────────────────
 //
-// refillHealthScan runs every 15 minutes and already snapshots stock, products,
-// refill_requests and 45 days of movements. This pass rides on that snapshot:
-// once per SA day, on the first run at or after 07:00, it hands the data the
-// run ALREADY HOLDS to lib/stock-audit.cjs and writes two small render caches.
-// Nothing here re-reads anything the scan read.
+// refillHealthScan runs every 15 minutes and already snapshots /orders, /stock,
+// /products and 45 days of movements. This pass rides on that snapshot: once
+// per SA day, on the first run at or after 07:00, it hands the data the run
+// ALREADY HOLDS to lib/stock-audit.cjs and writes small render caches — one
+// per hub for the sneaker out-of-stock checks, one per shop for the clothing
+// rotation. Nothing here re-reads anything the scan read.
 //
-// WHAT IT DOES COST, exactly and by design (measured on live data 2026-09-08):
+// WHAT IT COSTS, exactly (measured on live data 2026-09-08):
 //
 //   EVERY RUN (48/day)   settings/stockAudit/config      ~250 B   the kill switch
 //   THE DAILY PASS ONLY  settings/stockAudit/state       ~200 B   the date guard
-//                        settings/stockAudit/rotation/*  ~120 KB  the check stamps
-//                        displayChecks_active/* (SHALLOW)  58 KB  keys only
-//                        settings/stockAudit/*/results (SHALLOW)  ~1 KB  prune
+//                        settings/stockAudit/rotation/*  ~90 KB   the check stamps
+//                        settings/stockAudit/*/results (SHALLOW)  ~2 KB  prune
 //
-// The two shallow reads are REST `?shallow=true` calls, the same discipline as
-// scripts/lib/rtdbPaged.mjs: displayChecks_active is ~1.8 MB of photo URLs and
-// applied-movement maps across the two stores, and the only question this
-// feature asks of it is "is a display registered for this product/size", which
-// the KEY answers on its own. Reading the bodies would cost 30x for nothing.
+// That is the whole bill: roughly 90 KB a day against the scan's existing
+// ~1.5 GB a month. There is no read of /displayChecks_active any more — the
+// display signal it fed is gone with the clothing half of Tab A, and with it
+// the only expensive read this feature ever proposed.
 //
 // KILL SWITCH: /settings/stockAudit/config/enabled. Absent or false is today's
 // behaviour exactly — one tiny read, no writes, no computation, and no deploy
@@ -26,7 +25,7 @@
 //
 // EVERY WRITE IS RECOMPUTED FROM LIVE STATE ON THE NEXT PASS, so a failure here
 // must never take the refill scan down: the caller wraps this in a try/catch
-// and the scan continues. That is the same resilience contract safeUpdate has.
+// and the scan continues. Same resilience contract safeUpdate has.
 
 "use strict";
 
@@ -87,7 +86,7 @@ function prunableResultDays(keys, saDate, keepDays) {
 // Returns a small record for the run log — never throws for a data problem, and
 // never returns without saying what it decided.
 async function runStockAuditPass({
-  db, app, nowMs, stock, products, refillRequests, movements, routes,
+  db, app, nowMs, stock, products, orders, movements,
   setFn, updFn, shallowKeys = restShallowKeys, log = console,
 }) {
   // 1. The kill switch. One tiny read on every run — the price of being able to
@@ -120,36 +119,48 @@ async function runStockAuditPass({
   if (!claim.committed) return { skipped: "claimed_elsewhere" };
 
   const written = [];
+
+  // ── the hubs: sneaker lines a customer was turned away from ───────────────
+  // Pure from the snapshot — /orders, /stock and /products are all in memory,
+  // so a hub list costs one write and no read at all.
+  for (const hub of audit.AUDIT_HUBS) {
+    try {
+      const snapshot = audit.buildHubSnapshot({ hub, nowMs, cfg, saDate, stock, products, orders });
+      if (await setFn(db, `settings/stockAudit/hub/${hub}/latest`, snapshot, `stock-audit ${hub} snapshot`)) {
+        written.push(hub);
+      }
+      const resultDays = await shallowKeys(app, `settings/stockAudit/hub/${hub}/results`).catch((e) => {
+        log.error(`[stock-audit] ${hub}: results prune skipped — ${e && e.message ? e.message : e}`);
+        return [];
+      });
+      const upd = {};
+      for (const day of prunableResultDays(resultDays, saDate, RESULTS_KEEP_DAYS)) {
+        upd[`settings/stockAudit/hub/${hub}/results/${day}`] = null;
+      }
+      if (Object.keys(upd).length) await updFn(db, upd, `stock-audit ${hub} prune`);
+    } catch (e) {
+      // One hub's failure must not cost the others, and none of them may cost
+      // the refill scan.
+      log.error(`[stock-audit] ${hub}: pass failed —`, e && e.message ? e.message : e);
+    }
+  }
+
+  // ── the shops: the clothing rotation ──────────────────────────────────────
   for (const store of audit.AUDIT_STORES) {
     try {
-      // The feature's own state, and the display keys. Scoped to this store,
-      // and only reached on a day the pass actually runs.
-      const [rotationState, displayKeys, resultDays] = await Promise.all([
+      const [rotationState, resultDays] = await Promise.all([
         db.ref(`settings/stockAudit/rotation/${store}`).once("value").then((s) => s.val() || {}),
-        shallowKeys(app, `displayChecks_active/${store}`).catch((e) => {
-          // A display signal that cannot be read must not cost the whole list.
-          // The rows still carry the sold signal and the quantities; `disp`
-          // simply reads false, which the card labels honestly rather than
-          // presenting as "no display registered".
-          log.error(`[stock-audit] ${store}: display keys unavailable — ${e && e.message ? e.message : e}`);
-          return null;
-        }),
-        // Swallowing this one entirely was wrong: pruning is the only thing
-        // that bounds the results node, so a read failing in silence means it
-        // grows for years and nobody is told. It still must not cost the list.
         shallowKeys(app, `settings/stockAudit/${store}/results`).catch((e) => {
+          // Pruning is the only thing bounding the results node, so a read
+          // failing in silence means it grows for years and nobody is told.
           log.error(`[stock-audit] ${store}: results prune skipped — ${e && e.message ? e.message : e}`);
           return [];
         }),
       ]);
 
       const snapshot = audit.buildStoreSnapshot({
-        store, nowMs, cfg, saDate,
-        stock, products, refillRequests, movements, routes,
+        store, nowMs, cfg, saDate, stock, products, movements,
         rotationState,
-        displayKeys: displayKeys || [],
-        // The batch that is currently up. buildRotation keeps it on a
-        // non-rotation day and mints a fresh one on Mon/Wed/Fri.
         prevBatchPids: state.batch?.[store]?.pids || null,
         // When the standing batch was minted. A product stamped at or after
         // this has been walked FOR THIS BATCH and drops off the list — the
@@ -157,16 +168,15 @@ async function runStockAuditPass({
         // outlives the day it was checked on.
         prevBatchAt: state.batch?.[store]?.at || 0,
       });
-      // Say so on the record rather than letting a false read as a fact.
-      snapshot.displaySignal = displayKeys ? "ok" : "unavailable";
 
       // The batch identity is the PASS's state, not the card's. Lifted off the
       // snapshot before the write so /latest stays exactly what the screen
       // renders and nothing else.
       const { batchPids, batchAt, ...rendered } = snapshot;
 
-      const ok = await setFn(db, `settings/stockAudit/${store}/latest`, rendered, `stock-audit ${store} snapshot`);
-      if (ok) written.push(store);
+      if (await setFn(db, `settings/stockAudit/${store}/latest`, rendered, `stock-audit ${store} snapshot`)) {
+        written.push(store);
+      }
 
       const upd = {
         [`${STATE_PATH}/batch/${store}`]: { date: rendered.rotation.batchDate, at: batchAt, pids: batchPids },
@@ -176,12 +186,11 @@ async function runStockAuditPass({
       }
       await updFn(db, upd, `stock-audit ${store} state`);
     } catch (e) {
-      // One store's failure must not cost the other's list, and neither may
-      // cost the refill scan.
       log.error(`[stock-audit] ${store}: pass failed —`, e && e.message ? e.message : e);
     }
   }
-  return { saDate, stores: written };
+
+  return { saDate, wrote: written };
 }
 
 module.exports = { runStockAuditPass, prunableResultDays, restShallowKeys, CONFIG_PATH, STATE_PATH, RESULTS_KEEP_DAYS, SHALLOW_TIMEOUT_MS };

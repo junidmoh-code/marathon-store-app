@@ -55,16 +55,21 @@ function makeDb(data = {}) {
   return db;
 }
 
-const PRODUCTS = { a: { name: "Tee", productType: "clothing" }, b: { name: "Hoodie", productType: "clothing" } };
-const STOCK = {
-  // b is HELD (M) and also short (S negative) — one product, both lists.
-  "marathon-pe": { a: { M: { qty: 3 } }, b: { S: { qty: -1 }, M: { qty: 2 } } },
-  trophy: { a: { L: { qty: 2 } } },
-  hub2: { a: { M: { qty: 0 } } },
-  central: {},
+const PRODUCTS = {
+  a: { name: "Tee", productType: "clothing" },
+  b: { name: "Hoodie", productType: "clothing" },
+  s1: { name: "Air Force 1", category: "Footwear" },
 };
-const ROUTES = { "marathon-pe": "hub2", trophy: "hub2", hub2: "central" };
-const SNAPSHOT = { stock: STOCK, products: PRODUCTS, refillRequests: {}, movements: [], routes: ROUTES };
+const STOCK = {
+  "marathon-pe": { a: { M: { qty: 3 } }, b: { M: { qty: 2 } } },
+  trophy: { a: { L: { qty: 2 } } },
+  hub1: { s1: { 9: { qty: 2 } } },
+};
+const ORDERS = {
+  "1": { productType: "sneaker", placedAtHub: "hub1", productId: "s1", productName: "Air Force 1",
+         size: "9", status: "out_of_stock", outOfStockAt: new Date(DUE - 3600e3).toISOString() },
+};
+const SNAPSHOT = { stock: STOCK, products: PRODUCTS, orders: ORDERS, movements: [] };
 const QUIET = { error: () => {}, warn: () => {}, log: () => {} };
 
 const run = (db, over = {}) => pass.runStockAuditPass({
@@ -118,8 +123,10 @@ test("the due pass reads EXACTLY its own state — nothing the scan already read
   const shallow = [];
   const res = await run(db, { shallowKeys: async (_app, p) => { shallow.push(p); return []; } });
   assert.equal(res.saDate, "2026-09-07");
-  assert.deepEqual(res.stores, ["marathon-pe", "trophy"]);
+  assert.deepEqual(res.wrote, ["hub1", "hub2", "hub3", "marathon-pe", "trophy"]);
 
+  // The hub lists cost NOTHING to read: /orders, /stock and /products are all
+  // already in the scan's memory. Only the shops' own rotation stamps are read.
   assert.deepEqual(db._reads, [
     "settings/stockAudit/config",
     "settings/stockAudit/state",
@@ -127,17 +134,22 @@ test("the due pass reads EXACTLY its own state — nothing the scan already read
     "settings/stockAudit/rotation/trophy",
   ]);
   // The expensive nodes — the whole reason this pass rides on the scan.
-  for (const forbidden of ["stock", "products", "stock_movements", "refill_requests", "insights_log", "orders", "stock_targets"]) {
+  for (const forbidden of ["stock", "products", "stock_movements", "refill_requests",
+                           "insights_log", "orders", "stock_targets", "displayChecks_active"]) {
     assert.equal(db._reads.some((r) => r === forbidden || r.startsWith(`${forbidden}/`)), false,
       `the pass must never read /${forbidden} — the scan already holds it`);
   }
-  // Display keys come from a SHALLOW read, never the ~1.8 MB bodies.
+  // The ONLY shallow reads left are the results-node prunes. The 1.8 MB
+  // display-registration read this feature once needed is gone with the
+  // clothing half of Tab A.
   assert.deepEqual(shallow, [
-    "displayChecks_active/marathon-pe",
+    "settings/stockAudit/hub/hub1/results",
+    "settings/stockAudit/hub/hub2/results",
+    "settings/stockAudit/hub/hub3/results",
     "settings/stockAudit/marathon-pe/results",
-    "displayChecks_active/trophy",
     "settings/stockAudit/trophy/results",
   ]);
+  assert.equal(shallow.some((p) => p.startsWith("displayChecks")), false);
 });
 
 test("the day is claimed BEFORE the work, so a crash costs one day and not a loop", async () => {
@@ -167,37 +179,40 @@ test("a concurrent writer that already claimed today wins; we do no work", async
 });
 
 // ── what the pass writes ─────────────────────────────────────────────────────
-test("the pass writes one snapshot per store and remembers the batch", async () => {
+test("one snapshot per hub and per shop, and the batch is remembered", async () => {
   const db = makeDb({ settings: { stockAudit: { config: { enabled: true } } } });
   await run(db);
   assert.deepEqual(db._writes, [
+    "settings/stockAudit/hub/hub1/latest",
+    "settings/stockAudit/hub/hub2/latest",
+    "settings/stockAudit/hub/hub3/latest",
     "settings/stockAudit/marathon-pe/latest",
     "settings/stockAudit/state/batch/marathon-pe",
     "settings/stockAudit/trophy/latest",
     "settings/stockAudit/state/batch/trophy",
   ]);
-  const snap = db._data.settings.stockAudit["marathon-pe"].latest;
-  assert.equal(snap.store, "marathon-pe");
-  assert.equal(snap.saDate, "2026-09-07");
-  assert.equal(snap.displaySignal, "ok");
-  assert.ok(snap.oos.rows.some((r) => r.r === "negative_cell" && r.w === "marathon-pe"));
-  assert.deepEqual(db._data.settings.stockAudit.state.batch["marathon-pe"].pids, snap.rotation.rows.map((r) => r.p));
+  // the hub that turned a customer away, against a cell it still believes has two
+  const hub = db._data.settings.stockAudit.hub.hub1.latest;
+  assert.equal(hub.hub, "hub1");
+  assert.deepEqual(hub.oos.rows.map((r) => [r.k, r.r, r.q]), [["s1__9__hub1", "out_of_stock", 2]]);
+  // a hub with nothing to check still gets a list, so the card is never blank
+  assert.deepEqual(db._data.settings.stockAudit.hub.hub2.latest.oos.rows, []);
+
+  const shop = db._data.settings.stockAudit["marathon-pe"].latest;
+  assert.equal(shop.store, "marathon-pe");
+  assert.equal(shop.saDate, "2026-09-07");
+  assert.equal(shop.oos, undefined, "a shop carries no hub tab");
+  assert.deepEqual(db._data.settings.stockAudit.state.batch["marathon-pe"].pids, shop.rotation.rows.map((r) => r.p));
 });
 
-test("unreadable display keys degrade one signal, and say so", async () => {
-  const db = makeDb({ settings: { stockAudit: { config: { enabled: true } } } });
-  await run(db, { shallowKeys: async (_a, p) => { if (p.startsWith("displayChecks_active")) throw new Error("403"); return []; } });
-  const snap = db._data.settings.stockAudit.trophy.latest;
-  assert.equal(snap.displaySignal, "unavailable");
-  assert.ok(snap.rotation.rows.length > 0, "the rest of the list must still be built");
-  assert.equal(snap.rotation.rows.every((r) => r.disp === false), true);
-});
-
-test("one store failing does not cost the other its list", async () => {
+test("one list failing does not cost any of the others", async () => {
   const db = makeDb({ settings: { stockAudit: { config: { enabled: true } } } });
   let n = 0;
+  // the FIRST hub write throws; every later list must still land
   await run(db, { setFn: async (d, p, v) => { if (++n === 1) throw new Error("boom"); return db._setFn(d, p, v); } });
-  assert.equal(db._data.settings.stockAudit["marathon-pe"], undefined);
+  assert.equal(db._data.settings.stockAudit.hub.hub1, undefined);
+  assert.equal(db._data.settings.stockAudit.hub.hub2.latest.hub, "hub2");
+  assert.equal(db._data.settings.stockAudit["marathon-pe"].latest.store, "marathon-pe");
   assert.equal(db._data.settings.stockAudit.trophy.latest.store, "trophy");
 });
 
@@ -216,6 +231,9 @@ test("the pass deletes the pruned day nodes and nothing adjacent", async () => {
   await run(db, { shallowKeys: async (_a, p) => (p.endsWith("/results") ? ["2026-01-01", "2026-09-06"] : []) });
   assert.ok(db._writes.includes("settings/stockAudit/marathon-pe/results/2026-01-01"));
   assert.equal(db._writes.includes("settings/stockAudit/marathon-pe/results/2026-09-06"), false);
+  // hubs are pruned on the same rule
+  assert.ok(db._writes.includes("settings/stockAudit/hub/hub1/results/2026-01-01"));
+  assert.equal(db._writes.includes("settings/stockAudit/hub/hub1/results/2026-09-06"), false);
 });
 
 // ── the batch carries over, and rotates on rotation days ─────────────────────

@@ -809,10 +809,10 @@ async function runScan() {
     await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
 
     // ── STOCK AUDIT — the once-a-day shelf-walk lists ────────────────────────
-    // Rides on the snapshot this run already holds (stock, products,
-    // refill_requests, movements, config.routes) — it re-reads none of it. One
-    // tiny kill-switch read per run; everything else only on the first run
-    // after 07:00 SAST. See stockAudit/dailyPass.cjs for the exact cost.
+    // Rides on the snapshot this run already holds (orders, stock, products,
+    // movements) — it re-reads none of it. One tiny kill-switch read per run;
+    // everything else only on the first run after 07:00 SAST. See
+    // stockAudit/dailyPass.cjs for the exact cost.
     //
     // WRAPPED, and deliberately not rethrown: these lists are a render cache
     // recomputed from live state on the next pass, so a failure here must never
@@ -820,7 +820,7 @@ async function runScan() {
     try {
       const auditRes = await runStockAuditPass({
         db, app: admin.app(), nowMs,
-        stock, products, refillRequests, movements, routes: config.routes || {},
+        stock, products, orders, movements,
         setFn: safeSet, updFn: safeUpdate,
       });
       if (auditRes && !auditRes.skipped) counts.stockAudit = auditRes;

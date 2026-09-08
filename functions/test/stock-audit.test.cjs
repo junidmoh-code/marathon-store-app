@@ -32,56 +32,51 @@ const STOCK = {
     tee:  { S: { qty: 4 }, M: { qty: 0 }, L: { qty: -2 } },
     hood: { M: { qty: 3 } },
     belt: { _: { qty: 6 } },
-    shoe: { 9: { qty: -5 } },                       // negative, but a sneaker
-  },
-  hub2: {
-    tee:  { M: { qty: 0 }, L: { qty: 7 } },
-    hood: { M: { qty: -1 } },
-  },
-  central: {
-    tee: { M: { qty: 12 } },
   },
   trophy: { tee: { S: { qty: 2 } } },
+  // hub1 still believes it has three of the size it refused — the phantom.
+  hub1: { shoe: { 9: { qty: 3 }, 6: { qty: 1 } }, boot: { 7: { qty: 0 }, 8: { qty: 0 }, 10: { qty: 0 } } },
+  hub2: { shoe: { 11: { qty: 0 } } },
+  hub3: { boot: { 9: { qty: 0 } } },
 };
 
 const NOW = Date.parse("2026-09-08T09:00:00.000Z");   // Tue 11:00 SAST
 const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
 
-const REQUESTS = {
-  // human "not here" at hub2 while hub2's cell still reads 7 → the loudest phantom
-  r1: { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "cancelled",
-        resolvedAt: iso(3 * 3600e3), createdFrom: { source: "hub2" } },
-  // engine self-withdrawal, source empty
-  r2: { requestingLocation: "marathon-pe", productId: "tee", size: "M", status: "cancelled",
-        cancelReason: "awaiting_upstream", resolvedAt: iso(5 * 3600e3), createdFrom: { source: "hub2" } },
-  // still open, source cell reads 0
-  r3: { requestingLocation: "marathon-pe", productId: "belt", size: null, status: "open",
-        createdAt: iso(20 * 3600e3), createdFrom: { source: "hub2" } },
-  // bookkeeping tidy-up — must NOT produce a row
-  r4: { requestingLocation: "marathon-pe", productId: "hood", size: "M", status: "cancelled",
-        cancelReason: "already_in_stock", resolvedAt: iso(2 * 3600e3), createdFrom: { source: "hub2" } },
+// Live-shaped orders. A hub answers a customer with "sold out"
+// (outOfStockAt) or "coming tomorrow" (comingTomorrowAt); readyAt/collectedAt
+// mean it was found and handed over.
+const ord = (o) => ({ productType: "sneaker", placedAtHub: "hub1", ...o });
+const ORDERS = {
+  // hub1 said sold out while its own cell reads 3 — the phantom
+  "1": ord({ productId: "shoe", productName: "Air Force 1 White", size: "9",
+             status: "out_of_stock", outOfStockAt: iso(2 * 3600e3) }),
+  // the same size refused again an hour later — ONE shelf, not two rows
+  "2": ord({ productId: "shoe", productName: "Air Force 1 White", size: "9",
+             status: "out_of_stock", outOfStockAt: iso(1 * 3600e3) }),
+  // coming tomorrow, still pending
+  "3": ord({ productId: "boot", productName: "Timberland Motion 6", size: "7",
+             status: "coming_tomorrow", comingTomorrowAt: iso(3 * 3600e3) }),
+  // told sold out, then FOUND and collected — nothing left to check
+  "4": ord({ productId: "boot", productName: "Timberland Motion 6", size: "8",
+             status: "collected", outOfStockAt: iso(4 * 3600e3), collectedAt: iso(1e3) }),
+  // told coming tomorrow, then made ready — also resolved
+  "5": ord({ productId: "boot", productName: "Timberland Motion 6", size: "10",
+             status: "ready", comingTomorrowAt: iso(4 * 3600e3), readyAt: iso(1e3) }),
+  // another hub's shelf
+  "6": ord({ placedAtHub: "hub2", productId: "shoe", productName: "Air Force 1 White",
+             size: "11", status: "out_of_stock", outOfStockAt: iso(1 * 3600e3) }),
+  // CLOTHING — out of scope for this tab entirely
+  "7": ord({ productType: "clothing", productId: "tee", productName: "Nike Tee Black",
+             size: "L", status: "out_of_stock", outOfStockAt: iso(1 * 3600e3) }),
   // outside the lookback window
-  r5: { requestingLocation: "marathon-pe", productId: "hood", size: "S", status: "cancelled",
-        cancelReason: "unfillable", resolvedAt: iso(40 * 3600e3), createdFrom: { source: "hub2" } },
-  // another store's problem
-  r6: { requestingLocation: "trophy", productId: "tee", size: "S", status: "cancelled",
-        cancelReason: "unfillable", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
-  // a sneaker — out of scope entirely
-  r7: { requestingLocation: "marathon-pe", productId: "shoe", size: "9", status: "cancelled",
-        cancelReason: "unfillable", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub1" } },
-  // Engine bookkeeping on cells NOTHING ELSE touches, so only the reason
-  // whitelist can keep them off the list. r4 above cannot prove that: its cell
-  // is already on the list as a negative, and first-writer-wins would mask an
-  // admitted tidy-up. (Found by the mutation harness — A3 came back PASS.)
-  r8: { requestingLocation: "marathon-pe", productId: "hood", size: "XL", status: "cancelled",
-        cancelReason: "already_in_stock", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
-  r9: { requestingLocation: "marathon-pe", productId: "hood", size: "XXL", status: "cancelled",
-        cancelReason: "order_lost", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
-  r10: { requestingLocation: "marathon-pe", productId: "hood", size: "XXXL", status: "cancelled",
-         cancelReason: "no_longer_needed", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
-  // fulfilled — the line arrived; there is nothing to check
-  r11: { requestingLocation: "marathon-pe", productId: "hood", size: "S", status: "fulfilled",
-         resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } },
+  "8": ord({ productId: "shoe", productName: "Air Force 1 White", size: "6",
+             status: "out_of_stock", outOfStockAt: iso(40 * 3600e3) }),
+  // an ordinary order nobody was turned away from
+  "9": ord({ productId: "shoe", productName: "Air Force 1 White", size: "12", status: "incoming" }),
+  // hub named by the legacy `hub` field only
+  "10": ord({ placedAtHub: null, hub: "hub3", productId: "boot", productName: "Timberland Motion 6",
+              size: "9", status: "out_of_stock", outOfStockAt: iso(1 * 3600e3) }),
 };
 
 const MOVEMENTS = [
@@ -146,167 +141,29 @@ test("saHour reads SAST, not UTC", () => {
 });
 
 // ── TAB A ────────────────────────────────────────────────────────────────────
-test("out-of-stock list: sources, scope and the place the stock was supposed to be", () => {
-  const { rows, total } = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG,
-    stock: STOCK, products: PRODUCTS, refillRequests: REQUESTS, routes: ROUTES,
-  });
-  assert.ok(rows.length >= 4, `fixture must produce real rows, got ${rows.length}`);
-  assert.equal(total, rows.length);
-  const by = Object.fromEntries(rows.map((r) => [r.k, r]));
+test("the rotation universe is clothing this shop HOLDS and has NOT SOLD", () => {
+  const all = sa.rotationUniverse({ store: "marathon-pe", stock: STOCK, products: PRODUCTS });
+  assert.deepEqual(all.map((x) => x.pid).sort(), ["belt", "hood", "tee"]);
+  // zero and negative cells are not a shelf to walk to
+  assert.deepEqual(all.find((x) => x.pid === "tee").sizes, [{ sk: "S", q: 4 }]);
 
-  // negative at the shop itself
-  assert.deepEqual(
-    { w: by["tee__L__marathon-pe"].w, q: by["tee__L__marathon-pe"].q, r: by["tee__L__marathon-pe"].r },
-    { w: "marathon-pe", q: -2, r: "negative_cell" });
-  // negative at the source (Hub 2) — a different shelf, so a different row
-  assert.equal(by["hood__M__hub2"].r, "negative_cell");
-  assert.equal(by["hood__M__hub2"].w, "hub2");
-
-  // human reject at hub2 while hub2 still reads 7 — believed qty is on the row
-  assert.equal(by["tee__L__hub2"].r, "rejected");
-  assert.equal(by["tee__L__hub2"].q, 7);
-  assert.equal(by["tee__L__hub2"].w, "hub2");
-
-  // engine withdrawal, source empty
-  assert.equal(by["tee__M__hub2"].r, "awaiting_upstream");
-  assert.equal(by["tee__M__hub2"].q, 0);
-
-  // open request against an empty source — one-size folds to the "_" cell
-  const beltKey = sa.cellKey("belt", "_", "hub2");
-  assert.ok(by[beltKey], `expected a one-size row at ${beltKey}`);
-  assert.equal(by[beltKey].r, "open_source_empty");
-  assert.equal(by[beltKey].s, "One size");
-  assert.equal(by[beltKey].sk, "_");
-
-  // excluded: bookkeeping tidy-up, stale resolution, the other store, the sneaker
-  for (const k of ["hood__XL__hub2", "hood__XXL__hub2", "hood__XXXL__hub2", "hood__S__hub2"]) {
-    assert.equal(by[k], undefined, `${k} is the engine tidying its own books — never a shelf walk`);
-  }
-  assert.equal(rows.some((r) => r.k === "hood__S__hub2"), false);
-  assert.equal(rows.some((r) => r.p === "shoe"), false);
-  assert.equal(rows.some((r) => r.w === "trophy"), false);
+  // THE NOT-SOLD FILTER IS THE UNIVERSE, not a badge. tee sold here five days
+  // ago, so it is a line that is working and must not spend a batch slot.
+  const sold = sa.soldIndex({ store: "marathon-pe", nowMs: NOW, movements: MOVEMENTS, soldWindowDays: 21 });
+  const unsold = sa.rotationUniverse({ store: "marathon-pe", stock: STOCK, products: PRODUCTS, soldPids: sold.byPid });
+  assert.deepEqual(unsold.map((x) => x.pid).sort(), ["belt", "hood"]);
 });
 
-test("out-of-stock list ranks proof and phantoms above routine rows, then caps", () => {
-  const { rows } = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG,
-    stock: STOCK, products: PRODUCTS, refillRequests: REQUESTS, routes: ROUTES,
-  });
-  const firstOther = rows.findIndex((r) => r.r !== "negative_cell");
-  assert.ok(firstOther > 0, "negatives must come first");
-  assert.equal(rows.slice(0, firstOther).every((r) => r.r === "negative_cell"), true);
-  // the phantom (rejected against a positive cell) outranks the routine rows
-  const iPhantom = rows.findIndex((r) => r.k === "tee__L__hub2");
-  const iRoutine = rows.findIndex((r) => r.k === "tee__M__hub2");
-  assert.ok(iPhantom < iRoutine, "a reject against live stock must sort above an empty-source row");
-
-  const capped = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: sa.auditConfig({ maxOutOfStockRows: 2 }),
-    stock: STOCK, products: PRODUCTS, refillRequests: REQUESTS, routes: ROUTES,
-  });
-  assert.equal(capped.rows.length, 2);
-  assert.equal(capped.truncated, true);
-  assert.ok(capped.total > 2);
-  assert.equal(capped.rows.every((r) => r.r === "negative_cell"), true);
-  // `rank` is a sort key, never snapshot bytes
-  assert.equal("rank" in capped.rows[0], false);
-});
-
-test("the same line missing from two places is two rows, never one", () => {
-  const stock = { "marathon-pe": { tee: { M: { qty: -1 } } }, hub2: { tee: { M: { qty: -3 } } } };
-  const { rows } = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG,
-    stock, products: PRODUCTS, refillRequests: {}, routes: ROUTES,
-  });
-  assert.equal(rows.length, 2);
-  assert.deepEqual(rows.map((r) => r.w).sort(), ["hub2", "marathon-pe"]);
-});
-
-test("the STRONGER reading wins a collision, whatever order the records arrive in", () => {
-  // Two CANCELLED records for the same cell, and the source now reads 7:
-  //   • an old engine withdrawal — it gave up when hub2 was empty, and hub2 has
-  //     since restocked                                            → rank 2
-  //   • a newer human "not here" against that same restocked cell  → rank 1,
-  //     the loudest phantom this tab can produce
-  // RTDB iterates push-ids chronologically, so the old one is seen FIRST. A
-  // first-writer-wins dedup keeps the weaker reading and hands the row a rank
-  // that is the first thing the cap truncates.
-  //
-  // (The reviewer's original scenario — an OPEN request colliding with a
-  // rejection — is not reachable: the open branch only emits when the source
-  // reads <= 0, and rank 1 requires it to read > 0, so the two can never meet
-  // on one cell. The guard is real; this is the collision that reaches it.)
-  const older = { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "cancelled",
-                  cancelReason: "awaiting_upstream", resolvedAt: iso(4 * 3600e3), createdFrom: { source: "hub2" } };
-  const newer = { requestingLocation: "marathon-pe", productId: "tee", size: "L", status: "cancelled",
-                  resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } };
-  const run = (rr) => sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG,
-    stock: { "marathon-pe": {}, hub2: STOCK.hub2, central: {} },
-    products: PRODUCTS, refillRequests: rr, routes: ROUTES,
-  }).rows.find((r) => r.k === "tee__L__hub2");
-
-  assert.equal(run({ "-old": older, "-new": newer }).r, "rejected");
-  assert.equal(run({ "-new": newer, "-old": older }).r, "rejected");   // and the other way round
-  assert.equal(run({ "-old": older, "-new": newer }).q, 7);
-});
-
-test("a request with no recorded source falls back to the route table", () => {
-  const { rows } = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG,
-    stock: STOCK, products: PRODUCTS, routes: ROUTES,
-    refillRequests: { x: { requestingLocation: "marathon-pe", productId: "tee", size: "M",
-                           status: "cancelled", resolvedAt: iso(1e3) } },
-  });
-  assert.equal(rows.find((r) => r.k === "tee__M__hub2").r, "rejected");
-});
-
-// ── TAB B: universe + signals ────────────────────────────────────────────────
-test("rotation universe is clothing this store actually holds", () => {
-  const u = sa.rotationUniverse({ store: "marathon-pe", stock: STOCK, products: PRODUCTS });
-  assert.deepEqual(u.map((x) => x.pid).sort(), ["belt", "hood", "tee"]);
-  // zero and negative cells are not shelf to walk to; the sneaker is out of scope
-  assert.deepEqual(u.find((x) => x.pid === "tee").sizes, [{ sk: "S", q: 4 }]);
-  assert.equal(u.some((x) => x.pid === "shoe"), false);
-});
-
-test("the two signals: sold in the window, and a display registered here", () => {
-  const rot = sa.buildRotation({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
-    stock: STOCK, products: PRODUCTS, movements: MOVEMENTS,
-    rotationState: {}, displayKeys: ["hood__M", "tee__XXL"], prevBatchPids: null,
-  });
-  assert.equal(rot.rows.length, 3);
-  const by = Object.fromEntries(rot.rows.map((r) => [r.p, r]));
-
-  // sold: only a `sold` movement FROM this store inside 21 days counts
-  assert.equal(by.tee.sold, true);          // S sold 5 days ago
-  assert.equal(by.hood.sold, false);        // sold at trophy, and a receive here
-  assert.equal(by.belt.sold, false);
-
-  // the size view resolves the same signals to the cell
-  assert.deepEqual(by.tee.z, [{ s: "S", sk: "S", q: 4, sold: true, disp: false }]);
-
-  // display: registered for hood/M here; tee's registration is a size this
-  // store does not hold, so the product reads registered and the size does not
-  assert.equal(by.hood.disp, true);
-  assert.equal(by.hood.z[0].disp, true);
-  assert.equal(by.tee.disp, true);
-  assert.equal(by.tee.z[0].disp, false);
-  assert.equal(by.belt.disp, false);
-
-  // the three outcomes the check is built on are all reachable from this fixture
-  assert.equal(by.belt.sold === false && by.belt.disp === false, true);   // not on the floor
-  assert.equal(by.hood.sold === false && by.hood.disp === true, true);    // wrong stock or size
-});
-
-test("a 40-day-old sale does not count as sold, and 21 days is the boundary", () => {
+test("the sold window bounds the universe: 21 days in, 22 days out", () => {
   const mk = (daysAgo) => [{ type: "sold", from: "marathon-pe", productId: "tee", size: "S",
                              ts: new Date(NOW - daysAgo * 864e5).toISOString() }];
-  const at = (daysAgo) => sa.soldIndex({ store: "marathon-pe", nowMs: NOW, movements: mk(daysAgo), soldWindowDays: 21 }).byPid.has("tee");
-  assert.equal(at(20), true);
-  assert.equal(at(22), false);
+  const inUniverse = (daysAgo) => sa.buildRotation({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
+    stock: STOCK, products: PRODUCTS, movements: mk(daysAgo),
+    rotationState: {}, prevBatchPids: null,
+  }).rows.some((r) => r.p === "tee");
+  assert.equal(inUniverse(20), false, "sold inside the window — not a not-selling line");
+  assert.equal(inUniverse(22), true, "sold before the window — it belongs in the sweep");
 });
 
 test("present-but-slow is carried as settled, not re-raised", () => {
@@ -314,7 +171,7 @@ test("present-but-slow is carried as settled, not re-raised", () => {
     store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
     stock: STOCK, products: PRODUCTS, movements: MOVEMENTS,
     rotationState: { belt: { at: NOW - 864e5, o: "slow" }, hood: { at: NOW - 864e5, o: "present" } },
-    displayKeys: [], prevBatchPids: null,
+    prevBatchPids: null,
   });
   const by = Object.fromEntries(rot.rows.map((r) => [r.p, r]));
   assert.equal(by.belt.slow, true);
@@ -326,7 +183,7 @@ test("present-but-slow is carried as settled, not re-raised", () => {
 test("a new batch on a rotation day; the standing batch is kept on other days", () => {
   const args = {
     store: "marathon-pe", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS,
-    movements: MOVEMENTS, rotationState: {}, displayKeys: [],
+    movements: [], rotationState: {},
   };
   const kept = sa.buildRotation({ ...args, saDate: "2026-09-08", prevBatchPids: ["hood"] });
   assert.deepEqual(kept.rows.map((r) => r.p), ["hood"]);
@@ -349,7 +206,7 @@ test("a batch already walked does not come back on the next non-rotation day", (
   // next morning.
   const args = {
     store: "marathon-pe", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS,
-    movements: MOVEMENTS, displayKeys: [],
+    movements: [],
   };
   const MON = Date.parse("2026-09-07T06:00:00.000Z");
 
@@ -387,7 +244,7 @@ test("a carried batch with no mint time shows the work rather than hiding it", (
   // must fail towards showing the shelf.
   const rot = sa.buildRotation({
     store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-08",
-    stock: STOCK, products: PRODUCTS, movements: MOVEMENTS, displayKeys: [],
+    stock: STOCK, products: PRODUCTS, movements: [],
     rotationState: { tee: { at: NOW - 864e5, o: "present" }, hood: { at: NOW - 2 * 864e5, o: "present" } },
     prevBatchPids: ["tee", "hood"], prevBatchAt: 0,
   });
@@ -399,20 +256,20 @@ test("a carried batch reports the day it was MINTED, not the day the pass ran", 
   const MON = Date.parse("2026-09-07T06:00:00.000Z");
   const rot = sa.buildRotation({
     store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-10",
-    stock: STOCK, products: PRODUCTS, movements: MOVEMENTS, displayKeys: [],
+    stock: STOCK, products: PRODUCTS, movements: [],
     rotationState: {}, prevBatchPids: ["tee"], prevBatchAt: MON,
   });
   assert.equal(rot.batchDate, "2026-09-07");
   // and a freshly minted one reports today
   const mint = sa.buildRotation({
     store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-09",
-    stock: STOCK, products: PRODUCTS, movements: MOVEMENTS, displayKeys: [],
+    stock: STOCK, products: PRODUCTS, movements: [],
     rotationState: {}, prevBatchPids: null,
   });
   assert.equal(mint.batchDate, sa.buildStoreSnapshot({
     store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-09",
     stock: STOCK, products: PRODUCTS, refillRequests: {}, movements: [], routes: ROUTES,
-    rotationState: {}, displayKeys: [], prevBatchPids: null,
+    rotationState: {}, prevBatchPids: null,
   }).rotation.batchDate);
 });
 
@@ -422,7 +279,7 @@ test("a stamp from BEFORE this batch was minted does not count as walked", () =>
   // stamp", is what keeps that true.
   const args = {
     store: "marathon-pe", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS,
-    movements: MOVEMENTS, displayKeys: [], saDate: "2026-09-08",
+    movements: [], saDate: "2026-09-08",
   };
   const MON = Date.parse("2026-09-07T06:00:00.000Z");
   const old = sa.buildRotation({
@@ -433,93 +290,6 @@ test("a stamp from BEFORE this batch was minted does not count as walked", () =>
   assert.equal(old.walked, 0);
 });
 
-test("the out-of-stock cap cannot be filled entirely by SHARED upstream rows", () => {
-  // hub2 and central are the source for BOTH audit stores, so their negatives
-  // land in both lists at rank 0 — ahead of every row the shop itself owns.
-  const products = {}, pe = {}, hub2 = {};
-  for (let i = 0; i < 200; i++) {
-    const pid = `u${String(i).padStart(3, "0")}`;
-    // Names that sort AHEAD of the shop's own rows — otherwise the alphabetical
-    // tiebreak hides the starvation by luck rather than by design.
-    products[pid] = { name: `Adidas Upstream ${i}`, productType: "clothing" };
-    hub2[pid] = { M: { qty: -1 } };
-  }
-  for (let i = 0; i < 40; i++) {
-    const pid = `s${String(i).padStart(3, "0")}`;
-    products[pid] = { name: `Zulu Shop ${i}`, productType: "clothing" };
-    pe[pid] = { M: { qty: -1 } };
-  }
-  const { rows, total, truncated } = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: sa.auditConfig({ maxOutOfStockRows: 100 }),
-    stock: { "marathon-pe": pe, hub2, central: {} }, products, refillRequests: {}, routes: ROUTES,
-  });
-  assert.equal(total, 240);
-  assert.equal(truncated, true);
-  assert.equal(rows.length, 100);
-  const own = rows.filter((r) => r.w === "marathon-pe");
-  assert.equal(own.length, 40, "every one of the shop's own rows must survive the cap");
-  assert.equal(rows.length - own.length, 60, "and the shared upstream rows take the rest");
-});
-
-test("with nothing upstream, the shop's own rows may take the whole budget", () => {
-  const products = {}, pe = {};
-  for (let i = 0; i < 200; i++) {
-    const pid = `s${String(i).padStart(3, "0")}`;
-    products[pid] = { name: `Shop ${i}`, productType: "clothing" };
-    pe[pid] = { M: { qty: -1 } };
-  }
-  const { rows } = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: sa.auditConfig({ maxOutOfStockRows: 100 }),
-    stock: { "marathon-pe": pe, hub2: {}, central: {} }, products, refillRequests: {}, routes: ROUTES,
-  });
-  assert.equal(rows.length, 100);
-  assert.equal(rows.every((r) => r.w === "marathon-pe"), true);
-});
-
-test("the cell key is /stock's own fold, not the engine's trimming encoder", () => {
-  // The engine encoder trims (" M" -> "M"); applyMovement, which WROTE every
-  // cell, does not (" M" -> "_M"). Deriving a row's key with the wrong one
-  // named a cell that does not exist, and the Adjust that followed created a
-  // second cell beside the real units.
-  assert.equal(sa.stockSizeKey(" M"), "_M");
-  assert.equal(sa.stockSizeKey("Free Size"), "_");
-  assert.equal(sa.stockSizeKey(""), "_");
-  assert.equal(sa.stockSizeKey(null), "_");
-  assert.equal(sa.stockSizeKey(5.5), "5_5");
-  assert.equal(sa.stockSizeKey("XXXL"), "XXXL");
-
-  const { rows } = sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG,
-    stock: { "marathon-pe": {}, hub2: { tee: { _M: { qty: 6 } } }, central: {} },
-    products: PRODUCTS, routes: ROUTES,
-    refillRequests: { x: { requestingLocation: "marathon-pe", productId: "tee", size: " M",
-                          status: "cancelled", resolvedAt: iso(1e3), createdFrom: { source: "hub2" } } },
-  });
-  const row = rows.find((r) => r.p === "tee");
-  assert.equal(row.sk, "_M");
-  assert.equal(row.q, 6, "the row must read the cell that actually holds the units");
-  assert.equal(row.k, "tee___M__hub2");
-});
-
-test("inside one rank the FRESHER evidence wins, not the first record read", () => {
-  const older = { requestingLocation: "marathon-pe", productId: "tee", size: "M", status: "cancelled",
-                  cancelReason: "unfillable", resolvedAt: iso(5 * 3600e3), createdFrom: { source: "hub2" } };
-  const newer = { requestingLocation: "marathon-pe", productId: "tee", size: "M", status: "cancelled",
-                  cancelReason: "awaiting_upstream", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } };
-  const run = (rr) => sa.buildOutOfStock({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG,
-    stock: { "marathon-pe": {}, hub2: STOCK.hub2, central: {} },
-    products: PRODUCTS, refillRequests: rr, routes: ROUTES,
-  }).rows.find((r) => r.k === "tee__M__hub2");
-  assert.equal(run({ a: older, b: newer }).r, "awaiting_upstream");
-  assert.equal(run({ b: newer, a: older }).r, "awaiting_upstream");
-});
-
-// ── THE ROTATION PROOF ───────────────────────────────────────────────────────
-// The claim this feature rests on: the sweep reaches EVERY product and starves
-// none. Simulated over many cycles against a universe that does not divide
-// evenly by the batch size (137 vs 30 — a remainder is where a naive cursor
-// loses records), with every batch stamped as checked.
 test("the rotation covers every product and never starves one", () => {
   const N = 137, BATCH = 30;
   const products = {}, cells = {};
@@ -591,72 +361,92 @@ test("the batch is deterministic when every product is unchecked", () => {
 });
 
 // ── the snapshot ─────────────────────────────────────────────────────────────
-test("the snapshot carries only what the card renders, and stays small", () => {
-  const snap = sa.buildStoreSnapshot({
+test("the shop snapshot carries only the rotation, and the hub snapshot only its list", () => {
+  const shop = sa.buildStoreSnapshot({
     store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
-    stock: STOCK, products: PRODUCTS, refillRequests: REQUESTS, movements: MOVEMENTS,
-    routes: ROUTES, rotationState: {}, displayKeys: ["hood__M"], prevBatchPids: null,
+    stock: STOCK, products: PRODUCTS, movements: [], rotationState: {}, prevBatchPids: null,
   });
-  assert.equal(snap.store, "marathon-pe");
-  assert.equal(snap.saDate, "2026-09-07");
-  assert.ok(snap.oos.rows.length > 0 && snap.rotation.rows.length > 0);
-  assert.equal(snap.rotation.universeSize, 3);
-  assert.equal(snap.rotation.cycleBatches, 1);
-  assert.equal(JSON.stringify(snap).includes("photoUrl"), false);
-  assert.ok(JSON.stringify(snap).length < 50 * 1024);
+  assert.equal(shop.store, "marathon-pe");
+  assert.equal(shop.saDate, "2026-09-07");
+  assert.equal(shop.oos, undefined, "a shop never carries the hub tab");
+  assert.equal(shop.rotation.universeSize, 3);
+  assert.equal(shop.rotation.cycleBatches, 1);
+
+  const hub = sa.buildHubSnapshot({
+    hub: "hub1", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
+    stock: STOCK, products: PRODUCTS, orders: ORDERS,
+  });
+  assert.equal(hub.hub, "hub1");
+  assert.equal(hub.rotation, undefined, "a hub never carries the shop tab");
+  assert.ok(hub.oos.rows.length > 0);
+  assert.equal(JSON.stringify(hub).includes("photoUrl"), false);
+  assert.equal(JSON.stringify(hub).includes("customerPhone"), false, "a shelf list carries no customer data");
 });
 
-// THE SIZE BUDGET, AT LIVE SCALE. The fixture above is small enough to pass
-// this on nothing, so here it is again at the real numbers: 1,400 clothing
-// products at the store (live count 2026-09-08 was 1,300 held at Marathon PE),
-// a full S–XXXL run each, catalogue-length names, and enough recent unavailable
-// requests to fill the Tab A cap. A future field added to a row multiplies by
-// 120 and by 30 — this is what stops that being discovered on the bill.
-test("the snapshot stays inside its size budget at live catalogue scale", () => {
+// THE SIZE BUDGET, AT LIVE SCALE. The fixtures above are small enough to pass
+// this on nothing, so here it is again at the real numbers: a shop holding
+// 1,400 unsold clothing lines with a full S–XXXL run and catalogue-length
+// names, and a hub that refused 400 sneaker lines in a day. A field added to a
+// row multiplies by 120 and by 30 — this is what stops that being discovered
+// on the bill.
+test("both snapshots stay inside the size budget at live scale", () => {
   const NAME = "Nike Sportswear Tech Fleece Full-Zip Hoodie Heather Grey/Black";
   const SIZES = ["XS", "S", "M", "L", "XL", "XXL", "XXXL"];
-  const products = {}, pe = {}, hub2 = {}, rr = {};
+  const products = {}, pe = {};
   for (let i = 0; i < 1400; i++) {
     const pid = `p17812345678${String(i).padStart(4, "0")}`;
     products[pid] = { name: `${NAME} ${i}`, productType: "clothing" };
-    pe[pid] = {}; hub2[pid] = {};
-    for (const sz of SIZES) { pe[pid][sz] = { qty: 3 }; hub2[pid][sz] = { qty: i % 3 === 0 ? -2 : 0 }; }
+    pe[pid] = {};
+    for (const sz of SIZES) pe[pid][sz] = { qty: 3 };
   }
-  let n = 0;
-  for (const pid of Object.keys(products).slice(0, 400)) {
-    rr[`r${n++}`] = { requestingLocation: "marathon-pe", productId: pid, size: "XXXL", status: "cancelled",
-                      resolvedAt: iso(3600e3), createdFrom: { source: "hub2" } };
-  }
-  const snap = sa.buildStoreSnapshot({
+  const shop = sa.buildStoreSnapshot({
     store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
-    stock: { "marathon-pe": pe, hub2, central: {} }, products, refillRequests: rr, movements: [],
-    routes: ROUTES, rotationState: {}, displayKeys: [], prevBatchPids: null,
+    stock: { "marathon-pe": pe }, products, movements: [], rotationState: {}, prevBatchPids: null,
   });
-  assert.equal(snap.oos.rows.length, CFG.maxOutOfStockRows);   // the cap is doing work
-  assert.equal(snap.oos.truncated, true);
-  assert.ok(snap.oos.total > 3000);
-  assert.equal(snap.rotation.rows.length, CFG.batchSize);
-  assert.equal(snap.rotation.universeSize, 1400);
-  const bytes = JSON.stringify(snap).length;
-  assert.ok(bytes < 50 * 1024, `snapshot is ${(bytes / 1024).toFixed(1)} KB — the budget is 50 KB`);
+  assert.equal(shop.rotation.rows.length, CFG.batchSize);
+  assert.equal(shop.rotation.universeSize, 1400);
+  const shopBytes = JSON.stringify(shop).length;
+  assert.ok(shopBytes < 50 * 1024, `shop snapshot is ${(shopBytes / 1024).toFixed(1)} KB — the budget is 50 KB`);
+
+  const sneakers = {}, hub1 = {}, orders = {};
+  for (let i = 0; i < 400; i++) {
+    const pid = `s${String(i).padStart(4, "0")}`;
+    sneakers[pid] = { name: `Nike Air Force 1 '07 LX White Metallic Swoosh Pins ${i}`, category: "Footwear" };
+    hub1[pid] = { "9_5": { qty: 0 } };
+    orders[`o${i}`] = { productType: "sneaker", placedAtHub: "hub1", productId: pid,
+                        productName: sneakers[pid].name, size: "9.5", outOfStockAt: iso(3600e3) };
+  }
+  const hub = sa.buildHubSnapshot({
+    hub: "hub1", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
+    stock: { hub1 }, products: sneakers, orders,
+  });
+  assert.equal(hub.oos.rows.length, CFG.maxOutOfStockRows);
+  assert.equal(hub.oos.total, 400);
+  const hubBytes = JSON.stringify(hub).length;
+  assert.ok(hubBytes < 50 * 1024, `hub snapshot is ${(hubBytes / 1024).toFixed(1)} KB — the budget is 50 KB`);
 });
 
-test("the snapshot is JSON-safe: no undefined reaches an RTDB write", () => {
-  // A product record with no name, a request with no size, a cell with no qty —
-  // every one of these produced an `undefined` in an early draft, and RTDB
-  // rejects an undefined SYNCHRONOUSLY (the #269 outage class).
-  const snap = sa.buildStoreSnapshot({
-    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
-    stock: { "marathon-pe": { x: { M: {} } }, hub2: {} },
-    products: { x: { productType: "clothing" } },
-    refillRequests: { q: { requestingLocation: "marathon-pe", productId: "x", status: "cancelled", resolvedAt: iso(1e3) } },
-    movements: [], routes: ROUTES, rotationState: {}, displayKeys: [], prevBatchPids: null,
-  });
+test("neither snapshot lets an undefined reach an RTDB write", () => {
+  // A product record with no name, an order with no size, a cell with no qty —
+  // each produced an `undefined` in an early draft, and RTDB rejects one
+  // SYNCHRONOUSLY (the #269 outage class).
   const walk = (v, path = "$") => {
     assert.notEqual(v, undefined, `undefined at ${path}`);
     if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${path}[${i}]`));
     else if (v && typeof v === "object") for (const k of Object.keys(v)) walk(v[k], `${path}.${k}`);
   };
-  walk(snap);
-  assert.equal(snap.oos.rows[0].n, "x");             // falls back to the id, never undefined
+  walk(sa.buildStoreSnapshot({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
+    stock: { "marathon-pe": { x: { M: {} }, y: { M: { qty: 2 } } } },
+    products: { x: { productType: "clothing" }, y: { productType: "clothing" } },
+    movements: [], rotationState: {}, prevBatchPids: null,
+  }));
+  const hub = sa.buildHubSnapshot({
+    hub: "hub1", nowMs: NOW, cfg: CFG, saDate: "2026-09-07",
+    stock: { hub1: {} }, products: { z: {} },
+    orders: { a: { productType: "sneaker", placedAtHub: "hub1", productId: "z", outOfStockAt: iso(1e3) } },
+  });
+  walk(hub);
+  assert.equal(hub.oos.rows[0].n, "z", "a nameless product falls back to its id, never undefined");
+  assert.equal(hub.oos.rows[0].sk, "_", "and a sizeless order folds to the one-size sentinel");
 });

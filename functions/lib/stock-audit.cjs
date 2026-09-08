@@ -1,41 +1,37 @@
-// ─── STOCK AUDIT — the pure brain behind the two daily shelf checks ───────────
+// ─── STOCK AUDIT — the pure brain behind the two daily shelf checks ──────────
 //
-// WHAT THIS IS. Two lists, per store, that tell staff which shelf to walk to:
+// TWO LISTS. THEY DO NOT SHARE A SCOPE, AND THAT IS DELIBERATE.
 //
-//   TAB A — OUT OF STOCK CHECKS. Every clothing line that came back
-//   unavailable, NAMED WITH THE PLACE THE STOCK WAS SUPPOSED TO BE (the shop's
-//   own cell, Hub 2, or Central). The point is to separate an OVERSTATED cell
-//   (system says stock, shelf is empty — a phantom) from an UNDERSTATED one
-//   (shelf has stock, system says zero — lost sales). Both are invisible until
-//   somebody physically looks, and the list is what tells them where.
+//   TAB A — OUT OF STOCK CHECKS, PER HUB, SNEAKERS ONLY.
+//   Every sneaker line a hub answered with "sold out" or "coming tomorrow".
+//   Those are the two answers that send a customer away, and each one is a
+//   claim about a shelf that nobody has looked at. The list is that claim,
+//   addressed to the hub that made it, with the quantity the system believed
+//   was there beside it — because a hub that says "sold out" against a cell
+//   reading three is a phantom, and a hub that says it against a cell reading
+//   zero is simply a hub that is out.
+//   NOT in this list: rejections (a refill request refused is a different
+//   conversation between two warehouses, not a customer turned away), clothing,
+//   and negative cells.
 //
-//   TAB B — NOT SELLING (ROTATION). A self-rotating sweep of every clothing
-//   product HELD at that store, oldest-checked first, 30 at a time, three
-//   mornings a week. It is deliberately NOT ranked by severity: severity
-//   rankings check the same worst offenders forever and never discover the
-//   quiet phantom sitting in the middle of the catalogue. Coverage is the
-//   product. Two server-computed signals sit beside each row — has it sold in
-//   the last 21 days, and is a display check registered for it at that store —
-//   because the pair is the check itself: no sale AND no display means the
-//   product is not on the floor; no sale WITH a display means the stock or the
-//   size is wrong.
-//
-// SCOPE, FIXED. Clothing only (engine isClothing — accessories carry
-// productType "clothing" deliberately and ARE in scope), and only the two
-// stores that have staff to walk a shelf: Marathon PE and Trophy. No sneakers,
-// no Hub 1, no Pine.
+//   TAB B — NOT SELLING, PER SHOP, CLOTHING ONLY.
+//   A self-rotating sweep of the clothing a shop HOLDS and has NOT SOLD in
+//   three weeks: 30 lines a batch, three mornings a week. Not ranked by
+//   severity — severity rankings check the same worst offenders forever and
+//   never find the quiet phantom in the middle of the catalogue. Coverage is
+//   the product. Marathon PE and Trophy only.
 //
 // WHY IT IS PURE. Everything here is a function of data the refill scan
-// ALREADY holds in memory after its once-per-run snapshot (stock, products,
-// refill_requests, movements, config.routes) plus three small pieces of the
-// feature's own state. No Firebase, no clock, no I/O — nowMs is injected. That
-// is what makes the daily pass free: the expensive reads were already paid for
-// by the run that calls this.
+// ALREADY holds in memory after its once-per-run snapshot — /orders, /stock,
+// /products, the 45-day movement slice — plus this feature's own small state.
+// No Firebase, no clock, no I/O; nowMs is injected. That is what makes the
+// daily pass free: the expensive reads were already paid for by the run that
+// calls it.
 //
-// NOTHING HERE ROTATES BY ITSELF ON A HUMAN'S SAY-SO. The batch is a pure
-// function of (universe, rotation stamps, SA date). There is no "generate"
-// button anywhere in the feature, because a list that only appears when
-// somebody remembers to press something is a list nobody reads.
+// NOTHING HERE ROTATES ON A HUMAN'S SAY-SO. The batch is a pure function of
+// (universe, rotation stamps, SA date). There is no "generate" button, because
+// a list that only appears when somebody remembers to press something is a list
+// nobody reads.
 
 "use strict";
 
@@ -46,6 +42,19 @@ const { saDateStringFromMs, SAST_OFFSET_MS } = require("./sa-time.cjs");
 // is an owner decision about which floors have someone to walk them, and a
 // config key would invite a third store to appear without anyone deciding it.
 const AUDIT_STORES = ["marathon-pe", "trophy"];
+
+// The hubs that answer customer orders. Measured on live /orders 2026-09-08:
+// every one of the three produces sold-out and coming-tomorrow answers
+// (hub1 20, hub2 14, hub3 7 in a single day), so all three get a list.
+const AUDIT_HUBS = ["hub1", "hub2", "hub3"];
+
+// The two answers that send a customer away, and the order field that records
+// each. Nothing else belongs in Tab A: a rejected refill request is two
+// warehouses talking to each other, not a customer being turned away.
+const UNAVAILABLE_ANSWERS = [
+  { key: "out_of_stock", field: "outOfStockAt" },
+  { key: "coming_tomorrow", field: "comingTomorrowAt" },
+];
 
 // Weekday tokens as the config names them. Index matches Date#getUTCDay().
 const WEEKDAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
@@ -171,148 +180,80 @@ function sizeLabel(sizeKey) {
   return sizeKey === "_" ? "One size" : sizeKey;
 }
 
-// ─── TAB A — OUT OF STOCK CHECKS ─────────────────────────────────────────────
+// ─── TAB A — OUT OF STOCK CHECKS (per hub, sneakers) ─────────────────────────
 //
-// Three sources, all already in the scan's memory. Each produces rows carrying
-// WHERE the stock was believed to be and WHAT quantity the system believed:
+// One source, and it is one the scan already holds: /orders. A hub answers a
+// customer order with "sold out" (`outOfStockAt`) or "coming tomorrow"
+// (`comingTomorrowAt`), and either answer is a statement about a shelf that
+// nobody has since walked. That is the list.
 //
-//   1. Requests from this store that came back unavailable in the lookback
-//      window. Four flavours, and the distinction matters to the person
-//      walking the shelf:
-//        rejected          — a human at the source said "not here" (an rr
-//                            cancelled with NO cancelReason: engine
-//                            self-withdrawals always stamp one, so an unstamped
-//                            cancel is a person's answer — the same load-bearing
-//                            reading the reject-streak guard uses)
-//        unfillable        — the engine found zero anywhere upstream
-//        awaiting_upstream — the engine found the source cell empty
-//      A rejected line whose source cell still reads a positive quantity is the
-//      loudest phantom the system can produce, and `q` is what makes that
-//      visible on the row.
+// RESOLVED LINES ARE NOT CHECKS. An order that later reached `readyAt` or
+// `collectedAt` was found and handed over — the shelf answered for itself, and
+// putting it in front of staff is work they cannot do. Same principle the
+// refill engine applies when it withdraws unpickable requests.
 //
-//   2. STILL-OPEN requests whose source cell reads zero or negative. Nobody has
-//      answered these yet; the source says it cannot answer.
+// THE BELIEVED QUANTITY IS THE WHOLE POINT. It is free — /stock for every hub
+// is already in memory — and without it a row is just a complaint. "Sold out"
+// against a cell reading 3 is a phantom worth walking to; "sold out" against a
+// cell reading 0 is a hub that is genuinely out and needs a refill, not a
+// count. The row carries the number so the reader can tell which they have.
 //
-//   3. Clothing cells that have gone NEGATIVE at the store or at its source. A
-//      negative cell is arithmetic that already happened — it is not a
-//      prediction, it is proof the count is wrong.
-//
-// ORDERING BEFORE THE CAP. Rows are sorted by how load-bearing they are, so a
-// cap can only ever drop the least informative tail: negatives first (proof),
-// then rejections against a positive cell (phantoms), then everything else.
-function buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, routes }) {
-  const rows = new Map();   // cellKey → row (first writer wins, see add())
-  const source = routes?.[store] || null;              // the store's supplier (hub2)
-  const upstream = source ? (routes?.[source] || null) : null;  // and its supplier (central)
+// DEDUPED BY CELL, not by order: three customers refused the same size on the
+// same day is ONE shelf to walk to, and listing it three times is how a list
+// becomes noise. The count rides along instead.
+function buildOutOfStock({ hub, nowMs, cfg, stock, products, orders }) {
   const since = nowMs - cfg.lookbackHours * 3600e3;
+  const rows = new Map();
 
-  // THE STRONGER READING WINS, not the first one to arrive.
-  //
-  // This was first-writer-wins, on the assumption that pushing the sources in
-  // descending evidential strength was enough. It is not, and the hole is
-  // inside a single source: /refill_requests is iterated in RTDB child order,
-  // which for push-id keys is chronological, so two records for the SAME
-  // product+size+place are seen oldest first. An old still-open request
-  // (rank 2) would then claim the cell and silently drop a NEWER human
-  // rejection against a cell that still reads positive (rank 1) — which is the
-  // single loudest phantom this tab exists to surface, and the first row a cap
-  // would truncate away. Duplicate records for one cell are not hypothetical
-  // here; requests that outlive their engine lock have happened before.
-  //
-  // Comparing rank makes the outcome independent of iteration order.
-  // (Adversarial architecture review, PR #580.)
-  // Ties inside a rank are broken by the FRESHER evidence, so the surviving row
-  // never depends on iteration order either. Comparing rank alone left that
-  // half unfixed: `unfillable`, `awaiting_upstream` and a rejection against a
-  // non-positive cell are all rank 2, so for a cell carrying two of them the
-  // reason pill flipped with push-id order — a narrower guarantee than the
-  // sentence above claimed.
-  const add = (row) => {
-    const cur = rows.get(row.k);
-    if (!cur || row.rank < cur.rank || (row.rank === cur.rank && row.at > cur.at)) rows.set(row.k, row);
-  };
+  for (const o of Object.values(orders || {})) {
+    if (!o || o.productType !== "sneaker") continue;
+    if ((o.placedAtHub || o.hub) !== hub) continue;
+    // Found and handed over — nothing left to check.
+    if (o.readyAt || o.collectedAt) continue;
 
-  // ── 3. negative cells (strongest evidence: it already happened) ────────────
-  for (const loc of [store, source, upstream].filter(Boolean)) {
-    const byPid = stock?.[loc] || {};
-    for (const pid of Object.keys(byPid)) {
-      if (!isClothing(products?.[pid])) continue;
-      for (const sizeKey of Object.keys(byPid[pid] || {})) {
-        const q = num(byPid[pid][sizeKey]?.qty);
-        if (q >= 0) continue;
-        // A cell carries no timestamp of its own; it is standing evidence, and
-        // rank 0 is never contested by anything else, so 0 is honest here.
-        add({ k: cellKey(pid, sizeKey, loc), p: pid, n: nameOf(products, pid),
-              s: sizeLabel(sizeKey), sk: sizeKey, w: loc, q, r: "negative_cell", rank: 0, at: 0 });
-      }
-    }
-  }
+    const answer = UNAVAILABLE_ANSWERS.find((a) => o[a.field]);
+    if (!answer) continue;
+    const at = Date.parse(o[answer.field]);
+    if (!Number.isFinite(at) || at < since) continue;
 
-  // ── 1 + 2. refill requests from this store ────────────────────────────────
-  for (const rr of Object.values(refillRequests || {})) {
-    if (!rr || rr.requestingLocation !== store) continue;
-    const pid = rr.productId;
-    if (!pid || !isClothing(products?.[pid])) continue;
-    // Where the stock was supposed to be: the request records its own source,
-    // and the route table is the fallback for older records that predate it.
-    const where = rr.createdFrom?.source || source;
-    if (!where) continue;
-    const sizeKey = stockSizeKey(rr.size);
-    const believed = qtyAt(stock, where, pid, sizeKey);
-
-    if (rr.status === "open") {
-      if (believed > 0) continue;                       // the source can still answer
-      add({ k: cellKey(pid, sizeKey, where), p: pid, n: nameOf(products, pid),
-            s: sizeLabel(sizeKey), sk: sizeKey, w: where, q: believed,
-            r: "open_source_empty", rank: 2, at: Date.parse(rr.createdAt || 0) || 0 });
+    const pid = o.productId;
+    if (!pid) continue;
+    const sizeKey = stockSizeKey(o.size);
+    const k = cellKey(pid, sizeKey, hub);
+    const cur = rows.get(k);
+    if (cur) {
+      cur.c += 1;
+      // The freshest answer names the row, and "sold out" outranks "coming
+      // tomorrow" — a hub that said it has none at all is the stronger claim
+      // about the shelf, whichever answer happened to be recorded last.
+      if (answer.key === "out_of_stock" && cur.r !== "out_of_stock") { cur.r = answer.key; cur.at = at; }
+      else if (answer.key === cur.r && at > cur.at) cur.at = at;
       continue;
     }
-    if (rr.status !== "cancelled") continue;            // fulfilled — nothing to check
-    const resolvedAt = Date.parse(rr.resolvedAt || rr.createdAt || 0);
-    if (!Number.isFinite(resolvedAt) || resolvedAt < since) continue;
-    const why = rr.cancelReason || "rejected";
-    // no_longer_needed / already_in_stock / order_lost / hold_released are the
-    // engine tidying its own bookkeeping — the line never came back unavailable
-    // and putting it on a shelf-walk list would be a wild goose chase.
-    if (why !== "rejected" && why !== "unfillable" && why !== "awaiting_upstream") continue;
-    // A human "not here" against a cell that still reads stock is the phantom
-    // this whole tab exists to surface — rank it above the ordinary cases.
-    const rank = why === "rejected" && believed > 0 ? 1 : 2;
-    add({ k: cellKey(pid, sizeKey, where), p: pid, n: nameOf(products, pid),
-          s: sizeLabel(sizeKey), sk: sizeKey, w: where, q: believed, r: why, rank, at: resolvedAt });
+    rows.set(k, {
+      k, p: pid,
+      // The order carries the name it showed the customer. Falling back to the
+      // catalogue keeps a row readable when a product record has been renamed
+      // or merged since; falling back to the id keeps it from ever being blank.
+      n: String(o.productName || products?.[pid]?.name || pid),
+      s: sizeLabel(sizeKey), sk: sizeKey, w: hub,
+      q: qtyAt(stock, hub, pid, sizeKey),
+      r: answer.key, at, c: 1,
+    });
   }
 
-  const byWeight = (a, b) =>
-    a.rank - b.rank || b.at - a.at || a.n.localeCompare(b.n) || a.s.localeCompare(b.s) || a.w.localeCompare(b.w);
-  const all = [...rows.values()].sort(byWeight);
-  const total = all.length;
-
-  // THE CAP IS SPLIT, because the upstream half is SHARED. Both audit stores
-  // route to the same Hub 2 and the same Central, so every negative cell there
-  // is emitted into BOTH lists — at rank 0, ahead of every rejection and every
-  // open-request row either shop owns. One bad dispatch run producing 120
-  // negative clothing cells upstream would fill Marathon PE's whole list with
-  // Central rows and cut every one of PE's own phantoms.
-  //
-  // Measured 2026-09-08: 0 negative clothing cells at hub2 and central, 57 at
-  // Marathon PE and 43 at Trophy — so the starvation is not live today. It is
-  // one dispatch away, and the fix is a fair split rather than a hope.
-  //
-  // Each side gets half the budget guaranteed and may take the other's unused
-  // half, so neither starves and a quiet upstream costs the store nothing.
-  const ownRows = all.filter((r) => r.w === store);
-  const upstreamRows = all.filter((r) => r.w !== store);
-  const cap = cfg.maxOutOfStockRows;
-  const half = Math.ceil(cap / 2);
-  const ownTake = Math.min(ownRows.length, Math.max(half, cap - upstreamRows.length));
-  const kept = [...ownRows.slice(0, ownTake), ...upstreamRows.slice(0, cap - ownTake)].sort(byWeight);
-
-  // `rank` and `at` are sort keys, not something the card renders — drop them
-  // rather than pay for them in every row's bytes.
+  // Worst first: a hub that said "sold out" while its own cell reads stock is
+  // the only row here that is certainly wrong, so it leads. Then everything
+  // else by how recently it was said — a customer turned away this morning is
+  // a fresher lead than one turned away last night.
+  const phantom = (r) => (r.r === "out_of_stock" && r.q > 0 ? 0 : 1);
+  const out = [...rows.values()].sort((a, b) =>
+    phantom(a) - phantom(b) || b.at - a.at || a.n.localeCompare(b.n) || a.s.localeCompare(b.s));
+  const total = out.length;
   return {
-    rows: kept.map(({ rank, at, ...r }) => r),
+    rows: out.slice(0, cfg.maxOutOfStockRows).map(({ at, ...r }) => r),
     total,
-    truncated: total > kept.length,
+    truncated: total > cfg.maxOutOfStockRows,
   };
 }
 
@@ -331,11 +272,17 @@ function buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, r
 // TIE-BREAK BY PRODUCT ID. Every never-checked product shares one sort value,
 // so without a deterministic second key the batch would depend on object key
 // order and two runs of the same day could disagree about what to check.
-function rotationUniverse({ store, stock, products }) {
+function rotationUniverse({ store, stock, products, soldPids = null }) {
   const out = [];
   const byPid = stock?.[store] || {};
   for (const pid of Object.keys(byPid)) {
     if (!isClothing(products?.[pid])) continue;
+    // NOT SOLD IN THE WINDOW is part of the UNIVERSE, not a badge on the row.
+    // The tab is "not selling": a line that sold last week is not what anyone
+    // is looking for, and leaving it in the rotation spends batches on
+    // products that are working. Measured 2026-09-08: this narrows Marathon PE
+    // from 1,296 held clothing lines to 641 and Trophy from 724 to 466.
+    if (soldPids && soldPids.has(pid)) continue;
     const sizes = [];
     for (const sizeKey of Object.keys(byPid[pid] || {})) {
       const q = num(byPid[pid][sizeKey]?.qty);
@@ -382,25 +329,9 @@ function soldIndex({ store, nowMs, movements, soldWindowDays }) {
   return { byPid, bySize };
 }
 
-// displayKeys: the KEYS of /displayChecks_active/{store}, which are
-// "{productId}__{sizeKey}". Keys only — the bodies carry photo URLs and applied-
-// movement maps and are ~1 MB a store; the question here is only "is one
-// registered", which a key answers. The caller supplies them (a shallow read);
-// this function does not care where they came from.
-function displayIndex(displayKeys) {
-  const byPid = new Set();
-  const bySize = new Set();
-  for (const k of displayKeys || []) {
-    const i = String(k).indexOf("__");
-    if (i <= 0) continue;
-    byPid.add(String(k).slice(0, i));
-    bySize.add(String(k));
-  }
-  return { byPid, bySize };
-}
-
-function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, displayKeys, prevBatchPids, prevBatchAt }) {
-  const universe = rotationUniverse({ store, stock, products });
+function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt }) {
+  const sold = soldIndex({ store, nowMs, movements, soldWindowDays: cfg.soldWindowDays });
+  const universe = rotationUniverse({ store, stock, products, soldPids: sold.byPid });
   const fresh = isRotationDay(saDate, cfg.rotationDays);
   // On a rotation day a new batch is minted. On every other day the batch that
   // is already up stays up — staff finish the one they were given rather than
@@ -448,29 +379,20 @@ function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, 
   const batchPids = picked.map((x) => x.pid);
   picked = picked.filter(({ pid }) => !walked.has(pid));
 
-  const sold = soldIndex({ store, nowMs, movements, soldWindowDays: cfg.soldWindowDays });
-  const disp = displayIndex(displayKeys);
-
   const rows = picked.map(({ pid, sizes }) => {
     const st = rotationState?.[pid] || null;
     return {
       p: pid,
       n: nameOf(products, pid),
-      // Product-level signals — what the PRODUCT view shows.
-      sold: sold.byPid.has(pid),
-      disp: disp.byPid.has(pid),
       // "Present but slow" from a previous cycle. Carried so the card can show
       // the line as settled rather than re-raising it as a problem — the owner
       // rule that a confirmed slow mover must not come back as a question.
       slow: st?.o === "slow",
       last: Number.isFinite(Number(st?.at)) ? Number(st.at) : null,
-      // Per-size rows — what the SIZE view shows. Same batch, same signals,
-      // resolved to the cell.
-      z: sizes.map(({ sk, q }) => ({
-        s: sizeLabel(sk), sk, q,
-        sold: sold.bySize.has(`${pid}__${sk}`),
-        disp: disp.bySize.has(`${pid}__${sk}`),
-      })),
+      // Per-size rows — what the SIZE view shows, same batch resolved to cells.
+      // No per-size sold flag: the whole batch is already "not sold", so the
+      // only honest per-size fact is the quantity.
+      z: sizes.map(({ sk, q }) => ({ s: sizeLabel(sk), sk, q })),
     };
   });
 
@@ -490,14 +412,25 @@ function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, 
 // /stock_movements (for adjustments) and /settings/stockAudit/{store}/results
 // (for outcomes) — this node is a render cache and may be thrown away and
 // recomputed at any time.
-function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, refillRequests, movements, routes, rotationState, displayKeys, prevBatchPids, prevBatchAt }) {
-  const oos = buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, routes });
-  const rot = buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, displayKeys, prevBatchPids, prevBatchAt });
+// ── THE SNAPSHOTS ────────────────────────────────────────────────────────────
+// One per hub for Tab A, one per shop for Tab B. Separate nodes because they
+// have separate scopes, separate audiences and separate chip rows — a hub
+// storeman opening this never needs Trophy's clothing rotation, and merging
+// them would put both in front of both.
+function buildHubSnapshot({ hub, nowMs, cfg, saDate, stock, products, orders }) {
+  const oos = buildOutOfStock({ hub, nowMs, cfg, stock, products, orders });
+  return {
+    computedAt: new Date(nowMs).toISOString(), saDate, hub,
+    oos: { rows: oos.rows, total: oos.total, truncated: oos.truncated },
+  };
+}
+
+function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt }) {
+  const rot = buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, prevBatchPids, prevBatchAt });
   const snap = {
     computedAt: new Date(nowMs).toISOString(),
     saDate,
     store,
-    oos: { rows: oos.rows, total: oos.total, truncated: oos.truncated },
     rotation: {
       rows: rot.rows,
       batchDate: rot.batchDate,
@@ -521,9 +454,9 @@ function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, refill
 }
 
 module.exports = {
-  AUDIT_STORES, WEEKDAYS, DEFAULTS,
+  AUDIT_STORES, AUDIT_HUBS, UNAVAILABLE_ANSWERS, WEEKDAYS, DEFAULTS,
   auditConfig, saHour, saWeekday, shouldRunDailyPass, isRotationDay,
   cellKey, sizeLabel, stockSizeKey,
-  buildOutOfStock, rotationUniverse, selectRotationBatch, soldIndex, displayIndex,
-  buildRotation, buildStoreSnapshot,
+  buildOutOfStock, rotationUniverse, selectRotationBatch, soldIndex,
+  buildRotation, buildStoreSnapshot, buildHubSnapshot,
 };

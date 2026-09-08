@@ -31,7 +31,7 @@ import { database, auth } from "../../firebase";
 import { stockCellPath, decodeSizeKey } from "../../utils/sizeKey";
 import { serverNowMs } from "../../utils/serverTime";
 import { applyMovement } from "./applyMovement";
-import { resultsPath, rotationPath, saDateOf } from "../../config/stockAudit";
+import { resultsPath, hubResultsPath, rotationPath, saDateOf } from "../../config/stockAudit";
 
 // Named on the movement so a year from now the ledger says which screen asked
 // for the correction and why — "adjustment" alone tells nobody anything.
@@ -120,7 +120,7 @@ export async function adjustCellTo({ loc, productId, size, actual, what, store, 
 // would have quietly buried the very defect it was built to surface, behind
 // the one button whose label best describes what the person just did.
 // (Adversarial architecture review, PR #580.)
-export async function recordOutOfStockOutcome({ store, row, outcome, actual, actorRole, nowMs = serverNowMs() }) {
+export async function recordOutOfStockOutcome({ hub, row, outcome, actual, actorRole, nowMs = serverNowMs() }) {
   if (!OOS_OUTCOMES.includes(outcome)) return { ok: false, reason: "unknown_outcome" };
   const uid = actor();
   if (!uid) return { ok: false, reason: "not_authenticated" };
@@ -129,7 +129,7 @@ export async function recordOutOfStockOutcome({ store, row, outcome, actual, act
   if (outcome === "confirmed_empty") {
     const res = await adjustCellTo({
       loc: row.w, productId: row.p, size: decodeSizeKey(row.sk),
-      actual: 0, what: "confirmed empty", store, actorRole,
+      actual: 0, what: "confirmed empty", store: hub, actorRole,
     });
     if (!res.ok) return res;                       // NOT recorded — rule 3 (confirm)
     movementId = res.movementId || null;
@@ -141,7 +141,7 @@ export async function recordOutOfStockOutcome({ store, row, outcome, actual, act
     // decode is here so the path is correct for any size the catalogue grows.
     const res = await adjustCellTo({
       loc: row.w, productId: row.p, size: decodeSizeKey(row.sk),
-      actual, what: "out of stock check", store, actorRole,
+      actual, what: "out of stock check", store: hub, actorRole,
     });
     if (!res.ok) return res;                       // NOT recorded — rule 3
     movementId = res.movementId || null;
@@ -149,7 +149,7 @@ export async function recordOutOfStockOutcome({ store, row, outcome, actual, act
 
   const saDate = saDateOf(nowMs);
   await update(ref(database), {
-    [`${resultsPath(store, saDate)}/${row.k}`]: {
+    [`${hubResultsPath(hub, saDate)}/${row.k}`]: {
       outcome, at: nowMs, by: uid,
       productId: row.p, sizeKey: row.sk, where: row.w,
       believed: row.q,

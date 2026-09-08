@@ -1,0 +1,30 @@
+import { createRequire } from "module";
+import { writeFileSync } from "fs";
+const OUT = []; const say=(...a)=>OUT.push(a.join(" "));
+const req = createRequire("/Users/junidmohammed/Documents/marathon-store-app-hub2avail/functions/package.json");
+const admin = req("firebase-admin");
+admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
+const db = admin.database();
+const v = async (p) => (await db.ref(p).once("value")).val();
+const orders = await v("orders") || {};
+const list = Object.entries(orders);
+say("orders count:", list.length, "bytes:", JSON.stringify(orders).length);
+const dates = {}, statuses = {}, hubs = {}, types = {};
+for (const [,o] of list) {
+  dates[(o.createdAt||"").slice(0,10)] = (dates[(o.createdAt||"").slice(0,10)]||0)+1;
+  statuses[o.status]=(statuses[o.status]||0)+1;
+  hubs[o.placedAtHub||o.bookedHub||o.hub||"?"]=(hubs[o.placedAtHub||o.bookedHub||o.hub||"?"]||0)+1;
+  types[o.productType||"?"]=(types[o.productType||"?"]||0)+1;
+}
+say("createdAt days:", JSON.stringify(dates));
+say("statuses:", JSON.stringify(statuses));
+say("hub fields:", JSON.stringify(hubs));
+say("productType:", JSON.stringify(types));
+const oos = list.filter(([,o])=>o.outOfStockAt);
+const tom = list.filter(([,o])=>o.comingTomorrowAt);
+say("with outOfStockAt:", oos.length, " with comingTomorrowAt:", tom.length);
+say("SAMPLE outOfStock:", JSON.stringify(oos.slice(0,2)));
+say("SAMPLE comingTomorrow:", JSON.stringify(tom.slice(0,2)));
+say("SAMPLE any:", JSON.stringify(list.slice(0,1)));
+writeFileSync("/tmp/orders-out.txt", OUT.join("\n\n")+"\n");
+process.exit(0);

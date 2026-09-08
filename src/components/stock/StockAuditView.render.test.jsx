@@ -21,31 +21,44 @@ const NOW_MS = { v: Date.parse("2026-09-07T09:00:00.000Z") };
 vi.mock("../../utils/serverTime", () => ({ serverNowMs: () => NOW_MS.v }));
 
 const SNAPSHOTS = {
-  "settings/stockAudit/marathon-pe/latest": {
-    store: "marathon-pe", saDate: "2026-09-07", displaySignal: "ok",
+  // ── hubs: sneaker lines a customer was turned away from ──
+  "settings/stockAudit/hub/hub1/latest": {
+    hub: "hub1", saDate: "2026-09-07",
     oos: {
       total: 2, truncated: false,
       rows: [
-        { k: "a__L__hub2", p: "a", n: "Nike Tee Black", s: "L", sk: "L", w: "hub2", q: 7, r: "rejected" },
-        { k: "b__M__marathon-pe", p: "b", n: "Adidas Hoodie", s: "M", sk: "M", w: "marathon-pe", q: -2, r: "negative_cell" },
+        // said sold out while its own cell reads 3 — the phantom
+        { k: "a__9__hub1", p: "a", n: "Air Force 1 White", s: "9", sk: "9", w: "hub1", q: 3, r: "out_of_stock", c: 2 },
+        { k: "b__7__hub1", p: "b", n: "Timberland Motion 6", s: "7", sk: "7", w: "hub1", q: 0, r: "coming_tomorrow", c: 1 },
       ],
     },
+  },
+  "settings/stockAudit/hub/hub2/latest": {
+    hub: "hub2", saDate: "2026-09-07",
+    oos: { total: 1, truncated: false, rows: [{ k: "z__11__hub2", p: "z", n: "Hub Two Shoe", s: "11", sk: "11", w: "hub2", q: 0, r: "out_of_stock", c: 1 }] },
+  },
+  "settings/stockAudit/hub/hub3/latest": {
+    hub: "hub3", saDate: "2026-09-07", oos: { total: 0, truncated: false, rows: [] },
+  },
+  // one row already actioned today — it must not come back
+  "settings/stockAudit/hub/hub1/results/2026-09-07": { "b__7__hub1": { outcome: "confirmed_empty" } },
+
+  // ── shops: the clothing rotation ──
+  "settings/stockAudit/marathon-pe/latest": {
+    store: "marathon-pe", saDate: "2026-09-07",
     rotation: {
-      batchDate: "2026-09-07", refreshed: true, universeSize: 90, cycleBatches: 3,
+      batchDate: "2026-09-07", refreshed: true, universeSize: 641, cycleBatches: 22, walked: 0, batchSize: 2,
       rows: [
-        { p: "a", n: "Nike Tee Black", sold: false, disp: false, slow: false, last: null,
-          z: [{ s: "S", sk: "S", q: 4, sold: false, disp: false }, { s: "M", sk: "M", q: 1, sold: true, disp: false }] },
-        { p: "c", n: "Puma Shorts", sold: true, disp: true, slow: true, last: 1, z: [{ s: "L", sk: "L", q: 2, sold: true, disp: true }] },
+        { p: "a", n: "Nike Tee Black", slow: false, last: null,
+          z: [{ s: "S", sk: "S", q: 4 }, { s: "M", sk: "M", q: 1 }] },
+        { p: "c", n: "Puma Shorts", slow: true, last: 1, z: [{ s: "L", sk: "L", q: 2 }] },
       ],
     },
   },
   "settings/stockAudit/trophy/latest": {
     store: "trophy", saDate: "2026-09-04",
-    oos: { total: 1, truncated: false, rows: [{ k: "z__S__central", p: "z", n: "Trophy Only Tee", s: "S", sk: "S", w: "central", q: 0, r: "unfillable" }] },
-    rotation: { batchDate: "2026-09-07", refreshed: false, universeSize: 10, cycleBatches: 1, rows: [], walked: 30, batchSize: 30 },
+    rotation: { batchDate: "2026-09-02", refreshed: false, universeSize: 466, cycleBatches: 16, rows: [], walked: 30, batchSize: 30 },
   },
-  // one row already actioned today — it must not come back
-  "settings/stockAudit/marathon-pe/results/2026-09-07": { "b__M__marathon-pe": { outcome: "confirmed_empty" } },
 };
 
 // usePathState reports THREE states RTDB's null conflates, so the fake must too
@@ -81,78 +94,99 @@ const mount = () => {
 const tap = (t, needle) => act(() => { buttonWith(t, needle).props.onClick(); });
 
 describe("StockAuditView", () => {
-  it("opens on Out of Stock for Marathon PE and names the place and the believed quantity", () => {
+  it("opens on the hub tab and names the answer, the shelf and what the hub believed", () => {
     SUBSCRIBED.length = 0;
     const t = mount();
     const s = text(t);
-    expect(s).toContain("Nike Tee Black");
-    expect(s).toContain("Hub 2");
+    expect(s).toContain("Air Force 1 White");
+    expect(s).toContain("Hub 1");
+    expect(s).toContain("Sold out");
     expect(s).toContain("system");
-    expect(s).toContain("Rejected");
+    expect(s).toContain("2 customers");
     // the row already actioned today is gone
-    expect(s).not.toContain("Adidas Hoodie");
+    expect(s).not.toContain("Timberland");
   });
 
-  it("reads only the selected store's snapshot and today's results", () => {
+  it("reads only the selected hub's snapshot and today's results", () => {
     SUBSCRIBED.length = 0;
     mount();
     expect([...new Set(SUBSCRIBED)]).toEqual([
-      "settings/stockAudit/marathon-pe/latest",
-      "settings/stockAudit/marathon-pe/results/2026-09-07",
+      "settings/stockAudit/hub/hub1/latest",
+      "settings/stockAudit/hub/hub1/results/2026-09-07",
     ]);
-    for (const forbidden of ["stock", "products", "stock_movements", "refill_requests", "insights_log", "locations"]) {
+    for (const forbidden of ["stock", "products", "stock_movements", "orders", "insights_log", "locations", "displayChecks_active"]) {
       expect(SUBSCRIBED.some((p) => p === forbidden || p.startsWith(`${forbidden}/`))).toBe(false);
     }
   });
 
-  it("the store chip switches which snapshot is read", () => {
+  it("the chip row is HUBS on the hub tab and SHOPS on the rotation tab", () => {
     const t = mount();
-    SUBSCRIBED.length = 0;
-    tap(t, "Trophy");
-    expect(SUBSCRIBED).toContain("settings/stockAudit/trophy/latest");
-    expect(text(t)).toContain("Trophy Only Tee");
-    expect(text(t)).toContain("Central");
+    expect(buttonWith(t, "Hub 1")).toBeTruthy();
+    expect(buttonWith(t, "Hub 3")).toBeTruthy();
+    expect(buttonWith(t, "Marathon PE")).toBeUndefined();
+
+    tap(t, "Not Selling");
+    expect(buttonWith(t, "Marathon PE")).toBeTruthy();
+    expect(buttonWith(t, "Trophy")).toBeTruthy();
+    expect(buttonWith(t, "Hub 3")).toBeUndefined();
   });
 
-  it("Not Selling shows the two signals as their absence, in both views", () => {
+  it("the hub chip switches which snapshot is read", () => {
+    const t = mount();
+    SUBSCRIBED.length = 0;
+    tap(t, "Hub 2");
+    expect(SUBSCRIBED).toContain("settings/stockAudit/hub/hub2/latest");
+    expect(text(t)).toContain("Hub Two Shoe");
+  });
+
+  it("switching tabs switches the subscription, never holding both", () => {
+    const t = mount();
+    SUBSCRIBED.length = 0;
+    tap(t, "Not Selling");
+    expect(SUBSCRIBED).toContain("settings/stockAudit/marathon-pe/latest");
+    expect(SUBSCRIBED.some((p) => p.includes("/hub/"))).toBe(false);
+  });
+
+  it("Not Selling lists the batch without a No-sale badge on every row", () => {
+    // Every line here is already a line that has not sold in three weeks — that
+    // is what put it in the batch — so the badge would say nothing.
     const t = mount();
     tap(t, "Not Selling");
-    let s = text(t);
+    const s = text(t);
     expect(s).toContain("Nike Tee Black");
-    expect(s).toContain("No sale");
-    expect(s).toContain("No display");
-    expect(s).toContain("Slow");              // the settled slow mover, not re-raised as a problem
     expect(s).toContain("Puma Shorts");
+    expect(s).not.toContain("No sale");
+    expect(s).not.toContain("No display");
+    expect(s).toContain("Slow");            // the settled slow mover, not re-raised
 
     tap(t, "Sizes");
-    s = text(t);
-    expect(s).toContain("Nike Tee Black");
-    expect(s).toContain("Puma Shorts");
+    expect(text(t)).toContain("Nike Tee Black");
   });
 
   it("the SIZE view reads; only the product view acts", () => {
-    // A rotation stamp is per PRODUCT, so a per-size outcome would mark sizes
-    // nobody looked at as freshly checked and starve them for a full cycle.
     const t = mount();
     tap(t, "Not Selling");
     expect(buttonWith(t, "Present but slow")).toBeTruthy();
-    expect(buttonWith(t, "Not on display")).toBeTruthy();
-
     tap(t, "Sizes");
     expect(buttonWith(t, "Present but slow")).toBeUndefined();
-    expect(buttonWith(t, "Not on display")).toBeUndefined();
     expect(buttonWith(t, "Not there")).toBeUndefined();
-    // still a read of the same batch
-    expect(text(t)).toContain("No sale");
+  });
+
+  it("a walked batch says it is done, not that there was nothing to do", () => {
+    const t = mount();
+    tap(t, "Not Selling");
+    tap(t, "Trophy");
+    const s = text(t);
+    expect(s).toContain("Batch done");
+    expect(s).toContain("30 checked");
+    expect(s).not.toContain("Nothing to check");
   });
 
   it("a list that is not today's says which day it was built", () => {
-    // The pass rides on refillHealthScan, which stands down entirely while the
-    // engine is off or Central is receiving — so a list can be days old, and
-    // silence about that is the lie.
     const t = mount();
-    expect(text(t)).not.toContain("Built ");    // Marathon PE's list is today's
-    tap(t, "Trophy");                          // Trophy's is three days old
+    expect(text(t)).not.toContain("Built ");     // hub1's list is today's
+    tap(t, "Not Selling");
+    tap(t, "Trophy");                            // Trophy's is three days old
     expect(text(t)).toContain("Built 2026-09-04");
   });
 
@@ -165,34 +199,12 @@ describe("StockAuditView", () => {
     expect(t.root.findAllByType("input")).toHaveLength(1);
   });
 
-  it("a DARK display signal is not drawn as 'No display' on every row", () => {
-    // Trophy's snapshot has no displaySignal at all (an older write) — known.
-    // Marathon PE's is flipped to unavailable here: the pass could not read the
-    // registrations, so every `disp` is false and the pill would put a finding
-    // on every row in the batch. Half of Tab B's purpose is telling
-    // no-sale-with-a-display from no-sale-without one; inventing the answer is
-    // worse than not showing it.
-    const pe = SNAPSHOTS["settings/stockAudit/marathon-pe/latest"];
-    const was = pe.displaySignal;
-    pe.displaySignal = "unavailable";
-    try {
-      const t = mount();
-      tap(t, "Not Selling");
-      const s = text(t);
-      expect(s).toContain("Display registrations could not be read.");
-      expect(s).not.toContain("No display");
-      expect(s).toContain("No sale");            // the signal that IS known still shows
-    } finally { pe.displaySignal = was; }
-  });
-
   it("waits for the results read before offering a list", () => {
-    // "Not answered yet" is not "nothing has been done today". Showing the list
-    // early would bring back rows staff already closed.
     READ.settled = false;
     try {
       const t = mount();
       expect(text(t)).toContain("Loading");
-      expect(text(t)).not.toContain("Nike Tee Black");
+      expect(text(t)).not.toContain("Air Force 1 White");
     } finally { READ.settled = true; }
   });
 
@@ -202,41 +214,29 @@ describe("StockAuditView", () => {
       const t = mount();
       const s = text(t);
       expect(s).toContain("may show work already done");
-      expect(s).toContain("Nike Tee Black");                    // still informative
+      expect(s).toContain("Air Force 1 White");
       expect(buttonWith(t, "Confirmed empty").props.disabled).toBe(true);
       expect(buttonWith(t, "Adjust").props.disabled).toBe(true);
-      expect(buttonWith(t, "Flag").props.disabled).toBe(true);
     } finally { READ.error = false; }
   });
 
+  it("a hub with nothing to check says so plainly, rather than spinning", () => {
+    const t = mount();
+    tap(t, "Hub 3");
+    expect(text(t)).toContain("Nothing to check");
+  });
+
   it("the results day follows SA midnight instead of freezing at mount", () => {
-    // A shop tablet left on the counter overnight would otherwise keep reading
-    // AND WRITING yesterday's results node all morning.
     vi.useFakeTimers();
     try {
       SUBSCRIBED.length = 0;
       let t;
       act(() => { t = TestRenderer.create(<StockAuditView onExit={() => {}} />); });
-      expect(SUBSCRIBED).toContain("settings/stockAudit/marathon-pe/results/2026-09-07");
+      expect(SUBSCRIBED).toContain("settings/stockAudit/hub/hub1/results/2026-09-07");
       SUBSCRIBED.length = 0;
-      // serverNowMs is mocked at 2026-09-07T09:00Z = 11:00 SAST; SA midnight is
-      // 13 hours away.
-      NOW_MS.v = Date.parse("2026-09-08T01:00:00.000Z");        // 03:00 SAST, next day
+      NOW_MS.v = Date.parse("2026-09-08T01:00:00.000Z");
       act(() => { vi.advanceTimersByTime(14 * 3600e3); });
-      expect(SUBSCRIBED).toContain("settings/stockAudit/marathon-pe/results/2026-09-08");
+      expect(SUBSCRIBED).toContain("settings/stockAudit/hub/hub1/results/2026-09-08");
     } finally { vi.useRealTimers(); NOW_MS.v = Date.parse("2026-09-07T09:00:00.000Z"); }
-  });
-
-  it("a walked batch says it is done, not that there was nothing to do", () => {
-    // The two empty lists mean opposite things. A batch carried across a
-    // non-rotation day and already cleared must read as finished work, not as
-    // an empty shop.
-    const t = mount();
-    tap(t, "Trophy");
-    tap(t, "Not Selling");
-    const s = text(t);
-    expect(s).toContain("Batch done");
-    expect(s).toContain("30 checked");
-    expect(s).not.toContain("Nothing to check");
   });
 });
