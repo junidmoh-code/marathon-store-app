@@ -80,3 +80,44 @@ describe("the CI deploy stays HOSTING-only", () => {
     expect(WF).toMatch(/channelId:\s*live/);
   });
 });
+
+// ─── THE DATABASE TARGET IS REFUSED, NOT PREFLIGHTED ────────────────────────
+//
+// `firebase deploy --only database` is always wrong from this repository: the
+// live rules are console-managed and database.rules.json is a stale copy, so
+// deploying it REPLACES the live document and deletes every node the copy has
+// never heard of.
+//
+// The preflight was wired here first, which closed a real gap (the target had
+// no check at all) and introduced a worse one: "✓ preflight passed" printed
+// immediately before a known-destructive deploy reads as sanction. (CodeRabbit.)
+describe("the database target refuses outright", () => {
+  const FB = JSON.parse(readFileSync(new URL("../../firebase.json", import.meta.url), "utf8"));
+
+  it("its predeploy is the refusal, never the preflight", () => {
+    const hook = (FB.database.predeploy || []).join(" ");
+    expect(hook).toMatch(/refuse-database-deploy/);
+    expect(hook).not.toMatch(/deploy-preflight/);
+  });
+
+  it("storage keeps the ordinary git preflight — it has no such divergence", () => {
+    const hook = (FB.storage.predeploy || []).join(" ");
+    expect(hook).toMatch(/deploy-preflight\.mjs --git-only/);
+    expect(hook).not.toMatch(/refuse-database-deploy/);
+  });
+
+  it("hosting and functions keep theirs too", () => {
+    expect((FB.hosting.predeploy || []).join(" ")).toMatch(/deploy-preflight\.mjs/);
+    expect((FB.functions[0].predeploy || []).join(" ")).toMatch(/deploy-preflight\.mjs --git-only/);
+  });
+
+  it("every deployable target has SOME predeploy hook — none may be added without one", () => {
+    // The original defect was a target declared with no hook at all.
+    expect(FB.database.predeploy?.length).toBeGreaterThan(0);
+    expect(FB.storage.predeploy?.length).toBeGreaterThan(0);
+    expect(FB.hosting.predeploy?.length).toBeGreaterThan(0);
+    expect(FB.functions[0].predeploy?.length).toBeGreaterThan(0);
+    // and the set of top-level deployable keys is the set we have covered
+    expect(Object.keys(FB).sort()).toEqual(["database", "functions", "hosting", "storage"]);
+  });
+});

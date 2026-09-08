@@ -110,7 +110,7 @@
   "database": {
     "rules": "database.rules.json",
     "predeploy": [
-      "node scripts/deploy-preflight.mjs --git-only"
+      "node scripts/refuse-database-deploy.mjs"
     ]
   },
   "storage": {
