@@ -523,3 +523,118 @@ test("a path-hostile customer id downgrades the remainder to UNALLOCATED, never 
   assert.equal(r.customerId, null);
   assert.equal(r.creditId, null);
 });
+
+// ── MARK AS USED — the owner's "settled outside the POS" ─────────────────────
+// The same transition as a till's settle, through the same decision, so the
+// race with a till is the race two tills already have: one winner.
+const { markUsedOutsidePosDecision } = require("../lib/eft-settle.cjs");
+const ownerMark = { at: 7000, actorUid: "uOwner", actorName: "owner", reason: "Paid in June, before the pool — matched on the statement" };
+
+function runMark(node, mark) {
+  let out = null;
+  const res = node.transaction((cur) => {
+    out = markUsedOutsidePosDecision(cur, mark);
+    return out.ok && !out.already ? out.value : undefined;
+  });
+  return { ...out, committed: res.committed, snapshot: node.get() };
+}
+
+test("mark-as-used consumes the whole payment with no sale, recording who, when and why", () => {
+  const node = makeNode(recorded());
+  const m = runMark(node, ownerMark);
+  assert.equal(m.ok, true);
+  assert.equal(m.committed, true);
+  const after = node.get();
+  assert.equal(after.status, "used");
+  assert.equal(after.used.sale, null);
+  assert.equal(after.used.appliedCents, 55000);      // the whole payment — nothing is owed on a sale the POS never saw
+  assert.equal(after.used.remainder, undefined);
+  assert.equal(after.used.cashierUid, "uOwner");
+  assert.equal(after.used.cashierName, "owner");
+  assert.equal(after.used.attemptId, "outside-pos-7000");
+  assert.deepEqual(after.used.outsidePos, { reason: ownerMark.reason, actorUid: "uOwner", actorName: "owner", at: 7000 });
+  // The poller's record is untouched underneath.
+  assert.equal(after.reference, "JUNID1234");
+  assert.equal(after.rawText, "…");
+});
+
+test("mark-as-used and a till, same payment, same instant: exactly one winner, either way round", () => {
+  // The owner first: the till loses with the owner named.
+  let node = makeNode(recorded());
+  assert.equal(runMark(node, ownerMark).ok, true);
+  const till = runSettle(node, tillA);
+  assert.equal(till.ok, false);
+  assert.equal(till.code, "already-used");
+  assert.match(till.message, /owner/);
+  assert.equal(node.get().used.outsidePos.actorUid, "uOwner");
+
+  // The till first: the owner loses with the cashier named — never a second
+  // `used` written over the first.
+  node = makeNode(recorded());
+  assert.equal(runSettle(node, tillA).ok, true);
+  const mark = runMark(node, ownerMark);
+  assert.equal(mark.ok, false);
+  assert.equal(mark.committed, false);
+  assert.equal(mark.code, "already-used");
+  assert.match(mark.message, /Ahmed/);
+  assert.equal(node.get().used.attemptId, "P-a1");
+  assert.equal(node.get().used.outsidePos, undefined);
+});
+
+test("a second mark on the same payment loses to the first — no double mark", () => {
+  const node = makeNode(recorded());
+  assert.equal(runMark(node, ownerMark).ok, true);
+  const again = runMark(node, { ...ownerMark, at: 7001, reason: "tapped twice" });
+  assert.equal(again.ok, false);
+  assert.equal(again.code, "already-used");
+  assert.equal(node.get().used.outsidePos.reason, ownerMark.reason);
+});
+
+test("mark-as-used refuses without a reason, an actor or a time, and on anything that is not an unmatched payment", () => {
+  const node = makeNode(recorded());
+  for (const bad of [
+    { ...ownerMark, reason: "" }, { ...ownerMark, reason: "  ok " }, { ...ownerMark, reason: null },
+    { ...ownerMark, actorUid: "" }, { ...ownerMark, actorName: null }, { ...ownerMark, at: "now" },
+  ]) {
+    const r = runMark(node, bad);
+    assert.equal(r.ok, false, JSON.stringify(bad));
+    assert.equal(r.committed, false);
+  }
+  assert.equal(node.get().status, "unmatched");
+  assert.equal(markUsedOutsidePosDecision(null, ownerMark).code, "not-found");
+  assert.equal(markUsedOutsidePosDecision(recorded({ outcome: "refused-parse" }), ownerMark).code, "not-a-payment");
+  assert.equal(markUsedOutsidePosDecision(recorded({ amountCents: 0 }), ownerMark).code, "bad-amount");
+});
+
+test("a marked payment cannot be attached to a sale or released — only reversed, keeping both records", () => {
+  const node = makeNode(recorded());
+  runMark(node, ownerMark);
+  const attach = attachSaleDecision(node.get(), { attemptId: "outside-pos-7000", saleId: "S-9", receiptNumber: "00099", at: 7500, poolKey: "k" });
+  assert.equal(attach.ok, false);
+  assert.equal(attach.code, "settled-outside");
+  const release = releaseDecision(node.get(), { attemptId: "outside-pos-7000", at: 7600, reason: "oops" });
+  assert.equal(release.ok, false);
+  assert.equal(release.code, "settled-outside");
+
+  let out = null;
+  node.transaction((cur) => {
+    out = reverseDecision(cur, { at: 9000, by: "gunidmoh@gmail.com", reason: "it was a different customer's payment" });
+    return out.ok ? out.value : undefined;
+  });
+  assert.equal(out.ok, true);
+  const after = node.get();
+  assert.equal(after.status, "unmatched");
+  assert.equal(after.used, null);
+  // Both records survive: the mark (reason, actor, time) sits inside the reversal.
+  assert.equal(after.reversals[9000].outsidePos.reason, ownerMark.reason);
+  assert.equal(after.reversals[9000].outsidePos.actorUid, "uOwner");
+  assert.match(after.reversals[9000].reason, /different customer/);
+  // And the freed payment can be settled by a till again.
+  assert.equal(runSettle(node, tillB).ok, true);
+});
+
+test("the reason is trimmed and capped, never dropped", () => {
+  const node = makeNode(recorded());
+  runMark(node, { ...ownerMark, reason: `  ${"x".repeat(400)}  ` });
+  assert.equal(node.get().used.outsidePos.reason.length, 300);
+});
