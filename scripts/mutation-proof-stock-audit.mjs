@@ -209,8 +209,8 @@ const MUTATIONS = [
   {
     id: "C4", file: STORE, tests: STORE_TESTS,
     guard: "RECORD ONLY AFTER THE WRITE LANDS — a refused correction must stay on the list",
-    from: `    if (!res.ok) return res;                       // NOT recorded — rule 3`,
-    to: `    if (!res.ok) { /* recorded anyway */ }`,
+    from: `    if (!res.ok) return res;                       // NOT recorded — rule 3\n    movementId = res.movementId || null;\n  }\n\n  const saDate`,
+    to: `    if (!res.ok) { /* recorded anyway */ }\n    movementId = res.movementId || null;\n  }\n\n  const saDate`,
   },
   {
     id: "C5", file: STORE, tests: STORE_TESTS,
@@ -241,6 +241,50 @@ const MUTATIONS = [
     guard: "an actioned row does not come back — today's results filter the list",
     from: `    () => (data?.oos?.rows || []).filter((r) => !done[r.k]),`,
     to: `    () => (data?.oos?.rows || []),`,
+  },
+
+  // ── the five the adversarial architecture review found ────────────────────
+  {
+    id: "F1", file: STORE, tests: STORE_TESTS,
+    guard: "CONFIRMED EMPTY CORRECTS A PHANTOM — a cell still reading stock is set to zero, not just ticked off",
+    from: `  if (outcome === "confirmed_empty" && Number(row.q) > 0) {`,
+    to: `  if (false) {`,
+  },
+  {
+    id: "F1b", file: STORE, tests: STORE_TESTS,
+    guard: "…and a REFUSED confirmed-empty correction records nothing either",
+    from: `    if (!res.ok) return res;                       // NOT recorded — rule 3 (confirm)`,
+    to: `    if (!res.ok) { /* recorded anyway */ }`,
+  },
+  {
+    id: "F2", file: LIB, nodeTests: LIB_TESTS,
+    guard: "THE STRONGER READING WINS — dedup compares rank, so a newer rejection is not lost to an older open request",
+    from: `    if (!cur || row.rank < cur.rank) rows.set(row.k, row);`,
+    to: `    if (!cur) rows.set(row.k, row);`,
+  },
+  {
+    id: "F3", file: VIEW, tests: ["src/components/stock/stockAuditReasons.test.js"],
+    guard: "THE REFUSAL STRING IS applyMovement's, not one invented here",
+    from: `export const STALE = "stale_expectation";`,
+    to: `export const STALE = "expect_mismatch";`,
+  },
+  {
+    id: "F3b", file: VIEW, tests: ["src/components/stock/stockAuditReasons.test.js"],
+    guard: "EVERY reason applyMovement can return has a sentence — a raw code at a shelf is a dead end",
+    from: `  insufficient_stock: "Not enough on hand to remove.",\n`,
+    to: ``,
+  },
+  {
+    id: "F4", file: VIEW, tests: VIEW_TESTS,
+    guard: "THE SIZE VIEW READS — a per-size outcome would stamp sizes nobody looked at as checked",
+    from: `          {mode === "product"`,
+    to: `          {true`,
+  },
+  {
+    id: "F5", file: VIEW, tests: VIEW_TESTS,
+    guard: "a list that is not today's SAYS SO — the pass stands down whenever the refill engine does",
+    from: `      {data && data.saDate && data.saDate !== saDate && (`,
+    to: `      {false && (`,
   },
 
   // ── the fence this PR did not move ────────────────────────────────────────
