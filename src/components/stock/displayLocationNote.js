@@ -45,8 +45,8 @@
 // location (independent review, 2026-09-08).
 //
 // The note therefore reports EVIDENCE and stops. It says where the pair was
-// recorded and WHEN, and it asks the picker to confirm it is still there before
-// refusing the order. It does not tell anyone to take anything.
+// recorded and WHEN, and it asks for one thing: look at the display before
+// deciding there is nothing to send. It does not tell anyone to take anything.
 //
 // AND IT ASKS NOBODY TO GO AND TELL SOMEBODY. A draft ended "…and tell whoever
 // keeps the display register if you take it", which is a human step by another

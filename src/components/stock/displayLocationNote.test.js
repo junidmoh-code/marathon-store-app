@@ -278,10 +278,18 @@ describe("the wiring in App.jsx", () => {
   //     another name, it names no one, it is unenforceable, and a gap that
   //     LOOKS covered is worse than one that is visibly open.
   it("the card never instructs a picker to take the pair, nor to go and tell somebody", () => {
+    // The two sentences that were cut, by their exact text — a literal pin
+    // catches a revert, not a paraphrase, and says so rather than pretending
+    // to be a semantic guard (review, 2026-09-08).
     expect(APP).not.toContain("Any pair of this size is fine to send");
     expect(APP).not.toContain("tell whoever keeps the display register");
+    // ONE instruction, not two ways of saying the same one. An earlier draft
+    // read "check there … confirm it is still on the wall first", where
+    // "first" dangled: it sequenced against the reporting step that had just
+    // been removed, leaving a visible seam in copy a picker has to read fast.
+    expect(APP).toContain("If the shelf is empty, check the display before marking it out of stock.");
+    expect(APP).not.toContain("confirm it is still on the wall");
     expect(APP).toContain("WAS ON A DISPLAY at ");
-    expect(APP).toContain("confirm it is still on the wall");
     // Past tense, dated from the order itself.
     expect(APP).toContain("when this was ordered");
     expect(APP).toContain("floorNote.when");
