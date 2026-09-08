@@ -24,6 +24,7 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
+const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
 // The ledger slice every run reads. HELD AT 45 — the reduction to 31 was
@@ -806,6 +807,26 @@ async function runScan() {
     // visible on one run record, present only when non-zero.
     if (plan.stats?.resizeSuppressed) counts.resizeSuppressed = plan.stats.resizeSuppressed;
     await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
+
+    // ── STOCK AUDIT — the once-a-day shelf-walk lists ────────────────────────
+    // Rides on the snapshot this run already holds (orders, stock, products,
+    // movements) — it re-reads none of it. One tiny kill-switch read per run;
+    // everything else only on the first run after 07:00 SAST. See
+    // stockAudit/dailyPass.cjs for the exact cost.
+    //
+    // WRAPPED, and deliberately not rethrown: these lists are a render cache
+    // recomputed from live state on the next pass, so a failure here must never
+    // stop the thing that restocks the shops. Same contract as safeUpdate.
+    try {
+      const auditRes = await runStockAuditPass({
+        db, app: admin.app(), nowMs,
+        stock, products, orders, movements,
+        setFn: safeSet, updFn: safeUpdate,
+      });
+      if (auditRes && !auditRes.skipped) counts.stockAudit = auditRes;
+    } catch (e) {
+      console.error("[refill-scan] stock audit pass failed:", e && e.message ? e.message : e);
+    }
     if (new Date(nowMs).getUTCMinutes() < 15) {
       const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
       await safeSet(db, "stock_confidence", { computedAt: startedAt, byLocation: confidence }, "confidence");
