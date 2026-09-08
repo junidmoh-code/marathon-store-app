@@ -114,11 +114,17 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
   const sizesOf = (product) =>
     (Array.isArray(product?.sizes) ? product.sizes : []).map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
 
-  const onWall = async (product, size) => {
+  // `bookedHub` comes from the tab's hub picker for a WALK candidate — right,
+  // because that list is built from that hub's own cells. For a CORRECTION of a
+  // row that already exists it must come from the ROW: the pair has not changed
+  // hubs, only the size on the record was wrong, and taking the tab's hub would
+  // re-book it on a guess — which can then have it closed by the wrong hub's
+  // sale and mis-points the slot for offShelf. (Adversarial review.)
+  const onWall = async (product, size, existingRow = null) => {
     setBusy(product.id); setNote(null);
     const res = await registerDisplayRow({
       rows, store, productId: product.id, productName: product.name || "",
-      size, bookedHub: hub, via: "wall_walk",
+      size, bookedHub: existingRow?.bookedHub || hub, via: "wall_walk",
     });
     setBusy(null); setActing(null);
     if (!res.ok) { setNote({ tone: "err", text: `Could not register ${product.name}: ${res.message}` }); return; }
@@ -279,7 +285,7 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
                     ? `The record says size ${formatSize(scanned.rows[0].size)}. Pick what is actually there — the old record is closed and the new one opened. No stock moves.`
                     : "Nothing is chosen for you — pick the size you are looking at."}
                   confirmLabel="Register"
-                  onPick={(sz) => onWall(scanned.product, sz)}
+                  onPick={(sz) => onWall(scanned.product, sz, scanned.rows[0] || null)}
                   onCancel={() => setActing(null)}
                 />
               ) : (
@@ -392,7 +398,7 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
                     title="Which size is actually on the wall?"
                     note={`The record says size ${g.rows.map((r) => formatSize(r.size)).join(", ")}. Pick what is there — the old record closes and the new one opens. No stock moves.`}
                     confirmLabel="Register"
-                    onPick={(sz) => onWall(g.product || { id: g.productId, name: g.productName }, sz)}
+                    onPick={(sz) => onWall(g.product || { id: g.productId, name: g.productName }, sz, g.rows[0] || null)}
                     onCancel={() => setActing(null)}
                   />
                 ) : (

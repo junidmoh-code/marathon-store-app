@@ -213,6 +213,16 @@ exports.closeDisplayRowOnSale = onValueCreated(
       // and can lag, and a wall walk inside that window would otherwise have
       // its brand-new row closed by an older sale. (CodeRabbit.)
       closes = decideCloses(byRow, sizeKey, qty, m.ts);
+      // WHY IT FOUND NOTHING MATTERS. "No display record for this size" is
+      // false when there WAS one and the age filter excluded it — and that
+      // sentence goes into the lease as the permanent answer to "why did this
+      // not close?". (Adversarial review.)
+      if (!closes.length && decideCloses(byRow, sizeKey, qty).length) {
+        const why = "the display record for this size was registered after this sale, so it cannot be what sold";
+        console.log(`closeDisplayRowOnSale: ${movementId} closed nothing — ${why}`);
+        await done([], why);
+        return;
+      }
     }
     // Nothing on the wall to close — the overwhelmingly common case: an
     // ordinary shelf sale of a size no display is registered at.
@@ -319,7 +329,13 @@ exports.closeDisplayRowOnSale = onValueCreated(
         return {
           ...(cur || {}), productId, productName: keep.productName || (cur && cur.productName) || "",
           size: keep.size, sizeKey: keep.sizeKey, bookedHub: keep.bookedHub || null,
-          source: "registration", at, by: `system:closeDisplayRowOnSale`, orderId: null, prevSize: null,
+          // THE SURVIVOR'S OWN PROVENANCE, not a blanket "registration". The
+          // client mirror was fixed to keep this and the trigger was not, so a
+          // till sale quietly rewrote which order put the surviving pair on the
+          // wall. (Adversarial review.)
+          source: keep.openedVia === "send" ? "display_refill" : "registration",
+          at, by: `system:closeDisplayRowOnSale`,
+          orderId: keep.requestOrderId || null, prevSize: null,
         };
       });
     }
