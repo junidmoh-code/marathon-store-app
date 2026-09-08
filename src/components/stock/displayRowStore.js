@@ -242,7 +242,21 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
       const keep = survivors[survivors.length - 1];
       res = await setDisplaySlot({
         store: row.store, productId: row.productId, productName: keep.productName || "",
-        size: String(keep.size), bookedHub: keep.bookedHub || null,
+        // `?? keep.sizeKey`, the SAME reason the trigger's mirror carries it and
+        // a worse failure on this side. `openRowsFor`/`rowIsOpen` require a good
+        // `sizeKey` and say NOTHING about `size`, so a hand-fixed row, an older
+        // shape or a partial write can be open, be the survivor, and carry no
+        // size. `String(undefined)` is the NON-EMPTY string "undefined", which
+        // setDisplaySlot happily accepts and encodes, writing
+        // `sizeKey: "undefined"` into the slot — while the ledger row still says
+        // "10". The mirror then represents no row at all, and every reader built
+        // on the slot (offShelf, the shop marker, the count card) reads a size
+        // that does not exist.
+        //
+        // The trigger's version of this bug THREW, which is loud. This one is
+        // silent, which is worse. sizeKey is present on an open row by
+        // definition, so it is the correct stand-in. (CodeRabbit.)
+        size: String(keep.size ?? keep.sizeKey), bookedHub: keep.bookedHub || null,
         source: keep.openedVia === "send" ? "display_refill" : "registration",
         orderId: keep.requestOrderId || null,
         at: when,
