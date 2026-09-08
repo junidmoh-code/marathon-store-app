@@ -36,7 +36,7 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
 import { displayUnitsByCell } from "./displayPairCore";
-import { promisedKey } from "./availabilityCore";
+import { promisedKey, cellAvailability, cellBlockInfo, allocateSneakerCart, resolveSneakerSourcing } from "./availabilityCore";
 
 const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
 
@@ -89,6 +89,81 @@ describe("every hub's walls are readable, and each map holds only its own", () =
   it("a hub with no walls answers empty, not undefined", () => {
     expect(displayUnitsByCell(SLOTS, "hubC")).toEqual({});
     expect(displayUnitsByCell(null, "hub2")).toEqual({});
+  });
+});
+
+// ─── THE WIDENED MARKER IS AS INERT AS THE NARROW ONE WAS ────────────────────
+//
+// #576 proved a HUB 1 marked size still selects, adds and steps. Widening the
+// glyph to hub2 and hub3 puts the same claim on two lanes it was never made
+// about, and "it is only a glyph" has to be shown there too rather than
+// assumed — a Trophy assistant losing a sale to a Trophy display is the same
+// lost sale, and until 2026-09-08 no Trophy size drew a glyph at all, so no
+// test in the tree had ever exercised one.
+describe("a HUB 2 marked size behaves exactly like an unmarked one", () => {
+  const SNEAKER = { id: "p1", category: "Footwear", productType: "sneaker" };
+  // Trophy's wall holds the one on display; Hub 2 holds the stock the size is
+  // actually served from. The glyph and the shelf are the same hub, which is
+  // the arrangement the split was built to produce.
+  const world = (qty) => ({
+    hub1: { cells: {}, promised: {}, ready: true },
+    hub2: { cells: { p1: { 9: { qty } } }, promised: {}, ready: true },
+  });
+
+  it("the glyph is really there — otherwise the rest of this block is vacuous", () => {
+    expect(mapFor("hub2")[promisedKey("p1", "9")].units).toBe(1);
+  });
+
+  // FOUR UNITS AT TROPHY, ONE ON TROPHY'S WALL: four available, not zero.
+  it("four in stock with one on Trophy's wall still offers four", () => {
+    const { hub, available } = resolveSneakerSourcing({
+      product: SNEAKER, taggedHub: "hub2", size: "9", hubData: world(4) });
+    expect(hub).toBe("hub2");
+    expect(available).toBe(4);
+  });
+
+  // THE HARDEST CASE ON THE WIDER LANE: the display pair is the only unit.
+  // A display is hub stock (#324); the tile does not get to refuse the sale.
+  it("one in stock and it IS the display — still sellable, and charged to Hub 2", () => {
+    const line = { product: SNEAKER, size: "9" };
+    const alloc = allocateSneakerCart({
+      lines: [line], hubData: world(1), taggedHubFor: () => "hub2" });
+    expect(alloc.hubOf.get(line)).toBe("hub2");
+    expect(alloc.overAllocated.has(promisedKey("p1", "9"))).toBe(false);
+    // Plain line: nothing on the marker's path stamps a pull flag, and a pull
+    // flag on a hub2 line would be a Hub 1 claim raised on the wrong lane.
+    expect(line.displayPairRequest).toBeUndefined();
+  });
+
+  // AT ZERO, IDENTICAL TO AN UNMARKED SIZE AT ZERO — the ✕ is authoritative and
+  // says nothing about a display, on this lane as on Hub 1's.
+  it("quantity 0 with a Trophy slot registered is out, exactly as with none", () => {
+    const marked = cellAvailability({ cells: { p1: { 9: { qty: 0 } } }, promised: {}, productId: "p1", size: "9" });
+    const plain  = cellAvailability({ cells: { p1: {} }, promised: {}, productId: "p1", size: "9" });
+    expect(marked).toBe(0);
+    expect(marked).toBe(plain);
+    const why = cellBlockInfo({ cells: { p1: { 9: { qty: 0 } } }, promised: {}, productId: "p1", size: "9" });
+    expect(JSON.stringify(why)).not.toMatch(/display/i);
+  });
+
+  // THE TILE DIFFERENTIAL, on Hub 2 this time: the same cell composed once with
+  // Trophy's slots and once with the slots node emptied must agree on
+  // everything that governs the tile, and differ only in the glyph.
+  it("the Hub 2 tile is identical with the slots and without them, bar the glyph", () => {
+    const tile = (qty, slotsNode) => {
+      const info = cellBlockInfo({ cells: { p1: { 9: { qty } } }, promised: {}, productId: "p1", size: "9" });
+      const mk = displayUnitsByCell(slotsNode, "hub2")[promisedKey("p1", "9")];
+      return { booked: info.booked, promised: info.promised, available: info.available,
+               out: info.available <= 0, glyph: info.available > 0 && !!mk };
+    };
+    for (const qty of [0, 1, 2, 4, 10]) {
+      const marked = tile(qty, SLOTS), plain = tile(qty, {});
+      for (const f of ["booked", "promised", "available", "out"]) {
+        expect(marked[f], `qty ${qty}: Trophy's slots changed ${f}`).toBe(plain[f]);
+      }
+      expect(plain.glyph).toBe(false);
+      expect(marked.glyph, `qty ${qty}: the glyph did not follow availability`).toBe(qty > 0);
+    }
   });
 });
 
