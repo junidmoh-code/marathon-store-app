@@ -77,9 +77,60 @@ describe("the excluded-location set is the same on both sides", () => {
     }
   });
 
-  it("is frozen — it is shared by reference across the reconciler and the backfill", () => {
-    expect(Object.isFrozen(ONLINE_EXCLUDED_LOCATIONS)).toBe(true);
-    expect(Object.isFrozen(cjsExcluded)).toBe(true);
+  it("refuses mutation — it is shared by reference across the reconciler and the backfill", () => {
+    // NOT Object.isFrozen. Freezing a Set seals its own properties and leaves
+    // its entries in internal slots, so add/delete/clear keep working while
+    // isFrozen answers true — an earlier version of this test asserted exactly
+    // that and would have passed while a caller quietly deleted Pine from the
+    // set and put 1,668 units back on the storefront. Assert the refusal.
+    for (const set of [ONLINE_EXCLUDED_LOCATIONS, cjsExcluded]) {
+      expect(() => set.delete("marathon-pine")).toThrow(/immutable/);
+      expect(() => set.add("hub1")).toThrow(/immutable/);
+      expect(() => set.clear()).toThrow(/immutable/);
+      expect(set.has("marathon-pine")).toBe(true);
+      expect(set.has("hub1")).toBe(false);
+    }
+  });
+});
+
+// ── ABSOLUTE ANSWERS, NOT ONLY AGREEMENT ────────────────────────────────────
+// Everything above asks whether the two implementations agree. Two copies that
+// drifted the SAME way agree perfectly and are both wrong — the differential
+// cannot see it, by construction. These fix the arithmetic to numbers a person
+// checked by hand, so a shared regression has something to fail against.
+describe("the number itself, checked by hand", () => {
+  const bothAgree = (tree, sizes) => {
+    const mine = availableUnits(forProduct(tree, "p1"), sizes);
+    const theirs = sumTotals(networkTotals(tree, "p1", sizes));
+    expect(mine).toBe(theirs);
+    return mine;
+  };
+
+  it("counts the trusted locations and only those", () => {
+    // 2 (PE) + 5 (hub2) + 1 (central) = 8 countable;
+    // 12 at Pine, 9 at Hub 3 and 99 in transit are real units that do not sell online.
+    const tree = {
+      "marathon-pe": { p1: { M: { qty: 2 } } },
+      hub2: { p1: { M: { qty: 5 } } },
+      central: { p1: { M: { qty: 1 } } },
+      "marathon-pine": { p1: { M: { qty: 12 } } },
+      hub3: { p1: { M: { qty: 9 } } },
+      in_transit: { p1: { M: { qty: 99 } } },
+    };
+    expect(bothAgree(tree, ["M"])).toBe(8);
+  });
+
+  it("a Pine-only product is exactly zero — the 43-product shape", () => {
+    const tree = { "marathon-pine": { p1: { "8": { qty: 3 }, "9": { qty: 4 } } } };
+    expect(bothAgree(tree, ["8", "9"])).toBe(0);
+  });
+
+  it("the baseline policy still counts Pine — proof the exclusion is what removed it", () => {
+    // Same tree, the pool passed explicitly. If this ever returned 3 as well,
+    // the zero above would be measuring something other than the exclusion.
+    const tree = { "marathon-pine": { p1: { M: { qty: 12 } } }, central: { p1: { M: { qty: 3 } } } };
+    expect(sumTotals(networkTotals(tree, "p1", ["M"], new Set(["in_transit"])))).toBe(15);
+    expect(sumTotals(networkTotals(tree, "p1", ["M"]))).toBe(3);
   });
 });
 

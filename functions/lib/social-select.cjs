@@ -83,11 +83,31 @@ const KIND_KEYS = POST_KINDS.map((k) => k.key);
 // to a page that says sold out — which is the exact class of bug the parity
 // test was written for, one location wider. Going quieter on 43 products is
 // the right side of that trade.
-const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
-const UNTRUSTED_LOCATIONS = new Set(["hub3", "marathon-pine"]);
-const ONLINE_EXCLUDED_LOCATIONS = Object.freeze(
-  new Set([...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS])
-);
+// Immutable FOR REAL. `Object.freeze(new Set([...]))` does not stop `.add()`,
+// `.delete()` or `.clear()` — a Set's entries live in internal slots, so
+// freezing seals its own properties and nothing else, while `Object.isFrozen`
+// still answers true. This set decides what a stranger can buy, so its
+// mutators refuse instead of pretending. (Mirror of sealedSet in
+// scripts/shopify/inventory.mjs, where the full reasoning lives.)
+function sealedSet(ids) {
+  const set = new Set(ids);
+  for (const method of ["add", "delete", "clear"]) {
+    Object.defineProperty(set, method, {
+      value: () => {
+        throw new TypeError(
+          `ONLINE_EXCLUDED_LOCATIONS is immutable — ${method}() would change what the shop sells`
+        );
+      },
+    });
+  }
+  return Object.freeze(set);
+}
+
+const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
+const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine"]);
+const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
+  ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
+]);
 
 // How long after a product appears in a post before it may appear in another.
 // Not a rule anybody asked for — a decision, made because a queue that

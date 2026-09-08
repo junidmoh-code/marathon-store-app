@@ -45,11 +45,31 @@
 // never marked and the storefront drifts silently; in the other, a marker is
 // written forever with nothing to do. The contract test in
 // scripts/shopify/inventorySync.test.mjs pins them by IMPORT.
-const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
-const UNTRUSTED_LOCATIONS = new Set(["hub3", "marathon-pine"]);
-const ONLINE_EXCLUDED_LOCATIONS = Object.freeze(
-  new Set([...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS])
-);
+// Immutable FOR REAL. `Object.freeze(new Set([...]))` does not stop `.add()`,
+// `.delete()` or `.clear()` — a Set's entries live in internal slots, so
+// freezing seals its own properties and nothing else, while `Object.isFrozen`
+// still answers true. This set decides what a stranger can buy, so its
+// mutators refuse instead of pretending. (Mirror of sealedSet in
+// scripts/shopify/inventory.mjs, where the full reasoning lives.)
+function sealedSet(ids) {
+  const set = new Set(ids);
+  for (const method of ["add", "delete", "clear"]) {
+    Object.defineProperty(set, method, {
+      value: () => {
+        throw new TypeError(
+          `ONLINE_EXCLUDED_LOCATIONS is immutable — ${method}() would change what the shop sells`
+        );
+      },
+    });
+  }
+  return Object.freeze(set);
+}
+
+const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
+const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine"]);
+const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
+  ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
+]);
 
 const DIRTY_PATH = "shopify_inventory_dirty";
 

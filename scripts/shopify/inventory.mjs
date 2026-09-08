@@ -31,9 +31,14 @@ import { stockSizeKey } from "../../src/utils/sizeKey.js";
 // that their numbers are no longer accurate enough to promise a stranger on
 // the internet. The owner's framing is the specification: "I'd rather a
 // product show as unavailable than sell something I can't fulfil." So a
-// location enters this set when its count stops being trustworthy and leaves
-// it when the count is trusted again — a one-line edit, measured before it is
-// made (scripts/shopify/census-online-locations.mjs).
+// A location enters this set when its count stops being trustworthy and leaves
+// it when the count is trusted again. That is NOT a one-line edit, and this
+// comment said it was: the list is mirrored into two Cloud Functions and named
+// by three test files, and the change needs a mini pull, three named function
+// deploys, a full inventory correction and a search-index rebuild. The whole
+// sequence is written down under "Trusting a location again" in
+// scripts/shopify/README.md; measure it first with
+// scripts/shopify/census-online-locations.mjs.
 //
 // Measured at the time of the decision, across 1,203 live products:
 //   marathon-pine  1,668 units on 268 live products (10.5% of the pool)
@@ -42,25 +47,63 @@ import { stockSizeKey } from "../../src/utils/sizeKey.js";
 // unavailable. Hub 3 alone takes NOTHING to zero; Pine is the whole cost.
 //
 // ONLINE_EXCLUDED_LOCATIONS is the union, and it is the only one anything
-// reads. Frozen because it is shared by reference with the reconciler, the
-// tracking backfill and (mirrored) the social selector: a line that mutated it
-// would change what the shop sells, globally and silently.
-const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
-const UNTRUSTED_LOCATIONS = new Set(["hub3", "marathon-pine"]);
-export const ONLINE_EXCLUDED_LOCATIONS = Object.freeze(
-  new Set([...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS])
-);
+// reads.
+//
+// ── IMMUTABLE FOR REAL, NOT BY Object.freeze ─────────────────────────────────
+// This set is shared BY REFERENCE with the reconciler, the tracking backfill,
+// the continuous sweep and (mirrored) two Cloud Functions. A line that mutated
+// it would change what the shop sells, globally and silently — so it must not
+// be mutable.
+//
+// `Object.freeze(new Set([...]))` DOES NOT DO THAT, and the first version of
+// this file claimed it did. Freezing seals a Set's own properties; the entries
+// live in internal slots, so `.add()`, `.delete()` and `.clear()` all still
+// work and `Object.isFrozen()` still answers true. A reviewer reproduced it:
+// deleting marathon-pine from the frozen set succeeded and the network total
+// went from 2 back to 14. The safeguard was decorative, and the test that
+// asserted `Object.isFrozen` certified the decoration.
+//
+// So the mutators are replaced with throwers. That is a real refusal — the
+// only kind worth writing next to a number that decides what a stranger can
+// buy.
+function sealedSet(ids) {
+  const set = new Set(ids);
+  for (const method of ["add", "delete", "clear"]) {
+    Object.defineProperty(set, method, {
+      value: () => {
+        throw new TypeError(
+          `ONLINE_EXCLUDED_LOCATIONS is immutable — ${method}() would change what the shop sells`
+        );
+      },
+    });
+  }
+  return Object.freeze(set);
+}
+
+export const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
+export const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine"]);
+export const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
+  ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
+]);
 
 // stockTree = the whole /stock value: { location: { productId: { sizeKey: cell } } }
 // where a cell is the movement-stamped object { qty, lastType, mv, … } the
 // applyMovement pipeline writes (a bare number is tolerated for old data).
 // → { [sizeKey]: networkQty } for this product's sizes (encoded keys).
 
-export function networkTotals(stockTree, productId, sizes) {
+// `excluded` is the pool to leave out, and it defaults to the one in force.
+// It is a PARAMETER rather than a hard reference for one reason: a tool that
+// has to compare policies — "what does the storefront show today, and what
+// would it show if Pine stopped counting?" — must be able to ask both
+// questions of the SAME arithmetic. Without it the census could only ever run
+// the current policy against itself and would report every change as costing
+// nothing, which is exactly the wrong answer to be confident about. Nothing in
+// the push path passes it; the default is the policy.
+export function networkTotals(stockTree, productId, sizes, excluded = ONLINE_EXCLUDED_LOCATIONS) {
   const totals = {};
   for (const size of sizes) totals[stockSizeKey(size)] = 0;
   for (const [loc, perProduct] of Object.entries(stockTree || {})) {
-    if (ONLINE_EXCLUDED_LOCATIONS.has(loc)) continue;
+    if (excluded.has(loc)) continue;
     const cells = perProduct?.[productId];
     if (!cells) continue;
     for (const [key, cell] of Object.entries(cells)) {
