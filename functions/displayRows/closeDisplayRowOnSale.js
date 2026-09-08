@@ -119,7 +119,17 @@ exports.closeDisplayRowOnSale = onValueCreated(
     if (!closes.length) return;
 
     // ── The lease. Claimed only once there is real work, and BEFORE the write.
-    const leaseRef = db.ref(`${META}/${store}/processed/${movementId}`);
+    //
+    // IT IS KEYED ON THE BUCKET THE MOVEMENT ITSELF NAMES, not on the store the
+    // inference resolved to. For a shop sale those are the same thing. For a
+    // HUB sale the store is decided from the ledger, and the ledger moves: a
+    // first delivery could resolve to Trophy and take Trophy's lease, and a
+    // redelivery minutes later — after a wall walk registered the same shoe at
+    // PE — could resolve to PE, find PE's lease absent, and close a SECOND row
+    // for one sale. Keying on the hub makes the second delivery find the lease
+    // it already took, whatever the ledger has done in between.
+    const leaseBucket = hit.store || hit.hub;
+    const leaseRef = db.ref(`${META}/${leaseBucket}/processed/${movementId}`);
     const nowMs = Date.now();
     const claim = await leaseRef.transaction((cur) => leaseDecision({ cur, nowMs }));
     if (!claim.committed) return;           // already done, or another execution holds it

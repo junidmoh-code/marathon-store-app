@@ -49,7 +49,10 @@ and a timeline.
   closedAt, closedBy, closedReason, closedVia, closedRef,
   events: { eventId: { at, what, by, detail } },
 }
-/settings/displayRows_meta/{store}/processed/{movementId} = { at, done, closed }
+/settings/displayRows_meta/{bucket}/processed/{movementId} = { at, done, closed }
+    // bucket = the shop for a shop-sourced sale, the HUB for a hub-sourced one
+    // — the movement names it, so a redelivery cannot take a second lease
+    // under a store the ledger has since changed its mind about.
 ```
 
 `closedReason` ∈ `replaced | sold | returned | corrected | cancelled`.
