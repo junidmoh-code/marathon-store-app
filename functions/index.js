@@ -4380,8 +4380,12 @@ async function loadSocialGenerationContext(db, { nowMs, style }) {
   // that does not fit the partial-read rule, and it is called out rather than
   // hidden.
   //
-  // ONLY the unsellable locations are dropped, and that list is
-  // UNSELLABLE_LOCATIONS — the same one the Shopify inventory push uses.
+  // ONLY the locations that do not count toward online availability are
+  // dropped, and that list is ONLINE_EXCLUDED_LOCATIONS — the same one the
+  // Shopify inventory push uses (in_transit, plus hub3 and marathon-pine
+  // whose counts are not trusted, owner decision 2026-09-08). Dropping them
+  // HERE rather than only inside availableUnits also saves the point reads:
+  // cells that could not change the answer are never fetched.
   //
   // An earlier version also dropped `active: false` locations to save reads.
   // That quietly re-opened the very divergence the stock-parity test exists
@@ -4393,7 +4397,7 @@ async function loadSocialGenerationContext(db, { nowMs, style }) {
   // hundred point reads is not worth a second source of truth.
   const locationsSnap = await db.ref("locations").once("value");
   const locations = Object.keys(locationsSnap.val() || {})
-    .filter((id) => !socialSelect.UNSELLABLE_LOCATIONS.has(id));
+    .filter((id) => !socialSelect.ONLINE_EXCLUDED_LOCATIONS.has(id));
   const products = {}, stockByPid = {};
   const READ_BATCH = 20;
   for (let i = 0; i < shortlist.length; i += READ_BATCH) {

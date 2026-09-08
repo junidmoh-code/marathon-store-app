@@ -19,11 +19,15 @@
 // module. Neither node:test nor the browser suite alone could compare them.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { networkTotals } from "../../../scripts/shopify/inventory.mjs";
+import { networkTotals, ONLINE_EXCLUDED_LOCATIONS } from "../../../scripts/shopify/inventory.mjs";
 import { stockSizeKey } from "../../utils/sizeKey";
 
 const require = createRequire(import.meta.url);
-const { availableUnits, stockSizeKey: cjsStockSizeKey } = require("../../../functions/lib/social-select.cjs");
+const {
+  availableUnits,
+  stockSizeKey: cjsStockSizeKey,
+  ONLINE_EXCLUDED_LOCATIONS: cjsExcluded,
+} = require("../../../functions/lib/social-select.cjs");
 
 // networkTotals takes the WHOLE /stock tree keyed by location → product →
 // cells; availableUnits takes one product's slice. Same data, one nesting level
@@ -43,6 +47,39 @@ describe("stockSizeKey — the CJS mirror equals the real one", () => {
   ];
   it.each(CASES.map((c) => [JSON.stringify(c), c]))("%s", (_label, size) => {
     expect(cjsStockSizeKey(size)).toEqual(stockSizeKey(size));
+  });
+});
+
+// ── THE SET ITSELF, NOT ONLY ITS EFFECT ─────────────────────────────────────
+// Comparing sums catches a divergence only when the fixture happens to put
+// stock in the location that differs. That is luck, and the fuzz's location
+// list is a hand-written constant that has already been wrong once (it said
+// "pine" where the real id is "marathon-pine", so Pine was never exercised at
+// all). Comparing the SETS is not luck: adding a location to one copy and
+// forgetting the other is a red test on the next run, whatever the fixtures
+// happen to contain.
+describe("the excluded-location set is the same on both sides", () => {
+  it("ESM and CJS list identical location ids", () => {
+    expect([...cjsExcluded].sort()).toEqual([...ONLINE_EXCLUDED_LOCATIONS].sort());
+  });
+
+  it("holds the locations the owner decided must not feed the storefront", () => {
+    // Named explicitly so REMOVING one is a deliberate act with a test to
+    // change, not a silent widening of what the shop offers strangers.
+    for (const id of ["in_transit", "hub3", "marathon-pine"]) {
+      expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `${id} must not feed the storefront`).toBe(true);
+    }
+  });
+
+  it("does not exclude a location that is trusted", () => {
+    for (const id of ["central", "hub1", "hub2", "marathon-pe", "trophy"]) {
+      expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `${id} must still count`).toBe(false);
+    }
+  });
+
+  it("is frozen — it is shared by reference across the reconciler and the backfill", () => {
+    expect(Object.isFrozen(ONLINE_EXCLUDED_LOCATIONS)).toBe(true);
+    expect(Object.isFrozen(cjsExcluded)).toBe(true);
   });
 });
 
@@ -77,6 +114,29 @@ describe("availableUnits agrees with networkTotals", () => {
       name: "the phantom Free Size cell",
       sizes: ["Free Size"],
       tree: { "marathon-pe": { p1: { _: { qty: 0 }, Free_Size: { qty: 3 } } } },
+    },
+    {
+      // The untrusted pair. Units are REAL and still in /stock; they simply
+      // stop being offered online. Both copies must agree on that or social
+      // links a stranger to a sold-out page.
+      name: "Pine's units do not count toward what the web is offered",
+      sizes: ["M"],
+      tree: { "marathon-pine": { p1: { M: { qty: 12 } } }, hub2: { p1: { M: { qty: 2 } } } },
+    },
+    {
+      name: "Hub 3's units do not count either",
+      sizes: ["M"],
+      tree: { hub3: { p1: { M: { qty: 9 } } }, central: { p1: { M: { qty: 1 } } } },
+    },
+    {
+      // The 43-product shape: everything the product has is untrusted, so the
+      // storefront must say zero rather than promise a pair nobody trusts.
+      name: "a product held ONLY at Pine and Hub 3 is unavailable, not oversold",
+      sizes: ["8", "9"],
+      tree: {
+        "marathon-pine": { p1: { "8": { qty: 3 } } },
+        hub3: { p1: { "9": { qty: 4 } } },
+      },
     },
     {
       name: "a size removed from the record while stock remains on the cell",
@@ -132,7 +192,14 @@ describe("availableUnits agrees with networkTotals", () => {
 // that two reviews missed.
 describe("differential fuzz", () => {
   const SIZES = ["S", "M", "L", "XL", "8", "5.5", "Free Size", "one size", "10.5"];
-  const LOCS = ["marathon-pe", "pine", "trophy", "hub1", "hub2", "central", "in_transit"];
+  // REAL /locations ids. This list said "pine" until 2026-09-08 — not a
+  // registered id, so the fuzz had never once put stock in Pine and could not
+  // have caught a divergence there. Every id below is one the census read back
+  // from the live /locations node.
+  const LOCS = [
+    "marathon-pe", "marathon-pine", "trophy", "hub1", "hub2", "hub3",
+    "central", "studio", "base", "in_transit",
+  ];
 
   // Deterministic PRNG so a failure is reproducible from the seed alone.
   let seed = 20260822;

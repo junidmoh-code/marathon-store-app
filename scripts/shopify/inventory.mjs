@@ -1,29 +1,66 @@
 // ── Inventory for the Shopify push — ONE location, ONE sellable pool ─────────
 // Shopify has exactly ONE location, deliberately (owner decision, slice 1):
-// inventory is the NETWORK total available per size — every /stock location
-// summed, negative cells clamped to 0 (the app's own convention: negatives
-// are bookkeeping artefacts, never sellable). Never create locations
-// mirroring PE / Pine / Trophy / the hubs.
+// inventory is the network total available per size — every /stock location
+// that COUNTS TOWARD ONLINE AVAILABILITY summed, negative cells clamped to 0
+// (the app's own convention: negatives are bookkeeping artefacts, never
+// sellable). Never create locations mirroring PE / Pine / Trophy / the hubs.
+//
+// "Every location" was literally true until 2026-09-08; it is not any more.
+// ONLINE_EXCLUDED_LOCATIONS below is the pool, and the block comment on it is
+// the reason. The one-Shopify-location decision is UNCHANGED — the shop still
+// has exactly one pool; what narrowed is which of our shelves feed it.
 //
 // networkTotals is pure (unit-tested against a /stock-shaped tree);
 // requireSingleLocation and setAvailable do the I/O.
 import { stockSizeKey } from "../../src/utils/sizeKey.js";
 
+// ── WHICH LOCATIONS MAY BE SOLD TO A WEB CUSTOMER ────────────────────────────
+// Two separate reasons a location's units must not reach the storefront. They
+// are kept as two sets because they are two different facts about the world,
+// and one of them will change back one day while the other never will.
+//
+// UNSELLABLE — the stock is not sellable BY NATURE. /stock/in_transit holds
+// boxes that left their source and have not landed (count-integrity holds
+// included); src/components/stock/locations.js marks it kind "transit",
+// sellable false. Pushing it as available would let the storefront sell stock
+// nobody can pick. This set is a property of the system and is not a policy.
+//
+// UNTRUSTED — the stock may well be sellable, but the COUNT is not believed.
+// Hub 3 and Pine keep their own /stock cells, get refilled, get counted and
+// get reported exactly as before; what changed (owner decision, 2026-09-08) is
+// that their numbers are no longer accurate enough to promise a stranger on
+// the internet. The owner's framing is the specification: "I'd rather a
+// product show as unavailable than sell something I can't fulfil." So a
+// location enters this set when its count stops being trustworthy and leaves
+// it when the count is trusted again — a one-line edit, measured before it is
+// made (scripts/shopify/census-online-locations.mjs).
+//
+// Measured at the time of the decision, across 1,203 live products:
+//   marathon-pine  1,668 units on 268 live products (10.5% of the pool)
+//   hub3               4 units on   3 live products ( 0.0%)
+// and 43 live products — 3.6% of the live catalogue — fall to zero and go
+// unavailable. Hub 3 alone takes NOTHING to zero; Pine is the whole cost.
+//
+// ONLINE_EXCLUDED_LOCATIONS is the union, and it is the only one anything
+// reads. Frozen because it is shared by reference with the reconciler, the
+// tracking backfill and (mirrored) the social selector: a line that mutated it
+// would change what the shop sells, globally and silently.
+const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
+const UNTRUSTED_LOCATIONS = new Set(["hub3", "marathon-pine"]);
+export const ONLINE_EXCLUDED_LOCATIONS = Object.freeze(
+  new Set([...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS])
+);
+
 // stockTree = the whole /stock value: { location: { productId: { sizeKey: cell } } }
 // where a cell is the movement-stamped object { qty, lastType, mv, … } the
 // applyMovement pipeline writes (a bare number is tolerated for old data).
 // → { [sizeKey]: networkQty } for this product's sizes (encoded keys).
-// stock/in_transit is NOT sellable (src/components/stock/locations.js marks it
-// kind "transit", sellable false — boxes that left their source but haven't
-// landed, incl. count-integrity holds). Pushing it as available would let the
-// storefront sell stock nobody can pick.
-const UNSELLABLE_LOCATIONS = new Set(["in_transit"]);
 
 export function networkTotals(stockTree, productId, sizes) {
   const totals = {};
   for (const size of sizes) totals[stockSizeKey(size)] = 0;
   for (const [loc, perProduct] of Object.entries(stockTree || {})) {
-    if (UNSELLABLE_LOCATIONS.has(loc)) continue;
+    if (ONLINE_EXCLUDED_LOCATIONS.has(loc)) continue;
     const cells = perProduct?.[productId];
     if (!cells) continue;
     for (const [key, cell] of Object.entries(cells)) {
