@@ -20,12 +20,13 @@
 //
 //   node scripts/cardrecon/retry-intake-message.mjs <intakeId|messageKey>
 //   node scripts/cardrecon/retry-intake-message.mjs <intakeId|messageKey> --execute
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { ImapFlow } from "imapflow";
 import { parseEnvText } from "./intakeCore.mjs";
+import { envelopeCandidateKeys } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -52,6 +53,30 @@ if (!user || !pass) {
 
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: DATABASE_URL });
 const db = admin.database();
+
+// ─── THE LOCAL PROCESSED CACHE MUST FORGET THE MESSAGE TOO ───────────────────
+// The poller keeps logs/card-recon-processed.json: keys the claim ledger has
+// confirmed "done", plus a per-IMAP-uid marker, so a tick never re-asks RTDB
+// about the same fortnight of mail. Clearing the claim row alone is therefore
+// NOT enough — the next tick sees the uid marker, skips the message, and says
+// "nothing unprocessed" for ever. (Found the hard way on the Absa re-run of
+// 2026-09-08: the retry ran clean and the poller ignored the mail until the
+// cache file was deleted by hand.) Evict every key this message could sit
+// under: its candidate ledger keys and its uid marker(s).
+function evictFromProcessedCache({ repo, messageId, uidValidity, uids }) {
+  const file = join(repo, "logs", "card-recon-processed.json");
+  if (!existsSync(file)) return 0;
+  let entries;
+  try { entries = JSON.parse(readFileSync(file, "utf8")) || {}; } catch { return 0; }
+  const doomed = new Set([
+    ...(envelopeCandidateKeys({ messageId }) ?? []),
+    ...uids.map((uid) => `u:${String(uidValidity ?? "")}:${uid}`),
+  ]);
+  let evicted = 0;
+  for (const k of doomed) if (k in entries) { delete entries[k]; evicted++; }
+  if (evicted) writeFileSync(file, JSON.stringify(entries));
+  return evicted;
+}
 
 // The row, by push id or by message key — whichever the person had to hand.
 let id = target, record = (await db.ref(`${INTAKE_PATH}/${target}`).get()).val();
@@ -94,20 +119,26 @@ if (!EXECUTE) {
 const client = new ImapFlow({ host: "imap.gmail.com", port: 993, secure: true, auth: { user, pass }, logger: false });
 await client.connect();
 let unflagged = 0;
+let uidValidity = null;
+const seenUids = [];
 try {
   const lock = await client.getMailboxLock(String(env.CARD_RECON_IMAP_MAILBOX || "INBOX").trim());
   try {
+    uidValidity = client.mailbox?.uidValidity ?? null;
     const uids = await client.search({ header: { "message-id": record.messageId } }, { uid: true });
     if (!uids?.length) throw new Error(`no message with that Message-ID is in the mailbox any more`);
     for (const uid of uids) {
       await client.messageFlagsRemove(String(uid), ["\\Seen"], { uid: true });
       unflagged++;
+      seenUids.push(uid);
     }
   } finally { lock.release(); }
 } finally {
   try { await client.logout(); } catch { /* going anyway */ }
 }
 console.log(`marked ${unflagged} message(s) unread`);
+const evicted = evictFromProcessedCache({ repo: REPO, messageId: record.messageId, uidValidity, uids: seenUids });
+console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted (the poller would otherwise keep skipping this message)`);
 
 await db.ref(`${SEEN_PATH}/${record.messageKey}`).remove();
 console.log("claim cleared");
