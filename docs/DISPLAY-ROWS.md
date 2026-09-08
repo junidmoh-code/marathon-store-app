@@ -60,6 +60,40 @@ and a timeline.
 replayed transition rewrites the same timeline entry instead of appending it
 twice.
 
+## Two copies of one rule, and the test that IS the contract
+
+`functions/` cannot import from `src/`, so three rules exist twice: the size-key
+encoder, the close decision, and — since 2026-09-08 — the **order the open rows
+of one wall are read in**, which decides which surviving row the slot mirrors.
+
+`displayRowCore.openRowsFor` (client) and `displayRows/lib.cjs openRowsInOrder`
+(server) agree **because a test says so, not because there is one of them.**
+That test is `src/components/stock/displayRowFuzz.test.js` — on the src side,
+because `src/` is ESM with extensionless specifiers that `require()` cannot
+resolve from CJS, so the bridge can only be built from that direction.
+
+**If you change either side, that file is what tells you that you broke it.**
+
+It is worth knowing how the pair drifted, because both times it looked fixed:
+
+1. the trigger sorted in RTDB **key order** while the client sorted on
+   `openedAt`. `seed…` ids sort after `r…`, so a seeded wall and a sent one
+   disagreed outright.
+2. the trigger then gained the `openedAt` sort *and* a `rowId` tiebreak — and
+   still disagreed, because it read `rowId` as a **stored field** (`Object.values`
+   discards the keys) while `openRowsFor` maps `Object.entries` and spreads
+   `rowId` **last**, deliberately overriding the field with the **key**.
+
+The key IS the row's identity: it is the path the row lives at. The field is a
+convenience copy that nothing enforces, that no close repairs (`closeFields`
+never rewrites it), and that a hand-fix or a path migration can leave wrong
+permanently.
+
+Neither divergence was visible to either suite, because every fixture in both
+wrote a row whose `rowId` field equalled its key. The differential's worlds are
+chosen as **only the shapes that can differ** — field disagreeing with key, no
+field at all, seed-vs-send ids at one instant — for exactly that reason.
+
 ## The slot is a mirror, not a replacement
 
 `/settings/displaySlots` stays exactly as it is and keeps every reader:
