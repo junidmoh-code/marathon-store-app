@@ -27,9 +27,9 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "module";
 import {
-  sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowPath, allRows, rowIsOpen,
+  sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowPath, allRows, rowIsOpen, rowSizeText,
 } from "./displayRowCore";
-import { stockSizeKey } from "../../utils/sizeKey";
+import { stockSizeKey, encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 
 const require_ = createRequire(import.meta.url);
 const srv = require_("../../../functions/displayRows/lib.cjs");
@@ -312,5 +312,31 @@ describe("openRowsFor and the server's openRowsInOrder are the same ordering", (
     // make r001 survive. The two answers are different, which is what makes
     // this world worth having.
     expect(srv.openRowsInOrder(byRow).map((r) => r.rowId)).toEqual(["r001", "seedZ"]);
+  });
+});
+
+// The DECODER is duplicated the same way the encoder is, and for the same
+// reason, so it gets the same differential. A drift here writes a machine key
+// into a human field on one side only. (Adversarial review of PR #585.)
+describe("decodeSizeKey and rowSizeText agree across the two copies", () => {
+  const CORPUS = ["9", "9.5", "9_5", "10", "M", "XL", "_", "ONE_SIZE", "4XL", "", "5_5_5", "0_0"];
+
+  it("the decoders agree on every size in the shared corpus", () => {
+    for (const s of CORPUS) expect(srv.decodeSizeKey(s), s).toBe(decodeSizeKey(s));
+  });
+
+  it("decode(encode(x)) round-trips on both sides for realistic sizes", () => {
+    for (const s of ["9", "9.5", "10.5", "M", "XL", "4XL"]) {
+      expect(srv.decodeSizeKey(srv.encodeSizeKey(s)), s).toBe(s);
+      expect(decodeSizeKey(encodeSizeKey(s)), s).toBe(s);
+    }
+  });
+
+  it("rowSizeText is the same answer on both sides", () => {
+    const rows = [
+      { size: "9.5", sizeKey: "9_5" }, { sizeKey: "9_5" }, { sizeKey: "M" },
+      { sizeKey: "_" }, { sizeKey: "ONE_SIZE" }, { size: "", sizeKey: "9_5" }, {},
+    ];
+    for (const r of rows) expect(srv.rowSizeText(r), JSON.stringify(r)).toBe(rowSizeText(r));
   });
 });

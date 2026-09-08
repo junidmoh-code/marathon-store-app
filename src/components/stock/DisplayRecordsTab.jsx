@@ -41,7 +41,7 @@ import { removeDisplayFact, recordDisplayFact } from "./displayRegistrationStore
 import { useDisplaySlots, useDisplayRegister } from "./useStock";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
-import { decodeSizeKey } from "../../utils/sizeKey";
+import { rowSizeText } from "./displayRowCore";
 import { CARD, BORDER, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, FONT, bGray, bRed } from "./ui";
 
 const HUBS = ["hub1", "hub2"];
@@ -55,7 +55,7 @@ const CLASS_META = {
   matched:  { title: "Confirmed", tone: GREEN, blurb: "A shop floor shows this product at this size. These records are right and are left alone." },
 };
 
-const sizeText = (row) => formatSize(row.size ?? decodeSizeKey(row.sizeKey) ?? row.sizeKey);
+const sizeText = (row) => formatSize(rowSizeText(row));
 
 function Evidence({ row }) {
   if (!row.evidence.length) return null;
@@ -269,7 +269,7 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
               <div style={{ flex: "1 1 240px", minWidth: 0 }}>
                 <div style={{ fontWeight: 700, fontSize: 14, color: "#fff" }}>{row.productName}</div>
                 <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.6)", marginTop: 2 }}>
-                  Size <b style={{ color: "#fff" }}>{formatSize(row.size ?? row.sizeKey)}</b>
+                  Size <b style={{ color: "#fff" }}>{formatSize(rowSizeText(row))}</b>
                   {` · on the floor at ${labelFor(row.store)} · booked at ${labelFor(row.bookedHub)}`}
                   {row.at ? ` · ${String(row.at).slice(0, 10)}` : ""}
                 </div>

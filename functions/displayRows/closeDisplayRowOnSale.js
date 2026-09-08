@@ -56,7 +56,7 @@ const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
   classifyMovement, decideCloses, claimClose, resolveHubSale, hubSaleTooOld, splitByHub,
-  leaseDecision, rowIsOpen, ageRefusalReason, openRowsInOrder, DISPLAY_STORES,
+  leaseDecision, rowIsOpen, ageRefusalReason, openRowsInOrder, rowSizeText, DISPLAY_STORES,
 } = require("./lib.cjs");
 
 if (!admin.apps.length) {
@@ -386,9 +386,12 @@ exports.closeDisplayRowOnSale = onValueCreated(
           // aborts on the fresh lease and the slot mirror is never written at
           // all: rows closed, slot still claiming a pair that has gone, and no
           // retry that can fix it. sizeKey is always present on an open row by
-          // definition, so it is the correct stand-in.
-          // (Peer review, marathon-store-app-display-f8.)
-          size: keep.size ?? keep.sizeKey, sizeKey: keep.sizeKey, bookedHub: keep.bookedHub || null,
+          // definition, so it is the correct stand-in — DECODED, because the
+          // raw key would write "9_5" into the slot's human `size` field and
+          // every screen showing a slot size would read it that way from then
+          // on. (Peer review, marathon-store-app-display-f8; the decode from
+          // the adversarial review of PR #585.)
+          size: rowSizeText(keep), sizeKey: keep.sizeKey, bookedHub: keep.bookedHub || null,
           // THE SURVIVOR'S OWN PROVENANCE, not a blanket "registration". The
           // client mirror was fixed to keep this and the trigger was not, so a
           // till sale quietly rewrote which order put the surviving pair on the

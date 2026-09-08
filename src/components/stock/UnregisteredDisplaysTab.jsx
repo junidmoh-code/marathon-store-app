@@ -39,7 +39,7 @@
 // HUB 1 AND HUB 2 ONLY, per GATED_SNEAKER_HUBS.
 
 import React, { useMemo, useState } from "react";
-import { unregisteredDisplayCandidates, filterCandidates, brandsOf, openRowsFor, registeredDisplays } from "./displayRowCore";
+import { unregisteredDisplayCandidates, filterCandidates, brandsOf, openRowsFor, registeredDisplays, rowSizeText } from "./displayRowCore";
 import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
 import { raiseDisplayRequest } from "./displayRequestStore";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
@@ -197,7 +197,7 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
     if (!res.ok) { setNote({ tone: "err", text: `Could not close that record: ${res.message}` }); return; }
     setScanned((v) => (v ? { ...v, rows: v.rows.filter((r) => r.rowId !== row.rowId) } : v));
     setNote({ tone: res.warning ? "err" : "ok",
-              text: res.warning || `Closed the size ${formatSize(row.size)} record at ${labelFor(store)}. No stock moved.` });
+              text: res.warning || `Closed the size ${formatSize(rowSizeText(row))} record at ${labelFor(store)}. No stock moved.` });
   };
 
   // ── SCAN TO CHECK ─────────────────────────────────────────────────────────
@@ -408,7 +408,7 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
                     sizes={sizesOf(g.product)}
                     busy={busy === g.productId}
                     title="Which size is actually on the wall?"
-                    note={`The record says size ${g.rows.map((r) => formatSize(r.size)).join(", ")}. Pick what is there — the old record closes and the new one opens. No stock moves.`}
+                    note={`The record says size ${g.rows.map((r) => formatSize(rowSizeText(r))).join(", ")}. Pick what is there — the old record closes and the new one opens. No stock moves.`}
                     confirmLabel="Register"
                     onPick={(sz) => onWall(g.product || { id: g.productId, name: g.productName }, sz, g.rows[0] || null)}
                     onCancel={() => setActing(null)}

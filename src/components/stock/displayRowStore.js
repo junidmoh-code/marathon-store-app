@@ -33,7 +33,7 @@ import { ref, get, update } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowIso } from "../../utils/serverTime";
 import {
-  DISPLAY_ROWS_ROOT, storeRowsPath, sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowSegment,
+  DISPLAY_ROWS_ROOT, storeRowsPath, sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowSegment, rowSizeText,
 } from "./displayRowCore";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot } from "./displaySlots";
@@ -242,7 +242,8 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
       const keep = survivors[survivors.length - 1];
       res = await setDisplaySlot({
         store: row.store, productId: row.productId, productName: keep.productName || "",
-        // `?? keep.sizeKey`, the SAME reason the trigger's mirror carries it and
+        // `rowSizeText`, and it decodes — the SAME reason the trigger's mirror
+        // carries a fallback, and
         // a worse failure on this side. `openRowsFor`/`rowIsOpen` require a good
         // `sizeKey` and say NOTHING about `size`, so a hand-fixed row, an older
         // shape or a partial write can be open, be the survivor, and carry no
@@ -256,7 +257,14 @@ export async function closeDisplayRow({ rows, row, reason, via = "manual", detai
         // The trigger's version of this bug THREW, which is loud. This one is
         // silent, which is worse. sizeKey is present on an open row by
         // definition, so it is the correct stand-in. (CodeRabbit.)
-        size: String(keep.size ?? keep.sizeKey), bookedHub: keep.bookedHub || null,
+        //
+        // AND IT MUST BE DECODED FIRST. A bare `?? keep.sizeKey` writes the
+        // RTDB-safe key into the slot's HUMAN `size` field, so a 9.5 display
+        // becomes a slot reading "9_5" — permanently, and on every screen that
+        // shows a slot size. Swapping the word "undefined" for the string "9_5"
+        // is a better bug, not a fixed one.
+        // (Adversarial review of PR #585.)
+        size: String(rowSizeText(keep)), bookedHub: keep.bookedHub || null,
         source: keep.openedVia === "send" ? "display_refill" : "registration",
         orderId: keep.requestOrderId || null,
         at: when,

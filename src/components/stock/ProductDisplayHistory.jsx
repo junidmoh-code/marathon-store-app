@@ -43,7 +43,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { get, ref } from "firebase/database";
 import { database } from "../../firebase";
-import { allRows, rowIsOpen, rowSegment, storeRowsPath, OPEN_VIA_TEXT, CLOSE_REASON_TEXT } from "./displayRowCore";
+import { allRows, rowIsOpen, rowSegment, storeRowsPath, OPEN_VIA_TEXT, CLOSE_REASON_TEXT, rowSizeText } from "./displayRowCore";
 import { RowHistory } from "./displayRowUi";
 import { DISPLAY_STORES } from "./hubCleanupCore";
 import { labelFor } from "./locations";
@@ -125,7 +125,7 @@ export default function ProductDisplayHistory({ productId, registry }) {
               <div key={`${r.store}/${r.rowId}`}
                    style={{ border: BORDER, borderRadius: 12, padding: 11, background: "rgba(255,255,255,.02)" }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: open ? GREEN : GRAY }}>
-                  {open ? "On display now" : "Closed"} · {labelFor(r.store, registry)} · size {formatSize(r.size ?? r.sizeKey)}
+                  {open ? "On display now" : "Closed"} · {labelFor(r.store, registry)} · size {formatSize(rowSizeText(r))}
                   {!open && r.closedReason ? ` · ${CLOSE_REASON_TEXT[r.closedReason] || r.closedReason}` : ""}
                 </div>
                 <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.5)", marginTop: 2 }}>

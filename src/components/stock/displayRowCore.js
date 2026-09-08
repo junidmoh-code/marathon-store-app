@@ -65,7 +65,7 @@
 // thing that hands one to RTDB. That is what makes "ONE atomic write" a
 // testable claim rather than a promise in a comment.
 
-import { stockSizeKey } from "../../utils/sizeKey";
+import { stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 
 export const DISPLAY_ROWS_ROOT = "settings/displayRows";
 /** Where the sale-close function parks its idempotency leases. */
@@ -528,6 +528,28 @@ export function openRowPlan({ rows, store, productId, productName = "", size, bo
   }
   return plan;
 }
+
+/**
+ * THE SIZE A ROW SHOWS A PERSON — one helper, because there are eight sites.
+ *
+ * A row carries `size` (human: "9.5") and `sizeKey` (RTDB-safe: "9_5"). Falling
+ * back to `sizeKey` when `size` is missing — which is a REACHABLE state, since
+ * `rowIsOpen` requires a good sizeKey and says nothing about size — swaps the
+ * literal word "undefined" for the literal string "9_5". Better, and still not
+ * a size anybody wrote on a box.
+ *
+ * `decodeSizeKey` is the missing step, and the correct pattern already existed
+ * in DisplayRecordsTab while seven other sites did the half-fix. The decode is
+ * digit_digit → digit.digit only, so "M", "XL" and the "_" sentinel pass
+ * through untouched.
+ *
+ * The all-underscore sentinel cannot reach a display surface — `rowIsOpen`
+ * excludes it and every list here is filtered through that — but the fallback
+ * is written to survive it anyway rather than rely on a guarantee made two
+ * modules away. (Adversarial review of PR #585.)
+ */
+export const rowSizeText = (row) =>
+  row?.size ?? (typeof row?.sizeKey === "string" ? decodeSizeKey(row.sizeKey) : row?.sizeKey);
 
 /** The one sentence every close surface prints. Clause 4's "say so in the UI",
  *  in one place so three screens cannot drift into three different promises. */

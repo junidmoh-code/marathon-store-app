@@ -38,7 +38,7 @@
 // silently showing a shorter list.
 
 import React, { useMemo, useState } from "react";
-import { duplicateDisplayGroups, duplicateRowCount } from "./displayRowCore";
+import { duplicateDisplayGroups, duplicateRowCount, rowSizeText } from "./displayRowCore";
 import { closeDisplayRow, registerDisplayRow } from "./displayRowStore";
 import { useDisplayRowsState } from "./useStock";
 import { GATED_SNEAKER_HUBS } from "./availabilityCore";
@@ -80,7 +80,7 @@ export default function DuplicateDisplaysTab({ products = [], isAdmin = false })
     setBusy(null); setConfirm(null);
     if (!res.ok) { setNote({ tone: "err", text: `Could not close that record: ${res.message}` }); return; }
     if (res.warning) setNote({ tone: "err", text: res.warning });
-    else setNote({ tone: "ok", text: `Closed the size ${formatSize(row.size)} record for ${group.productName} at ${labelFor(row.store)}. No stock moved.` });
+    else setNote({ tone: "ok", text: `Closed the size ${formatSize(rowSizeText(row))} record for ${group.productName} at ${labelFor(row.store)}. No stock moved.` });
   };
 
   // THE HUB THE NEW ROW IS BOOKED AT, when the group agrees on one.
