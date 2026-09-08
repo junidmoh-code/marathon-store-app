@@ -120,11 +120,23 @@ export default function UnregisteredDisplaysTab({ products = [], orders = [], or
   // hubs, only the size on the record was wrong, and taking the tab's hub would
   // re-book it on a guess — which can then have it closed by the wrong hub's
   // sale and mis-points the slot for offShelf. (Adversarial review.)
+  //
+  // AND A ROW THAT NAMES NO HUB STILL NAMES NO HUB. `existingRow?.bookedHub ||
+  // hub` fell through to the tab's hub whenever the row's was null — which is a
+  // real, anticipated state (displayRecordCleanup's `unattributed` bucket) and
+  // not an absent one. So the correction re-booked a hubless row onto whichever
+  // hub the picker happened to be showing: the exact guess the paragraph above
+  // forbids, made by the operator changing a SIZE. A hubless row is a supported
+  // shape end to end (openRowPlan writes `bookedHub || null`; splitByHub lets
+  // one block a hub sale and never be closed by it), so carrying the null
+  // through is both truthful and safe. The walk case is unchanged — its hub is
+  // known, because the candidate came off that hub's own cells.
+  // (Senior-architect review.)
   const onWall = async (product, size, existingRow = null) => {
     setBusy(product.id); setNote(null);
     const res = await registerDisplayRow({
       rows, store, productId: product.id, productName: product.name || "",
-      size, bookedHub: existingRow?.bookedHub || hub, via: "wall_walk",
+      size, bookedHub: existingRow ? (existingRow.bookedHub ?? null) : hub, via: "wall_walk",
     });
     setBusy(null); setActing(null);
     if (!res.ok) { setNote({ tone: "err", text: `Could not register ${product.name}: ${res.message}` }); return; }

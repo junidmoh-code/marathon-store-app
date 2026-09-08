@@ -10007,6 +10007,25 @@ function AssistantView({ products, onExit, orders = [] }) {
       // afterwards, so nobody is left wondering.
       const raisedHere = new Set();
       const skippedRequests = [];
+      // ── WHY THIS GUARD IS NOT BLIND, AND WHAT WOULD MAKE IT SO ────────────
+      // /orders is store-scoped at the rule layer (useOrders(myShop)), so a
+      // guard that reads it can only fence a store the feed can SEE. The wall
+      // walk hits this and refuses (UnregisteredDisplaysTab's `canRequest`).
+      // Here it cannot arise, for two reasons that are worth naming because
+      // both are load-bearing and neither is local to this line:
+      //
+      //   • `availableShops` is CLAMPED to `myShop` when there is one (8878),
+      //     so a scoped user's `effectiveShop` IS the feed's scope; an unscoped
+      //     user (super-admin, warehouse) has myShop null and sees every order.
+      //     Either way the feed covers the store this guard asks about.
+      //   • the other branch — `displayPairStore`, a CROSS-store target — has
+      //     had no minter on this screen since #576 deleted the divert.
+      //
+      // If a display-pull minter ever comes back (the display source-of-truth
+      // job is expected to re-attach one), that second reason goes with it and
+      // this guard starts passing silently on a wall it cannot read. Pinned by
+      // displaySizeNeverPreselected.test.js so the reintroduction is a red test
+      // rather than two pairs walked to one wall. (Spec-conformance review.)
       const alreadyRequested = (item) => {
         if (!item.requestDisplayPartner) return false;
         const store = (item.displayPairRequest === true && item.displayPairStore) || effectiveShop;
@@ -11422,6 +11441,21 @@ function WarehouseView({ products = [], orders, onExit }) {
   // fresh stock landing, updates "Stock has arrived" without a tab remount —
   // and without probing on every /orders stream delta.
   const reviveTick = Math.floor(nowTick / (5 * 60 * 1000));
+  // Which depleted cards clause 1 will not let back into the due list — see the
+  // paragraph inside the probe. Derived here, and reduced to a STABLE STRING
+  // KEY for the probe's dep list, because the probe deliberately does not run
+  // on every /orders delta (it does single-cell reads) and `orders` as a dep
+  // would make it do exactly that.
+  const revivalBlockedIds = useMemo(() => {
+    const out = {};
+    for (const o of depletedCards) {
+      const reqStore = requestStoreFor(o);
+      if (!reqStore || !o.productId) continue;
+      if (hasOpenDisplayRequest(orders, { store: reqStore, productId: o.productId })) out[o.id] = true;
+    }
+    return out;
+  }, [depletedCards, orders]);
+  const revivalBlockedKey = Object.keys(revivalBlockedIds).sort().join(",");
   const [revivedIds, setRevivedIds] = useState({});
   useEffect(() => {
     if (!depletedIdsKey) { setRevivedIds({}); return undefined; }
@@ -11431,6 +11465,22 @@ function WarehouseView({ products = [], orders, onExit }) {
       for (const o of depletedCards) {
         const size = o.displayRefillSize || o.sentSize || o.size;
         if (!o.productId || !size) continue;
+        // ── CLAUSE 1 REACHES THE REVIVAL TOO ───────────────────────────────
+        // A revived card is a display task the warehouse can SEND, so a wall
+        // holding one is a wall that has already been asked for. But the card
+        // still carries `displayRefillStatus: "stockDepleted"`, which is one of
+        // the things isOpenDisplayRequest counts as RESOLVED — so the checkout
+        // and wall-walk guards both read this wall as free and let a second
+        // request through, and two pairs walk to one wall. The guard is right
+        // about a depleted task (it IS resolved); the revival is what re-opens
+        // it, so the revival is where the second one has to be refused.
+        //
+        // Refusing the REVIVAL, not the new request, is deliberate: the newer
+        // request is a live intention someone just expressed, and the depleted
+        // card is days old by construction. The card stays where it was, as a
+        // completed task, and comes back on its own once the newer request is
+        // resolved. (Spec-conformance review.)
+        if (revivalBlockedIds[o.id]) continue;
         try {
           const snap = await get(ref(database, stockCellPath(selectedHub, o.productId, String(size))));
           const cellQty = snap.val()?.qty ?? 0;
@@ -11442,7 +11492,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     })();
     return () => { on = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [depletedIdsKey, selectedHub, reviveTick]);
+  }, [depletedIdsKey, selectedHub, reviveTick, revivalBlockedKey]);
   // Session-local dismissal: tapping Stock Depleted on a REVIVED card is the
   // operator saying "I looked, there is still nothing to put out" — without
   // this the probe would bounce the card straight back and the button would
@@ -11450,15 +11500,19 @@ function WarehouseView({ products = [], orders, onExit }) {
   const [dismissedRevived, setDismissedRevived] = useState({});
   const dueWithRevived = useMemo(() => [
     ...dueRefills,
-    ...depletedCards.filter((o) => revivedIds[o.id] && !dismissedRevived[o.id])
+    // `revivalBlockedIds` again, and not only inside the probe: the probe is
+    // async and its result is a snapshot, so a request raised after it last ran
+    // would leave an already-revived card sendable until the next tick. The
+    // clause-1 answer is synchronous — apply it at the point of display too.
+    ...depletedCards.filter((o) => revivedIds[o.id] && !dismissedRevived[o.id] && !revivalBlockedIds[o.id])
       // _revivedAt buckets the card under TODAY in the day-collapsed list —
       // its scheduledAt is days old by construction (the whole point of the
       // revival) and would land it in the collapsed "Older" section.
       .map((o) => ({ ...o, _revivedDepleted: true, _revivedAt: new Date(nowTick).toISOString() })),
-  ], [dueRefills, depletedCards, revivedIds, dismissedRevived, nowTick]);
+  ], [dueRefills, depletedCards, revivedIds, dismissedRevived, revivalBlockedIds, nowTick]);
   const completedSansRevived = useMemo(
-    () => completedRefills.filter((o) => !revivedIds[o.id] || dismissedRevived[o.id]),
-    [completedRefills, revivedIds, dismissedRevived]
+    () => completedRefills.filter((o) => !revivedIds[o.id] || dismissedRevived[o.id] || revivalBlockedIds[o.id]),
+    [completedRefills, revivedIds, dismissedRevived, revivalBlockedIds]
   );
   const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
   // Size run order — the SHARED hubSizeRank comparator (letters S→4XL in run
@@ -12110,7 +12164,17 @@ function WarehouseView({ products = [], orders, onExit }) {
     // then reading that wall as unregistered. The hub actually doing the refill
     // is the truth of last resort, and it is the same value the patch already
     // stamps as displayRefilledBy. (Independent second-brain review.)
-    const rowHub = order.displayRefillHub || order.placedAtHub || order.hub || selectedHub || null;
+    //
+    // ...BUT `||` NEVER REACHED IT. The chain short-circuits on the first
+    // TRUTHY value, and the failure the paragraph above describes is a field
+    // holding a SHOP id — which is truthy. So `placedAtHub: "marathon-pe"` won,
+    // `rowEligible` went false, and the send cleared the request and wrote a
+    // slot with NO ledger row: the very outcome the fix was written to stop,
+    // still reachable, with a comment claiming otherwise. Take the first value
+    // that is actually a gated hub instead, and only then fall back to the hub
+    // doing the refill. (Spec-conformance review.)
+    const rowHub = [order.displayRefillHub, order.placedAtHub, order.hub]
+      .find((h) => GATED_SNEAKER_HUBS.includes(h)) || selectedHub || null;
     const rowEligible = productIsFootwear(resolveProductById(order.productId))
       && GATED_SNEAKER_HUBS.includes(rowHub);
     if (status === "refilled" && refillSize && rowStore && order.productId && rowEligible) {

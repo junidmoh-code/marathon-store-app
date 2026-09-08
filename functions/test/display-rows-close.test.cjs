@@ -418,3 +418,62 @@ test("a post-sale row still BLOCKS a hub attribution — it cannot be the answer
   assert.match(r.why, /registered after this sale/);
   assert.doesNotMatch(r.why, /no hub/);
 });
+
+// ─── THE SHOP PATH'S REFUSAL SENTENCE MUST ALSO BE TRUE ──────────────────────
+//
+// The hub path learned to tell "registered after this sale" apart from "cannot
+// be dated" (splitByHub, above). The SHOP path never did: it asked "did the age
+// filter remove rows the size filter kept?" and, if so, said "registered after
+// this sale" — for both causes, because rowPredatesSale collapses them. The
+// sentence goes into the lease as the permanent answer to "why did this display
+// record not close?", so a false one is worse than a vague one.
+// (Senior-architect review; same defect as the hub path's, second location.)
+const { ageRefusalReason } = require("../displayRows/lib.cjs");
+
+test("ageRefusalReason: a genuinely post-sale row is named as one", () => {
+  const byRow = { r1: { status: "open", sizeKey: "9", openedAt: after.openedAt } };
+  assert.match(ageRefusalReason(byRow, "9", SALE_TS), /registered after this sale/);
+});
+
+test("ageRefusalReason: an UNDATABLE row is NOT called post-sale", () => {
+  for (const openedAt of [undefined, null, "", "not-a-date", 12345]) {
+    const byRow = { r1: { status: "open", sizeKey: "9", openedAt } };
+    const why = ageRefusalReason(byRow, "9", SALE_TS);
+    assert.match(why, /no readable registration time/, `openedAt=${String(openedAt)}`);
+    assert.doesNotMatch(why, /registered after this sale/, `openedAt=${String(openedAt)}`);
+  }
+});
+
+test("ageRefusalReason: both kinds present says both, and claims neither of the other", () => {
+  const byRow = {
+    r1: { status: "open", sizeKey: "9", openedAt: after.openedAt },
+    r2: { status: "open", sizeKey: "9", openedAt: "not-a-date" },
+  };
+  const why = ageRefusalReason(byRow, "9", SALE_TS);
+  assert.match(why, /either registered after this sale or cannot be dated/);
+});
+
+test("ageRefusalReason: an unreadable SALE instant blames the sale, not the rows", () => {
+  const byRow = { r1: { status: "open", sizeKey: "9", openedAt: before.openedAt } };
+  const why = ageRefusalReason(byRow, "9", "nonsense");
+  assert.match(why, /sale carries no readable instant/);
+  assert.doesNotMatch(why, /registered after this sale/);
+});
+
+test("ageRefusalReason: null when the age filter is NOT what emptied the list", () => {
+  // a row that predates the sale — excluded by qty or size, never by age
+  const byRow = { r1: { status: "open", sizeKey: "9", openedAt: before.openedAt } };
+  assert.equal(ageRefusalReason(byRow, "9", SALE_TS), null);
+  // wrong size, and a closed row, are not this function's business either
+  assert.equal(ageRefusalReason({ r1: { status: "open", sizeKey: "8", openedAt: after.openedAt } }, "9", SALE_TS), null);
+  assert.equal(ageRefusalReason({ r1: { status: "closed", sizeKey: "9", openedAt: after.openedAt } }, "9", SALE_TS), null);
+  assert.equal(ageRefusalReason({}, "9", SALE_TS), null);
+});
+
+test("ageRefusalReason: plural rows read as plural, and never as one", () => {
+  const byRow = {
+    r1: { status: "open", sizeKey: "9", openedAt: after.openedAt },
+    r2: { status: "open", sizeKey: "9", openedAt: after.openedAt },
+  };
+  assert.match(ageRefusalReason(byRow, "9", SALE_TS), /records .* were all registered after/);
+});

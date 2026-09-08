@@ -56,7 +56,7 @@ const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
   classifyMovement, decideCloses, claimClose, resolveHubSale, hubSaleTooOld, splitByHub,
-  leaseDecision, rowIsOpen, DISPLAY_STORES,
+  leaseDecision, rowIsOpen, ageRefusalReason, DISPLAY_STORES,
 } = require("./lib.cjs");
 
 if (!admin.apps.length) {
@@ -217,11 +217,19 @@ exports.closeDisplayRowOnSale = onValueCreated(
       // false when there WAS one and the age filter excluded it — and that
       // sentence goes into the lease as the permanent answer to "why did this
       // not close?". (Adversarial review.)
+      // AND IT MUST SAY THE TRUE ONE. `rowPredatesSale` collapses "after" and
+      // "unknown" into one `false`, so this branch also fires for a row whose
+      // openedAt is missing or unparseable — which is NOT "registered after
+      // this sale", and saying so writes a false claim into the permanent
+      // record. ageRefusalReason draws the same distinction the hub path
+      // already draws in splitByHub. (Senior-architect review.)
       if (!closes.length && decideCloses(byRow, sizeKey, qty).length) {
-        const why = "the display record for this size was registered after this sale, so it cannot be what sold";
-        console.log(`closeDisplayRowOnSale: ${movementId} closed nothing — ${why}`);
-        await done([], why);
-        return;
+        const why = ageRefusalReason(byRow, sizeKey, m.ts);
+        if (why) {
+          console.log(`closeDisplayRowOnSale: ${movementId} closed nothing — ${why}`);
+          await done([], why);
+          return;
+        }
       }
     }
     // Nothing on the wall to close — the overwhelmingly common case: an

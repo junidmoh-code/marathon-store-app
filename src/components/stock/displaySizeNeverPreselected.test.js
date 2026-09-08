@@ -99,3 +99,36 @@ describe("nothing else invents a size", () => {
     expect(WALL).toMatch(/raiseDisplayRequest\(\{ orders, store, hub, product \}\)/);
   });
 });
+
+// ─── CLAUSE 1'S GUARD MUST NOT GO BLIND WHEN A PULL MINTER COMES BACK ────────
+//
+// The checkout's one-open-request guard reads the STORE-SCOPED /orders feed, so
+// it can only fence a wall that feed covers. Today it always does: a scoped
+// user's effectiveShop IS the feed's scope (availableShops is clamped to
+// myShop), and the only branch that could name a DIFFERENT store —
+// `displayPairStore`, on a display-pair pull — has had no minter on the
+// ordering screen since #576 deleted the divert.
+//
+// The display source-of-truth job is expected to re-attach a minter. On the day
+// it does, this guard silently starts passing on walls it cannot read, and two
+// pairs get walked to one wall. That is a failure with no symptom at the point
+// of the change, which is exactly what a source pin is for.
+// (Spec-conformance review.)
+describe("the one-request guard cannot silently outgrow the feed it reads", () => {
+  it("nothing on the ordering screen mints a display-pair pull", () => {
+    // The flag the cross-store branch keys on. `addToCart`/quickAdd must never
+    // set it true again without the guard learning to refuse an unreadable
+    // store the way UnregisteredDisplaysTab's canRequest does.
+    expect(APP).not.toMatch(/displayPairRequest:\s*true/);
+  });
+
+  it("availableShops stays clamped to myShop — the reason the guard can see", () => {
+    // If this clamp goes, a scoped user can select a shop their /orders feed
+    // does not cover and the guard reads an empty list as "nothing open".
+    expect(APP).toMatch(/const availableShops = myShop\s*\n?\s*\?\s*allShops\.filter\(s => s\.id === myShop\)/);
+  });
+
+  it("the wall walk still refuses what it cannot verify", () => {
+    expect(WALL).toContain("const canRequest = !ordersScope || ordersScope === store;");
+  });
+});

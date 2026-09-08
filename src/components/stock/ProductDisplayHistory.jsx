@@ -15,37 +15,75 @@
 // shape of this question. So the display answer joins the stock answer instead
 // of being bolted onto a write surface nobody was asked to touch.
 //
-// ── COST, STATED HONESTLY ────────────────────────────────────────────────────
-// One subscription to the WHOLE of /settings/displayRows, mounted only while a
-// product is selected and torn down when the operator taps Change.
+// ── COST — TWO KEYED READS, NOT THE NODE ─────────────────────────────────────
+// One `get()` per display store at `/settings/displayRows/{store}/{productId}`,
+// fired when a product is selected. Two small reads, each returning only this
+// product's rows.
 //
-// It is NOT the same scale class as /settings/displaySlots, and an earlier
-// version of this comment said it was. displaySlots holds one flat record per
-// (store, product) and is overwritten in place; displayRows KEEPS EVERY CLOSED
-// ROW FOREVER, each carrying its own events map, so it grows monotonically with
-// every send. Today that is ~460 open rows and no closed ones; at roughly a
-// dozen sends a day it is a few thousand small records a year, which is still a
-// small node — but it is a growing one, and the honest statement is "small and
-// growing", not "the same as the slot node". (Independent second-brain review.)
+// It used to subscribe to the WHOLE of /settings/displayRows, and the comment
+// justifying that ended "it cannot be a per-product read: RTDB cannot index
+// across stores, and the node is store-major" — which contradicted the sentence
+// four lines above it that described doing exactly this, and was simply wrong.
+// The node being store-major is what MAKES the keyed read possible: store and
+// product are both path segments, so the row set for one product at one store
+// is a path, not a query. displayRowStore's own `rowsNow` has read it that way
+// from the start, and closeDisplayRowForPartnerSale does it on the ordering
+// screen for the same reason.
 //
-// If it ever stops being small the fix is a per-store read here (the Locator
-// knows no store, so it would have to read all three) or an archive of closed
-// rows older than a year. Neither is needed yet, and neither should be built
-// before the node is actually big.
+// The distinction mattered more here than anywhere else, because displayRows
+// KEEPS EVERY CLOSED ROW FOREVER — each with its own events map — so unlike
+// displaySlots it grows monotonically with every send. Reading the whole of a
+// monotonically growing node to show one product was the one read on this
+// feature that would get worse every day it ran. (Spec-conformance review.)
 //
-// It cannot be a per-product read: RTDB cannot index across stores, and the
-// node is store-major.
+// A `get` rather than a subscription: this is a read-only history on a screen
+// whose subject changes only when the operator picks a different product, and
+// nothing on it writes a row.
 
-import React, { useMemo } from "react";
-import { allRows, rowIsOpen, OPEN_VIA_TEXT, CLOSE_REASON_TEXT } from "./displayRowCore";
+import React, { useEffect, useMemo, useState } from "react";
+import { get, ref } from "firebase/database";
+import { database } from "../../firebase";
+import { allRows, rowIsOpen, rowSegment, storeRowsPath, OPEN_VIA_TEXT, CLOSE_REASON_TEXT } from "./displayRowCore";
 import { RowHistory } from "./displayRowUi";
-import { useDisplayRowsState } from "./useStock";
+import { DISPLAY_STORES } from "./hubCleanupCore";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
 import { BORDER, GREEN, GRAY, FONT } from "./ui";
 
 export default function ProductDisplayHistory({ productId, registry }) {
-  const { value: rows, settled } = useDisplayRowsState(!!productId);
+  // Shaped as { [store]: { [rowId]: row } } so `allRows` — the shared reader
+  // the tabs use — takes it unchanged and there is no second traversal to keep
+  // in step with the first.
+  const [rows, setRows] = useState({});
+  const [settled, setSettled] = useState(false);
+
+  useEffect(() => {
+    if (!productId) { setRows({}); setSettled(false); return undefined; }
+    let on = true;
+    setSettled(false);
+    (async () => {
+      const out = {};
+      // The SANITISED product segment, because that is the path the writers
+      // wrote to — the same rule (and the same failure it prevents) as
+      // displayRowStore's rowsNow. A product id that cannot be a key has no
+      // rows rather than rows read from some other product's path.
+      const pid = rowSegment(productId);
+      if (pid) {
+        await Promise.all(DISPLAY_STORES.map(async (store) => {
+          const base = storeRowsPath(store);
+          if (!base) return;
+          try {
+            const byRow = (await get(ref(database, `${base}/${pid}`))).val();
+            if (byRow) out[store] = { [productId]: byRow };
+          } catch { /* an unreadable store contributes nothing; the rest still show */ }
+        }));
+      }
+      // `settled` goes true either way, so a product with no display history
+      // shows its "never been on a wall" line instead of Loading… forever.
+      if (on) { setRows(out); setSettled(true); }
+    })();
+    return () => { on = false; };
+  }, [productId]);
 
   const mine = useMemo(() => {
     if (!productId) return [];

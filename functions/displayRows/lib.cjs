@@ -454,6 +454,57 @@ function rowPredatesSale(row, movementTs) {
 }
 
 /**
+ * WHY THE AGE FILTER EXCLUDED EVERY CANDIDATE — in words that are TRUE.
+ *
+ * The shop-sourced path had one sentence for two different facts. It asked
+ * "did the age filter remove rows the size filter had kept?" and, if so, said
+ * "registered after this sale". But `rowPredatesSale` collapses "after" and
+ * "unknown" into the same `false`, so a row whose `openedAt` is missing or
+ * unparseable — a hand-fixed record, a partial write, an older shape — was
+ * reported as having been registered after a sale it may well predate. That
+ * sentence is written into the lease as the PERMANENT answer to "why did this
+ * display record not close?", so a false one is worse than a vague one.
+ *
+ * This is the distinction the hub path already draws (splitByHub reports
+ * postSale and unknownAge apart, for exactly this reason). The shop path never
+ * got it. Same defect, second location. (Senior-architect review.)
+ *
+ * A third cause hides in the same branch and deserves its own sentence: when
+ * the SALE carries no readable instant, `rowAgeVsSale` answers "unknown" for
+ * every row, so every candidate is excluded and nothing about the ROWS is
+ * wrong at all.
+ *
+ * → the sentence, or null when the age filter is not what emptied the list.
+ */
+function ageRefusalReason(byRow, sizeKey, movementTs) {
+  const saleMs = typeof movementTs === "string" ? Date.parse(movementTs) : NaN;
+  if (movementTs != null && !Number.isFinite(saleMs)) {
+    return "this sale carries no readable instant, so no display record could be ordered against it";
+  }
+  let after = 0, unknown = 0;
+  for (const row of Object.values(byRow || {})) {
+    if (!rowIsOpen(row) || row.sizeKey !== sizeKey) continue;
+    const age = rowAgeVsSale(row, movementTs);
+    if (age === "after") after++;
+    else if (age === "unknown") unknown++;
+  }
+  if (after && unknown) {
+    return "the display records for this size were either registered after this sale or cannot be dated against it, so neither can be shown to be what sold";
+  }
+  if (after) {
+    return after === 1
+      ? "the display record for this size was registered after this sale, so it cannot be what sold"
+      : "the display records for this size were all registered after this sale, so none can be what sold";
+  }
+  if (unknown) {
+    return unknown === 1
+      ? "the display record for this size carries no readable registration time, so it cannot be shown to be what sold"
+      : "the display records for this size carry no readable registration time, so none can be shown to be what sold";
+  }
+  return null;
+}
+
+/**
  * The lease decision — returns the record to write, or undefined to ABORT the
  * transaction (already done, or somebody else holds a fresh lease).
  * Same shape as displayChecks/lib.cjs processedClaimDecision, deliberately.
@@ -466,5 +517,5 @@ function leaseDecision({ cur, nowMs }) {
 
 module.exports = {
   DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
-  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, leaseDecision,
+  encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, ageRefusalReason, leaseDecision,
 };

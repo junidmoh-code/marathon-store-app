@@ -181,10 +181,12 @@ node --import ./scripts/lib/appModuleLoader.mjs scripts/seed-display-rows.mjs   
 node --import ./scripts/lib/appModuleLoader.mjs scripts/seed-display-rows.mjs --apply
 ```
 
-Dry run on 2026-09-08: **460 rows to open** (marathon-pe 347, trophy 113) from
-478 live slots — 48 tombstones skipped, 18 Pine slots skipped (booked at hub3,
-outside `GATED_SNEAKER_HUBS`). Re-runnable: a wall+product that already has any
-row is skipped.
+Dry run on 2026-09-08, re-measured immediately before the seed ran: **467 rows
+to open** (marathon-pe 353, trophy 114) from 485 live slots — 41 tombstones
+skipped, 18 Pine slots skipped (booked at hub3, outside `GATED_SNEAKER_HUBS`).
+An earlier run the same day said 460/478; the difference is a day's trading on a
+live system, not a change in the rule. Re-runnable: a wall+product that already
+has any row is skipped.
 
 The seed produces **zero duplicates**, and not because the walls are clean — the
 old record could not hold a second one. Duplicates surface from here on, as
@@ -223,3 +225,82 @@ placed inside the existing `"settings"` node.
   t-shirts is not a wall walk. They keep the display-slot write they always had.
 * **The existing Display Registry** (Hub 1 / Hub 2 tabs) and the **Display
   Records** cleanup tab (PR #575's register-vs-floor work). Both unchanged.
+
+## Final review round (2026-09-08) — six defects, and three deviations kept
+
+CodeRabbit was rate-limited on the last four commits, so the substitutes ran on
+that delta with provenance recorded on the PR. Kimi is still returning
+`provider.api_error: 500` on a two-word prompt and contributed nothing.
+
+### Fixed
+
+1. **The shop path's refusal sentence could be false.** `rowPredatesSale`
+   collapses "registered after this sale" and "cannot be dated" into one
+   `false`, so a row with a missing or unparseable `openedAt` was recorded on
+   the lease as having been registered after a sale it may well predate — and
+   that sentence is the permanent answer to "why did this display record not
+   close?". The hub path already drew the distinction (`splitByHub` reports
+   post-sale and unknown-age apart); the shop path never got it. Same defect,
+   second location. `ageRefusalReason` in `lib.cjs`, and it names a third cause
+   the old branch hid entirely: a sale whose own instant is unreadable, where
+   nothing about the rows is wrong at all.
+
+2. **A correction re-booked a hubless row onto the tab's hub.** The comment
+   above `onWall` says a correction's `bookedHub` must come from the ROW,
+   "taking the tab's hub would re-book it on a guess" — and then
+   `existingRow?.bookedHub || hub` did exactly that whenever the row's hub was
+   null, which is a real state, not an absent one. Changing a SIZE silently
+   changed the hub. Now the null is carried through, which every consumer
+   already supports.
+
+3. **A shop id in `placedAtHub` beat the real hub.** `rowHub` was
+   `displayRefillHub || placedAtHub || hub || selectedHub`, with a comment
+   explaining that `selectedHub` is the truth of last resort for an older order
+   holding a shop id — but `||` short-circuits on the first TRUTHY value, and a
+   shop id is truthy. So that order failed `rowEligible`, and the send cleared
+   the request and wrote a slot with **no ledger row**: the precise outcome the
+   fix was written to prevent, still reachable, under a comment claiming
+   otherwise. Now it takes the first value that is actually a gated hub.
+
+4. **The depleted-task revival bypassed clause 1.** A revived card is a display
+   task the warehouse can send, but it still carries
+   `displayRefillStatus: "stockDepleted"`, which `isOpenDisplayRequest` counts
+   as resolved — so both guards read the wall as free and let a second request
+   through. Two pairs, one wall. The guard is right about a depleted task; the
+   revival is what re-opens it, so the revival is where it is refused. The
+   newer request wins because it is a live intention someone just expressed;
+   the days-old card comes back on its own once that one resolves.
+
+5. **`ProductDisplayHistory` read the whole node to show one product.** Its own
+   comment said a per-product read was impossible ("RTDB cannot index across
+   stores"), four lines after describing how to do it. The node being
+   store-major is what MAKES it a path rather than a query. Now two keyed
+   `get`s. This was the one read on the feature that would get worse every day
+   it ran, because `displayRows` never deletes a closed row.
+
+6. **The checkout guard's blind spot is pinned, not patched.** It reads the
+   store-scoped `/orders` feed, so it can only fence a wall that feed covers.
+   Today it always does — `availableShops` is clamped to `myShop`, and the
+   cross-store branch has had no minter since #576 deleted the divert. When the
+   source-of-truth job re-attaches a display-pull minter, that second reason
+   goes with it and the guard starts passing silently. Three source pins in
+   `displaySizeNeverPreselected.test.js` make that a red test instead.
+
+### Deviations from the letter of the spec, kept deliberately
+
+* **"Marker and duplicate tab read open rows only."** The duplicate tab does.
+  The marker reads `/settings/displaySlots`, the mirror — because the slot
+  writers are transactions carrying a staleness fence, a multi-path update
+  cannot carry a transaction, and that fence is load-bearing. See *The slot is
+  a mirror*. The mirror's failure is reported, never swallowed.
+* **"Also close on return-to-hub and cancellation."** Not from the trigger. A
+  shop→hub `transfer_out` cannot be a display — a display stays booked at its
+  hub, so it is not in the shop's cell at all — and closing on one would have
+  retired a real display every time a shop returned excess. Return is closed by
+  the person who took the pair down (Unregistered tab, reason `returned`);
+  cancellation by the refill undo.
+* **There is no 15-minute AUTO-RAISE.** `DISPLAY_REFILL_DELAY_MS` delays when an
+  already-raised request becomes VISIBLE in the warehouse tab; nothing mints a
+  second request on a timer. Clause 1's guard is in place for whenever one is
+  raised, by either entry point. Stated because the spec describes the timer as
+  existing behaviour and it does not do what it sounds like.
