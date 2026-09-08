@@ -11,31 +11,41 @@
 //      other customers' payment data and the owner's forensics.
 //   2. WHICH RECORDS answer a cashier's query, and in what order (search).
 //
-// THE SEARCH IS FORGIVING BY DESIGN. Customers say "Junid" at the counter when
-// they typed "JUNID1234" in their banking app; banks truncate references; some
-// customers type no reference at all. So a partial reference matches, the
-// payer's name matches, and an AMOUNT matches standalone — "550" finds the
-// R550.00 payment with a blank reference. Every token of the query must land
-// somewhere (reference, payer, bank ref, or the amount); a record nothing in
-// the query touches is not a result. Exactness only affects RANK, never
-// eligibility.
+// THE SEARCH IS BY REFERENCE AND PAYER NAME ONLY. Amount was a search key in
+// the first build and that was a design error: in a shop, "550" finds ANY
+// R550 payment, so a cashier can settle one customer's sale against another
+// customer's money and neither of them can tell. The amount is now shown on
+// every row as CONFIRMATION — the cashier reads it against what the customer
+// says — and is never a query. No token of the query is ever compared with
+// amountCents, and a query that looks like money is just text that has to
+// appear in a reference or a name.
+//
+// FORGIVING, WITHIN THAT. Customers say "Junid" at the counter when they typed
+// "JUNID1234" in their banking app; banks truncate references; people mistype.
+// So matching is case-blind, ignores spaces and punctuation, finds a substring
+// anywhere in the field, and tolerates ONE near-miss (a typo, a transposition,
+// a dropped or extra character — optimal-string-alignment distance ≤ 1) on
+// tokens of five or more characters. "JUNID1234" is found by "junid",
+// "junid123" and "juind1234". Exactness affects RANK, never eligibility.
+//
+// NOTHING IS BROWSABLE. An empty or short query (under three characters after
+// normalisation) returns nothing — no recent list, no suggestions, no default
+// result set: the pool is other customers' payment data. Ten results at most,
+// best match first, then newest.
 //
 // USED PAYMENTS STAY VISIBLE AND SEARCHABLE, shown as used with the date, the
-// slip number, the customer assisted and the cashier who settled it. Hiding
-// them creates arguments with customers who insist they paid; showing them
-// ends the argument in five seconds. They are simply not selectable to settle
-// again — that is the settle transaction's job (eft-settle.cjs), not the
-// search's.
+// slip number, the customer assisted and the cashier who settled it — or, for
+// a payment the owner marked as settled outside the POS, the reason, who and
+// when. Hiding them creates arguments with customers who insist they paid;
+// showing them ends the argument in five seconds. They are simply not
+// selectable to settle again — that is the settle transaction's job
+// (eft-settle.cjs), not the search's.
 //
 // The record shape is eftCore.mjs's (scripts/cardrecon), stored by the mailbox
 // poller. This module redefines nothing about it and reads only what it needs.
 // PURE by the house rule: no IO, no clock; tested in test/eft-pool-search.test.cjs.
 
 "use strict";
-
-// The fuzzed money parser, borrowed — never a second copy. It refuses mangled
-// figures, which here just means a token that isn't money scores as text only.
-const { parseRandsToCents } = require("./card-recon.cjs");
 
 const EFT_POOL_PATH = "eft_pool";
 
@@ -45,7 +55,13 @@ const EFT_POOL_PATH = "eft_pool";
 // till's: customers settle within days, not months.
 const EFT_SEARCH_WINDOW = 400;
 // What one search returns at most — a till screen, not a report.
-const EFT_SEARCH_LIMIT = 20;
+const EFT_SEARCH_LIMIT = 10;
+// Shorter than this (letters and digits only) is not a search — it is a
+// browse, and the pool is not browsable.
+const EFT_MIN_QUERY = 3;
+// Near-miss tolerance applies from this token length: one edit on a
+// four-character token is a different word, not a typo.
+const NEAR_MISS_MIN_LENGTH = 5;
 
 // ─── THE PUBLIC VIEW ─────────────────────────────────────────────────────────
 /**
@@ -54,8 +70,9 @@ const EFT_SEARCH_LIMIT = 20;
  * till never sees them, not even their existence).
  *
  * `used` is summarised for the counter conversation: when, which slip, who was
- * assisted, which cashier. The settlement's uids, store/till ids and attempt
- * history stay in the pool record.
+ * assisted, which cashier — or, for a manual settlement, that it was settled
+ * OUTSIDE the POS, by whom, when and why. The settlement's uids, store/till
+ * ids and attempt history stay in the pool record.
  */
 function publicEftView(key, record) {
   if (!record || typeof record !== "object") return null;
@@ -79,6 +96,18 @@ function publicEftView(key, record) {
               status: record.used.remainder.status ?? null,
               customerName: record.used.remainder.customerName ?? null,
               creditId: record.used.remainder.creditId ?? null,
+            }
+          : null,
+        // SETTLED OUTSIDE THE POS — the owner marked it used with no sale
+        // attached (paid before the pool existed, settled by hand, a refund
+        // given in cash). The till shows the reason, who and when, so "it says
+        // used but there is no slip" has an answer at the counter. The actor's
+        // uid stays in the pool record.
+        outsidePos: record.used.outsidePos && typeof record.used.outsidePos === "object"
+          ? {
+              reason: record.used.outsidePos.reason ?? null,
+              actorName: record.used.outsidePos.actorName ?? null,
+              at: Number.isInteger(record.used.outsidePos.at) ? record.used.outsidePos.at : null,
             }
           : null,
       }
@@ -107,67 +136,104 @@ function publicEftView(key, record) {
   };
 }
 
+// ─── NORMALISATION AND NEAR-MISS ─────────────────────────────────────────────
+/** Letters and digits only, upper-cased: "Junid-1234 " and "JUNID 1234" are
+ *  the same text. Everything the search compares goes through here. */
+function normaliseText(s) {
+  return String(s ?? "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+}
+
+/**
+ * The smallest optimal-string-alignment distance between `needle` and ANY
+ * substring of `hay` — Sellers' algorithm with adjacent transposition. The
+ * first row is all zeros so a match may start anywhere; the minimum of the
+ * last row lets it end anywhere. Distance 0 is a plain substring; distance 1
+ * is one typo, one transposition, one dropped or one extra character
+ * somewhere in the needle. Bounded by construction: tokens are short and
+ * fields are clipped by the reader (reference ≤ 140, payer ≤ 120).
+ */
+function nearestSubstringDistance(needle, hay) {
+  const n = needle.length;
+  const m = hay.length;
+  if (n === 0) return 0;
+  if (m === 0) return n;
+  let prev2 = null;
+  let prev = new Array(m + 1).fill(0);
+  for (let i = 1; i <= n; i++) {
+    const cur = new Array(m + 1);
+    cur[0] = i;
+    for (let j = 1; j <= m; j++) {
+      const cost = needle[i - 1] === hay[j - 1] ? 0 : 1;
+      let best = Math.min(prev[j] + 1, cur[j - 1] + 1, prev[j - 1] + cost);
+      if (i > 1 && j > 1 && needle[i - 1] === hay[j - 2] && needle[i - 2] === hay[j - 1]) {
+        best = Math.min(best, prev2[j - 2] + 1);
+      }
+      cur[j] = best;
+    }
+    prev2 = prev;
+    prev = cur;
+  }
+  let min = Infinity;
+  for (let j = 0; j <= m; j++) if (prev[j] < min) min = prev[j];
+  return min;
+}
+
 // ─── THE QUERY ───────────────────────────────────────────────────────────────
 /**
- * A cashier's query, read once: whitespace-split tokens (uppercased — matching
- * is case-blind throughout) plus, per token AND for the query as a whole, the
- * rand amount it parses to. "junid 550" is the token "JUNID" and the amount
- * R550.00; "550.00" alone is an amount-only search — amount search must work
- * standalone because some customers type no reference at all.
+ * A cashier's query, read once: whitespace-split tokens, each normalised to
+ * letters and digits, plus the query AS A WHOLE normalised the same way (so
+ * "junid 1234" still finds "JUNID1234", and "ousmane thiam" finds the payer
+ * "OUSMANE THIAM"). No amount is read from it, by design — see the header.
+ * `tooShort` is the refusal the callable turns into "type more": under three
+ * characters of letters and digits, nothing is searched.
  */
 function searchPlan(query) {
   const raw = String(query ?? "").trim();
-  const tokens = raw ? raw.toUpperCase().split(/\s+/).slice(0, 8) : [];
-  // The WHOLE query as one amount, besides the per-token reading: "R 550.00"
-  // tokenises as ["R", "550.00"] and the bare "R" lands nowhere — but the
-  // cashier typed exactly what the slip says, and that must find the payment.
-  const whole = parseRandsToCents(raw);
-  return {
-    wholeAmountCents: Number.isInteger(whole) && whole > 0 ? whole : null,
-    tokens: tokens.map((t) => {
-      const cents = parseRandsToCents(t);
-      return { text: t, amountCents: Number.isInteger(cents) && cents > 0 ? cents : null };
-    }),
-  };
+  const whole = normaliseText(raw);
+  const tokens = raw
+    ? raw.split(/\s+/).map(normaliseText).filter(Boolean).slice(0, 8)
+    : [];
+  return { whole, tokens, tooShort: whole.length < EFT_MIN_QUERY };
+}
+
+/** How well one token lands on one normalised field: exact beats prefix beats
+ *  substring beats near-miss; 0 when it does not land at all. `scale` is the
+ *  field's weight (a reference hit outranks a payer hit). */
+function fieldScore(token, field, scale) {
+  if (!field || !token) return 0;
+  if (field === token) return 100 * scale;
+  if (field.startsWith(token)) return 85 * scale;
+  if (field.includes(token)) return 70 * scale;
+  if (token.length >= NEAR_MISS_MIN_LENGTH && nearestSubstringDistance(token, field) <= 1) return 55 * scale;
+  return 0;
 }
 
 /**
  * How well one payment answers the query — or null when it doesn't.
  *
- * EVERY token must land somewhere on the record: the reference (exact beats
- * prefix beats substring), the bank's own transaction id, the payer's name, or
- * the amount. Exactness affects rank only; eligibility is the forgiving
- * substring. A query with no tokens matches everything at score 0 — the
- * empty-search "recent payments" view.
+ * EVERY token must land on the reference or the payer's name (exact beats
+ * prefix beats substring beats near-miss; reference beats payer). A query
+ * whose tokens do not each land on their own still answers when the query AS
+ * A WHOLE lands ("junid 1234" against "JUNID1234"). A query with no tokens
+ * answers nothing — there is no empty-search view of the pool.
  */
 function scoreEftView(view, plan) {
-  if (!plan.tokens.length) return 0;
-  const ref = String(view.reference ?? "").toUpperCase();
-  const payer = String(view.payer ?? "").toUpperCase();
-  const bankRef = String(view.bankRef ?? "").toUpperCase();
+  if (!plan.tokens.length || plan.tooShort) return null;
+  const ref = normaliseText(view.reference);
+  const payer = normaliseText(view.payer);
+  const best = (token) => Math.max(fieldScore(token, ref, 1), fieldScore(token, payer, 0.65));
   let total = 0;
+  let allLand = true;
   for (const token of plan.tokens) {
-    let best = 0;
-    const t = token.text;
-    if (ref) {
-      if (ref === t) best = 100;
-      else if (ref.startsWith(t)) best = 85;
-      else if (ref.includes(t)) best = 70;
-    }
-    if (bankRef && bankRef.includes(t)) best = Math.max(best, 55);
-    if (payer && payer.includes(t)) best = Math.max(best, 50);
-    if (token.amountCents !== null && view.amountCents === token.amountCents) {
-      best = Math.max(best, 75);
-    }
-    if (best === 0) {
-      // The token lands nowhere on its own — but if the query AS A WHOLE is
-      // this payment's amount ("R 550.00"), the payment still answers it.
-      if (plan.wholeAmountCents !== null && view.amountCents === plan.wholeAmountCents) return 75;
-      return null; // touches nothing — not a result
-    }
-    total += best;
+    const s = best(token);
+    if (s === 0) { allLand = false; break; }
+    total += s;
   }
-  return total;
+  if (allLand) return total;
+  // Not every token on its own — but the whole query, spaces and punctuation
+  // gone, might be one reference or one name.
+  const whole = best(plan.whole);
+  return whole > 0 ? whole : null;
 }
 
 // ─── THE SEARCH ──────────────────────────────────────────────────────────────
@@ -177,16 +243,18 @@ function scoreEftView(view, plan) {
  * @param {object|null} poolTail  the raw children of /eft_pool the callable
  *   read (key → record) — refusals included; they are filtered here.
  * @param {string} query
- * @returns {{results: Array, searched: number}} public views, best first —
- *   score, then still-unmatched before used (the cashier is here to settle),
- *   then newest. `searched` says how many payments the window actually held,
- *   so the till can say "nothing in the last N" honestly.
+ * @returns {{results: Array, searched: number, needQuery?: true}} public
+ *   views, best match first, then newest (by the bank's own timestamp).
+ *   `searched` says how many payments the window actually held, so the till
+ *   can say "nothing in the last N" honestly; `needQuery` says the query was
+ *   too short to search at all.
  */
 function searchEftPool(poolTail, query) {
   const plan = searchPlan(query);
   const views = Object.entries(poolTail ?? {})
     .map(([key, record]) => publicEftView(key, record))
     .filter(Boolean);
+  if (plan.tooShort) return { results: [], searched: views.length, needQuery: true };
   const scored = [];
   for (const view of views) {
     const score = scoreEftView(view, plan);
@@ -195,8 +263,7 @@ function searchEftPool(poolTail, query) {
   }
   scored.sort((a, b) =>
     (b.score - a.score)
-    || ((a.view.status === "unmatched" ? 0 : 1) - (b.view.status === "unmatched" ? 0 : 1))
-    || ((b.view.at ?? 0) - (a.view.at ?? 0)));
+    || ((b.view.paidAt ?? b.view.at ?? 0) - (a.view.paidAt ?? a.view.at ?? 0)));
   return {
     results: scored.slice(0, EFT_SEARCH_LIMIT).map((s) => s.view),
     searched: views.length,
@@ -207,7 +274,10 @@ module.exports = {
   EFT_POOL_PATH,
   EFT_SEARCH_WINDOW,
   EFT_SEARCH_LIMIT,
+  EFT_MIN_QUERY,
   publicEftView,
+  normaliseText,
+  nearestSubstringDistance,
   searchPlan,
   scoreEftView,
   searchEftPool,

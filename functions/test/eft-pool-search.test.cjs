@@ -1,12 +1,17 @@
-// ─── EFT POOL SEARCH — the forgiving till-side search over pool records ──────
+// ─── EFT POOL SEARCH — reference and payer name, nothing else ────────────────
 // The search's contract, pinned:
-//   · partial reference matches ("Junid" finds "JUNID1234"), case-blind;
-//   · amount matches STANDALONE ("550" finds the R550.00 payment with no
-//     reference at all);
-//   · every query token must land somewhere — reference, payer, bank ref or
-//     amount — or the record is not a result;
+//   · REFERENCE and PAYER NAME are the only keys. Amount is never one: "550"
+//     does not find the R550.00 payment unless "550" appears in a reference
+//     or a name. The amount is confirmation on the row, not a query.
+//   · forgiving within that: case-blind, spaces and punctuation ignored,
+//     substring anywhere, one near-miss (typo / transposition / dropped or
+//     extra character) tolerated on tokens of five or more characters;
+//   · under three characters nothing is searched — no browse list, no recent
+//     payments, no default result set;
+//   · at most ten results, best match first, then newest;
 //   · used payments stay visible and searchable, carrying the settled summary
-//     (date, slip, customer, cashier), never hidden;
+//     (date, slip, customer, cashier — or "settled outside POS", who, when,
+//     why), never hidden;
 //   · refusals (auth/parse/account) NEVER cross into a till result, and
 //     neither do rawText, subject, sender, auth transcript or destination.
 "use strict";
@@ -15,7 +20,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 
 const {
-  publicEftView, searchPlan, scoreEftView, searchEftPool, EFT_SEARCH_LIMIT,
+  publicEftView, searchPlan, scoreEftView, searchEftPool, nearestSubstringDistance,
+  EFT_SEARCH_LIMIT, EFT_MIN_QUERY,
 } = require("../lib/eft-pool.cjs");
 
 // A recorded pool record exactly as eftCore.mjs's eftPoolRecord stores it
@@ -43,6 +49,8 @@ function recorded(over = {}) {
   };
 }
 
+const keys = (pool, q) => searchEftPool(pool, q).results.map((r) => r.key);
+
 test("publicEftView projects a payment and nothing else", () => {
   const v = publicEftView("k1", recorded());
   assert.equal(v.key, "k1");
@@ -61,11 +69,13 @@ test("publicEftView projects a payment and nothing else", () => {
 });
 
 test("refusals never become till results", () => {
-  for (const outcome of ["refused-auth", "refused-parse", "refused-account"]) {
+  for (const outcome of ["refused-auth", "refused-parse", "refused-account", "unknown-bank"]) {
     assert.equal(publicEftView("k", recorded({ outcome })), null);
   }
   assert.equal(publicEftView("k", null), null);
   assert.equal(publicEftView("k", "junk"), null);
+  // …not even through the search.
+  assert.deepEqual(keys({ r: recorded({ outcome: "refused-parse" }) }, "junid"), []);
 });
 
 test("a used payment stays visible with its settled summary", () => {
@@ -83,74 +93,185 @@ test("a used payment stays visible with its settled summary", () => {
     saleId: "S-abc", receiptNumber: "00123",
     // The whole amount, accounted for: fully applied, nothing left over.
     appliedCents: 55000, remainder: null,
+    outsidePos: null,
   });
   // The settlement's uids and till context stay in the pool record.
   const s = JSON.stringify(v);
   assert.ok(!s.includes("u9") && !s.includes("till1"), s);
 });
 
+test("a payment settled OUTSIDE the POS says so: reason, who, when — never the actor's uid", () => {
+  const v = publicEftView("k1", recorded({
+    status: "used",
+    used: {
+      attemptId: "outside-pos-5000", at: 5000, cashierUid: "owner-uid", cashierName: "owner",
+      storeId: null, tillId: null, customerId: null, customerName: null, appliedCents: 55000, sale: null,
+      outsidePos: { reason: "Paid before the pool existed — slip 00099", actorUid: "owner-uid", actorName: "owner", at: 5000 },
+    },
+  }));
+  assert.equal(v.status, "used");
+  assert.deepEqual(v.used.outsidePos, { reason: "Paid before the pool existed — slip 00099", actorName: "owner", at: 5000 });
+  assert.equal(v.used.saleId, null);
+  assert.ok(!JSON.stringify(v).includes("owner-uid"));
+  // And it is still found by the same search.
+  assert.deepEqual(keys({ k1: recorded({ status: "used", used: v.used }) }, "junid"), ["k1"]);
+});
+
+// ─── AMOUNT IS NOT A KEY ─────────────────────────────────────────────────────
+test("an amount never finds a payment — not bare, not with R, not with cents", () => {
+  const pool = {
+    a: recorded({ reference: null, payer: null, amountCents: 55000, at: 10 }),
+    b: recorded({ reference: "OM82", payer: "J SOAP", amountCents: 55000, at: 20 }),
+  };
+  for (const q of ["550", "550.00", "R550", "R 550.00", "R550.00", "55000"]) {
+    assert.deepEqual(keys(pool, q), [], `query "${q}" must not match by amount`);
+  }
+});
+
+test("digits are text: they find a reference that CONTAINS them, never an amount that equals them", () => {
+  const pool = {
+    ref: recorded({ reference: "INV 550", amountCents: 12300, at: 10 }),
+    amt: recorded({ reference: "OM82", amountCents: 55000, at: 20 }),
+  };
+  assert.deepEqual(keys(pool, "550"), ["ref"]);
+});
+
+test("searchPlan reads no amount from the query", () => {
+  const plan = searchPlan("  junid   R550.00 ");
+  assert.deepEqual(plan.tokens, ["JUNID", "R55000"]);
+  assert.equal(plan.whole, "JUNIDR55000");
+  // Tokens are bare text — there is no per-token amount and no whole-query
+  // amount for anything downstream to compare with amountCents.
+  for (const t of plan.tokens) assert.equal(typeof t, "string");
+  assert.deepEqual(Object.keys(plan).sort(), ["tokens", "tooShort", "whole"]);
+  assert.equal(searchPlan("a b c d e f g h i j k").tokens.length, 8);
+});
+
+// ─── NOTHING IS BROWSABLE ────────────────────────────────────────────────────
+test("an empty or short query returns nothing — no recent list, no default set", () => {
+  const pool = {
+    oldUnmatched: recorded({ at: 10, bankTs: 100 }),
+    used: recorded({ at: 30, bankTs: 50, status: "used", used: { at: 31, cashierName: "A", sale: null } }),
+    newUnmatched: recorded({ at: 20, bankTs: 200 }),
+  };
+  for (const q of ["", "  ", "j", "ju", "J-U", " . ", null, undefined]) {
+    const out = searchEftPool(pool, q);
+    assert.deepEqual(out.results, [], `query ${JSON.stringify(q)}`);
+    assert.equal(out.needQuery, true);
+    assert.equal(out.searched, 3); // honest about what was there, silent about what it was
+  }
+  assert.equal(EFT_MIN_QUERY, 3);
+  // Three letters IS a search.
+  assert.deepEqual(keys(pool, "jun"), ["newUnmatched", "oldUnmatched", "used"]);
+});
+
+// ─── FORGIVING MATCHING ──────────────────────────────────────────────────────
 test("partial reference matches, case-blind, ranked above payer hits", () => {
   const pool = {
     a: recorded({ reference: "JUNID1234", at: 10 }),
     b: recorded({ reference: "OM82", payer: "JUNID MOH", at: 20 }),
     c: recorded({ reference: "SOMETHING ELSE", payer: "A N OTHER", at: 30 }),
   };
-  const { results } = searchEftPool(pool, "junid");
-  assert.deepEqual(results.map((r) => r.key), ["a", "b"]);
+  assert.deepEqual(keys(pool, "junid"), ["a", "b"]);
 });
 
-test("exact reference beats prefix beats substring", () => {
+test("exact reference beats prefix beats substring beats near-miss", () => {
   const pool = {
+    near: recorded({ reference: "JUNIX", at: 40 }),
     sub: recorded({ reference: "XXJUNID99", at: 30 }),
     exact: recorded({ reference: "JUNID", at: 10 }),
     prefix: recorded({ reference: "JUNID1234", at: 20 }),
   };
-  const { results } = searchEftPool(pool, "JUNID");
-  assert.deepEqual(results.map((r) => r.key), ["exact", "prefix", "sub"]);
+  assert.deepEqual(keys(pool, "JUNID"), ["exact", "prefix", "sub", "near"]);
 });
 
-test("amount search works standalone — no reference required", () => {
-  const pool = {
-    a: recorded({ reference: null, payer: null, amountCents: 55000, at: 10 }),
-    b: recorded({ reference: "OM82", amountCents: 10000, at: 20 }),
-  };
-  for (const q of ["550", "550.00", "R550", "R 550.00"]) {
-    const { results } = searchEftPool(pool, q);
-    assert.deepEqual(results.map((r) => r.key), ["a"], `query ${q}`);
+test('"JUNID1234" is found by "junid", "junid123" and "juind1234"', () => {
+  const pool = { a: recorded({ reference: "JUNID1234", payer: "J SOAP" }) };
+  for (const q of ["junid", "junid123", "juind1234", "JUNID1234", "junid-1234", "junid 1234", "unid12", "JUNID12345"]) {
+    assert.deepEqual(keys(pool, q), ["a"], `query "${q}"`);
   }
 });
 
-test("mixed query: every token must land somewhere (name + amount)", () => {
+test("spaces and punctuation are ignored on both sides", () => {
   const pool = {
-    hit: recorded({ payer: "JUNID MOH", reference: null, amountCents: 55000, at: 10 }),
-    wrongAmount: recorded({ payer: "JUNID MOH", reference: null, amountCents: 12300, at: 20 }),
-    wrongName: recorded({ payer: "SOMEBODY", reference: null, amountCents: 55000, at: 30 }),
+    a: recorded({ reference: "INV-2026/09 08", payer: "O'BRIEN, T." }),
   };
-  const { results } = searchEftPool(pool, "junid 550");
-  assert.deepEqual(results.map((r) => r.key), ["hit"]);
+  assert.deepEqual(keys(pool, "inv2026"), ["a"]);
+  assert.deepEqual(keys(pool, "INV 2026 09"), ["a"]);
+  assert.deepEqual(keys(pool, "obrien"), ["a"]);
+  assert.deepEqual(keys(pool, "o brien"), ["a"]);
 });
 
-test("bank transaction id is searchable too", () => {
-  const pool = { a: recorded({ bankRef: "4140542552", reference: "OM82" }) };
-  assert.equal(searchEftPool(pool, "414054").results.length, 1);
-});
-
-test("an amount-looking token still matches a reference that contains it", () => {
-  // "1234" is both money (R12.34? no — R1,234.00) and a reference fragment.
-  const pool = { a: recorded({ reference: "JUNID1234", amountCents: 99900 }) };
-  assert.equal(searchEftPool(pool, "1234").results.length, 1);
-});
-
-test("empty query lists recent payments, unmatched before used, newest first", () => {
+test("payer name: whole name, one word of it, or a typo in it", () => {
   const pool = {
-    oldUnmatched: recorded({ at: 10 }),
-    used: recorded({ at: 30, status: "used", used: { at: 31, cashierName: "A", sale: null } }),
-    newUnmatched: recorded({ at: 20 }),
-    refused: recorded({ at: 40, outcome: "refused-auth" }),
+    a: recorded({ reference: "OM82", payer: "OUSMANE THIAM", at: 10 }),
+    b: recorded({ reference: "OM83", payer: "SOMEBODY ELSE", at: 20 }),
   };
-  const { results, searched } = searchEftPool(pool, "");
-  assert.deepEqual(results.map((r) => r.key), ["newUnmatched", "oldUnmatched", "used"]);
-  assert.equal(searched, 3); // the refusal was never a payment
+  assert.deepEqual(keys(pool, "thiam"), ["a"]);
+  assert.deepEqual(keys(pool, "ousmane thiam"), ["a"]);
+  assert.deepEqual(keys(pool, "ousmanethiam"), ["a"]);
+  assert.deepEqual(keys(pool, "ousmani"), ["a"]);   // one substitution
+  assert.deepEqual(keys(pool, "osumane"), ["a"]);   // one transposition
+  assert.deepEqual(keys(pool, "ousmne"), ["a"]);    // one dropped character
+});
+
+test("near-miss tolerance needs five characters — a four-letter typo is a different word", () => {
+  const pool = { a: recorded({ reference: "OM82", payer: "ABCD" }) };
+  assert.deepEqual(keys(pool, "abxd"), []);
+  assert.deepEqual(keys(pool, "abcd"), ["a"]);
+  const five = { a: recorded({ reference: "OM82", payer: "ABCDE" }) };
+  assert.deepEqual(keys(five, "abxde"), ["a"]);
+});
+
+test("two edits away is not a match", () => {
+  const pool = { a: recorded({ reference: "JUNID1234", payer: "J SOAP" }) };
+  assert.deepEqual(keys(pool, "jonad1234"), []);
+  assert.deepEqual(keys(pool, "zzz9999"), []);
+});
+
+test("every token must land somewhere, unless the whole query does", () => {
+  const pool = {
+    hit: recorded({ payer: "JUNID MOH", reference: "OM82", at: 10 }),
+    wrongName: recorded({ payer: "SOMEBODY", reference: "OM82", at: 30 }),
+  };
+  assert.deepEqual(keys(pool, "junid om82"), ["hit"]);
+  assert.deepEqual(keys(pool, "junid zzzz"), []);
+  assert.deepEqual(keys(pool, "junid moh"), ["hit"]);
+});
+
+test("the bank's own transaction id is NOT a search key", () => {
+  const pool = { a: recorded({ bankRef: "4140542552", reference: "OM82", payer: "J SOAP" }) };
+  assert.deepEqual(keys(pool, "414054"), []);
+});
+
+test("nearestSubstringDistance: substring 0, one typo 1, transposition 1, unrelated more", () => {
+  assert.equal(nearestSubstringDistance("JUNID", "XXJUNID1234"), 0);
+  assert.equal(nearestSubstringDistance("JUNIX", "JUNID1234"), 1);
+  assert.equal(nearestSubstringDistance("JUIND1234", "JUNID1234"), 1);
+  assert.equal(nearestSubstringDistance("JUNID12345", "JUNID1234"), 1);
+  assert.equal(nearestSubstringDistance("JUND", "JUNID"), 1);
+  assert.equal(nearestSubstringDistance("ABCDE", "VWXYZ"), 5);
+  assert.equal(nearestSubstringDistance("", "ANY"), 0);
+  assert.equal(nearestSubstringDistance("ABC", ""), 3);
+});
+
+// ─── RANK AND CAP ────────────────────────────────────────────────────────────
+test("results are ranked by match strength, then newest first", () => {
+  const pool = {
+    olderExact: recorded({ reference: "JUNID", bankTs: 100, at: 1 }),
+    newerExact: recorded({ reference: "JUNID", bankTs: 200, at: 2 }),
+    newerSub: recorded({ reference: "XJUNIDX", bankTs: 300, at: 3 }),
+  };
+  assert.deepEqual(keys(pool, "junid"), ["newerExact", "olderExact", "newerSub"]);
+});
+
+test("results are capped at ten", () => {
+  const pool = {};
+  for (let i = 0; i < 60; i++) pool[`k${i}`] = recorded({ reference: "JUNID", at: i });
+  const { results, searched } = searchEftPool(pool, "junid");
+  assert.equal(EFT_SEARCH_LIMIT, 10);
+  assert.equal(results.length, 10);
+  assert.equal(searched, 60);
 });
 
 test("used payments come back from a real search as well, marked used", () => {
@@ -166,31 +287,20 @@ test("used payments come back from a real search as well, marked used", () => {
   assert.equal(results[0].used.receiptNumber, "00042");
 });
 
-test("results are capped at the screen's worth", () => {
-  const pool = {};
-  for (let i = 0; i < 60; i++) pool[`k${i}`] = recorded({ at: i });
-  const { results, searched } = searchEftPool(pool, "");
-  assert.equal(results.length, EFT_SEARCH_LIMIT);
-  assert.equal(searched, 60);
+test("every row carries what the cashier confirms against: amount, payer, reference, date", () => {
+  const { results } = searchEftPool({ a: recorded() }, "junid");
+  const [r] = results;
+  assert.equal(r.amountCents, 55000);
+  assert.equal(r.payer, "J SOAP");
+  assert.equal(r.reference, "JUNID1234");
+  assert.equal(r.paidAt, 890);
 });
 
-test("a query nothing matches returns no results, not everything", () => {
-  const pool = { a: recorded() };
-  assert.equal(searchEftPool(pool, "zzz9999").results.length, 0);
-});
-
-test("searchPlan reads amounts per token and caps token count", () => {
-  const plan = searchPlan("  junid   R550.00 ");
-  assert.equal(plan.tokens.length, 2);
-  assert.equal(plan.tokens[0].text, "JUNID");
-  assert.equal(plan.tokens[0].amountCents, null);
-  assert.equal(plan.tokens[1].amountCents, 55000);
-  assert.equal(searchPlan("a b c d e f g h i j k").tokens.length, 8);
-});
-
-test("scoreEftView: a zero amount never matches by amount", () => {
-  const v = publicEftView("k", recorded({ amountCents: 0, reference: null, payer: null, bankRef: null }));
-  assert.equal(scoreEftView(v, searchPlan("0")), null);
+test("scoreEftView: no tokens or too short → null, never everything", () => {
+  const v = publicEftView("k", recorded());
+  assert.equal(scoreEftView(v, searchPlan("")), null);
+  assert.equal(scoreEftView(v, searchPlan("ju")), null);
+  assert.ok(scoreEftView(v, searchPlan("jun")) > 0);
 });
 
 test("a partially-applied payment says where every rand went", () => {
