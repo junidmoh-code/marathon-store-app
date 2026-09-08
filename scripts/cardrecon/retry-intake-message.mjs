@@ -26,7 +26,7 @@ import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
 import { ImapFlow } from "imapflow";
 import { parseEnvText } from "./intakeCore.mjs";
-import { envelopeCandidateKeys } from "./eftCore.mjs";
+import { envelopeCandidateKeys, mergeEvictions } from "./eftCore.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
@@ -63,15 +63,25 @@ const db = admin.database();
 // 2026-09-08: the retry ran clean and the poller ignored the mail until the
 // cache file was deleted by hand.) Evict every key this message could sit
 // under: its candidate ledger keys and its uid marker(s).
+// TWO WRITES, AND THE SECOND IS THE ONE THAT HOLDS. Deleting the keys from the
+// cache file is undone by any tick that was already in flight (it holds its
+// own copy for minutes and saves it back). The eviction LIST is what the
+// poller honours at load and at every save, so the keys are recorded there
+// too — a tick that was mid-flight forgets them the moment it saves.
+const EVICT_WINDOW_MS = 30 * 86400000;
 function evictFromProcessedCache({ repo, messageId, uidValidity, uids }) {
+  const doomed = [
+    ...(envelopeCandidateKeys({ messageId }) ?? []),
+    ...uids.map((uid) => `u:${String(uidValidity ?? "")}:${uid}`),
+  ];
+  const evictFile = join(repo, "logs", "card-recon-evict.json");
+  let existing = {};
+  try { existing = JSON.parse(readFileSync(evictFile, "utf8")) || {}; } catch { /* first eviction */ }
+  writeFileSync(evictFile, JSON.stringify(mergeEvictions(existing, doomed, Date.now(), EVICT_WINDOW_MS)));
   const file = join(repo, "logs", "card-recon-processed.json");
   if (!existsSync(file)) return 0;
   let entries;
   try { entries = JSON.parse(readFileSync(file, "utf8")) || {}; } catch { return 0; }
-  const doomed = new Set([
-    ...(envelopeCandidateKeys({ messageId }) ?? []),
-    ...uids.map((uid) => `u:${String(uidValidity ?? "")}:${uid}`),
-  ]);
   let evicted = 0;
   for (const k of doomed) if (k in entries) { delete entries[k]; evicted++; }
   if (evicted) writeFileSync(file, JSON.stringify(entries));
@@ -138,7 +148,7 @@ try {
 }
 console.log(`marked ${unflagged} message(s) unread`);
 const evicted = evictFromProcessedCache({ repo: REPO, messageId: record.messageId, uidValidity, uids: seenUids });
-console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted (the poller would otherwise keep skipping this message)`);
+console.log(`local processed cache: ${evicted} entr${evicted === 1 ? "y" : "ies"} evicted now, and recorded on the eviction list the poller honours at its next save`);
 
 await db.ref(`${SEEN_PATH}/${record.messageKey}`).remove();
 console.log("claim cleared");

@@ -15,7 +15,7 @@ import {
   isEftCandidate, htmlToText, parseBankTimestamp, redactAccountDigits,
   parseAllowedAccountTails, accountVerdict, EFT_ACCOUNTS_ENV_VAR,
   maskAccountValue, looksPaymentShaped,
-  eftMessageKey, poolWriteDecision, eftPoolRecord, eftRetryPlan,
+  eftMessageKey, poolWriteDecision, eftPoolRecord, eftRetryPlan, applyEvictions, mergeEvictions,
   eftMessageRoute, looksLikeStrangerPayment, unknownBankRecord, UNKNOWN_BANK_RAW_LIMIT,
 } from "./eftCore.mjs";
 
@@ -790,5 +790,22 @@ describe("eftRetryPlan — re-running a refused notification after the fix", () 
     expect(eftRetryPlan({ poolKey: key, record: refused, seenRow: null, at: 1 }).why).toMatch(/No claim row/);
     expect(eftRetryPlan({ poolKey: key, record: { ...refused, messageId: null }, seenRow: {}, at: 1 }).why).toMatch(/Message-ID/);
     expect(eftRetryPlan({ poolKey: key, record: { ...refused, outcome: "unknown-bank" }, seenRow: {}, at: 1 }).why).toMatch(/unknown-bank/);
+  });
+});
+
+describe("eviction list — what the poller must forget, whatever its in-memory copy says", () => {
+  it("applyEvictions removes listed keys that are still fresh, ignores stale or unknown ones", () => {
+    const entries = { a: 1, b: 2, c: 3 };
+    const removed = applyEvictions(entries, { a: 1000, b: 10, zzz: 1000 }, 2000, 1500);
+    expect(removed).toBe(1);
+    expect(entries).toEqual({ b: 2, c: 3 }); // b's eviction is older than the window
+  });
+  it("mergeEvictions keeps fresh entries, drops stale ones, stamps new keys now", () => {
+    const out = mergeEvictions({ old: 10, kept: 1800 }, ["n1", "n2"], 2000, 500);
+    expect(out).toEqual({ kept: 1800, n1: 2000, n2: 2000 });
+  });
+  it("both tolerate null inputs", () => {
+    expect(applyEvictions({}, null, 1, 1)).toBe(0);
+    expect(mergeEvictions(null, null, 1, 1)).toEqual({});
   });
 });
