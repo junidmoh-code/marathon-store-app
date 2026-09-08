@@ -16,6 +16,7 @@ import { readFileSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
 import { fileURLToPath } from "url";
 import { dirname, join } from "path";
+import { requireCleanTree } from "./lib/mutationPreflight.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -543,6 +544,10 @@ function run(m) {
 
 let failures = 0;
 const rows = [];
+
+// ── PREFLIGHT: NEVER MUTATE AN ALREADY-DIRTY FILE ───────────────────────────
+// Runs BEFORE the baseline is captured — see scripts/lib/mutationPreflight.mjs.
+requireCleanTree(MUTATIONS.map((m) => m.file));
 
 for (const m of MUTATIONS) {
   const path = join(ROOT, m.file);

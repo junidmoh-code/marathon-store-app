@@ -11,9 +11,14 @@
 import { readFileSync, writeFileSync } from "fs";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
+import { requireCleanTree } from "./lib/mutationPreflight.mjs";
 
 const SRC = new URL("../functions/lib/social-twin.cjs", import.meta.url);
 const FUNCTIONS_DIR = fileURLToPath(new URL("../functions/", import.meta.url));
+// ── PREFLIGHT: NEVER MUTATE AN ALREADY-DIRTY FILE ───────────────────────────
+// Runs BEFORE the baseline is captured — see scripts/lib/mutationPreflight.mjs.
+requireCleanTree([SRC]);
+
 const original = readFileSync(SRC, "utf8");
 
 const restore = () => { try { writeFileSync(SRC, original); } catch { /* nothing left to do */ } };

@@ -12,6 +12,7 @@
 import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import { requireCleanTree } from "./lib/mutationPreflight.mjs";
 
 const ROOT = process.cwd();
 const F = (p) => path.join(ROOT, p);
@@ -145,6 +146,10 @@ function runTest(file) {
 }
 
 const originals = new Map();
+// ── PREFLIGHT: NEVER MUTATE AN ALREADY-DIRTY FILE ───────────────────────────
+// Runs BEFORE the baseline is captured — see scripts/lib/mutationPreflight.mjs.
+requireCleanTree(MUTATIONS.map((m) => F(m.file)));
+
 for (const m of MUTATIONS) if (!originals.has(m.file)) originals.set(m.file, fs.readFileSync(F(m.file), "utf8"));
 
 const rows = [];

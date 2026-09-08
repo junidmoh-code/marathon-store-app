@@ -1119,6 +1119,9 @@ const ASSIGNED = (assigned) => {
 
 const HUB1 = (over = {}) => CUSTOMER({ hub: "hub1", placedAtHub: "hub1", ...over });
 const HUB2 = (over = {}) => CUSTOMER({ id: "006", hub: "hub2", placedAtHub: "hub2", ...over });
+// Pine. destShop matches what every live hub3 order actually carries — all 714
+// of them in the fourteen days to 2026-09-08.
+const HUB3 = (over = {}) => CUSTOMER({ id: "007", hub: "hub3", placedAtHub: "hub3", destShop: "marathon-pine", ...over });
 
 test("NO ASSIGNMENT MEANS NOTHING IS SENT — a live token and full permission are not consent", async () => {
   // The whole model in one test. This person has a registered device, the
@@ -1330,4 +1333,163 @@ test("the STORE is still named, so a picker knows where the box is going", async
   await run({ ref }, m, "005", HUB1({ destShop: "trophy" }));
   assert.equal(m.calls[0].data.title, "Hub 1 — new order", "the title names what you are assigned to");
   assert.match(m.calls[0].data.body, /Trophy/, "the body names where it is going");
+});
+
+
+// ─── HUB 3 (PINE) IS A HUB LIKE THE OTHERS ───────────────────────────────────
+// Pine was excluded on the reasoning that it picks on its own floor. Reversed
+// 2026-09-08. Nothing in this file changed to enable it — the exclusion lived
+// entirely in the client's closed hub list — so these tests exist to prove that
+// "no change was needed" is true rather than merely believed, and that turning
+// Pine on did not quietly widen anything else.
+
+test("a HUB 3 assignee gets Pine orders, and neither of the other two hubs", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"], hub3: ["u_pine"] }));
+
+  const m3 = fakeMessaging();
+  const r3 = await run({ ref }, m3, "007", HUB3());
+  assert.equal(r3.sent, true, "Pine's order now reaches somebody");
+  assert.deepEqual(m3.calls[0].tokens, ["tok-u_pine"]);
+  assert.equal(m3.calls[0].data.hub, "hub3");
+
+  // And the same person hears nothing about the other two.
+  const m1 = fakeMessaging();
+  await run({ ref }, m1, "005", HUB1(), { newWindowId: () => "W2" });
+  assert.deepEqual(m1.calls[0].tokens, ["tok-u_one"], "Hub 1 is not Pine's business");
+
+  const m2 = fakeMessaging();
+  await run({ ref }, m2, "006", HUB2(), { newWindowId: () => "W3" });
+  assert.deepEqual(m2.calls[0].tokens, ["tok-u_two"], "nor is Hub 2");
+});
+
+test("someone assigned to Hub 1 AND Hub 3 hears about both, and about nothing else", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_both"], hub3: ["u_both"], hub2: ["u_two"] }));
+
+  const m1 = fakeMessaging();
+  await run({ ref }, m1, "005", HUB1());
+  assert.deepEqual(m1.calls[0].tokens, ["tok-u_both"]);
+
+  const m3 = fakeMessaging();
+  await run({ ref }, m3, "007", HUB3(), { newWindowId: () => "W2" });
+  assert.deepEqual(m3.calls[0].tokens, ["tok-u_both"]);
+
+  const m2 = fakeMessaging();
+  await run({ ref }, m2, "006", HUB2(), { newWindowId: () => "W3" });
+  assert.deepEqual(m2.calls[0].tokens, ["tok-u_two"], "two hubs assigned is not three");
+});
+
+test("the Hub 3 notification names Hub 3, and names Pine as the destination", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub3: ["u_pine"] }));
+  const m = fakeMessaging();
+  await run({ ref }, m, "007", HUB3());
+  assert.equal(m.calls[0].data.title, "Hub 3 — new order");
+  assert.match(m.calls[0].data.body, /Pine/);
+});
+
+test("BURST COLLAPSE STAYS PER HUB ACROSS ALL THREE — Pine cannot swallow Hub 1 or Hub 2", async () => {
+  // The window is keyed by hub, so three orders landing together must produce
+  // three notifications of one each — not one notification of three, and above
+  // all not a Hub 3 sentence with another hub's order hidden inside its count.
+  // Deliberately fired Pine FIRST, so a collapse would swallow the other two
+  // rather than the other way round.
+  const { ref, state } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"], hub3: ["u_pine"] }));
+  const m = fakeMessaging();
+
+  const a = await run({ ref }, m, "007", HUB3(),  { newWindowId: () => "W3" });
+  const b = await run({ ref }, m, "005", HUB1(),  { newWindowId: () => "W1" });
+  const c = await run({ ref }, m, "006", HUB2(),  { newWindowId: () => "W2" });
+
+  assert.deepEqual([a.sent, b.sent, c.sent], [true, true, true]);
+  assert.equal(m.calls.length, 3, "three hubs, three notifications");
+  assert.deepEqual(m.calls.map((x) => x.data.hub), ["hub3", "hub1", "hub2"]);
+  assert.deepEqual(m.calls.map((x) => x.data.count), ["1", "1", "1"],
+    "no hub's count may include another hub's order");
+  assert.deepEqual(m.calls.map((x) => x.tokens[0]), ["tok-u_pine", "tok-u_one", "tok-u_two"]);
+  // Three independent windows, one per hub node.
+  assert.ok(state.push_bursts.hub1 && state.push_bursts.hub2 && state.push_bursts.hub3);
+});
+
+test("two PINE orders together DO collapse — per-hub scoping is not per-hub disabling", async () => {
+  // The mirror of the test above: if collapse stopped working for hub3 the
+  // three-hub test would still pass, and a Pine cart would fire once per line.
+  const { ref } = fakeDb(ASSIGNED({ hub3: ["u_pine"] }));
+  const m = fakeMessaging();
+
+  // The claimer is held at the flush while the second lands — the real
+  // ordering, since the claimer is asleep for the window's duration.
+  let release;
+  const held = new Promise((r) => { release = r; });
+  const claimer = notifyOrderPlaced({
+    db: { ref }, messaging: m, orderId: "007", record: HUB3(), createdAt: AT,
+    nowMs: NOW, sleep: () => held, newWindowId: () => "W1",
+  });
+  const second = HUB3({ id: "008" });
+  const joiner = await notifyOrderPlaced({
+    db: { ref }, messaging: m, orderId: "008", record: second, createdAt: second.createdAt,
+    nowMs: NOW + 1, sleep: noSleep, newWindowId: () => "W2",
+  });
+  assert.equal(joiner.skipped, "joined_window");
+  assert.equal(m.calls.length, 0, "no joiner may send");
+
+  release();
+  const res = await claimer;
+  assert.equal(res.sent, true);
+  assert.equal(res.count, 2, "one hub, two orders, one sentence");
+  assert.equal(m.calls.length, 1);
+  assert.equal(m.calls[0].data.count, "2");
+});
+
+test("a Hub 3 order still notifies NOBODY when nobody is assigned to Hub 3", async () => {
+  // Making Pine assignable must not make it assigned. Absence is still off.
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"] }));
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "007", HUB3());
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "no_recipients");
+  assert.equal(m.calls.length, 0, "and above all it does not fall back to another hub's audience");
+});
+
+test("AN ORDER WITH NO HUB NOTIFIES NOBODY, AND DOES NOT FALL INTO HUB 3", async () => {
+  // The refusal must stay a refusal. With Pine now carrying a real audience,
+  // a malformed record quietly defaulting anywhere would deliver another hub's
+  // work — or every hub's — to Pine's phones.
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"], hub2: ["u_two"], hub3: ["u_pine"] }));
+
+  for (const [label, over] of [
+    ["absent",     { hub: undefined, placedAtHub: undefined }],
+    ["empty",      { hub: "", placedAtHub: "" }],
+    ["whitespace", { hub: "   ", placedAtHub: "   " }],
+    ["null",       { hub: null, placedAtHub: null }],
+  ]) {
+    const rec = CUSTOMER(over);
+    assert.equal(shouldNotify("005", rec, AT), "no_hub", `${label} hub must be refused`);
+    const m = fakeMessaging();
+    const res = await run({ ref }, m, "005", rec);
+    assert.equal(res.skipped, "no_hub", `${label}: refused`);
+    assert.equal(m.calls.length, 0, `${label}: nobody is told`);
+  }
+
+  // An illegal hub is refused for its own reason and also reaches nobody — it
+  // would otherwise become a path segment.
+  const bad = CUSTOMER({ hub: "hub3/../hub1", placedAtHub: "hub3/../hub1" });
+  assert.equal(shouldNotify("005", bad, AT), "bad_hub");
+  const mb = fakeMessaging();
+  assert.equal((await run({ ref }, mb, "005", bad)).skipped, "bad_hub");
+  assert.equal(mb.calls.length, 0);
+
+  // The control: the SAME fixture does notify when the hub is real, so the
+  // refusals above are not passing because the world is empty.
+  const ok = fakeMessaging();
+  assert.equal((await run({ ref }, ok, "007", HUB3())).sent, true);
+  assert.deepEqual(ok.calls[0].tokens, ["tok-u_pine"]);
+});
+
+test("a Hub 3 deep link opens Pine's own queue, not whichever hub was last used", async () => {
+  const { ref } = fakeDb(ASSIGNED({ hub3: ["u_pine"] }));
+  const m = fakeMessaging();
+  await run({ ref }, m, "007", HUB3());
+  assert.match(m.calls[0].data.link, /hub=hub3/);
+  // One tag PER HUB, so a Pine notification can never replace a Hub 1 or Hub 2
+  // one on the lock screen of somebody assigned to more than one.
+  assert.equal(m.calls[0].data.tag, "order-hub3");
 });

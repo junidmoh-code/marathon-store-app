@@ -80,10 +80,20 @@
 // permission and no entry in this index receives nothing, and nothing here
 // consults any other field to second-guess that.
 //
-// An order routed to hub3 (Pine, which picks on its own floor) therefore
-// resolves to nobody BY CONSTRUCTION rather than by a special case: no
-// assignment can name hub3, so /push_hub_audience/hub3 is always empty and the
-// burst closes quietly.
+// HUB 3 (PINE) IS ASSIGNABLE, since 2026-09-08. It used to resolve to nobody
+// by construction — no assignment could name hub3, so /push_hub_audience/hub3
+// was always empty and the burst closed quietly. Nothing in THIS file encoded
+// that: the exclusion lived entirely in the closed hub list on the client
+// (src/push/pushAssignments.js), which is why turning Pine on required no
+// change to the fan-out. Every step here — the audience read, the burst window,
+// the label, the deep link — has always been keyed by whatever hub the order
+// names, and hub3 was only ever a hub with an empty audience.
+//
+// It was not a quiet exclusion in practice. Over the fourteen days to
+// 2026-09-08 the live log holds 714 orders placed at hub3, every one carrying a
+// real `hub` of "hub3" and a destShop of "marathon-pine" — none refused as
+// no_hub or bad_hub, none a refill. They passed every guard below and arrived
+// at an audience that could never have had anybody in it.
 //
 // ── THE BURST WINDOW ────────────────────────────────────────────────────────
 // A store does not place one order, it places a cart; the engine's sweep does
