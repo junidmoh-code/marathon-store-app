@@ -293,6 +293,19 @@ const MUTATIONS = [
     to: `      {false && (`,
   },
 
+  {
+    id: "F6", file: VIEW, tests: VIEW_TESTS,
+    guard: "A DARK DISPLAY SIGNAL IS NOT A NEGATIVE ONE — the pill stays off rather than putting a finding on every row",
+    from: `      {displayKnown && !disp && <span style={pill(GRAY)}>No display</span>}`,
+    to: `      {!disp && <span style={pill(GRAY)}>No display</span>}`,
+  },
+  {
+    id: "F6b", file: VIEW, tests: VIEW_TESTS,
+    guard: "…and the screen SAYS the signal is missing rather than going quiet about it",
+    from: `      {!displayKnown && (`,
+    to: `      {false && (`,
+  },
+
   // ── the fence this PR did not move ────────────────────────────────────────
   {
     id: "M45", file: SCAN, nodeTests: ["test/refill-cadence.test.cjs"],

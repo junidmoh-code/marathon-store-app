@@ -120,7 +120,13 @@ async function runStockAuditPass({
           log.error(`[stock-audit] ${store}: display keys unavailable — ${e && e.message ? e.message : e}`);
           return null;
         }),
-        shallowKeys(app, `settings/stockAudit/${store}/results`).catch(() => []),
+        // Swallowing this one entirely was wrong: pruning is the only thing
+        // that bounds the results node, so a read failing in silence means it
+        // grows for years and nobody is told. It still must not cost the list.
+        shallowKeys(app, `settings/stockAudit/${store}/results`).catch((e) => {
+          log.error(`[stock-audit] ${store}: results prune skipped — ${e && e.message ? e.message : e}`);
+          return [];
+        }),
       ]);
 
       const snapshot = audit.buildStoreSnapshot({

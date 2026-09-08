@@ -251,11 +251,18 @@ function OosRow({ r, busy, onAction }) {
 // looking for: a row shows "No sale" when it has not sold, and "No display"
 // when none is registered. A product that sold and is on display draws no
 // pills at all and needs no reading.
-function Signals({ sold, disp, slow }) {
+function Signals({ sold, disp, slow, displayKnown = true }) {
   return (
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
       {!sold && <span style={pill(AMBER)}>No sale</span>}
-      {!disp && <span style={pill(GRAY)}>No display</span>}
+      {/* A DARK SIGNAL IS NOT A NEGATIVE ONE. When the display read failed the
+          pass writes displaySignal "unavailable" and every `disp` is false —
+          so drawing the pill would put "No display" on every row in the batch
+          and read as a finding. Half of Tab B's whole purpose is the
+          difference between no-sale-with-a-display and no-sale-without one;
+          inventing the answer is worse than not showing it. The banner above
+          says the signal is missing, and the pill stays off. */}
+      {displayKnown && !disp && <span style={pill(GRAY)}>No display</span>}
       {slow && <span style={pill(GREEN)}>Slow</span>}
     </div>
   );
@@ -310,6 +317,7 @@ function RotationRow({ row, title, sub, signals, busy, onAction }) {
 // floor, and it should be recorded where the whole product is in view.
 // (Adversarial architecture review, PR #580.)
 function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
+  const displayKnown = data.displaySignal !== "unavailable";
   const sizeRows = useMemo(
     () => rows.flatMap((r) => (r.z || []).map((z) => ({ ...z, p: r.p, n: r.n, slow: r.slow, key: `${r.p}__${z.sk}` }))),
     [rows]
@@ -320,13 +328,16 @@ function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
         <button onClick={() => setMode("product")} style={mode === "product" ? tabOn : tabOff}>Products</button>
         <button onClick={() => setMode("size")} style={mode === "size" ? tabOn : tabOff}>Sizes</button>
       </div>
+      {!displayKnown && (
+        <div style={{ ...rowBox, color: AMBER, fontSize: 12.5, marginBottom: 10 }}>Display registrations could not be read.</div>
+      )}
       {!rows.length ? <Empty text={data.rotation?.rows?.length ? "All checked." : "Nothing to check."} /> : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {mode === "product"
             ? rows.map((r) => (
                 <RotationRow key={r.p} row={r} busy={busy === r.p} onAction={onAction}
                   title={r.n} sub={(r.z || []).map((z) => `${formatSize(z.s)} ${z.q}`).join(" · ")}
-                  signals={{ sold: r.sold, disp: r.disp, slow: r.slow }} />
+                  signals={{ sold: r.sold, disp: r.disp, slow: r.slow, displayKnown }} />
               ))
             : sizeRows.map((z) => (
                 <div key={z.key} style={rowBox}>
@@ -334,7 +345,7 @@ function NotSelling({ data, rows, mode, setMode, busy, onAction }) {
                     <div style={nameStyle}>{z.n}</div>
                     <div style={subStyle}>{formatSize(z.s)} · {z.q}</div>
                   </div>
-                  <Signals sold={z.sold} disp={z.disp} slow={z.slow} />
+                  <Signals sold={z.sold} disp={z.disp} slow={z.slow} displayKnown={displayKnown} />
                 </div>
               ))}
         </div>

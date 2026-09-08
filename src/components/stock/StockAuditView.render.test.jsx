@@ -154,6 +154,26 @@ describe("StockAuditView", () => {
     expect(t.root.findAllByType("input")).toHaveLength(1);
   });
 
+  it("a DARK display signal is not drawn as 'No display' on every row", () => {
+    // Trophy's snapshot has no displaySignal at all (an older write) — known.
+    // Marathon PE's is flipped to unavailable here: the pass could not read the
+    // registrations, so every `disp` is false and the pill would put a finding
+    // on every row in the batch. Half of Tab B's purpose is telling
+    // no-sale-with-a-display from no-sale-without one; inventing the answer is
+    // worse than not showing it.
+    const pe = SNAPSHOTS["settings/stockAudit/marathon-pe/latest"];
+    const was = pe.displaySignal;
+    pe.displaySignal = "unavailable";
+    try {
+      const t = mount();
+      tap(t, "Not Selling");
+      const s = text(t);
+      expect(s).toContain("Display registrations could not be read.");
+      expect(s).not.toContain("No display");
+      expect(s).toContain("No sale");            // the signal that IS known still shows
+    } finally { pe.displaySignal = was; }
+  });
+
   it("says so plainly when there is nothing, rather than spinning", () => {
     const t = mount();
     tap(t, "Trophy");
