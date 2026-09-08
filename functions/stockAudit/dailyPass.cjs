@@ -151,15 +151,25 @@ async function runStockAuditPass({
         // The batch that is currently up. buildRotation keeps it on a
         // non-rotation day and mints a fresh one on Mon/Wed/Fri.
         prevBatchPids: state.batch?.[store]?.pids || null,
+        // When the standing batch was minted. A product stamped at or after
+        // this has been walked FOR THIS BATCH and drops off the list — the
+        // per-day results node cannot say that, because a carried batch
+        // outlives the day it was checked on.
+        prevBatchAt: state.batch?.[store]?.at || 0,
       });
       // Say so on the record rather than letting a false read as a fact.
       snapshot.displaySignal = displayKeys ? "ok" : "unavailable";
 
-      const ok = await setFn(db, `settings/stockAudit/${store}/latest`, snapshot, `stock-audit ${store} snapshot`);
+      // The batch identity is the PASS's state, not the card's. Lifted off the
+      // snapshot before the write so /latest stays exactly what the screen
+      // renders and nothing else.
+      const { batchPids, batchAt, ...rendered } = snapshot;
+
+      const ok = await setFn(db, `settings/stockAudit/${store}/latest`, rendered, `stock-audit ${store} snapshot`);
       if (ok) written.push(store);
 
       const upd = {
-        [`${STATE_PATH}/batch/${store}`]: { date: snapshot.rotation.batchDate, pids: snapshot.rotation.rows.map((r) => r.p) },
+        [`${STATE_PATH}/batch/${store}`]: { date: rendered.rotation.batchDate, at: batchAt, pids: batchPids },
       };
       for (const day of prunableResultDays(resultDays, saDate, RESULTS_KEEP_DAYS)) {
         upd[`settings/stockAudit/${store}/results/${day}`] = null;

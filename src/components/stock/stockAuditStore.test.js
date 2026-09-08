@@ -67,7 +67,9 @@ describe("adjustCellTo", () => {
   });
 
   it("refuses a negative or unreadable target before touching anything", async () => {
-    for (const bad of [-1, "abc", null, undefined, "", "  "]) {
+    // 3.5 is the one that used to get all the way to the database and be
+    // rejected as PERMISSION_DENIED, six retries later, as "try again".
+    for (const bad of [-1, "abc", null, undefined, "", "  ", 3.5, "2.5"]) {
       expect((await store.adjustCellTo({ loc: "hub2", productId: "p1", size: "L", actual: bad, what: "x", store: "s" })).ok).toBe(false);
     }
     expect(state.movements).toHaveLength(0);
@@ -76,7 +78,7 @@ describe("adjustCellTo", () => {
 
 describe("Tab A outcomes", () => {
   it("confirmed empty against a cell that AGREES moves no stock", async () => {
-    const agreed = { ...OOS_ROW, q: 0 };
+    const agreed = { ...OOS_ROW, q: 0 };          // and the LIVE cell is 0 too
     const res = await store.recordOutOfStockOutcome({ store: "marathon-pe", row: agreed, outcome: "confirmed_empty" });
     expect(res.ok).toBe(true);
     expect(state.movements).toHaveLength(0);
@@ -107,6 +109,19 @@ describe("Tab A outcomes", () => {
     });
     expect(res.ok).toBe(true);
     expect(state.movements[0]).toMatchObject({ type: "adjustment", qty: 2, to: "hub2", from: null, expect: { qty: -2 } });
+  });
+
+  it("confirmed empty CORRECTS from the live cell even when the snapshot said zero", async () => {
+    // The 07:00 snapshot recorded 0. A mis-scanned transfer credited 4 at
+    // 09:00. Staff walk the shelf at 15:00 and it is empty. Gating on the
+    // snapshot's number would record the check, drop the row, and leave hub2
+    // reading 4 — and the row never returns, because its request has aged out.
+    state.cells["stock/hub2/p1/L"] = { qty: 4 };
+    const res = await store.recordOutOfStockOutcome({
+      store: "marathon-pe", row: { ...OOS_ROW, q: 0 }, outcome: "confirmed_empty",
+    });
+    expect(res.ok).toBe(true);
+    expect(state.movements[0]).toMatchObject({ type: "adjustment", qty: 4, from: "hub2", expect: { qty: 4 } });
   });
 
   it("a REFUSED confirmed-empty correction records nothing either", async () => {

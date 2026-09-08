@@ -87,10 +87,10 @@ export const FAILURE = {
   write_failed: "Could not save — try again in a moment.",
   invalid_state: "Could not save — try again in a moment.",
   invalid_type: "Could not save — try again in a moment.",
-  invalid_quantity: "Enter a quantity of 0 or more.",
+  invalid_quantity: "Enter a whole number, 0 or more.",
   missing_location: "This row has no location.",
   missing_product_or_size: "This row is missing a product or size.",
-  qty_must_be_positive: "Enter a quantity of 0 or more.",
+  qty_must_be_positive: "Enter a whole number, 0 or more.",
   adjustment_requires_reason: "Could not save — try again in a moment.",
   expect_requires_single_cell: "Could not save — try again in a moment.",
   unknown_outcome: "Could not save — try again in a moment.",
@@ -363,7 +363,14 @@ function NotSelling({ data, rows, mode, setMode, busy, canAct, onAction }) {
       {!displayKnown && (
         <div style={{ ...rowBox, color: AMBER, fontSize: 12.5, marginBottom: 10 }}>Display registrations could not be read.</div>
       )}
-      {!rows.length ? <Empty text={data.rotation?.rows?.length ? "All checked." : "Nothing to check."} /> : (
+      {/* An empty list has two very different meanings and they must not look
+          the same: the batch was walked, or there was never anything in it. */}
+      {!rows.length ? (
+        <Empty text={
+          data.rotation?.walked ? `Batch done — ${data.rotation.walked} checked.`
+            : data.rotation?.rows?.length ? "All checked."
+            : "Nothing to check."} />
+      ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
           {mode === "product"
             ? rows.map((r) => (

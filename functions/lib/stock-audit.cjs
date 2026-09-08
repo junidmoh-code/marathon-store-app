@@ -39,7 +39,7 @@
 
 "use strict";
 
-const { isClothing, encodeSizeKey } = require("./refill-engine.cjs");
+const { isClothing } = require("./refill-engine.cjs");
 const { saDateStringFromMs, SAST_OFFSET_MS } = require("./sa-time.cjs");
 
 // The two shops this feature covers. Hard-coded, not config-driven: the scope
@@ -126,6 +126,28 @@ function isRotationDay(saDate, rotationDays) {
 }
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
+
+// ── THE /stock CELL KEY — the client's fold, not the engine's ────────────────
+// Byte-identical mirror of src/utils/sizeKey.js `stockSizeKey`, which is what
+// actually WROTE every cell in /stock (through applyMovement, the single
+// writer). The engine's encodeSizeKey is NOT the same function: it trims first,
+// so " M" becomes "M" there and "_M" here, and it does not fold the synthetic
+// "Free Size" label that the assistant order screen shows for a one-size line.
+//
+// Using the engine's encoder here produced a row that named a cell which does
+// not exist: it reported "system 0" for a size actually holding 6 in "_M",
+// staff read it as understated, tapped Adjust, and applyMovement — using the
+// CLIENT fold — created a second cell "M" beside the real one. One size, two
+// cells: the exact split #279 folded "Free Size" to close.
+//
+// A row's `sk` is therefore always a literal /stock key, from either side, and
+// decodeSizeKey(sk) round-trips back through this fold unchanged.
+function stockSizeKey(size) {
+  if (size == null || size === "" || size === "Free Size") return "_";
+  const s = typeof size === "number" ? String(size) : size;
+  if (typeof s !== "string") return s;
+  return s.replace(/[.#$[\]/\s]/g, "_");
+}
 const qtyAt = (stock, loc, pid, sizeKey) => num(stock?.[loc]?.[pid]?.[sizeKey]?.qty);
 
 // The identity of one checkable line: a product, a size, and the PLACE the
@@ -199,9 +221,15 @@ function buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, r
   //
   // Comparing rank makes the outcome independent of iteration order.
   // (Adversarial architecture review, PR #580.)
+  // Ties inside a rank are broken by the FRESHER evidence, so the surviving row
+  // never depends on iteration order either. Comparing rank alone left that
+  // half unfixed: `unfillable`, `awaiting_upstream` and a rejection against a
+  // non-positive cell are all rank 2, so for a cell carrying two of them the
+  // reason pill flipped with push-id order — a narrower guarantee than the
+  // sentence above claimed.
   const add = (row) => {
     const cur = rows.get(row.k);
-    if (!cur || row.rank < cur.rank) rows.set(row.k, row);
+    if (!cur || row.rank < cur.rank || (row.rank === cur.rank && row.at > cur.at)) rows.set(row.k, row);
   };
 
   // ── 3. negative cells (strongest evidence: it already happened) ────────────
@@ -212,8 +240,10 @@ function buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, r
       for (const sizeKey of Object.keys(byPid[pid] || {})) {
         const q = num(byPid[pid][sizeKey]?.qty);
         if (q >= 0) continue;
+        // A cell carries no timestamp of its own; it is standing evidence, and
+        // rank 0 is never contested by anything else, so 0 is honest here.
         add({ k: cellKey(pid, sizeKey, loc), p: pid, n: nameOf(products, pid),
-              s: sizeLabel(sizeKey), sk: sizeKey, w: loc, q, r: "negative_cell", rank: 0 });
+              s: sizeLabel(sizeKey), sk: sizeKey, w: loc, q, r: "negative_cell", rank: 0, at: 0 });
       }
     }
   }
@@ -227,14 +257,14 @@ function buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, r
     // and the route table is the fallback for older records that predate it.
     const where = rr.createdFrom?.source || source;
     if (!where) continue;
-    const sizeKey = encodeSizeKey(rr.size);
+    const sizeKey = stockSizeKey(rr.size);
     const believed = qtyAt(stock, where, pid, sizeKey);
 
     if (rr.status === "open") {
       if (believed > 0) continue;                       // the source can still answer
       add({ k: cellKey(pid, sizeKey, where), p: pid, n: nameOf(products, pid),
             s: sizeLabel(sizeKey), sk: sizeKey, w: where, q: believed,
-            r: "open_source_empty", rank: 2 });
+            r: "open_source_empty", rank: 2, at: Date.parse(rr.createdAt || 0) || 0 });
       continue;
     }
     if (rr.status !== "cancelled") continue;            // fulfilled — nothing to check
@@ -249,18 +279,40 @@ function buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, r
     // this whole tab exists to surface — rank it above the ordinary cases.
     const rank = why === "rejected" && believed > 0 ? 1 : 2;
     add({ k: cellKey(pid, sizeKey, where), p: pid, n: nameOf(products, pid),
-          s: sizeLabel(sizeKey), sk: sizeKey, w: where, q: believed, r: why, rank });
+          s: sizeLabel(sizeKey), sk: sizeKey, w: where, q: believed, r: why, rank, at: resolvedAt });
   }
 
-  const out = [...rows.values()].sort((a, b) =>
-    a.rank - b.rank || a.n.localeCompare(b.n) || a.s.localeCompare(b.s) || a.w.localeCompare(b.w));
-  const total = out.length;
-  // `rank` is a sort key, not something the card renders — drop it from the
-  // snapshot rather than pay for it in every row's bytes.
+  const byWeight = (a, b) =>
+    a.rank - b.rank || b.at - a.at || a.n.localeCompare(b.n) || a.s.localeCompare(b.s) || a.w.localeCompare(b.w);
+  const all = [...rows.values()].sort(byWeight);
+  const total = all.length;
+
+  // THE CAP IS SPLIT, because the upstream half is SHARED. Both audit stores
+  // route to the same Hub 2 and the same Central, so every negative cell there
+  // is emitted into BOTH lists — at rank 0, ahead of every rejection and every
+  // open-request row either shop owns. One bad dispatch run producing 120
+  // negative clothing cells upstream would fill Marathon PE's whole list with
+  // Central rows and cut every one of PE's own phantoms.
+  //
+  // Measured 2026-09-08: 0 negative clothing cells at hub2 and central, 57 at
+  // Marathon PE and 43 at Trophy — so the starvation is not live today. It is
+  // one dispatch away, and the fix is a fair split rather than a hope.
+  //
+  // Each side gets half the budget guaranteed and may take the other's unused
+  // half, so neither starves and a quiet upstream costs the store nothing.
+  const ownRows = all.filter((r) => r.w === store);
+  const upstreamRows = all.filter((r) => r.w !== store);
+  const cap = cfg.maxOutOfStockRows;
+  const half = Math.ceil(cap / 2);
+  const ownTake = Math.min(ownRows.length, Math.max(half, cap - upstreamRows.length));
+  const kept = [...ownRows.slice(0, ownTake), ...upstreamRows.slice(0, cap - ownTake)].sort(byWeight);
+
+  // `rank` and `at` are sort keys, not something the card renders — drop them
+  // rather than pay for them in every row's bytes.
   return {
-    rows: out.slice(0, cfg.maxOutOfStockRows).map(({ rank, ...r }) => r),
+    rows: kept.map(({ rank, at, ...r }) => r),
     total,
-    truncated: total > cfg.maxOutOfStockRows,
+    truncated: total > kept.length,
   };
 }
 
@@ -325,7 +377,7 @@ function soldIndex({ store, nowMs, movements, soldWindowDays }) {
     const ts = Date.parse(m.ts || m.appliedAt || 0);
     if (!Number.isFinite(ts) || ts < since) continue;
     byPid.add(m.productId);
-    bySize.add(`${m.productId}__${encodeSizeKey(m.size)}`);
+    bySize.add(`${m.productId}__${stockSizeKey(m.size)}`);
   }
   return { byPid, bySize };
 }
@@ -347,13 +399,14 @@ function displayIndex(displayKeys) {
   return { byPid, bySize };
 }
 
-function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, displayKeys, prevBatchPids }) {
+function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, displayKeys, prevBatchPids, prevBatchAt }) {
   const universe = rotationUniverse({ store, stock, products });
   const fresh = isRotationDay(saDate, cfg.rotationDays);
   // On a rotation day a new batch is minted. On every other day the batch that
   // is already up stays up — staff finish the one they were given rather than
   // watching it change under them, and nobody has to press anything either way.
   let picked;
+  let batchAt = nowMs;
   if (fresh || !prevBatchPids || !prevBatchPids.length) {
     picked = selectRotationBatch({ universe, rotationState, batchSize: cfg.batchSize });
   } else {
@@ -361,9 +414,34 @@ function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, 
     picked = prevBatchPids.map((pid) => inUniverse.get(pid)).filter(Boolean);
     // A carried batch that has emptied out (every product sold to zero) would
     // leave the card blank until the next rotation day. Refill it rather than
-    // show nothing.
+    // show nothing. A batch emptied by being CHECKED is a different thing and
+    // is handled below — that one should show as finished, not restart.
     if (!picked.length) picked = selectRotationBatch({ universe, rotationState, batchSize: cfg.batchSize });
+    else batchAt = Number(prevBatchAt) || 0;
   }
+
+  // ── A BATCH ALREADY WALKED MUST NOT COME BACK AS A QUESTION ────────────────
+  // The "already actioned" memory (/settings/stockAudit/{store}/results/{day})
+  // is per SA DAY, but a carried batch outlives the day it was checked on. So a
+  // batch cleared on Monday came back in full on Tuesday, Thursday, Saturday
+  // and Sunday — four days out of seven — with every button live and nothing on
+  // screen saying it had been done. Staff redid finished work, the real sweep
+  // ran far slower than the cycle length claims, and a line stamped "present
+  // but slow" was re-asked the very next morning, which is exactly the owner
+  // rule that a confirmed slow mover must not come back as a question.
+  //
+  // The rotation stamp is the durable record and it was already being read.
+  // A product stamped at or after this batch was minted has been walked FOR
+  // THIS BATCH and drops out of the rows — while staying in the batch list, so
+  // tomorrow still knows which thirty products the batch was.
+  const walked = new Set(
+    picked.filter(({ pid }) => {
+      const at = Number(rotationState?.[pid]?.at);
+      return Number.isFinite(at) && at > 0 && at >= batchAt;
+    }).map((x) => x.pid)
+  );
+  const batchPids = picked.map((x) => x.pid);
+  picked = picked.filter(({ pid }) => !walked.has(pid));
 
   const sold = soldIndex({ store, nowMs, movements, soldWindowDays: cfg.soldWindowDays });
   const disp = displayIndex(displayKeys);
@@ -391,7 +469,10 @@ function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, 
     };
   });
 
-  return { rows, universeSize: universe.length, refreshed: fresh, batchDate: saDate };
+  return {
+    rows, universeSize: universe.length, refreshed: fresh, batchDate: saDate,
+    batchAt, batchPids, walked: walked.size,
+  };
 }
 
 // ─── THE SNAPSHOT ────────────────────────────────────────────────────────────
@@ -399,10 +480,10 @@ function buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, 
 // /stock_movements (for adjustments) and /settings/stockAudit/{store}/results
 // (for outcomes) — this node is a render cache and may be thrown away and
 // recomputed at any time.
-function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, refillRequests, movements, routes, rotationState, displayKeys, prevBatchPids }) {
+function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, refillRequests, movements, routes, rotationState, displayKeys, prevBatchPids, prevBatchAt }) {
   const oos = buildOutOfStock({ store, nowMs, cfg, stock, products, refillRequests, routes });
-  const rot = buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, displayKeys, prevBatchPids });
-  return {
+  const rot = buildRotation({ store, nowMs, cfg, saDate, stock, products, movements, rotationState, displayKeys, prevBatchPids, prevBatchAt });
+  const snap = {
     computedAt: new Date(nowMs).toISOString(),
     saDate,
     store,
@@ -415,14 +496,24 @@ function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, refill
       // Cycle length in batches, so the card can say how long a full sweep
       // takes without the client counting anything.
       cycleBatches: Math.ceil(rot.universeSize / cfg.batchSize) || 0,
+      // How many of this batch have already been walked — so the card can say
+      // the batch is finished rather than showing an empty list that reads the
+      // same as "nothing to check".
+      walked: rot.walked,
+      batchSize: rot.batchPids.length,
     },
   };
+  // The full batch, for the pass's own state — never part of what the card
+  // reads, and deliberately not inside the snapshot's byte budget.
+  snap.batchPids = rot.batchPids;
+  snap.batchAt = rot.batchAt;
+  return snap;
 }
 
 module.exports = {
   AUDIT_STORES, WEEKDAYS, DEFAULTS,
   auditConfig, saHour, saWeekday, shouldRunDailyPass, isRotationDay,
-  cellKey, sizeLabel,
+  cellKey, sizeLabel, stockSizeKey,
   buildOutOfStock, rotationUniverse, selectRotationBatch, soldIndex, displayIndex,
   buildRotation, buildStoreSnapshot,
 };

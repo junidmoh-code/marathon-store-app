@@ -42,7 +42,7 @@ const SNAPSHOTS = {
   "settings/stockAudit/trophy/latest": {
     store: "trophy", saDate: "2026-09-04",
     oos: { total: 1, truncated: false, rows: [{ k: "z__S__central", p: "z", n: "Trophy Only Tee", s: "S", sk: "S", w: "central", q: 0, r: "unfillable" }] },
-    rotation: { batchDate: "2026-09-07", refreshed: true, universeSize: 10, cycleBatches: 1, rows: [] },
+    rotation: { batchDate: "2026-09-07", refreshed: false, universeSize: 10, cycleBatches: 1, rows: [], walked: 30, batchSize: 30 },
   },
   // one row already actioned today — it must not come back
   "settings/stockAudit/marathon-pe/results/2026-09-07": { "b__M__marathon-pe": { outcome: "confirmed_empty" } },
@@ -227,10 +227,16 @@ describe("StockAuditView", () => {
     } finally { vi.useRealTimers(); NOW_MS.v = Date.parse("2026-09-07T09:00:00.000Z"); }
   });
 
-  it("says so plainly when there is nothing, rather than spinning", () => {
+  it("a walked batch says it is done, not that there was nothing to do", () => {
+    // The two empty lists mean opposite things. A batch carried across a
+    // non-rotation day and already cleared must read as finished work, not as
+    // an empty shop.
     const t = mount();
     tap(t, "Trophy");
     tap(t, "Not Selling");
-    expect(text(t)).toContain("Nothing to check");
+    const s = text(t);
+    expect(s).toContain("Batch done");
+    expect(s).toContain("30 checked");
+    expect(s).not.toContain("Nothing to check");
   });
 });

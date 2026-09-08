@@ -341,6 +341,143 @@ test("a new batch on a rotation day; the standing batch is kept on other days", 
   assert.equal(empty.rows.length, 3);
 });
 
+test("a batch already walked does not come back on the next non-rotation day", () => {
+  // Monday's batch is cleared. Tuesday, Thursday, Saturday and Sunday are not
+  // rotation days, so the SAME batch is carried — and the per-day results node
+  // cannot remember Monday. Without the stamp check, staff redo finished work
+  // four days out of seven and a "present but slow" line is re-asked the very
+  // next morning.
+  const args = {
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS,
+    movements: MOVEMENTS, displayKeys: [],
+  };
+  const MON = Date.parse("2026-09-07T06:00:00.000Z");
+
+  const minted = sa.buildRotation({ ...args, saDate: "2026-09-07", nowMs: MON, rotationState: {}, prevBatchPids: null });
+  assert.equal(minted.refreshed, true);
+  assert.equal(minted.rows.length, 3);
+  assert.equal(minted.batchAt, MON);
+  assert.deepEqual(minted.batchPids.sort(), ["belt", "hood", "tee"]);
+
+  // Monday: staff walk two of the three, one of them "present but slow".
+  const stamped = { tee: { at: MON + 3600e3, o: "present" }, belt: { at: MON + 3700e3, o: "slow" } };
+  const tue = sa.buildRotation({
+    ...args, saDate: "2026-09-08", rotationState: stamped,
+    prevBatchPids: minted.batchPids, prevBatchAt: minted.batchAt,
+  });
+  assert.equal(tue.refreshed, false);
+  assert.deepEqual(tue.rows.map((r) => r.p), ["hood"], "only the unwalked one is still a question");
+  assert.equal(tue.walked, 2);
+  assert.deepEqual(tue.batchPids.sort(), ["belt", "hood", "tee"], "the batch identity survives");
+
+  // the whole batch walked → the list is finished, and does NOT restart
+  const allDone = { ...stamped, hood: { at: MON + 3800e3, o: "present" } };
+  const wed = sa.buildRotation({
+    ...args, saDate: "2026-09-08", rotationState: allDone,
+    prevBatchPids: minted.batchPids, prevBatchAt: minted.batchAt,
+  });
+  assert.deepEqual(wed.rows, []);
+  assert.equal(wed.walked, 3);
+  assert.equal(wed.batchPids.length, 3);
+});
+
+test("a stamp from BEFORE this batch was minted does not count as walked", () => {
+  // The whole point of a rotation is that a product checked months ago comes
+  // round again. Comparing against the batch's mint time, not merely "has a
+  // stamp", is what keeps that true.
+  const args = {
+    store: "marathon-pe", nowMs: NOW, cfg: CFG, stock: STOCK, products: PRODUCTS,
+    movements: MOVEMENTS, displayKeys: [], saDate: "2026-09-08",
+  };
+  const MON = Date.parse("2026-09-07T06:00:00.000Z");
+  const old = sa.buildRotation({
+    ...args, rotationState: { tee: { at: MON - 90 * 864e5, o: "present" } },
+    prevBatchPids: ["tee", "hood"], prevBatchAt: MON,
+  });
+  assert.deepEqual(old.rows.map((r) => r.p), ["tee", "hood"]);
+  assert.equal(old.walked, 0);
+});
+
+test("the out-of-stock cap cannot be filled entirely by SHARED upstream rows", () => {
+  // hub2 and central are the source for BOTH audit stores, so their negatives
+  // land in both lists at rank 0 — ahead of every row the shop itself owns.
+  const products = {}, pe = {}, hub2 = {};
+  for (let i = 0; i < 200; i++) {
+    const pid = `u${String(i).padStart(3, "0")}`;
+    products[pid] = { name: `Upstream ${i}`, productType: "clothing" };
+    hub2[pid] = { M: { qty: -1 } };
+  }
+  for (let i = 0; i < 40; i++) {
+    const pid = `s${String(i).padStart(3, "0")}`;
+    products[pid] = { name: `Shop ${i}`, productType: "clothing" };
+    pe[pid] = { M: { qty: -1 } };
+  }
+  const { rows, total, truncated } = sa.buildOutOfStock({
+    store: "marathon-pe", nowMs: NOW, cfg: sa.auditConfig({ maxOutOfStockRows: 100 }),
+    stock: { "marathon-pe": pe, hub2, central: {} }, products, refillRequests: {}, routes: ROUTES,
+  });
+  assert.equal(total, 240);
+  assert.equal(truncated, true);
+  assert.equal(rows.length, 100);
+  const own = rows.filter((r) => r.w === "marathon-pe");
+  assert.equal(own.length, 40, "every one of the shop's own rows must survive the cap");
+  assert.equal(rows.length - own.length, 60, "and the shared upstream rows take the rest");
+});
+
+test("with nothing upstream, the shop's own rows may take the whole budget", () => {
+  const products = {}, pe = {};
+  for (let i = 0; i < 200; i++) {
+    const pid = `s${String(i).padStart(3, "0")}`;
+    products[pid] = { name: `Shop ${i}`, productType: "clothing" };
+    pe[pid] = { M: { qty: -1 } };
+  }
+  const { rows } = sa.buildOutOfStock({
+    store: "marathon-pe", nowMs: NOW, cfg: sa.auditConfig({ maxOutOfStockRows: 100 }),
+    stock: { "marathon-pe": pe, hub2: {}, central: {} }, products, refillRequests: {}, routes: ROUTES,
+  });
+  assert.equal(rows.length, 100);
+  assert.equal(rows.every((r) => r.w === "marathon-pe"), true);
+});
+
+test("the cell key is /stock's own fold, not the engine's trimming encoder", () => {
+  // The engine encoder trims (" M" -> "M"); applyMovement, which WROTE every
+  // cell, does not (" M" -> "_M"). Deriving a row's key with the wrong one
+  // named a cell that does not exist, and the Adjust that followed created a
+  // second cell beside the real units.
+  assert.equal(sa.stockSizeKey(" M"), "_M");
+  assert.equal(sa.stockSizeKey("Free Size"), "_");
+  assert.equal(sa.stockSizeKey(""), "_");
+  assert.equal(sa.stockSizeKey(null), "_");
+  assert.equal(sa.stockSizeKey(5.5), "5_5");
+  assert.equal(sa.stockSizeKey("XXXL"), "XXXL");
+
+  const { rows } = sa.buildOutOfStock({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG,
+    stock: { "marathon-pe": {}, hub2: { tee: { _M: { qty: 6 } } }, central: {} },
+    products: PRODUCTS, routes: ROUTES,
+    refillRequests: { x: { requestingLocation: "marathon-pe", productId: "tee", size: " M",
+                          status: "cancelled", resolvedAt: iso(1e3), createdFrom: { source: "hub2" } } },
+  });
+  const row = rows.find((r) => r.p === "tee");
+  assert.equal(row.sk, "_M");
+  assert.equal(row.q, 6, "the row must read the cell that actually holds the units");
+  assert.equal(row.k, "tee___M__hub2");
+});
+
+test("inside one rank the FRESHER evidence wins, not the first record read", () => {
+  const older = { requestingLocation: "marathon-pe", productId: "tee", size: "M", status: "cancelled",
+                  cancelReason: "unfillable", resolvedAt: iso(5 * 3600e3), createdFrom: { source: "hub2" } };
+  const newer = { requestingLocation: "marathon-pe", productId: "tee", size: "M", status: "cancelled",
+                  cancelReason: "awaiting_upstream", resolvedAt: iso(1 * 3600e3), createdFrom: { source: "hub2" } };
+  const run = (rr) => sa.buildOutOfStock({
+    store: "marathon-pe", nowMs: NOW, cfg: CFG,
+    stock: { "marathon-pe": {}, hub2: STOCK.hub2, central: {} },
+    products: PRODUCTS, refillRequests: rr, routes: ROUTES,
+  }).rows.find((r) => r.k === "tee__M__hub2");
+  assert.equal(run({ a: older, b: newer }).r, "awaiting_upstream");
+  assert.equal(run({ b: newer, a: older }).r, "awaiting_upstream");
+});
+
 // ── THE ROTATION PROOF ───────────────────────────────────────────────────────
 // The claim this feature rests on: the sweep reaches EVERY product and starves
 // none. Simulated over many cycles against a universe that does not divide

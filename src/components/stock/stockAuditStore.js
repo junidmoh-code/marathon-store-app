@@ -61,7 +61,14 @@ export async function adjustCellTo({ loc, productId, size, actual, what, store, 
   // the most destructive one. An absolute quantity must be typed to count.
   if (actual === null || actual === undefined || String(actual).trim() === "") return { ok: false, reason: "invalid_quantity" };
   const target = Number(actual);
-  if (!Number.isFinite(target) || target < 0) return { ok: false, reason: "invalid_quantity" };
+  // WHOLE UNITS ONLY. The /stock rule requires qty % 1 === 0, so "3.5" is
+  // rejected by the database as PERMISSION_DENIED — indistinguishable from a
+  // version conflict, so applyMovement burns all six retries and returns
+  // write_failed, which the screen renders as "try again in a moment". It never
+  // works. Refusing here says the true thing on the first tap.
+  if (!Number.isFinite(target) || target < 0 || !Number.isInteger(target)) {
+    return { ok: false, reason: "invalid_quantity" };
+  }
 
   // The LIVE cell, read at the moment of the tap — never the snapshot's number.
   const snap = await get(ref(database, stockCellPath(loc, productId, size)));
@@ -90,18 +97,21 @@ export async function adjustCellTo({ loc, productId, size, actual, what, store, 
 // "Confirmed empty" means the human walked to the shelf and there is nothing on
 // it. What that implies depends on what the system believed:
 //
-//   believed = 0   →  the shelf and the system agree. Record the check, write
-//                     no movement; an adjustment that changes nothing is
-//                     ledger noise.
-//   believed > 0   →  they DISAGREE, and this is the exact phantom the tab
-//                     exists to find — a line rejected against a cell that
-//                     still reads seven. The cell is corrected to zero.
-//   believed < 0   →  they disagree the other way. A negative cell is
-//                     arithmetic that already happened and is wrong by
-//                     definition; an empty shelf means zero, not minus two.
-//                     Corrected too — otherwise the one button that describes
-//                     what the person did leaves the cell wrong and the row
-//                     comes back tomorrow unchanged, every day, forever.
+// It always drives the cell to zero, and it does NOT ask the snapshot first.
+//
+// It used to: `Number(row.q) !== 0` decided whether a correction happened at
+// all — which is Rule 2 broken by the code four lines under the comment
+// stating it. The snapshot can be nine hours old. A cell that read 0 at 07:00
+// and was credited 4 by a mis-scanned transfer at 09:00 would take the
+// no-correction branch at 15:00: the check recorded, the row gone, and hub2
+// still reading 4 with an empty shelf. By the next pass the triggering request
+// has aged out of the lookback window, so it never returns — the exact burial
+// this button was already fixed once for.
+//
+// The gate was never needed. adjustCellTo reads the LIVE cell and returns
+// { ok: true, noop: true } when the delta is zero, which is precisely the
+// "shelf and system agree, write no ledger noise" behaviour that was wanted.
+// One source of truth for the quantity, and it is never the snapshot.
 //
 // This button used to record in both cases. That was the worst hole in the
 // feature: staff confirming an empty shelf would close the row, no correction
@@ -116,7 +126,7 @@ export async function recordOutOfStockOutcome({ store, row, outcome, actual, act
   if (!uid) return { ok: false, reason: "not_authenticated" };
 
   let movementId = null;
-  if (outcome === "confirmed_empty" && Number(row.q) !== 0) {
+  if (outcome === "confirmed_empty") {
     const res = await adjustCellTo({
       loc: row.w, productId: row.p, size: decodeSizeKey(row.sk),
       actual: 0, what: "confirmed empty", store, actorRole,

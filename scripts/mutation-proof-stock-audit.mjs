@@ -332,6 +332,68 @@ const MUTATIONS = [
     to: `  const resultsKnown = true;`,
   },
 
+  // ── second-brain review, PR #580 ──────────────────────────────────────────
+  {
+    id: "S1", file: LIB, nodeTests: LIB_TESTS,
+    guard: "A BATCH ALREADY WALKED DOES NOT COME BACK — the per-day results node cannot remember a carried batch",
+    from: `      return Number.isFinite(at) && at > 0 && at >= batchAt;`,
+    to: `      return false;`,
+  },
+  {
+    id: "S1b", file: LIB, nodeTests: LIB_TESTS,
+    guard: "…and a stamp from BEFORE the batch was minted does not count, so the rotation still comes round",
+    from: `      return Number.isFinite(at) && at > 0 && at >= batchAt;`,
+    to: `      return Number.isFinite(at) && at > 0;`,
+  },
+  {
+    id: "S1c", file: LIB, nodeTests: LIB_TESTS,
+    guard: "the batch IDENTITY survives the walked filter, so tomorrow still knows which thirty it was",
+    from: `  const batchPids = picked.map((x) => x.pid);\n  picked = picked.filter(({ pid }) => !walked.has(pid));`,
+    to: `  picked = picked.filter(({ pid }) => !walked.has(pid));\n  const batchPids = picked.map((x) => x.pid);`,
+  },
+  {
+    id: "S2", file: VIEW, tests: VIEW_TESTS,
+    guard: "a walked batch reads as FINISHED, not as an empty shop",
+    from: `          data.rotation?.walked ? \`Batch done — \${data.rotation.walked} checked.\``,
+    to: `          false ? ""`,
+  },
+  {
+    id: "S3", file: STORE, tests: STORE_TESTS,
+    guard: "CONFIRMED EMPTY NEVER ASKS THE SNAPSHOT — the live cell is the only quantity that decides",
+    from: `  if (outcome === "confirmed_empty") {`,
+    to: `  if (outcome === "confirmed_empty" && Number(row.q) !== 0) {`,
+  },
+  {
+    id: "S4", file: LIB, nodeTests: LIB_TESTS,
+    guard: "THE CELL KEY IS /stock's OWN FOLD — the engine's trimming encoder names cells that do not exist",
+    from: `    const sizeKey = stockSizeKey(rr.size);`,
+    to: `    const sizeKey = require("./refill-engine.cjs").encodeSizeKey(rr.size);`,
+  },
+  {
+    id: "S4b", file: LIB, nodeTests: LIB_TESTS,
+    guard: "…and the fold keeps the synthetic \"Free Size\" label off its own phantom cell",
+    from: `  if (size == null || size === "" || size === "Free Size") return "_";`,
+    to: `  if (size == null || size === "") return "_";`,
+  },
+  {
+    id: "S5", file: LIB, nodeTests: LIB_TESTS,
+    guard: "THE SHARED UPSTREAM HALF CANNOT EAT THE WHOLE CAP — hub2/central negatives land in BOTH stores' lists",
+    from: `  const kept = [...ownRows.slice(0, ownTake), ...upstreamRows.slice(0, cap - ownTake)].sort(byWeight);`,
+    to: `  const kept = all.slice(0, cap);`,
+  },
+  {
+    id: "S6", file: LIB, nodeTests: LIB_TESTS,
+    guard: "inside one rank the FRESHER evidence wins, so no reason pill depends on push-id order",
+    from: `    if (!cur || row.rank < cur.rank || (row.rank === cur.rank && row.at > cur.at)) rows.set(row.k, row);`,
+    to: `    if (!cur || row.rank < cur.rank) rows.set(row.k, row);`,
+  },
+  {
+    id: "S7", file: STORE, tests: STORE_TESTS,
+    guard: "WHOLE UNITS ONLY — a fraction is refused here, not six retries later as \"try again\"",
+    from: `  if (!Number.isFinite(target) || target < 0 || !Number.isInteger(target)) {`,
+    to: `  if (!Number.isFinite(target) || target < 0) {`,
+  },
+
   // ── the fence this PR did not move ────────────────────────────────────────
   {
     id: "M45", file: SCAN, nodeTests: ["test/refill-cadence.test.cjs"],
