@@ -1,0 +1,748 @@
+{
+  "scannedAt": "2026-08-22T09:55:31.719Z",
+  "scanned": 4331,
+  "anyTrigger": 3185,
+  "newlyRefused": 97,
+  "byLabel": {
+    "dolce gabbana": 25,
+    "gabbana": 25,
+    "manchester united": 6,
+    "ac milan": 2,
+    "o2": 1,
+    "arsenal": 8,
+    "barcelona": 12,
+    "fly emirates": 2,
+    "emirates": 2,
+    "etihad": 1,
+    "manchester city": 2,
+    "paris saint germain": 4,
+    "sporting cp": 1,
+    "chelsea": 6,
+    "crown paints": 1,
+    "liverpool": 4,
+    "real madrid": 8,
+    "inter milan": 1,
+    "lakers": 2,
+    "juventus": 3,
+    "tottenham": 2,
+    "newcastle": 3,
+    "nascar": 2,
+    "lazio": 1,
+    "mclaren": 1,
+    "mercedes": 1,
+    "barrow": 3
+  },
+  "records": [
+    {
+      "id": "p1778240738113",
+      "name": "Dolce & Gabbana New Roma White Pink Green",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1778240776459",
+      "name": "Dolce & Gabbana New Roma White Red",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1778240809348",
+      "name": "Dolce & Gabbana Leather Low Classic White Black",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1778241326974",
+      "name": "Dolce & Gabbana White Blue Denim",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1778843940330",
+      "name": "Dolce & Gabbana Slide Black",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1778844013006",
+      "name": "Dolce & Gabbana Slide White Navy",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1779104601625",
+      "name": "Dolce & Gabbana White Custom 2.Zero",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1779104639473",
+      "name": "Dolce & Gabbana Perforated Logo Leather Sneaker White",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1782385696142",
+      "name": "Manchester United Home Long Sleeve Jersey",
+      "hits": [
+        "manchester united"
+      ]
+    },
+    {
+      "id": "p1782395517818",
+      "name": "AC Milan Away Jersey",
+      "hits": [
+        "ac milan"
+      ]
+    },
+    {
+      "id": "p1782399048627",
+      "name": "Arsenal O2 Away Jersey Blue",
+      "hits": [
+        "o2",
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1782460905069",
+      "name": "Barcelona Soccer Jersey Black",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782460986438",
+      "name": "FC Barcelona Away Jersey Mint",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782463528135",
+      "name": "Arsenal Fly Emirates Jersey",
+      "hits": [
+        "fly emirates",
+        "emirates",
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1782464117738",
+      "name": "Manchester City Etihad Airways Jersey Orange",
+      "hits": [
+        "etihad",
+        "manchester city"
+      ]
+    },
+    {
+      "id": "p1782464409772",
+      "name": "Paris Saint-Germain Qatar Airways Home Jersey",
+      "hits": [
+        "paris saint germain"
+      ]
+    },
+    {
+      "id": "p1782464491665",
+      "name": "Paris Saint-Germain Football Club Jersey Black Pink",
+      "hits": [
+        "paris saint germain"
+      ]
+    },
+    {
+      "id": "p1782469181772",
+      "name": "Arsenal Soccer Jersey Red Navy Geometric Pattern",
+      "hits": [
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1782473092397",
+      "name": "Sporting CP Home Jersey Green White Striped",
+      "hits": [
+        "sporting cp"
+      ]
+    },
+    {
+      "id": "p1782474138581",
+      "name": "Chelsea Fly Emirates White",
+      "hits": [
+        "fly emirates",
+        "emirates",
+        "chelsea"
+      ]
+    },
+    {
+      "id": "p1782478927355",
+      "name": "Liverpool FC Crown Paints Jersey Red",
+      "hits": [
+        "crown paints",
+        "liverpool"
+      ]
+    },
+    {
+      "id": "p1782546681626",
+      "name": "Barcelona tracksuit Lame",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782547404129",
+      "name": "Manchester united tracksuit black ",
+      "hits": [
+        "manchester united"
+      ]
+    },
+    {
+      "id": "p1782547480942",
+      "name": "Barcelona tracksuit black ",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782547633535",
+      "name": "Barcelona tracksuit white/red",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782547758022",
+      "name": "Barcelona tracksuit red",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782548114582",
+      "name": "Barcelona tracksuit blue/red",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782548215469",
+      "name": "Barcelona tracksuit navy/maroon",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782548306313",
+      "name": "Barcelona tracksuit black ",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782548431642",
+      "name": "Paris Saint Germain tracksuit red/navy",
+      "hits": [
+        "paris saint germain"
+      ]
+    },
+    {
+      "id": "p1782548787681",
+      "name": "Paris Saint Germain tracksuit Navyblue ",
+      "hits": [
+        "paris saint germain"
+      ]
+    },
+    {
+      "id": "p1782548875827",
+      "name": "Ac Milan tracksuit red with black ",
+      "hits": [
+        "ac milan"
+      ]
+    },
+    {
+      "id": "p1782548939873",
+      "name": "Real Madrid tracksuit pink",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1782549022546",
+      "name": "Real Madrid tracksuit orange",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1782549122407",
+      "name": "Barcelona tracksuit navy",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782551434319",
+      "name": "Real Madrid soccer jerseys blue bs-",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1782561793668",
+      "name": "Soccer jerseys inter Milan blue bs-4230496",
+      "hits": [
+        "inter milan"
+      ]
+    },
+    {
+      "id": "p1782562033722",
+      "name": "Soccer jerseys Real Madrid white bs-95985",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1782562101908",
+      "name": "Soccer jerseys Barcelona bs-4230496",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1782724557011",
+      "name": "New Lakers fitted cap black with purple ",
+      "hits": [
+        "lakers"
+      ]
+    },
+    {
+      "id": "p1783089003644",
+      "name": "Dolce&Gabbana",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1783323795787",
+      "name": "Dolce & Gabbana Glasses",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1784380764604",
+      "name": "Manchester united ",
+      "hits": [
+        "manchester united"
+      ]
+    },
+    {
+      "id": "p1784380930788",
+      "name": "Arsenal ",
+      "hits": [
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1784381177655",
+      "name": "Juventus ",
+      "hits": [
+        "juventus"
+      ]
+    },
+    {
+      "id": "p1784381369711",
+      "name": "Chelsea ",
+      "hits": [
+        "chelsea"
+      ]
+    },
+    {
+      "id": "p1784382027385",
+      "name": "Liverpool soccer jerseys",
+      "hits": [
+        "liverpool"
+      ]
+    },
+    {
+      "id": "p1784384219372",
+      "name": "Tottenham black jerseys soccer ",
+      "hits": [
+        "tottenham"
+      ]
+    },
+    {
+      "id": "p1784384449658",
+      "name": "Newcastle nevy end yellow soccer jerseys ",
+      "hits": [
+        "newcastle"
+      ]
+    },
+    {
+      "id": "p1784384647779",
+      "name": "Newcastle green soccer jerseys ",
+      "hits": [
+        "newcastle"
+      ]
+    },
+    {
+      "id": "p1784384933172",
+      "name": "Newcastle black end white soccer jerseys ",
+      "hits": [
+        "newcastle"
+      ]
+    },
+    {
+      "id": "p1784446982748",
+      "name": "Tottenham white soccer jerseys ",
+      "hits": [
+        "tottenham"
+      ]
+    },
+    {
+      "id": "p1784450119320",
+      "name": "Chelsea soccer jerseys Brue color ",
+      "hits": [
+        "chelsea"
+      ]
+    },
+    {
+      "id": "p1784450215038",
+      "name": "Chelsea white soccer jerseys ",
+      "hits": [
+        "chelsea"
+      ]
+    },
+    {
+      "id": "p1784450317042",
+      "name": "Liverpool maroon soccer jerseys ",
+      "hits": [
+        "liverpool"
+      ]
+    },
+    {
+      "id": "p1784450740350",
+      "name": "Manchester city soccer jerseys green",
+      "hits": [
+        "manchester city"
+      ]
+    },
+    {
+      "id": "p1784452428658",
+      "name": "Real Madrid nevy soccer jerseys ",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1784455877574",
+      "name": "Juventus black end white soccer jerseys ",
+      "hits": [
+        "juventus"
+      ]
+    },
+    {
+      "id": "p1784457114518",
+      "name": "Manchester united  soccer jerseys black ",
+      "hits": [
+        "manchester united"
+      ]
+    },
+    {
+      "id": "p1784457364560",
+      "name": "Juventus black soccer jerseys ",
+      "hits": [
+        "juventus"
+      ]
+    },
+    {
+      "id": "p1784458355338",
+      "name": "Real Madrid white soccer jerseys ",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1784458564835",
+      "name": "Real Madrid Bru color soccer jerseys ",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1784541764724",
+      "name": "Manchester united soccer jerseys red",
+      "hits": [
+        "manchester united"
+      ]
+    },
+    {
+      "id": "p1784541809889",
+      "name": "Manchester united soccer jerseys red",
+      "hits": [
+        "manchester united"
+      ]
+    },
+    {
+      "id": "p1784546876746",
+      "name": "Arsenal soccer jerseys white ",
+      "hits": [
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1784546985465",
+      "name": "Arsenal soccer jerseys red",
+      "hits": [
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1784547020333",
+      "name": "Arsenal soccer jerseys yellow ",
+      "hits": [
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1784547142230",
+      "name": "Chelsea soccer jerseys blue ",
+      "hits": [
+        "chelsea"
+      ]
+    },
+    {
+      "id": "p1784547176213",
+      "name": "Chelsea soccer jerseys white ",
+      "hits": [
+        "chelsea"
+      ]
+    },
+    {
+      "id": "p1784549168990",
+      "name": "Liverpool soccer jerseys red",
+      "hits": [
+        "liverpool"
+      ]
+    },
+    {
+      "id": "p1784556769659",
+      "name": "Barcelona tracksuit ",
+      "hits": [
+        "barcelona"
+      ]
+    },
+    {
+      "id": "p1784638965748",
+      "name": "DOLCE GABBANA NAVY YELLOW",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1784639782275",
+      "name": "Dolce & Gabbana Sneakers Navy Orange",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1784640082953",
+      "name": "DOLCE GABBANA BLACK END RED",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1784646049015",
+      "name": "Dolce &Gabbana black",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1784819553910",
+      "name": "Arsenal F.C tracksuit gray ",
+      "hits": [
+        "arsenal"
+      ]
+    },
+    {
+      "id": "p1785160193939",
+      "name": "Lakers cap ",
+      "hits": [
+        "lakers"
+      ]
+    },
+    {
+      "id": "p1785248225368",
+      "name": "Naskar jacket navy jeans ",
+      "hits": [
+        "nascar"
+      ]
+    },
+    {
+      "id": "p1785248525482",
+      "name": "Nascar jacket brown jeans ",
+      "hits": [
+        "nascar"
+      ]
+    },
+    {
+      "id": "p1785321976470",
+      "name": "DOLCE AND GABBANA FULL BLACK ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785322619165",
+      "name": "DOLCE AND GABBANA BLACK END WHITE ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785322994622",
+      "name": "DOLCE AND GABBANA WHITE END SILVER ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785323233016",
+      "name": "DOLCE  GABBANA WHITE END GOLD ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785323517678",
+      "name": "DOLCE & GABBANA BLACK END WHITE ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785323724264",
+      "name": "DOLCE & GABBANA WHITE END BLACK ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785326908983",
+      "name": "Dolce &GABBANA  BLACK end white ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785327199055",
+      "name": "Dolce & GABBANA white end black ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785328503134",
+      "name": "Dolce &GABBANA white end red",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785328986059",
+      "name": "Dolce & GABBANA FULL white ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785330411379",
+      "name": "DOLCE & GABBANA white end black ",
+      "hits": [
+        "dolce gabbana",
+        "gabbana"
+      ]
+    },
+    {
+      "id": "p1785661359934",
+      "name": "Real Madrid soccer jerseys",
+      "hits": [
+        "real madrid"
+      ]
+    },
+    {
+      "id": "p1785663361109",
+      "name": "Lazio Roma soccer jersey sky blue",
+      "hits": [
+        "lazio"
+      ]
+    },
+    {
+      "id": "p1786371385349",
+      "name": "McLaren cap white",
+      "hits": [
+        "mclaren"
+      ]
+    },
+    {
+      "id": "p1786371564344",
+      "name": "Mercedes adjustable cap black",
+      "hits": [
+        "mercedes"
+      ]
+    },
+    {
+      "id": "p1786443535041",
+      "name": "Barrow t-shirt  cream white",
+      "hits": [
+        "barrow"
+      ]
+    },
+    {
+      "id": "p1786444308378",
+      "name": "Barrow t-shirt white",
+      "hits": [
+        "barrow"
+      ]
+    },
+    {
+      "id": "p1786444382438",
+      "name": "Barrow t-shirt black",
+      "hits": [
+        "barrow"
+      ]
+    }
+  ]
+}
