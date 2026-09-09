@@ -146,8 +146,12 @@ const MUTATIONS = [
     id: "P3",
     guard: "ONLY THE NEWEST REGISTRATION WRITES THE STATE — an older passive result must not clobber a granted ON",
     file: HOOK,
-    from: `      if (attempt.current === mine) setState(r.state);`,
-    to: `      setState(r.state);`,
+    // The PASSIVE side is the one that carries the stale pre-permission answer
+    // and therefore the one the race damages. `cancelled` alone was what this
+    // effect had before the ticket, so dropping the ticket from `live()` is
+    // exactly the pre-fix code.
+    from: `    const live = () => !cancelled && attempt.current === mine;`,
+    to: `    const live = () => !cancelled;`,
     tests: HOOK_TESTS,
   },
   {
