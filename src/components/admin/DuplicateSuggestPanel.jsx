@@ -145,10 +145,15 @@ export default function DuplicateSuggestPanel({
   // ── NO "IS IT STILL MOUNTED" FLAG ─────────────────────────────────────────
   // There was one, and it was a bug: a mount-scoped ref cleared in the effect's
   // cleanup. This app renders inside React 18 StrictMode, which runs a mount
-  // effect as setup → cleanup → setup, so the flag went false on the first
-  // cleanup and nothing turned it back on — from then on every arriving total
-  // was dropped and the rows sat on "counting units…" with the numbers already
-  // cached one module away.
+  // effect as setup → cleanup → setup IN DEVELOPMENT, so the flag went false on
+  // the first cleanup and nothing turned it back on — from then on every
+  // arriving total was dropped and the rows sat on "counting units…" with the
+  // numbers already cached one module away.
+  //
+  // DEV-ONLY, and worth saying plainly: StrictMode does not double-invoke in a
+  // production build, so operators never saw this. It is still a real defect —
+  // it made the feature look broken to anyone developing it, which is how a
+  // working feature gets "fixed" into a broken one.
   //
   // The flag is GONE rather than repaired. It was guarding against a warning
   // React 18 deliberately removed: setting state on an unmounted component is a

@@ -316,19 +316,35 @@ for (const m of MUTATIONS) {
     continue;
   }
   let mutated = "?", restored = "?";
-  // A FAILED RESTORE IS A HARNESS FAILURE, NOT A SHRUG. Swallowing it leaves the
-  // file mutated, and the NEXT mutation then captures that mutated file as its
-  // baseline — so every guard after it is measured against broken code and the
-  // run reports a number that means nothing. Stop instead, loudly, with the file
-  // named. (CodeRabbit, PR #594.)
+  // ── A FAILED RESTORE IS A HARNESS FAILURE, NOT A SHRUG ────────────────────
+  // Swallowing it leaves the file mutated, and the NEXT mutation then captures
+  // that mutated file as its baseline — so every guard after it is measured
+  // against broken code while the run still prints a confident number.
+  //
+  // IT THROWS, IT DOES NOT process.exit. Two reasons, both learned the hard way:
+  //   • restore() is called TWICE per mutation — once inline, once in the
+  //     `finally`. Exiting from the inline call skips the `finally`, and with it
+  //     the second attempt that a TRANSIENT failure (EAGAIN, an editor holding
+  //     the file) would almost certainly have survived. That made the "fix"
+  //     strictly worse than the swallow it replaced.
+  //   • process.exit does not flush a piped stderr, so in CI or under `> log`
+  //     the three lines naming the file — the entire value of the change — can
+  //     be the thing that gets lost.
+  // A throw keeps the retry, and Node prints and flushes it on the way out.
+  //
+  // "Still mutated" is deliberately not claimed: writeFileSync truncates before
+  // it writes, so a mid-write failure can leave the file EMPTY rather than
+  // mutated, and someone hunting for a diff in a zero-byte file wastes the time
+  // this message exists to save. (Adversarial delta review, PR #594.)
   const restore = () => {
     try {
       writeFileSync(m.file, original);
     } catch (err) {
-      console.error(`\n  ✗ HARNESS ABORTED — could not restore ${m.file} after mutation ${m.id}`);
-      console.error(`    ${String(err && err.message || err)}`);
-      console.error(`    That file is still MUTATED. Restore it from git before running anything else.`);
-      process.exit(3);
+      console.error(`\n  ✗ RESTORE FAILED for ${m.file} after mutation ${m.id}`);
+      console.error(`    ${String((err && err.message) || err)}`);
+      console.error(`    That file is NOT the committed version — it may be mutated or truncated.`);
+      console.error(`    Restore it from git (git checkout -- ${m.file}) before running anything else.`);
+      throw err;
     }
   };
   const onSignal = () => { restore(); process.exit(130); };

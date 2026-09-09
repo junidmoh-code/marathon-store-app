@@ -5691,10 +5691,6 @@ function AdminView({ products, orders, onExit }) {
   // product's own page — the same path a re-order has always used. Held here
   // rather than in the URL because it is a one-shot handoff, not a place.
   const [receivePrefill, setReceivePrefill] = useState(null); // { productId, loc, qtys }
-  // The name a create-anyway confirm has been GIVEN for. Compared against the
-  // name actually being saved, so typing on after confirming re-arms the gate —
-  // the same discipline bypassReadiness applies to the style-code bypass.
-  const [createAnywayFor, setCreateAnywayFor] = useState(null);
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
@@ -5783,7 +5779,7 @@ function AdminView({ products, orders, onExit }) {
   // AFTER the duplicate gate has awaited its per-location stock reads. That
   // await is real network I/O on shop-floor wifi, and through all of it the
   // button stayed live: two taps ran two addProduct calls, both read the same
-  // still-null createAnywayFor, both raised a confirm, and an operator who
+  // still-unset gate, both raised a confirm, and an operator who
   // answered both created TWO products for one code — precisely the failure
   // this whole feature exists to prevent, produced by its own gate.
   //
@@ -5831,14 +5827,27 @@ function AdminView({ products, orders, onExit }) {
     // EXACT CODE MATCHES ONLY. A fuzzy name overlap gets the panel and nothing
     // else; a dialog in front of a guess is how the operator learns to dismiss
     // dialogs, including the one that mattered.
+    // EVERY ATTEMPT CONFIRMS. There was a "already confirmed for this name"
+    // flag; it was worse than useless. Cleared only on success, it stayed set
+    // after a failed save — and the product record is written EARLY, so a later
+    // step throwing (a rejected attachPrintedBarcode, say) left the form open,
+    // the name unchanged and the flag standing. The obvious retry then sailed
+    // past this gate and created a SECOND product with no dialog and no
+    // /insights_log row: the duplicate that actually landed was the one with no
+    // audit trail. Cleared on every exit instead, it could never be observed at
+    // all — set and cleared inside one call.
+    //
+    // So there is no flag. Creating a twin asks, every time, because each
+    // attempt to create one is its own deliberate act. The cost is one extra
+    // dialog on a retry; the thing it buys is that no duplicate is ever created
+    // unasked. (Adversarial delta review, PR #594.)
     const exactDupes = exactRowsOf(rankCandidates(form.name, products));
-    if (exactDupes.length && createAnywayFor !== form.name.trim()) {
+    if (exactDupes.length) {
       // Unit counts for the sentence. gatherExactTotals holds BOTH unknown
       // rules — an empty location set is not read at all, and a failed read is
       // null — so neither can degrade into a confident "0 units".
       const totalsById = await gatherExactTotals(exactDupes, dupLocationIds, productTotals);
       if (!window.confirm(createAnywayPrompt(form.name, exactDupes, totalsById))) return;
-      setCreateAnywayFor(form.name.trim());
       // The decision itself is the record. /insights_log is the append-only feed
       // this app already keeps; nothing new is invented for it, and consumers
       // filter on `action`, so an action they do not know is one they ignore.
@@ -6264,13 +6273,6 @@ function AdminView({ products, orders, onExit }) {
       setRecvQtys({});
       setSaveAttempted(false);
       setIntake(null);
-      // ── THE CONFIRM IS SPENT ─────────────────────────────────────────────
-      // createAnywayFor recorded that THIS creation was deliberate. Left
-      // standing it authorises the next one too: an admin loading a delivery
-      // adds several products in a row without leaving the screen, so typing
-      // the same code again would sail past the gate and mint a THIRD record
-      // with no dialog at all. One confirm, one product. (CodeRabbit, PR #594.)
-      setCreateAnywayFor(null);
       setCategoryChosen(false); // next Add Product starts at "what is it?" again
       // Keep the receiving location — an admin loading a delivery adds several
       // products into the SAME location in a row; re-picking it each time was

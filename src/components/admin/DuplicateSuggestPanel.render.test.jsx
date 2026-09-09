@@ -220,12 +220,14 @@ describe("the row is evidence the operator can check", () => {
   });
 });
 
-describe("StrictMode", () => {
-  it("a remount does not silence the totals re-render", async () => {
-    // React 18 StrictMode runs a mount effect as setup → cleanup → setup. If the
-    // cleanup's `alive = false` is never undone, every later loadTotals callback
-    // skips its setTick and the rows sit on "counting units…" with the numbers
-    // already cached. Simulated here by driving the effect lifecycle directly.
+describe("an arriving total reaches the screen", () => {
+  // NOT A STRICTMODE TEST, and it must not be named as one. react-test-renderer
+  // does not emulate StrictMode's double effect (this repo already documents
+  // that at PushAssignmentsCard.gate.test.jsx), so wrapping in StrictMode here
+  // buys nothing — one setup, no cleanup. What this DOES prove is the claim the
+  // panel actually rests on: when loadTotals hands a number back, the row stops
+  // saying "counting…" and shows it. That is what mutation F15 pins.
+  it("a total handed back by loadTotals replaces \"counting…\" with the number", async () => {
     let cb = null;
     loadTotals.mockImplementation(async (_ids, _locs, onRow) => { cb = onRow; });
     let r;
