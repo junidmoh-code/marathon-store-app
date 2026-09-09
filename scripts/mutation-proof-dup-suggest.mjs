@@ -266,6 +266,10 @@ const MUTATIONS = [
   { id: "F14", file: FUZZ, tests: FUZZ_TESTS,
     guard: "THE FUZZ ASSERTS ITS OWN COVERAGE — a generator that drifts until it exercises nothing is CAUGHT, not passed",
     from: `  const sep = pick(r, "-/_.");`, to: `  const sep = "";` },
+  { id: "F15", file: PANEL, tests: PANEL_TESTS,
+    guard: "AN ARRIVING TOTAL REACHES THE SCREEN — the re-render is what turns \"counting…\" into a number",
+    from: `    loadTotals(rows.map((r) => r.product.id), locationIds, () => setTick((n) => n + 1));`,
+    to: `    loadTotals(rows.map((r) => r.product.id), locationIds, () => {});` },
   { id: "F7", file: PANEL, tests: PANEL_TESTS,
     guard: "CREATE-NEW CANNOT BE SWITCHED OFF — it renders in the resolved banner as well as the picker",
     from: `        {createNew}\n      </div>\n    );\n  }`, to: `      </div>\n    );\n  }` },
@@ -312,7 +316,21 @@ for (const m of MUTATIONS) {
     continue;
   }
   let mutated = "?", restored = "?";
-  const restore = () => { try { writeFileSync(m.file, original); } catch { /* nothing better available */ } };
+  // A FAILED RESTORE IS A HARNESS FAILURE, NOT A SHRUG. Swallowing it leaves the
+  // file mutated, and the NEXT mutation then captures that mutated file as its
+  // baseline — so every guard after it is measured against broken code and the
+  // run reports a number that means nothing. Stop instead, loudly, with the file
+  // named. (CodeRabbit, PR #594.)
+  const restore = () => {
+    try {
+      writeFileSync(m.file, original);
+    } catch (err) {
+      console.error(`\n  ✗ HARNESS ABORTED — could not restore ${m.file} after mutation ${m.id}`);
+      console.error(`    ${String(err && err.message || err)}`);
+      console.error(`    That file is still MUTATED. Restore it from git before running anything else.`);
+      process.exit(3);
+    }
+  };
   const onSignal = () => { restore(); process.exit(130); };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);

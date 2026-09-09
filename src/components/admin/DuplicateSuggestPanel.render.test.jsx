@@ -220,6 +220,30 @@ describe("the row is evidence the operator can check", () => {
   });
 });
 
+describe("StrictMode", () => {
+  it("a remount does not silence the totals re-render", async () => {
+    // React 18 StrictMode runs a mount effect as setup → cleanup → setup. If the
+    // cleanup's `alive = false` is never undone, every later loadTotals callback
+    // skips its setTick and the rows sit on "counting units…" with the numbers
+    // already cached. Simulated here by driving the effect lifecycle directly.
+    let cb = null;
+    loadTotals.mockImplementation(async (_ids, _locs, onRow) => { cb = onRow; });
+    let r;
+    act(() => {
+      r = TestRenderer.create(
+        <React.StrictMode>
+          <DuplicateSuggestPanel typed="44712" products={CATALOGUE} locationIds={LOCS} onPick={() => {}} />
+        </React.StrictMode>,
+      );
+    });
+    await settle();
+    // The read has landed; now the totals arrive.
+    cachedTotals.mockImplementation((pid) => (pid === "p1" ? { total: 12 } : null));
+    act(() => { if (cb) cb("p1", { total: 12 }); });
+    expect(textOf(r)).toContain("12 units on hand");
+  });
+});
+
 describe("it costs nothing to open", () => {
   it("reads unit totals ONLY for the products it is showing", async () => {
     render({ typed: "44712" });

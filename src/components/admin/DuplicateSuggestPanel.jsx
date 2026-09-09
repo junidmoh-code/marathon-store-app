@@ -41,7 +41,7 @@
 // override link. The panel's job is to be impossible to miss, not to be
 // impossible to pass.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import CandidateCards from "../shared/CandidateCards.jsx";
 import { rankCandidates, TIER_EXACT_CODE } from "../../utils/productDupMatch.js";
 import { resolveDuplicateChoice, totalsKnowable, DUP_RESOLVED } from "./duplicateGate.js";
@@ -142,14 +142,22 @@ export default function DuplicateSuggestPanel({
   // networkTotalsStore's module-scope cache, so re-typing a query already asked
   // costs nothing at all.
   const [, setTick] = useState(0);
-  const alive = useRef(true);
-  useEffect(() => () => { alive.current = false; }, []);
+  // ── NO "IS IT STILL MOUNTED" FLAG ─────────────────────────────────────────
+  // There was one, and it was a bug: a mount-scoped ref cleared in the effect's
+  // cleanup. This app renders inside React 18 StrictMode, which runs a mount
+  // effect as setup → cleanup → setup, so the flag went false on the first
+  // cleanup and nothing turned it back on — from then on every arriving total
+  // was dropped and the rows sat on "counting units…" with the numbers already
+  // cached one module away.
+  //
+  // The flag is GONE rather than repaired. It was guarding against a warning
+  // React 18 deliberately removed: setting state on an unmounted component is a
+  // no-op, not a leak. A guard against nothing that can silence a real feature
+  // is worse than no guard. (CodeRabbit, PR #594.)
   const locKey = locationIds.join(",");
   useEffect(() => {
     if (!rows.length || !locationIds.length) return;
-    loadTotals(rows.map((r) => r.product.id), locationIds, () => {
-      if (alive.current) setTick((n) => n + 1);
-    });
+    loadTotals(rows.map((r) => r.product.id), locationIds, () => setTick((n) => n + 1));
     // locKey stands in for locationIds — a new array identity every render must
     // not re-issue reads that have not changed.
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import AiSpendTab from "./components/AiSpendTab";
 import { ref as storageRef, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
@@ -6264,6 +6264,13 @@ function AdminView({ products, orders, onExit }) {
       setRecvQtys({});
       setSaveAttempted(false);
       setIntake(null);
+      // ── THE CONFIRM IS SPENT ─────────────────────────────────────────────
+      // createAnywayFor recorded that THIS creation was deliberate. Left
+      // standing it authorises the next one too: an admin loading a delivery
+      // adds several products in a row without leaving the screen, so typing
+      // the same code again would sail past the gate and mint a THIRD record
+      // with no dialog at all. One confirm, one product. (CodeRabbit, PR #594.)
+      setCreateAnywayFor(null);
       setCategoryChosen(false); // next Add Product starts at "what is it?" again
       // Keep the receiving location — an admin loading a delivery adds several
       // products into the SAME location in a row; re-picking it each time was
@@ -6280,7 +6287,13 @@ function AdminView({ products, orders, onExit }) {
       setSaving(false);
     }
   };
-  addProductRef.current = addProductOnce;
+  // ASSIGNED IN A LAYOUT EFFECT, NOT DURING RENDER. React may replay or discard
+  // a render, and a ref written during one that never commits leaks a handler
+  // closed over state the UI never showed. useLayoutEffect (not useEffect) because
+  // it runs before paint: a passive effect can be beaten by an operator tap on a
+  // painted button, which would call the previous render's handler.
+  // (CodeRabbit + React Doctor, PR #594.)
+  useLayoutEffect(() => { addProductRef.current = addProductOnce; });
 
   // Per-product edit handlers (name/sizes/hubs/photo/delete) used to live
   // here as inline-editor flows in the list. They've been moved into
