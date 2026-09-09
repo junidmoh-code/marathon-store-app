@@ -450,6 +450,30 @@ export function seedPerSizeLocation(sizeRun) {
   return fillAllSizes(sizeRun, { target: "", minQty: "", reorderPoint: "" });
 }
 
+// ── ARMING A LOCATION SEATS NOTHING (2026-09-09) ──────────────────────────────
+// The draft row for a location being armed FOR THE FIRST TIME. It is always
+// `carriedOnly` — this leg reaches only products the location already holds a
+// stock cell for (a zero cell counts; a sold-out product stays armed).
+//
+// A POLICY SAYS HOW MANY TO KEEP, NEVER WHERE TO KEEP. On 2026-09-08 Slides was
+// armed at hub1 and hub2 with neither leg mentioning carriage, and the map's
+// standing promise did the rest: all 64 slides became demand at both hubs when
+// 3 are actually kept at both — 181 open lines, 125 of them at a hub with no
+// cell for the product.
+//
+// The SERVER is the gate (applyCategoryPolicy's gateNewLegsToSeated refuses to
+// write a new leg any other way, so a script cannot arm wide either). This
+// function exists so the chip on screen tells the truth from the first render
+// rather than after the save, and so the rule is testable without a browser.
+//
+// It shapes a NEW leg only. An existing leg is loaded by draftFromEntry, which
+// carries whatever the live entry holds — narrowing a live policy nobody asked
+// to narrow is the same class of mistake in the other direction.
+export function seedArmedLocation({ sizeRun = [], target = null } = {}) {
+  const run = Array.isArray(sizeRun) ? sizeRun : [];
+  return { ...(run.length ? seedPerSizeLocation(run) : seedLocation(target)), carriedOnly: true };
+}
+
 export function canSave({ preview, previewKeyNow, errors, busy }) {
   if (busy) return false;
   if (errors && Object.keys(errors).length) return false;
