@@ -20,6 +20,11 @@
 //          that matters most — the segment rule that keeps 447120 from
 //          impersonating 44712 with a suffix.
 //   R1–R4  ranking: tier order, the cap, the dedupe, the deterministic tie.
+//   G1–G7  the gate: the consistency rule (one code must not mean two
+//          products), the create-anyway sentence, and the size handoff — where
+//          a silent drop becomes a shortfall nobody can explain weeks later.
+//   P1–P6  the panel: the debounce, the minimum, the photo, the unknown-not-
+//          zero unit count, and the two ways it refuses to block.
 //
 // Run:  node scripts/mutation-proof-dup-suggest.mjs
 
@@ -28,6 +33,11 @@ import { execFileSync } from "node:child_process";
 
 const MATCH = "src/utils/productDupMatch.js";
 const TESTS = ["src/utils/productDupMatch.test.js"];
+const GATE = "src/components/admin/duplicateGate.js";
+const GATE_TESTS = ["src/components/admin/duplicateGate.test.js"];
+const PANEL = "src/components/admin/DuplicateSuggestPanel.jsx";
+const PANEL_TESTS = ["src/components/admin/DuplicateSuggestPanel.render.test.jsx"];
+const COST_TESTS = ["src/components/admin/DuplicateSuggestPanel.cost.test.jsx"];
 
 const MUTATIONS = [
   // ── exact_code: identity, and the three places identity is recorded ────────
@@ -135,6 +145,76 @@ const MUTATIONS = [
     guard: "ties break on NAME, so the order does not shuffle between renders",
     from: `    String(a.product.name ?? "").localeCompare(String(b.product.name ?? "")));`,
     to: `    0);` },
+
+  // ── the gate: one code must not mean two products ─────────────────────────
+  { id: "G1", file: GATE, tests: GATE_TESTS,
+    guard: "A SOLE EXACT MATCH IS RESOLVED, never offered as a choice — a choice with one right answer can be got wrong",
+    from: `  if (exact.length === 1) return { kind: DUP_RESOLVED, row: exact[0] };`,
+    to: `  if (exact.length === 1) return { kind: DUP_CHOOSE, rows: exact };` },
+  { id: "G2", file: GATE, tests: GATE_TESTS,
+    guard: "…and a GENUINE TIE is not resolved for the operator — the catalogue is already inconsistent there",
+    from: `  if (exact.length > 1) return { kind: DUP_CHOOSE, rows: exact };`,
+    to: `  if (exact.length > 1) return { kind: DUP_RESOLVED, row: exact[0] };` },
+  { id: "G3", file: GATE, tests: GATE_TESTS,
+    guard: "ONLY THE EXACT TIER decides any of this — a fuzzy guess must never resolve or confirm",
+    from: `  const exact = (Array.isArray(rows) ? rows : []).filter((r) => r && r.tier === TIER_EXACT_CODE);`,
+    to: `  const exact = (Array.isArray(rows) ? rows : []).filter((r) => r);` },
+  { id: "G4", file: GATE, tests: GATE_TESTS,
+    guard: "the confirm NAMES the product — \"this may be a duplicate\" is a sentence nobody can act on",
+    from: `    return \`\${r.product.name || "an unnamed product"} with \${units}\`;`,
+    to: `    return \`another product with \${units}\`;` },
+  { id: "G5", file: GATE, tests: GATE_TESTS,
+    guard: "AN UNREADABLE UNIT COUNT IS UNKNOWN, NEVER 0 — \"0 units\" reads as \"dead record, safe to replace\"",
+    from: `      : "an unknown number of units";`, to: `      : "0 units";` },
+  { id: "G6", file: GATE, tests: GATE_TESTS,
+    guard: "a fuzzy-only match gets NO confirm — a dialog over a guess trains people to dismiss dialogs",
+    from: `  if (!rows.length) return null;\n  const name = String(typed || "").trim();`,
+    to: `  const name = String(typed || "").trim();` },
+  { id: "G7", file: GATE, tests: GATE_TESTS,
+    guard: "A SIZE THE PRODUCT CANNOT HOLD IS REPORTED, not dropped — a silent drop is a shortfall weeks later",
+    from: `    if (have.has(String(size))) carried[size] = String(n);\n    else dropped.push(String(size));`,
+    to: `    if (have.has(String(size))) carried[size] = String(n);` },
+  { id: "G8", file: GATE, tests: GATE_TESTS,
+    guard: "a blank or zero quantity is not a loss — it carries nothing and is not reported as dropped",
+    from: `    if (!Number.isFinite(n) || n <= 0) continue;\n`, to: `` },
+  { id: "G9", file: GATE, tests: GATE_TESTS,
+    guard: "sizes compare as STRINGS, so a numeric shoe size still matches its own cell",
+    from: `  const have = new Set((Array.isArray(productSizes) ? productSizes : []).map(String));`,
+    to: `  const have = new Set(Array.isArray(productSizes) ? productSizes : []);` },
+
+  // ── the panel ─────────────────────────────────────────────────────────────
+  { id: "P1b", file: PANEL, tests: COST_TESTS,
+    guard: "…and a code typed fast is matched ONCE, not once per keystroke",
+    from: `  const held = useDebounced(typed, debounceMs);`, to: `  const held = typed;` },
+  { id: "P1", file: PANEL, tests: PANEL_TESTS,
+    guard: "THE DEBOUNCE — a typed article code is matched once, not once per keystroke",
+    from: `    const t = setTimeout(() => setHeld(value), ms);`, to: `    const t = setTimeout(() => {}, ms); setHeld(value);` },
+  { id: "P2", file: PANEL, tests: COST_TESTS,
+    guard: "the catalogue is not scanned below MIN_CHARS — 4,700 products per keystroke, for an answer that cannot exist yet",
+    from: `  const enough = query.length >= MIN_CHARS;`, to: `  const enough = query.length >= 1;` },
+  { id: "P3", file: PANEL, tests: PANEL_TESTS,
+    guard: "IT READS TOTALS ONLY FOR THE ROWS ON SCREEN — never for the catalogue",
+    from: `    loadTotals(rows.map((r) => r.product.id), locationIds, () => {`,
+    to: `    loadTotals(products.map((r) => r.id), locationIds, () => {` },
+  { id: "P4", file: PANEL, tests: PANEL_TESTS,
+    guard: "…and issues no read at all when it has nothing to show",
+    from: `    if (!rows.length || !locationIds.length) return;\n`, to: `` },
+  { id: "P5", file: PANEL, tests: PANEL_TESTS,
+    guard: "A FAILED STOCK READ SAYS UNKNOWN, NEVER 0 — the panel holds the same rule as the confirm",
+    from: `    : failed ? "units unknown — could not read stock"`, to: `    : failed ? "0 units on hand"` },
+  { id: "P6", file: PANEL, tests: PANEL_TESTS,
+    guard: "THE RESOLVED BANNER SHOWS NO ALTERNATIVES — showing them alongside it would make it a choice again",
+    from: `  if (choice.kind === DUP_RESOLVED && !overridden) {`, to: `  if (false) {` },
+  { id: "P7", file: PANEL, tests: PANEL_TESTS,
+    guard: "…and its override is a real escape that re-renders the full panel",
+    from: `<button type="button" onClick={() => setOverrideFor(query)}`, to: `<button type="button" onClick={() => {}}` },
+  { id: "P8", file: PANEL, tests: PANEL_TESTS,
+    guard: "A DISMISSAL IS KEYED TO THE NAME IT WAS TAPPED FOR — one that outlived it would silently disarm the guard",
+    from: `  const dismissed = dismissedFor !== null && dismissedFor === query;`,
+    to: `  const dismissed = dismissedFor !== null;` },
+  { id: "P9", file: PANEL, tests: PANEL_TESTS,
+    guard: "the row carries the PRODUCT'S OWN PHOTO — this is a visual confirmation, not a text list",
+    from: `        product: r.product,`, to: `        product: { ...r.product, photoUrl: null },` },
 ];
 
 // ── A NON-ZERO EXIT IS NOT PROOF ─────────────────────────────────────────────
