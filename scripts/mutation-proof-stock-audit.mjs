@@ -39,6 +39,9 @@ const LIB_TESTS = ["test/stock-audit.test.cjs"];
 const PASS_TESTS = ["test/stock-audit-pass.test.cjs"];
 const STORE_TESTS = ["src/components/stock/stockAuditStore.test.js"];
 const VIEW_TESTS = ["src/components/stock/StockAuditView.render.test.jsx"];
+const CONFIG = "src/config/stockAudit.js";
+const APP = "src/App.jsx";
+const ACCESS_TESTS = ["src/config/stockAuditAccess.test.js"];
 
 const MUTATIONS = [
   // ── the kill switch and the day gate ──────────────────────────────────────
@@ -158,6 +161,23 @@ const MUTATIONS = [
     from: `    batchDate: saDateStringFromMs(batchAt),`, to: `    batchDate: saDate,` },
 
   // ── the client writers ────────────────────────────────────────────────────
+
+  // ── who can open it ───────────────────────────────────────────────────────
+  { id: "G1", file: CONFIG, tests: ACCESS_TESTS,
+    guard: "OPEN TO EVERYONE SIGNED IN — the shelf-walkers are exactly who the stock gate locked out",
+    from: `  return !!signedIn;`, to: `  return !!(signedIn && arguments[0].canAccessStock);` },
+  { id: "G2", file: CONFIG, tests: ACCESS_TESTS,
+    guard: "…but shut for nobody at all: every write here needs an account",
+    from: `export function stockAuditVisibleForViewer({ signedIn }) {\n  return !!signedIn;`,
+    to: `export function stockAuditVisibleForViewer({ signedIn }) {\n  void signedIn;\n  return true;` },
+  { id: "G3", file: APP, tests: ACCESS_TESTS,
+    guard: "the TILE is ungated too — the function is only half the door",
+    from: `      { key:"stock_audit", icon:RoleIcons.stock_audit,`,
+    to: `      canAccessStock && { key:"stock_audit", icon:RoleIcons.stock_audit,` },
+  { id: "G4", file: APP, tests: ACCESS_TESTS,
+    guard: "and the route gate asks only whether somebody is signed in",
+    from: `  const stockAuditRouteOpen = stockAuditVisibleForViewer({ signedIn: !!authUser });`,
+    to: `  const stockAuditRouteOpen = stockAuditVisibleForViewer({ signedIn: !!authUser && canAccessStock });` },
 
   // ── the screen and the one action ─────────────────────────────────────────
   { id: "V1", file: VIEW, tests: VIEW_TESTS,
