@@ -194,7 +194,10 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const notOnWall = async (candidate) => {
     setBusy(candidate.productId); setNote(null);
     const res = await raiseDisplayRequest({
-      orders, store, hub: hubForSize(candidate, candidate.sizes?.[0]?.size ?? "") || GATED_SNEAKER_HUBS[0],
+      orders, store, // The hub that holds ANY of this shoe's stock. It carries no size — a
+      // display request never names one — so the first size's hub is simply the
+      // shelf the warehouse will pick from.
+      hub: candidate.sizes?.[0]?.hub || GATED_SNEAKER_HUBS[0],
       product: candidate.product || { id: candidate.productId, name: candidate.productName },
     });
     setBusy(null);

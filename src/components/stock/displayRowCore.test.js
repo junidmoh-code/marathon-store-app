@@ -4,6 +4,7 @@
 // pinned.
 
 import { describe, it, expect } from "vitest";
+import { decodeSizeKey } from "../../utils/sizeKey";
 import {
   rowIsOpen, allRows, openRowsFor, openRowIndex,
   duplicateDisplayGroups, duplicateRowCount,
@@ -663,7 +664,7 @@ describe("unregisteredAcrossHubs merges the two hubs", () => {
     const out = call({ hub2: { p1: { 9: { qty: 2 } } } });
     expect(out).toHaveLength(1);
     expect(out[0].productId).toBe("p1");
-    expect(out[0].sizes).toEqual([{ sizeKey: "9", size: null, qty: 2, hub: "hub2" }]);
+    expect(out[0].sizes).toEqual([{ sizeKey: "9", size: "9", qty: 2, hub: "hub2" }]);
     expect(hubForSize(out[0], "9")).toBe("hub2");
   });
 
@@ -678,7 +679,7 @@ describe("unregisteredAcrossHubs merges the two hubs", () => {
   it("a SIZE on both hubs keeps the earlier hub and sums the quantity", () => {
     // Deterministic — GATED_SNEAKER_HUBS order, not object-key order.
     const out = call({ hub1: { p1: { 9: { qty: 1 } } }, hub2: { p1: { 9: { qty: 4 } } } });
-    expect(out[0].sizes).toEqual([{ sizeKey: "9", size: null, qty: 5, hub: "hub1" }]);
+    expect(out[0].sizes).toEqual([{ sizeKey: "9", size: "9", qty: 5, hub: "hub1" }]);
     expect(hubForSize(out[0], "9")).toBe("hub1");
   });
 
@@ -709,32 +710,55 @@ describe("unregisteredAcrossHubs merges the two hubs", () => {
   });
 });
 
-// ── HALF SIZES: cell key -> human -> key, and back ──────────────────────────
-// The candidate's `sizeKey` comes from the RTDB STOCK CELL, which is already
-// encoded ("9_5"). The size the operator taps comes from the product's `sizes`
-// array, which is human ("9.5"). hubForSize has to bridge those, and if it did
-// not, every half-size registration would book `bookedHub: null` — silently,
-// because a null hub is a legal shape. Half sizes are most of a shoe wall.
+// ── HALF SIZES, THROUGH THE SHAPE THE APP ACTUALLY PASSES ──────────────────
+//
+// The first version of this test hand-built cells keyed "9_5" and passed. That
+// shape NEVER OCCURS: useStockCellsState decodes the RTDB key before the screen
+// sees it (`dec[decodeSizeKey(k)] = ...`), so the screen's cells are keyed
+// "9.5". The test asserted a contract the app does not have, went green, and
+// hid a real bug — hubForSize missed every half size, `bookedHub` came back
+// null, and a hubless row is both unclosable by the till trigger and a blocker
+// that stops it attributing any other wall's row at that size.
+//
+// So this builds its cells THE WAY useStock BUILDS THEM — same decode, applied
+// to real RTDB keys — and asserts the answer is right for both input shapes,
+// because the module now canonicalises rather than trusting its caller.
+// (Senior-architect review; my own test was the thing that let it through.)
 describe("hubForSize bridges the cell key and the human size", () => {
-  const candidate = () => unregisteredAcrossHubs({
-    cellsByHub: { hub1: { p1: { "9_5": { qty: 2, size: "9.5" }, 10: { qty: 1 } } },
-                  hub2: { p1: { 11: { qty: 1 } } } },
-    rows: {}, store: "trophy",
+  // Exactly what useStock's decodeByProduct does to a raw /stock node.
+  const asScreenSees = (rtdbCells) => {
+    const out = {};
+    for (const [pid, bySize] of Object.entries(rtdbCells)) {
+      out[pid] = {};
+      for (const [k, v] of Object.entries(bySize)) out[pid][decodeSizeKey(k)] = v;
+    }
+    return out;
+  };
+  const RAW = { p1: { "9_5": { qty: 2 }, 10: { qty: 1 } } };
+  const build = (cellsByHub) => unregisteredAcrossHubs({
+    cellsByHub, rows: {}, store: "trophy",
     productsById: new Map([["p1", { id: "p1", name: "A", productType: "sneaker" }]]),
     hubs: ["hub1", "hub2"],
   })[0];
 
-  it("a 9.5 tapped by a human finds the 9_5 cell", () => {
-    expect(candidate().sizes.map((s) => s.sizeKey)).toEqual(["9_5", "10", "11"]);
-    expect(hubForSize(candidate(), "9.5")).toBe("hub1");
+  it("THE REAL SHAPE: decoded cells still resolve a half size to its hub", () => {
+    const c = build({ hub1: asScreenSees(RAW), hub2: asScreenSees({ p1: { 11: { qty: 1 } } }) });
+    expect(hubForSize(c, "9.5")).toBe("hub1");
+    expect(hubForSize(c, "10")).toBe("hub1");
+    expect(hubForSize(c, "11")).toBe("hub2");
   });
 
-  it("whole sizes and the second hub still resolve", () => {
-    expect(hubForSize(candidate(), "10")).toBe("hub1");
-    expect(hubForSize(candidate(), "11")).toBe("hub2");
+  it("raw RTDB cells give the SAME answer — the module canonicalises, it does not trust", () => {
+    const c = build({ hub1: RAW });
+    expect(hubForSize(c, "9.5")).toBe("hub1");
+  });
+
+  it("sizeKey is always the ENCODED key and size always the human label", () => {
+    const c = build({ hub1: asScreenSees(RAW) });
+    expect(c.sizes.map((s) => [s.sizeKey, s.size])).toEqual([["9_5", "9.5"], ["10", "10"]]);
   });
 
   it("a size the shoe is not held in returns null, not a hub", () => {
-    expect(hubForSize(candidate(), "12")).toBe(null);
+    expect(hubForSize(build({ hub1: asScreenSees(RAW) }), "12")).toBe(null);
   });
 });

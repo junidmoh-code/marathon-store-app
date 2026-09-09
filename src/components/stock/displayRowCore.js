@@ -268,7 +268,24 @@ export function unregisteredDisplayCandidates({ cells, rows, store, hub, product
       const qty = Number(cell && typeof cell === "object" ? cell.qty : cell) || 0;
       if (qty <= 0) continue;
       units += qty;
-      sizes.push({ sizeKey, size: cell?.size ?? null, qty });
+      // ── THE KEY IS CANONICALISED, BOTH WAYS, ON PURPOSE ──────────────────
+      // These cells arrive from useStockCellsState, which DECODES the RTDB key
+      // before handing them over (`dec[decodeSizeKey(k)]`) — so `k` here is the
+      // HUMAN size "9.5", not the stored key "9_5", despite every name around
+      // it saying key. A field called sizeKey holding a human size is a trap,
+      // and it sprang: hubForSize encoded the size a human tapped and compared
+      // it against this, so every HALF SIZE missed, `bookedHub` came back null,
+      // and a hubless row is both unclosable by the till trigger AND a blocker
+      // that stops it attributing any other wall's row at that size. Silent,
+      // and half sizes are most of a shoe wall.
+      //
+      // So both forms are derived here rather than assumed: `sizeKey` is always
+      // the encoded key and `size` always the human label, whichever form the
+      // caller's cells happen to be in. Both conversions are idempotent in the
+      // direction that matters — stockSizeKey("9_5") is "9_5" and
+      // decodeSizeKey("9.5") is "9.5" — so a caller passing raw RTDB cells gets
+      // the same answer as one passing decoded ones.
+      sizes.push({ sizeKey: stockSizeKey(sizeKey), size: decodeSizeKey(sizeKey), qty });
     }
     if (units <= 0) continue;
     sizes.sort((a, b) => a.sizeKey.localeCompare(b.sizeKey, undefined, { numeric: true }));
