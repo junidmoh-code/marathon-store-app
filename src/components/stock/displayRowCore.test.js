@@ -708,3 +708,33 @@ describe("unregisteredAcrossHubs merges the two hubs", () => {
     expect(out).toHaveLength(0);
   });
 });
+
+// ── HALF SIZES: cell key -> human -> key, and back ──────────────────────────
+// The candidate's `sizeKey` comes from the RTDB STOCK CELL, which is already
+// encoded ("9_5"). The size the operator taps comes from the product's `sizes`
+// array, which is human ("9.5"). hubForSize has to bridge those, and if it did
+// not, every half-size registration would book `bookedHub: null` — silently,
+// because a null hub is a legal shape. Half sizes are most of a shoe wall.
+describe("hubForSize bridges the cell key and the human size", () => {
+  const candidate = () => unregisteredAcrossHubs({
+    cellsByHub: { hub1: { p1: { "9_5": { qty: 2, size: "9.5" }, 10: { qty: 1 } } },
+                  hub2: { p1: { 11: { qty: 1 } } } },
+    rows: {}, store: "trophy",
+    productsById: new Map([["p1", { id: "p1", name: "A", productType: "sneaker" }]]),
+    hubs: ["hub1", "hub2"],
+  })[0];
+
+  it("a 9.5 tapped by a human finds the 9_5 cell", () => {
+    expect(candidate().sizes.map((s) => s.sizeKey)).toEqual(["9_5", "10", "11"]);
+    expect(hubForSize(candidate(), "9.5")).toBe("hub1");
+  });
+
+  it("whole sizes and the second hub still resolve", () => {
+    expect(hubForSize(candidate(), "10")).toBe("hub1");
+    expect(hubForSize(candidate(), "11")).toBe("hub2");
+  });
+
+  it("a size the shoe is not held in returns null, not a hub", () => {
+    expect(hubForSize(candidate(), "12")).toBe(null);
+  });
+});
