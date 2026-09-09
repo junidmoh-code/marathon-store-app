@@ -30,13 +30,22 @@
 // WHAT IS LEFT: pick a wall, type a name, act. Two stores, one input, and the
 // two answers the walk actually needs — it is on the wall, or it is not.
 //
-// ── ONE THING THIS NO LONGER DOES ───────────────────────────────────────────
+// ── ONE THING NOTHING DOES ANY MORE, AND IT IS A REAL GAP ───────────────────
 // The old Hub 1 / Hub 2 tabs also edited the hub REGISTER
-// (/settings/hubSneakerCount/register) — fix a size, remove a row. That record
-// is not the display ledger and is not what this screen is about; the Stock
-// console's Display Records tab is where register rows are reconciled. Named
-// here because "the wall walk covers the hub tabs' job" is true of registering
-// a display and not of editing the register.
+// (/settings/hubSneakerCount/register): register a pair, FIX A WRONG SIZE, and
+// remove a row. That is a different record from the display ledger and is not
+// what this screen is about.
+//
+// Registering and removing survive — DisplayRecordsTab in the Stock console
+// calls recordDisplayFact and removeDisplayFact. FIXING A SIZE DOES NOT.
+// `editDisplaySize` now has no caller anywhere in the app, and an earlier
+// version of this comment claimed Display Records covered it. It does not: that
+// tab has no size-correction surface at all. Correcting a wrong register size
+// is currently a remove-then-record, or nothing.
+//
+// Left as a stated gap rather than quietly reinstated, because restoring it is
+// a product decision about a record this screen deliberately no longer owns.
+// (Senior-architect review, which caught the overstatement.)
 //
 // ── THE ABSOLUTE RULE IS UNTOUCHED ──────────────────────────────────────────
 // Nothing here picks, guesses or pre-selects a size. Every size on the record
