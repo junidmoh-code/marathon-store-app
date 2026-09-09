@@ -111,10 +111,16 @@ function settleDecision(current, settlement) {
 // races it exactly as two tills race each other — one winner, the loser told
 // who has it, never a silent double-settle. The whole payment is applied
 // (nothing was owed on a sale the POS never saw, so no remainder is stamped)
-// and the settlement carries who did it, when and why, for the counter and
-// for the record. Reversal is the ordinary owner reversal: the settlement
-// moves whole to `reversals`, outsidePos included — both records survive.
-const OUTSIDE_POS_REASON_MIN = 3;
+// and the settlement carries WHO did it and WHEN, for the counter and for the
+// record. Reversal is the ordinary owner reversal: the settlement moves whole
+// to `reversals`, outsidePos included — both records survive.
+//
+// THE REASON IS OPTIONAL, and that is a deliberate trade. It used to be
+// required, and a required sentence typed on a phone at a counter is the
+// difference between marking a payment now and never marking it — an unmarked
+// payment is a real hole in the pool, a missing "why" is not. Who and when are
+// still stamped and are what the owner's by-hand review actually reads. A
+// reason that IS sent is still kept, and older marks keep theirs.
 const OUTSIDE_POS_REASON_MAX = 300;
 
 /**
@@ -125,9 +131,8 @@ const OUTSIDE_POS_REASON_MAX = 300;
 function markUsedOutsidePosDecision(current, mark) {
   const m = mark ?? {};
   const reason = String(m.reason ?? "").trim();
-  if (reason.length < OUTSIDE_POS_REASON_MIN) {
-    return refuse("bad-reason", "A short reason is required — it stays on the record.");
-  }
+  // WHO is still mandatory. A mark nobody is named on is worse than no mark:
+  // the owner's whole review of settled-by-hand payments is "who did this".
   if (typeof m.actorUid !== "string" || !m.actorUid || typeof m.actorName !== "string" || !m.actorName) {
     return refuse("bad-actor", "The mark does not say who is marking — refused.");
   }
@@ -155,7 +160,9 @@ function markUsedOutsidePosDecision(current, mark) {
         ...base.value.used,
         sale: null,
         outsidePos: {
-          reason: reason.slice(0, OUTSIDE_POS_REASON_MAX),
+          // null, never "" — an absent reason and an empty one must not be two
+          // states for a reader to tell apart.
+          reason: reason ? reason.slice(0, OUTSIDE_POS_REASON_MAX) : null,
           actorUid: m.actorUid,
           actorName: m.actorName,
           at: m.at,
@@ -419,7 +426,7 @@ function poolTransactionStep(decide, capture) {
 
 module.exports = {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MIN, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
 };

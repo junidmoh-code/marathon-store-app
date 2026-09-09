@@ -178,17 +178,19 @@ test("REVERSAL IS THE OWNER ALONE — an eftReview holder is refused server-side
   assert.equal(dbState.transactions, 0, "no reversal transaction is ever reached");
 });
 
-test("markUsed by the owner needs a reason of three characters; then it runs the pool transaction", async () => {
+test("markUsed by the owner needs NO reason — two taps and no keyboard", async () => {
   const key = "a".repeat(40);
-  dbState.transactions = 0;
-  await rejects(eftPoolSettle({ ...OWNER, data: { action: "markUsed", poolKey: key, reason: " ok " } }), "invalid-argument");
-  await rejects(eftPoolSettle({ ...OWNER, data: { action: "markUsed", poolKey: key } }), "invalid-argument");
-  assert.equal(dbState.transactions, 0);
-  // With a reason, the transaction runs; the fake never commits and captures
-  // no decision, so the callable reports the record as gone — the point here
-  // is only that the gate opened and the transaction was reached.
-  await rejects(eftPoolSettle({ ...OWNER, data: { action: "markUsed", poolKey: key, reason: "paid in June" } }), "failed-precondition").catch(() => {});
-  assert.equal(dbState.transactions, 1);
+  // No reason field at all, and a blank one: both reach the transaction. A
+  // required sentence is what stops this being done at a counter.
+  for (const data of [
+    { action: "markUsed", poolKey: key },
+    { action: "markUsed", poolKey: key, reason: "" },
+    { action: "markUsed", poolKey: key, reason: "   " },
+  ]) {
+    dbState.transactions = 0;
+    await eftPoolSettle({ ...OWNER, data }).catch(() => {});
+    assert.equal(dbState.transactions, 1, JSON.stringify(data));
+  }
 });
 
 test("markUsed refuses a malformed pool key before anything else", async () => {
