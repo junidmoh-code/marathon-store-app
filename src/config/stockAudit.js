@@ -51,10 +51,26 @@ export const snapshotPath = (store) => `${STOCK_AUDIT_ROOT}/${store}/latest`;
 export const resultsPath = (store, saDate) => `${STOCK_AUDIT_ROOT}/${store}/results/${saDate}`;
 export const rotationPath = (store) => `${STOCK_AUDIT_ROOT}/rotation/${store}`;
 
-// Same identity as the Stock section: this screen adjusts stock, so it cannot
-// be open to anyone Stock is not. The route re-checks the same gate.
-export function stockAuditVisibleForViewer({ canAccessStock, isSuperAdmin }) {
-  return !!(canAccessStock || isSuperAdmin);
+// ── OPEN TO EVERYONE WHO IS SIGNED IN (owner, 2026-09-09) ───────────────────
+// It was gated on stock access, on the reasoning that the screen adjusted
+// stock. It does not any more — the single "Fixed" action records that a person
+// looked, and correcting a quantity is the Adjust screen's job. What is left is
+// a shelf-walk list, and the people who walk shelves are exactly the people who
+// were locked out of it.
+//
+// AND THE DATABASE ALREADY AGREED. Live rules on /settings are
+// `.read: auth != null` and `.write: auth != null && sign_in_provider !=
+// 'anonymous'`, with NO nested override under /settings/stockAudit — checked
+// against the live rules, not the stale repo copy. So this door opens onto
+// writes that were always permitted; it is not a grant, it is the UI catching
+// up with the rule.
+//
+// THE ONE THING TO CHECK WHEN CHANGING THIS: a door opened here that the rules
+// refuse is worse than a closed one — the operator taps, RTDB denies, and the
+// screen can only say "could not save". That is why Hub Count stays admin-only
+// (its adjustments need stockRole admin) and this does not.
+export function stockAuditVisibleForViewer({ signedIn }) {
+  return !!signedIn;
 }
 
 // The SA calendar day, for the results day-node key. Mirrors

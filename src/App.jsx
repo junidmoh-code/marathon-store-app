@@ -3030,6 +3030,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // gone. Restoring it is this one line.
       { key:"barcodes", icon:RoleIcons.barcodes, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
       { key:"label_print", icon:RoleIcons.label_print, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
+      // Stock Audit — the two daily shelf-walk lists. UNGATED, beside the other
+      // two tiles everyone already has: it is a list of shelves to look at, and
+      // the people who walk them are not the people with stock permissions.
+      // (Owner, 2026-09-09.) It writes only /settings/stockAudit, which the
+      // live rules already open to every signed-in account.
+      { key:"stock_audit", icon:RoleIcons.stock_audit, name:"Stock Audit", desc:"Out of stock checks & audit", onClick:()=>onSelect(ROLES.STOCK_AUDIT) },
       dcVisible && { key:"display_checks", icon:RoleIcons.display_checks, name:"Display Checks", desc:"Clothing display checks", onClick:()=>onSelect(ROLES.DISPLAY_CHECKS) },
     ].filter(Boolean) },
     { label: "Insights & Display", cards: [
@@ -3044,12 +3050,6 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // Inventory Health — the AI refill engine's control centre, promoted to its
       // own primary card (owner decision 2026-07-12). Same access as Stock.
       canAccessStock                                           && { key:"health", icon:RoleIcons.health, name:"Inventory Health", desc:"Refill engine & exceptions", onClick:()=>onSelect(ROLES.HEALTH) },
-      // Stock Audit — the two daily shelf-walk lists (sneaker out-of-stock
-      // checks per hub, the clothing rotation per shop). An ordinary tile in
-      // this group rather than a standalone card at the top of the screen: the
-      // oversized cards above are TEMPORARY surfaces carrying live state a tile
-      // cannot show, and this one carries none. (Owner, 2026-09-08.)
-      canAccessStock                                           && { key:"stock_audit", icon:RoleIcons.stock_audit, name:"Stock Audit", desc:"Out of stock checks & audit", onClick:()=>onSelect(ROLES.STOCK_AUDIT) },
       // Attention — the BUYING read of the same stock: what to reorder, what's
       // piled up, what isn't selling. Deliberately separate from Inventory
       // Health, which is the refill engine's operational control centre.
@@ -19271,7 +19271,7 @@ function AppInner() {
   // Display Registration: any stock-capable staff — the display-wall lane is
   // a fact recorder (register rows + slots, never movements).
   const displayRegRouteOpen = !!authUser && canAccessStock;
-  const stockAuditRouteOpen = !!authUser && stockAuditVisibleForViewer({ canAccessStock, isSuperAdmin });
+  const stockAuditRouteOpen = stockAuditVisibleForViewer({ signedIn: !!authUser });
   // Shopify Publishing route — same identities the /shopify_publish console
   // write rule accepts (Junid via super-admin, or a stockRole admin).
   const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin" || hasPermission("shopify_publish");
