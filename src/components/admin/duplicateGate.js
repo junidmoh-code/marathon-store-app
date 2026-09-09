@@ -73,6 +73,25 @@ export function exactRowsOf(rows) {
 // safe to replace", which is the exact wrong conclusion to invite here.
 
 /**
+ * Can a unit total be READ at all right now?
+ *
+ * The location registry is a live subscription. Before it answers — or if it
+ * fails — the set of locations to sum over is EMPTY, and summing over no
+ * locations returns a confident `{ total: 0 }` (networkTotalsCore.sumProduct of
+ * an empty map). That number would then be printed as "with 0 units", which is
+ * the single most dangerous sentence this confirm could show: 0 units reads as
+ * "dead record, safe to replace", and pushes the operator toward creating
+ * exactly the duplicate the dialog exists to prevent.
+ *
+ * So an empty location set is UNKNOWN, never zero. Same rule the panel and
+ * networkTotalsStore already hold for a failed read; this is the third way the
+ * same wrong number could have been produced.
+ */
+export function totalsKnowable(locationIds) {
+  return Array.isArray(locationIds) && locationIds.length > 0;
+}
+
+/**
  * @param {string} typed        the name about to be saved
  * @param {Array}  exactRows    rankCandidates rows, exact tier only
  * @param {object} totalsById   { [productId]: {total} | null } — null = unknown

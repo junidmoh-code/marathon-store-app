@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
-  resolveDuplicateChoice, exactRowsOf, createAnywayPrompt, splitPrefillSizes,
+  resolveDuplicateChoice, exactRowsOf, createAnywayPrompt, splitPrefillSizes, totalsKnowable,
   DUP_NONE, DUP_RESOLVED, DUP_CHOOSE,
 } from "./duplicateGate.js";
 import { TIER_EXACT_CODE, TIER_PARTIAL_CODE, TIER_FUZZY_NAME } from "../../utils/productDupMatch.js";
@@ -47,6 +47,25 @@ describe("exactRowsOf", () => {
   });
   it("survives junk", () => {
     for (const v of [null, undefined, 7]) expect(exactRowsOf(v)).toEqual([]);
+  });
+});
+
+describe("totalsKnowable — no locations means UNKNOWN, never zero", () => {
+  it("is false before the location registry answers", () => {
+    expect(totalsKnowable([])).toBe(false);
+    for (const v of [null, undefined, "hub1", 0, {}]) expect(totalsKnowable(v)).toBe(false);
+  });
+  it("is true once there is something to sum over", () => {
+    expect(totalsKnowable(["hub1"])).toBe(true);
+  });
+  it("summing over NO locations would otherwise print the most dangerous sentence", () => {
+    // This is what the guard prevents: sumProduct of an empty map returns a
+    // confident { total: 0 }, and "with 0 units" reads as "dead record, safe to
+    // replace" — pushing the operator toward the duplicate the dialog exists to
+    // stop. With no locations, nothing is read and the count stays unknown.
+    const p = createAnywayPrompt("44712", [row("p1", "X")], totalsKnowable([]) ? { p1: { total: 0 } } : {});
+    expect(p).toContain("an unknown number of units");
+    expect(p).not.toContain("0 units");
   });
 });
 

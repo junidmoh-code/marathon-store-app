@@ -44,7 +44,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import CandidateCards from "../shared/CandidateCards.jsx";
 import { rankCandidates, TIER_EXACT_CODE } from "../../utils/productDupMatch.js";
-import { resolveDuplicateChoice, DUP_RESOLVED } from "./duplicateGate.js";
+import { resolveDuplicateChoice, totalsKnowable, DUP_RESOLVED } from "./duplicateGate.js";
 import { topCategory } from "../../utils/productCategory.js";
 import { loadTotals, cachedTotals, totalsFailed } from "../stock/networkTotalsStore.js";
 
@@ -84,10 +84,13 @@ export function useDebounced(value, ms = DEBOUNCE_MS) {
 // what the operator needs to recognise a product they have handled before — a
 // category tells them which shelf, a unit count tells them whether this is the
 // live record or an abandoned twin.
-function rowReasons(product, totals, failed) {
+function rowReasons(product, totals, failed, knowable = true) {
   const cat = topCategory(product);
   const units = totals
     ? `${totals.total} unit${totals.total === 1 ? "" : "s"} on hand`
+    // No locations to sum over — /locations has not answered, or could not be
+    // read. Saying "counting…" here would wait for a read that is never issued.
+    : !knowable ? "units unknown — no locations to count"
     // A FAILED READ IS NOT ZERO. Saying "0 units" about a product whose stock we
     // could not read invites exactly the wrong conclusion ("this one is dead, I
     // will make a new one") — the same rule networkTotalsStore enforces for the
@@ -164,7 +167,12 @@ export default function DuplicateSuggestPanel({
         product: r.product,
         code: null,
         field: null,
-        reasons: rowReasons(r.product, cachedTotals(r.product.id, locationIds), totalsFailed(r.product.id, locationIds)),
+        reasons: rowReasons(
+          r.product,
+          cachedTotals(r.product.id, locationIds),
+          totalsFailed(r.product.id, locationIds),
+          totalsKnowable(locationIds),
+        ),
       }))}
       onPick={onPick}
       limit={list.length}

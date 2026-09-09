@@ -161,7 +161,7 @@ import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
 import DuplicateSuggestPanel from "./components/admin/DuplicateSuggestPanel";
-import { exactRowsOf, createAnywayPrompt, splitPrefillSizes } from "./components/admin/duplicateGate";
+import { exactRowsOf, createAnywayPrompt, splitPrefillSizes, totalsKnowable } from "./components/admin/duplicateGate";
 import { rankCandidates } from "./utils/productDupMatch";
 import { onceAtATime } from "./utils/onceAtATime";
 import { productTotals } from "./components/stock/networkTotalsStore";
@@ -5823,12 +5823,20 @@ function AdminView({ products, orders, onExit }) {
     const exactDupes = exactRowsOf(rankCandidates(form.name, products));
     if (exactDupes.length && createAnywayFor !== form.name.trim()) {
       const totalsById = {};
-      await Promise.all(exactDupes.map(async (r) => {
-        // An unreadable total is reported as UNKNOWN by createAnywayPrompt,
-        // never as 0 — and a failed read must not block the save either.
-        try { totalsById[r.product.id] = await productTotals(r.product.id, dupLocationIds); }
-        catch { totalsById[r.product.id] = null; }
-      }));
+      // NO LOCATIONS MEANS UNKNOWN, NOT ZERO. /locations is a live subscription;
+      // before it answers, dupLocationIds is empty and summing over no locations
+      // returns a confident { total: 0 }. Printed, that becomes "with 0 units" —
+      // "dead record, safe to replace" — which pushes the operator toward the
+      // very duplicate this dialog exists to stop. So the read is not even
+      // attempted until there is something to read.
+      if (totalsKnowable(dupLocationIds)) {
+        await Promise.all(exactDupes.map(async (r) => {
+          // An unreadable total is reported as UNKNOWN by createAnywayPrompt,
+          // never as 0 — and a failed read must not block the save either.
+          try { totalsById[r.product.id] = await productTotals(r.product.id, dupLocationIds); }
+          catch { totalsById[r.product.id] = null; }
+        }));
+      }
       if (!window.confirm(createAnywayPrompt(form.name, exactDupes, totalsById))) return;
       setCreateAnywayFor(form.name.trim());
       // The decision itself is the record. /insights_log is the append-only feed

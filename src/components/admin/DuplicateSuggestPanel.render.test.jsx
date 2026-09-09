@@ -200,6 +200,15 @@ describe("the row is evidence the operator can check", () => {
     expect(textOf(r)).toContain("1 unit on hand");
   });
 
+  it("NO LOCATIONS says unknown too — it must not sit on \"counting…\" for a read never issued", async () => {
+    const r = render({ typed: "44712", locationIds: [] });
+    await settle();
+    const t = textOf(r);
+    expect(t).toContain("units unknown");
+    expect(t).not.toContain("counting units");
+    expect(t).not.toContain("0 units on hand");
+  });
+
   it("an unreadable stock read says UNKNOWN, never zero", async () => {
     cachedTotals.mockReturnValue(null);
     totalsFailed.mockReturnValue(true);
