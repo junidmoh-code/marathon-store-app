@@ -70,9 +70,9 @@ const MUTATIONS = [
     from: `      return { tier: TIER_PARTIAL_CODE, score: 0.75, reason: \`\${stem} is the first part of both codes — this may be another colourway\` };`,
     to: `      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: \`\${stem} is the first part of both codes — this may be another colourway\` };` },
   { id: "S7b", file: MATCH, tests: TESTS,
-    guard: "partial NEVER outranks exact on the same product — the exact branch returns first",
-    from: `  // ── TIER 2: the same ARTICLE, a different printed suffix. ──`,
-    to: `  // moved below\n  {\n    for (const code of t.codes) if (p.codeStems.includes(code)) return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: "x" };\n  }\n  // ── TIER 2: the same ARTICLE, a different printed suffix. ──` },
+    guard: "partial NEVER outranks exact on the same product — the exact branch is asked FIRST",
+    from: `  // ── TIER 1: the same code. Identity, not similarity. ──`,
+    to: `  for (const code of t.codes) {\n    if (p.codeStems.includes(code)) return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: "stem" };\n  }\n  // ── TIER 1: the same code. Identity, not similarity. ──` },
 
   // ── fuzzy_name: every floor ───────────────────────────────────────────────
   { id: "S8", file: MATCH, tests: TESTS,
