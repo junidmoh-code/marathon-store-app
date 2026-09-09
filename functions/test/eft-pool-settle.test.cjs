@@ -590,10 +590,9 @@ test("a second mark on the same payment loses to the first — no double mark", 
   assert.equal(node.get().used.outsidePos.reason, ownerMark.reason);
 });
 
-test("mark-as-used refuses without a reason, an actor or a time, and on anything that is not an unmatched payment", () => {
+test("mark-as-used refuses without an ACTOR or a time, and on anything that is not an unmatched payment", () => {
   const node = makeNode(recorded());
   for (const bad of [
-    { ...ownerMark, reason: "" }, { ...ownerMark, reason: "  ok " }, { ...ownerMark, reason: null },
     { ...ownerMark, actorUid: "" }, { ...ownerMark, actorName: null }, { ...ownerMark, at: "now" },
   ]) {
     const r = runMark(node, bad);
@@ -604,6 +603,36 @@ test("mark-as-used refuses without a reason, an actor or a time, and on anything
   assert.equal(markUsedOutsidePosDecision(null, ownerMark).code, "not-found");
   assert.equal(markUsedOutsidePosDecision(recorded({ outcome: "refused-parse" }), ownerMark).code, "not-a-payment");
   assert.equal(markUsedOutsidePosDecision(recorded({ amountCents: 0 }), ownerMark).code, "bad-amount");
+});
+
+// THE REASON IS OPTIONAL, and who did it is not. A required sentence typed on a
+// phone at a counter is the difference between marking a payment now and never
+// marking it; an unmarked payment is a real hole in the pool, a missing "why"
+// is not. What the owner's by-hand review reads is who and when.
+test("mark-as-used goes through with NO reason, and still stamps who and when", () => {
+  for (const noReason of [{ ...ownerMark, reason: "" }, { ...ownerMark, reason: "   " }, { ...ownerMark, reason: null }, (() => { const m = { ...ownerMark }; delete m.reason; return m; })()]) {
+    const node = makeNode(recorded());
+    const r = runMark(node, noReason);
+    assert.equal(r.ok, true, JSON.stringify(noReason));
+    const after = node.get();
+    assert.equal(after.status, "used");
+    assert.equal(after.used.sale, null);
+    assert.equal(after.used.outsidePos.actorUid, ownerMark.actorUid);
+    assert.equal(after.used.outsidePos.actorName, ownerMark.actorName);
+    assert.equal(after.used.outsidePos.at, ownerMark.at);
+    // null, never "" — an absent reason and an empty one must not be two states.
+    assert.equal(after.used.outsidePos.reason, null);
+  }
+});
+
+test("a reason that IS sent is still kept, and still capped", () => {
+  const node = makeNode(recorded());
+  runMark(node, { ...ownerMark, reason: "  matched on the statement  " });
+  assert.equal(node.get().used.outsidePos.reason, "matched on the statement");
+
+  const long = makeNode(recorded());
+  runMark(long, { ...ownerMark, reason: "x".repeat(500) });
+  assert.equal(long.get().used.outsidePos.reason.length, 300);
 });
 
 test("a marked payment cannot be attached to a sale or released — only reversed, keeping both records", () => {

@@ -35,8 +35,9 @@
 //                   A fourth action, "allocate", is the OWNER assigning a held
 //                   remainder to a customer — same mint, same records.
 //                   A fifth, "markUsed", is a payment marked as settled
-//                   OUTSIDE the POS (no sale attached; a typed reason, the
-//                   actor's uid and NAME, and server time on the record). The
+//                   OUTSIDE the POS (no sale attached; the actor's uid and
+//                   NAME and server time on the record, and an OPTIONAL
+//                   reason — see markUsedOutsidePosDecision for why). The
 //                   owner, OR a uid the owner has given the eftReview
 //                   capability to — /users/{uid}/posAccess/eftReview on an
 //                   ACTIVE account, granted from the POS users screen and
@@ -74,7 +75,7 @@ const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEf
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MIN, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
 } = require("../lib/eft-settle.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
@@ -448,8 +449,10 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     // same instant still gets exactly one winner. Undone only by eftPoolReverse,
     // which is the owner ALONE and keeps both records.
     await assertEftReviewer(request);
+    // OPTIONAL. Two taps and no keyboard is what makes this get done at a
+    // counter at all; who and when are still stamped, and a reason that IS
+    // sent is still kept.
     const reason = String(data.reason ?? "").trim().slice(0, OUTSIDE_POS_REASON_MAX);
-    if (reason.length < OUTSIDE_POS_REASON_MIN) throw new HttpsError("invalid-argument", "A short reason is required — it stays on the record.");
     // THE ACTOR IS NAMED, NOT ASSUMED. This used to stamp the literal string
     // "owner" because the owner was the only caller; now that staff can mark a
     // payment, the record has to say WHICH person did, resolved server-side
@@ -459,7 +462,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       at: now, actorUid: uid, actorName, reason,
     }));
     if (!decision.ok) throw refusalToError(decision);
-    console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
+    console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid})${reason ? ` — ${reason}` : ""}`);
     // WHAT WAS ACTUALLY STAMPED travels back, so a caller repainting a card in
     // place shows the record rather than its own guess at it. Without this the
     // phone screen had to invent a name and a moment, and they could differ
