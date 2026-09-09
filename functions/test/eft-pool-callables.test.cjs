@@ -5,9 +5,11 @@
 //     "amount is not a search key" is a contract, not an absence;
 //   · eftPoolSearch refuses to read the pool for a query under three
 //     letters/digits;
-//   · eftPoolSettle's "markUsed" is the OWNER's alone, decided server-side —
-//     an active POS identity that is not the owner is refused before any
-//     transaction runs.
+//   · eftPoolSettle's "markUsed" is the owner's, OR a uid the owner has given
+//     the eftReview capability to, decided server-side and re-read from the
+//     database on every call — an active POS identity without the flag is
+//     refused before any transaction runs, and revoking the flag takes effect
+//     on the very next call with nothing cached to ride past.
 // firebase-functions and firebase-admin are stubbed through require.cache:
 // onCall hands back its handler, and the database fake answers only what
 // these gates read. (Independent architect review, this PR.)
@@ -28,7 +30,14 @@ const fakeAdmin = {
     ref: (path) => ({
       once: async () => ({ val: () => (path.startsWith("eft_pool") ? (dbState.poolReads++, {}) : (dbState.reads[path] ?? null)) }),
       orderByChild: () => ({ limitToLast: () => ({ once: async () => { dbState.poolReads++; return { val: () => ({}) }; } }) }),
-      transaction: async () => { dbState.transactions++; return { committed: false }; },
+      // The update function is RUN, against whatever record the test stands up
+      // at dbState.txCurrent (null by default — the Admin SDK's cold-cache
+      // first call), so a test can assert what would actually be written.
+      transaction: async (fn) => {
+        dbState.transactions++;
+        dbState.txNext = typeof fn === "function" ? fn(dbState.txCurrent ?? null) : undefined;
+        return { committed: false };
+      },
       set: async () => {}, remove: async () => {}, update: async () => {},
     }),
     getRules: async () => "{}",
@@ -42,12 +51,25 @@ function stub(name, exportsObj) {
 stub("firebase-functions/v2/https", { onCall: (_opts, handler) => handler, HttpsError });
 stub("firebase-functions/v2/scheduler", { onSchedule: (_opts, handler) => handler });
 stub("firebase-admin", fakeAdmin);
-const { eftPoolSearch, eftPoolSettle } = require("../eftPool/eftPool.js");
+const { eftPoolSearch, eftPoolSettle, eftPoolReverse } = require("../eftPool/eftPool.js");
 
 const OWNER = { auth: { uid: "owner-uid", token: { email: "gunidmoh@gmail.com", email_verified: true } } };
 const CASHIER = { auth: { uid: "cashier-uid", token: { email: "ahmed@marathon.internal" } } };
 dbState.reads["users/cashier-uid/posAccess/isActive"] = true;
 dbState.reads["users/cashier-uid/posAccess/displayName"] = "Ahmed";
+dbState.reads["users/cashier-uid/posAccess"] = { isActive: true, displayName: "Ahmed", role: "cashier" };
+
+// A staff member the OWNER has given eftReview to: an active POS account with
+// the flag. Everything about that comes off the record, never off the token.
+const REVIEWER = { auth: { uid: "reviewer-uid", token: { email: "ibrahim@marathon.internal" } } };
+dbState.reads["users/reviewer-uid/posAccess/isActive"] = true;
+dbState.reads["users/reviewer-uid/posAccess/displayName"] = "ibrahim";
+dbState.reads["users/reviewer-uid/posAccess"] = { isActive: true, displayName: "ibrahim", role: "manager", eftReview: true };
+
+// The same person, DEACTIVATED. The capability must go with the account.
+const SUSPENDED = { auth: { uid: "suspended-uid", token: { email: "x@marathon.internal" } } };
+dbState.reads["users/suspended-uid/posAccess/isActive"] = true;
+dbState.reads["users/suspended-uid/posAccess"] = { isActive: false, displayName: "x", eftReview: true };
 
 async function rejects(promise, code) {
   try { await promise; } catch (e) { assert.equal(e.code, code, e.message); return e; }
@@ -84,12 +106,64 @@ test("eftPoolSearch needs an active POS identity or the owner", async () => {
   assert.equal(dbState.poolReads, 1);
 });
 
-test("markUsed is the owner's alone — an active cashier is refused before any transaction", async () => {
+test("markUsed refuses an active cashier WITHOUT eftReview, before any transaction", async () => {
   const key = "a".repeat(40);
   dbState.transactions = 0;
   const e = await rejects(eftPoolSettle({ ...CASHIER, data: { action: "markUsed", poolKey: key, reason: "paid in June" } }), "permission-denied");
-  assert.match(e.message, /Only the owner/);
+  assert.match(e.message, /EFT review/);
   assert.equal(dbState.transactions, 0);
+});
+
+test("markUsed lets an eftReview holder through — and STAMPS THEIR NAME, not \"owner\"", async () => {
+  const key = "a".repeat(40);
+  dbState.transactions = 0;
+  // A real unmatched payment for the transaction to act on, so the assertion is
+  // about what WOULD BE WRITTEN, not merely about the gate opening.
+  dbState.txCurrent = { outcome: "recorded", status: "unmatched", amountCents: 10000, at: 1, payer: "P", reference: "R" };
+  await eftPoolSettle({ ...REVIEWER, data: { action: "markUsed", poolKey: key, reason: "paid at the shop in June" } }).catch(() => {});
+  assert.equal(dbState.transactions, 1, "the gate opened and the transaction ran");
+  const mark = dbState.txNext?.used?.outsidePos;
+  assert.ok(mark, "the transaction stamps an outside-POS mark");
+  // THE RECORD NAMES THE PERSON. It used to stamp the literal "owner" because
+  // the owner was the only caller; a staff mark that said "owner" would make
+  // the owner's own review list useless.
+  assert.equal(mark.actorName, "ibrahim");
+  assert.equal(mark.actorUid, "reviewer-uid");
+  assert.equal(mark.reason, "paid at the shop in June");
+  dbState.txCurrent = null;
+});
+
+test("REVOKING THE FLAG TAKES EFFECT ON THE NEXT CALL — nothing is cached", async () => {
+  const key = "a".repeat(40);
+  // The holder is through…
+  dbState.transactions = 0;
+  await eftPoolSettle({ ...REVIEWER, data: { action: "markUsed", poolKey: key, reason: "paid at the shop" } }).catch(() => {});
+  assert.equal(dbState.transactions, 1);
+  // …the owner takes the capability away…
+  const restore = dbState.reads["users/reviewer-uid/posAccess"];
+  dbState.reads["users/reviewer-uid/posAccess"] = { isActive: true, displayName: "ibrahim", role: "manager" };
+  dbState.transactions = 0;
+  // …and the VERY NEXT call is refused, with no transaction reached.
+  await rejects(eftPoolSettle({ ...REVIEWER, data: { action: "markUsed", poolKey: key, reason: "paid at the shop" } }), "permission-denied");
+  assert.equal(dbState.transactions, 0);
+  dbState.reads["users/reviewer-uid/posAccess"] = restore;
+});
+
+test("a DEACTIVATED account keeps the flag on the record and loses the capability", async () => {
+  const key = "a".repeat(40);
+  dbState.transactions = 0;
+  await rejects(eftPoolSettle({ ...SUSPENDED, data: { action: "markUsed", poolKey: key, reason: "paid at the shop" } }), "permission-denied");
+  assert.equal(dbState.transactions, 0);
+});
+
+test("REVERSAL IS THE OWNER ALONE — an eftReview holder is refused server-side", async () => {
+  const key = "a".repeat(40);
+  dbState.transactions = 0;
+  for (const who of [REVIEWER, CASHIER]) {
+    const e = await rejects(eftPoolReverse({ ...who, data: { poolKey: key, reason: "wrong one" } }), "permission-denied");
+    assert.match(e.message, /Only the owner can reverse/);
+  }
+  assert.equal(dbState.transactions, 0, "no reversal transaction is ever reached");
 });
 
 test("markUsed by the owner needs a reason of three characters; then it runs the pool transaction", async () => {

@@ -34,12 +34,17 @@
 //                   held visibly at /eft_unallocated. Never silently swallowed.
 //                   A fourth action, "allocate", is the OWNER assigning a held
 //                   remainder to a customer — same mint, same records.
-//                   A fifth, "markUsed", is the OWNER marking a payment as
-//                   settled OUTSIDE the POS (no sale attached; a typed reason,
-//                   actor and server time on the record). Owner-only, checked
-//                   server-side; the SAME transaction as a till's settle, so
+//                   A fifth, "markUsed", is a payment marked as settled
+//                   OUTSIDE the POS (no sale attached; a typed reason, the
+//                   actor's uid and NAME, and server time on the record). The
+//                   owner, OR a uid the owner has given the eftReview
+//                   capability to — /users/{uid}/posAccess/eftReview on an
+//                   ACTIVE account, granted from the POS users screen and
+//                   re-read here on every call, so revoking it takes effect on
+//                   the next one. The SAME transaction as a till's settle, so
 //                   it cannot race a till into a double-settle; undone only by
-//                   eftPoolReverse, which keeps both records.
+//                   eftPoolReverse, which stays the OWNER ALONE and keeps both
+//                   records.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -118,6 +123,40 @@ async function assertPosIdentity(request) {
     throw new HttpsError("unavailable", "Could not check access. Try again.");
   }
   if (!active) throw new HttpsError("permission-denied", "POS access required.");
+}
+
+/**
+ * Owner, or a uid the OWNER has given the eftReview capability to — an ACTIVE
+ * POS account with posAccess.eftReview === true. It is granted and revoked from
+ * the POS users screen in marathon-pos-app, so adding or removing a person
+ * never needs a deploy.
+ *
+ * Read from the database on EVERY call, deliberately: that is what makes a
+ * revocation take effect on the very next one. Nothing is carried on the token
+ * and nothing is cached, so there is no client state to ride past.
+ *
+ * WHAT IT GRANTS HERE IS EXACTLY ONE ACTION — marking a payment as settled
+ * outside the POS. It is NOT a widening of settle, attach, release, allocate or
+ * reverse: reversing a settlement stays the owner alone (eftPoolReverse checks
+ * isOwner itself), and a holder calling it is refused server-side.
+ */
+async function assertEftReviewer(request) {
+  if (isOwner(request)) return;
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
+  let access = null;
+  try {
+    const snap = await admin.database().ref(`users/${uid}/posAccess`).once("value");
+    access = snap.val();
+  } catch (err) {
+    // A read that FAILED is not an absent grant. "unavailable" says try again;
+    // "permission-denied" would teach a holder their access had been taken.
+    console.error("eftPool: eftReview check failed:", err.message);
+    throw new HttpsError("unavailable", "Could not check access. Try again.");
+  }
+  if (access?.isActive !== true || access?.eftReview !== true) {
+    throw new HttpsError("permission-denied", "Only the owner, or someone given EFT review, can mark a payment as settled outside the POS.");
+  }
 }
 
 /** The cashier's display name as the POS access record knows it — resolved
@@ -400,23 +439,27 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     console.log(`eftPoolSettle: allocate ${key} → customer ${customer.id} by owner`);
     return { ok: true, already: decision.already === true, remainder, customer };
   } else if (action === "markUsed") {
-    // THE OWNER'S MARK-AS-USED: a payment settled outside the POS (paid before
-    // the pool existed, matched on a statement, refunded in cash) is marked
-    // used with NO sale attached. Owner-only, enforced HERE — a hidden button
-    // is not the control. It runs through the very same transaction as a
-    // till's settle (markUsedOutsidePosDecision delegates to settleDecision),
-    // so a till settling the same payment in the same instant gets exactly
-    // one winner. Undone only by eftPoolReverse, which keeps both records.
-    if (!isOwner(request)) {
-      throw new HttpsError("permission-denied", "Only the owner can mark a payment as settled outside the POS.");
-    }
+    // MARK-AS-USED: a payment settled outside the POS (paid before the pool
+    // existed, matched on a statement, refunded in cash) is marked used with NO
+    // sale attached. The OWNER, or someone the owner has given eftReview —
+    // enforced HERE, because a hidden button is not the control. It runs through
+    // the very same transaction as a till's settle (markUsedOutsidePosDecision
+    // delegates to settleDecision), so a till settling the same payment in the
+    // same instant still gets exactly one winner. Undone only by eftPoolReverse,
+    // which is the owner ALONE and keeps both records.
+    await assertEftReviewer(request);
     const reason = String(data.reason ?? "").trim().slice(0, OUTSIDE_POS_REASON_MAX);
     if (reason.length < OUTSIDE_POS_REASON_MIN) throw new HttpsError("invalid-argument", "A short reason is required — it stays on the record.");
+    // THE ACTOR IS NAMED, NOT ASSUMED. This used to stamp the literal string
+    // "owner" because the owner was the only caller; now that staff can mark a
+    // payment, the record has to say WHICH person did, resolved server-side
+    // from their POS access record rather than from anything they sent.
+    const actorName = await cashierNameOf(request);
     decision = await runPoolTransaction(key, (current) => markUsedOutsidePosDecision(current, {
-      at: now, actorUid: uid, actorName: "owner", reason,
+      at: now, actorUid: uid, actorName, reason,
     }));
     if (!decision.ok) throw refusalToError(decision);
-    console.log(`eftPoolSettle: markUsed ${key} by owner ${uid} — ${reason}`);
+    console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
     return { ok: true, already: decision.already === true, remainder: null };
   } else if (action === "release") {
     decision = await runPoolTransaction(key, (current) => {
