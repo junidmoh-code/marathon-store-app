@@ -276,7 +276,10 @@ export function scoreCandidate(typed, product) {
   // ── TIER 3: word overlap, floored. ──
   const tw = signalWords(t);
   const pw = signalWords(extractTokens(product.name));
-  if (!tw.length || !pw.length) return null;
+  // NO SEPARATE EMPTY-SIDE GUARD. An empty side shares nothing, and
+  // FUZZY_MIN_SHARED already refuses a share of fewer than two — a `!tw.length`
+  // check here would be unreachable, and an unreachable guard is one no test can
+  // ever prove, which is worse than no guard at all.
   const pwSet = new Set(pw);
   const shared = tw.filter((w) => pwSet.has(w));
   if (shared.length < FUZZY_MIN_SHARED) return null;

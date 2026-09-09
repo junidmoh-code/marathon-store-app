@@ -140,12 +140,23 @@ describe("scoreCandidate — partial_code", () => {
     const hit = scoreCandidate("44712-01", prod("p", "44712-01 and 44712"));
     expect(hit.tier).toBe(TIER_EXACT_CODE);
   });
+  it("…even when the SAME typed code is also a stem of that product's other code", () => {
+    // "44712 44712-01" holds both the bare code and the segmented one, so the
+    // typed 44712 satisfies BOTH branches. Identity must win: the product
+    // literally answers to this code.
+    expect(scoreCandidate("44712", prod("p", "44712 44712-01")).tier).toBe(TIER_EXACT_CODE);
+  });
 });
 
 describe("scoreCandidate — fuzzy_name", () => {
   it(`needs at least ${FUZZY_MIN_SHARED} shared words`, () => {
     expect(scoreCandidate("Nike", prod("p", "Nike Air Force 1 Triple White"))).toBeNull();
     expect(scoreCandidate("Nike Air", prod("p", "Nike Air"))).toMatchObject({ tier: TIER_FUZZY_NAME });
+  });
+  it("one shared word is never enough, however well it scores", () => {
+    // 1 of 2 clears the ratio floor exactly — and is still refused, because a
+    // single shared word is a brand name and would surface the whole shop.
+    expect(scoreCandidate("Nike", prod("p", "Nike Air"))).toBeNull();
   });
   it(`is floored at ${FUZZY_FLOOR} against the LARGER word set, so one brand word matches nothing`, () => {
     // 2 shared of 5 = 0.4 — below the floor.
@@ -159,6 +170,14 @@ describe("scoreCandidate — fuzzy_name", () => {
     // "1" and "XL" carry no signal; only PUMA + HOODIE do.
     const hit = scoreCandidate("Puma Hoodie XL 1", prod("p", "Puma Hoodie"));
     expect(hit).toMatchObject({ tier: TIER_FUZZY_NAME, score: 1 });
+  });
+  it("a code is excluded from the RATIO as well as the shared count", () => {
+    // "44712 Black Tracksuit" against "Black Tracksuit" is a complete word
+    // overlap. If the code counted as a word the denominator would be 3, the
+    // score would drop to 0.67, and a perfect name match would rank below a
+    // worse one.
+    expect(scoreCandidate("44712 Black Tracksuit", prod("p", "Black Tracksuit")))
+      .toMatchObject({ tier: TIER_FUZZY_NAME, score: 1 });
   });
   it("never lets a code re-enter through the word list", () => {
     // Same code-shaped word on both sides, nothing else: the fuzzy tier must not
@@ -196,6 +215,18 @@ describe("rankCandidates", () => {
     prod("fuzzy", "44712 MENS FLEECE TRACKSUIT"),
     prod("miss", "144712"),
   ];
+
+  it("TIER BEFORE SCORE — a perfect fuzzy match still ranks below a partial code", () => {
+    // All three tiers, with the fuzzy row scoring a full 1.0 and sorting BEFORE
+    // the partial row by name. Only tier-first ordering puts them right.
+    const rows = rankCandidates("44712 Black Tracksuit", [
+      prod("exact", "44712"),
+      prod("partial", "44712-01"),
+      prod("fuzzy", "Black Tracksuit"),
+    ]);
+    expect(rows.map((r) => r.product.id)).toEqual(["exact", "partial", "fuzzy"]);
+    expect(rows.map((r) => r.tier)).toEqual([TIER_EXACT_CODE, TIER_PARTIAL_CODE, TIER_FUZZY_NAME]);
+  });
 
   it("orders exact before partial before fuzzy", () => {
     // "44712 MENS FLEECE TRACKSUIT" carries the code, so it is exact too —
