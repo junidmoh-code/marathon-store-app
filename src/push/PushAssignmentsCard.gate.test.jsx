@@ -115,7 +115,9 @@ describe("a refused viewer reads NOTHING", () => {
     getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     await render({ authUser: ADMIN });
     const paths = getMock.mock.calls.map((c) => c[0].path).sort();
-    expect(paths).toEqual(["push_assignments", "push_tokens/u1", "users"]);
+    // Four reads for one account: the two paged node reads, and per row the
+    // mute leaf and the token node. Both per-row reads are scoped to that uid.
+    expect(paths).toEqual(["push_assignments", "push_mutes/u1/muted", "push_tokens/u1", "users"]);
   });
 
   it("NEVER reads the /push_tokens node — the live rules refuse it, and it is every token in the business", async () => {
@@ -130,6 +132,12 @@ describe("a refused viewer reads NOTHING", () => {
     expect(paths).not.toContain("push_tokens");
     expect(paths).toContain("push_tokens/u1");
     expect(paths).toContain("push_tokens/u2");
+    // The mute read is the same shape and must never grow into a node fetch
+    // either — /push_mutes whole would be every staff member's setting, and it
+    // grows with headcount for ever.
+    expect(paths).not.toContain("push_mutes");
+    expect(paths).toContain("push_mutes/u1/muted");
+    expect(paths).toContain("push_mutes/u2/muted");
   });
 
   it("the node reads are BOUNDED — orderByKey + limitToFirst, never an open fetch", async () => {
@@ -146,8 +154,9 @@ describe("a refused viewer reads NOTHING", () => {
   it("reads ONCE, not on a subscription — closing the screen ends the cost", async () => {
     getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     await render({ authUser: ADMIN });
-    // roster + assignments + one token read for the one account. No listener.
-    expect(getMock).toHaveBeenCalledTimes(3);
+    // roster + assignments + one token read + one mute read for the one
+    // account. No listener.
+    expect(getMock).toHaveBeenCalledTimes(4);
   });
 });
 
