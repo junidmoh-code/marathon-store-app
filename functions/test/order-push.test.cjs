@@ -1322,7 +1322,12 @@ test("the fan-out reads ONE node to resolve recipients, and it is the hub's own"
   await run({ ref: spyRef }, fakeMessaging(), "005", HUB1());
   // push_bursts/hub1 is the flush tick's own node, not a recipient lookup.
   const lookups = reads.filter((p) => !p.startsWith("push_bursts"));
-  assert.deepEqual(lookups, ["push_hub_audience/hub1", "push_tokens/u_one"]);
+  // Three reads for one recipient: the hub's audience, that person's mute leaf,
+  // and their token node. The mute leaf is a single boolean and comes BEFORE
+  // the token node, so a muted person costs the leaf and nothing else.
+  assert.deepEqual(lookups, ["push_hub_audience/hub1", "push_mutes/u_one/muted", "push_tokens/u_one"]);
+  assert.equal(reads.filter((p) => p === "push_mutes").length, 0,
+    "the mute is read per-uid at its leaf — never as a whole node");
   assert.equal(reads.filter((p) => p === "users" || p === "push_assignments").length, 0,
     "never the roster, never the decision node — only the derived index");
 });
