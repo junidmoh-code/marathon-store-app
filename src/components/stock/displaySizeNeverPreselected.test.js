@@ -36,8 +36,10 @@ const code = (src) => src
 
 const APP = code(read("../../App.jsx"));
 const PICKER = code(read("./displayRowUi.jsx"));
-const DUPES = code(read("./DuplicateDisplaysTab.jsx"));
-const WALL = code(read("./UnregisteredDisplaysTab.jsx"));
+// ONE SCREEN NOW. The Duplicate Displays and Unregistered Displays tabs were
+// folded into the Display Registration view (owner, 2026-09-08), so the surface
+// that can put a size on the record is this one file plus the shared picker.
+const VIEW = code(read("./DisplayRegistrationView.jsx"));
 const REQUEST = code(read("./displayRequestStore.js"));
 
 describe("the warehouse size sheet opens with NOTHING chosen", () => {
@@ -80,13 +82,11 @@ describe("the shared size picker has no default", () => {
 });
 
 describe("nothing else invents a size", () => {
-  it("both tabs get their size from the picker's callback only", () => {
-    for (const [name, src] of [["DuplicateDisplaysTab", DUPES], ["UnregisteredDisplaysTab", WALL]]) {
-      expect(src, name).toContain("onPick={(sz) =>");
-      // No "most available", no "the biggest cell", no "the one we sent".
-      expect(src, name).not.toMatch(/sort\([^)]*qty/);
-      expect(src, name).not.toMatch(/mostAvailable|lastUsed|bestSize|suggestSize/i);
-    }
+  it("the screen gets its size from the picker's callback only", () => {
+    expect(VIEW).toContain("onPick={(sz) =>");
+    // No "most available", no "the biggest cell", no "the one we sent".
+    expect(VIEW).not.toMatch(/sort\([^)]*qty/);
+    expect(VIEW).not.toMatch(/mostAvailable|lastUsed|bestSize|suggestSize/i);
   });
 
   it("the 15-minute timer raises a request and never a size", () => {
@@ -96,7 +96,9 @@ describe("nothing else invents a size", () => {
   });
 
   it("the wall walk's request carries no size either", () => {
-    expect(WALL).toMatch(/raiseDisplayRequest\(\{ orders, store, hub, product \}\)/);
+    // The wall walk's request passes a product and a hub, never a size.
+    expect(VIEW).toMatch(/raiseDisplayRequest\(\{[\s\S]{0,200}?product:/);
+    expect(VIEW).not.toMatch(/raiseDisplayRequest\([\s\S]{0,200}?size:/);
   });
 });
 
@@ -129,7 +131,7 @@ describe("the one-request guard cannot silently outgrow the feed it reads", () =
   });
 
   it("the wall walk still refuses what it cannot verify", () => {
-    expect(WALL).toContain("const canRequest = !ordersScope || ordersScope === store;");
+    expect(VIEW).toContain("const canRequest = !ordersScope || ordersScope === store;");
   });
 });
 

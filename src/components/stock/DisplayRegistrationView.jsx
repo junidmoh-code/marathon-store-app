@@ -1,354 +1,334 @@
-// ─── DISPLAY REGISTRATION — THE VIEW ─────────────────────────────────────────
-// (Owner ask, 2026-08-26; the card is DisplayRegistrationCard.jsx.) One lane,
-// three jobs, one product at a time:
+// ─── DISPLAY REGISTRATION — ONE SCREEN, ONE QUESTION ────────────────────────
 //
-//   1. REGISTER — new stock arrived, a pair went on a display wall: find the
-//      product (name search or a label/barcode scan — the same window-level
-//      scanner burst listener the count screens use), pick the size and the
-//      shop wall, save. Records the FACT ONLY (register row with no movement
-//      + display slot) — the pair was already booked by receiving.
-//   2. FIX A SIZE — display recheck found the system says 6 and the wall
-//      holds 7: pick the registered row, tap the right size. The register
-//      quantity moves between size keys in one atomic multi-path update and
-//      every live slot holding the old size is re-pointed.
-//   3. REMOVE — the display came down or the row never matched reality.
+// (Owner, 2026-09-08.) This screen was four tabs in a row — Hub 1, Hub 2,
+// Duplicate Displays, Unregistered Displays — and the owner's instruction was
+// to remove all of it and leave the wall walk, because the wall walk already
+// does what the hub tabs did and there are no duplicates to clean.
 //
-// ── AND THE TWO CLEANUP TABS LIVE HERE TOO ──────────────────────────────────
-// (Owner correction, 2026-09-08.) Duplicate Displays and Unregistered Displays
-// shipped inside the Stock console, which was a misreading: "leave the Display
-// Registry untouched" meant do not change how Hub 1 and Hub 2 REGISTER, not
-// build the new screens somewhere else. This card is where an operator looks
-// for anything about a display wall, so the two tabs sit beside Hub 1 and Hub 2
-// as siblings. Hub 1 and Hub 2 keep their registration behaviour byte for byte
-// — every line of it is below, unchanged; the tabs only decide what renders.
+// WHAT THAT REMOVED, AND WHY EACH ONE WENT
 //
-// Reads: the products list (passed in), one register subscription for the
-// picked hub (~172 KB, the same node the shop marker already streams) and the
-// slots node (~60 KB). Writers live in displayRegistrationStore.js.
+//   HUB 1 / HUB 2 — a picker for which warehouse shelf to look at. That was
+//     never a question about the WALL. A display is a shoe standing in Marathon
+//     PE or Trophy; which shelf it came off is bookkeeping the screen can work
+//     out for itself. Both gated hubs are now walked at once, and the hub a row
+//     is booked at is the hub that actually holds the size the operator picked
+//     (unregisteredAcrossHubs / hubForSize).
+//
+//   DUPLICATE DISPLAYS — a whole tab for a state that does not exist: measured
+//     live on 2026-09-08, ZERO walls hold more than one open row. Its one real
+//     job, closing the extras, is here instead: a shoe whose record shows more
+//     than one size lists them and closes them one at a time. So nothing is
+//     lost, and a tab that is empty every day it is opened is a tab that teaches
+//     people not to open tabs.
+//
+//   THE LABEL SCANNER — removed on the owner's instruction. The search box is
+//     the whole finder now.
+//
+//   THE BRAND FILTER — removed. Chips that narrow a list you are already
+//     searching are furniture.
+//
+// WHAT IS LEFT: pick a wall, type a name, act. Two stores, one input, and the
+// two answers the walk actually needs — it is on the wall, or it is not.
+//
+// ── ONE THING NOTHING DOES ANY MORE, AND IT IS A REAL GAP ───────────────────
+// The old Hub 1 / Hub 2 tabs also edited the hub REGISTER
+// (/settings/hubSneakerCount/register): register a pair, FIX A WRONG SIZE, and
+// remove a row. That is a different record from the display ledger and is not
+// what this screen is about.
+//
+// Registering and removing survive — DisplayRecordsTab in the Stock console
+// calls recordDisplayFact and removeDisplayFact. FIXING A SIZE DOES NOT.
+// `editDisplaySize` now has no caller anywhere in the app, and an earlier
+// version of this comment claimed Display Records covered it. It does not: that
+// tab has no size-correction surface at all. Correcting a wrong register size
+// is currently a remove-then-record, or nothing.
+//
+// Left as a stated gap rather than quietly reinstated, because restoring it is
+// a product decision about a record this screen deliberately no longer owns.
+// (Senior-architect review, which caught the overstatement.)
+//
+// ── THE ABSOLUTE RULE IS UNTOUCHED ──────────────────────────────────────────
+// Nothing here picks, guesses or pre-selects a size. Every size on the record
+// comes from a human tapping it, and the picker opens with nothing chosen.
+// Pinned by displaySizeNeverPreselected.test.js.
 
-import React, { useEffect, useMemo, useRef, useState } from "react";
-import { CARD, BORDER, BLUE, BLUE_L, FONT } from "./ui";
-import { searchProducts } from "../../utils/productSearch";
+import React, { useMemo, useState } from "react";
+import {
+  unregisteredAcrossHubs, hubForSize, filterCandidates, registeredDisplays, rowSizeText,
+} from "./displayRowCore";
+import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
+import { raiseDisplayRequest } from "./displayRequestStore";
+import { useDisplayRowsState, useStockCellsState } from "./useStock";
+import { usePermissions } from "../PermissionsContext";
+import { GATED_SNEAKER_HUBS, isFootwearProduct } from "./availabilityCore";
 import { isDeactivated } from "../../utils/deactivation";
-import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
-import { lookupBarcode } from "./hubCleanupStore";
-import { useDisplaySlots, useDisplayRegister } from "./useStock";
-import { slotIsLive } from "./displaySlots";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
-import { decodeSizeKey } from "../../utils/sizeKey";
-import { isFootwearProduct } from "./availabilityCore";
-import { recordDisplayFact, editDisplaySize, removeDisplayFact } from "./displayRegistrationStore";
-import { usePermissions } from "../PermissionsContext";
-import StockErrorBoundary from "./StockErrorBoundary";
-import DuplicateDisplaysTab from "./DuplicateDisplaysTab";
-import UnregisteredDisplaysTab from "./UnregisteredDisplaysTab";
+import { SizePicker, HistoryToggle } from "./displayRowUi";
+import { FONT } from "./ui";
 
-const HUBS = ["hub1", "hub2"];
-const STORES = ["marathon-pe", "trophy", "marathon-pine"];
-const AMBER = "#FBBF24";
+// The two walls. Pine's displays are booked at hub3, outside
+// GATED_SNEAKER_HUBS, so Pine is deliberately not offered.
+const STORES = ["marathon-pe", "trophy"];
+const PAGE = 30;
 
-const chip = (on, tone = BLUE) => ({
-  padding: "10px 16px", borderRadius: 10, fontWeight: 800, fontSize: 14, cursor: "pointer", fontFamily: "inherit",
-  border: `2px solid ${on ? tone : "rgba(255,255,255,.14)"}`,
-  background: on ? (tone === AMBER ? "rgba(251,191,36,.16)" : "rgba(74,127,255,.16)") : "rgba(255,255,255,.03)",
-  color: on ? (tone === AMBER ? AMBER : BLUE_L) : "rgba(233,238,255,.6)",
-});
+// ── PALETTE ─────────────────────────────────────────────────────────────────
+// No amber anywhere (owner: "no orange colour should be used"). One ink, one
+// accent, three weights of grey — the restraint IS the design.
+const INK = "#F5F6F8";
+const DIM = "rgba(245,246,248,.52)";
+const FAINT = "rgba(245,246,248,.34)";
+const LINE = "1px solid rgba(255,255,255,.09)";
+const ACCENT = "#4A7FFF";
+const GOOD = "#4ADE80";
+const BAD = "#F87171";
+const SURFACE = "rgba(255,255,255,.035)";
+
+const sheet = {
+  page: { minHeight: "100vh", background: "#000", color: INK, fontFamily: FONT,
+          padding: "22px 18px 72px", maxWidth: 640, margin: "0 auto",
+          WebkitFontSmoothing: "antialiased", letterSpacing: "-0.01em" },
+  h1: { fontSize: 26, fontWeight: 700, letterSpacing: "-0.03em", margin: 0 },
+  sub: { fontSize: 13, color: DIM, marginTop: 4, lineHeight: 1.45 },
+  seg: { display: "inline-flex", background: "rgba(255,255,255,.06)", borderRadius: 999,
+         padding: 3, gap: 3, marginTop: 20 },
+  segBtn: (on) => ({
+    border: "none", cursor: "pointer", fontFamily: "inherit",
+    padding: "8px 20px", borderRadius: 999, fontSize: 14, fontWeight: 600,
+    letterSpacing: "-0.01em",
+    background: on ? INK : "transparent",
+    color: on ? "#0A0A0C" : DIM,
+    transition: "background .15s ease, color .15s ease",
+  }),
+  search: { width: "100%", boxSizing: "border-box", marginTop: 18,
+            padding: "14px 16px", borderRadius: 14, border: LINE,
+            background: SURFACE, color: INK, fontSize: 16, fontFamily: "inherit",
+            outline: "none", letterSpacing: "-0.01em" },
+  card: { border: LINE, borderRadius: 16, padding: 14, marginTop: 10,
+          background: SURFACE, display: "flex", gap: 13, alignItems: "flex-start" },
+  name: { fontSize: 15, fontWeight: 600, letterSpacing: "-0.015em", lineHeight: 1.3 },
+  meta: { fontSize: 12.5, color: FAINT, marginTop: 3 },
+  row: { display: "flex", gap: 8, marginTop: 11, flexWrap: "wrap" },
+  btn: (tone) => ({
+    border: "none", cursor: "pointer", fontFamily: "inherit", fontWeight: 600,
+    padding: "9px 15px", borderRadius: 11, fontSize: 13.5, letterSpacing: "-0.01em",
+    background: tone === "primary" ? ACCENT : "rgba(255,255,255,.07)",
+    color: tone === "primary" ? "#fff" : INK,
+  }),
+  note: (tone) => ({ marginTop: 16, padding: "12px 14px", borderRadius: 12, fontSize: 13.5, lineHeight: 1.5,
+                     background: tone === "err" ? "rgba(248,113,113,.10)" : "rgba(74,222,128,.10)",
+                     color: tone === "err" ? BAD : GOOD }),
+  empty: { textAlign: "center", color: FAINT, padding: "56px 12px", fontSize: 13.5, lineHeight: 1.6 },
+  thumb: { width: 46, height: 58, objectFit: "cover", borderRadius: 9, flexShrink: 0,
+           background: "rgba(255,255,255,.05)" },
+  pill: { display: "inline-block", padding: "3px 9px", borderRadius: 999, fontSize: 11.5,
+          fontWeight: 600, background: "rgba(255,255,255,.07)", color: DIM, marginRight: 6 },
+};
 
 export default function DisplayRegistrationView({ products = [], orders = [], ordersScope = null, onExit }) {
-  // The same derivation StockView uses, from the same context — not a prop, so
-  // the two screens cannot disagree about who is an admin.
   const { permRecord, isSuperAdmin } = usePermissions();
   const isAdmin = isSuperAdmin || permRecord?.stockRole === "admin";
-  // "hub1" | "hub2" register the way they always have; the two cleanup tabs are
-  // read-mostly screens over the ROW ledger and share only the chip strip.
-  const [pane, setPane] = useState("hub1");
-  // Every existing line below reads `hub`, and it keeps meaning exactly what it
-  // meant: the hub whose register is being edited. The cleanup panes do not use
-  // it, so it stays pinned to a real hub rather than becoming nullable and
-  // rippling through the registration code this change must not touch.
-  const hub = pane === "hub2" ? "hub2" : "hub1";
-  const isRegisterPane = pane === "hub1" || pane === "hub2";
-  const [query, setQuery] = useState("");
-  const [selected, setSelected] = useState(null);
-  const [size, setSize] = useState("");
-  const [store, setStore] = useState("marathon-pe");
-  const [editing, setEditing] = useState(null);   // { fromSizeKey } — the row being resized
-  const [confirmRemove, setConfirmRemove] = useState(null);   // sizeKey awaiting the second tap
-  const [busy, setBusy] = useState(false);
-  const [note, setNote] = useState(null);         // { tone: "ok"|"err"|"warn", text }
 
-  const slots = useDisplaySlots(true);
-  // Only while a register pane is showing: the hub register is ~172 KB and
-  // the cleanup panes do not read it. `hub` pins to hub1 off those panes, so
-  // without this the card would stream Hub 1's register the whole time an
-  // operator is browsing the wall walk. (Senior-architect review.)
-  const register = useDisplayRegister(hub, isRegisterPane);
+  const [store, setStore] = useState(() => (ordersScope && STORES.includes(ordersScope) ? ordersScope : STORES[0]));
+  const [q, setQ] = useState("");
+  const [page, setPage] = useState(0);
+  const [acting, setActing] = useState(null);      // productId whose picker is open
+  const [busy, setBusy] = useState(null);
+  const [note, setNote] = useState(null);
 
-  // SNEAKERS ONLY (owner ask, 2026-08-26): the display walls hold footwear —
-  // clothing, perfume and accessories never appear here, by search or by scan.
-  const results = useMemo(
-    // A DEACTIVATED product is not offered: registering a display for a retired
-    // line puts it back in front of customers. (Owner spec 2026-08-31.)
-    () => (query.trim() ? searchProducts(products, query, { limit: 12, predicate: (p) => isFootwearProduct(p) && !isDeactivated(p) }) : []),
-    [products, query]
+  const { value: rows, settled: rowsLoaded } = useDisplayRowsState(true);
+  const hub1 = useStockCellsState(GATED_SNEAKER_HUBS[0]);
+  const hub2 = useStockCellsState(GATED_SNEAKER_HUBS[1]);
+
+  const productsById = useMemo(() => {
+    const m = new Map();
+    for (const p of products || []) if (p && p.id) m.set(p.id, p);
+    return m;
+  }, [products]);
+
+  // BOTH LEDGER AND CELLS MUST HAVE ANSWERED. With the ledger unanswered every
+  // shoe reads as "no display record", and a tap would open a SECOND row beside
+  // one already there — the duplicate this screen exists to prevent, created by
+  // the screen itself.
+  const ready = rowsLoaded && hub1.settled && hub2.settled;
+
+  const candidates = useMemo(
+    () => (ready
+      ? unregisteredAcrossHubs({
+          cellsByHub: { [GATED_SNEAKER_HUBS[0]]: hub1.cells, [GATED_SNEAKER_HUBS[1]]: hub2.cells },
+          rows, store, productsById, hubs: GATED_SNEAKER_HUBS,
+          // A DEACTIVATED line is never offered a new display. It still holds
+          // warehouse stock, so it would otherwise sit at the top of a wall walk
+          // asking to be put on a shelf the business has retired it from.
+          // (deactivationRead.test.js pins this shape across every list.)
+          predicate: (p) => isFootwearProduct(p) && !isDeactivated(p),
+        })
+      : []),
+    [ready, hub1.cells, hub2.cells, rows, store, productsById]
   );
 
-  // The scan resolver, shared by the burst listener and the typed-digits
-  // fallback: /barcodes first (many-to-one; codes never mirrored onto the
-  // product record live only there), then the product list.
-  const productsRef = useRef(products);
-  productsRef.current = products;
-  const resolveScan = async (value) => {
-    try {
-      const hit = await lookupBarcode(String(value));
-      const pid = hit?.productId;
-      const p = pid ? productsRef.current.find((x) => x.id === pid) : null;
-      if (p && !isFootwearProduct(p)) {
-        setNote({ tone: "err", text: `${p.name} is not a sneaker — this lane registers shoe displays only.` });
-        return false;
-      }
-      if (p) { pick(p); setNote(null); return true; }
-      setNote({ tone: "err", text: `Scan ${value} matched no product — search by name instead.` });
-    } catch {
-      setNote({ tone: "err", text: "Scan lookup failed — search by name instead." });
-    }
-    return false;
-  };
-  const resolveScanRef = useRef(resolveScan);
-  resolveScanRef.current = resolveScan;
+  // Typing searches BOTH sides at once: shoes with no record, and shoes that
+  // have one. One box, because "is this on the wall?" is one question and the
+  // operator does not know the answer before they ask.
+  const found = useMemo(() => filterCandidates(candidates, { q }), [candidates, q]);
+  const onRecord = useMemo(
+    () => (ready ? registeredDisplays({ rows, store, productsById, q }) : []),
+    [ready, rows, store, productsById, q]
+  );
+  const shown = found.slice(0, (page + 1) * PAGE);
 
-  // Scanner: window-level burst listener, installed ONCE (refs keep the
-  // handler current — re-subscribing on every products update ripped the
-  // global listener out repeatedly).
-  useEffect(() => {
-    const uninstall = installBarcodeListener();
-    const unsub = subscribeBarcode((value) => { resolveScanRef.current(value); });
-    return () => { unsub(); uninstall(); };
-  }, []);
+  const sizesOf = (product) =>
+    (Array.isArray(product?.sizes) ? product.sizes : []).map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
 
-  // A scan INTO the focused search box types the digits instead of raising
-  // the burst event (the listener refuses focused inputs by design) — so a
-  // digits-only query also runs through the /barcodes index after a beat.
-  useEffect(() => {
-    const q = query.trim();
-    if (!/^\d{4,}$/.test(q)) return undefined;
-    const t = setTimeout(() => { resolveScanRef.current(q); }, 350);
-    return () => clearTimeout(t);
-  }, [query]);
+  // /orders is store-scoped at the rule layer, so a shop-scoped device cannot
+  // see another wall's open requests and must not raise one it cannot fence.
+  const canRequest = !ordersScope || ordersScope === store;
 
-  const pick = (p) => { setSelected(p); setQuery(""); setSize(""); setEditing(null); setConfirmRemove(null); setNote(null); };
-
-  const realSizes = useMemo(() =>
-    (selected?.sizes || []).map(String).map((s) => s.trim()).filter((s) => s && s !== "_"), [selected]);
-
-  // The product's current display facts at this hub: register rows (the
-  // store-less majority) joined with the live slots (store known).
-  const facts = useMemo(() => {
-    if (!selected) return [];
-    const out = {};
-    for (const [key, row] of Object.entries(register || {})) {
-      const i = key.lastIndexOf("__");
-      if (i <= 0 || key.slice(0, i) !== selected.id) continue;
-      const sizeKey = key.slice(i + 2);
-      out[sizeKey] = { sizeKey, size: row?.size || decodeSizeKey(sizeKey), qty: Number(row?.qty) || 0, movementBacked: !!row?.movementId, stores: [] };
-    }
-    for (const [st, byPid] of Object.entries(slots || {})) {
-      const slot = byPid?.[selected.id];
-      if (!slotIsLive(slot) || slot.bookedHub !== hub) continue;
-      (out[slot.sizeKey] ||= { sizeKey: slot.sizeKey, size: slot.size, qty: 0, stores: [] }).stores.push(st);
-    }
-    return Object.values(out).filter((f) => f.qty > 0 || f.stores.length > 0);
-  }, [selected, register, slots, hub]);
-
-  const slotStoresFor = (sizeKey) => (facts.find((f) => f.sizeKey === sizeKey)?.stores) || [];
-
-  const finish = (res, okText) => {
-    if (!res.ok) { setNote({ tone: "err", text: res.message || "Could not save — try again." }); return false; }
-    setNote(res.warning ? { tone: "warn", text: res.warning } : { tone: "ok", text: okText });
-    return true;
-  };
-
-  const doRegister = async () => {
-    if (!selected || !size || !store || busy) return;
-    setBusy(true);
-    const res = await recordDisplayFact({ hub, product: selected, size, store, slots });
-    setBusy(false);
-    if (finish(res, res.already
-      ? `Already registered: size ${formatSize(size)} at ${labelFor(store)}.`
-      : `Registered: size ${formatSize(size)} on the display at ${labelFor(store)}.`)) setSize("");
-  };
-
-  const doEdit = async (toSize) => {
-    if (!selected || !editing || busy) return;
-    setBusy(true);
-    const res = await editDisplaySize({
-      hub, product: selected, fromSizeKey: editing.fromSizeKey, toSize,
-      slotStores: slotStoresFor(editing.fromSizeKey),
+  const onWall = async (candidate, size, existingRow = null) => {
+    setBusy(candidate.productId); setNote(null);
+    // The hub that HOLDS the picked size — not a hub the operator guessed at.
+    // For a correction the row keeps the hub it already had, including null.
+    const bookedHub = existingRow ? (existingRow.bookedHub ?? null) : hubForSize(candidate, size);
+    const res = await registerDisplayRow({
+      rows, store, productId: candidate.productId,
+      productName: candidate.productName || candidate.product?.name || "",
+      size, bookedHub, via: "wall_walk",
     });
-    setBusy(false);
-    if (finish(res, `Fixed: the display is size ${formatSize(toSize)} now.`)) setEditing(null);
+    setBusy(null); setActing(null);
+    setNote(res.ok
+      ? { tone: "ok", text: `${candidate.productName} · size ${formatSize(size)} is on ${labelFor(store)}'s record. No stock moved.` }
+      : { tone: "err", text: res.message });
   };
 
-  const doRemove = async (f) => {
-    if (!selected || busy) return;
-    if (confirmRemove !== f.sizeKey) { setConfirmRemove(f.sizeKey); return; }   // two deliberate taps
-    setConfirmRemove(null);
-    setBusy(true);
-    const res = await removeDisplayFact({ hub, product: selected, sizeKey: f.sizeKey, slotStores: f.stores });
-    setBusy(false);
-    finish(res, `Removed the size ${formatSize(f.size)} display record.`);
+  const notOnWall = async (candidate) => {
+    setBusy(candidate.productId); setNote(null);
+    const res = await raiseDisplayRequest({
+      orders, store, // The hub that holds ANY of this shoe's stock. It carries no size — a
+      // display request never names one — so the first size's hub is simply the
+      // shelf the warehouse will pick from.
+      hub: candidate.sizes?.[0]?.hub || GATED_SNEAKER_HUBS[0],
+      product: candidate.product || { id: candidate.productId, name: candidate.productName },
+    });
+    setBusy(null);
+    setNote(res.ok
+      ? { tone: "ok", text: `Display partner requested — order #${res.orderId}. The warehouse picks the size when it sends it.` }
+      : { tone: res.already ? "err" : "err", text: res.message });
   };
+
+  const closeRow = async (row, reason) => {
+    setBusy(row.productId); setNote(null);
+    const res = await closeDisplayRow({ rows, row, reason, via: "wall_walk", detail: { reason, store } });
+    setBusy(null); setActing(null);
+    setNote(res.ok
+      ? { tone: res.warning ? "err" : "ok", text: res.warning || `Closed the size ${formatSize(rowSizeText(row))} record. No stock moved.` }
+      : { tone: "err", text: res.message });
+  };
+
+  const Thumb = ({ p }) => (p?.photoUrl
+    ? <img src={p.photoUrl} alt="" style={sheet.thumb} />
+    : <div style={{ ...sheet.thumb, display: "grid", placeItems: "center", fontSize: 20 }}>👟</div>);
 
   return (
-    <div style={{ minHeight: "100vh", background: "#000", fontFamily: FONT, color: "#fff", padding: "18px 16px 60px", maxWidth: 620, margin: "0 auto" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke={AMBER} strokeWidth="2.2"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
-          <div style={{ fontWeight: 800, fontSize: 18 }}>Display Registration</div>
+    <div style={sheet.page}>
+      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+        <div>
+          <h1 style={sheet.h1}>Display Registration</h1>
+          <div style={sheet.sub}>What is standing on the wall, and what is not.</div>
         </div>
-        <button onClick={onExit} style={{ background: "transparent", border: "1px solid rgba(255,255,255,.18)", color: "rgba(255,255,255,.7)", borderRadius: 10, padding: "8px 14px", fontWeight: 700, fontSize: 12.5, cursor: "pointer" }}>Exit</button>
+        <button onClick={onExit} style={{ ...sheet.btn(), padding: "8px 14px", color: DIM }}>Exit</button>
       </div>
 
-      {/* PANE PICKER — Hub 1 and Hub 2 register; the two cleanup tabs are their
-          siblings. The cleanup panes are admin-only, so a non-admin sees the
-          two hub chips exactly as before rather than a chip that refuses. */}
-      <div style={{ display: "flex", gap: 8, marginBottom: 12, flexWrap: "wrap" }}>
-        {HUBS.map((h) => (
-          <button key={h} onClick={() => { setPane(h); setEditing(null); }} style={chip(pane === h)}>{h === "hub1" ? "Hub 1" : "Hub 2"}</button>
+      <div style={sheet.seg}>
+        {STORES.map((s) => (
+          <button key={s} onClick={() => { setStore(s); setActing(null); setNote(null); setPage(0); }}
+                  style={sheet.segBtn(store === s)}>{labelFor(s)}</button>
         ))}
-        {isAdmin && (
-          <>
-            <button onClick={() => { setPane("dupes"); setEditing(null); }} style={chip(pane === "dupes", AMBER)}>Duplicate Displays</button>
-            <button onClick={() => { setPane("wall"); setEditing(null); }} style={chip(pane === "wall", AMBER)}>Unregistered Displays</button>
-          </>
-        )}
       </div>
 
-      {/* THE ERROR BOUNDARY MOVES WITH THEM. In the Stock console both tabs were
-          wrapped in StockErrorBoundary, so a render throw degraded to "this one
-          tab is broken" and the rest of the console stayed usable. Unwrapped
-          here, the only boundary left is AppErrorBoundary — mounted once per
-          ROLE — so a bad row shape in the wall walk would tear down the whole
-          Display Registration card, taking an operator's half-finished Hub 1
-          registration with it. Moving a screen has to move what was protecting
-          it. (Senior-architect review.) */}
-      {pane === "dupes" && <StockErrorBoundary><DuplicateDisplaysTab products={products} isAdmin={isAdmin} /></StockErrorBoundary>}
-      {pane === "wall" && <StockErrorBoundary><UnregisteredDisplaysTab products={products} orders={orders} ordersScope={ordersScope} isAdmin={isAdmin} /></StockErrorBoundary>}
+      <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }}
+             placeholder="Search a shoe…" style={sheet.search} />
 
-      {isRegisterPane && (<>
+      {note && <div style={sheet.note(note.tone)}>{note.text}</div>}
 
-      {/* search / scan */}
-      <input value={query} onChange={(e) => setQuery(e.target.value)}
-        placeholder="Search by name, or scan the label / barcode…"
-        style={{ width: "100%", boxSizing: "border-box", padding: "13px 14px", borderRadius: 12, border: BORDER, background: CARD, color: "#fff", fontSize: 15, fontFamily: "inherit", marginBottom: 8 }} />
-      {results.length > 0 && (
-        <div style={{ background: CARD, border: BORDER, borderRadius: 12, marginBottom: 12, overflow: "hidden" }}>
-          {results.map((p) => (
-            <button key={p.id} onClick={() => pick(p)}
-              style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", padding: "10px 12px", background: "transparent", border: "none", borderBottom: "1px solid rgba(255,255,255,.05)", color: "#fff", cursor: "pointer", textAlign: "left", fontFamily: "inherit" }}>
-              {p.photoUrl ? <img src={p.photoUrl} alt="" style={{ width: 34, height: 44, objectFit: "cover", borderRadius: 6 }} /> : <span style={{ width: 34, textAlign: "center" }}>👟</span>}
-              <span style={{ fontSize: 13.5, fontWeight: 600 }}>{p.name}</span>
-            </button>
-          ))}
-        </div>
-      )}
+      {!ready && <div style={sheet.empty}>Loading…</div>}
 
-      {note && (() => {
-        const tones = {
-          ok:   { bg: "rgba(74,222,128,.1)", bd: "rgba(74,222,128,.4)", fg: "#4ADE80" },
-          warn: { bg: "rgba(251,191,36,.1)", bd: "rgba(251,191,36,.4)", fg: AMBER },
-          err:  { bg: "rgba(248,113,113,.1)", bd: "rgba(248,113,113,.4)", fg: "#F87171" },
-        };
-        const t = tones[note.tone] || tones.err;
-        return (
-          <div style={{ background: t.bg, border: `1px solid ${t.bd}`, color: t.fg, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 700, marginBottom: 12 }}>
-            {note.text}
-          </div>
-        );
-      })()}
-
-      {selected && (
-        <div style={{ background: CARD, border: BORDER, borderRadius: 14, padding: 16 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 14 }}>
-            {selected.photoUrl ? <img src={selected.photoUrl} alt="" style={{ width: 52, height: 68, objectFit: "cover", borderRadius: 8 }} /> : null}
-            <div>
-              <div style={{ fontWeight: 800, fontSize: 15 }}>{selected.name}</div>
-              <div style={{ color: "rgba(255,255,255,.45)", fontSize: 11.5 }}>{hub === "hub1" ? "Hub 1" : "Hub 2"} display records</div>
+      {/* ── ALREADY ON THE RECORD ─────────────────────────────────────────── */}
+      {ready && onRecord.map((g) => (
+        <div key={`r-${g.productId}`} style={sheet.card}>
+          <Thumb p={g.product} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={sheet.name}>{g.productName}</div>
+            <div style={sheet.meta}>
+              {g.rows.map((r) => <span key={r.rowId} style={sheet.pill}>Size {formatSize(rowSizeText(r))}</span>)}
+              {g.rows.length > 1 ? "more than one record — close the ones that are not there" : "on the record"}
             </div>
-          </div>
-
-          {/* current facts */}
-          {facts.length > 0 ? facts.map((f) => (
-            <div key={f.sizeKey} style={{ border: "1px solid rgba(251,191,36,.3)", background: "rgba(251,191,36,.05)", borderRadius: 10, padding: "10px 12px", marginBottom: 8 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: AMBER }}>
-                  Size {formatSize(f.size)}{f.qty > 1 ? ` ×${f.qty}` : ""}
-                  <span style={{ color: "rgba(233,238,255,.55)", fontWeight: 600 }}>
-                    {" "}— {f.stores.length ? `on ${f.stores.map((s) => labelFor(s)).join(", ")}'s display` : "shop not recorded"}
-                    {f.movementBacked ? " · booked by the count lane (removing the record does not un-book the pair)" : ""}
-                  </span>
-                </div>
-                <div style={{ display: "flex", gap: 6 }}>
-                  <button onClick={() => { setEditing(editing?.fromSizeKey === f.sizeKey ? null : { fromSizeKey: f.sizeKey }); setNote(null); }}
-                    style={{ ...chip(editing?.fromSizeKey === f.sizeKey, AMBER), padding: "6px 10px", fontSize: 11.5 }}>Change size</button>
-                  <button onClick={() => doRemove(f)} disabled={busy}
-                    style={{ padding: "6px 10px", borderRadius: 8, border: `1px solid rgba(248,113,113,${confirmRemove === f.sizeKey ? ".8" : ".4"})`, background: confirmRemove === f.sizeKey ? "rgba(248,113,113,.2)" : "rgba(248,113,113,.08)", color: "#F87171", fontWeight: 700, fontSize: 11.5, cursor: "pointer", fontFamily: "inherit" }}>
-                    {confirmRemove === f.sizeKey ? "Really remove?" : "Remove"}
+            {acting === `fix-${g.productId}` ? (
+              <SizePicker sizes={sizesOf(g.product)} busy={busy === g.productId}
+                          title="Which size is actually on the wall?"
+                          note={`The record says ${g.rows.map((r) => formatSize(rowSizeText(r))).join(", ")}. Picking replaces it. No stock moves.`}
+                          confirmLabel="Register"
+                          onPick={(sz) => onWall({ productId: g.productId, productName: g.productName, product: g.product, sizes: [] }, sz, g.rows[0])}
+                          onCancel={() => setActing(null)} />
+            ) : (
+              <div style={sheet.row}>
+                <button style={sheet.btn()} disabled={!!busy} onClick={() => setActing(`fix-${g.productId}`)}>Different size</button>
+                {g.rows.map((r) => (
+                  <button key={r.rowId} style={sheet.btn()} disabled={!!busy}
+                          onClick={() => closeRow(r, "returned")}>
+                    {g.rows.length > 1 ? `Not there — size ${formatSize(rowSizeText(r))}` : "Not on the wall any more"}
                   </button>
-                </div>
+                ))}
+                <HistoryToggle row={g.rows[0]} />
               </div>
-              {editing?.fromSizeKey === f.sizeKey && (
-                <div style={{ marginTop: 10 }}>
-                  <div style={{ fontSize: 11, color: "rgba(233,238,255,.5)", fontWeight: 700, marginBottom: 6 }}>WHAT SIZE IS ACTUALLY ON THE DISPLAY?</div>
-                  <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-                    {realSizes.map((s) => (
-                      <button key={s} onClick={() => doEdit(s)} disabled={busy} style={chip(false, AMBER)}>{formatSize(s)}</button>
-                    ))}
-                  </div>
-                </div>
-              )}
-            </div>
-          )) : (
-            <div style={{ color: "rgba(255,255,255,.4)", fontSize: 12.5, marginBottom: 10 }}>No display registered for this product at {hub === "hub1" ? "Hub 1" : "Hub 2"} yet.</div>
-          )}
+            )}
+          </div>
+        </div>
+      ))}
 
-          {/* register new */}
-          <div style={{ marginTop: 14, paddingTop: 14, borderTop: "1px solid rgba(255,255,255,.07)" }}>
-            <div style={{ fontSize: 11, color: "rgba(233,238,255,.5)", fontWeight: 700, marginBottom: 6 }}>REGISTER A DISPLAY — WHICH SIZE WENT ON THE WALL?</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-              {realSizes.map((s) => (
-                <button key={s} onClick={() => setSize(size === s ? "" : s)} style={chip(size === s)}>{formatSize(s)}</button>
-              ))}
-              {!realSizes.length && <div style={{ color: AMBER, fontSize: 12 }}>This product has no sizes on record — fix the product first.</div>}
-            </div>
-            <div style={{ fontSize: 11, color: "rgba(233,238,255,.5)", fontWeight: 700, marginBottom: 6 }}>WHOSE DISPLAY WALL?</div>
-            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 12 }}>
-              {/* Required — a store-less registration is exactly the shop-
-                  unknown row the display marker had to work around. */}
-              {STORES.map((st) => (
-                <button key={st} onClick={() => setStore(st)} style={chip(store === st)}>{labelFor(st)}</button>
-              ))}
-            </div>
-            <button onClick={doRegister} disabled={!size || !store || busy}
-              style={{ width: "100%", padding: "12px", borderRadius: 11, border: "none", fontFamily: "inherit",
-                       background: size && store && !busy ? "#4ADE80" : "rgba(255,255,255,.06)",
-                       color: size && store && !busy ? "#04351a" : "rgba(233,238,255,.3)", fontWeight: 800, fontSize: 14, cursor: size && store && !busy ? "pointer" : "not-allowed" }}>
-              {!size ? "Pick a size" : !store ? "Pick the shop wall" : `Register size ${formatSize(size)} on ${labelFor(store)}'s display`}
-            </button>
-            <div style={{ color: "rgba(255,255,255,.35)", fontSize: 11, marginTop: 8, lineHeight: 1.5 }}>
-              Records the display fact only — no stock is added or moved. New-stock pairs are already booked by receiving.
-            </div>
+      {/* ── NOT ON THE RECORD — the walk ──────────────────────────────────── */}
+      {ready && shown.map((c) => (
+        <div key={c.productId} style={sheet.card}>
+          <Thumb p={c.product} />
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={sheet.name}>{c.productName}</div>
+            <div style={sheet.meta}>{c.hubUnits} in the warehouse · no display record here</div>
+            {acting === c.productId ? (
+              <SizePicker sizes={sizesOf(c.product)} busy={busy === c.productId}
+                          title="Which size is on the wall?"
+                          note="Nothing is chosen for you — pick the size you are looking at. No stock moves."
+                          confirmLabel="Register"
+                          onPick={(sz) => onWall(c, sz)}
+                          onCancel={() => setActing(null)} />
+            ) : (
+              <div style={sheet.row}>
+                <button style={sheet.btn("primary")} disabled={!!busy} onClick={() => setActing(c.productId)}>On the wall</button>
+                <button style={sheet.btn()} disabled={!!busy || !canRequest}
+                        title={canRequest ? "" : `Switch to ${labelFor(store)} on that device to request for this wall.`}
+                        onClick={() => notOnWall(c)}>Not on the wall</button>
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+
+      {ready && found.length > shown.length && (
+        <button style={{ ...sheet.btn(), width: "100%", marginTop: 12 }} onClick={() => setPage((p) => p + 1)}>
+          Show {Math.min(PAGE, found.length - shown.length)} more
+        </button>
+      )}
+
+      {ready && !shown.length && !onRecord.length && (
+        <div style={sheet.empty}>
+          {q
+            ? "Nothing matches that here."
+            : `Every shoe in the warehouse already has a display record for ${labelFor(store)}. Search to correct one.`}
+          <div style={{ marginTop: 10, color: "rgba(245,246,248,.24)" }}>
+            This list can only see shoes the warehouse still holds. A display whose warehouse stock has run out is real and is not here.
           </div>
         </div>
       )}
 
-      {!selected && !results.length && (
-        <div style={{ textAlign: "center", color: "rgba(255,255,255,.35)", padding: "3rem 1rem", fontSize: 13 }}>
-          Scan a shoe's label or barcode, or search its name, to register or fix its display size.
-        </div>
-      )}
-      </>)}
+      {!isAdmin && <div style={{ ...sheet.empty, paddingTop: 24 }}>Registering is admin-only.</div>}
     </div>
   );
 }
