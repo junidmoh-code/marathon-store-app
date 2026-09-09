@@ -16,7 +16,8 @@ let CELLS2 = {};
 let PERMS = { permRecord: { stockRole: "admin" }, isSuperAdmin: false, hasPermission: () => true };
 const registerDisplayRow = vi.fn(async () => ({ ok: true }));
 const closeDisplayRow = vi.fn(async () => ({ ok: true, stockMoved: false }));
-const raiseDisplayRequest = vi.fn(async () => ({ ok: true, orderId: "042" }));
+const raiseDisplayRequest = vi.fn(async () => ({ ok: true, orderId: "042", createdAt: "2026-09-09T10:00:00.000Z" }));
+const cancelDisplayRequest = vi.fn(async () => ({ ok: true }));
 
 vi.mock("../PermissionsContext", () => ({ usePermissions: () => PERMS }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } }, functions: {} }));
@@ -29,7 +30,10 @@ vi.mock("./displayRowStore", () => ({
   registerDisplayRow: (...a) => registerDisplayRow(...a),
   closeDisplayRow: (...a) => closeDisplayRow(...a),
 }));
-vi.mock("./displayRequestStore", () => ({ raiseDisplayRequest: (...a) => raiseDisplayRequest(...a) }));
+vi.mock("./displayRequestStore", () => ({
+  raiseDisplayRequest: (...a) => raiseDisplayRequest(...a),
+  cancelDisplayRequest: (...a) => cancelDisplayRequest(...a),
+}));
 vi.mock("./useStock", () => ({
   useDisplayRowsState: () => ({ value: ROWS, settled: true, error: false }),
   useStockCellsState: (hub) => ({ cells: hub === "hub1" ? CELLS1 : CELLS2, settled: true, error: false }),
@@ -82,6 +86,9 @@ beforeEach(() => {
   ROWS = {}; CELLS1 = { p1: { 6: { qty: 2 } } }; CELLS2 = {};
   PERMS = { permRecord: { stockRole: "admin" }, isSuperAdmin: false, hasPermission: () => true };
   registerDisplayRow.mockClear(); closeDisplayRow.mockClear(); raiseDisplayRequest.mockClear();
+  cancelDisplayRequest.mockClear();
+  raiseDisplayRequest.mockResolvedValue({ ok: true, orderId: "042", createdAt: "2026-09-09T10:00:00.000Z" });
+  cancelDisplayRequest.mockResolvedValue({ ok: true });
 });
 
 describe("the screen is one lane, and it mounts", () => {
@@ -136,11 +143,83 @@ describe("the two answers the walk needs", () => {
     expect(registerDisplayRow.mock.calls[0][0].bookedHub).toBe("hub2");
   });
 
-  it("NOT ON THE WALL raises a request and never a size", () => {
+  // ── THE CONSEQUENTIAL TAP ASKS FIRST ──────────────────────────────────────
+  // This tap draws a real order number and puts a real job in the warehouse
+  // queue. "On the wall", which moves nothing and changes only a record, has
+  // always made the operator pick a size first — this had the two backwards.
+  it("ONE TAP NO LONGER RAISES ANYTHING — it asks", async () => {
     const t = render();
-    act(() => { btn(t, "Not on the wall").props.onClick(); });
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    expect(raiseDisplayRequest).not.toHaveBeenCalled();
+    const s = text(t);
+    expect(s).toMatch(/Ask the warehouse to send a display pair\?/);
+    // It names the shoe and the wall — a confirm that does not is one nobody reads.
+    expect(s).toMatch(/Nike Dunk Low Panda/);
+    expect(s).toMatch(/Marathon PE/);
+  });
+
+  it("Cancel backs out and raises nothing", async () => {
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    await act(async () => { btn(t, "Cancel").props.onClick(); });
+    expect(raiseDisplayRequest).not.toHaveBeenCalled();
+    expect(text(t)).not.toMatch(/Ask the warehouse to send a display pair\?/);
+  });
+
+  it("confirming raises the request, and never a size", async () => {
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    await act(async () => { btn(t, "Yes — request it").props.onClick(); });
     expect(raiseDisplayRequest).toHaveBeenCalledTimes(1);
     expect(raiseDisplayRequest.mock.calls[0][0].store).toBe("marathon-pe");
+    expect(raiseDisplayRequest.mock.calls[0][0]).not.toHaveProperty("size");
+  });
+
+  // ── THE WORDING SAYS WHAT WAS ASKED FOR ───────────────────────────────────
+  // It read "Display partner requested" — the name of the PIPELINE, not of the
+  // thing asked for. Standing at an empty spot nobody asks for a partner to
+  // something that is not there.
+  it("says a display pair was asked for, not that a partner was requested", async () => {
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    await act(async () => { btn(t, "Yes — request it").props.onClick(); });
+    const s = text(t);
+    expect(s).toMatch(/Asked the warehouse for a display pair of Nike Dunk Low Panda/);
+    expect(s).toMatch(/#042/);
+    expect(s).not.toMatch(/Display partner requested/);
+  });
+
+  it("OFFERS AN UNDO, and the undo carries the stamp that proves which order it is", async () => {
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    await act(async () => { btn(t, "Yes — request it").props.onClick(); });
+    expect(btn(t, "Undo")).toBeTruthy();
+    await act(async () => { btn(t, "Undo").props.onClick(); });
+    expect(cancelDisplayRequest).toHaveBeenCalledTimes(1);
+    // /orders ids are recycled daily, so the id alone does not name an order.
+    expect(cancelDisplayRequest.mock.calls[0][0]).toMatchObject({
+      orderId: "042", createdAt: "2026-09-09T10:00:00.000Z", store: "marathon-pe",
+    });
+    expect(text(t)).toMatch(/Undone/);
+  });
+
+  it("a refused undo says why and leaves the request standing", async () => {
+    cancelDisplayRequest.mockResolvedValue({ ok: false, reason: "started", message: "The warehouse has already started on this one." });
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    await act(async () => { btn(t, "Yes — request it").props.onClick(); });
+    await act(async () => { btn(t, "Undo").props.onClick(); });
+    expect(text(t)).toMatch(/already started/);
+    expect(text(t)).not.toMatch(/Undone/);
+  });
+
+  it("a FAILED raise offers no undo — there is nothing to take back", async () => {
+    raiseDisplayRequest.mockResolvedValue({ ok: false, message: "A display partner is already on its way." });
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    await act(async () => { btn(t, "Yes — request it").props.onClick(); });
+    expect(text(t)).toMatch(/already on its way/);
+    expect(btn(t, "Undo")).toBeFalsy();
   });
 
   it("a store-scoped device cannot request for the OTHER wall", () => {

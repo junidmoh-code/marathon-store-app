@@ -57,7 +57,7 @@ import {
   unregisteredAcrossHubs, hubForSize, filterCandidates, registeredDisplays, rowSizeText,
 } from "./displayRowCore";
 import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
-import { raiseDisplayRequest } from "./displayRequestStore";
+import { raiseDisplayRequest, cancelDisplayRequest } from "./displayRequestStore";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { GATED_SNEAKER_HUBS, isFootwearProduct } from "./availabilityCore";
@@ -200,6 +200,17 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
       : { tone: "err", text: res.message });
   };
 
+  // ── ASKING FOR A SHOE IS THE CONSEQUENTIAL TAP, SO IT ASKS FIRST ──────────
+  // (Owner, 2026-09-09.) The screen had this exactly backwards. "On the wall"
+  // moves no stock and changes only a record, and it makes the operator pick a
+  // size before it does anything. "Not on the wall" draws a REAL order number
+  // and puts a REAL job in the warehouse queue — and it was one tap, no
+  // question asked, on a screen the operator is tapping through at walking
+  // pace with a shelf in front of them.
+  //
+  // Now it names the shoe and the wall and waits. The confirm is inline rather
+  // than a window.confirm because the operator is on a phone in a shop and a
+  // browser dialog covers the row they are looking at.
   const notOnWall = async (candidate) => {
     setBusy(candidate.productId); setNote(null);
     const res = await raiseDisplayRequest({
@@ -209,10 +220,30 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
       hub: candidate.sizes?.[0]?.hub || GATED_SNEAKER_HUBS[0],
       product: candidate.product || { id: candidate.productId, name: candidate.productName },
     });
+    setBusy(null); setActing(null);
+    // ── THE WORDING SAYS WHAT WAS ASKED FOR ──────────────────────────────────
+    // It used to read "Display partner requested", which is the name of the
+    // PIPELINE, not of the thing the operator asked for. Standing at an empty
+    // spot on the wall they did not ask for a partner to anything — they asked
+    // for a shoe to display. (The flag underneath is unchanged and correct:
+    // requestDisplayPartner is the only live one, and it is the queue the
+    // warehouse already works.)
+    setNote(res.ok
+      ? { tone: "ok",
+          text: `Asked the warehouse for a display pair of ${candidate.productName} for ${labelFor(store)} — order #${res.orderId}. They pick the size when they send it.`,
+          undo: { orderId: res.orderId, createdAt: res.createdAt, label: candidate.productName } }
+      : { tone: "err", text: res.message });
+  };
+
+  // Undo is offered only while the warehouse has not started; the store decides
+  // that, not this screen, by re-reading the order. See displayRequestStore.
+  const undoRequest = async (undo) => {
+    setBusy(`undo-${undo.orderId}`);
+    const res = await cancelDisplayRequest({ orderId: undo.orderId, createdAt: undo.createdAt, store });
     setBusy(null);
     setNote(res.ok
-      ? { tone: "ok", text: `Display partner requested — order #${res.orderId}. The warehouse picks the size when it sends it.` }
-      : { tone: res.already ? "err" : "err", text: res.message });
+      ? { tone: "ok", text: `Undone — the request for ${undo.label} was withdrawn. Nothing is on its way.` }
+      : { tone: "err", text: res.message });
   };
 
   const closeRow = async (row, reason) => {
@@ -248,7 +279,21 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
       <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }}
              placeholder="Search a shoe…" style={sheet.search} />
 
-      {note && <div style={sheet.note(note.tone)}>{note.text}</div>}
+      {/* The note carries an Undo when the thing it is reporting can still be
+          taken back. It disappears with the note — an undo that outlived its
+          message would be a button whose subject the operator has forgotten. */}
+      {note && (
+        <div style={sheet.note(note.tone)}>
+          {note.text}
+          {note.undo && (
+            <button style={{ ...sheet.btn(), marginLeft: 10, verticalAlign: "middle" }}
+                    disabled={busy === `undo-${note.undo.orderId}`}
+                    onClick={() => undoRequest(note.undo)}>
+              {busy === `undo-${note.undo.orderId}` ? "Undoing…" : "Undo"}
+            </button>
+          )}
+        </div>
+      )}
 
       {!ready && <div style={sheet.empty}>Loading…</div>}
 
@@ -292,7 +337,25 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={sheet.name}>{c.productName}</div>
             <div style={sheet.meta}>{c.hubUnits} in the warehouse · no display record here</div>
-            {acting === c.productId ? (
+            {acting === `ask-${c.productId}` ? (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff" }}>
+                  Ask the warehouse to send a display pair?
+                </div>
+                <div style={{ ...sheet.meta, marginTop: 4, lineHeight: 1.5 }}>
+                  {c.productName} for {labelFor(store)}. This puts a real job in the warehouse
+                  queue — it does not move any stock by itself.
+                </div>
+                <div style={{ ...sheet.row, marginTop: 8 }}>
+                  <button style={sheet.btn("primary")} disabled={busy === c.productId}
+                          onClick={() => notOnWall(c)}>
+                    {busy === c.productId ? "Requesting…" : "Yes — request it"}
+                  </button>
+                  <button style={sheet.btn()} disabled={busy === c.productId}
+                          onClick={() => setActing(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : acting === c.productId ? (
               <SizePicker sizes={sizesOf(c.product)} busy={busy === c.productId}
                           title="Which size is on the wall?"
                           note="Nothing is chosen for you — pick the size you are looking at. No stock moves."
@@ -304,7 +367,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
                 <button style={sheet.btn("primary")} disabled={!!busy} onClick={() => setActing(c.productId)}>On the wall</button>
                 <button style={sheet.btn()} disabled={!!busy || !canRequest}
                         title={canRequest ? "" : `Switch to ${labelFor(store)} on that device to request for this wall.`}
-                        onClick={() => notOnWall(c)}>Not on the wall</button>
+                        onClick={() => setActing(`ask-${c.productId}`)}>Not on the wall</button>
               </div>
             )}
           </div>
