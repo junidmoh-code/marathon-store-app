@@ -57,6 +57,24 @@ describe("extractTokens", () => {
     expect(extractTokens("T-44712").codeStems).toEqual([]);
   });
 
+  it("A THREE-BLOCK JOIN IS FENCED BY SHAPE — it may not invent a code out of unrelated blocks", () => {
+    // Joining across a separator the label printed is only allowed when the
+    // result is a shape a brand actually prints. None of these are.
+    expect(extractTokens("2024-05-01").codeStems).toEqual([]);
+    expect(extractTokens("12-34-5678").codeStems).toEqual([]);
+    expect(extractTokens("44712-0-1").codeStems).toEqual([]);
+  });
+
+  it("…so a three-block spelling cannot reach the adjacency the header forbids", () => {
+    expect(scoreCandidate("44712-0-1", prod("p", "447120"))).toBeNull();
+    expect(scoreCandidate("2024-05-01", prod("p", "202405"))).toBeNull();
+    expect(scoreCandidate("12-34-5678", prod("p", "1234"))).toBeNull();
+  });
+
+  it("a TWO-block stem needs no brand shape — a plain article number is enough", () => {
+    expect(extractTokens("44712-01").codeStems).toEqual(["44712"]);
+  });
+
   it("the stem is the run WITHOUT its trailing segment, not its first segment", () => {
     // The Lacoste tongue-label form this module's header is written around. The
     // article block is the MIDDLE segment; "7" is a category prefix and is not a

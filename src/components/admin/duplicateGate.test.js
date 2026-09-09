@@ -1,7 +1,7 @@
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import {
   resolveDuplicateChoice, exactRowsOf, createAnywayPrompt, splitPrefillSizes, totalsKnowable,
-  DUP_NONE, DUP_RESOLVED, DUP_CHOOSE,
+  gatherExactTotals, DUP_NONE, DUP_RESOLVED, DUP_CHOOSE,
 } from "./duplicateGate.js";
 import { TIER_EXACT_CODE, TIER_PARTIAL_CODE, TIER_FUZZY_NAME } from "../../utils/productDupMatch.js";
 
@@ -66,6 +66,40 @@ describe("totalsKnowable — no locations means UNKNOWN, never zero", () => {
     const p = createAnywayPrompt("44712", [row("p1", "X")], totalsKnowable([]) ? { p1: { total: 0 } } : {});
     expect(p).toContain("an unknown number of units");
     expect(p).not.toContain("0 units");
+  });
+});
+
+describe("gatherExactTotals — the caller's guards, where a test can see them", () => {
+  const rows = [row("p1", "A"), row("p2", "B")];
+
+  it("reads a total for every exact candidate", async () => {
+    const read = vi.fn(async (pid) => ({ total: pid === "p1" ? 4 : 7 }));
+    expect(await gatherExactTotals(rows, ["hub1"], read)).toEqual({ p1: { total: 4 }, p2: { total: 7 } });
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it("READS NOTHING when there are no locations — unread is unknown, not zero", async () => {
+    const read = vi.fn(async () => ({ total: 0 }));
+    expect(await gatherExactTotals(rows, [], read)).toEqual({});
+    expect(read).not.toHaveBeenCalled();
+    // …and the sentence built from it says so.
+    expect(createAnywayPrompt("44712", rows, await gatherExactTotals(rows, [], read)))
+      .toContain("an unknown number of units");
+  });
+
+  it("a failed read is null, and does not block the others or the save", async () => {
+    const read = vi.fn(async (pid) => { if (pid === "p1") throw new Error("denied"); return { total: 3 }; });
+    expect(await gatherExactTotals(rows, ["hub1"], read)).toEqual({ p1: null, p2: { total: 3 } });
+  });
+
+  it("ignores weaker tiers — only exact matches are ever counted", async () => {
+    const read = vi.fn(async () => ({ total: 1 }));
+    await gatherExactTotals([row("f", "F", TIER_FUZZY_NAME)], ["hub1"], read);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it("survives a missing reader rather than throwing inside the save handler", async () => {
+    expect(await gatherExactTotals(rows, ["hub1"], undefined)).toEqual({});
   });
 });
 

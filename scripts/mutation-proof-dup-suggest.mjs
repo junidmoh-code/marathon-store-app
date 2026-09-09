@@ -44,6 +44,7 @@ const PANEL = "src/components/admin/DuplicateSuggestPanel.jsx";
 const PANEL_TESTS = ["src/components/admin/DuplicateSuggestPanel.render.test.jsx"];
 const COST_TESTS = ["src/components/admin/DuplicateSuggestPanel.cost.test.jsx"];
 const FUZZ_TESTS = ["src/utils/productDupMatchFuzz.test.js"];
+const FUZZ = "src/utils/productDupMatchFuzz.test.js";
 const ONCE = "src/utils/onceAtATime.js";
 const ONCE_TESTS = ["src/utils/onceAtATime.test.js"];
 
@@ -77,16 +78,16 @@ const MUTATIONS = [
   // ── partial_code: both directions, and the sibling case ───────────────────
   { id: "S5", file: MATCH, tests: TESTS,
     guard: "a typed stem finds a stored SEGMENTED code — 44712 against 44712-01",
-    from: `    if (p.codeStems.includes(code)) {\n      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: \`\${code} is the first part of this product's code\` };\n    }\n`,
+    from: `    if (p.codeStems.includes(code)) {\n      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: \`\${code} is this product's code without its last block\` };\n    }\n`,
     to: `` },
   { id: "S6", file: MATCH, tests: TESTS,
     guard: "…and the reverse — a typed segmented code finds a stored stem",
-    from: `    if (p.byCode.has(stem)) {\n      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: \`this product's code \${stem} is the first part of what you typed\` };\n    }`,
+    from: `    if (p.byCode.has(stem)) {\n      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: \`this product's code \${stem} is what you typed without its last block\` };\n    }`,
     to: `    if (false) {}` },
   { id: "S7", file: MATCH, tests: TESTS,
     guard: "two sibling colourways rank BELOW either — a colour suffix makes a different product",
-    from: `      return { tier: TIER_PARTIAL_CODE, score: 0.75, reason: \`\${stem} is the first part of both codes — this may be another colourway\` };`,
-    to: `      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: \`\${stem} is the first part of both codes — this may be another colourway\` };` },
+    from: `      return { tier: TIER_PARTIAL_CODE, score: 0.75, reason: \`\${stem} is what both codes start from — this may be another colourway\` };`,
+    to: `      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: \`\${stem} is what both codes start from — this may be another colourway\` };` },
   { id: "S7b", file: MATCH, tests: TESTS,
     guard: "partial NEVER outranks exact on the same product — the exact branch is asked FIRST",
     from: `  // ── TIER 1: the same code. Identity, not similarity. ──`,
@@ -117,8 +118,8 @@ const MUTATIONS = [
   // ── tokenisation: where the no-substring rule actually lives ──────────────
   { id: "T2", file: MATCH, tests: TESTS,
     guard: "…and the stem must be code-shaped itself, so \"T-SHIRT\" donates no \"T\"",
-    from: `    if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);`,
-    to: `    if (stem && !codeStems.includes(stem)) codeStems.push(stem);` },
+    from: `      const stem = normaliseStyleCode(segments[0]);\n      if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);`,
+    to: `      const stem = normaliseStyleCode(segments[0]);\n      if (stem && !codeStems.includes(stem)) codeStems.push(stem);` },
   { id: "T3", file: MATCH, tests: TESTS,
     guard: `a digit run must be ${"CODE_DIGIT_MIN"}+ to be an identity claim — three digits is a model number`,
     from: `  if (/^\\d+$/.test(bare)) return bare.length >= CODE_DIGIT_MIN;`,
@@ -224,8 +225,8 @@ const MUTATIONS = [
   // ── the review findings, pinned so they cannot come back ──────────────────
   { id: "F1", file: MATCH, tests: TESTS,
     guard: "THE STEM IS THE RUN MINUS ITS LAST SEGMENT — segments[0] is \"7\" on a Lacoste label, and recorded no stem at all",
-    from: `    const stem = normaliseStyleCode(segments.slice(0, -1).join(""));`,
-    to: `    const stem = segments.length >= 2 ? segments[0] : "";` },
+    from: `      const stem = normaliseStyleCode(segments.slice(0, -1).join(""));\n      if (isKnownStyleCodeFormat(stem) && !codeStems.includes(stem)) codeStems.push(stem);`,
+    to: `      const stem = segments[0];\n      if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);` },
   { id: "F2", file: MATCH, tests: FUZZ_TESTS,
     guard: "PROPERTY FUZZ BITES: a prefix rule dressed as a boundary rule is caught over generated codes",
     from: `    if (p.codeStems.includes(code)) {`,
@@ -246,6 +247,25 @@ const MUTATIONS = [
   { id: "F9", file: PANEL, tests: PANEL_TESTS,
     guard: "…and the panel says so rather than sitting on \"counting…\" for a read it never issued",
     from: `    : !knowable ? "units unknown — no locations to count"`, to: `    : false ? ""` },
+  { id: "F10", file: MATCH, tests: TESTS,
+    guard: "A THREE-BLOCK JOIN IS FENCED BY SHAPE — otherwise it mints a code out of unrelated blocks (2024-05-01 → 202405)",
+    from: `      if (isKnownStyleCodeFormat(stem) && !codeStems.includes(stem)) codeStems.push(stem);`,
+    to: `      if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);` },
+  { id: "F11", file: MATCH, tests: FUZZ_TESTS,
+    guard: "A STEM STANDS ON ITS OWN SHAPE — sharing the code's gate threw away every stem whose joined form was not code-shaped",
+    from: `    if (isCodeToken(bare) && !codes.includes(bare)) codes.push(bare);`,
+    to: `    if (!isCodeToken(bare)) continue;\n    if (!codes.includes(bare)) codes.push(bare);` },
+  { id: "F12", file: GATE, tests: GATE_TESTS,
+    guard: "THE CALLER'S EMPTY-SET GUARD IS PROVEN — it used to live inline in a save handler no test rendered",
+    from: `  if (!totalsKnowable(locationIds) || typeof readTotals !== "function") return out;`,
+    to: `  if (typeof readTotals !== "function") return out;` },
+  { id: "F13", file: GATE, tests: GATE_TESTS,
+    guard: "…and a failed read is null, not a thrown save",
+    from: `    try { out[r.product.id] = await readTotals(r.product.id, locationIds); }\n    catch { out[r.product.id] = null; }`,
+    to: `    out[r.product.id] = await readTotals(r.product.id, locationIds);` },
+  { id: "F14", file: FUZZ, tests: FUZZ_TESTS,
+    guard: "THE FUZZ ASSERTS ITS OWN COVERAGE — a generator that drifts until it exercises nothing is CAUGHT, not passed",
+    from: `  const sep = pick(r, "-/_.");`, to: `  const sep = "";` },
   { id: "F7", file: PANEL, tests: PANEL_TESTS,
     guard: "CREATE-NEW CANNOT BE SWITCHED OFF — it renders in the resolved banner as well as the picker",
     from: `        {createNew}\n      </div>\n    );\n  }`, to: `      </div>\n    );\n  }` },

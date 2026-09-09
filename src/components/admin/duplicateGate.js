@@ -92,6 +92,37 @@ export function totalsKnowable(locationIds) {
 }
 
 /**
+ * Read the unit total for every exact-match candidate, as a { productId: totals }
+ * map, with a null for anything that could not be read.
+ *
+ * Lives here rather than inline in AdminView so the empty-set rule above is
+ * PROVEN by a test rather than asserted by a comment: the earlier version was
+ * three lines inside a 400-line save handler that no test rendered and no
+ * mutation touched, so deleting its guard changed nothing anyone could see.
+ *
+ * `readTotals` is injected (networkTotalsStore.productTotals in the app) so this
+ * stays free of Firebase and testable with a fake.
+ *
+ * @param {Array} exactRows
+ * @param {string[]} locationIds
+ * @param {(productId: string, locationIds: string[]) => Promise<object>} readTotals
+ * @returns {Promise<object>} { [productId]: totals|null }
+ */
+export async function gatherExactTotals(exactRows, locationIds, readTotals) {
+  const out = {};
+  const rows = exactRowsOf(exactRows);
+  // Nothing to sum over means UNKNOWN. Not attempted, so not answered — and an
+  // unanswered count prints as "an unknown number of units", never as 0.
+  if (!totalsKnowable(locationIds) || typeof readTotals !== "function") return out;
+  await Promise.all(rows.map(async (r) => {
+    // A failed read is UNKNOWN too, and must never block the save.
+    try { out[r.product.id] = await readTotals(r.product.id, locationIds); }
+    catch { out[r.product.id] = null; }
+  }));
+  return out;
+}
+
+/**
  * @param {string} typed        the name about to be saved
  * @param {Array}  exactRows    rankCandidates rows, exact tier only
  * @param {object} totalsById   { [productId]: {total} | null } — null = unknown

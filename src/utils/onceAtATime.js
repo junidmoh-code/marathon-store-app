@@ -17,8 +17,14 @@
 // same tick as the call, can close this window.
 //
 // The lock is released in a `finally`, so a handler that throws does not wedge
-// the button forever. The rejection is re-thrown: swallowing it here would turn
-// a failed save into a silent one.
+// the button forever. The rejection is re-thrown rather than swallowed — but
+// note what that does and does not buy: the only caller is a DOM onClick, which
+// React neither awaits nor catches, so a rejection that escapes becomes an
+// unhandled promise rejection and the operator sees NOTHING. Re-throwing is
+// still right (this wrapper must not be the thing that hides a failure), but the
+// place a failed save is actually reported is the handler's own try/catch. Do
+// not read this line as "errors reach the operator".
+// (Adversarial delta review, PR #594.)
 
 /**
  * Wrap an async function so that a call arriving while a previous one is still

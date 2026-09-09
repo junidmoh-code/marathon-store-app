@@ -161,7 +161,7 @@ import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
 import DuplicateSuggestPanel from "./components/admin/DuplicateSuggestPanel";
-import { exactRowsOf, createAnywayPrompt, splitPrefillSizes, totalsKnowable } from "./components/admin/duplicateGate";
+import { exactRowsOf, createAnywayPrompt, splitPrefillSizes, gatherExactTotals } from "./components/admin/duplicateGate";
 import { rankCandidates } from "./utils/productDupMatch";
 import { onceAtATime } from "./utils/onceAtATime";
 import { productTotals } from "./components/stock/networkTotalsStore";
@@ -5675,10 +5675,14 @@ function AdminView({ products, orders, onExit }) {
   // abandoned twin, so it is summed over the WHOLE network — no exclusions.
   // (Total Stock's EXCLUDED_LOCATIONS exist to shape a reorder figure; this is
   // a recognition figure and a unit sitting at Pine is still a unit that exists.)
-  // Retired locations are dropped: a read of a location nobody stocks costs
-  // bytes and adds nothing.
+  // A RETIRED LOCATION IS NOT DROPPED. Filtering on `active !== false` saved a
+  // read and produced a confident wrong number: a twin whose units all sit at a
+  // retired location summed to 0, and the confirm then said "already exists as X
+  // with 0 units" — which reads as "dead record, safe to replace" and pushes the
+  // operator into making the duplicate. Units at a retired location are still
+  // units that exist. (Adversarial delta review, PR #594.)
   const dupLocationIds = useMemo(
-    () => Object.keys(recvRegistry || {}).filter((id) => recvRegistry[id]?.active !== false).sort(),
+    () => Object.keys(recvRegistry || {}).sort(),
     [recvRegistry],
   );
   // ── THE HANDOFF INTO AN EXISTING PRODUCT ─────────────────────────────────
@@ -5789,8 +5793,15 @@ function AdminView({ products, orders, onExit }) {
   // The ref keeps the guard STABLE across renders while still calling the
   // CURRENT handler. A guard rebuilt every render holds a fresh, unlocked flag
   // and therefore locks nothing at all.
+  //
+  // NOT useMemo. React documents useMemo as a performance hint it MAY discard
+  // and recompute — and a discarded memo hands back a brand-new, unlocked guard,
+  // which is precisely the failure this guard exists to prevent. A ref is the
+  // only thing React promises to keep. (Adversarial delta review, PR #594.)
   const addProductRef = useRef();
-  const addProduct = useMemo(() => onceAtATime((...a) => addProductRef.current(...a)), []);
+  const addProductGuard = useRef(null);
+  if (!addProductGuard.current) addProductGuard.current = onceAtATime((...a) => addProductRef.current(...a));
+  const addProduct = addProductGuard.current;
   const addProductOnce = async () => {
     setSaveAttempted(true);
     // Category is REQUIRED — and it must resolve to a real registry entry with a
@@ -5822,21 +5833,10 @@ function AdminView({ products, orders, onExit }) {
     // dialogs, including the one that mattered.
     const exactDupes = exactRowsOf(rankCandidates(form.name, products));
     if (exactDupes.length && createAnywayFor !== form.name.trim()) {
-      const totalsById = {};
-      // NO LOCATIONS MEANS UNKNOWN, NOT ZERO. /locations is a live subscription;
-      // before it answers, dupLocationIds is empty and summing over no locations
-      // returns a confident { total: 0 }. Printed, that becomes "with 0 units" —
-      // "dead record, safe to replace" — which pushes the operator toward the
-      // very duplicate this dialog exists to stop. So the read is not even
-      // attempted until there is something to read.
-      if (totalsKnowable(dupLocationIds)) {
-        await Promise.all(exactDupes.map(async (r) => {
-          // An unreadable total is reported as UNKNOWN by createAnywayPrompt,
-          // never as 0 — and a failed read must not block the save either.
-          try { totalsById[r.product.id] = await productTotals(r.product.id, dupLocationIds); }
-          catch { totalsById[r.product.id] = null; }
-        }));
-      }
+      // Unit counts for the sentence. gatherExactTotals holds BOTH unknown
+      // rules — an empty location set is not read at all, and a failed read is
+      // null — so neither can degrade into a confident "0 units".
+      const totalsById = await gatherExactTotals(exactDupes, dupLocationIds, productTotals);
       if (!window.confirm(createAnywayPrompt(form.name, exactDupes, totalsById))) return;
       setCreateAnywayFor(form.name.trim());
       // The decision itself is the record. /insights_log is the append-only feed

@@ -40,10 +40,12 @@
 //
 // The one loosening is `partial_code`, and it is NOT a prefix rule. It fires only
 // when the printed code was SEGMENTED by a real separator — 44712-01 splits into
-// ["44712","01"] — so the stem "44712" is a token the label itself drew a
-// boundary around. 447120 has no separator, produces no stem, and can never
-// reach that tier. That distinction is the reason extractTokens tracks segments
-// at all.
+// ["44712","01"], and the stem is everything before the last boundary the label
+// drew. 447120 has no separator, produces no stem, and can never reach that
+// tier. That distinction is the reason extractTokens tracks segments at all.
+// Where a stem would have to JOIN two printed blocks (a three-part code), it is
+// allowed only if the join is a shape a brand actually prints — otherwise the
+// rule would mint codes out of unrelated blocks. See extractTokens.
 //
 // ── THE THREE TIERS ──────────────────────────────────────────────────────────
 //   exact_code    a code token typed equals a code token in the product's name,
@@ -126,10 +128,12 @@ function isCodeToken(bare) {
  *              removed, so "44712-01" is the single token "4471201" — exactly
  *              what normaliseStyleCode would produce for it. Two products
  *              sharing one of these share a code.
- *   codeStems  the leading segment of every code the SOURCE STRING itself
- *              separated: "44712-01" → "44712". Empty for any run with no
- *              separator, which is what keeps 447120 from ever pretending to be
- *              44712 with a suffix.
+ *   codeStems  every code the SOURCE STRING itself separated, minus its LAST
+ *              segment: "44712-01" → "44712", "7-45SMA0004-075" → "745SMA0004".
+ *              Empty for any run with no separator, which is what keeps 447120
+ *              from ever pretending to be 44712 with a suffix. A run of three or
+ *              more blocks yields a stem only when the join is a shape a brand
+ *              actually prints — see the fence in the loop below.
  *
  * @param {unknown} s
  * @returns {{words: string[], codes: string[], codeStems: string[]}}
@@ -153,31 +157,50 @@ export function extractTokens(s) {
     const run = m[0];
     const segments = run.split(/[-/_.]/).filter(Boolean);
     const bare = normaliseStyleCode(run);
-    if (!isCodeToken(bare)) continue;
-    if (!codes.includes(bare)) codes.push(bare);
-    // ── THE STEM IS THE RUN WITHOUT ITS TRAILING SEGMENT ──────────────────
-    // partial_code is defined as "differs only by a trailing colour/variant
-    // suffix", so the stem is everything BEFORE the last separator, not the
-    // first segment. On a two-part code these are the same thing; on a
-    // three-part one they are not, and taking segments[0] silently broke the
-    // shape this file's own header cites:
+    // THE CODE AND THE STEM ARE JUDGED SEPARATELY. They used to share one gate:
+    // a run whose JOINED form was not code-shaped was skipped outright, taking
+    // its stem with it. That threw away perfectly good stems for an unrelated
+    // reason — WG7520213-28 joins to WG752021328, which no brand shape matches,
+    // so its stem WG7520213 (a plain nike-alpha-6-3 code) was never recorded and
+    // the run matched none of its own colourway siblings. A stem stands or falls
+    // on ITS OWN shape. Found by the property fuzz, not by hand.
+    // (Adversarial delta review, PR #594.)
+    if (isCodeToken(bare) && !codes.includes(bare)) codes.push(bare);
+    // ── THE STEM: DROP THE LAST SEGMENT, AND ONLY WHERE THAT IS HONEST ────
+    // partial_code means "differs only by a trailing colour/variant suffix", so
+    // the stem is everything BEFORE the last separator:
     //
-    //   44712-01          → 44712        (either rule)
-    //   7-45SMA0004-075   → 745SMA0004   (this rule)
-    //                     → 7            (segments[0] — not code-shaped, so
-    //                                     NO stem was recorded at all, and two
-    //                                     Lacoste colourways of one article
-    //                                     matched at no tier whatsoever)
+    //   44712-01          → 44712
+    //   7-45SMA0004-075   → 745SMA0004
     //
-    // Still a boundary the LABEL drew: 447120 has one segment, so slicing the
-    // last one off leaves nothing and it can never reach this tier.
-    // (Sonnet architect review, PR #594.)
-    // NO SEPARATE "was it segmented?" CHECK. Dropping the last segment of an
-    // UNsegmented run leaves the empty string, and the empty string is not a
-    // code token — so 447120 is refused by the same line that accepts
-    // 44712-01, and there is no second guard here that no test could ever fail.
-    const stem = normaliseStyleCode(segments.slice(0, -1).join(""));
-    if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);
+    // On a TWO-segment run that is lossless — one boundary, one suffix dropped,
+    // nothing joined. On a THREE-OR-MORE-segment run it is not: joining the
+    // remaining blocks ERASES a separator the label actually printed, which is
+    // the operation styleCode.js's header forbids for identity. Taking
+    // segments[0] instead is no better — on the Lacoste form that is "7", a
+    // category prefix, so no stem was recorded at all and two colourways of one
+    // article matched at no tier whatsoever.
+    //
+    // So the join is allowed, and it is fenced: on 3+ segments the result must
+    // be a shape A BRAND ACTUALLY PRINTS (isKnownStyleCodeFormat), not merely a
+    // long-enough digit run. Shape is evidence, exactly as styleCode.js uses it.
+    // Without that fence the join invents codes out of unrelated blocks:
+    //
+    //   2024-05-01 → 202405   would have matched a product coded 202405
+    //   12-34-5678 → 1234     would have matched a product coded 1234
+    //   44712-0-1  → 447120   would have matched 447120 — the very adjacency
+    //                         this file's header promises never to match
+    //
+    // None of those is a shape any brand prints, so all three are refused,
+    // while 745SMA0004 (lacoste-ref) is kept.
+    // (Adversarial delta review, PR #594.)
+    if (segments.length === 2) {
+      const stem = normaliseStyleCode(segments[0]);
+      if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);
+    } else if (segments.length >= 3) {
+      const stem = normaliseStyleCode(segments.slice(0, -1).join(""));
+      if (isKnownStyleCodeFormat(stem) && !codeStems.includes(stem)) codeStems.push(stem);
+    }
   }
 
   return { words, codes, codeStems };
@@ -272,12 +295,12 @@ export function scoreCandidate(typed, product) {
   // one, or the long form against a stored short one.
   for (const code of t.codes) {
     if (p.codeStems.includes(code)) {
-      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: `${code} is the first part of this product's code` };
+      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: `${code} is this product's code without its last block` };
     }
   }
   for (const stem of t.codeStems) {
     if (p.byCode.has(stem)) {
-      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: `this product's code ${stem} is the first part of what you typed` };
+      return { tier: TIER_PARTIAL_CODE, score: 0.9, reason: `this product's code ${stem} is what you typed without its last block` };
     }
     // Two SIBLING colourways — 44712-01 typed against a stored 44712-99. Both
     // labels drew the same boundary around the same article block, so this is
@@ -286,7 +309,7 @@ export function scoreCandidate(typed, product) {
     // colour suffix makes a different product, so this may suggest and must
     // never resolve.
     if (p.codeStems.includes(stem)) {
-      return { tier: TIER_PARTIAL_CODE, score: 0.75, reason: `${stem} is the first part of both codes — this may be another colourway` };
+      return { tier: TIER_PARTIAL_CODE, score: 0.75, reason: `${stem} is what both codes start from — this may be another colourway` };
     }
   }
 
