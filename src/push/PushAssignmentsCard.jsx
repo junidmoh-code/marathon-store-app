@@ -30,6 +30,16 @@
 //   A row therefore says "no device" and an assignment on such a row is flagged
 //   rather than merely stored.
 //
+//   AND WHETHER THEY HAVE SILENCED THEMSELVES. Staff have a switch again — a
+//   MUTE, not an opt-in (src/push/pushMute.js). It grants nothing and cannot
+//   put anybody in a hub, but it can take them out of a send, which means an
+//   assignment made here can now be ignored at the other end. That is theirs to
+//   choose and nothing on this screen can or should undo it. What it must not be
+//   is INVISIBLE: an assignment going nowhere because somebody muted looks
+//   exactly like an assignment going nowhere because the feature is broken, and
+//   only one of those is worth chasing. So the row says "muted", the summary
+//   counts the assigned ones, and the read fails on its own channel.
+//
 // ── GATING ──────────────────────────────────────────────────────────────────
 // Three independent gates, and only the third one is enforcement:
 //   1. the tile does not render (src/App.jsx, isSuperAdmin)
@@ -53,6 +63,9 @@
 //                       unbounded node fetch.
 //   /push_assignments   the decisions. Same paged read.
 //   /push_tokens/{uid}  ONE READ PER ROW. Not the node.
+//   /push_mutes/{uid}/muted
+//                       ONE LEAF PER ROW. Not the node, and not even the
+//                       record — the leaf is a single boolean.
 //
 // ── WHY /push_tokens IS READ ONE UID AT A TIME ──────────────────────────────
 // This screen shipped reading `push_tokens` whole, and it had never worked:
@@ -85,10 +98,13 @@
 //   tokens fail       → the only thing lost is "can this person be reached".
 //                       The list still works. Those rows say "device unknown"
 //                       rather than "no device", which is a different claim.
+//   mutes fail        → the only thing lost is "is this person silencing it".
+//                       Those rows say "mute unknown" rather than nothing at
+//                       all, because a blank would read as "not muted".
 //
-// This is what makes the screen usable BEFORE the per-uid token rule is
-// pasted: the staff list loads, assignments load, and the device column alone
-// says it does not know.
+// This is what makes the screen usable BEFORE the per-uid token rule or the
+// /push_mutes rule is pasted: the staff list loads, assignments load, and each
+// enrichment column separately says it does not know.
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { get, ref, update } from "firebase/database";
@@ -96,6 +112,7 @@ import { database } from "../firebase";
 import { serverNowMs } from "../utils/serverTime";
 import { readByKeyPages } from "./pagedRead";
 import { partitionRoster } from "./staffRoster";
+import { isMuted, pushMuteFlagPath } from "./pushMute";
 import {
   PUSH_HUBS,
   PUSH_HUB_LABEL,
@@ -153,6 +170,12 @@ function PushAssignmentsAuthed({ onExit }) {
   // separate things — see the header. `null` is "fine", a string is the reason.
   const [assignError, setAssignError] = useState(null);
   const [tokensError, setTokensError] = useState(null);
+  // ── A FOURTH FACT, AND A FOURTH CHANNEL ──────────────────────────────────
+  // Whether somebody has MUTED themselves fails separately from whether they
+  // have a device, and means something different: "no device" is a browser
+  // that was never given permission, "muted" is a person who was and switched
+  // it off. Sharing a banner between them would report one as the other.
+  const [mutesError, setMutesError] = useState(null);
   // ONE FLAG PER FACT. These were briefly a single `truncated` boolean fed by
   // both reads, which meant a truncated ASSIGNMENTS read raised the ROSTER's
   // banner — telling Junid a staff account might be missing when every one of
@@ -183,7 +206,7 @@ function PushAssignmentsAuthed({ onExit }) {
     const gen = ++loadGen.current;
     const live = () => loadGen.current === gen;
     setLoading(true);
-    setLoadError(null); setAssignError(null); setTokensError(null); setRosterTruncated(false); setHiddenPos(0);
+    setLoadError(null); setAssignError(null); setTokensError(null); setMutesError(null); setRosterTruncated(false); setHiddenPos(0);
 
     // The two node reads are independent, so neither waits on the other and
     // neither can reject the other. allSettled, not all: that IS the bug.
@@ -261,6 +284,10 @@ function PushAssignmentsAuthed({ onExit }) {
         destShop: (rec && rec.destShop) || null,
         // null = not known yet / could not be read. NOT the same as 0.
         devices: null,
+        // null = not known yet / could not be read. NOT the same as false.
+        // "I could not look" and "they have not muted themselves" are
+        // different sentences and the row prints them differently.
+        muted: null,
         hubs,
       }))
       .sort((a, b) => a.name.localeCompare(b.name));
@@ -274,18 +301,41 @@ function PushAssignmentsAuthed({ onExit }) {
     // sockets at once. Every one is settled: a refusal leaves that row's count
     // at null, which the row renders as "device unknown".
     const counts = Object.create(null);   // a uid may be "__proto__"; see pagedRead.js
+    // ── AND WHETHER THEY HAVE SILENCED THEMSELVES ──────────────────────────
+    // An assignment can now fail to arrive for a SECOND reason, and it is a
+    // reason nobody but that person can see: they switched their own alerts
+    // off. That is legitimate and it is theirs to choose — but an assignment
+    // being ignored at the other end must be VISIBLE to the person who made
+    // it, or it is exactly the silent non-delivery the device column exists
+    // for, wearing a different hat.
+    //
+    // One bounded read per row at the LEAF (push_mutes/{uid}/muted), the same
+    // shape and the same rule idiom as the token read beside it. Nothing above
+    // $uid is read and no whole node is fetched.
+    const mutes = Object.create(null);
     let anyRefused = false;
     // A captured FLAG, not the truthiness of what was captured: a rejection
     // whose reason is undefined would leave `firstRefusal` falsy for ever and
     // let a later batch's refusal quietly take its place.
     let firstRefusal = null;
     let refusalCaptured = false;
+    // The mute read fails SEPARATELY. Its own flag and its own captured
+    // refusal, for the same reason the roster and assignment failures have
+    // theirs: a shared flag would raise the token banner for a mute refusal
+    // and send Junid to the wrong rule.
+    let muteRefused = false;
+    let firstMuteRefusal = null;
+    let muteRefusalCaptured = false;
     const BATCH = 8;
     for (let i = 0; i < list.length; i += BATCH) {
       if (!live()) return;
       const slice = list.slice(i, i + BATCH);
-      const settled = await Promise.allSettled(
-        slice.map((r) => get(ref(database, `push_tokens/${r.uid}`))));
+      // Both reads for a slice go together — 8 rows, 16 tiny reads — rather
+      // than walking the list twice.
+      const [settled, muteSettled] = await Promise.all([
+        Promise.allSettled(slice.map((r) => get(ref(database, `push_tokens/${r.uid}`)))),
+        Promise.allSettled(slice.map((r) => get(ref(database, pushMuteFlagPath(r.uid))))),
+      ]);
       settled.forEach((res, j) => {
         if (res.status !== "fulfilled") {
           anyRefused = true;
@@ -296,6 +346,18 @@ function PushAssignmentsAuthed({ onExit }) {
         counts[slice[j].uid] = v && typeof v === "object"
           ? Object.values(v).filter((d) => d && typeof d.token === "string").length
           : 0;
+      });
+      muteSettled.forEach((res, j) => {
+        if (res.status !== "fulfilled") {
+          muteRefused = true;
+          if (!muteRefusalCaptured) { firstMuteRefusal = res.reason; muteRefusalCaptured = true; }
+          return;
+        }
+        // isMuted, not a bare truthiness test: only a real boolean true is a
+        // mute, exactly as the fan-out reads it (src/push/pushMute.js). A
+        // successful read of an ABSENT leaf is a real answer — false — not an
+        // unknown, because absence is the audible default for everybody.
+        mutes[slice[j].uid] = isMuted(res.value.val());
       });
     }
     if (!live()) return;
@@ -310,10 +372,22 @@ function PushAssignmentsAuthed({ onExit }) {
         ? `The read was refused: ${firstRefusal.message}. If this is the first time, the per-uid rule below has not been published yet.`
         : "The read did not come back. If this is the first time, the per-uid rule below has not been published yet.");
     }
-    // Only `devices` is touched. A hub the admin switched during these awaits —
-    // or one that was rolled back by a refused write — survives untouched.
+    if (muteRefused) {
+      console.error("[push] mute states unavailable — see PUSH-MUTE-RULE-DEPLOY.md", firstMuteRefusal);
+      setMutesError(firstMuteRefusal && firstMuteRefusal.message
+        ? `The read was refused: ${firstMuteRefusal.message}. If this is the first time, the /push_mutes rule has not been published yet.`
+        : "The read did not come back. If this is the first time, the /push_mutes rule has not been published yet.");
+    }
+    // Only `devices` and `muted` are touched. A hub the admin switched during
+    // these awaits — or one that was rolled back by a refused write — survives
+    // untouched.
     setRows((prev) => (prev === null ? prev
-      : prev.map((r) => (r.uid in counts ? { ...r, devices: counts[r.uid] } : r))));
+      : prev.map((r) => {
+        const next = { ...r };
+        if (r.uid in counts) next.devices = counts[r.uid];
+        if (r.uid in mutes) next.muted = mutes[r.uid];
+        return next;
+      })));
     setLoading(false);
   }, []);
 
@@ -372,6 +446,12 @@ function PushAssignmentsAuthed({ onExit }) {
   // whose device count actually came back (0, not null).
   const assignedCount = assignError ? null : (rows || []).filter((r) => r.hubs.length > 0).length;
   const undeliverable = (rows || []).filter((r) => r.hubs.length > 0 && r.devices === 0).length;
+  // A KNOWN mute (`=== true`, never a truthy null), on somebody who is actually
+  // assigned. An assignment nobody is hearing is the point of the line; a mute
+  // on an unassigned row is just a person who has switched off something they
+  // were never going to get, and counting it would inflate a warning into
+  // noise.
+  const silenced = (rows || []).filter((r) => r.hubs.length > 0 && r.muted === true).length;
 
   return (
     <div style={{ minHeight: "100vh", background: "#000", fontFamily: FONT, color: "#fff", paddingBottom: 60 }}>
@@ -413,6 +493,15 @@ function PushAssignmentsAuthed({ onExit }) {
           </div>
         )}
 
+        {mutesError && (
+          <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
+            Assignments work, but this screen cannot see who has muted their own
+            alerts, so no row can say. Somebody assigned here may be silencing
+            it at their end without this screen showing it.
+            {" "}{mutesError} (PUSH-MUTE-RULE-DEPLOY.md)
+          </div>
+        )}
+
         {rosterTruncated && (
           <div style={{ margin: "0 0 14px", padding: "11px 13px", borderRadius: 11, background: "rgba(245,166,35,.1)", border: "1px solid rgba(245,166,35,.3)", color: AMBER, fontSize: 12.5, lineHeight: 1.5 }}>
             There are more staff accounts than this screen reads in one go, so
@@ -449,6 +538,16 @@ function PushAssignmentsAuthed({ onExit }) {
             {undeliverable > 0 && (
               <span style={{ color: AMBER }}>
                 <strong>{undeliverable}</strong> assigned with no device — they will not receive anything
+              </span>
+            )}
+            {silenced > 0 && (
+              // A SEPARATE SENTENCE FROM "no device", because it is a separate
+              // situation with a separate answer: that person's phone works and
+              // they have chosen quiet. Nothing here can or should undo it —
+              // the line exists so an assignment that is going nowhere is not
+              // mistaken for one that is landing.
+              <span style={{ color: AMBER }}>
+                <strong>{silenced}</strong> assigned but muted — they have switched their own alerts off
               </span>
             )}
           </div>
@@ -496,8 +595,12 @@ function PushAssignmentsAuthed({ onExit }) {
         <p style={{ fontSize: 11.5, lineHeight: 1.6, color: "rgba(233,238,255,.34)", margin: "18px 2px 0" }}>
           “No device” means that person’s browser has never been given permission
           to show alerts, so nothing can reach them yet — assigning them stores
-          the decision but sends nothing until they open the app on a device that
-          allows notifications.
+          the decision but sends nothing until they open the app and switch
+          “New order alerts” on at the bottom of their home screen.
+          {" "}“Muted” is different: their device works and they have switched
+          those alerts off themselves. Only they can switch them back on. You
+          cannot mute anybody from here, and nobody can assign themselves a hub
+          from there.
         </p>
       </div>
     </div>
@@ -539,6 +642,24 @@ function StaffRow({ row, last, busy, saved, locked, onToggle }) {
                 ? `${row.devices} device${row.devices > 1 ? "s" : ""}`
                 : "no device"}
           </span>
+          {/* THREE STATES AGAIN, and printed only when there is something to
+              say. `false` — a successful read of somebody who has not muted
+              themselves — is the ordinary case for almost every row and adding
+              "not muted" to all of them would bury the handful that matter.
+              `null` IS printed, because "I could not look" must never be shown
+              as "they have not". */}
+          {row.muted === true && (
+            <>
+              {" · "}
+              <span style={{ color: AMBER, fontWeight: 700 }}>muted</span>
+            </>
+          )}
+          {row.muted === null && (
+            <>
+              {" · "}
+              <span style={{ color: TEXT_2, fontWeight: 700 }}>mute unknown</span>
+            </>
+          )}
         </span>
       </span>
 

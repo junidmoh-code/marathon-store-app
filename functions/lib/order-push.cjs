@@ -415,6 +415,64 @@ async function resolveRecipients(db, hub) {
   return Object.keys(val).slice(0, MAX_RECIPIENTS);
 }
 
+// ── THE MUTE IS A VETO, APPLIED HERE AND NOWHERE ELSE ───────────────────────
+// Recipients are the AND of two independent facts: Junid ASSIGNED this person
+// to this hub, and this person has not silenced their own phone. The assignment
+// is the only thing that grants, and it is resolved above; the mute is the only
+// thing a staff member can write, and it can only ever take somebody OUT of a
+// send. Neither can stand in for the other, and no order of evaluation makes
+// one imply the other.
+//
+// ── ONE LEAF PER RECIPIENT, AND WHY IT IS CHEAPER THAN IT LOOKS ─────────────
+// `push_mutes/{uid}/muted` is a single boolean — the smallest read RTDB can be
+// asked for, and bounded by MAX_RECIPIENTS like everything else here. It runs
+// BEFORE collectTokens on purpose: a muted person then costs this one leaf
+// instead of a leaf plus their whole token node, and most people are not muted
+// so most of the time it costs one extra tiny read on top of a send that was
+// going to happen anyway. A single whole-node read of /push_mutes would be
+// fewer round trips and is deliberately not done — this project does not take
+// whole-node reads, and this one would grow with headcount forever.
+//
+// ── A MUTE THAT CANNOT BE READ IS NOT A MUTE ────────────────────────────────
+// allSettled, and a refusal counts as AUDIBLE. Failing the other way would mean
+// one RTDB blip silences everybody assigned to a hub — the exact silent,
+// invisible non-delivery this whole release exists to end, and it would look
+// identical to the feature being broken again. The cost of the choice made here
+// is that a muted phone might buzz once during an outage, which the person can
+// see and understand. The cost of the other choice is nobody hearing anything
+// and nobody knowing why.
+//
+// allSettled also keeps ONE refused read from becoming a refused delivery.
+// This runs inside deliver(), whose caller treats a throw as "the send failed"
+// and puts the whole burst back — so a rejection here would postpone the
+// notification rather than duplicate it (nothing has been multicast yet at this
+// point), but a persistent refusal would postpone it for ever, which is the
+// same silence by a slower route.
+//
+// The cost of failing open is stated rather than minimised: while a refusal
+// persists, a muted person is notified on EVERY burst, not once. That is
+// visible to them and they can act on it. The cost of failing closed is a hub
+// hearing nothing, with nobody able to tell that anything is wrong.
+async function dropMuted(db, uids) {
+  const settled = await Promise.allSettled(
+    uids.map((uid) => db.ref(`push_mutes/${uid}/muted`).get()));
+  const audible = [];
+  settled.forEach((res, i) => {
+    if (res.status !== "fulfilled") {
+      console.error("PUSH_ALARM orderPlacedPush could not read a mute (treated as audible):",
+        res.reason && res.reason.message);
+      audible.push(uids[i]);
+      return;
+    }
+    // Only a REAL boolean true mutes. A stray string, a 1 or a null is
+    // corruption in a node whose one writer is a switch, and corruption here
+    // must degrade towards DELIVERY — mirrors isMuted() in src/push/pushMute.js.
+    if (res.value && res.value.val() === true) return;
+    audible.push(uids[i]);
+  });
+  return audible;
+}
+
 /** Every live token for those uids, each carrying enough to delete it again. */
 async function collectTokens(db, uids) {
   const rows = [];
@@ -729,8 +787,15 @@ async function restoreBurst({ burstRef, count, captured, closedAt }) {
 /** Resolve, compose and send. Separated so the caller above can treat every
  *  failure in here as one recoverable unit. */
 async function deliver({ db, messaging, hub, count, captured, closedAt }) {
-  const recipients = await resolveRecipients(db, hub);
-  if (!recipients.length) return { sent: false, skipped: "no_recipients", count };
+  const assigned = await resolveRecipients(db, hub);
+  if (!assigned.length) return { sent: false, skipped: "no_recipients", count };
+
+  // ASSIGNED AND NOT MUTED. A muted uid never reaches collectTokens, so its
+  // token is never in the multicast, so it can never appear in `dead` and can
+  // never be pruned for being muted — the row stays live and unmuting works
+  // instantly, with nothing to re-register.
+  const recipients = await dropMuted(db, assigned);
+  if (!recipients.length) return { sent: false, skipped: "all_muted", count };
 
   const rows = await collectTokens(db, recipients);
   if (!rows.length) return { sent: false, skipped: "no_tokens", count };

@@ -86,8 +86,10 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
+import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
+import { usePushMute } from "./push/useMute";
 import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
@@ -2919,7 +2921,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
   const isDesktop = !useIsNarrow(1024);
   const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
@@ -3247,6 +3249,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               ))}
             </>
           )}
+          <NotificationSettingsRow push={push} mute={mute} />
           <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
@@ -3298,6 +3301,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
+        <NotificationSettingsRow push={push} mute={mute} />
         <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
     </div>
@@ -19227,10 +19231,15 @@ function AppInner() {
   // LOAD (it rotates silently — see src/push/registerPush.js), so it is driven
   // from the one component every session mounts.
   //
-  // There is no switch to own any more: WHO receives is set by Junid on the
-  // Notifications card in Admin (#admin/notifications) and read by the fan-out
-  // from /push_hub_audience. This registers the ADDRESS, nothing else.
+  // WHO receives is set by Junid on the Notifications card in Admin
+  // (#admin/notifications) and read by the fan-out from /push_hub_audience.
+  // This registers the ADDRESS, and grants nothing.
   const push = usePushRegistration({ user: authUser });
+  // The one thing a staff member controls: a MUTE, not an opt-in. Hoisted
+  // alongside `push` for the same reason — the home screen may go weeks without
+  // rendering, and both are passed down to the settings row that lives there.
+  // A mute can only ever REMOVE somebody from a send (src/push/pushMute.js).
+  const mute = usePushMute({ uid: push.uid });
   // The in-app half: banner + chime instead of an OS notification while the app
   // is open. No listener at all when push is off.
   // Gated on `ready` (this uid's registration actually returned ON), not merely
@@ -19587,7 +19596,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} mute={mute} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);

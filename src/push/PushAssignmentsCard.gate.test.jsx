@@ -66,17 +66,22 @@ const ADMIN = { uid: "admin-uid", email: "gunidmoh@gmail.com", displayName: "Jun
 const STAFF = { uid: "staff-uid", email: "rashid@marathon.internal" };
 
 // Serves any world object keyed by top-level path, including the per-uid
-// `push_tokens/{uid}` reads the card now issues.
+// `push_tokens/{uid}` reads and the per-uid `push_mutes/{uid}/muted` LEAF the
+// card issues. Walks every segment rather than splitting on the first slash:
+// the mute read is three deep, and a reader that stopped at one would hand back
+// null for it and let a broken read pass as "nobody is muted".
 const worldReader = (world) => async (r) => {
   const direct = Object.prototype.hasOwnProperty.call(world, r.path) ? world[r.path] : undefined;
   if (direct !== undefined) return snapshotFor(direct, r.constraints || []);
-  const slash = r.path.indexOf("/");
-  if (slash > 0) {
-    const parent = world[r.path.slice(0, slash)];
-    const child = parent && parent[r.path.slice(slash + 1)];
-    return snapshotFor(child === undefined ? null : child, r.constraints || []);
+  let node = world;
+  for (const seg of r.path.split("/").filter(Boolean)) {
+    if (node === null || typeof node !== "object" || !Object.prototype.hasOwnProperty.call(node, seg)) {
+      node = null;
+      break;
+    }
+    node = node[seg];
   }
-  return snapshotFor(null, r.constraints || []);
+  return snapshotFor(node === undefined ? null : node, r.constraints || []);
 };
 
 // The rendered TEXT, not the JSON tree — see the note at its first use below.
@@ -115,7 +120,9 @@ describe("a refused viewer reads NOTHING", () => {
     getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     await render({ authUser: ADMIN });
     const paths = getMock.mock.calls.map((c) => c[0].path).sort();
-    expect(paths).toEqual(["push_assignments", "push_tokens/u1", "users"]);
+    // Four reads for one account: the two paged node reads, and per row the
+    // mute leaf and the token node. Both per-row reads are scoped to that uid.
+    expect(paths).toEqual(["push_assignments", "push_mutes/u1/muted", "push_tokens/u1", "users"]);
   });
 
   it("NEVER reads the /push_tokens node — the live rules refuse it, and it is every token in the business", async () => {
@@ -130,6 +137,12 @@ describe("a refused viewer reads NOTHING", () => {
     expect(paths).not.toContain("push_tokens");
     expect(paths).toContain("push_tokens/u1");
     expect(paths).toContain("push_tokens/u2");
+    // The mute read is the same shape and must never grow into a node fetch
+    // either — /push_mutes whole would be every staff member's setting, and it
+    // grows with headcount for ever.
+    expect(paths).not.toContain("push_mutes");
+    expect(paths).toContain("push_mutes/u1/muted");
+    expect(paths).toContain("push_mutes/u2/muted");
   });
 
   it("the node reads are BOUNDED — orderByKey + limitToFirst, never an open fetch", async () => {
@@ -146,8 +159,9 @@ describe("a refused viewer reads NOTHING", () => {
   it("reads ONCE, not on a subscription — closing the screen ends the cost", async () => {
     getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     await render({ authUser: ADMIN });
-    // roster + assignments + one token read for the one account. No listener.
-    expect(getMock).toHaveBeenCalledTimes(3);
+    // roster + assignments + one token read + one mute read for the one
+    // account. No listener.
+    expect(getMock).toHaveBeenCalledTimes(4);
   });
 });
 
@@ -664,5 +678,128 @@ describe("a uid called __proto__ is a row, not a disappearance", () => {
     expect(labels, "the account must still have a row").toContain("Proto Person");
     expect(labels).toContain("Ayanda");
     expect(flattenTree(tree)).toContain("of 2 assigned");
+  });
+});
+
+// ─── THE MUTE COLUMN — AN ASSIGNMENT IGNORED AT THE OTHER END ────────────────
+// Staff can silence themselves. That is theirs to choose and nothing here undoes
+// it — what it must not be is INVISIBLE, because an assignment going nowhere
+// because somebody muted looks exactly like an assignment going nowhere because
+// the feature is broken, and only one of those is worth chasing.
+describe("the card shows who has muted themselves", () => {
+  const WORLD = (mutes) => ({
+    users: { u1: { displayName: "Ayanda" }, u2: { displayName: "Bongi" } },
+    push_assignments: { u1: { hub1: true, hub2: false, hub3: false, updatedAt: 1 } },
+    push_tokens: { u1: { d1: { token: "t1" } }, u2: { d1: { token: "t2" } } },
+    push_mutes: mutes,
+  });
+
+  it("a muted row says so", async () => {
+    getMock.mockImplementation(worldReader(WORLD({ u1: { muted: true, updatedAt: 1 } })));
+    const tree = await render({ authUser: ADMIN });
+    expect(flattenTree(tree)).toContain("muted");
+  });
+
+  it("READS THE LEAF PER UID — never the /push_mutes node", async () => {
+    getMock.mockImplementation(worldReader(WORLD({})));
+    await render({ authUser: ADMIN });
+    const paths = getMock.mock.calls.map((c) => c[0].path);
+    expect(paths).not.toContain("push_mutes");
+    expect(paths).toContain("push_mutes/u1/muted");
+    expect(paths).toContain("push_mutes/u2/muted");
+  });
+
+  it("counts the ones who are ASSIGNED and muted, and says what that means", async () => {
+    getMock.mockImplementation(worldReader(WORLD({ u1: { muted: true, updatedAt: 1 } })));
+    const tree = await render({ authUser: ADMIN });
+    expect(flattenTree(tree)).toContain("1");
+    expect(flattenTree(tree)).toContain("assigned but muted");
+  });
+
+  it("does NOT count a muted person who is assigned to nothing", async () => {
+    // Somebody switching off something they were never going to get is not a
+    // warning. Counting it would inflate the line into noise and it would stop
+    // being read.
+    getMock.mockImplementation(worldReader(WORLD({ u2: { muted: true, updatedAt: 1 } })));
+    const tree = await render({ authUser: ADMIN });
+    expect(flattenTree(tree)).not.toContain("assigned but muted");
+    expect(flattenTree(tree), "the row still says it, it is just not a warning").toContain("muted");
+  });
+
+  it("says NOTHING about an unmuted row — 'not muted' on 35 rows buries the ones that matter", async () => {
+    getMock.mockImplementation(worldReader(WORLD({})));
+    const tree = await render({ authUser: ADMIN });
+    const text = flattenTree(tree);
+    expect(text).not.toContain("mute unknown");
+    expect(text).not.toContain("assigned but muted");
+  });
+
+  it("A REFUSED READ SAYS 'mute unknown', NEVER NOTHING — a blank reads as 'not muted'", async () => {
+    // The state before PUSH-MUTE-RULE-DEPLOY.md is pasted. "I could not look"
+    // and "they have not" are different claims and the screen may only make the
+    // one it has earned.
+    const base = worldReader(WORLD({ u1: { muted: true, updatedAt: 1 } }));
+    getMock.mockImplementation(async (r) => {
+      if (String(r.path).startsWith("push_mutes/")) throw new Error("PERMISSION_DENIED");
+      return base(r);
+    });
+    const tree = await render({ authUser: ADMIN });
+    const text = flattenTree(tree);
+    expect(text).toContain("mute unknown");
+    expect(text).not.toContain("assigned but muted");
+    expect(text).toContain("PUSH-MUTE-RULE-DEPLOY.md");
+  });
+
+  it("a refused MUTE read does not raise the DEVICE banner — separate facts, separate channels", async () => {
+    // A shared flag would report one as the other and send Junid to the wrong
+    // rule document. Same reason the roster, assignment and token failures each
+    // have their own.
+    const base = worldReader(WORLD({}));
+    getMock.mockImplementation(async (r) => {
+      if (String(r.path).startsWith("push_mutes/")) throw new Error("PERMISSION_DENIED");
+      return base(r);
+    });
+    const tree = await render({ authUser: ADMIN });
+    const text = flattenTree(tree);
+    expect(text).toContain("PUSH-MUTE-RULE-DEPLOY.md");
+    expect(text).not.toContain("PUSH-TOKENS-ADMIN-READ-RULE.md");
+    expect(text, "devices came back fine and must still be reported").toContain("1 device");
+  });
+
+  it("a refused DEVICE read does not raise the MUTE banner either", async () => {
+    const base = worldReader(WORLD({ u1: { muted: true, updatedAt: 1 } }));
+    getMock.mockImplementation(async (r) => {
+      if (String(r.path).startsWith("push_tokens/")) throw new Error("PERMISSION_DENIED");
+      return base(r);
+    });
+    const tree = await render({ authUser: ADMIN });
+    const text = flattenTree(tree);
+    expect(text).toContain("PUSH-TOKENS-ADMIN-READ-RULE.md");
+    expect(text).not.toContain("PUSH-MUTE-RULE-DEPLOY.md");
+    expect(text, "the mute came back fine and must still be reported").toContain("muted");
+  });
+
+  it("ONLY A REAL BOOLEAN reads as muted here too", async () => {
+    getMock.mockImplementation(worldReader(WORLD({ u1: { muted: "true", updatedAt: 1 } })));
+    const tree = await render({ authUser: ADMIN });
+    expect(flattenTree(tree)).not.toContain("assigned but muted");
+  });
+
+  it("THE CARD CANNOT MUTE ANYBODY — every write it makes is the assignment update", async () => {
+    // The other half of the model. Junid assigns; only that person mutes. A
+    // write to /push_mutes from this screen would be the account owner
+    // silencing a colleague, which no rule permits and this screen must never
+    // attempt.
+    getMock.mockImplementation(worldReader(WORLD({})));
+    const tree = await render({ authUser: ADMIN });
+    const sw = tree.root.findAll((n) => n.props && n.props.role === "switch"
+      && String(n.props["aria-label"]).includes("Ayanda"))[0];
+    await act(async () => { sw.props.onClick(); });
+    expect(updateMock).toHaveBeenCalled();
+    for (const call of updateMock.mock.calls) {
+      for (const path of Object.keys(call[1])) {
+        expect(path.startsWith("push_mutes")).toBe(false);
+      }
+    }
   });
 });
