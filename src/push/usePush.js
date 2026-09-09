@@ -29,9 +29,15 @@
 // ── AN ASSIGNMENT STILL GRANTS, AND ONLY AN ASSIGNMENT ──────────────────────
 // Registering a token is not a subscription; it is an ADDRESS. A token with no
 // assignment is never sent to, because the fan-out resolves recipients from
-// /push_hub_audience and nothing else. `enablePush()` writes an address and a
-// mute record. It cannot put anybody in a hub audience, and no rule would let
-// it: /push_hub_audience is super-admin-write-only.
+// /push_hub_audience and nothing else. `enablePush()` writes an ADDRESS — a
+// /push_tokens row — and nothing else. It does NOT touch /push_mutes: clearing
+// a mute is a second, separate step made by the row component after this
+// resolves (NotificationSettingsRow.onToggle). Said precisely because the loose
+// version of this sentence invites a future reader to delete that second step
+// as redundant, which would leave anybody who had muted themselves muted for
+// ever however often they switched back on. Either way it cannot put somebody
+// in a hub audience, and no rule would let it: /push_hub_audience is
+// super-admin-write-only.
 //
 // `buckets` is ALWAYS empty, which makes every load CLEAR this uid out of the
 // legacy /push_audience index — the fan-out stopped reading it on 2026-09-07,
@@ -42,7 +48,7 @@
 // plus the single-leaf mute read in usePushMute. A browser that has never been
 // granted permission writes nothing at all.
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { PUSH_STATE, ensurePushRegistration, pushCapability } from "./registerPush";
 
 /**
@@ -53,20 +59,43 @@ export function usePushRegistration({ user }) {
   const uid = user && !user.isAnonymous ? user.uid : null;
   const [state, setState] = useState(null);
   const [busy, setBusy] = useState(false);
+  // ── ONLY THE NEWEST ATTEMPT MAY WRITE THE STATE ──────────────────────────
+  // Two registrations can be in flight at once: the passive one this hook
+  // starts on mount, and the one a tap starts through enablePush(). They
+  // resolve in whatever order the network gives them, and both used to call
+  // setState unconditionally — so a passive attempt that started first and
+  // finished LAST could overwrite a successful ON with its own older,
+  // pre-permission NEEDS_PERMISSION or ERROR. `ready` would then be false over
+  // a live token, and the foreground banner and chime would stay switched off
+  // until something re-registered.
+  //
+  // Every attempt takes a ticket. A stale one writes nothing. Same discipline
+  // as the load generation counter in PushAssignmentsCard.
+  const attempt = useRef(0);
 
   useEffect(() => {
     if (!uid) { setState(null); return undefined; }
     let cancelled = false;
+    const mine = ++attempt.current;
+    const live = () => !cancelled && attempt.current === mine;
     // Cleared before every attempt AND on a uid change, so a previous user's
     // successful registration can never be read as this one's. On a shared
     // tablet that is the difference between "B is registered" and "A was".
     setState(null);
+    // BUSY WHILE IT RUNS. A first-ever load registers a service worker and
+    // mints a token, which is seconds on a phone — and a tap during that window
+    // used to start a SECOND ensurePushRegistration concurrently, racing two
+    // getToken calls and two transactions on the same token row. The switch is
+    // disabled for those seconds instead, which is also the honest reading: a
+    // registration really is in flight.
+    setBusy(true);
     // PASSIVE. An effect is not a user gesture: Chrome ignores a prompt fired
     // from one and Safari holds it against the site. This path only refreshes
     // a registration that OS permission already allows.
     ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: false })
-      .then((r) => { if (!cancelled) setState(r.state); })
-      .catch((e) => { if (!cancelled) { console.error("[push]", e); setState(PUSH_STATE.ERROR); } });
+      .then((r) => { if (live()) setState(r.state); })
+      .catch((e) => { if (live()) { console.error("[push]", e); setState(PUSH_STATE.ERROR); } })
+      .finally(() => { if (live()) setBusy(false); });
     return () => { cancelled = true; };
   }, [uid]);
 
@@ -82,14 +111,17 @@ export function usePushRegistration({ user }) {
    */
   const enablePush = useCallback(async () => {
     if (!uid) return PUSH_STATE.ERROR;
+    const mine = ++attempt.current;
     setBusy(true);
     try {
       const r = await ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: true });
-      setState(r.state);
+      if (attempt.current === mine) setState(r.state);
+      // The RESULT is returned either way — the caller asked this question and
+      // is entitled to its answer even if a newer attempt now owns the state.
       return r.state;
     } catch (e) {
       console.error("[push] enable failed:", e);
-      setState(PUSH_STATE.ERROR);
+      if (attempt.current === mine) setState(PUSH_STATE.ERROR);
       return PUSH_STATE.ERROR;
     } finally {
       setBusy(false);

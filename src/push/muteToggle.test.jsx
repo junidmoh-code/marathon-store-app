@@ -98,9 +98,34 @@ describe("it says WHY, in words a person can act on", () => {
     expect(t).toContain("assigned");
   });
 
-  it("A REFUSED SAVE IS NAMED, not swallowed — this is the state before the rule is pasted", async () => {
-    const t = text(await render(PUSH(), MUTE({ error: "PERMISSION_DENIED" })));
+  it("A REFUSED SAVE IS NAMED, not swallowed", async () => {
+    const t = text(await render(PUSH(), MUTE({ error: { kind: "write", message: "PERMISSION_DENIED" } })));
     expect(t).toContain("PERMISSION_DENIED");
+    expect(t).toContain("Couldn't save");
+  });
+
+  it("A REFUSED READ IS NOT CALLED A FAILED SAVE — they saved nothing", async () => {
+    // What everybody saw before PUSH-MUTE-RULE-DEPLOY.md was pasted. Telling
+    // somebody their save failed when they had not saved anything sends them
+    // looking for a tap they never made.
+    const t = text(await render(PUSH(), MUTE({ error: { kind: "read", message: "PERMISSION_DENIED" }, known: false })));
+    expect(t).toContain("couldn't be read");
+    expect(t).not.toContain("Couldn't save");
+    expect(t).toContain("tell Junid");
+  });
+
+  it("a muted person is told they are MUTED even when the device is also blocked", async () => {
+    // Trouble used to win outright, so the mute went unmentioned — and the tap
+    // that followed silently unmuted them with no visible change at all.
+    const t = text(await render(PUSH({ state: PUSH_STATE.BLOCKED }), MUTE({ muted: true })));
+    expect(t).toContain("Muted");
+    expect(t).toContain("blocked");
+  });
+
+  it("does not claim 'On' while registration is still in flight", async () => {
+    const t = text(await render(PUSH({ state: null }), MUTE()));
+    expect(t).toContain("Setting up");
+    expect(t).not.toContain("you'll be alerted");
   });
 
   it("a working row says what it does, without a warning", async () => {
@@ -164,15 +189,42 @@ describe("what a tap actually does", () => {
 });
 
 describe("it grants nothing, and it cannot be tapped from an unknown baseline", () => {
-  it("is disabled until the first snapshot of the setting lands", async () => {
-    // Toggling from an unknown baseline is how a switch ends up flipping back
-    // on its own. Same reasoning as the locked hub switches on the admin card.
-    expect(sw(await render(PUSH(), MUTE({ known: false }))).props.disabled).toBe(true);
+  it("IS NOT DISABLED BY AN UNREADABLE SETTING — that locked the permission request itself", async () => {
+    // The near-miss Fable caught. Gating the whole control on `known` put the
+    // app one refused /push_mutes read away from the original outage: no
+    // prompt reachable, from a node that has nothing to do with prompting.
+    expect(sw(await render(PUSH(), MUTE({ known: false }))).props.disabled).toBe(false);
+  });
+
+  it("but WRITES NO MUTE from an unknown baseline — it only asks for permission", async () => {
+    const push = PUSH();
+    const mute = MUTE({ known: false });
+    await act(async () => { sw(await render(push, mute)).props.onClick(); });
+    expect(push.enablePush).toHaveBeenCalled();
+    expect(mute.setMuted).not.toHaveBeenCalled();
   });
 
   it("is disabled while a write is in flight", async () => {
     expect(sw(await render(PUSH(), MUTE({ busy: true }))).props.disabled).toBe(true);
     expect(sw(await render(PUSH({ busy: true }), MUTE())).props.disabled).toBe(true);
+  });
+
+  it("offers an explicit way to mute from a device that cannot receive", async () => {
+    // The account-wide mute must be reachable from the shop desktop, where this
+    // browser is unsupported. Driving the tap off the rendered switch made that
+    // impossible — every tap read as "turn it on" and never wrote the mute,
+    // while their phone kept ringing.
+    const mute = MUTE({ muted: false });
+    const tree = await render(PUSH({ state: PUSH_STATE.UNSUPPORTED }), mute);
+    const link = tree.root.findAll((n) => n.props && typeof n.props.onClick === "function"
+      && n.props.role !== "switch")[0];
+    await act(async () => { link.props.onClick(); });
+    expect(mute.setMuted).toHaveBeenCalledWith(true);
+  });
+
+  it("does not offer it on a healthy row — that is what the switch is for", async () => {
+    const tree = await render(PUSH(), MUTE());
+    expect(text(tree)).not.toContain("Silence alerts on all my devices");
   });
 
   it("a disabled switch does nothing when its handler is called anyway", async () => {

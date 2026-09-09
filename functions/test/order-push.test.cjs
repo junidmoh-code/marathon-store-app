@@ -1649,3 +1649,24 @@ test("A REFUSED MUTE READ DOES NOT THROW — a throw here would put the burst ba
   assert.equal(res.sent, true);
   assert.equal(res.tokens, 2, "both are still reached");
 });
+
+test("SWITCHED ON WITH NO ASSIGNMENT RECEIVES NOTHING — the spec line, as one test", async () => {
+  // The full "turned it on" state, assembled rather than composed out of three
+  // partial proofs: this person tapped the switch, so they have a live token
+  // AND no mute record — the exact database state enablePush() + an unmute
+  // leaves behind. Junid has not assigned them. They hear nothing.
+  //
+  // This is the sentence that makes the switch a veto rather than an opt-in,
+  // and it is the one a future "helpful" fallback in resolveRecipients would
+  // break while every other test here stayed green.
+  const world = ASSIGNED({ hub1: ["u_assigned"] });
+  world.push_tokens.u_keen = { d1: { token: "tok-u_keen" } };   // registered by the ON tap
+  // and NO world.push_mutes entry for u_keen — unmuting deletes the record
+  const { ref } = fakeDb(world);
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", HUB1());
+  assert.equal(res.sent, true);
+  assert.deepEqual(m.calls[0].tokens, ["tok-u_assigned"],
+    "being audible and registered is not being a recipient");
+  assert.equal(res.tokens, 1);
+});

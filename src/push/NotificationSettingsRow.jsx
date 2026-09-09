@@ -87,35 +87,89 @@ export default function NotificationSettingsRow({ push, mute }) {
   const on = !muted && state === PUSH_STATE.ON;
   const busy = !!push.busy || !!mute.busy;
 
+  // ── THE MUTE IS SAID FIRST, EVEN WHEN THE DEVICE ALSO HAS TROUBLE ────────
+  // Trouble used to win outright, so somebody muted AND blocked read only
+  // "Notifications are blocked…" — nothing said they had also silenced
+  // themselves. They would tap to fix the blocking, silently unmute on the way
+  // past (the tap's job when muted), see no change at all because the browser
+  // still refuses, and Junid's card would flip from "muted" to blank with
+  // nobody having meant it. Both facts are true, so both are printed, the
+  // account-wide one first because it is the one they can act on from here.
+  const MUTED_LINE = "Muted — your phone stays quiet even when you're assigned to a hub. Switch on to hear about orders again.";
   const sub = error
     // A refused read or write of the setting itself. Named rather than
-    // swallowed: until PUSH-MUTE-RULE-DEPLOY.md is pasted this is what
-    // everybody sees, and "nothing happened" would send them to Junid with no
-    // information.
-    ? `Couldn't save this setting on your account. ${error}`
-    : trouble
-      || (muted
-        ? "Muted — your phone stays quiet even when you're assigned to a hub. Switch on to hear about orders again."
-        : "On — you'll be alerted when a shop places an order for a hub you're assigned to.");
+    // swallowed: this is what everybody saw before PUSH-MUTE-RULE-DEPLOY.md was
+    // pasted, and "nothing happened" would send them to Junid with no
+    // information. A READ that failed is not a save that failed — printing the
+    // second over the first told people their save had failed when they had
+    // saved nothing.
+    ? (error.kind === "read"
+      ? `Your alert setting couldn't be read on this device, so this switch can only ask for permission — tell Junid. (${error.message})`
+      : `Couldn't save this setting on your account. ${error.message}`)
+    : muted
+      ? (trouble ? `${MUTED_LINE} Also: ${trouble}` : MUTED_LINE)
+      : trouble
+        // Registration still in flight. Saying "On — you'll be alerted" beside
+        // a switch that is rendering OFF is the copy contradicting the control.
+        || (state === null
+          ? "Setting up alerts on this device…"
+          : "On — you'll be alerted when a shop places an order for a hub you're assigned to.");
 
+  // ── THE SWITCH IS THE DEVICE. THE MUTE IS THE ACCOUNT. ───────────────────
+  // These come apart, and the row has to let them.
+  //
+  // A mute is account-wide: it silences that person's phone from wherever they
+  // write it. Registration is per-BROWSER. So a picker whose phone is buzzing
+  // can perfectly well be sitting at the shop desktop, where this browser is
+  // UNSUPPORTED or blocked — and they must still be able to say "stop".
+  //
+  // Driving the tap off the rendered `on` made that impossible: `on` is false
+  // on that desktop (correctly — this browser receives nothing), so every tap
+  // read as "turn it on", ran the permission request, and never wrote the mute.
+  // The switch moved, nothing was stored, and their phone kept ringing. The tap
+  // therefore branches on the three real cases, not on the two the switch has
+  // room to show.
   const onToggle = async () => {
     if (busy) return;
-    if (on) { await setMuted(true); return; }
-    // OFF → ON. Two things, in this order, and both every time.
-    //
-    // The permission request FIRST, because it is the half that can fail and
-    // the half a tap is required for. It is safe to call when permission is
-    // already granted — it re-registers the address, which is what a person
-    // whose token rotated needs anyway.
-    //
-    // The unmute regardless of what permission said. Somebody who denies the
-    // prompt has still expressed "I want these", and storing that means the day
-    // they fix it in site settings it simply works, with nothing further to
-    // find. A mute left standing behind a denied prompt would be a second,
-    // invisible reason they hear nothing.
+    // ── THE PERMISSION REQUEST IS NEVER GATED ON THE MUTE READ ───────────────
+    // If the setting could not be read we do not know the baseline, so we may
+    // not WRITE a mute — but asking the browser for permission is unrelated to
+    // that node and must always be reachable. Locking the whole control on
+    // `known` is what made a refused /push_mutes read reproduce the original
+    // outage: no prompt, from a node that has nothing to do with prompting.
+    if (!known) { await enablePush(); return; }
+    if (muted) {
+      // MUTED → AUDIBLE. Both halves, in this order, and both every time.
+      //
+      // The permission request FIRST, because it is the half that can fail and
+      // the half a tap is required for. Safe when permission is already
+      // granted — it re-registers the address, which is what somebody whose
+      // token rotated needs anyway.
+      //
+      // The unmute REGARDLESS of what permission said. Somebody who denies the
+      // prompt has still expressed "I want these", and storing that means the
+      // day they fix it in site settings it simply works, with nothing further
+      // to find. A mute left standing behind a denied prompt would be a
+      // second, invisible reason they hear nothing.
+      await enablePush();
+      await setMuted(false);
+      return;
+    }
+    if (state === PUSH_STATE.ON) { await setMuted(true); return; }
+    // NOT MUTED, and this browser cannot receive. The switch reads off, so a
+    // tap is a request to make it work — try the permission path. It must NOT
+    // mute them: they never asked for quiet, and a switch that silences an
+    // account because the device it was tapped on is unsupported is the worst
+    // outcome available here. Muting from this state is the explicit link
+    // below, which says what it does.
     await enablePush();
-    if (muted) await setMuted(false);
   };
+
+  // The escape hatch for the case above: audible, on a browser that cannot
+  // receive, wanting quiet on the device that CAN. Offered only in that exact
+  // state — a "silence everything" link under a working switch would be a
+  // second control for the thing the switch already does.
+  const showSilenceLink = known && !muted && !!trouble && !error;
 
   return (
     <div style={{ marginTop: 34, paddingTop: 18, borderTop: "1px solid rgba(255,255,255,.07)" }}>
@@ -146,6 +200,18 @@ export default function NotificationSettingsRow({ push, mute }) {
           <span style={{ display: "block", fontSize: 11.5, lineHeight: 1.45, color: (trouble || error) ? AMBER : "rgba(233,238,255,.5)" }}>
             {sub}
           </span>
+          {showSilenceLink && (
+            <button
+              onClick={() => { if (!busy) setMuted(true); }}
+              disabled={busy}
+              style={{
+                marginTop: 5, padding: 0, border: 0, background: "transparent",
+                cursor: (busy || !known) ? "not-allowed" : "pointer",
+                color: BLUE, fontSize: 11, fontWeight: 700, fontFamily: "inherit",
+              }}>
+              Silence alerts on all my devices
+            </button>
+          )}
         </span>
 
         <button
@@ -155,14 +221,15 @@ export default function NotificationSettingsRow({ push, mute }) {
           // Locked only while a write is in flight, or before the first
           // snapshot of the setting has landed. Toggling from an unknown
           // baseline is how a switch ends up flipping back on its own.
-          disabled={busy || !known}
+          // Only while a write is in flight. NOT on `known` — see onToggle.
+          disabled={busy}
           onClick={onToggle}
           style={{
             flex: "0 0 auto", width: 52, height: 30, borderRadius: 999,
-            cursor: busy ? "wait" : (known ? "pointer" : "not-allowed"),
+            cursor: busy ? "wait" : "pointer",
             border: `1px solid ${on ? "rgba(74,127,255,.6)" : "rgba(255,255,255,.12)"}`,
             background: on ? "rgba(74,127,255,.32)" : "rgba(255,255,255,.05)",
-            position: "relative", padding: 0, opacity: (busy || !known) ? 0.6 : 1,
+            position: "relative", padding: 0, opacity: busy ? 0.6 : 1,
             transition: "background .18s, border-color .18s",
           }}>
           <span style={{

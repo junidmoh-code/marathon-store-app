@@ -442,9 +442,17 @@ async function resolveRecipients(db, hub) {
 // see and understand. The cost of the other choice is nobody hearing anything
 // and nobody knowing why.
 //
-// A rejection cannot take the burst down either: this runs inside deliver(),
-// whose caller treats a throw as "the send failed" and puts the whole burst
-// back — so a mute read that threw would re-notify everybody on the retry.
+// allSettled also keeps ONE refused read from becoming a refused delivery.
+// This runs inside deliver(), whose caller treats a throw as "the send failed"
+// and puts the whole burst back — so a rejection here would postpone the
+// notification rather than duplicate it (nothing has been multicast yet at this
+// point), but a persistent refusal would postpone it for ever, which is the
+// same silence by a slower route.
+//
+// The cost of failing open is stated rather than minimised: while a refusal
+// persists, a muted person is notified on EVERY burst, not once. That is
+// visible to them and they can act on it. The cost of failing closed is a hub
+// hearing nothing, with nobody able to tell that anything is wrong.
 async function dropMuted(db, uids) {
   const settled = await Promise.allSettled(
     uids.map((uid) => db.ref(`push_mutes/${uid}/muted`).get()));

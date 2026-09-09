@@ -42,6 +42,7 @@ const HOOK = "src/push/usePush.js";
 const HOOK_TESTS = ["src/push/pushPermission.test.jsx"];
 const ROW = "src/push/NotificationSettingsRow.jsx";
 const ROW_TESTS = ["src/push/muteToggle.test.jsx"];
+const MUTE_HOOK_TESTS = ["src/push/useMute.test.jsx"];
 const CARD = "src/push/PushAssignmentsCard.jsx";
 const CARD_TESTS = ["src/push/PushAssignmentsCard.gate.test.jsx"];
 
@@ -138,6 +139,23 @@ const MUTATIONS = [
     file: HOOK,
     from: `    ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: false })`,
     to: `    ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: true })`,
+    tests: HOOK_TESTS,
+  },
+
+  {
+    id: "P3",
+    guard: "ONLY THE NEWEST REGISTRATION WRITES THE STATE — an older passive result must not clobber a granted ON",
+    file: HOOK,
+    from: `      if (attempt.current === mine) setState(r.state);`,
+    to: `      setState(r.state);`,
+    tests: HOOK_TESTS,
+  },
+  {
+    id: "P4",
+    guard: "THE APP ACTUALLY MOUNTS THE ENTRANCE — hook tests stay green while nothing renders the switch",
+    file: "src/App.jsx",
+    from: `          <NotificationSettingsRow push={push} mute={mute} />`,
+    to: ``,
     tests: HOOK_TESTS,
   },
 
@@ -267,6 +285,15 @@ const MUTATIONS = [
     nodeTests: SERVER_TESTS,
   },
 
+  {
+    id: "U6",
+    guard: "A REFUSED WRITE ROLLS BACK TO THE SERVER, not to what this tab last believed",
+    file: "src/push/useMute.js",
+    from: `      setMutedState(serverMuted.current);`,
+    to: `      setMutedState(false);`,
+    tests: MUTE_HOOK_TESTS,
+  },
+
   // ── THE STAFF SWITCH ──────────────────────────────────────────────────────
   {
     id: "T1",
@@ -295,11 +322,41 @@ const MUTATIONS = [
     tests: ROW_TESTS,
   },
   {
+    // T4 REPLACED 2026-09-09 (review round). It used to mutate
+    // `disabled={busy || !known}` — a guard that was itself the defect: gating
+    // the whole control on the mute read put the app one refused /push_mutes
+    // read away from the original outage, with no permission prompt reachable
+    // from a node that has nothing to do with prompting. The switch is no
+    // longer disabled by `known`; what `known` gates is the mute WRITE.
     id: "T4",
-    guard: "NO TAP FROM AN UNKNOWN BASELINE — a switch toggled before its first snapshot flips back",
+    guard: "AN UNREADABLE SETTING STILL ASKS FOR PERMISSION, but WRITES NO MUTE from an unknown baseline",
     file: ROW,
-    from: `          disabled={busy || !known}`,
-    to: `          disabled={busy}`,
+    from: `    if (!known) { await enablePush(); return; }`,
+    to: ``,
+    tests: ROW_TESTS,
+  },
+  {
+    id: "T5",
+    guard: "THE ACCOUNT MUTE IS REACHABLE FROM A DEVICE THAT CANNOT RECEIVE — the switch alone cannot reach it",
+    file: ROW,
+    from: `  const showSilenceLink = known && !muted && !!trouble && !error;`,
+    to: `  const showSilenceLink = false;`,
+    tests: ROW_TESTS,
+  },
+  {
+    id: "T6",
+    guard: "A MUTED PERSON IS TOLD SO even when the device is ALSO blocked — else the next tap silently unmutes",
+    file: ROW,
+    from: `      ? (trouble ? \`\${MUTED_LINE} Also: \${trouble}\` : MUTED_LINE)`,
+    to: `      ? MUTED_LINE`,
+    tests: ROW_TESTS,
+  },
+  {
+    id: "T7",
+    guard: "A REFUSED READ IS NOT CALLED A FAILED SAVE — they saved nothing",
+    file: ROW,
+    from: `    ? (error.kind === "read"`,
+    to: `    ? (false`,
     tests: ROW_TESTS,
   },
 

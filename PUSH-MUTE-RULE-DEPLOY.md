@@ -87,6 +87,31 @@ every refused write is refused whole.
 The fan-out is unaffected by the paste entirely: it uses the Admin SDK, which
 bypasses rules, and reads an absent node as audible.
 
+## 🚨 THE FUNCTION MUST BE REDEPLOYED, OR THE MUTE DOES NOTHING
+
+The half that actually withholds a notification is `dropMuted()` in
+`functions/lib/order-push.cjs`. Until that ships, a staff member can save a mute
+and read "your phone stays quiet" on their own screen while the live fan-out —
+which has never heard of `/push_mutes` — keeps notifying them. That is a switch
+that lies, which is the failure this release exists to end.
+
+**Functions in this project are SHARED with marathon-pos-app. Never a bare
+`--only functions`.** Name the one function:
+
+```
+firebase deploy --only functions:orderPlacedPush
+```
+
+Full order of operations:
+
+1. paste the rule above and **Publish**
+2. `firebase deploy --only functions:orderPlacedPush`
+3. `firebase deploy --only hosting:marathon-club`
+4. verify with the four steps below
+
+Steps 2 and 3 are independent of each other and either order works. Both must
+follow step 1.
+
 ## Verifying it took
 
 1. Open the app as any staff member and scroll to the bottom of the home screen.

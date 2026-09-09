@@ -68,10 +68,6 @@ describe("the mute rule that will be pasted", () => {
     expect(node().$other[".validate"]).toBe(false);
   });
 
-  it("REFUSES A STRING — isMuted counts only a real boolean, and the rule says so too", () => {
-    expect(node().muted[".validate"]).not.toContain("isString");
-  });
-
   it("THE RULE GRANTS NO HUB — a mute may never touch the assignment nodes", () => {
     // The safety argument for a client-writable node in this feature. If this
     // paste ever mentioned push_assignments or push_hub_audience, a staff

@@ -25,6 +25,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { readFileSync } from "node:fs";
 
 const ensureMock = vi.fn(async () => ({ state: "on" }));
 vi.mock("./registerPush", async () => {
@@ -139,4 +140,45 @@ describe("`ready` is the registration, not the intention", () => {
       expect(api.ready).toBe(false);
     });
   }
+});
+
+// ─── AND THE ENTRANCE HAS TO BE REACHABLE FROM THE APP ───────────────────────
+// Everything above tests the hook, and the hook is not the entrance. Deleting
+// both <NotificationSettingsRow /> mounts from src/App.jsx would leave every
+// assertion in this file and every assertion in muteToggle.test.jsx green,
+// while new browsers again had no reachable way to be asked for permission —
+// which is EXACTLY the outage this file was written about. A capability test
+// that cannot see whether anything calls the capability is the same blind spot
+// one level up.
+//
+// So these read the source of App.jsx. That is a blunt instrument and it is the
+// right one here: rendering AppInner in a unit test would need the whole
+// Firebase surface stubbed, and the thing being defended is not behavioural —
+// it is "does the wiring still exist at all".
+describe("the app actually mounts the entrance", () => {
+  const APP = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
+
+  it("renders the settings row on BOTH home branches — desktop and mobile", () => {
+    // Two branches, two mounts. #573 deleted them as a pair and a fix that
+    // restored only one would leave half the staff with no way in.
+    const mounts = APP.match(/<NotificationSettingsRow\b/g) || [];
+    expect(mounts.length).toBe(2);
+  });
+
+  it("imports it, so the mounts are not dead text in a comment", () => {
+    expect(APP).toMatch(/^import NotificationSettingsRow from "\.\/push\/NotificationSettingsRow";$/m);
+  });
+
+  it("feeds it BOTH hooks — a row with no push prop renders null and asks nobody", () => {
+    // NotificationSettingsRow returns null unless it has push.uid AND mute, so
+    // a mount that forgot either prop is an entrance that silently is not one.
+    expect(APP).toMatch(/<NotificationSettingsRow push=\{push\} mute=\{mute\} \/>/);
+    expect(APP).toMatch(/const push = usePushRegistration\(/);
+    expect(APP).toMatch(/const mute = usePushMute\(/);
+  });
+
+  it("passes both down to the home screen that renders them", () => {
+    expect(APP).toMatch(/function RoleSelector\(\{[^}]*\bpush\b[^}]*\bmute\b[^}]*\}\)/);
+    expect(APP).toMatch(/<RoleSelector[^>]*push=\{push\}[^>]*mute=\{mute\}/);
+  });
 });
