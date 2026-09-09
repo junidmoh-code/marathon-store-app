@@ -200,6 +200,17 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
       : { tone: "err", text: res.message });
   };
 
+  // ── ASKING FOR A SHOE IS THE CONSEQUENTIAL TAP, SO IT ASKS FIRST ──────────
+  // (Owner, 2026-09-09.) The screen had this exactly backwards. "On the wall"
+  // moves no stock and changes only a record, and it makes the operator pick a
+  // size before it does anything. "Not on the wall" draws a REAL order number
+  // and puts a REAL job in the warehouse queue — and it was one tap, no
+  // question asked, on a screen the operator is tapping through at walking
+  // pace with a shelf in front of them.
+  //
+  // Now it names the shoe and the wall and waits. The confirm is inline rather
+  // than a window.confirm because the operator is on a phone in a shop and a
+  // browser dialog covers the row they are looking at.
   const notOnWall = async (candidate) => {
     setBusy(candidate.productId); setNote(null);
     const res = await raiseDisplayRequest({
@@ -209,10 +220,18 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
       hub: candidate.sizes?.[0]?.hub || GATED_SNEAKER_HUBS[0],
       product: candidate.product || { id: candidate.productId, name: candidate.productName },
     });
-    setBusy(null);
+    setBusy(null); setActing(null);
+    // ── THE WORDING SAYS WHAT WAS ASKED FOR ──────────────────────────────────
+    // It used to read "Display partner requested", which is the name of the
+    // PIPELINE, not of the thing the operator asked for. Standing at an empty
+    // spot on the wall they did not ask for a partner to anything — they asked
+    // for a shoe to display. (The flag underneath is unchanged and correct:
+    // requestDisplayPartner is the only live one, and it is the queue the
+    // warehouse already works.)
     setNote(res.ok
-      ? { tone: "ok", text: `Display partner requested — order #${res.orderId}. The warehouse picks the size when it sends it.` }
-      : { tone: res.already ? "err" : "err", text: res.message });
+      ? { tone: "ok",
+          text: `Asked the warehouse for a display pair of ${candidate.productName} for ${labelFor(store)} — order #${res.orderId}. They pick the size when they send it.` }
+      : { tone: "err", text: res.message });
   };
 
   const closeRow = async (row, reason) => {
@@ -292,7 +311,25 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={sheet.name}>{c.productName}</div>
             <div style={sheet.meta}>{c.hubUnits} in the warehouse · no display record here</div>
-            {acting === c.productId ? (
+            {acting === `ask-${c.productId}` ? (
+              <div style={{ marginTop: 8 }}>
+                <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff" }}>
+                  Ask the warehouse to send a display pair?
+                </div>
+                <div style={{ ...sheet.meta, marginTop: 4, lineHeight: 1.5 }}>
+                  {c.productName} for {labelFor(store)}. This puts a real job in the warehouse
+                  queue — it does not move any stock by itself.
+                </div>
+                <div style={{ ...sheet.row, marginTop: 8 }}>
+                  <button style={sheet.btn("primary")} disabled={busy === c.productId}
+                          onClick={() => notOnWall(c)}>
+                    {busy === c.productId ? "Requesting…" : "Yes — request it"}
+                  </button>
+                  <button style={sheet.btn()} disabled={busy === c.productId}
+                          onClick={() => setActing(null)}>Cancel</button>
+                </div>
+              </div>
+            ) : acting === c.productId ? (
               <SizePicker sizes={sizesOf(c.product)} busy={busy === c.productId}
                           title="Which size is on the wall?"
                           note="Nothing is chosen for you — pick the size you are looking at. No stock moves."
@@ -304,7 +341,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
                 <button style={sheet.btn("primary")} disabled={!!busy} onClick={() => setActing(c.productId)}>On the wall</button>
                 <button style={sheet.btn()} disabled={!!busy || !canRequest}
                         title={canRequest ? "" : `Switch to ${labelFor(store)} on that device to request for this wall.`}
-                        onClick={() => notOnWall(c)}>Not on the wall</button>
+                        onClick={() => setActing(`ask-${c.productId}`)}>Not on the wall</button>
               </div>
             )}
           </div>
