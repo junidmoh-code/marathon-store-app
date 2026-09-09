@@ -266,6 +266,20 @@ const MUTATIONS = [
   { id: "F14", file: FUZZ, tests: FUZZ_TESTS,
     guard: "THE FUZZ ASSERTS ITS OWN COVERAGE — a generator that drifts until it exercises nothing is CAUGHT, not passed",
     from: `  const sep = pick(r, "-/_.");`, to: `  const sep = "";` },
+  { id: "F16", file: GATE, tests: GATE_TESTS,
+    guard: "THE TOTALS READ IS BOUNDED — unbounded, a dead network is a Save button that looks live and does nothing, forever",
+    from: `  await Promise.race([reads, new Promise((resolve) => setTimeout(resolve, timeoutMs))]);`,
+    to: `  await reads;` },
+  { id: "F17", file: GATE, tests: GATE_TESTS,
+    guard: "…and whatever DID land before the bound is still used — a slow location does not blank the others",
+    from: `  await Promise.race([reads, new Promise((resolve) => setTimeout(resolve, timeoutMs))]);`,
+    to: `  await Promise.race([reads, new Promise((resolve) => setTimeout(() => { for (const k of Object.keys(out)) delete out[k]; resolve(); }, timeoutMs))]);` },
+  { id: "F18", file: GATE, tests: GATE_TESTS,
+    guard: "A HANDOFF GOES STALE — an abandoned one must not spring a filled receive form on someone hours later",
+    from: `  return age <= PREFILL_MAX_AGE_MS;`, to: `  return true;` },
+  { id: "F19", file: GATE, tests: GATE_TESTS,
+    guard: "…and a backwards clock keeps the operator's work rather than discarding it",
+    from: `  const age = nowMs - prefill.at;`, to: `  const age = Math.abs(nowMs - prefill.at);` },
   { id: "F15", file: PANEL, tests: PANEL_TESTS,
     guard: "AN ARRIVING TOTAL REACHES THE SCREEN — the re-render is what turns \"counting…\" into a number",
     from: `    loadTotals(rows.map((r) => r.product.id), locationIds, () => setTick((n) => n + 1));`,
@@ -302,6 +316,7 @@ function runVitest(files) {
 }
 
 const results = [];
+try {
 for (const m of MUTATIONS) {
   const original = readFileSync(m.file, "utf8");
   const hits = original.split(m.from).length - 1;
@@ -344,10 +359,18 @@ for (const m of MUTATIONS) {
       console.error(`    ${String((err && err.message) || err)}`);
       console.error(`    That file is NOT the committed version — it may be mutated or truncated.`);
       console.error(`    Restore it from git (git checkout -- ${m.file}) before running anything else.`);
+      // Tagged so the top-level handler can exit 3 — "the harness broke and a
+      // file may be damaged" must stay distinguishable from exit 1, "a guard is
+      // not proven". An uncaught throw exits 1 and the two become the same
+      // number to CI. (Adversarial delta review, PR #594.)
+      err.__restoreFailed = true;
       throw err;
     }
   };
-  const onSignal = () => { restore(); process.exit(130); };
+  // A restore failure during Ctrl-C must still exit 130 — the message is already
+  // on stderr, and throwing out of a signal handler would replace the exit code
+  // with an unhandled-rejection crash.
+  const onSignal = () => { try { restore(); } catch { /* already reported */ } process.exit(130); };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   try {
@@ -363,6 +386,11 @@ for (const m of MUTATIONS) {
   const proven = mutated === "FAIL" && restored === "PASS";
   results.push({ ...m, mutated, restored, proven });
   console.log(`${m.id}  mutated:${mutated}  restored:${restored}  ${proven ? "✅ PROVEN" : "❌ NOT PROVEN"}  — ${m.guard}`);
+}
+
+} catch (err) {
+  if (err && err.__restoreFailed) process.exit(3);
+  throw err;
 }
 
 const unproven = results.filter((r) => !r.proven);

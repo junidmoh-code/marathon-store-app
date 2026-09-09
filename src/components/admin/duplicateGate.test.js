@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from "vitest";
 import {
   resolveDuplicateChoice, exactRowsOf, createAnywayPrompt, splitPrefillSizes, totalsKnowable,
-  gatherExactTotals, DUP_NONE, DUP_RESOLVED, DUP_CHOOSE,
+  gatherExactTotals, prefillIsFresh, PREFILL_MAX_AGE_MS, TOTALS_TIMEOUT_MS,
+  DUP_NONE, DUP_RESOLVED, DUP_CHOOSE,
 } from "./duplicateGate.js";
 import { TIER_EXACT_CODE, TIER_PARTIAL_CODE, TIER_FUZZY_NAME } from "../../utils/productDupMatch.js";
 
@@ -100,6 +101,63 @@ describe("gatherExactTotals — the caller's guards, where a test can see them",
 
   it("survives a missing reader rather than throwing inside the save handler", async () => {
     expect(await gatherExactTotals(rows, ["hub1"], undefined)).toEqual({});
+  });
+
+  it("A HUNG READ DOES NOT WEDGE THE SAVE — it times out into UNKNOWN", async () => {
+    // RTDB's get() has no timeout of its own. Unbounded here, the Save button
+    // looks live, does nothing, swallows every further tap (the re-entrancy
+    // guard already holds its lock) and shows no error — recoverable only by a
+    // reload. Losing a number is not worth losing the save.
+    vi.useFakeTimers();
+    try {
+      const never = () => new Promise(() => {});
+      const p = gatherExactTotals(rows, ["hub1"], never, 50);
+      await vi.advanceTimersByTimeAsync(51);
+      const totals = await p;
+      expect(totals).toEqual({});
+      expect(createAnywayPrompt("44712", rows, totals)).toContain("an unknown number of units");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("a healthy read is not delayed by the bound", async () => {
+    const read = vi.fn(async () => ({ total: 5 }));
+    expect(await gatherExactTotals(rows, ["hub1"], read, TOTALS_TIMEOUT_MS)).toEqual({ p1: { total: 5 }, p2: { total: 5 } });
+  });
+
+  it("a SLOW read still contributes whatever landed before the bound", async () => {
+    vi.useFakeTimers();
+    try {
+      const read = vi.fn((pid) => (pid === "p1" ? Promise.resolve({ total: 2 }) : new Promise(() => {})));
+      const p = gatherExactTotals(rows, ["hub1"], read, 50);
+      await vi.advanceTimersByTimeAsync(51);
+      expect(await p).toEqual({ p1: { total: 2 } });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("prefillIsFresh — a handoff is not a standing instruction", () => {
+  it("is fresh when it was just made", () => {
+    expect(prefillIsFresh({ at: 1000 }, 1000)).toBe(true);
+    expect(prefillIsFresh({ at: 1000 }, 1000 + PREFILL_MAX_AGE_MS)).toBe(true);
+  });
+
+  it("GOES STALE — an abandoned handoff must not spring a filled receive form later", () => {
+    expect(prefillIsFresh({ at: 1000 }, 1000 + PREFILL_MAX_AGE_MS + 1)).toBe(false);
+  });
+
+  it("a clock that moved backwards keeps the operator's work rather than discarding it", () => {
+    // The skew must EXCEED the window, or an abs() of the age would look
+    // identical and this would prove nothing.
+    expect(prefillIsFresh({ at: 1000 + PREFILL_MAX_AGE_MS * 2 }, 1000)).toBe(true);
+  });
+
+  it("refuses anything without a real timestamp", () => {
+    for (const v of [null, undefined, {}, { at: "1000" }, { at: NaN }]) expect(prefillIsFresh(v, 1000)).toBe(false);
+    expect(prefillIsFresh({ at: 1000 }, NaN)).toBe(false);
   });
 });
 

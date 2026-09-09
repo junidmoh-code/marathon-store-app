@@ -161,7 +161,7 @@ import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
 import DuplicateSuggestPanel from "./components/admin/DuplicateSuggestPanel";
-import { exactRowsOf, createAnywayPrompt, splitPrefillSizes, gatherExactTotals } from "./components/admin/duplicateGate";
+import { exactRowsOf, createAnywayPrompt, splitPrefillSizes, gatherExactTotals, prefillIsFresh } from "./components/admin/duplicateGate";
 import { rankCandidates } from "./utils/productDupMatch";
 import { onceAtATime } from "./utils/onceAtATime";
 import { productTotals } from "./components/stock/networkTotalsStore";
@@ -5838,9 +5838,17 @@ function AdminView({ products, orders, onExit }) {
     // all — set and cleared inside one call.
     //
     // So there is no flag. Creating a twin asks, every time, because each
-    // attempt to create one is its own deliberate act. The cost is one extra
-    // dialog on a retry; the thing it buys is that no duplicate is ever created
-    // unasked. (Adversarial delta review, PR #594.)
+    // attempt to create one is its own deliberate act.
+    //
+    // BE HONEST ABOUT WHAT THE RETRY DIALOG BUYS. On that post-write path the
+    // twin exists but its stock movements have not run, so the count read back
+    // is a truthful 0 — and the dialog says "already exists as X with 0 units",
+    // which duplicateGate's own header calls the sentence that pushes an
+    // operator TOWARD the duplicate. The number is honest and the ask is right;
+    // it simply does not argue the case on that one path. What the removal
+    // actually fixes is the silent create with NO dialog and NO /insights_log
+    // row — the duplicate that landed with no audit trail at all.
+    // (Adversarial delta review, PR #594.)
     const exactDupes = exactRowsOf(rankCandidates(form.name, products));
     if (exactDupes.length) {
       // Unit counts for the sentence. gatherExactTotals holds BOTH unknown
@@ -6429,7 +6437,7 @@ function AdminView({ products, orders, onExit }) {
         product={detailProduct}
         allProducts={products}
         insightsLog={insightsLog}
-        receivePrefill={receivePrefill && receivePrefill.productId === detailProduct.id ? receivePrefill : null}
+        receivePrefill={receivePrefill && receivePrefill.productId === detailProduct.id && prefillIsFresh(receivePrefill, serverNowMs()) ? receivePrefill : null}
         onPrefillConsumed={() => setReceivePrefill(null)}
         onBack={() => window.history.back()}
       />
@@ -6592,7 +6600,7 @@ function AdminView({ products, orders, onExit }) {
                 // Everything already typed travels with them. Sizes are filtered
                 // against the TARGET product on arrival (splitPrefillSizes), and
                 // anything it cannot hold is named on screen rather than dropped.
-                setReceivePrefill({ productId: p.id, loc: recvLoc, qtys: recvQtys });
+                setReceivePrefill({ productId: p.id, loc: recvLoc, qtys: recvQtys, at: serverNowMs() });
                 setShowAdd(false); setIntake(null); setCategoryChosen(false);
                 window.location.hash = "product/" + p.id;
               }}

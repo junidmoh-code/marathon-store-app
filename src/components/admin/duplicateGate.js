@@ -32,6 +32,9 @@
 
 import { TIER_EXACT_CODE } from "../../utils/productDupMatch.js";
 
+// See gatherExactTotals.
+export const TOTALS_TIMEOUT_MS = 2500;
+
 export const DUP_NONE = "none";        // nothing certain — show the panel as a panel
 export const DUP_RESOLVED = "resolved"; // exactly one; the banner names it
 export const DUP_CHOOSE = "choose";     // a genuine tie; the operator must pick
@@ -108,17 +111,29 @@ export function totalsKnowable(locationIds) {
  * @param {(productId: string, locationIds: string[]) => Promise<object>} readTotals
  * @returns {Promise<object>} { [productId]: totals|null }
  */
-export async function gatherExactTotals(exactRows, locationIds, readTotals) {
+export async function gatherExactTotals(exactRows, locationIds, readTotals, timeoutMs = TOTALS_TIMEOUT_MS) {
   const out = {};
   const rows = exactRowsOf(exactRows);
   // Nothing to sum over means UNKNOWN. Not attempted, so not answered — and an
   // unanswered count prints as "an unknown number of units", never as 0.
   if (!totalsKnowable(locationIds) || typeof readTotals !== "function") return out;
-  await Promise.all(rows.map(async (r) => {
+  const reads = Promise.all(rows.map(async (r) => {
     // A failed read is UNKNOWN too, and must never block the save.
     try { out[r.product.id] = await readTotals(r.product.id, locationIds); }
     catch { out[r.product.id] = null; }
   }));
+  // ── AND IT IS BOUNDED ─────────────────────────────────────────────────────
+  // This runs BEFORE the save marks itself busy, while the re-entrancy guard
+  // already holds its lock — so an unbounded wait here is a Save button that
+  // looks live, does nothing, swallows every further tap, and shows no error.
+  // On shop-floor wifi that is the worst shape a failure can take: the operator
+  // has no dialog to answer, no message to read and no way out but a reload.
+  // RTDB's get() has no timeout of its own, so the bound has to be here.
+  //
+  // A timed-out read is simply the UNKNOWN case this file already models: the
+  // confirm says "an unknown number of units" and the save carries on. Losing a
+  // number is not worth losing the save.
+  await Promise.race([reads, new Promise((resolve) => setTimeout(resolve, timeoutMs))]);
   return out;
 }
 
@@ -169,6 +184,29 @@ export function createAnywayPrompt(typed, exactRows, totalsById = {}) {
  *             positive number (a blank or a 0 carries nothing and is not a loss)
  *   dropped — sizes with a real positive quantity that the product cannot hold
  */
+/**
+ * How long a handoff stays valid. It is carried in memory across one
+ * navigation; if the operator turns back before the product page mounts, it is
+ * never consumed and would otherwise sit there for the session — so opening
+ * that product an hour later would spring a pre-filled receive form on someone
+ * who asked for nothing. Nothing is written either way (the receive still needs
+ * a deliberate tap), but a form that fills itself is a mis-tap surface.
+ */
+export const PREFILL_MAX_AGE_MS = 5 * 60 * 1000;
+
+/**
+ * Is this handoff still the one the operator just made?
+ * @param {object} prefill  { at } — server ms when it was created
+ * @param {number} nowMs
+ */
+export function prefillIsFresh(prefill, nowMs) {
+  if (!prefill || !Number.isFinite(prefill.at) || !Number.isFinite(nowMs)) return false;
+  const age = nowMs - prefill.at;
+  // A negative age means the clock moved; treat it as fresh rather than
+  // discarding work the operator just did.
+  return age <= PREFILL_MAX_AGE_MS;
+}
+
 export function splitPrefillSizes(qtys, productSizes) {
   const have = new Set((Array.isArray(productSizes) ? productSizes : []).map(String));
   const carried = {};
