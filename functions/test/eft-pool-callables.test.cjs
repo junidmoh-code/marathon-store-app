@@ -133,6 +133,18 @@ test("markUsed lets an eftReview holder through — and STAMPS THEIR NAME, not \
   dbState.txCurrent = null;
 });
 
+test("markUsed ANSWERS with what it stamped, so a caller need not invent it", async () => {
+  const key = "a".repeat(40);
+  dbState.txCurrent = { outcome: "recorded", status: "unmatched", amountCents: 10000, at: 1, payer: "P", reference: "R" };
+  const before = Date.now();
+  const out = await eftPoolSettle({ ...REVIEWER, data: { action: "markUsed", poolKey: key, reason: "paid at the shop" } }).catch(() => null);
+  dbState.txCurrent = null;
+  assert.ok(out, "the mark went through");
+  assert.equal(out.actorName, "ibrahim");
+  assert.equal(out.reason, "paid at the shop");
+  assert.ok(out.at >= before, "the moment is the server's own");
+});
+
 test("REVOKING THE FLAG TAKES EFFECT ON THE NEXT CALL — nothing is cached", async () => {
   const key = "a".repeat(40);
   // The holder is through…

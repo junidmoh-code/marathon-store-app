@@ -460,7 +460,11 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     }));
     if (!decision.ok) throw refusalToError(decision);
     console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
-    return { ok: true, already: decision.already === true, remainder: null };
+    // WHAT WAS ACTUALLY STAMPED travels back, so a caller repainting a card in
+    // place shows the record rather than its own guess at it. Without this the
+    // phone screen had to invent a name and a moment, and they could differ
+    // from the ones on the record until the next full reload.
+    return { ok: true, already: decision.already === true, remainder: null, actorName, at: now, reason };
   } else if (action === "release") {
     decision = await runPoolTransaction(key, (current) => {
       if (current?.used && current.used.cashierUid !== uid && !isOwner(request)) {
