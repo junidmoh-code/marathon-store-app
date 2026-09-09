@@ -57,7 +57,7 @@ import {
   unregisteredAcrossHubs, hubForSize, filterCandidates, registeredDisplays, rowSizeText,
 } from "./displayRowCore";
 import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
-import { raiseDisplayRequest, cancelDisplayRequest } from "./displayRequestStore";
+import { raiseDisplayRequest } from "./displayRequestStore";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { GATED_SNEAKER_HUBS, isFootwearProduct } from "./availabilityCore";
@@ -230,19 +230,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
     // warehouse already works.)
     setNote(res.ok
       ? { tone: "ok",
-          text: `Asked the warehouse for a display pair of ${candidate.productName} for ${labelFor(store)} — order #${res.orderId}. They pick the size when they send it.`,
-          undo: { orderId: res.orderId, createdAt: res.createdAt, label: candidate.productName } }
-      : { tone: "err", text: res.message });
-  };
-
-  // Undo is offered only while the warehouse has not started; the store decides
-  // that, not this screen, by re-reading the order. See displayRequestStore.
-  const undoRequest = async (undo) => {
-    setBusy(`undo-${undo.orderId}`);
-    const res = await cancelDisplayRequest({ orderId: undo.orderId, createdAt: undo.createdAt, store });
-    setBusy(null);
-    setNote(res.ok
-      ? { tone: "ok", text: `Undone — the request for ${undo.label} was withdrawn. Nothing is on its way.` }
+          text: `Asked the warehouse for a display pair of ${candidate.productName} for ${labelFor(store)} — order #${res.orderId}. They pick the size when they send it.` }
       : { tone: "err", text: res.message });
   };
 
@@ -279,21 +267,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
       <input value={q} onChange={(e) => { setQ(e.target.value); setPage(0); }}
              placeholder="Search a shoe…" style={sheet.search} />
 
-      {/* The note carries an Undo when the thing it is reporting can still be
-          taken back. It disappears with the note — an undo that outlived its
-          message would be a button whose subject the operator has forgotten. */}
-      {note && (
-        <div style={sheet.note(note.tone)}>
-          {note.text}
-          {note.undo && (
-            <button style={{ ...sheet.btn(), marginLeft: 10, verticalAlign: "middle" }}
-                    disabled={busy === `undo-${note.undo.orderId}`}
-                    onClick={() => undoRequest(note.undo)}>
-              {busy === `undo-${note.undo.orderId}` ? "Undoing…" : "Undo"}
-            </button>
-          )}
-        </div>
-      )}
+      {note && <div style={sheet.note(note.tone)}>{note.text}</div>}
 
       {!ready && <div style={sheet.empty}>Loading…</div>}
 

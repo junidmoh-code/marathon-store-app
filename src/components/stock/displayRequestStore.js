@@ -33,95 +33,42 @@
 // requests their own sequence would put two numbering schemes in the same queue
 // for the same kind of work.
 //
+// ── THERE IS NO UNDO HERE, AND THAT IS A DECISION ────────────────────────────
+// (Owner asked for one, 2026-09-09. It is deliberately NOT here.) Undoing means
+// removing a live warehouse job, and three things stand in the way of doing that
+// safely from a client:
+//
+//   1. THE READ IS DENIED TO THE PEOPLE WHO NEED IT. /orders has no per-child
+//      .read — a destShop-pinned device may only read it through the
+//      orderByChild("destShop") query useOrders already runs. A store operator
+//      is the only person who walks a wall, and they cannot read orders/{id}
+//      directly, so an undo that checks before deleting fails for exactly them.
+//   2. READ-THEN-DELETE IS NOT ATOMIC. The one guard that matters is "the
+//      warehouse has not started". Between the check and the delete the
+//      warehouse can mark it Ready — and then a pair is off a shelf and in
+//      somebody's hand with no order left to explain it. A transaction would
+//      close that window, and a transaction needs the same denied read.
+//   3. NOTHING IN THIS APP HAS EVER DELETED AN ORDER. A wall-walk request is
+//      written nowhere else, so a delete would destroy the only copy — raisedBy
+//      included — and leave no trace it ever existed.
+//
+// The confirm step in DisplayRegistrationView is what actually stops the
+// accidental request, and it needs none of this. A real undo belongs behind a
+// callable that can read the order with admin rights, refuse it atomically, and
+// write a tombstone before it removes anything.
+//
 // ── CLAUSE 1 IS ENFORCED HERE TOO ────────────────────────────────────────────
 // At most one open display request per product per store. The caller passes the
 // orders it already holds and this refuses a second — the same guard the
 // checkout runs, from the same pure function, so the two entry points cannot
 // disagree about what "already asked for" means.
 
-import { ref, set, get, remove } from "firebase/database";
+import { ref, set } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowIso } from "../../utils/serverTime";
 import { getNextOrderNumber } from "../../utils/orderCounter";
 import { hasOpenDisplayRequest } from "./displayRowCore";
 import { labelFor } from "./locations";
-
-// ─── UNDOING ONE ─────────────────────────────────────────────────────────────
-// (Owner, 2026-09-09: "give an undo button".) A wall walk is a walk — the
-// operator is looking at shelves, tapping quickly, and the tap that raises a
-// request is one pixel from the tap that registers one. Until now the raise was
-// irreversible from this screen: it drew a real order number and entered the
-// warehouse queue, and the only way back was to find the order elsewhere.
-//
-// ── WHAT MAY BE UNDONE, AND WHAT MAY NOT ─────────────────────────────────────
-// Only an order this walk raised, at this store, that the warehouse has NOT yet
-// started on. The moment it is Ready the warehouse has picked a shoe off a
-// shelf for it, and deleting the order would leave that pair in someone's hand
-// with nothing to say why. Then it is not an undo, it is a cancellation, and it
-// belongs where cancellations already live.
-//
-// ── THE ID IS RE-READ, AND THE STAMP IS CHECKED ──────────────────────────────
-// /orders ids are RECYCLED daily (the counter resets), so an id alone does not
-// identify an order — tomorrow's order 42 is not today's. The undo therefore
-// carries the createdAt it minted and refuses if the record at that id no
-// longer carries the same one. Without that, an undo left on screen across
-// midnight could delete a stranger's order.
-
-export const CANCEL_GONE = "gone";
-export const CANCEL_NOT_OURS = "not-ours";
-export const CANCEL_STARTED = "started";
-
-/**
- * Pure: may THIS undo delete THIS record? Split out so every refusal is a test
- * rather than a hope, and so the writer below cannot quietly disagree with it.
- *
- * @param order   what /orders/{id} actually holds right now, or null
- * @param expect  { createdAt, store } — what the undo believes it raised
- */
-export function canCancelDisplayRequest(order, expect = {}) {
-  if (!order || typeof order !== "object") {
-    return { ok: false, reason: CANCEL_GONE, message: "That request is no longer there — nothing to undo." };
-  }
-  // Same id, different order: the daily counter recycled it.
-  if (!expect.createdAt || order.createdAt !== expect.createdAt) {
-    return { ok: false, reason: CANCEL_NOT_OURS,
-      message: "That order number now belongs to a different order. Nothing was undone." };
-  }
-  if (order.wallWalk !== true || order.requestDisplayPartner !== true) {
-    return { ok: false, reason: CANCEL_NOT_OURS,
-      message: "That is not a wall-walk request. Nothing was undone." };
-  }
-  if (expect.store && order.destShop !== expect.store) {
-    return { ok: false, reason: CANCEL_NOT_OURS,
-      message: "That request belongs to another wall. Nothing was undone." };
-  }
-  // Anything past "incoming" means the warehouse has acted on it.
-  if (order.readyAt || order.collectedAt || order.outOfStockAt || order.comingTomorrowAt
-      || (order.status && order.status !== "incoming")) {
-    return { ok: false, reason: CANCEL_STARTED,
-      message: "The warehouse has already started on this one — it can no longer be undone here." };
-  }
-  return { ok: true };
-}
-
-/**
- * Undo a request this walk just raised.
- * → { ok } | { ok: false, reason, message }
- */
-export async function cancelDisplayRequest({ orderId, createdAt, store }) {
-  try {
-    if (!orderId) return { ok: false, reason: CANCEL_GONE, message: "Nothing to undo." };
-    // RE-READ. The decision is made against what the database holds now, never
-    // against what the screen remembers.
-    const snap = await get(ref(database, `orders/${orderId}`));
-    const verdict = canCancelDisplayRequest(snap.val(), { createdAt, store });
-    if (!verdict.ok) return verdict;
-    await remove(ref(database, `orders/${orderId}`));
-    return { ok: true };
-  } catch (err) {
-    return { ok: false, reason: CANCEL_GONE, message: String(err?.message || err) };
-  }
-}
 
 /**
  * Raise one display partner request for a product at a store.
@@ -184,9 +131,7 @@ export async function raiseDisplayRequest({ orders, store, hub, product }) {
       displayRefilledBy: null,
     };
     await set(ref(database, `orders/${orderId}`), order);
-    // createdAt travels back so an undo can prove the record it deletes is still
-    // the one this raise created — /orders ids are recycled daily.
-    return { ok: true, orderId, createdAt: now };
+    return { ok: true, orderId };
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }
