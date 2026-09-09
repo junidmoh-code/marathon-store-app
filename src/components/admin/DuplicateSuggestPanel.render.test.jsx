@@ -42,6 +42,10 @@ const CATALOGUE = [
   { id: "p4", name: "144712", category: "Clothing", photoUrl: "https://x/144712.jpg" },
 ];
 
+// A SECOND product already answering to 44712 — the catalogue is already
+// inconsistent, and that is the one case a human must settle.
+const TIED = [...CATALOGUE, { id: "p5", name: "44712 Older Record", category: "Clothing", photoUrl: "https://x/old.jpg" }];
+
 const LOCS = ["hub1", "hub2", "marathon-pe"];
 
 function render(props) {
@@ -108,9 +112,11 @@ describe("the two headings are two different questions", () => {
   });
 
   it("a partial / fuzzy match heads POSSIBLY THE SAME", async () => {
-    const r = render({ typed: "44712" });
+    // Two products already answer to this code, so the panel is a picker and the
+    // weaker tiers sit under their own heading beneath it.
+    const r = render({ typed: "44712", products: TIED });
     await settle();
-    // 44712-01 is the segmented sibling — same article, different suffix.
+    expect(textOf(r)).toContain("Already in the catalogue");
     expect(textOf(r)).toContain("Possibly the same");
   });
 
@@ -118,6 +124,49 @@ describe("the two headings are two different questions", () => {
     const r = render({ typed: "44712" });
     await settle();
     expect(textOf(r)).not.toContain("144712");
+  });
+});
+
+describe("ONE CODE, ONE PRODUCT — the consistency rule", () => {
+  it("a sole exact match is RESOLVED, not offered as a choice", async () => {
+    const r = render({ typed: "44712" });
+    await settle();
+    const t = textOf(r);
+    expect(t).toContain("Already in the catalogue");
+    expect(t).toContain("This code is already");
+    expect(t).toContain("ADD STOCK TO IT");
+    // The weaker sibling is NOT shown alongside it — that would be a choice.
+    expect(t).not.toContain("Possibly the same");
+    expect(t).not.toContain("44712-01");
+  });
+
+  it("the banner names the product so it can be checked against the rail", async () => {
+    cachedTotals.mockImplementation((pid) => (pid === "p1" ? { total: 9 } : null));
+    const r = render({ typed: "44712" });
+    await settle();
+    const t = textOf(r);
+    expect(t).toContain("44712");
+    expect(t).toContain("9 units on hand");
+  });
+
+  it("the override is an escape, and it takes an extra tap", async () => {
+    const r = render({ typed: "44712" });
+    await settle();
+    expect(textOf(r)).toContain("Not this one?");
+    const link = r.root.findAllByType("button").find((b) => JSON.stringify(b.props.children).includes("Not this one"));
+    act(() => link.props.onClick());
+    const t = textOf(r);
+    expect(t).toContain("Possibly the same");
+    expect(t).toContain("None of these — create new");
+  });
+
+  it("TWO products already answering to one code is the case a human must settle", async () => {
+    const r = render({ typed: "44712", products: TIED });
+    await settle();
+    const t = textOf(r);
+    expect(t).not.toContain("This code is already");   // no auto-resolve
+    expect(t).toContain("44712 Older Record");          // both are on screen
+    expect(t).toContain("None of these — create new");
   });
 });
 
@@ -174,8 +223,8 @@ describe("it costs nothing to open", () => {
 });
 
 describe("it never blocks", () => {
-  it("always offers create-new, even under an exact code match", async () => {
-    const r = render({ typed: "44712" });
+  it("always offers create-new, even under exact code matches", async () => {
+    const r = render({ typed: "44712", products: TIED });
     await settle();
     expect(textOf(r)).toContain("None of these — create new");
   });
@@ -185,7 +234,7 @@ describe("it never blocks", () => {
     let r;
     act(() => {
       r = TestRenderer.create(
-        <DuplicateSuggestPanel typed="44712" products={CATALOGUE} locationIds={LOCS} onPick={() => {}} onCreateNew={onCreateNew} />,
+        <DuplicateSuggestPanel typed="44712" products={TIED} locationIds={LOCS} onPick={() => {}} onCreateNew={onCreateNew} />,
       );
     });
     await settle();
@@ -197,7 +246,7 @@ describe("it never blocks", () => {
 
     // A different name is a different question — the guard re-arms.
     act(() => {
-      r.update(<DuplicateSuggestPanel typed="44712-01" products={CATALOGUE} locationIds={LOCS} onPick={() => {}} onCreateNew={onCreateNew} />);
+      r.update(<DuplicateSuggestPanel typed="44712-01" products={TIED} locationIds={LOCS} onPick={() => {}} onCreateNew={onCreateNew} />);
     });
     await settle();
     expect(r.toJSON()).not.toBeNull();

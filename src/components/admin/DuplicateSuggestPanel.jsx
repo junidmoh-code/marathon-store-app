@@ -28,14 +28,23 @@
 // flow already use for "is it one of these?" — so all three surfaces ask the
 // question the same way rather than growing three answers to it.
 //
+// ── ONE CODE, ONE PRODUCT ────────────────────────────────────────────────────
+// A SOLE exact code match is not presented as a list to choose from — it is
+// RESOLVED, and shown as a banner naming the product. Three shops receive the
+// same delivery; if each is handed a list, the same printed code is routed to
+// two different products by three independent judgement calls. The rule and the
+// reasoning live in duplicateGate.js.
+//
 // ── IT NEVER BLOCKS ──────────────────────────────────────────────────────────
 // "None of these — create new" is ALWAYS rendered, on every tier, including when
-// an exact code match is on screen. The panel's job is to be impossible to miss,
-// not to be impossible to pass.
+// an exact code match is on screen; the resolved banner always carries its
+// override link. The panel's job is to be impossible to miss, not to be
+// impossible to pass.
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import CandidateCards from "../shared/CandidateCards.jsx";
 import { rankCandidates, TIER_EXACT_CODE } from "../../utils/productDupMatch.js";
+import { resolveDuplicateChoice, DUP_RESOLVED } from "./duplicateGate.js";
 import { topCategory } from "../../utils/productCategory.js";
 import { loadTotals, cachedTotals, totalsFailed } from "../stock/networkTotalsStore.js";
 
@@ -120,6 +129,11 @@ export default function DuplicateSuggestPanel({
   const [dismissedFor, setDismissedFor] = useState(null);
   const dismissed = dismissedFor !== null && dismissedFor === query;
 
+  // The override on a resolved banner, keyed the same way and for the same
+  // reason: it is an escape from THIS answer, not a setting.
+  const [overrideFor, setOverrideFor] = useState(null);
+  const overridden = overrideFor !== null && overrideFor === query;
+
   // ── UNIT TOTALS: only for what is on screen ──────────────────────────────
   // `tick` exists to re-render as reads land; the numbers themselves live in
   // networkTotalsStore's module-scope cache, so re-typing a query already asked
@@ -142,6 +156,7 @@ export default function DuplicateSuggestPanel({
 
   const exact = rows.filter((r) => r.tier === TIER_EXACT_CODE);
   const similar = rows.filter((r) => r.tier !== TIER_EXACT_CODE);
+  const choice = resolveDuplicateChoice(rows);
 
   const cards = (list, cta) => (
     <CandidateCards
@@ -157,6 +172,26 @@ export default function DuplicateSuggestPanel({
       cta={cta}
     />
   );
+
+  // ── RESOLVED: one code, one product, no choice offered ────────────────────
+  if (choice.kind === DUP_RESOLVED && !overridden) {
+    return (
+      <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 10 }}>
+        <div style={{ ...HEAD, color: "#FBBF24", marginBottom: 0 }}>Already in the catalogue</div>
+        <div style={{ fontSize: 12.5, color: "rgba(233,238,255,.62)", lineHeight: 1.5 }}>
+          This code is already <b style={{ color: "#fff" }}>{choice.row.product.name || "a product"}</b>. Add
+          the stock you have typed to it — you do not need to create it again.
+        </div>
+        {cards([choice.row], "ADD STOCK TO IT →")}
+        <button type="button" onClick={() => setOverrideFor(query)}
+          style={{ alignSelf: "flex-start", background: "transparent", border: "none", padding: 0,
+                   color: "#6A9FFF", fontSize: 12.5, fontWeight: 700, cursor: "pointer",
+                   textDecoration: "underline" }}>
+          Not this one?
+        </button>
+      </div>
+    );
+  }
 
   return (
     <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 16 }}>
