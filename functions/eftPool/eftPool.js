@@ -77,6 +77,7 @@ const {
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
 } = require("../lib/eft-settle.cjs");
+const { recordFingerprint } = require("../lib/eft-fingerprint.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
   ledgerApplyDecision, buildUnallocatedRecord,
@@ -343,6 +344,62 @@ exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   return searchEftPool(snap.val(), query);
 });
 
+// ─── THE CONSUME-TIME DUPLICATE GUARD ────────────────────────────────────────
+// Ingest-time dedupe is not the only line of defence, and this is why: the pool
+// already CONTAINS a duplicate that got in under the old email-identity key
+// (bank reference 4141078732, 2026-09-09), and a fix at the reader does nothing
+// about money already sitting there. So the last thing between a duplicate and
+// a customer walking out with goods is the consume itself.
+//
+// Two questions, cheapest first:
+//
+//   1. THE FINGERPRINT INDEX. /eft_fingerprints/{hash} names the FIRST payment
+//      ever seen with that identity. If it names a different pool key, this
+//      record is a later arrival of money already in the pool. One point read.
+//
+//   2. THE TAIL, as a fallback. The index is written by the reader from now on
+//      and backfilled by a script; until that has run, an older duplicate has
+//      no index entry at all. So a bounded tail read (the same window and the
+//      same `at` index eftPoolSearch already uses — never the whole node) looks
+//      for a sibling that is already USED. This is belt and braces on purpose:
+//      the guard has to work from the minute it deploys, not from whenever the
+//      backfill is run.
+//
+// It refuses only against an ALREADY-CONSUMED sibling. Two unused copies are a
+// mess for the owner to sort out, not a reason to block a cashier mid-sale.
+const FINGERPRINT_PATH = "eft_fingerprints";
+
+async function findConsumedTwin(key, record) {
+  const fp = recordFingerprint(record);
+  if (!fp) return null;
+  const db = admin.database();
+
+  const idx = await db.ref(`${FINGERPRINT_PATH}/${fp.hash}`).once("value").catch(() => null);
+  const first = idx?.val();
+  if (first && first.poolKey && first.poolKey !== key) {
+    const twin = await db.ref(`${EFT_POOL_PATH}/${first.poolKey}`).once("value").catch(() => null);
+    const t = twin?.val();
+    if (t && t.status === "used") return { key: first.poolKey, record: t, via: "index" };
+  }
+
+  // Fallback: the tail, bounded exactly as the till's own search is.
+  const tail = await db.ref(EFT_POOL_PATH).orderByChild("at").limitToLast(EFT_SEARCH_WINDOW)
+    .once("value").catch(() => null);
+  for (const [k, r] of Object.entries(tail?.val() || {})) {
+    if (k === key || r?.status !== "used") continue;
+    const other = recordFingerprint(r);
+    if (other && other.hash === fp.hash) return { key: k, record: r, via: "tail" };
+  }
+  return null;
+}
+
+/** The sentence a cashier reads out, and the line the owner finds in the log. */
+function twinRefusal(twin) {
+  const slip = twin.record?.used?.sale?.receiptNumber;
+  const when = twin.record?.used?.at ? new Date(twin.record.used.at).toISOString().slice(0, 10) : "earlier";
+  return `This payment has ALREADY BEEN USED — the same bank reference was settled on ${when}${slip ? `, slip ${slip}` : ""}. A proof of payment can be sent more than once; the money can only be spent once. Do not hand over the goods against it.`;
+}
+
 // ─── SETTLE / ATTACH / RELEASE ───────────────────────────────────────────────
 exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   await assertPosIdentity(request);
@@ -363,6 +420,20 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   if (action === "settle") {
     const appliedCents = data.appliedCents;
     const cashierName = await cashierNameOf(request);
+    // BEFORE the transaction, and before anything is consumed: is this payment
+    // a later copy of money that has already been spent?
+    const current = (await admin.database().ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+    const twin = await findConsumedTwin(key, current);
+    if (twin) {
+      // Logged with who, where and when — a refused duplicate is somebody
+      // presenting a used proof of payment, and that is worth a name.
+      console.error(`eftPoolSettle: DUPLICATE REFUSED ${key} — twin ${twin.key} (via ${twin.via}) already used. till=${data.tillId ?? "?"} store=${data.storeId ?? "?"} by ${cashierName} (${uid}) at ${now}`);
+      await admin.database().ref(`${EFT_POOL_PATH}/${key}/duplicateAttempts/${now}`).set({
+        twinKey: twin.key, via: twin.via, cashierUid: uid, cashierName,
+        storeId: data.storeId ?? null, tillId: data.tillId ?? null, at: now,
+      }).catch((e) => console.error("eftPoolSettle: could not record the duplicate attempt:", e.message));
+      throw new HttpsError("failed-precondition", twinRefusal(twin), { code: "duplicate-payment" });
+    }
     decision = await runPoolTransaction(key, (current) => settleDecision(current, {
       attemptId,
       at: now,
