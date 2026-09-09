@@ -23,8 +23,13 @@
 //   G1–G7  the gate: the consistency rule (one code must not mean two
 //          products), the create-anyway sentence, and the size handoff — where
 //          a silent drop becomes a shortfall nobody can explain weeks later.
-//   P1–P6  the panel: the debounce, the minimum, the photo, the unknown-not-
-//          zero unit count, and the two ways it refuses to block.
+//   P1–P9  the panel: the debounce, the minimum, the photo, the unknown-not-
+//          zero unit count, and the ways it refuses to block.
+//   F1–F5  the three review findings, so none of them can come back: the
+//          drop-last stem rule (Lacoste), the re-entrancy guard on Save, and
+//          the create-new action that cannot be switched off. F2 runs against
+//          the PROPERTY FUZZ rather than the hand-written cases — the fuzz is
+//          what catches a prefix rule dressed up as a boundary one.
 //
 // Run:  node scripts/mutation-proof-dup-suggest.mjs
 
@@ -38,6 +43,9 @@ const GATE_TESTS = ["src/components/admin/duplicateGate.test.js"];
 const PANEL = "src/components/admin/DuplicateSuggestPanel.jsx";
 const PANEL_TESTS = ["src/components/admin/DuplicateSuggestPanel.render.test.jsx"];
 const COST_TESTS = ["src/components/admin/DuplicateSuggestPanel.cost.test.jsx"];
+const FUZZ_TESTS = ["src/utils/productDupMatchFuzz.test.js"];
+const ONCE = "src/utils/onceAtATime.js";
+const ONCE_TESTS = ["src/utils/onceAtATime.test.js"];
 
 const MUTATIONS = [
   // ── exact_code: identity, and the three places identity is recorded ────────
@@ -107,13 +115,10 @@ const MUTATIONS = [
     to: `  if (!product || typeof product !== "object") return null;` },
 
   // ── tokenisation: where the no-substring rule actually lives ──────────────
-  { id: "T1", file: MATCH, tests: TESTS,
-    guard: "ONLY A SEGMENTED RUN YIELDS A STEM — this is what stops 447120 impersonating 44712 with a suffix",
-    from: `    if (segments.length >= 2) {`, to: `    if (segments.length >= 1) {` },
   { id: "T2", file: MATCH, tests: TESTS,
     guard: "…and the stem must be code-shaped itself, so \"T-SHIRT\" donates no \"T\"",
-    from: `      if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);`,
-    to: `      if (!codeStems.includes(stem)) codeStems.push(stem);` },
+    from: `    if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);`,
+    to: `    if (stem && !codeStems.includes(stem)) codeStems.push(stem);` },
   { id: "T3", file: MATCH, tests: TESTS,
     guard: `a digit run must be ${"CODE_DIGIT_MIN"}+ to be an identity claim — three digits is a model number`,
     from: `  if (/^\\d+$/.test(bare)) return bare.length >= CODE_DIGIT_MIN;`,
@@ -215,6 +220,28 @@ const MUTATIONS = [
   { id: "P9", file: PANEL, tests: PANEL_TESTS,
     guard: "the row carries the PRODUCT'S OWN PHOTO — this is a visual confirmation, not a text list",
     from: `        product: r.product,`, to: `        product: { ...r.product, photoUrl: null },` },
+
+  // ── the review findings, pinned so they cannot come back ──────────────────
+  { id: "F1", file: MATCH, tests: TESTS,
+    guard: "THE STEM IS THE RUN MINUS ITS LAST SEGMENT — segments[0] is \"7\" on a Lacoste label, and recorded no stem at all",
+    from: `    const stem = normaliseStyleCode(segments.slice(0, -1).join(""));`,
+    to: `    const stem = segments.length >= 2 ? segments[0] : "";` },
+  { id: "F2", file: MATCH, tests: FUZZ_TESTS,
+    guard: "PROPERTY FUZZ BITES: a prefix rule dressed as a boundary rule is caught over generated codes",
+    from: `    if (p.codeStems.includes(code)) {`,
+    to: `    if (p.codeStems.includes(code) || p.codes.some((c) => c !== code && c.startsWith(code))) {` },
+  { id: "F4", file: ONCE, tests: ONCE_TESTS,
+    guard: "ONE TAP IS ONE PRODUCT — the second tap during the gate's stock read is DROPPED, not run",
+    from: `    if (busy) return undefined;\n`, to: `` },
+  { id: "F5", file: ONCE, tests: ONCE_TESTS,
+    guard: "…and a throw RELEASES the lock, so a failed save does not wedge the button forever",
+    from: `    } finally {\n      busy = false;\n    }`, to: `    } finally {\n    }\n    busy = false;` },
+  { id: "F6", file: ONCE, tests: ONCE_TESTS,
+    guard: "…and the error still surfaces — a swallowed rejection is a save that failed silently",
+    from: `      return await fn(...args);`, to: `      try { return await fn(...args); } catch { return undefined; }` },
+  { id: "F7", file: PANEL, tests: PANEL_TESTS,
+    guard: "CREATE-NEW CANNOT BE SWITCHED OFF — it renders in the resolved banner as well as the picker",
+    from: `        {createNew}\n      </div>\n    );\n  }`, to: `      </div>\n    );\n  }` },
 ];
 
 // ── A NON-ZERO EXIT IS NOT PROOF ─────────────────────────────────────────────

@@ -163,6 +163,7 @@ import NewProductForm from "./components/admin/NewProductForm";
 import DuplicateSuggestPanel from "./components/admin/DuplicateSuggestPanel";
 import { exactRowsOf, createAnywayPrompt, splitPrefillSizes } from "./components/admin/duplicateGate";
 import { rankCandidates } from "./utils/productDupMatch";
+import { onceAtATime } from "./utils/onceAtATime";
 import { productTotals } from "./components/stock/networkTotalsStore";
 import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
@@ -5773,7 +5774,24 @@ function AdminView({ products, orders, onExit }) {
     ...f, printedBarcode: null, printedBarcodeAuto: !f.printedBarcodeAuto,
   }));
 
-  const addProduct = async () => {
+  // ── ONE TAP IS ONE PRODUCT ────────────────────────────────────────────────
+  // The Save button only disables on `saving`, and `saving` is not set until
+  // AFTER the duplicate gate has awaited its per-location stock reads. That
+  // await is real network I/O on shop-floor wifi, and through all of it the
+  // button stayed live: two taps ran two addProduct calls, both read the same
+  // still-null createAnywayFor, both raised a confirm, and an operator who
+  // answered both created TWO products for one code — precisely the failure
+  // this whole feature exists to prevent, produced by its own gate.
+  //
+  // A REF, NOT STATE. State updates are asynchronous; the second tap arrives
+  // before any re-render, so a state flag would still be false when it reads it.
+  // (Sonnet architect review, PR #594.)
+  // The ref keeps the guard STABLE across renders while still calling the
+  // CURRENT handler. A guard rebuilt every render holds a fresh, unlocked flag
+  // and therefore locks nothing at all.
+  const addProductRef = useRef();
+  const addProduct = useMemo(() => onceAtATime((...a) => addProductRef.current(...a)), []);
+  const addProductOnce = async () => {
     setSaveAttempted(true);
     // Category is REQUIRED — and it must resolve to a real registry entry with a
     // legacy derivation. Without it we cannot write the legacy fields, and a
@@ -5817,7 +5835,12 @@ function AdminView({ products, orders, onExit }) {
       // this app already keeps; nothing new is invented for it, and consumers
       // filter on `action`, so an action they do not know is one they ignore.
       logInsight({
-        timestamp: serverNowMs(),
+        // ISO, NOT MILLISECONDS — matching every other row in this node. It is
+        // still server time (serverNowIso is serverNowMs formatted), so the
+        // no-Date.now rule holds; a lone numeric timestamp in a node whose
+        // readers sort and compare ISO strings is a schema divergence waiting to
+        // be tripped over. (Fable spec review, PR #594.)
+        timestamp: serverNowIso(),
         action: "duplicate_created_despite_match",
         productId: null,
         productName: form.name.trim(),
@@ -6249,6 +6272,7 @@ function AdminView({ products, orders, onExit }) {
       setSaving(false);
     }
   };
+  addProductRef.current = addProductOnce;
 
   // Per-product edit handlers (name/sizes/hubs/photo/delete) used to live
   // here as inline-editor flows in the list. They've been moved into

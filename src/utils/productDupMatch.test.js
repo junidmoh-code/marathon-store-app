@@ -57,6 +57,13 @@ describe("extractTokens", () => {
     expect(extractTokens("T-44712").codeStems).toEqual([]);
   });
 
+  it("the stem is the run WITHOUT its trailing segment, not its first segment", () => {
+    // The Lacoste tongue-label form this module's header is written around. The
+    // article block is the MIDDLE segment; "7" is a category prefix and is not a
+    // code, so a first-segment rule recorded no stem at all here.
+    expect(extractTokens("7-45SMA0004-075").codeStems).toEqual(["745SMA0004"]);
+  });
+
   it("dedupes", () => {
     expect(extractTokens("44712 44712").codes).toEqual(["44712"]);
   });
@@ -130,6 +137,14 @@ describe("scoreCandidate — partial_code", () => {
   it("typed segmented code against a stored stem", () => {
     const hit = scoreCandidate("44712-01", prod("p", "44712"));
     expect(hit).toMatchObject({ tier: TIER_PARTIAL_CODE, score: 0.9 });
+  });
+  it("two Lacoste colourways of one article are siblings, not strangers", () => {
+    const hit = scoreCandidate("7-45SMA0004-075", prod("p", "7-45SMA0004-016"));
+    expect(hit).toMatchObject({ tier: TIER_PARTIAL_CODE });
+    expect(hit.reason).toContain("745SMA0004");
+  });
+  it("…and a three-part code still refuses its unsegmented neighbour", () => {
+    expect(scoreCandidate("7-45SMA0004-075", prod("p", "745SMA0004075X"))).toBeNull();
   });
   it("two sibling colourways share a stem and rank below either", () => {
     const hit = scoreCandidate("44712-01", prod("p", "44712-99"));

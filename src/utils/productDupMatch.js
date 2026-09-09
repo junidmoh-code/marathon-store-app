@@ -155,12 +155,29 @@ export function extractTokens(s) {
     const bare = normaliseStyleCode(run);
     if (!isCodeToken(bare)) continue;
     if (!codes.includes(bare)) codes.push(bare);
-    // Only a run the label ITSELF segmented yields a stem, and only when that
-    // stem is code-shaped in its own right — "T-SHIRT" must not donate "T".
-    if (segments.length >= 2) {
-      const stem = segments[0];
-      if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);
-    }
+    // ── THE STEM IS THE RUN WITHOUT ITS TRAILING SEGMENT ──────────────────
+    // partial_code is defined as "differs only by a trailing colour/variant
+    // suffix", so the stem is everything BEFORE the last separator, not the
+    // first segment. On a two-part code these are the same thing; on a
+    // three-part one they are not, and taking segments[0] silently broke the
+    // shape this file's own header cites:
+    //
+    //   44712-01          → 44712        (either rule)
+    //   7-45SMA0004-075   → 745SMA0004   (this rule)
+    //                     → 7            (segments[0] — not code-shaped, so
+    //                                     NO stem was recorded at all, and two
+    //                                     Lacoste colourways of one article
+    //                                     matched at no tier whatsoever)
+    //
+    // Still a boundary the LABEL drew: 447120 has one segment, so slicing the
+    // last one off leaves nothing and it can never reach this tier.
+    // (Sonnet architect review, PR #594.)
+    // NO SEPARATE "was it segmented?" CHECK. Dropping the last segment of an
+    // UNsegmented run leaves the empty string, and the empty string is not a
+    // code token — so 447120 is refused by the same line that accepts
+    // 44712-01, and there is no second guard here that no test could ever fail.
+    const stem = normaliseStyleCode(segments.slice(0, -1).join(""));
+    if (isCodeToken(stem) && !codeStems.includes(stem)) codeStems.push(stem);
   }
 
   return { words, codes, codeStems };

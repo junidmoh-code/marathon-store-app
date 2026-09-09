@@ -140,6 +140,12 @@ describe("ONE CODE, ONE PRODUCT — the consistency rule", () => {
     expect(t).not.toContain("44712-01");
   });
 
+  it("the resolved banner still offers create-new — the operator is never one tap from blocked", async () => {
+    const r = render({ typed: "44712" });
+    await settle();
+    expect(textOf(r)).toContain("None of these — create new");
+  });
+
   it("the banner names the product so it can be checked against the rail", async () => {
     cachedTotals.mockImplementation((pid) => (pid === "p1" ? { total: 9 } : null));
     const r = render({ typed: "44712" });
@@ -252,10 +258,13 @@ describe("it never blocks", () => {
     expect(r.toJSON()).not.toBeNull();
   });
 
-  it("hides its own create-new when the caller renders one", async () => {
-    const r = render({ typed: "44712", hideCreateNew: true });
-    await settle();
-    expect(textOf(r)).not.toContain("None of these");
+  it("there is NO way to switch create-new off", async () => {
+    // Every rendering state, including the resolved banner and the picker.
+    for (const products of [CATALOGUE, TIED]) {
+      const r = render({ typed: "44712", products });
+      await settle();
+      expect(textOf(r)).toContain("None of these — create new");
+    }
   });
 });
 

@@ -103,14 +103,14 @@ function rowReasons(product, totals, failed) {
  *   products     the catalogue already in memory — never re-read
  *   locationIds  every location to sum units over
  *   onPick       (product) => void — the operator says "that's the one"
- *   onCreateNew  () => void — "none of these"; always offered
- *   hideCreateNew  true when the caller renders its own create-anyway control
- *                  (the exact-match confirm in AdminView), so the screen never
- *                  shows two ways to say the same thing
+ *   onCreateNew  () => void — "none of these"; ALWAYS offered, in every state
+ *
+ * There is no way to switch the create-new action off. An earlier draft had one,
+ * nothing ever passed it, and its own doc comment claimed a wiring that did not
+ * exist — a prop whose only caller was its test. (Sonnet architect review, #594.)
  */
 export default function DuplicateSuggestPanel({
-  typed, products, locationIds = [], onPick, onCreateNew,
-  hideCreateNew = false, debounceMs = DEBOUNCE_MS,
+  typed, products, locationIds = [], onPick, onCreateNew, debounceMs = DEBOUNCE_MS,
 }) {
   const held = useDebounced(typed, debounceMs);
   const query = typeof held === "string" ? held.trim() : "";
@@ -173,6 +173,20 @@ export default function DuplicateSuggestPanel({
     />
   );
 
+  // ALWAYS RENDERED, in every state including the resolved banner. The banner
+  // is not a choice between products, so offering the escape alongside it does
+  // not reintroduce one — and requiring a tap on "Not this one?" before the
+  // operator can even SEE the way out is a block, however small.
+  // (Fable spec review, PR #594: C2.11.)
+  const createNew = (
+    <button type="button" onClick={() => { setDismissedFor(query); if (onCreateNew) onCreateNew(); }}
+      style={{ alignSelf: "flex-start", background: "transparent", border: "1px solid rgba(120,150,255,.28)",
+               color: "rgba(233,238,255,.72)", borderRadius: 10, padding: "9px 14px",
+               fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
+      None of these — create new
+    </button>
+  );
+
   // ── RESOLVED: one code, one product, no choice offered ────────────────────
   if (choice.kind === DUP_RESOLVED && !overridden) {
     return (
@@ -189,6 +203,7 @@ export default function DuplicateSuggestPanel({
                    textDecoration: "underline" }}>
           Not this one?
         </button>
+        {createNew}
       </div>
     );
   }
@@ -207,14 +222,7 @@ export default function DuplicateSuggestPanel({
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>{cards(similar, "USE THIS →")}</div>
         </div>
       )}
-      {!hideCreateNew && (
-        <button type="button" onClick={() => { setDismissedFor(query); if (onCreateNew) onCreateNew(); }}
-          style={{ alignSelf: "flex-start", background: "transparent", border: "1px solid rgba(120,150,255,.28)",
-                   color: "rgba(233,238,255,.72)", borderRadius: 10, padding: "9px 14px",
-                   fontSize: 12.5, fontWeight: 700, cursor: "pointer" }}>
-          None of these — create new
-        </button>
-      )}
+      {createNew}
     </div>
   );
 }
