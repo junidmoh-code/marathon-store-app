@@ -227,6 +227,41 @@ function config() {
   };
 }
 
+// ─── THE EFT INGESTION SWITCH ────────────────────────────────────────────────
+// A kill switch for the EFT reader ALONE. Card reconciliation — the batch-slip
+// path this poller was built for — is not touched by it and keeps running.
+//
+// It exists because EFT ingestion can need stopping FAST, without a deploy and
+// without editing anything on this machine: the pool is money, and a reader
+// admitting payments it should not is not something to fix at leisure.
+//
+//   node absent   → ENABLED. A missing node must never silently stop the shop
+//                   receiving payments.
+//   === false     → DISABLED.
+//   read FAILED   → DISABLED for this tick, loudly. Skipping costs NOTHING —
+//                   the message is left unclaimed and unread and the next tick
+//                   picks it up — so the safe side of an unanswerable question
+//                   is "don't ingest", and it self-heals.
+//
+// Flip it with:
+//   firebase database:set /eft_ingest/enabled false --project marathon-club
+const EFT_INGEST_FLAG_PATH = "eft_ingest/enabled";
+
+async function readEftIngestEnabled(db) {
+  try {
+    const snap = await db.ref(EFT_INGEST_FLAG_PATH).once("value");
+    const v = snap.val();
+    if (v === false) {
+      console.log("· EFT ingestion is SWITCHED OFF at /eft_ingest/enabled — notifications are left unread for a later tick. Card reconciliation is unaffected.");
+      return false;
+    }
+    return true;
+  } catch (err) {
+    console.error(`· EFT ingestion switch could not be read (${err.message}) — NOT ingesting this tick. Nothing is lost: the messages stay unread and the next tick retries.`);
+    return false;
+  }
+}
+
 // ─── THE LOCAL PROCESSED-KEY CACHE ───────────────────────────────────────────
 // A convenience layer over the claim ledger, never a second truth: keys the
 // ledger has confirmed "done", remembered locally so the every-two-minutes
@@ -446,6 +481,10 @@ async function run() {
   // terminal is not reconciling; a refused-auth notification means somebody
   // tried to forge a payment. Different alarms for different people.
   let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftErrors = 0;
+  // ONCE per tick, not once per message: the switch is an operational state,
+  // and asking the database about it per message would be a read per mail.
+  const eftIngest = await readEftIngestEnabled(db);
+  let eftSkipped = 0;
   let scannedSoFar = 0;
   let windowCount = 0;
   try {
@@ -524,7 +563,7 @@ async function run() {
           // an attachment that will not decode, a capture call that times out —
           // each is recorded against that message and the next one still runs.
           try {
-            const result = await handleMessage({ client, uid, db, getToken, cfg });
+            const result = await handleMessage({ client, uid, db, getToken, cfg: { ...cfg, eftIngest } });
             // `done` = this message's outcome is durably in the database (or
             // it was found already done) — safe to never download again. A
             // held claim, a dry run and a throw all stay un-cached, so the
@@ -542,6 +581,7 @@ async function run() {
             eftRefusedParse += result.eftRefusedParse || 0;
             eftRefusedAccount += result.eftRefusedAccount || 0;
             eftErrors += result.eftErrors || 0;
+            eftSkipped += result.eftSkipped || 0;
           } catch (err) {
             console.error(`  ✗ message uid ${uid}: ${err.message}`);
           }
@@ -586,6 +626,9 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
+  if (eftSkipped) {
+    console.log(`· EFT: ${eftSkipped} notification(s) LEFT UNREAD — ingestion is switched off at /eft_ingest/enabled. Nothing was lost; turning it back on picks them up.`);
+  }
   if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || unknownBankThisRun) {
     console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
   }
@@ -802,6 +845,26 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // A batch report is the slip path's, always. A stranger gets the
   // visibility-only path below — never a reader, never an opened attachment.
   if (route === "card") return null;
+
+  // ── THE EFT INGESTION SWITCH ────────────────────────────────────────────
+  // Card reconciliation is already gone above, so this stops the EFT reader
+  // and NOTHING else.
+  //
+  // It returns a TRUTHY result rather than null, and that is the whole care in
+  // it: null means "this is not an EFT message", and handleMessage would then
+  // file a bank notification as ORDINARY MAIL — a done row in the claim ledger
+  // and a \Seen flag — after which the payment would be skipped for ever, even
+  // once ingestion came back on. Switching ingestion off must lose nothing.
+  // This shape leaves the message unclaimed and unread, exactly as a reader
+  // error does, and the tick that runs after the switch goes back on picks it
+  // up as if nothing had happened.
+  if (cfg.eftIngest === false) {
+    return {
+      processed: false, recorded: 0, refused: 0, unrelated: 0,
+      eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0,
+      eftSkipped: 1,
+    };
+  }
   const fromDomain = domainOfAddress(fromAddress);
   if (route === "stranger") {
     // NOTE it, then HAND IT BACK. Returning a result here would consume the
