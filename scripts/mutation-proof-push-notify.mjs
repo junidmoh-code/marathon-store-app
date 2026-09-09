@@ -307,9 +307,9 @@ const MUTATIONS = [
     id: "T2",
     guard: "A DENIED PROMPT STILL CLEARS THE MUTE — a standing mute is a second, invisible reason",
     file: ROW,
-    from: `    await enablePush();
-    if (muted) await setMuted(false);`,
-    to: `    if ((await enablePush()) === PUSH_STATE.ON && muted) await setMuted(false);`,
+    from: `      await enablePush();
+      await setMuted(false);`,
+    to: `      if ((await enablePush()) === PUSH_STATE.ON) await setMuted(false);`,
     tests: ROW_TESTS,
   },
   {

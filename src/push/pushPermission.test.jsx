@@ -182,3 +182,45 @@ describe("the app actually mounts the entrance", () => {
     expect(APP).toMatch(/<RoleSelector[^>]*push=\{push\}[^>]*mute=\{mute\}/);
   });
 });
+
+// ─── THE TWO REGISTRATIONS RACE, AND THE OLDER ONE MUST LOSE ─────────────────
+// A passive registration starts on mount and can still be in flight seconds
+// later on a phone doing its first service-worker registration. A tap starts a
+// second one. Both used to write state unconditionally, so whichever RESOLVED
+// last won regardless of which STARTED last — and the passive one carries the
+// pre-permission answer.
+//
+// The visible damage is not the state field: `ready` gates the foreground
+// banner and the chime (src/App.jsx), so a granted, registered device would sit
+// with alerts working on the lock screen and silently nothing in the app.
+describe("an older registration cannot clobber a newer one", () => {
+  it("a slow PASSIVE result does not overwrite a granted ON", async () => {
+    let releasePassive;
+    ensureMock.mockImplementationOnce(() => new Promise((res) => {
+      releasePassive = () => res({ state: PUSH_STATE.NEEDS_PERMISSION });
+    }));
+    await mount();
+    expect(api.state).toBe(null);           // passive still in flight
+
+    ensureMock.mockImplementation(async () => ({ state: PUSH_STATE.ON }));
+    await act(async () => { await api.enablePush(); });
+    expect(api.state).toBe(PUSH_STATE.ON);
+
+    // The passive attempt now lands, with its stale pre-permission answer.
+    await act(async () => { releasePassive(); await Promise.resolve(); });
+    expect(api.state, "the older attempt must write nothing").toBe(PUSH_STATE.ON);
+    expect(api.ready, "the banner and chime stay armed").toBe(true);
+  });
+
+  it("a slow passive REJECTION does not overwrite it either", async () => {
+    let failPassive;
+    ensureMock.mockImplementationOnce(() => new Promise((_res, rej) => {
+      failPassive = () => rej(new Error("late boom"));
+    }));
+    await mount();
+    ensureMock.mockImplementation(async () => ({ state: PUSH_STATE.ON }));
+    await act(async () => { await api.enablePush(); });
+    await act(async () => { failPassive(); await Promise.resolve().then(() => {}); });
+    expect(api.state).toBe(PUSH_STATE.ON);
+  });
+});
