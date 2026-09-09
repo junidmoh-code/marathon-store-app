@@ -1498,3 +1498,154 @@ test("a Hub 3 deep link opens Pine's own queue, not whichever hub was last used"
   // one on the lock screen of somebody assigned to more than one.
   assert.equal(m.calls[0].data.tag, "order-hub3");
 });
+
+
+// ─── THE MUTE — A VETO, AND ONLY A VETO ──────────────────────────────────────
+// Recipients are the AND of two independent facts: Junid ASSIGNED this person
+// to this hub, and this person has not silenced their own phone. These prove
+// each half is genuinely required, that neither can stand in for the other, and
+// that the mute cannot leak into any of the machinery around it.
+//
+// The failure being guarded against is the one that produced this release: a
+// personal switch that was load-bearing for DELIVERY, so an assignment could
+// not reach somebody until they found it. Turning the mute on grants nothing;
+// the "never touched it" case below is the one that has to keep working for
+// ever, because it is everybody's default.
+
+/** ASSIGNED(), with a mute record for the named uids. */
+const MUTED = (assigned, mutedUids) => {
+  const world = ASSIGNED(assigned);
+  world.push_mutes = {};
+  for (const uid of mutedUids) world.push_mutes[uid] = { muted: true, updatedAt: NOW };
+  return world;
+};
+
+test("MUTED AND ASSIGNED HEARS NOTHING — the veto beats the assignment", async () => {
+  const { ref } = fakeDb(MUTED({ hub1: ["u_one"] }, ["u_one"]));
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", HUB1());
+  assert.equal(res.sent, false);
+  assert.equal(res.skipped, "all_muted", "refused for the mute, not for want of an assignment or a token");
+  assert.equal(m.calls.length, 0, "not one device may be reached");
+});
+
+test("NEVER TOUCHED THE SWITCH IS NOT MUTED — an assignment works with no mute record at all", async () => {
+  // The default for every account, and the requirement this release exists for:
+  // nobody may have to find a switch in order to START receiving. There is no
+  // /push_mutes node in this world at all.
+  const { ref } = fakeDb(ASSIGNED({ hub1: ["u_one"] }));
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", HUB1());
+  assert.equal(res.sent, true);
+  assert.deepEqual(m.calls[0].tokens, ["tok-u_one"]);
+});
+
+test("AN EMPTY MUTE RECORD IS NOT A MUTE — absence of the flag is audible", async () => {
+  const world = ASSIGNED({ hub1: ["u_one"] });
+  world.push_mutes = { u_one: { updatedAt: NOW } };
+  const { ref } = fakeDb(world);
+  const m = fakeMessaging();
+  assert.equal((await run({ ref }, m, "005", HUB1())).sent, true);
+});
+
+test("UNMUTING IS A DELETE, and a stray muted:false is audible anyway", async () => {
+  // The client deletes the record rather than storing false, so this shape
+  // should not exist. It is read the audible way regardless: corruption in this
+  // node must degrade towards DELIVERY, the opposite direction from an
+  // assignment, because the harm here is silencing somebody who WAS chosen.
+  const world = ASSIGNED({ hub1: ["u_one"] });
+  world.push_mutes = { u_one: { muted: false, updatedAt: NOW } };
+  const { ref } = fakeDb(world);
+  assert.equal((await run({ ref }, fakeMessaging(), "005", HUB1())).sent, true);
+});
+
+test('ONLY A REAL BOOLEAN MUTES — "true" the string does not silence anybody', async () => {
+  const world = ASSIGNED({ hub1: ["u_one"] });
+  world.push_mutes = { u_one: { muted: "true", updatedAt: NOW } };
+  const { ref } = fakeDb(world);
+  const m = fakeMessaging();
+  assert.equal((await run({ ref }, m, "005", HUB1())).sent, true, "corruption degrades to delivery here");
+});
+
+test("THE MUTE GRANTS NOTHING — an unassigned person with no mute is still told nothing", async () => {
+  // The half that makes this a veto rather than an opt-in. u_two is not muted,
+  // has a live token, and is assigned to nothing. Being audible is not being a
+  // recipient.
+  const world = ASSIGNED({ hub1: ["u_one"] });
+  world.push_tokens.u_two = { d1: { token: "tok-u_two" } };
+  const { ref } = fakeDb(world);
+  const m = fakeMessaging();
+  await run({ ref }, m, "005", HUB1());
+  assert.deepEqual(m.calls[0].tokens, ["tok-u_one"], "only the ASSIGNED uid, never everyone who is audible");
+});
+
+test("ONE MUTED PERSON DOES NOT SILENCE THE HUB — the others still hear it", async () => {
+  const { ref } = fakeDb(MUTED({ hub1: ["u_one", "u_two"] }, ["u_one"]));
+  const m = fakeMessaging();
+  const res = await run({ ref }, m, "005", HUB1());
+  assert.equal(res.sent, true);
+  assert.deepEqual(m.calls[0].tokens, ["tok-u_two"]);
+  assert.equal(res.tokens, 1, "the muted device is not counted as reached");
+});
+
+test("A MUTED PERSON'S TOKEN IS NOT PRUNED — being quiet is not being dead", async () => {
+  // The mute filter runs BEFORE collectTokens, so a muted uid's token never
+  // enters the multicast and can never appear in the failure responses that
+  // drive pruning. If it were filtered afterwards — or if the token were sent
+  // and the response discarded — a muted person would lose their registration
+  // and unmuting would silently do nothing until they reopened the app.
+  const { ref, state } = fakeDb(MUTED({ hub1: ["u_one", "u_two"] }, ["u_one"]));
+  const m = fakeMessaging();
+  await run({ ref }, m, "005", HUB1());
+  assert.ok(state.push_tokens.u_one, "the muted person's token row survives");
+  assert.equal(state.push_tokens.u_one.d1.token, "tok-u_one");
+});
+
+test("A MUTED PERSON'S TOKEN IS NOT EVEN READ — the leaf is the whole cost of being muted", async () => {
+  const reads = [];
+  const base = fakeDb(MUTED({ hub1: ["u_muted"] }, ["u_muted"]));
+  const spyRef = (path = "") => {
+    const inner = base.ref(path);
+    return { ...inner, async get() { reads.push(path); return inner.get(); } };
+  };
+  await run({ ref: spyRef }, fakeMessaging(), "005", HUB1());
+  assert.ok(reads.includes("push_mutes/u_muted/muted"));
+  assert.ok(!reads.includes("push_tokens/u_muted"),
+    "a muted uid costs one boolean leaf, never their token node as well");
+});
+
+test("A MUTE THAT CANNOT BE READ IS AUDIBLE — one refusal must not silence a hub", async () => {
+  // Failing the other way would let a single RTDB blip suppress every
+  // notification for a hub — invisible, indistinguishable from the feature
+  // being broken, and the exact failure this release exists to end. A muted
+  // phone buzzing once during an outage is the price, and it is legible.
+  const base = fakeDb(ASSIGNED({ hub1: ["u_one"] }));
+  const spyRef = (path = "") => {
+    const inner = base.ref(path);
+    if (path === "push_mutes/u_one/muted") {
+      return { ...inner, async get() { throw new Error("PERMISSION_DENIED"); } };
+    }
+    return inner;
+  };
+  const m = fakeMessaging();
+  const res = await run({ ref: spyRef }, m, "005", HUB1());
+  assert.equal(res.sent, true, "the send happens anyway");
+  assert.deepEqual(m.calls[0].tokens, ["tok-u_one"]);
+});
+
+test("A REFUSED MUTE READ DOES NOT THROW — a throw here would put the burst back and re-notify", async () => {
+  // deliver()'s caller treats a throw as "the send failed" and restores the
+  // whole burst. A mute read that rejected would therefore re-notify every
+  // device that had already been told, on every retry, for ever.
+  const base = fakeDb(ASSIGNED({ hub1: ["u_one", "u_two"] }));
+  const spyRef = (path = "") => {
+    const inner = base.ref(path);
+    if (path.startsWith("push_mutes/")) {
+      return { ...inner, async get() { throw new Error("PERMISSION_DENIED"); } };
+    }
+    return inner;
+  };
+  const res = await run({ ref: spyRef }, fakeMessaging(), "005", HUB1());
+  assert.equal(res.sent, true);
+  assert.equal(res.tokens, 2, "both are still reached");
+});

@@ -20,6 +20,7 @@
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
+import { requireCleanTree } from "./lib/mutationPreflight.mjs";
 
 const PUSH = "functions/lib/order-push.cjs";
 const ASSIGN = "src/push/pushAssignments.js";
@@ -34,6 +35,15 @@ const DEEPLINK = "src/push/deepLink.js";
 const DEEPLINK_TESTS = ["src/push/deepLink.test.js"];
 const FOCUS = "src/push/useFocusOrder.js";
 const FOCUS_TESTS = ["src/push/focusOrder.test.jsx"];
+const MUTE = "src/push/pushMute.js";
+const MUTE_TESTS = ["src/push/pushMute.test.js"];
+const MUTE_RULES_TESTS = ["src/push/pushMuteRules.test.js"];
+const HOOK = "src/push/usePush.js";
+const HOOK_TESTS = ["src/push/pushPermission.test.jsx"];
+const ROW = "src/push/NotificationSettingsRow.jsx";
+const ROW_TESTS = ["src/push/muteToggle.test.jsx"];
+const CARD = "src/push/PushAssignmentsCard.jsx";
+const CARD_TESTS = ["src/push/PushAssignmentsCard.gate.test.jsx"];
 
 const MUTATIONS = [
   // ── THE PERSONAL TOGGLE IS GONE (2026-09-07) ──────────────────────────────
@@ -76,10 +86,16 @@ const MUTATIONS = [
     id: "A4",
     guard: "Clearing DELETES the record — off is absence, never a stored row of falses",
     file: ASSIGN,
+    // ANCHOR REPAIRED 2026-09-09. It still named the two-hub object literal
+    // that #583 replaced with a PUSH_HUBS.reduce, so it had been reporting
+    // ANCHOR NOT FOUND — a guard silently not run, in a harness whose whole
+    // purpose is to refuse a pass it did not watch break.
     from: `  upd[pushAssignmentPath(uid)] = want.size
-    ? { hub1: want.has("hub1"), hub2: want.has("hub2"), updatedAt: nowMs }
+    ? PUSH_HUBS.reduce((rec, hub) => { rec[hub] = want.has(hub); return rec; },
+                       { updatedAt: nowMs })
     : null;`,
-    to: `  upd[pushAssignmentPath(uid)] = { hub1: want.has("hub1"), hub2: want.has("hub2"), updatedAt: nowMs };`,
+    to: `  upd[pushAssignmentPath(uid)] = PUSH_HUBS.reduce((rec, hub) => { rec[hub] = want.has(hub); return rec; },
+                       { updatedAt: nowMs });`,
     tests: ASSIGN_TESTS,
   },
   {
@@ -101,6 +117,74 @@ const MUTATIONS = [
   ".read":  "auth != null",
   ".write": "auth != null",`,
     tests: RULES_TESTS,
+  },
+
+  // ── THE ENTRANCE (2026-09-09) ─────────────────────────────────────────────
+  // P1 and P2 are the two halves of the outage this release fixes, and they
+  // pull in OPPOSITE directions — which is why both are here. Deleting the
+  // prompt is what left the app with no way to ask for permission for two days;
+  // firing it from an effect is what got the toggle deleted in the first place.
+  {
+    id: "P1",
+    guard: "THE GESTURE PATH PROMPTS — deleting this is the two-day outage again",
+    file: HOOK,
+    from: `      const r = await ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: true });`,
+    to: `      const r = await ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: false });`,
+    tests: HOOK_TESTS,
+  },
+  {
+    id: "P2",
+    guard: "THE PASSIVE PATH NEVER PROMPTS — a prompt outside a gesture is ignored, and penalised",
+    file: HOOK,
+    from: `    ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: false })`,
+    to: `    ensurePushRegistration({ uid, wanted: true, buckets: [], promptIfNeeded: true })`,
+    tests: HOOK_TESTS,
+  },
+
+  // ── THE MUTE IS A VETO (2026-09-09) ───────────────────────────────────────
+  // U1-U4 are the pure module; S6-S8 are the fan-out that honours it; T1-T4 are
+  // the switch; C1-C3 are the admin card that has to show it. The sentence they
+  // collectively defend: recipients are ASSIGNED AND NOT MUTED, absence is
+  // audible, and the switch grants nothing.
+  {
+    id: "U1",
+    guard: "ONLY A REAL BOOLEAN MUTES — corruption here must degrade towards DELIVERY",
+    file: MUTE,
+    from: `  return record.muted === true;`,
+    to: `  return !!record.muted;`,
+    tests: MUTE_TESTS,
+  },
+  {
+    id: "U2",
+    guard: "UNMUTING DELETES — off is absence, never a stored muted:false",
+    file: MUTE,
+    from: `  return { [pushMutePath(uid)]: muted ? { muted: true, updatedAt: nowMs } : null };`,
+    to: `  return { [pushMutePath(uid)]: { muted, updatedAt: nowMs } };`,
+    tests: MUTE_TESTS,
+  },
+  {
+    id: "U3",
+    guard: "A uid RTDB could not store is REFUSED, not handed to the SDK to throw on",
+    file: MUTE,
+    from: `  if (!isLegalKey(uid)) throw new Error(\`push mute: unusable uid "\${uid}"\`);`,
+    to: ``,
+    tests: MUTE_TESTS,
+  },
+  {
+    id: "U4",
+    guard: "THE FAN-OUT READS A LEAF — the record path is not the leaf path",
+    file: MUTE,
+    from: `export const pushMuteFlagPath = (uid) => \`\${PUSH_MUTES_PATH}/\${uid}/muted\`;`,
+    to: `export const pushMuteFlagPath = (uid) => \`\${PUSH_MUTES_PATH}/\${uid}\`;`,
+    tests: MUTE_TESTS,
+  },
+  {
+    id: "U5",
+    guard: "THE MUTE RULE IS SELF-WRITE — a blanket auth != null lets anyone silence a colleague",
+    file: "PUSH-MUTE-RULE-DEPLOY.md",
+    from: `    ".write": "auth != null && auth.uid === $uid",`,
+    to: `    ".write": "auth != null",`,
+    tests: MUTE_RULES_TESTS,
   },
 
   // ── THE SCOPED FAN-OUT ────────────────────────────────────────────────────
@@ -145,6 +229,112 @@ const MUTATIONS = [
     from: `      tag: \`order-\${hub}\`,`,
     to: `      tag: "order",`,
     nodeTests: SERVER_TESTS,
+  },
+
+  {
+    id: "S6",
+    guard: "THE MUTE IS APPLIED — an assigned person who silenced their phone must not be sent to",
+    file: PUSH,
+    from: `  const recipients = await dropMuted(db, assigned);`,
+    to: `  const recipients = assigned;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S7",
+    guard: "A MUTE THAT CANNOT BE READ IS AUDIBLE — one blip must not silence a whole hub",
+    file: PUSH,
+    from: `      audible.push(uids[i]);
+      return;
+    }`,
+    to: `      return;
+    }`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S8",
+    guard: "ONLY A REAL BOOLEAN MUTES SERVER-SIDE TOO — the two ends must agree",
+    file: PUSH,
+    from: `    if (res.value && res.value.val() === true) return;`,
+    to: `    if (res.value && res.value.val()) return;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "S9",
+    guard: "THE MUTE FILTER RUNS BEFORE THE TOKEN READ — a muted token must never enter the multicast",
+    file: PUSH,
+    from: `  const rows = await collectTokens(db, recipients);`,
+    to: `  const rows = await collectTokens(db, assigned);`,
+    nodeTests: SERVER_TESTS,
+  },
+
+  // ── THE STAFF SWITCH ──────────────────────────────────────────────────────
+  {
+    id: "T1",
+    guard: "THE SWITCH SHOWS THE OUTCOME — it must not look on over a device that receives nothing",
+    file: ROW,
+    from: `  const on = !muted && state === PUSH_STATE.ON;`,
+    to: `  const on = !muted;`,
+    tests: ROW_TESTS,
+  },
+  {
+    id: "T2",
+    guard: "A DENIED PROMPT STILL CLEARS THE MUTE — a standing mute is a second, invisible reason",
+    file: ROW,
+    from: `    await enablePush();
+    if (muted) await setMuted(false);`,
+    to: `    if ((await enablePush()) === PUSH_STATE.ON && muted) await setMuted(false);`,
+    tests: ROW_TESTS,
+  },
+  {
+    id: "T3",
+    guard: "BLOCKED IS EXPLAINED — the browser will never prompt again and only site settings can undo it",
+    file: ROW,
+    from: `    + "On Android Chrome: tap the ⋮ menu → Site settings → Notifications → Allow. "
+    + "This switch cannot undo it.",`,
+    to: `    + "",`,
+    tests: ROW_TESTS,
+  },
+  {
+    id: "T4",
+    guard: "NO TAP FROM AN UNKNOWN BASELINE — a switch toggled before its first snapshot flips back",
+    file: ROW,
+    from: `          disabled={busy || !known}`,
+    to: `          disabled={busy}`,
+    tests: ROW_TESTS,
+  },
+
+  // ── THE ADMIN CARD SHOWS THE MUTE ─────────────────────────────────────────
+  {
+    id: "C1",
+    guard: "A MUTED ROW SAYS SO — an assignment ignored at the other end must be visible",
+    file: CARD,
+    from: `        if (r.uid in mutes) next.muted = mutes[r.uid];`,
+    to: ``,
+    tests: CARD_TESTS,
+  },
+  {
+    id: "C2",
+    guard: "THE WARNING COUNTS THE ASSIGNED ONES — a mute on an unassigned row is not a warning",
+    file: CARD,
+    from: `  const silenced = (rows || []).filter((r) => r.hubs.length > 0 && r.muted === true).length;`,
+    to: `  const silenced = (rows || []).filter((r) => r.muted === true).length;`,
+    tests: CARD_TESTS,
+  },
+  {
+    id: "C3",
+    guard: "A REFUSED MUTE READ RAISES ITS OWN BANNER — a shared channel names the wrong rule",
+    file: CARD,
+    from: `      setMutesError(firstMuteRefusal && firstMuteRefusal.message`,
+    to: `      setTokensError(firstMuteRefusal && firstMuteRefusal.message`,
+    tests: CARD_TESTS,
+  },
+  {
+    id: "C4",
+    guard: "THE MUTE IS READ PER-UID AT ITS LEAF — never the node, which grows with headcount",
+    file: CARD,
+    from: `        Promise.allSettled(slice.map((r) => get(ref(database, pushMuteFlagPath(r.uid))))),`,
+    to: `        Promise.allSettled(slice.map(() => get(ref(database, "push_mutes")))),`,
+    tests: CARD_TESTS,
   },
 
   // ── DEAD TOKEN PRUNING ────────────────────────────────────────────────────
@@ -589,15 +779,12 @@ function runAll(m) {
 }
 
 // ── PREFLIGHT: NEVER MUTATE AN ALREADY-DIRTY FILE ────────────────────────────
-{
-  const dirty = execFileSync("git", ["status", "--porcelain", "--", ...new Set(MUTATIONS.map((m) => m.file))])
-    .toString().trim();
-  if (dirty) {
-    console.error("Working tree is not clean for the files this harness mutates:\n" + dirty);
-    console.error("Commit or stash first — a dirty file would be captured as the baseline.");
-    process.exit(2);
-  }
-}
+// The SHARED one (scripts/lib/mutationPreflight.mjs), not a local copy. This
+// harness had its own inline version, which was equivalent on the day it was
+// written and is exactly the kind of thing that drifts — the shared module also
+// refuses when git itself cannot be consulted, which a local `execFileSync`
+// without a try would turn into a crash rather than a refusal.
+requireCleanTree([...new Set(MUTATIONS.map((m) => m.file))]);
 
 const results = [];
 for (const m of MUTATIONS) {
