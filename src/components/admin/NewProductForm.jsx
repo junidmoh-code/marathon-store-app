@@ -74,6 +74,7 @@ export default function NewProductForm({
   recvLoc, setRecvLoc, recvRegistry,
   fileInputRef, handleImageUpload,
   products, isPerfume, onCapturePrintedBarcode, onClearPrintedBarcode, onUseAutoBarcode,
+  nameSuggestions,
   saving, saveAttempted, onSave,
 }) {
   const nameOk = !!form.name.trim();
@@ -174,6 +175,14 @@ export default function NewProductForm({
           onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
           style={{ ...textField, borderColor: saveAttempted && !nameOk ? "#F87171" : "rgba(74,127,255,.28)" }}
         />
+        {/* ── IS IT ALREADY IN THE CATALOGUE? ────────────────────────────────
+            Clothing names ARE the supplier's article code, and the style-code
+            gate does not cover clothing — so this field is the only place the
+            duplicate question can be asked. Rendered by the caller
+            (DuplicateSuggestPanel, matched in memory against the `products`
+            array this form already receives) so the form stays a form. It
+            never blocks: it is a panel under an input, not a step. */}
+        {nameSuggestions}
       </div>
 
       {/* ── CATEGORY — the one product-type decision ──────────────────────── */}

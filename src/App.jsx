@@ -160,6 +160,7 @@ import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
+import DuplicateSuggestPanel from "./components/admin/DuplicateSuggestPanel";
 import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 import TaxonomyTab from "./components/admin/TaxonomyTab";
@@ -5665,6 +5666,17 @@ function AdminView({ products, orders, onExit }) {
   // label. (CodeRabbit, PR #340.)
   const [distribUsesPrintedBarcode, setDistribUsesPrintedBarcode] = useState(false);
   const recvRegistry = useLocations();
+  // ── EVERY LOCATION, for the duplicate panel's unit counts ─────────────────
+  // "How many are on hand" is the number that tells a live record from an
+  // abandoned twin, so it is summed over the WHOLE network — no exclusions.
+  // (Total Stock's EXCLUDED_LOCATIONS exist to shape a reorder figure; this is
+  // a recognition figure and a unit sitting at Pine is still a unit that exists.)
+  // Retired locations are dropped: a read of a location nobody stocks costs
+  // bytes and adds nothing.
+  const dupLocationIds = useMemo(
+    () => Object.keys(recvRegistry || {}).filter((id) => recvRegistry[id]?.active !== false).sort(),
+    [recvRegistry],
+  );
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
@@ -6469,6 +6481,15 @@ function AdminView({ products, orders, onExit }) {
           fileInputRef={fileInputRef} handleImageUpload={handleImageUpload}
           products={products}
           isPerfume={formIsPerfume}
+          nameSuggestions={
+            <DuplicateSuggestPanel
+              typed={form.name}
+              products={products}
+              locationIds={dupLocationIds}
+              onPick={(p) => { if (p?.id) window.location.hash = "product/" + p.id; }}
+
+            />
+          }
           onCapturePrintedBarcode={(code) => setForm((f) => ({ ...f, printedBarcode: code, printedBarcodeAuto: false }))}
           onClearPrintedBarcode={() => setForm((f) => ({ ...f, printedBarcode: null }))}
           onUseAutoBarcode={useAutoBarcode}
