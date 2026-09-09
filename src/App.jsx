@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import AiSpendTab from "./components/AiSpendTab";
 import { ref as storageRef, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
@@ -162,6 +162,11 @@ import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
+import DuplicateSuggestPanel from "./components/admin/DuplicateSuggestPanel";
+import { exactRowsOf, createAnywayPrompt, splitPrefillSizes, gatherExactTotals, prefillIsFresh } from "./components/admin/duplicateGate";
+import { rankCandidates } from "./utils/productDupMatch";
+import { onceAtATime } from "./utils/onceAtATime";
+import { productTotals } from "./components/stock/networkTotalsStore";
 import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 import TaxonomyTab from "./components/admin/TaxonomyTab";
@@ -5669,6 +5674,27 @@ function AdminView({ products, orders, onExit }) {
   // label. (CodeRabbit, PR #340.)
   const [distribUsesPrintedBarcode, setDistribUsesPrintedBarcode] = useState(false);
   const recvRegistry = useLocations();
+  // ── EVERY LOCATION, for the duplicate panel's unit counts ─────────────────
+  // "How many are on hand" is the number that tells a live record from an
+  // abandoned twin, so it is summed over the WHOLE network — no exclusions.
+  // (Total Stock's EXCLUDED_LOCATIONS exist to shape a reorder figure; this is
+  // a recognition figure and a unit sitting at Pine is still a unit that exists.)
+  // A RETIRED LOCATION IS NOT DROPPED. Filtering on `active !== false` saved a
+  // read and produced a confident wrong number: a twin whose units all sit at a
+  // retired location summed to 0, and the confirm then said "already exists as X
+  // with 0 units" — which reads as "dead record, safe to replace" and pushes the
+  // operator into making the duplicate. Units at a retired location are still
+  // units that exist. (Adversarial delta review, PR #594.)
+  const dupLocationIds = useMemo(
+    () => Object.keys(recvRegistry || {}).sort(),
+    [recvRegistry],
+  );
+  // ── THE HANDOFF INTO AN EXISTING PRODUCT ─────────────────────────────────
+  // Picking a suggestion CREATES NOTHING. It carries the destination, the sizes
+  // and the quantities already typed into the receive-stock section of that
+  // product's own page — the same path a re-order has always used. Held here
+  // rather than in the URL because it is a one-shot handoff, not a place.
+  const [receivePrefill, setReceivePrefill] = useState(null); // { productId, loc, qtys }
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
@@ -5752,7 +5778,31 @@ function AdminView({ products, orders, onExit }) {
     ...f, printedBarcode: null, printedBarcodeAuto: !f.printedBarcodeAuto,
   }));
 
-  const addProduct = async () => {
+  // ── ONE TAP IS ONE PRODUCT ────────────────────────────────────────────────
+  // The Save button only disables on `saving`, and `saving` is not set until
+  // AFTER the duplicate gate has awaited its per-location stock reads. That
+  // await is real network I/O on shop-floor wifi, and through all of it the
+  // button stayed live: two taps ran two addProduct calls, both read the same
+  // still-unset gate, both raised a confirm, and an operator who
+  // answered both created TWO products for one code — precisely the failure
+  // this whole feature exists to prevent, produced by its own gate.
+  //
+  // A REF, NOT STATE. State updates are asynchronous; the second tap arrives
+  // before any re-render, so a state flag would still be false when it reads it.
+  // (Sonnet architect review, PR #594.)
+  // The ref keeps the guard STABLE across renders while still calling the
+  // CURRENT handler. A guard rebuilt every render holds a fresh, unlocked flag
+  // and therefore locks nothing at all.
+  //
+  // NOT useMemo. React documents useMemo as a performance hint it MAY discard
+  // and recompute — and a discarded memo hands back a brand-new, unlocked guard,
+  // which is precisely the failure this guard exists to prevent. A ref is the
+  // only thing React promises to keep. (Adversarial delta review, PR #594.)
+  const addProductRef = useRef();
+  const addProductGuard = useRef(null);
+  if (!addProductGuard.current) addProductGuard.current = onceAtATime((...a) => addProductRef.current(...a));
+  const addProduct = addProductGuard.current;
+  const addProductOnce = async () => {
     setSaveAttempted(true);
     // Category is REQUIRED — and it must resolve to a real registry entry with a
     // legacy derivation. Without it we cannot write the legacy fields, and a
@@ -5771,6 +5821,68 @@ function AdminView({ products, orders, onExit }) {
     if (formIsPerfume && !form.printedBarcode && !form.printedBarcodeAuto) {
       alert("Photograph the barcode printed on the box — or tap “generate a shop barcode instead” if it will not read.");
       return;
+    }
+    // ── A SECOND RECORD FOR A CODE WE ALREADY HOLD IS A DELIBERATE ACT ──────
+    // Re-derived HERE, from the name actually being saved, rather than read off
+    // the panel: the panel's view is debounced and can be a keystroke behind,
+    // and a gate that can be outrun by typing quickly is not a gate. Pure and in
+    // memory against the catalogue this view already holds — no read.
+    //
+    // EXACT CODE MATCHES ONLY. A fuzzy name overlap gets the panel and nothing
+    // else; a dialog in front of a guess is how the operator learns to dismiss
+    // dialogs, including the one that mattered.
+    // EVERY ATTEMPT CONFIRMS. There was a "already confirmed for this name"
+    // flag; it was worse than useless. Cleared only on success, it stayed set
+    // after a failed save — and the product record is written EARLY, so a later
+    // step throwing (a rejected attachPrintedBarcode, say) left the form open,
+    // the name unchanged and the flag standing. The obvious retry then sailed
+    // past this gate and created a SECOND product with no dialog and no
+    // /insights_log row: the duplicate that actually landed was the one with no
+    // audit trail. Cleared on every exit instead, it could never be observed at
+    // all — set and cleared inside one call.
+    //
+    // So there is no flag. Creating a twin asks, every time, because each
+    // attempt to create one is its own deliberate act.
+    //
+    // BE HONEST ABOUT WHAT THE RETRY DIALOG BUYS. On that post-write path the
+    // twin exists but its stock movements have not run, so the count read back
+    // is a truthful 0 — and the dialog says "already exists as X with 0 units",
+    // which duplicateGate's own header calls the sentence that pushes an
+    // operator TOWARD the duplicate. The number is honest and the ask is right;
+    // it simply does not argue the case on that one path. What the removal
+    // actually fixes is the silent create with NO dialog and NO /insights_log
+    // row — the duplicate that landed with no audit trail at all.
+    // (Adversarial delta review, PR #594.)
+    const exactDupes = exactRowsOf(rankCandidates(form.name, products));
+    if (exactDupes.length) {
+      // Unit counts for the sentence. gatherExactTotals holds BOTH unknown
+      // rules — an empty location set is not read at all, and a failed read is
+      // null — so neither can degrade into a confident "0 units".
+      const totalsById = await gatherExactTotals(exactDupes, dupLocationIds, productTotals);
+      if (!window.confirm(createAnywayPrompt(form.name, exactDupes, totalsById))) return;
+      // The decision itself is the record. /insights_log is the append-only feed
+      // this app already keeps; nothing new is invented for it, and consumers
+      // filter on `action`, so an action they do not know is one they ignore.
+      logInsight({
+        // ISO, NOT MILLISECONDS — matching every other row in this node. It is
+        // still server time (serverNowIso is serverNowMs formatted), so the
+        // no-Date.now rule holds; a lone numeric timestamp in a node whose
+        // readers sort and compare ISO strings is a schema divergence waiting to
+        // be tripped over. (Fable spec review, PR #594.)
+        timestamp: serverNowIso(),
+        action: "duplicate_created_despite_match",
+        productId: null,
+        productName: form.name.trim(),
+        productCategory: formLegacy?.category || "",
+        productType: formLegacy?.productType || "",
+        matchedProductIds: exactDupes.map((r) => r.product.id),
+        matchedProductNames: exactDupes.map((r) => r.product.name || ""),
+        matchedUnits: exactDupes.map((r) => {
+          const t = totalsById[r.product.id];
+          return t && Number.isFinite(t.total) ? t.total : null;
+        }),
+        by: auth.currentUser?.uid ?? null,
+      });
     }
     setSaving(true);
     try {
@@ -6189,6 +6301,13 @@ function AdminView({ products, orders, onExit }) {
       setSaving(false);
     }
   };
+  // ASSIGNED IN A LAYOUT EFFECT, NOT DURING RENDER. React may replay or discard
+  // a render, and a ref written during one that never commits leaks a handler
+  // closed over state the UI never showed. useLayoutEffect (not useEffect) because
+  // it runs before paint: a passive effect can be beaten by an operator tap on a
+  // painted button, which would call the previous render's handler.
+  // (CodeRabbit + React Doctor, PR #594.)
+  useLayoutEffect(() => { addProductRef.current = addProductOnce; });
 
   // Per-product edit handlers (name/sizes/hubs/photo/delete) used to live
   // here as inline-editor flows in the list. They've been moved into
@@ -6322,6 +6441,8 @@ function AdminView({ products, orders, onExit }) {
         product={detailProduct}
         allProducts={products}
         insightsLog={insightsLog}
+        receivePrefill={receivePrefill && receivePrefill.productId === detailProduct.id && prefillIsFresh(receivePrefill, serverNowMs()) ? receivePrefill : null}
+        onPrefillConsumed={() => setReceivePrefill(null)}
         onBack={() => window.history.back()}
       />
     );
@@ -6473,6 +6594,23 @@ function AdminView({ products, orders, onExit }) {
           fileInputRef={fileInputRef} handleImageUpload={handleImageUpload}
           products={products}
           isPerfume={formIsPerfume}
+          nameSuggestions={
+            <DuplicateSuggestPanel
+              typed={form.name}
+              products={products}
+              locationIds={dupLocationIds}
+              onPick={(p) => {
+                if (!p?.id) return;
+                // Everything already typed travels with them. Sizes are filtered
+                // against the TARGET product on arrival (splitPrefillSizes), and
+                // anything it cannot hold is named on screen rather than dropped.
+                setReceivePrefill({ productId: p.id, loc: recvLoc, qtys: recvQtys, at: serverNowMs() });
+                setShowAdd(false); setIntake(null); setCategoryChosen(false);
+                window.location.hash = "product/" + p.id;
+              }}
+
+            />
+          }
           onCapturePrintedBarcode={(code) => setForm((f) => ({ ...f, printedBarcode: code, printedBarcodeAuto: false }))}
           onClearPrintedBarcode={() => setForm((f) => ({ ...f, printedBarcode: null }))}
           onUseAutoBarcode={useAutoBarcode}
@@ -6717,7 +6855,7 @@ function AdminProductRow({ product }) {
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
-function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) {
+function AdminProductDetail({ product, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
   const isClothing = (product.productType || "sneaker") === "clothing";
   const productSizes = Array.isArray(product.sizes) && product.sizes.length
     ? product.sizes
@@ -7106,6 +7244,32 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({});
   const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; must be picked before receiving
+  // ── ARRIVING FROM THE DUPLICATE PANEL ────────────────────────────────────
+  // The operator typed a name that was already in the catalogue, tapped the
+  // product, and everything they had entered travelled with them: the
+  // destination, the sizes and the quantities. Nothing was created and nothing
+  // was received — this only OPENS the section with their work in it, so the
+  // receive is still their own deliberate tap on the same button as always.
+  //
+  // Sizes that this product does not have cannot be carried (receiving into one
+  // would invent a stock cell), so they are named on screen. A silent drop here
+  // means eleven units received against a belief of fourteen, surfacing weeks
+  // later as a shortfall nobody can explain.
+  const [prefillDropped, setPrefillDropped] = useState([]);
+  const prefillKey = receivePrefill ? `${receivePrefill.productId}:${receivePrefill.loc}:${JSON.stringify(receivePrefill.qtys || {})}` : null;
+  useEffect(() => {
+    if (!receivePrefill || receivePrefill.productId !== product.id) return;
+    const { carried, dropped } = splitPrefillSizes(receivePrefill.qtys, productSizes);
+    setRecvQtys(carried);
+    setPrefillDropped(dropped);
+    // The destination is carried VERBATIM — "stock lands at the location
+    // selected, unchanged". An empty one stays empty and the button stays
+    // disabled, exactly as it does for any other receive.
+    setRecvLoc(receivePrefill.loc || "");
+    setRecvOpen(true);
+    if (onPrefillConsumed) onPrefillConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillKey, product.id]);
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvMsg,  setRecvMsg]  = useState(null);
   const [lastReceived, setLastReceived] = useState(null); // { productId, productName, items:[{size,added}] }
@@ -7326,6 +7490,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
                 style={{ ...bBlue, padding:"0.55rem 1.25rem", marginTop:14, opacity: (recvBusy || !recvLoc) ? 0.5 : 1 }}>
                 {recvBusy ? "Receiving…" : recvLoc ? `Receive into ${labelFor(recvLoc, recvRegistry)}` : "Pick a destination first"}
               </button>
+              {prefillDropped.length > 0 && (
+                <div style={{ marginTop:10, fontSize:12.5, fontWeight:600, color:"#FBBF24", lineHeight:1.5 }}>
+                  {prefillDropped.join(", ")} could not be carried over — this product does not have {prefillDropped.length === 1 ? "that size" : "those sizes"}.
+                  Add {prefillDropped.length === 1 ? "it" : "them"} to its size list above first if it should.
+                </div>
+              )}
               {recvMsg && <div style={{ marginTop:10, fontSize:12.5, fontWeight:600, color: recvMsg.ok ? "#4ADE80" : "#FF9B9B" }}>{recvMsg.text}</div>}
               <div style={{ fontSize:11, color:"#666", marginTop:8 }}>
                 Posts <span style={{ color:"#4ADE80" }}>received</span> movements; changes nothing else on this product.
