@@ -15,7 +15,7 @@ import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
-import { stockCellPath, stockSizeKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
+import { stockCellPath, decodedCellKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { productPhotoObjectPath } from "./utils/productPhotoPaths";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
@@ -9110,10 +9110,13 @@ function AssistantView({ products, onExit, orders = [] }) {
   // sunglass / perfume / bag lives in the "_" cell, and a half-size in "5_5".
   // The raw lookup found no "Free Size" cell, read 0, and greyed every one-size
   // accessory out as "not available at Hub 2" while Hub 2 held units. Reading
-  // through stockSizeKey makes this lane read the SAME cell that Send deducts
+  // through decodedCellKey makes this lane read the SAME cell that Send deducts
   // (stockCellPath) — the number shown and the number moved can't disagree.
-  // Ordinary clothing sizes (S/M/L/XL…) encode to themselves: no change there.
-  const hubQty = (pid, size) => availableUnits(servingHubCells?.[pid]?.[stockSizeKey(size)]?.qty);
+  // decodedCellKey, NOT stockSizeKey: useStockCells hands back a DECODED map
+  // ("5_5" → "5.5"), so the encoded key would miss every half size; the
+  // decoded cell key matches one-size ("_"), half sizes and S/M/L/XL alike —
+  // the same lookup the sneaker lane already uses (availabilityCore).
+  const hubQty = (pid, size) => availableUnits(servingHubCells?.[pid]?.[decodedCellKey(size)]?.qty);
   // ── HUB 1 SNEAKER AVAILABILITY (2026-08-25) ───────────────────────────────
   // The sneaker mirror of the clothing subscription above: sneaker orders
   // sourcing from Hub 1 grey out (✕) sizes Hub 1 cannot supply, through the
