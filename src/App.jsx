@@ -15,7 +15,7 @@ import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
-import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
+import { stockCellPath, decodedCellKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { productPhotoObjectPath } from "./utils/productPhotoPaths";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
@@ -9104,12 +9104,19 @@ function AssistantView({ products, onExit, orders = [] }) {
   // reports 0 instead of its negative — and every consumer of this number
   // already floors at 0 (hub2SneakerAvailability.test.js exhausts it).
   //
-  // What deliberately did NOT converge: this lane looks a cell up by the RAW
-  // declared size while the sneaker lane uses decodedCellKey. Merging that
-  // would change which cell a "Free Size" / space-padded clothing size reads —
-  // a live Hub 2 clothing behaviour change, which this work is not allowed to
-  // make. Left as it is on purpose; do not "fix" it without an owner decision.
-  const hubQty = (pid, size) => availableUnits(servingHubCells?.[pid]?.[size]?.qty);
+  // CELL KEY (owner decision 2026-09-10). This lookup used to index the hub
+  // subtree by the RAW declared size. Real /stock cells are keyed by
+  // stockSizeKey — the one-size "Free Size" chip the order screen shows for a
+  // sunglass / perfume / bag lives in the "_" cell, and a half-size in "5_5".
+  // The raw lookup found no "Free Size" cell, read 0, and greyed every one-size
+  // accessory out as "not available at Hub 2" while Hub 2 held units. Reading
+  // through decodedCellKey makes this lane read the SAME cell that Send deducts
+  // (stockCellPath) — the number shown and the number moved can't disagree.
+  // decodedCellKey, NOT stockSizeKey: useStockCells hands back a DECODED map
+  // ("5_5" → "5.5"), so the encoded key would miss every half size; the
+  // decoded cell key matches one-size ("_"), half sizes and S/M/L/XL alike —
+  // the same lookup the sneaker lane already uses (availabilityCore).
+  const hubQty = (pid, size) => availableUnits(servingHubCells?.[pid]?.[decodedCellKey(size)]?.qty);
   // ── HUB 1 SNEAKER AVAILABILITY (2026-08-25) ───────────────────────────────
   // The sneaker mirror of the clothing subscription above: sneaker orders
   // sourcing from Hub 1 grey out (✕) sizes Hub 1 cannot supply, through the
