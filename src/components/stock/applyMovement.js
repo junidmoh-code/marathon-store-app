@@ -22,11 +22,13 @@
 //     no-op (offline re-sync, double-tap, retried network all collapse to one).
 //   • Paired write: all touched cells + the movement are one atomic update — all-or-
 //     nothing. A rejected attempt writes NOTHING (safe to retry).
-//   • Negative floor: NO movement drives a cell below zero (owner decision
-//     2026-09-11). A `sold` deducts what is booked and writes the uncovered part
-//     as `shortfall` on the movement — the accuracy signal moved from the cell to
-//     the ledger, where a later arrival cannot eat it. Transfers, receives and
-//     adjustments are refused when they would overdraw.
+//   • Negative floor: a `sold` never drives a cell below zero (owner decision
+//     2026-09-11) — it deducts what is booked and writes the uncovered part as
+//     `shortfall` on the movement, so the accuracy signal lives in the ledger
+//     where a later arrival cannot eat it. Transfers, receives and adjustments
+//     are refused when they would overdraw; the one deliberate exception is a
+//     caller passing `allowNegative` (a customer-order dispatch: the parcel has
+//     physically left, so the hub's shortage is recorded as it is).
 //   • Negative BASE (2026-09-11, the Diesel Slide incident): an ARRIVAL at a real
 //     shelf — received, opening, return, or the +leg of a relocation — lands on
 //     max(cell, 0), never on top of a negative. See NEGATIVE BASE below.

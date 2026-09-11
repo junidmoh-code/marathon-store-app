@@ -68,10 +68,12 @@ test("Health: a sold movement carrying a shortfall is reported under exceptions.
     { type: "sold", productId: PID, size: "6", qty: 3, from: "hub1", shortfall: 2, ts: "2026-09-11T10:00:00.000Z", appliedAt: "2026-09-11T13:45:00.000Z", link: { saleId: "S1" } },
     { type: "sold", productId: PID, size: "7", qty: 1, from: "hub1", appliedAt: "2026-09-11T10:00:00.000Z" },   // fully covered — not a shortfall
   ];
+  // a return the cap held back joins the SAME cell's row
+  movements.push({ type: "return", productId: PID, size: "6", qty: 1, to: "hub1", shortfallWithheld: 1, ts: "2026-09-11T11:00:00.000Z" });
   const p = computeRefillPlan({
     nowMs: NOW, config: config(), targets: {}, stock: { hub1: { [PID]: { 6: { qty: 0 } } }, central: { [PID]: { 6: { qty: 5 } } } }, products: PRODUCTS,
     openIndex: {}, refillRequests: {}, orders: {}, movements, targetDecisions: {}, rejectStreak: {}, retryState: {},
   });
   assert.equal(p.exceptions.shortfalls.count, 1);
-  assert.deepEqual(p.exceptions.shortfalls.items[0], { loc: "hub1", pid: PID, size: "6", qty: 3, shortfall: 2, ts: "2026-09-11T10:00:00.000Z", saleId: "S1" });
+  assert.deepEqual(p.exceptions.shortfalls.items[0], { loc: "hub1", pid: PID, size: "6", sold: 3, uncovered: 2, withheldReturns: 1, events: 2, lastTs: "2026-09-11T11:00:00.000Z" });
 });
