@@ -128,7 +128,7 @@ const CONFIG = {
 
 const ArmingMod = await import("./ArmingTab.jsx");
 const ArmingTab = ArmingMod.default;
-const { ArmRow, ProductSeating, mergeStock, mb } = ArmingMod;
+const { ArmRow, ProductSeating, applyProductRead, mergeStock, mb } = ArmingMod;
 const { SeatRow } = await import("./SeatingTab.jsx");
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 
@@ -513,6 +513,132 @@ describe("opening a row", () => {
   });
 });
 
+// ── AFTER A WRITE ───────────────────────────────────────────────────────────
+// A completed action hands its own complete per-product read UP to the list.
+describe("after an action on a row", () => {
+  const openRow = async (tree, name) => {
+    const row = rowFor(tree, name);
+    const btn = row.findAll((n) => n.type === "button").find((b) => label(b).includes(name));
+    await act(async () => { btn.props.onClick(); });
+    await act(async () => {});
+    return row;
+  };
+  // Fire SeatRow's onDone the way a real completed action does.
+  const finish = async (tree, loc) => {
+    const seat = tree.root.findAllByType(SeatRow).find((s) => s.props.seat.loc === loc);
+    await act(async () => { await seat.props.onDone("done"); });
+    await act(async () => {});
+    await act(async () => {});
+  };
+
+  it("re-classifies the product WITHOUT re-reading both hubs or re-settling", async () => {
+    // It used to call the tab's own load(): both hub nodes again (≈2.68 MB on
+    // live) plus the whole 1,472-request settle pass, on every switch-off.
+    const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
+    READS.length = 0;
+    await finish(tree, "hub2");
+    const listReads = READS.filter((p) => p.split("/").length === 2);
+    expect(listReads, "a write must not re-read a whole hub node").toEqual([]);
+    // …and every read it DID make is the one product being re-read.
+    for (const path of READS) expect(path).toMatch(/^(stock|stock_targets)\/[^/]+\/p1$/);
+  });
+
+  it("moves the row to the tab it now belongs in", async () => {
+    // Switch off Hub 2 for the both-hubs product: it belongs in Hub 1 now.
+    const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
+    setNode("stock_targets/hub2", {
+      p1: { 8: { target: 0, minQty: 0, source: "seating_off" }, 9: { target: 0, minQty: 0, source: "seating_off" } },
+    });
+    await finish(tree, "hub2");
+    expect(text(tree), "it must leave Both hubs").not.toContain("Both Hubs Sneaker");
+    expect(label(chip(tree, "Both hubs"))).toContain("0");
+    await act(async () => { chip(tree, "Hub 1").props.onClick(); });
+    expect(text(tree)).toContain("Both Hubs Sneaker");
+  });
+
+  it("a re-seat DELETES the rows rather than leaving stale ones behind", async () => {
+    // applyProductRead replaces, it does not merge. A merge would keep the
+    // target:0 rows and the product would read as switched off after being
+    // switched back on.
+    const tree = await renderTab();
+    await act(async () => { chip(tree, "Hub 2").props.onClick(); });
+    await openRow(tree, "Hub Two Sneaker");
+    expect(innerText(rowFor(tree, "Hub Two Sneaker"))).toContain("Switched off");
+    setNode("stock_targets/hub1", null);        // re-seat: the rows are gone
+    await finish(tree, "hub1");
+    await act(async () => { chip(tree, "Both hubs").props.onClick(); });
+    expect(text(tree), "with its rows gone the policy arms it at both hubs").toContain("Hub Two Sneaker");
+  });
+
+  it("does not leave the row expanded once it has left the list", async () => {
+    // openPid survived the row unmounting, so if the product came BACK into the
+    // list it rendered already expanded — a selection nobody made, and a second
+    // full per-location read with it.
+    //
+    // THE TAB MUST NOT CHANGE IN THIS TEST. Switching tab clears openPid on its
+    // own, so a version of this that navigated away proved nothing: it passed
+    // with the release deleted. Everything here happens on one tab.
+    const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
+    expect(tree.root.findAllByType(SeatRow).length).toBeGreaterThan(0);
+
+    setNode("stock_targets/hub2", { p1: { 8: { target: 0, minQty: 0 }, 9: { target: 0, minQty: 0 } } });
+    await finish(tree, "hub2");
+    expect(text(tree)).not.toContain("Both Hubs Sneaker");   // it left this list
+
+    // Undo it at the database and Refresh — the product returns to this tab.
+    setNode("stock_targets/hub2", null);
+    await act(async () => { await buttonSaying(tree, "Refresh").props.onClick(); });
+    await act(async () => {});
+    await act(async () => {});
+    expect(text(tree)).toContain("Both Hubs Sneaker");
+    expect(tree.root.findAllByType(SeatRow).length, "the row must open only when tapped").toBe(0);
+  });
+});
+
+describe("applyProductRead", () => {
+  const C = () => ({ stock: { hub1: { p1: { 8: cell(1) }, p2: { 8: cell(2) } } },
+    targets: { hub1: { p1: { 8: { target: 3 } } } } });
+
+  it("replaces one product at the hubs and leaves the others alone", () => {
+    const out = applyProductRead(C(), "p1", { stock: { hub1: { p1: { 9: cell(5) } } }, targets: {} }, ["hub1", "hub2"]);
+    expect(out.stock.hub1.p1).toEqual({ 9: cell(5) });
+    expect(out.stock.hub1.p2).toEqual({ 8: cell(2) });
+  });
+
+  it("DELETES what the fresh read does not hold — a re-seat removes rows", () => {
+    const out = applyProductRead(C(), "p1", { stock: { hub1: { p1: { 8: cell(1) } } }, targets: {} }, ["hub1", "hub2"]);
+    expect(out.targets.hub1).toBeUndefined();
+  });
+
+  it("drops a location left with no products, as RTDB does", () => {
+    const one = { stock: { hub1: { p1: { 8: cell(1) } } }, targets: {} };
+    const out = applyProductRead(one, "p1", { stock: {}, targets: {} }, ["hub1", "hub2"]);
+    expect(out.stock.hub1).toBeUndefined();
+  });
+
+  it("touches only the hubs it is given", () => {
+    const base = { stock: { central: { p1: { 8: cell(9) } } }, targets: {} };
+    const out = applyProductRead(base, "p1", { stock: { central: { p1: { 8: cell(1) } } }, targets: {} }, ["hub1", "hub2"]);
+    expect(out.stock.central.p1).toEqual({ 8: cell(9) });
+  });
+
+  it("does not mutate what it was given", () => {
+    const base = C();
+    applyProductRead(base, "p1", { stock: {}, targets: {} }, ["hub1", "hub2"]);
+    expect(base.stock.hub1.p1).toEqual({ 8: cell(1) });
+    expect(base.targets.hub1.p1).toEqual({ 8: { target: 3 } });
+  });
+
+  it("is a no-op without a product or a read", () => {
+    const base = C();
+    expect(applyProductRead(base, "", { stock: {} }, ["hub1"])).toBe(base);
+    expect(applyProductRead(base, "p1", null, ["hub1"])).toBe(base);
+  });
+});
+
 // ── THE POLICY ARRIVES ON ITS OWN SUBSCRIPTION ──────────────────────────────
 describe("before the engine policy has answered", () => {
   it("says it is still reading rather than showing a confident zero", async () => {
@@ -580,6 +706,33 @@ describe("the location registry changing", () => {
     await act(async () => {});
     await act(async () => {});
     expect(READS).toEqual([]);
+  });
+
+  it("settles once there is somewhere to settle AGAINST", async () => {
+    // settle() returns at once when the location list holds nothing but the two
+    // hubs — it records nothing and sets no state — so without `otherLocations`
+    // in the effect's dependencies nothing ever retried it, and the residue sat
+    // in Nowhere until somebody pressed Refresh.
+    //
+    // A registry of JUST the two hubs is what makes this reachable: an EMPTY
+    // registry falls back to the ten seed locations (locations.js
+    // allLocationIds), so the empty case never actually has an empty list. A
+    // version of this test that started from {} proved nothing.
+    LOCATIONS = { hub1: BASE_LOCATIONS.hub1, hub2: BASE_LOCATIONS.hub2 };
+    let tree;
+    await act(async () => {
+      tree = TestRenderer.create(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />);
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(READS.some((p) => p.split("/").length === 3), "nothing to settle against yet").toBe(false);
+
+    READS.length = 0;
+    LOCATIONS = { ...BASE_LOCATIONS };
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />); });
+    await act(async () => {});
+    await act(async () => {});
+    expect(READS.some((p) => p.startsWith("stock/central/")), "the settle must retry").toBe(true);
   });
 
   it("is insensitive to the ORDER the registry arrives in", async () => {

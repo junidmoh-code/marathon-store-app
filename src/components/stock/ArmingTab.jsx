@@ -199,18 +199,53 @@ export default function ArmingTab({ products, viewer, flash }) {
   // so this cannot loop.
   const settleRef = useRef(settle);
   settleRef.current = settle;
+  //
+  // `otherLocations` IS A DEPENDENCY, and it has to be. settle() returns at once
+  // when the list is empty, without recording that the work is still owed — so
+  // if the registry arrived after the hub reads, the settle was skipped and
+  // nothing ever retried it: the residue stayed in Nowhere until somebody
+  // pressed Refresh, which is the exact defect the automatic settle exists to
+  // remove. It also covers the subtler case: a registry that arrives and
+  // CHANGES the list must re-settle against the new one, and the locSig effect
+  // above cannot force that on its own (clearing an already-empty resolvedPids
+  // commits no state, so `index` keeps its identity). (CodeRabbit, PR #604.)
   useEffect(() => {
     if (!index?.undecidedPids?.length || settling) return;
     settleRef.current(index.undecidedPids);
     // `settle` is held in a ref so its identity cannot re-trigger this.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [index]);
+  }, [index, otherLocations]);
+
+  // ── AFTER A WRITE, RE-CLASSIFY ONE PRODUCT — NOT THE CATALOGUE ─────────────
+  // The open row has just read this product from EVERY location, which is a
+  // COMPLETE read for it — better than the hub-scoped snapshot the list is
+  // built on. So fold that in and mark the product settled.
+  //
+  // It used to call load(). That re-read both hub nodes (≈2.68 MB), reset
+  // resolvedPids, and thereby re-ran the whole 1,472-request settle pass — on
+  // every switch-off, every move, every re-seat. The tab's own headline feature
+  // paid for itself again on each edit. (Senior-architect review, PR #604.)
+  const applyOne = useCallback((pid, fresh) => {
+    if (!pid || !fresh) return;
+    setCtx((c) => (c ? applyProductRead(c, pid, fresh, ARMING_HUBS) : c));
+    setResolvedPids((prev) => new Set([...prev, pid]));
+  }, []);
 
   const rows = useMemo(() => (index ? sectionRows(index.rows, tab, query) : []), [index, tab, query]);
   const page = rows.slice(0, shown);
 
   // Changing tab or query starts the list again from the top.
   useEffect(() => { setShown(PAGE); setOpenPid(""); }, [tab, query]);
+
+  // ── AND THE OPEN ROW LETS GO WHEN IT LEAVES THE LIST ───────────────────────
+  // Switch a product off at Hub 2 while looking at "Both hubs" and it belongs
+  // in "Hub 1" — its row unmounts from under the operator. `openPid` survived
+  // that, so the row rendered ALREADY EXPANDED the next time its new tab was
+  // opened, with no tap: a selection the operator never made, and a second
+  // full per-location read to go with it. (Senior-architect review, PR #604.)
+  useEffect(() => {
+    if (openPid && !rows.some((r) => r.pid === openPid)) setOpenPid("");
+  }, [rows, openPid]);
 
   return (
     <div>
@@ -291,7 +326,7 @@ export default function ArmingTab({ products, viewer, flash }) {
               open={openPid === r.pid}
               onToggle={() => setOpenPid(openPid === r.pid ? "" : r.pid)}
               onPhoto={setPhoto}
-              onChanged={() => load()}
+              onChanged={(freshPid, fresh) => applyOne(freshPid, fresh)}
               flash={flash}
             />
           ))}
@@ -379,17 +414,21 @@ export function ProductSeating({ product, registry, locations, destinations, con
 
   const pid = product?.id || "";
 
+  // Returns the context it read, so a completed action can hand the SAME read
+  // up to the list instead of making the list go and fetch its own.
   const load = useCallback(async () => {
-    if (!pid || !locations.length) return;
+    if (!pid || !locations.length) return null;
     const mine = ++seq.current;
     setLoading(true); setError("");
     try {
       const next = await readSeatingContext(locations, pid);
-      if (mine !== seq.current) return;
+      if (mine !== seq.current) return null;
       setCtx(next);
+      return next;
     } catch (e) {
-      if (mine !== seq.current) return;
+      if (mine !== seq.current) return null;
       setError(e?.message || String(e));
+      return null;
     } finally {
       if (mine === seq.current) setLoading(false);
     }
@@ -430,15 +469,16 @@ export function ProductSeating({ product, registry, locations, destinations, con
           viewer={viewer}
           expanded={openLoc === seat.loc}
           onToggle={() => setOpenLoc(openLoc === seat.loc ? "" : seat.loc)}
-          onDone={(msg) => {
+          onDone={async (msg) => {
             flash?.("ok", msg);
             setOpenLoc("");
-            // Re-read this product AND the hub lists: a switch-off changes which
-            // tab this row belongs in, and a list that still shows it under
-            // "Both hubs" after you have just fixed it is the screen lying about
-            // the work you did.
-            load();
-            onChanged?.();
+            // Re-read this product from every location, then hand that read UP.
+            // A switch-off changes which tab the row belongs in, and a list that
+            // still shows it under "Both hubs" after you have just fixed it is
+            // the screen lying about the work you did. The read is complete for
+            // this product, so the list needs nothing else.
+            const next = await load();
+            if (next) onChanged?.(pid, next);
           }}
           onFail={(msg) => flash?.("bad", msg)}
         />
@@ -448,6 +488,34 @@ export function ProductSeating({ product, registry, locations, destinations, con
 }
 
 // ── helpers ──────────────────────────────────────────────────────────────────
+
+// ── ONE PRODUCT'S FRESH READ, FOLDED INTO THE LIST'S CONTEXT ─────────────────
+// REPLACEMENT, NOT A MERGE, and that is the whole point. A re-seat DELETES the
+// target rows; a merge would keep the stale ones and the row would go on
+// reading as switched off after it had been switched back on. RTDB says a
+// deleted node is ABSENT, so an absent product in the fresh read means "no rows
+// here" and must delete, not be ignored.
+//
+// Only the two hubs are touched: the list is a hub question, and the other
+// eight locations in `fresh` belong to the open row alone.
+export function applyProductRead(ctx, pid, fresh, hubs) {
+  if (!ctx || !pid || !fresh) return ctx;
+  const out = { ...ctx, stock: { ...ctx.stock }, targets: { ...ctx.targets } };
+  for (const node of ["stock", "targets"]) {
+    for (const hub of hubs || []) {
+      const now = fresh[node]?.[hub]?.[pid];
+      const had = out[node][hub];
+      if (now === undefined && !had) continue;
+      const next = { ...(had || {}) };
+      if (now === undefined) delete next[pid]; else next[pid] = now;
+      // RTDB cannot hold an empty child: a location left with no products is
+      // an absent location, and storeCarries asks exactly that question.
+      if (Object.keys(next).length) out[node][hub] = next;
+      else delete out[node][hub];
+    }
+  }
+  return out;
+}
 
 // Fold a per-product read into the context without losing the hub cells there.
 export function mergeStock(base, extra) {
