@@ -1722,6 +1722,17 @@ function computeRefillPlan(snapshot) {
   const onlyInHub2 = [];
   const excess = [];        // network-wide: hub2 (any surplus) + stores (significant surplus)
   const negativeCells = [];
+  // SHORTFALLS (owner decision 2026-09-11): a sale never drives a cell below
+  // zero any more — the uncovered part of a sale is written on the `sold`
+  // movement as `shortfall`. This is the shortage signal the negative cell used
+  // to be, read from the ledger window the scan already holds. Reporting only.
+  const shortfalls = [];
+  for (const m of movements) {
+    if (m && m.type === "sold" && Number(m.shortfall) > 0) {
+      shortfalls.push({ loc: m.from || null, pid: m.productId, size: m.size, qty: Number(m.qty) || 0, shortfall: Number(m.shortfall), ts: m.appliedAt || m.ts || null, saleId: (m.link && m.link.saleId) || null });
+    }
+  }
+  shortfalls.sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
   // Outstanding deficit per (pid,size) across ALL destinations — surplus at one
   // location is NOT excess while another location starves for the same size
   // (bugfix 2026-07-12, the "Cortez contradiction": hub2 XL flagged for return
@@ -2052,6 +2063,7 @@ function computeRefillPlan(snapshot) {
       onlyInHub2: cap(onlyInHub2),
       excess: cap(excess),
       negativeCells: cap(negativeCells),
+      shortfalls: cap(shortfalls, 500),
     },
   };
 }

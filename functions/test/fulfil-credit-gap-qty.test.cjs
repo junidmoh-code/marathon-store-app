@@ -61,3 +61,16 @@ test("Central at 0 → no intent at all (the gate never writes a card the wareho
   assert.equal(size6(p).length, 0);
   assert.equal(p.intents.length, 0);
 });
+
+test("Health: a sold movement carrying a shortfall is reported under exceptions.shortfalls (the shortage signal that replaced negative cells)", () => {
+  const movements = [
+    { type: "sold", productId: PID, size: "6", qty: 3, from: "hub1", shortfall: 2, appliedAt: "2026-09-11T10:00:00.000Z", link: { saleId: "S1" } },
+    { type: "sold", productId: PID, size: "7", qty: 1, from: "hub1", appliedAt: "2026-09-11T10:00:00.000Z" },   // fully covered — not a shortfall
+  ];
+  const p = computeRefillPlan({
+    nowMs: NOW, config: config(), targets: {}, stock: { hub1: { [PID]: { 6: { qty: 0 } } }, central: { [PID]: { 6: { qty: 5 } } } }, products: PRODUCTS,
+    openIndex: {}, refillRequests: {}, orders: {}, movements, targetDecisions: {}, rejectStreak: {}, retryState: {},
+  });
+  assert.equal(p.exceptions.shortfalls.count, 1);
+  assert.deepEqual(p.exceptions.shortfalls.items[0], { loc: "hub1", pid: PID, size: "6", qty: 3, shortfall: 2, ts: "2026-09-11T10:00:00.000Z", saleId: "S1" });
+});

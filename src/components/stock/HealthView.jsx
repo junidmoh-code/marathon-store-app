@@ -649,6 +649,25 @@ export default function HealthView({ products = [], onExit }) {
             <NoTargetQueue products={products} />
           </DetailShell>
         );
+      case "shortfalls": {
+        const rows = exceptions?.shortfalls?.items || [];
+        return (
+          <DetailShell title="Sale Shortfalls" sub="A sale rang more units than the cell held. The sale stands; the cell stopped at 0; the difference is recorded on the movement. Count the shelf." count={rows.length} onBack={back}>
+            {rows.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>No shortfalls in the last 30 days 🎉</div>
+            )}
+            {groupByProduct(rows).map(([pid, prows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)} badges={<Badge tone={AMBER}>SHORTFALL</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {prows.map((r, i) => (
+                    <div key={i}>{locLabel(r.loc)} · size {r.size} · sold {r.qty}, uncovered {r.shortfall} · {fmtTs(r.ts)}</div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       case "strandedTransit": {
         const HUB_NAMES = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
         return (
@@ -824,6 +843,8 @@ export default function HealthView({ products = [], onExit }) {
                         value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}
                         tone={(liveNegatives == null ? count("negativeCells") : liveNegatives.length) ? RED : GREEN}
                         sub="Live count — one-tap fix" onClick={() => setScreen("negative")} />
+              <StatCard label="Sale Shortfalls" value={count("shortfalls")} tone={count("shortfalls") ? AMBER : GREEN}
+                        sub="Sales the books could not cover (30 days) — cells no longer go negative" onClick={() => setScreen("shortfalls")} />
               <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}
                         tone={!strandedKnown ? GRAY : strandedNeedsHuman ? RED : strandedRows.length ? AMBER : GREEN}
                         sub={!strandedKnown ? (strandedState.error ? "Report unreadable" : strandedState.settled ? "Sweep has not run yet" : "Loading…") : strandedNeedsHuman ? "Parked units the hourly sweep cannot land" : "Hold-lane units land on their own"}
