@@ -190,10 +190,12 @@ export async function applyMovement(movement, opts = {}) {
       const cell = snap.val();
       // The server-side writer (functions/lib/admin-movement.cjs) mutates cells
       // one transaction at a time and stamps each with the movement id it is
-      // applying (`relMv`) before the ledger row exists. A device retrying the
-      // SAME id against a cell already carrying the stamp must not apply the
-      // leg a second time — the two writers share one idempotency contract.
-      if (cell && cell.relMv === mvId) return { ok: true, movementId: mvId, idempotent: true };
+      // applying (`relMv`) before the ledger row exists. A stamp under THIS id
+      // means the server is mid-flight on this very movement: a device must
+      // neither re-apply the leg nor claim success (the other leg and the
+      // ledger row may not exist yet — the server's next attempt completes
+      // them). Refuse, retryable; the stamp is gone once the row is written.
+      if (cell && cell.relMv === mvId) return { ok: false, reason: "in_flight_elsewhere", location: d.loc };
       const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
       // The absolute-value precondition, checked against the read we are about to
       // write from — NOT against whatever the caller saw earlier. Re-checked on

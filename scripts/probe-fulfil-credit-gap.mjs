@@ -216,7 +216,10 @@ for (const [id, r] of Object.entries(REQ)) {
   // every fulfil movement for this request: the recorded id plus any tranche
   // (link.refillId), EXCLUDING release legs (rel_…) which are judged with their fulfil.
   const ids = new Set([r.fulfilledBy?.movementId].filter(Boolean));
-  for (const [mid, m] of Object.entries(MV)) if (m?.link?.refillId === id && !mid.startsWith("rel_") && m.type !== "sold") ids.add(mid);
+  // Adjustments are excluded: an adjustment nets against a negative by
+  // design (the repair's own fcr_ rows link the request too and must not read
+  // as a second absorption).
+  for (const [mid, m] of Object.entries(MV)) if (m?.link?.refillId === id && !mid.startsWith("rel_") && m.type !== "sold" && m.type !== "adjustment") ids.add(mid);
   if (!ids.size) {
     // A store leg (trophy / marathon-pe ← hub2) is closed by the ENGINE when
     // its R### order is dispatched; the stock moves under the order's own

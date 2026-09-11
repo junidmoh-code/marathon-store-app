@@ -98,8 +98,18 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
   let refusal = null;
   for (const d of deltas) {
     const path = cellPath(d.loc, movement.productId, movement.size, movement.sizeKey);
+    // COLD-NULL TRAP (delta review, PR #602; test/helpers/guarded-txn.cjs): a
+    // Cloud Function has no local cache, so the transaction's FIRST callback
+    // runs on null, and returning undefined there ABORTS without ever seeing
+    // the server value — every debit leg would refuse as "insufficient" on a
+    // cold start. So the cell is read first, and a null callback value is
+    // judged against that read: the proposal goes to the server with the
+    // null hash, mismatches, and the callback is re-run with the real value.
+    // (A cell that was truly absent commits from null, correctly.)
+    const preRead = await read(db, path);
     let seen = null;
-    const res = await db.ref(path).transaction((cur) => {
+    const res = await db.ref(path).transaction((raw) => {
+      const cur = raw === null ? preRead : raw;
       seen = cur;
       // Already stamped by THIS movement (a resumed call): leave the cell alone.
       if (cur && cur.relMv === mvId) return undefined;

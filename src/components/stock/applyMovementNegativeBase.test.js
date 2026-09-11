@@ -107,14 +107,16 @@ describe("negative base — the Diesel Slide case", () => {
     expect(only().negativeCleared).toBeUndefined();
   });
 
-  it("a cell the server writer already stamped with this movement id is not credited again (shared idempotency)", async () => {
-    seed("central", 3);
-    setPath(stockCellPath("hub1", PID, "6"), { qty: 1, v: 1, mv: "rel_x", relMv: "rel_x", lastType: "transfer_in" });
-    const res = await applyMovement({ type: "transfer_out", productId: PID, size: "6", qty: 1, from: "central", to: "hub1", movementId: "rel_x" }, { maxRetries: 1 });
-    expect(res.idempotent).toBe(true);
-    expect(cell("hub1").qty).toBe(1);
-    expect(cell("central").qty).toBe(3);
-    expect(Object.keys(ledger())).toEqual([]);
+  it("a SOURCE cell the server already stamped with this movement id is refused as in flight — nothing applied, nothing claimed", async () => {
+    // the server's debit leg landed (2 → 1, stamped) and it has not yet credited or written the row
+    setPath(stockCellPath("in_transit", PID, "6"), { qty: 1, v: 1, mv: "rel_x", relMv: "rel_x", relBefore: 2, lastType: "transfer_in" });
+    seed("hub1", 0);
+    const res = await applyMovement({ type: "transfer_in", productId: PID, size: "6", qty: 1, from: "in_transit", to: "hub1", movementId: "rel_x" }, { maxRetries: 1 });
+    expect(res.ok).toBe(false);
+    expect(res.reason).toBe("in_flight_elsewhere");
+    expect(cell("in_transit").qty).toBe(1);               // not debited again
+    expect(cell("hub1").qty).toBe(0);                     // not credited by the device — the server will
+    expect(Object.keys(ledger())).toEqual([]);            // and no row that would make the server think it is done
   });
 
   it("the negative floor on the SOURCE leg is unchanged — a transfer out of an empty cell still refuses", async () => {

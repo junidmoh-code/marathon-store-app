@@ -52,12 +52,16 @@ const REASON = "fulfil_credit_repair";
 // WHAT SETTLES A CELL AFTER THE CREDIT (second-brain review, PR #602): any
 // later ADJUSTMENT on the cell is treated as a human stating the absolute
 // truth — hub counts, recounts, stock-takes, SetQuantity's "correction",
-// Adjust's free text, a merge, a stock audit — EXCEPT the two adjustments
-// that are not statements about the shelf: the negative-cell zeroing script
-// (an artifact clean-up that composes with the credit) and this repair's own
-// rows. A later ARRIVAL that itself carried `negativeCleared` also settles it:
+// Adjust's free text, a counted merge removal, a stock audit — EXCEPT the
+// adjustments that are not statements about the shelf: the negative-cell
+// zeroing script, a plain product merge (a relative transfer of booked
+// units) and this repair's own rows — all three compose with the credit. A later ARRIVAL that itself carried `negativeCleared` also settles it:
 // post-fix, the writer has already credited from zero.
-const NOT_A_COUNT = /^negative_cell_zeroed|^fulfil_credit_repair/;
+// A plain product MERGE (reason exactly "product_merge") moves the loser's
+// booked units into the survivor's cell — a relative transfer, not a count —
+// so it composes with the credit too; its COUNTED-removal variant
+// ("product_merge_counted_removal") is a count and does settle.
+const NOT_A_COUNT = /^negative_cell_zeroed|^fulfil_credit_repair|^product_merge$/;
 
 const report = JSON.parse(readFileSync(`${DIR}/probe-report.json`, "utf8"));
 const MV = JSON.parse(readFileSync(`${DIR}/movements.json`, "utf8"));
@@ -106,7 +110,7 @@ for (const r of rows) {
     : null;   // `received` fulfil: no source leg by design
   if (credit.from && !sourceDeducted) { refused.push({ ...base, why: "source leg does not show the deduct" }); continue; }
   if (!(await read(`products/${r.productId}/id`)) && !(await read(`products/${r.productId}/name`))) { refused.push({ ...base, why: "product record missing" }); continue; }
-  const settles = settledSince(r.dest, r.productId, sizeKey, ms(credit.appliedAt || credit.ts)).filter(([id]) => !(AUDIT && id === `fcr_${r.movementId}`));
+  const settles = settledSince(r.dest, r.productId, sizeKey, ms(credit.appliedAt || credit.ts));
   if (settles.length) { refused.push({ ...base, why: `settled since the credit: ${settles.map(([id, m]) => `${id} (${m.type}${m.reason ? ` ${String(m.reason).slice(0, 40)}` : ""})`).join(", ")}` }); continue; }
   if (!AUDIT && await read(`stock_movements/fcr_${r.movementId}`)) { refused.push({ ...base, why: "already repaired (fcr_ movement exists)" }); continue; }
   const cell = await read(`stock/${r.dest}/${r.productId}/${sizeKey}`);

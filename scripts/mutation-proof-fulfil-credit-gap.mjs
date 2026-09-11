@@ -112,6 +112,14 @@ const MUTATIONS = [
     nodeTests: SWEEP_TESTS,
   },
   {
+    id: "M-ADMIN-COLDNULL",
+    guard: "a cold transaction callback (null) is judged against the pre-read, never aborted as empty",
+    file: ADMIN,
+    from: `      const cur = raw === null ? preRead : raw;`,
+    to: `      const cur = raw;`,
+    nodeTests: SWEEP_TESTS,
+  },
+  {
     id: "M-ADMIN-RESUME",
     guard: "a leg already stamped by this movement is never applied twice",
     file: ADMIN,
@@ -123,7 +131,7 @@ const MUTATIONS = [
     id: "M-CLIENT-RELMV",
     guard: "a device retrying an id the server already applied moves nothing",
     file: APPLY,
-    from: `      if (cell && cell.relMv === mvId) return { ok: true, movementId: mvId, idempotent: true };`,
+    from: `      if (cell && cell.relMv === mvId) return { ok: false, reason: "in_flight_elsewhere", location: d.loc };`,
     to: ``,
     tests: NEG_TESTS,
   },
