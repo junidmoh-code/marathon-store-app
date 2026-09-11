@@ -126,9 +126,38 @@ describe("GATE 2b — no card", () => {
 
 // ── GATE 2d — THE TAB'S OWN CHECK ────────────────────────────────────────────
 describe("GATE 2d — the Arming branch refuses on its own", () => {
-  it("the card's arming branch is guarded by enginePolicyVisibleForViewer", () => {
-    const branch = CARD.slice(CARD.indexOf('tab === "arming"'), CARD.indexOf("<ArmingTab"));
-    expect(branch).toContain("enginePolicyVisibleForViewer(viewer)");
+  // THE SLICE HAS TO START AT THE BRANCH, NOT AT THE FIRST MENTION. The tab
+  // strip carries `tab === "arming" ? tabOn : tabOff` well above the branch, so
+  // a slice from the first occurrence swallows the whole Seating branch — and
+  // then passes on SEATING'S gate while Arming has none. Both M-ARMING-TAB
+  // mutations survived that version of this test, which is what the mutation
+  // harness is for.
+  const armingBranch = () => {
+    const start = CARD.indexOf('} : tab === "arming"') >= 0
+      ? CARD.indexOf('} : tab === "arming"')
+      : CARD.indexOf(') : tab === "arming"');
+    expect(start, "the Arming branch must still be a branch of the tab ternary").toBeGreaterThan(-1);
+    return CARD.slice(start, CARD.indexOf("<ArmingTab"));
+  };
+
+  it("the card's arming branch is guarded by the shared predicate", () => {
+    expect(armingBranch()).toContain("enginePolicyVisibleForViewer(viewer) ? (");
+  });
+
+  it("and by NOTHING WEAKER — no truthy viewer, no email test of its own", () => {
+    // A gate that still looks like a gate is the interesting failure. The
+    // branch must ask the one predicate every other gate asks, so a change to
+    // who may see Engine Policy cannot leave this tab behind.
+    const branch = armingBranch();
+    expect(branch).not.toMatch(/!!viewer\s*\?/);
+    expect(branch).not.toMatch(/\btrue\s*\?\s*\(/);
+    expect(branch).not.toContain("ADMIN_EMAIL");
+  });
+
+  it("and its refusal is the card's own Refused screen", () => {
+    expect(armingBranch().length).toBeGreaterThan(0);
+    const tail = CARD.slice(CARD.indexOf("<ArmingTab"));
+    expect(tail.slice(0, 200)).toContain("<Refused onExit={onExit} />");
   });
 
   it("a staff account never reaches the tab, whichever tab is selected", async () => {
