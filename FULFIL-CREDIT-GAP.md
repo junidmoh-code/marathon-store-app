@@ -89,6 +89,84 @@ are listed in the probe output; none is the Diesel pattern (all had Central stoc
 gap, and were granted a smaller tranche — consistent with same-scan reservations and the
 25 Aug tranche armer, which this probe does not model).
 
+## Phase C — fix at cause (commit 2)
+
+The cause is neither of the three hypotheses in the brief. It is a fourth: the credit
+landed atomically but onto a negative destination cell. So:
+
+- **`applyMovement` (the single /stock writer):** an arrival at a real shelf
+  (received, opening, return, or the +leg of a transfer) now credits from
+  `max(cell, 0)`. The phantom debt it cleared is written into the movement as
+  `negativeCleared: { loc: −n }`. Not clamped, deliberately: `adjustment` (a count's
+  delta is derived from the live negative and must net), a +leg landing at
+  `in_transit` (a negative transit cell is an unmatched-leg signal), and every
+  negative leg (the `sold` / `allowNegative` contract is unchanged).
+- **`releaseShipment`:** the archive under `released/` is written only after re-reading
+  the release movement from the ledger. A release that "succeeds" with no ledger row
+  now stays held and reports a visible failure. Never success-with-no-move.
+- **`strandedTransitSweep` (new Cloud Function, hourly 07:00–19:00 SA):** the timer the
+  hold lane never had. Every unit parked in `stock/in_transit` by the hold lane lands
+  at its destination on its own: a held line once holding is off (it is) or 24 h past
+  its window; an archived-but-unmoved line under the same `rel_{lineId}` movement id
+  the tap uses (a tap that did land is a no-op); an orphan cell after an hour. A
+  deleted product is refused and listed at `/stock_exceptions/strandedTransit` for the
+  owner to place. Server-side writer `functions/lib/admin-movement.cjs` mirrors the
+  client contract (atomic, idempotent, v+1 via read-recheck, negative base). This is
+  not the refill engine and the engine still never writes /stock.
+- **Holding:** `settings/stockHold/config/enabled` was already `false` (owner, 9 Sep).
+  Nothing to switch. With it off the sweep releases anything that ever parks.
+- Deploy: `firebase deploy --only functions:strandedTransitSweep` then
+  `firebase deploy --only hosting:marathon-club`. No rule change is needed (the
+  function uses the Admin SDK; `negativeCleared` is an extra child the movement
+  rule does not constrain).
+
+## Phase D — the qty calculation (commit 3)
+
+Central held exactly 1 at the request instant; need was 3; the engine asked
+`min(need, Central on-hand) = 1`. The gate worked. Pinned in
+`functions/test/fulfil-credit-gap-qty.test.cjs` (full gap when Central can supply it;
+−1 and 0 destination cells ask the same; Central 0 asks nothing). Engine unchanged.
+
+## Phase E — data repair (commit 4)
+
+`scripts/repair-fulfil-credit-gap.mjs`, run 2026-09-11 ~13:15 SA with `--commit`.
+Rule: credit only where the credit movement's own snapshot shows the source deducted,
+the cell was negative before the credit, the product still exists, and no count
+adjustment touched the cell after the credit. Nine real `adjustment` movements, reason
+`fulfil_credit_repair`, ids `fcr_{creditMovementId}`, before-state at
+`/reports/stock_corrections/-P1FA0VhRmYpeV4ODlD5` (and `repair-before-state.json`
+alongside the dump).
+
+| dest | product | size | before | after | +units | repairs |
+|---|---|---|---|---|---|---|
+| hub1 | Lacoste L-Guard Breaker Light Grey Orange | 9 | 0 | 1 | +1 | rel_rrf_onhold_2026-08-15_021 |
+| hub2 | Adidas Samba Kseniaschnaider Colorful | 6 | 1 | 2 | +1 | rel_rrf_onhold_2026-08-30_097 |
+| hub2 | Air Jordan 1 Low Travis Scott Brown Pink | 7 | 1 | 2 | +1 | rel_rrf_-P0aAEj3P9ya_xyg6vCg |
+| hub2 | Adidas Campus Brown Orange | 9 | −1 | 0 | +1 | rel_rrf_-P0a6ntJUkGK_TlrnHiJ |
+| hub2 | Adidas Adizero Adios Pro 4 Black Red | 6 | 2 | 3 | +1 | rel_rrf_-P0aHCj8muf-YSyTqi62 |
+| hub1 | DIESEL slide brown with black C151593 | 7 | 2 | 3 | +1 | rrf_-P10G0Zdv04lAoaBUYRf |
+| hub1 | **Diesel Slide Full Black** | **6** | **0** | **1** | +1 | rrf_-P151_2zzLyo57i8j7Ll |
+| hub2 | Diesel Big D Green Orange | 8 | 0 | 2 | +2 | rrf_-P1A0r_TWD_a0VAs-9tX |
+| hub2 | Diesel slide black | 9 | 2 | 3 | +1 | rrf_-P1Aib3O0pFGYedRT3yr |
+
+Refused (evidence rule): Air Jordan black red hub2 size 5 (merged since — the merge
+counted the cell); Lacoste L-Guard Breaker White orange sole hub1 size 9 and Adidas
+Samba White Core Black hub2 size 4 (a count adjustment touched the cell after the
+credit; the count settled the truth).
+
+**Not repaired, owner decision needed:**
+- The two New Balance 9060 units in `stock/in_transit` (`p1783251345522` sizes 7 and 8).
+  The product record is deleted; the owner released that box on 4 Sep so the pairs are
+  physically at Hub 2, but under which surviving record they were shelved is not in the
+  data (candidates by name: "New balance 9060 creem " `p1784973765907`, "New balance 9060
+  Grey white and cream " `p1783414315014`). The sweep lists them hourly under
+  `/stock_exceptions/strandedTransit` until placed. Once the owner names the record,
+  the fix is one adjustment out of in_transit and one into the twin's hub2 cell.
+- The wider class (Phase B1b): 85 units absorbed in 30 days across every arrival type,
+  ~72 of them outside the refill-request lens (hold releases, clothing CR dispatches,
+  manual transfers, excess rebalances). Above the 50-write cap; the same repair rule
+  applies and the probe already lists them. Ask and it runs.
+
 ## Probe output (verbatim)
 
 # Fulfil-credit gap probe — 2026-09-11T10:57:54.613Z
