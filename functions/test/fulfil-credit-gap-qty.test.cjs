@@ -64,7 +64,8 @@ test("Central at 0 → no intent at all (the gate never writes a card the wareho
 
 test("Health: a sold movement carrying a shortfall is reported under exceptions.shortfalls (the shortage signal that replaced negative cells)", () => {
   const movements = [
-    { type: "sold", productId: PID, size: "6", qty: 3, from: "hub1", shortfall: 2, appliedAt: "2026-09-11T10:00:00.000Z", link: { saleId: "S1" } },
+    // an OFFLINE sale: rung at ts, written later at appliedAt — reported on the sale instant
+    { type: "sold", productId: PID, size: "6", qty: 3, from: "hub1", shortfall: 2, ts: "2026-09-11T10:00:00.000Z", appliedAt: "2026-09-11T13:45:00.000Z", link: { saleId: "S1" } },
     { type: "sold", productId: PID, size: "7", qty: 1, from: "hub1", appliedAt: "2026-09-11T10:00:00.000Z" },   // fully covered — not a shortfall
   ];
   const p = computeRefillPlan({

@@ -215,12 +215,13 @@ export async function applyMovement(movement, opts = {}) {
       // sale is written on the movement as `shortfall`. The sale itself is
       // unchanged; the shortage now lives in the ledger, where a later arrival
       // cannot eat it. Mirrors the POS writer (marathon-pos-app stockMovement.js).
-      let shortfall = 0;
+      let shortfall = 0, soldCleared = 0;
       if (movement.type === "sold") {
         const booked = Math.max(curQty, 0);
         const deducted = Math.min(Number(movement.qty), booked);
         shortfall = Number(movement.qty) - deducted;
         newQty = booked - deducted;
+        soldCleared = curQty < 0 ? curQty : 0;   // a legacy negative the floor wiped — recorded like an arrival's
       }
       // P0 (stock-integrity): only a NEGATIVE delta can be floored — a positive
       // delta (a return / the +to leg of a transfer) always applies, even onto a
@@ -233,7 +234,7 @@ export async function applyMovement(movement, opts = {}) {
       if (d.delta < 0 && newQty < 0 && movement.type !== "sold" && !movement.allowNegative) {
         return { ok: false, reason: "insufficient_stock", location: d.loc, available: curQty, requested: Number(movement.qty) };
       }
-      cells.push({ path, cell, newQty, clearedDebt, shortfall });
+      cells.push({ path, cell, newQty, clearedDebt: clearedDebt || soldCleared, shortfall });
     }
 
     // Per-cell old→new snapshot for the audit trail, keyed by location so a two-cell

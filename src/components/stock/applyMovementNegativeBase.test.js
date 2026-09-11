@@ -136,6 +136,7 @@ describe("negative base — the Diesel Slide case", () => {
     await applyMovement({ type: "sold", productId: PID, size: "6", qty: 1, from: "trophy" }, { maxRetries: 1 });
     expect(cell("trophy").qty).toBe(0);
     expect(only().shortfall).toBe(1);
+    expect(only().negativeCleared).toEqual({ trophy: -2 });   // the floor wiped the legacy debt — say so, as an arrival would
   });
 
   it("a fully covered SALE carries no shortfall key", async () => {

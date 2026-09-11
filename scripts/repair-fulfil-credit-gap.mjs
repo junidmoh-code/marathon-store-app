@@ -55,8 +55,11 @@ const REASON = "fulfil_credit_repair";
 // Adjust's free text, a counted merge removal, a stock audit — EXCEPT the
 // adjustments that are not statements about the shelf: the negative-cell
 // zeroing script, a plain product merge (a relative transfer of booked
-// units) and this repair's own rows — all three compose with the credit. A later ARRIVAL that itself carried `negativeCleared` also settles it:
-// post-fix, the writer has already credited from zero.
+// units) and this repair's own rows — all three compose with the credit. A later movement that itself
+// carried `negativeCleared` also settles it: an ARRIVAL has already credited
+// from zero, and a floored SALE (no negative cells, 2026-09-11) took the cell
+// to 0 while a unit left the shelf — adding the absorbed unit on top would
+// state a unit nobody can vouch for. Refusing is the conservative direction.
 // A plain product MERGE (reason exactly "product_merge") moves the loser's
 // booked units into the survivor's cell — a relative transfer, not a count —
 // so it composes with the credit too; its COUNTED-removal variant
@@ -90,7 +93,7 @@ function settledSince(loc, pid, sizeKey, sinceMs) {
     if (!m || m.productId !== pid || cellKeyOf(m) !== sizeKey || (m.to !== loc && m.from !== loc)) return false;
     if (ms(m.appliedAt || m.ts) <= sinceMs) return false;
     if (m.type === "adjustment") return !NOT_A_COUNT.test(String(m.reason || ""));
-    return !!(m.negativeCleared && typeof m.negativeCleared[loc] === "number");   // a post-fix arrival already cleared the debt
+    return !!(m.negativeCleared && typeof m.negativeCleared[loc] === "number");   // a post-fix arrival or floored sale already cleared the debt
   });
 }
 

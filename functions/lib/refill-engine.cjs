@@ -1729,7 +1729,9 @@ function computeRefillPlan(snapshot) {
   const shortfalls = [];
   for (const m of movements) {
     if (m && m.type === "sold" && Number(m.shortfall) > 0) {
-      shortfalls.push({ loc: m.from || null, pid: m.productId, size: m.size, qty: Number(m.qty) || 0, shortfall: Number(m.shortfall), ts: m.appliedAt || m.ts || null, saleId: (m.link && m.link.saleId) || null });
+      // `ts` is the SALE instant (an offline sale replays later; appliedAt is
+      // the write) — the window the scan reads is on ts, so report and sort on it.
+      shortfalls.push({ loc: m.from || null, pid: m.productId, size: m.size, qty: Number(m.qty) || 0, shortfall: Number(m.shortfall), ts: m.ts || m.appliedAt || null, saleId: (m.link && m.link.saleId) || null });
     }
   }
   shortfalls.sort((a, b) => String(b.ts || "").localeCompare(String(a.ts || "")));
