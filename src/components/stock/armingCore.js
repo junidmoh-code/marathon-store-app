@@ -80,38 +80,56 @@ export const HUB1 = "hub1";
 export const HUB2 = "hub2";
 export const ARMING_HUBS = [HUB1, HUB2];
 
-// The five sections, in the order they are shown. A product may appear in more
-// than one — BOTH_HUBS and NOT_SEATED are different defects and a product can
-// have both — which is why this is a list of flags and not one verdict.
+// ── FOUR PLACES A PRODUCT CAN BE, AND EVERY PRODUCT IS IN EXACTLY ONE ────────
+// Hub 1 · Hub 2 · Both · Nowhere. Exclusive and exhaustive, because that is what
+// makes them TABS rather than filters: four counts that add up to the
+// catalogue, and no product that is in two lists or in none. "Both" is the
+// defect — slides are split across the hubs on purpose and arming must never
+// spread a line to both.
+//
+// WHY "NOWHERE" IS A TAB AND NOT AN ABSENCE. It is where a quiet product is
+// diagnosed: switched off by hand, deactivated, or simply never armed. The
+// first build dropped those 960 products from the screen entirely, and there
+// was no way to reach one except by already knowing the answer.
 export const BUCKET = {
   BOTH_HUBS: "both_hubs",
-  NOT_SEATED: "not_seated",
-  SUPPRESSED: "suppressed",
   HUB1_ONLY: "hub1_only",
   HUB2_ONLY: "hub2_only",
+  NOWHERE: "nowhere",
 };
 
+// Defect first. The two inventories next, the quiet pile last.
 export const BUCKET_ORDER = [
-  BUCKET.BOTH_HUBS, BUCKET.NOT_SEATED, BUCKET.SUPPRESSED, BUCKET.HUB1_ONLY, BUCKET.HUB2_ONLY,
+  BUCKET.BOTH_HUBS, BUCKET.HUB1_ONLY, BUCKET.HUB2_ONLY, BUCKET.NOWHERE,
 ];
 
 export const BUCKET_TITLE = {
-  [BUCKET.BOTH_HUBS]: "Armed at both hubs",
-  [BUCKET.NOT_SEATED]: "Armed but not seated",
-  [BUCKET.SUPPRESSED]: "Armed, suppressed by seating",
-  [BUCKET.HUB1_ONLY]: "Hub 1 only",
-  [BUCKET.HUB2_ONLY]: "Hub 2 only",
+  [BUCKET.BOTH_HUBS]: "Both hubs",
+  [BUCKET.HUB1_ONLY]: "Hub 1",
+  [BUCKET.HUB2_ONLY]: "Hub 2",
+  [BUCKET.NOWHERE]: "Nowhere",
 };
 
-// A/B/C are defects and open themselves. D/E are the full inventory — over a
-// thousand rows each — and stay shut until asked for.
-export const BUCKET_OPEN_BY_DEFAULT = {
-  [BUCKET.BOTH_HUBS]: true,
-  [BUCKET.NOT_SEATED]: true,
-  [BUCKET.SUPPRESSED]: true,
-  [BUCKET.HUB1_ONLY]: false,
-  [BUCKET.HUB2_ONLY]: false,
+// ── AND THE FACTS THAT ARE NOT A PLACE ──────────────────────────────────────
+// "Armed but not seated" and "armed then switched off" were sections of their
+// own in the first build. They are not places — they are things true of a
+// product that is already in one of the four — so they are flags on the row
+// instead. Nothing is lost: same products, same counts, one navigation instead
+// of five overlapping lists.
+export const FLAG = {
+  NOT_SEATED: "not_seated",
+  SUPPRESSED: "suppressed",
+  DEACTIVATED: "deactivated",
+  UNDECIDED: "undecided",
 };
+
+export const FLAG_LABEL = {
+  [FLAG.NOT_SEATED]: "Not seated",
+  [FLAG.SUPPRESSED]: "Switched off",
+  [FLAG.DEACTIVATED]: "Deactivated",
+  [FLAG.UNDECIDED]: "Checking",
+};
+
 
 // ── THE PHANTOM ──────────────────────────────────────────────────────────────
 // One unit of every size this product declares, at a location id that cannot
@@ -215,20 +233,24 @@ function undecidedHere(ctx, hub, pid) {
   return seatingAt(lifted, hub, pid).seated;
 }
 
-// ── THE BUCKETS ──────────────────────────────────────────────────────────────
-// Pure: two hub answers in, a list of section keys out. Nothing reads, nothing
-// renders, and the classification can be argued with in a test rather than in
-// a screenshot.
-export function bucketsFor(h1, h2) {
+// ── THE BUCKET ───────────────────────────────────────────────────────────────
+// Pure: two hub answers in, ONE bucket out. Exclusive and exhaustive, so the
+// four counts add up to the catalogue and no product can be missing from every
+// tab.
+export function bucketFor(h1, h2) {
+  if (h1.armed && h2.armed) return BUCKET.BOTH_HUBS;
+  if (h1.armed) return BUCKET.HUB1_ONLY;
+  if (h2.armed) return BUCKET.HUB2_ONLY;
+  return BUCKET.NOWHERE;
+}
+
+// The facts that are not a place, in the order they are shown on the row.
+export function flagsFor(h1, h2) {
   const out = [];
-  if (h1.armed && h2.armed) out.push(BUCKET.BOTH_HUBS);
   // Armed where nothing is on the shelf — the engine will move stock into a hub
-  // that does not carry the line. Reported per hub, because it is a fact about
-  // a hub and not about the product.
-  if ((h1.armed && !h1.hasCell) || (h2.armed && !h2.hasCell)) out.push(BUCKET.NOT_SEATED);
-  // A policy or rule would arm it and an explicit target:0 row kills it. Its own
-  // state, so a quiet hub is diagnosed in one look rather than read as "never
-  // armed".
+  // that does not carry the line.
+  if ((h1.armed && !h1.hasCell) || (h2.armed && !h2.hasCell)) out.push(FLAG.NOT_SEATED);
+  // A policy or rule would arm it and an explicit target:0 row kills it.
   //
   // ANY EXPLICIT ZERO, not only the rows this card's Switch off wrote. The off
   // switch IS the row — `source: "seating_off"` is a stamp saying who wrote it,
@@ -236,9 +258,13 @@ export function bucketsFor(h1, h2) {
   // as completely. Keying on the stamp would hide every suppression the
   // Decision Queue's Exclude button made (NoTargetQueue.jsx:325 writes the same
   // row with no such stamp), which is most of them.
-  if (suppressed(h1) || suppressed(h2)) out.push(BUCKET.SUPPRESSED);
-  if (h1.armed && !h2.armed) out.push(BUCKET.HUB1_ONLY);
-  if (h2.armed && !h1.armed) out.push(BUCKET.HUB2_ONLY);
+  if (suppressed(h1) || suppressed(h2)) out.push(FLAG.SUPPRESSED);
+  // A finished line. The engine refuses it above every other branch, so it is
+  // armed nowhere by definition — and worth SEEING in Nowhere rather than
+  // silently dropped, because "why is this quiet" is the question that tab
+  // exists to answer.
+  if (h1.deactivated || h2.deactivated) out.push(FLAG.DEACTIVATED);
+  if (h1.undecided || h2.undecided) out.push(FLAG.UNDECIDED);
   return out;
 }
 
@@ -247,21 +273,18 @@ export function suppressed(h) {
 }
 
 // ── THE INDEX ────────────────────────────────────────────────────────────────
-// One pass over the catalogue. Returns only products that land in at least one
-// section — a product neither hub is armed for is not an arming fact and does
-// not belong on an arming screen.
+// One pass over the catalogue. Returns EVERY product, because the four buckets
+// are exhaustive: a product neither hub is armed for belongs in Nowhere, which
+// is where somebody goes to ask why nothing is being sent. The first build
+// dropped those 960 products and there was no way to reach one.
 //
 // `pids` is passed in rather than taken from ctx.products so a caller can scope
 // the pass (a test, or a future filter) without rebuilding the context.
 export function armingIndex(ctx, pids) {
   const rows = [];
   const counts = Object.fromEntries(BUCKET_ORDER.map((b) => [b, 0]));
-  // EVERY undecided product, not only the ones a section claims. A product
-  // unarmed at both hubs on the stock we hold lands in NO bucket at all — and
-  // it is exactly the product a resolve pass might arm. Collecting them from
-  // `rows` afterwards would silently drop them and leave the residue
-  // un-resolvable. (The count and the list are built in the same place so they
-  // cannot disagree.)
+  // Every undecided product, collected in the SAME pass as the count so the two
+  // cannot disagree.
   const undecidedPids = [];
   let undecided = 0;
   let deactivatedSkipped = 0;
@@ -274,15 +297,12 @@ export function armingIndex(ctx, pids) {
     if (h1.undecided) undecided += 1;
     if (h2.undecided) undecided += 1;
     if (h1.undecided || h2.undecided) undecidedPids.push(pid);
-    const buckets = bucketsFor(h1, h2);
-    if (!buckets.length) {
-      // A deactivated product that WOULD have been armed is worth counting, so
-      // the screen can say how many armed answers the flag is suppressing
-      // rather than quietly shrinking.
-      if ((h1.deactivated || h2.deactivated) && (h1.policyWouldArm || h2.policyWouldArm)) deactivatedSkipped += 1;
-      continue;
-    }
-    for (const b of buckets) counts[b] += 1;
+    const bucket = bucketFor(h1, h2);
+    const flags = flagsFor(h1, h2);
+    // A deactivated product that WOULD have been armed is worth counting, so
+    // the screen can say how many armed answers the flag is holding back.
+    if ((h1.deactivated || h2.deactivated) && (h1.policyWouldArm || h2.policyWouldArm)) deactivatedSkipped += 1;
+    counts[bucket] += 1;
     rows.push({
       pid,
       name: p.name || pid,
@@ -291,7 +311,8 @@ export function armingIndex(ctx, pids) {
       photoUrl: p.photoUrl || "",
       hub1: h1,
       hub2: h2,
-      buckets,
+      bucket,
+      flags,
       // Lower-cased once, here, so the search box filters 4,000 rows on every
       // keystroke without re-lowering 12,000 strings each time.
       haystack: `${p.name || ""} ${p.category || ""} ${p.categoryKey || ""} ${p.brand || ""} ${p.sku || ""}`.toLowerCase(),
@@ -312,7 +333,7 @@ export function armingIndex(ctx, pids) {
 // so a keystroke re-filters without re-resolving a single target.
 export function sectionRows(rows, bucket, query) {
   const q = String(query || "").trim().toLowerCase();
-  const inBucket = (rows || []).filter((r) => r.buckets.includes(bucket));
+  const inBucket = (rows || []).filter((r) => r.bucket === bucket);
   if (!q) return inBucket;
   // Every word must match somewhere — the same "all terms" rule the product
   // search uses, so a two-word query narrows instead of widening.

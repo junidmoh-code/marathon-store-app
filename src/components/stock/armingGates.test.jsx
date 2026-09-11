@@ -63,6 +63,7 @@ vi.mock("./useStock", () => ({
 }));
 
 const ArmingTab = (await import("./ArmingTab.jsx")).default;
+const { SeatRow } = await import("./SeatingTab.jsx");
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 
 const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
@@ -171,6 +172,14 @@ describe("GATE 2d — the Arming branch refuses on its own", () => {
     await card(STAFF);
     expect(READS).toEqual([]);
     expect(callableMock).not.toHaveBeenCalled();
+  });
+
+  it("…and mounts no SeatRow, so none of its write buttons can exist", async () => {
+    // The tab EDITS now. A refusal that stopped at the list while still
+    // mounting the action rows would be a refusal of the reading and not of the
+    // writing.
+    const tree = await card(STAFF);
+    expect(tree.root.findAllByType(SeatRow).length).toBe(0);
   });
 });
 
