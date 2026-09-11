@@ -20,7 +20,7 @@ import React, { useMemo, useState } from "react";
 import { ref, update, set } from "firebase/database";
 import { database } from "../../firebase";
 import {
-  useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
+  useStockExceptions, useStrandedTransit, useEngineShadow, useEngineOpen, useEngineRuns,
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
   useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
@@ -260,6 +260,18 @@ export default function HealthView({ products = [], onExit }) {
   // the whole Inventory Health visit. (Sonnet substitute review, PR #361.)
   const [solveUndoables, setSolveUndoables] = useState([]);
   const exceptions = useStockExceptions();
+  // Units the hold lane parked in stock/in_transit that the hourly sweep could
+  // NOT land by itself (a deleted product, a phantom line) — the one place
+  // those refusals are read (FULFIL-CREDIT-GAP.md; Fable-vs-spec review, PR #602).
+  const strandedState = useStrandedTransit();
+  const strandedTransit = strandedState.value;
+  const strandedKnown = strandedState.settled && !strandedState.error && !!strandedTransit;
+  const strandedRows = useMemo(() => [
+    ...((strandedTransit?.refusals) || []).map((r) => ({ ...r, kind: "refused" })),
+    ...((strandedTransit?.failures) || []).map((r) => ({ ...r, kind: "failed" })),
+    ...((strandedTransit?.pending) || []).map((r) => ({ ...r, kind: "pending" })),
+  ], [strandedTransit]);
+  const strandedNeedsHuman = strandedRows.filter((r) => r.kind !== "pending").length;
   const shadow = useEngineShadow();
   const openEngine = useEngineOpen();
   const runs = useEngineRuns(8);
@@ -637,6 +649,31 @@ export default function HealthView({ products = [], onExit }) {
             <NoTargetQueue products={products} />
           </DetailShell>
         );
+      case "strandedTransit": {
+        const HUB_NAMES = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+        return (
+          <DetailShell title="Stranded In Transit"
+            sub={strandedKnown ? `Hourly sweep · last ${fmtTs(strandedTransit.computedAt)} · ${strandedTransit.released || 0} released last run` : strandedState.error ? "Could not read the sweep's report" : strandedState.settled ? "The hourly sweep has not run yet" : "Loading…"}
+            count={strandedKnown ? strandedRows.length : null} onBack={back}>
+            {strandedKnown && strandedRows.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>
+                Nothing parked that the sweep cannot land 🎉
+              </div>
+            )}
+            {strandedRows.map((r) => (
+              <ProductCard key={`${r.kind}|${r.lineId}`} photo={byId.get(r.productId)?.photoUrl}
+                name={r.productName || nameOf(r.productId)}
+                badges={<Badge tone={r.kind === "pending" ? AMBER : RED}>{r.kind === "pending" ? "PENDING" : r.kind === "failed" ? "FAILED" : "NEEDS A DECISION"}</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.5 }}>
+                  <div>Size {r.size || r.sizeKey} · {r.qty ?? r.inTransitQty ?? "?"} unit(s) · to {HUB_NAMES[r.dest] || r.dest || "—"}{r.shipmentId ? ` · shipment ${r.shipmentId}` : ""}</div>
+                  <div style={{ color: "rgba(255,255,255,.55)" }}>{r.why || r.reason}</div>
+                  <div style={{ color: "rgba(255,255,255,.35)", fontSize: 11 }}>{r.productId} · {r.lineId}</div>
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       case "negative": {
         // LIVE data (bugfix): fixed cells disappear instantly instead of
         // lingering in the up-to-15-min-old scan snapshot.
@@ -787,6 +824,10 @@ export default function HealthView({ products = [], onExit }) {
                         value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}
                         tone={(liveNegatives == null ? count("negativeCells") : liveNegatives.length) ? RED : GREEN}
                         sub="Live count — one-tap fix" onClick={() => setScreen("negative")} />
+              <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}
+                        tone={!strandedKnown ? GRAY : strandedNeedsHuman ? RED : strandedRows.length ? AMBER : GREEN}
+                        sub={!strandedKnown ? (strandedState.error ? "Report unreadable" : strandedState.settled ? "Sweep has not run yet" : "Loading…") : strandedNeedsHuman ? "Parked units the hourly sweep cannot land" : "Hold-lane units land on their own"}
+                        onClick={() => setScreen("strandedTransit")} />
               <StatCard label="Stuck Refills" value={count("stuckRefills")} tone={count("stuckRefills") ? RED : GREEN}
                         sub={`Waiting > ${config?.staleIntentHours || 48}h`} onClick={() => setScreen("activity")} />
             </div>

@@ -147,6 +147,26 @@ function makeFakeDb(initial = {}, hooks = {}) {
           return undefined;
         },
         child(k) { return api.ref(`${path}/${k}`); },
+        // transaction(fn): the RTDB wire shape a Cloud Function sees — the
+        // FIRST callback runs on null (no local cache). Returning undefined
+        // THERE aborts at once — the server is never asked (the cold-null
+        // trap, guarded-txn.cjs). A proposed write is a CAS on the server
+        // value: a mismatch re-invokes fn with the real value. Modelled
+        // exactly so: fn(null); undefined → abort; else if the real value is
+        // not null, fn(real). Atomic by construction here — the concurrency a
+        // test wants must be injected via beforeRead hooks on the reads
+        // AROUND the transaction, never inside it.
+        async transaction(fn) {
+          if (hooks.beforeRead) await hooks.beforeRead(path, state);
+          const real = readAt(state.root, path);
+          let next = fn(null);
+          if (next === undefined) return { committed: false, snapshot: makeSnapshot(self.key, real), coldAbort: true };
+          if (real !== null) next = fn(real === undefined ? null : structuredClone(real));
+          if (next === undefined) return { committed: false, snapshot: makeSnapshot(self.key, real) };
+          state.root = writeAt(state.root, path, next);
+          if (hooks.afterWrite) await hooks.afterWrite(path, next, state);
+          return { committed: true, snapshot: makeSnapshot(self.key, readAt(state.root, path)) };
+        },
         push() {
           pushCounter += 1;
           const key = `-fake${String(pushCounter).padStart(6, "0")}`;

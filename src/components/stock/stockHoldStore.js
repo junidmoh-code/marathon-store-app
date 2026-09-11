@@ -182,6 +182,21 @@ export async function releaseShipment({ dest, shipment, skipLineIds = new Set(),
       out.failures.push({ lineId: line.lineId, productName: liveLine.productName, reason: res.reason || "write failed" });
       continue;
     }
+    // NEVER SUCCESS-WITH-NO-MOVE (FULFIL-CREDIT-GAP.md, 2026-09-11): two lines
+    // of the 4 Sep Hub 2 shipment are archived as released with NO release
+    // movement in the ledger and their units still parked in in_transit. The
+    // archive must only ever be written on the strength of a movement that
+    // is actually there — re-read the ledger row and refuse the bookkeeping
+    // if it is missing, so the line stays held and the failure is visible.
+    let recorded = null;
+    try { recorded = await one(`stock_movements/${relId}`); } catch (err) {
+      out.failures.push({ lineId: line.lineId, productName: liveLine.productName, reason: `could not confirm the release movement (${String(err?.message || err)}) — release again to retry` });
+      continue;
+    }
+    if (!recorded || recorded.to !== dest) {
+      out.failures.push({ lineId: line.lineId, productName: liveLine.productName, reason: "the release movement was not recorded — nothing archived; release again" });
+      continue;
+    }
 
     const now = serverNowIso();
     const updates = {
