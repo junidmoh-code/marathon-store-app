@@ -22,9 +22,13 @@
 //     no-op (offline re-sync, double-tap, retried network all collapse to one).
 //   • Paired write: all touched cells + the movement are one atomic update — all-or-
 //     nothing. A rejected attempt writes NOTHING (safe to retry).
-//   • Negative floor: only the `sold` decrement may drive a cell negative (already-
-//     happened event → surfaces as an accuracy signal, not a hidden clamp). Transfers,
-//     receives and adjustments are blocked from going negative.
+//   • Negative floor: a `sold` never drives a cell below zero (owner decision
+//     2026-09-11) — it deducts what is booked and writes the uncovered part as
+//     `shortfall` on the movement, so the accuracy signal lives in the ledger
+//     where a later arrival cannot eat it. Transfers, receives and adjustments
+//     are refused when they would overdraw; the one deliberate exception is a
+//     caller passing `allowNegative` (a customer-order dispatch: the parcel has
+//     physically left, so the hub's shortage is recorded as it is).
 //   • Negative BASE (2026-09-11, the Diesel Slide incident): an ARRIVAL at a real
 //     shelf — received, opening, return, or the +leg of a relocation — lands on
 //     max(cell, 0), never on top of a negative. See NEGATIVE BASE below.
@@ -207,7 +211,20 @@ export async function applyMovement(movement, opts = {}) {
       // credits from zero when the cell is negative; the cleared debt is
       // recorded on the movement.
       const clearedDebt = curQty < 0 && clampsNegativeBase(movement, d.delta, d.loc) ? curQty : 0;
-      const newQty = (curQty - clearedDebt) + d.delta;
+      let newQty = (curQty - clearedDebt) + d.delta;
+      // NO NEGATIVE CELLS (owner decision 2026-09-11): a `sold` deducts what is
+      // BOOKED and no more — the cell floors at 0 and the uncovered part of the
+      // sale is written on the movement as `shortfall`. The sale itself is
+      // unchanged; the shortage now lives in the ledger, where a later arrival
+      // cannot eat it. Mirrors the POS writer (marathon-pos-app stockMovement.js).
+      let shortfall = 0, soldCleared = 0;
+      if (movement.type === "sold") {
+        const booked = Math.max(curQty, 0);
+        const deducted = Math.min(Number(movement.qty), booked);
+        shortfall = Number(movement.qty) - deducted;
+        newQty = booked - deducted;
+        soldCleared = curQty < 0 ? curQty : 0;   // a legacy negative the floor wiped — recorded like an arrival's
+      }
       // P0 (stock-integrity): only a NEGATIVE delta can be floored — a positive
       // delta (a return / the +to leg of a transfer) always applies, even onto a
       // cell already negative (raising −3 to −2 is an improvement; the old
@@ -219,18 +236,20 @@ export async function applyMovement(movement, opts = {}) {
       if (d.delta < 0 && newQty < 0 && movement.type !== "sold" && !movement.allowNegative) {
         return { ok: false, reason: "insufficient_stock", location: d.loc, available: curQty, requested: Number(movement.qty) };
       }
-      cells.push({ path, cell, newQty, clearedDebt });
+      cells.push({ path, cell, newQty, clearedDebt: clearedDebt || soldCleared, shortfall });
     }
 
     // Per-cell old→new snapshot for the audit trail, keyed by location so a two-cell
     // relocation (transfer) is unambiguous. Derived from the SAME reads that compute
     // the write, so the ledger's before/after can never disagree with the qty it wrote.
     const before = {}, after = {}, negativeCleared = {};
+    let shortfall = 0;
     cells.forEach((c, i) => {
       const loc = deltas[i].loc;
       before[loc] = c.cell && typeof c.cell.qty === "number" ? c.cell.qty : 0;
       after[loc]  = c.newQty;
       if (c.clearedDebt) negativeCleared[loc] = c.clearedDebt;   // the phantom debt this arrival wiped
+      if (c.shortfall) shortfall += c.shortfall;                 // the part of a sale the books could not cover
     });
 
     const now = serverNowIso();
@@ -252,6 +271,7 @@ export async function applyMovement(movement, opts = {}) {
       // Present ONLY when a negative base was cleared — RTDB stores no empty
       // object, and an absent key is the honest "nothing was cleared".
       ...(Object.keys(negativeCleared).length ? { negativeCleared } : {}),
+      ...(shortfall > 0 ? { shortfall } : {}),
     };
 
     const updates = {};

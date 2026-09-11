@@ -1722,6 +1722,35 @@ function computeRefillPlan(snapshot) {
   const onlyInHub2 = [];
   const excess = [];        // network-wide: hub2 (any surplus) + stores (significant surplus)
   const negativeCells = [];
+  // SHORTFALLS (owner decision 2026-09-11): a sale never drives a cell below
+  // zero any more — the uncovered part of a sale is written on the `sold`
+  // movement as `shortfall`. This is the shortage signal the negative cell used
+  // to be, read from the ledger window the scan already holds. Reporting only.
+  // Aggregated per CELL (a flow figure over the scan's ledger window, not a
+  // stock figure): how many sold units the books did not cover, how many
+  // return units were held back for the same reason (`shortfallWithheld`),
+  // how many events, and the last sale instant (`ts`, not appliedAt — an
+  // offline sale replays later and the window is on ts). Deactivated or
+  // merged-away products are skipped like every other exception list.
+  const shortfallByCell = new Map();
+  for (const m of movements) {
+    if (!m || !m.productId) continue;
+    const sold = m.type === "sold" && Number(m.shortfall) > 0;
+    const held = m.type === "return" && Number(m.shortfallWithheld) > 0;
+    if (!sold && !held) continue;
+    const loc = (sold ? m.from : m.to) || null;
+    const prod = products?.[m.productId];
+    if (!loc || (prod && (isDeactivated(prod) || prod.mergedInto))) continue;
+    const k = `${loc}|${m.productId}|${encodeSizeKey(m.size)}`;
+    const t = shortfallByCell.get(k) || { loc, pid: m.productId, size: m.size == null ? null : String(m.size), sold: 0, uncovered: 0, withheldReturns: 0, events: 0, lastTs: null };
+    if (sold) { t.sold += Number(m.qty) || 0; t.uncovered += Number(m.shortfall); }
+    if (held) t.withheldReturns += Number(m.shortfallWithheld);
+    t.events += 1;
+    const ts = m.ts || m.appliedAt || null;
+    if (ts && (!t.lastTs || ts > t.lastTs)) t.lastTs = ts;
+    shortfallByCell.set(k, t);
+  }
+  const shortfalls = [...shortfallByCell.values()].sort((a, b) => String(b.lastTs || "").localeCompare(String(a.lastTs || "")));
   // Outstanding deficit per (pid,size) across ALL destinations — surplus at one
   // location is NOT excess while another location starves for the same size
   // (bugfix 2026-07-12, the "Cortez contradiction": hub2 XL flagged for return
@@ -2052,6 +2081,7 @@ function computeRefillPlan(snapshot) {
       onlyInHub2: cap(onlyInHub2),
       excess: cap(excess),
       negativeCells: cap(negativeCells),
+      shortfalls: cap(shortfalls),
     },
   };
 }

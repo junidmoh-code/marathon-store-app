@@ -649,6 +649,25 @@ export default function HealthView({ products = [], onExit }) {
             <NoTargetQueue products={products} />
           </DetailShell>
         );
+      case "shortfalls": {
+        const rows = exceptions?.shortfalls?.items || [];
+        return (
+          <DetailShell title="Sale Shortfalls" sub={`A sale or layby rang more units than the cell held. The sale stands; the cell stopped at 0; the difference is recorded on the movement. Per cell, over the scan's ledger window (a flow, not a stock figure). Count the shelf.${count("shortfalls") > rows.length ? ` Showing the newest ${rows.length} of ${count("shortfalls")}.` : ""}`} count={count("shortfalls")} onBack={back}>
+            {rows.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>No recent shortfalls 🎉</div>
+            )}
+            {groupByProduct(rows).map(([pid, prows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)} badges={<Badge tone={AMBER}>SHORTFALL</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {prows.map((r, i) => (
+                    <div key={i}>{locLabel(r.loc)} · size {r.size} · {r.uncovered} of {r.sold} sold uncovered{r.withheldReturns ? ` · ${r.withheldReturns} return unit(s) held back` : ""} · {r.events} event(s) · last {fmtTs(r.lastTs)}</div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       case "strandedTransit": {
         const HUB_NAMES = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
         return (
@@ -824,6 +843,8 @@ export default function HealthView({ products = [], onExit }) {
                         value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}
                         tone={(liveNegatives == null ? count("negativeCells") : liveNegatives.length) ? RED : GREEN}
                         sub="Live count — one-tap fix" onClick={() => setScreen("negative")} />
+              <StatCard label="Sale Shortfalls" value={count("shortfalls")} tone={count("shortfalls") ? AMBER : GREEN}
+                        sub="Recent sales the books could not cover — a sale no longer takes a cell negative" onClick={() => setScreen("shortfalls")} />
               <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}
                         tone={!strandedKnown ? GRAY : strandedNeedsHuman ? RED : strandedRows.length ? AMBER : GREEN}
                         sub={!strandedKnown ? (strandedState.error ? "Report unreadable" : strandedState.settled ? "Sweep has not run yet" : "Loading…") : strandedNeedsHuman ? "Parked units the hourly sweep cannot land" : "Hold-lane units land on their own"}

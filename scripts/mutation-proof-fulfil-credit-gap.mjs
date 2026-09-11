@@ -152,6 +152,14 @@ const MUTATIONS = [
     nodeTests: SWEEP_TESTS,
   },
   {
+    id: "M-SOLD-FLOOR",
+    guard: "a sale never drives a cell below zero — the uncovered part is the ledger's shortfall",
+    file: APPLY,
+    from: `        newQty = booked - deducted;`,
+    to: `        newQty = curQty - Number(movement.qty);`,
+    tests: NEG_TESTS,
+  },
+  {
     id: "M-QTY-SOURCE-CAP",
     guard: "the ask is min(need, Central on-hand) — never more than Central holds",
     file: ENGINE,

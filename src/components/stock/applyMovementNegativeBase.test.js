@@ -119,6 +119,33 @@ describe("negative base — the Diesel Slide case", () => {
     expect(Object.keys(ledger())).toEqual([]);            // and no row that would make the server think it is done
   });
 
+  it("a SALE never drives a cell below zero — it deducts what is booked and writes the shortfall on the movement", async () => {
+    seed("hub1", 1);
+    const res = await applyMovement({ type: "sold", productId: PID, size: "6", qty: 3, from: "hub1" }, { maxRetries: 1 });
+    expect(res.ok).toBe(true);
+    expect(cell("hub1").qty).toBe(0);
+    const mv = only();
+    expect(mv.qty).toBe(3);                               // the SALE is unchanged
+    expect(mv.before).toEqual({ hub1: 1 });
+    expect(mv.after).toEqual({ hub1: 0 });
+    expect(mv.shortfall).toBe(2);                         // the books covered 1 of 3
+  });
+
+  it("a SALE on a legacy negative cell lands at 0 and reports the whole sale as shortfall", async () => {
+    seed("trophy", -2);
+    await applyMovement({ type: "sold", productId: PID, size: "6", qty: 1, from: "trophy" }, { maxRetries: 1 });
+    expect(cell("trophy").qty).toBe(0);
+    expect(only().shortfall).toBe(1);
+    expect(only().negativeCleared).toEqual({ trophy: -2 });   // the floor wiped the legacy debt — say so, as an arrival would
+  });
+
+  it("a fully covered SALE carries no shortfall key", async () => {
+    seed("hub1", 3);
+    await applyMovement({ type: "sold", productId: PID, size: "6", qty: 1, from: "hub1" }, { maxRetries: 1 });
+    expect(cell("hub1").qty).toBe(2);
+    expect(only().shortfall).toBeUndefined();
+  });
+
   it("the negative floor on the SOURCE leg is unchanged — a transfer out of an empty cell still refuses", async () => {
     seed("central", 0); seed("hub1", -1);
     const res = await applyMovement({ type: "transfer_out", productId: PID, size: "6", qty: 1, from: "central", to: "hub1" }, { maxRetries: 1 });
