@@ -241,6 +241,13 @@ export function suppressed(h) {
 export function armingIndex(ctx, pids) {
   const rows = [];
   const counts = Object.fromEntries(BUCKET_ORDER.map((b) => [b, 0]));
+  // EVERY undecided product, not only the ones a section claims. A product
+  // unarmed at both hubs on the stock we hold lands in NO bucket at all — and
+  // it is exactly the product a resolve pass might arm. Collecting them from
+  // `rows` afterwards would silently drop them and leave the residue
+  // un-resolvable. (The count and the list are built in the same place so they
+  // cannot disagree.)
+  const undecidedPids = [];
   let undecided = 0;
   let deactivatedSkipped = 0;
 
@@ -251,6 +258,7 @@ export function armingIndex(ctx, pids) {
     const h2 = hubArming(ctx, HUB2, pid);
     if (h1.undecided) undecided += 1;
     if (h2.undecided) undecided += 1;
+    if (h1.undecided || h2.undecided) undecidedPids.push(pid);
     const buckets = bucketsFor(h1, h2);
     if (!buckets.length) {
       // A deactivated product that WOULD have been armed is worth counting, so
@@ -276,7 +284,7 @@ export function armingIndex(ctx, pids) {
   }
 
   rows.sort((a, b) => a.name.localeCompare(b.name));
-  return { rows, counts, undecided, deactivatedSkipped };
+  return { rows, counts, undecided, undecidedPids, deactivatedSkipped };
 }
 
 // Rows for one section, filtered by the search box. Separated from armingIndex

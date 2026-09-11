@@ -79,6 +79,7 @@ import {
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
+import ArmingTab from "./ArmingTab";
 import { writableRow, shapeOfRow } from "./targetOverride";
 import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
@@ -234,6 +235,13 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // verified viewer, and it re-checks that condition for itself below:
   // three independent gates, exactly as the card's other contents have.
   const [tab, setTab] = useState("categories");
+  // The product the Arming tab handed to Seating, if any. A PRODUCT id and
+  // nothing else — see SeatingTab's initialPid. Cleared on the way INTO Arming
+  // so that leaving and re-entering Seating by hand starts blank; the tabs are
+  // rendered conditionally, so a second hand-off of the same product remounts
+  // SeatingTab and re-opens it rather than silently doing nothing.
+  const [seatPid, setSeatPid] = useState("");
+  const openSeating = useCallback((pid) => { setSeatPid(pid); setTab("seating"); }, []);
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
   const [rowsMeta, setRowsMeta] = useState(null); // { total, truncated, limit, loc, locations, byLocation }
   const [rowDraft, setRowDraft] = useState({});
@@ -799,6 +807,10 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
           <div style={{ display: "flex", gap: 8, marginBottom: "1rem" }}>
             <button onClick={() => setTab("categories")} style={tab === "categories" ? tabOn : tabOff}>Categories</button>
             <button onClick={() => setTab("seating")} style={tab === "seating" ? tabOn : tabOff}>Seating</button>
+            {/* ARMING — the same policy question asked of the whole catalogue at
+                once: which products is each hub holding, and where do the two
+                answers overlap when they must not. */}
+            <button onClick={() => { setSeatPid(""); setTab("arming"); }} style={tab === "arming" ? tabOn : tabOff}>Arming</button>
           </div>
         )}
 
@@ -817,7 +829,25 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
                 </div>
                 <button onClick={onExit} style={bGhost}>Back</button>
               </div>
-              <SeatingTab products={products} viewer={viewer} flash={flash} />
+              <SeatingTab products={products} viewer={viewer} flash={flash} initialPid={seatPid} />
+            </>
+          ) : <Refused onExit={onExit} />
+        ) : tab === "arming" && !open ? (
+          // GATE 2d. The card's fourth independent check, on the Arming tab
+          // itself. EnginePolicyAuthed already only mounts for a verified
+          // viewer, App.jsx gates the tile and the route, and the Seating tab
+          // asks for itself — this asks again, so that deleting any ONE of the
+          // four leaves the other three working. Mutation-proved, not asserted.
+          enginePolicyVisibleForViewer(viewer) ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Arming</h1>
+                  <div style={{ marginTop: 6, color: "#6b7280", fontSize: ".8rem" }}>What each hub is holding</div>
+                </div>
+                <button onClick={onExit} style={bGhost}>Back</button>
+              </div>
+              <ArmingTab products={products} onOpenSeating={openSeating} />
             </>
           ) : <Refused onExit={onExit} />
         ) : open ? (
