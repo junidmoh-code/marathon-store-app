@@ -315,3 +315,26 @@ test("applyMovementAdmin: idempotent on the movement id, bumps v by one, atomic 
   assert.deepEqual((await val(db, "stock_movements/rel_m")).before, { in_transit: 2, hub1: 0 });
   assert.equal(await val(db, "stock_movements/rel_m/negativeCleared"), null);
 });
+
+test("applyMovementAdmin: a raw size 'Free Size' with no sizeKey lands on the '_' cell (the client's fold)", async () => {
+  const db = makeFakeDb({ stock: { hub1: { hat: { _: { qty: -1, v: 0, mv: "s", lastType: "sold" } } } } });
+  const res = await applyMovementAdmin(db, { type: "adjustment", productId: "hat", size: "Free Size", qty: 1, to: "hub1", from: null, reason: "fuzz", movementId: "adj_hat", actor: "system:test" }, { nowIso: "2026-09-11T00:00:00.000Z" });
+  assert.equal(res.ok, true);
+  assert.equal((await cell(db, "hub1", "hat", "_")).qty, 0);
+  assert.equal(await val(db, "stock/hub1/hat/Free_Size"), null);
+});
+
+test("applyMovementAdmin: a cell already stamped by this movement is skipped — the leg is never applied twice", async () => {
+  // the debit leg landed on a crashed attempt: 2 → 1, stamped; the hub leg and the row did not
+  const db = makeFakeDb({ stock: {
+    in_transit: { p: { 6: { qty: 1, v: 4, mv: "rel_m", relMv: "rel_m", relBefore: 2, lastType: "transfer_in" } } },
+    hub1: { p: { 6: { qty: 0, v: 0, mv: "x", lastType: "sold" } } },
+  } });
+  const res = await applyMovementAdmin(db, { type: "transfer_in", productId: "p", size: "6", qty: 1, from: "in_transit", to: "hub1", movementId: "rel_m", actor: "system:test" }, { nowIso: "2026-09-11T00:00:00.000Z" });
+  assert.equal(res.ok, true);
+  assert.equal((await cell(db, "in_transit", "p", "6")).qty, 1);   // NOT debited again
+  assert.equal((await cell(db, "in_transit", "p", "6")).v, 4);
+  assert.equal((await cell(db, "hub1", "p", "6")).qty, 1);
+  assert.deepEqual((await val(db, "stock_movements/rel_m")).before, { in_transit: 2, hub1: 0 });
+  assert.equal(await val(db, "stock/in_transit/p/6/relMv"), null);   // stamps cleared once the row exists
+});
