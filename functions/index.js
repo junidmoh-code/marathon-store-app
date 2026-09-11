@@ -3472,6 +3472,15 @@ exports.updateStaffPassword = onCall(
 //   firebase deploy --only functions:refillHealthScan
 exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 
+// ─── STRANDED-TRANSIT SWEEP ──────────────────────────────────────────────────
+// Hourly: every unit parked in stock/in_transit by the central→hub hold lane
+// lands at its destination on its own once its window is past (or holding is
+// off), and anything that cannot be credited is reported — never a unit that
+// waits forever for a tap (FULFIL-CREDIT-GAP.md). Not the refill engine: a
+// separate function with one job. Deploy scoped:
+//   firebase deploy --only functions:strandedTransitSweep
+exports.strandedTransitSweep = require("./strandedTransitSweep.cjs").strandedTransitSweep;
+
 // ─── STORE ORDER → STAFF PUSH NOTIFICATION ───────────────────────────────────
 // Tells the people who pick and dispatch that a shop has placed an order, on a
 // phone that is locked with the app closed.
