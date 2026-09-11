@@ -25,6 +25,18 @@
 //   M-SOURCE     drop the model's source-availability gate (category-policy.cjs)
 //   M-ARMED-ROW  drop an armed non-destination's editor row (enginePolicyCore.js)
 //
+//   M-ARMING-TILE   delete the tile gate, Arming suite watching   (App.jsx)
+//   M-ARMING-ROUTE  delete the route gate, Arming suite watching  (App.jsx)
+//   M-ARMING-CARD   delete the card's own gate                    (EnginePolicyCard.jsx)
+//   M-ARMING-TAB    delete the Arming BRANCH's own gate           (EnginePolicyCard.jsx)
+//   M-ARMING-TAB-2  …and weaken it to a truthy viewer             (EnginePolicyCard.jsx)
+//
+// The Arming tab has the same four gates the Seating tab has, and the same
+// requirement: each refuses with the other three bypassed. The first three are
+// the SAME lines M-TILE / M-ROUTE / M-COMPONENT delete — proved again here
+// against the Arming suite, because a gate that only the Categories tests
+// notice is a gate the Arming tab does not actually own.
+//
 // The last two are not access gates and earn their place anyway. Without
 // M-SOURCE the model reported 293 day-one requests where the real engine
 // creates 0 — the difference between shipping a change and abandoning it.
@@ -50,6 +62,7 @@ const FUNCTIONS = "functions/index.js";
 const ACTIONS = "src/components/stock/SeatingActions.jsx";
 
 const GATE_TESTS = ["src/components/stock/enginePolicyGates.test.jsx"];
+const ARMING_TESTS = ["src/components/stock/armingGates.test.jsx"];
 const SEAT_TESTS = ["src/components/stock/seatingWriteGate.test.jsx"];
 const CORE_TESTS = ["src/components/stock/enginePolicyCore.test.js"];
 const SERVER_TESTS = ["test/category-policy-write.test.cjs"];
@@ -156,6 +169,68 @@ const MUTATIONS = [
     throw new HttpsError("permission-denied", "Engine Policy permission required.");`,
     tests: GATE_TESTS,
   },
+  // ── THE ARMING TAB'S FOUR GATES ───────────────────────────────────────────
+  // Each deleted alone, with the other three left intact.
+  {
+    id: "M-ARMING-TILE",
+    guard: "ARMING GATE 1 — the home tile is the only way in, and it is gated",
+    file: APP,
+    from: `      enginePolicyVisibleForViewer(enginePolicyViewer) && { key:"engine_policy"`,
+    to: `      true && { key:"engine_policy"`,
+    tests: ARMING_TESTS,
+  },
+  {
+    id: "M-ARMING-ROUTE",
+    guard: "ARMING GATE 2 — the route refuses to mount the card that holds the tab",
+    file: APP,
+    from: `  else if (role === ROLES.ENGINE_POLICY) view = enginePolicyVisibleForViewer({ email: authUser?.email, permFlags: permRecord?.permFlags })`,
+    to: `  else if (role === ROLES.ENGINE_POLICY) view = true`,
+    tests: ARMING_TESTS,
+  },
+  {
+    id: "M-ARMING-CARD",
+    guard: "ARMING GATE 2b — the card refuses on its own, so the tab is never mounted",
+    file: CARD,
+    from: `  if (!enginePolicyVisibleForViewer(viewer)) return <Refused onExit={onExit} />;`,
+    to: ``,
+    tests: ARMING_TESTS,
+  },
+  // The anchor spans down to the Arming heading on purpose: the identical
+  // ternary opens the Seating branch four lines above, and an anchor matching
+  // two places would mutate whichever came first.
+  {
+    id: "M-ARMING-TAB",
+    guard: "ARMING GATE 2d — the Arming branch asks for itself, with the card's gate intact",
+    file: CARD,
+    from: `          enginePolicyVisibleForViewer(viewer) ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Arming</h1>`,
+    to: `          true ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Arming</h1>`,
+    tests: ARMING_TESTS,
+  },
+  {
+    id: "M-ARMING-TAB-2",
+    guard: "…and it asks the SHARED predicate — a truthy viewer is not a grant",
+    file: CARD,
+    from: `          enginePolicyVisibleForViewer(viewer) ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Arming</h1>`,
+    to: `          !!viewer ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Arming</h1>`,
+    tests: ARMING_TESTS,
+  },
+
   // ── THE SEATING TAB'S OWN WRITES ──────────────────────────────────────────
   // Not a gate on the screen — a gate on three buttons that write RTDB directly
   // and would otherwise fail at the database for a grantee with no stockRole.
