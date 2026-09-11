@@ -228,6 +228,14 @@ export function useStockExceptions() {
   return usePath("stock_exceptions/latest");
 }
 
+// /stock_exceptions/strandedTransit → { computedAt, released, refusals:[…],
+// pending:[…], failures:[…] } — written hourly by strandedTransitSweep
+// (functions/lib/transit-sweep.cjs). A small node: only the lines the sweep
+// could not land on its own, each with the one reason a human must decide.
+export function useStrandedTransit() {
+  return usePath("stock_exceptions/strandedTransit");
+}
+
 // /stock_confidence → { computedAt, byLocation: { loc: { pid: {score,factors} } } }
 export function useStockConfidence() {
   return usePath("stock_confidence");

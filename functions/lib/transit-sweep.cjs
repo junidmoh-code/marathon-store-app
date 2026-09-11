@@ -135,6 +135,7 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
   const releases = [], refusals = [], pending = [], skipped = [];
   const holdOn = !!(config && config.enabled === true);
   const cellQty = new Map(candidates.cells.map((c) => [`${c.productId}|${c.sizeKey}`, c.qty]));
+  const cellMv = new Map(candidates.cells.map((c) => [`${c.productId}|${c.sizeKey}`, c.mv]));
 
   for (const cand of candidates.lines) {
     const line = cand.line || {};
@@ -151,7 +152,16 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
     // writer's negative floor would refuse it anyway; say so up front rather
     // than fail every hour.
     if (base.inTransitQty < base.qty) { refusals.push({ ...base, why: `phantom line — ${base.inTransitQty} unit(s) in transit for a line of ${base.qty}; nothing was parked` }); continue; }
-    if (cand.source === "released") { releases.push({ ...base, why: "archived as released but the release movement was never written", archived: true }); continue; }
+    if (cand.source === "released") {
+      // The cell must still name THIS line as its last parking. A newer line
+      // parked on the same pid/size after the archive would otherwise be
+      // spent on the old claim and refuse itself as a phantom (Fable-vs-spec
+      // review, PR #602). Reported, not guessed.
+      const lastMv = cellMv.get(`${line.productId}|${sizeKey}`);
+      if (lastMv !== cand.lineId) { pending.push({ ...base, why: `archived as released but a later parking (${lastMv}) sits on this cell — needs a human look` }); continue; }
+      releases.push({ ...base, why: "archived as released but the release movement was never written", archived: true });
+      continue;
+    }
     // held
     const releaseMs = shipmentReleaseMs(cand.shipmentId);
     if (!holdOn) { releases.push({ ...base, why: "holding is off — nothing waits for a tap" }); continue; }

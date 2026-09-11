@@ -97,6 +97,18 @@ test("archived as released with NO movement (the 4 Sep shape) → completed unde
   assert.equal((await cell(db, "hub2", "nb", "7")).qty, 1);
 });
 
+test("archived-but-unmoved line whose cell was re-parked by a NEWER line → pending, not spent on the old claim", async () => {
+  const archived = { ...heldLine("nb", "7", "hub2"), releasedAt: "2026-09-04T11:51:02.888Z", releasedBy: "owner", releaseMovementId: "rel_rrf_req_nb_7" };
+  const db = world({ config: { enabled: false }, products: { nb: { id: "nb" } }, released: { hub2: { "2026-09-04_1400": { rrf_req_nb_7: archived } } },
+    extraMovements: { rrf_newer: { ...parking("nb", "7", "hub2"), link: { refillId: "newer", holdDest: "hub2" } } } });
+  await db.ref("stock/in_transit/nb/7").set({ qty: 1, v: 1, mv: "rrf_newer", lastType: "transfer_out", updatedAt: PARKED });
+  const out = await _runSweep(db, WINDOW_MS + 7 * 24 * H);
+  assert.equal(out.released, 1);                          // the NEWER orphan lands (its own id)
+  assert.ok(await val(db, "stock_movements/rel_rrf_newer"));
+  assert.equal(await val(db, "stock_movements/rel_rrf_req_nb_7"), null);   // the old claim is not spent
+  assert.ok(out.pending.some((p) => p.lineId === "rrf_req_nb_7" && /later parking/.test(p.why)));
+});
+
 test("deleted product record → REFUSED and reported; the unit stays parked, nothing is credited", async () => {
   const archived = { ...heldLine("nb", "7", "hub2"), releasedAt: "2026-09-04T11:51:02.888Z", releasedBy: "owner", releaseMovementId: "rel_rrf_req_nb_7" };
   const db = world({ products: {}, released: { hub2: { "2026-09-04_1400": { rrf_req_nb_7: archived } } } });

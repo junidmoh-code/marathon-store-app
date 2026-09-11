@@ -24,10 +24,19 @@ function getPath(path) {
   return node === undefined ? null : node;
 }
 function setPath(path, value) {
+  // Real RTDB deletes a null leaf AND every parent left empty — the fake must too.
   const parts = String(path).split("/");
-  let node = store;
-  for (let i = 0; i < parts.length - 1; i++) { if (typeof node[parts[i]] !== "object" || node[parts[i]] === null) node[parts[i]] = {}; node = node[parts[i]]; }
-  if (value === null) delete node[parts[parts.length - 1]]; else node[parts[parts.length - 1]] = value;
+  const walk = (node, depth) => {
+    const key = parts[depth];
+    if (depth === parts.length - 1) {
+      if (value === null) delete node[key]; else node[key] = value;
+    } else {
+      if (typeof node[key] !== "object" || node[key] === null) node[key] = {};
+      walk(node[key], depth + 1);
+      if (Object.keys(node[key]).length === 0) delete node[key];
+    }
+  };
+  walk(store, 0);
 }
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
