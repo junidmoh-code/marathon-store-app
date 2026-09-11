@@ -92,13 +92,20 @@ vi.mock("firebase/database", () => ({
 
 // A FRESH OBJECT every render, exactly as usePath can hand one back — the shape
 // that turns an identity-keyed memo into a read loop.
+// MUTABLE, and handed back as a FRESH OBJECT every render — exactly as usePath
+// does. A static mock makes locSig constant, which leaves the whole
+// registry-invalidation path untestable: five separate mutations to it survived
+// the suite before this. (Adversarial review, PR #601.)
+let LOCATIONS = {};
+const BASE_LOCATIONS = {
+  hub1: { id: "hub1", label: "Hub 1", kind: "warehouse", active: true },
+  hub2: { id: "hub2", label: "Hub 2", kind: "warehouse", active: true },
+  central: { id: "central", label: "Central", kind: "warehouse", active: true },
+  trophy: { id: "trophy", label: "Trophy", kind: "store", sellable: true, active: true },
+};
+
 vi.mock("./useStock", () => ({
-  useLocations: () => ({
-    hub1: { id: "hub1", label: "Hub 1", kind: "warehouse", active: true },
-    hub2: { id: "hub2", label: "Hub 2", kind: "warehouse", active: true },
-    central: { id: "central", label: "Central", kind: "warehouse", active: true },
-    trophy: { id: "trophy", label: "Trophy", kind: "store", sellable: true, active: true },
-  }),
+  useLocations: () => ({ ...LOCATIONS }),
   useEngineConfig: () => CONFIG,
   useEngineConfigState: () => CONFIG_STATE,
 }));
@@ -139,6 +146,11 @@ const PRODUCTS = [
   { id: "p5", name: "Quiet Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] },
   { id: "p6", name: "Retired Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"],
     deactivated: { at: 1757000000000, by: "u1" } },
+  // Carried at Hub 1 with empty cells and NO units anywhere else. Undecided on
+  // the hub read, and STILL unarmed once every location has been asked — so
+  // `resolvedPids` is the only thing that decides it, which is what makes the
+  // invalidation tests below mean anything.
+  { id: "p7", name: "Nowhere Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] },
 ];
 
 const OWNER = { email: "gunidmoh@gmail.com" };
@@ -151,7 +163,8 @@ function seed() {
     p2: { 8: cell(1) },
     p3: { 8: cell(0), 9: cell(0) },      // carried, empty — the policy would arm it
 
-    p5: { 8: cell(0), 9: cell(0) },      // carried, empty — undecided
+    p5: { 8: cell(0), 9: cell(0) },      // carried, empty — undecided, armed by Central
+    p7: { 8: cell(0), 9: cell(0) },      // carried, empty — and empty everywhere
     p6: { 8: cell(4) },                  // deactivated: armed nowhere
   });
   setNode("stock/hub2", {
@@ -209,6 +222,7 @@ async function renderTab(props = {}) {
 beforeEach(() => {
   seed(); READS.length = 0; HELD.length = 0; HOLD_PRODUCT_READS = false;
   CONFIG_STATE = { value: CONFIG, settled: true, error: false };
+  LOCATIONS = { ...BASE_LOCATIONS };
   callableMock.mockClear(); updateMock.mockClear(); pushMock.mockClear();
 });
 
@@ -645,6 +659,70 @@ describe("Refresh and the resolved set", () => {
     const s = text(tree);
     expect(s).not.toContain("undecided");
     expect(s).toContain("scoped reads");
+  });
+});
+
+// ── A NEW LOCATION INVALIDATES A RESOLVE ────────────────────────────────────
+// `resolvedPids` means "this product's stock has been read from EVERY
+// location". A location registered afterwards makes that false with no read
+// having failed.
+describe("the location registry changing", () => {
+  const rerender = async (tree) => {
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} onOpenSeating={() => {}} />); });
+    await act(async () => {});
+  };
+
+  it("brings the residue back after a COMPLETED resolve", async () => {
+    const tree = await renderTab();
+    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
+    await act(async () => {});
+    expect(text(tree)).not.toContain("undecided");
+
+    LOCATIONS = { ...LOCATIONS, hub3: { id: "hub3", label: "Hub 3", kind: "warehouse", active: true } };
+    await rerender(tree);
+    expect(text(tree), "a location nobody read must un-decide the products").toContain("undecided");
+  });
+
+  it("and retires a resolve still IN FLIGHT, instead of letting it land after the clear", async () => {
+    // THE HOLE THE FIRST FIX LEFT. resolve() gates on its own counters, which
+    // the invalidation effect did not touch — so a pass started against the old
+    // location list still landed and unioned its pids back in AFTER the clear.
+    // The residue vanished and every one of those products read as fully read,
+    // with the new location never asked.
+    const tree = await renderTab();
+    HOLD_PRODUCT_READS = true;
+    let pending;
+    await act(async () => { pending = buttonSaying(tree, "Read the other").props.onClick(); });
+
+    LOCATIONS = { ...LOCATIONS, hub3: { id: "hub3", label: "Hub 3", kind: "warehouse", active: true } };
+    await rerender(tree);
+
+    HOLD_PRODUCT_READS = false;
+    await act(async () => { RELEASE(); await pending; });
+    await act(async () => {});
+    expect(text(tree), "the stale pass must not mark anything decided").toContain("undecided");
+  });
+
+  it("does not clear when the registry is UNCHANGED", async () => {
+    // A re-render with the same locations must not throw a completed resolve
+    // away. usePath hands back a fresh object every time, so this is the
+    // ordinary case, not the edge one.
+    const tree = await renderTab();
+    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
+    await act(async () => {});
+    await rerender(tree);
+    expect(text(tree)).not.toContain("undecided");
+  });
+
+  it("is insensitive to the ORDER the registry arrives in", async () => {
+    // locSig sorts. Without that, usePath handing back the same locations in a
+    // different key order would clear the set on every delivery.
+    const tree = await renderTab();
+    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
+    await act(async () => {});
+    LOCATIONS = Object.fromEntries(Object.entries(LOCATIONS).reverse());
+    await rerender(tree);
+    expect(text(tree)).not.toContain("undecided");
   });
 });
 

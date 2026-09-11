@@ -112,7 +112,7 @@ export default function ArmingTab({ products, onOpenSeating }) {
       // A fresh read invalidates every resolve: the hub cells it is folded into
       // have been replaced, and keeping the set would mark products decided
       // against stock that is no longer in the context.
-      setResolvedPids(new Set());
+      setResolvedPids((prev) => (prev.size ? new Set() : prev));
       setCtx(next);
     } catch (e) {
       if (mine !== seq.current) return;
@@ -158,11 +158,25 @@ export default function ArmingTab({ products, onOpenSeating }) {
   // would go on reading as decided against a location nobody ever asked.
   // Registering a location is rare and this costs one re-derive when it
   // happens. (CodeRabbit, PR #601.)
-  const firstLocSig = useRef(locSig);
+  //
+  // AND IT MUST RETIRE A RESOLVE IN FLIGHT, not merely clear the set. resolve()
+  // gates on its own counters, which this effect does not touch — so a pass
+  // that started against the OLD location list still landed and unioned its
+  // pids back in AFTER the clear. The residue vanished and every one of those
+  // products read as "stock read from every location" with the new location
+  // never asked. Clearing and retiring are one act.
+  // NO EXTRA GUARD: the [locSig] dependency IS the guard. An earlier version
+  // carried a ref and an `if (ref.current === locSig) return`, and three
+  // separate mutations to that pair survived the whole suite — because React
+  // only re-runs the effect when the dep VALUE changes, so the ref could never
+  // disagree with it. The one run it did suppress is the mount run, which is a
+  // no-op by construction: nothing is in flight and the set is empty.
   useEffect(() => {
-    if (firstLocSig.current === locSig) return;
-    firstLocSig.current = locSig;
-    setResolvedPids(new Set());
+    resolveSeq.current += 1;
+    setResolving(null);
+    // Identity matters: a fresh empty Set re-runs the whole armingIndex pass —
+    // 9,520 seatingAt calls on live — for no change.
+    setResolvedPids((prev) => (prev.size ? new Set() : prev));
   }, [locSig]);
 
   const resolve = useCallback(async () => {
