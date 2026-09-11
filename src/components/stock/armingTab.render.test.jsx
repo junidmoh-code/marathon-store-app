@@ -581,8 +581,13 @@ describe("bySize", () => {
     expect(run(["M", "3", "L"])).toEqual(["3", "L", "M"]);
   });
 
-  it("is stable for the one-size cell", () => {
+  it("puts the one-size cell last — after the letters too", () => {
+    // Blank and a letter size both rank as "not a number", so a fallback that
+    // reached localeCompare sorted "" in FRONT of "L" and "M". (CodeRabbit.)
     expect(run(["", "8"])).toEqual(["8", ""]);
+    expect(run(["", "M", "L"])).toEqual(["L", "M", ""]);
+    expect(run(["M", "", "3", "L"])).toEqual(["3", "L", "M", ""]);
+    expect(run(["  ", "L"])).toEqual(["L", "  "]);
   });
 });
 

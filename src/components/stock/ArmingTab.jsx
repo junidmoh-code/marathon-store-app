@@ -141,12 +141,29 @@ export default function ArmingTab({ products, onOpenSeating }) {
   // tab does not hold. Settled with the SEATING TAB'S OWN read — one product,
   // one location at a time — over the locations not already in the context.
   // Never a whole node: that is the read this tab was built to avoid.
+  // ── THE LOCATIONS A RESOLVE MUST COVER ─────────────────────────────────────
+  // Memoised on a SIGNATURE, not on the registry object: usePath hands back a
+  // fresh object whenever anything under /locations changes, and `resolve` is a
+  // callback that depends on this list. (Same reasoning, and the same trap, as
+  // SeatingTab's locSig.)
+  const locSig = JSON.stringify(allLocationIds(registry).slice().sort());
   const otherLocations = useMemo(
-    () => allLocationIds(registry).filter((l) => !ARMING_HUBS.includes(l)),
-    // labelFor/allLocationIds read the registry object; a fresh identity on
-    // every render would re-make the list but not re-read anything.
-    [registry],
+    () => JSON.parse(locSig).filter((l) => !ARMING_HUBS.includes(l)),
+    [locSig],
   );
+
+  // A LOCATION APPEARING AFTER A RESOLVE INVALIDATES IT. resolvedPids means
+  // "this product's stock has been read from EVERY location"; a registry that
+  // grows makes that false without any read having failed, and the products
+  // would go on reading as decided against a location nobody ever asked.
+  // Registering a location is rare and this costs one re-derive when it
+  // happens. (CodeRabbit, PR #601.)
+  const firstLocSig = useRef(locSig);
+  useEffect(() => {
+    if (firstLocSig.current === locSig) return;
+    firstLocSig.current = locSig;
+    setResolvedPids(new Set());
+  }, [locSig]);
 
   const resolve = useCallback(async () => {
     if (!index || !index.undecided) return;
@@ -421,7 +438,16 @@ const sizeRank = (size) => {
   return Number.isFinite(n) ? n : null;
 };
 
+const blankSize = (v) => String(v ?? "").trim() === "";
+
 export function bySize(a, b) {
+  // BLANK FIRST, BECAUSE BLANK GOES LAST. Both a blank and a letter size rank
+  // `null`, so the fallback used to fall through to localeCompare — and "" sorts
+  // BEFORE "L" and "M", putting the one-size chip back at the front for exactly
+  // the products that have letter sizes. Handled before the other two
+  // comparisons ever run. (CodeRabbit, PR #601.)
+  const ab = blankSize(a.size), bb = blankSize(b.size);
+  if (ab || bb) return ab && bb ? 0 : ab ? 1 : -1;
   const na = sizeRank(a.size), nb = sizeRank(b.size);
   if (na !== null && nb !== null) return na - nb;
   if ((na === null) !== (nb === null)) return na === null ? 1 : -1;
