@@ -15,8 +15,8 @@
 
 import { describe, it, expect } from "vitest";
 import {
-  hubArming, bucketsFor, armingIndex, sectionRows, suppressed,
-  BUCKET, HUB1, HUB2,
+  hubArming, bucketFor, flagsFor, armingIndex, sectionRows, suppressed,
+  BUCKET, FLAG, HUB1, HUB2,
 } from "./armingCore";
 
 const { createRequire } = await import("node:module");
@@ -119,9 +119,7 @@ describe("armed at both hubs", () => {
     const h2 = hubArming(both, HUB2, "p1");
     expect(h1.armed).toBe(true);
     expect(h2.armed).toBe(true);
-    expect(bucketsFor(h1, h2)).toContain(BUCKET.BOTH_HUBS);
-    expect(bucketsFor(h1, h2)).not.toContain(BUCKET.HUB1_ONLY);
-    expect(bucketsFor(h1, h2)).not.toContain(BUCKET.HUB2_ONLY);
+    expect(bucketFor(h1, h2)).toBe(BUCKET.BOTH_HUBS);
   });
 
   it("agrees with the real engine's resolveTarget, size by size, on both hubs", () => {
@@ -156,14 +154,31 @@ describe("armed at both hubs", () => {
 describe("armed at one hub only", () => {
   it("HUB1_ONLY when only hub 1 has a leg it carries", () => {
     const c = ctxOf({ config: CAT_HUB1, stock: { hub1: { p1: { 8: cell(3) } }, hub2: { p1: { 8: cell(3) } } } });
-    const b = bucketsFor(hubArming(c, HUB1, "p1"), hubArming(c, HUB2, "p1"));
-    expect(b).toEqual([BUCKET.HUB1_ONLY]);
+    expect(bucketFor(hubArming(c, HUB1, "p1"), hubArming(c, HUB2, "p1"))).toBe(BUCKET.HUB1_ONLY);
   });
 
   it("HUB2_ONLY when only hub 2 has one", () => {
     const c = ctxOf({ config: CAT_HUB2, stock: { hub1: { p1: { 8: cell(3) } }, hub2: { p1: { 8: cell(3) } } } });
-    const b = bucketsFor(hubArming(c, HUB1, "p1"), hubArming(c, HUB2, "p1"));
-    expect(b).toEqual([BUCKET.HUB2_ONLY]);
+    expect(bucketFor(hubArming(c, HUB1, "p1"), hubArming(c, HUB2, "p1"))).toBe(BUCKET.HUB2_ONLY);
+  });
+
+  it("NOWHERE when neither hub arms it — and every product has a bucket", () => {
+    // EXHAUSTIVE is the property that makes these tabs rather than filters. The
+    // first build returned no bucket at all here and dropped 960 live products
+    // off the screen with no way to reach one.
+    const c = ctxOf({ config: CAT_HUB1, stock: { trophy: { p1: { 8: cell(3) } } } });
+    expect(bucketFor(hubArming(c, HUB1, "p1"), hubArming(c, HUB2, "p1"))).toBe(BUCKET.NOWHERE);
+  });
+
+  it("the four buckets are mutually exclusive over every armed combination", () => {
+    const seat = (armed) => ({ armed, hasCell: true, deactivated: false, undecided: false,
+      policyWouldArm: armed, zeroRows: [] });
+    const seen = [
+      bucketFor(seat(true), seat(true)), bucketFor(seat(true), seat(false)),
+      bucketFor(seat(false), seat(true)), bucketFor(seat(false), seat(false)),
+    ];
+    expect(new Set(seen).size).toBe(4);
+    expect(seen.sort()).toEqual([BUCKET.BOTH_HUBS, BUCKET.HUB1_ONLY, BUCKET.HUB2_ONLY, BUCKET.NOWHERE].sort());
   });
 
   it("a carriedOnly leg arms nothing at a hub holding no cell", () => {
@@ -171,12 +186,12 @@ describe("armed at one hub only", () => {
     // the split survivable, and it is what section A's 34 rows got past.
     const c = ctxOf({ stock: { hub1: { p1: { 8: cell(3) } } } });
     expect(hubArming(c, HUB2, "p1").armed).toBe(false);
-    expect(bucketsFor(hubArming(c, HUB1, "p1"), hubArming(c, HUB2, "p1"))).toEqual([BUCKET.HUB1_ONLY]);
+    expect(bucketFor(hubArming(c, HUB1, "p1"), hubArming(c, HUB2, "p1"))).toBe(BUCKET.HUB1_ONLY);
   });
 });
 
 // ── ARMED BUT NOT SEATED — section B ────────────────────────────────────────
-describe("armed but not seated", () => {
+describe("the NOT SEATED flag", () => {
   // An UNSCOPED leg — no carriedOnly — arms a hub that holds no cell at all.
   const unscoped = cfg({ hub1: sizeLeg(["8", "9"]), hub2: sizeLeg(["8", "9"]) });
 
@@ -185,7 +200,7 @@ describe("armed but not seated", () => {
     const h1 = hubArming(c, HUB1, "p1");
     expect(h1.armed).toBe(true);
     expect(h1.hasCell).toBe(false);
-    expect(bucketsFor(h1, hubArming(c, HUB2, "p1"))).toContain(BUCKET.NOT_SEATED);
+    expect(flagsFor(h1, hubArming(c, HUB2, "p1"))).toContain(FLAG.NOT_SEATED);
   });
 
   it("does not flag a hub that carries the line and is merely sold out", () => {
@@ -196,7 +211,7 @@ describe("armed but not seated", () => {
     const h1 = hubArming(c, HUB1, "p1");
     expect(h1.armed).toBe(true);
     expect(h1.hasCell).toBe(true);
-    expect(bucketsFor(h1, hubArming(c, HUB2, "p1"))).not.toContain(BUCKET.NOT_SEATED);
+    expect(flagsFor(h1, hubArming(c, HUB2, "p1"))).not.toContain(FLAG.NOT_SEATED);
   });
 });
 
@@ -212,7 +227,7 @@ describe("category-armed then switched off", () => {
     expect(h1.policyWouldArm).toBe(true);
     expect(h1.zeroRows.sort()).toEqual(["8", "9"]);
     expect(suppressed(h1)).toBe(true);
-    expect(bucketsFor(h1, hubArming(c, HUB2, "p1"))).toContain(BUCKET.SUPPRESSED);
+    expect(flagsFor(h1, hubArming(c, HUB2, "p1"))).toContain(FLAG.SUPPRESSED);
   });
 
   it("a positive explicit row is not suppression", () => {
@@ -280,13 +295,18 @@ describe("a deactivated product is armed nowhere", () => {
     expect(h1.armed).toBe(false);
     expect(h2.armed).toBe(false);
     expect(h1.deactivated).toBe(true);
-    expect(bucketsFor(h1, h2)).toEqual([]);
+    // Armed NOWHERE — and visible there, flagged, rather than dropped.
+    expect(bucketFor(h1, h2)).toBe(BUCKET.NOWHERE);
+    expect(flagsFor(h1, h2)).toContain(FLAG.DEACTIVATED);
   });
 
-  it("and is counted, not silently dropped", () => {
+  it("and is counted AND reachable, not silently dropped", () => {
     const c = ctxOf({ products: product(dead), stock: { hub1: { p1: { 8: cell(3) } } } });
     const ix = armingIndex(c, ["p1"]);
-    expect(ix.rows).toEqual([]);
+    expect(ix.rows.map((r) => r.pid)).toEqual(["p1"]);
+    expect(ix.rows[0].bucket).toBe(BUCKET.NOWHERE);
+    expect(ix.rows[0].flags).toContain(FLAG.DEACTIVATED);
+    expect(ix.counts[BUCKET.NOWHERE]).toBe(1);
     expect(ix.deactivatedSkipped).toBe(1);
   });
 
@@ -433,16 +453,41 @@ describe("armingIndex", () => {
     },
   });
 
-  it("returns only products at least one section claims", () => {
+  it("returns EVERY product — the unarmed ones belong in Nowhere", () => {
     const ix = armingIndex(c, Object.keys(products));
-    expect(ix.rows.map((r) => r.pid).sort()).toEqual(["p1", "p2"]);
+    expect(ix.rows.map((r) => r.pid).sort()).toEqual(["p1", "p2", "p3"]);
+    expect(ix.rows.find((r) => r.pid === "p3").bucket).toBe(BUCKET.NOWHERE);
   });
 
-  it("counts each section independently", () => {
+  it("the four counts add up to the catalogue", () => {
     const ix = armingIndex(c, Object.keys(products));
     expect(ix.counts[BUCKET.BOTH_HUBS]).toBe(1);
     expect(ix.counts[BUCKET.HUB1_ONLY]).toBe(1);
     expect(ix.counts[BUCKET.HUB2_ONLY]).toBe(0);
+    expect(ix.counts[BUCKET.NOWHERE]).toBe(1);
+    expect(ix.rows.length).toBe(Object.keys(products).length);
+  });
+
+  it("and each row's bucket is the one its two hub answers demand", () => {
+    // THE SUM IS NOT THE PROPERTY. counts[bucket]++ and rows.push() happen in
+    // the same iteration and bucketFor returns exactly one string, so
+    // sum === rows.length holds by construction — it stayed green with
+    // BOTH_HUBS collapsed into NOWHERE, which is the defect the whole tab
+    // exists for. The property worth asserting is that the bucket AGREES with
+    // the armed flags, decided independently here. (Adversarial review, #604.)
+    const ix = armingIndex(c, Object.keys(products));
+    const expected = (r) => (r.hub1.armed && r.hub2.armed ? BUCKET.BOTH_HUBS
+      : r.hub1.armed ? BUCKET.HUB1_ONLY
+      : r.hub2.armed ? BUCKET.HUB2_ONLY
+      : BUCKET.NOWHERE);
+    for (const r of ix.rows) expect(r.bucket, `${r.pid}`).toBe(expected(r));
+    // …and the tally is the tally of those rows, not a second counter that can
+    // drift from them.
+    for (const b of Object.keys(ix.counts)) {
+      expect(ix.counts[b], b).toBe(ix.rows.filter((r) => r.bucket === b).length);
+    }
+    // Not vacuous: the fixture really does exercise more than one bucket.
+    expect(new Set(ix.rows.map((r) => r.bucket)).size).toBeGreaterThan(1);
   });
 
   it("counts undecided PAIRS and undecided PRODUCTS separately", () => {
@@ -470,8 +515,8 @@ describe("armingIndex", () => {
 // ── SEARCH ──────────────────────────────────────────────────────────────────
 describe("sectionRows", () => {
   const rows = [
-    { pid: "p1", buckets: [BUCKET.BOTH_HUBS, BUCKET.NOT_SEATED], haystack: "air max 90 footwear sneakers nike" },
-    { pid: "p2", buckets: [BUCKET.HUB1_ONLY], haystack: "zoom fly footwear sneakers nike" },
+    { pid: "p1", bucket: BUCKET.BOTH_HUBS, haystack: "air max 90 footwear sneakers nike" },
+    { pid: "p2", bucket: BUCKET.HUB1_ONLY, haystack: "zoom fly footwear sneakers nike" },
   ];
 
   it("filters within the section and nowhere else", () => {

@@ -1,12 +1,12 @@
-// ─── THE ARMING TAB — WHAT IT SHOWS, WHAT IT READS, WHO MAY SEE IT ───────────
+// ─── THE ARMING TAB — FOUR TABS, AND EDITING ON THE SPOT ─────────────────────
 //
-// Five sections, the collapse state, the search box, the paging that keeps a
-// three-thousand-row inventory off the phone, the hand-off into Seating, and
-// GATE 2d — the tab's own super-admin check, independent of the tile, the
-// route, the card's and the Seating tab's.
+// Four exclusive tabs whose counts add up, a residue that settles ITSELF rather
+// than waiting for a button (rows migrate as it drains, and the screen says
+// `checking n/m` while they do), badges for the facts that are not a place, and
+// a row that opens the Seating tab's own rows and actions inline.
 //
 // THE READS ARE PART OF THE BEHAVIOUR. Every path the tab asks for is recorded,
-// so a read it must never make is visible as an assertion and not as a comment.
+// so a read it must never make is an assertion and not a comment.
 //
 // Run: npx vitest run src/components/stock/armingTab.render.test.jsx
 
@@ -28,20 +28,14 @@ vi.mock("../../firebase", () => ({ database: { fake: true }, functions: { fake: 
 vi.mock("./barcodeListener", () => ({ installBarcodeListener: () => () => {}, subscribeBarcode: () => () => {} }));
 
 // ── THE DATABASE DOUBLE ──────────────────────────────────────────────────────
-// RTDB HAS NO EMPTY CHILDREN: a node whose value becomes {} or [] is deleted
-// and reads back as null. NODES is written through setNode, which deletes, so
-// no fixture below can assert against a shape the database cannot produce.
+// RTDB HAS NO EMPTY CHILDREN, at any depth, and cannot store an empty array. A
+// fake that kept `{ p1: {} }` would let a test pass over a shape the database
+// cannot produce, so the write prunes recursively.
 const NODES = {};
-// The delete is RECURSIVE. RTDB removes a key whose value becomes empty at EVERY
-// depth, not only at the node the write addressed — so `{ p1: {} }` is a shape
-// the database cannot hold, and a fake that kept it would let a test pass over
-// an impossible fixture. `[]` is pruned the same way, which is what "RTDB cannot
-// store empty arrays" means in practice.
 function prune(value) {
   if (value == null) return undefined;
   if (typeof value !== "object") return value;
-  const arr = Array.isArray(value);
-  const out = arr ? [] : {};
+  const out = Array.isArray(value) ? [] : {};
   let kept = 0;
   for (const k of Object.keys(value)) {
     const v = prune(value[k]);
@@ -51,22 +45,32 @@ function prune(value) {
   return kept ? out : undefined;
 }
 function setNode(path, value) {
-  const pruned = prune(value);
-  if (pruned === undefined) delete NODES[path];
-  else NODES[path] = pruned;
+  const p = prune(value);
+  if (p === undefined) delete NODES[path]; else NODES[path] = p;
+}
+// The per-(location, product) reads resolve against the same store, so a node
+// written at `stock/hub1` answers a read of `stock/hub1/p1` too. Without this
+// the settle pass would see nothing and every test of it would be vacuous.
+function readNode(path) {
+  if (Object.prototype.hasOwnProperty.call(NODES, path)) return NODES[path];
+  const parts = String(path).split("/");
+  for (let i = parts.length - 1; i > 0; i--) {
+    const head = parts.slice(0, i).join("/");
+    if (!Object.prototype.hasOwnProperty.call(NODES, head)) continue;
+    let v = NODES[head];
+    for (const k of parts.slice(i)) { v = v?.[k]; if (v == null) return null; }
+    return v;
+  }
+  return null;
 }
 
-const READS = [];
-// A WRITE would land here. Read-only is asserted at the database, not by
-// grepping the rendered text for the word "Save".
+// A WRITE would land here. Read-only-until-you-act is asserted at the database.
 const updateMock = vi.fn(async () => {});
 const pushMock = vi.fn(() => ({ key: "mv1" }));
 
-// A HELD READ. While HOLD_PRODUCT_READS is on, the per-(location, product) reads
-// the resolve pass makes never settle until RELEASE() is called — the shape
-// needed to land a Refresh in the MIDDLE of a resolve, which is the only way to
-// reach the wedge below. The four location reads are deliberately not held: the
-// test needs Refresh to complete while the resolve is still outstanding.
+const READS = [];
+// While HOLD_PRODUCT_READS is on, the per-(location, product) reads never settle
+// until RELEASE() — the shape needed to land a Refresh mid-settle.
 let HOLD_PRODUCT_READS = false;
 const HELD = [];
 const RELEASE = () => { const q = HELD.splice(0); for (const f of q) f(); };
@@ -76,8 +80,8 @@ vi.mock("firebase/database", () => ({
   get: async (r) => {
     READS.push(String(r.path));
     // A read loop must end in a clean failure, not a killed worker.
-    if (READS.length > 4000) return new Promise(() => {});
-    const v = Object.prototype.hasOwnProperty.call(NODES, r.path) ? NODES[r.path] : null;
+    if (READS.length > 6000) return new Promise(() => {});
+    const v = readNode(String(r.path));
     const snap = { exists: () => v != null, val: () => v };
     if (HOLD_PRODUCT_READS && String(r.path).split("/").length === 3) {
       return new Promise((res) => HELD.push(() => res(snap)));
@@ -90,23 +94,31 @@ vi.mock("firebase/database", () => ({
   child: () => ({}),
 }));
 
-// A FRESH OBJECT every render, exactly as usePath can hand one back — the shape
-// that turns an identity-keyed memo into a read loop.
-// MUTABLE, and handed back as a FRESH OBJECT every render — exactly as usePath
-// does. A static mock makes locSig constant, which leaves the whole
-// registry-invalidation path untestable: five separate mutations to it survived
-// the suite before this. (Adversarial review, PR #601.)
+// MUTABLE, and a FRESH OBJECT every render — exactly as usePath does. A static
+// mock leaves the whole registry-invalidation path untestable.
 let LOCATIONS = {};
 const BASE_LOCATIONS = {
   hub1: { id: "hub1", label: "Hub 1", kind: "warehouse", active: true },
   hub2: { id: "hub2", label: "Hub 2", kind: "warehouse", active: true },
   central: { id: "central", label: "Central", kind: "warehouse", active: true },
   trophy: { id: "trophy", label: "Trophy", kind: "store", sellable: true, active: true },
+  // THE TWO KINDS THE COMMENTS CALL LOAD-BEARING, and which the fixture did not
+  // have. `in_transit` is never a seat and never a destination; `base` is a
+  // DEACTIVATED warehouse. Both still hold cells the engine's dead-size rule
+  // counts, so both must be in the carriage context — and with neither in the
+  // fixture, narrowing that context to the transfer targets left all 105 tests
+  // green. (Adversarial review, PR #604.)
+  in_transit: { id: "in_transit", label: "In Transit", kind: "transit", active: true },
+  base: { id: "base", label: "Base", kind: "warehouse", sellable: false, active: false },
 };
+// Where a product can be SEATED — active, not in_transit. The carriage context
+// is strictly wider, and the difference is the point.
+const SEAT_LOCATIONS = ["hub1", "hub2", "central", "trophy"];
+let CONFIG_STATE = { value: null, settled: false, error: false };
 
 vi.mock("./useStock", () => ({
   useLocations: () => ({ ...LOCATIONS }),
-  useEngineConfig: () => CONFIG,
+  useEngineConfig: () => CONFIG_STATE.value,
   useEngineConfigState: () => CONFIG_STATE,
 }));
 
@@ -120,20 +132,15 @@ const CONFIG = {
   ruleBasedTargets: true,
   categoryPolicy: {
     sneakers: { perSize: true, hub1: leg(true), hub2: leg(true) },
-    // Unscoped: arms a hub whether or not it holds a cell — section B's source.
+    // Unscoped: arms a hub whether or not it holds a cell — the NOT_SEATED flag.
     bags: { hub2: { target: 4, minQty: 2 } },
   },
 };
 
-// Mutable, so a test can hold the policy in flight — the state the tab is
-// gated on and the one a warm page actually hits.
-let CONFIG_STATE = { value: null, settled: false, error: false };
-
 const ArmingMod = await import("./ArmingTab.jsx");
 const ArmingTab = ArmingMod.default;
-const { ArmRow, bySize, mergeStock, mb } = ArmingMod;
-const SeatingTab = (await import("./SeatingTab.jsx")).default;
-const { SizeFactChip } = await import("./healthWidgets.jsx");
+const { ArmRow, ProductSeating, applyProductRead, mergeStock, mb } = ArmingMod;
+const { SeatRow } = await import("./SeatingTab.jsx");
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 
 const cell = (qty) => ({ qty, v: 1, lastType: "received", updatedAt: "2026-09-01T00:00:00.000Z" });
@@ -143,13 +150,14 @@ const PRODUCTS = [
   { id: "p2", name: "Hub One Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] },
   { id: "p3", name: "Hub Two Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] },
   { id: "p4", name: "Unseated Bag", category: "Bags", categoryKey: "bags", sizes: [] },
-  { id: "p5", name: "Quiet Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] },
+  // Carried at Hub 1 with empty cells; its units live at CENTRAL, so the
+  // dead-size rule cannot be settled from the two hubs alone. It belongs in
+  // Hub 1 and only the settle pass can put it there.
+  { id: "p5", name: "Elsewhere Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] },
   { id: "p6", name: "Retired Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"],
     deactivated: { at: 1757000000000, by: "u1" } },
-  // Carried at Hub 1 with empty cells and NO units anywhere else. Undecided on
-  // the hub read, and STILL unarmed once every location has been asked — so
-  // `resolvedPids` is the only thing that decides it, which is what makes the
-  // invalidation tests below mean anything.
+  // Carried at Hub 1, empty everywhere. Unarmed even after every location is
+  // read — so the resolved set is the only thing that decides it.
   { id: "p7", name: "Nowhere Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8", "9"] },
 ];
 
@@ -162,32 +170,22 @@ function seed() {
     p1: { 8: cell(3) },
     p2: { 8: cell(1) },
     p3: { 8: cell(0), 9: cell(0) },      // carried, empty — the policy would arm it
-
-    p5: { 8: cell(0), 9: cell(0) },      // carried, empty — undecided, armed by Central
-    p7: { 8: cell(0), 9: cell(0) },      // carried, empty — and empty everywhere
+    p5: { 8: cell(0), 9: cell(0) },      // units are at Central
     p6: { 8: cell(4) },                  // deactivated: armed nowhere
+    p7: { 8: cell(0), 9: cell(0) },      // empty everywhere
   });
-  setNode("stock/hub2", {
-    p1: { 9: cell(2) },
-    p3: { 9: cell(5) },
-  });
-  // A hand-written target:0 pair at hub 1 over a policy that would arm — the
-  // suppression section. The units live at Central so the dead-size rule is not
+  setNode("stock/hub2", { p1: { 9: cell(2) }, p3: { 9: cell(5) } });
+  // A hand-written target:0 pair at Hub 1 over a policy that would arm — the
+  // SUPPRESSED flag. Size 9 is alive at Hub 2, so the dead-size rule is not
   // what is answering.
   setNode("stock_targets/hub1", {
     p3: { 8: { target: 0, minQty: 0, source: "seating_off" }, 9: { target: 0, minQty: 0, source: "seating_off" } },
   });
-  setNode("stock/central", { p3: { 8: cell(9), 9: cell(9) }, p5: { 8: cell(4) } });
-  setNode("stock/central/p3", { 8: cell(9), 9: cell(9) });
-  setNode("stock/central/p5", { 8: cell(4) });
+  setNode("stock/central", { p5: { 8: cell(4) } });
 }
 
 const text = (tree) => JSON.stringify(tree.toJSON());
 const buttons = (tree) => tree.root.findAll((n) => n.type === "button");
-
-// A test instance's `children` carry fibers, which JSON.stringify cannot walk.
-// The rendered TEXT is what a button says, so collect that from the element
-// tree instead.
 function label(node) {
   const out = [];
   const walk = (c) => {
@@ -197,40 +195,42 @@ function label(node) {
     out.push(String(c));
   };
   walk(node.props?.children);
-  return out.join(" ");
+  return out.join("");
 }
-const buttonSaying = (tree, said) => buttons(tree).find((b) => label(b).includes(said));
-
-// The RENDERED text under any test instance. `label` reads an element's own
-// children prop, which is empty for a component that takes data props instead —
-// so a row has to be read from what it produced, not from what it was given.
+// The RENDERED text under a test instance — `label` reads an element's own
+// children prop, which is empty for a component taking data props instead.
 function innerText(inst) {
   if (inst == null) return "";
   if (typeof inst === "string" || typeof inst === "number") return String(inst);
   return (inst.children || []).map(innerText).join(" ");
 }
+const buttonSaying = (tree, said) => buttons(tree).find((b) => label(b).includes(said));
+const chip = (tree, title) => buttons(tree).find((b) => label(b).startsWith(title + " "));
+const rowFor = (tree, name) => tree.root.findAllByType(ArmRow).find((n) => n.props.row.name === name);
 
 async function renderTab(props = {}) {
   let tree;
   await act(async () => {
-    tree = TestRenderer.create(<ArmingTab products={PRODUCTS} onOpenSeating={() => {}} {...props} />);
+    tree = TestRenderer.create(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} {...props} />);
   });
   await act(async () => {});
+  await act(async () => {});    // the settle pass lands on the second flush
   return tree;
 }
 
 beforeEach(() => {
   seed(); READS.length = 0; HELD.length = 0; HOLD_PRODUCT_READS = false;
-  CONFIG_STATE = { value: CONFIG, settled: true, error: false };
   LOCATIONS = { ...BASE_LOCATIONS };
+  CONFIG_STATE = { value: CONFIG, settled: true, error: false };
   callableMock.mockClear(); updateMock.mockClear(); pushMock.mockClear();
 });
 
 // ── THE READ ────────────────────────────────────────────────────────────────
 describe("what it reads", () => {
-  it("four location-scoped paths, and no root", async () => {
+  it("four location-scoped paths for the list, and no root", async () => {
     await renderTab();
-    expect(READS.sort()).toEqual([
+    const listReads = READS.filter((p) => p.split("/").length === 2);
+    expect(listReads.sort()).toEqual([
       "stock/hub1", "stock/hub2", "stock_targets/hub1", "stock_targets/hub2",
     ]);
     for (const banned of ["stock", "stock_targets", "products"]) {
@@ -238,104 +238,184 @@ describe("what it reads", () => {
     }
   });
 
+  it("and only per-(location, product) reads to settle the rest", async () => {
+    await renderTab();
+    for (const path of READS.filter((p) => p.split("/").length === 3)) {
+      expect(path).toMatch(/^stock\/[^/]+\/[^/]+$/);
+      // Never at a hub — those two are already held in full.
+      expect(path.startsWith("stock/hub1/")).toBe(false);
+      expect(path.startsWith("stock/hub2/")).toBe(false);
+    }
+  });
+
   it("does not re-read on every render", async () => {
     const tree = await renderTab();
     const after = READS.length;
-    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} onOpenSeating={() => {}} />); });
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />); });
     await act(async () => {});
     expect(READS.length).toBe(after);
   });
 
-  it("reports what it cost, on screen", async () => {
+  it("reports what it cost, on screen, including the settle", async () => {
     const tree = await renderTab();
-    expect(text(tree)).toContain("4 scoped reads");
+    const n = Number(text(tree).match(/(\d+) scoped reads/)[1]);
+    expect(n).toBeGreaterThan(4);      // 4 for the list, plus the settle pass
     expect(text(tree)).toMatch(/\d+ KB|\d+\.\d MB/);
   });
 });
 
-// ── THE SECTIONS ────────────────────────────────────────────────────────────
-describe("the five sections", () => {
-  it("names all five, with a count on each", async () => {
-    const s = text(await renderTab());
-    for (const title of ["Armed at both hubs", "Armed but not seated",
-      "Armed, suppressed by seating", "Hub 1 only", "Hub 2 only"]) {
-      expect(s).toContain(title);
-    }
-  });
-
-  it("puts the both-hub product first and shows it", async () => {
-    const s = text(await renderTab());
-    expect(s).toContain("Both Hubs Sneaker");
-    expect(s.indexOf("Armed at both hubs")).toBeLessThan(s.indexOf("Hub 1 only"));
-  });
-
-  it("A, B and C are open by default; D and E are not", async () => {
+// ── THE FOUR TABS ───────────────────────────────────────────────────────────
+describe("the four tabs", () => {
+  it("names all four with a count, and the counts add up to the catalogue", async () => {
     const tree = await renderTab();
-    const expanded = (title) => buttons(tree).find((b) => label(b).includes(title))?.props["aria-expanded"];
-    expect(expanded("Armed at both hubs")).toBe(true);
-    expect(expanded("Armed but not seated")).toBe(true);
-    expect(expanded("Armed, suppressed by seating")).toBe(true);
-    expect(expanded("Hub 1 only")).toBe(false);
-    expect(expanded("Hub 2 only")).toBe(false);
-    // …and a shut section renders none of its rows. p2 is in section D alone.
+    const counts = {};
+    for (const title of ["Both hubs", "Hub 1", "Hub 2", "Nowhere"]) {
+      const c = chip(tree, title);
+      expect(c, `${title} must be a tab`).toBeTruthy();
+      counts[title] = Number(label(c).slice(title.length + 1));
+    }
+    expect(Object.values(counts).reduce((a, b) => a + b, 0)).toBe(PRODUCTS.length);
+  });
+
+  it("opens on Both hubs — the defect, not the inventory", async () => {
+    const tree = await renderTab();
+    expect(chip(tree, "Both hubs").props["aria-pressed"]).toBe(true);
     expect(text(tree)).toContain("Both Hubs Sneaker");
     expect(text(tree)).not.toContain("Hub One Sneaker");
   });
 
-  it("opens a shut section on demand and shuts it again", async () => {
+  it("shows one list at a time", async () => {
     const tree = await renderTab();
-    const header = buttonSaying(tree, "Hub 1 only");
-    await act(async () => { header.props.onClick(); });
-    expect(text(tree)).toContain("Hub One Sneaker");
-    await act(async () => { header.props.onClick(); });
-    expect(text(tree)).not.toContain("Hub One Sneaker");
+    await act(async () => { chip(tree, "Hub 1").props.onClick(); });
+    const s = text(tree);
+    expect(s).toContain("Hub One Sneaker");
+    expect(s).not.toContain("Both Hubs Sneaker");
+    expect(s).not.toContain("Hub Two Sneaker");
   });
 
-  it("a deactivated product is armed nowhere and is counted, not shown", async () => {
+  it("Nowhere holds the quiet ones, and they are reachable", async () => {
+    // The first build dropped these from the screen entirely.
     const tree = await renderTab();
+    await act(async () => { chip(tree, "Nowhere").props.onClick(); });
     const s = text(tree);
-    expect(s).not.toContain("Retired Sneaker");
-    expect(s).toContain("deactivated, armed nowhere");
+    expect(s).toContain("Retired Sneaker");     // deactivated
+    expect(s).toContain("Nowhere Sneaker");     // armed by nothing
+  });
+
+  it("every product is in exactly one tab", async () => {
+    const tree = await renderTab();
+    const seen = [];
+    for (const title of ["Both hubs", "Hub 1", "Hub 2", "Nowhere"]) {
+      await act(async () => { chip(tree, title).props.onClick(); });
+      for (const r of tree.root.findAllByType(ArmRow)) seen.push(r.props.row.name);
+    }
+    expect(seen.length).toBe(PRODUCTS.length);
+    expect(new Set(seen).size).toBe(PRODUCTS.length);
   });
 });
 
-// ── SEARCH ──────────────────────────────────────────────────────────────────
-describe("the filter", () => {
-  it("narrows every section at once", async () => {
+// ── THE LIST IS COMPLETE ON FIRST PAINT ─────────────────────────────────────
+describe("the residue settles itself", () => {
+  it("puts a product armed only by stock at another location in the right tab", async () => {
+    // p5 is carried at Hub 1 with zero units of both sizes; its units are at
+    // Central. On the hub-scoped read alone the engine's dead-size rule reads it
+    // as unarmed and it lands in Nowhere. It is armed at Hub 1, and the tab must
+    // say so WITHOUT anyone pressing anything — a list that is wrong until you
+    // press something is a list that is wrong. 64 live products were in this
+    // state.
     const tree = await renderTab();
-    const box = tree.root.findAll((n) => n.type === "input")[0];
-    // Open section D so there is something in it to narrow.
-    await act(async () => { buttonSaying(tree, "Hub 1 only").props.onClick(); });
-    await act(async () => { box.props.onChange({ target: { value: "both hubs" } }); });
-    const s = text(tree);
-    expect(s).toContain("Both Hubs Sneaker");
-    expect(s).not.toContain("Hub One Sneaker");
+    await act(async () => { chip(tree, "Hub 1").props.onClick(); });
+    expect(text(tree), "Elsewhere Sneaker belongs in Hub 1").toContain("Elsewhere Sneaker");
+
+    await act(async () => { chip(tree, "Nowhere").props.onClick(); });
+    expect(text(tree)).not.toContain("Elsewhere Sneaker");
   });
 
-  it("keeps the section's real count on the header while filtering", async () => {
-    // THE NUMBER, not the title. A version of this test that asserted only the
-    // heading and the empty-state line stayed green with the header wired to
-    // the FILTERED row count — which is the very thing it is named for.
-    // (Adversarial review, PR #601.)
+  it("reads the other locations per product, never as a node", async () => {
+    await renderTab();
+    const perProduct = READS.filter((p) => p.split("/").length === 3);
+    expect(perProduct.length).toBeGreaterThan(0);
+    expect(READS).not.toContain("stock/central");
+    expect(READS).not.toContain("stock/trophy");
+  });
+
+  it("does not loop: the settle runs once and then has nothing to do", async () => {
     const tree = await renderTab();
-    const header = () => buttons(tree).find((b) => label(b).includes("Armed at both hubs"));
-    expect(label(header())).toContain("1");
+    const after = READS.length;
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />); });
+    await act(async () => {});
+    await act(async () => {});
+    expect(READS.length).toBe(after);
+  });
+});
+
+// ── THE BADGES ──────────────────────────────────────────────────────────────
+describe("the flags that are not a place", () => {
+  it("marks a hub armed with nothing on the shelf", async () => {
+    const tree = await renderTab();
+    await act(async () => { chip(tree, "Hub 2").props.onClick(); });
+    expect(innerText(rowFor(tree, "Unseated Bag"))).toContain("Not seated");
+  });
+
+  it("marks a product a target:0 row switched off", async () => {
+    const tree = await renderTab();
+    await act(async () => { chip(tree, "Hub 2").props.onClick(); });
+    expect(innerText(rowFor(tree, "Hub Two Sneaker"))).toContain("Switched off");
+  });
+
+  it("marks a deactivated line, in Nowhere", async () => {
+    const tree = await renderTab();
+    await act(async () => { chip(tree, "Nowhere").props.onClick(); });
+    expect(innerText(rowFor(tree, "Retired Sneaker"))).toContain("Deactivated");
+  });
+
+  it("names the hub and its units on an armed row", async () => {
+    const tree = await renderTab();
+    expect(innerText(rowFor(tree, "Both Hubs Sneaker"))).toContain("Hub 1 · 3");
+    expect(innerText(rowFor(tree, "Both Hubs Sneaker"))).toContain("Hub 2 · 2");
+  });
+});
+
+// ── SEARCH AND PAGING ───────────────────────────────────────────────────────
+describe("the search box", () => {
+  it("filters the list that is open", async () => {
+    const tree = await renderTab();
+    await act(async () => { chip(tree, "Nowhere").props.onClick(); });
+    const box = tree.root.findAll((n) => n.type === "input")[0];
+    await act(async () => { box.props.onChange({ target: { value: "retired" } }); });
+    const s = text(tree);
+    expect(s).toContain("Retired Sneaker");
+    expect(s).not.toContain("Nowhere Sneaker");
+  });
+
+  it("requires every term, so a second word narrows", async () => {
+    const tree = await renderTab();
+    await act(async () => { chip(tree, "Nowhere").props.onClick(); });
+    const box = tree.root.findAll((n) => n.type === "input")[0];
+    await act(async () => { box.props.onChange({ target: { value: "sneaker nowhere" } }); });
+    expect(text(tree)).not.toContain("Retired Sneaker");
+  });
+
+  it("says so when nothing matches", async () => {
+    const tree = await renderTab();
     const box = tree.root.findAll((n) => n.type === "input")[0];
     await act(async () => { box.props.onChange({ target: { value: "zzzznothing" } }); });
-    expect(label(header()), "the header count must stay unfiltered").toContain("1");
-    expect(text(tree)).toContain("No match in this section.");
+    expect(text(tree)).toContain("No match in this list.");
+    // The TAB COUNT stays unfiltered — it is what the list holds, not what the
+    // search found.
+    expect(label(chip(tree, "Both hubs"))).toContain("1");
   });
 
-  it("filters nothing when empty", async () => {
+  it("keeps the tab counts unfiltered while searching", async () => {
     const tree = await renderTab();
+    const before = label(chip(tree, "Nowhere"));
     const box = tree.root.findAll((n) => n.type === "input")[0];
-    await act(async () => { box.props.onChange({ target: { value: "  " } }); });
-    expect(text(tree)).toContain("Both Hubs Sneaker");
+    await act(async () => { box.props.onChange({ target: { value: "zzzznothing" } }); });
+    expect(label(chip(tree, "Nowhere"))).toBe(before);
   });
 });
 
-// ── PAGING ──────────────────────────────────────────────────────────────────
-describe("a long section does not render at once", () => {
+describe("a long list does not render at once", () => {
   const MANY = [
     ...PRODUCTS,
     ...Array.from({ length: 140 }, (_, i) => ({
@@ -350,183 +430,239 @@ describe("a long section does not render at once", () => {
       ...Object.fromEntries(Array.from({ length: 140 }, (_, i) => [`q${i}`, { 8: cell(2) }])),
     });
     const tree = await renderTab({ products: MANY });
-    await act(async () => { buttonSaying(tree, "Hub 2 only").props.onClick(); });
+    await act(async () => { chip(tree, "Hub 2").props.onClick(); });
     const s = text(tree);
     expect(s).toContain("Bulk Sneaker 000");
     expect(s).not.toContain("Bulk Sneaker 139");
-    const more = buttons(tree).find((b) => /\d+ more/.test(label(b)));
+    const more = buttons(tree).find((b) => /^\d+ more$/.test(label(b)));
     expect(more).toBeTruthy();
     await act(async () => { more.props.onClick(); });
     expect(text(tree)).toContain("Bulk Sneaker 060");
   });
+
+  it("starts a new list at the top", async () => {
+    setNode("stock/hub2", {
+      p1: { 9: cell(2) }, p3: { 9: cell(5) },
+      ...Object.fromEntries(Array.from({ length: 140 }, (_, i) => [`q${i}`, { 8: cell(2) }])),
+    });
+    const tree = await renderTab({ products: MANY });
+    await act(async () => { chip(tree, "Hub 2").props.onClick(); });
+    await act(async () => { buttons(tree).find((b) => /^\d+ more$/.test(label(b))).props.onClick(); });
+    expect(text(tree)).toContain("Bulk Sneaker 060");
+    await act(async () => { chip(tree, "Both hubs").props.onClick(); });
+    await act(async () => { chip(tree, "Hub 2").props.onClick(); });
+    expect(text(tree)).not.toContain("Bulk Sneaker 060");
+  });
 });
 
-// ── THE RESIDUE ─────────────────────────────────────────────────────────────
-describe("the undecided residue", () => {
-  it("is named rather than swallowed", async () => {
-    const s = text(await renderTab());
-    expect(s).toContain("undecided");
-  });
+// ── EDITING ON THE SPOT ─────────────────────────────────────────────────────
+describe("opening a row", () => {
+  const openRow = async (tree, name) => {
+    const row = rowFor(tree, name);
+    const btn = row.findAll((n) => n.type === "button").find((b) => label(b).includes(name));
+    await act(async () => { btn.props.onClick(); });
+    await act(async () => {});
+    return row;
+  };
 
-  it("resolves it with per-(location, product) reads and never a whole node", async () => {
+  it("reads that ONE product from every location, never a node", async () => {
     const tree = await renderTab();
     READS.length = 0;
-    const btn = buttonSaying(tree, "Read the other");
-    expect(btn).toBeTruthy();
-    await act(async () => { await btn.props.onClick(); });
-    await act(async () => {});
-    // Only scoped per-product paths, and only at the locations not already held.
+    await openRow(tree, "Both Hubs Sneaker");
     expect(READS.length).toBeGreaterThan(0);
     for (const path of READS) {
-      expect(path).toMatch(/^stock\/[^/]+\/[^/]+$/);
-      expect(path.startsWith("stock/hub1/")).toBe(false);
-      expect(path.startsWith("stock/hub2/")).toBe(false);
+      expect(path, "every read must be per (location, product)").toMatch(/^(stock|stock_targets)\/[^/]+\/p1$/);
+    }
+    // EVERY location that can hold a cell — in_transit and the deactivated
+    // warehouse included. The engine's dead-size rule counts units anywhere, so
+    // a context narrowed to the transfer targets makes a size read as dead and
+    // the row says "not carried" for a line the engine is actively seating.
+    for (const loc of Object.keys(BASE_LOCATIONS)) {
+      expect(READS, `the carriage context must include ${loc}`).toContain(`stock/${loc}/p1`);
+    }
+    // Named explicitly, because these two are the ones a narrowing would drop.
+    expect(READS).toContain("stock/in_transit/p1");
+    expect(READS).toContain("stock/base/p1");
+  });
+
+  it("renders the Seating tab's own rows, one per location", async () => {
+    const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
+    // One row per place a product can be SEATED — not per place it can hold a
+    // cell. in_transit is never a seat and the deactivated warehouse is not a
+    // destination, but both are still read for the carriage context above.
+    const seats = tree.root.findAllByType(SeatRow);
+    expect(seats.map((s) => s.props.seat.loc).sort()).toEqual([...SEAT_LOCATIONS].sort());
+  });
+
+  it("hands each row the FULL location list, or switchOff would refuse it", async () => {
+    const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
+    const seats = tree.root.findAllByType(SeatRow);
+    expect(seats.length).toBeGreaterThan(0);
+    for (const s of seats) {
+      // switchOff refuses outright when the list does not cover its own seat.
+      expect(s.props.locations).toContain(s.props.seat.loc);
+      expect(s.props.viewer).toBe(OWNER);
+      // …and covering the seats is NOT enough. `toContain(seat.loc)` is
+      // satisfied by the destination list itself, so it could never catch a
+      // narrowing — which is exactly what it failed to catch. The carriage
+      // context is strictly WIDER than the seats.
+      expect(s.props.locations).toContain("in_transit");
+      expect(s.props.locations).toContain("base");
+      expect(s.props.locations.length).toBeGreaterThan(s.props.destinations.length);
     }
   });
 
-  it("and the residue is gone afterwards", async () => {
+  it("closes again, and only one row is open at a time", async () => {
     const tree = await renderTab();
-    const btn = buttonSaying(tree, "Read the other");
-    await act(async () => { await btn.props.onClick(); });
-    await act(async () => {});
-    expect(text(tree)).not.toContain("undecided");
+    await openRow(tree, "Both Hubs Sneaker");
+    expect(tree.root.findAllByType(SeatRow).length).toBeGreaterThan(0);
+    await openRow(tree, "Both Hubs Sneaker");
+    expect(tree.root.findAllByType(SeatRow).length).toBe(0);
+  });
+
+  it("writes nothing merely by opening", async () => {
+    const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+  });
+
+  it("the actions are the Seating tab's, so the write gate is asked once", async () => {
+    // ProductSeating renders SeatRow, which renders SeatingActions, which asks
+    // enginePolicySeatingWritable for itself. This tab must not re-decide it.
+    const src = (await import("node:fs")).readFileSync(new URL("./ArmingTab.jsx", import.meta.url), "utf8");
+    const code = src.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    expect(code).not.toContain("enginePolicySeatingWritable");
+    expect(code).not.toContain("enginePolicySeatingMovable");
+    expect(code).toContain('import { SeatRow } from "./SeatingTab"');
   });
 });
 
-// ── REFRESH, AND REFRESH DURING A RESOLVE ───────────────────────────────────
-describe("Refresh", () => {
-  it("re-reads the four paths", async () => {
+// ── AFTER A WRITE ───────────────────────────────────────────────────────────
+// A completed action hands its own complete per-product read UP to the list.
+describe("after an action on a row", () => {
+  const openRow = async (tree, name) => {
+    const row = rowFor(tree, name);
+    const btn = row.findAll((n) => n.type === "button").find((b) => label(b).includes(name));
+    await act(async () => { btn.props.onClick(); });
+    await act(async () => {});
+    return row;
+  };
+  // Fire SeatRow's onDone the way a real completed action does.
+  const finish = async (tree, loc) => {
+    const seat = tree.root.findAllByType(SeatRow).find((s) => s.props.seat.loc === loc);
+    await act(async () => { await seat.props.onDone("done"); });
+    await act(async () => {});
+    await act(async () => {});
+  };
+
+  it("re-classifies the product WITHOUT re-reading both hubs or re-settling", async () => {
+    // It used to call the tab's own load(): both hub nodes again (≈2.68 MB on
+    // live) plus the whole 1,472-request settle pass, on every switch-off.
     const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
     READS.length = 0;
-    await act(async () => { await buttonSaying(tree, "Refresh").props.onClick(); });
-    await act(async () => {});
-    expect(READS.sort()).toEqual(["stock/hub1", "stock/hub2", "stock_targets/hub1", "stock_targets/hub2"]);
+    await finish(tree, "hub2");
+    const listReads = READS.filter((p) => p.split("/").length === 2);
+    expect(listReads, "a write must not re-read a whole hub node").toEqual([]);
+    // …and every read it DID make is the one product being re-read.
+    for (const path of READS) expect(path).toMatch(/^(stock|stock_targets)\/[^/]+\/p1$/);
   });
 
-  it("does not leave the resolve button wedged when it interrupts one", async () => {
-    // THE BUG: resolve() gated its `finally` on the READ's sequence number, so a
-    // Refresh landing mid-resolve meant `resolving` was never cleared and the
-    // button sat disabled on a frozen count for the life of the tab.
+  it("moves the row to the tab it now belongs in", async () => {
+    // Switch off Hub 2 for the both-hubs product: it belongs in Hub 1 now.
     const tree = await renderTab();
-    const resolveBtn = buttonSaying(tree, "Read the other");
-    let pending;
-    HOLD_PRODUCT_READS = true;
-    await act(async () => { pending = resolveBtn.props.onClick(); });
-    // …the resolve is now stuck mid-flight. Refresh lands on top of it.
+    await openRow(tree, "Both Hubs Sneaker");
+    setNode("stock_targets/hub2", {
+      p1: { 8: { target: 0, minQty: 0, source: "seating_off" }, 9: { target: 0, minQty: 0, source: "seating_off" } },
+    });
+    await finish(tree, "hub2");
+    expect(text(tree), "it must leave Both hubs").not.toContain("Both Hubs Sneaker");
+    expect(label(chip(tree, "Both hubs"))).toContain("0");
+    await act(async () => { chip(tree, "Hub 1").props.onClick(); });
+    expect(text(tree)).toContain("Both Hubs Sneaker");
+  });
+
+  it("a re-seat DELETES the rows rather than leaving stale ones behind", async () => {
+    // applyProductRead replaces, it does not merge. A merge would keep the
+    // target:0 rows and the product would read as switched off after being
+    // switched back on.
+    const tree = await renderTab();
+    await act(async () => { chip(tree, "Hub 2").props.onClick(); });
+    await openRow(tree, "Hub Two Sneaker");
+    expect(innerText(rowFor(tree, "Hub Two Sneaker"))).toContain("Switched off");
+    setNode("stock_targets/hub1", null);        // re-seat: the rows are gone
+    await finish(tree, "hub1");
+    await act(async () => { chip(tree, "Both hubs").props.onClick(); });
+    expect(text(tree), "with its rows gone the policy arms it at both hubs").toContain("Hub Two Sneaker");
+  });
+
+  it("does not leave the row expanded once it has left the list", async () => {
+    // openPid survived the row unmounting, so if the product came BACK into the
+    // list it rendered already expanded — a selection nobody made, and a second
+    // full per-location read with it.
+    //
+    // THE TAB MUST NOT CHANGE IN THIS TEST. Switching tab clears openPid on its
+    // own, so a version of this that navigated away proved nothing: it passed
+    // with the release deleted. Everything here happens on one tab.
+    const tree = await renderTab();
+    await openRow(tree, "Both Hubs Sneaker");
+    expect(tree.root.findAllByType(SeatRow).length).toBeGreaterThan(0);
+
+    setNode("stock_targets/hub2", { p1: { 8: { target: 0, minQty: 0 }, 9: { target: 0, minQty: 0 } } });
+    await finish(tree, "hub2");
+    expect(text(tree)).not.toContain("Both Hubs Sneaker");   // it left this list
+
+    // Undo it at the database and Refresh — the product returns to this tab.
+    setNode("stock_targets/hub2", null);
     await act(async () => { await buttonSaying(tree, "Refresh").props.onClick(); });
-    HOLD_PRODUCT_READS = false;
-    await act(async () => { RELEASE(); await pending; });
     await act(async () => {});
-    // The residue is back (the fresh read holds only the hubs again) and the
-    // button offers to settle it rather than showing a dead progress count.
-    const live = buttonSaying(tree, "Read the other");
-    expect(live, "the resolve button must be offered again").toBeTruthy();
-    expect(live.props.disabled).toBe(false);
+    await act(async () => {});
+    expect(text(tree)).toContain("Both Hubs Sneaker");
+    expect(tree.root.findAllByType(SeatRow).length, "the row must open only when tapped").toBe(0);
   });
 });
 
-// ── THE HAND-OFF ────────────────────────────────────────────────────────────
-describe("a row hands the product to Seating", () => {
-  it("calls back with the product id and nothing else", async () => {
-    // EVERY ARGUMENT, captured. A one-parameter closure cannot observe a second
-    // argument, so the assertion that literally says "nothing else" was the one
-    // assertion that could not see something else — a location appended here
-    // would have sailed through. (Adversarial review, PR #601.)
-    const seen = [];
-    const tree = await renderTab({ onOpenSeating: (...args) => seen.push(args) });
-    const row = buttonSaying(tree, "Both Hubs Sneaker");
-    await act(async () => { row.props.onClick(); });
-    expect(seen).toEqual([["p1"]]);
+describe("applyProductRead", () => {
+  const C = () => ({ stock: { hub1: { p1: { 8: cell(1) }, p2: { 8: cell(2) } } },
+    targets: { hub1: { p1: { 8: { target: 3 } } } } });
+
+  it("replaces one product at the hubs and leaves the others alone", () => {
+    const out = applyProductRead(C(), "p1", { stock: { hub1: { p1: { 9: cell(5) } } }, targets: {} }, ["hub1", "hub2"]);
+    expect(out.stock.hub1.p1).toEqual({ 9: cell(5) });
+    expect(out.stock.hub1.p2).toEqual({ 8: cell(2) });
   });
 
-  it("and does NOT survive a manual return to Seating", async () => {
-    // Hand p1 over, leave to Categories, then tap Seating BY HAND. The tabs are
-    // a mutually-exclusive ternary, so SeatingTab remounts and its initialPid
-    // effect fires again — with a stale id it would silently re-open p1.
-    let tree;
-    await act(async () => { tree = TestRenderer.create(<EnginePolicyCard viewer={OWNER} products={PRODUCTS} onExit={() => {}} />); });
-    await act(async () => { buttonSaying(tree, "Arming").props.onClick(); });
-    await act(async () => {});
-    await act(async () => { buttonSaying(tree, "Both Hubs Sneaker").props.onClick(); });
-    await act(async () => {});
-    expect(tree.root.findAllByType(SeatingTab)[0].props.initialPid).toBe("p1");
-
-    await act(async () => { buttonSaying(tree, "Categories").props.onClick(); });
-    await act(async () => {});
-    await act(async () => { buttonSaying(tree, "Seating").props.onClick(); });
-    await act(async () => {});
-    expect(tree.root.findAllByType(SeatingTab)[0].props.initialPid).toBe("");
+  it("DELETES what the fresh read does not hold — a re-seat removes rows", () => {
+    const out = applyProductRead(C(), "p1", { stock: { hub1: { p1: { 8: cell(1) } } }, targets: {} }, ["hub1", "hub2"]);
+    expect(out.targets.hub1).toBeUndefined();
   });
 
-  it("through the card, Arming opens Seating on that product", async () => {
-    let tree;
-    await act(async () => { tree = TestRenderer.create(<EnginePolicyCard viewer={OWNER} products={PRODUCTS} onExit={() => {}} />); });
-    await act(async () => { buttonSaying(tree, "Arming").props.onClick(); });
-    await act(async () => {});
-    const row = buttonSaying(tree, "Both Hubs Sneaker");
-    await act(async () => { row.props.onClick(); });
-    await act(async () => {});
-    expect(tree.root.findAllByType(SeatingTab).length).toBe(1);
-    expect(tree.root.findAllByType(SeatingTab)[0].props.initialPid).toBe("p1");
-  });
-});
-
-// ── WHAT A ROW ACTUALLY SHOWS ───────────────────────────────────────────────
-// The PR's headline sentences about the row — both hubs always, the run
-// filtered to positive targets, coloured by source, the on-hand line, the
-// switched-off count — were each carried by a comment and by nothing else.
-describe("the row", () => {
-  // Found by the ROW component instance, not by walking parents from a button —
-  // a parent walk encodes the current nesting and goes green-but-meaningless the
-  // moment the markup is reshaped.
-  const rowFor = (tree, name) =>
-    tree.root.findAllByType(ArmRow).find((n) => n.props.row.name === name);
-
-  it("renders BOTH hub columns, including the one that is not armed", async () => {
-    // p2 is armed at Hub 1 only. Its row must still name Hub 2 and say what it
-    // says there — the comparison is the point of the screen.
-    const tree = await renderTab();
-    await act(async () => { buttonSaying(tree, "Hub 1 only").props.onClick(); });
-    const t = innerText(rowFor(tree, "Hub One Sneaker"));
-    expect(t).toContain("Hub 1");
-    expect(t).toContain("Hub 2");
-    expect(t).toContain("Not armed");
+  it("drops a location left with no products, as RTDB does", () => {
+    const one = { stock: { hub1: { p1: { 8: cell(1) } } }, targets: {} };
+    const out = applyProductRead(one, "p1", { stock: {}, targets: {} }, ["hub1", "hub2"]);
+    expect(out.stock.hub1).toBeUndefined();
   });
 
-  it("shows the per-size run only for sizes with a POSITIVE target", async () => {
-    // p5 is carried at Hub 1 with zero units of both covered sizes, so the
-    // dead-size rule resolves both to 0. Every chip on a rendered run must carry
-    // a positive number; a dropped filter puts a "0" chip on screen.
-    const tree = await renderTab();
-    const chips = tree.root.findAllByType(SizeFactChip);
-    expect(chips.length).toBeGreaterThan(0);
-    for (const c of chips) expect(c.props.value, `chip ${c.props.size}`).toBeGreaterThan(0);
+  it("touches only the hubs it is given", () => {
+    const base = { stock: { central: { p1: { 8: cell(9) } } }, targets: {} };
+    const out = applyProductRead(base, "p1", { stock: { central: { p1: { 8: cell(1) } } }, targets: {} }, ["hub1", "hub2"]);
+    expect(out.stock.central.p1).toEqual({ 8: cell(9) });
   });
 
-  it("colours each chip by which source answered", async () => {
-    const tree = await renderTab();
-    const chips = tree.root.findAllByType(SizeFactChip);
-    // Every run on this fixture is category policy — green, not the blue an
-    // explicit row would get. A dropped SOURCE_TONE lookup makes them all blue.
-    expect(new Set(chips.map((c) => c.props.tone))).toEqual(new Set(["#4ADE80"]));
+  it("does not mutate what it was given", () => {
+    const base = C();
+    applyProductRead(base, "p1", { stock: {}, targets: {} }, ["hub1", "hub2"]);
+    expect(base.stock.hub1.p1).toEqual({ 8: cell(1) });
+    expect(base.targets.hub1.p1).toEqual({ 8: { target: 3 } });
   });
 
-  it("states each hub's on-hand and row count", async () => {
-    const tree = await renderTab();
-    expect(innerText(rowFor(tree, "Both Hubs Sneaker"))).toContain("3 on hand · 0 rows");
-    expect(innerText(rowFor(tree, "Both Hubs Sneaker"))).toContain("2 on hand · 0 rows");
-  });
-
-  it("names a switched-off hub and counts its zeroed sizes", async () => {
-    // p3 is carried at Hub 1 with two target:0 rows over a policy that would
-    // arm it (size 9 is alive at Hub 2, so the dead-size rule is not what is
-    // answering). That is section C, and the row has to say so.
-    const tree = await renderTab();
-    const row = rowFor(tree, "Hub Two Sneaker");
-    expect(row, "the suppressed product must be on screen").toBeTruthy();
-    const t = innerText(row);
-    expect(t).toContain("Switched off");
-    expect(t).toContain("2 sizes at 0");
+  it("is a no-op without a product or a read", () => {
+    const base = C();
+    expect(applyProductRead(base, "", { stock: {} }, ["hub1"])).toBe(base);
+    expect(applyProductRead(base, "p1", null, ["hub1"])).toBe(base);
   });
 });
 
@@ -536,75 +672,108 @@ describe("before the engine policy has answered", () => {
     CONFIG_STATE = { value: null, settled: false, error: false };
     const tree = await renderTab();
     const s = text(tree);
-    // The one thing it must NOT do is render the sections with every count at 0.
-    expect(s).not.toContain("Armed at both hubs");
     expect(s).toContain("Reading the policy…");
+    expect(s).not.toContain("Both Hubs Sneaker");
   });
 
-  it("and degrades with a visible warning when the policy cannot be READ", async () => {
-    // settled AND error: an unreadable node must not be a permanent spinner,
-    // and must not pass silently as an empty policy either.
+  it("degrades with a visible warning when the policy cannot be READ", async () => {
     CONFIG_STATE = { value: null, settled: true, error: true };
     const tree = await renderTab();
-    const s = text(tree);
-    expect(s).toContain("could not be read");
-    expect(s).toContain("Armed at both hubs");
+    expect(text(tree)).toContain("could not be read");
   });
 });
 
-// ── IT WRITES NOTHING ───────────────────────────────────────────────────────
-describe("read-only", () => {
-  it("offers no unarm, no switch off and no target edit", async () => {
-    const s = text(await renderTab());
-    for (const word of ["Switch off", "Unarm", "Re-seat", "Save"]) {
-      expect(s, `the Arming tab must not offer "${word}"`).not.toContain(word);
-    }
-    // …and the words are the weak half of this. Grepping rendered text passes
-    // for an empty component; the database is where a write would actually
-    // land, so that is where the refusal is asserted.
-    expect(updateMock).not.toHaveBeenCalled();
-    expect(pushMock).not.toHaveBeenCalled();
-  });
-
-  it("writes nothing even while resolving the residue", async () => {
+// ── REFRESH ─────────────────────────────────────────────────────────────────
+describe("Refresh", () => {
+  it("re-reads the four list paths", async () => {
     const tree = await renderTab();
-    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
+    READS.length = 0;
+    await act(async () => { await buttonSaying(tree, "Refresh").props.onClick(); });
     await act(async () => {});
-    expect(updateMock).not.toHaveBeenCalled();
-    expect(pushMock).not.toHaveBeenCalled();
+    await act(async () => {});
+    const listReads = READS.filter((p) => p.split("/").length === 2);
+    expect(listReads.sort()).toEqual(["stock/hub1", "stock/hub2", "stock_targets/hub1", "stock_targets/hub2"]);
+  });
+
+  it("interrupting a settle leaves no frozen progress behind", async () => {
+    // The settle gated its cleanup on the READ's sequence number, so a Refresh
+    // landing mid-pass left "checking n/m" on screen for the life of the tab.
+    HOLD_PRODUCT_READS = true;
+    let tree;
+    await act(async () => {
+      tree = TestRenderer.create(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />);
+    });
+    await act(async () => {});
+    await act(async () => { await buttonSaying(tree, "Refresh").props.onClick(); });
+    HOLD_PRODUCT_READS = false;
+    await act(async () => { RELEASE(); });
+    await act(async () => {});
+    await act(async () => {});
+    expect(text(tree)).not.toContain("checking");
   });
 });
 
-// ── THE EXPORTED HELPERS ────────────────────────────────────────────────────
-// Each of these carries a comment making a claim, and each claim was resting on
-// nothing: deleting the body of bySize's numeric branch, or the spread in
-// mergeStock, left all 74 tests green. (Adversarial review, PR #601.)
-describe("bySize", () => {
-  const run = (sizes) => sizes.map((size) => ({ size })).sort(bySize).map((s) => s.size);
-
-  it("orders shoe sizes as numbers, not as strings", () => {
-    expect(run(["10", "3", "9", "11", "8"])).toEqual(["3", "8", "9", "10", "11"]);
+// ── A NEW LOCATION INVALIDATES A SETTLE ─────────────────────────────────────
+describe("the location registry changing", () => {
+  it("re-settles against the new location list", async () => {
+    const tree = await renderTab();
+    READS.length = 0;
+    LOCATIONS = { ...LOCATIONS, hub3: { id: "hub3", label: "Hub 3", kind: "warehouse", active: true } };
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />); });
+    await act(async () => {});
+    await act(async () => {});
+    // "Read from every location" stopped being true with no read having failed.
+    expect(READS.some((p) => p.startsWith("stock/hub3/"))).toBe(true);
   });
 
-  it("keeps a half size between its neighbours", () => {
-    expect(run(["6", "5.5", "5"])).toEqual(["5", "5.5", "6"]);
-    expect(run(["6", "5_5", "5"])).toEqual(["5", "5_5", "6"]);
+  it("does not re-settle when the registry is unchanged", async () => {
+    const tree = await renderTab();
+    READS.length = 0;
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />); });
+    await act(async () => {});
+    await act(async () => {});
+    expect(READS).toEqual([]);
   });
 
-  it("puts letter sizes after the numbers, alphabetically", () => {
-    expect(run(["M", "3", "L"])).toEqual(["3", "L", "M"]);
+  it("settles once there is somewhere to settle AGAINST", async () => {
+    // settle() returns at once when the location list holds nothing but the two
+    // hubs — it records nothing and sets no state — so without `otherLocations`
+    // in the effect's dependencies nothing ever retried it, and the residue sat
+    // in Nowhere until somebody pressed Refresh.
+    //
+    // A registry of JUST the two hubs is what makes this reachable: an EMPTY
+    // registry falls back to the ten seed locations (locations.js
+    // allLocationIds), so the empty case never actually has an empty list. A
+    // version of this test that started from {} proved nothing.
+    LOCATIONS = { hub1: BASE_LOCATIONS.hub1, hub2: BASE_LOCATIONS.hub2 };
+    let tree;
+    await act(async () => {
+      tree = TestRenderer.create(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />);
+    });
+    await act(async () => {});
+    await act(async () => {});
+    expect(READS.some((p) => p.split("/").length === 3), "nothing to settle against yet").toBe(false);
+
+    READS.length = 0;
+    LOCATIONS = { ...BASE_LOCATIONS };
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />); });
+    await act(async () => {});
+    await act(async () => {});
+    expect(READS.some((p) => p.startsWith("stock/central/")), "the settle must retry").toBe(true);
   });
 
-  it("puts the one-size cell last — after the letters too", () => {
-    // Blank and a letter size both rank as "not a number", so a fallback that
-    // reached localeCompare sorted "" in FRONT of "L" and "M". (CodeRabbit.)
-    expect(run(["", "8"])).toEqual(["8", ""]);
-    expect(run(["", "M", "L"])).toEqual(["L", "M", ""]);
-    expect(run(["M", "", "3", "L"])).toEqual(["3", "L", "M", ""]);
-    expect(run(["  ", "L"])).toEqual(["L", "  "]);
+  it("is insensitive to the ORDER the registry arrives in", async () => {
+    const tree = await renderTab();
+    READS.length = 0;
+    LOCATIONS = Object.fromEntries(Object.entries(LOCATIONS).reverse());
+    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} viewer={OWNER} flash={() => {}} />); });
+    await act(async () => {});
+    await act(async () => {});
+    expect(READS).toEqual([]);
   });
 });
 
+// ── HELPERS ─────────────────────────────────────────────────────────────────
 describe("mergeStock", () => {
   it("keeps the cells already held at a location", () => {
     const base = { hub1: { p1: { 8: cell(1) } } };
@@ -635,128 +804,27 @@ describe("mb", () => {
   });
 });
 
-// ── A FRESH READ INVALIDATES EVERY RESOLVE ──────────────────────────────────
-describe("Refresh and the resolved set", () => {
-  it("drops the resolved products, because the cells they were proved against are gone", async () => {
-    // Resolve, then Refresh. The residue must come BACK: the hub cells the
-    // resolve was folded into have been replaced wholesale, so a product still
-    // marked "decided" would be answering from stock no longer in the context.
-    const tree = await renderTab();
-    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
-    await act(async () => {});
-    expect(text(tree)).not.toContain("undecided");
-    await act(async () => { await buttonSaying(tree, "Refresh").props.onClick(); });
-    await act(async () => {});
-    expect(text(tree)).toContain("undecided");
-  });
-
-  it("a second resolve keeps what the first one proved", async () => {
-    // A resolve proves ABSENCE as much as presence, and only the resolved set
-    // remembers it — mergeStock cannot carry a negative.
-    const tree = await renderTab();
-    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
-    await act(async () => {});
-    const s = text(tree);
-    expect(s).not.toContain("undecided");
-    expect(s).toContain("scoped reads");
-  });
-});
-
-// ── A NEW LOCATION INVALIDATES A RESOLVE ────────────────────────────────────
-// `resolvedPids` means "this product's stock has been read from EVERY
-// location". A location registered afterwards makes that false with no read
-// having failed.
-describe("the location registry changing", () => {
-  const rerender = async (tree) => {
-    await act(async () => { tree.update(<ArmingTab products={PRODUCTS} onOpenSeating={() => {}} />); });
-    await act(async () => {});
-  };
-
-  it("brings the residue back after a COMPLETED resolve", async () => {
-    const tree = await renderTab();
-    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
-    await act(async () => {});
-    expect(text(tree)).not.toContain("undecided");
-
-    LOCATIONS = { ...LOCATIONS, hub3: { id: "hub3", label: "Hub 3", kind: "warehouse", active: true } };
-    await rerender(tree);
-    expect(text(tree), "a location nobody read must un-decide the products").toContain("undecided");
-  });
-
-  it("and retires a resolve still IN FLIGHT, instead of letting it land after the clear", async () => {
-    // THE HOLE THE FIRST FIX LEFT. resolve() gates on its own counters, which
-    // the invalidation effect did not touch — so a pass started against the old
-    // location list still landed and unioned its pids back in AFTER the clear.
-    // The residue vanished and every one of those products read as fully read,
-    // with the new location never asked.
-    const tree = await renderTab();
-    HOLD_PRODUCT_READS = true;
-    let pending;
-    await act(async () => { pending = buttonSaying(tree, "Read the other").props.onClick(); });
-
-    LOCATIONS = { ...LOCATIONS, hub3: { id: "hub3", label: "Hub 3", kind: "warehouse", active: true } };
-    await rerender(tree);
-
-    HOLD_PRODUCT_READS = false;
-    await act(async () => { RELEASE(); await pending; });
-    await act(async () => {});
-    expect(text(tree), "the stale pass must not mark anything decided").toContain("undecided");
-  });
-
-  it("does not clear when the registry is UNCHANGED", async () => {
-    // A re-render with the same locations must not throw a completed resolve
-    // away. usePath hands back a fresh object every time, so this is the
-    // ordinary case, not the edge one.
-    const tree = await renderTab();
-    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
-    await act(async () => {});
-    await rerender(tree);
-    expect(text(tree)).not.toContain("undecided");
-  });
-
-  it("is insensitive to the ORDER the registry arrives in", async () => {
-    // locSig sorts. Without that, usePath handing back the same locations in a
-    // different key order would clear the set on every delivery.
-    const tree = await renderTab();
-    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
-    await act(async () => {});
-    LOCATIONS = Object.fromEntries(Object.entries(LOCATIONS).reverse());
-    await rerender(tree);
-    expect(text(tree)).not.toContain("undecided");
-  });
-});
-
-// ── THE BILL INCLUDES THE RESOLVE ───────────────────────────────────────────
-describe("the reported read cost", () => {
-  it("grows by the resolve pass's own reads and bytes", async () => {
-    const tree = await renderTab();
-    const before = text(tree).match(/(\d+) scoped reads/)[1];
-    expect(before).toBe("4");
-    await act(async () => { await buttonSaying(tree, "Read the other").props.onClick(); });
-    await act(async () => {});
-    const after = Number(text(tree).match(/(\d+) scoped reads/)[1]);
-    // One read per (undecided product × other location). Anything that still
-    // says 4 is a screen reporting a cost it did not pay.
-    expect(after).toBeGreaterThan(4);
-  });
-});
-
-// ── THE TAB STRIP AND GATE 2d ───────────────────────────────────────────────
-describe("the tab strip", () => {
-  it("Engine Policy now shows three tabs", async () => {
+// ── THE TAB STRIP ───────────────────────────────────────────────────────────
+describe("the card", () => {
+  it("shows three tabs and Arming is reachable", async () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<EnginePolicyCard viewer={OWNER} products={PRODUCTS} onExit={() => {}} />); });
     const s = text(tree);
     expect(s).toContain("Categories");
     expect(s).toContain("Seating");
     expect(s).toContain("Arming");
+    await act(async () => { buttonSaying(tree, "Arming").props.onClick(); });
+    await act(async () => {});
+    expect(tree.root.findAllByType(ArmingTab).length).toBe(1);
   });
 
-  it("Arming is reachable and renders the tab", async () => {
+  it("hands Arming the viewer and the flash, because it writes now", async () => {
     let tree;
     await act(async () => { tree = TestRenderer.create(<EnginePolicyCard viewer={OWNER} products={PRODUCTS} onExit={() => {}} />); });
     await act(async () => { buttonSaying(tree, "Arming").props.onClick(); });
     await act(async () => {});
-    expect(tree.root.findAllByType(ArmingTab).length).toBe(1);
+    const tab = tree.root.findAllByType(ArmingTab)[0];
+    expect(tab.props.viewer).toBe(OWNER);
+    expect(typeof tab.props.flash).toBe("function");
   });
 });

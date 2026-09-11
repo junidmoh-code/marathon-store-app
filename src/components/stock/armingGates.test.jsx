@@ -44,9 +44,31 @@ vi.mock("./barcodeListener", () => ({ installBarcodeListener: () => () => {}, su
 // them: the four scoped reads are 2.7 MB against live, and a gate that refuses
 // the pixels while still downloading the catalogue has not refused anything.
 const READS = [];
+// Enough stock for ONE armed row to exist, so the positive half of the refusal
+// tests is not asserting against an empty screen.
+const NODES = {
+  "stock/hub1": { p1: { 8: { qty: 3, v: 1 } } },
+  "stock/hub2": { p1: { 8: { qty: 2, v: 1 } } },
+};
+const readNode = (path) => {
+  if (Object.prototype.hasOwnProperty.call(NODES, path)) return NODES[path];
+  const parts = String(path).split("/");
+  for (let i = parts.length - 1; i > 0; i--) {
+    const head = parts.slice(0, i).join("/");
+    if (!Object.prototype.hasOwnProperty.call(NODES, head)) continue;
+    let v = NODES[head];
+    for (const k of parts.slice(i)) { v = v?.[k]; if (v == null) return null; }
+    return v;
+  }
+  return null;
+};
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
-  get: async (r) => { READS.push(String(r.path)); return { exists: () => false, val: () => null }; },
+  get: async (r) => {
+    READS.push(String(r.path));
+    const v = readNode(String(r.path));
+    return { exists: () => v != null, val: () => v };
+  },
   onValue: () => () => {},
   update: async () => {},
   push: () => ({ key: "mv1" }),
@@ -58,16 +80,25 @@ vi.mock("./useStock", () => ({
     hub1: { id: "hub1", label: "Hub 1", kind: "warehouse", active: true },
     hub2: { id: "hub2", label: "Hub 2", kind: "warehouse", active: true },
   }),
-  useEngineConfig: () => ({ ruleBasedTargets: true }),
-  useEngineConfigState: () => ({ value: { ruleBasedTargets: true }, settled: true, error: false }),
+  useEngineConfig: () => GATE_CONFIG,
+  useEngineConfigState: () => ({ value: GATE_CONFIG, settled: true, error: false }),
 }));
 
 const ArmingTab = (await import("./ArmingTab.jsx")).default;
+const { SeatRow } = await import("./SeatingTab.jsx");
+const { ArmRow } = await import("./ArmingTab.jsx");
+const SeatingActions = (await import("./SeatingActions.jsx")).default;
 const EnginePolicyCard = (await import("./EnginePolicyCard.jsx")).default;
 
 const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
 const CARD = readFileSync(new URL("./EnginePolicyCard.jsx", import.meta.url), "utf8");
 
+const GATE_CONFIG = {
+  ruleBasedTargets: true,
+  categoryPolicy: { sneakers: { perSize: true,
+    hub1: { carriedOnly: true, sizes: { 8: { target: 2, minQty: 1 } } },
+    hub2: { carriedOnly: true, sizes: { 8: { target: 2, minQty: 1 } } } } },
+};
 const PRODUCTS = [{ id: "p1", name: "A Sneaker", category: "Footwear", categoryKey: "sneakers", sizes: ["8"] }];
 const OWNER = { email: "gunidmoh@gmail.com" };
 const GRANTED = { email: "mc@marathon.internal", permFlags: { engine_policy: true } };
@@ -87,6 +118,31 @@ function label(node) {
   return out.join("");
 }
 const buttonSaying = (tree, said) => buttons(tree).find((b) => label(b).includes(said));
+
+// Open the Arming tab and expand its first row, as far as the viewer is let.
+// A refused viewer simply has no tab and no rows, and that is the answer.
+async function openFirstRow(tree, { alsoSeat = false } = {}) {
+  const arming = buttonSaying(tree, "Arming");
+  if (arming) { await act(async () => { arming.props.onClick(); }); await act(async () => {}); await act(async () => {}); }
+  const row = tree.root.findAllByType(ArmRow)[0];
+  if (row) {
+    const btn = row.findAll((n) => n.type === "button").find((b) => label(b).includes(row.props.row.name));
+    await act(async () => { btn.props.onClick(); });
+    await act(async () => {});
+    await act(async () => {});
+  }
+  if (alsoSeat) {
+    // SeatingActions mounts only for an EXPANDED seat row — that is where the
+    // write buttons live, so that is where the refusal has to reach.
+    const seat = tree.root.findAllByType(SeatRow)[0];
+    if (seat) {
+      const change = seat.findAll((n) => n.type === "button").find((b) => label(b).includes("Change"));
+      await act(async () => { change.props.onClick(); });
+      await act(async () => {});
+    }
+  }
+  return tree;
+}
 
 async function card(viewer) {
   let tree;
@@ -171,6 +227,32 @@ describe("GATE 2d — the Arming branch refuses on its own", () => {
     await card(STAFF);
     expect(READS).toEqual([]);
     expect(callableMock).not.toHaveBeenCalled();
+  });
+
+  it("…and mounts no SeatRow, so none of its write buttons can exist", async () => {
+    // The tab EDITS now. A refusal that stopped at the list while still
+    // mounting the action rows would be a refusal of the reading and not of the
+    // writing.
+    //
+    // THE OWNER HALF IS WHAT MAKES THIS MEAN ANYTHING. SeatRow only mounts when
+    // a row is OPENED, so a version of this that merely rendered the card
+    // asserted zero for every viewer alive — it passed with STAFF swapped for
+    // OWNER. The positive case is proved first, on the same fixture, and only
+    // then is the refusal asserted. (Adversarial review, PR #604.)
+    const armed = await openFirstRow(await card(OWNER));
+    expect(armed.root.findAllByType(SeatRow).length,
+      "the refusal below is vacuous unless a permitted viewer gets rows").toBeGreaterThan(0);
+
+    const refused = await openFirstRow(await card(STAFF));
+    expect(refused.root.findAllByType(SeatRow).length).toBe(0);
+  });
+
+  it("and no SeatingActions, which is where the writes actually live", async () => {
+    const armed = await openFirstRow(await card(OWNER), { alsoSeat: true });
+    expect(armed.root.findAllByType(SeatingActions).length).toBeGreaterThan(0);
+
+    const refused = await openFirstRow(await card(STAFF), { alsoSeat: true });
+    expect(refused.root.findAllByType(SeatingActions).length).toBe(0);
   });
 });
 
