@@ -1,9 +1,9 @@
 // ─── THE ARMING TAB — FOUR TABS, AND EDITING ON THE SPOT ─────────────────────
 //
-// Four exclusive tabs whose counts add up, a list that is COMPLETE on first
-// paint (the residue settles itself rather than waiting for a button), badges
-// for the facts that are not a place, and a row that opens the Seating tab's
-// own rows and actions inline.
+// Four exclusive tabs whose counts add up, a residue that settles ITSELF rather
+// than waiting for a button (rows migrate as it drains, and the screen says
+// `checking n/m` while they do), badges for the facts that are not a place, and
+// a row that opens the Seating tab's own rows and actions inline.
 //
 // THE READS ARE PART OF THE BEHAVIOUR. Every path the tab asks for is recorded,
 // so a read it must never make is an assertion and not a comment.
@@ -102,7 +102,18 @@ const BASE_LOCATIONS = {
   hub2: { id: "hub2", label: "Hub 2", kind: "warehouse", active: true },
   central: { id: "central", label: "Central", kind: "warehouse", active: true },
   trophy: { id: "trophy", label: "Trophy", kind: "store", sellable: true, active: true },
+  // THE TWO KINDS THE COMMENTS CALL LOAD-BEARING, and which the fixture did not
+  // have. `in_transit` is never a seat and never a destination; `base` is a
+  // DEACTIVATED warehouse. Both still hold cells the engine's dead-size rule
+  // counts, so both must be in the carriage context — and with neither in the
+  // fixture, narrowing that context to the transfer targets left all 105 tests
+  // green. (Adversarial review, PR #604.)
+  in_transit: { id: "in_transit", label: "In Transit", kind: "transit", active: true },
+  base: { id: "base", label: "Base", kind: "warehouse", sellable: false, active: false },
 };
+// Where a product can be SEATED — active, not in_transit. The carriage context
+// is strictly wider, and the difference is the point.
+const SEAT_LOCATIONS = ["hub1", "hub2", "central", "trophy"];
 let CONFIG_STATE = { value: null, settled: false, error: false };
 
 vi.mock("./useStock", () => ({
@@ -462,28 +473,44 @@ describe("opening a row", () => {
     for (const path of READS) {
       expect(path, "every read must be per (location, product)").toMatch(/^(stock|stock_targets)\/[^/]+\/p1$/);
     }
-    // Every location that can hold a cell, in_transit and deactivated ones
-    // included — the engine's dead-size rule counts units anywhere, and
-    // switchOff REFUSES a location list that does not cover the seat.
+    // EVERY location that can hold a cell — in_transit and the deactivated
+    // warehouse included. The engine's dead-size rule counts units anywhere, so
+    // a context narrowed to the transfer targets makes a size read as dead and
+    // the row says "not carried" for a line the engine is actively seating.
     for (const loc of Object.keys(BASE_LOCATIONS)) {
-      expect(READS).toContain(`stock/${loc}/p1`);
+      expect(READS, `the carriage context must include ${loc}`).toContain(`stock/${loc}/p1`);
     }
+    // Named explicitly, because these two are the ones a narrowing would drop.
+    expect(READS).toContain("stock/in_transit/p1");
+    expect(READS).toContain("stock/base/p1");
   });
 
   it("renders the Seating tab's own rows, one per location", async () => {
     const tree = await renderTab();
     await openRow(tree, "Both Hubs Sneaker");
+    // One row per place a product can be SEATED — not per place it can hold a
+    // cell. in_transit is never a seat and the deactivated warehouse is not a
+    // destination, but both are still read for the carriage context above.
     const seats = tree.root.findAllByType(SeatRow);
-    expect(seats.length).toBe(Object.keys(BASE_LOCATIONS).length);
-    expect(seats.map((s) => s.props.label).sort()).toEqual(["Central", "Hub 1", "Hub 2", "Trophy"]);
+    expect(seats.map((s) => s.props.seat.loc).sort()).toEqual([...SEAT_LOCATIONS].sort());
   });
 
   it("hands each row the FULL location list, or switchOff would refuse it", async () => {
     const tree = await renderTab();
     await openRow(tree, "Both Hubs Sneaker");
-    for (const s of tree.root.findAllByType(SeatRow)) {
+    const seats = tree.root.findAllByType(SeatRow);
+    expect(seats.length).toBeGreaterThan(0);
+    for (const s of seats) {
+      // switchOff refuses outright when the list does not cover its own seat.
       expect(s.props.locations).toContain(s.props.seat.loc);
       expect(s.props.viewer).toBe(OWNER);
+      // …and covering the seats is NOT enough. `toContain(seat.loc)` is
+      // satisfied by the destination list itself, so it could never catch a
+      // narrowing — which is exactly what it failed to catch. The carriage
+      // context is strictly WIDER than the seats.
+      expect(s.props.locations).toContain("in_transit");
+      expect(s.props.locations).toContain("base");
+      expect(s.props.locations.length).toBeGreaterThan(s.props.destinations.length);
     }
   });
 

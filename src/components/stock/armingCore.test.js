@@ -465,10 +465,29 @@ describe("armingIndex", () => {
     expect(ix.counts[BUCKET.HUB1_ONLY]).toBe(1);
     expect(ix.counts[BUCKET.HUB2_ONLY]).toBe(0);
     expect(ix.counts[BUCKET.NOWHERE]).toBe(1);
-    // THE PROPERTY, not three numbers that happen to be right today. A bucket
-    // that stops being exhaustive loses products off the screen silently.
-    expect(Object.values(ix.counts).reduce((a, b) => a + b, 0)).toBe(ix.rows.length);
     expect(ix.rows.length).toBe(Object.keys(products).length);
+  });
+
+  it("and each row's bucket is the one its two hub answers demand", () => {
+    // THE SUM IS NOT THE PROPERTY. counts[bucket]++ and rows.push() happen in
+    // the same iteration and bucketFor returns exactly one string, so
+    // sum === rows.length holds by construction — it stayed green with
+    // BOTH_HUBS collapsed into NOWHERE, which is the defect the whole tab
+    // exists for. The property worth asserting is that the bucket AGREES with
+    // the armed flags, decided independently here. (Adversarial review, #604.)
+    const ix = armingIndex(c, Object.keys(products));
+    const expected = (r) => (r.hub1.armed && r.hub2.armed ? BUCKET.BOTH_HUBS
+      : r.hub1.armed ? BUCKET.HUB1_ONLY
+      : r.hub2.armed ? BUCKET.HUB2_ONLY
+      : BUCKET.NOWHERE);
+    for (const r of ix.rows) expect(r.bucket, `${r.pid}`).toBe(expected(r));
+    // …and the tally is the tally of those rows, not a second counter that can
+    // drift from them.
+    for (const b of Object.keys(ix.counts)) {
+      expect(ix.counts[b], b).toBe(ix.rows.filter((r) => r.bucket === b).length);
+    }
+    // Not vacuous: the fixture really does exercise more than one bucket.
+    expect(new Set(ix.rows.map((r) => r.bucket)).size).toBeGreaterThan(1);
   });
 
   it("counts undecided PAIRS and undecided PRODUCTS separately", () => {

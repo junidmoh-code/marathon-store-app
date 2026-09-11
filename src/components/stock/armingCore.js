@@ -40,7 +40,8 @@
 //      a hub-scoped read genuinely cannot settle.
 //
 // ── THE ONE THING TWO LOCATION-SCOPED READS CANNOT SETTLE ────────────────────
-// The engine's per-size category branch (refill-engine.cjs:416) suppresses a
+// The engine's per-size category branch (refill-engine.cjs:476, and :492 for
+// the uniform per-size form) suppresses a
 // size that holds no units ANYWHERE:
 //
 //     shape(sizeUnitsAnywhere(stock, pid, size) > 0 ? row.target : 0, …)
@@ -256,8 +257,8 @@ export function flagsFor(h1, h2) {
   // switch IS the row — `source: "seating_off"` is a stamp saying who wrote it,
   // not what makes it work — and a hand-written zero suppresses the policy just
   // as completely. Keying on the stamp would hide every suppression the
-  // Decision Queue's Exclude button made (NoTargetQueue.jsx:325 writes the same
-  // row with no such stamp), which is most of them.
+  // Decision Queue's Exclude button made (NoTargetQueue.jsx:338 writes the same
+  // row under its OWN stamp, source: "excluded"), which is most of them.
   if (suppressed(h1) || suppressed(h2)) out.push(FLAG.SUPPRESSED);
   // A finished line. The engine refuses it above every other branch, so it is
   // armed nowhere by definition — and worth SEEING in Nowhere rather than
@@ -273,10 +274,16 @@ export function suppressed(h) {
 }
 
 // ── THE INDEX ────────────────────────────────────────────────────────────────
-// One pass over the catalogue. Returns EVERY product, because the four buckets
-// are exhaustive: a product neither hub is armed for belongs in Nowhere, which
-// is where somebody goes to ask why nothing is being sent. The first build
-// dropped those 960 products and there was no way to reach one.
+// One pass over the catalogue. Returns every pid it is GIVEN that the catalogue
+// also holds — the four buckets are exhaustive, so a product neither hub is
+// armed for belongs in Nowhere, which is where somebody goes to ask why nothing
+// is being sent. The first build dropped those 960 products and there was no
+// way to reach one.
+//
+// A pid the catalogue does not hold is skipped, which is looser than "every
+// product" and is said here rather than left for a reader to discover: the app
+// always passes the keys of the very map it hands in, so the two can only
+// diverge in a test. (Adversarial review, PR #604.)
 //
 // `pids` is passed in rather than taken from ctx.products so a caller can scope
 // the pass (a test, or a future filter) without rebuilding the context.

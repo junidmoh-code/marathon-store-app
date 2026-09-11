@@ -34,11 +34,14 @@
 //     /stock/hub2          1,405 KB        /stock_targets/hub2     785 KB
 //                                                        total  ≈ 2.68 MB
 //
-// For comparison, the whole of /stock is 6.47 MB across its ten locations, and
+// For comparison, the whole of /stock is 6.18 MB across its ten locations, and
 // resolving the engine's dead-size rule exactly would need every byte of it.
-// This read is 41% of that and answers bucket A — armed at both hubs, the
-// defect the tab exists for — identically: 34 products either way, measured
-// over the whole live catalogue. See armingCore.js for why.
+// The two hubs are 1.87 MB of that, so the eight this tab does not read whole
+// are 4.31 MB.
+//
+// (An earlier version of this comment said 3.8 MB, arrived at by subtracting
+// the tab's 2.68 MB total from /stock's — a category error, because 825 KB of
+// that total is /stock_targets and is not part of /stock at all.)
 //
 // It is still two and a half megabytes, and the brief asked for it to be
 // measured rather than assumed, so the tab reports its own byte count on screen
@@ -103,8 +106,8 @@ export async function readArmingContext(hubs = ARMING_HUBS) {
 // Settled with the SEATING TAB'S OWN READ — /stock/{loc}/{pid}, one product at
 // a time — over the locations the tab does not already hold. Never a whole
 // node: that is the read this tab was built to avoid, and doing it here to tidy
-// up the residue would spend a further 3.8 MB — every location but the two hubs
-// — to settle 185 (product, hub) pairs out of 9,520.
+// up the residue by reading those nodes whole would spend a further 4.31 MB to
+// settle 185 (product, hub) pairs out of 9,520. Per product it is ~320 KB.
 //
 // Batched, because 184 products across 8 locations is 1,472 requests and firing
 // them all at once is how a shop phone drops the lot. Each response is a few

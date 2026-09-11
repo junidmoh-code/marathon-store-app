@@ -167,8 +167,8 @@ export default function ArmingTab({ products, viewer, flash }) {
   // That was behind a button, and a list that is wrong until you press
   // something is a list that is wrong. It runs by itself now, straight after
   // the read: 184 products × 8 locations of the SEATING TAB'S OWN per-(location,
-  // product) reads — about 320 KB, against the 3.8 MB reading those locations
-  // whole would cost. Never a whole node.
+  // product) reads — about 320 KB, against the 4.31 MB reading those eight
+  // locations whole would cost. Never a whole node.
   const settle = useCallback(async (pids) => {
     if (!pids?.length || !otherLocations.length) return;
     const mine = ++settleSeq.current;
