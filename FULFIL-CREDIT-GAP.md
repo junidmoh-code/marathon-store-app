@@ -83,8 +83,8 @@ repaired in this PR (see Phase E cap).
 
 **B3 — engine requests granted less than the policy need** (policy evaluated with
 today's config; on-hand reconstructed at the request instant; reservations by other
-open requests not reconstructed): considered 7,391; asked the full gap 6,413; capped by
-source on-hand 857; unexplained 121 (footwear 16, clothing 105). The 16 footwear rows
+open requests not reconstructed): considered 7,389; asked the full gap 6,408; capped by
+source on-hand 859; unexplained 122 (footwear 16, clothing 106). The 16 footwear rows
 are listed in the probe output; none is the Diesel pattern (all had Central stock ≥ the
 gap, and were granted a smaller tranche — consistent with same-scan reservations and the
 25 Aug tranche armer, which this probe does not model).
@@ -166,6 +166,54 @@ credit; the count settled the truth).
   ~72 of them outside the refill-request lens (hold releases, clothing CR dispatches,
   manual transfers, excess rebalances). Above the 50-write cap; the same repair rule
   applies and the probe already lists them. Ask and it runs.
+
+## Phase F — proof (commit 5 and the review rounds)
+
+Tests: `applyMovementNegativeBase.test.js`, `stockHoldReleaseVerify.test.js`,
+`fulfilMovementId.test.js` (the "swallowed-id transfer is impossible" property),
+`applyMovementMirror.fuzz.test.js` (2,000 seeded sequences through both writers),
+`functions/test/transit-sweep.test.cjs` (21), `functions/test/fulfil-credit-gap-qty.test.cjs` (4).
+
+**Mutation kill count: 17/17** (`scripts/mutation-proof-fulfil-credit-gap.mjs`, clean tree,
+final head): negative base · adjustment exemption · in_transit exemption · release verify ·
+sweep hold-off · sweep timer · window floor · retirement · apportioning · server size fold ·
+cold-null transaction · in-flight resume · client in-flight refusal · deleted product ·
+server negative base · qty source cap · qty negative destination.
+
+Pre-existing failures on main, unrelated to this branch: `hubIsolation.test.js` (an App.jsx
+string assertion from #600), `homeRails` / `themeStrings` / `priceHearts` (Shopify theme
+files), `socialSchedule` and six social-caption tests.
+
+## Review rounds (what each found, what changed)
+
+| reviewer | outcome |
+|---|---|
+| CodeRabbit | check SUCCESS with "Review rate limited" — a spending-cap notice, no review. Substituted below. |
+| Fable-vs-spec | 7 gaps, all closed: the stranded-transit report had no reader (Health card + screen added); an archived claim could be spent on a newer parking on the same cell (guard: the cell's last parking must be that line); the swallowed-id property had no test; vitest fakes left empty parents; kill count was not in this report. |
+| Sonnet architect | CRITICAL: the server writer's read → recheck → update window could overwrite a POS sale landing in between (Admin SDK bypasses the v+1 rule). Closed: each cell is an RTDB transaction, legs run debit-first, cells carry in-flight stamps, the ledger row is last. |
+| Kimi | out of monthly quota (403). Codex excluded by instruction. |
+| Substitute second-brain pass (Opus) | 11 findings, all closed: server size fold ("Free Size" → "_"); a held line whose movement already landed is now RETIRED instead of sitting held forever; never release before the window (a switch flipped off must not credit a box still at Central), not-arrived lines wait for the box they were carried to; one cell is apportioned across its lines; the run summary survives a malformed line; probe reconstruction backs out snapshot-less returns; repair evidence rule replaced by an allow-list + freshness gate + `--audit`. |
+| Delta review (Sonnet, on the fix rounds) | 2 CRITICAL, both closed: the client's in-flight guard returned an early "idempotent" success that could abandon the second leg (now a retryable refusal); the transaction's cold-null first callback could abort every debit on a cold function (now judged against a pre-read; the fake models the SDK's abort). Its HIGH (release id reuse across shipments) does not apply: a line id IS one parking movement, create-once, and a not-arrived line carries the same units. |
+
+**Phase E audit under the stricter rule** (fresh dump 2026-09-11 ~14:05 SA, `--audit`):
+all nine written corrections stand; the three refusals stand (one merged away, two counted
+since). One row to read carefully: Adidas Campus Brown Orange hub2 size 9 went −1 → 0 —
+the arrived unit was sold after the 4 Sep release (0 → −1), so the phantom debt that
+absorbed it is now cleared and 0 is the true count.
+
+**Phase B re-run with the corrected reconstruction:** B1 unchanged (12 requests / 13 units;
+2 stranded); B1b unchanged (81 / 85); B3 considered 7,389, full gap 6,408, capped by
+source 859, unexplained 122 (footwear 16, clothing 106) — same 16 footwear rows.
+
+## Residuals, stated
+
+- `negativeCleared` is written on every clamped arrival but nothing reads it yet; on such
+  rows `before + qty ≠ after` — derive deltas from `qty`. A Health line for units created
+  this way is a follow-up.
+- The sweep detects orphan cells through the cell's last parking pointer only; a cell
+  holding two parkings exposes the newer — self-reporting via the apportioned refusal.
+- Product deletion leaves stock cells behind (the New Balance case); refusing a delete
+  while cells hold units is outside this PR.
 
 ## Probe output (verbatim)
 
