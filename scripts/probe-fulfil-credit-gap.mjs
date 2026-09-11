@@ -22,11 +22,12 @@
 //       split into correctly capped by source on-hand vs unexplained.
 //
 // HOW ON-HAND-AT-TIME IS RECONSTRUCTED. Movements written by applyMovement
-// carry a per-location before/after snapshot; `sold` movements (POS) do not.
-// On-hand at instant T for a cell = the `before` of the first snapshot-bearing
-// movement AFTER T on that cell, plus every `sold` unit that left the cell
-// between T and that movement (those sales are already netted out of that
-// `before`). With no later snapshot, the live cell plus the sales after T.
+// carry a per-location before/after snapshot; POS `sold` and `return`
+// movements do not. On-hand at instant T for a cell = the `before` of the
+// first snapshot-bearing movement AFTER T on that cell, minus the signed net
+// of every snapshot-less movement between T and it (a sale −, a return +;
+// those are already inside that `before`). With no later snapshot, the live
+// cell minus the signed net of the snapshot-less movements after T.
 //
 // Usage:
 //   node scripts/probe-fulfil-credit-gap.mjs --dump <dir>        # live read → dump + report
@@ -125,13 +126,17 @@ for (const [id, m] of Object.entries(MV)) {
 for (const arr of byCell.values()) arr.sort((a, b) => a._ts - b._ts);
 const cellNow = (loc, pid, sk) => STOCK[loc]?.[pid]?.[sk] || null;
 function onHandAt(loc, pid, sk, T) {
-  let sold = 0;
+  // Every snapshot-less movement between T and the next snapshot is backed
+  // out with its SIGN: a `sold` (−from) and a POS `return` (+to) alike
+  // (second-brain review, PR #602 — returns were previously ignored).
+  let net = 0;
   for (const m of byCell.get(`${loc}|${pid}|${sk}`) || []) {
     if (m._ts <= T) continue;
-    if (m.before && typeof m.before[loc] === "number") return m.before[loc] + sold;
-    if (m.type === "sold" && m.from === loc) sold += Number(m.qty) || 0;
+    if (m.before && typeof m.before[loc] === "number") return m.before[loc] - net;
+    if (m.from === loc) net -= Number(m.qty) || 0;
+    if (m.to === loc) net += Number(m.qty) || 0;
   }
-  return q(cellNow(loc, pid, sk)) + sold;
+  return q(cellNow(loc, pid, sk)) - net;
 }
 const name = (pid) => PRODUCTS[pid]?.name || "(product record missing)";
 const releasedLineFor = (dest, lineId) => {

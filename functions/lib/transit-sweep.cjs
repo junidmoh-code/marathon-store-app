@@ -12,12 +12,18 @@
 //
 // THE THREE STRANDED SHAPES, and what the sweep does with each:
 //   1. HELD LINE past its window — /settings/stockHold/held/{dest}/{lineId}
-//      exists. Released automatically once the switch is OFF (nothing new
-//      parks; nothing old should wait for a tap) or, with the switch ON, once
-//      the shipment's release instant is more than RELEASE_GRACE_MS behind us
-//      (the box has arrived by then; a tap that has not happened in a day is
-//      not going to). Inside the grace window the card is still the owner's
-//      — the line is reported as pending, untouched.
+//      exists. The box leaves at the shipment's release instant whatever the
+//      switch says, so a line is never released BEFORE its window (second-
+//      brain review, PR #602: flipping the switch off at 08:30 must not
+//      credit a shelf for a box still at Central). With the switch OFF it is
+//      released as soon as the window passes; with the switch ON the card is
+//      the owner's for RELEASE_GRACE_MS after the window, then the timer takes
+//      it. A line a human marked NOT ARRIVED carries its new shipment id, so
+//      the same rule waits for the box it was carried to.
+//   1b. HELD LINE whose release movement IS in the ledger — a device (or an
+//      earlier run) moved the stock and then failed its bookkeeping. Nothing
+//      to move; the line is RETIRED (archived, removed from held) so it cannot
+//      sit held forever behind a movement that already landed.
 //   2. ARCHIVED-BUT-NOT-MOVED — the line sits under released/ with a
 //      releaseMovementId that is not in the ledger and units still parked.
 //      Re-applied under the SAME movement id the tap would have used, so a
@@ -35,10 +41,14 @@
 // lane's and is skipped by name.
 //
 // SIZE OF THE READ. stock/in_transit is ~500 KB (3,175 cells, 1,157 products,
-// almost all qty 0 — measured 2026-09-11) and is read ONCE per run; the run
-// is hourly inside trading hours. Candidate lines are only the ones whose cell
-// actually holds units, so the per-line lookups (ledger row, product record)
-// are a handful, never the archive's hundreds.
+// almost all qty 0 — measured 2026-09-11) and the settings/stockHold node
+// (config + held + the released archive) are read ONCE per run; the run is
+// hourly inside trading hours. Every held line is a candidate (small node);
+// archive rows only when their cell still holds units — so the per-line
+// lookups (ledger row, product record) are a handful, never the archive's
+// hundreds. Orphan detection reads the cell's `mv` pointer only (the LAST
+// parking); a cell holding two parkings exposes the newer one — a stated
+// residual, self-reporting via the apportioned phantom refusal.
 //
 // THE REFILL ENGINE NEVER WRITES /stock. This is not the engine: a separate,
 // explicitly named function (strandedTransitSweep) with one job.
@@ -59,6 +69,10 @@ const ORPHAN_MIN_AGE_MS = 60 * 60 * 1000;       // a cell with no line is left a
 const ACTOR = "system:strandedTransitSweep";
 const IN_TRANSIT = "in_transit";
 const UNFILED_SHIPMENT = "unfiled";
+// The client's stockHoldStore.safeSeg — the release id is `rel_${safeSeg(lineId)}`
+// on the device; the sweep must mint the very same id or the two could
+// double-credit one line (second-brain review, PR #602).
+const safeSeg = (s) => String(s ?? "").replace(/[.#$/\[\]\s]/g, "_");
 
 // "2026-09-04_1400" → release instant (ms). Mirrors stockHoldCore.shipmentReleaseMs.
 function shipmentReleaseMs(shipmentId) {
@@ -67,13 +81,15 @@ function shipmentReleaseMs(shipmentId) {
   return Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]) - SA_OFFSET_MS;
 }
 
-/** Every in_transit cell holding units → [{ productId, sizeKey, qty, mv, updatedAt }]. */
+/** Every in_transit cell holding units — or carrying an IN-FLIGHT release
+ *  stamp (`relMv`: the debit leg landed, the ledger row did not; see
+ *  admin-movement.cjs) → [{ productId, sizeKey, qty, mv, relMv, updatedAt }]. */
 function cellsWithUnits(inTransit) {
   const out = [];
   for (const [pid, bySize] of Object.entries(inTransit || {})) {
     for (const [sizeKey, c] of Object.entries(bySize || {})) {
       const qty = c && typeof c.qty === "number" ? c.qty : 0;
-      if (qty > 0) out.push({ productId: pid, sizeKey, qty, mv: c.mv || null, updatedAt: c.updatedAt || null });
+      if (qty > 0 || (c && c.relMv)) out.push({ productId: pid, sizeKey, qty, mv: c.mv || null, relMv: (c && c.relMv) || null, updatedAt: c.updatedAt || null });
     }
   }
   return out;
@@ -132,10 +148,12 @@ function sweepCandidates({ inTransit, held, released }) {
  * → { releases: [...], refusals: [...], pending: [...], skipped: [...] }
  */
 function planTransitSweep({ candidates, movements, productExists, config, nowMs }) {
-  const releases = [], refusals = [], pending = [], skipped = [];
+  const releases = [], refusals = [], pending = [], skipped = [], retirements = [];
   const holdOn = !!(config && config.enabled === true);
   const cellQty = new Map(candidates.cells.map((c) => [`${c.productId}|${c.sizeKey}`, c.qty]));
   const cellMv = new Map(candidates.cells.map((c) => [`${c.productId}|${c.sizeKey}`, c.mv]));
+  const remaining = new Map(cellQty);   // apportioned as releases are planned
+  const cellRelMv = new Map(candidates.cells.map((c) => [`${c.productId}|${c.sizeKey}`, c.relMv]));
 
   for (const cand of candidates.lines) {
     const line = cand.line || {};
@@ -145,13 +163,28 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
       productName: line.productName || null, size: String(line.size), sizeKey, qty: Number(line.qty) || 1,
       refillId: line.refillId || null, source: cand.source, inTransitQty: cellQty.get(`${line.productId}|${sizeKey}`) || 0,
     };
-    if (movements[`rel_${cand.lineId}`]) { skipped.push({ ...base, why: "release movement already in the ledger" }); continue; }
+    const relRow = movements[`rel_${safeSeg(cand.lineId)}`];
+    if (relRow) {
+      // Stock already moved under this line's own release id. A HELD line or
+      // an archive row without its movement id is bookkeeping left behind by
+      // a failed update — retire it, move nothing.
+      if (cand.source === "held" || !(line.releaseMovementId)) retirements.push({ ...base, relId: `rel_${safeSeg(cand.lineId)}`, why: "release movement already in the ledger — bookkeeping completed, nothing moved" });
+      else skipped.push({ ...base, why: "release movement already in the ledger" });
+      continue;
+    }
     if (productExists[line.productId] === false) { refusals.push({ ...base, why: "product record missing — nothing to credit; owner must place these units" }); continue; }
     // A line whose transit cell holds fewer units than it claims is a phantom:
     // the fulfil never parked them (or something else drained the cell). The
-    // writer's negative floor would refuse it anyway; say so up front rather
-    // than fail every hour.
-    if (base.inTransitQty < base.qty) { refusals.push({ ...base, why: `phantom line — ${base.inTransitQty} unit(s) in transit for a line of ${base.qty}; nothing was parked` }); continue; }
+    // cell is APPORTIONED across the lines planned against it in this run, so
+    // two lines on one cell can never both be promised the same unit
+    // (second-brain review, PR #602).
+    const ck = `${line.productId}|${sizeKey}`;
+    // IN FLIGHT: the cell is stamped with this line's own release id — the
+    // debit landed on an earlier attempt and the credit did not. Resume it
+    // regardless of what the cell holds now; the writer skips the stamped leg.
+    if (cellRelMv.get(ck) === `rel_${safeSeg(cand.lineId)}`) { releases.push({ ...base, why: "release interrupted after the transit debit — completing the credit", resumed: true }); continue; }
+    const left = remaining.get(ck) || 0;
+    if (left < base.qty) { refusals.push({ ...base, why: `phantom line — ${left} unit(s) in transit for a line of ${base.qty}; nothing was parked` }); continue; }
     if (cand.source === "released") {
       // The cell must still name THIS line as its last parking. A newer line
       // parked on the same pid/size after the archive would otherwise be
@@ -159,14 +192,21 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
       // review, PR #602). Reported, not guessed.
       const lastMv = cellMv.get(`${line.productId}|${sizeKey}`);
       if (lastMv !== cand.lineId) { pending.push({ ...base, why: `archived as released but a later parking (${lastMv}) sits on this cell — needs a human look` }); continue; }
+      remaining.set(ck, left - base.qty);
       releases.push({ ...base, why: "archived as released but the release movement was never written", archived: true });
       continue;
     }
-    // held
+    // held — never before the window; after it, at once when holding is off,
+    // after the grace when holding is on (the card's turn first).
     const releaseMs = shipmentReleaseMs(cand.shipmentId);
-    if (!holdOn) { releases.push({ ...base, why: "holding is off — nothing waits for a tap" }); continue; }
-    if (releaseMs != null && nowMs >= releaseMs + RELEASE_GRACE_MS) { releases.push({ ...base, why: `release window more than ${RELEASE_GRACE_MS / 3600000}h past` }); continue; }
-    pending.push({ ...base, why: releaseMs == null ? "shipment id unreadable — left for the card" : "inside the release window's grace — the card's" });
+    if (releaseMs == null) { pending.push({ ...base, why: "shipment id unreadable — left for the card" }); continue; }
+    const dueMs = releaseMs + (holdOn ? RELEASE_GRACE_MS : 0);
+    if (nowMs >= dueMs) {
+      remaining.set(ck, left - base.qty);
+      releases.push({ ...base, why: holdOn ? `release window more than ${RELEASE_GRACE_MS / 3600000}h past` : "holding is off and the window has passed — nothing waits for a tap" });
+      continue;
+    }
+    pending.push({ ...base, why: nowMs < releaseMs ? "the box has not left yet — before the release window" : "inside the release window's grace — the card's" });
   }
 
   for (const c of candidates.orphanCells) {
@@ -175,17 +215,21 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
     if (!pm) { skipped.push({ ...base, why: "parking movement not in the ledger" }); continue; }
     const dest = pm.link && pm.link.holdDest;
     if (!dest) { skipped.push({ ...base, why: "not a hold-lane parking (manual transit lane) — receive it there" }); continue; }
-    if (movements[`rel_${c.mv}`]) { skipped.push({ ...base, dest, why: "release movement already in the ledger" }); continue; }
+    if (movements[`rel_${safeSeg(c.mv)}`]) { skipped.push({ ...base, dest, why: "release movement already in the ledger" }); continue; }
     if (productExists[c.productId] === false) { refusals.push({ ...base, dest, size: String(pm.size), why: "product record missing — nothing to credit; owner must place these units" }); continue; }
     const parkedMs = Date.parse(pm.appliedAt || pm.ts || "") || 0;
     if (nowMs - parkedMs < ORPHAN_MIN_AGE_MS) { pending.push({ ...base, dest, why: "parked less than an hour ago — a fulfil may still be filing its line" }); continue; }
+    const left = remaining.get(`${c.productId}|${c.sizeKey}`) || 0;
+    const orphanQty = Math.min(Number(pm.qty) || 1, left);
+    if (orphanQty <= 0) { skipped.push({ ...base, dest, why: "cell already apportioned to its lines" }); continue; }
+    remaining.set(`${c.productId}|${c.sizeKey}`, left - orphanQty);
     releases.push({
-      ...base, dest, shipmentId: null, size: String(pm.size), qty: Math.min(Number(pm.qty) || 1, c.qty),
+      ...base, dest, shipmentId: null, size: String(pm.size), qty: orphanQty,
       refillId: (pm.link && pm.link.refillId) || null, productName: null,
       why: "parked with no shipment line (fulfil crashed after the movement)", orphan: true,
     });
   }
-  return { releases, refusals, pending, skipped };
+  return { releases, refusals, pending, skipped, retirements };
 }
 
 /**
@@ -197,10 +241,30 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
 async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
   const out = { released: 0, releasedUnits: 0, failures: [] };
   const read = async (p) => (await db.ref(p).once("value")).val();
+  // Retirements first: bookkeeping for stock that already moved.
+  for (const r of plan.retirements || []) {
+    const shipmentKey = r.shipmentId || UNFILED_SHIPMENT;
+    const archivePath = `settings/stockHold/released/${r.dest}/${shipmentKey}/${safeSeg(r.lineId)}`;
+    const updates = {};
+    if (r.source === "held") {
+      updates[`settings/stockHold/held/${r.dest}/${safeSeg(r.lineId)}`] = null;
+      updates[archivePath] = {
+        productId: r.productId, productName: r.productName || r.productId, size: r.size, sizeKey: r.sizeKey,
+        qty: r.qty, dest: r.dest, shipmentId: shipmentKey, refillId: r.refillId || null, movementId: r.lineId,
+        releasedAt: nowIso, releasedBy: ACTOR, releaseMovementId: r.relId, retiredBookkeeping: true, why: r.why,
+      };
+    } else {
+      updates[`${archivePath}/releaseMovementId`] = r.relId;
+      updates[`${archivePath}/autoRepairedAt`] = nowIso;
+      updates[`${archivePath}/autoRepairedBy`] = ACTOR;
+    }
+    try { await db.ref().update(updates); out.retired = (out.retired || 0) + 1; }
+    catch (err) { out.failures.push({ lineId: r.lineId, dest: r.dest, reason: `retirement bookkeeping failed (${String(err && err.message || err)}) — next run retries` }); }
+  }
   for (const r of plan.releases) {
-    const relId = `rel_${r.lineId}`;
+    const relId = `rel_${safeSeg(r.lineId)}`;
     const res = await applyMovementAdmin(db, {
-      type: "transfer_in", productId: r.productId, size: r.size, qty: r.qty,
+      type: "transfer_in", productId: r.productId, size: r.size, sizeKey: r.sizeKey, qty: r.qty,
       from: IN_TRANSIT, to: r.dest, actor: ACTOR, actorRole: "admin",
       reason: "stock_hold_release", movementId: relId,
       link: { refillId: r.refillId || null, holdShipmentId: r.shipmentId || UNFILED_SHIPMENT, holdLineId: r.lineId, autoReleased: true },
@@ -210,9 +274,9 @@ async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
     if (!recorded || recorded.to !== r.dest) { out.failures.push({ lineId: r.lineId, dest: r.dest, reason: "release movement not in the ledger after the write — nothing archived" }); continue; }
 
     const shipmentKey = r.shipmentId || UNFILED_SHIPMENT;
-    const archivePath = `settings/stockHold/released/${r.dest}/${shipmentKey}/${r.lineId}`;
+    const archivePath = `settings/stockHold/released/${r.dest}/${shipmentKey}/${safeSeg(r.lineId)}`;
     const updates = {};
-    if (r.source === "held") updates[`settings/stockHold/held/${r.dest}/${r.lineId}`] = null;
+    if (r.source === "held") updates[`settings/stockHold/held/${r.dest}/${safeSeg(r.lineId)}`] = null;
     if (r.archived) {
       updates[`${archivePath}/releaseMovementId`] = relId;
       updates[`${archivePath}/autoRepairedAt`] = nowIso;

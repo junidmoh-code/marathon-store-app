@@ -74,11 +74,124 @@ test("held line, switch ON, inside the grace window → pending, nothing moves",
   assert.equal(await val(db, "stock_movements/rel_rrf_req_nb_7"), null);
 });
 
-test("held line, switch OFF → released at once, whatever the window", async () => {
+test("held line, switch OFF → NOT before the window (the box has not left), released as soon as it passes", async () => {
   const db = world({ config: { enabled: false }, products: { nb: { id: "nb" } }, held: { hub2: { rrf_req_nb_7: heldLine("nb", "7", "hub2") } } });
-  const out = await _runSweep(db, WINDOW_MS - 3 * H);   // before the window even opens
+  const early = await _runSweep(db, WINDOW_MS - 3 * H);
+  assert.equal(early.released, 0);
+  assert.match(early.pending[0].why, /not left yet/);
+  assert.equal(await val(db, "stock/hub2"), null);
+  const out = await _runSweep(db, WINDOW_MS + 60000);
   assert.equal(out.released, 1);
   assert.equal((await cell(db, "hub2", "nb", "7")).qty, 1);
+});
+
+test("a line a human marked NOT ARRIVED waits for the shipment it was carried to", async () => {
+  const carried = { ...heldLine("nb", "7", "hub2", "2026-09-05_0600"), carriedFrom: "2026-09-04_1400", notArrivedAt: "2026-09-04T12:30:00.000Z" };
+  const db = world({ config: { enabled: false }, products: { nb: { id: "nb" } }, held: { hub2: { rrf_req_nb_7: carried } } });
+  const out = await _runSweep(db, WINDOW_MS + 5 * H);          // old window long past, new one not yet
+  assert.equal(out.released, 0);
+  assert.equal(out.pending.length, 1);
+  const later = await _runSweep(db, Date.parse("2026-09-05T04:00:00.000Z") + 60000);
+  assert.equal(later.released, 1);
+});
+
+test("a HELD line whose release movement is already in the ledger is RETIRED — archived, nothing moved", async () => {
+  const relRow = { type: "transfer_in", productId: "nb", size: "7", qty: 1, from: "in_transit", to: "hub2", before: { in_transit: 1, hub2: 0 }, after: { in_transit: 0, hub2: 1 }, actor: "owner", ts: PARKED, appliedAt: PARKED, reason: "stock_hold_release", link: {} };
+  const db = makeFakeDb({
+    products: { nb: { id: "nb" } },
+    settings: { stockHold: { config: { enabled: false }, held: { hub2: { rrf_req_nb_7: heldLine("nb", "7", "hub2") } } } },
+    stock: { in_transit: { nb: { 7: { qty: 0, v: 1, mv: "rel_rrf_req_nb_7", lastType: "transfer_in" } } }, hub2: { nb: { 7: { qty: 1, v: 1, mv: "rel_rrf_req_nb_7", lastType: "transfer_in" } } } },
+    stock_movements: { rrf_req_nb_7: parking("nb", "7", "hub2"), rel_rrf_req_nb_7: relRow },
+  });
+  const out = await _runSweep(db, WINDOW_MS + H);
+  assert.equal(out.released, 0);
+  assert.equal(out.retired, 1);
+  assert.equal(await val(db, "settings/stockHold/held"), null);
+  assert.equal((await val(db, "settings/stockHold/released/hub2/2026-09-04_1400/rrf_req_nb_7")).retiredBookkeeping, true);
+  assert.equal((await cell(db, "hub2", "nb", "7")).qty, 1);   // untouched
+});
+
+test("one cell, two lines, only ONE unit parked → the first is released, the second is refused as phantom (never overdrawn)", async () => {
+  const a = heldLine("nb", "7", "hub2"); const b = { ...heldLine("nb", "7", "hub2"), refillId: "req_b", movementId: "rrf_req_b" };
+  const db = makeFakeDb({
+    products: { nb: { id: "nb" } },
+    settings: { stockHold: { config: { enabled: false }, held: { hub2: { rrf_req_nb_7: a, rrf_req_b: b } } } },
+    stock: { in_transit: { nb: { 7: { qty: 1, v: 0, mv: "rrf_req_b", lastType: "transfer_out", updatedAt: PARKED } } } },
+    stock_movements: { rrf_req_nb_7: parking("nb", "7", "hub2"), rrf_req_b: parking("nb", "7", "hub2") },
+  });
+  const out = await _runSweep(db, WINDOW_MS + H);
+  assert.equal(out.released, 1);
+  assert.equal(out.refusals.length, 1);
+  assert.match(out.refusals[0].why, /phantom line/);
+  assert.equal(out.failures.length, 0);
+  assert.equal((await cell(db, "hub2", "nb", "7")).qty, 1);
+  assert.equal((await cell(db, "in_transit", "nb", "7")).qty, 0);
+});
+
+test("a one-size line (size 'Free Size', cell '_') is released from the '_' cell — never a phantom 'Free_Size' cell", async () => {
+  const line = { ...heldLine("hat", "Free Size", "hub2"), sizeKey: "_", movementId: "rrf_req_hat" };
+  const db = makeFakeDb({
+    products: { hat: { id: "hat" } },
+    settings: { stockHold: { config: { enabled: false }, held: { hub2: { rrf_req_hat: line } } } },
+    stock: { in_transit: { hat: { _: { qty: 1, v: 0, mv: "rrf_req_hat", lastType: "transfer_out", updatedAt: PARKED } } } },
+    stock_movements: { rrf_req_hat: { ...parking("hat", "Free Size", "hub2"), link: { refillId: "req_hat", holdDest: "hub2" } } },
+  });
+  const out = await _runSweep(db, WINDOW_MS + H);
+  assert.equal(out.released, 1);
+  assert.equal((await cell(db, "hub2", "hat", "_")).qty, 1);
+  assert.equal(await val(db, "stock/hub2/hat/Free_Size"), null);
+  assert.equal(await val(db, "stock/in_transit/hat/Free_Size"), null);
+});
+
+test("a malformed held line (no productId) is reported, and the run's summary still lands", async () => {
+  const db = makeFakeDb({
+    products: { nb: { id: "nb" } },
+    settings: { stockHold: { config: { enabled: false }, held: { hub2: { rrf_req_nb_7: heldLine("nb", "7", "hub2"), broken: { size: "7", qty: 1, shipmentId: "2026-09-04_1400" } } } } },
+    stock: { in_transit: { nb: { 7: { qty: 1, v: 0, mv: "rrf_req_nb_7", lastType: "transfer_out", updatedAt: PARKED } } } },
+    stock_movements: { rrf_req_nb_7: parking("nb", "7", "hub2") },
+  });
+  const out = await _runSweep(db, WINDOW_MS + H);
+  assert.equal(out.released, 1);
+  assert.ok(await val(db, "stock_exceptions/strandedTransit"));
+});
+
+test("a crash between the two legs is completed on the next run — never a double credit, honest before/after", async () => {
+  // Simulate: the in_transit leg landed (stamped relMv), the hub leg and the ledger row did not.
+  const db = makeFakeDb({
+    products: { nb: { id: "nb" } },
+    settings: { stockHold: { config: { enabled: false }, held: { hub2: { rrf_req_nb_7: heldLine("nb", "7", "hub2") } } } },
+    stock: { in_transit: { nb: { 7: { qty: 0, v: 1, mv: "rel_rrf_req_nb_7", relMv: "rel_rrf_req_nb_7", relBefore: 1, lastType: "transfer_in", updatedAt: PARKED } } } },
+    stock_movements: { rrf_req_nb_7: parking("nb", "7", "hub2") },
+  });
+  const out = await _runSweep(db, WINDOW_MS + H);
+  assert.equal(out.released, 1);
+  assert.equal((await cell(db, "hub2", "nb", "7")).qty, 1);
+  assert.equal((await cell(db, "in_transit", "nb", "7")).qty, 0);          // not debited twice
+  assert.deepEqual((await val(db, "stock_movements/rel_rrf_req_nb_7")).before, { in_transit: 1, hub2: 0 });
+  const again = await _runSweep(db, WINDOW_MS + 2 * H);
+  assert.equal(again.released, 0);
+  assert.equal((await cell(db, "hub2", "nb", "7")).qty, 1);
+});
+
+test("a POS sale landing on the hub cell while the sweep runs is never overwritten — the credit composes on the sold value", async () => {
+  let sold = false;
+  const db = makeFakeDb({
+    products: { nb: { id: "nb" } },
+    settings: { stockHold: { config: { enabled: false }, held: { hub2: { rrf_req_nb_7: heldLine("nb", "7", "hub2") } } } },
+    stock: { in_transit: { nb: { 7: { qty: 1, v: 0, mv: "rrf_req_nb_7", lastType: "transfer_out", updatedAt: PARKED } } }, hub2: { nb: { 7: { qty: 3, v: 4, mv: "x", lastType: "received" } } } },
+    stock_movements: { rrf_req_nb_7: parking("nb", "7", "hub2") },
+  }, {
+    // the sale lands after planning, right before the hub cell's transaction reads it
+    beforeRead: async (path, state) => {
+      if (!sold && path === "stock/hub2/nb/7") { sold = true; state.root.stock.hub2.nb[7] = { qty: 2, v: 5, mv: "sold:s1", lastType: "sold" }; }
+    },
+  });
+  const out = await _runSweep(db, WINDOW_MS + H);
+  assert.equal(out.released, 1);
+  const hub = await cell(db, "hub2", "nb", "7");
+  assert.equal(hub.qty, 3);      // 2 (after the sale) + 1, not 3 + 1 from the stale read
+  assert.equal(hub.v, 6);
+  assert.deepEqual((await val(db, "stock_movements/rel_rrf_req_nb_7")).before, { in_transit: 1, hub2: 2 });
 });
 
 test("archived as released with NO movement (the 4 Sep shape) → completed under the tap's id; a landed tap is a no-op", async () => {
@@ -178,10 +291,9 @@ test("the writer's negative floor still guards a cell drained between planning a
     stock: { in_transit: { nb: { 7: { qty: 1, v: 0, mv: "rrf_req_nb_7", lastType: "transfer_out", updatedAt: PARKED } } } },
     stock_movements: { rrf_req_nb_7: parking("nb", "7", "hub2") },
   }, {
-    // the first read of the ledger row for the release is the writer's own
-    // idempotency check — drain the cell right there, after planning
+    // drain the cell right before its own transaction reads it, after planning
     beforeRead: async (path, state) => {
-      if (!drained && path === "stock_movements/rel_rrf_req_nb_7") { drained = true; state.root.stock.in_transit.nb[7].qty = 0; }
+      if (!drained && path === "stock/in_transit/nb/7") { drained = true; state.root.stock.in_transit.nb[7].qty = 0; }
     },
   });
   const out = await _runSweep(db, WINDOW_MS + H);

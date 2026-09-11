@@ -188,6 +188,12 @@ export async function applyMovement(movement, opts = {}) {
       const path = stockCellPath(d.loc, movement.productId, movement.size);
       const snap = await get(child(ref(database), path));
       const cell = snap.val();
+      // The server-side writer (functions/lib/admin-movement.cjs) mutates cells
+      // one transaction at a time and stamps each with the movement id it is
+      // applying (`relMv`) before the ledger row exists. A device retrying the
+      // SAME id against a cell already carrying the stamp must not apply the
+      // leg a second time — the two writers share one idempotency contract.
+      if (cell && cell.relMv === mvId) return { ok: true, movementId: mvId, idempotent: true };
       const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
       // The absolute-value precondition, checked against the read we are about to
       // write from — NOT against whatever the caller saw earlier. Re-checked on

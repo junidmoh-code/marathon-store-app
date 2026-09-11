@@ -36,13 +36,15 @@ async function runSweep(db = admin.database(), nowMs = Date.now()) {
   const summary = {
     computedAt: nowIso,
     cellsWithUnits: candidates.cells.length,
-    released: applied.released, releasedUnits: applied.releasedUnits,
+    released: applied.released, releasedUnits: applied.releasedUnits, retired: applied.retired || 0,
     failures: applied.failures,
     refusals: plan.refusals,
     pending: plan.pending,
     skipped: plan.skipped.map((s) => ({ lineId: s.lineId, productId: s.productId, sizeKey: s.sizeKey, why: s.why })),
   };
-  await db.ref("stock_exceptions/strandedTransit").set(summary);
+  // A malformed line (no productId) must not throw the report away after
+  // stock has moved: RTDB rejects `undefined`; JSON round-trip drops it.
+  await db.ref("stock_exceptions/strandedTransit").set(JSON.parse(JSON.stringify(summary)));
   return summary;
 }
 

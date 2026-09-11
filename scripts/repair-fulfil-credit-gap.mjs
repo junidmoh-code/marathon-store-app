@@ -14,9 +14,12 @@
 //   • the source was NOT deducted — the credit movement's own before/after
 //     must show the source leg (a `received` fulfil has no source; it still
 //     absorbed, and is credited: the unit was physically put on the shelf);
-//   • the cell has been COUNTED since the credit (a hub count / recount /
-//     stock-audit adjustment on that cell after the credit's instant) — the
-//     count settled the truth and a repair would double-count;
+//   • the cell has been SETTLED since the credit — any later adjustment that
+//     states the shelf (count, recount, stock-take, correction, merge, audit;
+//     not the negative-zeroing script, not this repair), or a later arrival
+//     that already credited from zero (`negativeCleared`) — a repair would
+//     double-count;
+//   • the ledger snapshot is older than an hour — re-run the probe's --dump;
 //   • the product record is gone — nothing to credit;
 //   • more than MAX_WRITES corrections — stop and report (owner cap).
 //
@@ -28,6 +31,7 @@
 // Usage:
 //   node scripts/repair-fulfil-credit-gap.mjs <dump dir>            # dry-run (default)
 //   node scripts/repair-fulfil-credit-gap.mjs <dump dir> --commit
+//   node scripts/repair-fulfil-credit-gap.mjs <dump dir> --audit    # re-judge rows already written
 
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
@@ -35,18 +39,32 @@ import { adminRequire } from "./adminRequire.mjs";
 
 const require = createRequire(import.meta.url);
 const { applyMovementAdmin } = require("../functions/lib/admin-movement.cjs");
-const { encodeSizeKey } = require("../functions/lib/refill-engine.cjs");
+const { stockCellKey } = require("../functions/lib/admin-movement.cjs");   // the CLIENT's size fold ("Free Size" → "_")
 
 const DIR = process.argv[2];
 const COMMIT = process.argv.includes("--commit");
 if (!DIR) { console.error("usage: <dump dir> [--commit]"); process.exit(2); }
+const AUDIT = process.argv.includes("--audit");   // re-judge rows already repaired, write nothing
 const MAX_WRITES = 50;
+const MAX_DUMP_AGE_MS = 60 * 60 * 1000;   // the ledger snapshot the evidence rule reads must be fresh
 const ACTOR = "script:repair-fulfil-credit-gap";
 const REASON = "fulfil_credit_repair";
-const COUNT_REASON = /hub_sneaker_count|recount|stock_audit|stockAudit|count/i;
+// WHAT SETTLES A CELL AFTER THE CREDIT (second-brain review, PR #602): any
+// later ADJUSTMENT on the cell is treated as a human stating the absolute
+// truth — hub counts, recounts, stock-takes, SetQuantity's "correction",
+// Adjust's free text, a merge, a stock audit — EXCEPT the two adjustments
+// that are not statements about the shelf: the negative-cell zeroing script
+// (an artifact clean-up that composes with the credit) and this repair's own
+// rows. A later ARRIVAL that itself carried `negativeCleared` also settles it:
+// post-fix, the writer has already credited from zero.
+const NOT_A_COUNT = /^negative_cell_zeroed|^fulfil_credit_repair/;
 
 const report = JSON.parse(readFileSync(`${DIR}/probe-report.json`, "utf8"));
 const MV = JSON.parse(readFileSync(`${DIR}/movements.json`, "utf8"));
+{
+  const age = Date.now() - Date.parse(report.generatedAt || 0);
+  if (!(age <= MAX_DUMP_AGE_MS)) { console.error(`REFUSED: the dump is ${Math.round(age / 60000)} min old — the evidence rule reads the ledger snapshot; re-run the probe with --dump first.`); process.exit(2); }
+}
 const rows = report.phaseB.creditGap.rows.filter((r) => r.cause === "credit_absorbed_by_negative_destination_cell");
 
 const adminReq = adminRequire(import.meta.url);
@@ -59,19 +77,24 @@ const db = admin.database();
 const read = async (p) => (await db.ref(p).once("value")).val();
 const ms = (iso) => Date.parse(iso || "") || 0;
 
-// Later count on this cell? From the ledger snapshot (the probe's dump) —
-// one whole-ledger read is the forensic budget, not one per cell.
-function countedSince(loc, pid, sizeKey, sinceMs) {
-  return Object.entries(MV).filter(([, m]) =>
-    m && m.productId === pid && encodeSizeKey(String(m.size)) === sizeKey && m.type === "adjustment"
-    && (m.to === loc || m.from === loc) && ms(m.appliedAt || m.ts) > sinceMs && COUNT_REASON.test(String(m.reason || "")));
+// Settled since the credit? From the ledger snapshot (the probe's dump, at
+// most an hour old — enforced above): one whole-ledger read is the forensic
+// budget, not one per cell.
+const cellKeyOf = (m) => stockCellKey(m.size);
+function settledSince(loc, pid, sizeKey, sinceMs) {
+  return Object.entries(MV).filter(([, m]) => {
+    if (!m || m.productId !== pid || cellKeyOf(m) !== sizeKey || (m.to !== loc && m.from !== loc)) return false;
+    if (ms(m.appliedAt || m.ts) <= sinceMs) return false;
+    if (m.type === "adjustment") return !NOT_A_COUNT.test(String(m.reason || ""));
+    return !!(m.negativeCleared && typeof m.negativeCleared[loc] === "number");   // a post-fix arrival already cleared the debt
+  });
 }
 
 const plan = [];
 const refused = [];
 for (const r of rows) {
   const credit = await read(`stock_movements/${r.movementId}`);
-  const sizeKey = encodeSizeKey(String(r.size));
+  const sizeKey = stockCellKey(r.size);
   const base = { requestId: r.requestId, creditMovementId: r.movementId, dest: r.dest, productId: r.productId, name: r.name, size: String(r.size), sizeKey, units: r.units };
   if (!credit) { refused.push({ ...base, why: "credit movement not found live" }); continue; }
   const before = credit.before && credit.before[r.dest];
@@ -83,14 +106,14 @@ for (const r of rows) {
     : null;   // `received` fulfil: no source leg by design
   if (credit.from && !sourceDeducted) { refused.push({ ...base, why: "source leg does not show the deduct" }); continue; }
   if (!(await read(`products/${r.productId}/id`)) && !(await read(`products/${r.productId}/name`))) { refused.push({ ...base, why: "product record missing" }); continue; }
-  const counts = countedSince(r.dest, r.productId, sizeKey, ms(credit.appliedAt || credit.ts));
-  if (counts.length) { refused.push({ ...base, why: `counted since the credit: ${counts.map(([id]) => id).join(", ")}` }); continue; }
-  if (await read(`stock_movements/fcr_${r.movementId}`)) { refused.push({ ...base, why: "already repaired (fcr_ movement exists)" }); continue; }
+  const settles = settledSince(r.dest, r.productId, sizeKey, ms(credit.appliedAt || credit.ts)).filter(([id]) => !(AUDIT && id === `fcr_${r.movementId}`));
+  if (settles.length) { refused.push({ ...base, why: `settled since the credit: ${settles.map(([id, m]) => `${id} (${m.type}${m.reason ? ` ${String(m.reason).slice(0, 40)}` : ""})`).join(", ")}` }); continue; }
+  if (!AUDIT && await read(`stock_movements/fcr_${r.movementId}`)) { refused.push({ ...base, why: "already repaired (fcr_ movement exists)" }); continue; }
   const cell = await read(`stock/${r.dest}/${r.productId}/${sizeKey}`);
   plan.push({ ...base, units: absorbed, sourceDeducted: sourceDeducted ?? "n/a (received)", creditAppliedAt: credit.appliedAt, liveCell: cell ? { qty: cell.qty, v: cell.v, mv: cell.mv, lastType: cell.lastType } : null, movementId: `fcr_${r.movementId}` });
 }
 
-console.log(`\n${COMMIT ? "COMMIT" : "DRY RUN"} — ${plan.length} correction(s) planned, ${refused.length} refused, ${plan.reduce((n, p) => n + p.units, 0)} unit(s)\n`);
+console.log(`\n${AUDIT ? "AUDIT (re-judging, writes nothing)" : COMMIT ? "COMMIT" : "DRY RUN"} — ${plan.length} correction(s) planned, ${refused.length} refused, ${plan.reduce((n, p) => n + p.units, 0)} unit(s)\n`);
 console.log("| dest | product | size | cell now | +units | credit movement | source deducted |");
 console.log("|---|---|---|---|---|---|---|");
 for (const p of plan) console.log(`| ${p.dest} | ${p.name} [${p.productId}] | ${p.size} | ${p.liveCell ? p.liveCell.qty : "—"} (v${p.liveCell ? p.liveCell.v : "—"}) | +${p.units} | ${p.creditMovementId} | ${p.sourceDeducted} |`);
@@ -102,6 +125,7 @@ const beforeState = { generatedAt: new Date().toISOString(), commit: COMMIT, pla
 writeFileSync(`${DIR}/repair-before-state.json`, JSON.stringify(beforeState, null, 2));
 console.log(`\nbefore-state → ${DIR}/repair-before-state.json`);
 
+if (AUDIT) { console.log("\nAudit — nothing written."); process.exit(0); }
 if (!COMMIT) { console.log("\nDry run — nothing written. Re-run with --commit."); process.exit(0); }
 
 const recRef = db.ref("reports/stock_corrections").push();
