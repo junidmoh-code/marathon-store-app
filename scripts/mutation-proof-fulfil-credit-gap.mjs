@@ -123,7 +123,7 @@ const MUTATIONS = [
     id: "M-ADMIN-RESUME",
     guard: "a leg already stamped by this movement is never applied twice",
     file: ADMIN,
-    from: `      if (cur && cur.relMv === mvId) return undefined;`,
+    from: `      if (cur && (cur.relMv === mvId || cur.lastRelMv === mvId)) return undefined;`,
     to: `      if (false) return undefined;`,
     nodeTests: SWEEP_TESTS,
   },

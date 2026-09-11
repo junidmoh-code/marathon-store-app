@@ -263,15 +263,25 @@ async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
   }
   for (const r of plan.releases) {
     const relId = `rel_${safeSeg(r.lineId)}`;
-    const res = await applyMovementAdmin(db, {
-      type: "transfer_in", productId: r.productId, size: r.size, sizeKey: r.sizeKey, qty: r.qty,
-      from: IN_TRANSIT, to: r.dest, actor: ACTOR, actorRole: "admin",
-      reason: "stock_hold_release", movementId: relId,
-      link: { refillId: r.refillId || null, holdShipmentId: r.shipmentId || UNFILED_SHIPMENT, holdLineId: r.lineId, autoReleased: true },
-    }, { nowIso });
-    if (!res.ok) { out.failures.push({ lineId: r.lineId, dest: r.dest, reason: res.reason }); continue; }
+    const fail = (reason) => out.failures.push({ lineId: r.lineId, dest: r.dest, productId: r.productId, productName: r.productName || null, size: r.size, sizeKey: r.sizeKey, qty: r.qty, shipmentId: r.shipmentId || null, reason });
+    let res;
+    try {
+      res = await applyMovementAdmin(db, {
+        type: "transfer_in", productId: r.productId, size: r.size, sizeKey: r.sizeKey, qty: r.qty,
+        from: IN_TRANSIT, to: r.dest, actor: ACTOR, actorRole: "admin",
+        reason: "stock_hold_release", movementId: relId,
+        link: { refillId: r.refillId || null, holdShipmentId: r.shipmentId || UNFILED_SHIPMENT, holdLineId: r.lineId, autoReleased: true },
+      }, { nowIso });
+    } catch (err) {
+      // One line's RTDB failure must not stop the rest or lose the run's
+      // report; the deterministic id and the in-flight stamps let the next
+      // run resume this line safely (CodeRabbit, PR #602).
+      fail(`release write threw (${String(err && err.message || err)}) — next run resumes`);
+      continue;
+    }
+    if (!res.ok) { fail(res.reason); continue; }
     const recorded = await read(`stock_movements/${relId}`);
-    if (!recorded || recorded.to !== r.dest) { out.failures.push({ lineId: r.lineId, dest: r.dest, reason: "release movement not in the ledger after the write — nothing archived" }); continue; }
+    if (!recorded || recorded.to !== r.dest) { fail("release movement not in the ledger after the write — nothing archived"); continue; }
 
     const shipmentKey = r.shipmentId || UNFILED_SHIPMENT;
     const archivePath = `settings/stockHold/released/${r.dest}/${shipmentKey}/${safeSeg(r.lineId)}`;
@@ -303,7 +313,7 @@ async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
       await db.ref().update(updates);
       out.released++; out.releasedUnits += r.qty;
     } catch (err) {
-      out.failures.push({ lineId: r.lineId, dest: r.dest, reason: `credited, bookkeeping failed (${String(err && err.message || err)}) — next run completes it` });
+      fail(`credited, bookkeeping failed (${String(err && err.message || err)}) — next run completes it`);
     }
   }
   return out;

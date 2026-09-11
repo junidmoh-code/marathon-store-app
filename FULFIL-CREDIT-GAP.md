@@ -83,8 +83,8 @@ repaired in this PR (see Phase E cap).
 
 **B3 — engine requests granted less than the policy need** (policy evaluated with
 today's config; on-hand reconstructed at the request instant; reservations by other
-open requests not reconstructed): considered 7,389; asked the full gap 6,408; capped by
-source on-hand 859; unexplained 122 (footwear 16, clothing 106). The 16 footwear rows
+open requests not reconstructed): considered 7,387; asked the full gap 6,407; capped by
+source on-hand 858; unexplained 122 (footwear 16, clothing 106). The 16 footwear rows
 are listed in the probe output; none is the Diesel pattern (all had Central stock ≥ the
 gap, and were granted a smaller tranche — consistent with same-scan reservations and the
 25 Aug tranche armer, which this probe does not model).
@@ -202,8 +202,8 @@ the arrived unit was sold after the 4 Sep release (0 → −1), so the phantom d
 absorbed it is now cleared and 0 is the true count.
 
 **Phase B re-run with the corrected reconstruction:** B1 unchanged (12 requests / 13 units;
-2 stranded); B1b unchanged (81 / 85); B3 considered 7,389, full gap 6,408, capped by
-source 859, unexplained 122 (footwear 16, clothing 106) — same 16 footwear rows.
+2 stranded); B1b unchanged (81 / 85); B3 considered 7,387, full gap 6,407, capped by
+source 858, unexplained 122 (footwear 16, clothing 106) — same 16 footwear rows.
 
 ## Residuals, stated
 

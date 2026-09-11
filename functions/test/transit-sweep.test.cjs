@@ -338,3 +338,16 @@ test("applyMovementAdmin: a cell already stamped by this movement is skipped —
   assert.deepEqual((await val(db, "stock_movements/rel_m")).before, { in_transit: 2, hub1: 0 });
   assert.equal(await val(db, "stock/in_transit/p/6/relMv"), null);   // stamps cleared once the row exists
 });
+
+test("applyMovementAdmin: a delayed second invocation after the stamps came off never re-applies a leg (durable lastRelMv)", async () => {
+  const db = makeFakeDb({ stock: {
+    in_transit: { p: { 6: { qty: 1, v: 5, mv: "rel_m", lastRelMv: "rel_m", lastType: "transfer_in" } } },
+    hub1: { p: { 6: { qty: 1, v: 1, mv: "rel_m", lastRelMv: "rel_m", lastType: "transfer_in" } } },
+  } });
+  // the ledger row is absent for this call (it passed its own check before the row landed)
+  const res = await applyMovementAdmin(db, { type: "transfer_in", productId: "p", size: "6", qty: 1, from: "in_transit", to: "hub1", movementId: "rel_m", actor: "system:test" }, { nowIso: "2026-09-11T00:00:00.000Z" });
+  assert.equal(res.ok, true);
+  assert.equal((await cell(db, "in_transit", "p", "6")).qty, 1);
+  assert.equal((await cell(db, "hub1", "p", "6")).qty, 1);
+  assert.equal((await cell(db, "hub1", "p", "6")).v, 1);
+});

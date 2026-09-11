@@ -111,8 +111,11 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
     const res = await db.ref(path).transaction((raw) => {
       const cur = raw === null ? preRead : raw;
       seen = cur;
-      // Already stamped by THIS movement (a resumed call): leave the cell alone.
-      if (cur && cur.relMv === mvId) return undefined;
+      // Already applied by THIS movement — in flight (relMv, a resumed call)
+      // or completed (lastRelMv, a durable marker that survives the unstamp,
+      // so a delayed second invocation that passed the ledger check before
+      // the row existed can never re-apply a leg — CodeRabbit, PR #602).
+      if (cur && (cur.relMv === mvId || cur.lastRelMv === mvId)) return undefined;
       const curQty = cur && typeof cur.qty === "number" ? cur.qty : 0;
       const clearedDebt = curQty < 0 && clampsNegativeBase(movement, d.delta, d.loc) ? curQty : 0;
       const newQty = (curQty - clearedDebt) + d.delta;
@@ -132,7 +135,7 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
     const cur = seen;
     const curQty = cur && typeof cur.qty === "number" ? cur.qty : 0;
     if (!res.committed) {
-      if (cur && cur.relMv === mvId) {
+      if (cur && (cur.relMv === mvId || cur.lastRelMv === mvId)) {
         // resumed: this leg landed on an earlier attempt — recover its snapshot
         before[d.loc] = typeof cur.relBefore === "number" ? cur.relBefore : curQty - d.delta;
         after[d.loc] = curQty;
@@ -159,12 +162,14 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
   // create-once: a device that wrote the same id first wins the row
   await db.ref(`stock_movements/${mvId}`).transaction((cur) => (cur == null ? mv : undefined));
   // The ledger row is now the idempotency marker; the in-flight stamps come
-  // off so a stamped cell means exactly "a leg landed, the row did not yet".
+  // off so a stamped cell means exactly "a leg landed, the row did not yet",
+  // and a durable lastRelMv stays so the same id can never re-apply here.
   // Best effort — a stale stamp costs the sweep one extra lookup, never a unit.
   const unstamp = {};
   for (const d of deltas) {
     const path = cellPath(d.loc, movement.productId, movement.size, movement.sizeKey);
     unstamp[`${path}/relMv`] = null; unstamp[`${path}/relBefore`] = null;
+    unstamp[`${path}/lastRelMv`] = mvId;   // durable: "this id has been applied here
   }
   try { await db.ref().update(unstamp); } catch { /* see above */ }
   return { ok: true, movementId: mvId, newQty: after[movement.to || movement.from] };

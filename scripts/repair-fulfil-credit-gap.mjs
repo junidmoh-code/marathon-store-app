@@ -125,9 +125,11 @@ if (refused.length) { console.log("\nRefused:"); for (const r of refused) consol
 
 if (plan.length > MAX_WRITES) { console.error(`\nSTOP: ${plan.length} corrections exceed the ${MAX_WRITES} cap — owner decision required.`); process.exit(3); }
 
-const beforeState = { generatedAt: new Date().toISOString(), commit: COMMIT, plan, refused };
-writeFileSync(`${DIR}/repair-before-state.json`, JSON.stringify(beforeState, null, 2));
-console.log(`\nbefore-state → ${DIR}/repair-before-state.json`);
+const beforeState = { generatedAt: new Date().toISOString(), commit: COMMIT, audit: AUDIT, plan, refused };
+// An audit must never overwrite a committed run's rollback record.
+const stateFile = `${DIR}/${AUDIT ? "repair-audit-state" : "repair-before-state"}.json`;
+writeFileSync(stateFile, JSON.stringify(beforeState, null, 2));
+console.log(`\n${AUDIT ? "audit-state" : "before-state"} → ${stateFile}`);
 
 if (AUDIT) { console.log("\nAudit — nothing written."); process.exit(0); }
 if (!COMMIT) { console.log("\nDry run — nothing written. Re-run with --commit."); process.exit(0); }

@@ -41,7 +41,11 @@ import { readMapPaged } from "./lib/rtdbPaged.mjs";
 
 const require = createRequire(import.meta.url);
 const engine = require("../functions/lib/refill-engine.cjs");
-const { encodeSizeKey, resolveTarget } = engine;
+const { resolveTarget } = engine;
+// The /stock cell-key fold is the CLIENT's (stockSizeKey: "Free Size" → "_"), not
+// the engine's encodeSizeKey ("Free_Size") — one-size cells would otherwise be
+// read from the wrong key (CodeRabbit, PR #602).
+const { stockCellKey: encodeSizeKey } = require("../functions/lib/admin-movement.cjs");
 
 const args = process.argv.slice(2);
 const argOf = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };

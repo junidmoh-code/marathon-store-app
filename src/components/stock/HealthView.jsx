@@ -263,7 +263,9 @@ export default function HealthView({ products = [], onExit }) {
   // Units the hold lane parked in stock/in_transit that the hourly sweep could
   // NOT land by itself (a deleted product, a phantom line) — the one place
   // those refusals are read (FULFIL-CREDIT-GAP.md; Fable-vs-spec review, PR #602).
-  const strandedTransit = useStrandedTransit();
+  const strandedState = useStrandedTransit();
+  const strandedTransit = strandedState.value;
+  const strandedKnown = strandedState.settled && !strandedState.error && !!strandedTransit;
   const strandedRows = useMemo(() => [
     ...((strandedTransit?.refusals) || []).map((r) => ({ ...r, kind: "refused" })),
     ...((strandedTransit?.failures) || []).map((r) => ({ ...r, kind: "failed" })),
@@ -651,9 +653,9 @@ export default function HealthView({ products = [], onExit }) {
         const HUB_NAMES = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
         return (
           <DetailShell title="Stranded In Transit"
-            sub={strandedTransit?.computedAt ? `Hourly sweep · last ${fmtTs(strandedTransit.computedAt)} · ${strandedTransit.released || 0} released last run` : "The hourly sweep has not run yet"}
-            count={strandedRows.length} onBack={back}>
-            {strandedRows.length === 0 && (
+            sub={strandedKnown ? `Hourly sweep · last ${fmtTs(strandedTransit.computedAt)} · ${strandedTransit.released || 0} released last run` : strandedState.error ? "Could not read the sweep's report" : strandedState.settled ? "The hourly sweep has not run yet" : "Loading…"}
+            count={strandedKnown ? strandedRows.length : null} onBack={back}>
+            {strandedKnown && strandedRows.length === 0 && (
               <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>
                 Nothing parked that the sweep cannot land 🎉
               </div>
@@ -822,8 +824,10 @@ export default function HealthView({ products = [], onExit }) {
                         value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}
                         tone={(liveNegatives == null ? count("negativeCells") : liveNegatives.length) ? RED : GREEN}
                         sub="Live count — one-tap fix" onClick={() => setScreen("negative")} />
-              <StatCard label="Stranded In Transit" value={strandedRows.length} tone={strandedNeedsHuman ? RED : strandedRows.length ? AMBER : GREEN}
-                        sub={strandedNeedsHuman ? "Parked units the hourly sweep cannot land" : "Hold-lane units land on their own"} onClick={() => setScreen("strandedTransit")} />
+              <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}
+                        tone={!strandedKnown ? GRAY : strandedNeedsHuman ? RED : strandedRows.length ? AMBER : GREEN}
+                        sub={!strandedKnown ? (strandedState.error ? "Report unreadable" : strandedState.settled ? "Sweep has not run yet" : "Loading…") : strandedNeedsHuman ? "Parked units the hourly sweep cannot land" : "Hold-lane units land on their own"}
+                        onClick={() => setScreen("strandedTransit")} />
               <StatCard label="Stuck Refills" value={count("stuckRefills")} tone={count("stuckRefills") ? RED : GREEN}
                         sub={`Waiting > ${config?.staleIntentHours || 48}h`} onClick={() => setScreen("activity")} />
             </div>

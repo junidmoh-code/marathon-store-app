@@ -233,7 +233,9 @@ export function useStockExceptions() {
 // (functions/lib/transit-sweep.cjs). A small node: only the lines the sweep
 // could not land on its own, each with the one reason a human must decide.
 export function useStrandedTransit() {
-  return usePath("stock_exceptions/strandedTransit");
+  // With readiness: "the sweep has not run" and "not loaded yet" must not
+  // both render as a green zero (CodeRabbit, PR #602).
+  return usePathState("stock_exceptions/strandedTransit");
 }
 
 // /stock_confidence → { computedAt, byLocation: { loc: { pid: {score,factors} } } }
