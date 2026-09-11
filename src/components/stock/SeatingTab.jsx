@@ -63,7 +63,13 @@ const TONE = {
 // seatingStore.js because the move path must re-read through the SAME function
 // it renders from, or the two could drift.
 
-export default function SeatingTab({ products, viewer, flash }) {
+// `initialPid` — THE ARMING TAB'S HAND-OFF. The Arming tab identifies a product
+// armed in the wrong place and hands it here, because this is the only screen
+// that can change it: the location's numbers on screen, the plan previewed, the
+// write audited and reversible. It is a PRODUCT id and nothing else — no
+// location, no action, no pre-filled intent — so the hand-off can never do more
+// than the operator would have done by searching for the name themselves.
+export default function SeatingTab({ products, viewer, flash, initialPid = "" }) {
   const registry = useLocations();
   const engineConfig = useEngineConfig();
   const [query, setQuery] = useState("");
@@ -169,6 +175,17 @@ export default function SeatingTab({ products, viewer, flash }) {
   }, [pid, load]);
 
   useEffect(() => { if (pid) load(pid); }, [pid, load]);
+
+  // Arriving from Arming, or arriving again with a different product. Runs
+  // through `choose` like every other way in — so a re-arrival on the SAME
+  // product re-reads rather than blanking the screen, which is the behaviour
+  // the scanner path already depends on.
+  useEffect(() => {
+    if (initialPid && byId[initialPid]) choose(initialPid);
+    // `choose` changes identity with `pid`; depending on it here would re-choose
+    // on every selection and lock the tab to initialPid.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPid]);
 
   const refresh = useCallback(() => load(pid), [load, pid]);
 
