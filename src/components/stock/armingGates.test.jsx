@@ -59,6 +59,7 @@ vi.mock("./useStock", () => ({
     hub2: { id: "hub2", label: "Hub 2", kind: "warehouse", active: true },
   }),
   useEngineConfig: () => ({ ruleBasedTargets: true }),
+  useEngineConfigState: () => ({ value: { ruleBasedTargets: true }, settled: true, error: false }),
 }));
 
 const ArmingTab = (await import("./ArmingTab.jsx")).default;

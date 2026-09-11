@@ -15,19 +15,39 @@ import { describe, it, expect, beforeEach, vi } from "vitest";
 // the database cannot produce. So the fake deletes, exactly as the real one
 // does, and the tests below assert on the deletion.
 const NODES = {};
+// The delete is RECURSIVE. RTDB removes a key whose value becomes empty at EVERY
+// depth, not only at the node a write addressed — so `{ p1: {} }` is a shape the
+// database cannot hold, and a fake that kept it would let a test pass over an
+// impossible fixture. `[]` is pruned identically: RTDB cannot store an empty
+// array, and a last-child delete on one removes the key outright.
+function prune(value) {
+  if (value == null) return undefined;
+  if (typeof value !== "object") return value;
+  const arr = Array.isArray(value);
+  const out = arr ? [] : {};
+  let kept = 0;
+  for (const k of Object.keys(value)) {
+    const v = prune(value[k]);
+    if (v === undefined) continue;
+    out[k] = v; kept += 1;
+  }
+  return kept ? out : undefined;
+}
 function setNode(path, value) {
-  const empty = value == null
-    || (Array.isArray(value) && value.length === 0)
-    || (typeof value === "object" && Object.keys(value).length === 0);
-  if (empty) delete NODES[path];
-  else NODES[path] = value;
+  const pruned = prune(value);
+  if (pruned === undefined) delete NODES[path];
+  else NODES[path] = pruned;
 }
 
 const reads = [];
+// A hook the concurrency test swaps in to watch how many reads are in flight at
+// once. Default is a no-op, so every other test is unaffected.
+let gate = null;
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   get: async (r) => {
     reads.push(r.path);
+    if (gate) await gate();
     const v = Object.prototype.hasOwnProperty.call(NODES, r.path) ? NODES[r.path] : null;
     return { exists: () => v != null, val: () => v };
   },
@@ -41,6 +61,38 @@ const cell = (qty) => ({ qty, v: 1 });
 beforeEach(() => {
   for (const k of Object.keys(NODES)) delete NODES[k];
   reads.length = 0;
+  gate = null;
+});
+
+// ── THE SUBSCRIPTIONS THE HOOKS OPEN ────────────────────────────────────────
+// This module opens none — it is the ONE file on the Arming path that touches
+// firebase/database, and the assertion below is what makes "four one-shot
+// get()s" a fact about the code rather than a sentence in a comment. The two
+// listeners the TAB opens (/locations, /config/refillEngine) come from
+// ./useStock, which every render suite mocks, so they are named in
+// armingStore.js's header instead. (Adversarial review, PR #601.)
+describe("the read surface", () => {
+  it("imports exactly `ref` and `get` — no listener, no writer", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("./armingStore.js", import.meta.url), "utf8");
+    expect(src).toContain('import { ref, get } from "firebase/database";');
+    // COMMENTS STRIPPED. This file's header names onValue in order to say which
+    // listeners the TAB opens; matching against prose would fail on its own
+    // honesty.
+    const code = src.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+    for (const banned of ["onValue", ".set(", "update(", "remove(", "runTransaction", "httpsCallable"]) {
+      expect(code, `armingStore must not use ${banned}`).not.toContain(banned);
+    }
+  });
+
+  it("and neither does armingCore or the tab itself", async () => {
+    const { readFileSync } = await import("node:fs");
+    for (const f of ["./armingCore.js", "./ArmingTab.jsx"]) {
+      const src = readFileSync(new URL(f, import.meta.url), "utf8");
+      const code = src.split("\n").filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l)).join("\n");
+      expect(code, `${f} must not import firebase/database`).not.toContain("firebase/database");
+    }
+  });
 });
 
 describe("readArmingContext", () => {
@@ -72,6 +124,21 @@ describe("readArmingContext", () => {
     expect(stock).toEqual({});
   });
 
+  it("…at every depth, and for an empty ARRAY as much as an empty object", async () => {
+    // RTDB cannot store an empty array and cannot hold an empty child. A product
+    // whose last cell is deleted takes the product key with it; a location left
+    // with no products takes the location. storeCarries asks whether the product
+    // map exists and is non-empty, so a fake that kept `{ p1: {} }` would be
+    // testing a state the database cannot produce.
+    setNode("stock/hub1", { p1: {}, p2: [], p3: { 8: cell(1) } });
+    const { stock } = await readArmingContext();
+    expect(Object.keys(stock.hub1)).toEqual(["p3"]);
+
+    setNode("stock/hub2", { p1: { 8: [] } });
+    const again = await readArmingContext();
+    expect(again.stock.hub2).toBeUndefined();
+  });
+
   it("weighs what it actually read", async () => {
     const v = { p1: { 8: cell(1) } };
     setNode("stock/hub1", v);
@@ -101,11 +168,38 @@ describe("resolveUndecided", () => {
     expect(Object.keys(stock.central).length).toBe(30);
   });
 
-  it("reports progress so 1,500 reads are not a frozen screen", async () => {
+  it("reports progress in PRODUCTS, which is the unit the screen names", async () => {
     const pids = Array.from({ length: 30 }, (_, i) => `p${i}`);
     const seen = [];
     await resolveUndecided(pids, ["central"], { onProgress: (n, t) => seen.push([n, t]) });
     expect(seen).toEqual([[24, 30], [30, 30]]);
+    expect(seen[seen.length - 1]).toEqual([30, 30]);
+  });
+
+  it("…and still in products when there are several locations per product", async () => {
+    const pids = Array.from({ length: 6 }, (_, i) => `p${i}`);
+    const seen = [];
+    await resolveUndecided(pids, ["central", "trophy", "hub3"], { onProgress: (n, t) => seen.push([n, t]) });
+    // 18 jobs, batches of 24 → one pass, and progress must land on 6/6, not
+    // 18/6 or 24/6.
+    expect(seen).toEqual([[6, 6]]);
+  });
+
+  it("bounds the REQUESTS in flight, not the products", async () => {
+    // The batch used to slice the product list and then multiply each product by
+    // every location, so a "batch of 24" put 24 × 8 = 192 gets on the wire at
+    // once. The comment claimed the opposite. (CodeRabbit, PR #601.)
+    let live = 0, peak = 0;
+    gate = async () => { live += 1; peak = Math.max(peak, live); await Promise.resolve(); live -= 1; };
+    const pids = Array.from({ length: 40 }, (_, i) => `p${i}`);
+    await resolveUndecided(pids, ["a", "b", "c", "d", "e", "f", "g", "h"]);
+    expect(peak).toBeLessThanOrEqual(24);
+    expect(peak).toBeGreaterThan(1);      // not accidentally serialised
+  });
+
+  it("counts its own reads, so the screen can add them to the bill", async () => {
+    const { readCount } = await resolveUndecided(["p1", "p2"], ["central", "trophy"]);
+    expect(readCount).toBe(4);
   });
 
   it("reads nothing when there is nothing undecided", async () => {

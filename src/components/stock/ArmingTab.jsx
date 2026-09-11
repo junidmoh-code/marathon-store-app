@@ -28,7 +28,7 @@ import {
   HUB1, HUB2, ARMING_HUBS, suppressed,
 } from "./armingCore";
 import { readArmingContext, resolveUndecided } from "./armingStore";
-import { useLocations, useEngineConfig } from "./useStock";
+import { useLocations, useEngineConfigState } from "./useStock";
 import { labelFor, allLocationIds } from "./locations";
 import { PhotoThumb, PhotoLightbox, Badge, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGhost, input } from "./ui";
@@ -52,7 +52,20 @@ const SOURCE_TONE = {
 
 export default function ArmingTab({ products, onOpenSeating }) {
   const registry = useLocations();
-  const config = useEngineConfig();
+  // ── GATED ON `settled`, NOT ON A NON-NULL VALUE ────────────────────────────
+  // Every armed answer on this screen is a function of the category policy. The
+  // config arrives over its own subscription, and the four one-shot reads
+  // usually win that race on a warm page — so gating only on the reads showed a
+  // fully-rendered screen saying "Armed at both hubs: 0" while the policy was
+  // still in flight. A clean, confident, wrong verdict on the one defect this
+  // tab exists to surface.
+  //
+  // `settled` is the honest gate: it is true once the listener has answered at
+  // ALL, including with nothing and including with an error, so an empty or
+  // unreadable node degrades to a visible answer rather than a permanent
+  // spinner. (Adversarial review, PR #601 — and usePathState's own header says
+  // exactly this.)
+  const { value: config, settled: configSettled, error: configError } = useEngineConfigState();
   const [ctx, setCtx] = useState(null);          // { stock, targets, bytes, readCount }
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -67,12 +80,31 @@ export default function ArmingTab({ products, onOpenSeating }) {
   // in is one setState and the index recomputes once.
   const [resolvedPids, setResolvedPids] = useState(() => new Set());
 
-  // A stale load must never land on a newer one — Refresh and the resolve pass
-  // can both be in flight.
+  // ── TWO SEQUENCES, NOT ONE ─────────────────────────────────────────────────
+  // Refresh and the resolve pass are both long, both cancellable, and both
+  // visible at the same time — so they need separate identities.
+  //
+  // THE BUG ONE SHARED COUNTER CAUSED. resolve() used to capture `seq.current`
+  // and gate its `finally` on it. Press Refresh while a resolve is in flight and
+  // load() bumps the counter, so when the resolve settles its finally no longer
+  // matches — `resolving` is never cleared, and the "Read the other N" button
+  // sits disabled showing a frozen progress count for the life of the tab. The
+  // only way out was to leave the tab and come back. (Senior-architect review.)
+  //
+  // Now: `seq` is the READ's identity and `resolveSeq` is the resolve's, load()
+  // retires any resolve in flight and clears the progress itself, and a resolve
+  // applies only if BOTH are still current — its own, and the read it was
+  // computed against.
   const seq = useRef(0);
+  const resolveSeq = useRef(0);
 
   const load = useCallback(async () => {
     const mine = ++seq.current;
+    // Retire an in-flight resolve and clear its progress HERE — the resolve
+    // itself can no longer be trusted to, because it is about to find itself
+    // stale.
+    resolveSeq.current += 1;
+    setResolving(null);
     setLoading(true); setError("");
     try {
       const next = await readArmingContext(ARMING_HUBS);
@@ -93,8 +125,10 @@ export default function ArmingTab({ products, onOpenSeating }) {
   useEffect(() => { load(); }, [load]);
 
   const full = useMemo(
-    () => (ctx ? { products: byIdOf(products), stock: ctx.stock, targets: ctx.targets, config, resolvedPids } : null),
-    [ctx, products, config, resolvedPids],
+    () => (ctx && configSettled
+      ? { products: byIdOf(products), stock: ctx.stock, targets: ctx.targets, config, resolvedPids }
+      : null),
+    [ctx, configSettled, products, config, resolvedPids],
   );
 
   const index = useMemo(
@@ -116,21 +150,35 @@ export default function ArmingTab({ products, onOpenSeating }) {
 
   const resolve = useCallback(async () => {
     if (!index || !index.undecided) return;
-    const mine = seq.current;
+    const mine = ++resolveSeq.current;   // this resolve
+    const readAt = seq.current;          // the read it is computed against
+    const current = () => mine === resolveSeq.current && readAt === seq.current;
     setResolving({ done: 0, total: 0 });
     try {
       const pids = index.undecidedPids;
       setResolving({ done: 0, total: pids.length });
-      const { stock } = await resolveUndecided(pids, otherLocations, {
-        onProgress: (done, total) => { if (mine === seq.current) setResolving({ done, total }); },
+      const { stock, bytes, readCount } = await resolveUndecided(pids, otherLocations, {
+        onProgress: (done, total) => { if (current()) setResolving({ done, total }); },
       });
-      if (mine !== seq.current) return;
-      setCtx((c) => (c ? { ...c, stock: mergeStock(c.stock, stock) } : c));
-      setResolvedPids(new Set(pids));
+      if (!current()) return;
+      // THE BILL INCLUDES THIS. A screen that reports its own read cost and then
+      // quietly leaves out a 1,472-request pass is not reporting its read cost.
+      setCtx((c) => (c ? { ...c, stock: mergeStock(c.stock, stock),
+        bytes: c.bytes + bytes, readCount: c.readCount + readCount } : c));
+      // UNION, NOT REPLACE. A resolve proves ABSENCE as much as presence — a
+      // product with no cells anywhere else merges nothing, and mergeStock
+      // cannot carry a negative. Only this set remembers that we looked, so
+      // replacing it would make every earlier pass's products undecided again.
+      // A fresh load() clears it outright, which is correct: the hub cells it
+      // was proved against have been replaced. (CodeRabbit, PR #601.)
+      setResolvedPids((prev) => new Set([...prev, ...pids]));
     } catch (e) {
-      if (mine === seq.current) setError(e?.message || String(e));
+      if (current()) setError(e?.message || String(e));
     } finally {
-      if (mine === seq.current) setResolving(null);
+      // Only if no NEWER resolve has taken over. A load() that retired this one
+      // has already cleared the progress; clearing it again would wipe a fresh
+      // resolve's count.
+      if (mine === resolveSeq.current) setResolving(null);
     }
   }, [index, otherLocations]);
 
@@ -159,7 +207,20 @@ export default function ArmingTab({ products, onOpenSeating }) {
 
       <PhotoLightbox url={photo} onClose={() => setPhoto("")} />
 
-      {loading && !index && <div style={{ color: GRAY, padding: "2rem 0" }}>Reading both hubs…</div>}
+      {!index && (loading || !configSettled) && (
+        <div style={{ color: GRAY, padding: "2rem 0" }}>
+          {loading ? "Reading both hubs…" : "Reading the policy…"}
+        </div>
+      )}
+
+      {/* An unreadable policy node is not a quiet one. Every target on this
+          screen resolves from it, so saying so is the only honest answer. */}
+      {configError && (
+        <div style={{ ...GLASS, padding: ".7rem .9rem", marginBottom: ".8rem",
+          border: "1px solid rgba(251,191,36,.35)", color: AMBER, fontSize: ".85rem" }}>
+          The engine policy could not be read — every count below is against an empty policy.
+        </div>
+      )}
 
       {index && (
         <>
@@ -178,14 +239,20 @@ export default function ArmingTab({ products, onOpenSeating }) {
               this tab does not read. The error is one-directional — an armed
               answer is always right — so this can only be hiding arming, never
               inventing it. Said out loud rather than swallowed. */}
-          {index.undecided > 0 && (
+          {index.undecidedProducts > 0 && (
             <div style={{ ...GLASS, padding: ".7rem .9rem", marginBottom: ".8rem",
               border: "1px solid rgba(251,191,36,.35)", display: "flex", alignItems: "center",
               gap: 10, flexWrap: "wrap" }}>
               <span style={{ color: AMBER, fontSize: ".82rem", flex: 1, minWidth: 180 }}>
-                {`${index.undecided} undecided — no units at either hub`}
+                {`${index.undecidedProducts} undecided — no units at either hub`}
               </span>
-              <button onClick={resolve} disabled={!!resolving} style={{ ...bGhost, opacity: resolving ? .5 : 1 }}>
+              {/* Disabled while a READ is in flight, because a resolve computed
+                  against the old index would be merged into the new context.
+                  Refresh is deliberately NOT disabled the other way round: it is
+                  the escape hatch from a 1,472-request pass, and the sequence
+                  guards above exist so that interrupting one is safe. */}
+              <button onClick={resolve} disabled={!!resolving || loading}
+                style={{ ...bGhost, opacity: (resolving || loading) ? .5 : 1 }}>
                 {resolving ? `${resolving.done}/${resolving.total}` : `Read the other ${otherLocations.length}`}
               </button>
             </div>
@@ -216,7 +283,7 @@ export default function ArmingTab({ products, onOpenSeating }) {
 // Count on the header, always — the unfiltered count, so collapsing a section
 // does not hide how big it is, and a search that matches nothing still says
 // what it searched.
-function Section({ bucket, rows, total, open, shown, registry, onToggle, onMore, onPhoto, onOpenSeating }) {
+export function Section({ bucket, rows, total, open, shown, registry, onToggle, onMore, onPhoto, onOpenSeating }) {
   const tone = bucket === BUCKET.BOTH_HUBS ? RED
     : bucket === BUCKET.NOT_SEATED ? AMBER
     : bucket === BUCKET.SUPPRESSED ? GRAY
@@ -260,7 +327,7 @@ function Section({ bucket, rows, total, open, shown, registry, onToggle, onMore,
 // ── ONE PRODUCT ──────────────────────────────────────────────────────────────
 // Photo, name, category, and the per-size target run at each hub. Tapping it
 // opens the product in Seating, which is where anything can be changed.
-function ArmRow({ row, bucket, registry, onPhoto, onOpenSeating }) {
+export function ArmRow({ row, bucket, registry, onPhoto, onOpenSeating }) {
   return (
     <div style={{ ...GLASS, padding: "10px 12px", marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -294,7 +361,7 @@ function ArmRow({ row, bucket, registry, onPhoto, onOpenSeating }) {
   );
 }
 
-function HubColumn({ hub, label, highlight }) {
+export function HubColumn({ hub, label, highlight }) {
   const armed = hub.armed;
   const off = suppressed(hub);
   const run = hub.sizes.filter((s) => s.target > 0).sort(bySize);
@@ -342,12 +409,22 @@ const byIdOf = (products) => Object.fromEntries((products || []).map((p) => [p.i
 
 // Numeric sizes in numeric order, letter sizes after them alphabetically —
 // "10" must not sort before "3", which is what a bare string compare does.
+//
+// THE ONE-SIZE CELL IS NOT THE NUMBER ZERO. `Number("")` is 0 and 0 is finite,
+// so the no-size chip sorted in FRONT of size 3 — a "One" chip opening a shoe
+// run. It is not a size at all; it goes last. (Found by giving this exported
+// helper the unit test it never had. Adversarial review, PR #601.)
+const sizeRank = (size) => {
+  const raw = String(size ?? "").trim();
+  if (!raw) return null;
+  const n = Number(raw.replace("_", "."));
+  return Number.isFinite(n) ? n : null;
+};
+
 export function bySize(a, b) {
-  const na = Number(String(a.size).replace("_", "."));
-  const nb = Number(String(b.size).replace("_", "."));
-  const aNum = Number.isFinite(na), bNum = Number.isFinite(nb);
-  if (aNum && bNum) return na - nb;
-  if (aNum !== bNum) return aNum ? -1 : 1;
+  const na = sizeRank(a.size), nb = sizeRank(b.size);
+  if (na !== null && nb !== null) return na - nb;
+  if ((na === null) !== (nb === null)) return na === null ? 1 : -1;
   return String(a.size).localeCompare(String(b.size));
 }
 

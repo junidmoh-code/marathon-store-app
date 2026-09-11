@@ -49,11 +49,18 @@
 // /stock/hub2 therefore knows a size is alive when either hub holds units, and
 // cannot tell "dead everywhere" from "alive at Central" when neither does. The
 // error is ONE-DIRECTIONAL — hub-scoped units can only UNDER-count, so an armed
-// answer is always right and an unarmed one may be too pessimistic.
+// answer is always right and an unarmed one may be too pessimistic. That holds
+// for the WHOLE of resolveTarget, not merely for the branch above:
+// sizeUnitsAnywhere is the only place ANY branch consults stock outside `dest`,
+// and it appears only in the per-size and perSize category branches. Every other
+// carriage test — the explicit row, carriedOnly, the footwear rule, the clothing
+// size run — asks storeCarries(stock, dest, …), which is exact here because
+// `dest` is one of the two hubs this tab reads in full.
 //
-// Measured live 2026-09-11 over the whole catalogue: 199 (product, hub) pairs
-// out of 9,520 are undecided, and bucket A — armed at BOTH hubs, the defect
-// this tab exists for — comes out at 34 either way. So the cheap read answers
+// Measured live 2026-09-11 through this module over the whole catalogue: 185
+// (product, hub) pairs out of 9,520 are undecided — 184 distinct products — and
+// bucket A, armed at BOTH hubs and the defect this tab exists for, comes out at
+// 34 either way. So the cheap read answers
 // the question the tab was built to answer, exactly, and the residue is named
 // on screen and resolvable on demand through the Seating tab's own per-(loc,
 // pid) reads rather than guessed at or silently swallowed.
@@ -219,8 +226,16 @@ export function bucketsFor(h1, h2) {
   // that does not carry the line. Reported per hub, because it is a fact about
   // a hub and not about the product.
   if ((h1.armed && !h1.hasCell) || (h2.armed && !h2.hasCell)) out.push(BUCKET.NOT_SEATED);
-  // The category policy would arm it and a target:0 row kills it. Its own state,
-  // so a quiet hub is diagnosed in one look rather than read as "never armed".
+  // A policy or rule would arm it and an explicit target:0 row kills it. Its own
+  // state, so a quiet hub is diagnosed in one look rather than read as "never
+  // armed".
+  //
+  // ANY EXPLICIT ZERO, not only the rows this card's Switch off wrote. The off
+  // switch IS the row — `source: "seating_off"` is a stamp saying who wrote it,
+  // not what makes it work — and a hand-written zero suppresses the policy just
+  // as completely. Keying on the stamp would hide every suppression the
+  // Decision Queue's Exclude button made (NoTargetQueue.jsx:325 writes the same
+  // row with no such stamp), which is most of them.
   if (suppressed(h1) || suppressed(h2)) out.push(BUCKET.SUPPRESSED);
   if (h1.armed && !h2.armed) out.push(BUCKET.HUB1_ONLY);
   if (h2.armed && !h1.armed) out.push(BUCKET.HUB2_ONLY);
@@ -284,7 +299,13 @@ export function armingIndex(ctx, pids) {
   }
 
   rows.sort((a, b) => a.name.localeCompare(b.name));
-  return { rows, counts, undecided, undecidedPids, deactivatedSkipped };
+  // TWO COUNTS, BECAUSE THEY ARE TWO NUMBERS. `undecided` is (product, hub)
+  // PAIRS — a product can be undecided at both hubs — and `undecidedProducts`
+  // is how many products a resolve pass would have to read. Showing the pair
+  // count beside a progress bar that counts products puts "185 undecided"
+  // above "184/184" on the same screen. (CodeRabbit, PR #601.)
+  return { rows, counts, undecided, undecidedProducts: undecidedPids.length,
+    undecidedPids, deactivatedSkipped };
 }
 
 // Rows for one section, filtered by the search box. Separated from armingIndex

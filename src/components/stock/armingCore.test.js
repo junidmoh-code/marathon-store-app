@@ -52,16 +52,22 @@ const cell = (qty) => ({ qty, updatedAt: "2026-09-01T00:00:00.000Z", lastType: "
 // not appear as `{}` — the key is gone. Every fixture below is built through
 // this helper so no test can accidentally assert against a shape the database
 // cannot produce.
+// Recursive, because RTDB prunes at EVERY depth and cannot store an empty array
+// either — a last-child delete removes the key outright and it reads back null.
 function stockOf(map) {
-  const out = {};
-  for (const [loc, byPid] of Object.entries(map)) {
-    const keptPids = {};
-    for (const [pid, cells] of Object.entries(byPid)) {
-      if (cells && Object.keys(cells).length) keptPids[pid] = cells;
+  const prune = (value) => {
+    if (value == null) return undefined;
+    if (typeof value !== "object") return value;
+    const out = Array.isArray(value) ? [] : {};
+    let kept = 0;
+    for (const k of Object.keys(value)) {
+      const v = prune(value[k]);
+      if (v === undefined) continue;
+      out[k] = v; kept += 1;
     }
-    if (Object.keys(keptPids).length) out[loc] = keptPids;
-  }
-  return out;
+    return kept ? out : undefined;
+  };
+  return prune(map) ?? {};
 }
 
 const ctxOf = ({ config = CAT_BOTH, products = product(), stock = {}, targets = {} } = {}) =>
@@ -74,12 +80,33 @@ describe("the test double reproduces RTDB's empty-child delete", () => {
     expect(stockOf({ hub1: { p1: {}, p2: { 8: cell(1) } } })).toEqual({ hub1: { p2: { 8: cell(1) } } });
   });
 
-  it("and storeCarries therefore reads the same answer the engine reads", () => {
-    // The engine's own predicate, not a copy of it: both must agree that an
-    // absent map is not carriage.
-    const s = stockOf({ hub1: { p1: {} } });
-    expect(hubArming(ctxOf({ stock: {} }), HUB1, "p1").hasCell).toBe(false);
-    expect(s.hub1).toBeUndefined();
+  it("and treats an empty ARRAY exactly as an empty object", () => {
+    // RTDB cannot store [] — writing it, or deleting the last child of an
+    // array-shaped node, removes the key. /stock DOES hand back arrays: a
+    // product whose only cells are "0".."n" comes back array-shaped (live
+    // /stock/hub1 holds several), so the array branch is not hypothetical.
+    expect(stockOf({ hub1: { p1: [] } })).toEqual({});
+    expect(stockOf({ hub1: { p1: { 8: [] } } })).toEqual({});
+  });
+
+  it("and an absent map is not carriage — asked of the ENGINE, not only of us", () => {
+    // An earlier version of this claimed to use "the engine's own predicate"
+    // while calling only our own, over empty stock, where `hasCell: false`
+    // would have been true of any implementation. It now puts the same
+    // fixture through the real refill-engine and compares the two answers.
+    // (Adversarial review, PR #601.)
+    const empty = ctxOf({ stock: { hub1: { p1: {} } } });        // pruned to {}
+    const held = ctxOf({ stock: { hub1: { p1: { 8: cell(2) } } } });
+
+    expect(hubArming(empty, HUB1, "p1").hasCell).toBe(false);
+    expect(hubArming(held, HUB1, "p1").hasCell).toBe(true);
+
+    // The engine decides carriage through the same predicate, inside its
+    // carriedOnly gate: no cell, no target; a cell, a target.
+    const ask = (c) => engine.resolveTarget(
+      { targets: {}, config: c.config, products: c.products, stock: c.stock }, HUB1, "p1", "8");
+    expect(ask(empty)).toBe(null);
+    expect(ask(held)?.target).toBeGreaterThan(0);
   });
 });
 
@@ -97,16 +124,31 @@ describe("armed at both hubs", () => {
     expect(bucketsFor(h1, h2)).not.toContain(BUCKET.HUB2_ONLY);
   });
 
-  it("agrees with the real engine's resolveTarget on both hubs", () => {
-    // The point of section A is a claim about the ENGINE. Assert it against the
-    // engine, not against our own mirror of it.
+  it("agrees with the real engine's resolveTarget, size by size, on both hubs", () => {
+    // A CROSS-COMPARISON, not two independent assertions over one fixture. The
+    // first version asserted "the engine says > 0" in one `it` and "we say
+    // armed" in another; that is a sanity check on the fixture, and it would
+    // have stayed green with the two answers disagreeing. Here each of our
+    // per-size targets is compared with the engine's for the SAME size.
+    // (Adversarial review, PR #601.)
+    const ask = (hub, size) => engine.resolveTarget(
+      { targets: both.targets, config: both.config, products: both.products, stock: both.stock },
+      hub, "p1", size);
+
+    let positives = 0;
     for (const hub of [HUB1, HUB2]) {
-      const t = engine.resolveTarget(
-        { targets: both.targets, config: both.config, products: both.products, stock: both.stock },
-        hub, "p1", hub === HUB1 ? "8" : "9",
-      );
-      expect(t?.target, `${hub} must resolve a positive target`).toBeGreaterThan(0);
+      const ours = hubArming(both, hub, "p1");
+      for (const s of ours.sizes) {
+        const theirs = ask(hub, s.size);
+        expect(theirs?.target ?? null, `${hub} size ${s.size}`).toBe(s.target);
+        if (s.target > 0) positives += 1;
+      }
+      // …and OUR armed verdict is exactly "the engine gave some size a
+      // positive target here".
+      expect(ours.armed).toBe(ours.sizes.some((x) => x.target > 0));
     }
+    // Not vacuous: the loop above had something to compare.
+    expect(positives).toBeGreaterThan(0);
   });
 });
 
@@ -248,12 +290,38 @@ describe("a deactivated product is armed nowhere", () => {
     expect(ix.deactivatedSkipped).toBe(1);
   });
 
-  it("a reactivated product is armed again", () => {
-    const c = ctxOf({
-      products: product({ reactivated: { at: 1757000000000, by: "u1", reason: "stock_received" } }),
+  it("a reactivated product is armed again — and it is the DELETION that does it", () => {
+    // THE GUARD IS `!!product.deactivated` AND NOTHING ELSE. Reactivation is not
+    // a later timestamp winning a comparison: reactivateUpdates writes the
+    // `reactivated` node and DELETES `deactivated` in one atomic update
+    // (src/utils/deactivation.js), so exactly one of the two ever exists.
+    //
+    // Asserting only that a record carrying `reactivated` is armed would pass
+    // even if the guard ignored that field completely — which it does, and
+    // should. (CodeRabbit raised this, and its proposed fixture sets BOTH flags
+    // and expects armed; against the engine's actual predicate that expectation
+    // is false. So: the reversal is pinned as the deletion it is, and the
+    // impossible both-flags state is pinned as still-deactivated, which is the
+    // fail-safe answer.)
+    const live = ctxOf({
+      products: product({ reactivated: { at: 1757000001000, by: "u1", reason: "stock_received" } }),
       stock: { hub1: { p1: { 8: cell(3) } } },
     });
-    expect(hubArming(c, HUB1, "p1").armed).toBe(true);
+    expect(hubArming(live, HUB1, "p1").armed).toBe(true);
+
+    const stillOff = ctxOf({
+      products: product({
+        deactivated: { at: 1757000000000, by: "u1" },
+        reactivated: { at: 1757000001000, by: "u1", reason: "stock_received" },
+      }),
+      stock: { hub1: { p1: { 8: cell(3) } } },
+    });
+    expect(hubArming(stillOff, HUB1, "p1").armed).toBe(false);
+    // …and the ENGINE agrees, which is the only reason that is the right answer.
+    expect(engine.resolveTarget(
+      { targets: {}, config: stillOff.config, products: stillOff.products, stock: stillOff.stock },
+      HUB1, "p1", "8",
+    )).toBe(null);
   });
 });
 
@@ -303,6 +371,43 @@ describe("the dead-size rule, and what two hub reads cannot settle", () => {
     expect(hubArming(c, HUB2, "p1").undecided).toBe(false);
   });
 
+  it("the gate is the PER-SIZE branch, not merely 'a policy exists here'", () => {
+    // undecidedHere is gated on the category entry being per-size, because that
+    // is the only branch of resolveTarget that consults sizeUnitsAnywhere.
+    // Widening the gate to "any entry" would flag every uniform leg — bags,
+    // caps, perfumes, sunglasses at hub 2 — none of which the dead-size rule
+    // can ever change.
+    const uniform = { ruleBasedTargets: true,
+      categoryPolicy: { sneakers: { hub1: { target: 4, minQty: 2, carriedOnly: true } } } };
+    // A uniform leg speaks for the "_" cell and nothing else, and that branch
+    // never calls sizeUnitsAnywhere — so the answer here is FINAL whichever way
+    // it falls. Armed, in this case, and decidedly so.
+    const c = ctxOf({ config: uniform, stock: { hub1: { p1: { 8: cell(0) } } } });
+    const h1 = hubArming(c, HUB1, "p1");
+    expect(h1.armed).toBe(true);
+    expect(h1.undecided).toBe(false);
+
+    // …and the same leg over a product it does NOT carry: unarmed by the
+    // carriedOnly gate, which is a `dest`-scoped question this tab answers
+    // exactly. Still not undecided.
+    const away = ctxOf({ config: uniform, stock: { hub2: { p1: { 8: cell(3) } } } });
+    expect(hubArming(away, HUB1, "p1").armed).toBe(false);
+    expect(hubArming(away, HUB1, "p1").undecided).toBe(false);
+  });
+
+  it("the phantom carries the no-size cell, so a product declaring NO sizes is still asked", () => {
+    // seatingSizes adds "_" for a uniform leg, and a product with an empty
+    // `sizes` array would otherwise get an empty phantom and read as decided
+    // for ever. The perfume case that PR #429 was built around.
+    const perSizeOneSize = { ruleBasedTargets: true,
+      categoryPolicy: { sneakers: { perSize: true, hub1: { sizes: { _: { target: 3 } } } } } };
+    const c = ctxOf({ products: product({ sizes: [] }), config: perSizeOneSize, stock: {} });
+    // The engine's per-size branch returns null for "_", so this is unarmed and
+    // NOT undecided — but the phantom must have been asked, not skipped for
+    // want of a size to put in it.
+    expect(hubArming(c, HUB1, "p1").armed).toBe(false);
+  });
+
   it("the phantom never leaks into the rendered facts", () => {
     const c = ctxOf({ stock: { hub1: { p1: { 8: cell(0), 9: cell(0) } } } });
     const h1 = hubArming(c, HUB1, "p1");
@@ -338,6 +443,18 @@ describe("armingIndex", () => {
     expect(ix.counts[BUCKET.BOTH_HUBS]).toBe(1);
     expect(ix.counts[BUCKET.HUB1_ONLY]).toBe(1);
     expect(ix.counts[BUCKET.HUB2_ONLY]).toBe(0);
+  });
+
+  it("counts undecided PAIRS and undecided PRODUCTS separately", () => {
+    // A product undecided at both hubs is two pairs and one product. The banner
+    // names products (that is what a resolve pass reads); the pair count is what
+    // the read-cost reasoning is stated in. Collapsing them puts "2 undecided"
+    // above "1/1" on the same screen.
+    const two = ctxOf({ products, stock: { hub1: { p1: { 8: cell(0) } }, hub2: { p1: { 8: cell(0) } } } });
+    const ix = armingIndex(two, ["p1"]);
+    expect(ix.undecided).toBe(2);
+    expect(ix.undecidedProducts).toBe(1);
+    expect(ix.undecidedPids).toEqual(["p1"]);
   });
 
   it("skips a pid the catalogue does not hold rather than inventing a row", () => {

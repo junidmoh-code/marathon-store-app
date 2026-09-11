@@ -236,11 +236,18 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
   // three independent gates, exactly as the card's other contents have.
   const [tab, setTab] = useState("categories");
   // The product the Arming tab handed to Seating, if any. A PRODUCT id and
-  // nothing else — see SeatingTab's initialPid. Cleared on the way INTO Arming
-  // so that leaving and re-entering Seating by hand starts blank; the tabs are
-  // rendered conditionally, so a second hand-off of the same product remounts
-  // SeatingTab and re-opens it rather than silently doing nothing.
+  // nothing else — see SeatingTab's initialPid.
+  //
+  // EVERY TAB BUTTON CLEARS IT; only openSeating sets it. The tabs are rendered
+  // by a mutually-exclusive ternary, so SeatingTab REMOUNTS on every return and
+  // its initialPid effect fires again with whatever this still holds. Clearing
+  // it on the way into Arming alone was not enough: hand a product over, go to
+  // Categories, then tap Seating by hand, and the tab silently re-opened the
+  // handed-over product instead of starting blank — including after the
+  // operator had searched for something else in between, because a manual
+  // search inside Seating never writes back here. (Senior-architect review.)
   const [seatPid, setSeatPid] = useState("");
+  const goTab = useCallback((next) => { setSeatPid(""); setTab(next); }, []);
   const openSeating = useCallback((pid) => { setSeatPid(pid); setTab("seating"); }, []);
   const [rows, setRows] = useState(null);         // the explicit-row list, when opened
   const [rowsMeta, setRowsMeta] = useState(null); // { total, truncated, limit, loc, locations, byLocation }
@@ -805,12 +812,12 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
             unsaved draft with no warning. */}
         {!open && (
           <div style={{ display: "flex", gap: 8, marginBottom: "1rem" }}>
-            <button onClick={() => setTab("categories")} style={tab === "categories" ? tabOn : tabOff}>Categories</button>
-            <button onClick={() => setTab("seating")} style={tab === "seating" ? tabOn : tabOff}>Seating</button>
+            <button onClick={() => goTab("categories")} style={tab === "categories" ? tabOn : tabOff}>Categories</button>
+            <button onClick={() => goTab("seating")} style={tab === "seating" ? tabOn : tabOff}>Seating</button>
             {/* ARMING — the same policy question asked of the whole catalogue at
                 once: which products is each hub holding, and where do the two
                 answers overlap when they must not. */}
-            <button onClick={() => { setSeatPid(""); setTab("arming"); }} style={tab === "arming" ? tabOn : tabOff}>Arming</button>
+            <button onClick={() => goTab("arming")} style={tab === "arming" ? tabOn : tabOff}>Arming</button>
           </div>
         )}
 

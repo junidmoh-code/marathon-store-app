@@ -257,6 +257,16 @@ export function useEngineConfig() {
   return usePath("config/refillEngine");
 }
 
+// The same node, reporting the three states a bare null conflates. A screen that
+// RESOLVES TARGETS from this config must gate on `settled`: every arming answer
+// is a function of the category policy, so rendering before the first snapshot
+// arrives produces a confident "armed nowhere" — which on the Arming tab is a
+// clean, wrong verdict on the exact defect it exists to surface. See
+// usePathState's own note on why `value != null` is not the gate.
+export function useEngineConfigState() {
+  return usePathState("config/refillEngine");
+}
+
 // /settings/stockHold/config → { enabled, delegates, ... } — the central→hub
 // held-credit switch (absent/false = OFF = today's instant behaviour). Paths
 // derive from STOCK_HOLD_ROOT so these subscriptions can never drift from the
