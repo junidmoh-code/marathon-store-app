@@ -4057,117 +4057,11 @@ async function generateSocialScene(apiKey, prompt, productImages, refs, format =
   });
 }
 
-// Fit the generated scene to the one size all three platforms accept. Never
-// crops: "inside" preserves the whole composition, which matters when the
-// model has spaced four products across the frame. Best-effort — on a sharp
-// failure the raw output is kept rather than the post being lost.
-async function normalizeSocialImage(buffer, fallbackMime, format = "feed") {
-  try {
-    const sharp = require("sharp");
-    const [w, h] = format === "feed" ? [SOCIAL_W, SOCIAL_H] : [SOCIAL_VERTICAL_W, SOCIAL_VERTICAL_H];
-    const out = await sharp(buffer)
-      .resize(w, h, { fit: "inside", withoutEnlargement: true })
-      .jpeg({ quality: 90, chromaSubsampling: "4:4:4" })
-      .toBuffer();
-    return { buffer: out, mime: "image/jpeg" };
-  } catch (e) {
-    console.warn("normalizeSocialImage failed, using raw output:", e && e.message);
-    return { buffer, mime: fallbackMime || "image/jpeg" };
-  }
-}
-
-// ── MEASURE THE PHOTOGRAPH SO THE LAYOUT CAN ANSWER TO IT ────────────────────
-// The master direction forbids a fixed layout: "Do not automatically place the
-// logo in the top-left, the product list on the right... Study the composition
-// first. If the left side has beautiful negative space, information can live
-// there." We cannot look at the picture the way an art director does, but we
-// can MEASURE it, which is enough to choose a side honestly.
-//
-// Mean luminance says whether type must be light or dark. Standard deviation
-// says whether a region is EMPTY: flat tone is negative space, high variance is
-// product. Those two numbers per edge are all social-design.cjs needs.
-async function measureEdges(buffer) {
-  try {
-    const sharp = require("sharp");
-    const meta = await sharp(buffer).metadata();
-    const w = meta.width || SOCIAL_W, h = meta.height || SOCIAL_H;
-    const third = Math.max(1, Math.floor(w / 3));
-    const band = Math.max(1, Math.floor(h / 4));
-    // ── extract() IS NOT HONOURED BY stats() ───────────────────────────────
-    // sharp's stats() reads the SOURCE image and ignores pipeline operations
-    // before it, so `sharp(buf).extract(region).stats()` returns the stats of
-    // the WHOLE image. Verified against sharp 0.33/0.34 with a half-black,
-    // half-white test image: both halves reported mean 127.5.
-    //
-    // Left unfixed this is invisible and total — every region returns the same
-    // numbers, chooseLayout() therefore sees no difference between the sides
-    // and always picks the same one, and the layout is fixed for every image
-    // while looking measured. The region must be MATERIALISED first.
-    const region = async (left, top, width, height) => {
-      const cut = await sharp(buffer).extract({ left, top, width, height }).toBuffer();
-      const st = await sharp(cut).greyscale().stats();
-      const ch = st.channels[0];
-      return { mean: ch.mean, stdev: ch.stdev };
-    };
-    const half = Math.max(1, Math.floor(h / 2));
-    const [left, right, lTop, lBot, rTop, rBot] = await Promise.all([
-      region(0, 0, third, h),
-      region(w - third, 0, third, h),
-      // Each column also measured in halves: a column can average flat while a
-      // product sits low in it, which is how the first render put the total
-      // block over a perfume box.
-      region(0, 0, third, half),
-      region(0, h - half, third, half),
-      region(w - third, 0, third, half),
-      region(w - third, h - half, third, half),
-    ]);
-    return {
-      left: { ...left, top: lTop, bottom: lBot },
-      right: { ...right, top: rTop, bottom: rBot },
-    };
-  } catch (e) {
-    // A measurement failure must not lose a paid image. social-design falls
-    // back to a sensible default side and light ink when the numbers are absent.
-    console.warn("measureEdges failed, layout will use defaults:", e && e.message);
-    return {};
-  }
-}
-
-// ── COMPOSITE THE TYPE ───────────────────────────────────────────────────────
-// The model produced a photograph with negative space and NO lettering. Every
-// name, every price and the outfit total are placed here, as real text, from
-// the product records — summed in code, never by a model.
-//
-// Best-effort in the same way normalizeSocialImage is: a failure here keeps the
-// photograph rather than losing a generation that has already been paid for. An
-// undesigned post is a post Junid can still look at; a lost one is not.
-async function compositeSocialDesign(buffer, { products, kind, format = "feed" }) {
-  try {
-    const socialDesign = require("./lib/social-design.cjs");
-    const rows = socialDesign.sellableRows(products || []);
-    if (!rows.length) return { buffer, designed: false, reason: "no product carried a usable price" };
-    const sharp = require("sharp");
-    const edges = await measureEdges(buffer);
-    // The overlay must match the photograph's ACTUAL size: normalizeSocialImage
-    // fits "inside" without enlarging, so it is often a few pixels short of
-    // its target and sharp refuses an overlay bigger than its base.
-    const meta = await sharp(buffer).metadata();
-    const canvas = socialDesign.canvasFor(format);
-    const svg = socialDesign.buildOverlay({
-      products, edges, kind, format,
-      width: meta.width || canvas.w,
-      height: meta.height || canvas.h,
-    });
-    const out = await sharp(buffer)
-      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-      .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
-      .toBuffer();
-    return { buffer: out, designed: true, named: rows.length };
-  } catch (e) {
-    console.warn("compositeSocialDesign failed, keeping the bare photograph:", e && e.message);
-    return { buffer, designed: false, reason: String(e && e.message) };
-  }
-}
+// Fitting the photograph to its canvas, measuring it, and compositing the type
+// over it — including the second, 1080x1350 render a twinned story carries —
+// live in lib/social-render.cjs, so the tests and scripts/social/proof-safe-zone.mjs
+// run exactly this code without Firebase. See docs/SOCIAL-SAFE-ZONE.md.
+const { normalizeSocialImage, compositeSocialDesign } = require("./lib/social-render.cjs");
 
 // Generated post media goes to its OWN Storage path, under the aiStudio prefix
 // the Style Kit already owns (public read, super-admin write — the access these
@@ -4474,6 +4368,12 @@ async function generateOnePost(db, {
   const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
   const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
   let media = [];
+  // A story that will be twinned carries both renders of its design:
+  // { story: {url,width,height}, feed: {url,width,height} }. See social-render.
+  let artwork = null;
+  // Every object this call put in Storage, so a failed record write can remove
+  // all of them — a story now uploads two.
+  const uploadedUrls = [];
   let costUSD = 0;
   // Set once the paid image is in Storage. If the record write then fails,
   // the object is referenced by nothing and nothing would ever clean it up
@@ -4526,11 +4426,24 @@ async function generateOnePost(db, {
       const designed = await compositeSocialDesign(normBuf, {
         products: picks.map((p) => ({ displayName: p.displayName || p.name, retailPrice: p.retailPrice })),
         kind, format,
+        // The feed twin gets its own 1080x1350 render of the same design.
+        alsoFeed: format === "story" && STORY_ALSO_POSTS_TO_FEED,
       });
       const outBuf = designed.buffer;
       if (!designed.designed) console.warn(`social: ${kind} post went out undesigned — ${designed.reason}`);
-      uploadedPath = `aiStudio/social/posts/${postId}/0`;   // for the cleanup below
-      media = [{ url: await uploadSocialImage(postId, 0, outBuf, mime), type: "image" }];
+      const storyUrl = await uploadSocialImage(postId, 0, outBuf, mime);
+      uploadedUrls.push(storyUrl);
+      media = [{ url: storyUrl, type: "image" }];
+      if (designed.feed) {
+        const feedUrl = await uploadSocialImage(postId, "feed", designed.feed.buffer, mime);
+        uploadedUrls.push(feedUrl);
+        artwork = {
+          story: { url: storyUrl, width: designed.width, height: designed.height },
+          feed: { url: feedUrl, width: designed.feed.width, height: designed.feed.height },
+        };
+      } else if (format === "story" && STORY_ALSO_POSTS_TO_FEED) {
+        console.warn(`social: story ${postId} has no feed render (${designed.feedReason || designed.reason || "undesigned"}) — it will not be twinned onto the feed`);
+      }
     }
 
     // ── THE LINK ─────────────────────────────────────────────────────
@@ -4554,7 +4467,10 @@ async function generateOnePost(db, {
     // a caption IS shown, so the model is asked for a real one and the twin
     // carries it. The story still carries none — the two records are separate
     // and each is honest about its own surface.
-    const wantsTwin = socialTwin.wantsFeedTwin(format, media, STORY_ALSO_POSTS_TO_FEED);
+    // A twin needs the feed render. Without one the only picture is the
+    // 1080x1920 file, which the feed crops through the wordmark — so no twin.
+    const wantsTwin = socialTwin.wantsFeedTwin(format, media, STORY_ALSO_POSTS_TO_FEED)
+      && socialTwin.hasFeedArtwork({ artwork });
     const { caption, source: captionSource, reason: captionReason } =
       format === "story" && !wantsTwin
         ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
@@ -4584,6 +4500,7 @@ async function generateOnePost(db, {
       kind,
       format,
       media,
+      ...(artwork ? { artwork } : {}),
       caption: storyCaption,
       captionSource: storyCaptionSource,
       ...(storyCaptionNote ? { captionNote: storyCaptionNote } : {}),
@@ -4619,7 +4536,8 @@ async function generateOnePost(db, {
     // can be two shapes at once would have touched every one of them. Two
     // records that happen to share an image touch none.
     //
-    // It shares: the picture (the identical URL — see STORY_ALSO_POSTS_TO_FEED),
+    // It shares: the design (the feed gets its own 1080x1350 render of it, see
+    // social-render.cjs — never the 1080x1920 file, which the feed crops),
     // the products, the link, the platforms, and the SLOT. Sharing the slot is
     // the point: "post them both places" means both go out on the same tick,
     // not hours apart. Two records on one timestamp is fine — the publisher
@@ -4667,9 +4585,9 @@ async function generateOnePost(db, {
     // orphaned by a failed record write. A failure here is logged and
     // ignored — an orphan costs pennies of storage; throwing would lose the
     // reason the post failed in the first place.
-    if (uploadedPath && media.length) {
+    for (const url of uploadedUrls) {
       try {
-        const objectPath = decodeURIComponent(new URL(media[0].url).pathname.split("/o/")[1] || "");
+        const objectPath = decodeURIComponent(new URL(url).pathname.split("/o/")[1] || "");
         if (objectPath) await admin.storage().bucket(STORAGE_BUCKET).file(objectPath).delete();
       } catch (cleanupErr) {
         console.warn(`social: could not clean up the orphaned image for ${postId}:`, cleanupErr && cleanupErr.message);
@@ -4861,23 +4779,20 @@ const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
 // should be posted both places". A story is gone in 24 hours; the picture that
 // earned it is worth keeping.
 //
-// The twin reuses the STORY'S OWN IMAGE — the identical Storage URL, not a
-// re-render. That is a deliberate choice made against a measurement rather
-// than a guess. Instagram's feed used to refuse anything narrower than 4:5,
-// which would have made a 9:16 story impossible to feed-post without cropping
-// it; checked against the live account on 2026-08-27, a 9:16 feed container is
-// now ACCEPTED and the image comes back off Instagram's own CDN at 1072x1920.
-// It is not cropped to 4:5. So there is nothing to re-render, no second
-// generation to pay for, and no crop that could cut a product in half — the
-// twin is the same photograph, whole.
+// The twin is the same PHOTOGRAPH and the same DESIGN, in its own FILE. Until
+// 2026-09-13 it reused the story's 1080x1920 file, on the strength of a 9:16
+// feed container being accepted. But the feed shows that file in a 4:5 frame,
+// 285 rows off the top and the bottom, and on the 4 Sep NIKE NOCTA post the
+// MARATHON wordmark was sliced in half and the web address cropped away.
 //
-// The one visible consequence, stated because it is a real one: Instagram's
-// GRID thumbnail is at most 4:5, so a 9:16 post is centre-cropped in the grid
-// and whole when opened. That is inherent to posting a story-shaped picture on
-// the feed, not a defect in this code.
+// So the story's layout now lives inside y 345..1575 (social-design.cjs
+// SAFE_BAND), and social-render.cjs renders it a second time at a native
+// 1080x1350 over the same photograph's central rows. The twin's media is that
+// file (artwork.feed); a story without one is not twinned. See
+// docs/SOCIAL-SAFE-ZONE.md.
 //
 // WHAT IT COSTS: nothing extra to generate. One Nano Banana Pro image already
-// paid for, used twice. The twin does add one caption call — a story does not
+// paid for, composited twice. The twin does add one caption call — a story does not
 // need a caption and skips the model entirely, but a feed post shows one, so
 // the twin gets a real one. That is a few hundredths of a cent.
 //

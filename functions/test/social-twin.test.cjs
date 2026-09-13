@@ -5,7 +5,7 @@
 "use strict";
 const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
-const { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields, TWIN_ROLE } = require("../lib/social-twin.cjs");
+const { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields, hasFeedArtwork, TWIN_ROLE } = require("../lib/social-twin.cjs");
 
 const SLOT = Date.UTC(2026, 7, 28, 7, 0);   // 09:00 SAST
 const IMG = { url: "https://storage/aiStudio/social/posts/S1/0.jpg", type: "image" };
@@ -258,5 +258,34 @@ describe("primaryCaptionFields", () => {
     const f = primaryCaptionFields("feed", { fallback: "x", caption: "y", captionSource: "ai" });
     assert.equal(f.captionNote, null);
     assert.equal(f.captionSource, "ai");
+  });
+});
+
+// ── THE TWIN POSTS THE FEED RENDER, NEVER THE CROPPED STORY FILE ─────────────
+describe("the twin's picture is the 1080x1350 render", () => {
+  const FEED = { url: "https://storage/aiStudio/social/posts/S1/feed.jpg", width: 1080, height: 1350 };
+  const withArt = () => story({ artwork: { story: { url: IMG.url, width: 1080, height: 1920 }, feed: FEED } });
+
+  test("a story with a feed render gives its twin that file", () => {
+    const t = twinOf(withArt());
+    assert.deepEqual(t.media, [{ type: "image", url: FEED.url }]);
+    assert.deepEqual(t.artwork.feed, FEED);
+  });
+
+  test("the story itself keeps the 1080x1920 file", () => {
+    const s = withArt();
+    twinOf(s);
+    assert.deepEqual(s.media, [IMG]);
+  });
+
+  test("hasFeedArtwork decides whether a twin may be written at all", () => {
+    assert.equal(hasFeedArtwork(withArt()), true);
+    assert.equal(hasFeedArtwork(story()), false);
+    assert.equal(hasFeedArtwork({ artwork: { feed: { url: "" } } }), false);
+    assert.equal(hasFeedArtwork(null), false);
+  });
+
+  test("an older record with no artwork is twinned exactly as before", () => {
+    assert.deepEqual(twinOf(story()).media, [IMG]);
   });
 });

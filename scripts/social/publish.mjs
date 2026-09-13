@@ -42,7 +42,7 @@
 import { createRequire } from "module";
 import {
   postBlocker, outstandingPlatforms, attemptsExhausted, captionFor, needsVerification,
-  formatOf, needsVideo,
+  formatOf, needsVideo, mediaForSurface,
   MAX_ATTEMPTS, STALE_CLAIM_MS, describePost, formatSlot, nextSlots,
 } from "../../src/components/social/socialCore.js";
 import { readSecret, credentialStatus } from "./secrets.mjs";
@@ -231,7 +231,7 @@ async function sendInstagram(post, creds) {
   // says is composited onto the artwork. igContainerPayload drops it, and it is
   // passed anyway so that one place decides, not two.
   return publishInstagram({
-    igUserId: creds.igUserId, token: creds.token, media: post.media, caption,
+    igUserId: creds.igUserId, token: creds.token, media: mediaForSurface(post), caption,
     format: post.format || "feed",
   });
 }
@@ -257,10 +257,10 @@ async function sendFacebook(post, creds) {
   // GET /{page}/stories listed it as status "published". No caption is passed
   // — Meta's story endpoints take no message field, on either medium.
   if (formatOf(post) === "story") {
-    return publishFacebookStory({ pageId: creds.pageId, token: creds.token, media: post.media });
+    return publishFacebookStory({ pageId: creds.pageId, token: creds.token, media: mediaForSurface(post) });
   }
   const { caption } = captionFor(post, "facebook");
-  return publishFacebook({ pageId: creds.pageId, token: creds.token, media: post.media, caption });
+  return publishFacebook({ pageId: creds.pageId, token: creds.token, media: mediaForSurface(post), caption });
 }
 
 // ── TIKTOK ───────────────────────────────────────────────────────────────────
