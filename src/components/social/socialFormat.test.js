@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
-import { FORMATS, DEFAULT_FORMAT, formatOf, needsVideo, STORY_ALSO_POSTS_TO_FEED } from "./socialCore.js";
+import { FORMATS, DEFAULT_FORMAT, formatOf, needsVideo, mediaForSurface, STORY_ALSO_POSTS_TO_FEED } from "./socialCore.js";
 import { hasVideo, stillOf } from "../../../scripts/social/reel-media.mjs";
 
 const require = createRequire(import.meta.url);
@@ -116,5 +116,36 @@ describe("STORY_ALSO_POSTS_TO_FEED does not drift", () => {
   it("the browser never creates a twin — it only describes one", () => {
     const core = read("./socialCore.js");
     expect(core).not.toMatch(/buildFeedTwin|twinWriteUpdates/);
+  });
+});
+
+// ── THE PUBLISHER SENDS THE RENDER MADE FOR THE SURFACE ──────────────────────
+describe("mediaForSurface", () => {
+  const STORY = "https://s/story.jpg", FEED = "https://s/feed.jpg";
+  const artwork = { story: { url: STORY, width: 1080, height: 1920 }, feed: { url: FEED, width: 1080, height: 1350 } };
+
+  it("a feed twin sends the 1080x1350 file", () => {
+    expect(mediaForSurface({ format: "feed", media: [{ type: "image", url: FEED }], artwork })).toEqual([{ type: "image", url: FEED }]);
+  });
+  it("sends the feed file even if the twin's media still pointed at the story's", () => {
+    expect(mediaForSurface({ format: "feed", media: [{ type: "image", url: STORY }], artwork })[0].url).toBe(FEED);
+  });
+  it("a story sends the 1080x1920 file", () => {
+    expect(mediaForSurface({ format: "story", media: [{ type: "image", url: STORY }], artwork })[0].url).toBe(STORY);
+  });
+  it("a record written before artwork existed is sent exactly as it was", () => {
+    const media = [{ type: "image", url: STORY }];
+    expect(mediaForSurface({ format: "feed", media })).toBe(media);
+  });
+  it("a picture replaced by hand is sent as replaced, not swapped back", () => {
+    const media = [{ type: "image", url: "https://s/replacement.jpg" }];
+    expect(mediaForSurface({ format: "feed", media, artwork })).toBe(media);
+    expect(mediaForSurface({ format: "story", media, artwork })).toBe(media);
+  });
+  it("never swaps a video or a carousel", () => {
+    const video = [{ type: "video", url: "https://s/v.mp4" }];
+    expect(mediaForSurface({ format: "reel", media: video, artwork: { reel: { url: FEED } } })).toBe(video);
+    const carousel = [{ type: "image", url: "a" }, { type: "image", url: "b" }];
+    expect(mediaForSurface({ format: "feed", media: carousel, artwork })).toBe(carousel);
   });
 });

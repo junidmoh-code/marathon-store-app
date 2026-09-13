@@ -181,6 +181,27 @@ export const formatOf = (post) => (FORMATS.includes(post?.format) ? post.format 
 /** Only a reel needs a video; the others are stills. */
 export const needsVideo = (post) => formatOf(post) === "reel";
 
+// ── THE FILE FOR THE SURFACE ─────────────────────────────────────────────────
+// A generated story carries `artwork: { story, feed }` — one design rendered at
+// 1080x1920 and at 1080x1350 (functions/lib/social-render.cjs). The publisher
+// sends the render made for the surface it is posting to, so a feed post never
+// goes out as a 9:16 file that Instagram crops through the wordmark.
+//
+// Only a single still is ever swapped. A reel's encoded video, a carousel, and
+// every record written before `artwork` existed are sent exactly as `media`.
+export function mediaForSurface(post) {
+  const media = Array.isArray(post?.media) ? post.media : [];
+  const art = post?.artwork?.[formatOf(post)];
+  const url = art && typeof art.url === "string" ? art.url : "";
+  if (!url || media.length !== 1 || media[0]?.type !== "image") return media;
+  // Only while media is still one of THIS record's own renders. A picture
+  // replaced by hand must go out as replaced, not be swapped back for the
+  // generated one the artwork still remembers.
+  const renders = Object.values(post.artwork || {}).map((r) => r && r.url).filter(Boolean);
+  if (!renders.includes(media[0].url)) return media;
+  return [{ ...media[0], url }];
+}
+
 export const STATUSES = ["draft", "approved", "posting", "posted", "failed", "discarded"];
 
 // What the QUEUE shows, in tab order. "All" is deliberately absent — a list

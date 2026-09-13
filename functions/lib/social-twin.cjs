@@ -17,16 +17,16 @@
 //      all — and a feed post shows one. A record whose caption cannot be seen
 //      must not claim to have one.
 //
-// WHY THE SAME IMAGE AND NOT A RE-RENDER. Instagram's feed used to refuse
-// anything narrower than 4:5, which would have forced a crop of the 9:16 story
-// artwork. Measured against the live account on 2026-08-27: a 9:16 feed
-// container is accepted, and Instagram's own CDN serves the result back at
-// 1072x1920 — not cropped. So there is nothing to re-render and no crop that
-// could cut a product in half.
+// THE SAME DESIGN, ITS OWN FILE. On 2026-08-27 the twin shared the story's
+// 1080x1920 file, because a 9:16 feed container was accepted and served back
+// uncropped. But the feed SHOWS a 4:5 frame — 285 rows off the top and the
+// bottom — and the wordmark lived in those rows: the 4 Sep NIKE NOCTA post went
+// out with MARATHON sliced in half and the web address cropped away.
 //
-// The one real consequence: Instagram's GRID thumbnail is at most 4:5, so a
-// 9:16 post is centre-cropped in the grid and whole when opened. That is
-// inherent to putting a story-shaped picture on a feed.
+// So the generator now renders the story's layout a second time at a native
+// 1080x1350 (social-render.cjs, `artwork.feed` on the story record), and the
+// twin's media IS that file. A story with no feed render is not twinned at all
+// (hasFeedArtwork) rather than falling back to the file that gets cropped.
 
 "use strict";
 
@@ -46,6 +46,21 @@ const TWIN_ROLE = "feed-copy-of-story";
  * story carousel — if such a post ever reached here, twinning it would build a
  * feed record out of media the story never had.
  */
+/** The 1080x1350 render a story record carries for its feed twin, or null. */
+function feedArtworkOf(record) {
+  const feed = record && record.artwork && record.artwork.feed;
+  return feed && typeof feed.url === "string" && feed.url ? feed : null;
+}
+
+/**
+ * Does this record carry a feed render to twin with? The generator requires it
+ * before writing a twin: without one the only picture available is the story's
+ * 1080x1920 file, and the feed crops that through the wordmark.
+ */
+function hasFeedArtwork(record) {
+  return feedArtworkOf(record) !== null;
+}
+
 function wantsFeedTwin(format, media, enabled) {
   return enabled === true
     && format === "story"
@@ -78,6 +93,11 @@ function buildFeedTwin(story, { twinId, storyId, caption, captionSource, caption
     twinOf: storyId,
     twinRole: TWIN_ROLE,
   };
+  // The picture is the one thing about the surface that is NOT the story's:
+  // the feed gets the 1080x1350 render of the same design. An older record with
+  // no artwork keeps the inherited media, exactly as before.
+  const feedArt = feedArtworkOf(story);
+  if (feedArt) twin.media = [{ type: "image", url: feedArt.url }];
   // captionNote is present only when the caption model had something to say
   // about itself. Absent must mean ABSENT — writing `undefined` into RTDB
   // throws, and writing null would invent a note that does not exist.
@@ -146,4 +166,4 @@ function primaryCaptionFields(format, { fallback, caption, captionSource, captio
   };
 }
 
-module.exports = { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields, TWIN_ROLE };
+module.exports = { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields, feedArtworkOf, hasFeedArtwork, TWIN_ROLE };
