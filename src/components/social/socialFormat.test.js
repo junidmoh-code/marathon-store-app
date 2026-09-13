@@ -137,6 +137,11 @@ describe("mediaForSurface", () => {
     const media = [{ type: "image", url: STORY }];
     expect(mediaForSurface({ format: "feed", media })).toBe(media);
   });
+  it("a picture replaced by hand is sent as replaced, not swapped back", () => {
+    const media = [{ type: "image", url: "https://s/replacement.jpg" }];
+    expect(mediaForSurface({ format: "feed", media, artwork })).toBe(media);
+    expect(mediaForSurface({ format: "story", media, artwork })).toBe(media);
+  });
   it("never swaps a video or a carousel", () => {
     const video = [{ type: "video", url: "https://s/v.mp4" }];
     expect(mediaForSurface({ format: "reel", media: video, artwork: { reel: { url: FEED } } })).toBe(video);

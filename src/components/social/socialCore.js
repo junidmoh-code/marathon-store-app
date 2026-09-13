@@ -194,6 +194,11 @@ export function mediaForSurface(post) {
   const art = post?.artwork?.[formatOf(post)];
   const url = art && typeof art.url === "string" ? art.url : "";
   if (!url || media.length !== 1 || media[0]?.type !== "image") return media;
+  // Only while media is still one of THIS record's own renders. A picture
+  // replaced by hand must go out as replaced, not be swapped back for the
+  // generated one the artwork still remembers.
+  const renders = Object.values(post.artwork || {}).map((r) => r && r.url).filter(Boolean);
+  if (!renders.includes(media[0].url)) return media;
   return [{ ...media[0], url }];
 }
 
