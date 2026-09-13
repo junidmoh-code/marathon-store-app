@@ -38,7 +38,7 @@ const R = require("./lib/social-render.cjs");
 const args = process.argv.slice(2);
 const outIdx = args.indexOf("--out");
 const OUT = resolve(outIdx >= 0 ? args[outIdx + 1] : "proof-safe-zone");
-const pids = args.filter((a, i) => !a.startsWith("--") && i !== outIdx + 1);
+const pids = args.filter((a, i) => !a.startsWith("--") && !(outIdx >= 0 && i === outIdx + 1));
 if (!pids.length) {
   console.error("usage: node scripts/social/proof-safe-zone.mjs --out <dir> <pid> [pid ...]");
   process.exit(2);

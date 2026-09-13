@@ -475,3 +475,15 @@ describe("publishInstagram waits for every container before publishing", () => {
     expect(log[log.length - 1]).toBe("publish");
   });
 });
+
+describe("a container that reports no status_code is not waited on forever", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+  it("returns ready on the first poll instead of running out the budget", async () => {
+    let polls = 0, slept = 0;
+    globalThis.fetch = async () => { polls++; return { ok: true, status: 200, text: async () => JSON.stringify({ id: "C1" }) }; };
+    await expect(waitForContainer("C1", "t", { sleep: async () => { slept++; } })).resolves.toBe(true);
+    expect(polls).toBe(1);
+    expect(slept).toBe(0);
+  });
+});

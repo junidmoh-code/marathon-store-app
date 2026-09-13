@@ -185,10 +185,11 @@ function breakWord(word, maxWidth, style) {
  * Fit a string into `maxWidth`: every word kept, nothing elided.
  *
  * In order of preference —
- *   1. one line, shrinking at most to 85% of `size` (a small shrink is invisible)
- *   2. up to `maxLines` lines, shrinking from `size` down to `minSize`
- *   3. at `minSize`, as many lines as it takes, breaking any single word that is
- *      wider than the whole column
+ *   1. one line at full size
+ *   2. up to `maxLines` lines at full size, then shrinking toward `minSize` —
+ *      a second line reads better on a phone than one small line
+ *   3. at `minSize`, as many lines as it takes, breaking any single word that
+ *      is wider than the whole column
  * Step 3 always succeeds, so the function always returns every character of the
  * input. The caller reserves vertical space from `lines.length`, so a third
  * line pushes the stack rather than overlapping it.
@@ -201,10 +202,6 @@ function fitLines(text, { maxWidth, size, minSize = size * 0.6, weight = 400, le
   // Letter-spacing is authored at the base size and scales with the type.
   const at = (s) => ({ size: s, weight, letterSpacing: letterSpacing * (s / size) });
   const STEP = 0.5;
-  for (let s = size; s >= size * 0.85; s -= STEP) {
-    const one = words.join(" ");
-    if (textWidth(one, at(s)) <= maxWidth) return { lines: [one], size: s };
-  }
   for (let s = size; s >= minSize; s -= STEP) {
     const lines = wrapToWidth(words, maxWidth, at(s));
     if (lines && lines.length <= maxLines) return { lines, size: s };

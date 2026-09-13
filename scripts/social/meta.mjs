@@ -264,6 +264,11 @@ export async function waitForContainer(containerId, token, { sleep = (ms) => new
   for (;;) {
     const { status_code: code, status } = await graph(containerId, { token, params: { fields: "status_code,status" } });
     if (code === "FINISHED") return true;
+    // No status_code at all means this container type does not report one.
+    // Waiting on a field that never arrives would run out the whole budget
+    // and fail every such post; publishing straight away is what always
+    // happened before every container was polled.
+    if (code === undefined || code === null) return true;
     if (code === "ERROR" || code === "EXPIRED") {
       throw new Error(`Meta could not ingest the media (${code})${status ? `: ${status}` : ""}`);
     }

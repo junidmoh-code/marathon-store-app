@@ -4375,12 +4375,6 @@ async function generateOnePost(db, {
   // all of them — a story now uploads two.
   const uploadedUrls = [];
   let costUSD = 0;
-  // Set once the paid image is in Storage. If the record write then fails,
-  // the object is referenced by nothing and nothing would ever clean it up
-  // — so the catch deletes it. The COST is still counted either way by the
-  // caller: it reads costUSD off the skipped/created result either way, so
-  // the ledger stays honest about money spent even when the picture is lost.
-  let uploadedPath = null;
   // What was ACTUALLY sent to the model — library references plus Style Kit
   // references. Recording only the library share meant a post grounded on
   // six Style Kit photographs was filed as refsUsed: 0, i.e. the audit
