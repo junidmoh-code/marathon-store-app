@@ -254,9 +254,10 @@ async function graph(path, { method = "GET", token, params = {} } = {}) {
 
 /**
  * Wait for a media container to finish ingesting.
- * Images are ready immediately; videos are transcoded and are NOT. Publishing
- * an unfinished container is the single most common way this API fails in
- * production, so every video container goes through here.
+ * Videos are transcoded and take a while; images usually answer FINISHED on
+ * the first poll, but not always. Publishing an unfinished container is the
+ * single most common way this API fails in production, so EVERY container —
+ * photo, video, carousel child and carousel parent — goes through here.
  */
 export async function waitForContainer(containerId, token, { sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
   const deadline = Date.now() + CONTAINER_MAX_WAIT_MS;
@@ -298,14 +299,13 @@ export async function publishInstagram({ igUserId, token, media, caption, sleep,
       method: "POST", token, params: igContainerPayload(items[0], { caption, format }),
     });
     containerId = id;
-    if (isVideo(items[0])) await waitForContainer(containerId, token, { sleep });
   } else {
     const childIds = [];
     for (const item of items) {
       const { id } = await graph(`${igUserId}/media`, {
         method: "POST", token, params: igContainerPayload(item, { carouselChild: true }),
       });
-      if (isVideo(item)) await waitForContainer(id, token, { sleep });
+      await waitForContainer(id, token, { sleep });
       childIds.push(id);
     }
     const { id } = await graph(`${igUserId}/media`, {
@@ -313,6 +313,15 @@ export async function publishInstagram({ igUserId, token, media, caption, sleep,
     });
     containerId = id;
   }
+  // ── EVERY CONTAINER IS WAITED FOR, NOT ONLY VIDEO ──────────────────────────
+  // Image containers used to be published the instant they were created, on
+  // the belief that an image is ready immediately. Since 2026-09-10 Instagram
+  // has refused that on most photo posts and stories — "The media is not ready
+  // to be published" (9007/2207027), and on the retry "Media not found"
+  // (24/2207006) — while Facebook, which has no container step, posted the same
+  // item fine. A photo container answers FINISHED on the first poll when it is
+  // ready, so this costs one GET.
+  await waitForContainer(containerId, token, { sleep });
 
   const { id: postId } = await graph(`${igUserId}/media_publish`, {
     method: "POST", token, params: { creation_id: containerId },
