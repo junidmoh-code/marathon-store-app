@@ -416,8 +416,39 @@ function subcategoryRun(config, products, pid, dest) {
 // ~1,245 products; scoped, ~260). `stock` joins the signature for that reason.
 // Absent flag = the map's standing promise, unchanged: the category is the
 // arming act, carriage or not (the perfume case above).
+// ═══ THE CATEGORY KEY THE POLICY RESOLVES THROUGH (2026-09-15) ═══════════════
+// The catalogue's own rule, mirrored from src/utils/productTaxonomy.js
+// effectiveCategoryKey: an assigned categoryKey wins; a record with NO key
+// whose legacy pair is category "Footwear" + subcategory "Sneakers" IS a
+// sneaker — that is the Sneakers LEAF only, never the whole Footwear top
+// (boots, soccer boots and slides are their own categories and must not fold
+// in). Anything else resolves no key at all.
+//
+// WHY THE ENGINE NEEDS IT. The Add Product form has required a categoryKey
+// since #280 (2026-07-30). The 33 footwear records created in the days before
+// that never got one, and the taxonomy screen deliberately hides them from its
+// assignment backlog ("legacy sneakers — auto-assigned by predicate",
+// needsAssignment) — so nobody will ever key them by hand. Until this line the
+// engine read the RAW field, so those records were sneakers to every catalogue
+// screen and invisible to the sneakers policy: the census of 2026-09-15
+// (scripts/audit/policy-coverage-census.mjs) found 29 of them holding 259
+// units across the two hubs with nothing arming them, the Seating card
+// reading "Cell only — no target" — the owner's Adidas Campus Black White
+// report. Resolving through the catalogue's rule arms them by the SAME map,
+// with the SAME carriedOnly gate (HOW MANY, never WHERE), on the next scan.
+//
+// Kept in lockstep with the browser mirror by the seatingCore differential
+// fuzz (which now generates the legacy pair) and pinned equal to the app's
+// effectiveCategoryKey by test/policy-category-key.test.cjs.
+function policyCategoryKey(product) {
+  const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
+  if (key) return key;
+  if (product && product.category === "Footwear" && product.subcategory === "Sneakers") return "sneakers";
+  return null;
+}
+
 function categoryPolicyEntry(config, products, stock, pid, dest) {
-  const key = products?.[pid]?.categoryKey;
+  const key = policyCategoryKey(products?.[pid]);
   if (typeof key !== "string" || !key) return null;
   // target must be a positive finite number — the entry arms; the computed
   // dead-size 0 below is the only zero this branch ever produces. Garbage
@@ -2138,4 +2169,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, armedGroupForCategory, effectivePolicyFor };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor };

@@ -60,7 +60,7 @@ const {
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf } = require("./policy-resolve.cjs");
-const { encodeSizeKey, resolveTarget } = require("./refill-engine.cjs");
+const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-engine.cjs");
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -631,7 +631,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   const rowsByCategory = {};
   for (const loc of rowLocs) {
     for (const [pid, bySize] of Object.entries(targets[loc] || {})) {
-      const key = products[pid]?.categoryKey;
+      const key = policyCategoryKey(products[pid]);
       if (!key) continue;
       const r = rowsByCategory[key] || (rowsByCategory[key] = { cells: 0, products: new Set(), byLocation: {} });
       const n = Object.keys(bySize || {}).length;
@@ -923,7 +923,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // one shop made the All chip read "All (240)". The bound this action exists
     // for is on the PAYLOAD, not on the count. (Delta review, PR #401.)
     const products = await readMapPaged(db, "products");
-    const pids = new Set(Object.keys(products).filter((pid) => rowKeys.has(products[pid]?.categoryKey)));
+    const pids = new Set(Object.keys(products).filter((pid) => rowKeys.has(policyCategoryKey(products[pid]))));
     const all = [];
     const byLocation = {};
     for (const loc of allRowLocs) {

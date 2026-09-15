@@ -58,6 +58,7 @@
 // encoder is the one that answers it. Pinned by the same differential test.
 
 import { decodeSizeKey } from "../../utils/sizeKey";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
 // ── engine primitives, mirrored ──────────────────────────────────────────────
 
@@ -178,7 +179,14 @@ function carriedOnlyOf(locEntry) {
 // holds a stock cell for (storeCarries). Gated HERE, the one choke point, so
 // seatingSizes / resolveTarget / every seating consumer agree with the engine.
 export function categoryPolicyEntry(config, products, stock, pid, dest) {
-  const key = products?.[pid]?.categoryKey;
+  // THE CATALOGUE'S OWN KEY RULE, not the raw field (2026-09-15). A keyless
+  // record whose legacy pair is Footwear + Sneakers is a sneaker to every
+  // catalogue screen (effectiveCategoryKey) and, since this line, to the
+  // policy as well — refill-engine.cjs policyCategoryKey is the engine's
+  // copy, and the differential fuzz generates the legacy pair to hold the two
+  // together. Before this the Seating card read "Cell only — no target" on 29
+  // stocked legacy sneakers the engine was silently not governing.
+  const key = effectiveCategoryKey(products?.[pid]);
   if (typeof key !== "string" || !key) return null;
   const r = locationPolicyFor(config, key, dest);
   if (!r) return null;

@@ -79,7 +79,7 @@
 // be re-expanded by every reader, and the first reader to expand it differently
 // would be a silent divergence.
 
-const { encodeSizeKey } = require("./refill-engine.cjs");
+const { encodeSizeKey, policyCategoryKey } = require("./refill-engine.cjs");
 // validateLocationEntry lives in category-policy.cjs, not here: the CATEGORY
 // validator needs it too, and category-policy.cjs cannot require this file
 // without a cycle. Re-exported below so callers have one import either way.
@@ -209,7 +209,7 @@ function validatePolicyGroup(groupKey, group, {
 // run cannot be derived must not be given a per-size editor with a guessed list
 // in it.
 function sizeRunForCategory({ products, stock, targets, taxonomy, categoryKey, locations }) {
-  const pids = Object.keys(products || {}).filter((pid) => products[pid]?.categoryKey === categoryKey);
+  const pids = Object.keys(products || {}).filter((pid) => policyCategoryKey(products[pid]) === categoryKey);   // legacy sneakers included — see refill-engine.cjs policyCategoryKey
   const declared = new Set(), stocked = new Set(), rowed = new Set();
   for (const pid of pids) {
     for (const raw of (products[pid]?.sizes || [])) {
