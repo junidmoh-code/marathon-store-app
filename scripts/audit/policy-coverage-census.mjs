@@ -51,7 +51,8 @@
 //   node scripts/audit/policy-coverage-census.mjs                 → live, prints report + writes var/policy-coverage-<stamp>.json
 //   node scripts/audit/policy-coverage-census.mjs --dump           → also saves the raw snapshot to var/policy-coverage-snapshot-<stamp>.json
 //   node scripts/audit/policy-coverage-census.mjs --from-dump F   → replay a saved snapshot
-//   node scripts/audit/policy-coverage-census.mjs --trace <pid>   → one product, line by line, at both hubs (add --from-dump to replay)
+//   node scripts/audit/policy-coverage-census.mjs --trace <pid>   → one product, line by line, at both hubs (add --from-dump to replay;
+//                                                                    --without-rows also replays it with its explicit rows removed)
 //
 // The resolver this imports is the one the deployed refillHealthScan runs:
 // verify by downloading the function's source zip and diffing lib/refill-engine.cjs
@@ -73,7 +74,7 @@ const opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : nu
 
 const req = adminRequire(import.meta.url);
 const ENGINE_PATH = join(ROOT, "functions", "lib", "refill-engine.cjs");
-const { resolveTarget, encodeSizeKey, categoryPolicyEntry } = req(ENGINE_PATH);
+const { resolveTarget, encodeSizeKey, categoryPolicyEntry, policyCategoryKey } = req(ENGINE_PATH);
 const { locationPolicyFor } = req(join(ROOT, "functions", "lib", "policy-resolve.cjs"));
 const ENGINE_SHA = createHash("sha256").update(readFileSync(ENGINE_PATH)).digest("hex");
 
@@ -131,7 +132,12 @@ function classify(ctx, hub, pid) {
   const { products, stock, targets, config } = ctx;
   const p = products[pid];
   const sizes = declaredSizes(p);
-  const key = typeof p?.categoryKey === "string" ? p.categoryKey.trim() : "";
+  // The key the RESOLVER uses — policyCategoryKey, not the raw field — so the
+  // reason this census gives agrees with the resolver it imports. (Before the
+  // 2026-09-15 fix the two were the same thing; after it a keyless legacy
+  // sneaker resolves "sneakers", and a census reading the raw field would file
+  // it "outside_group" while the engine armed it. Spec review, PR #606.)
+  const key = policyCategoryKey(p) || "";
   const policy = key ? locationPolicyFor(config, key, hub) : null;
   const carries = storeCarries(stock, hub, pid);
   const cells = stock?.[hub]?.[pid];
@@ -149,7 +155,7 @@ function classify(ctx, hub, pid) {
     else if (p?.deactivated) { verdict = "deactivated"; why = "product.deactivated"; }
     else if (!policy) {
       verdict = "outside_group"; outside++;
-      why = key ? `categoryKey "${key}" resolves no policy at ${hub}` : "no categoryKey on the record";
+      why = key ? `key "${key}"${p?.categoryKey ? "" : " (legacy pair)"} resolves no policy at ${hub}` : "no categoryKey on the record (and not the Footwear+Sneakers legacy pair)";
     }
     else if (policy.carriedOnly && !carries) { verdict = "no_cell"; why = "carriedOnly leg, no stock cell here"; noCell++; }
     else if (policy.sizes && !policy.sizes[k]) { verdict = "size_run"; why = `size ${size} (${k}) not in the ${hub} per-size map`; sizeRun++; }
@@ -249,7 +255,16 @@ async function main() {
   if (!fromDump) console.log(`read ${(snap.bytesRead / 1024 / 1024).toFixed(2)} MB, paged`);
 
   const tracePid = opt("--trace");
-  if (tracePid) { traceProduct(ctx, tracePid, keys); return; }
+  if (tracePid) {
+    traceProduct(ctx, tracePid, keys);
+    // --without-rows: the same product with its explicit /stock_targets rows
+    // removed, so a hand-armed product shows what the POLICY alone says.
+    if (flag("--without-rows")) {
+      console.log(`\n── the same product with its explicit rows removed (policy only):`);
+      traceProduct({ ...ctx, targets: {} }, tracePid, keys);
+    }
+    return;
+  }
 
   // ── walk ──
   const universe = Object.keys(products).filter((pid) => admitted(products[pid], keys)).sort();
@@ -277,8 +292,12 @@ async function main() {
     }
     const ms = createdMs(pid, p);
     const wk = isoWeek(ms);
-    const w = (weekTab[wk] ||= { week: wk, total: 0, armedAnywhere: 0, stockedAtAHubUnarmedThere: 0, outsideGroup: 0, noCellBoth: 0, deactivated: 0 });
+    const w = (weekTab[wk] ||= { week: wk, total: 0, armedAnywhere: 0, stockedAtAHubUnarmedThere: 0, outsideGroup: 0, noCellBoth: 0, deactivated: 0, switchedOff: 0, dormant: 0, sizeRun: 0, sizeKey: 0, unexplained: 0 });
     w.total++;
+    // Every bucket, per week — a product counts once per bucket if EITHER hub files it there.
+    for (const [b, f] of [["switched_off", "switchedOff"], ["dormant", "dormant"], ["size_run", "sizeRun"], ["size_key", "sizeKey"], ["unexplained", "unexplained"]]) {
+      if (HUBS.some((h) => per[h].bucket === b)) w[f]++;
+    }
     const armedAnywhere = HUBS.some((h) => per[h].bucket === "armed");
     if (armedAnywhere) w.armedAnywhere++;
     if (HUBS.some((h) => per[h].carries && per[h].units > 0 && !["armed", "switched_off", "deactivated", "dormant"].includes(per[h].bucket))) w.stockedAtAHubUnarmedThere++;
@@ -316,9 +335,9 @@ async function main() {
   for (const r of unexplainedRows) console.log(`  ${r.pid} ${r.hub} ${JSON.stringify(r.name)}: ${r.perSize.map((s) => `${s.size}: ${s.why}`).join("; ")}`);
 
   console.log(`\nBY CREATION WEEK (Monday), the ${ARMING_DATE} arming run falls in week 2026-08-24:`);
-  console.log(`${pad("week", 12)}${rpad("total", 7)}${rpad("armed@1+", 9)}${rpad("stocked", 9)}${rpad("outside", 9)}${rpad("noCell2", 9)}${rpad("deact", 7)}   (stocked = holds units at a hub and is not armed there)`);
+  console.log(`${pad("week", 12)}${rpad("total", 7)}${rpad("armed@1+", 9)}${rpad("stocked", 9)}${rpad("outside", 9)}${rpad("noCell2", 9)}${rpad("off", 5)}${rpad("dormant", 9)}${rpad("sizeRun", 9)}${rpad("sizeKey", 9)}${rpad("unexpl", 8)}${rpad("deact", 7)}   (stocked = holds units at a hub and is not armed there; noCell2 = no cell at either hub)`);
   const weeks = Object.values(weekTab).sort((a, b) => a.week.localeCompare(b.week));
-  for (const w of weeks) console.log(`${pad(w.week, 12)}${rpad(w.total, 7)}${rpad(w.armedAnywhere, 9)}${rpad(w.stockedAtAHubUnarmedThere, 9)}${rpad(w.outsideGroup, 9)}${rpad(w.noCellBoth, 9)}${rpad(w.deactivated, 7)}`);
+  for (const w of weeks) console.log(`${pad(w.week, 12)}${rpad(w.total, 7)}${rpad(w.armedAnywhere, 9)}${rpad(w.stockedAtAHubUnarmedThere, 9)}${rpad(w.outsideGroup, 9)}${rpad(w.noCellBoth, 9)}${rpad(w.switchedOff, 5)}${rpad(w.dormant, 9)}${rpad(w.sizeRun, 9)}${rpad(w.sizeKey, 9)}${rpad(w.unexplained, 8)}${rpad(w.deactivated, 7)}`);
   const before = universe.filter((pid) => (results[pid].createdMs ?? 0) <= Date.parse(ARMING_DATE));
   const after = universe.filter((pid) => (results[pid].createdMs ?? 0) > Date.parse(ARMING_DATE));
   const rate = (arr, f) => (arr.length ? `${arr.filter(f).length}/${arr.length} (${(100 * arr.filter(f).length / arr.length).toFixed(1)}%)` : "0/0");
