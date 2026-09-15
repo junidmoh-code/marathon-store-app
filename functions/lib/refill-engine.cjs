@@ -2165,6 +2165,12 @@ function computeRefillPlan(snapshot) {
   for (const loc of Object.keys(stock || {})) for (const pid of Object.keys(stock[loc] || {})) gatedPids.add(pid);
   for (const pid of gatedPids) {
     const p = products?.[pid];
+    // DELIBERATELY the ORDER SHEET's predicate (gatedSneakerHub: category
+    // Footwear and not clothing-TYPED), not isClothing — this bucket answers
+    // "can the grid offer it", and the grid does gate an untyped, letter-sized
+    // Footwear record. unarmedFootwear above uses isClothing because it
+    // answers a policy question the clothing queues own. Same record, two
+    // screens, two honest predicates.
     if (!isFootwear(p) || (p.productType || "sneaker") === "clothing" || isDeactivated(p)) continue;
     if (GATED_HUBS.some((h) => storeCarries(stock, h, pid))) continue;   // a hub cell exists — the grid can see it
     const byLoc = {};

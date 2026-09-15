@@ -304,7 +304,7 @@ test("fuzz: the key rule changes NOTHING for a record that has an assigned key â
     const keyed = Object.entries(snap.products).filter(([, p]) => typeof p.categoryKey === "string" && p.categoryKey.trim());
     if (!keyed.length) continue;
     const stripped = { ...snap.products };
-    for (const [pid, p] of keyed) stripped[pid] = { ...p, category: p.category === "Footwear" ? "Footwear" : p.category, subcategory: "Other" };
+    for (const [pid, p] of keyed) stripped[pid] = { ...p, subcategory: "Other" };   // only the legacy pair's second half is read anywhere
     const a = computeRefillPlan(snap), b = computeRefillPlan({ ...snap, products: stripped });
     assert.deepEqual(a.intents, b.intents, `case ${i}: intents differ`);
     assert.deepEqual(a.exceptions.unarmedFootwear, b.exceptions.unarmedFootwear, `case ${i}: unarmedFootwear differs`);
