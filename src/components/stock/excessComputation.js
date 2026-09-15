@@ -87,6 +87,7 @@
 
 import { resolveTarget, engineSizeKey, isClothing, cellQtyAt } from "./seatingCore";
 import { isDeactivated } from "../../utils/deactivation";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
 // The only hubs this feature touches — same closed list as HubCleanup
 // (CLEANUP_HUBS, hubCleanupCore.js): hub3/Pine is out of scope everywhere in
@@ -101,7 +102,10 @@ export const SNEAKER_CATEGORY_KEYS = Object.freeze([
 const SNEAKER_CATEGORY_SET = new Set(SNEAKER_CATEGORY_KEYS);
 
 export function isSneakerGroupProduct(product) {
-  return SNEAKER_CATEGORY_SET.has(product?.categoryKey);
+  // effectiveCategoryKey, not the raw field: a keyless Footwear+Sneakers
+  // record is a sneaker to the engine's policy since 2026-09-15, so its hub
+  // surplus must be sneaker-group excess too (PR #606 review).
+  return SNEAKER_CATEGORY_SET.has(effectiveCategoryKey(product));
 }
 
 // ── clothing gate — config/refillEngine/excessClothingEnabled ────────────────

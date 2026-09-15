@@ -660,8 +660,8 @@ export default function HealthView({ products = [], onExit }) {
         const REASON = {
           no_category_key: "no category on the record — assign one",
           no_policy: "category not armed at this hub — arm it in Engine Policy, or move the units",
-          no_sizes_declared: "record declares no sizes — add its size run",
-          sizes_outside_run: "none of its declared sizes is in the hub's per-size policy",
+          size_not_declared: "size is stocked but not on the record — declare it",
+          size_outside_run: "size is not in the hub's per-size policy — widen the run",
         };
         return (
           <DetailShell title="Unarmed Footwear" sub={`Shoes holding units at a hub where no policy, rule or row arms any size — the engine will never restock these. Legacy sneakers with no category key are governed since 15 Sep; what is left needs a decision.${count("unarmedFootwear") > items("unarmedFootwear").length ? ` Showing the largest ${items("unarmedFootwear").length} of ${count("unarmedFootwear")}.` : ""}`} count={count("unarmedFootwear")} onBack={back}>
@@ -673,7 +673,12 @@ export default function HealthView({ products = [], onExit }) {
                 badges={<Badge tone={AMBER}>{rows[0]?.key || "NO CATEGORY"}</Badge>}>
                 <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
                   {rows.map((r, i) => (
-                    <div key={i}>{locLabel(r.loc)} · {r.units} unit{r.units === 1 ? "" : "s"} · {REASON[r.reason] || r.reason}</div>
+                    <div key={i} style={{ marginBottom: 6 }}>
+                      <div>{locLabel(r.loc)} · {r.units} unit{r.units === 1 ? "" : "s"} unarmed</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                        {(r.sizes || []).map((sz, j) => <SizeFactChip key={j} size={sz.size || "one size"} value={`${sz.units} · ${REASON[sz.reason] || sz.reason}`} tone={AMBER} />)}
+                      </div>
+                    </div>
                   ))}
                 </div>
               </ProductCard>

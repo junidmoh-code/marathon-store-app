@@ -40,7 +40,7 @@ describe("footwear coverage: scan → /stock_exceptions → Health", () => {
 
   it("the engine fills both buckets for this snapshot (so the wiring check below is not vacuous)", () => {
     expect(ex.unarmedFootwear.count).toBe(1);
-    expect(ex.unarmedFootwear.items[0]).toMatchObject({ loc: "hub1", pid: "boot", units: 2, reason: "no_policy", key: "designer-shoes" });
+    expect(ex.unarmedFootwear.items[0]).toMatchObject({ loc: "hub1", pid: "boot", units: 2, reason: "no_policy", key: "designer-shoes", sizes: [{ size: "6", units: 2, reason: "no_policy" }] });
     expect(ex.unorderableFootwear.count).toBe(1);
     expect(ex.unorderableFootwear.items[0]).toMatchObject({ pid: "stranded", units: 4, byLoc: { central: 4 } });
   });
@@ -59,11 +59,12 @@ describe("footwear coverage: scan → /stock_exceptions → Health", () => {
 
   it("every field the detail screen reads is a field the engine writes", () => {
     // Unarmed rows: loc, units, reason, key. Unorderable rows: pid, units, byLoc.
-    for (const f of ["loc", "units", "reason", "key"]) expect(ex.unarmedFootwear.items[0]).toHaveProperty(f);
+    for (const f of ["loc", "units", "reason", "key", "sizes"]) expect(ex.unarmedFootwear.items[0]).toHaveProperty(f);
+    for (const f of ["size", "units", "reason"]) expect(ex.unarmedFootwear.items[0].sizes[0]).toHaveProperty(f);
     for (const f of ["pid", "units", "byLoc"]) expect(ex.unorderableFootwear.items[0]).toHaveProperty(f);
     // The reason vocabulary the screen translates must be the engine's vocabulary.
-    const screenReasons = [...health.matchAll(/^\s+(no_category_key|no_policy|no_sizes_declared|sizes_outside_run):/gm)].map((m) => m[1]).sort();
-    expect(screenReasons).toEqual(["no_category_key", "no_policy", "no_sizes_declared", "sizes_outside_run"]);
+    const screenReasons = [...health.matchAll(/^\s+(no_category_key|no_policy|size_not_declared|size_outside_run):/gm)].map((m) => m[1]).sort();
+    expect(screenReasons).toEqual(["no_category_key", "no_policy", "size_not_declared", "size_outside_run"]);
     const engineSrc = readFileSync(fileURLToPath(new URL("../../../functions/lib/refill-engine.cjs", import.meta.url)), "utf8");
     for (const r of screenReasons) expect(engineSrc).toContain(`"${r}"`);
   });

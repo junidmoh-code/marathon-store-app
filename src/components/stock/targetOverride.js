@@ -44,6 +44,7 @@
 
 import { resolveTarget, seatingSizes, rawSizeOf, engineSizeKey, SEATING_OFF_SOURCE } from "./seatingCore";
 import { bySizeRank, sizeLabel } from "./enginePolicyCore";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
 // The `source` stamp this card puts on a row it writes. SEATING_OFF_SOURCE is
 // the older stamp for the same act (switch off) and is still recognised
@@ -361,8 +362,10 @@ export function targetPayload(ctx, loc, pid, draft, { allowRemoveForeign = false
       // categoryKey, and an entry with none would show up under every category
       // on the screen. The server takes it as a label, never as authority: it
       // reads the product record for itself.
-      ...(typeof ctx?.products?.[pid]?.categoryKey === "string" && ctx.products[pid].categoryKey
-        ? { categoryKey: ctx.products[pid].categoryKey } : null),
+      // effectiveCategoryKey: a legacy sneaker's entry files under Sneakers,
+      // not under every card (an entry with no key matches them all).
+      ...(effectiveCategoryKey(ctx?.products?.[pid])
+        ? { categoryKey: effectiveCategoryKey(ctx.products[pid]) } : null),
       rows,
       remove: plan.remove.map((r) => r.sizeKey),
       expected: expectationFor(ctx, loc, pid, plan, draft),

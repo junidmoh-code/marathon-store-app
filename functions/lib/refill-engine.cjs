@@ -2079,9 +2079,10 @@ function computeRefillPlan(snapshot) {
   //                        destination and NO size resolves anything there —
   //                        not a positive target, not the policy's dead-size 0
   //                        (that is "governed, dormant"), not an explicit row
-  //                        (a human ruled, target 0 included). The reason names
-  //                        what a human has to do: give the record a key, arm
-  //                        the category here, or declare the sizes it stocks.
+  //                        (a human ruled, target 0 included) — judged PER
+  //                        STOCKED SIZE. The reason names what a human has to
+  //                        do: give the record a key, arm the category here,
+  //                        declare the size it stocks, or widen the run.
   //   unorderableFootwear  a GATED product (the order sheet's own predicate:
   //                        category "Footwear", not clothing-typed) holds units
   //                        somewhere in this universe and has NO CELL at any
@@ -2117,26 +2118,40 @@ function computeRefillPlan(snapshot) {
   // group arms.
   const footwearDests = dests.filter((d) => !!config?.footwearRunByLocation?.[d]
     || [...FOOTWEAR_GROUP_KEYS].some((k) => !!locationPolicyFor(config, k, d)));
+  // PER STOCKED SIZE, never per product. A product-level "is any size
+  // governed?" gate hid exactly the common case: a run covering 6–10 while
+  // five units of an outlier size sit at the hub with nothing arming them —
+  // one dormant size 6 would have vouched for the whole product (Sonnet
+  // architect review, PR #606). So the question is asked of every size that
+  // HOLDS UNITS at this destination: an explicit row for THAT size (0
+  // included) is a decision; a positive target or the policy's dead-size 0
+  // for THAT size is governance; anything else is a hole, and the reason is
+  // per size too. A product is one entry carrying its unarmed sizes.
   const unarmedFootwear = [];
   for (const loc of footwearDests) {
     for (const pid of Object.keys(stock?.[loc] || {})) {
       const p = products?.[pid];
       if (!inFootwearGroup(p) || isDeactivated(p)) continue;
-      if (targets?.[loc]?.[pid]) continue;                 // a human ruled here — any row, 0 included
-      const units = sumLoc(loc, pid);
-      if (units <= 0) continue;
-      const sizes = productSizes(products, pid);
-      const governed = sizes.some((s) => {
-        const t = resolveTarget(ctx, loc, pid, s);
-        return !!t && (t.target > 0 || t.source === "category_policy");
-      });
-      if (governed) continue;
+      const declared = new Set(productSizes(products, pid).map(encodeSizeKey));
+      const entry = categoryPolicyEntry(config, products, stock, pid, loc);
       const key = policyCategoryKey(p);
-      const reason = !key ? "no_category_key"
-        : !categoryPolicyEntry(config, products, stock, pid, loc) ? "no_policy"
-        : !sizes.length ? "no_sizes_declared"
-        : "sizes_outside_run";
-      unarmedFootwear.push({ loc, pid, units, key, reason });
+      const holes = [];
+      for (const [sk, c] of Object.entries(stock[loc][pid] || {})) {
+        const q = avail(num(c?.qty));
+        if (q <= 0) continue;
+        const row = targets?.[loc]?.[pid]?.[sk];
+        if (row && typeof row.target === "number") continue;      // a human ruled on this size — 0 included
+        const t = resolveTarget(ctx, loc, pid, rawSize(pid, sk));
+        if (t && (t.target > 0 || t.source === "category_policy")) continue;
+        const reason = !key ? "no_category_key"
+          : !entry ? "no_policy"
+          : !declared.has(sk) ? "size_not_declared"
+          : "size_outside_run";
+        holes.push({ size: rawSize(pid, sk), units: q, reason });
+      }
+      if (!holes.length) continue;
+      holes.sort((x, y) => y.units - x.units);
+      unarmedFootwear.push({ loc, pid, units: holes.reduce((n, h) => n + h.units, 0), key, reason: holes[0].reason, sizes: holes });
     }
   }
   // GATED_SNEAKER_HUBS in availabilityCore.js — the two hubs the grid reads.

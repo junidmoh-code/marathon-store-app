@@ -15,8 +15,11 @@
 //   M-MIRROR   the browser mirror (seatingCore) reads the raw field — the
 //              differential fuzz must catch a mirror that lags the engine
 //   M-COVER    unarmedFootwear never lists anything — the silent state again
-//   M-ROW      an explicit row no longer counts as "a human ruled" — every
-//              switched-off shoe is reported as a hole
+//   M-ROW      an explicit row on a size no longer counts as "a human ruled"
+//              — every switched-off size is reported as a hole
+//   M-SIZE     the per-size judgement collapsed back to per-product: one
+//              governed size vouches for every stocked size (the gap the
+//              architect review found)
 //   M-SCOPE    the footwear-destination scope dropped — shops are scanned
 //   M-ORDER    unorderableFootwear ignores hub cells — every shoe with units
 //              anywhere is "seated nowhere"
@@ -74,17 +77,27 @@ const MUTATIONS = [
   {
     id: "M-COVER", file: ENGINE,
     guard: "unarmedFootwear actually lists a stocked, ungoverned shoe",
-    from: `      if (governed) continue;
-      const key = policyCategoryKey(p);`,
-    to: `      if (governed || units >= 0) continue;
-      const key = policyCategoryKey(p);`,
+    from: `      if (!holes.length) continue;
+      holes.sort((x, y) => y.units - x.units);`,
+    to: `      if (!holes.length || holes.length) continue;
+      holes.sort((x, y) => y.units - x.units);`,
     nodeTests: KEY_TESTS, vitest: WIRING,
   },
   {
     id: "M-ROW", file: ENGINE,
     guard: "an explicit row (0 included) is a human decision, not a blind spot",
-    from: `      if (targets?.[loc]?.[pid]) continue;                 // a human ruled here — any row, 0 included`,
+    from: `        if (row && typeof row.target === "number") continue;      // a human ruled on this size — 0 included`,
     to: ``,
+    nodeTests: KEY_TESTS,
+  },
+  {
+    id: "M-SIZE", file: ENGINE,
+    guard: "judged per stocked size — a governed size never vouches for an unarmed one",
+    from: `        if (t && (t.target > 0 || t.source === "category_policy")) continue;
+        const reason = !key ? "no_category_key"`,
+    to: `        if (t && (t.target > 0 || t.source === "category_policy")) continue;
+        if (productSizes(products, pid).some((s) => { const g = resolveTarget(ctx, loc, pid, s); return !!g && (g.target > 0 || g.source === "category_policy"); })) continue;
+        const reason = !key ? "no_category_key"`,
     nodeTests: KEY_TESTS,
   },
   {

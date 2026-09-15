@@ -202,14 +202,30 @@ test("unarmedFootwear: an explicit row (0 included) means a human ruled — not 
   assert.ok(armed.unarmedFootwear.items.some((r) => r.pid === "boot" && r.loc === "hub1"));
 });
 
-test("unarmedFootwear: a policy whose per-size map names none of the product's sizes is 'sizes_outside_run', and zero units is not a hole", () => {
-  const products = { ...PRODUCTS, wide: { id: "wide", name: "Big shoe", category: "Footwear", categoryKey: "sneakers", sizes: ["14", "15"] }, empty: { id: "empty", name: "Sold out", category: "Footwear", categoryKey: "designer-shoes", sizes: ["6"] } };
-  const stock = { ...STOCK, hub1: { ...STOCK.hub1, wide: { 14: { qty: 2 } }, empty: { 6: { qty: 0 } } } };
+test("unarmedFootwear is judged PER STOCKED SIZE: a governed size never vouches for an unarmed one", () => {
+  // `mixed` declares 6 (in the run, dormant: zero units anywhere) and 14 (not
+  // in the run) and holds 5 units of 14 at hub1. A product-level gate would
+  // hide the 5 units behind the dormant 6 (Sonnet review, PR #606).
+  const products = { ...PRODUCTS,
+    mixed: { id: "mixed", name: "Mixed", category: "Footwear", categoryKey: "sneakers", sizes: ["6", "14"] },
+    stray: { id: "stray", name: "Stray", category: "Footwear", categoryKey: "sneakers", sizes: ["6"] },
+    empty: { id: "empty", name: "Sold out", category: "Footwear", categoryKey: "designer-shoes", sizes: ["6"] } };
+  const stock = { ...STOCK, hub1: { ...STOCK.hub1, mixed: { 6: { qty: 0 }, 14: { qty: 5 } }, stray: { 6: { qty: 1 }, 9: { qty: 2 } }, empty: { 6: { qty: 0 } } } };
   const ex = computeRefillPlan(snap({ products, stock })).exceptions;
-  const w = ex.unarmedFootwear.items.find((r) => r.pid === "wide");
-  assert.equal(w.reason, "sizes_outside_run");
-  assert.equal(w.units, 2);
+  const m = ex.unarmedFootwear.items.find((r) => r.pid === "mixed" && r.loc === "hub1");
+  assert.deepEqual(m.sizes, [{ size: "14", units: 5, reason: "size_outside_run" }]);
+  assert.equal(m.units, 5);
+  assert.equal(m.reason, "size_outside_run");
+  // A stocked size the record does not declare is a hole of its own kind; the
+  // declared, armed size 6 is not listed.
+  const st = ex.unarmedFootwear.items.find((r) => r.pid === "stray" && r.loc === "hub1");
+  assert.deepEqual(st.sizes, [{ size: "9", units: 2, reason: "size_not_declared" }]);
   assert.ok(!ex.unarmedFootwear.items.some((r) => r.pid === "empty"), "a zero-unit cell is not a hole");
+  // An explicit row on ONE size decides that size only: a 0 row on 14 clears it, 9 on stray stays.
+  const targets = { hub1: { mixed: { 14: { target: 0, minQty: 0, source: "seating_off" } } } };
+  const ex2 = computeRefillPlan(snap({ products, stock, targets })).exceptions;
+  assert.ok(!ex2.unarmedFootwear.items.some((r) => r.pid === "mixed"));
+  assert.ok(ex2.unarmedFootwear.items.some((r) => r.pid === "stray"));
 });
 
 test("unarmedFootwear scope is config-driven: a destination with no footwear leg is never listed", () => {
@@ -227,7 +243,7 @@ test("unarmedFootwear scope: a destination armed only through a policy GROUP cou
   const ex = computeRefillPlan(snap({ config, products, stock })).exceptions;
   // hub2 is a footwear destination only via the group; boot (designer-shoes) declares 6/7, the group leg names 14 → sizes_outside_run.
   const b = ex.unarmedFootwear.items.find((r) => r.pid === "boot" && r.loc === "hub2");
-  assert.equal(b?.reason, "sizes_outside_run");
+  assert.equal(b?.reason, "size_outside_run");
   assert.ok(!ex.unarmedFootwear.items.some((r) => r.loc === "hub1"), "hub1 has no footwear leg in this config");
   assert.ok(!ex.unarmedFootwear.items.some((r) => r.pid === "hoodie"), "clothing-typed record belongs to the clothing queues");
 });

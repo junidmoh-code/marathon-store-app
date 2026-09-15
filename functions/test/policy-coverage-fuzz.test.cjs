@@ -131,19 +131,28 @@ function expectedUnarmed(snap) {
   const dests = Object.keys(config.routes);
   const footwearDests = dests.filter((d) => !!config.footwearRunByLocation?.[d]
     || [...GROUP].some((k) => !!locationPolicyFor(config, k, d)));
+  const rawSize = (p, sk) => { for (const s of p.sizes || []) if (encodeSizeKey(String(s)) === sk) return String(s); return sk === "_" ? "" : sk.replace(/(\d)_(\d)/g, "$1.$2"); };
   const out = [];
   for (const loc of footwearDests) {
     for (const pid of Object.keys(stock[loc] || {})) {
       const p = products[pid];
       if (!inGroup(p) || p.deactivated) continue;
-      if (targets[loc]?.[pid]) continue;
-      const u = units(stock[loc][pid]);
-      if (u <= 0) continue;
-      const sizes = (p.sizes || []).map(String);
-      if (sizes.some((s) => { const t = resolveTarget(ctx, loc, pid, s); return !!t && (t.target > 0 || t.source === "category_policy"); })) continue;
+      const declared = new Set((p.sizes || []).map((s) => encodeSizeKey(String(s))));
       const key = policyCategoryKey(p);
-      const reason = !key ? "no_category_key" : !categoryPolicyEntry(config, products, stock, pid, loc) ? "no_policy" : !sizes.length ? "no_sizes_declared" : "sizes_outside_run";
-      out.push({ loc, pid, units: u, key, reason });
+      const entry = categoryPolicyEntry(config, products, stock, pid, loc);
+      const holes = [];
+      for (const [sk, c] of cells(stock[loc][pid])) {
+        const q = Math.max(num(c.qty), 0);
+        if (q <= 0) continue;
+        const row = targets[loc]?.[pid]?.[sk];
+        if (row && typeof row.target === "number") continue;
+        const t = resolveTarget(ctx, loc, pid, rawSize(p, sk));
+        if (t && (t.target > 0 || t.source === "category_policy")) continue;
+        holes.push({ size: rawSize(p, sk), units: q, reason: !key ? "no_category_key" : !entry ? "no_policy" : !declared.has(sk) ? "size_not_declared" : "size_outside_run" });
+      }
+      if (!holes.length) continue;
+      holes.sort((x, y) => y.units - x.units);
+      out.push({ loc, pid, units: holes.reduce((n, h) => n + h.units, 0), key, reason: holes[0].reason, sizes: holes });
     }
   }
   return out;
@@ -191,7 +200,12 @@ test("fuzz: both buckets equal an independent re-derivation, soundness and compl
     // INVARIANTS the spec cares about, checked on every listed row:
     for (const row of ex.unarmedFootwear.items) {
       assert.ok(row.units > 0);
-      assert.ok(!snap.targets[row.loc]?.[row.pid], "an explicit row means a human ruled");
+      for (const h of row.sizes) {
+        const r = snap.targets[row.loc]?.[row.pid]?.[encodeSizeKey(h.size) || "_"];
+        assert.ok(!(r && typeof r.target === "number"), "an explicit row on that size means a human ruled");
+        assert.ok(h.units > 0);
+      }
+      assert.equal(row.units, row.sizes.reduce((n, h) => n + h.units, 0));
       assert.ok(!snap.products[row.pid].deactivated);
       assert.ok(carries(snap.stock, row.loc, row.pid), "listed only where a cell exists — WHERE is never invented");
     }
