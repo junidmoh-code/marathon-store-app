@@ -63,7 +63,7 @@
 // real engine alongside the model on the live snapshot — so the residual gap is
 // measured rather than assumed.
 
-const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
+const { resolveTarget, encodeSizeKey, policyCategoryKey } = require("./refill-engine.cjs");
 // Group and per-size resolution, from the leaf module the ENGINE consumes — so
 // "which policy speaks here" is answered once. A copy on this side would drift
 // the first time the precedence changed, and the model's whole value is that it
@@ -310,7 +310,10 @@ function diffCategoryPolicy(before, after) {
 // is itself evidence: marathon-pine's headwear cells were all zero husks left
 // by a reconciliation run, not an assortment.
 function carriageForCategory({ products, stock, categoryKey, locations }) {
-  const pids = Object.keys(products || {}).filter((pid) => products[pid]?.categoryKey === categoryKey);
+  // policyCategoryKey, not the raw field: the legacy sneakers the engine now
+  // governs must be in the carriage count, or the card under-states the
+  // blast radius of exactly the products this arming reaches.
+  const pids = Object.keys(products || {}).filter((pid) => policyCategoryKey(products[pid]) === categoryKey);
   const locs = Array.isArray(locations) && locations.length ? locations : Object.keys(stock || {});
   const out = {};
   for (const loc of locs) {

@@ -416,8 +416,39 @@ function subcategoryRun(config, products, pid, dest) {
 // ~1,245 products; scoped, ~260). `stock` joins the signature for that reason.
 // Absent flag = the map's standing promise, unchanged: the category is the
 // arming act, carriage or not (the perfume case above).
+// ═══ THE CATEGORY KEY THE POLICY RESOLVES THROUGH (2026-09-15) ═══════════════
+// The catalogue's own rule, mirrored from src/utils/productTaxonomy.js
+// effectiveCategoryKey: an assigned categoryKey wins; a record with NO key
+// whose legacy pair is category "Footwear" + subcategory "Sneakers" IS a
+// sneaker — that is the Sneakers LEAF only, never the whole Footwear top
+// (boots, soccer boots and slides are their own categories and must not fold
+// in). Anything else resolves no key at all.
+//
+// WHY THE ENGINE NEEDS IT. The Add Product form has required a categoryKey
+// since #280 (2026-07-30). The 33 footwear records created in the days before
+// that never got one, and the taxonomy screen deliberately hides them from its
+// assignment backlog ("legacy sneakers — auto-assigned by predicate",
+// needsAssignment) — so nobody will ever key them by hand. Until this line the
+// engine read the RAW field, so those records were sneakers to every catalogue
+// screen and invisible to the sneakers policy: the census of 2026-09-15
+// (scripts/audit/policy-coverage-census.mjs) found 29 of them holding 259
+// units across the two hubs with nothing arming them, the Seating card
+// reading "Cell only — no target" — the owner's Adidas Campus Black White
+// report. Resolving through the catalogue's rule arms them by the SAME map,
+// with the SAME carriedOnly gate (HOW MANY, never WHERE), on the next scan.
+//
+// Kept in lockstep with the browser mirror by the seatingCore differential
+// fuzz (which now generates the legacy pair) and pinned equal to the app's
+// effectiveCategoryKey by test/policy-category-key.test.cjs.
+function policyCategoryKey(product) {
+  const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
+  if (key) return key;
+  if (product && product.category === "Footwear" && product.subcategory === "Sneakers") return "sneakers";
+  return null;
+}
+
 function categoryPolicyEntry(config, products, stock, pid, dest) {
-  const key = products?.[pid]?.categoryKey;
+  const key = policyCategoryKey(products?.[pid]);
   if (typeof key !== "string" || !key) return null;
   // target must be a positive finite number — the entry arms; the computed
   // dead-size 0 below is the only zero this branch ever produces. Garbage
@@ -2036,6 +2067,124 @@ function computeRefillPlan(snapshot) {
     }
   }
 
+  // ═══ FOOTWEAR COVERAGE — stocked and unarmed can never be silent (2026-09-15) ═══
+  // Every clothing queue above is isClothing-gated, so a SHOE holding units at
+  // a hub with nothing arming it surfaced nowhere: the census of 2026-09-15
+  // (scripts/audit/policy-coverage-census.mjs) found 38 product×hub cases /
+  // 259 units that way, and the owner found one of them by hand on the Seating
+  // card. Two standing buckets, computed from the snapshot this scan already
+  // holds — no extra read — and drawn on the Health screen:
+  //
+  //   unarmedFootwear      a footwear-group product HOLDS UNITS at a footwear
+  //                        destination and NO size resolves anything there —
+  //                        not a positive target, not the policy's dead-size 0
+  //                        (that is "governed, dormant"), not an explicit row
+  //                        (a human ruled, target 0 included) — judged PER
+  //                        STOCKED SIZE. The reason names what a human has to
+  //                        do: give the record a key, arm the category here,
+  //                        declare the size it stocks, or widen the run.
+  //   unorderableFootwear  a GATED product (the order sheet's own predicate:
+  //                        category "Footwear", not clothing-typed) holds units
+  //                        somewhere in this universe and has NO CELL at any
+  //                        gated hub — so the SELECT SIZE grid, which reads the
+  //                        two hubs and nothing else, dashes every size, and a
+  //                        carriedOnly policy cannot arm it either. It is seated
+  //                        nowhere; only a Seating move seats it.
+  //
+  // NEITHER BUCKET WRITES ANYTHING. This is a HOW-MANY engine and these are
+  // its blind spots listed, not a seating act: nothing here arms a product
+  // anywhere it is not already kept, nothing spreads a product across hubs,
+  // and the Hub 1 / Hub 2 slides split is not consulted. Arming happens where
+  // it always has — the map, resolved live — which is why the keyless legacy
+  // sneakers policyCategoryKey now recognises drop OUT of the first bucket the
+  // scan after that fix deploys, while soccer-boots and designer-shoes stay in
+  // it until the owner arms them.
+  //
+  // Scope is config-driven, never a location list in code: a footwear
+  // destination is one that carries a footwear per-size leg or a footwear run.
+  // The group key list is the cross-app footwear contract
+  // (src/utils/footwearLine.js FOOTWEAR_CATEGORY_KEYS) plus designer-shoes,
+  // the same set scripts/lib/sneakerScope.mjs uses.
+  const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
+  // Anything isClothing says is clothing — the explicit productType OR the
+  // legacy letter-size heuristic — is the clothing queues' business, whatever
+  // its category says: a "Footwear" hoodie is a data error the Decision Queue
+  // already shows, not a second alert here. The same predicate the queues
+  // gate on, so a record is in exactly one of the two worlds.
+  const inFootwearGroup = (p) => !isClothing(p)
+    && (isFootwear(p) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(p)));
+  // A footwear destination is one where some footwear key RESOLVES a leg —
+  // through locationPolicyFor, so an armed policy GROUP naming the category
+  // counts exactly as an own entry does (CodeRabbit, PR #606) — or one with a
+  // footwear run. Reading config.categoryPolicy directly would skip a hub the
+  // group arms.
+  const footwearDests = dests.filter((d) => !!config?.footwearRunByLocation?.[d]
+    || [...FOOTWEAR_GROUP_KEYS].some((k) => !!locationPolicyFor(config, k, d)));
+  // PER STOCKED SIZE, never per product. A product-level "is any size
+  // governed?" gate hid exactly the common case: a run covering 6–10 while
+  // five units of an outlier size sit at the hub with nothing arming them —
+  // one dormant size 6 would have vouched for the whole product (Sonnet
+  // architect review, PR #606). So the question is asked of every size that
+  // HOLDS UNITS at this destination: an explicit row for THAT size (0
+  // included) is a decision; a positive target or the policy's dead-size 0
+  // for THAT size is governance; anything else is a hole, and the reason is
+  // per size too. A product is one entry carrying its unarmed sizes.
+  const unarmedFootwear = [];
+  for (const loc of footwearDests) {
+    for (const pid of Object.keys(stock?.[loc] || {})) {
+      const p = products?.[pid];
+      if (!inFootwearGroup(p) || isDeactivated(p)) continue;
+      const declared = new Set(productSizes(products, pid).map(encodeSizeKey));
+      const entry = categoryPolicyEntry(config, products, stock, pid, loc);
+      const key = policyCategoryKey(p);
+      const holes = [];
+      for (const [sk, c] of Object.entries(stock[loc][pid] || {})) {
+        const q = avail(num(c?.qty));
+        if (q <= 0) continue;
+        // ONE answer, the resolver's own: an explicit row on this size (0
+        // included, source "explicit") is a human decision; a positive target
+        // or the policy's dead-size 0 is governance. No second copy of the
+        // row test lives here to drift from resolveTarget's.
+        const t = resolveTarget(ctx, loc, pid, rawSize(pid, sk));
+        if (t && (t.source === "explicit" || t.target > 0 || t.source === "category_policy")) continue;
+        const reason = !key ? "no_category_key"
+          : !entry ? "no_policy"
+          : !declared.has(sk) ? "size_not_declared"
+          : "size_outside_run";
+        holes.push({ size: rawSize(pid, sk), units: q, reason });
+      }
+      if (!holes.length) continue;
+      holes.sort((x, y) => y.units - x.units);
+      unarmedFootwear.push({ loc, pid, units: holes.reduce((n, h) => n + h.units, 0), key, reason: holes[0].reason, sizes: holes });
+    }
+  }
+  // GATED_SNEAKER_HUBS in availabilityCore.js — the two hubs the grid reads.
+  const GATED_HUBS = ["hub1", "hub2"];
+  const unorderableFootwear = [];
+  const gatedPids = new Set();
+  for (const loc of Object.keys(stock || {})) for (const pid of Object.keys(stock[loc] || {})) gatedPids.add(pid);
+  for (const pid of gatedPids) {
+    const p = products?.[pid];
+    // DELIBERATELY the ORDER SHEET's predicate (gatedSneakerHub: category
+    // Footwear and not clothing-TYPED), not isClothing — this bucket answers
+    // "can the grid offer it", and the grid does gate an untyped, letter-sized
+    // Footwear record. unarmedFootwear above uses isClothing because it
+    // answers a policy question the clothing queues own. Same record, two
+    // screens, two honest predicates.
+    if (!isFootwear(p) || (p.productType || "sneaker") === "clothing" || isDeactivated(p)) continue;
+    if (GATED_HUBS.some((h) => storeCarries(stock, h, pid))) continue;   // a hub cell exists — the grid can see it
+    const byLoc = {};
+    let units = 0;
+    for (const loc of Object.keys(stock || {})) {
+      if (GATED_HUBS.includes(loc)) continue;
+      const u = sumLoc(loc, pid);
+      if (u > 0) { byLoc[loc] = u; units += u; }
+    }
+    if (units > 0) unorderableFootwear.push({ pid, units, byLoc });
+  }
+  unarmedFootwear.sort((a, b) => b.units - a.units);
+  unorderableFootwear.sort((a, b) => b.units - a.units);
+
   const cap = (arr, n = 300) => ({ count: arr.length, items: arr.slice(0, n) });
   return {
     intents: plannedIntents,
@@ -2082,6 +2231,8 @@ function computeRefillPlan(snapshot) {
       excess: cap(excess),
       negativeCells: cap(negativeCells),
       shortfalls: cap(shortfalls),
+      unarmedFootwear: cap(unarmedFootwear, 900),
+      unorderableFootwear: cap(unorderableFootwear, 900),
     },
   };
 }
@@ -2138,4 +2289,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, armedGroupForCategory, effectivePolicyFor };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor };

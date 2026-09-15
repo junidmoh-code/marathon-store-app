@@ -649,6 +649,59 @@ export default function HealthView({ products = [], onExit }) {
             <NoTargetQueue products={products} />
           </DetailShell>
         );
+      // ── FOOTWEAR COVERAGE (2026-09-15) ────────────────────────────────────
+      // Two lists the scan computes from its own snapshot (refill-engine.cjs,
+      // "FOOTWEAR COVERAGE"). Read-only here: the fix for a row is the record
+      // (give it a category), the Engine Policy card (arm the category at
+      // that hub) or the Seating tab (move it to a hub) — never a write from
+      // this screen, because a policy says HOW MANY and this screen must not
+      // decide WHERE.
+      case "unarmedFootwear": {
+        const REASON = {
+          no_category_key: "no category on the record — assign one",
+          no_policy: "category not armed at this hub — arm it in Engine Policy, or move the units",
+          size_not_declared: "size is stocked but not on the record — declare it",
+          size_outside_run: "size is not in the hub's per-size policy — widen the run",
+        };
+        return (
+          <DetailShell title="Unarmed Footwear" sub={`Sizes holding units at a hub where no policy, rule or row arms THAT size — the engine will never restock those units; the product's other sizes may be armed. Legacy sneakers with no category key are governed since 15 Sep; what is left needs a decision.${count("unarmedFootwear") > items("unarmedFootwear").length ? ` Showing the largest ${items("unarmedFootwear").length} of ${count("unarmedFootwear")}.` : ""}`} count={count("unarmedFootwear")} onBack={back}>
+            {count("unarmedFootwear") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every stocked shoe at every hub is armed 🎉</div>
+            )}
+            {groupByProduct(items("unarmedFootwear")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={AMBER}>{rows[0]?.key || "NO CATEGORY"}</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {rows.map((r, i) => (
+                    <div key={i} style={{ marginBottom: 6 }}>
+                      <div>{locLabel(r.loc)} · {r.units} unit{r.units === 1 ? "" : "s"} unarmed</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                        {(r.sizes || []).map((sz, j) => <SizeFactChip key={j} size={sz.size || "one size"} value={`${sz.units} · ${REASON[sz.reason] || sz.reason}`} tone={AMBER} />)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
+      case "unorderableFootwear":
+        return (
+          <DetailShell title="Unorderable Footwear" sub={`Shoes with units somewhere in the network but no stock cell at Hub 1 or Hub 2. The order sheet reads only the two hubs, so every size shows dashed, and a hub policy cannot arm a product the hub does not hold. Seat it (Engine Policy → Seating → Move) or transfer it.${count("unorderableFootwear") > items("unorderableFootwear").length ? ` Showing the largest ${items("unorderableFootwear").length} of ${count("unorderableFootwear")}.` : ""}`} count={count("unorderableFootwear")} onBack={back}>
+            {count("unorderableFootwear") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every stocked shoe has a hub cell 🎉</div>
+            )}
+            {items("unorderableFootwear").map((r) => (
+              <ProductCard key={r.pid} photo={byId.get(r.pid)?.photoUrl} name={nameOf(r.pid)}
+                badges={<Badge tone={AMBER}>SEATED NOWHERE</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {Object.entries(r.byLoc || {}).map(([loc, u]) => <SizeFactChip key={loc} size={locLabel(loc)} value={`${u} unit${u === 1 ? "" : "s"}`} tone={AMBER} />)}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
       case "shortfalls": {
         const rows = exceptions?.shortfalls?.items || [];
         return (
@@ -845,6 +898,15 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Live count — one-tap fix" onClick={() => setScreen("negative")} />
               <StatCard label="Sale Shortfalls" value={count("shortfalls")} tone={count("shortfalls") ? AMBER : GREEN}
                         sub="Recent sales the books could not cover — a sale no longer takes a cell negative" onClick={() => setScreen("shortfalls")} />
+              {/* FOOTWEAR COVERAGE (2026-09-15) — the scan's two standing blind-spot
+                  lists for shoes: every clothing queue on this screen is
+                  isClothing-gated, so a shoe stocked with nothing arming it
+                  had no card until now. Both are read from the 15-min
+                  exceptions snapshot like Missing Sizes; neither writes. */}
+              <StatCard label="Unarmed Footwear" value={count("unarmedFootwear")} tone={count("unarmedFootwear") ? AMBER : GREEN}
+                        sub="Stocked sizes at a hub that no policy, rule or row arms" onClick={() => setScreen("unarmedFootwear")} />
+              <StatCard label="Unorderable Footwear" value={count("unorderableFootwear")} tone={count("unorderableFootwear") ? AMBER : GREEN}
+                        sub="Units in the network, no cell at either hub — the order sheet can't offer it" onClick={() => setScreen("unorderableFootwear")} />
               <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}
                         tone={!strandedKnown ? GRAY : strandedNeedsHuman ? RED : strandedRows.length ? AMBER : GREEN}
                         sub={!strandedKnown ? (strandedState.error ? "Report unreadable" : strandedState.settled ? "Sweep has not run yet" : "Loading…") : strandedNeedsHuman ? "Parked units the hourly sweep cannot land" : "Hold-lane units land on their own"}
