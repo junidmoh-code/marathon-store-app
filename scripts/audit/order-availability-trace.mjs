@@ -56,7 +56,15 @@ import { readMapPaged } from "../lib/rtdbPaged.mjs";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n);
-const opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
+// An option that takes a value REFUSES a missing or option-shaped value —
+// "--trace --from-dump" must not silently start a live census (CodeRabbit).
+const opt = (n) => {
+  const i = argv.indexOf(n);
+  if (i < 0) return null;
+  const v = argv[i + 1];
+  if (v === undefined || v.startsWith("--")) { console.error(`${n} needs a value`); process.exit(2); }
+  return v;
+};
 const PIDS = argv.filter((a) => /^p\d+$/.test(a));
 const DB_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
 const GATED = ["hub1", "hub2"];
@@ -126,13 +134,17 @@ function decide(ctx, pid) {
   const rows = sizes.map((size) => {
     const r = gate ? resolveSneakerSourcing({ product: p, taggedHub: tag, size, hubData }) : { hub: tag, available: null };
     const dashed = !!gate && Number.isFinite(r.available) && r.available <= 0;
+    // A clothing-typed record never reaches this resolver: its tile is decided
+    // by the clothing lane (hubQty at the serving hub), which this trace does
+    // not reproduce — so it must not be reported as "selectable" (CodeRabbit).
+    const lane = clothingLane ? "clothing" : gate ? "gated" : "ungated";
     const elsewhere = {};
     for (const loc of Object.keys(stock)) {
       const cell = stock[loc]?.[pid]?.[encodeSizeKey(size === "Free Size" ? "" : size) || "_"];
       const q = cell ? num(cell.qty) : 0;
       if (q > 0 && !GATED.includes(loc)) elsewhere[loc] = q;
     }
-    return { size, key: encodeSizeKey(size === "Free Size" ? "" : size) || "_", lookupKey: decodedCellKey(size), hub: r.hub, available: r.available, dashed,
+    return { size, key: encodeSizeKey(size === "Free Size" ? "" : size) || "_", lookupKey: decodedCellKey(size), hub: r.hub, available: r.available, dashed, lane,
       hub1: cellBlockInfo({ cells: decodedStock.hub1 || {}, promised: ctx.promised.hub1, productId: pid, size }),
       hub2: cellBlockInfo({ cells: decodedStock.hub2 || {}, promised: ctx.promised.hub2, productId: pid, size }),
       elsewhere };
@@ -162,7 +174,7 @@ function trace(ctx, pid) {
   console.log(`   ${"size".padEnd(10)}${"stored".padEnd(8)}${"lookup".padEnd(8)}${"hub1 b/p/a".padEnd(13)}${"hub2 b/p/a".padEnd(13)}${"→ hub".padEnd(7)}${"avail".padEnd(7)}tile      units the screen does not read`);
   for (const r of d.rows) {
     const b = (x) => `${x.booked}/${x.promised}/${x.available}`;
-    console.log(`   ${r.size.padEnd(10)}${r.key.padEnd(8)}${r.lookupKey.padEnd(8)}${b(r.hub1).padEnd(13)}${b(r.hub2).padEnd(13)}${String(r.hub).padEnd(7)}${String(r.available).padEnd(7)}${r.dashed ? "✕ DASHED " : "selectable"} ${Object.entries(r.elsewhere).map(([l, q]) => `${l}:${q}`).join(" ") || "—"}`);
+    console.log(`   ${r.size.padEnd(10)}${r.key.padEnd(8)}${r.lookupKey.padEnd(8)}${b(r.hub1).padEnd(13)}${b(r.hub2).padEnd(13)}${String(r.hub).padEnd(7)}${String(r.available).padEnd(7)}${r.lane === "clothing" ? "clothing lane — not this resolver" : r.dashed ? "✕ DASHED " : "selectable"} ${Object.entries(r.elsewhere).map(([l, q]) => `${l}:${q}`).join(" ") || "—"}`);
   }
   const dashedWithUnits = d.rows.filter((r) => r.dashed && Object.keys(r.elsewhere).length);
   if (dashedWithUnits.length) console.log(`   ⇒ ${dashedWithUnits.length} dashed size(s) have physical units OUTSIDE hub1/hub2: ${dashedWithUnits.map((r) => `${r.size}@${Object.keys(r.elsewhere).join("+")}`).join(", ")} — by design, the grid reads the two hubs only.`);

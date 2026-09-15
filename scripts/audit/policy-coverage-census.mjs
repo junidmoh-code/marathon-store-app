@@ -70,7 +70,15 @@ import { readMapPaged } from "../lib/rtdbPaged.mjs";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const argv = process.argv.slice(2);
 const flag = (n) => argv.includes(n);
-const opt = (n) => { const i = argv.indexOf(n); return i >= 0 ? argv[i + 1] : null; };
+// An option that takes a value REFUSES a missing or option-shaped value —
+// "--trace --from-dump" must not silently start a live census (CodeRabbit).
+const opt = (n) => {
+  const i = argv.indexOf(n);
+  if (i < 0) return null;
+  const v = argv[i + 1];
+  if (v === undefined || v.startsWith("--")) { console.error(`${n} needs a value`); process.exit(2); }
+  return v;
+};
 
 const req = adminRequire(import.meta.url);
 const ENGINE_PATH = join(ROOT, "functions", "lib", "refill-engine.cjs");
@@ -236,6 +244,7 @@ function traceProduct(ctx, pid, keys) {
 
 async function main() {
   const fromDump = opt("--from-dump");
+  const tracePid = opt("--trace");   // validated BEFORE any read
   const snap = fromDump ? JSON.parse(readFileSync(fromDump, "utf8")) : await readLive();
   const stamp = new Date().toISOString().replace(/[:.]/g, "-");
   mkdirSync(join(ROOT, "var"), { recursive: true });
@@ -254,7 +263,6 @@ async function main() {
   console.log(`config: footwearTargets=${JSON.stringify(config.footwearTargets ?? null)} ruleBasedTargets=${JSON.stringify(config.ruleBasedTargets ?? null)} categoryPolicy legs: ${Object.keys(config.categoryPolicy || {}).filter((k) => keys.includes(k)).map((k) => `${k}[${HUBS.filter((h) => config.categoryPolicy[k][h]).join("+")}]`).join(" ") || "none in group"}; groups: ${Object.entries(config.policyGroups || {}).map(([g, v]) => `${g}(${v.armed ? "ARMED" : "disarmed"})`).join(" ") || "none"}`);
   if (!fromDump) console.log(`read ${(snap.bytesRead / 1024 / 1024).toFixed(2)} MB, paged`);
 
-  const tracePid = opt("--trace");
   if (tracePid) {
     traceProduct(ctx, tracePid, keys);
     // --without-rows: the same product with its explicit /stock_targets rows

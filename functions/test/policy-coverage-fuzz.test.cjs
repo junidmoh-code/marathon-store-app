@@ -24,8 +24,14 @@
 // Run: cd functions && node --test test/policy-coverage-fuzz.test.cjs
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { computeRefillPlan, resolveTarget, categoryPolicyEntry, policyCategoryKey, encodeSizeKey } = require("../lib/refill-engine.cjs");
-const { locationPolicyFor } = require("../lib/policy-resolve.cjs");
+// ONLY the function under test is imported. The re-derivation below resolves
+// from raw config, rows and cells with its own code — it must not call
+// resolveTarget, categoryPolicyEntry, policyCategoryKey or locationPolicyFor,
+// or a bug inside those would reproduce on both sides and the fuzz would
+// report equality regardless (second architect pass, PR #606; the standing
+// rule: a census must not read the policy it measures). encodeSizeKey is a
+// pure key encoder, not policy.
+const { computeRefillPlan, encodeSizeKey } = require("../lib/refill-engine.cjs");
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 const NOW = Date.parse("2026-09-15T09:00:00Z");
@@ -123,14 +129,80 @@ const cells = (row) => Object.entries(row || {}).filter(([, c]) => c && typeof c
 const units = (row) => cells(row).reduce((n, [, c]) => n + Math.max(num(c.qty), 0), 0);
 const carries = (stock, loc, pid) => !!stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0;
 const isFootwear = (p) => p?.category === "Footwear";
-const inGroup = (p) => (p?.productType || "sneaker") !== "clothing" && (isFootwear(p) || GROUP.has(policyCategoryKey(p)));
-
-function expectedUnarmed(snap) {
+const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
+// The catalogue's rule, written again from the spec, not imported.
+const keyOf = (p) => {
+  const k = typeof p?.categoryKey === "string" ? p.categoryKey.trim() : "";
+  if (k) return k;
+  return p && p.category === "Footwear" && p.subcategory === "Sneakers" ? "sneakers" : null;
+};
+// isClothing, written again: explicit type, else the letter-size heuristic.
+const clothingLike = (p) => p?.productType ? p.productType === "clothing"
+  : (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s)));
+const inGroup = (p) => !clothingLike(p) && (isFootwear(p) || GROUP.has(keyOf(p)));
+// Which policy object speaks for a key: own entry if PRESENT (even garbage),
+// else the lexicographically first ARMED group naming it.
+const policyFor = (config, key) => {
+  const own = config.categoryPolicy?.[key];
+  if (own !== undefined && own !== null) return isObj(own) ? own : null;
+  const groups = config.policyGroups;
+  if (!isObj(groups)) return null;
+  const gk = Object.keys(groups).sort().find((g) => isObj(groups[g]) && groups[g].armed === true && isObj(groups[g].policy)
+    && Array.isArray(groups[g].memberCategoryKeys) && groups[g].memberCategoryKeys.includes(key));
+  return gk ? groups[gk].policy : null;
+};
+const unitsAnywhere = (stock, pid, sk) => Object.keys(stock).reduce((n, loc) => n + Math.max(num(stock[loc]?.[pid]?.[sk]?.qty), 0), 0);
+// Does a size at (loc, pid) count as DECIDED or GOVERNED — resolved from raw
+// data in the engine's documented precedence: explicit row > category policy
+// (own entry / armed group; per-size map ∩ declared; carriedOnly; dead-size 0
+// is governance) > footwear rule > clothing rule (kill switch + size run).
+function decidedOrGoverned(snap, loc, pid, sk) {
   const { config, products, stock, targets } = snap;
-  const ctx = { config, products, stock, targets };
+  const p = products[pid];
+  if (p.deactivated) return false;
+  const row = targets[loc]?.[pid]?.[sk];
+  if (row && typeof row.target === "number") return true;
+  const declared = new Set((p.sizes || []).map((s) => encodeSizeKey(String(s))));
+  const key = keyOf(p);
+  const pol = key ? policyFor(config, key) : null;
+  const leg = pol ? pol[loc] : null;
+  if (isObj(leg)) {
+    const hasSizes = isObj(leg.sizes), hasTarget = leg.target !== undefined;
+    const scoped = leg.carriedOnly !== undefined && leg.carriedOnly !== false;
+    if (!(scoped && !carries(stock, loc, pid)) && !(hasSizes && hasTarget)) {
+      if (hasSizes) {
+        const usable = Object.values(leg.sizes).some((r) => typeof r?.target === "number" && r.target > 0);
+        if (pol.perSize === true && usable && sk !== "_" && declared.has(sk)) {
+          const r = leg.sizes[sk];
+          if (isObj(r) && typeof r.target === "number" && r.target > 0) return true;   // target, or dead-size 0 — both governance
+        }
+      } else if (typeof leg.target === "number" && leg.target > 0) {
+        if (pol.perSize === true ? (sk !== "_" && declared.has(sk)) : sk === "_") return true;
+      }
+    }
+  }
+  const ft = config.footwearTargets;
+  const footOn = ft === true || (isObj(ft) && ft[loc] === true);
+  if (footOn && isFootwear(p) && carries(stock, loc, pid) && declared.has(sk)) {
+    const t = config.footwearRunByLocation?.[loc]?.[sk];
+    if (typeof t === "number" && t > 0) return true;
+  }
+  const rb = config.ruleBasedTargets;
+  const ruleOn = rb === true || (isObj(rb) && rb[loc] === true);
+  if (ruleOn && clothingLike(p) && carries(stock, loc, pid) && declared.has(sk)) {
+    const t = config.defaultRunByStore?.[loc]?.[sk];
+    if (typeof t === "number" && t > 0) return true;
+  }
+  return false;
+}
+function expectedUnarmed(snap) {
+  const { config, products, stock } = snap;
   const dests = Object.keys(config.routes);
   const footwearDests = dests.filter((d) => !!config.footwearRunByLocation?.[d]
-    || [...GROUP].some((k) => !!locationPolicyFor(config, k, d)));
+    || [...GROUP].some((k) => { const pol = policyFor(config, k); const leg = pol?.[d]; if (!isObj(leg)) return false;
+      const hasSizes = isObj(leg.sizes), hasTarget = leg.target !== undefined; if (hasSizes && hasTarget) return false;
+      if (hasSizes) return pol.perSize === true && Object.values(leg.sizes).some((r) => typeof r?.target === "number" && r.target > 0);
+      return typeof leg.target === "number" && leg.target > 0; }));
   const rawSize = (p, sk) => { for (const s of p.sizes || []) if (encodeSizeKey(String(s)) === sk) return String(s); return sk === "_" ? "" : sk.replace(/(\d)_(\d)/g, "$1.$2"); };
   const out = [];
   for (const loc of footwearDests) {
@@ -138,17 +210,18 @@ function expectedUnarmed(snap) {
       const p = products[pid];
       if (!inGroup(p) || p.deactivated) continue;
       const declared = new Set((p.sizes || []).map((s) => encodeSizeKey(String(s))));
-      const key = policyCategoryKey(p);
-      const entry = categoryPolicyEntry(config, products, stock, pid, loc);
+      const key = keyOf(p);
+      const pol = key ? policyFor(config, key) : null;
+      const leg = pol?.[loc];
+      const entryOk = isObj(leg) && !(isObj(leg.sizes) && leg.target !== undefined)
+        && (isObj(leg.sizes) ? (pol.perSize === true && Object.values(leg.sizes).some((r) => typeof r?.target === "number" && r.target > 0)) : (typeof leg.target === "number" && leg.target > 0))
+        && !((leg.carriedOnly !== undefined && leg.carriedOnly !== false) && !carries(stock, loc, pid));
       const holes = [];
       for (const [sk, c] of cells(stock[loc][pid])) {
         const q = Math.max(num(c.qty), 0);
         if (q <= 0) continue;
-        const row = targets[loc]?.[pid]?.[sk];
-        if (row && typeof row.target === "number") continue;
-        const t = resolveTarget(ctx, loc, pid, rawSize(p, sk));
-        if (t && (t.target > 0 || t.source === "category_policy")) continue;
-        holes.push({ size: rawSize(p, sk), units: q, reason: !key ? "no_category_key" : !entry ? "no_policy" : !declared.has(sk) ? "size_not_declared" : "size_outside_run" });
+        if (decidedOrGoverned(snap, loc, pid, sk)) continue;
+        holes.push({ size: rawSize(p, sk), units: q, reason: !key ? "no_category_key" : !entryOk ? "no_policy" : !declared.has(sk) ? "size_not_declared" : "size_outside_run" });
       }
       if (!holes.length) continue;
       holes.sort((x, y) => y.units - x.units);
@@ -185,7 +258,7 @@ test("fuzz: both buckets equal an independent re-derivation, soundness and compl
   for (let i = 0; i < 3000; i++) {
     const snap = makeCase(r);
     for (const byPid of Object.values(snap.stock)) for (const row of Object.values(byPid)) if (Array.isArray(row)) arrays++;
-    for (const p of Object.values(snap.products)) if (policyCategoryKey(p) === "sneakers" && !(typeof p.categoryKey === "string" && p.categoryKey.trim())) legacy++;
+    for (const p of Object.values(snap.products)) if (keyOf(p) === "sneakers" && !(typeof p.categoryKey === "string" && p.categoryKey.trim())) legacy++;
     const ex = computeRefillPlan(snap).exceptions;
     const gotU = sortU(ex.unarmedFootwear.items), expU = sortU(expectedUnarmed(snap));
     assert.deepEqual(gotU, expU, `case ${i}: unarmedFootwear\n${JSON.stringify(snap)}`);
@@ -223,22 +296,19 @@ test("fuzz: both buckets equal an independent re-derivation, soundness and compl
   assert.ok(legacy > 300, `legacy pair generated only ${legacy} times`);
 });
 
-test("fuzz: the key rule changes NOTHING for a record that has an assigned key, at any location or size", () => {
+test("fuzz: the key rule changes NOTHING for a record that has an assigned key — the plan is identical with the legacy pair stripped", () => {
   const r = rng(7);
-  for (let i = 0; i < 2000; i++) {
+  let compared = 0;
+  for (let i = 0; i < 1500; i++) {
     const snap = makeCase(r);
-    const ctx = { config: snap.config, products: snap.products, stock: snap.stock, targets: snap.targets };
-    for (const [pid, p] of Object.entries(snap.products)) {
-      if (!(typeof p.categoryKey === "string" && p.categoryKey.trim())) continue;
-      // Same record with the legacy pair stripped — resolution must be identical.
-      const stripped = { ...snap.products, [pid]: { ...p, category: "Other", subcategory: "Other" } };
-      const ctx2 = { ...ctx, products: stripped };
-      for (const loc of DESTS) for (const s of (p.sizes || [])) {
-        const a = resolveTarget(ctx, loc, pid, String(s)), b = resolveTarget(ctx2, loc, pid, String(s));
-        // Only the footwear RULE (category === "Footwear") may differ, never the category policy.
-        const aCat = a?.source === "category_policy" ? a : null, bCat = b?.source === "category_policy" ? b : null;
-        assert.deepEqual(aCat, bCat, `case ${i} ${pid} ${loc} ${s}`);
-      }
-    }
+    const keyed = Object.entries(snap.products).filter(([, p]) => typeof p.categoryKey === "string" && p.categoryKey.trim());
+    if (!keyed.length) continue;
+    const stripped = { ...snap.products };
+    for (const [pid, p] of keyed) stripped[pid] = { ...p, category: p.category === "Footwear" ? "Footwear" : p.category, subcategory: "Other" };
+    const a = computeRefillPlan(snap), b = computeRefillPlan({ ...snap, products: stripped });
+    assert.deepEqual(a.intents, b.intents, `case ${i}: intents differ`);
+    assert.deepEqual(a.exceptions.unarmedFootwear, b.exceptions.unarmedFootwear, `case ${i}: unarmedFootwear differs`);
+    compared++;
   }
+  assert.ok(compared > 800, `compared only ${compared}`);
 });

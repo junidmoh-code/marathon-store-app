@@ -2106,10 +2106,12 @@ function computeRefillPlan(snapshot) {
   // (src/utils/footwearLine.js FOOTWEAR_CATEGORY_KEYS) plus designer-shoes,
   // the same set scripts/lib/sneakerScope.mjs uses.
   const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
-  // Clothing-typed records are the clothing queues' business (isClothing reads
-  // productType first), whatever their category says — a "Footwear" hoodie is
-  // a data error the Decision Queue already shows, not a second alert here.
-  const inFootwearGroup = (p) => (p?.productType || "sneaker") !== "clothing"
+  // Anything isClothing says is clothing — the explicit productType OR the
+  // legacy letter-size heuristic — is the clothing queues' business, whatever
+  // its category says: a "Footwear" hoodie is a data error the Decision Queue
+  // already shows, not a second alert here. The same predicate the queues
+  // gate on, so a record is in exactly one of the two worlds.
+  const inFootwearGroup = (p) => !isClothing(p)
     && (isFootwear(p) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(p)));
   // A footwear destination is one where some footwear key RESOLVES a leg —
   // through locationPolicyFor, so an armed policy GROUP naming the category
@@ -2139,10 +2141,12 @@ function computeRefillPlan(snapshot) {
       for (const [sk, c] of Object.entries(stock[loc][pid] || {})) {
         const q = avail(num(c?.qty));
         if (q <= 0) continue;
-        const row = targets?.[loc]?.[pid]?.[sk];
-        if (row && typeof row.target === "number") continue;      // a human ruled on this size — 0 included
+        // ONE answer, the resolver's own: an explicit row on this size (0
+        // included, source "explicit") is a human decision; a positive target
+        // or the policy's dead-size 0 is governance. No second copy of the
+        // row test lives here to drift from resolveTarget's.
         const t = resolveTarget(ctx, loc, pid, rawSize(pid, sk));
-        if (t && (t.target > 0 || t.source === "category_policy")) continue;
+        if (t && (t.source === "explicit" || t.target > 0 || t.source === "category_policy")) continue;
         const reason = !key ? "no_category_key"
           : !entry ? "no_policy"
           : !declared.has(sk) ? "size_not_declared"

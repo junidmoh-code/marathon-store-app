@@ -664,7 +664,7 @@ export default function HealthView({ products = [], onExit }) {
           size_outside_run: "size is not in the hub's per-size policy — widen the run",
         };
         return (
-          <DetailShell title="Unarmed Footwear" sub={`Shoes holding units at a hub where no policy, rule or row arms any size — the engine will never restock these. Legacy sneakers with no category key are governed since 15 Sep; what is left needs a decision.${count("unarmedFootwear") > items("unarmedFootwear").length ? ` Showing the largest ${items("unarmedFootwear").length} of ${count("unarmedFootwear")}.` : ""}`} count={count("unarmedFootwear")} onBack={back}>
+          <DetailShell title="Unarmed Footwear" sub={`Sizes holding units at a hub where no policy, rule or row arms THAT size — the engine will never restock those units; the product's other sizes may be armed. Legacy sneakers with no category key are governed since 15 Sep; what is left needs a decision.${count("unarmedFootwear") > items("unarmedFootwear").length ? ` Showing the largest ${items("unarmedFootwear").length} of ${count("unarmedFootwear")}.` : ""}`} count={count("unarmedFootwear")} onBack={back}>
             {count("unarmedFootwear") === 0 && (
               <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every stocked shoe at every hub is armed 🎉</div>
             )}
@@ -904,7 +904,7 @@ export default function HealthView({ products = [], onExit }) {
                   had no card until now. Both are read from the 15-min
                   exceptions snapshot like Missing Sizes; neither writes. */}
               <StatCard label="Unarmed Footwear" value={count("unarmedFootwear")} tone={count("unarmedFootwear") ? AMBER : GREEN}
-                        sub="Stocked at a hub, no policy arms it there" onClick={() => setScreen("unarmedFootwear")} />
+                        sub="Stocked sizes at a hub that no policy, rule or row arms" onClick={() => setScreen("unarmedFootwear")} />
               <StatCard label="Unorderable Footwear" value={count("unorderableFootwear")} tone={count("unorderableFootwear") ? AMBER : GREEN}
                         sub="Units in the network, no cell at either hub — the order sheet can't offer it" onClick={() => setScreen("unorderableFootwear")} />
               <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}

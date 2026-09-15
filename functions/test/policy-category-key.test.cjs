@@ -246,6 +246,12 @@ test("unarmedFootwear scope: a destination armed only through a policy GROUP cou
   assert.equal(b?.reason, "size_outside_run");
   assert.ok(!ex.unarmedFootwear.items.some((r) => r.loc === "hub1"), "hub1 has no footwear leg in this config");
   assert.ok(!ex.unarmedFootwear.items.some((r) => r.pid === "hoodie"), "clothing-typed record belongs to the clothing queues");
+  // isClothing parity: no productType but letter sizes is clothing by the
+  // engine's own heuristic, and the clothing queues already own it.
+  const products2 = { ...PRODUCTS, tee: { id: "tee", name: "Tee", category: "Footwear", categoryKey: "sneakers", sizes: ["M", "L"] } };
+  const stock2 = { ...STOCK, hub2: { ...STOCK.hub2, tee: { M: { qty: 4 } } } };
+  const ex2 = computeRefillPlan(snap({ products: products2, stock: stock2 })).exceptions;
+  assert.ok(!ex2.unarmedFootwear.items.some((r) => r.pid === "tee"), "letter-sized, untyped record is clothing to the engine");
 });
 
 test("unorderableFootwear lists gated shoes with units but no cell at either hub — and nothing else", () => {
