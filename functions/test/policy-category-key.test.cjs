@@ -10,6 +10,10 @@
 //      WHERE. The engine copy is pinned EQUAL to the app function over a fuzz,
 //      so the two cannot drift apart without this file going red.
 //
+//   2. exceptions.unarmedFootwear / exceptions.unorderableFootwear — the two
+//      standing blind-spot lists the scan now computes, so a shoe can never
+//      again sit stocked-and-unarmed, or stocked-and-unorderable, silently.
+//
 // Every test here asserts a NUMBER or a RESOLVED TARGET, never a title — a
 // test that only checks the bucket exists would pass with an empty loop.
 //
@@ -165,4 +169,80 @@ test("with the legacy pair removed from the record, the same shoe raises nothing
   const products = { ...PRODUCTS, legacy: { ...PRODUCTS.legacy, subcategory: "Trainers" } };
   const plan = computeRefillPlan(snap({ products }));
   assert.equal(plan.intents.filter((i) => i.productId === "legacy").length, 0);
+});
+
+// ── 3. THE COVERAGE BUCKETS ──────────────────────────────────────────────────
+test("unarmedFootwear lists a stocked shoe no policy reaches, with the reason, and only that", () => {
+  const ex = computeRefillPlan(snap()).exceptions;
+  const rows = ex.unarmedFootwear.items;
+  const key = (r) => `${r.loc}|${r.pid}`;
+  const got = Object.fromEntries(rows.map((r) => [key(r), r]));
+  assert.deepEqual(Object.keys(got).sort(), ["hub1|boot", "hub2|boot", "hub2|nosub", "hub2|soccer"]);
+  assert.equal(got["hub2|boot"].units, 12);
+  assert.equal(got["hub2|boot"].reason, "no_policy");
+  assert.equal(got["hub2|boot"].key, "designer-shoes");
+  assert.equal(got["hub2|nosub"].reason, "no_category_key");
+  assert.equal(got["hub2|soccer"].reason, "no_category_key", "keyless Soccer Boots is not a legacy sneaker and has no key to resolve");
+  assert.equal(ex.unarmedFootwear.count, 4);
+  // The legacy sneaker is governed now → NOT listed; keyed sneaker → not listed;
+  // the deactivated shoe → not listed; clothing → never listed.
+  assert.ok(!rows.some((r) => ["legacy", "keyed", "retired", "shirt"].includes(r.pid)));
+  // Ordered by units, largest first — the card shows the biggest hole on top.
+  assert.deepEqual(rows.map((r) => r.units), [...rows.map((r) => r.units)].sort((a, b) => b - a));
+});
+
+test("unarmedFootwear: an explicit row (0 included) means a human ruled — not listed; the fix itself empties the bucket for legacy sneakers", () => {
+  const targets = { hub2: { boot: { 6: { target: 0, minQty: 0, source: "seating_off" } } } };
+  const ex = computeRefillPlan(snap({ targets })).exceptions;
+  assert.ok(!ex.unarmedFootwear.items.some((r) => r.pid === "boot" && r.loc === "hub2"), "switched off at hub2 → not a blind spot there");
+  assert.ok(ex.unarmedFootwear.items.some((r) => r.pid === "boot" && r.loc === "hub1"), "still unarmed at hub1");
+  // A policy leg for designer-shoes at hub2 removes the hub2 entry without touching hub1.
+  const armed = computeRefillPlan(snap({ config: { categoryPolicy: { sneakers: SNEAKERS, slides: SLIDES, "designer-shoes": { perSize: true, hub2: { sizes: RUN, carriedOnly: true } } } } })).exceptions;
+  assert.ok(!armed.unarmedFootwear.items.some((r) => r.pid === "boot" && r.loc === "hub2"));
+  assert.ok(armed.unarmedFootwear.items.some((r) => r.pid === "boot" && r.loc === "hub1"));
+});
+
+test("unarmedFootwear: a policy whose per-size map names none of the product's sizes is 'sizes_outside_run', and zero units is not a hole", () => {
+  const products = { ...PRODUCTS, wide: { id: "wide", name: "Big shoe", category: "Footwear", categoryKey: "sneakers", sizes: ["14", "15"] }, empty: { id: "empty", name: "Sold out", category: "Footwear", categoryKey: "designer-shoes", sizes: ["6"] } };
+  const stock = { ...STOCK, hub1: { ...STOCK.hub1, wide: { 14: { qty: 2 } }, empty: { 6: { qty: 0 } } } };
+  const ex = computeRefillPlan(snap({ products, stock })).exceptions;
+  const w = ex.unarmedFootwear.items.find((r) => r.pid === "wide");
+  assert.equal(w.reason, "sizes_outside_run");
+  assert.equal(w.units, 2);
+  assert.ok(!ex.unarmedFootwear.items.some((r) => r.pid === "empty"), "a zero-unit cell is not a hole");
+});
+
+test("unarmedFootwear scope is config-driven: a destination with no footwear leg is never listed", () => {
+  // Same snapshot, but the sneakers policy names hub2 only → hub1 is not a footwear destination.
+  const config = { categoryPolicy: { sneakers: { perSize: true, hub2: { sizes: RUN, carriedOnly: true } } } };
+  const ex = computeRefillPlan(snap({ config })).exceptions;
+  assert.ok(!ex.unarmedFootwear.items.some((r) => r.loc === "hub1"), JSON.stringify(ex.unarmedFootwear.items));
+  assert.ok(ex.unarmedFootwear.items.some((r) => r.loc === "hub2"));
+});
+
+test("unorderableFootwear lists gated shoes with units but no cell at either hub — and nothing else", () => {
+  const ex = computeRefillPlan(snap()).exceptions;
+  const rows = ex.unorderableFootwear.items;
+  const got = Object.fromEntries(rows.map((r) => [r.pid, r]));
+  assert.deepEqual(Object.keys(got).sort(), ["centralOnly"]);
+  assert.equal(got.centralOnly.units, 30);
+  assert.deepEqual(got.centralOnly.byLoc, { central: 30 });
+  assert.equal(ex.unorderableFootwear.count, 1);
+  // nosub (Labubu) is NOT a gated product? It is: category Footwear, not clothing —
+  // but it has a hub2 cell, so the grid can see it. legacy has hub cells too.
+  // A hub cell with ZERO units still counts as a cell (the grid reads presence,
+  // the policy reads presence) — so a sold-through hub row is not "seated nowhere".
+  const stock = { ...STOCK, hub1: { ...STOCK.hub1, centralOnly: { 6: { qty: 0 } } } };
+  assert.equal(computeRefillPlan(snap({ stock })).exceptions.unorderableFootwear.count, 0);
+});
+
+test("unorderableFootwear: clothing-typed and deactivated records are excluded; units at a shop count", () => {
+  const products = { ...PRODUCTS,
+    tee: { id: "tee", name: "Tee", category: "Footwear", productType: "clothing", sizes: ["M"] },
+    dead: { id: "dead", name: "Dead", category: "Footwear", categoryKey: "sneakers", sizes: ["6"], deactivated: { at: 1 } },
+    shopOnly: { id: "shopOnly", name: "Kids soccer boot", category: "Footwear", categoryKey: "soccer-boots", sizes: ["6"] } };
+  const stock = { ...STOCK, "marathon-pe": { ...STOCK["marathon-pe"], tee: { M: { qty: 5 } }, dead: { 6: { qty: 5 } }, shopOnly: { 6: { qty: 1 } } } };
+  const rows = computeRefillPlan(snap({ products, stock })).exceptions.unorderableFootwear.items;
+  assert.deepEqual(rows.map((r) => r.pid).sort(), ["centralOnly", "shopOnly"]);
+  assert.deepEqual(rows.find((r) => r.pid === "shopOnly").byLoc, { "marathon-pe": 1 });
 });

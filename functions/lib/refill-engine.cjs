@@ -2067,6 +2067,90 @@ function computeRefillPlan(snapshot) {
     }
   }
 
+  // ═══ FOOTWEAR COVERAGE — stocked and unarmed can never be silent (2026-09-15) ═══
+  // Every clothing queue above is isClothing-gated, so a SHOE holding units at
+  // a hub with nothing arming it surfaced nowhere: the census of 2026-09-15
+  // (scripts/audit/policy-coverage-census.mjs) found 38 product×hub cases /
+  // 259 units that way, and the owner found one of them by hand on the Seating
+  // card. Two standing buckets, computed from the snapshot this scan already
+  // holds — no extra read — and drawn on the Health screen:
+  //
+  //   unarmedFootwear      a footwear-group product HOLDS UNITS at a footwear
+  //                        destination and NO size resolves anything there —
+  //                        not a positive target, not the policy's dead-size 0
+  //                        (that is "governed, dormant"), not an explicit row
+  //                        (a human ruled, target 0 included). The reason names
+  //                        what a human has to do: give the record a key, arm
+  //                        the category here, or declare the sizes it stocks.
+  //   unorderableFootwear  a GATED product (the order sheet's own predicate:
+  //                        category "Footwear", not clothing-typed) holds units
+  //                        somewhere in this universe and has NO CELL at any
+  //                        gated hub — so the SELECT SIZE grid, which reads the
+  //                        two hubs and nothing else, dashes every size, and a
+  //                        carriedOnly policy cannot arm it either. It is seated
+  //                        nowhere; only a Seating move seats it.
+  //
+  // NEITHER BUCKET WRITES ANYTHING. This is a HOW-MANY engine and these are
+  // its blind spots listed, not a seating act: nothing here arms a product
+  // anywhere it is not already kept, nothing spreads a product across hubs,
+  // and the Hub 1 / Hub 2 slides split is not consulted. Arming happens where
+  // it always has — the map, resolved live — which is why the keyless legacy
+  // sneakers policyCategoryKey now recognises drop OUT of the first bucket the
+  // scan after that fix deploys, while soccer-boots and designer-shoes stay in
+  // it until the owner arms them.
+  //
+  // Scope is config-driven, never a location list in code: a footwear
+  // destination is one that carries a footwear per-size leg or a footwear run.
+  // The group key list is the cross-app footwear contract
+  // (src/utils/footwearLine.js FOOTWEAR_CATEGORY_KEYS) plus designer-shoes,
+  // the same set scripts/lib/sneakerScope.mjs uses.
+  const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
+  const inFootwearGroup = (p) => isFootwear(p) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(p));
+  const footwearDests = dests.filter((d) => !!config?.footwearRunByLocation?.[d]
+    || Object.keys(config?.categoryPolicy || {}).some((k) => FOOTWEAR_GROUP_KEYS.has(k) && !!config.categoryPolicy[k]?.[d]));
+  const unarmedFootwear = [];
+  for (const loc of footwearDests) {
+    for (const pid of Object.keys(stock?.[loc] || {})) {
+      const p = products?.[pid];
+      if (!inFootwearGroup(p) || isDeactivated(p)) continue;
+      if (targets?.[loc]?.[pid]) continue;                 // a human ruled here — any row, 0 included
+      const units = sumLoc(loc, pid);
+      if (units <= 0) continue;
+      const sizes = productSizes(products, pid);
+      const governed = sizes.some((s) => {
+        const t = resolveTarget(ctx, loc, pid, s);
+        return !!t && (t.target > 0 || t.source === "category_policy");
+      });
+      if (governed) continue;
+      const key = policyCategoryKey(p);
+      const reason = !key ? "no_category_key"
+        : !categoryPolicyEntry(config, products, stock, pid, loc) ? "no_policy"
+        : !sizes.length ? "no_sizes_declared"
+        : "sizes_outside_run";
+      unarmedFootwear.push({ loc, pid, units, key, reason });
+    }
+  }
+  // GATED_SNEAKER_HUBS in availabilityCore.js — the two hubs the grid reads.
+  const GATED_HUBS = ["hub1", "hub2"];
+  const unorderableFootwear = [];
+  const gatedPids = new Set();
+  for (const loc of Object.keys(stock || {})) for (const pid of Object.keys(stock[loc] || {})) gatedPids.add(pid);
+  for (const pid of gatedPids) {
+    const p = products?.[pid];
+    if (!isFootwear(p) || (p.productType || "sneaker") === "clothing" || isDeactivated(p)) continue;
+    if (GATED_HUBS.some((h) => storeCarries(stock, h, pid))) continue;   // a hub cell exists — the grid can see it
+    const byLoc = {};
+    let units = 0;
+    for (const loc of Object.keys(stock || {})) {
+      if (GATED_HUBS.includes(loc)) continue;
+      const u = sumLoc(loc, pid);
+      if (u > 0) { byLoc[loc] = u; units += u; }
+    }
+    if (units > 0) unorderableFootwear.push({ pid, units, byLoc });
+  }
+  unarmedFootwear.sort((a, b) => b.units - a.units);
+  unorderableFootwear.sort((a, b) => b.units - a.units);
+
   const cap = (arr, n = 300) => ({ count: arr.length, items: arr.slice(0, n) });
   return {
     intents: plannedIntents,
@@ -2113,6 +2197,8 @@ function computeRefillPlan(snapshot) {
       excess: cap(excess),
       negativeCells: cap(negativeCells),
       shortfalls: cap(shortfalls),
+      unarmedFootwear: cap(unarmedFootwear, 900),
+      unorderableFootwear: cap(unorderableFootwear, 900),
     },
   };
 }
