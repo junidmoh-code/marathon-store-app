@@ -25,6 +25,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { computeRefillPlan, resolveTarget, categoryPolicyEntry, policyCategoryKey, encodeSizeKey } = require("../lib/refill-engine.cjs");
+const { locationPolicyFor } = require("../lib/policy-resolve.cjs");
 
 function rng(seed) { let s = seed >>> 0; return () => { s = (s * 1664525 + 1013904223) >>> 0; return s / 4294967296; }; }
 const NOW = Date.parse("2026-09-15T09:00:00Z");
@@ -98,7 +99,12 @@ function makeCase(r) {
     for (const d of DESTS) { const l = leg(); if (l) e[d] = l; }
     categoryPolicy[k] = e;
   }
+  // Sometimes the category is armed through a policy GROUP rather than its own
+  // entry — the destination scope must see that leg too.
+  const policyGroups = r() < 0.4 ? { "footwear-all": { armed: r() < 0.7, memberCategoryKeys: ["designer-shoes", "boots", "soccer-boots"], policy: { perSize: true, hub2: { sizes: run, carriedOnly: true } } } } : undefined;
+  if (policyGroups && r() < 0.5) delete categoryPolicy["designer-shoes"];
   const config = {
+    policyGroups,
     mode: Object.fromEntries(DESTS.map((d) => [d, "live"])),
     routes: { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" },
     ruleBasedTargets: pick([true, false]),
@@ -117,14 +123,14 @@ const cells = (row) => Object.entries(row || {}).filter(([, c]) => c && typeof c
 const units = (row) => cells(row).reduce((n, [, c]) => n + Math.max(num(c.qty), 0), 0);
 const carries = (stock, loc, pid) => !!stock?.[loc]?.[pid] && Object.keys(stock[loc][pid]).length > 0;
 const isFootwear = (p) => p?.category === "Footwear";
-const inGroup = (p) => isFootwear(p) || GROUP.has(policyCategoryKey(p));
+const inGroup = (p) => (p?.productType || "sneaker") !== "clothing" && (isFootwear(p) || GROUP.has(policyCategoryKey(p)));
 
 function expectedUnarmed(snap) {
   const { config, products, stock, targets } = snap;
   const ctx = { config, products, stock, targets };
   const dests = Object.keys(config.routes);
   const footwearDests = dests.filter((d) => !!config.footwearRunByLocation?.[d]
-    || Object.keys(config.categoryPolicy || {}).some((k) => GROUP.has(k) && !!config.categoryPolicy[k]?.[d]));
+    || [...GROUP].some((k) => !!locationPolicyFor(config, k, d)));
   const out = [];
   for (const loc of footwearDests) {
     for (const pid of Object.keys(stock[loc] || {})) {

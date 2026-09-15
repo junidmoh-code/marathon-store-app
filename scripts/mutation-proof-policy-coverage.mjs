@@ -91,7 +91,7 @@ const MUTATIONS = [
     id: "M-SCOPE", file: ENGINE,
     guard: "scope is config-driven: only destinations with a footwear leg are scanned",
     from: `  const footwearDests = dests.filter((d) => !!config?.footwearRunByLocation?.[d]
-    || Object.keys(config?.categoryPolicy || {}).some((k) => FOOTWEAR_GROUP_KEYS.has(k) && !!config.categoryPolicy[k]?.[d]));`,
+    || [...FOOTWEAR_GROUP_KEYS].some((k) => !!locationPolicyFor(config, k, d)));`,
     to: `  const footwearDests = dests;`,
     nodeTests: KEY_TESTS,
   },

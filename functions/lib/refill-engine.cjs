@@ -2105,9 +2105,18 @@ function computeRefillPlan(snapshot) {
   // (src/utils/footwearLine.js FOOTWEAR_CATEGORY_KEYS) plus designer-shoes,
   // the same set scripts/lib/sneakerScope.mjs uses.
   const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
-  const inFootwearGroup = (p) => isFootwear(p) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(p));
+  // Clothing-typed records are the clothing queues' business (isClothing reads
+  // productType first), whatever their category says — a "Footwear" hoodie is
+  // a data error the Decision Queue already shows, not a second alert here.
+  const inFootwearGroup = (p) => (p?.productType || "sneaker") !== "clothing"
+    && (isFootwear(p) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(p)));
+  // A footwear destination is one where some footwear key RESOLVES a leg —
+  // through locationPolicyFor, so an armed policy GROUP naming the category
+  // counts exactly as an own entry does (CodeRabbit, PR #606) — or one with a
+  // footwear run. Reading config.categoryPolicy directly would skip a hub the
+  // group arms.
   const footwearDests = dests.filter((d) => !!config?.footwearRunByLocation?.[d]
-    || Object.keys(config?.categoryPolicy || {}).some((k) => FOOTWEAR_GROUP_KEYS.has(k) && !!config.categoryPolicy[k]?.[d]));
+    || [...FOOTWEAR_GROUP_KEYS].some((k) => !!locationPolicyFor(config, k, d)));
   const unarmedFootwear = [];
   for (const loc of footwearDests) {
     for (const pid of Object.keys(stock?.[loc] || {})) {

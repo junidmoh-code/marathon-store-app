@@ -338,8 +338,12 @@ async function main() {
   console.log(`${pad("week", 12)}${rpad("total", 7)}${rpad("armed@1+", 9)}${rpad("stocked", 9)}${rpad("outside", 9)}${rpad("noCell2", 9)}${rpad("off", 5)}${rpad("dormant", 9)}${rpad("sizeRun", 9)}${rpad("sizeKey", 9)}${rpad("unexpl", 8)}${rpad("deact", 7)}   (stocked = holds units at a hub and is not armed there; noCell2 = no cell at either hub)`);
   const weeks = Object.values(weekTab).sort((a, b) => a.week.localeCompare(b.week));
   for (const w of weeks) console.log(`${pad(w.week, 12)}${rpad(w.total, 7)}${rpad(w.armedAnywhere, 9)}${rpad(w.stockedAtAHubUnarmedThere, 9)}${rpad(w.outsideGroup, 9)}${rpad(w.noCellBoth, 9)}${rpad(w.switchedOff, 5)}${rpad(w.dormant, 9)}${rpad(w.sizeRun, 9)}${rpad(w.sizeKey, 9)}${rpad(w.unexplained, 8)}${rpad(w.deactivated, 7)}`);
-  const before = universe.filter((pid) => (results[pid].createdMs ?? 0) <= Date.parse(ARMING_DATE));
-  const after = universe.filter((pid) => (results[pid].createdMs ?? 0) > Date.parse(ARMING_DATE));
+  // Unknown creation dates are in NEITHER cohort — folding them into BEFORE
+  // would inflate that side (CodeRabbit, PR #606).
+  const dated = universe.filter((pid) => results[pid].createdMs != null);
+  const before = dated.filter((pid) => results[pid].createdMs <= Date.parse(ARMING_DATE));
+  const after = dated.filter((pid) => results[pid].createdMs > Date.parse(ARMING_DATE));
+  if (dated.length !== universe.length) console.log(`  (${universe.length - dated.length} product(s) with no creation date are in neither cohort)`);
   const rate = (arr, f) => (arr.length ? `${arr.filter(f).length}/${arr.length} (${(100 * arr.filter(f).length / arr.length).toFixed(1)}%)` : "0/0");
   const stockedUnarmed = (pid) => HUBS.some((h) => { const r = classify(ctx, h, pid); return r.carries && r.units > 0 && !["armed", "switched_off", "deactivated", "dormant"].includes(r.bucket); });
   const armedSomewhere = (pid) => HUBS.some((h) => results[pid][h] === "armed");

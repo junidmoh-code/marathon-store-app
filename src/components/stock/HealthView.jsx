@@ -664,7 +664,7 @@ export default function HealthView({ products = [], onExit }) {
           sizes_outside_run: "none of its declared sizes is in the hub's per-size policy",
         };
         return (
-          <DetailShell title="Unarmed Footwear" sub="Shoes holding units at a hub where no policy, rule or row arms any size — the engine will never restock these. Legacy sneakers with no category key are governed since 15 Sep; what is left needs a decision." count={count("unarmedFootwear")} onBack={back}>
+          <DetailShell title="Unarmed Footwear" sub={`Shoes holding units at a hub where no policy, rule or row arms any size — the engine will never restock these. Legacy sneakers with no category key are governed since 15 Sep; what is left needs a decision.${count("unarmedFootwear") > items("unarmedFootwear").length ? ` Showing the largest ${items("unarmedFootwear").length} of ${count("unarmedFootwear")}.` : ""}`} count={count("unarmedFootwear")} onBack={back}>
             {count("unarmedFootwear") === 0 && (
               <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every stocked shoe at every hub is armed 🎉</div>
             )}
@@ -683,7 +683,7 @@ export default function HealthView({ products = [], onExit }) {
       }
       case "unorderableFootwear":
         return (
-          <DetailShell title="Unorderable Footwear" sub="Shoes with units somewhere in the network but no stock cell at Hub 1 or Hub 2. The order sheet reads only the two hubs, so every size shows dashed, and a hub policy cannot arm a product the hub does not hold. Seat it (Engine Policy → Seating → Move) or transfer it." count={count("unorderableFootwear")} onBack={back}>
+          <DetailShell title="Unorderable Footwear" sub={`Shoes with units somewhere in the network but no stock cell at Hub 1 or Hub 2. The order sheet reads only the two hubs, so every size shows dashed, and a hub policy cannot arm a product the hub does not hold. Seat it (Engine Policy → Seating → Move) or transfer it.${count("unorderableFootwear") > items("unorderableFootwear").length ? ` Showing the largest ${items("unorderableFootwear").length} of ${count("unorderableFootwear")}.` : ""}`} count={count("unorderableFootwear")} onBack={back}>
             {count("unorderableFootwear") === 0 && (
               <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every stocked shoe has a hub cell 🎉</div>
             )}

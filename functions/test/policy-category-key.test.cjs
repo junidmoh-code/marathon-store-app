@@ -220,6 +220,18 @@ test("unarmedFootwear scope is config-driven: a destination with no footwear leg
   assert.ok(ex.unarmedFootwear.items.some((r) => r.loc === "hub2"));
 });
 
+test("unarmedFootwear scope: a destination armed only through a policy GROUP counts; clothing-typed footwear is excluded", () => {
+  const config = { categoryPolicy: {}, policyGroups: { "footwear-all": { armed: true, memberCategoryKeys: ["designer-shoes"], policy: { perSize: true, hub2: { sizes: { 14: { target: 1, minQty: 1 } }, carriedOnly: true } } } } };
+  const products = { ...PRODUCTS, hoodie: { id: "hoodie", name: "Hoodie", category: "Footwear", productType: "clothing", sizes: ["M"] } };
+  const stock = { ...STOCK, hub2: { ...STOCK.hub2, hoodie: { M: { qty: 10 } } } };
+  const ex = computeRefillPlan(snap({ config, products, stock })).exceptions;
+  // hub2 is a footwear destination only via the group; boot (designer-shoes) declares 6/7, the group leg names 14 → sizes_outside_run.
+  const b = ex.unarmedFootwear.items.find((r) => r.pid === "boot" && r.loc === "hub2");
+  assert.equal(b?.reason, "sizes_outside_run");
+  assert.ok(!ex.unarmedFootwear.items.some((r) => r.loc === "hub1"), "hub1 has no footwear leg in this config");
+  assert.ok(!ex.unarmedFootwear.items.some((r) => r.pid === "hoodie"), "clothing-typed record belongs to the clothing queues");
+});
+
 test("unorderableFootwear lists gated shoes with units but no cell at either hub — and nothing else", () => {
   const ex = computeRefillPlan(snap()).exceptions;
   const rows = ex.unorderableFootwear.items;

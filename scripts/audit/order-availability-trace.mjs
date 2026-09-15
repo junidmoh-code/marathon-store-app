@@ -75,7 +75,9 @@ const db = admin.database();
 const productHubs = (p) => p?.hubs || (p?.hub ? [p.hub] : []);
 const routedHub = (p) => productHubs(p).find((h) => h === "hub1" || h === "hub2") || "hub1";
 // App.jsx selectedSizes.
-const selectedSizes = (p) => { const real = (p?.sizes || []).filter((s) => s && String(s).trim() && s !== "_"); return real.length ? real : ["Free Size"]; };
+// String() on the way out: App.jsx renders whatever the record holds, and a
+// numeric size (a record hand-edited in the console) would break padEnd below.
+const selectedSizes = (p) => { const real = (p?.sizes || []).filter((s) => s && String(s).trim() && s !== "_").map(String); return real.length ? real : ["Free Size"]; };
 // useStock.js decodeByProduct — stored keys decoded on the way in, null holes
 // (RTDB array coercion of dense integer keys) dropped.
 const decodeRow = (row) => { const out = {}; for (const k of Object.keys(row || {})) if (row[k] != null) out[decodeSizeKey(k)] = row[k]; return out; };
