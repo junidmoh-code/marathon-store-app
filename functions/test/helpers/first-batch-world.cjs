@@ -24,8 +24,14 @@ const cell = (qty) => ({ qty, v: 1, mv: "m", lastType: "received" });
 const seed = () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live" });
 
 // One random world around ONE shop request for (p1, size) at `store`.
+// Since 2026-09-17 a third of the worlds are MAPPED categories — the class
+// #607 left out: a one-size bag (map legs at hub2 and the shop, "_" only) or a
+// perSize belt (map legs for every declared letter; a size with zero units
+// anywhere resolves a dead 0). The engine manages Hub 2 for these with NO
+// cell, so the "engine got there first" branch is exercised for real.
 function makeWorld(r) {
-  const size = pick(r, SIZES);
+  const mapped = r() < 0.35 ? pick(r, ["bags", "belts"]) : null;
+  const size = mapped === "bags" ? "_" : mapped === "belts" ? pick(r, SIZES.filter((s) => s !== "_")) : pick(r, SIZES);
   const sk = encodeSizeKey(size);
   const store = pick(r, STORES);
   const hubTarget = int(r, 0, 6);
@@ -40,8 +46,20 @@ function makeWorld(r) {
     ruleBasedTargets: true, maxUnitsPerIntent: cap, maxIntentsPerRun: 200, staleIntentHours: 48,
     defaultRunByStore: { hub2: { [size]: hubTarget }, trophy: { [size]: storeTarget }, "marathon-pe": { [size]: storeTarget } },
   };
+  if (mapped === "bags") {
+    // the live shape: hub2 + ONE shop; sometimes the other shop too
+    const legs = { hub2: { target: hubTarget, minQty: 1 }, [store]: { target: storeTarget, minQty: 1 } };
+    if (r() < 0.3) legs[store === "trophy" ? "marathon-pe" : "trophy"] = { target: int(r, 1, 3), minQty: 1 };
+    config.categoryPolicy = { bags: legs };
+  } else if (mapped === "belts") {
+    config.categoryPolicy = { belts: { perSize: true, hub2: { target: hubTarget, minQty: 1 }, [store]: { target: storeTarget, minQty: 1 } } };
+  }
+  const product = mapped
+    ? { id: "p1", name: "Gym Bag", productType: "clothing", categoryKey: mapped, sizes: mapped === "bags" ? ["_"] : [size] }
+    : { id: "p1", name: "Tee", productType: "clothing", sizes: [size] };
   // "_" gets its target through an explicit row only (the run refuses it) —
-  // sometimes give it one, sometimes not.
+  // sometimes give it one, sometimes not. (For a mapped product the row
+  // OUTRANKS the map, exactly as live.)
   const targets = {};
   if (r() < 0.4) targets.hub2 = { p1: { [sk]: { target: int(r, 0, 5), minQty: 1 } } };
   const centralHave = int(r, -1, 6);              // -1: a negative counted cell
@@ -75,16 +93,16 @@ function makeWorld(r) {
   if (open.trophy || open["marathon-pe"]) refill_requests.sib = { productId: "p1", size, qty: 1, requestingLocation: store === "trophy" ? "marathon-pe" : "trophy", status: "open", createdAt: T1, createdFrom: { firstBatch: true, solveId: "fb_p1_zzz", source: "central" } };
   const db = makeFakeDb({
     config: { refillEngine: config },
-    products: { p1: { id: "p1", name: "Tee", productType: "clothing", sizes: [size] } },
+    products: { p1: product },
     stock_targets: targets, stock, refill_requests,
     ...(Object.keys(open).length ? { refill_engine: { open } } : {}),
   });
-  return { db, size, sk, store, config, targets, rr, centralHave };
+  return { db, size, sk, store, config, targets, rr, centralHave, mapped, product };
 }
 
 const hubRequests = (db) => Object.entries(db.state.root.refill_requests || {}).filter(([, r]) => r.requestingLocation === "hub2");
 const snapshot = (db, config, targets) => ({
-  nowMs: NOW, config, products: { p1: { id: "p1", name: "Tee", productType: "clothing", sizes: [Object.values(db.state.root.refill_requests)[0].size] } },
+  nowMs: NOW, config, products: db.state.root.products,
   targets: db.state.root.stock_targets || targets || {},
   stock: db.state.root.stock || {},
   openIndex: db.state.root.refill_engine?.open || {},

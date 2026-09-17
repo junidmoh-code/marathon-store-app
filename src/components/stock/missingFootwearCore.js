@@ -26,6 +26,7 @@
 // stock; 121 are missing from both hubs — 95 never introduced, 26 sold out.
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 import { isDeactivated } from "../../utils/deactivation.js";
+import { isClothing } from "./missingProductsCore";
 
 // Footwear is CATEGORY, never productType: 1,369 products carry
 // category "Footwear" while only 580 carry productType "sneaker", and 858
@@ -112,7 +113,13 @@ export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1"
   // person looking at the two photos.
   const idsByName = new Map();
   for (const [pid, p] of byId) {
-    if (!isFootwearProduct(p)) continue;
+    // A clothing-TYPED record with a legacy "Footwear" category (a data
+    // error the engine already resolves as clothing — isClothing wins) is
+    // Missing Products' card, not this list's: the two Health tabs must be
+    // complementary, never both. isFootwearProduct itself is untouched (the
+    // hub counts and the display lane keep their category-only rule).
+    // (CodeRabbit, PR #608.)
+    if (!isFootwearProduct(p) || isClothing(p)) continue;
     const k = nameKey(p?.name);
     if (!idsByName.has(k)) idsByName.set(k, []);
     idsByName.get(k).push(pid);
@@ -124,7 +131,13 @@ export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1"
   for (const pid of Object.keys(allStock?.central || {})) {
     if (pid === "_meta") continue;
     const p = byId.get(pid);
-    if (!isFootwearProduct(p)) continue;
+    // A clothing-TYPED record with a legacy "Footwear" category (a data
+    // error the engine already resolves as clothing — isClothing wins) is
+    // Missing Products' card, not this list's: the two Health tabs must be
+    // complementary, never both. isFootwearProduct itself is untouched (the
+    // hub counts and the display lane keep their category-only rule).
+    // (CodeRabbit, PR #608.)
+    if (!isFootwearProduct(p) || isClothing(p)) continue;
     // A deactivated product is a finished line: it must not be requestable
     // here (this screen writes /refill_requests directly, outside the engine).
     // Its stock stays visible on the Deactivated list, not as a "missing" row.

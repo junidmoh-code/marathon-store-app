@@ -1,10 +1,11 @@
 // ─── FIRST BATCH DIRECT TO SHOP — the Solve's new first leg (pure, testable) ──
 // Owner spec 2026-09-17. For a product that exists only at Central and is
-// kept at Hub 2 for its shops (Marathon PE / Trophy clothing), the Missing
-// Products Solve used to seed qty-0 cells at Hub 2 AND the shop and leave the
-// rest to the engine: Hub 2 then asked Central for its whole buffer, and the
-// shop asked Hub 2 for its policy quantity — so Hub 2 staff unpacked one bag to
-// fulfil shop requests one by one.
+// kept at Hub 2 for its shops (Marathon PE / Trophy — every category except
+// sneakers and slides, since the same evening), the Missing Products Solve
+// used to seed qty-0 cells at Hub 2 AND the shop and leave the rest to the
+// engine: Hub 2 then asked Central for its whole buffer, and the shop asked
+// Hub 2 for its policy quantity — so Hub 2 staff unpacked one bag to fulfil
+// shop requests one by one.
 //
 // Now, for exactly that Solve, the FIRST batch goes straight to the shop:
 //   1. the Solve creates ONLY the shop's request — its own policy quantity,
@@ -22,11 +23,15 @@
 // for a product the shop CARRIES (storeCarries — a stock node exists), and the
 // Missing Products card only leaves the list once a shop node exists. Seeding
 // the shop at qty 0 is therefore unchanged. What is NEW is that Hub 2 is NOT
-// seeded at Solve time for a size Central can send: with no Hub 2 node the
-// engine cannot raise hub2←central (managedPids needs storeCarries) — which is
-// the whole reason the shop's request cannot be duplicated by the engine while
-// it is open. Hub 2's node is seeded by the deferred leg, at the moment its own
-// request is raised.
+// seeded at Solve time for a size Central can send: for a product the clothing
+// RULE governs, no Hub 2 node means the engine cannot raise hub2←central at
+// all (managedPids needs storeCarries); for a product a category MAP or an
+// explicit row governs, the engine manages Hub 2 with no cell — and there the
+// guard is the engine's own lock, read by the trigger before it raises Hub 2's
+// leg (deferredTo: engine when the scan got there first) and counted as
+// inbound by the engine when the trigger did. Either way: one Hub 2 request.
+// Hub 2's node is seeded by the deferred leg, at the moment its own request
+// is raised.
 //
 // PER SIZE, NOT PER PRODUCT. A size Central has none of cannot be sent first,
 // so it follows today's path unchanged (seed Hub 2 + shop; the engine takes
@@ -37,9 +42,9 @@
 // Size keys go through encodeSizeKey / stockCellPath. Timestamps come from the
 // caller (serverNowMs / serverNowIso), never Date.now().
 
-import { stockSizeKey, stockCellPath } from "../../utils/sizeKey";
-import { isClothing } from "./missingProductsCore";
-import { categoryPolicyLocs } from "./solvePlan";
+import { stockSizeKey, stockCellPath, encodeSizeKey } from "../../utils/sizeKey";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 export const FIRST_BATCH_HUB = "hub2";
 // The lock runId the server stamps on both legs' engine locks. Kept as ONE
@@ -65,33 +70,261 @@ export const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
 // Central-level answer the engine should learn from).
 export const isFirstBatchShopLeg = (r) => !!r && r.createdFrom?.firstBatch === true && r.requestingLocation !== FIRST_BATCH_HUB;
 
-// ── SCOPE — is this Solve the one that routes shop quantities via Hub 2? ─────
-// True only when ALL of these hold; every "no" leaves the old path untouched:
+// ── SNEAKERS AND SLIDES — the ONLY two categories off this path ──────────────
+// Owner rule 2026-09-17: everything except sneakers and slides goes through
+// Hub 2 into the shop and takes the first-batch path — bags, belts, caps,
+// beanies, gloves, perfumes, soccer jerseys, sunglasses, underwear, and every
+// other category. The identity is the catalogue's own: the effective category
+// key (an assigned categoryKey wins; a keyless record whose legacy pair is
+// Footwear + Sneakers IS a sneaker — productTaxonomy.effectiveCategoryKey, the
+// engine's policyCategoryKey twin, pinned equal by test), plus the keyless
+// legacy pair for slides (Footwear + "Sandals & Slides", the taxonomy's own
+// derivation for that key). Nothing else is excluded here. Boots, soccer
+// boots, loafers and the rest never reach this Solve at all — the Missing
+// Products tab owns the complement of the footwear group
+// (missingProductsCore.inFootwearGroup) — but the rule is stated exactly so a
+// future entry point inherits it unchanged.
+export const EXCLUDED_KEYS = Object.freeze(["sneakers", "slides"]);
+export function isSneakerOrSlide(p) {
+  if (!p) return false;
+  const key = effectiveCategoryKey(p);
+  if (key) return EXCLUDED_KEYS.includes(key);
+  return p.category === "Footwear" && p.subcategory === "Sandals & Slides";
+}
+
+// ── SCOPE — which Solve routes the first batch straight to the shop ──────────
+// True when ALL of these hold; a "no" leaves the old seed-only path untouched:
 //   • the card is Central-stranded (source "central") — a hub-stranded card is
 //     the hub-to-hub Solve, frozen;
 //   • the nominated store's route is Hub 2 (config.routes) — that is what "kept
 //     at Hub 2" means to the engine;
-//   • the product is clothing in the engine's sense — the rule-based class whose
-//     Hub 2 target exists only once Hub 2 carries a cell;
-//   • its category has NO unscoped Hub 2 category-policy leg — a mapped category
-//     (bags, belts, gloves, perfumes…) is managed at Hub 2 with no cell and no
-//     Solve at all, so its Solve never routed anything; a carriedOnly leg still
-//     needs the cell and stays eligible;
-//   • no explicit /stock_targets row at Hub 2 — an explicit row makes the engine
-//     manage Hub 2 for this product regardless of a cell.
-export function firstBatchEligible({ source, store, product, routes, categoryPolicy, targets } = {}) {
+//   • the product exists and is not a sneaker or a slide.
+//
+// WHAT PR #607 ALSO REQUIRED, AND WHY IT NO LONGER DOES (2026-09-17): the
+// product had to be clothing in the engine's sense, with NO unscoped Hub 2
+// category-policy leg and NO explicit /stock_targets row at Hub 2. Those three
+// tests all said the same thing — "the engine manages Hub 2 for this product
+// with no cell, so not seeding Hub 2 does not stop it asking Central" — and
+// that was #607's whole anti-duplication argument for Hub 2. It was never the
+// load-bearing guard: the engine's OWN lock is. Whoever locks
+// /refill_engine/open/hub2/{pid}/{sizeKey} first wins — the scan
+// (create-if-absent) or the trigger (same transaction shape); the trigger
+// records `deferredTo: engine` when it loses, and the engine counts our lock
+// as inbound when we win and proposes nothing. So a mapped category (bags,
+// perfumes…) or an explicit-row product takes the same path as a plain tee:
+// the shop's request first, Hub 2's leg on fulfil, one Hub 2 request ever.
+// Their policies are read exactly as they are, by resolvedRun — the map or
+// the row simply IS the shop's / Hub 2's target.
+export function firstBatchEligible({ source, store, product, routes } = {}) {
   if (source !== "central") return false;
   if (!store || routes?.[store] !== FIRST_BATCH_HUB) return false;
-  if (!isClothing(product)) return false;
-  const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
-  if (key) {
-    const legs = categoryPolicyLocs(categoryPolicy, key);
-    const hubLeg = categoryPolicy?.[key]?.[FIRST_BATCH_HUB];
-    if (legs.includes(FIRST_BATCH_HUB) && !(hubLeg && hubLeg.carriedOnly === true)) return false;
-  }
-  if (targets?.[FIRST_BATCH_HUB]?.[product?.id] && Object.keys(targets[FIRST_BATCH_HUB][product.id]).length > 0) return false;
+  if (!product) return false;
+  if (isSneakerOrSlide(product)) return false;
   return true;
 }
+
+// ── LOCATION HISTORY — which shop gets the first batch ───────────────────────
+// Owner rule 2026-09-17: use each product's location history — where the
+// product, and its style or siblings, currently sit and have been sent
+// before (NOT sales history) — to inform the arrangement. What the system
+// holds, and what can be read SCOPED (investigation §3):
+//   • /stock cells — where a product sits now; a qty-0 cell is a product that
+//     was sent there and sold out (cells are never deleted). HealthView
+//     already holds /stock whole for this screen: ZERO new reads.
+//   • /stock_targets rows — a human seated the product there (7,797 hand-made
+//     rows). Already held by HealthView.
+//   • style-code siblings — colourway siblings share styleCodeNormalised (the
+//     stamp is on the record the client holds). Nearly empty for clothing
+//     (4 of 329 stranded cards on 2026-09-17), present for the record.
+//   • /stock_movements and /refill_requests are indexed by time only, so a
+//     per-product query would be a whole-node read (banned) — not used.
+// The strongest signal is the CATEGORY'S OWN PLACEMENT: where the products
+// of the same effective category key are kept today (bags: Trophy 356 vs
+// PE 97; caps & beanies: PE 295 vs 0; suits 0 vs 49 …). A Central-stranded
+// product has no shop cell of its own by definition, so its history is its
+// siblings' and its category's.
+//
+// WHAT HISTORY DECIDES: the shop nominated BY DEFAULT for the first batch
+// (the operator can still tap the other shop — nothing is typed). Three
+// tiers, most specific first; a tier that answers with a tie falls through:
+//   1. the product's OWN positive explicit row at a shop;
+//   2. a style-code sibling carried at a shop (more sibling cells wins, units
+//      break ties);
+//   3. the category's placement (the shop carrying more of the category).
+// No signal, or a tie at every tier → today's default (the first store with
+// qualifying sizes), unchanged. A shop with no qualifying sizes is never
+// nominated, whatever its history — the policy decides WHERE a product may
+// be kept at all; history only orders the shops the policy allows.
+//
+// WHAT HISTORY DOES NOT DECIDE — the shop / Hub 2 split. It is fixed by the
+// two policies and Central's count: the shop's request is min(shop target,
+// Central free, cap) now and Hub 2's leg min(hub2 target − on hand, Central
+// remainder, cap) after. A history-shrunk first batch would not survive: the
+// engine's own reconcile grows every locked open request back to exactly
+// that number on the next scan (refill-engine.cjs `desired`/`availForMe`),
+// and the request must be right AS CREATED. Policies are the owner's and are
+// used as they are.
+//
+// KEYED BY productId THROUGHOUT. Siblings are found by the style-code STAMP,
+// never by name: duplicate-name twins (177 groups) share no history here.
+export const HISTORY_STORES = ["marathon-pe", "trophy"];
+// The engine's storeCarries: a node exists (any qty, qty 0 included).
+const carriesAt = (allStock, loc, pid) => !!allStock?.[loc]?.[pid] && Object.keys(allStock[loc][pid]).length > 0;
+// `c != null`: an array-coerced row answers null in a hole.
+const positiveUnits = (row) => Object.values(row || {}).reduce((t, c) => t + (c != null ? Math.max(Number(c.qty) || 0, 0) : 0), 0);
+const humanKey = (key) => String(key || "product");
+
+// Built ONCE per (products, allStock) — one walk of the catalogue the screen
+// already holds — so every card's history is a lookup, not a scan.
+export function buildPlacementIndex({ products, allStock, stores = HISTORY_STORES } = {}) {
+  const byKey = {};    // effective category key → { store: products carried there }
+  const byCode = {};   // styleCodeNormalised → [productId]
+  for (const p of Array.isArray(products) ? products : []) {
+    if (!p || !p.id) continue;
+    // A retired line or a merge loser is not history a new line should
+    // follow (39 live shop nodes belong to deactivated products).
+    if (isDeactivated(p) || p.mergedInto) continue;
+    const code = typeof p.styleCodeNormalised === "string" ? p.styleCodeNormalised.trim() : "";
+    if (code) (byCode[code] = byCode[code] || []).push(p.id);
+    const key = effectiveCategoryKey(p);
+    if (!key) continue;
+    for (const s of stores) {
+      if (!carriesAt(allStock, s, p.id)) continue;
+      const e = (byKey[key] = byKey[key] || {});
+      e[s] = (e[s] || 0) + 1;
+    }
+  }
+  return { byKey, byCode, stores: [...stores] };
+}
+
+// One product's location history at each shop, from the index and the two
+// nodes the screen holds. Pure; `targets` may be null (a failed read → no
+// own-row tier, the other tiers still answer).
+export function firstBatchHistory({ pid, product, index, allStock, targets, stores } = {}) {
+  const locs = stores || index?.stores || HISTORY_STORES;
+  const key = effectiveCategoryKey(product);
+  const code = typeof product?.styleCodeNormalised === "string" ? product.styleCodeNormalised.trim() : "";
+  const siblings = code ? (index?.byCode?.[code] || []).filter((x) => x !== pid) : [];
+  const byStore = {};
+  for (const s of locs) {
+    const rows = targets?.[s]?.[pid];
+    // a positive row only: an explicit 0 is "deliberately excluded", not a seat
+    const ownRow = !!rows && typeof rows === "object" && Object.values(rows).some((r) => r && typeof r.target === "number" && r.target > 0);
+    let siblingCells = 0, siblingUnits = 0;
+    for (const sib of siblings) {
+      if (!carriesAt(allStock, s, sib)) continue;
+      siblingCells += 1;
+      siblingUnits += positiveUnits(allStock[s][sib]);
+    }
+    const categoryCarried = (key && index?.byKey?.[key]?.[s]) || 0;
+    byStore[s] = { ownRow, siblingCells, siblingUnits, categoryCarried };
+  }
+  const categoryTotal = locs.reduce((t, s) => t + byStore[s].categoryCarried, 0);
+  return { key, siblings, byStore, categoryTotal };
+}
+
+// The nomination. `candidates` = the shops with qualifying sizes, in today's
+// default order; the answer is always one of them (or null when there are
+// none). `sentence` is the one line the panel shows; null when history had
+// nothing to say and the default stood.
+export function firstBatchStoreChoice({ history, candidates, labels = {} } = {}) {
+  const cands = (candidates || []).filter((s) => history?.byStore?.[s]);
+  if (!cands.length) return { store: null, tier: null, sentence: null };
+  const label = (s) => labels[s] || s;
+  const pick = (score, tier, sentence) => {
+    let best = null, bestScore = 0, tie = false;
+    for (const s of cands) {
+      const v = score(history.byStore[s]);
+      if (v > bestScore) { best = s; bestScore = v; tie = false; }
+      else if (v === bestScore && v > 0) tie = true;
+    }
+    return best && !tie ? { store: best, tier, sentence: sentence(best, history.byStore[best]) } : null;
+  };
+  return pick((h) => (h.ownRow ? 1 : 0), "own_row",
+      (s) => `${label(s)} first — this product has its own target row there.`)
+    || pick((h) => h.siblingCells * 1000 + h.siblingUnits, "siblings",
+      (s, h) => `${label(s)} first — ${h.siblingCells === 1 ? "a colourway sibling is" : `${h.siblingCells} colourway siblings are`} kept there${h.siblingUnits > 0 ? ` (${h.siblingUnits} unit${h.siblingUnits === 1 ? "" : "s"})` : ""}.`)
+    || pick((h) => h.categoryCarried, "category",
+      (s, h) => `${label(s)} first — where ${h.categoryCarried} of ${history.categoryTotal} ${humanKey(history.key)} lines are kept.`)
+    || { store: cands[0], tier: "default", sentence: null };
+}
+
+// ── CENTRAL'S OPEN RESERVATIONS — what the engine has already promised ───────
+// (2026-09-17, the de-duplication guard the widening needs.) The engine
+// manages Hub 2 for a MAPPED category or an explicit-row product with no
+// cell, so by the time a card is Solved the scan may already hold an open
+// hub2←central lock for the very units the shop is about to ask for (live on
+// the day: a caps-beanies card, 1 unit at Central, 1 engine lock). A sibling
+// shop's first-batch lock reserves Central the same way. The engine's own
+// idea of "free" is on-hand MINUS those reservations (refill-engine.cjs
+// sourceReserved: every open lock whose source — explicit, else the route of
+// its destination — is Central), and the shop's request must be right AS
+// CREATED: sized from that same free, so no unit is booked twice and the
+// scan has nothing to shrink. The trigger does the identical sum for Hub 2's
+// leg (first-batch.cjs centralReservations); this is the client twin, over
+// the per-location lock nodes the Solve reads (one scoped read per routed
+// location). Lock keys are the engine's encodeSizeKey of the raw size.
+//
+// DEAD LOCKS ARE NOT RESERVATIONS. A lock outlives its request in two known
+// ways: the Solve's own Undo cancels the shop's request but cannot touch
+// /refill_engine (client-unwritable), and a fulfilled request's lock stays
+// until the next scan's close — while Central's cell is ALREADY decremented
+// (a double subtraction). The server twin excludes by runId / refillId; the
+// client reads each lock's request row (one scoped read per lock) and drops
+// a lock whose request is gone or no longer open. (Sonnet + adversarial
+// review, PR #608: an undo-then-re-solve asked Central for 1 where the policy
+// said 2 and Central held 3.)
+export function pruneClosedLocks({ openByLoc, requestsById } = {}) {
+  const out = {};
+  for (const [loc, bySize] of Object.entries(openByLoc || {})) {
+    if (!bySize || typeof bySize !== "object") { out[loc] = bySize ?? null; continue; }
+    const kept = {};
+    for (const [sizeKey, entry] of Object.entries(bySize)) {
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.refillId && Object.prototype.hasOwnProperty.call(requestsById || {}, entry.refillId)) {
+        const r = requestsById[entry.refillId];
+        if (!r || r.status !== "open") continue;   // gone, fulfilled or cancelled → not a reservation
+      }
+      kept[sizeKey] = entry;
+    }
+    out[loc] = Object.keys(kept).length ? kept : null;
+  }
+  return out;
+}
+// The refillIds a lock table names — what pruneClosedLocks needs read.
+export const lockRefillIds = (openByLoc) => {
+  const ids = new Set();
+  for (const bySize of Object.values(openByLoc || {})) {
+    if (!bySize || typeof bySize !== "object") continue;
+    for (const entry of Object.values(bySize)) if (entry && typeof entry === "object" && entry.refillId) ids.add(String(entry.refillId));
+  }
+  return [...ids];
+};
+
+export function centralReservedBySize({ openByLoc, routes, source = "central" } = {}) {
+  const out = {};
+  for (const [loc, bySize] of Object.entries(openByLoc || {})) {
+    if (!bySize || typeof bySize !== "object") continue;
+    for (const [sizeKey, entry] of Object.entries(bySize)) {
+      if (!entry || typeof entry !== "object") continue;
+      const src = entry.source || routes?.[loc];
+      if (src !== source) continue;
+      const q = typeof entry.qty === "number" && Number.isFinite(entry.qty) ? entry.qty : 0;
+      out[sizeKey] = (out[sizeKey] || 0) + Math.max(q || 1, 1);
+    }
+  }
+  return out;
+}
+// On-hand at Central for a raw size, net of the reservations above (never
+// below 0). `qtyAt(size)` is the caller's decoded-cell lookup.
+// The lock key is the ENGINE's encoder, which trims first and maps an empty
+// size to "_" (refill-engine.cjs encodeSizeKey); the app's does neither, so a
+// padded " 8" would look up "_8" against a lock at "8" and read "nothing
+// reserved". Trim and map here so the two agree on every size shape.
+// (Adversarial review, PR #608.)
+export const lockKeyFor = (size) => { const k = String(size ?? "").trim(); return k ? encodeSizeKey(k) : "_"; };
+export const centralFreeFor = ({ qtyAt, reserved, size }) =>
+  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[lockKeyFor(size)] || 0), 0);
 
 // ── THE PER-SIZE SPLIT ───────────────────────────────────────────────────────
 // `sizes` are the QUALIFYING sizes (positive target at Hub 2 AND the store —

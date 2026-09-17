@@ -9,8 +9,9 @@
 //   → Transfer — immediate one-step applyMovement, straight from Health.
 //
 // Data is computed LIVE from /stock (not the scan snapshot) so a transfer
-// retires its card instantly. Clothing and perfume (2026-08-13 — see
-// missingProductsCore's isPerfume note); strictly existing tokens.
+// retires its card instantly. Every product outside the footwear group
+// (clothing, perfume, and since 2026-09-17 every other non-footwear record —
+// see missingProductsCore's inFootwearGroup note); strictly existing tokens.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref, get, update, onValue, runTransaction, push } from "firebase/database";
@@ -26,7 +27,7 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
-import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId } from "./firstBatchCore";
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -414,23 +415,77 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // qualifying sizes there and returned silently. A button that says Trophy,
   // does nothing, and reports nothing: the precise failure this tab is being
   // fixed to abolish. (Kimi review, PR #342.)
-  const defaultStoreFor = (card) => STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
+  // LOCATION HISTORY (owner rule 2026-09-17, firstBatchCore.js): on the
+  // first-batch path the default nomination is history-ranked among the shops
+  // the policy allows — the product's own row, its style siblings' shops,
+  // its category's placement — from the two nodes this screen already holds
+  // (no new reads). The index is ONE walk of the catalogue per /stock change;
+  // each card's history is then a lookup. Off the path (hub-stranded, a shop
+  // not routed via Hub 2) today's default stands byte-for-byte.
+  const placementIndex = useMemo(() => buildPlacementIndex({ products, allStock, stores: STORES }), [products, allStock]);
+  const historyFor = (card) => firstBatchHistory({ pid: card.pid, product: byId.get(card.pid), index: placementIndex, allStock, targets: targetRows, stores: STORES });
+  const storeChoiceFor = (card) => {
+    const candidates = STORES.filter((s) => qualifyingSizes(card, s).length > 0);
+    if (!candidates.length) return { store: STORES[0], tier: null, sentence: null };
+    const onPath = !!cfg && !targetsError && candidates.some((s) => firstBatchEligible({ source: card.source, store: s, product: byId.get(card.pid), routes: cfg.routes }));
+    if (!onPath) return { store: candidates[0], tier: null, sentence: null };
+    const c = firstBatchStoreChoice({ history: historyFor(card), candidates, labels: LOC_LABEL });
+    return c.store ? c : { store: candidates[0], tier: null, sentence: null };
+  };
+  const defaultStoreFor = (card) => storeChoiceFor(card).store;
   const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
 
   // The first-batch split for a card at a store, or null when this Solve is
-  // not the in-scope one. Conservative on a FAILED targets read: without the
-  // explicit rows the scope test cannot rule out an engine-managed Hub 2, so
-  // the old path runs (it never needed the rows either).
-  const firstBatchFor = (card, store, sizes) => {
+  // not the in-scope one (hub-stranded, a shop not routed via Hub 2, a sneaker
+  // or slide). Conservative on a FAILED targets read: without the explicit
+  // rows the shop's own quantity cannot be resolved for an explicit-row
+  // product, so the old path runs (it never needed the rows either).
+  // CENTRAL'S OPEN RESERVATIONS (2026-09-17, firstBatchCore.js
+  // centralReservedBySize). The panel reads the engine's lock node for this
+  // product at every routed location ONCE when its Solve panel opens (one
+  // scoped read per location); the estimate nets them out, and the confirm
+  // waits for the read so the number shown is the number written. solve()
+  // re-reads them live, so a lock that lands while the panel is open is
+  // still honoured at the moment of the write.
+  const [openLocks, setOpenLocks] = useState({});   // pid → { loc: node|null } (undefined = not read yet)
+  const routeLocs = useMemo(() => Object.keys(cfg?.routes || {}), [cfg]);
+  const readOpenLocks = async (pid) => {
+    const raw = {};
+    await Promise.all(routeLocs.map(async (loc) => {
+      raw[loc] = (await get(ref(database, `refill_engine/open/${loc}/${pid}`))).val();
+    }));
+    // A lock whose request is gone or closed is dead, not a reservation
+    // (firstBatchCore.pruneClosedLocks): one scoped read per lock it names.
+    const requestsById = {};
+    await Promise.all(lockRefillIds(raw).map(async (id) => {
+      requestsById[id] = (await get(ref(database, `refill_requests/${id}`))).val();
+    }));
+    return pruneClosedLocks({ openByLoc: raw, requestsById });
+  };
+  useEffect(() => {
+    if (!solvePid || !cfg) return undefined;
+    let live = true;
+    const pid = solvePid;
+    setOpenLocks((m) => { const n = { ...m }; delete n[pid]; return n; });
+    readOpenLocks(pid).then((locks) => { if (live) setOpenLocks((m) => ({ ...m, [pid]: locks })); })
+      // an unreadable lock table reads as "nothing promised" — the write
+      // re-reads and the engine's own reconcile shrinks any over-ask; the
+      // panel just must not stay gated forever
+      .catch(() => { if (live) setOpenLocks((m) => ({ ...m, [pid]: {} })); });
+    return () => { live = false; };
+  }, [solvePid, cfg]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const locksReadyFor = (pid) => openLocks[pid] !== undefined;
+
+  // The first-batch split for a card at a store from the LIVE (or cached)
+  // lock table, or null when this Solve is not the in-scope one.
+  const firstBatchFor = (card, store, sizes, openByLoc = openLocks[card.pid]) => {
     if (!cfg || targetsError) return null;
-    const eligible = firstBatchEligible({
-      source: card.source, store, product: byId.get(card.pid),
-      routes: cfg.routes, categoryPolicy: cfg.categoryPolicy, targets: targetRows,
-    });
+    const eligible = firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), routes: cfg.routes });
     if (!eligible) return null;
+    const reserved = centralReservedBySize({ openByLoc: openByLoc || {}, routes: cfg.routes });
     return firstBatchSplit({
       sizes, run: runFor(card.pid), store,
-      centralAvail: (sz) => qtyAt("central", card.pid, sz),
+      centralAvail: (sz) => centralFreeFor({ qtyAt: (s) => qtyAt("central", card.pid, s), reserved, size: sz }),
       maxUnitsPerIntent: cfg.maxUnitsPerIntent,
     });
   };
@@ -438,6 +493,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const solve = async (card) => {
     const store = storeFor(card);
     if (solveBusy || !canAct || !store) return;
+    // Never a Hub 2 seed for a sneaker or slide (see `offTab` in the render).
+    if (isSneakerOrSlide(byId.get(card.pid))) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: "Not seeded — sneakers and slides are refilled from the Sneakers tab." } }));
+      return;
+    }
     const sizes = qualifyingSizes(card, store);
     // Unreachable while the confirm button is gated on the same store — but a
     // bare `return` here is a dead button by another name, so it speaks.
@@ -446,29 +506,38 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       return;
     }
     // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17). For the in-scope
-    // Solve only — Central-stranded, clothing, shop routed via Hub 2, no map
-    // leg or explicit row managing Hub 2 — the sizes Central can send become
-    // the shop's OWN request from Central (Source › Trophy / Marathon), and
-    // Hub 2 is NOT seeded for them: the server raises Hub 2's leg when the
-    // shop's is fulfilled. Sizes Central has none of follow the old path
-    // unchanged. Everything else (hub-stranded, mapped categories, perfume,
-    // explicit Hub 2 rows) is byte-for-byte the old Solve below.
-    const split = firstBatchFor(card, store, sizes);
-    const firstBatch = !!(split && split.firstBatch.length);
-    const locs = firstBatch ? [FIRST_BATCH_HUB, store] : seedLocations(card.source, store);
+    // Solve — Central-stranded, shop routed via Hub 2, any category except
+    // sneakers and slides (mapped categories, perfume and explicit-row
+    // products included since the same evening; firstBatchCore.js) — the
+    // sizes Central can send become the shop's OWN request from Central
+    // (Source › Trophy / Marathon), and Hub 2 is NOT seeded for them: the
+    // server raises Hub 2's leg when the shop's is fulfilled. Sizes Central
+    // has none of follow the old path unchanged. Everything else (hub-
+    // stranded, a shop not routed via Hub 2) is byte-for-byte the old Solve
+    // below.
+    const onPath = !!firstBatchFor(card, store, sizes);
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
-    const okMsg = firstBatch
-      ? `${split.firstBatch.reduce((t, l) => t + l.qty, 0)} unit${split.firstBatch.reduce((t, l) => t + l.qty, 0) === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2's own batch follows once that is fulfilled.`
-      : `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
+    const oldMsg = `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
     try {
+      // LIVE lock table first (one scoped read per routed location): the
+      // split is sized from Central's free at the moment of the write, never
+      // from the panel's earlier read. A size the reservations leave nothing
+      // of takes the normal path — and if that is every size, the whole
+      // Solve does (the old block below), exactly as when Central had none.
+      const openNow = onPath ? await readOpenLocks(card.pid) : null;
+      const split = onPath ? firstBatchFor(card, store, sizes, openNow) : null;
+      const firstBatch = !!(split && split.firstBatch.length);
+      const locs = firstBatch ? [FIRST_BATCH_HUB, store] : seedLocations(card.source, store);
       if (firstBatch) {
+        const units = split.firstBatch.reduce((t, l) => t + l.qty, 0);
+        const okMsg = `${units} unit${units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2's own batch follows once that is fulfilled.`;
         const existing = {};
         const priorOpen = {};
         for (const loc of locs) {
           existing[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {};
-          priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();
+          priorOpen[loc] = openNow[loc] ?? null;
         }
         const solveId = solveIdFor(card.pid, serverNowMs());
         const { updates, requestIds, paths } = buildFirstBatchSolveUpdate({
@@ -479,11 +548,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // ONE atomic update: shop seeds, the normal-path seeds, and the shop's
         // requests land together or not at all (the old Solve's contract).
         await update(ref(database), updates);
-        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch: { solveId, requestIds, store, units: split.firstBatch.reduce((t, x) => t + x.qty, 0) } }, ...l]);
+        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch: { solveId, requestIds, store, units } }, ...l]);
         setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
         setSolveBusy(null);
         return;
       }
+      const okMsg = oldMsg;
       const updates = {};
       // The engine locks that exist BEFORE this solve, snapshotted into the
       // undo record. Undo blocks on any lock NOT in this snapshot — identity
@@ -647,6 +717,23 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // button under an enabled Solve, which reads as broken. The operator can
         // still pick either store; this only changes which one is pre-selected.
         const sStore = storeFor(card);
+        // The history sentence, when history had a say (first-batch path only).
+        // When the operator has tapped the OTHER shop, the line says what
+        // history suggested and what was chosen — never "X first" over a
+        // panel that is about to send to Y. (Spec review, PR #608.)
+        const storeWhy = (() => {
+          if (!sOpen) return null;
+          const c = storeChoiceFor(card);
+          if (!c.sentence) return null;
+          if (sStore === c.store) return c.sentence;
+          return `${c.sentence.replace(/ first — /, " was suggested — ")} You chose ${LOC_LABEL[sStore]}.`;
+        })();
+        // A sneaker or slide that reached this list (a clothing-typed record
+        // with a footwear key) is never seeded here: the old path's Hub 2 seed
+        // would ARM its carriedOnly Hub 2 policy — the exact auto-refill the
+        // owner forbids. Its refills live on the Sneakers tab. (Adversarial
+        // review, PR #608.)
+        const offTab = isSneakerOrSlide(byId.get(card.pid));
         const hOpen = hidePid === card.pid;
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // First batch direct to shop: the split this Solve would write, or
@@ -655,9 +742,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const fb = fbSplit && fbSplit.firstBatch.length ? firstBatchEstimate({ split: fbSplit, run: runFor(card.pid) }) : null;
         // The confirm button asks the question of the ONE nominated store, which
         // a per-location policy can answer differently from "any store".
-        const confirmBlocked = sOpen ? solveConfirmReason({
+        const confirmBlocked = sOpen ? (solveConfirmReason({
           canAct, busy: solveBusy === card.pid, sizesInPlan: plan.sizes.length, storeLabel: LOC_LABEL[sStore],
-        }) : null;
+        // On the path, the confirm waits for the lock read so the estimate
+        // shown IS the request written (never a false "2" over a promised 1).
+        }) || (fbSplit && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)) : null;
         // Solvable only if the engine has a standard for at least one of its sizes
         // at at least one store. This used to probe STORES[0] alone, on the grounds
         // that the PE and Trophy size runs are identical — true of defaultRunByStore,
@@ -682,7 +771,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // one-size "needs a target set" sentence, which is the actual remedy.
         // Clothing keeps the real switch state, byte-for-byte. (Sonnet review,
         // PR #350.)
-        const solveBlocked = solveReason({
+        const solveBlocked = (offTab ? "this is a sneaker or slide — it is refilled from the Sneakers tab, never seeded here." : null) || solveReason({
           canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
           hasSourceStock: card.units > 0, policyAtAnyStore,
           ruleOnAnywhere: isClothing(byId.get(card.pid)) ? armed : true, targetsError,
@@ -776,6 +865,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     </button>
                   ))}
                 </div>
+                {/* Location history's one line — why this shop is pre-selected.
+                    Informational: the chips above still decide. */}
+                {storeWhy && (
+                  <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginTop: 6 }}>{storeWhy}</div>
+                )}
                 {/* Inline confirm — what gets seeded + what the engine will then want. */}
                 {fb ? (
                 <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>

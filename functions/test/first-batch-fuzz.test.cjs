@@ -15,12 +15,12 @@ const { makeWorld, snapshot, prng, hubRequests, T1, FIRST_BATCH_RUN_PREFIX } = r
 test("property fuzz: 600 random worlds, every invariant holds on each", async () => {
   const seeds = [];
   for (let i = 1; i <= 600; i++) seeds.push(i * 7919);
-  let raised = 0, none = 0, deferred = 0, guarded = 0;
+  let raised = 0, none = 0, deferred = 0, guarded = 0, mappedRaised = 0, mappedDeferred = 0;
   for (const s of seeds) {
     const r = prng(s);
     const w = makeWorld(r);
     const { db, sk, store, config, targets, rr } = w;
-    const ctx = `seed ${s} size=${w.size} store=${store} status=${rr.status} sent=${rr.sentQty || 0} central=${w.centralHave}`;
+    const ctx = `seed ${s} size=${w.size} store=${store} status=${rr.status} sent=${rr.sentQty || 0} central=${w.centralHave} mapped=${w.mapped || "-"}`;
     const before = JSON.stringify(db.state.root);
     const hadHub2Cell = db.state.root.stock?.hub2?.p1?.[sk] !== undefined;
     // Never throws on any world (a throw would make the trigger retry forever).
@@ -67,6 +67,7 @@ test("property fuzz: 600 random worlds, every invariant holds on each", async ()
     assert.ok(marker, `${ctx}: no hub2Leg marker after resolution`);
     if (res1.raised) {
       raised++;
+      if (w.mapped) mappedRaised++;
       const [key, hr] = hubs[0];
       assert.equal(marker.refillId, key, ctx);
       assert.ok(Number.isInteger(hr.qty) && hr.qty >= 1, `${ctx}: qty ${hr.qty}`);
@@ -89,6 +90,7 @@ test("property fuzz: 600 random worlds, every invariant holds on each", async ()
       if (marker.none === "solve_undone" && !hadHub2Cell) assert.equal(db.state.root.stock.hub2?.p1?.[sk], undefined, `${ctx}: undone solve seeded Hub 2`);
     } else if (marker.deferredTo) {
       deferred++;
+      if (w.mapped) mappedDeferred++;
       assert.equal(hubs.length, 0, `${ctx}: request created beside the engine's`);
       assert.equal(db.state.root.refill_engine?.open?.hub2?.p1?.[sk]?.refillId, "eng1", ctx);
     } else {
@@ -97,4 +99,6 @@ test("property fuzz: 600 random worlds, every invariant holds on each", async ()
   }
   // The fuzz must have exercised every branch or it proves nothing.
   assert.ok(raised > 50 && none > 50 && deferred > 20 && guarded > 100, `coverage raised=${raised} none=${none} deferred=${deferred} guarded=${guarded}`);
+  // The mapped worlds must have exercised both "we raised" and "the engine got there first".
+  assert.ok(mappedRaised > 15 && mappedDeferred > 5, `mapped coverage raised=${mappedRaised} deferred=${mappedDeferred}`);
 });

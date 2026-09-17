@@ -23,9 +23,19 @@ describe("solve → undo wiring", () => {
     // A lock's createdAt is its scan's START time, so clock comparison
     // misclassifies a scan that spans the solve. The snapshot must be taken
     // in the pre-write loop.
+    // Two write paths since the first batch (2026-09-17), each with its own
+    // pre-write snapshot: the first-batch path takes it from the LIVE lock
+    // read it already makes for Central's reservations (openNow), the old
+    // path from its own per-location read. Both must precede their write.
+    const fbReadAt = NETWORK.indexOf("const openNow = onPath ? await readOpenLocks(card.pid) : null;");
+    const fbSnapAt = NETWORK.indexOf("priorOpen[loc] = openNow[loc] ?? null;");
+    const fbWriteAt = NETWORK.indexOf("await update(ref(database), updates)");
+    expect(fbReadAt).toBeGreaterThan(-1);
+    expect(fbSnapAt).toBeGreaterThan(fbReadAt);
+    expect(fbSnapAt).toBeLessThan(fbWriteAt);
     const readAt = NETWORK.indexOf("priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val()");
-    const writeAt = NETWORK.indexOf("await update(ref(database), updates)");
-    expect(readAt).toBeGreaterThan(-1);
+    const writeAt = NETWORK.lastIndexOf("await update(ref(database), updates)");
+    expect(readAt).toBeGreaterThan(fbWriteAt);
     expect(readAt).toBeLessThan(writeAt);
     // And the guard core carries no timestamp inputs at all.
     // (ownRunId, first batch 2026-09-17: the solve's OWN server-claimed lock is
