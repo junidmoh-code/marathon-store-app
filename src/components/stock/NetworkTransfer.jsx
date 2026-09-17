@@ -13,7 +13,7 @@
 // missingProductsCore's isPerfume note); strictly existing tokens.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ref, get, update, onValue, runTransaction } from "firebase/database";
+import { ref, get, update, onValue, runTransaction, push } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -25,10 +25,14 @@ import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as comput
 import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
+// FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
+// The Source tab a shop's first-batch request lands on (App.jsx SOURCE_SHOP_TABS).
+const SOURCE_TAB_LABEL = { "marathon-pe": "Marathon", trophy: "Trophy" };
 // "_" is the catalogue's one-size sentinel — a real cell key, but never shown raw.
 const sizeLabel = (s) => (String(s) === "_" ? "One size" : String(s));
 // Fallback size-standard if config/refillEngine can't be read — mirrors the live
@@ -158,10 +162,43 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       await Promise.all(u.locs.map(async (loc) => {
         openByLoc[loc] = (await get(ref(database, `refill_engine/open/${loc}/${u.pid}`))).val();
       }));
-      const blockers = solveUndoBlockers({ paths: u.paths, openByLoc, priorOpenByLoc: u.priorOpen });
+      // FIRST BATCH: reversible only while Central has not started on the
+      // shop's requests (live re-read, never the render snapshot). The lock
+      // the server claimed FOR this solve is not "the engine raised work" —
+      // it is exempted by its runId; any other new lock still blocks.
+      let liveFb = null;
+      if (u.firstBatch) {
+        liveFb = {};
+        await Promise.all(u.firstBatch.requestIds.map(async (id) => {
+          liveFb[id] = (await get(ref(database, `refill_requests/${id}`))).val();
+        }));
+        const fbBlockers = firstBatchUndoBlockers({ liveRequests: liveFb, storeLabel: LOC_LABEL[u.store] });
+        if (fbBlockers.length) {
+          setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: fbBlockers[0] } : x)));
+          return;
+        }
+      }
+      const blockers = solveUndoBlockers({ paths: u.paths, openByLoc, priorOpenByLoc: u.priorOpen, ownRunId: u.firstBatch ? firstBatchRunId(u.firstBatch.solveId) : null });
       if (blockers.length) {
         setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: blockers[0] } : x)));
         return;
+      }
+      // Cancel the shop's open requests FIRST, with the solve_undone reason:
+      // the trigger then raises no Hub 2 leg and the engine withdraws the lock
+      // as its own kind of close (no cooldown, no confirmed-out strike). Only
+      // then are the seeds removed, so no request can outlive its cell. Each
+      // cancel is a CAS (firstBatchUndoCancelTxn): a row Central got to first
+      // aborts and stands, and its cell — now holding real units — is kept by
+      // undoCellTxn below, so the two halves can never disagree.
+      let stood = [];
+      if (liveFb) {
+        const txn = firstBatchUndoCancelTxn({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null });
+        // Only rows still OPEN: a retry after a partial undo must not re-run
+        // the CAS on its own already-cancelled rows (they would abort and be
+        // reported as "standing"). (CodeRabbit, PR #607.)
+        const ids = Object.keys(liveFb).filter((id) => liveFb[id] && liveFb[id].status === "open");
+        const outcomes = await Promise.all(ids.map((id) => runTransaction(ref(database, `refill_requests/${id}`), txn)));
+        stood = ids.filter((id, i) => !outcomes[i].committed).map((id) => liveFb[id].size);
       }
       // Per-cell TRANSACTIONS, not read-then-delete: each cell is re-verified
       // as the untouched seed INSIDE the CAS, so a count/sale/transfer landing
@@ -172,8 +209,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // the touched sizes.
       const results = await Promise.all(u.paths.map((p) => runTransaction(ref(database, p), undoCellTxn)));
       const kept = u.paths.filter((p, i) => !results[i].committed);
-      if (kept.length) {
-        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${u.paths.length - kept.length} of ${u.paths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.` } : x)));
+      if (kept.length || stood.length) {
+        const standing = stood.length ? ` Central had already started on size${stood.length === 1 ? "" : "s"} ${stood.map(sizeLabel).join(", ")} — ${stood.length === 1 ? "that request stands" : "those requests stand"}.` : "";
+        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${u.paths.length - kept.length} of ${u.paths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.${standing}` } : x)));
       } else {
         // Fully undone: the entry leaves the strip (the card reappearing IS
         // the feedback), and the stale "Solved ✓" banner is cleared so the
@@ -379,6 +417,24 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const defaultStoreFor = (card) => STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
   const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
 
+  // The first-batch split for a card at a store, or null when this Solve is
+  // not the in-scope one. Conservative on a FAILED targets read: without the
+  // explicit rows the scope test cannot rule out an engine-managed Hub 2, so
+  // the old path runs (it never needed the rows either).
+  const firstBatchFor = (card, store, sizes) => {
+    if (!cfg || targetsError) return null;
+    const eligible = firstBatchEligible({
+      source: card.source, store, product: byId.get(card.pid),
+      routes: cfg.routes, categoryPolicy: cfg.categoryPolicy, targets: targetRows,
+    });
+    if (!eligible) return null;
+    return firstBatchSplit({
+      sizes, run: runFor(card.pid), store,
+      centralAvail: (sz) => qtyAt("central", card.pid, sz),
+      maxUnitsPerIntent: cfg.maxUnitsPerIntent,
+    });
+  };
+
   const solve = async (card) => {
     const store = storeFor(card);
     if (solveBusy || !canAct || !store) return;
@@ -389,12 +445,45 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: `Nothing to seed at ${LOC_LABEL[store]} — no refill policy covers this product there.` } }));
       return;
     }
-    const locs = seedLocations(card.source, store);
+    // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17). For the in-scope
+    // Solve only — Central-stranded, clothing, shop routed via Hub 2, no map
+    // leg or explicit row managing Hub 2 — the sizes Central can send become
+    // the shop's OWN request from Central (Source › Trophy / Marathon), and
+    // Hub 2 is NOT seeded for them: the server raises Hub 2's leg when the
+    // shop's is fulfilled. Sizes Central has none of follow the old path
+    // unchanged. Everything else (hub-stranded, mapped categories, perfume,
+    // explicit Hub 2 rows) is byte-for-byte the old Solve below.
+    const split = firstBatchFor(card, store, sizes);
+    const firstBatch = !!(split && split.firstBatch.length);
+    const locs = firstBatch ? [FIRST_BATCH_HUB, store] : seedLocations(card.source, store);
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
-    const okMsg = `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
+    const okMsg = firstBatch
+      ? `${split.firstBatch.reduce((t, l) => t + l.qty, 0)} unit${split.firstBatch.reduce((t, l) => t + l.qty, 0) === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2's own batch follows once that is fulfilled.`
+      : `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
     try {
+      if (firstBatch) {
+        const existing = {};
+        const priorOpen = {};
+        for (const loc of locs) {
+          existing[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {};
+          priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();
+        }
+        const solveId = solveIdFor(card.pid, serverNowMs());
+        const { updates, requestIds, paths } = buildFirstBatchSolveUpdate({
+          pid: card.pid, store, split, existing, solveId, nowIso: now, uid,
+          seedCell: () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid }),
+          newKey: () => push(ref(database, "refill_requests")).key,
+        });
+        // ONE atomic update: shop seeds, the normal-path seeds, and the shop's
+        // requests land together or not at all (the old Solve's contract).
+        await update(ref(database), updates);
+        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch: { solveId, requestIds, store, units: split.firstBatch.reduce((t, x) => t + x.qty, 0) } }, ...l]);
+        setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
+        setSolveBusy(null);
+        return;
+      }
       const updates = {};
       // The engine locks that exist BEFORE this solve, snapshotted into the
       // undo record. Undo blocks on any lock NOT in this snapshot — identity
@@ -469,7 +558,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     <div key={u.key} style={{ ...GLASS, padding: "9px 12px", marginBottom: 8, fontSize: 12.5 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         <span style={{ flex: 1, color: "rgba(255,255,255,.75)" }}>
-          Solved — <b style={{ color: "#fff" }}>{u.name}</b> now carried at {LOC_LABEL[u.store]}{u.locs.includes("hub2") && u.store !== "hub2" ? " (via Hub 2)" : ""}
+          {u.firstBatch
+            ? <>Solved — <b style={{ color: "#fff" }}>{u.name}</b>: {u.firstBatch.units} unit{u.firstBatch.units === 1 ? "" : "s"} requested from Central for {LOC_LABEL[u.store]} (Hub 2's batch follows)</>
+            : <>Solved — <b style={{ color: "#fff" }}>{u.name}</b> now carried at {LOC_LABEL[u.store]}{u.locs.includes("hub2") && u.store !== "hub2" ? " (via Hub 2)" : ""}</>}
         </span>
         {canAct && (
           <button onClick={() => undoSolve(u)} disabled={u.busy}
@@ -558,6 +649,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const sStore = storeFor(card);
         const hOpen = hidePid === card.pid;
         const plan = sOpen ? solvePlan(card, sStore) : null;
+        // First batch direct to shop: the split this Solve would write, or
+        // null when the card is out of scope (old panel copy, unchanged).
+        const fbSplit = sOpen ? firstBatchFor(card, sStore, plan.sizes) : null;
+        const fb = fbSplit && fbSplit.firstBatch.length ? firstBatchEstimate({ split: fbSplit, run: runFor(card.pid) }) : null;
         // The confirm button asks the question of the ONE nominated store, which
         // a per-location policy can answer differently from "any store".
         const confirmBlocked = sOpen ? solveConfirmReason({
@@ -682,6 +777,20 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                   ))}
                 </div>
                 {/* Inline confirm — what gets seeded + what the engine will then want. */}
+                {fb ? (
+                <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
+                  <b style={{ color: "#fff" }}>{fb.shopNow} unit{fb.shopNow === 1 ? "" : "s"}</b> ({fbSplit.firstBatch.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> first — requested from Central now; Central picks it from Source › {SOURCE_TAB_LABEL[sStore]} at the next release.
+                  <div style={{ marginTop: 5, color: GRAY }}>
+                    Hub 2's own ~<b style={{ color: BLUE_L }}>{fb.hubAfter} units</b> follow automatically after {LOC_LABEL[sStore]}'s request is fulfilled, sized from what Central still has.
+                  </div>
+                  {fb.sizesNormal.length > 0 && (
+                    <div style={{ marginTop: 5, color: GRAY }}>
+                      {fb.sizesNormal.map(sizeLabel).join(" · ")}: Central has none — seeded at Hub 2 + {LOC_LABEL[sStore]} for the engine as usual.
+                    </div>
+                  )}
+                  <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — it moves when Central fulfils; then the normal route resumes.</div>
+                </div>
+                ) : (
                 <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
                   {plan.sizes.length === 1 && plan.sizes[0] === "_"
                     ? <b style={{ color: "#fff" }}>One size</b>
@@ -695,13 +804,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                   </div>
                   <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — this just marks it carried; the engine raises the refills.</div>
                 </div>
+                )}
                 {confirmBlocked && (
                   <div style={{ fontSize: 11.5, color: AMBER, lineHeight: 1.4, marginTop: 8 }}>{confirmBlocked}</div>
                 )}
                 <button onClick={() => solve(card)} disabled={!!confirmBlocked}
                         title={confirmBlocked || undefined}
                         style={{ ...bGreen, width: "100%", marginTop: 10, padding: "12px", opacity: confirmBlocked ? 0.5 : 1 }}>
-                  {solveBusy === card.pid ? "Seeding…" : `Solve — carry at ${LOC_LABEL[sStore]}`}
+                  {solveBusy === card.pid ? (fb ? "Requesting…" : "Seeding…") : fb ? `Solve — send ${fb.shopNow} to ${LOC_LABEL[sStore]} first` : `Solve — carry at ${LOC_LABEL[sStore]}`}
                 </button>
               </>
             ) : result ? (

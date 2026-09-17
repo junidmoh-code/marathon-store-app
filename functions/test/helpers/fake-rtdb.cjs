@@ -104,7 +104,16 @@ let pushCounter = 0;
 // deserializes fresh objects every time, and the difference is not cosmetic: a
 // fake that returns references makes a drift check untestable, because the
 // "before" snapshot silently follows the very change it is supposed to catch.
-const clone = (v) => (v === null || typeof v !== "object" ? v : structuredClone(v));
+// An array-coerced node is handed back with NULL in its holes — exactly what
+// the SDK's val() returns for a sparse index-keyed node ("null for missing
+// indices") — never a JS hole, which reads as undefined and lets a `=== undefined`
+// test pass here while the live database answers null. (PR #607.)
+const fillHoles = (v) => {
+  if (Array.isArray(v)) { const out = []; for (let i = 0; i < v.length; i++) out[i] = i in v ? fillHoles(v[i]) : null; return out; }
+  if (v && typeof v === "object") { for (const k of Object.keys(v)) v[k] = fillHoles(v[k]); }
+  return v;
+};
+const clone = (v) => (v === null || typeof v !== "object" ? v : fillHoles(structuredClone(v)));
 
 function makeSnapshot(key, value) {
   return {

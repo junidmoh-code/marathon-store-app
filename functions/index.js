@@ -574,6 +574,36 @@ exports.holdAvailabilityNotify = onValueWritten(
   }
 );
 
+// ─── FIRST BATCH DIRECT TO SHOP: HUB 2'S DEFERRED LEG ────────────────────────
+// A Missing Products Solve can raise a SHOP's own request from Central (tagged
+// createdFrom.firstBatch). When that row is fulfilled, partially sent or
+// cancelled, Hub 2's own request from Central is raised here — once, with an
+// engine lock, sized from what Central still has. It runs server-side because
+// (a) no browser may need to stay open for it and (b) /refill_engine/open is
+// not client-writable, and without the lock the next scan would raise a second
+// hub2<-central request beside it. All logic and every scoped read live in
+// lib/first-batch.cjs (node-tested against the fake RTDB). Every non-transient
+// outcome RETURNS; only real I/O failures throw, so retry re-drives exactly
+// those. Whole-node ref (not /status): a partial send writes sentQty and qty,
+// never status. The handler re-reads the row and exits early on its own
+// marker writes.
+exports.firstBatchLeg = onValueWritten(
+  {
+    ref:            "/refill_requests/{requestId}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          true,
+  },
+  async (event) => {
+    if (!event.data.after.exists()) return;   // a deleted row has no leg to raise
+    const { processFirstBatchRequest } = require("./lib/first-batch.cjs");
+    const res = await processFirstBatchRequest({ db: admin.database(), requestId: event.params.requestId });
+    if (res && (res.raised || res.none || res.deferredTo)) console.log("firstBatchLeg:", event.params.requestId, JSON.stringify(res));
+  }
+);
+
 // ─── SHOPIFY INVENTORY: MARK WHAT MOVED ──────────────────────────────────────
 // The storefront was overselling. reconcile.mjs writes a product's inventory to
 // Shopify exactly once — at the moment it goes live — and never again, so a

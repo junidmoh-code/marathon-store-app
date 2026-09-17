@@ -15645,6 +15645,10 @@ const SOURCE_TAB_ICON = {
   // Refill history — a calendar, since this lane is chosen by DATE RANGE. The
   // "history" glyph above is already taken by the customer-request history.
   refillhistory: <><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></>,
+  // Shop tabs (first batch direct to shop, 2026-09-17) — a storefront, since
+  // these lanes are the SHOPS' own requests from Central.
+  trophy: <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 006 0 3 3 0 006 0 3 3 0 006 0"/><path d="M5 11v9h14v-9M10 20v-5h4v5"/></>,
+  marathonpe: <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 006 0 3 3 0 006 0 3 3 0 006 0"/><path d="M5 11v9h14v-9M10 20v-5h4v5"/></>,
 };
 // ── THE SOURCE CONSOLIDATION (owner directive 2026-08-08) ────────────────────
 // Three tabs, down from six. Today's Request, History and On Hold are GONE as
@@ -15658,7 +15662,16 @@ const SOURCE_TAB_ICON = {
 // New holds raise a real refill request against their hub (onHoldRefill.js)
 // and appear in the queue; held cards remain only for legacy holds and
 // fail-closed ones (unroutable hub / no product id / write refused).
-const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],["refillhistory","Refill History"]];
+// FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17): a Missing Products
+// Solve on a Central-stranded product can now raise the SHOP's own request
+// from Central (see firstBatchCore.js). Those rows are requestingLocation
+// "trophy" / "marathon-pe" and are picked by Central here, on their own tabs —
+// the same RefillQueue, same Fulfil / Out of Stock, same partial tranches and
+// `rrf_` movement ids, destination the shop. No sale rows: a shop's POS sales
+// restock through its hub, never through Central.
+const SOURCE_SHOP_TABS = [["trophy","Trophy","trophy"],["marathonpe","Marathon","marathon-pe"]];
+const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],...SOURCE_SHOP_TABS.map(([k, label]) => [k, label]),["refillhistory","Refill History"]];
+const SOURCE_SHOP_BY_TAB = Object.fromEntries(SOURCE_SHOP_TABS.map(([k, , loc]) => [k, loc]));
 
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [rawTab, setTab] = usePersistedTab("source", "hub1refill");
@@ -15906,7 +15919,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // Per-hub badge for the Hub 1 / Hub 2 tabs: pending sale cells (today +
   // stragglers) plus open refill requests — everything the one queue lists.
   const hubBadges = useMemo(() => {
-    const counts = { hub1: 0, hub2: 0 };
+    const counts = { hub1: 0, hub2: 0, trophy: 0, "marathon-pe": 0 };
     const todayResponses = allResponses[todayDate] || {};
 
     REACTIVE_REFILL_HUBS.forEach(h => {
@@ -15943,7 +15956,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     // ordinary requests now, so they count here and nowhere else).
     allRefillRequests.forEach((r) => {
       if (r.status === "open" && !r.shadow && r.productId &&
-          (r.requestingLocation === "hub1" || r.requestingLocation === "hub2"))
+          Object.prototype.hasOwnProperty.call(counts, r.requestingLocation))
         counts[r.requestingLocation] += 1;
     });
 
@@ -16056,6 +16069,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     <>
         {tab==="hub1refill" && hubTabContent("hub1")}
         {tab==="clothing" && hubTabContent("hub2")}
+        {/* Shop tabs — first-batch requests from Central (request rows only). */}
+        {SOURCE_SHOP_BY_TAB[tab] && <RefillQueue products={products} dest={SOURCE_SHOP_BY_TAB[tab]} fulfilCtx={fulfilCtx} />}
         {/* Refill History (2026-08-07, redone 2026-08-08). Every outcome, both
             hubs and the shops, over a chosen date range. */}
         {tab==="refillhistory" && <RefillHistory products={products} />}
@@ -16066,11 +16081,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   if (isWide) {
     const activeTab = tab;                       // already normalised above
     const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Hub 1 Refill"])[1];
-    const totalPending = (hubBadges.hub1 || 0) + (hubBadges.hub2 || 0);
+    const totalPending = Object.values(hubBadges).reduce((t, n) => t + (n || 0), 0);
     const navItem = ([key, label]) => {
       const on = activeTab === key;
       // Per-hub pending work (sold cells + stragglers + open requests) on its hub tab.
-      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
+      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : 0;
       return (
         <button key={key} onClick={() => setTab(key)}
           style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
@@ -16145,7 +16160,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             phone instead of the strip scrolling. Adding the sixth tab is what
             made this reachable. (CodeRabbit, PR #332.) */}
         {SOURCE_TABS.map(([key, label]) => {
-          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
+          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : 0;
           return (
             <div key={key} onClick={() => setTab(key)}
                  style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>

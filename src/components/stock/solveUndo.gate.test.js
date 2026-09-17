@@ -28,7 +28,9 @@ describe("solve → undo wiring", () => {
     expect(readAt).toBeGreaterThan(-1);
     expect(readAt).toBeLessThan(writeAt);
     // And the guard core carries no timestamp inputs at all.
-    expect(NETWORK).toMatch(/solveUndoBlockers\(\{ paths: u\.paths, openByLoc, priorOpenByLoc: u\.priorOpen \}\)/);
+    // (ownRunId, first batch 2026-09-17: the solve's OWN server-claimed lock is
+    // exempted by runId — an identity, still never a clock.)
+    expect(NETWORK).toMatch(/solveUndoBlockers\(\{ paths: u\.paths, openByLoc, priorOpenByLoc: u\.priorOpen, ownRunId: [^}]*\}\)/);
     expect(NETWORK).not.toMatch(/solvedAtMs/);
   });
   it("the deletion is per-cell TRANSACTIONS through undoCellTxn — never read-then-delete", () => {
@@ -38,7 +40,11 @@ describe("solve → undo wiring", () => {
     expect(NETWORK).toMatch(/await Promise\.all\(u\.paths\.map\(\(p\) => runTransaction\(ref\(database, p\), undoCellTxn\)\)\)/);
     const undoStart = NETWORK.indexOf("const undoSolve = async (u) => {");
     const undoBlock = NETWORK.slice(undoStart, NETWORK.indexOf("\n  };", undoStart));
+    // (First batch, 2026-09-17: the shop-request cancel is ALSO a CAS —
+    // firstBatchUndoCancelTxn through runTransaction — so the undo still
+    // issues no plain update() at all.)
     expect(undoBlock).not.toMatch(/update\(ref\(database\)/);
+    expect(undoBlock).toMatch(/runTransaction\(ref\(database, `refill_requests\/\$\{id\}`\), txn\)/);
   });
   it("an aborted cell is reported, a full undo clears the stale Solved banner and leaves the strip", () => {
     expect(NETWORK).toMatch(/const kept = u\.paths\.filter\(\(p, i\) => !results\[i\]\.committed\)/);
