@@ -242,3 +242,31 @@ worktree). Live function list captured before (57 functions).
   → marker `{none:"solve_undone"}`, nothing seeded.
 - **Cutover:** rows without `createdFrom.firstBatch` are ignored by the trigger;
   pre-deploy Solves (hub2 + shop seeded, no rows) are untouched by construction.
+
+## 7. Cutover — Solves made before this deploy (commit 6)
+
+A pre-deploy Solve wrote qty-0 seeds at Hub 2 AND the shop and raised no
+request; the engine has been managing both legs since. Nothing here touches
+that state, by construction:
+
+- The trigger acts only on `/refill_requests` rows with `createdFrom.firstBatch
+  === true` (`functions/lib/first-batch.cjs processFirstBatchRequest`); every
+  other row — engine, Missing Sneakers, holds, MoveExcess — returns
+  `not_first_batch` without a write. Pinned by test.
+- A pre-deploy Solve's product is carried at a shop, so it is not a card and
+  cannot be Solved again. A hub-stranded card ("Only in Hub 2") still takes the
+  old path (`firstBatchEligible` requires `source === "central"`).
+- Undo records from before the deploy carry no `firstBatch` field; the undo
+  strip runs the old path for them byte-for-byte (the `u.firstBatch` branches
+  are the only additions).
+- **Deploy order is the one cutover rule:** `functions:firstBatchLeg` FIRST,
+  hosting SECOND. A shop request fulfilled while the trigger does not yet exist
+  would never receive its Hub 2 leg (triggers fire on writes, not on history).
+  With the function live before any client can write a tagged row, every
+  tagged row is seen from its first write.
+- Rollback: redeploy the previous hosting bundle. Rows already tagged keep
+  working (the function is independent of the client); deleting the function
+  afterwards leaves Central to fulfil any open shop request through the shop
+  tab of the previous build — which does not exist — so keep the function until
+  the shop tabs are empty (`refill_requests` where `requestingLocation` is a
+  shop and `status === "open"`).
