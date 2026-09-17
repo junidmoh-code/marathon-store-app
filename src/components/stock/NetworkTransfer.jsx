@@ -193,7 +193,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       let stood = [];
       if (liveFb) {
         const txn = firstBatchUndoCancelTxn({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null });
-        const ids = Object.keys(liveFb).filter((id) => liveFb[id]);
+        // Only rows still OPEN: a retry after a partial undo must not re-run
+        // the CAS on its own already-cancelled rows (they would abort and be
+        // reported as "standing"). (CodeRabbit, PR #607.)
+        const ids = Object.keys(liveFb).filter((id) => liveFb[id] && liveFb[id].status === "open");
         const outcomes = await Promise.all(ids.map((id) => runTransaction(ref(database, `refill_requests/${id}`), txn)));
         stood = ids.filter((id, i) => !outcomes[i].committed).map((id) => liveFb[id].size);
       }

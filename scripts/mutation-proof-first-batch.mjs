@@ -301,6 +301,22 @@ const MUTATIONS = [
     tests: ["src/components/stock/firstBatchSourceTab.render.test.jsx"],
   },
   {
+    id: "M-UNDO-RETRY",
+    guard: "a retry after a partial undo treats its own landed cancel as done, not as a blocker",
+    file: CORE,
+    from: `    if (r.status === "cancelled" && r.cancelReason === SOLVE_UNDONE_REASON) continue;`,
+    to: ``,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-SOLVE-PROBE-KEY",
+    guard: "the seed existence probe uses the path's own encoder (stockSizeKey)",
+    file: CORE,
+    from: `  const has = (loc, sz) => existing?.[loc]?.[stockSizeKey(sz)] != null;`,
+    to: `  const has = (loc, sz) => existing?.[loc]?.[String(sz).replace(/[.#$/\\[\\]\\s]/g, "_")] != null;`,
+    tests: CORE_TESTS,
+  },
+  {
     id: "M-UNDO-OWN-LOCK",
     guard: "the undo exempts ONLY this solve's own lock (any other lock still blocks)",
     file: UNDO,

@@ -37,7 +37,7 @@
 // Size keys go through encodeSizeKey / stockCellPath. Timestamps come from the
 // caller (serverNowMs / serverNowIso), never Date.now().
 
-import { encodeSizeKey, stockCellPath } from "../../utils/sizeKey";
+import { stockSizeKey, stockCellPath } from "../../utils/sizeKey";
 import { isClothing } from "./missingProductsCore";
 import { categoryPolicyLocs } from "./solvePlan";
 
@@ -130,7 +130,12 @@ export function firstBatchSplit({ sizes, run, store, centralAvail, maxUnitsPerIn
 export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, seedCell, nowIso, uid, solveId, newKey } = {}) {
   const updates = {};
   const paths = [];
-  const has = (loc, sz) => existing?.[loc]?.[encodeSizeKey(sz)] !== undefined;
+  // stockSizeKey, the SAME encoder stockCellPath uses for the path — never
+  // encodeSizeKey, which disagrees on "" ("" vs "_") and "Free Size"
+  // ("Free_Size" vs "_"): a probe that misses the stored cell would seed qty 0
+  // over it. `!= null` because an array-coerced row answers null in a hole.
+  // (CodeRabbit, PR #607.)
+  const has = (loc, sz) => existing?.[loc]?.[stockSizeKey(sz)] != null;
   const seed = (loc, sz) => {
     if (has(loc, sz)) return;
     const p = stockCellPath(loc, pid, sz);
@@ -170,6 +175,9 @@ export function firstBatchUndoBlockers({ liveRequests = {}, storeLabel = "the sh
   const blockers = [];
   for (const [id, r] of Object.entries(liveRequests)) {
     if (!r) continue;   // already gone — nothing to cancel
+    // This solve's OWN cancel already landed (a retry after the seed deletes
+    // failed mid-way): done, not a blocker. (CodeRabbit, PR #607.)
+    if (r.status === "cancelled" && r.cancelReason === SOLVE_UNDONE_REASON) continue;
     if (r.status !== "open") {
       // Three different pasts, three different sentences: Central sent it,
       // Central answered "no", or the ENGINE withdrew it (a cancelReason —

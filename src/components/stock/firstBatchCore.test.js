@@ -91,6 +91,13 @@ describe("the atomic write", () => {
     expect(updates["refill_requests/k2"].qty).toBe(1);
     expect(Object.keys(updates)).toHaveLength(6);
   });
+  it("the existence probe uses the PATH's encoder: an existing one-size '_' cell is found for a 'Free Size' catalogue size", () => {
+    n = 0;
+    const s = firstBatchSplit({ sizes: ["Free Size"], run: { hub2: { "FREE SIZE": 2 }, trophy: { "FREE SIZE": 1 } }, store: "trophy", centralAvail: () => 3 });
+    const { updates } = buildFirstBatchSolveUpdate({ pid: "os1", store: "trophy", split: s, existing: { trophy: { _: { qty: 5 } } }, seedCell, nowIso: now, uid: "u1", solveId: "s", newKey });
+    expect(Object.keys(updates).filter((k) => k.startsWith("stock/"))).toEqual([]);   // the stored "_" cell is seen, nothing seeded over it
+    expect(updates["refill_requests/k1"].size).toBe("Free Size");
+  });
   it("seed-if-absent: an existing cell is never overwritten; a missing uid is OMITTED, never undefined", () => {
     n = 0;
     const { updates, paths } = buildFirstBatchSolveUpdate({ pid: "tee1", store: "trophy", split, existing: { trophy: { S: { qty: 3 } } }, seedCell, nowIso: now, uid: null, solveId: "s", newKey });
@@ -123,8 +130,10 @@ describe("identity and the undo", () => {
     expect(solveIdFor("tee1", 1000)).not.toBe(solveIdFor("tee2", 1000));
     expect(firstBatchRunId("fb_tee1_rs")).toBe(`${FIRST_BATCH_RUN_PREFIX}fb_tee1_rs`);
   });
-  it("undo is blocked once Central has sent, answered or partially sent; a vanished row is not a blocker", () => {
+  it("undo is blocked once Central has sent, answered or partially sent; a vanished row or this solve's own finished cancel is not a blocker", () => {
     expect(firstBatchUndoBlockers({ liveRequests: { a: { status: "open", size: "M" }, b: null } })).toEqual([]);
+    // a retry after a partial undo: its own cancel already landed
+    expect(firstBatchUndoBlockers({ liveRequests: { a: { status: "cancelled", cancelReason: SOLVE_UNDONE_REASON, size: "M" } } })).toEqual([]);
     expect(firstBatchUndoBlockers({ liveRequests: { a: { status: "fulfilled", size: "M" } }, storeLabel: "Trophy" })[0]).toMatch(/already sent/);
     expect(firstBatchUndoBlockers({ liveRequests: { a: { status: "cancelled", size: "M" } } })[0]).toMatch(/answered/);
     expect(firstBatchUndoBlockers({ liveRequests: { a: { status: "open", sentQty: 1, size: "L" } } })[0]).toMatch(/started sending size L/);

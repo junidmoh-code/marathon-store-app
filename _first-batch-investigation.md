@@ -264,12 +264,13 @@ that state, by construction:
   would never receive its Hub 2 leg (triggers fire on writes, not on history).
   With the function live before any client can write a tagged row, every
   tagged row is seen from its first write.
-- Rollback: redeploy the previous hosting bundle. Rows already tagged keep
-  working (the function is independent of the client); deleting the function
-  afterwards leaves Central to fulfil any open shop request through the shop
-  tab of the previous build — which does not exist — so keep the function until
-  the shop tabs are empty (`refill_requests` where `requestingLocation` is a
-  shop and `status === "open"`).
+- Rollback: redeploy the previous hosting bundle (`0eeb6669`). Rows already
+  tagged keep working — the function is independent of the client — but that
+  bundle has NO shop tabs, so an open shop request could only be closed by a
+  script or by the engine's own withdrawal. Keep the function deployed and, if
+  rolling back, first drain the shop tabs on THIS bundle (open
+  `refill_requests` whose `requestingLocation` is a shop), then roll hosting
+  back; delete the function last.
 
 ## 8. Build and test results (commit 8, this worktree)
 
