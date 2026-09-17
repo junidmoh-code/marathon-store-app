@@ -205,3 +205,24 @@ belts maps, with the engine sometimes holding Hub 2's lock first) holds the same
 invariants as #607's: at most one Hub 2 request of ours, none beside the engine's,
 re-fires change nothing, and never a shop intent beside an open shop lock unless the
 engine withdrew it because Central ran dry.
+
+## 10. Build and test results (commit 6, this worktree)
+
+- `npm run build`: clean (`index-BgTxYacs.js`).
+- New / changed tests, all green: `functions/test/first-batch-categories.test.cjs` 13/13
+  (real trigger core + real `computeRefillPlan` over mapped, explicit-row, perfume and
+  one-size products); `first-batch.test.cjs` 26/26 unchanged (PR #607 behaviour for plain
+  clothing); `first-batch-fuzz.test.cjs` 600 worlds, a third mapped, all invariants;
+  `firstBatchCore.test.js` 40/40; `firstBatchSolve.render.test.jsx` 21/21;
+  `missingProductsCore.test.js` 35/35; `solveUndo.gate.test.js` re-pinned for both write
+  paths.
+- Mutation proof `scripts/mutation-proof-first-batch.mjs`: **50/50 guards proven** (the two
+  #607 mutations that pinned the exclusions this change removes were deleted; 22 new).
+- Full vitest: 6395 pass / 10 fail; full functions `node --test`: 2051 pass / 11 fail.
+  Every failure predates this branch and lives in subjects it does not touch —
+  `git diff origin/main --name-only` over them is empty: `hubIsolation.test.js` (pins an
+  `App.jsx` line #600 changed on main), `scripts/shopify/{homeRails,priceHearts,themeStrings}`,
+  `scripts/social/socialSchedule`, `functions/test/social-{select,caption}` (theme and
+  launchd assets outside this diff). Identical to the list recorded for PR #607.
+- Kill switches re-read after the build: unchanged (`ruleBasedTargets true`,
+  `footwearTargets` absent = sneakers OFF).
