@@ -231,7 +231,9 @@ describe("location history nominates the shop (the operator can still switch)", 
     await act(async () => { await buttonSaying(tree, "Solve — send 4 to Trophy first").props.onClick(); });
     const upd = updateMock.mock.calls[0][1];
     expect(upd["refill_requests/req1"].requestingLocation).toBe("trophy");
-    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).every((k) => k.startsWith("stock/trophy/") || k.startsWith("stock/hub2/"))).toBe(true);
+    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual([
+      "stock/hub2/tee1/L", "stock/trophy/tee1/L", "stock/trophy/tee1/M", "stock/trophy/tee1/S",
+    ]);
   });
   it("the product's OWN row at Marathon PE outranks the category's Trophy placement", () => {
     const tree = render({ products: [KEYED_TEE, ...TROPHY_TEES], stock: stockWithHistory, targets: { "marathon-pe": { [TEE]: { M: { target: 2 } } } } });

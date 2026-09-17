@@ -283,8 +283,17 @@ describe("the admission gate — the complement of the footwear group (2026-09-1
     expect(admitsMissingProduct(null)).toBe(false);
     expect(admitsMissingProduct(undefined)).toBe(false);
   });
-  it("a clothing-typed record is clothing whatever its category says — the engine's precedence", () => {
-    expect(inFootwearGroup({ id: "h", name: "Footwear hoodie", category: "Footwear", productType: "clothing", sizes: ["M"] })).toBe(false);
+  it("a clothing-typed record is clothing whatever its category says — the engine's precedence — and the two Health tabs are complementary on it", async () => {
+    const hoodie = { id: "h", name: "Footwear hoodie", category: "Footwear", productType: "clothing", sizes: ["M"] };
+    expect(inFootwearGroup(hoodie)).toBe(false);
+    const { computeMissingFootwear } = await import("./missingFootwearCore.js");
+    const allStock = { central: { h: { M: cell(3) } } };
+    expect(computeMissingProducts({ allStock, products: [hoodie] }).map((c) => c.pid)).toEqual(["h"]);
+    expect(computeMissingFootwear({ allStock, products: [hoodie] })).toEqual([]);
+    // and a real shoe is the other way round
+    const shoe = { id: "s", name: "Campus", category: "Footwear", subcategory: "Sneakers", sizes: ["8"] };
+    expect(computeMissingProducts({ allStock: { central: { s: { 8: cell(3) } } }, products: [shoe] })).toEqual([]);
+    expect(computeMissingFootwear({ allStock: { central: { s: { 8: cell(3) } } }, products: [shoe] }).map((c) => c.pid)).toEqual(["s"]);
   });
   it("the group's key list is the engine's own (refill-engine.cjs FOOTWEAR_GROUP_KEYS), so the two Health tabs cannot drift", () => {
     const engine = readFileSync(new URL("../../../functions/lib/refill-engine.cjs", import.meta.url), "utf8");

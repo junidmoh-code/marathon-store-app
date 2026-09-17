@@ -40,6 +40,14 @@ const carries = (stock, loc, pid) => !!stock?.[loc]?.[pid] && Object.keys(stock[
 const sumAt = (stock, loc, pid) => cells(stock?.[loc]?.[pid]).reduce((t, [, c]) => t + Math.max(num(c.qty), 0), 0);
 const isPerfume = (p) => !!p && p.categoryKey === "perfumes";
 const isDeactivated = (p) => !!(p && p.deactivated);
+// The tab's admission predicate, as of PR #608: the complement of the engine's
+// footwear group (missingProductsCore.inFootwearGroup — a CJS restatement here
+// because that module is ESM; the vitest suite pins the key list to the
+// engine's). "admitted (#607)" below is the OLD gate, kept so the census still
+// shows what the widening changed.
+const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
+const inFootwearGroup = (p) => !!p && !isClothing(p) && (p.category === "Footwear" || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(p) || ""));
+const admitsMissingProduct = (p) => !!p && !inFootwearGroup(p);
 
 async function readLive() {
   const admin = req("firebase-admin");
@@ -106,7 +114,8 @@ async function readLive() {
     const t = p.productType || "∅"; c.types[t] = (c.types[t] || 0) + 1;
     if (isClothing(p)) c.clothing++;
     if (isPerfume(p)) c.perfume++;
-    if (isClothing(p) || isPerfume(p)) c.admitted++;
+    if (admitsMissingProduct(p)) c.admitted++;
+    if (isClothing(p) || isPerfume(p)) c.admitted607 = (c.admitted607 || 0) + 1;
     if (isDeactivated(p)) c.deact++;
     const sizes = (p.sizes || []).map(String);
     if (sizes.length === 1 && sizes[0] === "_") c.oneSize++;
@@ -115,10 +124,10 @@ async function readLive() {
     if (SHOPS.some((s) => carries(stock, s, pid))) c.atShop++;
     if (carries(stock, "hub2", pid)) c.atHub2++;
   }
-  say("| key | n | productType | isClothing | isPerfume | admitted to Missing Products | deactivated | one-size | styleCode | alternatives | carried at a shop | carried at Hub 2 |");
+  say("| key | n | productType | isClothing | isPerfume | admitted to Missing Products (#608 / #607) | deactivated | one-size | styleCode | alternatives | carried at a shop | carried at Hub 2 |");
   say("|---|---|---|---|---|---|---|---|---|---|---|---|");
   for (const [k, c] of Object.entries(cat).sort((a, b) => b[1].n - a[1].n)) {
-    say(`| ${k} | ${c.n} | ${Object.entries(c.types).map(([t, n]) => `${t}:${n}`).join(" ")} | ${c.clothing} | ${c.perfume} | ${c.admitted} | ${c.deact} | ${c.oneSize} | ${c.styleCode} | ${c.alternatives} | ${c.atShop} | ${c.atHub2} |`);
+    say(`| ${k} | ${c.n} | ${Object.entries(c.types).map(([t, n]) => `${t}:${n}`).join(" ")} | ${c.clothing} | ${c.perfume} | ${c.admitted} / ${c.admitted607 || 0} | ${c.deact} | ${c.oneSize} | ${c.styleCode} | ${c.alternatives} | ${c.atShop} | ${c.atHub2} |`);
   }
 
   // ── the cards: Only in Central ──────────────────────────────────────────
@@ -149,13 +158,14 @@ async function readLive() {
     if (!(ce > 0)) continue;
     if (carries(stock, "hub2", pid) || SHOPS.some((s) => carries(stock, s, pid))) continue;
     const key = policyCategoryKey({ ...p, id: pid }) || "(no key)";
-    const admitted = isClothing(p) || isPerfume(p);
+    const admitted = admitsMissingProduct(p);
+    const admitted607 = isClothing(p) || isPerfume(p);
     const hub2 = policyAt(pid, "hub2"), pe = policyAt(pid, "marathon-pe"), tr = policyAt(pid, "trophy");
     const any = (m) => Object.values(m).some((t) => t && t.target > 0);
     const src = (m) => [...new Set(Object.values(m).filter((t) => t && t.target > 0).map((t) => t.source))].join("/");
     const hubLeg = locationPolicyFor(config, key, "hub2");
     const row = {
-      pid, key, name: p.name, admitted, oneSize: (p.sizes || []).length === 1 && String(p.sizes[0]) === "_", sizes: (p.sizes || []).length,
+      pid, key, name: p.name, admitted, admitted607, oneSize: (p.sizes || []).length === 1 && String(p.sizes[0]) === "_", sizes: (p.sizes || []).length,
       units: ce, hub2Policy: any(hub2), hub2Src: src(hub2), pePolicy: any(pe), peSrc: src(pe), trPolicy: any(tr), trSrc: src(tr),
       explicitHub2: !!targets.hub2?.[pid], explicitPe: !!targets["marathon-pe"]?.[pid], explicitTr: !!targets.trophy?.[pid],
       hub2Leg: hubLeg ? (hubLeg.carriedOnly ? "carriedOnly" : "unscoped") : "none",
@@ -178,7 +188,7 @@ async function readLive() {
   for (const [k, c] of Object.entries(cardsByKey).sort((a, b) => b[1].n - a[1].n)) {
     say(`| ${k} | ${c.n} | ${c.units} | ${c.admitted} | ${c.oneSize} | ${c.hub2Policy} | ${c.shopPolicy} | ${c.bothShops} | ${c.explicitHub2} | ${c.explicitShop} | ${c.unscopedLeg} | ${c.carriedOnlyLeg} | ${c.openHub2Lock} | ${c.noPolicyAnywhere} | ${c.styleCode} | ${Object.entries(c.srcs).map(([s, n]) => `${s}:${n}`).join(" ")} |`);
   }
-  say(`\nTotal cards: ${cardRows.length}; admitted today: ${cardRows.filter((r) => r.admitted).length}; with an open engine Hub 2 lock right now: ${cardRows.filter((r) => r.openHub2Lock).length}; with an open shop lock: ${cardRows.filter((r) => r.openShopLock).length}`);
+  say(`\nTotal cards: ${cardRows.length}; admitted (#608 gate): ${cardRows.filter((r) => r.admitted).length}; admitted by the #607 gate: ${cardRows.filter((r) => r.admitted607).length}; with an open engine Hub 2 lock right now: ${cardRows.filter((r) => r.openHub2Lock).length}; with an open shop lock: ${cardRows.filter((r) => r.openShopLock).length}`);
   say("\n### Cards with NO policy at Hub 2 or either shop (the ones the widened path cannot arm without inventing numbers)");
   for (const r of cardRows.filter((x) => !x.hub2Policy && !x.pePolicy && !x.trPolicy).slice(0, 60)) say(`- ${r.pid} ${r.key} "${r.name}" units ${r.units} sizes ${r.sizes}${r.oneSize ? " one-size" : ""}`);
   say("\n### Cards with a Hub 2 policy but NO shop policy at either shop");

@@ -286,3 +286,21 @@ makes any other split self-undoing; the owner's two bullets ("use policies as th
 "history informs the split") are reconciled in favour of the first, stated plainly in the PR
 and the final report. Newly admitted typeless cards land in the Clothing chip (cosmetic). An
 armed policy GROUP is not mirrored by `categoryRun` (none armed live).
+
+### CodeRabbit round (HEAD `609643b2` review, 5 actionable)
+- **Fixed**: the census used the #607 gate for "admitted" (now the #608 predicate, with the
+  #607 count kept beside it: 265 / 263 live); a render assertion whose `every()` could pass on
+  an empty list (now the exact stock paths); a clothing-typed record with a legacy "Footwear"
+  category appeared on BOTH Health tabs (Missing Sneakers now skips it — the engine already
+  resolves it as clothing; `isFootwearProduct` itself, shared by the hub counts and the display
+  lane, is untouched); the history line after a manual override (already reworded in §11).
+- **Accepted, not built** (Major, "reserve Central atomically with request creation"): two
+  operators Solving the same Central-stranded product at the SAME moment at the two shops can
+  each read Central's free as 1 and both create a request — the shops' locks are per
+  (shop, pid, size), so nothing serialises them. What follows: the engine counts both in
+  `sourceReserved`; Central fulfils one; the other is withdrawn on the next scan as
+  `awaiting_upstream` (`sourceEmpty`), or Central answers "Out of Stock" — no unit moves
+  twice (`applyMovement` refuses a negative source). The same window exists in #607 and in
+  every human Shop Refill order. Closing it means a new authoritative server operation keyed
+  by (pid, size) at Central — a reservation table the engine would also have to honour — which
+  is outside "build on the existing paths"; recorded here for the owner.
