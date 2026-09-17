@@ -79,6 +79,24 @@ async function centralReservations({ db, routes, pid, sizeKey, excludeRefillId }
   return reserved;
 }
 
+// Create-if-absent, exactly as refill-scan.cjs claims its intents. A lock that
+// already exists and is not ours means another writer (the engine, or an
+// earlier solve) is bookkeeping this cell — record it and leave it alone.
+async function claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, now }) {
+  const lockPath = `refill_engine/open/${store}/${pid}/${sizeKey}`;
+  const claim = await db.ref(lockPath).transaction((cur) => (cur ? undefined : {
+    qty: Math.max(num(rr.qty) || 1, 1), source: SOURCE, createdAt: now, runId,
+    refillId: requestId, orderId: null, orderCreatedAt: null,
+  }));
+  const cur = claim.snapshot.val();
+  const ours = !!cur && cur.runId === runId && cur.refillId === requestId;
+  const mark = ours
+    ? { claimedAt: now }
+    : { heldBy: (cur && cur.runId) || "unknown", refillId: (cur && cur.refillId) || null, at: now };
+  await db.ref(`refill_requests/${requestId}/firstBatch/lock`).set(mark);
+  return ours ? { claimed: true } : { claimed: false, heldBy: mark.heldBy };
+}
+
 /**
  * The trigger core. Returns a small result object naming what it did — every
  * outcome that is not a transient I/O failure RETURNS (never throws), so a
@@ -108,7 +126,21 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
 
   const resolved = rr.status !== "open";
   const touched = (num(rr.sentQty) || 0) > 0;
-  if (!resolved && !touched) return { skipped: "open_untouched" };
+  if (!resolved && !touched) {
+    // ── THE OPEN-REQUEST GUARD (investigation §4, Q2) ──────────────────────
+    // Claim the SHOP request's engine lock, source Central. With it the row is
+    // INBOUND to the engine: the shop's deficit reads 0, so no scan raises a
+    // hub2→shop request for this product/size while the shop's Central
+    // request is open — which matters the moment a partial send has raised
+    // Hub 2's leg and Hub 2 holds stock. It also reserves Central for the shop
+    // before the hub (sourceReserved), and hands the row to the engine's own
+    // bookkeeping: withdraw when Central runs dry (awaiting_upstream), resize
+    // to real demand, close on fulfil. The engine never CREATES a shop→Central
+    // request — routes are untouched — it only bookkeeps this one.
+    if (rr.firstBatch && rr.firstBatch.lock) return { skipped: "open_untouched" };
+    const r = await claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, now });
+    return { skipped: "open_untouched", lock: r };
+  }
   if (rr.firstBatch && rr.firstBatch.hub2Leg) return { skipped: "hub2_leg_done", hub2Leg: rr.firstBatch.hub2Leg };
 
   const legRef = reqRef.child("firstBatch/hub2Leg");
@@ -221,6 +253,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
 
 module.exports = {
   processFirstBatchRequest,
+  claimShopLock,
   centralReservations,
   seedCell,
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, firstBatchRunId,
