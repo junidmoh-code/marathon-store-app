@@ -27,10 +27,100 @@ const TAB_TESTS = ["src/components/stock/missingProductsCore.test.js"];
 // origin filter, the server backstop.
 const QUEUE = "src/components/stock/RefillQueue.jsx";
 const OFF_SERVER_TESTS = ["test/first-batch-off.test.cjs"];
-const OFF_CLIENT_TESTS = ["src/components/stock/firstBatchCore.test.js", "src/components/stock/firstBatchOff.render.test.jsx"];
+const OFF_CLIENT_TESTS = ["src/components/stock/firstBatchCore.test.js", "src/components/stock/firstBatchGuard.render.test.jsx"];
+const GUARD_SERVER_TESTS = ["test/first-batch-guard.test.cjs", "test/first-batch-categories.test.cjs", "test/first-batch-fuzz.test.cjs"];
 const QUEUE_TESTS = ["src/components/stock/firstBatchSourceTab.render.test.jsx"];
 
 const MUTATIONS = [
+  // ── the Hub 2-presence guard (Phase 3) ─────────────────────────────────────
+  {
+    id: "M-GUARD-CLIENT-FAIL-CLOSED",
+    guard: "firstBatchEligible fails CLOSED: anything but an explicit hub2Present:false is ineligible",
+    file: CORE,
+    from: `  if (present !== false) return false;`,
+    to: `  if (present === true) return false;`,
+    tests: [...CORE_TESTS, ...OFF_CLIENT_TESTS],
+  },
+  {
+    id: "M-GUARD-CLIENT-PASSED",
+    guard: "the Solve passes the REAL presence (stock node + live locks) to the eligibility test",
+    file: SOLVE,
+    from: `hub2Present: hub2PresentFor(card.pid, openByLoc) });`,
+    to: `hub2Present: false });`,
+    tests: [...SOLVE_TESTS, ...OFF_CLIENT_TESTS],
+  },
+  {
+    id: "M-GUARD-CLIENT-LOCK-SIGNAL",
+    guard: "an engine lock at Hub 2 is presence (a pending inbound) on the client",
+    file: CORE,
+    from: `  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some((e) => e && typeof e === "object")) signals.push("engine_lock");`,
+    to: ``,
+    tests: [...CORE_TESTS, ...SOLVE_TESTS, ...OFF_CLIENT_TESTS],
+  },
+  {
+    id: "M-GUARD-CLIENT-OWN-SEED",
+    guard: "only THIS Solve's own qty-0 seeds are excluded from presence (a unit in one, or a foreign seed, counts)",
+    file: CORE,
+    from: `  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0);`,
+    to: `  const ownSeed = (k, c) => !!c && c.mv === "seed";`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-GUARD-CLIENT-UNREADABLE",
+    guard: "an unreadable lock table is UNKNOWN presence: the write falls to the old Solve",
+    file: SOLVE,
+    from: `      const split = onPath && openNow ? firstBatchFor(card, store, sizes, openNow) : null;`,
+    to: `      const split = onPath ? firstBatchFor(card, store, sizes, openNow || {}) : null;`,
+    tests: OFF_CLIENT_TESTS,
+  },
+  {
+    id: "M-GUARD-SEEDED-STAMP",
+    guard: "the request records the Hub 2 seeds this Solve wrote (the trigger must not read them as presence)",
+    file: CORE,
+    from: `        ...(hub2Seeded.length ? { hub2Seeded } : {}),`,
+    to: ``,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-GUARD-SERVER-CHECK",
+    guard: "the trigger re-checks Hub 2 presence at creation and withdraws a request Hub 2 already holds",
+    file: SERVER,
+    from: `    if (signals.length) {`,
+    to: `    if (false) {`,
+    nodeTests: GUARD_SERVER_TESTS,
+  },
+  {
+    id: "M-GUARD-SERVER-ONCE",
+    guard: "presence is judged ONCE, before any lock is claimed — never on a later write",
+    file: SERVER,
+    from: `  if (!resolved && !touched && !(rr.firstBatch && rr.firstBatch.lock)) {`,
+    to: `  if (!resolved && !touched) {`,
+    nodeTests: GUARD_SERVER_TESTS,
+  },
+  {
+    id: "M-GUARD-SERVER-OWN-SEED",
+    guard: "the server excludes only the Solve's own listed seeds (hub2Seeded)",
+    file: SERVER,
+    from: `    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, ownSeedKeys: rr.createdFrom.hub2Seeded || [] });`,
+    to: `    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, ownSeedKeys: Object.keys(hub2Node || {}) });`,
+    nodeTests: GUARD_SERVER_TESTS,
+  },
+  {
+    id: "M-GUARD-SERVER-LOCK-SIGNAL",
+    guard: "an engine lock at Hub 2 is presence on the server",
+    file: SERVER,
+    from: `    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, ownSeedKeys: rr.createdFrom.hub2Seeded || [] });`,
+    to: `    const signals = hub2PresenceSignals({ hub2Node, hub2Locks: null, ownSeedKeys: rr.createdFrom.hub2Seeded || [] });`,
+    nodeTests: GUARD_SERVER_TESTS,
+  },
+  {
+    id: "M-GUARD-SERVER-REASON",
+    guard: "the presence withdrawal carries its own reason (first_batch_hub2_present)",
+    file: SERVER,
+    from: `      const r = await withdrawToOldSolve({ reason: HUB2_PRESENT_REASON, none: "hub2_present", product });`,
+    to: `      const r = await withdrawToOldSolve({ reason: PATH_OFF_REASON, none: "hub2_present", product });`,
+    nodeTests: GUARD_SERVER_TESTS,
+  },
   // ── the incident revert (PR #609) ──────────────────────────────────────────
   {
     id: "M-OFF-CLIENT",
@@ -50,9 +140,9 @@ const MUTATIONS = [
   },
   {
     id: "M-OFF-NO-LOCK-READS",
-    guard: "off the path the Solve panel reads nothing from the engine's lock table",
+    guard: "a card the path cannot take reads nothing from the engine's lock table",
     file: SOLVE,
-    from: `    if (!openCard || !STORES.some((s) => firstBatchEligible({ source: openCard.source, store: s, product: byId.get(solvePid), routes: cfg.routes }))) return undefined;`,
+    from: `    if (!openCard || !STORES.some((s) => eligibleAt(openCard, s, undefined))) return undefined;`,
     to: ``,
     tests: OFF_CLIENT_TESTS,
   },
@@ -82,11 +172,11 @@ const MUTATIONS = [
   },
   {
     id: "M-SERVER-OFF-SEED",
-    guard: "the backstop seeds Hub 2 before withdrawing (Hub 2 stays a valid source)",
+    guard: "a withdrawal to the old Solve seeds Hub 2 first (Hub 2 stays a valid source)",
     file: SERVER,
-    from: `    if (offProduct) await seedIfAbsent(db, \`stock/\${FIRST_BATCH_HUB}/\${pid}/\${sizeKey}\`, now);`,
+    from: `    if (product) await seedIfAbsent(db, \`stock/\${FIRST_BATCH_HUB}/\${pid}/\${sizeKey}\`, now);`,
     to: ``,
-    nodeTests: OFF_SERVER_TESTS,
+    nodeTests: [...OFF_SERVER_TESTS, ...GUARD_SERVER_TESTS],
   },
   {
     id: "M-SERVER-OFF-CAS",
@@ -100,9 +190,9 @@ const MUTATIONS = [
     id: "M-SERVER-OFF-PRODUCT-GONE",
     guard: "a product gone from the catalogue gets no Hub 2 carriage cell",
     file: SERVER,
-    from: `    if (offProduct) await seedIfAbsent(`,
+    from: `    if (product) await seedIfAbsent(`,
     to: `    if (true) await seedIfAbsent(`,
-    nodeTests: OFF_SERVER_TESTS,
+    nodeTests: [...OFF_SERVER_TESTS, ...GUARD_SERVER_TESTS],
   },
   {
     id: "M-SERVER-OFF-SHOP-ONLY",
@@ -124,9 +214,9 @@ const MUTATIONS = [
     id: "M-SERVER-OFF-REASON",
     guard: "the withdrawal carries a reason — to the engine a bare cancel is a shop-level rejection",
     file: SERVER,
-    from: `      return { ...cur, status: "cancelled", cancelReason: PATH_OFF_REASON, resolvedAt: now,`,
+    from: `      return { ...cur, status: "cancelled", cancelReason: reason, resolvedAt: now,`,
     to: `      return { ...cur, status: "cancelled", resolvedAt: now,`,
-    nodeTests: OFF_SERVER_TESTS,
+    nodeTests: [...OFF_SERVER_TESTS, ...GUARD_SERVER_TESTS],
   },
   {
     id: "M-SERVER-LOCK-OWN-ONLY",
@@ -269,10 +359,10 @@ const MUTATIONS = [
   // ── the Solve (client) ─────────────────────────────────────────────────────
   {
     id: "M-SOLVE-NO-HUB-SEED",
-    guard: "Hub 2 is NOT seeded for a size Central can send",
+    guard: "Hub 2 IS seeded for every first-batch size (Hub 2 always a valid source)",
     file: CORE,
-    from: `  for (const l of split.firstBatch) seed(store, l.size);`,
-    to: `  for (const l of split.firstBatch) { seed(store, l.size); seed(FIRST_BATCH_HUB, l.size); }`,
+    from: `  for (const l of split.firstBatch) { if (seed(FIRST_BATCH_HUB, l.size)) hub2Seeded.push(stockSizeKey(l.size)); seed(store, l.size); }`,
+    to: `  for (const l of split.firstBatch) seed(store, l.size);`,
     tests: [...CORE_TESTS, ...SOLVE_TESTS],
   },
   {
@@ -303,7 +393,7 @@ const MUTATIONS = [
     id: "M-SOLVE-SEED-IF-ABSENT",
     guard: "an existing cell is never overwritten by a seed",
     file: CORE,
-    from: `    if (has(loc, sz)) return;`,
+    from: `    if (has(loc, sz)) return false;`,
     to: ``,
     tests: CORE_TESTS,
   },
@@ -534,8 +624,8 @@ const MUTATIONS = [
     id: "M-SOLVE-LIVE-LOCKS",
     guard: "the write re-reads the lock table live, never the panel's earlier read",
     file: SOLVE,
-    from: `      const openNow = onPath ? await readOpenLocks(card.pid) : null;`,
-    to: `      const openNow = onPath ? (openLocks[card.pid] || {}) : null;`,
+    from: `    if (onPath) { try { openNow = await readOpenLocks(card.pid); } catch { openNow = null; } }`,
+    to: `    if (onPath) openNow = openLocks[card.pid] || {};`,
     tests: SOLVE_TESTS,
   },
   {

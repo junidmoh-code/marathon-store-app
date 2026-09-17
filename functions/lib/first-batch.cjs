@@ -69,8 +69,33 @@ const firstBatchRunId = (solveId) => `${FIRST_BATCH_RUN_PREFIX}${solveId}`;
 // has already started on (sentQty > 0) is real stock in motion and keeps the
 // existing follow-through. A parameter, like the client flag, so the path's
 // tests still drive it with `pathEnabled: true`.
-const FIRST_BATCH_PATH_ENABLED = false;
+const FIRST_BATCH_PATH_ENABLED = true;   // ON again with the Hub 2-presence guard (Phase 3 of the incident plan)
 const PATH_OFF_REASON = "first_batch_path_off";
+// ── HUB 2 PRESENCE — the hard precondition, re-checked at creation ──────────
+// Owner rule after the incident: a product that exists at Hub 2 by ANY means
+// — a stock cell (qty 0 included; cells are never deleted), an engine lock at
+// Hub 2 (a pending inbound / an open Hub 2 request), an open Hub 2 request —
+// is served from Hub 2, never from Central. The client checks this at Solve
+// time; the trigger checks it AGAIN here, on the request's creation (before
+// the shop lock is claimed), from scoped reads: a request created for a
+// product Hub 2 holds is withdrawn with `first_batch_hub2_present`, Hub 2
+// seeded, and the normal route takes over. The Solve's own qty-0 Hub 2 seeds
+// (createdFrom.hub2Seeded, written in the same update as the request) are
+// not presence. JS twin: src/components/stock/firstBatchCore.js
+// hub2PresenceSignals (pinned equal by test).
+const HUB2_PRESENT_REASON = "first_batch_hub2_present";
+function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys } = {}) {
+  const own = new Set((ownSeedKeys || []).map(String));
+  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0);
+  const cells = Array.isArray(hub2Node)
+    ? hub2Node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)
+    : Object.entries(hub2Node || {}).filter(([, c]) => c != null);
+  const signals = [];
+  if (cells.some(([k, c]) => !ownSeed(k, c))) signals.push("stock_cell");
+  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some((e) => e && typeof e === "object")) signals.push("engine_lock");
+  if (Array.isArray(hub2OpenRequestIds) && hub2OpenRequestIds.length) signals.push("open_hub2_request");
+  return signals;
+}
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const avail = (q) => Math.max(num(q), 0);
@@ -202,18 +227,9 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // (Spec review, PR #607.)
   const centralDeclined = rr.status === "cancelled" && !rr.cancelReason;
   const declineStamp = centralDeclined ? { "cancelReason": CENTRAL_DECLINED_REASON } : {};
-  if (!resolved && !touched && pathEnabled !== true) {
-    // ── PATH OFF: back to the old Solve (see FIRST_BATCH_PATH_ENABLED) ─────
-    // Only a SHOP routed via Hub 2 can have been given a first-batch row (the
-    // client's own scope); a tagged row anywhere else is not this backstop's
-    // to touch. A product gone from the catalogue is withdrawn WITHOUT a seed
-    // — the #607 branch below refuses that seed too (a carriage cell for a
-    // record that no longer exists is forever). (Adversarial review, PR #609.)
-    const [offConfig, offProduct] = await Promise.all([
-      db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
-      db.ref(`products/${pid}`).once("value").then((s) => s.val()),
-    ]);
-    if (((offConfig.routes || {})[store]) !== FIRST_BATCH_HUB) return { skipped: "path_off_not_shop", store };
+  // ── BACK TO THE OLD SOLVE — the withdrawal both guards share ─────────────
+  // Used when the path is OFF and when Hub 2 presence is found at creation.
+  const withdrawToOldSolve = async ({ reason, none, product }) => {
     // Seed FIRST (a seed with nothing after it is harmless; a withdrawn
     // request with no Hub 2 cell is a size the engine could never adopt),
     // then withdraw by CAS: a row Central got to in the gap (fulfilled, or
@@ -222,18 +238,17 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // cancel so the re-fire this cancel causes is a no-op (`hub2_leg_done`).
     // No resolvedBy: to Refill History a reasoned cancel with no actor IS an
     // engine withdrawal; a synthetic actor string would render as neither.
-    if (offProduct) await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`, now);
+    if (product) await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`, now);
     // COLD-NULL TRAP (admin-movement.cjs): the first callback runs on null in
     // a Cloud Function; judge it against the row already read (`rr`) — the
     // proposal then CASes against the server value and re-runs on a mismatch.
     // (A row hard-deleted in the gap would be re-created as cancelled; nothing
     // in this codebase deletes a live /refill_requests row — accepted.)
-    const none = offProduct ? "path_off" : "product_missing";
     const res = await reqRef.transaction((raw) => {
       const cur = raw === null || raw === undefined ? rr : raw;
       if (cur.status !== "open" || (num(cur.sentQty) || 0) > 0 || (cur.sentQty != null && typeof cur.sentQty !== "number")) return undefined;
       if (cur.firstBatch && cur.firstBatch.hub2Leg) return undefined;
-      return { ...cur, status: "cancelled", cancelReason: PATH_OFF_REASON, resolvedAt: now,
+      return { ...cur, status: "cancelled", cancelReason: reason, resolvedAt: now,
         firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none, at: now } } };
     });
     // A #607-era row may already hold the SHOP's engine lock (claimShopLock
@@ -248,6 +263,37 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
       lockReleased = !!rel.committed;
     }
     return { raised: false, none, withdrawn: !!res.committed, ...(lockReleased ? { lockReleased } : {}) };
+  };
+
+  if (!resolved && !touched && pathEnabled !== true) {
+    // ── PATH OFF (see FIRST_BATCH_PATH_ENABLED) ────────────────────────────
+    // Only a SHOP routed via Hub 2 can have been given a first-batch row (the
+    // client's own scope); a tagged row anywhere else is not this backstop's
+    // to touch. A product gone from the catalogue is withdrawn WITHOUT a seed
+    // — the #607 branch below refuses that seed too (a carriage cell for a
+    // record that no longer exists is forever). (Adversarial review, PR #609.)
+    const [offConfig, offProduct] = await Promise.all([
+      db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
+      db.ref(`products/${pid}`).once("value").then((s) => s.val()),
+    ]);
+    if (((offConfig.routes || {})[store]) !== FIRST_BATCH_HUB) return { skipped: "path_off_not_shop", store };
+    return withdrawToOldSolve({ reason: PATH_OFF_REASON, none: offProduct ? "path_off" : "product_missing", product: offProduct });
+  }
+  if (!resolved && !touched && !(rr.firstBatch && rr.firstBatch.lock)) {
+    // ── THE HUB 2-PRESENCE GUARD, AT CREATION (before any lock is claimed) ──
+    // Judged ONCE, on the row's first write: after the shop lock exists the
+    // engine may legitimately raise Hub 2's own leg (hub2←central from the
+    // remainder) and that lock must never read as "Hub 2 held it before".
+    const [hub2Node, hub2Locks, product] = await Promise.all([
+      db.ref(`stock/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
+      db.ref(`refill_engine/open/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
+      db.ref(`products/${pid}`).once("value").then((s) => s.val()),
+    ]);
+    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, ownSeedKeys: rr.createdFrom.hub2Seeded || [] });
+    if (signals.length) {
+      const r = await withdrawToOldSolve({ reason: HUB2_PRESENT_REASON, none: "hub2_present", product });
+      return { ...r, signals };
+    }
   }
   if (!resolved && !touched) {
     // ── THE OPEN-REQUEST GUARD (investigation §4, Q2) ──────────────────────
@@ -440,5 +486,5 @@ module.exports = {
   centralReservations,
   seedCell,
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, firstBatchRunId,
-  FIRST_BATCH_PATH_ENABLED, PATH_OFF_REASON,
+  FIRST_BATCH_PATH_ENABLED, PATH_OFF_REASON, HUB2_PRESENT_REASON, hub2PresenceSignals,
 };

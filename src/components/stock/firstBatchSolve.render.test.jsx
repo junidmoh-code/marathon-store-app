@@ -31,15 +31,6 @@ vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ ...perm }) })
 vi.mock("./applyMovement", () => ({ applyMovement: vi.fn(() => Promise.resolve({ ok: true })) }));
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toISOString(), serverNowMs: () => NOW }));
 
-// THE PATH AS IT WOULD RUN: firstBatchEligible is forced `enabled: true` here
-// because the live default is OFF (FIRST_BATCH_ENABLED — incident 2026-09-17).
-// The default's own behaviour — the old Solve, byte-for-byte — is proven in
-// firstBatchOff.render.test.jsx against the real flag.
-vi.mock("./firstBatchCore", async (importOriginal) => {
-  const m = await importOriginal();
-  return { ...m, firstBatchEligible: (a) => m.firstBatchEligible({ ...a, enabled: true }) };
-});
-
 const { default: NetworkTransfer } = await import("./NetworkTransfer.jsx");
 const { computeMissingProducts } = await import("./missingProductsCore.js");
 
@@ -121,13 +112,13 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
     act(() => { buttonExactly(tree, "Solve").props.onClick(); });
     const text = textOf(tree);
     expect(text).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first — requested from Central now; Central picks it from Source › Marathon at the next release/);
-    expect(text).toMatch(/Hub 2's own ~5 units follow automatically after Marathon PE's request is fulfilled/);
+    expect(text).toMatch(/Hub 2 is seeded now; its own ~5 units follow automatically/);
     expect(text).toMatch(/L: Central has none — seeded at Hub 2 \+ Marathon PE/);
     expect(text).not.toMatch(/seeds Hub 2 \+/);
     expect(buttonSaying(tree, "Solve — send 4 to Marathon PE first")).toBeTruthy();
   });
 
-  it("ONE atomic update: shop seeds for every size, NO Hub 2 seed for a size Central can send, one shop request per such size", async () => {
+  it("ONE atomic update: Hub 2 AND shop seeds for every size (Hub 2 always a valid source), one shop request per size Central can send, the Hub 2 seeds recorded on it", async () => {
     const tree = render({ products: onlyProduct(TEE) });
     await solve(tree);
     expect(updateMock).toHaveBeenCalledTimes(1);
@@ -135,9 +126,10 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
     const keys = Object.keys(upd).sort();
     expect(keys).toEqual([
       "refill_requests/req1", "refill_requests/req2",
-      "stock/hub2/tee1/L",                                   // the size Central lacks: old path
+      "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
     ]);
+    expect(upd["refill_requests/req1"].createdFrom.hub2Seeded.slice().sort()).toEqual(["M", "S"]);
     expect(upd["stock/marathon-pe/tee1/S"]).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: new Date(NOW).toISOString(), updatedBy: "u1" });
     for (const k of ["refill_requests/req1", "refill_requests/req2"]) {
       expect(upd[k]).toMatchObject({ productId: TEE, requestingLocation: "marathon-pe", status: "open", qty: 2, createdFrom: { firstBatch: true, source: "central", store: "marathon-pe", hub: "hub2", by: "u1" } });
@@ -155,13 +147,13 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
     const upd = updateMock.mock.calls[0][1];
     expect(Object.keys(upd).sort()).toEqual([
       "refill_requests/req1",
-      "stock/hub2/tee2/L", "stock/hub2/tee2/M",
+      "stock/hub2/tee2/L", "stock/hub2/tee2/M", "stock/hub2/tee2/S",
       "stock/trophy/tee2/L", "stock/trophy/tee2/M", "stock/trophy/tee2/S",
     ]);
     expect(upd["refill_requests/req1"]).toMatchObject({ productId: TWIN, size: "S", qty: 1, requestingLocation: "trophy" });
   });
 
-  it("the product LEAVES the unsolved tab on the shop seed alone — before Hub 2's batch exists", async () => {
+  it("the product LEAVES the unsolved tab: Hub 2 and the shop both carry every size after the Solve", async () => {
     const tree = render({ products: onlyProduct(TEE) });
     await solve(tree);
     const upd = updateMock.mock.calls[0][1];
@@ -170,8 +162,7 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
       const [root, loc, pid, size] = k.split("/");
       if (root === "stock") after[loc][pid][size] = v;
     }
-    // Hub 2 holds ONLY the normal-path size L; the shop holds all three.
-    expect(Object.keys(after.hub2[TEE])).toEqual(["L"]);
+    expect(Object.keys(after.hub2[TEE]).sort()).toEqual(["L", "M", "S"]);
     expect(computeMissingProducts({ allStock: after, products: onlyProduct(TEE) })).toEqual([]);
     // …and even with NO Hub 2 node at all the card is gone (the shop alone carries it)
     delete after.hub2;
@@ -188,17 +179,17 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
 });
 
 describe("mapped categories and explicit rows — on the path since 2026-09-17, with their own policies", () => {
-  it("a one-size mapped category (bags: map hub2 4 / trophy 2): the SHOP's map quantity goes first, one '_' request, no Hub 2 seed", async () => {
+  it("a one-size mapped category (bags: map hub2 4 / trophy 2): the SHOP's map quantity goes first, one '_' request, Hub 2 seeded at '_'", async () => {
     const tree = render({ products: onlyProduct(BAG) });
     act(() => { buttonExactly(tree, "Solve").props.onClick(); });
     const text = textOf(tree);
     expect(text).toMatch(/2 units \(One size×2\) go to Trophy first — requested from Central now; Central picks it from Source › Trophy/);
-    expect(text).toMatch(/Hub 2's own ~4 units follow automatically after Trophy's request is fulfilled/);
+    expect(text).toMatch(/Hub 2 is seeded now; its own ~4 units follow automatically/);
     expect(text).not.toMatch(/seeds Hub 2 \+/);
     await act(async () => { await buttonSaying(tree, "Solve — send 2 to Trophy first").props.onClick(); });
     const upd = updateMock.mock.calls[0][1];
-    expect(Object.keys(upd).sort()).toEqual(["refill_requests/req1", "stock/trophy/bag1/_"]);
-    expect(upd["refill_requests/req1"]).toMatchObject({ productId: BAG, size: "_", qty: 2, requestingLocation: "trophy", status: "open", createdFrom: { firstBatch: true, source: "central", store: "trophy", hub: "hub2" } });
+    expect(Object.keys(upd).sort()).toEqual(["refill_requests/req1", "stock/hub2/bag1/_", "stock/trophy/bag1/_"]);
+    expect(upd["refill_requests/req1"]).toMatchObject({ productId: BAG, size: "_", qty: 2, requestingLocation: "trophy", status: "open", createdFrom: { firstBatch: true, source: "central", store: "trophy", hub: "hub2", hub2Seeded: ["_"] } });
   });
   it("the map names Trophy only: the Marathon PE chip is offered but its confirm is blocked with the no-policy sentence, and nothing is written", async () => {
     const tree = render({ products: onlyProduct(BAG) });
@@ -213,12 +204,12 @@ describe("mapped categories and explicit rows — on the path since 2026-09-17, 
     const tree = render({ products: onlyProduct(TEE), targets: { hub2: { [TEE]: { M: { target: 6 } } } } });
     act(() => { buttonExactly(tree, "Solve").props.onClick(); });
     // Hub 2's estimate reads the ROW for M (6) and the run for S (2)
-    expect(textOf(tree)).toMatch(/Hub 2's own ~8 units follow automatically/);
+    expect(textOf(tree)).toMatch(/Hub 2 is seeded now; its own ~8 units follow automatically/);
     await act(async () => { await buttonSaying(tree, "Solve — send 4 to Marathon PE first").props.onClick(); });
     const upd = updateMock.mock.calls[0][1];
     expect(Object.keys(upd).sort()).toEqual([
       "refill_requests/req1", "refill_requests/req2",
-      "stock/hub2/tee1/L",
+      "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
     ]);
     expect([upd["refill_requests/req1"].qty, upd["refill_requests/req2"].qty]).toEqual([2, 2]);
@@ -241,7 +232,7 @@ describe("location history nominates the shop (the operator can still switch)", 
     const upd = updateMock.mock.calls[0][1];
     expect(upd["refill_requests/req1"].requestingLocation).toBe("trophy");
     expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual([
-      "stock/hub2/tee1/L", "stock/trophy/tee1/L", "stock/trophy/tee1/M", "stock/trophy/tee1/S",
+      "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S", "stock/trophy/tee1/L", "stock/trophy/tee1/M", "stock/trophy/tee1/S",
     ]);
   });
   it("the product's OWN row at Marathon PE outranks the category's Trophy placement", () => {
@@ -265,28 +256,16 @@ describe("location history nominates the shop (the operator can still switch)", 
   });
 });
 
-describe("Central's open reservations are netted out — a unit the engine already promised is never asked for twice", () => {
+describe("Hub 2 presence at Solve time — an engine lock at Hub 2 is a pending inbound: the OLD path, no request (the incident's rule)", () => {
   const lock = (qty, source) => ({ qty, createdAt: "t", runId: "scan-1", refillId: "eng1", ...(source ? { source } : {}) });
-  it("an engine hub2<-central lock on M (3 of Central's 4) → M×1; a hub2->shop lock is not a Central reservation; the write matches the panel", async () => {
-    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(3) };                  // route hub2→central
-    gets[`refill_engine/open/trophy/${TEE}`] = { S: lock(9, "hub2") };        // Hub 2 → Trophy: not Central's
-    gets["refill_requests/eng1"] = { status: "open" };                        // a LIVE lock has an open request behind it
+  it("an engine hub2<-central lock on M: the whole Solve is the old one — Hub 2 + shop seeded for S, M, L, NO request, the old sentence", async () => {
+    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(3) };
+    gets["refill_requests/eng1"] = { status: "open" };
     const tree = render({ products: onlyProduct(TEE) });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });   // flushes the lock read
     const text = textOf(tree);
-    expect(text).toMatch(/3 units \(S×2 · M×1\) go to Marathon PE first/);
-    expect(text).not.toMatch(/One moment — checking/);
-    await act(async () => { await buttonSaying(tree, "Solve — send 3 to Marathon PE first").props.onClick(); });
-    const upd = updateMock.mock.calls[0][1];
-    const reqs = Object.keys(upd).filter((k) => k.startsWith("refill_requests/")).map((k) => upd[k]);
-    expect(reqs.map((r) => [r.size, r.qty]).sort()).toEqual([["M", 1], ["S", 2]]);
-  });
-  it("a size the engine has FULLY promised takes the normal path (Hub 2 + shop seeded, no request for it)", async () => {
-    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(4), S: lock(4) };
-    gets["refill_requests/eng1"] = { status: "open" };
-    const tree = render({ products: onlyProduct(TEE) });
-    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
-    expect(textOf(tree)).toMatch(/S · M · L: Central has none — seeded at Hub 2 \+ Marathon PE|seeds Hub 2 \+ Marathon PE at qty 0/);
+    expect(text).not.toMatch(/go to Marathon PE first/);
+    expect(text).toMatch(/seeds Hub 2 \+ Marathon PE at qty 0|seeded at Hub 2 \+ Marathon PE/);
     await act(async () => { await buttonSaying(tree, "Solve — ").props.onClick(); });
     const upd = updateMock.mock.calls[0][1];
     expect(Object.keys(upd).some((k) => k.startsWith("refill_requests/"))).toBe(false);
@@ -294,6 +273,36 @@ describe("Central's open reservations are netted out — a unit the engine alrea
       "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
     ]);
+    expect(textOf(tree)).toMatch(/Carrying 3 sizes at Marathon PE \(via Hub 2\) — the engine will refill on its next scan/);
+  });
+  it("a sibling SHOP's first-batch lock (source central) is not presence — it is a Central reservation, netted out: Trophy holds 3 of Central's 4 M → M×1", async () => {
+    gets[`refill_engine/open/trophy/${TEE}`] = { M: { ...lock(3, "central"), runId: "first_batch:fb_tee1_zzz", refillId: "sib" } };
+    gets["refill_requests/sib"] = { status: "open" };
+    const tree = render({ products: onlyProduct(TEE) });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    expect(textOf(tree)).toMatch(/3 units \(S×2 · M×1\) go to Marathon PE first/);
+    await act(async () => { await buttonSaying(tree, "Solve — send 3 to Marathon PE first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    const reqs = Object.keys(upd).filter((k) => k.startsWith("refill_requests/")).map((k) => upd[k]);
+    expect(reqs.map((r) => [r.size, r.qty]).sort()).toEqual([["M", 1], ["S", 2]]);
+  });
+  it("a hub2->shop lock at the OTHER shop is neither presence nor a Central reservation", async () => {
+    gets[`refill_engine/open/trophy/${TEE}`] = { S: lock(9, "hub2") };
+    gets["refill_requests/eng1"] = { status: "open" };
+    const tree = render({ products: onlyProduct(TEE) });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    expect(textOf(tree)).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first/);
+  });
+  it("the write judges presence LIVE: a Hub 2 lock that lands after the panel opened turns the write into the old Solve", async () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    expect(textOf(tree)).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first/);
+    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(1) };
+    gets["refill_requests/eng1"] = { status: "open" };
+    await act(async () => { await buttonSaying(tree, "Solve — send 4 to Marathon PE first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    expect(Object.keys(upd).some((k) => k.startsWith("refill_requests/"))).toBe(false);
+    expect(Object.keys(upd)).toHaveLength(6);
   });
   it("the confirm waits for the lock read: before it settles the button is gated and says so", () => {
     const tree = render({ products: onlyProduct(TEE) });
@@ -301,12 +310,12 @@ describe("Central's open reservations are netted out — a unit the engine alrea
     expect(textOf(tree)).toMatch(/One moment — checking what Central has already promised/);
     expect(buttonSaying(tree, "Solve — send").props.disabled).toBe(true);
   });
-  it("the write re-reads the lock table LIVE: a lock that lands after the panel opened is honoured", async () => {
+  it("the write re-reads the lock table LIVE: a sibling shop's Central reservation that lands after the panel opened is honoured", async () => {
     const tree = render({ products: onlyProduct(TEE) });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
     expect(textOf(tree)).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first/);
-    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(3) };            // lands now
-    gets["refill_requests/eng1"] = { status: "open" };
+    gets[`refill_engine/open/trophy/${TEE}`] = { M: { ...lock(3, "central"), runId: "first_batch:fb_tee1_zzz", refillId: "sib" } };   // lands now
+    gets["refill_requests/sib"] = { status: "open" };
     await act(async () => { await buttonSaying(tree, "Solve — send 4 to Marathon PE first").props.onClick(); });
     const upd = updateMock.mock.calls[0][1];
     const reqs = Object.keys(upd).filter((k) => k.startsWith("refill_requests/")).map((k) => upd[k]);
@@ -376,13 +385,13 @@ describe("a per-location SIZE MAP category (soccer-jerseys live shape) solves wi
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
     const text = textOf(tree);
     expect(text).toMatch(/3 units \(S×2 · M×1\) go to Marathon PE first/);
-    expect(text).toMatch(/Hub 2's own ~8 units follow automatically/);
+    expect(text).toMatch(/Hub 2 is seeded now; its own ~8 units follow automatically/);
     await act(async () => { await buttonSaying(tree, "Solve — send 3 to Marathon PE first").props.onClick(); });
     const upd = updateMock.mock.calls[0][1];
     const reqs = Object.values(upd).filter((v) => v.productId);
     expect(reqs.map((r) => [r.size, r.qty]).sort()).toEqual([["M", 1], ["S", 2]]);
     // L has zero units anywhere → a dead 0 at both legs → not a qualifying size → not seeded at all
-    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual(["stock/marathon-pe/sj1/M", "stock/marathon-pe/sj1/S"]);
+    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual(["stock/hub2/sj1/M", "stock/hub2/sj1/S", "stock/marathon-pe/sj1/M", "stock/marathon-pe/sj1/S"]);
   });
 });
 
@@ -429,7 +438,7 @@ describe("the undo strip after a first-batch Solve", () => {
     abortPaths.add("refill_requests/req2");
     await act(async () => { await undoButton(tree).props.onClick(); });
     const text = stripText(tree);
-    expect(text).toMatch(/4 of 4 seeded cells removed/);
+    expect(text).toMatch(/6 of 6 seeded cells removed/);
     expect(text).toMatch(/Central had already started on size M — that request stands/);
   });
   it("a RETRY after a partial undo: its own landed cancel is done — no CAS on it, no blocker, and the seeds are removed", async () => {
@@ -440,7 +449,7 @@ describe("the undo strip after a first-batch Solve", () => {
     txnPaths.length = 0;
     await act(async () => { await undoButton(tree).props.onClick(); });
     expect(txnPaths.filter((p) => p.startsWith("refill_requests/"))).toEqual(["refill_requests/req2"]);
-    expect(txnPaths.filter((p) => p.startsWith("stock/"))).toHaveLength(4);
+    expect(txnPaths.filter((p) => p.startsWith("stock/"))).toHaveLength(6);
     expect(stripText(tree)).not.toMatch(/can no longer be undone|stands/);
   });
   it("undo is refused outright when a request is no longer open, and nothing is written", async () => {

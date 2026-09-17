@@ -27,7 +27,7 @@ describe("solve → undo wiring", () => {
     // pre-write snapshot: the first-batch path takes it from the LIVE lock
     // read it already makes for Central's reservations (openNow), the old
     // path from its own per-location read. Both must precede their write.
-    const fbReadAt = NETWORK.indexOf("const openNow = onPath ? await readOpenLocks(card.pid) : null;");
+    const fbReadAt = NETWORK.indexOf("if (onPath) { try { openNow = await readOpenLocks(card.pid); } catch { openNow = null; } }");
     const fbSnapAt = NETWORK.indexOf("priorOpen[loc] = openNow[loc] ?? null;");
     const fbWriteAt = NETWORK.indexOf("await update(ref(database), updates)");
     expect(fbReadAt).toBeGreaterThan(-1);

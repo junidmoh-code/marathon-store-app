@@ -27,7 +27,7 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
-import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide } from "./firstBatchCore";
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -424,10 +424,19 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // not routed via Hub 2) today's default stands byte-for-byte.
   const placementIndex = useMemo(() => buildPlacementIndex({ products, allStock, stores: STORES }), [products, allStock]);
   const historyFor = (card) => firstBatchHistory({ pid: card.pid, product: byId.get(card.pid), index: placementIndex, allStock, targets: targetRows, stores: STORES });
+  // HUB 2 PRESENCE (the hard precondition — firstBatchCore.hub2PresenceSignals).
+  // From the /stock node this screen already holds plus, when read, the
+  // engine's lock table for the product (openLocks). Without the lock read
+  // the answer is the static one (cells); the WRITE always judges with the
+  // live lock table (solve()). Anything but an explicit `false` keeps the old
+  // path (firstBatchEligible fails closed).
+  const hub2PresentFor = (pid, openByLoc) => hub2PresenceSignals({ hub2Node: allStock?.[FIRST_BATCH_HUB]?.[pid], hub2Locks: openByLoc ? openByLoc[FIRST_BATCH_HUB] : null }).length > 0;
+  const eligibleAt = (card, store, openByLoc) => !!cfg && !targetsError
+    && firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), routes: cfg.routes, hub2Present: hub2PresentFor(card.pid, openByLoc) });
   const storeChoiceFor = (card) => {
     const candidates = STORES.filter((s) => qualifyingSizes(card, s).length > 0);
     if (!candidates.length) return { store: STORES[0], tier: null, sentence: null };
-    const onPath = !!cfg && !targetsError && candidates.some((s) => firstBatchEligible({ source: card.source, store: s, product: byId.get(card.pid), routes: cfg.routes }));
+    const onPath = candidates.some((s) => eligibleAt(card, s, openLocks[card.pid]));
     if (!onPath) return { store: candidates[0], tier: null, sentence: null };
     const c = firstBatchStoreChoice({ history: historyFor(card), candidates, labels: LOC_LABEL });
     return c.store ? c : { store: candidates[0], tier: null, sentence: null };
@@ -470,7 +479,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // the incident revert: four scoped reads per panel open for a number
     // nothing used.)
     const openCard = (cards || []).find((c) => c.pid === solvePid);
-    if (!openCard || !STORES.some((s) => firstBatchEligible({ source: openCard.source, store: s, product: byId.get(solvePid), routes: cfg.routes }))) return undefined;
+    if (!openCard || !STORES.some((s) => eligibleAt(openCard, s, undefined))) return undefined;
     let live = true;
     const pid = solvePid;
     setOpenLocks((m) => { const n = { ...m }; delete n[pid]; return n; });
@@ -486,9 +495,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // The first-batch split for a card at a store from the LIVE (or cached)
   // lock table, or null when this Solve is not the in-scope one.
   const firstBatchFor = (card, store, sizes, openByLoc = openLocks[card.pid]) => {
-    if (!cfg || targetsError) return null;
-    const eligible = firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), routes: cfg.routes });
-    if (!eligible) return null;
+    if (!eligibleAt(card, store, openByLoc)) return null;
     const reserved = centralReservedBySize({ openByLoc: openByLoc || {}, routes: cfg.routes });
     return firstBatchSplit({
       sizes, run: runFor(card.pid), store,
@@ -533,13 +540,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // from the panel's earlier read. A size the reservations leave nothing
       // of takes the normal path — and if that is every size, the whole
       // Solve does (the old block below), exactly as when Central had none.
-      const openNow = onPath ? await readOpenLocks(card.pid) : null;
-      const split = onPath ? firstBatchFor(card, store, sizes, openNow) : null;
+      // An unreadable lock table is an UNKNOWN Hub 2 presence: the guard
+      // fails closed and this Solve is the old one (Hub 2 + shop seeded).
+      let openNow = null;
+      if (onPath) { try { openNow = await readOpenLocks(card.pid); } catch { openNow = null; } }
+      const split = onPath && openNow ? firstBatchFor(card, store, sizes, openNow) : null;
       const firstBatch = !!(split && split.firstBatch.length);
       const locs = firstBatch ? [FIRST_BATCH_HUB, store] : seedLocations(card.source, store);
       if (firstBatch) {
         const units = split.firstBatch.reduce((t, l) => t + l.qty, 0);
-        const okMsg = `${units} unit${units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2's own batch follows once that is fulfilled.`;
+        const okMsg = `${units} unit${units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2 is seeded now and its own batch follows from Central's remainder.`;
         const existing = {};
         const priorOpen = {};
         for (const loc of locs) {
@@ -882,7 +892,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
                   <b style={{ color: "#fff" }}>{fb.shopNow} unit{fb.shopNow === 1 ? "" : "s"}</b> ({fbSplit.firstBatch.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> first — requested from Central now; Central picks it from Source › {SOURCE_TAB_LABEL[sStore]} at the next release.
                   <div style={{ marginTop: 5, color: GRAY }}>
-                    Hub 2's own ~<b style={{ color: BLUE_L }}>{fb.hubAfter} units</b> follow automatically after {LOC_LABEL[sStore]}'s request is fulfilled, sized from what Central still has.
+                    Hub 2 is seeded now; its own ~<b style={{ color: BLUE_L }}>{fb.hubAfter} units</b> follow automatically from what Central still has — the engine raises them on its next scan, or the fulfil of {LOC_LABEL[sStore]}'s request does.
                   </div>
                   {fb.sizesNormal.length > 0 && (
                     <div style={{ marginTop: 5, color: GRAY }}>

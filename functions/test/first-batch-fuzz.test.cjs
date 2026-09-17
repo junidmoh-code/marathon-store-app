@@ -15,7 +15,7 @@ const { makeWorld, snapshot, prng, hubRequests, T1, FIRST_BATCH_RUN_PREFIX } = r
 test("property fuzz: 600 random worlds, every invariant holds on each", async () => {
   const seeds = [];
   for (let i = 1; i <= 600; i++) seeds.push(i * 7919);
-  let raised = 0, none = 0, deferred = 0, guarded = 0, mappedRaised = 0, mappedDeferred = 0;
+  let raised = 0, none = 0, deferred = 0, guarded = 0, mappedRaised = 0, mappedDeferred = 0, withdrawnPresent = 0;
   for (const s of seeds) {
     const r = prng(s);
     const w = makeWorld(r);
@@ -38,6 +38,25 @@ test("property fuzz: 600 random worlds, every invariant holds on each", async ()
     // A lock of OURS on Hub 2's cell — the engine's pre-existing eng1 lock is not ours.
     const ourLock = hubLock && hubLock.refillId !== "eng1" ? hubLock : undefined;
     const resolvedOrTouched = rr.status !== "open" || (rr.sentQty || 0) > 0;
+    // THE INCIDENT'S RULE at creation: Hub 2 present by any means (a cell of
+    // any qty, an array-coerced row with a present index, an engine lock) →
+    // the shop's Central request is withdrawn with a reason, Hub 2 keeps
+    // its cells, no shop lock, and the engine may serve the shop from Hub 2.
+    const hub2Row = JSON.parse(before).stock?.hub2?.p1;
+    const presentAtCreation = (Array.isArray(hub2Row) ? hub2Row.some((c) => c != null) : !!hub2Row && Object.keys(hub2Row).length > 0)
+      || !!JSON.parse(before).refill_engine?.open?.hub2?.p1?.[sk];
+    if (!resolvedOrTouched && presentAtCreation) {
+      withdrawnPresent++;
+      const r1 = db.state.root.refill_requests.r1;
+      assert.equal(r1.status, "cancelled", `${ctx}: Hub 2 present at creation but the shop's Central request stands`);
+      assert.equal(r1.cancelReason, "first_batch_hub2_present", ctx);
+      assert.equal(hubs.length, 0, `${ctx}: a Hub 2 leg raised on a withdrawn request`);
+      assert.equal(db.state.root.refill_engine?.open?.[store]?.p1?.[sk], undefined, `${ctx}: shop lock claimed although withdrawn`);
+      assert.equal(JSON.stringify(db.state.root.stock.hub2.p1[sk]?.qty ?? null), JSON.stringify((Array.isArray(hub2Row) ? hub2Row[Number(sk)] : hub2Row?.[sk])?.qty ?? (hub2Row && (Array.isArray(hub2Row) ? hub2Row[Number(sk)] : hub2Row[sk]) ? null : 0)), `${ctx}: Hub 2's cell changed`);
+      const plan = computeRefillPlan(snapshot(db, config, targets));
+      for (const i of plan.intents) if (i.productId === "p1" && i.dest === store) assert.equal(i.source, "hub2", `${ctx}: shop sourced from ${i.source}`);
+      continue;
+    }
     if (!resolvedOrTouched) {
       // open + untouched: no Hub 2 leg, no Hub 2 seed; the SHOP lock claimed (or held by a sibling)
       assert.equal(hubs.length, 0, `${ctx}: leg raised on an open untouched request`);
@@ -98,7 +117,7 @@ test("property fuzz: 600 random worlds, every invariant holds on each", async ()
     }
   }
   // The fuzz must have exercised every branch or it proves nothing.
-  assert.ok(raised > 50 && none > 50 && deferred > 20 && guarded > 100, `coverage raised=${raised} none=${none} deferred=${deferred} guarded=${guarded}`);
+  assert.ok(raised > 50 && none > 50 && deferred > 20 && guarded > 20 && withdrawnPresent > 50, `coverage raised=${raised} none=${none} deferred=${deferred} guarded=${guarded} withdrawnPresent=${withdrawnPresent}`);
   // The mapped worlds must have exercised both "we raised" and "the engine got there first".
   assert.ok(mappedRaised > 15 && mappedDeferred > 5, `mapped coverage raised=${mappedRaised} deferred=${mappedDeferred}`);
 });

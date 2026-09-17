@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import {
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, firstBatchRunId, solveIdFor,
   firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate, FIRST_BATCH_ENABLED,
+  hub2PresenceSignals, hub2Present,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
   buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES,
   centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, lockKeyFor,
@@ -26,7 +27,9 @@ const RUN = { hub2: { S: 2, M: 3, L: 3 }, trophy: { S: 2, M: 2, L: 2 }, "maratho
 describe("scope — every category except sneakers and slides (owner rule 2026-09-17)", () => {
   // `enabled: true` drives the PATH's scope rule; the live default is OFF
   // (FIRST_BATCH_ENABLED — incident 2026-09-17), pinned in its own block below.
-  const base = { source: "central", store: "trophy", product: TEE, routes: ROUTES, categoryPolicy: POLICY, targets: {}, enabled: true };
+  // `hub2Present: false` is the hard precondition, asserted explicitly (the
+  // guard fails closed on anything else — its own block below).
+  const base = { source: "central", store: "trophy", product: TEE, routes: ROUTES, categoryPolicy: POLICY, targets: {}, enabled: true, hub2Present: false };
   it("IN: a Central-stranded clothing product, shop routed via Hub 2", () => {
     expect(firstBatchEligible(base)).toBe(true);
     expect(firstBatchEligible({ ...base, store: "marathon-pe" })).toBe(true);
@@ -103,26 +106,35 @@ describe("the atomic write", () => {
   let n = 0;
   const newKey = () => `k${++n}`;
   const split = firstBatchSplit({ sizes: ["S", "M", "L"], run: RUN, store: "trophy", centralAvail: (s) => ({ S: 4, M: 1, L: 0 })[s] });
-  it("seeds the SHOP for every size, Hub 2 ONLY for the normal size, and one request per first-batch size", () => {
+  it("seeds the SHOP AND Hub 2 for every size (Hub 2 is always a valid source), one request per first-batch size, and records the Hub 2 seeds it wrote", () => {
     n = 0;
     const { updates, requestIds, paths } = buildFirstBatchSolveUpdate({ pid: "tee1", store: "trophy", split, existing: {}, seedCell, nowIso: now, uid: "u1", solveId: "fb_tee1_x", newKey });
-    expect(paths.sort()).toEqual(["stock/hub2/tee1/L", "stock/trophy/tee1/L", "stock/trophy/tee1/M", "stock/trophy/tee1/S"]);
-    expect(updates["stock/hub2/tee1/S"]).toBeUndefined();
-    expect(updates["stock/hub2/tee1/M"]).toBeUndefined();
+    expect(paths.sort()).toEqual(["stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S", "stock/trophy/tee1/L", "stock/trophy/tee1/M", "stock/trophy/tee1/S"]);
+    expect(updates["stock/hub2/tee1/S"]).toEqual(seedCell());
+    expect(updates["stock/hub2/tee1/M"]).toEqual(seedCell());
     expect(requestIds).toEqual(["k1", "k2"]);
     expect(updates["refill_requests/k1"]).toEqual({
       productId: "tee1", size: "S", qty: 2, requestingLocation: "trophy", status: "open", createdAt: now,
-      createdFrom: { firstBatch: true, solveId: "fb_tee1_x", source: "central", store: "trophy", hub: FIRST_BATCH_HUB, via: "missing_products_solve", by: "u1" },
+      createdFrom: { firstBatch: true, solveId: "fb_tee1_x", source: "central", store: "trophy", hub: FIRST_BATCH_HUB, via: "missing_products_solve", hub2Seeded: ["S", "M"], by: "u1" },
     });
     expect(updates["refill_requests/k2"].size).toBe("M");
     expect(updates["refill_requests/k2"].qty).toBe(1);
-    expect(Object.keys(updates)).toHaveLength(6);
+    expect(Object.keys(updates)).toHaveLength(8);
+  });
+  it("hub2Seeded lists ONLY the Hub 2 cells this write creates: an existing Hub 2 cell is neither overwritten nor listed; none → the key is omitted (RTDB cannot store [])", () => {
+    n = 0;
+    const { updates } = buildFirstBatchSolveUpdate({ pid: "tee1", store: "trophy", split, existing: { hub2: { S: { qty: 0 } } }, seedCell, nowIso: now, uid: "u1", solveId: "fb_tee1_x", newKey });
+    expect(updates["stock/hub2/tee1/S"]).toBeUndefined();
+    expect(updates["refill_requests/k1"].createdFrom.hub2Seeded).toEqual(["M"]);
+    n = 0;
+    const { updates: u2 } = buildFirstBatchSolveUpdate({ pid: "tee1", store: "trophy", split, existing: { hub2: { S: { qty: 0 }, M: { qty: 0 } } }, seedCell, nowIso: now, uid: "u1", solveId: "fb_tee1_x", newKey });
+    expect(Object.prototype.hasOwnProperty.call(u2["refill_requests/k1"].createdFrom, "hub2Seeded")).toBe(false);
   });
   it("the existence probe uses the PATH's encoder: an existing one-size '_' cell is found for a 'Free Size' catalogue size", () => {
     n = 0;
     const s = firstBatchSplit({ sizes: ["Free Size"], run: { hub2: { "FREE SIZE": 2 }, trophy: { "FREE SIZE": 1 } }, store: "trophy", centralAvail: () => 3 });
     const { updates } = buildFirstBatchSolveUpdate({ pid: "os1", store: "trophy", split: s, existing: { trophy: { _: { qty: 5 } } }, seedCell, nowIso: now, uid: "u1", solveId: "s", newKey });
-    expect(Object.keys(updates).filter((k) => k.startsWith("stock/"))).toEqual([]);   // the stored "_" cell is seen, nothing seeded over it
+    expect(Object.keys(updates).filter((k) => k.startsWith("stock/"))).toEqual(["stock/hub2/os1/_"]);   // the stored shop "_" cell is seen, nothing seeded over it; Hub 2 gets its "_" seed
     expect(updates["refill_requests/k1"].size).toBe("Free Size");
   });
   it("seed-if-absent: an existing cell is never overwritten; a missing uid is OMITTED, never undefined", () => {
@@ -386,22 +398,70 @@ describe("the CJS twin in functions/lib/first-batch.cjs speaks the same constant
   });
 });
 
-// ── THE PATH IS OFF (incident 2026-09-17 evening) ────────────────────────────
-describe("the first-batch path is OFF by default — the #607 behaviour is reverted", () => {
-  const inScope = { source: "central", store: "trophy", product: TEE, routes: ROUTES };
-  it("FIRST_BATCH_ENABLED is false", () => {
-    expect(FIRST_BATCH_ENABLED).toBe(false);
-  });
-  it("the in-scope card is NOT eligible without an explicit enabled: true — the Solve takes the old path", () => {
-    expect(firstBatchEligible(inScope)).toBe(false);
-    expect(firstBatchEligible({ ...inScope, enabled: FIRST_BATCH_ENABLED })).toBe(false);
-    expect(firstBatchEligible({ ...inScope, enabled: "true" })).toBe(false);   // strict — never a truthy string
-    expect(firstBatchEligible({ ...inScope, enabled: true })).toBe(true);      // the same card, the path itself
-  });
-  it("the server twin agrees: FIRST_BATCH_PATH_ENABLED equals the client flag", () => {
+// ── THE FLAG AND THE HUB 2-PRESENCE GUARD (incident 2026-09-17 → Phase 3) ──
+describe("the flag: ON with the guard; enabled:false switches the path off; judged strictly", () => {
+  const inScope = { source: "central", store: "trophy", product: TEE, routes: ROUTES, hub2Present: false };
+  it("FIRST_BATCH_ENABLED is true, and the server twin agrees", () => {
+    expect(FIRST_BATCH_ENABLED).toBe(true);
     const req = createRequire(import.meta.url);
     const srv = req("../../../functions/lib/first-batch.cjs");
     expect(srv.FIRST_BATCH_PATH_ENABLED).toBe(FIRST_BATCH_ENABLED);
     expect(srv.PATH_OFF_REASON).toBe("first_batch_path_off");
+    expect(srv.HUB2_PRESENT_REASON).toBe("first_batch_hub2_present");
+  });
+  it("enabled:false / a truthy string → off; the default → on", () => {
+    expect(firstBatchEligible(inScope)).toBe(true);
+    expect(firstBatchEligible({ ...inScope, enabled: false })).toBe(false);
+    expect(firstBatchEligible({ ...inScope, enabled: "true" })).toBe(false);
+  });
+});
+
+describe("Hub 2 presence — the hard precondition (owner rule: Hub 2 by ANY means → the shop asks Hub 2, never Central)", () => {
+  const inScope = { source: "central", store: "trophy", product: TEE, routes: ROUTES };
+  const cell = (qty, over = {}) => ({ qty, v: 1, mv: "m", lastType: "received", ...over });
+  const ownSeed = { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedBy: "u1" };
+  it("fails CLOSED: unknown or true presence is never eligible; only an explicit false is", () => {
+    expect(firstBatchEligible(inScope)).toBe(false);                            // not passed
+    expect(firstBatchEligible({ ...inScope, hub2Present: undefined })).toBe(false);
+    expect(firstBatchEligible({ ...inScope, hub2Present: null })).toBe(false);
+    expect(firstBatchEligible({ ...inScope, hub2Present: true })).toBe(false);
+    expect(firstBatchEligible({ ...inScope, hub2Present: 0 })).toBe(false);       // strict
+    expect(firstBatchEligible({ ...inScope, hub2Present: false })).toBe(true);
+  });
+  it("a stock cell of ANY quantity — qty 0 included — is presence (cells are never deleted)", () => {
+    expect(hub2PresenceSignals({ hub2Node: { M: cell(3) } })).toEqual(["stock_cell"]);
+    expect(hub2PresenceSignals({ hub2Node: { M: cell(0) } })).toEqual(["stock_cell"]);
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed } } })).toEqual(["stock_cell"]);   // an EARLIER solve's seed
+    expect(hub2PresenceSignals({ hub2Node: null })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Node: {} })).toEqual([]);
+  });
+  it("this Solve's OWN qty-0 seeds (hub2Seeded) are not presence — but a unit in one of them is", () => {
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed }, L: { ...ownSeed } }, ownSeedKeys: ["M", "L"] })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed }, L: { ...ownSeed } }, ownSeedKeys: ["M"] })).toEqual(["stock_cell"]);
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, qty: 2 } }, ownSeedKeys: ["M"] })).toEqual(["stock_cell"]);
+    expect(hub2PresenceSignals({ hub2Node: { M: cell(0) }, ownSeedKeys: ["M"] })).toEqual(["stock_cell"]);   // not a seed shape
+  });
+  it("an array-coerced Hub 2 row: a hole is nothing, a present index is presence; own seeds by index key", () => {
+    expect(hub2PresenceSignals({ hub2Node: [null, null, null] })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Node: [null, null, cell(1)] })).toEqual(["stock_cell"]);
+    expect(hub2PresenceSignals({ hub2Node: [null, null, { ...ownSeed }], ownSeedKeys: ["2"] })).toEqual([]);
+  });
+  it("an engine lock at Hub 2 (a pending inbound) and an open Hub 2 request are presence; an explicit row is NOT (a plan)", () => {
+    expect(hub2PresenceSignals({ hub2Locks: { M: { qty: 2, source: "central", runId: "scan-1" } } })).toEqual(["engine_lock"]);
+    expect(hub2PresenceSignals({ hub2Locks: { M: null } })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2OpenRequestIds: ["x"] })).toEqual(["open_hub2_request"]);
+    expect(hub2PresenceSignals({ hub2OpenRequestIds: [] })).toEqual([]);
+    expect(hub2Present({ hub2Node: { M: cell(1) }, hub2Locks: { M: {} }, hub2OpenRequestIds: ["x"] })).toBe(true);
+    expect(hub2Present({})).toBe(false);
+  });
+  it("the server twin computes the SAME signals on the same inputs", () => {
+    const req = createRequire(import.meta.url);
+    const srv = req("../../../functions/lib/first-batch.cjs");
+    const cases = [
+      {}, { hub2Node: { M: cell(0) } }, { hub2Node: { M: { ...ownSeed } }, ownSeedKeys: ["M"] }, { hub2Node: [null, cell(1)] },
+      { hub2Node: [null, { ...ownSeed }], ownSeedKeys: ["1"] }, { hub2Locks: { M: { qty: 1 } } }, { hub2OpenRequestIds: ["a"] },
+      { hub2Node: { M: { ...ownSeed, qty: 1 } }, ownSeedKeys: ["M"] }, { hub2Node: { M: cell(2), L: { ...ownSeed } }, ownSeedKeys: ["L"], hub2Locks: { L: {} } },
+    ];
+    for (const c of cases) expect(srv.hub2PresenceSignals(c), JSON.stringify(c)).toEqual(hub2PresenceSignals(c));
   });
 });

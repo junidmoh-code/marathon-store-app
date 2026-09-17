@@ -19,19 +19,34 @@
 //   4. from then on nothing changes: shop refills from Hub 2 and Hub 2 refills
 //      from Central through the engine exactly as before.
 //
-// WHY THE SHOP CELL IS STILL SEEDED HERE: the engine only ever manages a shop
-// for a product the shop CARRIES (storeCarries — a stock node exists), and the
-// Missing Products card only leaves the list once a shop node exists. Seeding
-// the shop at qty 0 is therefore unchanged. What is NEW is that Hub 2 is NOT
-// seeded at Solve time for a size Central can send: for a product the clothing
-// RULE governs, no Hub 2 node means the engine cannot raise hub2←central at
-// all (managedPids needs storeCarries); for a product a category MAP or an
-// explicit row governs, the engine manages Hub 2 with no cell — and there the
-// guard is the engine's own lock, read by the trigger before it raises Hub 2's
-// leg (deferredTo: engine when the scan got there first) and counted as
-// inbound by the engine when the trigger did. Either way: one Hub 2 request.
-// Hub 2's node is seeded by the deferred leg, at the moment its own request
-// is raised.
+// HUB 2 IS ALWAYS SEEDED — AND HUB 2 PRESENCE IS THE HARD PRECONDITION
+// (owner rule after the 2026-09-17 incident, _first-batch-incident-2026-09-17.md):
+//   • If the product exists at Hub 2 by ANY means — a stock cell (qty 0
+//     included: cells are never deleted, so a qty-0 cell IS prior presence),
+//     an engine lock at Hub 2 (a pending inbound), an open Hub 2 request — the
+//     shop requests from Hub 2, NEVER from Central. Such a product takes the
+//     old Solve unchanged. The check runs here at Solve time (hub2Presence)
+//     and AGAIN in the trigger when the request is created (the server twin
+//     hub2PresenceSignals in functions/lib/first-batch.cjs, pinned equal by
+//     test): a request created for a product Hub 2 holds is withdrawn there
+//     with `first_batch_hub2_present` and the normal route takes over.
+//   • Central-to-shop applies ONLY to a product Hub 2 has never held, and
+//     only for that first batch. After it, everything is the normal route.
+//   • Hub 2 is seeded for EVERY qualifying size in the same atomic write as
+//     the shop's requests — first-batch sizes included. #607 deliberately
+//     left Hub 2 un-seeded for those sizes so the engine could not raise a
+//     second hub2←central; that was never the load-bearing guard (the engine's
+//     own lock is), and an un-seeded Hub 2 is a Hub 2 that is not a valid
+//     source. Hub 2 must remain a valid source for every product at all
+//     times: the engine raises hub2←central from Central's remainder on its
+//     next scan (the shop's lock reserves the shop's units first), and the
+//     trigger's deferred leg defers to that lock when it exists.
+//   • The request records the Hub 2 cells THIS Solve wrote
+//     (createdFrom.hub2Seeded) so the trigger's re-check can tell the Solve's
+//     own qty-0 seeds from prior presence.
+// The shop cell is seeded at qty 0 as before: the engine only manages a shop
+// for a product the shop CARRIES, and the Missing Products card leaves the
+// list once a shop node exists.
 //
 // PER SIZE, NOT PER PRODUCT. A size Central has none of cannot be sent first,
 // so it follows today's path unchanged (seed Hub 2 + shop; the engine takes
@@ -138,10 +153,43 @@ export function isSneakerOrSlide(p) {
 // request withdrawn). The flag is a PARAMETER of firstBatchEligible so the
 // path's own tests keep exercising it with `enabled: true`; every real caller
 // (NetworkTransfer) takes the default.
-export const FIRST_BATCH_ENABLED = false;
+export const FIRST_BATCH_ENABLED = true;   // ON again since the Hub 2-presence guard below (Phase 3 of the incident plan)
 
-export function firstBatchEligible({ source, store, product, routes, enabled = FIRST_BATCH_ENABLED } = {}) {
+// ── HUB 2 PRESENCE — the hard precondition ───────────────────────────────────
+// The signals, from scoped inputs the caller already holds or has read:
+//   hub2Node           /stock/hub2/{pid} (object, array-coerced row, or null)
+//   hub2Locks          /refill_engine/open/hub2/{pid} (a live lock = a pending
+//                      inbound or an open Hub 2 request the engine bookkeeps)
+//   hub2OpenRequestIds open /refill_requests rows at Hub 2 for pid, when the
+//                      caller has them (the server reads none: every engine
+//                      request holds a lock, and the trigger's own leg too)
+//   ownSeedKeys        the size keys of qty-0 seeds THIS Solve wrote at Hub 2
+//                      (createdFrom.hub2Seeded) — never presence
+// A cell of any other kind — units, a movement, a human's or an earlier
+// Solve's seed — IS presence: cells are never deleted, so it says Hub 2 held
+// the product before. An explicit /stock_targets/hub2 row is a PLAN, not
+// presence (the #608 owner spec put explicit-row products on the path); it is
+// reported in `signals` for the panel but does not gate.
+// CJS twin: functions/lib/first-batch.cjs hub2PresenceSignals (pinned equal).
+export function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys } = {}) {
+  const own = new Set((ownSeedKeys || []).map(String));
+  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0);
+  const cells = Array.isArray(hub2Node)
+    ? hub2Node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)
+    : Object.entries(hub2Node || {}).filter(([, c]) => c != null);
+  const signals = [];
+  if (cells.some(([k, c]) => !ownSeed(k, c))) signals.push("stock_cell");
+  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some((e) => e && typeof e === "object")) signals.push("engine_lock");
+  if (Array.isArray(hub2OpenRequestIds) && hub2OpenRequestIds.length) signals.push("open_hub2_request");
+  return signals;
+}
+export const hub2Present = (args) => hub2PresenceSignals(args).length > 0;
+
+// `hub2Present` is REQUIRED and fails closed: anything but an explicit
+// `false` (unknown, unread, true) keeps the Solve on the old path.
+export function firstBatchEligible({ source, store, product, routes, enabled = FIRST_BATCH_ENABLED, hub2Present: present } = {}) {
   if (enabled !== true) return false;
+  if (present !== false) return false;
   if (source !== "central") return false;
   if (!store || routes?.[store] !== FIRST_BATCH_HUB) return false;
   if (!product) return false;
@@ -380,8 +428,9 @@ export function firstBatchSplit({ sizes, run, store, centralAvail, maxUnitsPerIn
 // One multi-path update, seed-if-absent for every cell (a cell that already
 // exists is never overwritten — the SEED rule branch refuses that anyway):
 //   • the STORE gets a qty-0 seed for every qualifying size (both sets);
-//   • Hub 2 gets a qty-0 seed ONLY for the normal sizes — never for a
-//     first-batch size (see the header: that is the anti-duplication);
+//   • Hub 2 gets a qty-0 seed for every qualifying size too (both sets) —
+//     Hub 2 is always a valid source (see the header); the first-batch
+//     sizes' Hub 2 seeds are recorded on the request as hub2Seeded;
 //   • one /refill_requests row per first-batch size, in the engine's own shape
 //     plus the firstBatch tag the server trigger keys on.
 // Returns the update, the request ids (for the undo record) and the seeded
@@ -396,12 +445,16 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
   // (CodeRabbit, PR #607.)
   const has = (loc, sz) => existing?.[loc]?.[stockSizeKey(sz)] != null;
   const seed = (loc, sz) => {
-    if (has(loc, sz)) return;
+    if (has(loc, sz)) return false;
     const p = stockCellPath(loc, pid, sz);
     updates[p] = seedCell();
     paths.push(p);
+    return true;
   };
-  for (const l of split.firstBatch) seed(store, l.size);
+  // Hub 2 AND the shop for EVERY qualifying size — first-batch sizes
+  // included (Hub 2 is always a valid source; see the header).
+  const hub2Seeded = [];
+  for (const l of split.firstBatch) { if (seed(FIRST_BATCH_HUB, l.size)) hub2Seeded.push(stockSizeKey(l.size)); seed(store, l.size); }
   for (const sz of split.normal) { seed(FIRST_BATCH_HUB, sz); seed(store, sz); }
   const requestIds = [];
   for (const l of split.firstBatch) {
@@ -417,6 +470,10 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
       createdFrom: {
         firstBatch: true, solveId, source: "central", store, hub: FIRST_BATCH_HUB,
         via: "missing_products_solve",
+        // the Hub 2 seeds THIS solve writes — the trigger's presence re-check
+        // must not read them as prior presence. RTDB cannot store an empty
+        // array, so none → omitted.
+        ...(hub2Seeded.length ? { hub2Seeded } : {}),
         // omit-don't-copy: a null here would be dropped by RTDB anyway, but an
         // undefined would fail the whole atomic write (#327).
         ...(uid ? { by: uid } : {}),
