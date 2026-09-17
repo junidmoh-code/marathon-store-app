@@ -31,6 +31,15 @@ vi.mock("../PermissionsContext", () => ({ usePermissions: () => ({ ...perm }) })
 vi.mock("./applyMovement", () => ({ applyMovement: vi.fn(() => Promise.resolve({ ok: true })) }));
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toISOString(), serverNowMs: () => NOW }));
 
+// THE PATH AS IT WOULD RUN: firstBatchEligible is forced `enabled: true` here
+// because the live default is OFF (FIRST_BATCH_ENABLED — incident 2026-09-17).
+// The default's own behaviour — the old Solve, byte-for-byte — is proven in
+// firstBatchOff.render.test.jsx against the real flag.
+vi.mock("./firstBatchCore", async (importOriginal) => {
+  const m = await importOriginal();
+  return { ...m, firstBatchEligible: (a) => m.firstBatchEligible({ ...a, enabled: true }) };
+});
+
 const { default: NetworkTransfer } = await import("./NetworkTransfer.jsx");
 const { computeMissingProducts } = await import("./missingProductsCore.js");
 

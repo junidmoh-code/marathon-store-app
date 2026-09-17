@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import {
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, firstBatchRunId, solveIdFor,
-  firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate,
+  firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate, FIRST_BATCH_ENABLED,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
   buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES,
   centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, lockKeyFor,
@@ -24,7 +24,9 @@ const POLICY = {
 const RUN = { hub2: { S: 2, M: 3, L: 3 }, trophy: { S: 2, M: 2, L: 2 }, "marathon-pe": { S: 2, M: 2, L: 1 } };
 
 describe("scope — every category except sneakers and slides (owner rule 2026-09-17)", () => {
-  const base = { source: "central", store: "trophy", product: TEE, routes: ROUTES, categoryPolicy: POLICY, targets: {} };
+  // `enabled: true` drives the PATH's scope rule; the live default is OFF
+  // (FIRST_BATCH_ENABLED — incident 2026-09-17), pinned in its own block below.
+  const base = { source: "central", store: "trophy", product: TEE, routes: ROUTES, categoryPolicy: POLICY, targets: {}, enabled: true };
   it("IN: a Central-stranded clothing product, shop routed via Hub 2", () => {
     expect(firstBatchEligible(base)).toBe(true);
     expect(firstBatchEligible({ ...base, store: "marathon-pe" })).toBe(true);
@@ -381,5 +383,25 @@ describe("the CJS twin in functions/lib/first-batch.cjs speaks the same constant
     expect(isFirstBatchShopLeg({ createdFrom: { firstBatch: true }, requestingLocation: "hub2" })).toBe(false);
     expect(isFirstBatchShopLeg({ createdFrom: { engine: true }, requestingLocation: "trophy" })).toBe(false);
     expect(fb.firstBatchRunId("x")).toBe(firstBatchRunId("x"));
+  });
+});
+
+// ── THE PATH IS OFF (incident 2026-09-17 evening) ────────────────────────────
+describe("the first-batch path is OFF by default — the #607 behaviour is reverted", () => {
+  const inScope = { source: "central", store: "trophy", product: TEE, routes: ROUTES };
+  it("FIRST_BATCH_ENABLED is false", () => {
+    expect(FIRST_BATCH_ENABLED).toBe(false);
+  });
+  it("the in-scope card is NOT eligible without an explicit enabled: true — the Solve takes the old path", () => {
+    expect(firstBatchEligible(inScope)).toBe(false);
+    expect(firstBatchEligible({ ...inScope, enabled: FIRST_BATCH_ENABLED })).toBe(false);
+    expect(firstBatchEligible({ ...inScope, enabled: "true" })).toBe(false);   // strict — never a truthy string
+    expect(firstBatchEligible({ ...inScope, enabled: true })).toBe(true);      // the same card, the path itself
+  });
+  it("the server twin agrees: FIRST_BATCH_PATH_ENABLED equals the client flag", () => {
+    const req = createRequire(import.meta.url);
+    const srv = req("../../../functions/lib/first-batch.cjs");
+    expect(srv.FIRST_BATCH_PATH_ENABLED).toBe(FIRST_BATCH_ENABLED);
+    expect(srv.PATH_OFF_REASON).toBe("first_batch_path_off");
   });
 });

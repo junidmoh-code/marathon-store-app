@@ -55,6 +55,22 @@ const SOLVE_UNDONE_REASON = "solve_undone";
 const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
 const SOURCE = "central";
 const firstBatchRunId = (solveId) => `${FIRST_BATCH_RUN_PREFIX}${solveId}`;
+// ── THE PATH IS OFF (incident 2026-09-17 evening) ────────────────────────────
+// Owner order: the #607 behaviour is reverted until the first batch is rebuilt
+// with the Hub 2-presence guard. The client no longer creates first-batch shop
+// requests (firstBatchCore.FIRST_BATCH_ENABLED, pinned equal by test), but a
+// browser still running the old bundle can — so the trigger is the backstop:
+// an OPEN, UNTOUCHED first-batch shop request found while the path is off is
+// turned back into the old Solve: Hub 2 is seeded for that size (the seed the
+// old Solve always wrote) and the request is WITHDRAWN by CAS with
+// `cancelReason: first_batch_path_off` (a reason, so the engine reads a
+// withdrawal — no cooldown, no rejection learned at the shop's cell). The
+// engine then runs the normal route: hub2←central, hub2→shop. A row Central
+// has already started on (sentQty > 0) is real stock in motion and keeps the
+// existing follow-through. A parameter, like the client flag, so the path's
+// tests still drive it with `pathEnabled: true`.
+const FIRST_BATCH_PATH_ENABLED = false;
+const PATH_OFF_REASON = "first_batch_path_off";
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 const avail = (q) => Math.max(num(q), 0);
@@ -149,7 +165,7 @@ async function claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, no
  * @param requestId the /refill_requests key that was written
  * @param nowIso    injectable clock
  */
-async function processFirstBatchRequest({ db, requestId, nowIso }) {
+async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = FIRST_BATCH_PATH_ENABLED }) {
   const now = nowIso || new Date().toISOString();
   const reqRef = db.ref(`refill_requests/${requestId}`);
   const rr = (await reqRef.once("value")).val();
@@ -182,6 +198,27 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
   // (Spec review, PR #607.)
   const centralDeclined = rr.status === "cancelled" && !rr.cancelReason;
   const declineStamp = centralDeclined ? { "cancelReason": CENTRAL_DECLINED_REASON } : {};
+  if (!resolved && !touched && pathEnabled !== true) {
+    // ── PATH OFF: back to the old Solve (see FIRST_BATCH_PATH_ENABLED) ─────
+    // Seed FIRST (a seed with nothing after it is harmless; a withdrawn
+    // request with no Hub 2 cell is a size the engine could never adopt),
+    // then withdraw by CAS: a row Central got to in the gap (fulfilled, or
+    // sentQty > 0) is left exactly as it is and takes the follow-through
+    // below on its next write. The marker lands in the same write as the
+    // cancel so the re-fire this cancel causes is a no-op (`hub2_leg_done`).
+    await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`, now);
+    // COLD-NULL TRAP (admin-movement.cjs): the first callback runs on null in
+    // a Cloud Function; judge it against the row already read (`rr`) — the
+    // proposal then CASes against the server value and re-runs on a mismatch.
+    const res = await reqRef.transaction((raw) => {
+      const cur = raw === null || raw === undefined ? rr : raw;
+      if (cur.status !== "open" || (num(cur.sentQty) || 0) > 0) return undefined;
+      if (cur.firstBatch && cur.firstBatch.hub2Leg) return undefined;
+      return { ...cur, status: "cancelled", cancelReason: PATH_OFF_REASON, resolvedAt: now, resolvedBy: "first_batch_path_off",
+        firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none: "path_off", at: now } } };
+    });
+    return { raised: false, none: "path_off", withdrawn: !!res.committed };
+  }
   if (!resolved && !touched) {
     // ── THE OPEN-REQUEST GUARD (investigation §4, Q2) ──────────────────────
     // Claim the SHOP request's engine lock, source Central. With it the row is
@@ -373,4 +410,5 @@ module.exports = {
   centralReservations,
   seedCell,
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, firstBatchRunId,
+  FIRST_BATCH_PATH_ENABLED, PATH_OFF_REASON,
 };

@@ -69,6 +69,16 @@ const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
 // shop (2026-09-17) — the two shops whose Solve raises a request from Central.
 const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", trophy: "Trophy", "marathon-pe": "Marathon PE" };
+// The SHOP destinations. A shop's ordinary refills come from Hub 2 (the
+// engine's route), and those requests are Hub 2's work, not Central's: this
+// queue — whose Fulfil moves stock OUT OF CENTRAL — must list, for a shop,
+// ONLY the first-batch legs the Solve raised from Central
+// (isFirstBatchShopLeg). Incident 2026-09-17: mounted with dest = a shop and
+// filtered by requestingLocation alone, the Trophy/Marathon tabs listed the
+// engine's entire hub2→shop backlog (225 rows, 142 products all stocked at
+// Hub 2) as Central's picking list. Nothing was fulfilled from them; one tap
+// would have moved a Central unit for a request Hub 2 was meant to send.
+const SHOP_DESTS = new Set(["trophy", "marathon-pe"]);
 // Sale-row ledger reasons — the Source Transfer & Fulfil contract (#209).
 const SOURCE_REFILL_REASON = "source_refill";
 const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
@@ -334,6 +344,9 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   // Request rows for this destination, one row per request (per size already).
   const requestRows = useMemo(() => {
     let mine = allRequests.filter((r) => r.status === "open" && r.requestingLocation === DEST_LOC && r.productId);
+    // A shop tab is Central's list of the shop's FIRST-BATCH legs only — never
+    // the engine's hub2→shop rows (see SHOP_DESTS).
+    if (SHOP_DESTS.has(DEST_LOC)) mine = mine.filter(isFirstBatchShopLeg);
     if (lineFilter) mine = mine.filter((r) => lineFilter(byId.get(r.productId), r.size));
     return mine.map((r) => {
       const p = byId.get(r.productId);
