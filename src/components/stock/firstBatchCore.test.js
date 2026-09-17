@@ -594,6 +594,19 @@ describe("location history informs the shop / Hub 2 split — per SIZE, never th
     const h2 = firstBatchHistory({ pid: "bag", product: ps[0], index: buildPlacementIndex({ products: ps, allStock: st }), allStock: st, targets: null });
     expect(firstBatchSizeHints({ history: h2, store: "trophy", sizes: ["_"] })._.to).toBe("shop");
   });
+  it("the hint looks cells up by the STORED size key: a '5.5' card is matched to the lines' '5_5' cells, and 'Free Size' to '_'", () => {
+    const belt = (id, extra = {}) => ({ id, name: id, categoryKey: "belts", sizes: ["5.5"], ...extra });
+    const ps = [belt("card"), ...Array.from({ length: 11 }, (_, i) => belt(`b${i}`))];
+    const st = { central: { card: { "5_5": cell(2) } }, trophy: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`b${i}`, { "5_5": cell(1) }])) };
+    const h = firstBatchHistory({ pid: "card", product: ps[0], index: buildPlacementIndex({ products: ps, allStock: st }), allStock: st, targets: null });
+    expect(firstBatchSizeHints({ history: h, store: "trophy", sizes: ["5.5"] })["5.5"].to).toBe("shop");
+    expect(firstBatchSizeHints({ history: h, store: "trophy", sizes: ["6"] })["6"].to).toBe("hub");
+    const cap = (id) => ({ id, name: id, categoryKey: "caps-beanies", sizes: ["Free Size"] });
+    const ps2 = [cap("c"), ...Array.from({ length: 10 }, (_, i) => cap(`k${i}`))];
+    const st2 = { central: { c: { _: cell(2) } }, "marathon-pe": Object.fromEntries(Array.from({ length: 10 }, (_, i) => [`k${i}`, { _: cell(1) }])) };
+    const h2 = firstBatchHistory({ pid: "c", product: ps2[0], index: buildPlacementIndex({ products: ps2, allStock: st2 }), allStock: st2, targets: null });
+    expect(firstBatchSizeHints({ history: h2, store: "marathon-pe", sizes: ["Free Size"] })["Free Size"].to).toBe("shop");
+  });
   it("no history at all → no hints, and the split is byte-for-byte the un-hinted one", () => {
     const h = firstBatchHistory({ pid: "card", product: key("card"), index: buildPlacementIndex({ products: [key("card")], allStock: { central: allStock.central } }), allStock: { central: allStock.central }, targets: null });
     const hints = firstBatchSizeHints({ history: h, store: "trophy", sizes: ["S", "M", "XXXL"] });
