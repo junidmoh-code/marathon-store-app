@@ -72,6 +72,16 @@ footwear-group predicate (`refill-engine.cjs:2108-2115`: not clothing AND (categ
 OR key in the footwear group)). Live effect: +1 card (the suit; greyed — no policy), chips
 otherwise identical (263 → 264).
 
+**The other six footwear keys** (boots, soccer-boots, loafers, running-shoes, kids-shoes,
+designer-shoes) stay on Missing Sneakers by evidence, not by predicate: the live map gives
+none of them a shop leg (`policyGroups.footwear-all` is disarmed), no product under them is
+routed shop←hub2 (1 soccer-boot unit at PE, 2 designer-shoe lines at Trophy, nothing else),
+and the census finds **0** Central-stranded cards under any of them. Under §4's rule they
+would be greyed "no policy" on this tab, so admitting them would add nothing but noise; the
+first-batch predicate itself excludes only `sneakers` and `slides`. Every live footwear-keyed
+record also carries the legacy `category: "Footwear"` (0 exceptions in the snapshot), so no
+record sits on neither tab.
+
 ## 3. Location history — what exists, what is readable scoped, and the decision
 
 Census over the 329 live Central-stranded cards (`var/first-batch-all-census-…md`):
@@ -159,6 +169,12 @@ Asked of the REAL `resolveTarget` over each card with a hypothetical seed at the
    (`centralReservations`).
 4. **Map legs after the first batch**: unchanged — the shop's cell exists once Central fulfils,
    the engine refills it from Hub 2 by the map (`routes` untouched), Hub 2 from Central.
+5. **The engine already holding the SHOP's lock at Solve time** (a mapped shop leg is managed
+   with no cell): unreachable for a stranded card — the engine only raises hub2→shop when
+   Hub 2 can supply (`srcAvail > 0`, `:1592-1594`), and a Central-stranded card has no Hub 2
+   node; live: 0 open shop locks over 329 cards. If it ever happens, `claimShopLock` loses,
+   records `heldBy`, never writes `claimedAt`, and retries on every later write; the engine's
+   lock is never touched (pinned in `first-batch-categories.test.cjs`).
 
 ## 6. Kill switches / live state (before)
 
@@ -216,13 +232,57 @@ engine withdrew it because Central ran dry.
   `firstBatchCore.test.js` 40/40; `firstBatchSolve.render.test.jsx` 21/21;
   `missingProductsCore.test.js` 35/35; `solveUndo.gate.test.js` re-pinned for both write
   paths.
-- Mutation proof `scripts/mutation-proof-first-batch.mjs`: **50/50 guards proven** (the two
-  #607 mutations that pinned the exclusions this change removes were deleted; 22 new).
+- Mutation proof `scripts/mutation-proof-first-batch.mjs`: **55/55 guards proven** (the two
+  #607 mutations that pinned the exclusions this change removes were deleted; 20 new).
 - Full vitest: 6395 pass / 10 fail; full functions `node --test`: 2051 pass / 11 fail.
   Every failure predates this branch and lives in subjects it does not touch —
   `git diff origin/main --name-only` over them is empty: `hubIsolation.test.js` (pins an
   `App.jsx` line #600 changed on main), `scripts/shopify/{homeRails,priceHearts,themeStrings}`,
   `scripts/social/socialSchedule`, `functions/test/social-{select,caption}` (theme and
   launchd assets outside this diff). Identical to the list recorded for PR #607.
+- "PR #607 behaviour for plain clothing unchanged" means the SERVER leg and the write shape:
+  `first-batch.test.cjs` and the #607 render tests pass untouched. The client's default shop
+  nomination (history) and Central's free (reservations netted) changed for plain clothing
+  by design — a shirt now defaults to Trophy (33 of 36 lines) where #607 defaulted to PE.
 - Kill switches re-read after the build: unchanged (`ruleBasedTargets true`,
   `footwearTargets` absent = sneakers OFF).
+
+## 11. Review round (PR #608) — provenance and what changed
+
+CodeRabbit (see the PR), a Sonnet senior-architect pass, a Fable-vs-spec pass, and — Kimi
+being out on its monthly quota (`403` on a two-word prompt, 2026-09-17) and Codex excluded by
+the brief — the standing substitute: an adversarial Opus pass that constructed inputs and ran
+the real functions, plus the mapped-category property fuzz (600 worlds).
+
+Fixed at the cause, each pinned by a test and a mutation:
+- **Dead locks counted as Central reservations** (Sonnet LOW, Opus MEDIUM-HIGH): an undone
+  solve's lock (the undo cannot touch `/refill_engine`) or a fulfilled sibling's lock (Central's
+  cell already decremented) reserved Central until the next scan, so a re-solve asked Central
+  for 1 where the policy said 2 and Central held 3. `pruneClosedLocks`: one scoped read per
+  lock's request; gone / fulfilled / cancelled → not a reservation.
+- **Per-location SIZE MAPS invisible to the client mirror** (Opus MEDIUM): `soccer-jerseys` and
+  `underwear` are live as `{ sizes: { S: {target…} } }` per location; `categoryRun` read only
+  `entry.target`, so their Solve stayed greyed (0 live cards today, both categories stocked).
+  Mirrored from `locationPolicyFor` (perSize only, usable row, dead-size 0), pinned by a
+  size-by-size differential against the real `resolveTarget`.
+- **A clothing-typed record with a sneakers/slides key fell to the seed-Hub 2 path** (Opus LOW,
+  unreachable today — 0 such records): the Hub 2 seed would arm its carriedOnly policy. Solve
+  is now blocked for it with a sentence; nothing is written.
+- **Lock-key encoder mismatch for padded/blank sizes** (Opus LOW, unreachable): `lockKeyFor`
+  trims and maps blank → "_" like the engine's encoder.
+- **Vacuous assertion** (Fable MEDIUM): the bag test asserted the PE chip was absent after the
+  confirm, when the result view had replaced the chips. Now: the chip is offered, its confirm is
+  blocked with the no-policy sentence, nothing is written.
+- **History line vs the operator's tap** (Fable MEDIUM): after tapping the other shop the line
+  reads "Trophy was suggested — …; You chose Marathon PE."
+- **History counted retired / merged records** (Opus LOW): the index skips them; the sentence
+  says "lines", not units.
+- Stale comments (`first-batch.cjs` header, `solvePlan.js` "cards list applies isClothing")
+  corrected; §2, §5 and §10 amended (six footwear keys by evidence; the engine-held shop lock
+  branch; mutation count; what "unchanged for plain clothing" means).
+
+Noted, not changed: the shop / Hub 2 split remains policy-fixed (§3) — the engine's reconcile
+makes any other split self-undoing; the owner's two bullets ("use policies as they are" and
+"history informs the split") are reconciled in favour of the first, stated plainly in the PR
+and the final report. Newly admitted typeless cards land in the Clothing chip (cosmetic). An
+armed policy GROUP is not mirrored by `categoryRun` (none armed live).

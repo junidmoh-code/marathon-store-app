@@ -16,6 +16,7 @@ const SOLVE = "src/components/stock/NetworkTransfer.jsx";
 const UNDO = "src/components/stock/solveUndo.js";
 
 const TAB = "src/components/stock/missingProductsCore.js";
+const PLAN = "src/components/stock/solvePlan.js";
 
 const SERVER_TESTS = ["test/first-batch.test.cjs", "test/first-batch-categories.test.cjs"];
 const CORE_TESTS = ["src/components/stock/firstBatchCore.test.js"];
@@ -432,6 +433,48 @@ const MUTATIONS = [
     file: SOLVE,
     from: `        }) || (fbSplit && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)) : null;`,
     to: `        }) || null) : null;`,
+    tests: SOLVE_TESTS,
+  },
+  {
+    id: "M-RESERVE-PRUNE",
+    guard: "a lock whose request is gone / fulfilled / cancelled is not a Central reservation",
+    file: CORE,
+    from: `        if (!r || r.status !== "open") continue;   // gone, fulfilled or cancelled → not a reservation`,
+    to: ``,
+    tests: [...CORE_TESTS, ...SOLVE_TESTS],
+  },
+  {
+    id: "M-RESERVE-LOCK-KEY",
+    guard: "the reservation lookup uses the engine's lock key (trimmed, blank → '_')",
+    file: CORE,
+    from: `export const lockKeyFor = (size) => { const k = String(size ?? "").trim(); return k ? encodeSizeKey(k) : "_"; };`,
+    to: `export const lockKeyFor = (size) => encodeSizeKey(size);`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-MAP-SIZES",
+    guard: "a per-location size map (soccer-jerseys / underwear) arms the sizes it names on the client, as the engine does",
+    file: PLAN,
+    from: `    if (isMapEntry(entry)) {
+      if (!mapUsable(cat, entry)) continue;`,
+    to: `    if (isMapEntry(entry)) {
+      continue;`,
+    tests: [...CORE_TESTS, ...SOLVE_TESTS],
+  },
+  {
+    id: "M-MAP-DEAD-SIZE",
+    guard: "a mapped size with zero units anywhere is a dead 0, never re-armed",
+    file: PLAN,
+    from: `        run[String(sz).toUpperCase()] = at(sz) > 0 ? row.target : 0;`,
+    to: `        run[String(sz).toUpperCase()] = row.target;`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-SNEAKER-NEVER-SEEDED",
+    guard: "a sneaker or slide that reaches the list is never seeded (the old path would arm its carriedOnly Hub 2 policy)",
+    file: SOLVE,
+    from: `        const solveBlocked = (offTab ? "this is a sneaker or slide — it is refilled from the Sneakers tab, never seeded here." : null) || solveReason({`,
+    to: `        const solveBlocked = solveReason({`,
     tests: SOLVE_TESTS,
   },
   {
