@@ -1,7 +1,8 @@
 import { describe, it, expect } from "vitest";
+import { readFileSync } from "node:fs";
 import {
   computeMissingProducts, groupOf, countByCategory, isClothing, isPerfume,
-  buildChips, pickActiveTab,
+  buildChips, pickActiveTab, inFootwearGroup, admitsMissingProduct, FOOTWEAR_GROUP_KEYS,
 } from "./missingProductsCore";
 
 // Live catalogue shapes (2026-08-03). Bags, watches and belts are all recorded
@@ -248,6 +249,49 @@ describe("buildChips + pickActiveTab — three fixed chips", () => {
     for (const sel of ["bags", "t-shirts", "nonsense", undefined, null]) {
       expect(keys).toContain(pickActiveTab(chips, sel));
     }
+  });
+});
+
+describe("the admission gate — the complement of the footwear group (2026-09-17)", () => {
+  const MISTYPED_SUIT = { id: "su1", name: "Suit jacket black FF1070", categoryKey: "suits", category: "Clothing", subcategory: "Suits", productType: "sneaker", sizes: ["S", "M"] };
+  const PHONE = { id: "ph1", name: "Phone case", categoryKey: "iphone", sizes: ["_"] };
+  const KEYLESS_TYPELESS = { id: "kt1", name: "Mystery accessory", category: "Accessories", sizes: ["_"] };
+  const BOOT = { id: "bt1", name: "Timberland", categoryKey: "boots", category: "Footwear", subcategory: "Boots", sizes: ["8"] };
+  const SLIDE = { id: "sl1", name: "Arizona", categoryKey: "slides", category: "Footwear", subcategory: "Sandals & Slides", sizes: ["8"] };
+  const LEGACY_SNEAKER = { id: "ls1", name: "Campus", category: "Footwear", subcategory: "Sneakers", sizes: ["8"] };
+  const KEYED_SHOE_ODD_CATEGORY = { id: "ks1", name: "Loafer", categoryKey: "loafers", category: "Accessories", sizes: ["8"] };
+  it("ADMITS every non-footwear record — clothing, perfume, AND the mis-typed / typeless ones that used to be invisible", () => {
+    for (const p of [TEE, BAG, WATCH, PERFUME, HYBRID, MISTYPED_SUIT, PHONE, KEYLESS_TYPELESS]) {
+      expect(admitsMissingProduct(p), p.id).toBe(true);
+      expect(inFootwearGroup(p), p.id).toBe(false);
+    }
+    const cards = computeMissingProducts({
+      allStock: { central: { su1: { S: cell(8) }, ph1: { _: cell(3) } } }, products: [...PRODUCTS, MISTYPED_SUIT, PHONE],
+    });
+    expect(cards.map((c) => c.pid).sort()).toEqual(["ph1", "su1"]);
+    expect(cards.every((c) => c.group === "clothing")).toBe(true);   // no new chip — the pile
+  });
+  it("EXCLUDES the whole footwear group, by legacy category OR by key (incl. a keyless legacy sneaker)", () => {
+    for (const p of [SNEAKER, BOOT, SLIDE, LEGACY_SNEAKER, KEYED_SHOE_ODD_CATEGORY]) {
+      expect(admitsMissingProduct(p), p.id).toBe(false);
+      expect(inFootwearGroup(p), p.id).toBe(true);
+    }
+    const cards = computeMissingProducts({
+      allStock: { central: { bt1: { 8: cell(4) }, sl1: { 8: cell(4) }, ls1: { 8: cell(4) } } }, products: [...PRODUCTS, BOOT, SLIDE, LEGACY_SNEAKER],
+    });
+    expect(cards).toHaveLength(0);
+    expect(admitsMissingProduct(null)).toBe(false);
+    expect(admitsMissingProduct(undefined)).toBe(false);
+  });
+  it("a clothing-typed record is clothing whatever its category says — the engine's precedence", () => {
+    expect(inFootwearGroup({ id: "h", name: "Footwear hoodie", category: "Footwear", productType: "clothing", sizes: ["M"] })).toBe(false);
+  });
+  it("the group's key list is the engine's own (refill-engine.cjs FOOTWEAR_GROUP_KEYS), so the two Health tabs cannot drift", () => {
+    const engine = readFileSync(new URL("../../../functions/lib/refill-engine.cjs", import.meta.url), "utf8");
+    const m = /const FOOTWEAR_GROUP_KEYS = new Set\(\[([^\]]+)\]\)/.exec(engine);
+    expect(m).toBeTruthy();
+    const engineKeys = m[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean).sort();
+    expect([...FOOTWEAR_GROUP_KEYS].sort()).toEqual(engineKeys);
   });
 });
 

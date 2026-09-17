@@ -1,10 +1,11 @@
 // ─── FIRST BATCH DIRECT TO SHOP — the Solve's new first leg (pure, testable) ──
 // Owner spec 2026-09-17. For a product that exists only at Central and is
-// kept at Hub 2 for its shops (Marathon PE / Trophy clothing), the Missing
-// Products Solve used to seed qty-0 cells at Hub 2 AND the shop and leave the
-// rest to the engine: Hub 2 then asked Central for its whole buffer, and the
-// shop asked Hub 2 for its policy quantity — so Hub 2 staff unpacked one bag to
-// fulfil shop requests one by one.
+// kept at Hub 2 for its shops (Marathon PE / Trophy — every category except
+// sneakers and slides, since the same evening), the Missing Products Solve
+// used to seed qty-0 cells at Hub 2 AND the shop and leave the rest to the
+// engine: Hub 2 then asked Central for its whole buffer, and the shop asked
+// Hub 2 for its policy quantity — so Hub 2 staff unpacked one bag to fulfil
+// shop requests one by one.
 //
 // Now, for exactly that Solve, the FIRST batch goes straight to the shop:
 //   1. the Solve creates ONLY the shop's request — its own policy quantity,
@@ -22,11 +23,15 @@
 // for a product the shop CARRIES (storeCarries — a stock node exists), and the
 // Missing Products card only leaves the list once a shop node exists. Seeding
 // the shop at qty 0 is therefore unchanged. What is NEW is that Hub 2 is NOT
-// seeded at Solve time for a size Central can send: with no Hub 2 node the
-// engine cannot raise hub2←central (managedPids needs storeCarries) — which is
-// the whole reason the shop's request cannot be duplicated by the engine while
-// it is open. Hub 2's node is seeded by the deferred leg, at the moment its own
-// request is raised.
+// seeded at Solve time for a size Central can send: for a product the clothing
+// RULE governs, no Hub 2 node means the engine cannot raise hub2←central at
+// all (managedPids needs storeCarries); for a product a category MAP or an
+// explicit row governs, the engine manages Hub 2 with no cell — and there the
+// guard is the engine's own lock, read by the trigger before it raises Hub 2's
+// leg (deferredTo: engine when the scan got there first) and counted as
+// inbound by the engine when the trigger did. Either way: one Hub 2 request.
+// Hub 2's node is seeded by the deferred leg, at the moment its own request
+// is raised.
 //
 // PER SIZE, NOT PER PRODUCT. A size Central has none of cannot be sent first,
 // so it follows today's path unchanged (seed Hub 2 + shop; the engine takes
@@ -38,8 +43,7 @@
 // caller (serverNowMs / serverNowIso), never Date.now().
 
 import { stockSizeKey, stockCellPath } from "../../utils/sizeKey";
-import { isClothing } from "./missingProductsCore";
-import { categoryPolicyLocs } from "./solvePlan";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 
 export const FIRST_BATCH_HUB = "hub2";
 // The lock runId the server stamps on both legs' engine locks. Kept as ONE
@@ -65,31 +69,56 @@ export const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
 // Central-level answer the engine should learn from).
 export const isFirstBatchShopLeg = (r) => !!r && r.createdFrom?.firstBatch === true && r.requestingLocation !== FIRST_BATCH_HUB;
 
-// ── SCOPE — is this Solve the one that routes shop quantities via Hub 2? ─────
-// True only when ALL of these hold; every "no" leaves the old path untouched:
+// ── SNEAKERS AND SLIDES — the ONLY two categories off this path ──────────────
+// Owner rule 2026-09-17: everything except sneakers and slides goes through
+// Hub 2 into the shop and takes the first-batch path — bags, belts, caps,
+// beanies, gloves, perfumes, soccer jerseys, sunglasses, underwear, and every
+// other category. The identity is the catalogue's own: the effective category
+// key (an assigned categoryKey wins; a keyless record whose legacy pair is
+// Footwear + Sneakers IS a sneaker — productTaxonomy.effectiveCategoryKey, the
+// engine's policyCategoryKey twin, pinned equal by test), plus the keyless
+// legacy pair for slides (Footwear + "Sandals & Slides", the taxonomy's own
+// derivation for that key). Nothing else is excluded here. Boots, soccer
+// boots, loafers and the rest never reach this Solve at all — the Missing
+// Products tab owns the complement of the footwear group
+// (missingProductsCore.inFootwearGroup) — but the rule is stated exactly so a
+// future entry point inherits it unchanged.
+export const EXCLUDED_KEYS = Object.freeze(["sneakers", "slides"]);
+export function isSneakerOrSlide(p) {
+  if (!p) return false;
+  const key = effectiveCategoryKey(p);
+  if (key) return EXCLUDED_KEYS.includes(key);
+  return p.category === "Footwear" && p.subcategory === "Sandals & Slides";
+}
+
+// ── SCOPE — which Solve routes the first batch straight to the shop ──────────
+// True when ALL of these hold; a "no" leaves the old seed-only path untouched:
 //   • the card is Central-stranded (source "central") — a hub-stranded card is
 //     the hub-to-hub Solve, frozen;
 //   • the nominated store's route is Hub 2 (config.routes) — that is what "kept
 //     at Hub 2" means to the engine;
-//   • the product is clothing in the engine's sense — the rule-based class whose
-//     Hub 2 target exists only once Hub 2 carries a cell;
-//   • its category has NO unscoped Hub 2 category-policy leg — a mapped category
-//     (bags, belts, gloves, perfumes…) is managed at Hub 2 with no cell and no
-//     Solve at all, so its Solve never routed anything; a carriedOnly leg still
-//     needs the cell and stays eligible;
-//   • no explicit /stock_targets row at Hub 2 — an explicit row makes the engine
-//     manage Hub 2 for this product regardless of a cell.
-export function firstBatchEligible({ source, store, product, routes, categoryPolicy, targets } = {}) {
+//   • the product exists and is not a sneaker or a slide.
+//
+// WHAT PR #607 ALSO REQUIRED, AND WHY IT NO LONGER DOES (2026-09-17): the
+// product had to be clothing in the engine's sense, with NO unscoped Hub 2
+// category-policy leg and NO explicit /stock_targets row at Hub 2. Those three
+// tests all said the same thing — "the engine manages Hub 2 for this product
+// with no cell, so not seeding Hub 2 does not stop it asking Central" — and
+// that was #607's whole anti-duplication argument for Hub 2. It was never the
+// load-bearing guard: the engine's OWN lock is. Whoever locks
+// /refill_engine/open/hub2/{pid}/{sizeKey} first wins — the scan
+// (create-if-absent) or the trigger (same transaction shape); the trigger
+// records `deferredTo: engine` when it loses, and the engine counts our lock
+// as inbound when we win and proposes nothing. So a mapped category (bags,
+// perfumes…) or an explicit-row product takes the same path as a plain tee:
+// the shop's request first, Hub 2's leg on fulfil, one Hub 2 request ever.
+// Their policies are read exactly as they are, by resolvedRun — the map or
+// the row simply IS the shop's / Hub 2's target.
+export function firstBatchEligible({ source, store, product, routes } = {}) {
   if (source !== "central") return false;
   if (!store || routes?.[store] !== FIRST_BATCH_HUB) return false;
-  if (!isClothing(product)) return false;
-  const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
-  if (key) {
-    const legs = categoryPolicyLocs(categoryPolicy, key);
-    const hubLeg = categoryPolicy?.[key]?.[FIRST_BATCH_HUB];
-    if (legs.includes(FIRST_BATCH_HUB) && !(hubLeg && hubLeg.carriedOnly === true)) return false;
-  }
-  if (targets?.[FIRST_BATCH_HUB]?.[product?.id] && Object.keys(targets[FIRST_BATCH_HUB][product.id]).length > 0) return false;
+  if (!product) return false;
+  if (isSneakerOrSlide(product)) return false;
   return true;
 }
 

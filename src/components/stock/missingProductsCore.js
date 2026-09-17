@@ -23,6 +23,8 @@
 // arbitrary map order (12/13 would otherwise land anywhere).
 import { sizeRank } from "./hubSizeRank";
 import { isDeactivated } from "../../utils/deactivation.js";
+import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { FOOTWEAR_CATEGORY_KEYS } from "../../utils/footwearLine.js";
 
 const STORES = ["marathon-pe", "trophy"];
 
@@ -88,6 +90,33 @@ export function isClothing(p) {
   return (p.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s)));
 }
 
+// ── THE FOOTWEAR GROUP — the ONE class this tab does not own ─────────────────
+// (2026-09-17, first batch for every category.) The gate used to be
+// `isClothing || isPerfume`, which kept the footwear group out correctly but
+// ALSO kept out, by accident, every non-footwear record that is neither
+// clothing-typed nor a perfume: a suit jacket mis-typed productType "sneaker"
+// (8 units at Central, invisible on BOTH tabs on 2026-09-17), and the typeless
+// categories. The owner's rule is that everything except sneakers and slides
+// goes through Hub 2 into the shop, so this tab admits the COMPLEMENT of the
+// footwear group — the engine's own Health predicate (refill-engine.cjs
+// `inFootwearGroup`): NOT clothing in the engine's sense AND (legacy category
+// "Footwear" OR a footwear category key, resolved through the catalogue's
+// effectiveCategoryKey so a keyless legacy sneaker is still a sneaker).
+// Footwear keeps its own list (missingFootwearCore, `category === "Footwear"`),
+// so the two tabs stay complementary on every legacy-Footwear record. A
+// clothing-typed record is clothing to this tab whatever its category says —
+// the same precedence the engine applies (isClothing is evaluated first).
+export const FOOTWEAR_GROUP_KEYS = Object.freeze([...FOOTWEAR_CATEGORY_KEYS, "designer-shoes"]);
+export function inFootwearGroup(p) {
+  if (!p || isClothing(p)) return false;
+  if (p.category === "Footwear") return true;
+  const key = effectiveCategoryKey(p);
+  return !!key && FOOTWEAR_GROUP_KEYS.includes(key);
+}
+// What this tab admits: a catalogue record that is not in the footwear group.
+// (A stock node with no product record is not admitted — same as before.)
+export const admitsMissingProduct = (p) => !!p && !inFootwearGroup(p);
+
 // The stranded-card list. `allStock` is { loc: { pid: { sizeKey: cell } } } and
 // `products` is an array of catalogue records.
 export function computeMissingProducts({ allStock, products } = {}) {
@@ -105,10 +134,10 @@ export function computeMissingProducts({ allStock, products } = {}) {
   const pids = new Set([...Object.keys(allStock?.central || {}), ...Object.keys(allStock?.hub2 || {})]);
   for (const pid of pids) {
     const p = byId.get(pid);
-    // Clothing OR perfume — the two classes this tab owns. Footwear keeps its
-    // own list (missingFootwearCore); everything else stays out until the owner
-    // asks for it (see the isPerfume note on why the gate is this narrow).
-    if (!isClothing(p) && !isPerfume(p)) continue;
+    // Everything outside the footwear group — clothing, perfume, and (since
+    // 2026-09-17) every other non-footwear record. Footwear keeps its own list
+    // (missingFootwearCore). See inFootwearGroup above.
+    if (!admitsMissingProduct(p)) continue;
     // Finished lines take no requests and no Solve — same guard as the
     // footwear twin. Without it, Solve here would seed qty-0 cells that no
     // arrival ever follows, so nothing would auto-reactivate: the exact

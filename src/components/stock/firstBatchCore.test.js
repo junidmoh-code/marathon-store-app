@@ -5,7 +5,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import {
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, firstBatchRunId, solveIdFor,
-  firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate,
+  firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
 } from "./firstBatchCore.js";
 
@@ -13,16 +13,16 @@ const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy
 const TEE = { id: "tee1", name: "Essentials Tee", productType: "clothing", sizes: ["S", "M", "L"] };
 const BAG = { id: "bag1", name: "Gym Bag", productType: "clothing", categoryKey: "bags", sizes: ["_"] };
 const PERFUME = { id: "pf1", name: "Sauvage", categoryKey: "perfumes", sizes: ["_"] };
-const SNEAKER = { id: "sn1", name: "Air Max", category: "Footwear", sizes: ["8"] };
+const SNEAKER = { id: "sn1", name: "Air Max", category: "Footwear", subcategory: "Sneakers", sizes: ["8"] };
 const POLICY = {
   bags: { hub2: { target: 4, minQty: 2 }, trophy: { target: 2, minQty: 1 } },
   slides: { hub2: { carriedOnly: true, sizes: { 8: { target: 3 } } }, perSize: true },
 };
 const RUN = { hub2: { S: 2, M: 3, L: 3 }, trophy: { S: 2, M: 2, L: 2 }, "marathon-pe": { S: 2, M: 2, L: 1 } };
 
-describe("scope — which Solve routes shop quantities through Hub 2", () => {
+describe("scope — every category except sneakers and slides (owner rule 2026-09-17)", () => {
   const base = { source: "central", store: "trophy", product: TEE, routes: ROUTES, categoryPolicy: POLICY, targets: {} };
-  it("IN: a Central-stranded clothing product, shop routed via Hub 2, unmapped, no explicit Hub 2 row", () => {
+  it("IN: a Central-stranded clothing product, shop routed via Hub 2", () => {
     expect(firstBatchEligible(base)).toBe(true);
     expect(firstBatchEligible({ ...base, store: "marathon-pe" })).toBe(true);
   });
@@ -34,22 +34,44 @@ describe("scope — which Solve routes shop quantities through Hub 2", () => {
     expect(firstBatchEligible({ ...base, routes: undefined })).toBe(false);
     expect(firstBatchEligible({ ...base, store: "marathon-pine" })).toBe(false);
   });
-  it("OUT: a mapped category whose Hub 2 leg is unscoped — the engine already asks with no Solve", () => {
-    expect(firstBatchEligible({ ...base, product: BAG })).toBe(false);
+  it("IN (was OUT in #607): a mapped category with an unscoped Hub 2 leg — bags, and every other live map key", () => {
+    expect(firstBatchEligible({ ...base, product: BAG })).toBe(true);
+    for (const key of ["belts", "caps-beanies", "fitted-caps", "gloves", "perfumes", "soccer-jerseys", "sunglasses", "underwear"]) {
+      expect(firstBatchEligible({ ...base, product: { ...BAG, categoryKey: key } }), key).toBe(true);
+    }
   });
-  it("IN: a mapped category whose Hub 2 leg is carriedOnly still needs the cell", () => {
-    const slide = { ...TEE, categoryKey: "slides" };
-    expect(firstBatchEligible({ ...base, product: slide })).toBe(true);
+  it("IN (was OUT in #607): perfume — not clothing in the engine's sense, but on the path", () => {
+    expect(firstBatchEligible({ ...base, product: PERFUME })).toBe(true);
   });
-  it("OUT: perfume and sneakers — not clothing in the engine's sense", () => {
-    expect(firstBatchEligible({ ...base, product: PERFUME })).toBe(false);
-    expect(firstBatchEligible({ ...base, product: SNEAKER })).toBe(false);
+  it("IN (was OUT in #607): an explicit /stock_targets row at Hub 2 — the row IS Hub 2's policy", () => {
+    expect(firstBatchEligible({ ...base, targets: { hub2: { tee1: { M: { target: 5 } } } } })).toBe(true);
+  });
+  it("IN: a typeless, keyless non-footwear record (the tab now admits it; its policy decides the rest)", () => {
+    expect(firstBatchEligible({ ...base, product: { id: "x1", name: "Phone case", sizes: ["_"] } })).toBe(true);
+    expect(firstBatchEligible({ ...base, product: { id: "x2", name: "Suit jacket", categoryKey: "suits", productType: "sneaker", sizes: ["S"] } })).toBe(true);
+  });
+  it("OUT: sneakers and slides, by every identity the catalogue uses", () => {
+    expect(firstBatchEligible({ ...base, product: { ...TEE, categoryKey: "sneakers" } })).toBe(false);
+    expect(firstBatchEligible({ ...base, product: { ...TEE, categoryKey: "slides" } })).toBe(false);
+    expect(firstBatchEligible({ ...base, product: { ...TEE, categoryKey: " slides " } })).toBe(false);   // trimmed like the engine
+    expect(firstBatchEligible({ ...base, product: SNEAKER })).toBe(false);          // keyless legacy sneaker (Footwear + Sneakers)
+    expect(firstBatchEligible({ ...base, product: { id: "sl", name: "Arizona", category: "Footwear", subcategory: "Sandals & Slides", sizes: ["8"] } })).toBe(false);
     expect(firstBatchEligible({ ...base, product: null })).toBe(false);
   });
-  it("OUT: an explicit /stock_targets row at Hub 2 — the engine manages Hub 2 for it regardless of a cell", () => {
-    expect(firstBatchEligible({ ...base, targets: { hub2: { tee1: { M: { target: 5 } } } } })).toBe(false);
-    // another product's row is not this product's row
-    expect(firstBatchEligible({ ...base, targets: { hub2: { other: { M: { target: 5 } } } } })).toBe(true);
+  it("the exclusion is EXACT: no other footwear key is excluded by the predicate (they never reach this Solve; the tab owns that)", () => {
+    expect(EXCLUDED_KEYS).toEqual(["sneakers", "slides"]);
+    for (const key of ["boots", "soccer-boots", "loafers", "running-shoes", "kids-shoes", "designer-shoes"]) {
+      expect(isSneakerOrSlide({ id: "b", categoryKey: key, category: "Footwear", sizes: ["8"] }), key).toBe(false);
+    }
+    // an assigned key WINS over the legacy pair, both ways
+    expect(isSneakerOrSlide({ categoryKey: "boots", category: "Footwear", subcategory: "Sneakers" })).toBe(false);
+    expect(isSneakerOrSlide({ categoryKey: "sneakers", category: "Clothing", subcategory: "T-Shirts" })).toBe(true);
+    expect(isSneakerOrSlide(SNEAKER)).toBe(true);
+    expect(isSneakerOrSlide({ category: "Footwear", subcategory: "Boots" })).toBe(false);
+    // a keyless "Footwear" record with NO leaf is not a sneaker to the catalogue
+    // either (effectiveCategoryKey answers null) — it is footwear, and the tab
+    // keeps it off this Solve; the predicate itself stays exact.
+    expect(isSneakerOrSlide({ category: "Footwear", sizes: ["8"] })).toBe(false);
   });
 });
 

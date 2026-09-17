@@ -9,8 +9,9 @@
 //   → Transfer — immediate one-step applyMovement, straight from Health.
 //
 // Data is computed LIVE from /stock (not the scan snapshot) so a transfer
-// retires its card instantly. Clothing and perfume (2026-08-13 — see
-// missingProductsCore's isPerfume note); strictly existing tokens.
+// retires its card instantly. Every product outside the footwear group
+// (clothing, perfume, and since 2026-09-17 every other non-footwear record —
+// see missingProductsCore's inFootwearGroup note); strictly existing tokens.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref, get, update, onValue, runTransaction, push } from "firebase/database";
@@ -418,15 +419,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
 
   // The first-batch split for a card at a store, or null when this Solve is
-  // not the in-scope one. Conservative on a FAILED targets read: without the
-  // explicit rows the scope test cannot rule out an engine-managed Hub 2, so
-  // the old path runs (it never needed the rows either).
+  // not the in-scope one (hub-stranded, a shop not routed via Hub 2, a sneaker
+  // or slide). Conservative on a FAILED targets read: without the explicit
+  // rows the shop's own quantity cannot be resolved for an explicit-row
+  // product, so the old path runs (it never needed the rows either).
   const firstBatchFor = (card, store, sizes) => {
     if (!cfg || targetsError) return null;
-    const eligible = firstBatchEligible({
-      source: card.source, store, product: byId.get(card.pid),
-      routes: cfg.routes, categoryPolicy: cfg.categoryPolicy, targets: targetRows,
-    });
+    const eligible = firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), routes: cfg.routes });
     if (!eligible) return null;
     return firstBatchSplit({
       sizes, run: runFor(card.pid), store,
@@ -446,13 +445,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       return;
     }
     // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17). For the in-scope
-    // Solve only — Central-stranded, clothing, shop routed via Hub 2, no map
-    // leg or explicit row managing Hub 2 — the sizes Central can send become
-    // the shop's OWN request from Central (Source › Trophy / Marathon), and
-    // Hub 2 is NOT seeded for them: the server raises Hub 2's leg when the
-    // shop's is fulfilled. Sizes Central has none of follow the old path
-    // unchanged. Everything else (hub-stranded, mapped categories, perfume,
-    // explicit Hub 2 rows) is byte-for-byte the old Solve below.
+    // Solve — Central-stranded, shop routed via Hub 2, any category except
+    // sneakers and slides (mapped categories, perfume and explicit-row
+    // products included since the same evening; firstBatchCore.js) — the
+    // sizes Central can send become the shop's OWN request from Central
+    // (Source › Trophy / Marathon), and Hub 2 is NOT seeded for them: the
+    // server raises Hub 2's leg when the shop's is fulfilled. Sizes Central
+    // has none of follow the old path unchanged. Everything else (hub-
+    // stranded, a shop not routed via Hub 2) is byte-for-byte the old Solve
+    // below.
     const split = firstBatchFor(card, store, sizes);
     const firstBatch = !!(split && split.firstBatch.length);
     const locs = firstBatch ? [FIRST_BATCH_HUB, store] : seedLocations(card.source, store);

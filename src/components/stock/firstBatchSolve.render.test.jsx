@@ -178,6 +178,37 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
   });
 });
 
+describe("mapped categories and explicit rows — on the path since 2026-09-17, with their own policies", () => {
+  it("a one-size mapped category (bags: map hub2 4 / trophy 2): the SHOP's map quantity goes first, one '_' request, no Hub 2 seed", async () => {
+    const tree = render({ products: onlyProduct(BAG) });
+    act(() => { buttonExactly(tree, "Solve").props.onClick(); });
+    const text = textOf(tree);
+    expect(text).toMatch(/2 units \(One size×2\) go to Trophy first — requested from Central now; Central picks it from Source › Trophy/);
+    expect(text).toMatch(/Hub 2's own ~4 units follow automatically after Trophy's request is fulfilled/);
+    expect(text).not.toMatch(/seeds Hub 2 \+/);
+    await act(async () => { await buttonSaying(tree, "Solve — send 2 to Trophy first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    expect(Object.keys(upd).sort()).toEqual(["refill_requests/req1", "stock/trophy/bag1/_"]);
+    expect(upd["refill_requests/req1"]).toMatchObject({ productId: BAG, size: "_", qty: 2, requestingLocation: "trophy", status: "open", createdFrom: { firstBatch: true, source: "central", store: "trophy", hub: "hub2" } });
+    // the map names Trophy only, so Marathon PE cannot be nominated for a bag
+    expect(buttonExactly(tree, "Marathon PE")).toBeUndefined();
+  });
+  it("an explicit Hub 2 row is Hub 2's policy, not an exclusion: the tee still takes the path and the shop's run quantity", async () => {
+    const tree = render({ products: onlyProduct(TEE), targets: { hub2: { [TEE]: { M: { target: 6 } } } } });
+    act(() => { buttonExactly(tree, "Solve").props.onClick(); });
+    // Hub 2's estimate reads the ROW for M (6) and the run for S (2)
+    expect(textOf(tree)).toMatch(/Hub 2's own ~8 units follow automatically/);
+    await act(async () => { await buttonSaying(tree, "Solve — send 4 to Marathon PE first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    expect(Object.keys(upd).sort()).toEqual([
+      "refill_requests/req1", "refill_requests/req2",
+      "stock/hub2/tee1/L",
+      "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
+    ]);
+    expect([upd["refill_requests/req1"].qty, upd["refill_requests/req2"].qty]).toEqual([2, 2]);
+  });
+});
+
 describe("out of scope — byte-for-byte the old Solve", () => {
   const oldShape = (upd, pid, sizes, store) => {
     const want = [];
@@ -185,19 +216,6 @@ describe("out of scope — byte-for-byte the old Solve", () => {
     expect(Object.keys(upd).sort()).toEqual(want.sort());
     expect(Object.keys(upd).some((k) => k.startsWith("refill_requests/"))).toBe(false);
   };
-  it("a mapped category (bags — the engine asks Hub 2 with no Solve) keeps the old copy and the old write", async () => {
-    const tree = render({ products: onlyProduct(BAG) });
-    act(() => { buttonExactly(tree, "Solve").props.onClick(); });
-    expect(textOf(tree)).toMatch(/seeds Hub 2 \+ Trophy at qty 0/);
-    expect(buttonSaying(tree, "Solve — carry at")).toBeTruthy();
-    await act(async () => { await buttonSaying(tree, "Solve — carry at").props.onClick(); });
-    oldShape(updateMock.mock.calls[0][1], BAG, ["_"], "trophy");
-  });
-  it("an explicit Hub 2 row → old path", async () => {
-    const tree = render({ products: onlyProduct(TEE), targets: { hub2: { [TEE]: { M: { target: 6 } } } } });
-    await solve(tree);
-    oldShape(updateMock.mock.calls[0][1], TEE, ["S", "M", "L"], "marathon-pe");
-  });
   it("no routes in config (a shop not routed via Hub 2) → old path", async () => {
     paths["config/refillEngine"] = { ...CONFIG, routes: { ...CONFIG.routes, "marathon-pe": "hub3", trophy: "hub3" } };
     const tree = render({ products: onlyProduct(TEE) });
