@@ -317,6 +317,14 @@ const MUTATIONS = [
     tests: CORE_TESTS,
   },
   {
+    id: "M-UNDO-OPEN-ONLY",
+    guard: "the undo re-runs the cancel CAS only on rows still open (a retry never re-CASes its own landed cancel)",
+    file: SOLVE,
+    from: `        const ids = Object.keys(liveFb).filter((id) => liveFb[id] && liveFb[id].status === "open");`,
+    to: `        const ids = Object.keys(liveFb).filter((id) => liveFb[id]);`,
+    tests: SOLVE_TESTS,
+  },
+  {
     id: "M-UNDO-OWN-LOCK",
     guard: "the undo exempts ONLY this solve's own lock (any other lock still blocks)",
     file: UNDO,

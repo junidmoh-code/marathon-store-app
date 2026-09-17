@@ -22,7 +22,8 @@ vi.mock("firebase/database", () => ({
 // runTransaction outcomes by path: default = committed; a test can make one
 // path abort (Central got to that request first).
 const abortPaths = new Set();
-const txnOutcome = (path, fn) => (abortPaths.has(path) ? { committed: false } : { committed: true, snapshot: { val: () => fn(null) } });
+const txnPaths = [];
+const txnOutcome = (path, fn) => { txnPaths.push(path); return abortPaths.has(path) ? { committed: false } : { committed: true, snapshot: { val: () => fn(null) } }; };
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 const perm = { permRecord: { stockRole: "warehouse" }, isSuperAdmin: false };
@@ -99,6 +100,7 @@ beforeEach(() => {
   updateMock.mockClear();
   pushN = 0;
   abortPaths.clear();
+  txnPaths.length = 0;
   for (const k of Object.keys(paths)) delete paths[k];
   for (const k of Object.keys(gets)) delete gets[k];
   paths["config/refillEngine"] = CONFIG;
@@ -234,6 +236,17 @@ describe("the undo strip after a first-batch Solve", () => {
     const text = stripText(tree);
     expect(text).toMatch(/4 of 4 seeded cells removed/);
     expect(text).toMatch(/Central had already started on size M — that request stands/);
+  });
+  it("a RETRY after a partial undo: its own landed cancel is done — no CAS on it, no blocker, and the seeds are removed", async () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    await solve(tree);
+    gets["refill_requests/req1"] = { status: "cancelled", cancelReason: "solve_undone", size: "S", qty: 2 };
+    gets["refill_requests/req2"] = { status: "open", size: "M", qty: 2 };
+    txnPaths.length = 0;
+    await act(async () => { await undoButton(tree).props.onClick(); });
+    expect(txnPaths.filter((p) => p.startsWith("refill_requests/"))).toEqual(["refill_requests/req2"]);
+    expect(txnPaths.filter((p) => p.startsWith("stock/"))).toHaveLength(4);
+    expect(stripText(tree)).not.toMatch(/can no longer be undone|stands/);
   });
   it("undo is refused outright when a request is no longer open, and nothing is written", async () => {
     const tree = render({ products: onlyProduct(TEE) });
