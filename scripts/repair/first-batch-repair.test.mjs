@@ -33,7 +33,7 @@ function world() {
       a: fbRow("p1", "M", "trophy"),                       // stock node → withdraw
       b: fbRow("p2", "M", "marathon-pe"),                  // nothing at Hub 2 → keep, seed
       c: fbRow("p3", "_", "trophy"),                       // one-size, nothing → keep, seed "_"
-      d: fbRow("p4", "M", "trophy"),                       // explicit row → withdraw
+      d: fbRow("p4", "M", "trophy"),                       // explicit row only → a plan, not presence → keep, seed
       e: fbRow("p5", "M", "trophy"),                       // engine lock + open hub2 request → withdraw
       eng5: { productId: "p5", size: "M", qty: 2, requestingLocation: "hub2", status: "open", createdAt: T, createdFrom: { engine: true, source: "central" } },
       f: fbRow("p1", "M", "marathon-pe", { sentQty: 1, qty: 1 }),   // touched → never withdrawn (stock in motion)
@@ -50,15 +50,21 @@ describe("decideRepair — presence by ANY means", () => {
   it("no presence → keep the Central request, seed Hub 2", () => {
     expect(decideRepair({ row, hub2Node: null, hub2Locks: null, hub2OpenRequests: [], hub2TargetRow: null })).toMatchObject({ withdraw: false, seedNeeded: true, presence: [], openUntouched: true });
   });
-  it("a qty-0 cell is presence; so is a lock, an open Hub 2 request, an explicit row", () => {
-    expect(decideRepair({ row, hub2Node: { M: cell(0) }, hub2Locks: null, hub2OpenRequests: [], hub2TargetRow: null })).toMatchObject({ withdraw: true, seedNeeded: false, presence: ["stock_node"] });
-    // a Solve's own seed (updatedBy a uid) IS prior presence; the trigger's / this repair's qty-0 seed is NOT
-    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedBy: "u1" } } })).toMatchObject({ withdraw: true, presence: ["stock_node"] });
-    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedBy: "first_batch" } } })).toMatchObject({ withdraw: false, presence: [], seedNeeded: false });
-    expect(decideRepair({ row, hub2Node: { M: { qty: 2, mv: "seed", updatedBy: "first_batch" } } })).toMatchObject({ withdraw: true, presence: ["stock_node"] });
+  it("a qty-0 cell is presence; so is a lock, an open Hub 2 request; an explicit row is a PLAN (reported, never presence)", () => {
+    expect(decideRepair({ row, hub2Node: { M: cell(0) }, hub2Locks: null, hub2OpenRequests: [], hub2TargetRow: null })).toMatchObject({ withdraw: true, seedNeeded: false, presence: ["stock_cell"] });
+    // an EARLIER Solve's seed (updatedBy a uid, not listed on this request) IS prior presence; the trigger's / this repair's qty-0 seed is NOT
+    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedBy: "u1" } } })).toMatchObject({ withdraw: true, presence: ["stock_cell"] });
+    // THIS request's own Solve seeds (stamped at the row's createdAt) are not presence — the guard's rule; an older stamp is
+    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: row.createdAt, updatedBy: "u1" } } })).toMatchObject({ withdraw: false, presence: [] });
+    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: "2026-09-01T00:00:00.000Z", updatedBy: "u1" } } })).toMatchObject({ withdraw: true, presence: ["stock_cell"] });
+    // a held line in the hold lane (units on the way to Hub 2) is presence
+    expect(decideRepair({ row, hub2Node: null, heldLines: { l1: { productId: "p", dest: "hub2", qty: 2 } } })).toMatchObject({ withdraw: true, presence: ["held_inbound"] });
+    expect(decideRepair({ row, hub2Node: null, heldLines: { l1: { productId: "other", dest: "hub2", qty: 2 } } })).toMatchObject({ withdraw: false, presence: [] });
+    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: "2026-09-17T19:00:00.000Z", updatedBy: "first_batch" } } })).toMatchObject({ withdraw: false, presence: [], seedNeeded: false });   // stamped after the row
+    expect(decideRepair({ row, hub2Node: { M: { qty: 2, mv: "seed", updatedBy: "first_batch" } } })).toMatchObject({ withdraw: true, presence: ["stock_cell"] });
     expect(decideRepair({ row, hub2Node: null, hub2Locks: { M: {} }, hub2OpenRequests: [], hub2TargetRow: null })).toMatchObject({ withdraw: true, presence: ["engine_lock"] });
     expect(decideRepair({ row, hub2Node: null, hub2Locks: null, hub2OpenRequests: ["x"], hub2TargetRow: null })).toMatchObject({ withdraw: true, presence: ["open_hub2_request"] });
-    expect(decideRepair({ row, hub2Node: null, hub2Locks: null, hub2OpenRequests: [], hub2TargetRow: { M: { target: 0 } } })).toMatchObject({ withdraw: true, presence: ["explicit_row"] });
+    expect(decideRepair({ row, hub2Node: null, hub2Locks: null, hub2OpenRequests: [], hub2TargetRow: { M: { target: 0 } } })).toMatchObject({ withdraw: false, presence: [], explicitRow: true });
   });
   it("a touched or resolved row is never withdrawn, whatever the presence", () => {
     expect(decideRepair({ row: { ...row, sentQty: 1 }, hub2Node: { M: cell(1) } }).withdraw).toBe(false);
@@ -72,14 +78,15 @@ describe("decideRepair — presence by ANY means", () => {
 });
 
 describe("buildPlan + applyPlan over the fake", () => {
-  it("plans exactly the shop rows: withdraws a/d/e/g, keeps b/c, seeds b/c/h(p2 M once)/e/d/a", async () => {
+  it("plans exactly the shop rows: withdraws a/e/g, keeps b/c/d, seeds p2 M (b+h once) / p3 _ / p4 M / p5 M", async () => {
     const db = world();
     const { plan, shopRows } = await buildPlan(db, { readAll });
     expect(shopRows).toBe(8);
     const by = Object.fromEntries(plan.map((p) => [p.id, p]));
     expect(Object.keys(by).sort()).toEqual(["a", "b", "c", "d", "e", "f", "g", "h"]);
-    expect(plan.filter((p) => p.withdraw).map((p) => p.id).sort()).toEqual(["a", "d", "e", "g"]);
-    expect(plan.filter((p) => p.openUntouched && !p.withdraw).map((p) => p.id).sort()).toEqual(["b", "c"]);
+    expect(plan.filter((p) => p.withdraw).map((p) => p.id).sort()).toEqual(["a", "e", "g"]);
+    expect(plan.filter((p) => p.openUntouched && !p.withdraw).map((p) => p.id).sort()).toEqual(["b", "c", "d"]);
+    expect(by.d.explicitRow).toBe(true);
     expect(by.f.withdraw).toBe(false);
     expect(by.c.sizeKey).toBe("_");
     expect(by.g.seedNeeded).toBe(false);
@@ -90,14 +97,14 @@ describe("buildPlan + applyPlan over the fake", () => {
     const before = qtys(db);
     const { plan } = await buildPlan(db, { readAll });
     const r = await applyPlan(db, plan, T);
-    expect(r).toEqual({ seeded: 4, withdrawn: 4, refused: 0 });   // p2 M (b+h share ONE seed), p3 _, p4 M, p5 M; p1 M and p6 8 exist
+    expect(r).toEqual({ seeded: 4, withdrawn: 3, refused: 0 });   // p2 M (b+h share ONE seed), p3 _, p4 M, p5 M; p1 M and p6 8 exist
     const rr = db.state.root.refill_requests;
-    for (const id of ["a", "d", "e", "g"]) {
+    for (const id of ["a", "e", "g"]) {
       expect(rr[id].status).toBe("cancelled");
       expect(rr[id].cancelReason).toBe(REPAIR_REASON);
       expect(rr[id].firstBatch.hub2Leg).toEqual({ none: "repair_hub2_present", at: T });
     }
-    for (const id of ["b", "c", "f", "eng", "hub"]) expect(rr[id].status).toBe("open");
+    for (const id of ["b", "c", "d", "f", "eng", "hub"]) expect(rr[id].status).toBe("open");
     expect(rr.h.status).toBe("fulfilled");
     const h2 = db.state.root.stock.hub2;
     expect(h2.p2.M).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: T, updatedBy: "first_batch" });

@@ -76,7 +76,8 @@ function makeWorld(r) {
   };
   // Sometimes the engine already holds Hub 2's lock, or a sibling shop's lock reserves Central.
   const open = {};
-  if (r() < 0.25) open.hub2 = { p1: { [sk]: { qty: int(r, 1, 3), source: "central", createdAt: T1, runId: "scan-1", refillId: "eng1" } } };
+  // the engine's lock at Hub 2: sometimes claimed BEFORE the shop's request (prior presence), sometimes after (the scan in the trigger's gap)
+  if (r() < 0.25) open.hub2 = { p1: { [sk]: { qty: int(r, 1, 3), source: "central", createdAt: r() < 0.5 ? "2026-09-17T08:30:00.000Z" : T1, runId: "scan-1", refillId: "eng1" } } };
   if (r() < 0.25) {
     const other = store === "trophy" ? "marathon-pe" : "trophy";
     open[other] = { p1: { [sk]: { qty: int(r, 1, 3), source: "central", createdAt: T1, runId: "first_batch:fb_p1_zzz", refillId: "sib" } } };

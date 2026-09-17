@@ -31,31 +31,31 @@ import { readMapPaged } from "../lib/rtdbPaged.mjs";
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const APPLY = process.argv.includes("--apply");
 const req = (() => { try { const r = createRequire(join(ROOT, "functions", "package.json")); r.resolve("firebase-admin"); return r; } catch { return adminRequire(import.meta.url); } })();
-const { seedIfAbsent, FIRST_BATCH_HUB } = req(join(ROOT, "functions", "lib", "first-batch.cjs"));
+const { seedIfAbsent, FIRST_BATCH_HUB, hub2PresenceSignals } = req(join(ROOT, "functions", "lib", "first-batch.cjs"));
 const { encodeSizeKey } = req(join(ROOT, "functions", "lib", "refill-engine.cjs"));
 export const REPAIR_REASON = "first_batch_repair_hub2_present";
 
 // Pure: the decision for one first-batch shop row given its scoped reads.
 // Exported so the test drives the same function the script runs.
-export function decideRepair({ row, hub2Node, hub2Locks, hub2OpenRequests, hub2TargetRow }) {
+export function decideRepair({ row, hub2Node, hub2Locks, hub2OpenRequests, hub2TargetRow, heldLines }) {
   const sizeKey = encodeSizeKey(String(row.size ?? ""));
-  const presence = [];
-  // A qty-0 carriage cell stamped by the trigger or by THIS repair
-  // (seedCell: mv "seed", updatedBy "first_batch") is Hub 2 made a valid
-  // source by us — not prior presence. Counting it would withdraw a kept
-  // Central request on the very next run (the repair seeds every kept row).
-  // Any other cell — units, a movement, a human's or a Solve's seed — is.
-  const ownSeed = (c) => !!c && c.mv === "seed" && c.updatedBy === "first_batch" && !((Number(c.qty) || 0) > 0);
-  const nodeCells = Array.isArray(hub2Node) ? hub2Node.filter((c) => c != null) : Object.values(hub2Node || {}).filter((c) => c != null);
-  if (nodeCells.some((c) => !ownSeed(c))) presence.push("stock_node");
-  if (hub2Locks && Object.keys(hub2Locks).length) presence.push("engine_lock");
-  if (hub2OpenRequests && hub2OpenRequests.length) presence.push("open_hub2_request");
-  if (hub2TargetRow && typeof hub2TargetRow === "object" && Object.keys(hub2TargetRow).length) presence.push("explicit_row");
+  // THE guard's own definition (first-batch.cjs hub2PresenceSignals): a cell
+  // other than a first-batch qty-0 seed, an engine lock, an open Hub 2
+  // request. The trigger's / this repair's own seeds (updatedBy first_batch)
+  // are excluded the same way the Solve's are: counting them would withdraw
+  // a kept Central request on the very next run.
+  // THE guard's own definition (first-batch.cjs hub2PresenceSignals): a
+  // qty-0 seed stamped at/after the request (this Solve's, the trigger's,
+  // this repair's) is not prior presence; any other cell, a prior lock, an
+  // open Hub 2 request, a held line is.
+  const presence = hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds: hub2OpenRequests || [], sinceIso: row.createdAt, heldLines, pid: row.productId });
+  // informational only — an explicit row is a plan, not presence (same as the Solve guard)
+  const explicitRow = !!hub2TargetRow && typeof hub2TargetRow === "object" && Object.keys(hub2TargetRow).length > 0;
   // `== null`: an array-coerced row answers null in a hole → absent cell
   const seedNeeded = !hub2Node || hub2Node[sizeKey] == null;
-  const openUntouched = row.status === "open" && !((Number(row.sentQty) || 0) > 0);
+  const openUntouched = row.status === "open" && !((Number(row.sentQty) || 0) > 0) && !(row.sentQty != null && typeof row.sentQty !== "number");
   const withdraw = openUntouched && presence.length > 0;
-  return { sizeKey, presence, seedNeeded, openUntouched, withdraw };
+  return { sizeKey, presence, explicitRow, seedNeeded, openUntouched, withdraw };
 }
 
 // The plan, from the live (or fake) db: one scoped read per product for the
@@ -68,6 +68,7 @@ export async function buildPlan(db, { readAll } = {}) {
   for (const r of all) if (r.requestingLocation === FIRST_BATCH_HUB && r.status === "open" && r.productId) (hub2OpenByPid[r.productId] = hub2OpenByPid[r.productId] || []).push(r.id);
   const plan = [];
   const cache = {};
+  const heldLines = (await db.ref(`settings/stockHold/held/${FIRST_BATCH_HUB}`).once("value")).val();   // the hold lane's inbound to Hub 2
   for (const row of shopRows) {
     const pid = row.productId;
     if (!cache[pid]) cache[pid] = {
@@ -75,7 +76,7 @@ export async function buildPlan(db, { readAll } = {}) {
       hub2Locks: (await db.ref(`refill_engine/open/${FIRST_BATCH_HUB}/${pid}`).once("value")).val(),
       hub2TargetRow: (await db.ref(`stock_targets/${FIRST_BATCH_HUB}/${pid}`).once("value")).val(),
     };
-    const d = decideRepair({ row, ...cache[pid], hub2OpenRequests: hub2OpenByPid[pid] || [] });
+    const d = decideRepair({ row, ...cache[pid], hub2OpenRequests: hub2OpenByPid[pid] || [], heldLines });
     plan.push({ id: row.id, pid, size: row.size, store: row.requestingLocation, status: row.status, sentQty: row.sentQty || 0, ...d, row });
   }
   return { plan, total: all.length, shopRows: shopRows.length };

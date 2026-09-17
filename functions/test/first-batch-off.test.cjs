@@ -1,6 +1,7 @@
 // ─── firstBatchLeg with the path OFF (incident 2026-09-17) ───────────────────
-// The REAL trigger core under its LIVE default (FIRST_BATCH_PATH_ENABLED false,
-// no `pathEnabled` passed). The claim: a first-batch SHOP request a stale
+// The REAL trigger core with the path switched OFF (`pathEnabled: false` — the
+// live default was false during the incident revert and is true again since
+// the Hub 2-presence guard; the switch stays, tested here). The claim: a first-batch SHOP request a stale
 // bundle still creates is turned back into the old Solve — Hub 2 seeded,
 // request withdrawn with a reason — and nothing is ever requested from
 // Central for a shop; stock already in motion keeps its follow-through.
@@ -32,9 +33,9 @@ const world = (rr = shopRow(), extra = {}, hooks = {}) => makeFakeDb({
   refill_requests: { r1: rr },
   ...extra,
 }, hooks);
-const run = (db, id = "r1", nowIso = T1) => processFirstBatchRequest({ db, requestId: id, nowIso });   // LIVE default
+const run = (db, id = "r1", nowIso = T1) => processFirstBatchRequest({ db, requestId: id, nowIso, pathEnabled: false });   // the switch OFF
 
-test("the live default is OFF", () => { assert.equal(FIRST_BATCH_PATH_ENABLED, false); });
+test("the live default is ON again (the guard is what protects the shop now); the switch is a parameter", () => { assert.equal(FIRST_BATCH_PATH_ENABLED, true); });
 
 test("an open, untouched first-batch shop request is withdrawn with a reason, Hub 2 seeded, NO lock claimed — the old Solve's end state", async () => {
   const db = world();
@@ -133,12 +134,12 @@ test("the undo's own cancel (solve_undone) still raises nothing and seeds nothin
   assert.equal(db.state.root.stock.hub2, undefined);
 });
 
-test("property: over 300 random worlds under the live default, NO open first-batch shop request survives, and no stock quantity changes", async () => {
+test("property: over 300 random worlds with the switch OFF, NO open first-batch shop request survives, and no stock quantity changes", async () => {
   for (let s = 1; s <= 300; s++) {
     const w = makeWorld(prng(s));
     const qtyBefore = JSON.stringify(Object.fromEntries(Object.entries(w.db.state.root.stock).map(([l, byPid]) => [l, Object.fromEntries(Object.entries(byPid).map(([pid, row]) => [pid, Array.isArray(row) ? row.map((c) => c && c.qty) : Object.fromEntries(Object.entries(row).map(([k, c]) => [k, c && c.qty]))]))])));
-    await processFirstBatchRequest({ db: w.db, requestId: "r1", nowIso: T1 });
-    await processFirstBatchRequest({ db: w.db, requestId: "r1", nowIso: T1 });   // the re-fire
+    await processFirstBatchRequest({ db: w.db, requestId: "r1", nowIso: T1, pathEnabled: false });
+    await processFirstBatchRequest({ db: w.db, requestId: "r1", nowIso: T1, pathEnabled: false });   // the re-fire
     const r1 = w.db.state.root.refill_requests.r1;
     const untouchedOpen = r1.status === "open" && !(Number(r1.sentQty) > 0);
     assert.equal(untouchedOpen, false, `seed ${s}: open untouched first-batch shop request survived: ${JSON.stringify(r1)}`);
