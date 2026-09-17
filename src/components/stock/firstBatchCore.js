@@ -122,6 +122,129 @@ export function firstBatchEligible({ source, store, product, routes } = {}) {
   return true;
 }
 
+// ── LOCATION HISTORY — which shop gets the first batch ───────────────────────
+// Owner rule 2026-09-17: use each product's location history — where the
+// product, and its style or siblings, currently sit and have been sent
+// before (NOT sales history) — to inform the arrangement. What the system
+// holds, and what can be read SCOPED (investigation §3):
+//   • /stock cells — where a product sits now; a qty-0 cell is a product that
+//     was sent there and sold out (cells are never deleted). HealthView
+//     already holds /stock whole for this screen: ZERO new reads.
+//   • /stock_targets rows — a human seated the product there (7,797 hand-made
+//     rows). Already held by HealthView.
+//   • style-code siblings — colourway siblings share styleCodeNormalised (the
+//     stamp is on the record the client holds). Nearly empty for clothing
+//     (4 of 329 stranded cards on 2026-09-17), present for the record.
+//   • /stock_movements and /refill_requests are indexed by time only, so a
+//     per-product query would be a whole-node read (banned) — not used.
+// The strongest signal is the CATEGORY'S OWN PLACEMENT: where the products
+// of the same effective category key are kept today (bags: Trophy 356 vs
+// PE 97; caps & beanies: PE 295 vs 0; suits 0 vs 49 …). A Central-stranded
+// product has no shop cell of its own by definition, so its history is its
+// siblings' and its category's.
+//
+// WHAT HISTORY DECIDES: the shop nominated BY DEFAULT for the first batch
+// (the operator can still tap the other shop — nothing is typed). Three
+// tiers, most specific first; a tier that answers with a tie falls through:
+//   1. the product's OWN positive explicit row at a shop;
+//   2. a style-code sibling carried at a shop (more sibling cells wins, units
+//      break ties);
+//   3. the category's placement (the shop carrying more of the category).
+// No signal, or a tie at every tier → today's default (the first store with
+// qualifying sizes), unchanged. A shop with no qualifying sizes is never
+// nominated, whatever its history — the policy decides WHERE a product may
+// be kept at all; history only orders the shops the policy allows.
+//
+// WHAT HISTORY DOES NOT DECIDE — the shop / Hub 2 split. It is fixed by the
+// two policies and Central's count: the shop's request is min(shop target,
+// Central free, cap) now and Hub 2's leg min(hub2 target − on hand, Central
+// remainder, cap) after. A history-shrunk first batch would not survive: the
+// engine's own reconcile grows every locked open request back to exactly
+// that number on the next scan (refill-engine.cjs `desired`/`availForMe`),
+// and the request must be right AS CREATED. Policies are the owner's and are
+// used as they are.
+//
+// KEYED BY productId THROUGHOUT. Siblings are found by the style-code STAMP,
+// never by name: duplicate-name twins (177 groups) share no history here.
+export const HISTORY_STORES = ["marathon-pe", "trophy"];
+// The engine's storeCarries: a node exists (any qty, qty 0 included).
+const carriesAt = (allStock, loc, pid) => !!allStock?.[loc]?.[pid] && Object.keys(allStock[loc][pid]).length > 0;
+// `c != null`: an array-coerced row answers null in a hole.
+const positiveUnits = (row) => Object.values(row || {}).reduce((t, c) => t + (c != null ? Math.max(Number(c.qty) || 0, 0) : 0), 0);
+const humanKey = (key) => String(key || "products").replace(/-/g, " ");
+
+// Built ONCE per (products, allStock) — one walk of the catalogue the screen
+// already holds — so every card's history is a lookup, not a scan.
+export function buildPlacementIndex({ products, allStock, stores = HISTORY_STORES } = {}) {
+  const byKey = {};    // effective category key → { store: products carried there }
+  const byCode = {};   // styleCodeNormalised → [productId]
+  for (const p of Array.isArray(products) ? products : []) {
+    if (!p || !p.id) continue;
+    const code = typeof p.styleCodeNormalised === "string" ? p.styleCodeNormalised.trim() : "";
+    if (code) (byCode[code] = byCode[code] || []).push(p.id);
+    const key = effectiveCategoryKey(p);
+    if (!key) continue;
+    for (const s of stores) {
+      if (!carriesAt(allStock, s, p.id)) continue;
+      const e = (byKey[key] = byKey[key] || {});
+      e[s] = (e[s] || 0) + 1;
+    }
+  }
+  return { byKey, byCode, stores: [...stores] };
+}
+
+// One product's location history at each shop, from the index and the two
+// nodes the screen holds. Pure; `targets` may be null (a failed read → no
+// own-row tier, the other tiers still answer).
+export function firstBatchHistory({ pid, product, index, allStock, targets, stores } = {}) {
+  const locs = stores || index?.stores || HISTORY_STORES;
+  const key = effectiveCategoryKey(product);
+  const code = typeof product?.styleCodeNormalised === "string" ? product.styleCodeNormalised.trim() : "";
+  const siblings = code ? (index?.byCode?.[code] || []).filter((x) => x !== pid) : [];
+  const byStore = {};
+  for (const s of locs) {
+    const rows = targets?.[s]?.[pid];
+    // a positive row only: an explicit 0 is "deliberately excluded", not a seat
+    const ownRow = !!rows && typeof rows === "object" && Object.values(rows).some((r) => r && typeof r.target === "number" && r.target > 0);
+    let siblingCells = 0, siblingUnits = 0;
+    for (const sib of siblings) {
+      if (!carriesAt(allStock, s, sib)) continue;
+      siblingCells += 1;
+      siblingUnits += positiveUnits(allStock[s][sib]);
+    }
+    const categoryCarried = (key && index?.byKey?.[key]?.[s]) || 0;
+    byStore[s] = { ownRow, siblingCells, siblingUnits, categoryCarried };
+  }
+  const categoryTotal = locs.reduce((t, s) => t + byStore[s].categoryCarried, 0);
+  return { key, siblings, byStore, categoryTotal };
+}
+
+// The nomination. `candidates` = the shops with qualifying sizes, in today's
+// default order; the answer is always one of them (or null when there are
+// none). `sentence` is the one line the panel shows; null when history had
+// nothing to say and the default stood.
+export function firstBatchStoreChoice({ history, candidates, labels = {} } = {}) {
+  const cands = (candidates || []).filter((s) => history?.byStore?.[s]);
+  if (!cands.length) return { store: null, tier: null, sentence: null };
+  const label = (s) => labels[s] || s;
+  const pick = (score, tier, sentence) => {
+    let best = null, bestScore = 0, tie = false;
+    for (const s of cands) {
+      const v = score(history.byStore[s]);
+      if (v > bestScore) { best = s; bestScore = v; tie = false; }
+      else if (v === bestScore && v > 0) tie = true;
+    }
+    return best && !tie ? { store: best, tier, sentence: sentence(best, history.byStore[best]) } : null;
+  };
+  return pick((h) => (h.ownRow ? 1 : 0), "own_row",
+      (s) => `${label(s)} first — this product has its own target row there.`)
+    || pick((h) => h.siblingCells * 1000 + h.siblingUnits, "siblings",
+      (s, h) => `${label(s)} first — ${h.siblingCells === 1 ? "a colourway sibling is" : `${h.siblingCells} colourway siblings are`} kept there${h.siblingUnits > 0 ? ` (${h.siblingUnits} unit${h.siblingUnits === 1 ? "" : "s"})` : ""}.`)
+    || pick((h) => h.categoryCarried, "category",
+      (s, h) => `${label(s)} first — where ${h.categoryCarried} of ${history.categoryTotal} ${humanKey(history.key)} are kept.`)
+    || { store: cands[0], tier: "default", sentence: null };
+}
+
 // ── THE PER-SIZE SPLIT ───────────────────────────────────────────────────────
 // `sizes` are the QUALIFYING sizes (positive target at Hub 2 AND the store —
 // solvePlan.qualifyingSizes; unchanged). `run` is resolvedRun's map. A size

@@ -27,7 +27,7 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
-import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId } from "./firstBatchCore";
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -415,7 +415,24 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // qualifying sizes there and returned silently. A button that says Trophy,
   // does nothing, and reports nothing: the precise failure this tab is being
   // fixed to abolish. (Kimi review, PR #342.)
-  const defaultStoreFor = (card) => STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0];
+  // LOCATION HISTORY (owner rule 2026-09-17, firstBatchCore.js): on the
+  // first-batch path the default nomination is history-ranked among the shops
+  // the policy allows — the product's own row, its style siblings' shops,
+  // its category's placement — from the two nodes this screen already holds
+  // (no new reads). The index is ONE walk of the catalogue per /stock change;
+  // each card's history is then a lookup. Off the path (hub-stranded, a shop
+  // not routed via Hub 2) today's default stands byte-for-byte.
+  const placementIndex = useMemo(() => buildPlacementIndex({ products, allStock, stores: STORES }), [products, allStock]);
+  const historyFor = (card) => firstBatchHistory({ pid: card.pid, product: byId.get(card.pid), index: placementIndex, allStock, targets: targetRows, stores: STORES });
+  const storeChoiceFor = (card) => {
+    const candidates = STORES.filter((s) => qualifyingSizes(card, s).length > 0);
+    if (!candidates.length) return { store: STORES[0], tier: null, sentence: null };
+    const onPath = !!cfg && !targetsError && candidates.some((s) => firstBatchEligible({ source: card.source, store: s, product: byId.get(card.pid), routes: cfg.routes }));
+    if (!onPath) return { store: candidates[0], tier: null, sentence: null };
+    const c = firstBatchStoreChoice({ history: historyFor(card), candidates, labels: LOC_LABEL });
+    return c.store ? c : { store: candidates[0], tier: null, sentence: null };
+  };
+  const defaultStoreFor = (card) => storeChoiceFor(card).store;
   const storeFor = (card) => solveDest[card.pid] || defaultStoreFor(card);
 
   // The first-batch split for a card at a store, or null when this Solve is
@@ -648,6 +665,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // button under an enabled Solve, which reads as broken. The operator can
         // still pick either store; this only changes which one is pre-selected.
         const sStore = storeFor(card);
+        // The history sentence, when history had a say (first-batch path only).
+        const storeWhy = sOpen ? storeChoiceFor(card).sentence : null;
         const hOpen = hidePid === card.pid;
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // First batch direct to shop: the split this Solve would write, or
@@ -777,6 +796,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     </button>
                   ))}
                 </div>
+                {/* Location history's one line — why this shop is pre-selected.
+                    Informational: the chips above still decide. */}
+                {storeWhy && (
+                  <div style={{ fontSize: 11.5, color: GRAY, lineHeight: 1.4, marginTop: 6 }}>{storeWhy}</div>
+                )}
                 {/* Inline confirm — what gets seeded + what the engine will then want. */}
                 {fb ? (
                 <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>

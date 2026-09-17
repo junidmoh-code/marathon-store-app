@@ -209,6 +209,44 @@ describe("mapped categories and explicit rows — on the path since 2026-09-17, 
   });
 });
 
+describe("location history nominates the shop (the operator can still switch)", () => {
+  // Three other t-shirts are kept at Trophy, none at PE: the category's own
+  // placement says Trophy. The tee itself has no shop cell (it is a card).
+  const TROPHY_TEES = [1, 2, 3].map((n) => ({ id: `tt${n}`, name: `Tee ${n}`, productType: "clothing", categoryKey: "t-shirts", sizes: ["M"] }));
+  const KEYED_TEE = { ...PRODUCTS[0], categoryKey: "t-shirts" };
+  const stockWithHistory = { ...STOCK, trophy: { tt1: { M: cell(1) }, tt2: { M: cell(0) }, tt3: { M: cell(2) } } };
+  it("the panel opens on the shop history names, says why, and the write goes there", async () => {
+    const tree = render({ products: [KEYED_TEE, ...TROPHY_TEES], stock: stockWithHistory });
+    act(() => { buttonExactly(tree, "Solve").props.onClick(); });
+    const text = textOf(tree);
+    expect(text).toMatch(/Trophy first — where 3 of 3 t shirts are kept\./);
+    expect(text).toMatch(/go to Trophy first/);
+    await act(async () => { await buttonSaying(tree, "Solve — send 4 to Trophy first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    expect(upd["refill_requests/req1"].requestingLocation).toBe("trophy");
+    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).every((k) => k.startsWith("stock/trophy/") || k.startsWith("stock/hub2/"))).toBe(true);
+  });
+  it("the product's OWN row at Marathon PE outranks the category's Trophy placement", () => {
+    const tree = render({ products: [KEYED_TEE, ...TROPHY_TEES], stock: stockWithHistory, targets: { "marathon-pe": { [TEE]: { M: { target: 2 } } } } });
+    act(() => { buttonExactly(tree, "Solve").props.onClick(); });
+    const text = textOf(tree);
+    expect(text).toMatch(/Marathon PE first — this product has its own target row there\./);
+    expect(text).toMatch(/go to Marathon PE first/);
+  });
+  it("no history → today's default (Marathon PE, the first store with qualifying sizes) and NO sentence", () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    act(() => { buttonExactly(tree, "Solve").props.onClick(); });
+    const text = textOf(tree);
+    expect(text).not.toMatch(/(Marathon PE|Trophy) first — (this product|where |a colourway|\d+ colourway)/);
+    expect(text).toMatch(/go to Marathon PE first/);
+  });
+  it("the operator's tap still wins: history says Trophy, the tap says Marathon PE, the request goes to Marathon PE", async () => {
+    const tree = render({ products: [KEYED_TEE, ...TROPHY_TEES], stock: stockWithHistory });
+    await solve(tree, "Marathon PE");
+    expect(updateMock.mock.calls[0][1]["refill_requests/req1"].requestingLocation).toBe("marathon-pe");
+  });
+});
+
 describe("out of scope — byte-for-byte the old Solve", () => {
   const oldShape = (upd, pid, sizes, store) => {
     const want = [];

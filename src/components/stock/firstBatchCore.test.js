@@ -7,6 +7,7 @@ import {
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, firstBatchRunId, solveIdFor,
   firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
+  buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES,
 } from "./firstBatchCore.js";
 
 const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
@@ -175,6 +176,85 @@ describe("identity and the undo", () => {
   it("the panel estimate: shop units now, Hub 2's policy units after", () => {
     const split = firstBatchSplit({ sizes: ["S", "M", "L"], run: RUN, store: "trophy", centralAvail: (s) => ({ S: 4, M: 1, L: 0 })[s] });
     expect(firstBatchEstimate({ split, run: RUN })).toEqual({ shopNow: 3, hubAfter: 5, sizesNow: ["S", "M"], sizesNormal: ["L"] });
+  });
+});
+
+describe("location history — which shop is nominated (owner rule 2026-09-17)", () => {
+  const cell = (qty) => ({ qty, v: 1, mv: "m" });
+  const LABELS = { "marathon-pe": "Marathon PE", trophy: "Trophy" };
+  // The stranded product (no shop cell), two siblings by style-code STAMP, a
+  // duplicate-NAME twin with no code, and the rest of its category.
+  const CARD = { id: "tee1", name: "Essentials Tee Olive", categoryKey: "t-shirts", productType: "clothing", styleCodeNormalised: "ES1", sizes: ["S", "M"] };
+  const SIB_A = { id: "tee2", name: "Essentials Tee Black", categoryKey: "t-shirts", productType: "clothing", styleCodeNormalised: "ES1", sizes: ["S", "M"] };
+  const SIB_B = { id: "tee3", name: "Essentials Tee Navy", categoryKey: "t-shirts", productType: "clothing", styleCodeNormalised: " ES1 ", sizes: ["S", "M"] };
+  const NAME_TWIN = { id: "tee9", name: "Essentials Tee Olive", categoryKey: "t-shirts", productType: "clothing", sizes: ["S", "M"] };
+  const OTHER_TEES = [4, 5, 6, 7].map((n) => ({ id: `t${n}`, name: `Tee ${n}`, categoryKey: "t-shirts", productType: "clothing", sizes: ["M"] }));
+  const LEGACY_SNEAKER = { id: "sn9", name: "Campus", category: "Footwear", subcategory: "Sneakers", sizes: ["8"] };
+  const KEYLESS = { id: "k1", name: "Mystery", sizes: ["M"] };
+  const PRODUCTS = [CARD, SIB_A, SIB_B, NAME_TWIN, ...OTHER_TEES, LEGACY_SNEAKER, KEYLESS];
+  const STOCK = {
+    central: { tee1: { S: cell(4) } },
+    trophy: { tee2: { S: cell(2), M: cell(0) }, tee3: { S: cell(0) }, t4: { M: cell(1) }, t5: { M: cell(0) }, sn9: { 8: cell(1) } },
+    "marathon-pe": { tee9: { S: cell(9) }, t6: { M: cell(3) }, t7: { M: cell(2) }, k1: { M: cell(1) } },
+  };
+  const index = buildPlacementIndex({ products: PRODUCTS, allStock: STOCK });
+
+  it("the index counts CARRIED products per category per shop (qty-0 cells count: sent before and sold out) and groups siblings by the trimmed stamp", () => {
+    expect(index.byKey["t-shirts"]).toEqual({ trophy: 4, "marathon-pe": 3 });   // tee2, tee3, t4, t5 · tee9, t6, t7
+    expect(index.byKey.sneakers).toEqual({ trophy: 1 });                           // the keyless legacy sneaker resolves its key
+    expect(index.byKey["(no key)"]).toBeUndefined();
+    expect(Object.keys(index.byKey)).not.toContain("null");                        // a keyless record is in no bucket
+    expect(index.byCode.ES1.sort()).toEqual(["tee1", "tee2", "tee3"]);
+    expect(index.stores).toEqual(HISTORY_STORES);
+  });
+  it("siblings are found by the style-code stamp, NEVER by name: the duplicate-name twin at PE is not history", () => {
+    const h = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: STOCK, targets: null });
+    expect(h.siblings.sort()).toEqual(["tee2", "tee3"]);
+    expect(h.byStore.trophy).toEqual({ ownRow: false, siblingCells: 2, siblingUnits: 2, categoryCarried: 4 });
+    expect(h.byStore["marathon-pe"]).toEqual({ ownRow: false, siblingCells: 0, siblingUnits: 0, categoryCarried: 3 });
+    expect(h.categoryTotal).toBe(7);
+  });
+  it("tier 1 — the product's OWN positive explicit row wins over siblings and category; an explicit 0 row is not a seat", () => {
+    const targets = { "marathon-pe": { tee1: { S: { target: 2 } } } };
+    const h = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: STOCK, targets });
+    expect(h.byStore["marathon-pe"].ownRow).toBe(true);
+    const c = firstBatchStoreChoice({ history: h, candidates: ["marathon-pe", "trophy"], labels: LABELS });
+    expect(c).toEqual({ store: "marathon-pe", tier: "own_row", sentence: "Marathon PE first — this product has its own target row there." });
+    const zero = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: STOCK, targets: { "marathon-pe": { tee1: { S: { target: 0 } } } } });
+    expect(zero.byStore["marathon-pe"].ownRow).toBe(false);
+  });
+  it("tier 2 — colourway siblings' shop wins over the category prior", () => {
+    const stock = { ...STOCK, "marathon-pe": { ...STOCK["marathon-pe"], t8: { M: cell(1) }, t9: { M: cell(1) } } };
+    const idx = buildPlacementIndex({ products: [...PRODUCTS, { id: "t8", categoryKey: "t-shirts", productType: "clothing", sizes: ["M"] }, { id: "t9", categoryKey: "t-shirts", productType: "clothing", sizes: ["M"] }], allStock: stock });
+    const h = firstBatchHistory({ pid: "tee1", product: CARD, index: idx, allStock: stock, targets: null });
+    expect(h.byStore["marathon-pe"].categoryCarried).toBe(5);   // PE now leads the category…
+    const c = firstBatchStoreChoice({ history: h, candidates: ["marathon-pe", "trophy"], labels: LABELS });
+    expect(c.store).toBe("trophy");                               // …but the siblings sit at Trophy
+    expect(c.tier).toBe("siblings");
+    expect(c.sentence).toBe("Trophy first — 2 colourway siblings are kept there (2 units).");
+  });
+  it("tier 3 — the category's placement decides when the product has no row and no siblings", () => {
+    const h = firstBatchHistory({ pid: "t4", product: OTHER_TEES[0], index, allStock: STOCK, targets: null });
+    const c = firstBatchStoreChoice({ history: h, candidates: ["marathon-pe", "trophy"], labels: LABELS });
+    expect(c).toEqual({ store: "trophy", tier: "category", sentence: "Trophy first — where 4 of 7 t shirts are kept." });
+  });
+  it("a tie at a tier falls through; no history at all → today's default (the first candidate) with no sentence", () => {
+    const tied = { key: "bags", siblings: [], categoryTotal: 4, byStore: { "marathon-pe": { ownRow: true, siblingCells: 0, siblingUnits: 0, categoryCarried: 2 }, trophy: { ownRow: true, siblingCells: 0, siblingUnits: 0, categoryCarried: 2 } } };
+    expect(firstBatchStoreChoice({ history: tied, candidates: ["marathon-pe", "trophy"] })).toEqual({ store: "marathon-pe", tier: "default", sentence: null });
+    const empty = firstBatchHistory({ pid: "k1", product: KEYLESS, index, allStock: {}, targets: null });
+    expect(empty.categoryTotal).toBe(0);
+    expect(firstBatchStoreChoice({ history: empty, candidates: ["trophy", "marathon-pe"] })).toEqual({ store: "trophy", tier: "default", sentence: null });
+    expect(firstBatchStoreChoice({ history: empty, candidates: [] })).toEqual({ store: null, tier: null, sentence: null });
+    expect(firstBatchStoreChoice({ history: null, candidates: ["trophy"] })).toEqual({ store: null, tier: null, sentence: null });
+  });
+  it("history only orders the shops the POLICY allows: a shop with no qualifying sizes is never nominated, whatever its history", () => {
+    const h = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: STOCK, targets: null });   // Trophy has the siblings + the category
+    expect(firstBatchStoreChoice({ history: h, candidates: ["marathon-pe"], labels: LABELS })).toEqual({ store: "marathon-pe", tier: "category", sentence: "Marathon PE first — where 3 of 7 t shirts are kept." });
+  });
+  it("an array-coerced sibling row (null holes) counts once, its units clamp at 0, and a one-size sibling is history like any other", () => {
+    const stock = { trophy: { tee2: [null, null, cell(-1)], tee3: { _: cell(3) } } };
+    const h = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: stock, targets: null });
+    expect(h.byStore.trophy).toMatchObject({ siblingCells: 2, siblingUnits: 3 });
   });
 });
 
