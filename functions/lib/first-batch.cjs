@@ -182,6 +182,23 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
 
   const seedPath = `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
   const seedNeeded = !hub2Cells || hub2Cells[sizeKey] === undefined;
+  const lockPath = `refill_engine/open/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
+  // Somebody already bookkeeps this Hub 2 cell (the engine, or an earlier
+  // solve's leg) → ONE request stands; record where the demand went. Read
+  // BEFORE sizing: an existing lock is an answer, not a reservation to
+  // subtract from.
+  const held = (await db.ref(lockPath).once("value")).val();
+  if (held && held.runId !== runId) {
+    const upd = {
+      "firstBatch/hub2Leg": {
+        deferredTo: String(held.runId || "").startsWith(FIRST_BATCH_RUN_PREFIX) ? "first_batch" : "engine",
+        refillId: held.refillId || null, lockRunId: held.runId || null, at: now,
+      },
+    };
+    await reqRef.update(upd);
+    if (seedNeeded) await db.ref(seedPath).set(seedCell(now));
+    return { raised: false, deferredTo: upd["firstBatch/hub2Leg"].deferredTo, refillId: held.refillId || null };
+  }
   const hub2Have = avail(hub2Cells && hub2Cells[sizeKey] ? hub2Cells[sizeKey].qty : 0);
   const centralHave = avail(centralCell ? centralCell.qty : 0);
   const routes = config.routes || {};
@@ -205,15 +222,14 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
   }
 
   // ── the engine's own idempotency contract: the lock, create-if-absent ──────
-  const lockPath = `refill_engine/open/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
   const claim = await db.ref(lockPath).transaction((cur) => (cur ? undefined : {
     qty, source: SOURCE, createdAt: now, runId, pending: true,
   }));
   const cur = claim.snapshot.val();
   const ours = !!cur && cur.runId === runId;
   if (!ours) {
-    // The engine (or a prior run of ours under another solve) already holds
-    // this cell — ONE request stands. Record where the demand went.
+    // Raced: a lock landed between the read above and the claim (a scan
+    // between the seed and this write) — same answer, one request stands.
     const upd = {
       "firstBatch/hub2Leg": {
         deferredTo: cur && cur.runId && String(cur.runId).startsWith(FIRST_BATCH_RUN_PREFIX) ? "first_batch" : "engine",
