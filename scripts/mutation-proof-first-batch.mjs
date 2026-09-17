@@ -415,7 +415,7 @@ const MUTATIONS = [
     id: "M-RESERVE-NET",
     guard: "Central free = on-hand minus the reservation (a promised unit is never asked for twice)",
     file: CORE,
-    from: `  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[encodeSizeKey(size)] || 0), 0);`,
+    from: `  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[lockKeyFor(size)] || 0), 0);`,
     to: `  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0), 0);`,
     tests: [...CORE_TESTS, ...SOLVE_TESTS],
   },
