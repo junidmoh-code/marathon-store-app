@@ -86,7 +86,7 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
-import { isFirstBatchShopLeg } from "./components/stock/firstBatchCore";
+import { countsTowardSourceQueue } from "./components/stock/firstBatchCore";
 import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
@@ -15961,9 +15961,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     // are Hub 2's work; counting them here put 112/113 on the Trophy/Marathon
     // tabs for work Central never had (incident 2026-09-17).
     allRefillRequests.forEach((r) => {
-      if (r.status === "open" && !r.shadow && r.productId &&
-          Object.prototype.hasOwnProperty.call(counts, r.requestingLocation) &&
-          (SOURCE_SHOP_LOCS.has(r.requestingLocation) ? isFirstBatchShopLeg(r) : true))
+      if (Object.prototype.hasOwnProperty.call(counts, r.requestingLocation) && countsTowardSourceQueue(r, SOURCE_SHOP_LOCS))
         counts[r.requestingLocation] += 1;
     });
 

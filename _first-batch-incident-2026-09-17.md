@@ -1,7 +1,7 @@
 # First-batch incident — 2026-09-17 evening
 
 Read-only findings. Census: `scripts/audit/first-batch-incident-census.mjs`
-(paged /refill_requests, scoped everything else). Read at 21:02Z, ~3h after
+(paged /refill_requests, scoped everything else). Read at 21:02Z, ~5h after
 PR #607 went live (16:05Z) and ~1h15 after PR #608 (19:48Z).
 
 ## What was reported

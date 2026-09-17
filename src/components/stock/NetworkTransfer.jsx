@@ -464,6 +464,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   };
   useEffect(() => {
     if (!solvePid || !cfg) return undefined;
+    // Only a card the first-batch path can take needs Central's reservations
+    // read; off the path (and while the path is OFF — FIRST_BATCH_ENABLED)
+    // the panel never waits on them, so nothing is read. (Sonnet review of
+    // the incident revert: four scoped reads per panel open for a number
+    // nothing used.)
+    const openCard = (cards || []).find((c) => c.pid === solvePid);
+    if (!openCard || !STORES.some((s) => firstBatchEligible({ source: openCard.source, store: s, product: byId.get(solvePid), routes: cfg.routes }))) return undefined;
     let live = true;
     const pid = solvePid;
     setOpenLocks((m) => { const n = { ...m }; delete n[pid]; return n; });

@@ -26,6 +26,7 @@ vi.mock("./applyMovement", () => ({ applyMovement: (...a) => applyMovementMock(.
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toISOString(), serverNowMs: () => NOW }));
 
 const { default: RefillQueue } = await import("./RefillQueue.jsx");
+const { countsTowardSourceQueue } = await import("./firstBatchCore.js");
 
 const RAISED = "2026-09-17T03:00:00.000Z";   // before the 06:00 release → released
 const PRODUCTS = [
@@ -159,6 +160,28 @@ describe("Fulfil moves Central → the shop through the existing path", () => {
   });
 });
 
+describe("the badge predicate — the number the tabs promise", () => {
+  const SHOPS = new Set(["trophy", "marathon-pe"]);
+  const eng = (loc) => ({ productId: "tee1", size: "M", qty: 1, requestingLocation: loc, status: "open", createdFrom: { engine: true, source: "hub2" } });
+  it("225 engine hub2→shop rows count ZERO at the shops; the hubs still count every open row", () => {
+    const rows = [];
+    for (let i = 0; i < 113; i++) rows.push(eng("marathon-pe"));
+    for (let i = 0; i < 112; i++) rows.push(eng("trophy"));
+    rows.push(eng("hub2"), eng("hub1"), { ...eng("hub2"), createdFrom: undefined });
+    const counts = { hub1: 0, hub2: 0, trophy: 0, "marathon-pe": 0 };
+    for (const r of rows) if (countsTowardSourceQueue(r, SHOPS)) counts[r.requestingLocation] += 1;
+    expect(counts).toEqual({ hub1: 1, hub2: 2, trophy: 0, "marathon-pe": 0 });
+  });
+  it("a first-batch SHOP leg counts at its shop; Hub 2's own first-batch leg counts at Hub 2; closed / shadow / productless rows never", () => {
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "trophy"), SHOPS)).toBe(true);
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "hub2"), SHOPS)).toBe(true);
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "trophy", { status: "cancelled" }), SHOPS)).toBe(false);
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "trophy", { shadow: true }), SHOPS)).toBe(false);
+    expect(countsTowardSourceQueue({ ...fb("tee1", "M", 2, "trophy"), productId: undefined }, SHOPS)).toBe(false);
+    expect(countsTowardSourceQueue({ ...eng("trophy"), createdFrom: { firstBatch: "true" } }, SHOPS)).toBe(false);   // strict
+  });
+});
+
 describe("SourceView wiring (source gate on App.jsx)", () => {
   const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
   it("the tab list carries Trophy and Marathon, mapped to the shop location ids", () => {
@@ -170,9 +193,10 @@ describe("SourceView wiring (source gate on App.jsx)", () => {
   });
   it("the badges count a shop's FIRST-BATCH legs only (never the engine's hub2→shop rows), and the total includes them", () => {
     expect(APP).toMatch(/const counts = \{ hub1: 0, hub2: 0, trophy: 0, "marathon-pe": 0 \};/);
-    expect(APP).toMatch(/Object\.prototype\.hasOwnProperty\.call\(counts, r\.requestingLocation\) &&\s*\(SOURCE_SHOP_LOCS\.has\(r\.requestingLocation\) \? isFirstBatchShopLeg\(r\) : true\)/);
+    // the wiring gate: the badge uses the ONE predicate (tested by the number below)
+    expect(APP).toMatch(/Object\.prototype\.hasOwnProperty\.call\(counts, r\.requestingLocation\) && countsTowardSourceQueue\(r, SOURCE_SHOP_LOCS\)/);
     expect(APP).toMatch(/const SOURCE_SHOP_LOCS = new Set\(SOURCE_SHOP_TABS\.map\(\(\[, , loc\]\) => loc\)\);/);
-    expect(APP).toMatch(/import \{ isFirstBatchShopLeg \} from "\.\/components\/stock\/firstBatchCore";/);
+    expect(APP).toMatch(/import \{ countsTowardSourceQueue \} from "\.\/components\/stock\/firstBatchCore";/);
     expect(APP).toMatch(/const totalPending = Object\.values\(hubBadges\)\.reduce/);
   });
 });

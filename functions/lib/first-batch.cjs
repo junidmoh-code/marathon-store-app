@@ -217,7 +217,20 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
       return { ...cur, status: "cancelled", cancelReason: PATH_OFF_REASON, resolvedAt: now, resolvedBy: "first_batch_path_off",
         firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none: "path_off", at: now } } };
     });
-    return { raised: false, none: "path_off", withdrawn: !!res.committed };
+    // A #607-era row may already hold the SHOP's engine lock (claimShopLock
+    // ran before this revert). Withdrawn, the row must not keep naming a live
+    // Central-source lock until the engine's next stale-lock close: release
+    // it by CAS on our own refillId — never a lock that names another row.
+    let lockReleased = false;
+    if (res.committed && rr.firstBatch && rr.firstBatch.lock && rr.firstBatch.lock.claimedAt) {
+      const shopLockRef = db.ref(`refill_engine/open/${store}/${pid}/${sizeKey}`);
+      const held = (await shopLockRef.once("value")).val();   // cold-null: judge the first callback against this read
+      const rel = held && held.refillId === requestId
+        ? await shopLockRef.transaction((raw) => { const cur = raw === null || raw === undefined ? held : raw; return cur && cur.refillId === requestId ? null : undefined; })
+        : { committed: false };
+      lockReleased = !!rel.committed;
+    }
+    return { raised: false, none: "path_off", withdrawn: !!res.committed, ...(lockReleased ? { lockReleased } : {}) };
   }
   if (!resolved && !touched) {
     // ── THE OPEN-REQUEST GUARD (investigation §4, Q2) ──────────────────────

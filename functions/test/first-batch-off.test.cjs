@@ -153,7 +153,24 @@ test("property: over 300 random worlds under the live default, NO open first-bat
       const a = seededOnly(l, pid, row);
       const b = beforeObj[l]?.[pid];
       if (b === undefined) { for (const q of Object.values(a)) assert.ok(q === 0 || q == null, `seed ${s}: a non-zero cell appeared at ${l}/${pid}`); continue; }
-      for (const [k, q] of Object.entries(a)) if (b[k] !== undefined && b[k] !== null) assert.equal(q, b[k], `seed ${s}: qty changed at ${l}/${pid}/${k}`);
+      for (const [k, q] of Object.entries(a)) {
+        if (b[k] == null) assert.ok(q === 0 || q == null, `seed ${s}: a non-zero cell appeared at ${l}/${pid}/${k}`);   // (CodeRabbit, PR #609)
+        else assert.equal(q, b[k], `seed ${s}: qty changed at ${l}/${pid}/${k}`);
+      }
     }
   }
+});
+
+test("a #607-era row that already holds the shop's engine lock: withdrawn AND its own lock released; another row's lock is never touched", async () => {
+  const mine = { qty: 2, source: "central", createdAt: T1, runId: "first_batch:fb_p1_1", refillId: "r1", orderId: null, orderCreatedAt: null };
+  const db = world(shopRow({ firstBatch: { lock: { claimedAt: T1 } } }), { refill_engine: { open: { trophy: { p1: { M: mine } } } } });
+  const res = await run(db);
+  assert.deepEqual(res, { raised: false, none: "path_off", withdrawn: true, lockReleased: true });
+  assert.equal(db.state.root.refill_engine?.open?.trophy?.p1?.M, undefined);
+  const theirs = { ...mine, refillId: "someone_else" };
+  const db2 = world(shopRow({ firstBatch: { lock: { claimedAt: T1 } } }), { refill_engine: { open: { trophy: { p1: { M: theirs } } } } });
+  const res2 = await run(db2);
+  assert.deepEqual(res2, { raised: false, none: "path_off", withdrawn: true });
+  // RTDB (and the fake) drop null fields on write — compare what survives
+  assert.deepEqual(db2.state.root.refill_engine.open.trophy.p1.M, Object.fromEntries(Object.entries(theirs).filter(([, v]) => v !== null)));
 });

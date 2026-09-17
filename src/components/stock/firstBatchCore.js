@@ -69,6 +69,16 @@ export const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
 // A first-batch SHOP leg (never Hub 2's own leg, whose human "no" IS the
 // Central-level answer the engine should learn from).
 export const isFirstBatchShopLeg = (r) => !!r && r.createdFrom?.firstBatch === true && r.requestingLocation !== FIRST_BATCH_HUB;
+// Which open request rows Source's queues LIST — and therefore which its
+// badges COUNT (App.jsx hubBadges; RefillQueue's own filter is the same
+// predicate). A hub's queue lists every open request at that hub. A SHOP's
+// queue lists only the shop's first-batch legs from Central: the engine's
+// ordinary hub2→shop rows are Hub 2's work, and counting them put 112/113 on
+// the Trophy/Marathon tabs for a picking list Central never had (incident
+// 2026-09-17). One predicate, one number, one list.
+export const countsTowardSourceQueue = (r, shopLocs) =>
+  !!r && r.status === "open" && !r.shadow && !!r.productId
+  && (shopLocs && (typeof shopLocs.has === "function" ? shopLocs.has(r.requestingLocation) : shopLocs.includes?.(r.requestingLocation)) ? isFirstBatchShopLeg(r) : true);
 
 // ── SNEAKERS AND SLIDES — the ONLY two categories off this path ──────────────
 // Owner rule 2026-09-17: everything except sneakers and slides goes through
