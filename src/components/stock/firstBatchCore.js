@@ -166,17 +166,24 @@ export function firstBatchUndoBlockers({ liveRequests = {}, storeLabel = "the sh
   return blockers;
 }
 
-// The cancel patch for the undo: cancelled WITH the solve_undone reason (so
-// the engine treats it as a withdrawal, and the trigger raises no Hub 2 leg).
-export function firstBatchUndoCancelUpdate({ requestIds = [], nowIso, uid } = {}) {
-  const upd = {};
-  for (const id of requestIds) {
-    upd[`refill_requests/${id}/status`] = "cancelled";
-    upd[`refill_requests/${id}/cancelReason`] = SOLVE_UNDONE_REASON;
-    upd[`refill_requests/${id}/resolvedAt`] = nowIso;
-    if (uid) upd[`refill_requests/${id}/resolvedBy`] = uid;
-  }
-  return upd;
+// The undo's cancel, as a TRANSACTION per request — never a blind patch. The
+// blocker check above reads the rows once; Central's fulfil (live read →
+// applyMovement → status write) can land in the gap, and a plain update
+// landing last would mark a row whose stock has already MOVED as
+// "solve_undone" — the trigger would then raise no Hub 2 leg, ever. Inside the
+// CAS the row is re-verified as open-and-untouched; anything else aborts and
+// the row stands. (Spec review, PR #607.)
+//
+// `null` on a null callback: the client SDK runs the first callback on its
+// local cache, which may be empty — returning undefined THERE aborts for good
+// (the one-shot abort), so a missing row answers "nothing to cancel" instead,
+// and a real row is re-delivered by the server for a second callback.
+export function firstBatchUndoCancelTxn({ nowIso, uid } = {}) {
+  return (cur) => {
+    if (cur === null || cur === undefined) return null;
+    if (cur.status !== "open" || (Number(cur.sentQty) || 0) > 0) return undefined;
+    return { ...cur, status: "cancelled", cancelReason: SOLVE_UNDONE_REASON, resolvedAt: nowIso, ...(uid ? { resolvedBy: uid } : {}) };
+  };
 }
 
 // Units the panel shows: what goes to the shop NOW, and Hub 2's own policy

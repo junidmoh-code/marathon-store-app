@@ -6,7 +6,7 @@ import { createRequire } from "node:module";
 import {
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, firstBatchRunId, solveIdFor,
   firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate,
-  firstBatchUndoBlockers, firstBatchUndoCancelUpdate, firstBatchEstimate,
+  firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
 } from "./firstBatchCore.js";
 
 const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
@@ -129,13 +129,17 @@ describe("identity and the undo", () => {
     expect(firstBatchUndoBlockers({ liveRequests: { a: { status: "cancelled", size: "M" } } })[0]).toMatch(/answered/);
     expect(firstBatchUndoBlockers({ liveRequests: { a: { status: "open", sentQty: 1, size: "L" } } })[0]).toMatch(/started sending size L/);
   });
-  it("the undo cancels WITH the solve_undone reason (an engine-style withdrawal, and the trigger's no-leg signal)", () => {
-    const upd = firstBatchUndoCancelUpdate({ requestIds: ["a", "b"], nowIso: "t", uid: "u1" });
-    expect(upd["refill_requests/a/status"]).toBe("cancelled");
-    expect(upd["refill_requests/a/cancelReason"]).toBe(SOLVE_UNDONE_REASON);
-    expect(upd["refill_requests/b/resolvedAt"]).toBe("t");
-    expect(upd["refill_requests/b/resolvedBy"]).toBe("u1");
-    expect("refill_requests/a/resolvedBy" in firstBatchUndoCancelUpdate({ requestIds: ["a"], nowIso: "t", uid: null })).toBe(false);
+  it("the undo cancels WITH the solve_undone reason, as a CAS that refuses a row Central got to first", () => {
+    const txn = firstBatchUndoCancelTxn({ nowIso: "t", uid: "u1" });
+    const open = { productId: "p", size: "M", qty: 2, status: "open", createdFrom: { firstBatch: true } };
+    expect(txn(open)).toEqual({ ...open, status: "cancelled", cancelReason: SOLVE_UNDONE_REASON, resolvedAt: "t", resolvedBy: "u1" });
+    expect("resolvedBy" in firstBatchUndoCancelTxn({ nowIso: "t", uid: null })(open)).toBe(false);
+    // Central fulfilled it in the gap → abort (undefined), the row stands
+    expect(txn({ ...open, status: "fulfilled" })).toBeUndefined();
+    // Central sent a tranche in the gap → abort
+    expect(txn({ ...open, qty: 1, sentQty: 1 })).toBeUndefined();
+    // cold-cache null is answered, never aborted (the one-shot abort trap)
+    expect(txn(null)).toBe(null);
   });
   it("the panel estimate: shop units now, Hub 2's policy units after", () => {
     const split = firstBatchSplit({ sizes: ["S", "M", "L"], run: RUN, store: "trophy", centralAvail: (s) => ({ S: 4, M: 1, L: 0 })[s] });

@@ -26,11 +26,13 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
-import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelUpdate, solveIdFor, firstBatchRunId } from "./firstBatchCore";
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
+// The Source tab a shop's first-batch request lands on (App.jsx SOURCE_SHOP_TABS).
+const SOURCE_TAB_LABEL = { "marathon-pe": "Marathon", trophy: "Trophy" };
 // "_" is the catalogue's one-size sentinel — a real cell key, but never shown raw.
 const sizeLabel = (s) => (String(s) === "_" ? "One size" : String(s));
 // Fallback size-standard if config/refillEngine can't be read — mirrors the live
@@ -184,10 +186,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // Cancel the shop's open requests FIRST, with the solve_undone reason:
       // the trigger then raises no Hub 2 leg and the engine withdraws the lock
       // as its own kind of close (no cooldown, no confirmed-out strike). Only
-      // then are the seeds removed, so no request can outlive its cell.
+      // then are the seeds removed, so no request can outlive its cell. Each
+      // cancel is a CAS (firstBatchUndoCancelTxn): a row Central got to first
+      // aborts and stands, and its cell — now holding real units — is kept by
+      // undoCellTxn below, so the two halves can never disagree.
+      let stood = [];
       if (liveFb) {
-        const openIds = Object.keys(liveFb).filter((id) => liveFb[id] && liveFb[id].status === "open");
-        if (openIds.length) await update(ref(database), firstBatchUndoCancelUpdate({ requestIds: openIds, nowIso: serverNowIso(), uid: auth.currentUser?.uid || null }));
+        const txn = firstBatchUndoCancelTxn({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null });
+        const ids = Object.keys(liveFb).filter((id) => liveFb[id]);
+        const outcomes = await Promise.all(ids.map((id) => runTransaction(ref(database, `refill_requests/${id}`), txn)));
+        stood = ids.filter((id, i) => !outcomes[i].committed).map((id) => liveFb[id].size);
       }
       // Per-cell TRANSACTIONS, not read-then-delete: each cell is re-verified
       // as the untouched seed INSIDE the CAS, so a count/sale/transfer landing
@@ -198,8 +206,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // the touched sizes.
       const results = await Promise.all(u.paths.map((p) => runTransaction(ref(database, p), undoCellTxn)));
       const kept = u.paths.filter((p, i) => !results[i].committed);
-      if (kept.length) {
-        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${u.paths.length - kept.length} of ${u.paths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.` } : x)));
+      if (kept.length || stood.length) {
+        const standing = stood.length ? ` Central had already started on size${stood.length === 1 ? "" : "s"} ${stood.map(sizeLabel).join(", ")} — ${stood.length === 1 ? "that request stands" : "those requests stand"}.` : "";
+        setUndoables((l) => l.map((x) => (x.key === u.key ? { ...x, busy: false, err: `${u.paths.length - kept.length} of ${u.paths.length} seeded cells removed — the rest took real stock or counts since the solve and were kept. Use Adjust for those.${standing}` } : x)));
       } else {
         // Fully undone: the entry leaves the strip (the card reappearing IS
         // the feedback), and the stale "Solved ✓" banner is cleared so the
@@ -448,7 +457,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
     const okMsg = firstBatch
-      ? `${split.firstBatch.reduce((t, l) => t + l.qty, 0)} unit${split.firstBatch.reduce((t, l) => t + l.qty, 0) === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} (Source › ${LOC_LABEL[store]}) — Hub 2's own batch follows once that is fulfilled.`
+      ? `${split.firstBatch.reduce((t, l) => t + l.qty, 0)} unit${split.firstBatch.reduce((t, l) => t + l.qty, 0) === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2's own batch follows once that is fulfilled.`
       : `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
     try {
       if (firstBatch) {
@@ -767,7 +776,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                 {/* Inline confirm — what gets seeded + what the engine will then want. */}
                 {fb ? (
                 <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
-                  <b style={{ color: "#fff" }}>{fb.shopNow} unit{fb.shopNow === 1 ? "" : "s"}</b> ({fbSplit.firstBatch.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> now — requested from Central, picked in Source › {LOC_LABEL[sStore]}.
+                  <b style={{ color: "#fff" }}>{fb.shopNow} unit{fb.shopNow === 1 ? "" : "s"}</b> ({fbSplit.firstBatch.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> first — requested from Central now; Central picks it from Source › {SOURCE_TAB_LABEL[sStore]} at the next release.
                   <div style={{ marginTop: 5, color: GRAY }}>
                     Hub 2's own ~<b style={{ color: BLUE_L }}>{fb.hubAfter} units</b> follow automatically after {LOC_LABEL[sStore]}'s request is fulfilled, sized from what Central still has.
                   </div>
@@ -776,7 +785,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                       {fb.sizesNormal.map(sizeLabel).join(" · ")}: Central has none — seeded at Hub 2 + {LOC_LABEL[sStore]} for the engine as usual.
                     </div>
                   )}
-                  <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — Central picks the shop's request; then the normal route resumes.</div>
+                  <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — it moves when Central fulfils; then the normal route resumes.</div>
                 </div>
                 ) : (
                 <div style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>

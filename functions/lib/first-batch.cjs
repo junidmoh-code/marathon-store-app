@@ -49,6 +49,7 @@ const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
 const FIRST_BATCH_HUB = "hub2";
 const FIRST_BATCH_RUN_PREFIX = "first_batch:";
 const SOLVE_UNDONE_REASON = "solve_undone";
+const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
 const SOURCE = "central";
 const firstBatchRunId = (solveId) => `${FIRST_BATCH_RUN_PREFIX}${solveId}`;
 
@@ -61,17 +62,34 @@ function seedCell(nowIso) {
   return { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: nowIso, updatedBy: "first_batch" };
 }
 
+// Seed-if-absent, as a TRANSACTION — never a blind set. The "is there a cell?"
+// answer is taken from a read several awaits earlier; a real quantity can land
+// in that cell in between (Hub 2 staff fulfilling another request for the same
+// size, a count), and a blind set would overwrite it back to qty 0 — stock
+// deleted. The same create-if-absent shape the lock claims use. (Senior-
+// architect review, PR #607 — HIGH.)
+async function seedIfAbsent(db, path, nowIso) {
+  const res = await db.ref(path).transaction((cur) => (cur ? undefined : seedCell(nowIso)));
+  return res.committed;
+}
+
 // Units already promised out of Central for this (pid, size) by OPEN engine
 // locks at every routed destination — the engine's own sourceReserved idea,
 // read one lock at a time. `excludeRefillId` leaves out the shop request whose
 // leg is being raised; its live remainder is added back by the caller from the
 // row itself (the lock's qty can lag a partial send by one scan).
-async function centralReservations({ db, routes, pid, sizeKey, excludeRefillId }) {
+// `excludeRunId` leaves out THIS solve's own locks — above all the Hub 2 lock a
+// previous fire claimed (pending, no refillId) before crashing: counting it
+// would read Central as fully reserved, record "central_empty", and strand the
+// leg until the engine's orphaned-pending self-heal deleted the lock an hour
+// later. (Found by the crash-recovery test, PR #607.)
+async function centralReservations({ db, routes, pid, sizeKey, excludeRefillId, excludeRunId }) {
   let reserved = 0;
   for (const dest of Object.keys(routes || {})) {
     const entry = (await db.ref(`refill_engine/open/${dest}/${pid}/${sizeKey}`).once("value")).val();
     if (!entry) continue;
     if (entry.refillId && entry.refillId === excludeRefillId) continue;
+    if (excludeRunId && entry.runId === excludeRunId) continue;
     const src = entry.source || routes[dest];
     if (src !== SOURCE) continue;
     reserved += Math.max(num(entry.qty) || 1, 1);
@@ -82,6 +100,11 @@ async function centralReservations({ db, routes, pid, sizeKey, excludeRefillId }
 // Create-if-absent, exactly as refill-scan.cjs claims its intents. A lock that
 // already exists and is not ours means another writer (the engine, or an
 // earlier solve) is bookkeeping this cell — record it and leave it alone.
+// The `firstBatch/lock` stamp is a SEPARATE write after the transaction (a
+// transaction writes one path): a crash between the two leaves a lock with no
+// stamp, which the next fire simply re-records (the claim is idempotent — its
+// refillId is this request). The stamp is a note, not the idempotency record;
+// only the Hub 2 leg's `firstBatch/hub2Leg` marker is that.
 async function claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, now }) {
   const lockPath = `refill_engine/open/${store}/${pid}/${sizeKey}`;
   const claim = await db.ref(lockPath).transaction((cur) => (cur ? undefined : {
@@ -126,6 +149,19 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
 
   const resolved = rr.status !== "open";
   const touched = (num(rr.sentQty) || 0) > 0;
+  // CENTRAL'S "OUT OF STOCK" ON THE SHOP'S FIRST BATCH IS NOT A SHOP-LEVEL "NO".
+  // Source cancels a request WITHOUT a cancelReason, which the engine reads as
+  // a human rejection at the requesting location's cell: a 24h retry cooldown
+  // and a reject streak keyed (shop, pid, size) with denier Central, plus the
+  // "shop level said no" half of confirmed-out. Every one of those would then
+  // throttle the SHOP's ordinary hub2→shop refill for a "no" that was about
+  // Central's shelf, not Hub 2's. So the trigger stamps the reason it knows,
+  // in the same write as the leg it raises: the engine then treats the row as
+  // a withdrawal (no cooldown, no learning), Hub 2's own leg carries the real
+  // question to Central, and a "no" THERE learns at Hub 2's cell as always.
+  // (Spec review, PR #607.)
+  const centralDeclined = rr.status === "cancelled" && !rr.cancelReason;
+  const declineStamp = centralDeclined ? { "cancelReason": CENTRAL_DECLINED_REASON } : {};
   if (!resolved && !touched) {
     // ── THE OPEN-REQUEST GUARD (investigation §4, Q2) ──────────────────────
     // Claim the SHOP request's engine lock, source Central. With it the row is
@@ -158,7 +194,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
     db.ref(`stock/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
   ]);
   if (!product) {
-    await legRef.set({ none: "product_missing", at: now });
+    await reqRef.update({ "firstBatch/hub2Leg": { none: "product_missing", at: now }, ...declineStamp });
     return { raised: false, none: "product_missing" };
   }
 
@@ -176,7 +212,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
   };
   const t = resolveTarget(ctx, FIRST_BATCH_HUB, pid, size);
   if (!t || !(t.target > 0)) {
-    await legRef.set({ none: "no_hub2_target", at: now });
+    await reqRef.update({ "firstBatch/hub2Leg": { none: "no_hub2_target", at: now }, ...declineStamp });
     return { raised: false, none: "no_hub2_target" };
   }
 
@@ -194,15 +230,20 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
         deferredTo: String(held.runId || "").startsWith(FIRST_BATCH_RUN_PREFIX) ? "first_batch" : "engine",
         refillId: held.refillId || null, lockRunId: held.runId || null, at: now,
       },
+      ...declineStamp,
     };
+    // SEED FIRST, MARKER SECOND — in every branch. The marker is the "done"
+    // record; once it exists nothing re-fires for this row. A crash between
+    // the two therefore leaves a seed with no marker (the next fire finishes),
+    // never a marker with no seed (an orphaned size). (Sonnet, PR #607 — HIGH.)
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
     await reqRef.update(upd);
-    if (seedNeeded) await db.ref(seedPath).set(seedCell(now));
     return { raised: false, deferredTo: upd["firstBatch/hub2Leg"].deferredTo, refillId: held.refillId || null };
   }
   const hub2Have = avail(hub2Cells && hub2Cells[sizeKey] ? hub2Cells[sizeKey].qty : 0);
   const centralHave = avail(centralCell ? centralCell.qty : 0);
   const routes = config.routes || {};
-  let reserved = await centralReservations({ db, routes, pid, sizeKey, excludeRefillId: requestId });
+  let reserved = await centralReservations({ db, routes, pid, sizeKey, excludeRefillId: requestId, excludeRunId: runId });
   // A partially-sent shop request still has its remainder to come from
   // Central — the shop is served first, always.
   if (!resolved) reserved += Math.max(num(rr.qty) || 0, 0);
@@ -213,11 +254,11 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
 
   if (qty <= 0) {
     const none = deficit <= 0 ? "hub2_covered" : "central_empty";
-    const upd = { "firstBatch/hub2Leg": { none, at: now, target: t.target, hub2Have, centralHave, reserved } };
-    // The seed still lands: from here the ENGINE manages Hub 2 for this size
-    // and raises hub2←central itself the moment Central has units.
+    const upd = { "firstBatch/hub2Leg": { none, at: now, target: t.target, hub2Have, centralHave, reserved }, ...declineStamp };
+    // The seed still lands (first): from here the ENGINE manages Hub 2 for
+    // this size and raises hub2←central itself the moment Central has units.
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
     await reqRef.update(upd);
-    if (seedNeeded) await db.ref(seedPath).set(seedCell(now));
     return { raised: false, none, seeded: seedNeeded };
   }
 
@@ -235,9 +276,10 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
         deferredTo: cur && cur.runId && String(cur.runId).startsWith(FIRST_BATCH_RUN_PREFIX) ? "first_batch" : "engine",
         refillId: (cur && cur.refillId) || null, lockRunId: (cur && cur.runId) || null, at: now,
       },
+      ...declineStamp,
     };
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
     await reqRef.update(upd);
-    if (seedNeeded) await db.ref(seedPath).set(seedCell(now));
     return { raised: false, deferredTo: upd["firstBatch/hub2Leg"].deferredTo, refillId: (cur && cur.refillId) || null };
   }
   // Ours and already finalised (a re-fire after the atomic update landed but
@@ -254,15 +296,20 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
     createdAt: now,
     createdFrom: { firstBatch: true, solveId, source: SOURCE, store, shopRequestId: requestId, via: "first_batch_hub2_leg" },
   };
+  // The seed lands FIRST, by transaction (see seedIfAbsent): it is pure
+  // carriage — exactly what the old Solve wrote — so a seed with nothing after
+  // it is harmless, while a request whose Hub 2 cell never existed is a size
+  // the engine would never adopt. Then ONE atomic update: request, finalised
+  // lock and marker land together or not at all. A failure leaves our pending
+  // lock, which the next fire (or the engine's orphaned-pending self-heal
+  // after an hour) resolves.
+  if (seedNeeded) await seedIfAbsent(db, seedPath, now);
   const upd = {
     [`refill_requests/${key}`]: hubRequest,
     [lockPath]: { qty, source: SOURCE, createdAt: now, runId, refillId: key, orderId: null, orderCreatedAt: null },
     [`refill_requests/${requestId}/firstBatch/hub2Leg`]: { refillId: key, qty, at: now, target: t.target, hub2Have, centralHave, reserved },
   };
-  if (seedNeeded) upd[seedPath] = seedCell(now);
-  // ONE atomic update: request, finalised lock, marker and seed land together
-  // or not at all. A failure leaves our pending lock, which the next fire
-  // (or the engine's orphaned-pending self-heal after an hour) resolves.
+  if (centralDeclined) upd[`refill_requests/${requestId}/cancelReason`] = CENTRAL_DECLINED_REASON;
   await db.ref().update(upd);
   return { raised: true, refillId: key, qty, seeded: seedNeeded };
 }
@@ -270,7 +317,8 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
 module.exports = {
   processFirstBatchRequest,
   claimShopLock,
+  seedIfAbsent,
   centralReservations,
   seedCell,
-  FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, firstBatchRunId,
+  FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, firstBatchRunId,
 };

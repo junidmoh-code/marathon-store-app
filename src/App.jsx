@@ -15645,6 +15645,10 @@ const SOURCE_TAB_ICON = {
   // Refill history — a calendar, since this lane is chosen by DATE RANGE. The
   // "history" glyph above is already taken by the customer-request history.
   refillhistory: <><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></>,
+  // Shop tabs (first batch direct to shop, 2026-09-17) — a storefront, since
+  // these lanes are the SHOPS' own requests from Central.
+  trophy: <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 006 0 3 3 0 006 0 3 3 0 006 0"/><path d="M5 11v9h14v-9M10 20v-5h4v5"/></>,
+  marathonpe: <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 006 0 3 3 0 006 0 3 3 0 006 0"/><path d="M5 11v9h14v-9M10 20v-5h4v5"/></>,
 };
 // ── THE SOURCE CONSOLIDATION (owner directive 2026-08-08) ────────────────────
 // Three tabs, down from six. Today's Request, History and On Hold are GONE as

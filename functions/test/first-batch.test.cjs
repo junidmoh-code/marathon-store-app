@@ -353,3 +353,92 @@ test("RACE: a lock that lands between the pre-read and the claim still means ONE
   assert.equal(lockAt(db, "hub2", "p1", "M").refillId, "eng1");
   assert.equal(db.state.root.refill_requests.r1.firstBatch.hub2Leg.deferredTo, "engine");
 });
+
+// ── the two HIGH findings of the PR #607 architect review ────────────────────
+test("a real quantity landing in Hub 2's cell between the read and the seed is NEVER overwritten (seed is create-if-absent)", async () => {
+  const SEED = "stock/hub2/p1/M";
+  let injected = false;
+  const db = makeFakeDb({
+    config: { refillEngine: CONFIG }, products: PRODUCTS,
+    stock: { central: { p1: { M: cell(2) } }, trophy: { p1: { M: cell(2) } } },
+    refill_requests: { r1: shopReq({ status: "fulfilled" }) },
+  }, {
+    // The pre-read saw no Hub 2 row; a fulfil for another request lands 4
+    // units in that very cell just before the seed transaction runs.
+    beforeRead: async (path, state) => {
+      if (path !== SEED || injected) return;
+      injected = true;
+      state.root.stock.hub2 = { p1: { M: { qty: 4, v: 3, mv: "other-fulfil", lastType: "transfer_in" } } };
+    },
+  });
+  const r = await run(db);
+  assert.equal(injected, true, "the race was exercised");
+  assert.equal(r.raised, true, "the leg is still raised — the cell is simply not ours to write");
+  assert.deepEqual(db.state.root.stock.hub2.p1.M, { qty: 4, v: 3, mv: "other-fulfil", lastType: "transfer_in" }, "the 4 real units survive");
+  // same race on the central-empty branch
+  const db2 = makeFakeDb({
+    config: { refillEngine: CONFIG }, products: PRODUCTS,
+    stock: { central: { p1: { M: cell(0) } }, trophy: { p1: { M: cell(2) } } },
+    refill_requests: { r1: shopReq({ status: "fulfilled" }) },
+  }, { beforeRead: async (path, state) => { if (path === SEED && !state.root.stock.hub2) state.root.stock.hub2 = { p1: { M: cell(4) } }; } });
+  await run(db2);
+  assert.equal(db2.state.root.stock.hub2.p1.M.qty, 4);
+  assert.equal(db2.state.root.refill_requests.r1.firstBatch.hub2Leg.none, "central_empty");
+});
+
+test("a crash between the seed and the marker leaves a seed with no marker — the next fire finishes with exactly one request; never a marker with no seed", async () => {
+  const db = world({ stock: { central: { p1: { M: cell(2) } }, trophy: { p1: { M: cell(2) } } }, refill_requests: { r1: shopReq({ status: "fulfilled" }) } });
+  // First fire: the atomic request+lock+marker update throws (network drop).
+  const realRef = db.ref.bind(db);
+  let boom = true;
+  db.ref = (p) => {
+    const r = realRef(p);
+    if ((p === undefined || p === "") && boom) { const u = r.update.bind(r); r.update = async (x) => { boom = false; throw new Error("network"); }; void u; }
+    return r;
+  };
+  await assert.rejects(() => run(db), /network/);
+  assert.equal(db.state.root.stock.hub2.p1.M.mv, "seed", "the seed landed before the crash");
+  assert.equal(db.state.root.refill_requests.r1.firstBatch?.hub2Leg, undefined, "no marker — nothing claims 'done'");
+  assert.equal(hubRequests(db).length, 0);
+  const pending = lockAt(db, "hub2", "p1", "M");
+  assert.equal(pending.pending, true, "our claimed lock is still pending");
+  // The re-fire (the trigger's retry) completes it: one request, lock finalised, marker written.
+  const r = await run(db, "r1", "2026-09-17T10:01:00.000Z");
+  assert.equal(r.raised, true);
+  assert.equal(hubRequests(db).length, 1);
+  assert.equal(lockAt(db, "hub2", "p1", "M").refillId, hubRequests(db)[0][0]);
+  assert.equal(db.state.root.refill_requests.r1.firstBatch.hub2Leg.refillId, hubRequests(db)[0][0]);
+  // and a third fire is a no-op
+  const after = JSON.stringify(db.state.root);
+  await run(db, "r1", "2026-09-17T10:02:00.000Z");
+  assert.equal(JSON.stringify(db.state.root), after);
+});
+
+test("Central's Out of Stock on the shop's batch is stamped as a withdrawal — the engine learns no shop-level cooldown, and the shop's later Hub 2 refill is not parked", async () => {
+  const db = world({ refill_requests: { r1: shopReq({ status: "cancelled", resolvedAt: T1, rejectedBy: "warehouse" }) } });
+  // (the shop lock exists from creation)
+  db.state.root.refill_engine = { open: { trophy: { p1: { M: { qty: 2, source: "central", createdAt: T1, runId: `${FIRST_BATCH_RUN_PREFIX}${SOLVE}`, refillId: "r1" } } } } };
+  const r = await run(db);
+  assert.equal(r.raised, true, "Hub 2's leg is raised immediately on the cancel");
+  assert.equal(db.state.root.refill_requests.r1.cancelReason, "first_batch_central_declined");
+  // The REAL engine's reconcile: the shop lock closes as a plain cancel — no humanReject, no retry/streak op.
+  const plan = computeRefillPlan(snapshot(db));
+  const close = plan.closes.find((c) => c.dest === "trophy" && c.pid === "p1");
+  assert.ok(close, "the lock is closed");
+  assert.equal(close.humanReject, undefined, "not a human rejection");
+  assert.equal((plan.retryOps || []).filter((o) => o.dest === "trophy" && o.pid === "p1").length, 0, "no 24h retry state for the shop's cell");
+  // …and once Hub 2 holds its batch (locks gone), the shop's refill from Hub 2 is proposed at once.
+  const [hubKey] = hubRequests(db)[0];
+  db.state.root.refill_requests[hubKey].status = "fulfilled";
+  db.state.root.stock.hub2.p1.M = cell(3);
+  delete db.state.root.refill_engine;
+  const later = intentsFor(computeRefillPlan(snapshot(db)), "trophy", "p1");
+  assert.equal(later.length, 1);
+  assert.equal(later[0].source, "hub2");
+  // CONTRAST (the reason the stamp exists): the same cancel WITHOUT the stamp is a human "no" with a retry op.
+  const db2 = world({ refill_requests: { r1: shopReq({ status: "cancelled", resolvedAt: T1 }) } });
+  db2.state.root.refill_engine = { open: { trophy: { p1: { M: { qty: 2, source: "central", createdAt: T1, runId: "x", refillId: "r1" } } } } };
+  const plan2 = computeRefillPlan(snapshot(db2));
+  assert.equal(plan2.closes.find((c) => c.dest === "trophy" && c.pid === "p1").humanReject, true);
+  assert.ok((plan2.retryOps || []).some((o) => o.dest === "trophy" && o.pid === "p1" && o.op === "reject"));
+});

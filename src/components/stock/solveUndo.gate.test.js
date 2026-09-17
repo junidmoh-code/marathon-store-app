@@ -40,12 +40,11 @@ describe("solve → undo wiring", () => {
     expect(NETWORK).toMatch(/await Promise\.all\(u\.paths\.map\(\(p\) => runTransaction\(ref\(database, p\), undoCellTxn\)\)\)/);
     const undoStart = NETWORK.indexOf("const undoSolve = async (u) => {");
     const undoBlock = NETWORK.slice(undoStart, NETWORK.indexOf("\n  };", undoStart));
-    // The ONE update() the undo may issue is the first-batch request cancel
-    // (firstBatchUndoCancelUpdate) — never a null over a stock cell.
-    const updates = undoBlock.match(/update\(ref\(database\)[^\n]*/g) || [];
-    expect(updates.length).toBe(1);
-    expect(updates[0]).toMatch(/firstBatchUndoCancelUpdate\(/);
-    expect(undoBlock).not.toMatch(/stock\/\$\{/);
+    // (First batch, 2026-09-17: the shop-request cancel is ALSO a CAS —
+    // firstBatchUndoCancelTxn through runTransaction — so the undo still
+    // issues no plain update() at all.)
+    expect(undoBlock).not.toMatch(/update\(ref\(database\)/);
+    expect(undoBlock).toMatch(/runTransaction\(ref\(database, `refill_requests\/\$\{id\}`\), txn\)/);
   });
   it("an aborted cell is reported, a full undo clears the stale Solved banner and leaves the strip", () => {
     expect(NETWORK).toMatch(/const kept = u\.paths\.filter\(\(p, i\) => !results\[i\]\.committed\)/);

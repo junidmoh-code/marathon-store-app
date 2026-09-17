@@ -112,6 +112,27 @@ const MUTATIONS = [
     to: `    targets: {},`,
     nodeTests: SERVER_TESTS,
   },
+  {
+    id: "M-SEED-TXN",
+    guard: "the Hub 2 seed is create-if-absent — a real quantity landing meanwhile is never overwritten",
+    file: SERVER,
+    from: `  const res = await db.ref(path).transaction((cur) => (cur ? undefined : seedCell(nowIso)));
+  return res.committed;`,
+    to: `  await db.ref(path).set(seedCell(nowIso));
+  return true;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M-SEED-BEFORE-MARKER",
+    guard: "the seed lands BEFORE the atomic request/lock/marker update, so a crash never strands a marker without a cell",
+    file: SERVER,
+    from: `  if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+  const upd = {
+    [\`refill_requests/\${key}\`]: hubRequest,`,
+    to: `  const upd = {
+    [\`refill_requests/\${key}\`]: hubRequest,`,
+    nodeTests: SERVER_TESTS,
+  },
   // ── the open-request guard (server) ───────────────────────────────────────
   {
     id: "M-GUARD-SHOP-LOCK",
@@ -196,6 +217,30 @@ const MUTATIONS = [
     to: `        for (const [k, v] of Object.entries(updates)) await update(ref(database), { [k]: v });
         setUndoables((l) => [{ key: \`\${card.pid}_\${now}\`, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch:`,
     tests: SOLVE_TESTS,
+  },
+  {
+    id: "M-UNDO-CAS",
+    guard: "the undo's cancel refuses a row Central already fulfilled or started (CAS, not a blind patch)",
+    file: CORE,
+    from: `    if (cur.status !== "open" || (Number(cur.sentQty) || 0) > 0) return undefined;`,
+    to: ``,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-LEG-DECLINE-STAMP",
+    guard: "Central's Out of Stock on the shop's batch is stamped as a withdrawal, never a shop-level human rejection",
+    file: SERVER,
+    from: `  const centralDeclined = rr.status === "cancelled" && !rr.cancelReason;`,
+    to: `  const centralDeclined = false;`,
+    nodeTests: SERVER_TESTS,
+  },
+  {
+    id: "M-LEG-OWN-RESERVATION",
+    guard: "a crashed fire's own pending Hub 2 lock is not counted as a Central reservation on the re-fire",
+    file: SERVER,
+    from: `    if (excludeRunId && entry.runId === excludeRunId) continue;`,
+    to: ``,
+    nodeTests: SERVER_TESTS,
   },
   {
     id: "M-UNDO-OWN-LOCK",

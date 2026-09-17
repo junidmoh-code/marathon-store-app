@@ -104,7 +104,7 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
     const tree = render({ products: onlyProduct(TEE) });
     act(() => { buttonExactly(tree, "Solve").props.onClick(); });
     const text = textOf(tree);
-    expect(text).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE now — requested from Central, picked in Source › Marathon PE/);
+    expect(text).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first — requested from Central now; Central picks it from Source › Marathon at the next release/);
     expect(text).toMatch(/Hub 2's own ~5 units follow automatically after Marathon PE's request is fulfilled/);
     expect(text).toMatch(/L: Central has none — seeded at Hub 2 \+ Marathon PE/);
     expect(text).not.toMatch(/seeds Hub 2 \+/);
@@ -130,7 +130,7 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
     expect([upd["refill_requests/req1"].size, upd["refill_requests/req2"].size].sort()).toEqual(["M", "S"]);
     // nothing else was written — no order, no lock (the server claims that)
     expect(keys.some((k) => k.startsWith("orders/") || k.startsWith("refill_engine/"))).toBe(false);
-    expect(textOf(tree)).toMatch(/4 units requested from Central for Marathon PE/);
+    expect(textOf(tree)).toMatch(/4 units requested from Central for Marathon PE — Central picks it from Source › Marathon at the next release/);
   });
 
   it("the shop's policy quantity is capped by Central: the twin has 1 S → ×1, and its M/L follow the old path", async () => {

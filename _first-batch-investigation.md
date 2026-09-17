@@ -288,3 +288,58 @@ that state, by construction:
   pin rejects), and the Shopify theme / social schedule / social caption tests
   read theme and launchd assets outside this diff. `git diff origin/main
   --name-only` for those subjects is empty.
+
+## 9. Review round 1 (PR #607) — what was found and what changed
+
+Provenance: CodeRabbit (in progress at the time of writing), a Sonnet
+senior-architect pass, a Fable-vs-spec pass, and — Kimi being out on its
+monthly quota (403) and Codex excluded by the spec — the standing substitute:
+a seeded property fuzz over 600 random worlds through the REAL trigger core and
+the REAL `computeRefillPlan` (`functions/test/first-batch-fuzz.test.cjs`), plus
+a second adversarial architect pass.
+
+Fixed at the cause:
+- **Seed overwrite (Sonnet, HIGH):** the Hub 2 seed was a blind `set` from a
+  stale "no cell" read; a real quantity landing meanwhile would have been
+  zeroed. Now `seedIfAbsent`, a create-if-absent transaction, in every branch.
+- **Marker before seed (Sonnet, HIGH):** three branches wrote the "done" marker
+  first; a crash between the writes stranded the size. Now the seed lands
+  first in every branch, and the marker only after.
+- **Own pending lock counted as a reservation (crash-recovery test):** a
+  re-fire after a crash read its own pending Hub 2 lock as Central being fully
+  reserved, recorded `central_empty`, and never raised the leg.
+  `centralReservations` now skips this solve's own run id.
+- **Undo raced a fulfil (Fable-vs-spec, MEDIUM):** the undo cancelled the
+  shop's requests with a blind patch; a fulfil landing in the gap would have
+  marked a moved batch `solve_undone` and Hub 2 would never get its leg. The
+  cancel is now a CAS (`firstBatchUndoCancelTxn`): a row Central got to first
+  stands, and its cell is kept by `undoCellTxn`.
+- **Central's "Out of Stock" taught the engine a shop-level "no" (Fable-vs-spec,
+  MEDIUM):** a human cancel with no `cancelReason` is, to the engine, a
+  rejection at the shop's cell with a 24h retry and a streak — throttling the
+  shop's ordinary hub2→shop refill for a "no" about Central's shelf. The trigger
+  now stamps `cancelReason: first_batch_central_declined` in the same write as
+  the leg it raises; the engine treats the row as a withdrawal, and Hub 2's
+  own leg carries the real question to Central (a "no" there learns at Hub 2's
+  cell as always). Pinned against the real engine's `closes`/`retryOps`.
+- **Empty tab icons (Fable-vs-spec, HIGH/UI):** `SOURCE_TAB_ICON` had no
+  glyph for the two shop tabs on the desktop rail. Added.
+- Copy: the Solve panel now says the batch is picked "at the next release"
+  (requests are release-window gated like every row) and names the Source tab
+  as it is labelled ("Source › Marathon").
+
+Fuzz finding kept as an invariant, not a bug: when Central runs dry with the
+shop's Central request still open, the engine withdraws that request
+(`awaiting_upstream`) and — in the same plan, with the lock closed — may serve
+the shop from Hub 2 if Hub 2 holds stock. That is the normal route taking over
+and is what the owner asked for; the fuzz asserts "never both live at once".
+
+Noted, not changed:
+- `firstBatchLeg` fires on every write to every `/refill_requests` row (the
+  engine's own writes included); each untagged fire is one scoped read and an
+  early return.
+- The hold lane (`/settings/stockHold/config.enabled`, live false) would park a
+  Central→shop fulfil under a shipment keyed by the shop; the release card was
+  built for hub destinations. Flag before that lane is ever switched on.
+- `product_missing` / `no_hub2_target` markers are terminal for that row (the
+  size was not a qualifying size at Solve time in either case).
