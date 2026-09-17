@@ -216,6 +216,42 @@ describe("mapped categories and explicit rows — on the path since 2026-09-17, 
   });
 });
 
+describe("location history informs the SPLIT at the screen: a size the shop's category never carries stays at Hub 2 first", () => {
+  // Twelve t-shirt lines at Trophy carry S and M and never L; the card has S, M, L at Central.
+  const KEYED = { ...PRODUCTS[0], categoryKey: "t-shirts" };
+  const LINES = Array.from({ length: 12 }, (_, i) => ({ id: `tl${i}`, name: `Line ${i}`, productType: "clothing", categoryKey: "t-shirts", sizes: ["S", "M", "L"] }));
+  const stock = {
+    central: { [TEE]: { S: cell(4), M: cell(4), L: cell(4) } },
+    trophy: Object.fromEntries(LINES.map((p) => [p.id, { S: cell(1), M: cell(0) }])),
+  };
+  it("the panel says L stays at Hub 2 first and why; the write requests S and M only, seeds Hub 2 + Trophy for all three", async () => {
+    const tree = render({ products: [KEYED, ...LINES], stock });
+    act(() => { buttonExactly(tree, "Solve").props.onClick(); });
+    const text = textOf(tree);
+    expect(text).toMatch(/Trophy first — where 12 of 12 t-shirts lines are kept\./);
+    expect(text).toMatch(/4 units \(S×2 · M×2\) go to Trophy first/);
+    expect(text).toMatch(/L stays at Hub 2 first — none of the 12 t-shirts lines at Trophy carries L; the engine sends it to Trophy from Hub 2 when needed\./);
+    await act(async () => { await buttonSaying(tree, "Solve — send 4 to Trophy first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    const reqs = Object.keys(upd).filter((k) => k.startsWith("refill_requests/")).map((k) => upd[k]);
+    expect(reqs.map((r) => r.size).sort()).toEqual(["M", "S"]);
+    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual([
+      "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S", "stock/trophy/tee1/L", "stock/trophy/tee1/M", "stock/trophy/tee1/S",
+    ]);
+  });
+  it("the operator taps Marathon PE (no history there): every size Central can send goes first — history only speaks for the shop it knows", async () => {
+    const tree = render({ products: [KEYED, ...LINES], stock });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    await act(async () => { buttonExactly(tree, "Marathon PE").props.onClick(); });
+    const text = textOf(tree);
+    expect(text).toMatch(/go to Marathon PE first/);
+    expect(text).not.toMatch(/stays at Hub 2 first/);
+    await act(async () => { await buttonSaying(tree, "Solve — send").props.onClick(); });
+    const reqs = Object.keys(updateMock.mock.calls[0][1]).filter((k) => k.startsWith("refill_requests/"));
+    expect(reqs).toHaveLength(3);
+  });
+});
+
 describe("location history nominates the shop (the operator can still switch)", () => {
   // Three other t-shirts are kept at Trophy, none at PE: the category's own
   // placement says Trophy. The tee itself has no shop cell (it is a card).

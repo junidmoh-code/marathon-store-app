@@ -32,6 +32,55 @@ const GUARD_SERVER_TESTS = ["test/first-batch-guard.test.cjs", "test/first-batch
 const QUEUE_TESTS = ["src/components/stock/firstBatchSourceTab.render.test.jsx"];
 
 const MUTATIONS = [
+  // ── location history informs the split (Phase 3, Commit 6) ────────────────
+  {
+    id: "M-HIST-SPLIT-USED",
+    guard: "the Solve passes history's size hints to the split",
+    file: SOLVE,
+    from: `      sizeHints,\n    });`,
+    to: `    });`,
+    tests: SOLVE_TESTS,
+  },
+  {
+    id: "M-HIST-SPLIT-HELD",
+    guard: "a size hinted 'hub' takes the normal path and is reported as held",
+    file: CORE,
+    from: `    if (qty > 0 && hint && hint.to === "hub") { normal.push(size); held.push({ size, why: hint.why || null }); continue; }`,
+    to: ``,
+    tests: [...CORE_TESTS, ...SOLVE_TESTS],
+  },
+  {
+    id: "M-HIST-SPLIT-FLOOR",
+    guard: "the category's placement has a say only from MIN_LINES_FOR_SIZE_HINT lines",
+    file: CORE,
+    from: `    if ((h.categoryCarried || 0) >= minLines) {`,
+    to: `    if ((h.categoryCarried || 0) >= 1) {`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-HIST-SPLIT-SIBLINGS-FIRST",
+    guard: "colourway siblings at the shop outrank the category's size placement",
+    file: CORE,
+    from: `    if (h.siblingCells > 0) {\n      const n = h.siblingSizes?.[sk] || 0;`,
+    to: `    if (false) {\n      const n = h.siblingSizes?.[sk] || 0;`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-HIST-SPLIT-SIZE-KEY",
+    guard: "the size hint looks the shop's cells up by the stored size key (one-size '_' included)",
+    file: CORE,
+    from: `    const sk = stockSizeKey(size);\n    if (h.siblingCells > 0) {`,
+    to: `    const sk = size;\n    if (h.siblingCells > 0) {`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-HIST-SPLIT-NEVER-ADDS",
+    guard: "a hint never adds a size Central has none of",
+    file: CORE,
+    from: `    if (qty > 0) firstBatch.push({ size, qty, target, avail });\n    else normal.push(size);`,
+    to: `    if (qty > 0 || (hint && hint.to === "shop")) firstBatch.push({ size, qty: Math.max(qty, 1), target, avail });\n    else normal.push(size);`,
+    tests: CORE_TESTS,
+  },
   // ── the Hub 2-presence guard (Phase 3) ─────────────────────────────────────
   {
     id: "M-GUARD-CLIENT-FAIL-CLOSED",

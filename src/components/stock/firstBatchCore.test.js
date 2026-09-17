@@ -8,7 +8,7 @@ import {
   firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate, FIRST_BATCH_ENABLED,
   hub2PresenceSignals, hub2Present,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
-  buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES,
+  buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES, firstBatchSizeHints, MIN_LINES_FOR_SIZE_HINT,
   centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, lockKeyFor,
 } from "./firstBatchCore.js";
 import { categoryRun, resolvedRun, categoryPolicyLocs } from "./solvePlan.js";
@@ -96,7 +96,7 @@ describe("the per-size split", () => {
     expect(firstBatchSplit({ sizes: ["M"], run: big, store: "trophy", centralAvail: () => 99, maxUnitsPerIntent: "x" }).firstBatch[0].qty).toBe(20);
   });
   it("a size with no store target never becomes a request", () => {
-    expect(firstBatchSplit({ sizes: ["XXL"], run: RUN, store: "trophy", centralAvail: () => 9 })).toEqual({ firstBatch: [], normal: ["XXL"] });
+    expect(firstBatchSplit({ sizes: ["XXL"], run: RUN, store: "trophy", centralAvail: () => 9 })).toEqual({ firstBatch: [], normal: ["XXL"], held: [] });
   });
 });
 
@@ -191,7 +191,7 @@ describe("identity and the undo", () => {
   });
   it("the panel estimate: shop units now, Hub 2's policy units after", () => {
     const split = firstBatchSplit({ sizes: ["S", "M", "L"], run: RUN, store: "trophy", centralAvail: (s) => ({ S: 4, M: 1, L: 0 })[s] });
-    expect(firstBatchEstimate({ split, run: RUN })).toEqual({ shopNow: 3, hubAfter: 5, sizesNow: ["S", "M"], sizesNormal: ["L"] });
+    expect(firstBatchEstimate({ split, run: RUN })).toEqual({ shopNow: 3, hubAfter: 5, sizesNow: ["S", "M"], sizesNormal: ["L"], held: [] });
   });
 });
 
@@ -226,8 +226,8 @@ describe("location history — which shop is nominated (owner rule 2026-09-17)",
   it("siblings are found by the style-code stamp, NEVER by name: the duplicate-name twin at PE is not history", () => {
     const h = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: STOCK, targets: null });
     expect(h.siblings.sort()).toEqual(["tee2", "tee3"]);
-    expect(h.byStore.trophy).toEqual({ ownRow: false, siblingCells: 2, siblingUnits: 2, categoryCarried: 4 });
-    expect(h.byStore["marathon-pe"]).toEqual({ ownRow: false, siblingCells: 0, siblingUnits: 0, categoryCarried: 3 });
+    expect(h.byStore.trophy).toMatchObject({ ownRow: false, siblingCells: 2, siblingUnits: 2, categoryCarried: 4 });
+    expect(h.byStore["marathon-pe"]).toMatchObject({ ownRow: false, siblingCells: 0, siblingUnits: 0, categoryCarried: 3 });
     expect(h.categoryTotal).toBe(7);
   });
   it("tier 1 — the product's OWN positive explicit row wins over siblings and category; an explicit 0 row is not a seat", () => {
@@ -507,5 +507,99 @@ describe("scope pinned against the live catalogue: every category except sneaker
     const { updates } = buildFirstBatchSolveUpdate({ pid: "bag1", store: "trophy", split: s, existing: {}, seedCell: () => ({ qty: 0 }), nowIso: "t", uid: "u", solveId: "s", newKey: () => `k${++n}` });
     expect(Object.keys(updates).sort()).toEqual(["refill_requests/k1", "stock/hub2/bag1/_", "stock/trophy/bag1/_"]);
     expect(updates["refill_requests/k1"]).toMatchObject({ size: "_", qty: 2, createdFrom: { hub2Seeded: ["_"] } });
+  });
+});
+
+// ── LOCATION HISTORY INFORMS THE SPLIT (Phase 3, Commit 6) ───────────────────
+describe("location history informs the shop / Hub 2 split — per SIZE, never the quantity", () => {
+  const cell = (qty) => ({ qty, v: 1, mv: "m" });
+  const key = (id, extra = {}) => ({ id, name: id, productType: "clothing", categoryKey: "t-shirts", sizes: ["S", "M", "XXXL"], ...extra });
+  // Trophy keeps 12 t-shirt lines: all carry S and M, NONE carries XXXL. PE keeps 3 (below the floor).
+  const products = [key("card"), ...Array.from({ length: 12 }, (_, i) => key(`t${i}`)), ...Array.from({ length: 3 }, (_, i) => key(`pe${i}`))];
+  const allStock = {
+    central: { card: { S: cell(4), M: cell(4), XXXL: cell(4) } },
+    trophy: Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`t${i}`, { S: cell(1), M: cell(0) }])),
+    "marathon-pe": Object.fromEntries(Array.from({ length: 3 }, (_, i) => [`pe${i}`, { S: cell(1) }])),
+  };
+  const index = buildPlacementIndex({ products, allStock });
+  const hist = firstBatchHistory({ pid: "card", product: products[0], index, allStock, targets: null });
+  const RUN = { trophy: { S: 2, M: 2, XXXL: 1 }, "marathon-pe": { S: 2, M: 2, XXXL: 1 }, hub2: { S: 2, M: 3, XXXL: 1 } };
+
+  it("the index counts, per category and shop, how many lines carry each size (array-coerced rows and holes included)", () => {
+    expect(index.bySize["t-shirts"].trophy).toEqual({ S: 12, M: 12 });
+    expect(index.bySize["t-shirts"]["marathon-pe"]).toEqual({ S: 3 });
+    const idx2 = buildPlacementIndex({ products: [key("a", { sizes: ["7", "8"] })], allStock: { trophy: { a: [null, null, null, null, null, null, null, cell(1), null, cell(0)] } } });
+    expect(idx2.bySize["t-shirts"].trophy).toEqual({ 7: 1, 9: 1 });
+    expect(hist.byStore.trophy.sizeCarried).toEqual({ S: 12, M: 12 });
+  });
+  it("Trophy (12 lines, none with XXXL): XXXL stays at Hub 2 first with the sentence; S and M go first", () => {
+    const hints = firstBatchSizeHints({ history: hist, store: "trophy", sizes: ["S", "M", "XXXL"], labels: { trophy: "Trophy" } });
+    expect(hints.S).toEqual({ to: "shop", why: null });
+    expect(hints.M).toEqual({ to: "shop", why: null });
+    expect(hints.XXXL.to).toBe("hub");
+    expect(hints.XXXL.why).toBe("XXXL stays at Hub 2 first — none of the 12 t-shirts lines at Trophy carries XXXL; the engine sends it to Trophy from Hub 2 when needed.");
+    const split = firstBatchSplit({ sizes: ["S", "M", "XXXL"], run: RUN, store: "trophy", centralAvail: () => 4, sizeHints: hints });
+    expect(split.firstBatch.map((l) => l.size)).toEqual(["S", "M"]);
+    expect(split.normal).toEqual(["XXXL"]);
+    expect(split.held).toEqual([{ size: "XXXL", why: hints.XXXL.why }]);
+    const est = firstBatchEstimate({ split, run: RUN });
+    expect(est.sizesNormal).toEqual([]);            // held sizes are not "Central has none"
+    expect(est.held).toHaveLength(1);
+    expect(est.shopNow).toBe(4);
+  });
+  it("below the floor (PE keeps 3 lines) history has no say: every size Central can send goes first", () => {
+    const hints = firstBatchSizeHints({ history: hist, store: "marathon-pe", sizes: ["S", "M", "XXXL"] });
+    expect(Object.values(hints).every((h) => h.to === "shop")).toBe(true);
+    const split = firstBatchSplit({ sizes: ["S", "M", "XXXL"], run: RUN, store: "marathon-pe", centralAvail: () => 4, sizeHints: hints });
+    expect(split.firstBatch.map((l) => l.size)).toEqual(["S", "M", "XXXL"]);
+    expect(split.held).toEqual([]);
+  });
+  it("the floor is exactly MIN_LINES_FOR_SIZE_HINT (10): 9 lines → no say, 10 → a say", () => {
+    const mk = (n) => {
+      const ps = [key("card"), ...Array.from({ length: n }, (_, i) => key(`t${i}`))];
+      const st = { central: { card: { S: cell(1), XXXL: cell(1) } }, trophy: Object.fromEntries(Array.from({ length: n }, (_, i) => [`t${i}`, { S: cell(1) }])) };
+      const ix = buildPlacementIndex({ products: ps, allStock: st });
+      return firstBatchHistory({ pid: "card", product: ps[0], index: ix, allStock: st, targets: null });
+    };
+    expect(firstBatchSizeHints({ history: mk(9), store: "trophy", sizes: ["XXXL"] }).XXXL.to).toBe("shop");
+    expect(firstBatchSizeHints({ history: mk(10), store: "trophy", sizes: ["XXXL"] }).XXXL.to).toBe("hub");
+  });
+  it("colourway siblings at the shop outrank the category: the sibling carries XXXL at Trophy → XXXL goes first; the sibling lacks M → M stays", () => {
+    const ps = [key("card", { styleCodeNormalised: "AB1" }), key("sib", { styleCodeNormalised: "AB1" }), ...Array.from({ length: 12 }, (_, i) => key(`t${i}`))];
+    const st = { ...allStock, trophy: { ...allStock.trophy, sib: { S: cell(1), XXXL: cell(2) } } };
+    const ix = buildPlacementIndex({ products: ps, allStock: st });
+    const h = firstBatchHistory({ pid: "card", product: ps[0], index: ix, allStock: st, targets: null });
+    expect(h.byStore.trophy.siblingSizes).toEqual({ S: 1, XXXL: 1 });
+    const hints = firstBatchSizeHints({ history: h, store: "trophy", sizes: ["S", "M", "XXXL"], labels: { trophy: "Trophy" } });
+    expect(hints.XXXL.to).toBe("shop");
+    expect(hints.M.to).toBe("hub");
+    expect(hints.M.why).toBe("M stays at Hub 2 first — the colourway sibling at Trophy carries no M; the engine sends it to Trophy from Hub 2 when needed.");
+  });
+  it("a hint never ADDS a size: a size Central has none of stays normal (not held), and a hint for an unknown size is ignored", () => {
+    const hints = firstBatchSizeHints({ history: hist, store: "trophy", sizes: ["S", "XXXL"] });
+    const split = firstBatchSplit({ sizes: ["S", "M", "XXXL"], run: RUN, store: "trophy", centralAvail: (sz) => (sz === "S" ? 0 : 4), sizeHints: hints });
+    expect(split.firstBatch.map((l) => l.size)).toEqual(["M"]);
+    expect(split.normal).toEqual(["S", "XXXL"]);
+    expect(split.held).toEqual([{ size: "XXXL", why: hints.XXXL.why }]);
+  });
+  it("one-size: '_' hints by the '_' cell key and speaks as 'One size'", () => {
+    const ps = [{ id: "bag", name: "bag", categoryKey: "bags", sizes: ["_"] }, ...Array.from({ length: 11 }, (_, i) => ({ id: `b${i}`, name: `b${i}`, categoryKey: "bags", sizes: ["M"] }))];
+    const st = { central: { bag: { _: cell(3) } }, trophy: Object.fromEntries(Array.from({ length: 11 }, (_, i) => [`b${i}`, { M: cell(1) }])) };
+    const ix = buildPlacementIndex({ products: ps, allStock: st });
+    const h = firstBatchHistory({ pid: "bag", product: ps[0], index: ix, allStock: st, targets: null });
+    const hints = firstBatchSizeHints({ history: h, store: "trophy", sizes: ["_"], labels: { trophy: "Trophy" } });
+    expect(hints._.to).toBe("hub");
+    expect(hints._.why).toMatch(/^One size stays at Hub 2 first — none of the 11 bags lines at Trophy carries one-size;/);
+    st.trophy.b0 = { _: cell(1) };
+    const h2 = firstBatchHistory({ pid: "bag", product: ps[0], index: buildPlacementIndex({ products: ps, allStock: st }), allStock: st, targets: null });
+    expect(firstBatchSizeHints({ history: h2, store: "trophy", sizes: ["_"] })._.to).toBe("shop");
+  });
+  it("no history at all → no hints, and the split is byte-for-byte the un-hinted one", () => {
+    const h = firstBatchHistory({ pid: "card", product: key("card"), index: buildPlacementIndex({ products: [key("card")], allStock: { central: allStock.central } }), allStock: { central: allStock.central }, targets: null });
+    const hints = firstBatchSizeHints({ history: h, store: "trophy", sizes: ["S", "M", "XXXL"] });
+    const a = firstBatchSplit({ sizes: ["S", "M", "XXXL"], run: RUN, store: "trophy", centralAvail: () => 4, sizeHints: hints });
+    const b = firstBatchSplit({ sizes: ["S", "M", "XXXL"], run: RUN, store: "trophy", centralAvail: () => 4 });
+    expect(a).toEqual(b);
+    expect(a.held).toEqual([]);
   });
 });

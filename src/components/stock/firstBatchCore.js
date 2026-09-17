@@ -252,6 +252,7 @@ const humanKey = (key) => String(key || "product");
 // already holds — so every card's history is a lookup, not a scan.
 export function buildPlacementIndex({ products, allStock, stores = HISTORY_STORES } = {}) {
   const byKey = {};    // effective category key → { store: products carried there }
+  const bySize = {};   // effective category key → { store: { sizeKey: products carrying that size there } }
   const byCode = {};   // styleCodeNormalised → [productId]
   for (const p of Array.isArray(products) ? products : []) {
     if (!p || !p.id) continue;
@@ -266,10 +267,17 @@ export function buildPlacementIndex({ products, allStock, stores = HISTORY_STORE
       if (!carriesAt(allStock, s, p.id)) continue;
       const e = (byKey[key] = byKey[key] || {});
       e[s] = (e[s] || 0) + 1;
+      const bs = ((bySize[key] = bySize[key] || {})[s] = bySize[key][s] || {});
+      for (const sk of cellKeys(allStock[s][p.id])) bs[sk] = (bs[sk] || 0) + 1;
     }
   }
-  return { byKey, byCode, stores: [...stores] };
+  return { byKey, bySize, byCode, stores: [...stores] };
 }
+// The size keys a row holds a cell for (`c != null`: an array-coerced row
+// answers null in a hole; its present indices are the keys).
+const cellKeys = (row) => Array.isArray(row)
+  ? row.map((c, i) => (c != null ? String(i) : null)).filter((k) => k !== null)
+  : Object.entries(row || {}).filter(([, c]) => c != null).map(([k]) => k);
 
 // One product's location history at each shop, from the index and the two
 // nodes the screen holds. Pure; `targets` may be null (a failed read → no
@@ -285,13 +293,16 @@ export function firstBatchHistory({ pid, product, index, allStock, targets, stor
     // a positive row only: an explicit 0 is "deliberately excluded", not a seat
     const ownRow = !!rows && typeof rows === "object" && Object.values(rows).some((r) => r && typeof r.target === "number" && r.target > 0);
     let siblingCells = 0, siblingUnits = 0;
+    const siblingSizes = {};   // sizeKey → siblings carrying that size at s
     for (const sib of siblings) {
       if (!carriesAt(allStock, s, sib)) continue;
       siblingCells += 1;
       siblingUnits += positiveUnits(allStock[s][sib]);
+      for (const sk of cellKeys(allStock[s][sib])) siblingSizes[sk] = (siblingSizes[sk] || 0) + 1;
     }
     const categoryCarried = (key && index?.byKey?.[key]?.[s]) || 0;
-    byStore[s] = { ownRow, siblingCells, siblingUnits, categoryCarried };
+    const sizeCarried = (key && index?.bySize?.[key]?.[s]) || {};
+    byStore[s] = { ownRow, siblingCells, siblingUnits, siblingSizes, categoryCarried, sizeCarried };
   }
   const categoryTotal = locs.reduce((t, s) => t + byStore[s].categoryCarried, 0);
   return { key, siblings, byStore, categoryTotal };
@@ -400,6 +411,54 @@ export const lockKeyFor = (size) => { const k = String(size ?? "").trim(); retur
 export const centralFreeFor = ({ qtyAt, reserved, size }) =>
   Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[lockKeyFor(size)] || 0), 0);
 
+// ── LOCATION HISTORY AND THE SHOP / HUB 2 SPLIT (owner rule, Phase 3) ────────
+// What history CAN decide about the split without the engine undoing it: WHICH
+// SIZES go to the shop first. A request's quantity is not history's to set
+// (the engine's reconcile regrows every locked open request to min(target,
+// Central free, cap) on the next scan — investigation §5 of #608), but a size
+// that is NOT requested for the shop is simply the normal route: Hub 2 first,
+// then hub2→shop when the shop's cell needs it. So, per size, the shop's own
+// history says whether that size belongs at the shop at all:
+//   1. colourway siblings carried at the shop (the most specific signal):
+//      a size no sibling carries there stays at Hub 2 first;
+//   2. else the category's placement at the shop, when it is large enough to
+//      mean something (≥ MIN_LINES_FOR_SIZE_HINT lines kept): a size no line
+//      of that category carries there stays at Hub 2 first (live 2026-09-17:
+//      tracksuits XXXL — Trophy 34 lines, PE 13; t-shirts XXXL — PE 15 of
+//      457; suits S — 4 of 49 at Trophy);
+//   3. no history at that shop → every size Central can send goes first, as
+//      before. A hint never ADDS a size: a size Central has none of, or the
+//      policy does not cover, is never a first-batch size.
+// The shop NOMINATION (own row > siblings > category) is unchanged.
+export const MIN_LINES_FOR_SIZE_HINT = 10;
+export function firstBatchSizeHints({ history, store, sizes, labels = {}, minLines = MIN_LINES_FOR_SIZE_HINT } = {}) {
+  const h = history?.byStore?.[store];
+  const out = {};
+  if (!h) return out;
+  const label = labels[store] || store;
+  const cat = humanKey(history.key);
+  for (const sz of sizes || []) {
+    const size = String(sz);
+    const sk = stockSizeKey(size);
+    if (h.siblingCells > 0) {
+      const n = h.siblingSizes?.[sk] || 0;
+      out[size] = n > 0
+        ? { to: "shop", why: null }
+        : { to: "hub", why: `${size === "_" ? "One size" : size} stays at Hub 2 first — ${h.siblingCells === 1 ? "the colourway sibling" : `none of the ${h.siblingCells} colourway siblings`} at ${label} carr${h.siblingCells === 1 ? "ies no" : "y"} ${size === "_" ? "one-size" : size}; the engine sends it to ${label} from Hub 2 when needed.` };
+      continue;
+    }
+    if ((h.categoryCarried || 0) >= minLines) {
+      const n = h.sizeCarried?.[sk] || 0;
+      out[size] = n > 0
+        ? { to: "shop", why: null }
+        : { to: "hub", why: `${size === "_" ? "One size" : size} stays at Hub 2 first — none of the ${h.categoryCarried} ${cat} lines at ${label} carries ${size === "_" ? "one-size" : size}; the engine sends it to ${label} from Hub 2 when needed.` };
+      continue;
+    }
+    out[size] = { to: "shop", why: null };
+  }
+  return out;
+}
+
 // ── THE PER-SIZE SPLIT ───────────────────────────────────────────────────────
 // `sizes` are the QUALIFYING sizes (positive target at Hub 2 AND the store —
 // solvePlan.qualifyingSizes; unchanged). `run` is resolvedRun's map. A size
@@ -408,20 +467,26 @@ export const centralFreeFor = ({ qtyAt, reserved, size }) =>
 // (maxUnitsPerIntent, live 20 — the same cap the engine applies to its own
 // requests, so a first batch is never bigger than an engine batch). The rest
 // follow today's path.
-export function firstBatchSplit({ sizes, run, store, centralAvail, maxUnitsPerIntent } = {}) {
+// `sizeHints` (optional): firstBatchSizeHints' map. A size hinted "hub" takes
+// the normal path (Hub 2 first) and is reported in `held` with its sentence.
+export function firstBatchSplit({ sizes, run, store, centralAvail, maxUnitsPerIntent, sizeHints } = {}) {
   const storeRun = (run && run[store]) || {};
   const at = typeof centralAvail === "function" ? centralAvail : () => 0;
   const cap = Number.isFinite(Number(maxUnitsPerIntent)) && Number(maxUnitsPerIntent) > 0 ? Number(maxUnitsPerIntent) : 20;
   const firstBatch = [];
   const normal = [];
+  const held = [];
   for (const sz of sizes || []) {
-    const target = Number(storeRun[String(sz).toUpperCase()]) || 0;
+    const size = String(sz);
+    const target = Number(storeRun[size.toUpperCase()]) || 0;
     const avail = Math.max(Number(at(sz)) || 0, 0);
     const qty = Math.min(target, avail, cap);
-    if (qty > 0) firstBatch.push({ size: String(sz), qty, target, avail });
-    else normal.push(String(sz));
+    const hint = sizeHints && sizeHints[size];
+    if (qty > 0 && hint && hint.to === "hub") { normal.push(size); held.push({ size, why: hint.why || null }); continue; }
+    if (qty > 0) firstBatch.push({ size, qty, target, avail });
+    else normal.push(size);
   }
-  return { firstBatch, normal };
+  return { firstBatch, normal, held };
 }
 
 // ── THE ATOMIC WRITE ─────────────────────────────────────────────────────────
@@ -538,5 +603,12 @@ export function firstBatchEstimate({ split, run } = {}) {
   const hubRun = (run && run[FIRST_BATCH_HUB]) || {};
   const shopNow = (split?.firstBatch || []).reduce((t, l) => t + l.qty, 0);
   const hubAfter = (split?.firstBatch || []).reduce((t, l) => t + (Number(hubRun[String(l.size).toUpperCase()]) || 0), 0);
-  return { shopNow, hubAfter, sizesNow: (split?.firstBatch || []).map((l) => l.size), sizesNormal: split?.normal || [] };
+  const heldSizes = new Set((split?.held || []).map((h) => h.size));
+  return {
+    shopNow, hubAfter,
+    sizesNow: (split?.firstBatch || []).map((l) => l.size),
+    // the normal-path sizes Central has none of — held sizes are listed apart
+    sizesNormal: (split?.normal || []).filter((sz) => !heldSizes.has(sz)),
+    held: split?.held || [],
+  };
 }

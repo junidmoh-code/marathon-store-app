@@ -27,7 +27,7 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
-import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -497,10 +497,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const firstBatchFor = (card, store, sizes, openByLoc = openLocks[card.pid]) => {
     if (!eligibleAt(card, store, openByLoc)) return null;
     const reserved = centralReservedBySize({ openByLoc: openByLoc || {}, routes: cfg.routes });
+    // LOCATION HISTORY informs the split (firstBatchCore.firstBatchSizeHints):
+    // a size the shop's own history says does not belong there stays at
+    // Hub 2 first — the normal route serves it.
+    const sizeHints = firstBatchSizeHints({ history: historyFor(card), store, sizes, labels: LOC_LABEL });
     return firstBatchSplit({
       sizes, run: runFor(card.pid), store,
       centralAvail: (sz) => centralFreeFor({ qtyAt: (s) => qtyAt("central", card.pid, s), reserved, size: sz }),
       maxUnitsPerIntent: cfg.maxUnitsPerIntent,
+      sizeHints,
     });
   };
 
@@ -899,6 +904,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                       {fb.sizesNormal.map(sizeLabel).join(" · ")}: Central has none — seeded at Hub 2 + {LOC_LABEL[sStore]} for the engine as usual.
                     </div>
                   )}
+                  {/* Location history's say on the SPLIT: sizes held at Hub 2 first. */}
+                  {fb.held.map((h) => (
+                    <div key={h.size} style={{ marginTop: 5, color: GRAY }}>{h.why || `${sizeLabel(h.size)} stays at Hub 2 first.`}</div>
+                  ))}
                   <div style={{ marginTop: 5, color: "rgba(255,255,255,.4)", fontSize: 11 }}>No stock moves now — it moves when Central fulfils; then the normal route resumes.</div>
                 </div>
                 ) : (
