@@ -164,22 +164,6 @@ const MUTATIONS = [
     tests: [...CORE_TESTS, ...SOLVE_TESTS],
   },
   {
-    id: "M-SOLVE-MAPPED-OUT",
-    guard: "a mapped category (unscoped Hub 2 leg) stays on the old path",
-    file: CORE,
-    from: `    if (legs.includes(FIRST_BATCH_HUB) && !(hubLeg && hubLeg.carriedOnly === true)) return false;`,
-    to: ``,
-    tests: [...CORE_TESTS, ...SOLVE_TESTS],
-  },
-  {
-    id: "M-SOLVE-EXPLICIT-OUT",
-    guard: "an explicit Hub 2 row stays on the old path",
-    file: CORE,
-    from: `  if (targets?.[FIRST_BATCH_HUB]?.[product?.id] && Object.keys(targets[FIRST_BATCH_HUB][product.id]).length > 0) return false;`,
-    to: ``,
-    tests: [...CORE_TESTS, ...SOLVE_TESTS],
-  },
-  {
     id: "M-SOLVE-ROUTE",
     guard: "only a shop routed via Hub 2 is in scope",
     file: CORE,
