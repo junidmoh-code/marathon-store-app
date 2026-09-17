@@ -147,8 +147,8 @@ const MUTATIONS = [
     id: "M-GUARD-SOURCE",
     guard: "the shop's lock names Central as its source",
     file: SERVER,
-    from: `    qty: Math.max(num(rr.qty) || 1, 1), source: SOURCE, createdAt: now, runId,`,
-    to: `    qty: Math.max(num(rr.qty) || 1, 1), createdAt: now, runId,`,
+    from: `  const mine = { qty: Math.max(num(rr.qty) || 1, 1), source: SOURCE, createdAt: now, runId, refillId: requestId, orderId: null, orderCreatedAt: null };`,
+    to: `  const mine = { qty: Math.max(num(rr.qty) || 1, 1), createdAt: now, runId, refillId: requestId, orderId: null, orderCreatedAt: null };`,
     nodeTests: SERVER_TESTS,
   },
   // ── the Solve (client) ─────────────────────────────────────────────────────
