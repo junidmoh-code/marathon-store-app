@@ -465,3 +465,47 @@ describe("Hub 2 presence — the hard precondition (owner rule: Hub 2 by ANY mea
     for (const c of cases) expect(srv.hub2PresenceSignals(c), JSON.stringify(c)).toEqual(hub2PresenceSignals(c));
   });
 });
+
+// ── SCOPE PINNED AGAINST THE LIVE CATALOGUE (read 2026-09-17 21:2xZ) ────────
+// Every effective category key with at least one product live today, and the
+// live categoryPolicy key list. The rule is the owner's: every category except
+// sneakers and slides. Mapped categories (bags, belts, caps-beanies,
+// fitted-caps, gloves, perfumes, soccer-jerseys, sunglasses, underwear), the
+// one-size ones, keyless clothing and typeless records are all IN; the two
+// footwear keys are OUT whatever the productType says. (The footwear group
+// beyond those two — boots, soccer-boots, loafers, running-shoes, kids-shoes,
+// designer-shoes — never reaches this Solve: the Missing Products tab owns
+// the complement of that group.)
+describe("scope pinned against the live catalogue: every category except sneakers and slides", () => {
+  const LIVE_KEYS_2026_09_17 = ["t-shirts", "bags", "caps-beanies", "pants", "tracksuits", "soccer-jerseys", "golf-t-shirts", "hoodies", "fitted-caps", "jackets",
+    "perfumes", "shorts", "suits", "watches", "baseball-shirts", "ladies-tracksuits", "underwear", "shirts", "belts", "sunglasses", "dresses", "packaging",
+    "basketball-vests", "visors", "gloves", "chains-bracelets", "sneakers", "slides"];
+  const LIVE_POLICY_KEYS_2026_09_17 = ["bags", "belts", "caps-beanies", "fitted-caps", "gloves", "perfumes", "slides", "sneakers", "soccer-jerseys", "sunglasses", "underwear"];
+  const base = { source: "central", store: "trophy", routes: ROUTES, hub2Present: false };
+  it("every live key except sneakers and slides is eligible; those two never are — with or without a clothing productType", () => {
+    for (const key of LIVE_KEYS_2026_09_17) {
+      const expected = !["sneakers", "slides"].includes(key);
+      expect(firstBatchEligible({ ...base, product: { id: `p_${key}`, name: key, categoryKey: key, sizes: ["_"] } }), key).toBe(expected);
+      expect(firstBatchEligible({ ...base, product: { id: `q_${key}`, name: key, productType: "clothing", categoryKey: key, sizes: ["M"] } }), `${key} (clothing)`).toBe(expected);
+    }
+  });
+  it("every live policy (mapped) key is on the path except the two footwear keys", () => {
+    for (const key of LIVE_POLICY_KEYS_2026_09_17) {
+      expect(firstBatchEligible({ ...base, product: { id: `m_${key}`, name: key, categoryKey: key, sizes: ["_"] } }), key).toBe(!["sneakers", "slides"].includes(key));
+    }
+  });
+  it("the exclusion is by the engine's own category identity: a keyless legacy sneaker and a keyless legacy slide are out; keyless clothing and a typeless keyless record are in", () => {
+    expect(firstBatchEligible({ ...base, product: { id: "k1", name: "Air Force", category: "Footwear", subcategory: "Sneakers", sizes: ["8"] } })).toBe(false);
+    expect(firstBatchEligible({ ...base, product: { id: "k2", name: "Arizona", category: "Footwear", subcategory: "Sandals & Slides", sizes: ["8"] } })).toBe(false);
+    expect(firstBatchEligible({ ...base, product: { id: "k3", name: "Tee", productType: "clothing", sizes: ["M"] } })).toBe(true);
+    expect(firstBatchEligible({ ...base, product: { id: "k4", name: "Phone case", sizes: ["_"] } })).toBe(true);
+  });
+  it("the split works for a one-size product exactly as for a sized one (the '_' key end to end)", () => {
+    const s = firstBatchSplit({ sizes: ["_"], run: { hub2: { _: 4 }, trophy: { _: 2 } }, store: "trophy", centralAvail: () => 10 });
+    expect(s.firstBatch).toEqual([{ size: "_", qty: 2, target: 2, avail: 10 }]);
+    let n = 0;
+    const { updates } = buildFirstBatchSolveUpdate({ pid: "bag1", store: "trophy", split: s, existing: {}, seedCell: () => ({ qty: 0 }), nowIso: "t", uid: "u", solveId: "s", newKey: () => `k${++n}` });
+    expect(Object.keys(updates).sort()).toEqual(["refill_requests/k1", "stock/hub2/bag1/_", "stock/trophy/bag1/_"]);
+    expect(updates["refill_requests/k1"]).toMatchObject({ size: "_", qty: 2, createdFrom: { hub2Seeded: ["_"] } });
+  });
+});
