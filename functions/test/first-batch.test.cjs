@@ -325,3 +325,31 @@ test("leg ids differ and are repeat-safe: the shop leg, Hub 2's leg and both loc
   assert.notEqual(shopLock.refillId, hubLock.refillId);
   assert.equal(shopLock.runId, hubLock.runId, "one solve, two legs — same solve identity on both");
 });
+
+test("RACE: a lock that lands between the pre-read and the claim still means ONE request (the claim's own answer is trusted, never the earlier read)", async () => {
+  const LOCK = "refill_engine/open/hub2/p1/M";
+  let reads = 0;
+  const db = makeFakeDb({
+    config: { refillEngine: CONFIG }, products: PRODUCTS,
+    stock: { central: { p1: { M: cell(2) } }, trophy: { p1: { M: cell(2) } } },
+    refill_requests: { r1: shopReq({ status: "fulfilled" }), eng1: { productId: "p1", size: "M", qty: 3, requestingLocation: "hub2", status: "open", createdAt: T1, createdFrom: { engine: true, source: "central" } } },
+  }, {
+    // The lock path is read three times: the pre-read, the reservation walk,
+    // and the claim transaction itself. A scan claims the cell just before the
+    // THIRD — after both reads said "free".
+    beforeRead: async (path, state) => {
+      if (path !== LOCK) return;
+      reads += 1;
+      if (reads === 3) {
+        state.root.refill_engine = { open: { hub2: { p1: { M: { qty: 3, source: "central", createdAt: T1, runId: "scan-9", refillId: "eng1" } } } } };
+      }
+    },
+  });
+  const r = await run(db);
+  assert.equal(reads, 3, "pre-read, reservation walk, claim — the injected lock was seen by the claim alone");
+  assert.equal(r.raised, false);
+  assert.equal(r.deferredTo, "engine");
+  assert.equal(hubRequests(db).length, 1, "the engine's request stands alone");
+  assert.equal(lockAt(db, "hub2", "p1", "M").refillId, "eng1");
+  assert.equal(db.state.root.refill_requests.r1.firstBatch.hub2Leg.deferredTo, "engine");
+});
