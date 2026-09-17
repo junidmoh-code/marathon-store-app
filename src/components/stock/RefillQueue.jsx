@@ -63,7 +63,7 @@ import { holdActive, shipmentIdFor } from "./stockHoldCore";
 import { recordHeldLine } from "./stockHoldStore";
 import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
-import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg } from "./firstBatchCore";
+import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, sourceQueueLists } from "./firstBatchCore";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -343,10 +343,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
 
   // Request rows for this destination, one row per request (per size already).
   const requestRows = useMemo(() => {
-    let mine = allRequests.filter((r) => r.status === "open" && r.requestingLocation === DEST_LOC && r.productId);
     // A shop tab is Central's list of the shop's FIRST-BATCH legs only — never
-    // the engine's hub2→shop rows (see SHOP_DESTS).
-    if (SHOP_DESTS.has(DEST_LOC)) mine = mine.filter(isFirstBatchShopLeg);
+    // the engine's hub2→shop rows (see SHOP_DESTS). The SAME predicate the
+    // Source badges count (firstBatchCore.sourceQueueLists).
+    let mine = allRequests.filter((r) => r.requestingLocation === DEST_LOC && sourceQueueLists(r, SHOP_DESTS));
     if (lineFilter) mine = mine.filter((r) => lineFilter(byId.get(r.productId), r.size));
     return mine.map((r) => {
       const p = byId.get(r.productId);

@@ -184,7 +184,11 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   const runId = firstBatchRunId(solveId);
 
   const resolved = rr.status !== "open";
-  const touched = (num(rr.sentQty) || 0) > 0;
+  // "Untouched" must be CERTAIN before a row is withdrawn: a sentQty of an
+  // unexpected shape (a string "1") reads as 0 to num() — treat any non-number
+  // non-null value as touched, so the row keeps its follow-through instead of
+  // being cancelled over stock that may have moved. (Adversarial review, PR #609.)
+  const touched = (num(rr.sentQty) || 0) > 0 || (rr.sentQty != null && typeof rr.sentQty !== "number");
   // CENTRAL'S "OUT OF STOCK" ON THE SHOP'S FIRST BATCH IS NOT A SHOP-LEVEL "NO".
   // Source cancels a request WITHOUT a cancelReason, which the engine reads as
   // a human rejection at the requesting location's cell: a 24h retry cooldown
@@ -200,22 +204,37 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   const declineStamp = centralDeclined ? { "cancelReason": CENTRAL_DECLINED_REASON } : {};
   if (!resolved && !touched && pathEnabled !== true) {
     // ── PATH OFF: back to the old Solve (see FIRST_BATCH_PATH_ENABLED) ─────
+    // Only a SHOP routed via Hub 2 can have been given a first-batch row (the
+    // client's own scope); a tagged row anywhere else is not this backstop's
+    // to touch. A product gone from the catalogue is withdrawn WITHOUT a seed
+    // — the #607 branch below refuses that seed too (a carriage cell for a
+    // record that no longer exists is forever). (Adversarial review, PR #609.)
+    const [offConfig, offProduct] = await Promise.all([
+      db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
+      db.ref(`products/${pid}`).once("value").then((s) => s.val()),
+    ]);
+    if (((offConfig.routes || {})[store]) !== FIRST_BATCH_HUB) return { skipped: "path_off_not_shop", store };
     // Seed FIRST (a seed with nothing after it is harmless; a withdrawn
     // request with no Hub 2 cell is a size the engine could never adopt),
     // then withdraw by CAS: a row Central got to in the gap (fulfilled, or
     // sentQty > 0) is left exactly as it is and takes the follow-through
     // below on its next write. The marker lands in the same write as the
     // cancel so the re-fire this cancel causes is a no-op (`hub2_leg_done`).
-    await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`, now);
+    // No resolvedBy: to Refill History a reasoned cancel with no actor IS an
+    // engine withdrawal; a synthetic actor string would render as neither.
+    if (offProduct) await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`, now);
     // COLD-NULL TRAP (admin-movement.cjs): the first callback runs on null in
     // a Cloud Function; judge it against the row already read (`rr`) — the
     // proposal then CASes against the server value and re-runs on a mismatch.
+    // (A row hard-deleted in the gap would be re-created as cancelled; nothing
+    // in this codebase deletes a live /refill_requests row — accepted.)
+    const none = offProduct ? "path_off" : "product_missing";
     const res = await reqRef.transaction((raw) => {
       const cur = raw === null || raw === undefined ? rr : raw;
-      if (cur.status !== "open" || (num(cur.sentQty) || 0) > 0) return undefined;
+      if (cur.status !== "open" || (num(cur.sentQty) || 0) > 0 || (cur.sentQty != null && typeof cur.sentQty !== "number")) return undefined;
       if (cur.firstBatch && cur.firstBatch.hub2Leg) return undefined;
-      return { ...cur, status: "cancelled", cancelReason: PATH_OFF_REASON, resolvedAt: now, resolvedBy: "first_batch_path_off",
-        firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none: "path_off", at: now } } };
+      return { ...cur, status: "cancelled", cancelReason: PATH_OFF_REASON, resolvedAt: now,
+        firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none, at: now } } };
     });
     // A #607-era row may already hold the SHOP's engine lock (claimShopLock
     // ran before this revert). Withdrawn, the row must not keep naming a live
@@ -225,12 +244,10 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     if (res.committed && rr.firstBatch && rr.firstBatch.lock && rr.firstBatch.lock.claimedAt) {
       const shopLockRef = db.ref(`refill_engine/open/${store}/${pid}/${sizeKey}`);
       const held = (await shopLockRef.once("value")).val();   // cold-null: judge the first callback against this read
-      const rel = held && held.refillId === requestId
-        ? await shopLockRef.transaction((raw) => { const cur = raw === null || raw === undefined ? held : raw; return cur && cur.refillId === requestId ? null : undefined; })
-        : { committed: false };
+      const rel = await shopLockRef.transaction((raw) => { const cur = raw === null || raw === undefined ? held : raw; return cur && cur.refillId === requestId ? null : undefined; });
       lockReleased = !!rel.committed;
     }
-    return { raised: false, none: "path_off", withdrawn: !!res.committed, ...(lockReleased ? { lockReleased } : {}) };
+    return { raised: false, none, withdrawn: !!res.committed, ...(lockReleased ? { lockReleased } : {}) };
   }
   if (!resolved && !touched) {
     // ── THE OPEN-REQUEST GUARD (investigation §4, Q2) ──────────────────────

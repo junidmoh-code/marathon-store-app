@@ -95,7 +95,7 @@ export async function applyPlan(db, plan, nowIso) {
         const cur = raw === null || raw === undefined ? p.row : raw;
         if (!cur || cur.status !== "open" || (Number(cur.sentQty) || 0) > 0) return undefined;
         if (cur.cancelReason) return undefined;
-        return { ...cur, status: "cancelled", cancelReason: REPAIR_REASON, resolvedAt: nowIso, resolvedBy: "first_batch_repair",
+        return { ...cur, status: "cancelled", cancelReason: REPAIR_REASON, resolvedAt: nowIso,   // no resolvedBy: a reasoned cancel with no actor IS an engine-style withdrawal to Refill History
           firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none: "repair_hub2_present", at: nowIso } } };
       });
       if (res.committed) withdrawn++; else refused++;

@@ -149,6 +149,12 @@ test("property: over 300 random worlds under the live default, NO open first-bat
     const seededOnly = (l, pid, row) => Array.isArray(row) ? row.map((c) => c && c.qty) : Object.fromEntries(Object.entries(row).map(([k, c]) => [k, c && c.qty]));
     const after = w.db.state.root.stock;
     const beforeObj = JSON.parse(qtyBefore);
+    // EVERY pre-existing cell survives with its quantity (an array-coerced
+    // row's cells included — the fake used to drop them on a sibling write)
+    for (const [l, byPid] of Object.entries(beforeObj)) for (const [pid, row] of Object.entries(byPid)) {
+      const a = after[l]?.[pid]; const aq = a ? seededOnly(l, pid, a) : {};
+      for (const [k, q] of Object.entries(row)) if (q != null) assert.equal(aq[k], q, `seed ${s}: cell ${l}/${pid}/${k} lost or changed (${q} → ${aq[k]})`);
+    }
     for (const [l, byPid] of Object.entries(after)) for (const [pid, row] of Object.entries(byPid)) {
       const a = seededOnly(l, pid, row);
       const b = beforeObj[l]?.[pid];
@@ -171,6 +177,47 @@ test("a #607-era row that already holds the shop's engine lock: withdrawn AND it
   const db2 = world(shopRow({ firstBatch: { lock: { claimedAt: T1 } } }), { refill_engine: { open: { trophy: { p1: { M: theirs } } } } });
   const res2 = await run(db2);
   assert.deepEqual(res2, { raised: false, none: "path_off", withdrawn: true });
-  // RTDB (and the fake) drop null fields on write — compare what survives
   assert.deepEqual(db2.state.root.refill_engine.open.trophy.p1.M, Object.fromEntries(Object.entries(theirs).filter(([, v]) => v !== null)));
+  // the lock is swapped to another row's BETWEEN the pre-read and the transaction: still never touched
+  let swapped = false;
+  const db3 = world(shopRow({ firstBatch: { lock: { claimedAt: T1 } } }), { refill_engine: { open: { trophy: { p1: { M: mine } } } } }, { beforeRead: async (path, state) => {
+    if (path === "refill_engine/open/trophy/p1/M") { if (swapped) state.root.refill_engine.open.trophy.p1.M = { ...theirs }; swapped = true; }
+  } });
+  const res3 = await run(db3);
+  assert.deepEqual(res3, { raised: false, none: "path_off", withdrawn: true });
+  assert.equal(db3.state.root.refill_engine.open.trophy.p1.M.refillId, "someone_else");
+});
+
+test("path off: a row whose product is gone from the catalogue is withdrawn WITHOUT a Hub 2 seed", async () => {
+  const db = world(shopRow());
+  delete db.state.root.products.p1;
+  const res = await run(db);
+  assert.deepEqual(res, { raised: false, none: "product_missing", withdrawn: true });
+  assert.equal(db.state.root.stock.hub2, undefined);
+  assert.equal(db.state.root.refill_requests.r1.status, "cancelled");
+  assert.equal(db.state.root.refill_requests.r1.cancelReason, PATH_OFF_REASON);
+  assert.deepEqual(db.state.root.refill_requests.r1.firstBatch.hub2Leg, { none: "product_missing", at: T1 });
+});
+
+test("path off: a tagged row at a destination NOT routed via Hub 2 is not the backstop's to touch", async () => {
+  const db = world(shopRow({ requestingLocation: "hub1" }));
+  const before = JSON.stringify(db.state.root);
+  const res = await run(db);
+  assert.deepEqual(res, { skipped: "path_off_not_shop", store: "hub1" });
+  assert.equal(JSON.stringify(db.state.root), before);
+});
+
+test("path off: a sentQty of an unexpected shape is 'touched' — never withdrawn", async () => {
+  const db = world(shopRow({ sentQty: "1" }));
+  const res = await run(db);
+  assert.equal(db.state.root.refill_requests.r1.status, "open");
+  assert.notEqual(res.none, "path_off");
+});
+
+test("no resolvedBy on the withdrawal: Refill History reads it as an engine withdrawal with a plain-English reason", async () => {
+  const db = world();
+  await run(db);
+  const r = db.state.root.refill_requests.r1;
+  assert.equal(r.resolvedBy, undefined);
+  assert.ok(r.cancelReason && !r.rejectedBy && !r.resolvedBy);   // refillHistoryCore.byEngine
 });

@@ -76,9 +76,12 @@ export const isFirstBatchShopLeg = (r) => !!r && r.createdFrom?.firstBatch === t
 // ordinary hub2→shop rows are Hub 2's work, and counting them put 112/113 on
 // the Trophy/Marathon tabs for a picking list Central never had (incident
 // 2026-09-17). One predicate, one number, one list.
-export const countsTowardSourceQueue = (r, shopLocs) =>
-  !!r && r.status === "open" && !r.shadow && !!r.productId
+export const sourceQueueLists = (r, shopLocs) =>
+  !!r && r.status === "open" && !!r.productId
   && (shopLocs && (typeof shopLocs.has === "function" ? shopLocs.has(r.requestingLocation) : shopLocs.includes?.(r.requestingLocation)) ? isFirstBatchShopLeg(r) : true);
+// The badge counts what the list shows, minus shadow rows (listed as previews,
+// never counted as work).
+export const countsTowardSourceQueue = (r, shopLocs) => sourceQueueLists(r, shopLocs) && !r.shadow;
 
 // ── SNEAKERS AND SLIDES — the ONLY two categories off this path ──────────────
 // Owner rule 2026-09-17: everything except sneakers and slides goes through
