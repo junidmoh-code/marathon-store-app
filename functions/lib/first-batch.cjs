@@ -84,27 +84,50 @@ const PATH_OFF_REASON = "first_batch_path_off";
 // not presence. JS twin: src/components/stock/firstBatchCore.js
 // hub2PresenceSignals (pinned equal by test).
 const HUB2_PRESENT_REASON = "first_batch_hub2_present";
-function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys, ownSeedAt, sinceIso, heldLines, pid } = {}) {
-  const own = new Set((ownSeedKeys || []).map(String));
-  // An "own" seed must LOOK like one: a qty-0 seed cell — and, when the
-  // caller knows the Solve's write time (`ownSeedAt` = the request's
-  // createdAt; the Solve stamps its seeds with the same `now`), stamped at
-  // exactly that time. A listed key over any other cell is presence: a client
-  // cannot make a real cell disappear by naming it. (Spec review, PR #610.)
-  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0) && (!ownSeedAt || c.updatedAt === ownSeedAt);
+// OPEN HUB 2 REQUESTS WITHOUT A LOCK — the on-hold "coming tomorrow" flow
+// (onHoldRefill.js) writes an open hub2←central /refill_requests row and can
+// claim no engine lock (client-unwritable). /refill_requests is indexed by
+// time only, so a per-product read is a whole-node download UNLESS the
+// index below is live. The query runs only when the owner has pasted it and
+// flipped `config/refillEngine.refillRequestsProductIdIndex: true`; until
+// then the signal is not read here (reported as a residual — never a
+// whole-node read). RULE TO PASTE, under "refill_requests":
+//   ".indexOn": ["productId"]
+async function openHub2RequestIds({ db, pid, config }) {
+  if (!config || config.refillRequestsProductIdIndex !== true) return [];
+  const snap = await db.ref("refill_requests").orderByChild("productId").equalTo(pid).once("value");
+  const rows = snap.val() || {};
+  return Object.entries(rows).filter(([, r]) => r && r.status === "open" && r.requestingLocation === FIRST_BATCH_HUB).map(([id]) => id);
+}
+// The CLIENT's stock cell key (src/utils/sizeKey.js stockSizeKey): a one-size /
+// blank / "Free Size" size is the "_" cell, no trim. The engine's encodeSizeKey
+// (trims, "Free Size" → "Free_Size") keys LOCKS; a Hub 2 seed written under it
+// would be a phantom twin of the cell the client and the POS use (#279).
+const clientCellKey = (size) => (size == null || size === "" || size === "Free Size") ? "_" : String(size).replace(/[.#$[\]/\s]/g, "_");
+function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, sinceIso, heldLines, pid } = {}) {
+  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  // PRIOR presence is what counts: a qty-0 seed cell stamped AT OR AFTER the
+  // request's own createdAt (`sinceIso`) was written by this Solve (its seeds
+  // and its request carry the same `now`), by the trigger, or by another
+  // Solve of the same product in the same window — none of them "Hub 2 held
+  // it before". A seed stamped BEFORE the request, a seed with no stamp, and
+  // any cell that is not a qty-0 seed (units, a movement) is presence. Judged
+  // by SHAPE + STAMP, never by a list the client supplies: #610's first cut
+  // listed only the first-batch sizes' seeds, so a normal-path size's seed —
+  // written by the same update — withdrew the request, and two shops' Solves
+  // withdrew each other. (Adversarial review, PR #610.)
+  const laterSeed = (c) => !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0)
+    && Number.isFinite(sinceMs) && !!c.updatedAt && Date.parse(c.updatedAt) >= sinceMs;
   const cells = Array.isArray(hub2Node)
     ? hub2Node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)
     : Object.entries(hub2Node || {}).filter(([, c]) => c != null);
   const signals = [];
-  if (cells.some(([k, c]) => !ownSeed(k, c))) signals.push("stock_cell");
-  // A lock claimed AT OR AFTER this request's own createdAt (`sinceIso`) cannot
-  // be prior presence: the engine's scan may run in the seconds between the
-  // Solve's write (which seeds Hub 2, making it managed) and the trigger's
-  // first run, and claim hub2←central for the very product just solved. A
-  // lock that predates the request is real. (Lock createdAt is the scan's
-  // START time, so a scan spanning the write reads as "before" — that error
-  // only withdraws to the normal route, never the reverse. Sonnet, PR #610.)
-  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  if (cells.some(([, c]) => !laterSeed(c))) signals.push("stock_cell");
+  // The same rule for the engine's lock at Hub 2: one claimed at/after the
+  // request is the scan running in the trigger's gap (Hub 2 just became
+  // managed), not prior presence; one that predates the request is. (Lock
+  // createdAt is the scan's START time, so a scan spanning the write reads as
+  // "before" — that error only withdraws to the normal route. Sonnet, PR #610.)
   const priorLock = (e) => !!e && typeof e === "object" && !(Number.isFinite(sinceMs) && e.createdAt && Date.parse(e.createdAt) >= sinceMs);
   if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some(priorLock)) signals.push("engine_lock");
   if (Array.isArray(hub2OpenRequestIds) && hub2OpenRequestIds.length) signals.push("open_hub2_request");
@@ -262,7 +285,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // cancel so the re-fire this cancel causes is a no-op (`hub2_leg_done`).
     // No resolvedBy: to Refill History a reasoned cancel with no actor IS an
     // engine withdrawal; a synthetic actor string would render as neither.
-    if (product) await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`, now);
+    if (product) await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${clientCellKey(size)}`, now);
     // COLD-NULL TRAP (admin-movement.cjs): the first callback runs on null in
     // a Cloud Function; judge it against the row already read (`rr`) — the
     // proposal then CASes against the server value and re-runs on a mismatch.
@@ -318,13 +341,15 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // Judged ONCE, on the row's first write: after the shop lock exists the
     // engine may legitimately raise Hub 2's own leg (hub2←central from the
     // remainder) and that lock must never read as "Hub 2 held it before".
-    const [hub2Node, hub2Locks, product, heldLines] = await Promise.all([
+    const [hub2Node, hub2Locks, product, heldLines, guardConfig] = await Promise.all([
       db.ref(`stock/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
       db.ref(`refill_engine/open/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
       db.ref(`products/${pid}`).once("value").then((s) => s.val()),
       db.ref(`settings/stockHold/held/${FIRST_BATCH_HUB}`).once("value").then((s) => s.val()),
+      db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
     ]);
-    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, ownSeedKeys: rr.createdFrom.hub2Seeded || [], ownSeedAt: rr.createdAt, sinceIso: rr.createdAt, heldLines, pid });
+    const hub2OpenRequestIds = await openHub2RequestIds({ db, pid, config: guardConfig });
+    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, sinceIso: rr.createdAt, heldLines, pid });
     if (signals.length) {
       const r = await withdrawToOldSolve({ reason: HUB2_PRESENT_REASON, none: "hub2_present", product });
       return { ...r, signals };
@@ -371,10 +396,11 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     return { raised: false, none: "product_missing" };
   }
 
-  const seedPath = `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
+  const cellKey = clientCellKey(size);   // the client's cell key, never the lock key (see clientCellKey)
+  const seedPath = `stock/${FIRST_BATCH_HUB}/${pid}/${cellKey}`;
   // `== null`, never `=== undefined`: an array-coerced /stock row (dense numeric
   // size keys) comes back with NULL holes, and a hole is an absent cell.
-  const seedNeeded = !hub2Cells || hub2Cells[sizeKey] == null;
+  const seedNeeded = !hub2Cells || hub2Cells[cellKey] == null;
 
   // THE ENGINE'S SWITCHES. With the engine disabled, or Hub 2 not in live
   // mode, a real lock and a real request would be written that nothing
@@ -397,7 +423,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // units ANYWHERE, and a Hub 2-only view answered 0 for a size Central held
   // nine of. (Adversarial review, PR #607.)
   const hub2CellsAfterSeed = { ...(hub2Cells || {}) };
-  if (hub2CellsAfterSeed[sizeKey] == null) hub2CellsAfterSeed[sizeKey] = seedCell(now);
+  if (hub2CellsAfterSeed[cellKey] == null) hub2CellsAfterSeed[cellKey] = seedCell(now);
   const ctx = {
     config,
     products: { [pid]: product },
@@ -440,7 +466,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     await reqRef.update(upd);
     return { raised: false, deferredTo: upd["firstBatch/hub2Leg"].deferredTo, refillId: held.refillId || null };
   }
-  const hub2Have = avail(hub2Cells && hub2Cells[sizeKey] ? hub2Cells[sizeKey].qty : 0);
+  const hub2Have = avail(hub2Cells && hub2Cells[cellKey] ? hub2Cells[cellKey].qty : 0);
   const centralHave = avail(centralCell ? centralCell.qty : 0);
   const routes = config.routes || {};
   let reserved = await centralReservations({ db, routes, pid, sizeKey, excludeRefillId: requestId, excludeRunId: runId });
@@ -521,5 +547,5 @@ module.exports = {
   centralReservations,
   seedCell,
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, firstBatchRunId,
-  FIRST_BATCH_PATH_ENABLED, PATH_OFF_REASON, HUB2_PRESENT_REASON, hub2PresenceSignals,
+  FIRST_BATCH_PATH_ENABLED, PATH_OFF_REASON, HUB2_PRESENT_REASON, hub2PresenceSignals, openHub2RequestIds, clientCellKey,
 };

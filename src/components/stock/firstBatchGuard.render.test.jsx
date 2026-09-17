@@ -15,6 +15,7 @@ const gets = {};
 const updateMock = vi.fn(() => Promise.resolve());
 let pushN = 0;
 vi.mock("firebase/database", () => ({
+  query: (r, ...parts) => ({ path: `${r.path}?${parts.map((p) => p.q).join("&")}` }), orderByChild: (f) => ({ q: `orderBy=${f}` }), equalTo: (v) => ({ q: `equalTo=${v}` }),
   ref: (_db, path) => ({ path: path ?? "" }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
@@ -147,6 +148,20 @@ describe("Hub 2 presence → the old Solve, never a shop-from-Central request (t
     const tree = render({ products: only(TEE) });
     await solve(tree);
     expect(Object.keys(updateMock.mock.calls[0][1]).some((k) => k.startsWith("refill_requests/"))).toBe(false);
+  });
+
+  it("an open Hub 2 request with no lock (on-hold row) is presence at the screen once the index flag is on; off, the query is never issued", async () => {
+    paths["config/refillEngine"] = { ...CONFIG, refillRequestsProductIdIndex: true };
+    gets[`refill_requests?orderBy=productId&equalTo=${TEE}`] = { oh1: { productId: TEE, size: "M", qty: 1, requestingLocation: "hub2", status: "open", createdFrom: { via: "on_hold" } } };
+    const tree = render({ products: only(TEE) });
+    await solve(tree);
+    expect(Object.keys(updateMock.mock.calls[0][1]).some((k) => k.startsWith("refill_requests/"))).toBe(false);
+    paths["config/refillEngine"] = CONFIG;
+    readPaths.length = 0;
+    const tree2 = render({ products: only(TEE) });
+    await act(async () => { buttonExactly(tree2, "Solve").props.onClick(); });
+    await act(async () => {});
+    expect(readPaths.some((p) => p.startsWith("refill_requests?"))).toBe(false);
   });
 
   it("an unreadable lock table is UNKNOWN presence: the guard fails closed and the write is the old Solve", async () => {

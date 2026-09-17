@@ -196,6 +196,18 @@ function makeFakeDb(initial = {}, hooks = {}) {
         // that pre-reversed would hide a caller that forgot to.
         orderByChild(field) {
           return {
+            // orderByChild(field).equalTo(v): the indexed per-product read
+            // (first-batch.cjs openHub2RequestIds). Equality on the child
+            // field, RTDB key order.
+            equalTo(value) {
+              return { async once() {
+                if (hooks.beforeRead) await hooks.beforeRead(path, state);
+                const v = readAt(state.root, path);
+                if (!v || typeof v !== "object") return makeSnapshot(parts(path).pop() || null, null);
+                const hits = Object.entries(v).filter(([, r]) => r && typeof r === "object" && r[field] === value);
+                return makeSnapshot(parts(path).pop() || null, hits.length ? Object.fromEntries(hits) : null);
+              } };
+            },
             limitToLast(n) {
               return { async once() {
                 if (hooks.beforeRead) await hooks.beforeRead(path, state);

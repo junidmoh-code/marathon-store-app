@@ -163,35 +163,40 @@ export const FIRST_BATCH_ENABLED = true;   // ON again since the Hub 2-presence 
 //   hub2OpenRequestIds open /refill_requests rows at Hub 2 for pid, when the
 //                      caller has them (the server reads none: every engine
 //                      request holds a lock, and the trigger's own leg too)
-//   ownSeedKeys        the size keys of qty-0 seeds THIS Solve wrote at Hub 2
-//                      (createdFrom.hub2Seeded) — never presence
+//   sinceIso           the request's own createdAt — a qty-0 seed or a lock
+//                      stamped at/after it is not PRIOR presence
+//   heldLines, pid     /settings/stockHold/held/hub2 — a held line for pid is
+//                      units on the way to Hub 2
 // A cell of any other kind — units, a movement, a human's or an earlier
 // Solve's seed — IS presence: cells are never deleted, so it says Hub 2 held
 // the product before. An explicit /stock_targets/hub2 row is a PLAN, not
 // presence (the #608 owner spec put explicit-row products on the path); it is
 // reported in `signals` for the panel but does not gate.
 // CJS twin: functions/lib/first-batch.cjs hub2PresenceSignals (pinned equal).
-export function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys, ownSeedAt, sinceIso, heldLines, pid } = {}) {
-  const own = new Set((ownSeedKeys || []).map(String));
-  // An "own" seed must LOOK like one: a qty-0 seed cell — and, when the
-  // caller knows the Solve's write time (`ownSeedAt` = the request's
-  // createdAt; the Solve stamps its seeds with the same `now`), stamped at
-  // exactly that time. A listed key over any other cell is presence: a client
-  // cannot make a real cell disappear by naming it. (Spec review, PR #610.)
-  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0) && (!ownSeedAt || c.updatedAt === ownSeedAt);
+export function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, sinceIso, heldLines, pid } = {}) {
+  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  // PRIOR presence is what counts: a qty-0 seed cell stamped AT OR AFTER the
+  // request's own createdAt (`sinceIso`) was written by this Solve (its seeds
+  // and its request carry the same `now`), by the trigger, or by another
+  // Solve of the same product in the same window — none of them "Hub 2 held
+  // it before". A seed stamped BEFORE the request, a seed with no stamp, and
+  // any cell that is not a qty-0 seed (units, a movement) is presence. Judged
+  // by SHAPE + STAMP, never by a list the client supplies: #610's first cut
+  // listed only the first-batch sizes' seeds, so a normal-path size's seed —
+  // written by the same update — withdrew the request, and two shops' Solves
+  // withdrew each other. (Adversarial review, PR #610.)
+  const laterSeed = (c) => !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0)
+    && Number.isFinite(sinceMs) && !!c.updatedAt && Date.parse(c.updatedAt) >= sinceMs;
   const cells = Array.isArray(hub2Node)
     ? hub2Node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)
     : Object.entries(hub2Node || {}).filter(([, c]) => c != null);
   const signals = [];
-  if (cells.some(([k, c]) => !ownSeed(k, c))) signals.push("stock_cell");
-  // A lock claimed AT OR AFTER this request's own createdAt (`sinceIso`) cannot
-  // be prior presence: the engine's scan may run in the seconds between the
-  // Solve's write (which seeds Hub 2, making it managed) and the trigger's
-  // first run, and claim hub2←central for the very product just solved. A
-  // lock that predates the request is real. (Lock createdAt is the scan's
-  // START time, so a scan spanning the write reads as "before" — that error
-  // only withdraws to the normal route, never the reverse. Sonnet, PR #610.)
-  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  if (cells.some(([, c]) => !laterSeed(c))) signals.push("stock_cell");
+  // The same rule for the engine's lock at Hub 2: one claimed at/after the
+  // request is the scan running in the trigger's gap (Hub 2 just became
+  // managed), not prior presence; one that predates the request is. (Lock
+  // createdAt is the scan's START time, so a scan spanning the write reads as
+  // "before" — that error only withdraws to the normal route. Sonnet, PR #610.)
   const priorLock = (e) => !!e && typeof e === "object" && !(Number.isFinite(sinceMs) && e.createdAt && Date.parse(e.createdAt) >= sinceMs);
   if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some(priorLock)) signals.push("engine_lock");
   if (Array.isArray(hub2OpenRequestIds) && hub2OpenRequestIds.length) signals.push("open_hub2_request");
@@ -559,9 +564,9 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
       createdFrom: {
         firstBatch: true, solveId, source: "central", store, hub: FIRST_BATCH_HUB,
         via: "missing_products_solve",
-        // the Hub 2 seeds THIS solve writes — the trigger's presence re-check
-        // must not read them as prior presence. RTDB cannot store an empty
-        // array, so none → omitted.
+        // the Hub 2 seeds THIS solve writes — information for the audit trail
+        // (the guard judges its own seeds by their stamp, not by this list).
+        // RTDB cannot store an empty array, so none → omitted.
         ...(hub2Seeded.length ? { hub2Seeded } : {}),
         // omit-don't-copy: a null here would be dropped by RTDB anyway, but an
         // undefined would fail the whole atomic write (#327).

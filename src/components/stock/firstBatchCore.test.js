@@ -431,20 +431,23 @@ describe("Hub 2 presence — the hard precondition (owner rule: Hub 2 by ANY mea
   it("a stock cell of ANY quantity — qty 0 included — is presence (cells are never deleted)", () => {
     expect(hub2PresenceSignals({ hub2Node: { M: cell(3) } })).toEqual(["stock_cell"]);
     expect(hub2PresenceSignals({ hub2Node: { M: cell(0) } })).toEqual(["stock_cell"]);
-    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed } } })).toEqual(["stock_cell"]);   // an EARLIER solve's seed
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed } } })).toEqual(["stock_cell"]);   // an EARLIER solve's seed (unstamped, no since)
     expect(hub2PresenceSignals({ hub2Node: null })).toEqual([]);
     expect(hub2PresenceSignals({ hub2Node: {} })).toEqual([]);
   });
-  it("this Solve's OWN qty-0 seeds (hub2Seeded) are not presence — but a unit in one of them is", () => {
-    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed }, L: { ...ownSeed } }, ownSeedKeys: ["M", "L"] })).toEqual([]);
-    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed }, L: { ...ownSeed } }, ownSeedKeys: ["M"] })).toEqual(["stock_cell"]);
-    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, qty: 2 } }, ownSeedKeys: ["M"] })).toEqual(["stock_cell"]);
-    expect(hub2PresenceSignals({ hub2Node: { M: cell(0) }, ownSeedKeys: ["M"] })).toEqual(["stock_cell"]);   // not a seed shape
+  it("a qty-0 seed stamped AT or AFTER the request's own createdAt is not PRIOR presence (this Solve's, a sibling Solve's, the trigger's); a seed stamped before, or unstamped, is", () => {
+    const at = "2026-09-17T10:00:00.000Z";
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: at }, L: { ...ownSeed, updatedAt: "2026-09-17T10:00:02.000Z" } }, sinceIso: at })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: "2026-09-17T09:59:59.000Z" } }, sinceIso: at })).toEqual(["stock_cell"]);
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed } }, sinceIso: at })).toEqual(["stock_cell"]);          // no stamp
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: at } } })).toEqual(["stock_cell"]);          // no since → every cell counts
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: at, qty: 2 } }, sinceIso: at })).toEqual(["stock_cell"]);   // units, whatever the stamp
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: at, mv: "m" } }, sinceIso: at })).toEqual(["stock_cell"]);  // not a seed
   });
-  it("an array-coerced Hub 2 row: a hole is nothing, a present index is presence; own seeds by index key", () => {
+  it("an array-coerced Hub 2 row: a hole is nothing, a present index is presence, a later seed by index is not", () => {
     expect(hub2PresenceSignals({ hub2Node: [null, null, null] })).toEqual([]);
     expect(hub2PresenceSignals({ hub2Node: [null, null, cell(1)] })).toEqual(["stock_cell"]);
-    expect(hub2PresenceSignals({ hub2Node: [null, null, { ...ownSeed }], ownSeedKeys: ["2"] })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Node: [null, null, { ...ownSeed, updatedAt: "2026-09-17T10:00:00.000Z" }], sinceIso: "2026-09-17T10:00:00.000Z" })).toEqual([]);
   });
   it("an engine lock at Hub 2 (a pending inbound) and an open Hub 2 request are presence; an explicit row is NOT (a plan)", () => {
     expect(hub2PresenceSignals({ hub2Locks: { M: { qty: 2, source: "central", runId: "scan-1" } } })).toEqual(["engine_lock"]);
@@ -466,20 +469,18 @@ describe("Hub 2 presence — the hard precondition (owner rule: Hub 2 by ANY mea
     expect(hub2PresenceSignals({ heldLines: held })).toEqual([]);
     expect(hub2PresenceSignals({ heldLines: null, pid: "tee1" })).toEqual([]);
   });
-  it("ownSeedAt: a listed own seed must be stamped at the Solve's own time; any other stamp is presence", () => {
-    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: "t1" } }, ownSeedKeys: ["M"], ownSeedAt: "t1" })).toEqual([]);
-    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: "t0" } }, ownSeedKeys: ["M"], ownSeedAt: "t1" })).toEqual(["stock_cell"]);
-    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed } }, ownSeedKeys: ["M"], ownSeedAt: "t1" })).toEqual(["stock_cell"]);   // no stamp at all
-  });
+
   it("the server twin computes the SAME signals on the same inputs", () => {
     const req = createRequire(import.meta.url);
     const srv = req("../../../functions/lib/first-batch.cjs");
+    const T = "2026-09-17T10:00:00.000Z";
     const cases = [
-      {}, { hub2Node: { M: cell(0) } }, { hub2Node: { M: { ...ownSeed } }, ownSeedKeys: ["M"] }, { hub2Node: [null, cell(1)] },
-      { hub2Node: [null, { ...ownSeed }], ownSeedKeys: ["1"] }, { hub2Locks: { M: { qty: 1 } } }, { hub2OpenRequestIds: ["a"] },
-      { hub2Node: { M: { ...ownSeed, qty: 1 } }, ownSeedKeys: ["M"] }, { hub2Node: { M: cell(2), L: { ...ownSeed } }, ownSeedKeys: ["L"], hub2Locks: { L: {} } },
-      { hub2Locks: { M: { createdAt: "2026-09-17T10:00:01.000Z" } }, sinceIso: "2026-09-17T10:00:00.000Z" }, { hub2Locks: { M: { createdAt: "2026-09-17T09:00:00.000Z" } }, sinceIso: "2026-09-17T10:00:00.000Z" },
-      { heldLines: { a: { productId: "p" } }, pid: "p" }, { heldLines: { a: { productId: "q" } }, pid: "p" }, { hub2Node: { M: { ...ownSeed, updatedAt: "t0" } }, ownSeedKeys: ["M"], ownSeedAt: "t1" },
+      {}, { hub2Node: { M: cell(0) } }, { hub2Node: { M: { ...ownSeed, updatedAt: T } }, sinceIso: T }, { hub2Node: [null, cell(1)] },
+      { hub2Node: [null, { ...ownSeed, updatedAt: T }], sinceIso: T }, { hub2Locks: { M: { qty: 1 } } }, { hub2OpenRequestIds: ["a"] },
+      { hub2Node: { M: { ...ownSeed, qty: 1, updatedAt: T } }, sinceIso: T }, { hub2Node: { M: cell(2), L: { ...ownSeed, updatedAt: T } }, sinceIso: T, hub2Locks: { L: {} } },
+      { hub2Locks: { M: { createdAt: "2026-09-17T10:00:01.000Z" } }, sinceIso: T }, { hub2Locks: { M: { createdAt: "2026-09-17T09:00:00.000Z" } }, sinceIso: T },
+      { heldLines: { a: { productId: "p" } }, pid: "p" }, { heldLines: { a: { productId: "q" } }, pid: "p" }, { hub2Node: { M: { ...ownSeed, updatedAt: "2026-09-17T09:00:00.000Z" } }, sinceIso: T },
+      { hub2Node: { M: { ...ownSeed } }, sinceIso: T },
     ];
     for (const c of cases) expect(srv.hub2PresenceSignals(c), JSON.stringify(c)).toEqual(hub2PresenceSignals(c));
   });

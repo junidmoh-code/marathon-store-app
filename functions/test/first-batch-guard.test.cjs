@@ -122,12 +122,57 @@ test("'already judged' is the SERVER-OWNED shop lock, never a field on the row: 
   assert.equal(db3.state.root.refill_engine.open.trophy.p1.M.refillId, "r1");
 });
 
-test("hub2Seeded cannot hide a real cell: a listed key over a cell with units, a non-seed cell, or a seed not stamped at this request's createdAt is presence", async () => {
+test("the hub2Seeded list cannot hide a real cell: a cell with units, a non-seed cell, or a seed stamped BEFORE this request is presence whatever the list says", async () => {
   for (const c of [cell(2), { ...solveSeed(), mv: "m" }, { ...solveSeed(), updatedAt: "2026-09-01T00:00:00.000Z" }]) {
     const db = solvedWorld({ hub2: { M: c, L: solveSeed() } });
     db.state.root.refill_requests.r1.createdFrom.hub2Seeded = ["M", "L", "S", "XL"];   // over-listed
     assert.equal((await run(db)).none, "hub2_present", JSON.stringify(c));
   }
+});
+
+test("ADVERSARIAL REPRO 1 — a NORMAL-PATH size's Hub 2 seed, written by the same Solve (not in hub2Seeded), is not prior presence: the request stands", async () => {
+  const db = solvedWorld({ hub2: { M: solveSeed(), L: solveSeed() } });
+  db.state.root.refill_requests.r1.createdFrom.hub2Seeded = ["M"];   // L was a normal-path size (Central had none)
+  const res = await run(db);
+  assert.deepEqual(res, { skipped: "open_untouched", lock: { claimed: true } });
+  assert.equal(db.state.root.refill_requests.r1.status, "open");
+});
+
+test("ADVERSARIAL REPRO 2 — two shops Solve the same product in one window: each other's seeds are stamped at/after the OTHER's createdAt → neither withdraws the other (the accepted per-shop case), and a sibling's seed stamped BEFORE this request is prior presence", async () => {
+  const t2 = "2026-09-17T10:00:00.000Z", t1 = "2026-09-17T09:59:58.000Z";
+  // Trophy solved first (t1, seeds M at t1); PE solved 2s later (t2, seeds L at t2)
+  const db = solvedWorld({ hub2: { M: { ...solveSeed(), updatedAt: t1 }, L: { ...solveSeed(), updatedAt: t2 } }, refill: { r2: shopReq({ requestingLocation: "marathon-pe", size: "L", createdAt: t2, createdFrom: { firstBatch: true, solveId: "fb_p1_pe", source: "central", store: "marathon-pe", hub: "hub2", hub2Seeded: ["L"] } }) } });
+  db.state.root.refill_requests.r1.createdAt = t1;
+  db.state.root.stock["marathon-pe"] = { p1: { L: solveSeed() } };
+  const first = await run(db, "r1");                       // Trophy's: PE's seed came AFTER → not prior presence
+  assert.deepEqual(first, { skipped: "open_untouched", lock: { claimed: true } });
+  const second = await run(db, "r2");                      // PE's: Trophy's seed came BEFORE → prior presence → PE asks Hub 2
+  assert.equal(second.none, "hub2_present");
+  assert.deepEqual(second.signals, ["stock_cell"]);
+  assert.equal(db.state.root.refill_requests.r1.status, "open");
+  assert.equal(db.state.root.refill_requests.r2.status, "cancelled");
+});
+
+test("an OPEN Hub 2 request with no lock (the on-hold 'coming tomorrow' row) is presence once the productId index is live (config flag); without the flag the query is never run", async () => {
+  const onHold = { productId: "p1", size: "M", qty: 1, requestingLocation: "hub2", status: "open", createdAt: "2026-09-17T08:00:00.000Z", createdFrom: { manual: true, source: "central", via: "on_hold" } };
+  const dbOff = solvedWorld({ refill: { oh1: onHold } });
+  assert.equal((await run(dbOff)).skipped, "open_untouched");
+  const dbOn = solvedWorld({ refill: { oh1: onHold } });
+  dbOn.state.root.config.refillEngine.refillRequestsProductIdIndex = true;
+  const res = await run(dbOn);
+  assert.equal(res.none, "hub2_present");
+  assert.deepEqual(res.signals, ["open_hub2_request"]);
+});
+
+test("the trigger's Hub 2 seed lands under the CLIENT's cell key: 'Free Size' and '' → '_', ' 8' → '_8' (never the lock key)", async () => {
+  const { clientCellKey } = require("../lib/first-batch.cjs");
+  assert.equal(clientCellKey("Free Size"), "_"); assert.equal(clientCellKey(""), "_"); assert.equal(clientCellKey(null), "_");
+  assert.equal(clientCellKey(" 8"), "_8"); assert.equal(clientCellKey("5.5"), "5_5"); assert.equal(clientCellKey("_"), "_");
+  const db = solvedWorld({ hub2: { M: cell(1) } });
+  db.state.root.refill_requests.r1.size = "Free Size";
+  await run(db);   // presence → withdrawn → seed under "_"
+  assert.ok(db.state.root.stock.hub2.p1._, "seeded at '_'");
+  assert.equal(db.state.root.stock.hub2.p1.Free_Size, undefined, "no phantom twin");
 });
 
 test("judged ONCE: after the shop lock is claimed, the engine's own Hub 2 lock (its hub2←central leg from the remainder) never withdraws the committed request", async () => {

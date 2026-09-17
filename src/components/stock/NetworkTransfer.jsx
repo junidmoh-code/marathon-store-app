@@ -14,7 +14,7 @@
 // see missingProductsCore's inFootwearGroup note); strictly existing tokens.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ref, get, update, onValue, runTransaction, push } from "firebase/database";
+import { ref, get, update, onValue, runTransaction, push, query, orderByChild, equalTo } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
@@ -437,6 +437,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const hub2PresentFor = (pid, openByLoc) => hub2PresenceSignals({
     hub2Node: allStock?.[FIRST_BATCH_HUB]?.[pid],
     hub2Locks: openByLoc ? (openByLoc.hub2Raw ?? openByLoc[FIRST_BATCH_HUB]) : null,
+    hub2OpenRequestIds: openByLoc ? openByLoc.openHub2Requests : null,
     heldLines: openByLoc ? openByLoc.heldHub2 : null, pid,
   }).length > 0;
   const eligibleAt = (card, store, openByLoc) => !!cfg && !targetsError
@@ -474,15 +475,25 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // A lock whose request is gone or closed is dead, not a reservation
     // (firstBatchCore.pruneClosedLocks): one scoped read per lock it names.
     const requestsById = {};
-    const [heldHub2] = await Promise.all([
+    // OPEN HUB 2 REQUESTS WITHOUT A LOCK (the on-hold "coming tomorrow" flow):
+    // a per-product query of /refill_requests needs the productId index —
+    // run only once the owner has pasted it and flipped
+    // config/refillEngine.refillRequestsProductIdIndex (never a whole-node
+    // read from here). Mirrors the trigger (first-batch.cjs openHub2RequestIds).
+    const openHub2 = cfg?.refillRequestsProductIdIndex === true
+      ? get(query(ref(database, "refill_requests"), orderByChild("productId"), equalTo(pid))).then((s) => Object.entries(s.val() || {}).filter(([, r]) => r && r.status === "open" && r.requestingLocation === FIRST_BATCH_HUB).map(([id]) => id))
+      : Promise.resolve([]);
+    const [heldHub2, openHub2Requests] = await Promise.all([
       get(ref(database, `settings/stockHold/held/${FIRST_BATCH_HUB}`)).then((s) => s.val()),
+      openHub2,
       ...lockRefillIds(raw).map(async (id) => { requestsById[id] = (await get(ref(database, `refill_requests/${id}`))).val(); }),
     ]);
     // Non-enumerable extras: centralReservedBySize walks the enumerable
-    // locations, and these two are inputs to the PRESENCE test only.
+    // locations, and these are inputs to the PRESENCE test only.
     const pruned = pruneClosedLocks({ openByLoc: raw, requestsById });
     Object.defineProperty(pruned, "hub2Raw", { value: raw[FIRST_BATCH_HUB] ?? null, enumerable: false });
     Object.defineProperty(pruned, "heldHub2", { value: heldHub2 ?? null, enumerable: false });
+    Object.defineProperty(pruned, "openHub2Requests", { value: openHub2Requests, enumerable: false });
     return pruned;
   };
   useEffect(() => {
@@ -930,6 +941,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     ? <b style={{ color: "#fff" }}>One size</b>
                     : <><b style={{ color: "#fff" }}>{plan.sizes.length} size{plan.sizes.length === 1 ? "" : "s"}</b> ({plan.sizes.map(sizeLabel).join(" · ")})</>
                   } → seeds {card.source === "central" ? <b>Hub 2 + {LOC_LABEL[sStore]}</b> : <b>{LOC_LABEL[sStore]}</b>} at qty 0.
+                  {/* Location history held EVERY size at Hub 2 first: say so — the
+                      operator must see the decision that removed the first batch. */}
+                  {fbSplit && fbSplit.held && fbSplit.held.map((h) => (
+                    <div key={h.size} style={{ marginTop: 5, color: GRAY }}>{h.why || `${sizeLabel(h.size)} stays at Hub 2 first.`}</div>
+                  ))}
                   <div style={{ marginTop: 5, color: GRAY }}>
                     The engine will then want ~<b style={{ color: BLUE_L }}>{plan.storeUnits} units</b> at {LOC_LABEL[sStore]}
                     {plan.twoLeg

@@ -44,13 +44,11 @@ export function decideRepair({ row, hub2Node, hub2Locks, hub2OpenRequests, hub2T
   // request. The trigger's / this repair's own seeds (updatedBy first_batch)
   // are excluded the same way the Solve's are: counting them would withdraw
   // a kept Central request on the very next run.
-  // Two kinds of qty-0 seed are not presence: the trigger's / this repair's
-  // own (updatedBy "first_batch" — removed from the view first) and the
-  // Solve's own for THIS request (createdFrom.hub2Seeded, verified as qty-0
-  // seed cells stamped at the request's createdAt — the guard's own rule).
-  const notOurs = (c) => !(c && c.mv === "seed" && c.updatedBy === "first_batch" && !((Number(c.qty) || 0) > 0));
-  const view = Array.isArray(hub2Node) ? hub2Node.map((c) => (notOurs(c) ? c : null)) : Object.fromEntries(Object.entries(hub2Node || {}).filter(([, c]) => notOurs(c)));
-  const presence = hub2PresenceSignals({ hub2Node: view, hub2Locks, hub2OpenRequestIds: hub2OpenRequests || [], ownSeedKeys: row.createdFrom?.hub2Seeded || [], ownSeedAt: row.createdAt, sinceIso: row.createdAt, heldLines, pid: row.productId });
+  // THE guard's own definition (first-batch.cjs hub2PresenceSignals): a
+  // qty-0 seed stamped at/after the request (this Solve's, the trigger's,
+  // this repair's) is not prior presence; any other cell, a prior lock, an
+  // open Hub 2 request, a held line is.
+  const presence = hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds: hub2OpenRequests || [], sinceIso: row.createdAt, heldLines, pid: row.productId });
   // informational only — an explicit row is a plan, not presence (same as the Solve guard)
   const explicitRow = !!hub2TargetRow && typeof hub2TargetRow === "object" && Object.keys(hub2TargetRow).length > 0;
   // `== null`: an array-coerced row answers null in a hole → absent cell

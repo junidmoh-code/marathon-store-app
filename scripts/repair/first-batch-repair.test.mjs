@@ -54,14 +54,13 @@ describe("decideRepair — presence by ANY means", () => {
     expect(decideRepair({ row, hub2Node: { M: cell(0) }, hub2Locks: null, hub2OpenRequests: [], hub2TargetRow: null })).toMatchObject({ withdraw: true, seedNeeded: false, presence: ["stock_cell"] });
     // an EARLIER Solve's seed (updatedBy a uid, not listed on this request) IS prior presence; the trigger's / this repair's qty-0 seed is NOT
     expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedBy: "u1" } } })).toMatchObject({ withdraw: true, presence: ["stock_cell"] });
-    // THIS request's own Solve seeds (createdFrom.hub2Seeded, stamped at the row's createdAt) are not presence — the guard's rule
-    const own = { ...row, createdFrom: { ...row.createdFrom, hub2Seeded: ["M"] } };
-    expect(decideRepair({ row: own, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: row.createdAt, updatedBy: "u1" } } })).toMatchObject({ withdraw: false, presence: [] });
-    expect(decideRepair({ row: own, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: "2026-09-01T00:00:00.000Z", updatedBy: "u1" } } })).toMatchObject({ withdraw: true, presence: ["stock_cell"] });   // listed, but not stamped by this Solve
+    // THIS request's own Solve seeds (stamped at the row's createdAt) are not presence — the guard's rule; an older stamp is
+    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: row.createdAt, updatedBy: "u1" } } })).toMatchObject({ withdraw: false, presence: [] });
+    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: "2026-09-01T00:00:00.000Z", updatedBy: "u1" } } })).toMatchObject({ withdraw: true, presence: ["stock_cell"] });
     // a held line in the hold lane (units on the way to Hub 2) is presence
     expect(decideRepair({ row, hub2Node: null, heldLines: { l1: { productId: "p", dest: "hub2", qty: 2 } } })).toMatchObject({ withdraw: true, presence: ["held_inbound"] });
     expect(decideRepair({ row, hub2Node: null, heldLines: { l1: { productId: "other", dest: "hub2", qty: 2 } } })).toMatchObject({ withdraw: false, presence: [] });
-    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedBy: "first_batch" } } })).toMatchObject({ withdraw: false, presence: [], seedNeeded: false });
+    expect(decideRepair({ row, hub2Node: { M: { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: "2026-09-17T19:00:00.000Z", updatedBy: "first_batch" } } })).toMatchObject({ withdraw: false, presence: [], seedNeeded: false });   // stamped after the row
     expect(decideRepair({ row, hub2Node: { M: { qty: 2, mv: "seed", updatedBy: "first_batch" } } })).toMatchObject({ withdraw: true, presence: ["stock_cell"] });
     expect(decideRepair({ row, hub2Node: null, hub2Locks: { M: {} }, hub2OpenRequests: [], hub2TargetRow: null })).toMatchObject({ withdraw: true, presence: ["engine_lock"] });
     expect(decideRepair({ row, hub2Node: null, hub2Locks: null, hub2OpenRequests: ["x"], hub2TargetRow: null })).toMatchObject({ withdraw: true, presence: ["open_hub2_request"] });

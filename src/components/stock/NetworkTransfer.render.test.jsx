@@ -23,6 +23,7 @@ const paths = {};                       // onValue subscriptions
 const gets = {};                        // one-shot get() reads
 const updateMock = vi.fn(() => Promise.resolve());
 vi.mock("firebase/database", () => ({
+  query: (r, ...parts) => ({ path: `${r.path}?${parts.map((p) => p.q).join("&")}` }), orderByChild: (f) => ({ q: `orderBy=${f}` }), equalTo: (v) => ({ q: `equalTo=${v}` }),
   ref: (_db, path) => ({ path: path ?? "" }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
