@@ -1,7 +1,10 @@
 // ─── FIRST BATCH DIRECT TO SHOP — the deferred Hub 2 leg (server) ───────────
 // Owner spec 2026-09-17. The Missing Products Solve (src/components/stock/
 // firstBatchCore.js) can raise a SHOP's own request from Central for a
-// Central-stranded clothing product whose shop is routed via Hub 2. That row is
+// Central-stranded product whose shop is routed via Hub 2 — every category
+// except sneakers and slides since 2026-09-17 (mapped categories and
+// explicit-row products included; the Hub 2 target is whatever the real
+// resolveTarget answers, map or row or run). That row is
 // tagged `createdFrom.firstBatch` and carries `createdFrom.solveId`. This module
 // is what happens NEXT, and it runs here — in a Cloud Function on an RTDB
 // trigger — for two reasons that cannot be met in the browser:

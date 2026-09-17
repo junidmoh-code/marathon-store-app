@@ -27,7 +27,7 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
-import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, centralReservedBySize, centralFreeFor } from "./firstBatchCore";
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -450,11 +450,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [openLocks, setOpenLocks] = useState({});   // pid → { loc: node|null } (undefined = not read yet)
   const routeLocs = useMemo(() => Object.keys(cfg?.routes || {}), [cfg]);
   const readOpenLocks = async (pid) => {
-    const out = {};
+    const raw = {};
     await Promise.all(routeLocs.map(async (loc) => {
-      out[loc] = (await get(ref(database, `refill_engine/open/${loc}/${pid}`))).val();
+      raw[loc] = (await get(ref(database, `refill_engine/open/${loc}/${pid}`))).val();
     }));
-    return out;
+    // A lock whose request is gone or closed is dead, not a reservation
+    // (firstBatchCore.pruneClosedLocks): one scoped read per lock it names.
+    const requestsById = {};
+    await Promise.all(lockRefillIds(raw).map(async (id) => {
+      requestsById[id] = (await get(ref(database, `refill_requests/${id}`))).val();
+    }));
+    return pruneClosedLocks({ openByLoc: raw, requestsById });
   };
   useEffect(() => {
     if (!solvePid || !cfg) return undefined;
@@ -487,6 +493,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const solve = async (card) => {
     const store = storeFor(card);
     if (solveBusy || !canAct || !store) return;
+    // Never a Hub 2 seed for a sneaker or slide (see `offTab` in the render).
+    if (isSneakerOrSlide(byId.get(card.pid))) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store, sizes: [], msg: "Not seeded — sneakers and slides are refilled from the Sneakers tab." } }));
+      return;
+    }
     const sizes = qualifyingSizes(card, store);
     // Unreachable while the confirm button is gated on the same store — but a
     // bare `return` here is a dead button by another name, so it speaks.
@@ -707,7 +718,22 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // still pick either store; this only changes which one is pre-selected.
         const sStore = storeFor(card);
         // The history sentence, when history had a say (first-batch path only).
-        const storeWhy = sOpen ? storeChoiceFor(card).sentence : null;
+        // When the operator has tapped the OTHER shop, the line says what
+        // history suggested and what was chosen — never "X first" over a
+        // panel that is about to send to Y. (Spec review, PR #608.)
+        const storeWhy = (() => {
+          if (!sOpen) return null;
+          const c = storeChoiceFor(card);
+          if (!c.sentence) return null;
+          if (sStore === c.store) return c.sentence;
+          return `${c.sentence.replace(/ first — /, " was suggested — ")} You chose ${LOC_LABEL[sStore]}.`;
+        })();
+        // A sneaker or slide that reached this list (a clothing-typed record
+        // with a footwear key) is never seeded here: the old path's Hub 2 seed
+        // would ARM its carriedOnly Hub 2 policy — the exact auto-refill the
+        // owner forbids. Its refills live on the Sneakers tab. (Adversarial
+        // review, PR #608.)
+        const offTab = isSneakerOrSlide(byId.get(card.pid));
         const hOpen = hidePid === card.pid;
         const plan = sOpen ? solvePlan(card, sStore) : null;
         // First batch direct to shop: the split this Solve would write, or
@@ -745,7 +771,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // one-size "needs a target set" sentence, which is the actual remedy.
         // Clothing keeps the real switch state, byte-for-byte. (Sonnet review,
         // PR #350.)
-        const solveBlocked = solveReason({
+        const solveBlocked = (offTab ? "this is a sneaker or slide — it is refilled from the Sneakers tab, never seeded here." : null) || solveReason({
           canAct, configLoaded: !!cfg, configError: cfgErr, targetsLoaded: targetsReady,
           hasSourceStock: card.units > 0, policyAtAnyStore,
           ruleOnAnywhere: isClothing(byId.get(card.pid)) ? armed : true, targetsError,

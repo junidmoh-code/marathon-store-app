@@ -234,6 +234,22 @@ test("Central was short at Solve time (request 1 of target 2), Hub 2 already sto
   assert.equal(after[0].qty, 1, "the remainder, from Hub 2, only now");
 });
 
+test("the ENGINE already holds the SHOP's lock at creation (structurally unreachable for a stranded card — no Hub 2 stock to serve it from): the claim is lost, recorded as heldBy, retried on the next write, and the engine's lock is never touched", async () => {
+  const db = world({
+    stock: { central: { bag1: { _: cell(6) } }, trophy: { bag1: { _: seed() } } },
+    refill_engine: { open: { trophy: { bag1: { _: { qty: 2, source: "hub2", createdAt: T1, runId: "scan-3", refillId: "eng9" } } } } },
+    refill_requests: { r1: req("bag1", "_", "trophy", 2), eng9: { productId: "bag1", size: "_", qty: 2, requestingLocation: "trophy", status: "open", createdAt: T1, createdFrom: { engine: true } } },
+  });
+  const res = await run(db);
+  assert.deepEqual(res.lock, { claimed: false, heldBy: "scan-3" });
+  assert.equal(lockAt(db, "trophy", "bag1", "_").refillId, "eng9");
+  assert.deepEqual(db.state.root.refill_requests.r1.firstBatch.lock, { heldBy: "scan-3", refillId: "eng9", at: T1 });
+  assert.equal(db.state.root.refill_requests.r1.firstBatch.lock.claimedAt, undefined, "a lost claim is never recorded as done");
+  // the next write retries the claim (still lost while the engine holds it)
+  const again = await run(db, "r1", "2026-09-17T10:05:00.000Z");
+  assert.equal(again.lock.claimed, false);
+});
+
 // ── after the first batch: the normal route, exactly as before ───────────────
 test("after a later sell-out the mapped shop asks HUB 2 (its map quantity), never Central; Hub 2 asks Central by ITS map", async () => {
   const db = world({

@@ -44,6 +44,7 @@
 
 import { stockSizeKey, stockCellPath, encodeSizeKey } from "../../utils/sizeKey";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { isDeactivated } from "../../utils/deactivation.js";
 
 export const FIRST_BATCH_HUB = "hub2";
 // The lock runId the server stamps on both legs' engine locks. Kept as ONE
@@ -171,7 +172,7 @@ export const HISTORY_STORES = ["marathon-pe", "trophy"];
 const carriesAt = (allStock, loc, pid) => !!allStock?.[loc]?.[pid] && Object.keys(allStock[loc][pid]).length > 0;
 // `c != null`: an array-coerced row answers null in a hole.
 const positiveUnits = (row) => Object.values(row || {}).reduce((t, c) => t + (c != null ? Math.max(Number(c.qty) || 0, 0) : 0), 0);
-const humanKey = (key) => String(key || "products").replace(/-/g, " ");
+const humanKey = (key) => String(key || "product");
 
 // Built ONCE per (products, allStock) — one walk of the catalogue the screen
 // already holds — so every card's history is a lookup, not a scan.
@@ -180,6 +181,9 @@ export function buildPlacementIndex({ products, allStock, stores = HISTORY_STORE
   const byCode = {};   // styleCodeNormalised → [productId]
   for (const p of Array.isArray(products) ? products : []) {
     if (!p || !p.id) continue;
+    // A retired line or a merge loser is not history a new line should
+    // follow (39 live shop nodes belong to deactivated products).
+    if (isDeactivated(p) || p.mergedInto) continue;
     const code = typeof p.styleCodeNormalised === "string" ? p.styleCodeNormalised.trim() : "";
     if (code) (byCode[code] = byCode[code] || []).push(p.id);
     const key = effectiveCategoryKey(p);
@@ -241,7 +245,7 @@ export function firstBatchStoreChoice({ history, candidates, labels = {} } = {})
     || pick((h) => h.siblingCells * 1000 + h.siblingUnits, "siblings",
       (s, h) => `${label(s)} first — ${h.siblingCells === 1 ? "a colourway sibling is" : `${h.siblingCells} colourway siblings are`} kept there${h.siblingUnits > 0 ? ` (${h.siblingUnits} unit${h.siblingUnits === 1 ? "" : "s"})` : ""}.`)
     || pick((h) => h.categoryCarried, "category",
-      (s, h) => `${label(s)} first — where ${h.categoryCarried} of ${history.categoryTotal} ${humanKey(history.key)} are kept.`)
+      (s, h) => `${label(s)} first — where ${h.categoryCarried} of ${history.categoryTotal} ${humanKey(history.key)} lines are kept.`)
     || { store: cands[0], tier: "default", sentence: null };
 }
 
@@ -260,6 +264,43 @@ export function firstBatchStoreChoice({ history, candidates, labels = {} } = {})
 // leg (first-batch.cjs centralReservations); this is the client twin, over
 // the per-location lock nodes the Solve reads (one scoped read per routed
 // location). Lock keys are the engine's encodeSizeKey of the raw size.
+//
+// DEAD LOCKS ARE NOT RESERVATIONS. A lock outlives its request in two known
+// ways: the Solve's own Undo cancels the shop's request but cannot touch
+// /refill_engine (client-unwritable), and a fulfilled request's lock stays
+// until the next scan's close — while Central's cell is ALREADY decremented
+// (a double subtraction). The server twin excludes by runId / refillId; the
+// client reads each lock's request row (one scoped read per lock) and drops
+// a lock whose request is gone or no longer open. (Sonnet + adversarial
+// review, PR #608: an undo-then-re-solve asked Central for 1 where the policy
+// said 2 and Central held 3.)
+export function pruneClosedLocks({ openByLoc, requestsById } = {}) {
+  const out = {};
+  for (const [loc, bySize] of Object.entries(openByLoc || {})) {
+    if (!bySize || typeof bySize !== "object") { out[loc] = bySize ?? null; continue; }
+    const kept = {};
+    for (const [sizeKey, entry] of Object.entries(bySize)) {
+      if (!entry || typeof entry !== "object") continue;
+      if (entry.refillId && Object.prototype.hasOwnProperty.call(requestsById || {}, entry.refillId)) {
+        const r = requestsById[entry.refillId];
+        if (!r || r.status !== "open") continue;   // gone, fulfilled or cancelled → not a reservation
+      }
+      kept[sizeKey] = entry;
+    }
+    out[loc] = Object.keys(kept).length ? kept : null;
+  }
+  return out;
+}
+// The refillIds a lock table names — what pruneClosedLocks needs read.
+export const lockRefillIds = (openByLoc) => {
+  const ids = new Set();
+  for (const bySize of Object.values(openByLoc || {})) {
+    if (!bySize || typeof bySize !== "object") continue;
+    for (const entry of Object.values(bySize)) if (entry && typeof entry === "object" && entry.refillId) ids.add(String(entry.refillId));
+  }
+  return [...ids];
+};
+
 export function centralReservedBySize({ openByLoc, routes, source = "central" } = {}) {
   const out = {};
   for (const [loc, bySize] of Object.entries(openByLoc || {})) {
@@ -276,8 +317,14 @@ export function centralReservedBySize({ openByLoc, routes, source = "central" } 
 }
 // On-hand at Central for a raw size, net of the reservations above (never
 // below 0). `qtyAt(size)` is the caller's decoded-cell lookup.
+// The lock key is the ENGINE's encoder, which trims first and maps an empty
+// size to "_" (refill-engine.cjs encodeSizeKey); the app's does neither, so a
+// padded " 8" would look up "_8" against a lock at "8" and read "nothing
+// reserved". Trim and map here so the two agree on every size shape.
+// (Adversarial review, PR #608.)
+export const lockKeyFor = (size) => { const k = String(size ?? "").trim(); return k ? encodeSizeKey(k) : "_"; };
 export const centralFreeFor = ({ qtyAt, reserved, size }) =>
-  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[encodeSizeKey(size)] || 0), 0);
+  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[lockKeyFor(size)] || 0), 0);
 
 // ── THE PER-SIZE SPLIT ───────────────────────────────────────────────────────
 // `sizes` are the QUALIFYING sizes (positive target at Hub 2 AND the store —

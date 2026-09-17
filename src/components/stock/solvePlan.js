@@ -21,12 +21,15 @@
 //
 // ONE MIRROR GAP IS LOAD-BEARING AND LIVES ELSEWHERE: the engine nests its
 // subcategory branch inside isClothing(product), and nothing in this file checks
-// productType. That composes correctly only because NetworkTransfer's `cards`
-// list applies its own isClothing filter before any row can reach Solve — so a
-// non-clothing product can never be offered here in the first place. Any FUTURE
-// entry point into Solve (a "solve from search", say) must apply that same
-// filter, or it will offer to seed products the engine will not manage.
-// (Senior-architect review, PR #305.)
+// productType. Since 2026-09-17 the Missing Products list admits every
+// non-footwear record (perfume, typeless, mis-typed), so the guard is no
+// longer the cards list: it is NetworkTransfer's `runFor`, which hands this
+// file an EMPTY size run and no subcategory run for a product that is not
+// clothing in the engine's sense (`ruleEligible`), leaving only the category
+// policy and explicit rows — exactly the branches the engine would apply. Any
+// FUTURE entry point into Solve must do the same, or it will offer to seed
+// products the engine will not manage. (Senior-architect review, PR #305;
+// spec review, PR #608.)
 
 import { encodeSizeKey } from "../../utils/sizeKey";
 
@@ -168,13 +171,24 @@ export function explicitTarget(targets, loc, pid, size) {
 // product — rows that then outrank the map FOREVER and quietly break its off
 // switch (delete-the-entry no longer restores anything for that product).
 // (Sonnet review, PR #352.)
+// A per-location SIZE MAP (policy-resolve.cjs locationEntryMode "per-size"):
+// `{ sizes: { "<encodedSize>": { target, minQty, reorderPoint } } }` in place
+// of one collapsed number, valid only under `perSize: true` and only when at
+// least one row carries a positive finite target — byte-for-byte the engine's
+// locationPolicyFor. Live for soccer-jerseys and underwear (hub2 + PE).
+const posTarget = (t) => typeof t === "number" && Number.isFinite(t) && t > 0;
+const isMapEntry = (entry) => !!entry && typeof entry === "object" && !Array.isArray(entry)
+  && entry.sizes && typeof entry.sizes === "object" && !Array.isArray(entry.sizes);
+const mapUsable = (cat, entry) => cat.perSize === true
+  && Object.values(entry.sizes).some((row) => row && typeof row === "object" && posTarget(row.target));
+
 export function categoryPolicyLocs(policy, categoryKey) {
   if (typeof categoryKey !== "string" || !categoryKey) return [];
   const cat = policy && typeof policy === "object" && !Array.isArray(policy) ? policy[categoryKey] : null;
   if (!cat || typeof cat !== "object" || Array.isArray(cat)) return [];
   return Object.entries(cat)
     .filter(([loc, entry]) => loc !== "perSize" && entry && typeof entry === "object" && !Array.isArray(entry)
-      && typeof entry.target === "number" && Number.isFinite(entry.target) && entry.target > 0)
+      && (isMapEntry(entry) ? mapUsable(cat, entry) : posTarget(entry.target)))
     .map(([loc]) => loc);
 }
 
@@ -187,6 +201,26 @@ export function categoryRun({ policy, categoryKey, sizes, unitsAnywhere }) {
   for (const [loc, entry] of Object.entries(cat)) {
     if (loc === "perSize") continue;   // the mode flag, not a location
     if (!entry || typeof entry !== "object" || Array.isArray(entry)) continue;
+    // ── PER-LOCATION SIZE MAP (2026-09-17, first batch for every category) ──
+    // The engine walks exactly the sizes the map names, intersected with the
+    // product's declared sizes; a named size with zero units anywhere is a
+    // dead 0 (a stop, never a fall-through); an unnamed size resolves nothing
+    // here and falls through to the run. Outside perSize mode, or with no
+    // usable row, the entry arms nothing — locationPolicyFor refuses it too.
+    // (Adversarial review, PR #608: soccer-jerseys and underwear are live in
+    // this shape, and without this branch their Solve stayed greyed.)
+    if (isMapEntry(entry)) {
+      if (!mapUsable(cat, entry)) continue;
+      const run = {};
+      for (const sz of sizes || []) {
+        if (String(sz) === "_") continue;
+        const row = entry.sizes[encodeSizeKey(String(sz))];
+        if (!row || typeof row !== "object" || Array.isArray(row) || !posTarget(row.target)) continue;
+        run[String(sz).toUpperCase()] = at(sz) > 0 ? row.target : 0;
+      }
+      if (Object.keys(run).length) out[loc] = run;
+      continue;
+    }
     const t = entry.target;
     if (typeof t !== "number" || !Number.isFinite(t) || t <= 0) continue;
     // Per-size mode REFUSES the "_" sentinel (a per-size product declaring

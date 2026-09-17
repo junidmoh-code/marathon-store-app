@@ -8,8 +8,9 @@ import {
   firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
   buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES,
-  centralReservedBySize, centralFreeFor,
+  centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, lockKeyFor,
 } from "./firstBatchCore.js";
+import { categoryRun, resolvedRun } from "./solvePlan.js";
 
 const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
 const TEE = { id: "tee1", name: "Essentials Tee", productType: "clothing", sizes: ["S", "M", "L"] };
@@ -237,7 +238,7 @@ describe("location history — which shop is nominated (owner rule 2026-09-17)",
   it("tier 3 — the category's placement decides when the product has no row and no siblings", () => {
     const h = firstBatchHistory({ pid: "t4", product: OTHER_TEES[0], index, allStock: STOCK, targets: null });
     const c = firstBatchStoreChoice({ history: h, candidates: ["marathon-pe", "trophy"], labels: LABELS });
-    expect(c).toEqual({ store: "trophy", tier: "category", sentence: "Trophy first — where 4 of 7 t shirts are kept." });
+    expect(c).toEqual({ store: "trophy", tier: "category", sentence: "Trophy first — where 4 of 7 t-shirts lines are kept." });
   });
   it("a tie at a tier falls through; no history at all → today's default (the first candidate) with no sentence", () => {
     const tied = { key: "bags", siblings: [], categoryTotal: 4, byStore: { "marathon-pe": { ownRow: true, siblingCells: 0, siblingUnits: 0, categoryCarried: 2 }, trophy: { ownRow: true, siblingCells: 0, siblingUnits: 0, categoryCarried: 2 } } };
@@ -250,7 +251,16 @@ describe("location history — which shop is nominated (owner rule 2026-09-17)",
   });
   it("history only orders the shops the POLICY allows: a shop with no qualifying sizes is never nominated, whatever its history", () => {
     const h = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: STOCK, targets: null });   // Trophy has the siblings + the category
-    expect(firstBatchStoreChoice({ history: h, candidates: ["marathon-pe"], labels: LABELS })).toEqual({ store: "marathon-pe", tier: "category", sentence: "Marathon PE first — where 3 of 7 t shirts are kept." });
+    expect(firstBatchStoreChoice({ history: h, candidates: ["marathon-pe"], labels: LABELS })).toEqual({ store: "marathon-pe", tier: "category", sentence: "Marathon PE first — where 3 of 7 t-shirts lines are kept." });
+  });
+  it("a deactivated or merged record is not history: it is skipped by the index (siblings and the category prior alike)", () => {
+    const dead = { ...SIB_A, id: "teeD", deactivated: { at: 1, by: "u" } };
+    const merged = { ...SIB_B, id: "teeM", mergedInto: "tee2" };
+    const idx = buildPlacementIndex({ products: [CARD, dead, merged, ...OTHER_TEES], allStock: { trophy: { teeD: { S: cell(9) }, teeM: { S: cell(9) }, t4: { M: cell(1) } } } });
+    expect(idx.byKey["t-shirts"]).toEqual({ trophy: 1 });
+    expect(idx.byCode.ES1).toEqual(["tee1"]);
+    const h = firstBatchHistory({ pid: "tee1", product: CARD, index: idx, allStock: { trophy: { teeD: { S: cell(9) } } }, targets: null });
+    expect(h.siblings).toEqual([]);
   });
   it("an array-coerced sibling row (null holes) counts once, its units clamp at 0, and a one-size sibling is history like any other", () => {
     const stock = { trophy: { tee2: [null, null, cell(-1)], tee3: { _: cell(3) } } };
@@ -284,6 +294,28 @@ describe("Central's open reservations — the engine's sourceReserved, on the cl
     expect(centralFreeFor({ qtyAt: () => 5, reserved, size: "L" })).toBe(5);
     expect(centralFreeFor({ qtyAt: () => -2, reserved: {}, size: "L" })).toBe(0);
   });
+  it("a DEAD lock is not a reservation: its request gone, fulfilled or cancelled → dropped; open → kept; a pending lock (no refillId) → kept", () => {
+    const openByLoc = {
+      trophy: { M: lock(2, "central") },                                                    // an undone solve's lock: request cancelled
+      hub2: { M: { ...lock(3), refillId: "done" }, L: { ...lock(1), refillId: "gone" }, S: { qty: 1, source: "central", runId: "first_batch:x", pending: true } },
+      "marathon-pe": { M: { ...lock(2, "central"), refillId: "live" } },
+    };
+    const requestsById = { r: { status: "cancelled", cancelReason: "solve_undone" }, done: { status: "fulfilled" }, gone: null, live: { status: "open" } };
+    expect(lockRefillIds(openByLoc).sort()).toEqual(["done", "gone", "live", "r"]);
+    const pruned = pruneClosedLocks({ openByLoc, requestsById });
+    expect(pruned).toEqual({ trophy: null, hub2: { S: openByLoc.hub2.S }, "marathon-pe": { M: openByLoc["marathon-pe"].M } });
+    expect(centralReservedBySize({ openByLoc: pruned, routes: ROUTES })).toEqual({ S: 1, M: 2 });
+    // a lock whose request was NOT read stays (never assume a row is dead without looking)
+    expect(pruneClosedLocks({ openByLoc: { hub2: { M: lock(3) } }, requestsById: {} })).toEqual({ hub2: { M: lock(3) } });
+    expect(pruneClosedLocks({ openByLoc: { hub2: null, x: "junk" }, requestsById: {} })).toEqual({ hub2: null, x: "junk" });
+  });
+  it("the reservation lookup uses the ENGINE's key: a padded ' 8' finds the lock at '8', a blank size the '_' lock", () => {
+    expect(lockKeyFor(" 8")).toBe("8");
+    expect(lockKeyFor("")).toBe("_");
+    expect(lockKeyFor("5.5")).toBe("5_5");
+    expect(lockKeyFor("Free Size")).toBe("Free_Size");
+    expect(centralFreeFor({ qtyAt: () => 3, reserved: { 8: 2 }, size: " 8" })).toBe(1);
+  });
   it("through the split: a promised unit is never asked for twice, and a fully promised size takes the normal path", () => {
     const reserved = centralReservedBySize({ openByLoc: { hub2: { M: lock(4), S: lock(1) } }, routes: ROUTES });
     const avail = { S: 4, M: 4, L: 2 };
@@ -293,6 +325,38 @@ describe("Central's open reservations — the engine's sourceReserved, on the cl
     });
     expect(firstBatch).toEqual([{ size: "S", qty: 2, target: 2, avail: 3 }, { size: "L", qty: 2, target: 2, avail: 2 }]);
     expect(normal).toEqual(["M"]);
+  });
+});
+
+describe("a per-location SIZE MAP (soccer-jerseys / underwear live shape) resolves on the client exactly as the engine resolves it", () => {
+  const require = createRequire(import.meta.url);
+  const { resolveTarget } = require("../../../functions/lib/refill-engine.cjs");
+  const rows = (t) => Object.fromEntries(["S", "M", "L", "XL", "XXL", "XXXL"].map((k) => [k, { target: t, minQty: 1, reorderPoint: 1 }]));
+  const POLICY_MAP = { "soccer-jerseys": { perSize: true, hub2: { sizes: rows(4) }, "marathon-pe": { sizes: rows(2) } } };
+  const JERSEY = { id: "sj1", name: "Real Madrid Home", productType: "clothing", categoryKey: "soccer-jerseys", sizes: ["S", "M", "L", "XXXL"] };
+  const stock = { central: { sj1: { S: { qty: 3 }, M: { qty: 0 }, L: { qty: 2 } } } };
+  const unitsAnywhere = (sz) => Object.values(stock).reduce((t, byPid) => t + Math.max(Number(byPid.sj1?.[sz]?.qty) || 0, 0), 0);
+  it("the map arms the named sizes with their own numbers; a size with zero units anywhere is a dead 0; the client agrees with resolveTarget size by size", () => {
+    const run = categoryRun({ policy: POLICY_MAP, categoryKey: "soccer-jerseys", sizes: JERSEY.sizes, unitsAnywhere });
+    expect(run).toEqual({ hub2: { S: 4, M: 0, L: 4, XXXL: 0 }, "marathon-pe": { S: 2, M: 0, L: 2, XXXL: 0 } });
+    const cfg = { categoryPolicy: POLICY_MAP, ruleBasedTargets: true, defaultRunByStore: { hub2: { S: 9, M: 9, L: 9 }, "marathon-pe": { S: 9, M: 9, L: 9 } } };
+    for (const dest of ["hub2", "marathon-pe"]) {
+      const seeded = { ...stock, [dest]: { sj1: Object.fromEntries(JERSEY.sizes.map((s) => [s, { qty: 0 }])) } };
+      const ctx = { config: cfg, products: { sj1: JERSEY }, stock: seeded, targets: {} };
+      for (const sz of JERSEY.sizes) {
+        const engine = resolveTarget(ctx, dest, "sj1", sz);
+        expect(engine?.source, `${dest} ${sz}`).toBe("category_policy");
+        expect(run[dest][sz], `${dest} ${sz}`).toBe(engine.target);
+      }
+    }
+    // and through resolvedRun the map beats the letter run, exactly as the engine's branch order
+    const rr = resolvedRun({ std: cfg.defaultRunByStore, sizes: JERSEY.sizes, targets: {}, pid: "sj1", ruleBasedTargets: true, categoryPolicy: POLICY_MAP, categoryKey: "soccer-jerseys", unitsAnywhere });
+    expect(rr.hub2).toEqual({ S: 4, M: 0, L: 4, XXXL: 0 });
+  });
+  it("a map outside perSize mode, or with no usable row, arms nothing (the engine refuses it too)", () => {
+    expect(categoryRun({ policy: { x: { hub2: { sizes: rows(4) } } }, categoryKey: "x", sizes: ["S"], unitsAnywhere: () => 1 })).toEqual({});
+    expect(categoryRun({ policy: { x: { perSize: true, hub2: { sizes: { S: { target: 0 } } } } }, categoryKey: "x", sizes: ["S"], unitsAnywhere: () => 1 })).toEqual({});
+    expect(categoryRun({ policy: { x: { perSize: true, hub2: { sizes: rows(4) } } }, categoryKey: "x", sizes: ["_"], unitsAnywhere: () => 1 })).toEqual({});
   });
 });
 
