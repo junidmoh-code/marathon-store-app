@@ -15,10 +15,13 @@ const CORE = "src/components/stock/firstBatchCore.js";
 const SOLVE = "src/components/stock/NetworkTransfer.jsx";
 const UNDO = "src/components/stock/solveUndo.js";
 
-const SERVER_TESTS = ["test/first-batch.test.cjs"];
+const TAB = "src/components/stock/missingProductsCore.js";
+
+const SERVER_TESTS = ["test/first-batch.test.cjs", "test/first-batch-categories.test.cjs"];
 const CORE_TESTS = ["src/components/stock/firstBatchCore.test.js"];
 const SOLVE_TESTS = ["src/components/stock/firstBatchSolve.render.test.jsx"];
 const UNDO_TESTS = ["src/components/stock/solveUndo.test.js", "src/components/stock/solveUndo.gate.test.js"];
+const TAB_TESTS = ["src/components/stock/missingProductsCore.test.js"];
 
 const MUTATIONS = [
   // ── the deferred leg (server) ──────────────────────────────────────────────
@@ -331,6 +334,129 @@ const MUTATIONS = [
     from: `      if (ownRunId && cur.runId === ownRunId) continue;      // this solve's own leg`,
     to: `      if (ownRunId) continue;      // this solve's own leg`,
     tests: UNDO_TESTS,
+  },
+  // ── every category except sneakers and slides (2026-09-17) ─────────────────
+  {
+    id: "M-SCOPE-SNEAKER",
+    guard: "sneakers and slides never take the first-batch path",
+    file: CORE,
+    from: `  if (isSneakerOrSlide(product)) return false;\n  return true;`,
+    to: `  return true;`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-SCOPE-SLIDES-KEY",
+    guard: "slides are excluded by key, not only sneakers",
+    file: CORE,
+    from: `export const EXCLUDED_KEYS = Object.freeze(["sneakers", "slides"]);`,
+    to: `export const EXCLUDED_KEYS = Object.freeze(["sneakers"]);`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-SCOPE-LEGACY-SLIDE",
+    guard: "a keyless legacy slide (Footwear + Sandals & Slides) is a slide",
+    file: CORE,
+    from: `  return p.category === "Footwear" && p.subcategory === "Sandals & Slides";`,
+    to: `  return false;`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-TAB-GATE",
+    guard: "the Missing Products tab keeps the footwear group out (and admits everything else)",
+    file: TAB,
+    from: `export const admitsMissingProduct = (p) => !!p && !inFootwearGroup(p);`,
+    to: `export const admitsMissingProduct = (p) => !!p;`,
+    tests: TAB_TESTS,
+  },
+  {
+    id: "M-TAB-CLOTHING-FIRST",
+    guard: "a clothing-typed record is clothing whatever its category says (the engine's precedence)",
+    file: TAB,
+    from: `  if (!p || isClothing(p)) return false;\n  if (p.category === "Footwear") return true;`,
+    to: `  if (!p) return false;\n  if (p.category === "Footwear") return true;`,
+    tests: TAB_TESTS,
+  },
+  // ── location history ───────────────────────────────────────────────────────
+  {
+    id: "M-HIST-OWN-ROW-POSITIVE",
+    guard: "an explicit 0 row is 'deliberately excluded', never a seat",
+    file: CORE,
+    from: `Object.values(rows).some((r) => r && typeof r.target === "number" && r.target > 0);`,
+    to: `Object.values(rows).some((r) => r && typeof r.target === "number" && r.target >= 0);`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-HIST-SIBLINGS-TIER",
+    guard: "colourway siblings outrank the category prior",
+    file: CORE,
+    from: `    || pick((h) => h.siblingCells * 1000 + h.siblingUnits, "siblings",`,
+    to: `    || pick(() => 0, "siblings",`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-HIST-TIE",
+    guard: "a tie at a tier falls through instead of nominating the first candidate",
+    file: CORE,
+    from: `      else if (v === bestScore && v > 0) tie = true;`,
+    to: ``,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-HIST-CANDIDATES",
+    guard: "history only orders the shops the policy allows",
+    file: CORE,
+    from: `  const cands = (candidates || []).filter((s) => history?.byStore?.[s]);`,
+    to: `  const cands = Object.keys(history?.byStore || {});`,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-HIST-USED",
+    guard: "the Solve's default nomination IS the history choice",
+    file: SOLVE,
+    from: `  const defaultStoreFor = (card) => storeChoiceFor(card).store;`,
+    to: `  const defaultStoreFor = (card) => (STORES.find((s) => qualifyingSizes(card, s).length > 0) || STORES[0]);`,
+    tests: SOLVE_TESTS,
+  },
+  // ── Central's open reservations ────────────────────────────────────────────
+  {
+    id: "M-RESERVE-SOURCE",
+    guard: "only locks whose source is Central reserve Central (a hub2->shop lock does not)",
+    file: CORE,
+    from: `      if (src !== source) continue;`,
+    to: ``,
+    tests: CORE_TESTS,
+  },
+  {
+    id: "M-RESERVE-NET",
+    guard: "Central free = on-hand minus the reservation (a promised unit is never asked for twice)",
+    file: CORE,
+    from: `  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[encodeSizeKey(size)] || 0), 0);`,
+    to: `  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0), 0);`,
+    tests: [...CORE_TESTS, ...SOLVE_TESTS],
+  },
+  {
+    id: "M-SOLVE-LIVE-LOCKS",
+    guard: "the write re-reads the lock table live, never the panel's earlier read",
+    file: SOLVE,
+    from: `      const openNow = onPath ? await readOpenLocks(card.pid) : null;`,
+    to: `      const openNow = onPath ? (openLocks[card.pid] || {}) : null;`,
+    tests: SOLVE_TESTS,
+  },
+  {
+    id: "M-SOLVE-GATE",
+    guard: "the confirm waits for the lock read so the estimate shown is the request written",
+    file: SOLVE,
+    from: `        }) || (fbSplit && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)) : null;`,
+    to: `        }) || null) : null;`,
+    tests: SOLVE_TESTS,
+  },
+  {
+    id: "M-LEG-MAP-CONFIG",
+    guard: "Hub 2's leg for a mapped category is sized by the LIVE map (the real resolveTarget over the real config)",
+    file: SERVER,
+    from: `  const ctx = {\n    config,`,
+    to: `  const ctx = {\n    config: { ...config, categoryPolicy: undefined },`,
+    nodeTests: SERVER_TESTS,
   },
 ];
 
