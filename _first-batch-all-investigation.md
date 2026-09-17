@@ -189,3 +189,19 @@ would enable a future per-product movement-history signal (NOT required, NOT rel
   nomination and its reason line.
 - **4 — guard**: Central free nets out open Central reservations at Solve time.
 - **5 — tests** (real functions, numbers not titles) + mutation proof; **6** build + suite.
+
+## 9. Addendum from the build (commit 5) — the hub2→shop guard is structural
+
+§5(2) above expected the engine to serve a REMAINDER from Hub 2 while the shop's
+Central request is open when Central was short at Solve time. Driving the real
+`computeRefillPlan` shows it does not: the deficit loop skips any cell with inbound at
+all (`refill-engine.cjs:1519` `if (inb > 0) continue;`), whatever the lock's quantity.
+So while the shop's first-batch request is open — and locked, which the trigger does on
+creation — the engine raises NO hub2→shop for that cell, for every category, at any
+quantity. The remainder comes from Hub 2 only after the shop's request has closed
+(`functions/test/first-batch-categories.test.cjs`, "Central was short at Solve time").
+The mapped-category fuzz (`first-batch-world.cjs`, a third of 600 worlds are bags /
+belts maps, with the engine sometimes holding Hub 2's lock first) holds the same
+invariants as #607's: at most one Hub 2 request of ours, none beside the engine's,
+re-fires change nothing, and never a shop intent beside an open shop lock unless the
+engine withdrew it because Central ran dry.
