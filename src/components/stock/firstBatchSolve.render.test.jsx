@@ -17,8 +17,12 @@ vi.mock("firebase/database", () => ({
   update: (...a) => updateMock(...a),
   get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
   push: () => ({ key: `req${++pushN}` }),
-  runTransaction: () => Promise.resolve({ committed: true }),
+  runTransaction: (r, fn) => Promise.resolve(txnOutcome(r.path, fn)),
 }));
+// runTransaction outcomes by path: default = committed; a test can make one
+// path abort (Central got to that request first).
+const abortPaths = new Set();
+const txnOutcome = (path, fn) => (abortPaths.has(path) ? { committed: false } : { committed: true, snapshot: { val: () => fn(null) } });
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 const perm = { permRecord: { stockRole: "warehouse" }, isSuperAdmin: false };
@@ -94,6 +98,7 @@ const onlyProduct = (id) => PRODUCTS.filter((p) => p.id === id);
 beforeEach(() => {
   updateMock.mockClear();
   pushN = 0;
+  abortPaths.clear();
   for (const k of Object.keys(paths)) delete paths[k];
   for (const k of Object.keys(gets)) delete gets[k];
   paths["config/refillEngine"] = CONFIG;
@@ -210,5 +215,34 @@ describe("out of scope — byte-for-byte the old Solve", () => {
     const tree = render({ products: [{ ...onlyProduct(TEE)[0], sizes: ["S"] }], stock });
     await solve(tree);
     oldShape(updateMock.mock.calls[0][1], TEE, ["S"], "marathon-pe");
+  });
+});
+
+describe("the undo strip after a first-batch Solve", () => {
+  const undoButton = (tree) => buttonExactly(tree, "Undo");
+  const stripText = (tree) => textOf(tree);
+  it("undo cancels the open requests (CAS) and removes the seeds; a request Central already started stands, and the strip says so", async () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    await solve(tree);
+    expect(stripText(tree)).toMatch(/Solved — Essentials Tee Olive: 4 units requested from Central for Marathon PE/);
+    // Live rows: req1 still open and untouched; req2 open too — but Central
+    // wins the race on req2 (its cancel CAS aborts).
+    gets["refill_requests/req1"] = { status: "open", size: "S", qty: 2 };
+    gets["refill_requests/req2"] = { status: "open", size: "M", qty: 2 };
+    abortPaths.add("refill_requests/req2");
+    await act(async () => { await undoButton(tree).props.onClick(); });
+    const text = stripText(tree);
+    expect(text).toMatch(/4 of 4 seeded cells removed/);
+    expect(text).toMatch(/Central had already started on size M — that request stands/);
+  });
+  it("undo is refused outright when a request is no longer open, and nothing is written", async () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    await solve(tree);
+    updateMock.mockClear();
+    gets["refill_requests/req1"] = { status: "fulfilled", size: "S", qty: 2 };
+    gets["refill_requests/req2"] = { status: "open", size: "M", qty: 2 };
+    await act(async () => { await undoButton(tree).props.onClick(); });
+    expect(stripText(tree)).toMatch(/Central has already sent the S request for Marathon PE — this solve can no longer be undone/);
+    expect(updateMock).not.toHaveBeenCalled();
   });
 });

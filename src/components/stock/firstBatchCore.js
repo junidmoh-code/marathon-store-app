@@ -54,6 +54,16 @@ export const solveIdFor = (pid, nowMs) => `fb_${pid}_${Number(nowMs).toString(36
 // as its own kind of withdrawal (no cooldown, no confirmed-out learning), and
 // the server trigger reads this exact string as "raise NO Hub 2 leg".
 export const SOLVE_UNDONE_REASON = "solve_undone";
+// Central's "Out of Stock" on a SHOP's first batch. Stamped by the Source
+// queue in the same write as the cancel (and by the trigger as a backstop for
+// any other cancel writer): to the engine a cancel WITHOUT a reason is a human
+// rejection at the requesting location's cell — a 24h retry and a reject
+// streak that would throttle the shop's ordinary hub2→shop refill for a "no"
+// that was about Central's shelf. With a reason it is a withdrawal.
+export const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
+// A first-batch SHOP leg (never Hub 2's own leg, whose human "no" IS the
+// Central-level answer the engine should learn from).
+export const isFirstBatchShopLeg = (r) => !!r && r.createdFrom?.firstBatch === true && r.requestingLocation !== FIRST_BATCH_HUB;
 
 // ── SCOPE — is this Solve the one that routes shop quantities via Hub 2? ─────
 // True only when ALL of these hold; every "no" leaves the old path untouched:

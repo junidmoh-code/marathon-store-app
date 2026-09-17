@@ -63,6 +63,7 @@ import { holdActive, shipmentIdFor } from "./stockHoldCore";
 import { recordHeldLine } from "./stockHoldStore";
 import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
+import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg } from "./firstBatchCore";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -514,7 +515,13 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // path: the engine recognises a HUMAN rejection precisely as "cancelled
       // with NO cancelReason" — a leftover reason would silently skip the
       // cooldown and confirmed-out learning (CodeRabbit, PR #337).
-      [`refill_requests/${row.id}/cancelReason`]: null,
+      // EXCEPT a first-batch SHOP leg (2026-09-17): Central's "no" to the
+      // shop's batch must not become a rejection at the SHOP's cell, so the
+      // reason is stamped HERE, in the same write as the cancel — the trigger
+      // stamps it too, but a scan landing between the two writes would have
+      // read the bare cancel (Sonnet round 2, PR #607). Hub 2's own leg keeps
+      // the human shape: that "no" is the Central-level answer.
+      [`refill_requests/${row.id}/cancelReason`]: isFirstBatchShopLeg(row._r) ? CENTRAL_DECLINED_REASON : null,
       ...(auth.currentUser?.uid ? { [`refill_requests/${row.id}/resolvedBy`]: auth.currentUser.uid } : {}),
     };
     try { await update(ref(database), upd); }

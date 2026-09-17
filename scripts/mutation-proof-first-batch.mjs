@@ -293,6 +293,14 @@ const MUTATIONS = [
     nodeTests: SERVER_TESTS,
   },
   {
+    id: "M-QUEUE-DECLINE-STAMP",
+    guard: "Source's Out of Stock on a first-batch SHOP leg stamps the reason in the SAME write as the cancel",
+    file: "src/components/stock/RefillQueue.jsx",
+    from: `      [\`refill_requests/\${row.id}/cancelReason\`]: isFirstBatchShopLeg(row._r) ? CENTRAL_DECLINED_REASON : null,`,
+    to: `      [\`refill_requests/\${row.id}/cancelReason\`]: null,`,
+    tests: ["src/components/stock/firstBatchSourceTab.render.test.jsx"],
+  },
+  {
     id: "M-UNDO-OWN-LOCK",
     guard: "the undo exempts ONLY this solve's own lock (any other lock still blocks)",
     file: UNDO,

@@ -375,3 +375,15 @@ the shop's own policy target, never above) and may withdraw it when Central
 runs dry — the ordinary bookkeeping of a locked request. The residual of a
 crash between the pending lock claim and the atomic update is that the pending
 lock reserves Central for up to an hour before the engine's self-heal.
+
+## 11. Review round 2b — Sonnet on the round-1 delta
+
+One open finding, closed at the writer: the decline stamp was written by the
+trigger AFTER Source's bare cancel, so a scan landing in that window (trigger
+latency, normally sub-second) would still have read a human rejection at the
+shop's cell. Source's Out of Stock now stamps `first_batch_central_declined`
+in the SAME write as the cancel for a first-batch SHOP leg
+(`isFirstBatchShopLeg`); Hub 2's own leg keeps the human shape; the trigger's
+stamp remains as the backstop for any other cancel writer. Pinned by a render
+test on the queue and a mutation. The undo strip's partial-abort path (a
+request Central got to first "stands") now has a rendered test too.

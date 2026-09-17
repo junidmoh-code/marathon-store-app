@@ -116,13 +116,21 @@ describe("Fulfil moves Central → the shop through the existing path", () => {
     const patch = updateMock.mock.calls.at(-1)[1];
     expect(patch).toEqual({ "refill_requests/tro1/qty": 1, "refill_requests/tro1/sentQty": 1 });
   });
-  it("Out of Stock: cancelled with NO cancelReason (human rejection) — the third cue", async () => {
+  it("Out of Stock on the SHOP's batch: cancelled WITH first_batch_central_declined, in the same write — the third cue, never a shop-level rejection", async () => {
     const tree = renderQueue("trophy");
     await act(async () => { lineButton(rowLineOf(tree, "req:tro2"), "Out of Stock").props.onClick(); });
     const patch = updateMock.mock.calls.at(-1)[1];
     expect(patch["refill_requests/tro2/status"]).toBe("cancelled");
-    expect(patch["refill_requests/tro2/cancelReason"]).toBe(null);
+    expect(patch["refill_requests/tro2/cancelReason"]).toBe("first_batch_central_declined");
     expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+  it("Out of Stock on Hub 2's own leg (also tagged firstBatch) keeps the human shape: NO cancelReason", async () => {
+    paths["refill_requests"].hub.createdFrom = { firstBatch: true, solveId: "fb_tee1_x", source: "central", shopRequestId: "tro1" };
+    paths["stock/hub2"] = null;
+    const tree = renderQueue("hub2");
+    await act(async () => { lineButton(rowLineOf(tree, "req:hub"), "Out of Stock").props.onClick(); });
+    const patch = updateMock.mock.calls.at(-1)[1];
+    expect(patch["refill_requests/hub/cancelReason"]).toBe(null);
   });
 });
 

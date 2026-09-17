@@ -4,7 +4,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import {
-  FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, firstBatchRunId, solveIdFor,
+  FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, firstBatchRunId, solveIdFor,
   firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
 } from "./firstBatchCore.js";
@@ -154,6 +154,11 @@ describe("the CJS twin in functions/lib/first-batch.cjs speaks the same constant
     expect(fb.FIRST_BATCH_HUB).toBe(FIRST_BATCH_HUB);
     expect(fb.FIRST_BATCH_RUN_PREFIX).toBe(FIRST_BATCH_RUN_PREFIX);
     expect(fb.SOLVE_UNDONE_REASON).toBe(SOLVE_UNDONE_REASON);
+    expect(fb.CENTRAL_DECLINED_REASON).toBe(CENTRAL_DECLINED_REASON);
+    // and the shop-leg test: a tagged shop row yes, Hub 2's tagged leg no, an engine row no
+    expect(isFirstBatchShopLeg({ createdFrom: { firstBatch: true }, requestingLocation: "trophy" })).toBe(true);
+    expect(isFirstBatchShopLeg({ createdFrom: { firstBatch: true }, requestingLocation: "hub2" })).toBe(false);
+    expect(isFirstBatchShopLeg({ createdFrom: { engine: true }, requestingLocation: "trophy" })).toBe(false);
     expect(fb.firstBatchRunId("x")).toBe(firstBatchRunId("x"));
   });
 });
