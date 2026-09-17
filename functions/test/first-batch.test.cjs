@@ -46,7 +46,9 @@ function world(over = {}) {
     ...over,
   });
 }
-const run = (db, id = "r1", nowIso = T1) => processFirstBatchRequest({ db, requestId: id, nowIso });
+// `pathEnabled: true`: these tests drive the PATH; the live default is OFF
+// (FIRST_BATCH_PATH_ENABLED, incident 2026-09-17) and is tested in first-batch-off.test.cjs.
+const run = (db, id = "r1", nowIso = T1) => processFirstBatchRequest({ db, requestId: id, nowIso, pathEnabled: true });
 const hubRequests = (db) => Object.entries(db.state.root.refill_requests || {}).filter(([, r]) => r.requestingLocation === "hub2");
 const lockAt = (db, loc, pid, sk) => db.state.root.refill_engine?.open?.[loc]?.[pid]?.[sk] ?? null;
 const snapshot = (db) => ({

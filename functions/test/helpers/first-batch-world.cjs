@@ -117,7 +117,7 @@ async function replay(seedNo) {
   console.log("targets", JSON.stringify(w.db.state.root.stock_targets), "run", JSON.stringify(w.config.defaultRunByStore));
   console.log("open before", JSON.stringify(w.db.state.root.refill_engine));
   console.log("stock before", JSON.stringify(w.db.state.root.stock));
-  const res = await processFirstBatchRequest({ db: w.db, requestId: "r1", nowIso: T1 });
+  const res = await processFirstBatchRequest({ db: w.db, requestId: "r1", nowIso: T1, pathEnabled: true });
   console.log("res", JSON.stringify(res));
   console.log("open after", JSON.stringify(w.db.state.root.refill_engine));
   console.log("stock after", JSON.stringify(w.db.state.root.stock));

@@ -51,7 +51,7 @@ const req = (pid, size, store, qty, over = {}) => ({
 function world(over = {}) {
   return makeFakeDb({ config: { refillEngine: CONFIG }, products: PRODUCTS, ...over });
 }
-const run = (db, id = "r1", nowIso = T1) => processFirstBatchRequest({ db, requestId: id, nowIso });
+const run = (db, id = "r1", nowIso = T1) => processFirstBatchRequest({ db, requestId: id, nowIso, pathEnabled: true });   // the path itself; live default OFF
 const hubRequests = (db, pid) => Object.entries(db.state.root.refill_requests || {}).filter(([, r]) => r.requestingLocation === "hub2" && (!pid || r.productId === pid));
 const lockAt = (db, loc, pid, sk) => db.state.root.refill_engine?.open?.[loc]?.[pid]?.[sk] ?? null;
 const snapshot = (db, config = CONFIG) => ({

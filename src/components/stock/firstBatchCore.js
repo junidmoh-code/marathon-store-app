@@ -69,6 +69,19 @@ export const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
 // A first-batch SHOP leg (never Hub 2's own leg, whose human "no" IS the
 // Central-level answer the engine should learn from).
 export const isFirstBatchShopLeg = (r) => !!r && r.createdFrom?.firstBatch === true && r.requestingLocation !== FIRST_BATCH_HUB;
+// Which open request rows Source's queues LIST — and therefore which its
+// badges COUNT (App.jsx hubBadges; RefillQueue's own filter is the same
+// predicate). A hub's queue lists every open request at that hub. A SHOP's
+// queue lists only the shop's first-batch legs from Central: the engine's
+// ordinary hub2→shop rows are Hub 2's work, and counting them put 112/113 on
+// the Trophy/Marathon tabs for a picking list Central never had (incident
+// 2026-09-17). One predicate, one number, one list.
+export const sourceQueueLists = (r, shopLocs) =>
+  !!r && r.status === "open" && !!r.productId
+  && (shopLocs && (typeof shopLocs.has === "function" ? shopLocs.has(r.requestingLocation) : shopLocs.includes?.(r.requestingLocation)) ? isFirstBatchShopLeg(r) : true);
+// The badge counts what the list shows, minus shadow rows (listed as previews,
+// never counted as work).
+export const countsTowardSourceQueue = (r, shopLocs) => sourceQueueLists(r, shopLocs) && !r.shadow;
 
 // ── SNEAKERS AND SLIDES — the ONLY two categories off this path ──────────────
 // Owner rule 2026-09-17: everything except sneakers and slides goes through
@@ -115,7 +128,20 @@ export function isSneakerOrSlide(p) {
 // the shop's request first, Hub 2's leg on fulfil, one Hub 2 request ever.
 // Their policies are read exactly as they are, by resolvedRun — the map or
 // the row simply IS the shop's / Hub 2's target.
-export function firstBatchEligible({ source, store, product, routes } = {}) {
+// ── THE PATH IS OFF (incident 2026-09-17 evening, _first-batch-incident-2026-09-17.md) ──
+// Owner order: revert the #607 behaviour until the first batch is rebuilt with
+// the Hub 2-presence guard as a hard precondition. While this is false NO
+// Solve takes the first-batch branch — every card seeds Hub 2 AND the shop
+// exactly as before #607 — and the server twin (functions/lib/first-batch.cjs
+// FIRST_BATCH_PATH_ENABLED, pinned equal by test) turns any first-batch shop
+// request a stale bundle still creates back into the old Solve (Hub 2 seeded,
+// request withdrawn). The flag is a PARAMETER of firstBatchEligible so the
+// path's own tests keep exercising it with `enabled: true`; every real caller
+// (NetworkTransfer) takes the default.
+export const FIRST_BATCH_ENABLED = false;
+
+export function firstBatchEligible({ source, store, product, routes, enabled = FIRST_BATCH_ENABLED } = {}) {
+  if (enabled !== true) return false;
   if (source !== "central") return false;
   if (!store || routes?.[store] !== FIRST_BATCH_HUB) return false;
   if (!product) return false;

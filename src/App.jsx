@@ -86,6 +86,7 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
+import { countsTowardSourceQueue } from "./components/stock/firstBatchCore";
 import NotificationSettingsRow from "./push/NotificationSettingsRow";
 import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
@@ -15672,6 +15673,7 @@ const SOURCE_TAB_ICON = {
 const SOURCE_SHOP_TABS = [["trophy","Trophy","trophy"],["marathonpe","Marathon","marathon-pe"]];
 const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],...SOURCE_SHOP_TABS.map(([k, label]) => [k, label]),["refillhistory","Refill History"]];
 const SOURCE_SHOP_BY_TAB = Object.fromEntries(SOURCE_SHOP_TABS.map(([k, , loc]) => [k, loc]));
+const SOURCE_SHOP_LOCS = new Set(SOURCE_SHOP_TABS.map(([, , loc]) => loc));
 
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [rawTab, setTab] = usePersistedTab("source", "hub1refill");
@@ -15954,9 +15956,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 
     // Open refill requests — rows in the same queue (holds included: they are
     // ordinary requests now, so they count here and nowhere else).
+    // A SHOP key counts only the shop's first-batch legs from Central — the
+    // rows its tab lists (RefillQueue SHOP_DESTS). The engine's hub2→shop rows
+    // are Hub 2's work; counting them here put 112/113 on the Trophy/Marathon
+    // tabs for work Central never had (incident 2026-09-17).
     allRefillRequests.forEach((r) => {
-      if (r.status === "open" && !r.shadow && r.productId &&
-          Object.prototype.hasOwnProperty.call(counts, r.requestingLocation))
+      if (Object.prototype.hasOwnProperty.call(counts, r.requestingLocation) && countsTowardSourceQueue(r, SOURCE_SHOP_LOCS))
         counts[r.requestingLocation] += 1;
     });
 

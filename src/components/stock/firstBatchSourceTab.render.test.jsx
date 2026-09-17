@@ -26,6 +26,7 @@ vi.mock("./applyMovement", () => ({ applyMovement: (...a) => applyMovementMock(.
 vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toISOString(), serverNowMs: () => NOW }));
 
 const { default: RefillQueue } = await import("./RefillQueue.jsx");
+const { countsTowardSourceQueue } = await import("./firstBatchCore.js");
 
 const RAISED = "2026-09-17T03:00:00.000Z";   // before the 06:00 release → released
 const PRODUCTS = [
@@ -60,6 +61,12 @@ beforeEach(() => {
     tro2: fb("tee2", "M", 1, "trophy"),
     pe1: fb("tee1", "S", 2, "marathon-pe"),
     hub: { productId: "tee1", size: "M", qty: 3, requestingLocation: "hub2", status: "open", createdAt: RAISED, createdFrom: { engine: true, source: "central" } },
+    // THE INCIDENT ROW (2026-09-17): the ENGINE's ordinary hub2→trophy request
+    // for a product Hub 2 stocks. Hub 2's work — never Central's list.
+    eng: { productId: "tee1", size: "L", qty: 2, requestingLocation: "trophy", status: "open", createdAt: "2026-09-15T03:00:00.000Z", createdFrom: { engine: true, source: "hub2" } },
+    engPe: { productId: "tee2", size: "L", qty: 1, requestingLocation: "marathon-pe", status: "open", createdAt: "2026-09-15T03:00:00.000Z", createdFrom: { engine: true, source: "hub2" } },
+    // a legacy human shop request with no createdFrom at all — also not Central's
+    legacy: { productId: "tee1", size: "XL", qty: 1, requestingLocation: "trophy", status: "open", createdAt: RAISED },
   };
   paths["stock/trophy"] = null; paths["stock/marathon-pe"] = null;
   paths["refill_engine/open"] = null;
@@ -77,6 +84,9 @@ describe("the Trophy tab shows Trophy's Central requests only, one card per prod
     expect(rowLineOf(tree, "req:tro2")).toBeTruthy();
     expect(rowLineOf(tree, "req:pe1")).toBeUndefined();
     expect(rowLineOf(tree, "req:hub")).toBeUndefined();
+    // THE INCIDENT: an engine hub2→trophy row and a legacy human row are NOT Central's
+    expect(rowLineOf(tree, "req:eng")).toBeUndefined();
+    expect(rowLineOf(tree, "req:legacy")).toBeUndefined();
     const text = textOf(tree.toJSON());
     expect(text.match(/Essentials Tee Olive/g)).toHaveLength(2);   // twins never merge by name
     expect(text).toMatch(/2 to pick \(3 units\)/);
@@ -85,7 +95,23 @@ describe("the Trophy tab shows Trophy's Central requests only, one card per prod
     const tree = renderQueue("marathon-pe");
     expect(rowLineOf(tree, "req:pe1")).toBeTruthy();
     expect(rowLineOf(tree, "req:tro1")).toBeUndefined();
+    expect(rowLineOf(tree, "req:engPe")).toBeUndefined();
     expect(textOf(tree.toJSON())).toMatch(/1 to pick \(2 units\)/);
+  });
+  it("with no first-batch rows at all (live 2026-09-17: 225 engine rows, 0 first-batch) both shop tabs are EMPTY — nothing to pick, no Fulfil button", () => {
+    delete paths["refill_requests"].tro1; delete paths["refill_requests"].tro2; delete paths["refill_requests"].pe1;
+    for (const dest of ["trophy", "marathon-pe"]) {
+      const tree = renderQueue(dest);
+      expect(tree.root.findAll((n) => n.props && typeof n.props["data-row"] === "string")).toHaveLength(0);
+      expect(tree.root.findAll((n) => n.type === "button" && textOf(n.props.children).trim() === "Fulfil")).toHaveLength(0);
+      expect(textOf(tree.toJSON())).toMatch(/Nothing to pick/);
+      expect(textOf(tree.toJSON())).not.toMatch(/\d+ to pick/);
+    }
+  });
+  it("the Hub 2 tab is untouched: it still lists the engine's hub2 row", () => {
+    paths["stock/hub2"] = null;
+    const tree = renderQueue("hub2");
+    expect(rowLineOf(tree, "req:hub")).toBeTruthy();
   });
 });
 
@@ -134,6 +160,28 @@ describe("Fulfil moves Central → the shop through the existing path", () => {
   });
 });
 
+describe("the badge predicate — the number the tabs promise", () => {
+  const SHOPS = new Set(["trophy", "marathon-pe"]);
+  const eng = (loc) => ({ productId: "tee1", size: "M", qty: 1, requestingLocation: loc, status: "open", createdFrom: { engine: true, source: "hub2" } });
+  it("225 engine hub2→shop rows count ZERO at the shops; the hubs still count every open row", () => {
+    const rows = [];
+    for (let i = 0; i < 113; i++) rows.push(eng("marathon-pe"));
+    for (let i = 0; i < 112; i++) rows.push(eng("trophy"));
+    rows.push(eng("hub2"), eng("hub1"), { ...eng("hub2"), createdFrom: undefined });
+    const counts = { hub1: 0, hub2: 0, trophy: 0, "marathon-pe": 0 };
+    for (const r of rows) if (countsTowardSourceQueue(r, SHOPS)) counts[r.requestingLocation] += 1;
+    expect(counts).toEqual({ hub1: 1, hub2: 2, trophy: 0, "marathon-pe": 0 });
+  });
+  it("a first-batch SHOP leg counts at its shop; Hub 2's own first-batch leg counts at Hub 2; closed / shadow / productless rows never", () => {
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "trophy"), SHOPS)).toBe(true);
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "hub2"), SHOPS)).toBe(true);
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "trophy", { status: "cancelled" }), SHOPS)).toBe(false);
+    expect(countsTowardSourceQueue(fb("tee1", "M", 2, "trophy", { shadow: true }), SHOPS)).toBe(false);
+    expect(countsTowardSourceQueue({ ...fb("tee1", "M", 2, "trophy"), productId: undefined }, SHOPS)).toBe(false);
+    expect(countsTowardSourceQueue({ ...eng("trophy"), createdFrom: { firstBatch: "true" } }, SHOPS)).toBe(false);   // strict
+  });
+});
+
 describe("SourceView wiring (source gate on App.jsx)", () => {
   const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
   it("the tab list carries Trophy and Marathon, mapped to the shop location ids", () => {
@@ -143,9 +191,12 @@ describe("SourceView wiring (source gate on App.jsx)", () => {
   it("a shop tab mounts the SAME RefillQueue with dest = the shop and no sale rows", () => {
     expect(APP).toMatch(/\{SOURCE_SHOP_BY_TAB\[tab\] && <RefillQueue products=\{products\} dest=\{SOURCE_SHOP_BY_TAB\[tab\]\} fulfilCtx=\{fulfilCtx\} \/>\}/);
   });
-  it("the badges count every open request at a shop, and the total includes them", () => {
+  it("the badges count a shop's FIRST-BATCH legs only (never the engine's hub2→shop rows), and the total includes them", () => {
     expect(APP).toMatch(/const counts = \{ hub1: 0, hub2: 0, trophy: 0, "marathon-pe": 0 \};/);
-    expect(APP).toMatch(/Object\.prototype\.hasOwnProperty\.call\(counts, r\.requestingLocation\)/);
+    // the wiring gate: the badge uses the ONE predicate (tested by the number below)
+    expect(APP).toMatch(/Object\.prototype\.hasOwnProperty\.call\(counts, r\.requestingLocation\) && countsTowardSourceQueue\(r, SOURCE_SHOP_LOCS\)/);
+    expect(APP).toMatch(/const SOURCE_SHOP_LOCS = new Set\(SOURCE_SHOP_TABS\.map\(\(\[, , loc\]\) => loc\)\);/);
+    expect(APP).toMatch(/import \{ countsTowardSourceQueue \} from "\.\/components\/stock\/firstBatchCore";/);
     expect(APP).toMatch(/const totalPending = Object\.values\(hubBadges\)\.reduce/);
   });
 });

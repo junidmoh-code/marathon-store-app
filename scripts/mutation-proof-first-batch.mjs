@@ -23,8 +23,119 @@ const CORE_TESTS = ["src/components/stock/firstBatchCore.test.js"];
 const SOLVE_TESTS = ["src/components/stock/firstBatchSolve.render.test.jsx"];
 const UNDO_TESTS = ["src/components/stock/solveUndo.test.js", "src/components/stock/solveUndo.gate.test.js"];
 const TAB_TESTS = ["src/components/stock/missingProductsCore.test.js"];
+// The incident revert (PR #609): the path OFF on both sides, the shop tabs'
+// origin filter, the server backstop.
+const QUEUE = "src/components/stock/RefillQueue.jsx";
+const OFF_SERVER_TESTS = ["test/first-batch-off.test.cjs"];
+const OFF_CLIENT_TESTS = ["src/components/stock/firstBatchCore.test.js", "src/components/stock/firstBatchOff.render.test.jsx"];
+const QUEUE_TESTS = ["src/components/stock/firstBatchSourceTab.render.test.jsx"];
 
 const MUTATIONS = [
+  // ── the incident revert (PR #609) ──────────────────────────────────────────
+  {
+    id: "M-OFF-CLIENT",
+    guard: "the path is OFF: no Solve takes the first-batch branch unless enabled: true is passed",
+    file: CORE,
+    from: `  if (enabled !== true) return false;`,
+    to: ``,
+    tests: OFF_CLIENT_TESTS,
+  },
+  {
+    id: "M-OFF-STRICT",
+    guard: "the flag is judged strictly — a truthy string never turns the path on",
+    file: CORE,
+    from: `  if (enabled !== true) return false;`,
+    to: `  if (!enabled) return false;`,
+    tests: OFF_CLIENT_TESTS,
+  },
+  {
+    id: "M-OFF-NO-LOCK-READS",
+    guard: "off the path the Solve panel reads nothing from the engine's lock table",
+    file: SOLVE,
+    from: `    if (!openCard || !STORES.some((s) => firstBatchEligible({ source: openCard.source, store: s, product: byId.get(solvePid), routes: cfg.routes }))) return undefined;`,
+    to: ``,
+    tests: OFF_CLIENT_TESTS,
+  },
+  {
+    id: "M-TAB-ORIGIN-FILTER",
+    guard: "a shop tab lists first-batch shop legs ONLY — never the engine's hub2→shop rows (the incident)",
+    file: QUEUE,
+    from: `    let mine = allRequests.filter((r) => r.requestingLocation === DEST_LOC && sourceQueueLists(r, SHOP_DESTS));`,
+    to: `    let mine = allRequests.filter((r) => r.requestingLocation === DEST_LOC && sourceQueueLists(r, new Set()));`,
+    tests: QUEUE_TESTS,
+  },
+  {
+    id: "M-BADGE-ORIGIN",
+    guard: "the badge counts a shop's first-batch legs only — 225 engine rows count 0",
+    file: CORE,
+    from: `shopLocs.includes?.(r.requestingLocation)) ? isFirstBatchShopLeg(r) : true);`,
+    to: `shopLocs.includes?.(r.requestingLocation)) ? true : true);`,
+    tests: QUEUE_TESTS,
+  },
+  {
+    id: "M-SERVER-OFF",
+    guard: "the trigger's path-off backstop runs under the live default",
+    file: SERVER,
+    from: `  if (!resolved && !touched && pathEnabled !== true) {`,
+    to: `  if (false) {`,
+    nodeTests: OFF_SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OFF-SEED",
+    guard: "the backstop seeds Hub 2 before withdrawing (Hub 2 stays a valid source)",
+    file: SERVER,
+    from: `    if (offProduct) await seedIfAbsent(db, \`stock/\${FIRST_BATCH_HUB}/\${pid}/\${sizeKey}\`, now);`,
+    to: ``,
+    nodeTests: OFF_SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OFF-CAS",
+    guard: "the withdrawal re-verifies open-and-untouched INSIDE the transaction (Central's fulfil in the gap wins)",
+    file: SERVER,
+    from: `      if (cur.status !== "open" || (num(cur.sentQty) || 0) > 0 || (cur.sentQty != null && typeof cur.sentQty !== "number")) return undefined;`,
+    to: ``,
+    nodeTests: OFF_SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OFF-PRODUCT-GONE",
+    guard: "a product gone from the catalogue gets no Hub 2 carriage cell",
+    file: SERVER,
+    from: `    if (offProduct) await seedIfAbsent(`,
+    to: `    if (true) await seedIfAbsent(`,
+    nodeTests: OFF_SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OFF-SHOP-ONLY",
+    guard: "the backstop touches only a destination routed via Hub 2",
+    file: SERVER,
+    from: `    if (((offConfig.routes || {})[store]) !== FIRST_BATCH_HUB) return { skipped: "path_off_not_shop", store };`,
+    to: ``,
+    nodeTests: OFF_SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OFF-TOUCHED-SHAPE",
+    guard: "a sentQty of an unexpected shape counts as touched",
+    file: SERVER,
+    from: `  const touched = (num(rr.sentQty) || 0) > 0 || (rr.sentQty != null && typeof rr.sentQty !== "number");`,
+    to: `  const touched = (num(rr.sentQty) || 0) > 0;`,
+    nodeTests: OFF_SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-OFF-REASON",
+    guard: "the withdrawal carries a reason — to the engine a bare cancel is a shop-level rejection",
+    file: SERVER,
+    from: `      return { ...cur, status: "cancelled", cancelReason: PATH_OFF_REASON, resolvedAt: now,`,
+    to: `      return { ...cur, status: "cancelled", resolvedAt: now,`,
+    nodeTests: OFF_SERVER_TESTS,
+  },
+  {
+    id: "M-SERVER-LOCK-OWN-ONLY",
+    guard: "the backstop releases only the shop lock that names THIS request",
+    file: SERVER,
+    from: `return cur && cur.refillId === requestId ? null : undefined; })`,
+    to: `return cur ? null : undefined; })`,
+    nodeTests: OFF_SERVER_TESTS,
+  },
   // ── the deferred leg (server) ──────────────────────────────────────────────
   {
     id: "M-LEG-ONCE",
@@ -38,7 +149,7 @@ const MUTATIONS = [
     id: "M-LEG-PARTIAL",
     guard: "a partial send raises the leg",
     file: SERVER,
-    from: `  const touched = (num(rr.sentQty) || 0) > 0;`,
+    from: `  const touched = (num(rr.sentQty) || 0) > 0 || (rr.sentQty != null && typeof rr.sentQty !== "number");`,
     to: `  const touched = false;`,
     nodeTests: SERVER_TESTS,
   },

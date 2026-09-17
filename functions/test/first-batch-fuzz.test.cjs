@@ -24,11 +24,11 @@ test("property fuzz: 600 random worlds, every invariant holds on each", async ()
     const before = JSON.stringify(db.state.root);
     const hadHub2Cell = db.state.root.stock?.hub2?.p1?.[sk] !== undefined;
     // Never throws on any world (a throw would make the trigger retry forever).
-    const res1 = await processFirstBatchRequest({ db, requestId: "r1", nowIso: T1 });
+    const res1 = await processFirstBatchRequest({ db, requestId: "r1", nowIso: T1, pathEnabled: true });
     const after1 = JSON.stringify(db.state.root);
     // Idempotent: a second and third fire change NOTHING.
-    await processFirstBatchRequest({ db, requestId: "r1", nowIso: "2026-09-17T10:30:00.000Z" });
-    await processFirstBatchRequest({ db, requestId: "r1", nowIso: "2026-09-17T11:00:00.000Z" });
+    await processFirstBatchRequest({ db, requestId: "r1", nowIso: "2026-09-17T10:30:00.000Z", pathEnabled: true });
+    await processFirstBatchRequest({ db, requestId: "r1", nowIso: "2026-09-17T11:00:00.000Z", pathEnabled: true });
     assert.equal(JSON.stringify(db.state.root), after1, `${ctx}: re-fire changed state`);
     // No undefined ever reached the tree (the fake throws; belt and braces).
     assert.ok(!after1.includes("undefined"), ctx);

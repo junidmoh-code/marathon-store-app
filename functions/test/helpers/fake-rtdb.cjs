@@ -84,7 +84,12 @@ function writeAt(root, path, value) {
   if (!ks.length) return v === null ? {} : v;
   const walk = (node, i) => {
     const k = ks[i];
-    const base = node && typeof node === "object" && !Array.isArray(node) ? { ...node } : {};
+    // An ARRAY-coerced node (dense integer keys) is an object to RTDB: a
+    // write under it keeps every present index as a string key. Replacing it
+    // with {} silently destroyed its cells here (adversarial review, PR #609).
+    const base = node && typeof node === "object"
+      ? (Array.isArray(node) ? Object.fromEntries(node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)) : { ...node })
+      : {};
     if (i === ks.length - 1) {
       if (v === null) delete base[k]; else base[k] = v;
     } else {
