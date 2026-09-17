@@ -28,7 +28,9 @@ describe("solve → undo wiring", () => {
     expect(readAt).toBeGreaterThan(-1);
     expect(readAt).toBeLessThan(writeAt);
     // And the guard core carries no timestamp inputs at all.
-    expect(NETWORK).toMatch(/solveUndoBlockers\(\{ paths: u\.paths, openByLoc, priorOpenByLoc: u\.priorOpen \}\)/);
+    // (ownRunId, first batch 2026-09-17: the solve's OWN server-claimed lock is
+    // exempted by runId — an identity, still never a clock.)
+    expect(NETWORK).toMatch(/solveUndoBlockers\(\{ paths: u\.paths, openByLoc, priorOpenByLoc: u\.priorOpen, ownRunId: [^}]*\}\)/);
     expect(NETWORK).not.toMatch(/solvedAtMs/);
   });
   it("the deletion is per-cell TRANSACTIONS through undoCellTxn — never read-then-delete", () => {
@@ -38,7 +40,12 @@ describe("solve → undo wiring", () => {
     expect(NETWORK).toMatch(/await Promise\.all\(u\.paths\.map\(\(p\) => runTransaction\(ref\(database, p\), undoCellTxn\)\)\)/);
     const undoStart = NETWORK.indexOf("const undoSolve = async (u) => {");
     const undoBlock = NETWORK.slice(undoStart, NETWORK.indexOf("\n  };", undoStart));
-    expect(undoBlock).not.toMatch(/update\(ref\(database\)/);
+    // The ONE update() the undo may issue is the first-batch request cancel
+    // (firstBatchUndoCancelUpdate) — never a null over a stock cell.
+    const updates = undoBlock.match(/update\(ref\(database\)[^\n]*/g) || [];
+    expect(updates.length).toBe(1);
+    expect(updates[0]).toMatch(/firstBatchUndoCancelUpdate\(/);
+    expect(undoBlock).not.toMatch(/stock\/\$\{/);
   });
   it("an aborted cell is reported, a full undo clears the stale Solved banner and leaves the strip", () => {
     expect(NETWORK).toMatch(/const kept = u\.paths\.filter\(\(p, i\) => !results\[i\]\.committed\)/);

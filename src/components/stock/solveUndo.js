@@ -85,13 +85,20 @@ const lockId = (e) => e?.refillId || `${e?.runId || ""}|${e?.createdAt || ""}`;
 //   paths         — the recorded seeded cell paths
 //   openByLoc     — { loc: openIndexNode|null } read at UNDO time
 //   priorOpenByLoc— { loc: openIndexNode|null } recorded at SOLVE time
-export function solveUndoBlockers({ paths = [], openByLoc = {}, priorOpenByLoc = {} } = {}) {
+// `ownRunId` (first batch, 2026-09-17): the server claims engine locks FOR a
+// first-batch solve — the shop's own request and, later, Hub 2's leg — stamped
+// with runId `first_batch:{solveId}`. Those are this solve's own bookkeeping,
+// not work the engine raised on top of it, so they do not block its undo (the
+// undo cancels the requests and the engine withdraws the locks). A lock with
+// any other runId is still exactly the blocker it always was.
+export function solveUndoBlockers({ paths = [], openByLoc = {}, priorOpenByLoc = {}, ownRunId = null } = {}) {
   const blockers = [];
   const seeded = seededSizesByLoc(paths);
   for (const [loc, sizes] of Object.entries(seeded)) {
     for (const sz of sizes) {
       const cur = openByLoc?.[loc]?.[sz];
       if (!cur) continue;
+      if (ownRunId && cur.runId === ownRunId) continue;      // this solve's own leg
       const prior = priorOpenByLoc?.[loc]?.[sz];
       if (prior && lockId(prior) === lockId(cur)) continue;   // predates the solve
       blockers.push(`The engine has already raised a refill for ${loc}${cur?.orderId ? ` (${cur.orderId})` : ""} — reject it in the queue first, then undo.`);
