@@ -65,7 +65,9 @@ import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
 
 const SOURCE_LOC = "central";
-const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+// Destinations this queue serves: the three hubs, and — first batch direct to
+// shop (2026-09-17) — the two shops whose Solve raises a request from Central.
+const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", trophy: "Trophy", "marathon-pe": "Marathon PE" };
 // Sale-row ledger reasons — the Source Transfer & Fulfil contract (#209).
 const SOURCE_REFILL_REASON = "source_refill";
 const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
