@@ -270,3 +270,21 @@ that state, by construction:
   tab of the previous build — which does not exist — so keep the function until
   the shop tabs are empty (`refill_requests` where `requestingLocation` is a
   shop and `status === "open"`).
+
+## 8. Build and test results (commit 8, this worktree)
+
+- `npm run build`: clean.
+- New tests, all green: `functions/test/first-batch.test.cjs` 18/18 (trigger core
+  over the fake RTDB + the REAL `computeRefillPlan` over the resulting tree);
+  `firstBatchCore.test.js` 19/19; `firstBatchSolve.render.test.jsx` 10/10;
+  `firstBatchSourceTab.render.test.jsx` 8/8; `solveUndo*.test.js` updated.
+- Mutation proof `scripts/mutation-proof-first-batch.mjs`: **22/22 guards
+  proven** (the first run found 2 unprotected — the lock race and the undo's
+  own-lock exemption — both now pinned).
+- Full vitest: 6364 pass / 10 fail; full functions `node --test`: 2028 pass /
+  11 fail. Every failure predates this branch and lives in files it does not
+  touch: `hubIsolation.test.js` pins a Hub 2 `hubQty` line that #600 changed on
+  main (verified: `origin/main` already carries the `decodedCellKey` form the
+  pin rejects), and the Shopify theme / social schedule / social caption tests
+  read theme and launchd assets outside this diff. `git diff origin/main
+  --name-only` for those subjects is empty.
