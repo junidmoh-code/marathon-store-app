@@ -462,6 +462,14 @@ const MUTATIONS = [
     tests: [...CORE_TESTS, ...SOLVE_TESTS],
   },
   {
+    id: "M-MAP-GARBLED",
+    guard: "an entry with BOTH target and sizes is garbled — the client arms nothing for it, like the engine",
+    file: PLAN,
+    from: `const isGarbledEntry = (entry) => isMapEntry(entry) && entry.target !== undefined;`,
+    to: `const isGarbledEntry = () => false;`,
+    tests: CORE_TESTS,
+  },
+  {
     id: "M-MAP-DEAD-SIZE",
     guard: "a mapped size with zero units anywhere is a dead 0, never re-armed",
     file: PLAN,

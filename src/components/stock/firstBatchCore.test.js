@@ -10,7 +10,7 @@ import {
   buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES,
   centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, lockKeyFor,
 } from "./firstBatchCore.js";
-import { categoryRun, resolvedRun } from "./solvePlan.js";
+import { categoryRun, resolvedRun, categoryPolicyLocs } from "./solvePlan.js";
 
 const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
 const TEE = { id: "tee1", name: "Essentials Tee", productType: "clothing", sizes: ["S", "M", "L"] };
@@ -352,6 +352,14 @@ describe("a per-location SIZE MAP (soccer-jerseys / underwear live shape) resolv
     // and through resolvedRun the map beats the letter run, exactly as the engine's branch order
     const rr = resolvedRun({ std: cfg.defaultRunByStore, sizes: JERSEY.sizes, targets: {}, pid: "sj1", ruleBasedTargets: true, categoryPolicy: POLICY_MAP, categoryKey: "soccer-jerseys", unitsAnywhere });
     expect(rr.hub2).toEqual({ S: 4, M: 0, L: 4, XXXL: 0 });
+  });
+  it("an entry carrying BOTH a collapsed target and a sizes map is garbled: the engine arms nothing for it, and so does the client", () => {
+    const garbled = { headwear: { perSize: true, hub2: { target: 5, sizes: rows(3) } } };
+    const HAT = { id: "h1", name: "Cap", productType: "clothing", categoryKey: "headwear", sizes: ["S", "M"] };
+    expect(categoryRun({ policy: garbled, categoryKey: "headwear", sizes: HAT.sizes, unitsAnywhere: () => 1 })).toEqual({});
+    const ctx = { config: { categoryPolicy: garbled }, products: { h1: HAT }, stock: { hub2: { h1: { S: { qty: 0 }, M: { qty: 0 } } }, central: { h1: { S: { qty: 2 } } } }, targets: {} };
+    expect(resolveTarget(ctx, "hub2", "h1", "S")).toBe(null);
+    expect(categoryPolicyLocs(garbled, "headwear")).toEqual([]);
   });
   it("a map outside perSize mode, or with no usable row, arms nothing (the engine refuses it too)", () => {
     expect(categoryRun({ policy: { x: { hub2: { sizes: rows(4) } } }, categoryKey: "x", sizes: ["S"], unitsAnywhere: () => 1 })).toEqual({});

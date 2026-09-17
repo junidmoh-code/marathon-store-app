@@ -177,8 +177,13 @@ export function explicitTarget(targets, loc, pid, size) {
 // least one row carries a positive finite target — byte-for-byte the engine's
 // locationPolicyFor. Live for soccer-jerseys and underwear (hub2 + PE).
 const posTarget = (t) => typeof t === "number" && Number.isFinite(t) && t > 0;
+// An entry carrying BOTH a collapsed `target` and a `sizes` map is a garbled
+// node: locationEntryMode calls it "invalid" and the engine arms NOTHING for
+// it. Mirror the refusal exactly — treating it as a map would light Solve up
+// over cells the engine never refills. (Sonnet delta review, PR #608.)
 const isMapEntry = (entry) => !!entry && typeof entry === "object" && !Array.isArray(entry)
   && entry.sizes && typeof entry.sizes === "object" && !Array.isArray(entry.sizes);
+const isGarbledEntry = (entry) => isMapEntry(entry) && entry.target !== undefined;
 const mapUsable = (cat, entry) => cat.perSize === true
   && Object.values(entry.sizes).some((row) => row && typeof row === "object" && posTarget(row.target));
 
@@ -188,6 +193,7 @@ export function categoryPolicyLocs(policy, categoryKey) {
   if (!cat || typeof cat !== "object" || Array.isArray(cat)) return [];
   return Object.entries(cat)
     .filter(([loc, entry]) => loc !== "perSize" && entry && typeof entry === "object" && !Array.isArray(entry)
+      && !isGarbledEntry(entry)
       && (isMapEntry(entry) ? mapUsable(cat, entry) : posTarget(entry.target)))
     .map(([loc]) => loc);
 }
@@ -209,6 +215,7 @@ export function categoryRun({ policy, categoryKey, sizes, unitsAnywhere }) {
     // usable row, the entry arms nothing — locationPolicyFor refuses it too.
     // (Adversarial review, PR #608: soccer-jerseys and underwear are live in
     // this shape, and without this branch their Solve stayed greyed.)
+    if (isGarbledEntry(entry)) continue;   // both target and sizes: the engine refuses it too
     if (isMapEntry(entry)) {
       if (!mapUsable(cat, entry)) continue;
       const run = {};
