@@ -76,7 +76,7 @@ test("INCIDENT HALF 1 — a qty-0 Hub 2 cell that is NOT this Solve's (an earlie
 test("a Hub 2 cell WITH units, an engine lock at Hub 2, an array-coerced Hub 2 row: each is presence → withdrawn; nothing else changes", async () => {
   for (const [label, w] of [
     ["units", solvedWorld({ hub2: { M: cell(2), L: solveSeed() } })],
-    ["engine lock", solvedWorld({ open: { hub2: { p1: { M: { qty: 3, source: "central", createdAt: T1, runId: "scan-1", refillId: "eng1" } } } }, refill: { eng1: { productId: "p1", size: "M", qty: 3, requestingLocation: "hub2", status: "open", createdAt: T1, createdFrom: { engine: true, source: "central" } } } })],
+    ["engine lock", solvedWorld({ open: { hub2: { p1: { M: { qty: 3, source: "central", createdAt: "2026-09-17T09:45:00.000Z", runId: "scan-1", refillId: "eng1" } } } }, refill: { eng1: { productId: "p1", size: "M", qty: 3, requestingLocation: "hub2", status: "open", createdAt: "2026-09-17T09:45:00.000Z", createdFrom: { engine: true, source: "central" } } } })],
     ["array row", solvedWorld({ hub2: [null, null, cell(1)] })],
   ]) {
     const res = await run(w);
@@ -84,6 +84,49 @@ test("a Hub 2 cell WITH units, an engine lock at Hub 2, an array-coerced Hub 2 r
     assert.equal(res.withdrawn, true, label);
     assert.equal(w.state.root.refill_requests.r1.cancelReason, HUB2_PRESENT_REASON, label);
     assert.equal(w.state.root.refill_engine?.open?.trophy, undefined, `${label}: shop lock claimed`);
+  }
+});
+
+test("a Hub 2 lock claimed AT or AFTER the request's own createdAt (the scan ran in the trigger's gap) is NOT prior presence: the request stands and the shop lock is claimed", async () => {
+  for (const at of [T1, "2026-09-17T10:00:03.000Z"]) {
+    const db = solvedWorld({ open: { hub2: { p1: { M: { qty: 2, source: "central", createdAt: at, runId: "scan-gap", refillId: "engg" } } } }, refill: { engg: { productId: "p1", size: "M", qty: 2, requestingLocation: "hub2", status: "open", createdAt: at, createdFrom: { engine: true, source: "central" } } } });
+    const res = await run(db);
+    assert.deepEqual(res, { skipped: "open_untouched", lock: { claimed: true } }, at);
+    assert.equal(db.state.root.refill_requests.r1.status, "open", at);
+  }
+});
+
+test("a HELD LINE in the hold lane (Central's fulfil parked at in_transit, Hub 2 not yet credited, the engine's lock already closed) is presence: withdrawn", async () => {
+  const db = solvedWorld();
+  db.state.root.settings = { stockHold: { held: { hub2: { "rrf_old1": { productId: "p1", productName: "Essentials Tee", size: "M", sizeKey: "M", qty: 3, dest: "hub2", refillId: "old1", movementId: "rrf_old1", heldAt: "2026-09-17T09:00:00.000Z" } } } } };
+  const res = await run(db);
+  assert.deepEqual(res, { raised: false, none: "hub2_present", withdrawn: true, signals: ["held_inbound"] });
+  const db2 = solvedWorld();
+  db2.state.root.settings = { stockHold: { held: { hub2: { "rrf_x": { productId: "p9", dest: "hub2", qty: 1 } } } } };
+  assert.equal((await run(db2)).skipped, "open_untouched");   // another product's line is nothing
+});
+
+test("'already judged' is the SERVER-OWNED shop lock, never a field on the row: a row created with firstBatch.lock / hub2Leg pre-set is still judged — and withdrawn when Hub 2 is present", async () => {
+  for (const pre of [{ lock: { claimedAt: T1 } }, { hub2Leg: { refillId: "fake" } }]) {
+    const db = solvedWorld({ hub2: { M: cell(2) } });
+    db.state.root.refill_requests.r1.firstBatch = pre;
+    const res = await run(db);
+    assert.equal(res.none, "hub2_present", JSON.stringify(pre));
+    assert.equal(db.state.root.refill_requests.r1.status, "cancelled", JSON.stringify(pre));
+  }
+  // …and with no presence, a lying claimedAt does not skip the real claim
+  const db3 = solvedWorld();
+  db3.state.root.refill_requests.r1.firstBatch = { lock: { claimedAt: T1 } };
+  const res3 = await run(db3);
+  assert.deepEqual(res3, { skipped: "open_untouched", lock: { claimed: true } });
+  assert.equal(db3.state.root.refill_engine.open.trophy.p1.M.refillId, "r1");
+});
+
+test("hub2Seeded cannot hide a real cell: a listed key over a cell with units, a non-seed cell, or a seed not stamped at this request's createdAt is presence", async () => {
+  for (const c of [cell(2), { ...solveSeed(), mv: "m" }, { ...solveSeed(), updatedAt: "2026-09-01T00:00:00.000Z" }]) {
+    const db = solvedWorld({ hub2: { M: c, L: solveSeed() } });
+    db.state.root.refill_requests.r1.createdFrom.hub2Seeded = ["M", "L", "S", "XL"];   // over-listed
+    assert.equal((await run(db)).none, "hub2_present", JSON.stringify(c));
   }
 });
 
@@ -150,10 +193,10 @@ test("property: 300 random creations — Hub 2 presence at creation ⇒ withdraw
     const lock = rnd() < 0.25;
     const hub2 = {};
     for (const k of own) hub2[k] = solveSeed();
-    if (foreign) hub2.L = { ...solveSeed(), updatedAt: "2026-09-01T00:00:00.000Z" };   // present whether or not "L" is in own — only foreign when it is not
-    const foreignReally = foreign && !own.includes("L");
+    if (foreign) hub2.L = { ...solveSeed(), updatedAt: "2026-09-01T00:00:00.000Z" };   // an OLD seed: presence whether or not "L" is listed (a listed key must carry the Solve's own stamp)
+    const foreignReally = foreign;
     if (units) hub2.M = cell(1 + Math.floor(rnd() * 3));
-    const db = solvedWorld({ hub2, ...(lock ? { open: { hub2: { p1: { M: { qty: 1, source: "central", createdAt: T1, runId: "scan-x", refillId: "engx" } } } } } : {}) });
+    const db = solvedWorld({ hub2, ...(lock ? { open: { hub2: { p1: { M: { qty: 1, source: "central", createdAt: "2026-09-17T09:30:00.000Z", runId: "scan-x", refillId: "engx" } } } } } : {}) });
     db.state.root.refill_requests.r1.createdFrom.hub2Seeded = own;
     const qtyBefore = JSON.stringify(Object.fromEntries(Object.entries(db.state.root.stock).map(([l, byPid]) => [l, Object.fromEntries(Object.entries(byPid).map(([pid, row]) => [pid, Object.fromEntries(Object.entries(row).map(([k, c]) => [k, c.qty]))]))])));
     const res = await run(db);

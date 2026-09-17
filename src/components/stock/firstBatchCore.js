@@ -171,16 +171,40 @@ export const FIRST_BATCH_ENABLED = true;   // ON again since the Hub 2-presence 
 // presence (the #608 owner spec put explicit-row products on the path); it is
 // reported in `signals` for the panel but does not gate.
 // CJS twin: functions/lib/first-batch.cjs hub2PresenceSignals (pinned equal).
-export function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys } = {}) {
+export function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys, ownSeedAt, sinceIso, heldLines, pid } = {}) {
   const own = new Set((ownSeedKeys || []).map(String));
-  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0);
+  // An "own" seed must LOOK like one: a qty-0 seed cell — and, when the
+  // caller knows the Solve's write time (`ownSeedAt` = the request's
+  // createdAt; the Solve stamps its seeds with the same `now`), stamped at
+  // exactly that time. A listed key over any other cell is presence: a client
+  // cannot make a real cell disappear by naming it. (Spec review, PR #610.)
+  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0) && (!ownSeedAt || c.updatedAt === ownSeedAt);
   const cells = Array.isArray(hub2Node)
     ? hub2Node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)
     : Object.entries(hub2Node || {}).filter(([, c]) => c != null);
   const signals = [];
   if (cells.some(([k, c]) => !ownSeed(k, c))) signals.push("stock_cell");
-  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some((e) => e && typeof e === "object")) signals.push("engine_lock");
+  // A lock claimed AT OR AFTER this request's own createdAt (`sinceIso`) cannot
+  // be prior presence: the engine's scan may run in the seconds between the
+  // Solve's write (which seeds Hub 2, making it managed) and the trigger's
+  // first run, and claim hub2←central for the very product just solved. A
+  // lock that predates the request is real. (Lock createdAt is the scan's
+  // START time, so a scan spanning the write reads as "before" — that error
+  // only withdraws to the normal route, never the reverse. Sonnet, PR #610.)
+  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  const priorLock = (e) => !!e && typeof e === "object" && !(Number.isFinite(sinceMs) && e.createdAt && Date.parse(e.createdAt) >= sinceMs);
+  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some(priorLock)) signals.push("engine_lock");
   if (Array.isArray(hub2OpenRequestIds) && hub2OpenRequestIds.length) signals.push("open_hub2_request");
+  // A PENDING INBOUND in the hold lane: Central's fulfil of a Hub 2 request
+  // parks the units at stock/in_transit and records a held line at
+  // /settings/stockHold/held/hub2/{lineId} {productId, …} until the release
+  // credits Hub 2 — no Hub 2 cell, and the engine closes the fulfilled
+  // request's lock on its next scan. Units on the way to Hub 2 ARE Hub 2
+  // presence. (Spec review, PR #610.)
+  if (pid && heldLines && typeof heldLines === "object") {
+    const lines = Array.isArray(heldLines) ? heldLines : Object.values(heldLines);
+    if (lines.some((l) => l && typeof l === "object" && l.productId === pid)) signals.push("held_inbound");
+  }
   return signals;
 }
 export const hub2Present = (args) => hub2PresenceSignals(args).length > 0;

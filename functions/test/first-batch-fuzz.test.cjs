@@ -43,8 +43,9 @@ test("property fuzz: 600 random worlds, every invariant holds on each", async ()
     // the shop's Central request is withdrawn with a reason, Hub 2 keeps
     // its cells, no shop lock, and the engine may serve the shop from Hub 2.
     const hub2Row = JSON.parse(before).stock?.hub2?.p1;
+    const lock0 = JSON.parse(before).refill_engine?.open?.hub2?.p1?.[sk];
     const presentAtCreation = (Array.isArray(hub2Row) ? hub2Row.some((c) => c != null) : !!hub2Row && Object.keys(hub2Row).length > 0)
-      || !!JSON.parse(before).refill_engine?.open?.hub2?.p1?.[sk];
+      || (!!lock0 && Date.parse(lock0.createdAt) < Date.parse(rr.createdAt));   // a lock claimed after the request is the scan in the gap, not prior presence
     if (!resolvedOrTouched && presentAtCreation) {
       withdrawnPresent++;
       const r1 = db.state.root.refill_requests.r1;

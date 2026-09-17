@@ -132,6 +132,23 @@ describe("Hub 2 presence → the old Solve, never a shop-from-Central request (t
     expect(Object.keys(upd).sort()).toEqual(["stock/hub2/bag1/_", "stock/trophy/bag1/_"]);
   });
 
+  it("a held line in the hold lane for the product (units on the way to Hub 2): the old Solve — no request", async () => {
+    gets["settings/stockHold/held/hub2"] = { rrf_old: { productId: TEE, dest: "hub2", size: "M", sizeKey: "M", qty: 3 } };
+    const tree = render({ products: only(TEE) });
+    await solve(tree);
+    const upd = updateMock.mock.calls[0][1];
+    expect(Object.keys(upd).some((k) => k.startsWith("refill_requests/"))).toBe(false);
+    expect(Object.keys(upd)).toHaveLength(6);
+  });
+
+  it("a Hub 2 lock whose request has CLOSED still bookkeeps Hub 2 (the raw node, as the server judges it): the old Solve", async () => {
+    gets[`refill_engine/open/hub2/${TEE}`] = ENGINE_LOCK;
+    gets["refill_requests/eng1"] = { status: "fulfilled" };
+    const tree = render({ products: only(TEE) });
+    await solve(tree);
+    expect(Object.keys(updateMock.mock.calls[0][1]).some((k) => k.startsWith("refill_requests/"))).toBe(false);
+  });
+
   it("an unreadable lock table is UNKNOWN presence: the guard fails closed and the write is the old Solve", async () => {
     const tree = render({ products: only(TEE) });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
@@ -158,5 +175,6 @@ describe("Hub 2 presence → the old Solve, never a shop-from-Central request (t
     expect(readPaths.filter((p) => p.startsWith("refill_engine/open/")).sort()).toEqual([
       "refill_engine/open/hub1/tee1", "refill_engine/open/hub2/tee1", "refill_engine/open/marathon-pe/tee1", "refill_engine/open/trophy/tee1",
     ]);
+    expect(readPaths.filter((p) => p === "settings/stockHold/held/hub2")).toHaveLength(1);   // the hold lane, once
   });
 });

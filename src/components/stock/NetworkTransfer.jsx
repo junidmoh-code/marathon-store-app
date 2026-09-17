@@ -430,7 +430,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // the answer is the static one (cells); the WRITE always judges with the
   // live lock table (solve()). Anything but an explicit `false` keeps the old
   // path (firstBatchEligible fails closed).
-  const hub2PresentFor = (pid, openByLoc) => hub2PresenceSignals({ hub2Node: allStock?.[FIRST_BATCH_HUB]?.[pid], hub2Locks: openByLoc ? openByLoc[FIRST_BATCH_HUB] : null }).length > 0;
+  // Presence reads the RAW Hub 2 lock node (a lock whose request has closed
+  // is still the engine bookkeeping Hub 2 for this product — the server
+  // judges the raw node too) and the hold lane's held lines for Hub 2
+  // (units on the way). Both arrive with the lock read (`hub2Raw`).
+  const hub2PresentFor = (pid, openByLoc) => hub2PresenceSignals({
+    hub2Node: allStock?.[FIRST_BATCH_HUB]?.[pid],
+    hub2Locks: openByLoc ? (openByLoc.hub2Raw ?? openByLoc[FIRST_BATCH_HUB]) : null,
+    heldLines: openByLoc ? openByLoc.heldHub2 : null, pid,
+  }).length > 0;
   const eligibleAt = (card, store, openByLoc) => !!cfg && !targetsError
     && firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), routes: cfg.routes, hub2Present: hub2PresentFor(card.pid, openByLoc) });
   const storeChoiceFor = (card) => {
@@ -466,10 +474,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // A lock whose request is gone or closed is dead, not a reservation
     // (firstBatchCore.pruneClosedLocks): one scoped read per lock it names.
     const requestsById = {};
-    await Promise.all(lockRefillIds(raw).map(async (id) => {
-      requestsById[id] = (await get(ref(database, `refill_requests/${id}`))).val();
-    }));
-    return pruneClosedLocks({ openByLoc: raw, requestsById });
+    const [heldHub2] = await Promise.all([
+      get(ref(database, `settings/stockHold/held/${FIRST_BATCH_HUB}`)).then((s) => s.val()),
+      ...lockRefillIds(raw).map(async (id) => { requestsById[id] = (await get(ref(database, `refill_requests/${id}`))).val(); }),
+    ]);
+    // Non-enumerable extras: centralReservedBySize walks the enumerable
+    // locations, and these two are inputs to the PRESENCE test only.
+    const pruned = pruneClosedLocks({ openByLoc: raw, requestsById });
+    Object.defineProperty(pruned, "hub2Raw", { value: raw[FIRST_BATCH_HUB] ?? null, enumerable: false });
+    Object.defineProperty(pruned, "heldHub2", { value: heldHub2 ?? null, enumerable: false });
+    return pruned;
   };
   useEffect(() => {
     if (!solvePid || !cfg) return undefined;

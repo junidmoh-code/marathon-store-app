@@ -37,17 +37,20 @@ export const REPAIR_REASON = "first_batch_repair_hub2_present";
 
 // Pure: the decision for one first-batch shop row given its scoped reads.
 // Exported so the test drives the same function the script runs.
-export function decideRepair({ row, hub2Node, hub2Locks, hub2OpenRequests, hub2TargetRow }) {
+export function decideRepair({ row, hub2Node, hub2Locks, hub2OpenRequests, hub2TargetRow, heldLines }) {
   const sizeKey = encodeSizeKey(String(row.size ?? ""));
   // THE guard's own definition (first-batch.cjs hub2PresenceSignals): a cell
   // other than a first-batch qty-0 seed, an engine lock, an open Hub 2
   // request. The trigger's / this repair's own seeds (updatedBy first_batch)
   // are excluded the same way the Solve's are: counting them would withdraw
   // a kept Central request on the very next run.
-  const ownKeys = Array.isArray(hub2Node)
-    ? hub2Node.map((c, i) => (c && c.mv === "seed" && c.updatedBy === "first_batch" ? String(i) : null)).filter(Boolean)
-    : Object.entries(hub2Node || {}).filter(([, c]) => c && c.mv === "seed" && c.updatedBy === "first_batch").map(([k]) => k);
-  const presence = hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds: hub2OpenRequests || [], ownSeedKeys: ownKeys });
+  // Two kinds of qty-0 seed are not presence: the trigger's / this repair's
+  // own (updatedBy "first_batch" — removed from the view first) and the
+  // Solve's own for THIS request (createdFrom.hub2Seeded, verified as qty-0
+  // seed cells stamped at the request's createdAt — the guard's own rule).
+  const notOurs = (c) => !(c && c.mv === "seed" && c.updatedBy === "first_batch" && !((Number(c.qty) || 0) > 0));
+  const view = Array.isArray(hub2Node) ? hub2Node.map((c) => (notOurs(c) ? c : null)) : Object.fromEntries(Object.entries(hub2Node || {}).filter(([, c]) => notOurs(c)));
+  const presence = hub2PresenceSignals({ hub2Node: view, hub2Locks, hub2OpenRequestIds: hub2OpenRequests || [], ownSeedKeys: row.createdFrom?.hub2Seeded || [], ownSeedAt: row.createdAt, sinceIso: row.createdAt, heldLines, pid: row.productId });
   // informational only — an explicit row is a plan, not presence (same as the Solve guard)
   const explicitRow = !!hub2TargetRow && typeof hub2TargetRow === "object" && Object.keys(hub2TargetRow).length > 0;
   // `== null`: an array-coerced row answers null in a hole → absent cell
@@ -67,6 +70,7 @@ export async function buildPlan(db, { readAll } = {}) {
   for (const r of all) if (r.requestingLocation === FIRST_BATCH_HUB && r.status === "open" && r.productId) (hub2OpenByPid[r.productId] = hub2OpenByPid[r.productId] || []).push(r.id);
   const plan = [];
   const cache = {};
+  const heldLines = (await db.ref(`settings/stockHold/held/${FIRST_BATCH_HUB}`).once("value")).val();   // the hold lane's inbound to Hub 2
   for (const row of shopRows) {
     const pid = row.productId;
     if (!cache[pid]) cache[pid] = {
@@ -74,7 +78,7 @@ export async function buildPlan(db, { readAll } = {}) {
       hub2Locks: (await db.ref(`refill_engine/open/${FIRST_BATCH_HUB}/${pid}`).once("value")).val(),
       hub2TargetRow: (await db.ref(`stock_targets/${FIRST_BATCH_HUB}/${pid}`).once("value")).val(),
     };
-    const d = decideRepair({ row, ...cache[pid], hub2OpenRequests: hub2OpenByPid[pid] || [] });
+    const d = decideRepair({ row, ...cache[pid], hub2OpenRequests: hub2OpenByPid[pid] || [], heldLines });
     plan.push({ id: row.id, pid, size: row.size, store: row.requestingLocation, status: row.status, sentQty: row.sentQty || 0, ...d, row });
   }
   return { plan, total: all.length, shopRows: shopRows.length };

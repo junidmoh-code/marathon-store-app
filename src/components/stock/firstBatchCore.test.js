@@ -449,10 +449,27 @@ describe("Hub 2 presence — the hard precondition (owner rule: Hub 2 by ANY mea
   it("an engine lock at Hub 2 (a pending inbound) and an open Hub 2 request are presence; an explicit row is NOT (a plan)", () => {
     expect(hub2PresenceSignals({ hub2Locks: { M: { qty: 2, source: "central", runId: "scan-1" } } })).toEqual(["engine_lock"]);
     expect(hub2PresenceSignals({ hub2Locks: { M: null } })).toEqual([]);
+    // a lock claimed at/after the request's own createdAt is not PRIOR presence; one before it is
+    expect(hub2PresenceSignals({ hub2Locks: { M: { qty: 1, createdAt: "2026-09-17T10:00:00.000Z" } }, sinceIso: "2026-09-17T10:00:00.000Z" })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Locks: { M: { qty: 1, createdAt: "2026-09-17T10:00:05.000Z" } }, sinceIso: "2026-09-17T10:00:00.000Z" })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Locks: { M: { qty: 1, createdAt: "2026-09-17T09:59:59.000Z" } }, sinceIso: "2026-09-17T10:00:00.000Z" })).toEqual(["engine_lock"]);
+    expect(hub2PresenceSignals({ hub2Locks: { M: { qty: 1 } }, sinceIso: "2026-09-17T10:00:00.000Z" })).toEqual(["engine_lock"]);   // no createdAt → counts
     expect(hub2PresenceSignals({ hub2OpenRequestIds: ["x"] })).toEqual(["open_hub2_request"]);
     expect(hub2PresenceSignals({ hub2OpenRequestIds: [] })).toEqual([]);
     expect(hub2Present({ hub2Node: { M: cell(1) }, hub2Locks: { M: {} }, hub2OpenRequestIds: ["x"] })).toBe(true);
     expect(hub2Present({})).toBe(false);
+  });
+  it("a held line in the hold lane for THIS product (units parked at in_transit on the way to Hub 2) is presence; another product's is not; no pid → not judged", () => {
+    const held = { rrf_a: { productId: "tee1", dest: "hub2", qty: 2 }, rrf_b: { productId: "other", dest: "hub2", qty: 1 } };
+    expect(hub2PresenceSignals({ heldLines: held, pid: "tee1" })).toEqual(["held_inbound"]);
+    expect(hub2PresenceSignals({ heldLines: held, pid: "tee9" })).toEqual([]);
+    expect(hub2PresenceSignals({ heldLines: held })).toEqual([]);
+    expect(hub2PresenceSignals({ heldLines: null, pid: "tee1" })).toEqual([]);
+  });
+  it("ownSeedAt: a listed own seed must be stamped at the Solve's own time; any other stamp is presence", () => {
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: "t1" } }, ownSeedKeys: ["M"], ownSeedAt: "t1" })).toEqual([]);
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed, updatedAt: "t0" } }, ownSeedKeys: ["M"], ownSeedAt: "t1" })).toEqual(["stock_cell"]);
+    expect(hub2PresenceSignals({ hub2Node: { M: { ...ownSeed } }, ownSeedKeys: ["M"], ownSeedAt: "t1" })).toEqual(["stock_cell"]);   // no stamp at all
   });
   it("the server twin computes the SAME signals on the same inputs", () => {
     const req = createRequire(import.meta.url);
@@ -461,6 +478,8 @@ describe("Hub 2 presence — the hard precondition (owner rule: Hub 2 by ANY mea
       {}, { hub2Node: { M: cell(0) } }, { hub2Node: { M: { ...ownSeed } }, ownSeedKeys: ["M"] }, { hub2Node: [null, cell(1)] },
       { hub2Node: [null, { ...ownSeed }], ownSeedKeys: ["1"] }, { hub2Locks: { M: { qty: 1 } } }, { hub2OpenRequestIds: ["a"] },
       { hub2Node: { M: { ...ownSeed, qty: 1 } }, ownSeedKeys: ["M"] }, { hub2Node: { M: cell(2), L: { ...ownSeed } }, ownSeedKeys: ["L"], hub2Locks: { L: {} } },
+      { hub2Locks: { M: { createdAt: "2026-09-17T10:00:01.000Z" } }, sinceIso: "2026-09-17T10:00:00.000Z" }, { hub2Locks: { M: { createdAt: "2026-09-17T09:00:00.000Z" } }, sinceIso: "2026-09-17T10:00:00.000Z" },
+      { heldLines: { a: { productId: "p" } }, pid: "p" }, { heldLines: { a: { productId: "q" } }, pid: "p" }, { hub2Node: { M: { ...ownSeed, updatedAt: "t0" } }, ownSeedKeys: ["M"], ownSeedAt: "t1" },
     ];
     for (const c of cases) expect(srv.hub2PresenceSignals(c), JSON.stringify(c)).toEqual(hub2PresenceSignals(c));
   });

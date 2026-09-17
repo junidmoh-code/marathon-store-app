@@ -84,16 +84,40 @@ const PATH_OFF_REASON = "first_batch_path_off";
 // not presence. JS twin: src/components/stock/firstBatchCore.js
 // hub2PresenceSignals (pinned equal by test).
 const HUB2_PRESENT_REASON = "first_batch_hub2_present";
-function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys } = {}) {
+function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, ownSeedKeys, ownSeedAt, sinceIso, heldLines, pid } = {}) {
   const own = new Set((ownSeedKeys || []).map(String));
-  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0);
+  // An "own" seed must LOOK like one: a qty-0 seed cell — and, when the
+  // caller knows the Solve's write time (`ownSeedAt` = the request's
+  // createdAt; the Solve stamps its seeds with the same `now`), stamped at
+  // exactly that time. A listed key over any other cell is presence: a client
+  // cannot make a real cell disappear by naming it. (Spec review, PR #610.)
+  const ownSeed = (k, c) => own.has(String(k)) && !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0) && (!ownSeedAt || c.updatedAt === ownSeedAt);
   const cells = Array.isArray(hub2Node)
     ? hub2Node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)
     : Object.entries(hub2Node || {}).filter(([, c]) => c != null);
   const signals = [];
   if (cells.some(([k, c]) => !ownSeed(k, c))) signals.push("stock_cell");
-  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some((e) => e && typeof e === "object")) signals.push("engine_lock");
+  // A lock claimed AT OR AFTER this request's own createdAt (`sinceIso`) cannot
+  // be prior presence: the engine's scan may run in the seconds between the
+  // Solve's write (which seeds Hub 2, making it managed) and the trigger's
+  // first run, and claim hub2←central for the very product just solved. A
+  // lock that predates the request is real. (Lock createdAt is the scan's
+  // START time, so a scan spanning the write reads as "before" — that error
+  // only withdraws to the normal route, never the reverse. Sonnet, PR #610.)
+  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
+  const priorLock = (e) => !!e && typeof e === "object" && !(Number.isFinite(sinceMs) && e.createdAt && Date.parse(e.createdAt) >= sinceMs);
+  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some(priorLock)) signals.push("engine_lock");
   if (Array.isArray(hub2OpenRequestIds) && hub2OpenRequestIds.length) signals.push("open_hub2_request");
+  // A PENDING INBOUND in the hold lane: Central's fulfil of a Hub 2 request
+  // parks the units at stock/in_transit and records a held line at
+  // /settings/stockHold/held/hub2/{lineId} {productId, …} until the release
+  // credits Hub 2 — no Hub 2 cell, and the engine closes the fulfilled
+  // request's lock on its next scan. Units on the way to Hub 2 ARE Hub 2
+  // presence. (Spec review, PR #610.)
+  if (pid && heldLines && typeof heldLines === "object") {
+    const lines = Array.isArray(heldLines) ? heldLines : Object.values(heldLines);
+    if (lines.some((l) => l && typeof l === "object" && l.productId === pid)) signals.push("held_inbound");
+  }
   return signals;
 }
 
@@ -246,8 +270,10 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // in this codebase deletes a live /refill_requests row — accepted.)
     const res = await reqRef.transaction((raw) => {
       const cur = raw === null || raw === undefined ? rr : raw;
+      // open-and-untouched is the whole CAS condition: our own earlier cancel
+      // fails `status === "open"`, and a marker a CLIENT pre-set must not
+      // shield the row (the server lock decides "judged", never a row field).
       if (cur.status !== "open" || (num(cur.sentQty) || 0) > 0 || (cur.sentQty != null && typeof cur.sentQty !== "number")) return undefined;
-      if (cur.firstBatch && cur.firstBatch.hub2Leg) return undefined;
       return { ...cur, status: "cancelled", cancelReason: reason, resolvedAt: now,
         firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none, at: now } } };
     });
@@ -279,17 +305,26 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     if (((offConfig.routes || {})[store]) !== FIRST_BATCH_HUB) return { skipped: "path_off_not_shop", store };
     return withdrawToOldSolve({ reason: PATH_OFF_REASON, none: offProduct ? "path_off" : "product_missing", product: offProduct });
   }
-  if (!resolved && !touched && !(rr.firstBatch && rr.firstBatch.lock)) {
+  // "Already judged" is decided by the SERVER-OWNED shop lock (client-
+  // unwritable), never by a field on the row: a row created with
+  // firstBatch.lock or firstBatch.hub2Leg pre-set must not skip the guard.
+  // (Spec review, PR #610.)
+  const shopLockPath = `refill_engine/open/${store}/${pid}/${sizeKey}`;
+  const committed = !resolved && !touched
+    ? (((await db.ref(shopLockPath).once("value")).val() || {}).refillId === requestId)
+    : true;
+  if (!resolved && !touched && !committed) {
     // ── THE HUB 2-PRESENCE GUARD, AT CREATION (before any lock is claimed) ──
     // Judged ONCE, on the row's first write: after the shop lock exists the
     // engine may legitimately raise Hub 2's own leg (hub2←central from the
     // remainder) and that lock must never read as "Hub 2 held it before".
-    const [hub2Node, hub2Locks, product] = await Promise.all([
+    const [hub2Node, hub2Locks, product, heldLines] = await Promise.all([
       db.ref(`stock/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
       db.ref(`refill_engine/open/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
       db.ref(`products/${pid}`).once("value").then((s) => s.val()),
+      db.ref(`settings/stockHold/held/${FIRST_BATCH_HUB}`).once("value").then((s) => s.val()),
     ]);
-    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, ownSeedKeys: rr.createdFrom.hub2Seeded || [] });
+    const signals = hub2PresenceSignals({ hub2Node, hub2Locks, ownSeedKeys: rr.createdFrom.hub2Seeded || [], ownSeedAt: rr.createdAt, sinceIso: rr.createdAt, heldLines, pid });
     if (signals.length) {
       const r = await withdrawToOldSolve({ reason: HUB2_PRESENT_REASON, none: "hub2_present", product });
       return { ...r, signals };
@@ -310,7 +345,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // every later write to the row — a lost claim recorded as "done" would let
     // the shop run unguarded once the blocking lock is gone. (Adversarial
     // review, PR #607.)
-    if (rr.firstBatch && rr.firstBatch.lock && rr.firstBatch.lock.claimedAt) return { skipped: "open_untouched" };
+    if (committed) return { skipped: "open_untouched" };
     const r = await claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, now });
     return { skipped: "open_untouched", lock: r };
   }
