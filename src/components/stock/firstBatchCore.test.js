@@ -8,6 +8,7 @@ import {
   firstBatchEligible, isSneakerOrSlide, EXCLUDED_KEYS, firstBatchSplit, buildFirstBatchSolveUpdate,
   firstBatchUndoBlockers, firstBatchUndoCancelTxn, firstBatchEstimate,
   buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, HISTORY_STORES,
+  centralReservedBySize, centralFreeFor,
 } from "./firstBatchCore.js";
 
 const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
@@ -255,6 +256,43 @@ describe("location history — which shop is nominated (owner rule 2026-09-17)",
     const stock = { trophy: { tee2: [null, null, cell(-1)], tee3: { _: cell(3) } } };
     const h = firstBatchHistory({ pid: "tee1", product: CARD, index, allStock: stock, targets: null });
     expect(h.byStore.trophy).toMatchObject({ siblingCells: 2, siblingUnits: 3 });
+  });
+});
+
+describe("Central's open reservations — the engine's sourceReserved, on the client (2026-09-17)", () => {
+  const lock = (qty, source) => ({ qty, createdAt: "t", runId: "scan-1", refillId: "r", ...(source ? { source } : {}) });
+  it("sums every open lock whose source is Central — explicit, or by the destination's route — per lock key", () => {
+    const openByLoc = {
+      hub2: { M: lock(3), "5_5": lock(1) },                       // route hub2→central
+      hub1: { M: lock(2) },                                       // route hub1→central
+      trophy: { M: lock(1, "central"), L: lock(4) },              // a sibling shop's first batch (explicit central) · an engine hub2→trophy leg (route hub2)
+      "marathon-pe": { M: lock(2, "hub2") },                      // explicit hub2 source
+      hub3: { M: lock(9) },                                       // no route at all → no source
+    };
+    expect(centralReservedBySize({ openByLoc, routes: ROUTES })).toEqual({ M: 6, "5_5": 1 });
+  });
+  it("a lock with no usable qty counts as 1 (the engine's own floor); garbage and holes are skipped", () => {
+    expect(centralReservedBySize({ openByLoc: { hub2: { M: { source: "central" }, L: { qty: "x", source: "central" }, S: null, XL: 7 } }, routes: ROUTES })).toEqual({ M: 1, L: 1 });
+    expect(centralReservedBySize({ openByLoc: { hub2: null, trophy: "junk" }, routes: ROUTES })).toEqual({});
+    expect(centralReservedBySize({})).toEqual({});
+  });
+  it("free = on-hand minus the reservation for the ENCODED size key, floored at 0", () => {
+    const reserved = { M: 3, "5_5": 1, _: 2 };
+    expect(centralFreeFor({ qtyAt: () => 4, reserved, size: "M" })).toBe(1);
+    expect(centralFreeFor({ qtyAt: () => 1, reserved, size: "5.5" })).toBe(0);   // the lock key is "5_5"
+    expect(centralFreeFor({ qtyAt: () => 1, reserved, size: "_" })).toBe(0);
+    expect(centralFreeFor({ qtyAt: () => 5, reserved, size: "L" })).toBe(5);
+    expect(centralFreeFor({ qtyAt: () => -2, reserved: {}, size: "L" })).toBe(0);
+  });
+  it("through the split: a promised unit is never asked for twice, and a fully promised size takes the normal path", () => {
+    const reserved = centralReservedBySize({ openByLoc: { hub2: { M: lock(4), S: lock(1) } }, routes: ROUTES });
+    const avail = { S: 4, M: 4, L: 2 };
+    const { firstBatch, normal } = firstBatchSplit({
+      sizes: ["S", "M", "L"], run: RUN, store: "trophy",
+      centralAvail: (sz) => centralFreeFor({ qtyAt: (s) => avail[s], reserved, size: sz }), maxUnitsPerIntent: 20,
+    });
+    expect(firstBatch).toEqual([{ size: "S", qty: 2, target: 2, avail: 3 }, { size: "L", qty: 2, target: 2, avail: 2 }]);
+    expect(normal).toEqual(["M"]);
   });
 });
 

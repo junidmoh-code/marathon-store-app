@@ -42,7 +42,7 @@
 // Size keys go through encodeSizeKey / stockCellPath. Timestamps come from the
 // caller (serverNowMs / serverNowIso), never Date.now().
 
-import { stockSizeKey, stockCellPath } from "../../utils/sizeKey";
+import { stockSizeKey, stockCellPath, encodeSizeKey } from "../../utils/sizeKey";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 
 export const FIRST_BATCH_HUB = "hub2";
@@ -244,6 +244,40 @@ export function firstBatchStoreChoice({ history, candidates, labels = {} } = {})
       (s, h) => `${label(s)} first — where ${h.categoryCarried} of ${history.categoryTotal} ${humanKey(history.key)} are kept.`)
     || { store: cands[0], tier: "default", sentence: null };
 }
+
+// ── CENTRAL'S OPEN RESERVATIONS — what the engine has already promised ───────
+// (2026-09-17, the de-duplication guard the widening needs.) The engine
+// manages Hub 2 for a MAPPED category or an explicit-row product with no
+// cell, so by the time a card is Solved the scan may already hold an open
+// hub2←central lock for the very units the shop is about to ask for (live on
+// the day: a caps-beanies card, 1 unit at Central, 1 engine lock). A sibling
+// shop's first-batch lock reserves Central the same way. The engine's own
+// idea of "free" is on-hand MINUS those reservations (refill-engine.cjs
+// sourceReserved: every open lock whose source — explicit, else the route of
+// its destination — is Central), and the shop's request must be right AS
+// CREATED: sized from that same free, so no unit is booked twice and the
+// scan has nothing to shrink. The trigger does the identical sum for Hub 2's
+// leg (first-batch.cjs centralReservations); this is the client twin, over
+// the per-location lock nodes the Solve reads (one scoped read per routed
+// location). Lock keys are the engine's encodeSizeKey of the raw size.
+export function centralReservedBySize({ openByLoc, routes, source = "central" } = {}) {
+  const out = {};
+  for (const [loc, bySize] of Object.entries(openByLoc || {})) {
+    if (!bySize || typeof bySize !== "object") continue;
+    for (const [sizeKey, entry] of Object.entries(bySize)) {
+      if (!entry || typeof entry !== "object") continue;
+      const src = entry.source || routes?.[loc];
+      if (src !== source) continue;
+      const q = typeof entry.qty === "number" && Number.isFinite(entry.qty) ? entry.qty : 0;
+      out[sizeKey] = (out[sizeKey] || 0) + Math.max(q || 1, 1);
+    }
+  }
+  return out;
+}
+// On-hand at Central for a raw size, net of the reservations above (never
+// below 0). `qtyAt(size)` is the caller's decoded-cell lookup.
+export const centralFreeFor = ({ qtyAt, reserved, size }) =>
+  Math.max((Number(typeof qtyAt === "function" ? qtyAt(size) : 0) || 0) - (reserved?.[encodeSizeKey(size)] || 0), 0);
 
 // ── THE PER-SIZE SPLIT ───────────────────────────────────────────────────────
 // `sizes` are the QUALIFYING sizes (positive target at Hub 2 AND the store —

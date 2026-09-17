@@ -27,7 +27,7 @@ import { computeMissingProducts, isClothing } from "./missingProductsCore";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
-import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice } from "./firstBatchCore";
+import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, centralReservedBySize, centralFreeFor } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 
 const STORES = ["marathon-pe", "trophy"];
@@ -440,13 +440,46 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // or slide). Conservative on a FAILED targets read: without the explicit
   // rows the shop's own quantity cannot be resolved for an explicit-row
   // product, so the old path runs (it never needed the rows either).
-  const firstBatchFor = (card, store, sizes) => {
+  // CENTRAL'S OPEN RESERVATIONS (2026-09-17, firstBatchCore.js
+  // centralReservedBySize). The panel reads the engine's lock node for this
+  // product at every routed location ONCE when its Solve panel opens (one
+  // scoped read per location); the estimate nets them out, and the confirm
+  // waits for the read so the number shown is the number written. solve()
+  // re-reads them live, so a lock that lands while the panel is open is
+  // still honoured at the moment of the write.
+  const [openLocks, setOpenLocks] = useState({});   // pid → { loc: node|null } (undefined = not read yet)
+  const routeLocs = useMemo(() => Object.keys(cfg?.routes || {}), [cfg]);
+  const readOpenLocks = async (pid) => {
+    const out = {};
+    await Promise.all(routeLocs.map(async (loc) => {
+      out[loc] = (await get(ref(database, `refill_engine/open/${loc}/${pid}`))).val();
+    }));
+    return out;
+  };
+  useEffect(() => {
+    if (!solvePid || !cfg) return undefined;
+    let live = true;
+    const pid = solvePid;
+    setOpenLocks((m) => { const n = { ...m }; delete n[pid]; return n; });
+    readOpenLocks(pid).then((locks) => { if (live) setOpenLocks((m) => ({ ...m, [pid]: locks })); })
+      // an unreadable lock table reads as "nothing promised" — the write
+      // re-reads and the engine's own reconcile shrinks any over-ask; the
+      // panel just must not stay gated forever
+      .catch(() => { if (live) setOpenLocks((m) => ({ ...m, [pid]: {} })); });
+    return () => { live = false; };
+  }, [solvePid, cfg]);   // eslint-disable-line react-hooks/exhaustive-deps
+  const locksReadyFor = (pid) => openLocks[pid] !== undefined;
+
+  // The first-batch split for a card at a store from the LIVE (or cached)
+  // lock table, or null when this Solve is not the in-scope one.
+  const firstBatchFor = (card, store, sizes, openByLoc = openLocks[card.pid]) => {
     if (!cfg || targetsError) return null;
     const eligible = firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), routes: cfg.routes });
     if (!eligible) return null;
+    const reserved = centralReservedBySize({ openByLoc: openByLoc || {}, routes: cfg.routes });
     return firstBatchSplit({
       sizes, run: runFor(card.pid), store,
-      centralAvail: (sz) => qtyAt("central", card.pid, sz),
+      centralAvail: (sz) => centralFreeFor({ qtyAt: (s) => qtyAt("central", card.pid, s), reserved, size: sz }),
       maxUnitsPerIntent: cfg.maxUnitsPerIntent,
     });
   };
@@ -471,22 +504,29 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // has none of follow the old path unchanged. Everything else (hub-
     // stranded, a shop not routed via Hub 2) is byte-for-byte the old Solve
     // below.
-    const split = firstBatchFor(card, store, sizes);
-    const firstBatch = !!(split && split.firstBatch.length);
-    const locs = firstBatch ? [FIRST_BATCH_HUB, store] : seedLocations(card.source, store);
+    const onPath = !!firstBatchFor(card, store, sizes);
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
-    const okMsg = firstBatch
-      ? `${split.firstBatch.reduce((t, l) => t + l.qty, 0)} unit${split.firstBatch.reduce((t, l) => t + l.qty, 0) === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2's own batch follows once that is fulfilled.`
-      : `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
+    const oldMsg = `Carrying ${sizes.length} size${sizes.length === 1 ? "" : "s"} at ${LOC_LABEL[store]}${card.source === "central" ? " (via Hub 2)" : ""} — the engine will refill on its next scan.`;
     try {
+      // LIVE lock table first (one scoped read per routed location): the
+      // split is sized from Central's free at the moment of the write, never
+      // from the panel's earlier read. A size the reservations leave nothing
+      // of takes the normal path — and if that is every size, the whole
+      // Solve does (the old block below), exactly as when Central had none.
+      const openNow = onPath ? await readOpenLocks(card.pid) : null;
+      const split = onPath ? firstBatchFor(card, store, sizes, openNow) : null;
+      const firstBatch = !!(split && split.firstBatch.length);
+      const locs = firstBatch ? [FIRST_BATCH_HUB, store] : seedLocations(card.source, store);
       if (firstBatch) {
+        const units = split.firstBatch.reduce((t, l) => t + l.qty, 0);
+        const okMsg = `${units} unit${units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${SOURCE_TAB_LABEL[store]} at the next release; Hub 2's own batch follows once that is fulfilled.`;
         const existing = {};
         const priorOpen = {};
         for (const loc of locs) {
           existing[loc] = (await get(ref(database, `stock/${loc}/${card.pid}`))).val() || {};
-          priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();
+          priorOpen[loc] = openNow[loc] ?? null;
         }
         const solveId = solveIdFor(card.pid, serverNowMs());
         const { updates, requestIds, paths } = buildFirstBatchSolveUpdate({
@@ -497,11 +537,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // ONE atomic update: shop seeds, the normal-path seeds, and the shop's
         // requests land together or not at all (the old Solve's contract).
         await update(ref(database), updates);
-        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch: { solveId, requestIds, store, units: split.firstBatch.reduce((t, x) => t + x.qty, 0) } }, ...l]);
+        setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch: { solveId, requestIds, store, units } }, ...l]);
         setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));
         setSolveBusy(null);
         return;
       }
+      const okMsg = oldMsg;
       const updates = {};
       // The engine locks that exist BEFORE this solve, snapshotted into the
       // undo record. Undo blocks on any lock NOT in this snapshot — identity
@@ -675,9 +716,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         const fb = fbSplit && fbSplit.firstBatch.length ? firstBatchEstimate({ split: fbSplit, run: runFor(card.pid) }) : null;
         // The confirm button asks the question of the ONE nominated store, which
         // a per-location policy can answer differently from "any store".
-        const confirmBlocked = sOpen ? solveConfirmReason({
+        const confirmBlocked = sOpen ? (solveConfirmReason({
           canAct, busy: solveBusy === card.pid, sizesInPlan: plan.sizes.length, storeLabel: LOC_LABEL[sStore],
-        }) : null;
+        // On the path, the confirm waits for the lock read so the estimate
+        // shown IS the request written (never a false "2" over a promised 1).
+        }) || (fbSplit && !locksReadyFor(card.pid) ? "One moment — checking what Central has already promised…" : null)) : null;
         // Solvable only if the engine has a standard for at least one of its sizes
         // at at least one store. This used to probe STORES[0] alone, on the grounds
         // that the PE and Trophy size runs are identical — true of defaultRunByStore,

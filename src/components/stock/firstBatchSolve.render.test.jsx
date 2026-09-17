@@ -247,6 +247,53 @@ describe("location history nominates the shop (the operator can still switch)", 
   });
 });
 
+describe("Central's open reservations are netted out — a unit the engine already promised is never asked for twice", () => {
+  const lock = (qty, source) => ({ qty, createdAt: "t", runId: "scan-1", refillId: "eng1", ...(source ? { source } : {}) });
+  it("an engine hub2<-central lock on M (3 of Central's 4) → M×1; a hub2->shop lock is not a Central reservation; the write matches the panel", async () => {
+    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(3) };                  // route hub2→central
+    gets[`refill_engine/open/trophy/${TEE}`] = { S: lock(9, "hub2") };        // Hub 2 → Trophy: not Central's
+    const tree = render({ products: onlyProduct(TEE) });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });   // flushes the lock read
+    const text = textOf(tree);
+    expect(text).toMatch(/3 units \(S×2 · M×1\) go to Marathon PE first/);
+    expect(text).not.toMatch(/One moment — checking/);
+    await act(async () => { await buttonSaying(tree, "Solve — send 3 to Marathon PE first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    const reqs = Object.keys(upd).filter((k) => k.startsWith("refill_requests/")).map((k) => upd[k]);
+    expect(reqs.map((r) => [r.size, r.qty]).sort()).toEqual([["M", 1], ["S", 2]]);
+  });
+  it("a size the engine has FULLY promised takes the normal path (Hub 2 + shop seeded, no request for it)", async () => {
+    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(4), S: lock(4) };
+    const tree = render({ products: onlyProduct(TEE) });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    expect(textOf(tree)).toMatch(/S · M · L: Central has none — seeded at Hub 2 \+ Marathon PE|seeds Hub 2 \+ Marathon PE at qty 0/);
+    await act(async () => { await buttonSaying(tree, "Solve — ").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    expect(Object.keys(upd).some((k) => k.startsWith("refill_requests/"))).toBe(false);
+    expect(Object.keys(upd).sort()).toEqual([
+      "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
+      "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
+    ]);
+  });
+  it("the confirm waits for the lock read: before it settles the button is gated and says so", () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    act(() => { buttonExactly(tree, "Solve").props.onClick(); });   // sync: the read is still in flight
+    expect(textOf(tree)).toMatch(/One moment — checking what Central has already promised/);
+    expect(buttonSaying(tree, "Solve — send").props.disabled).toBe(true);
+  });
+  it("the write re-reads the lock table LIVE: a lock that lands after the panel opened is honoured", async () => {
+    const tree = render({ products: onlyProduct(TEE) });
+    await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
+    expect(textOf(tree)).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first/);
+    gets[`refill_engine/open/hub2/${TEE}`] = { M: lock(3) };            // lands now
+    await act(async () => { await buttonSaying(tree, "Solve — send 4 to Marathon PE first").props.onClick(); });
+    const upd = updateMock.mock.calls[0][1];
+    const reqs = Object.keys(upd).filter((k) => k.startsWith("refill_requests/")).map((k) => upd[k]);
+    expect(reqs.map((r) => [r.size, r.qty]).sort()).toEqual([["M", 1], ["S", 2]]);
+    expect(textOf(tree)).toMatch(/3 units requested from Central for Marathon PE/);
+  });
+});
+
 describe("out of scope — byte-for-byte the old Solve", () => {
   const oldShape = (upd, pid, sizes, store) => {
     const want = [];
