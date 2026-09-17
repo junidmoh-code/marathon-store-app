@@ -232,8 +232,8 @@ engine withdrew it because Central ran dry.
   `firstBatchCore.test.js` 40/40; `firstBatchSolve.render.test.jsx` 21/21;
   `missingProductsCore.test.js` 35/35; `solveUndo.gate.test.js` re-pinned for both write
   paths.
-- Mutation proof `scripts/mutation-proof-first-batch.mjs`: **55/55 guards proven** (the two
-  #607 mutations that pinned the exclusions this change removes were deleted; 20 new).
+- Mutation proof `scripts/mutation-proof-first-batch.mjs`: **56/56 guards proven** (the two
+  #607 mutations that pinned the exclusions this change removes were deleted; 21 new).
 - Full vitest: 6395 pass / 10 fail; full functions `node --test`: 2051 pass / 11 fail.
   Every failure predates this branch and lives in subjects it does not touch —
   `git diff origin/main --name-only` over them is empty: `hubIsolation.test.js` (pins an
@@ -304,3 +304,12 @@ armed policy GROUP is not mirrored by `categoryRun` (none armed live).
   every human Shop Refill order. Closing it means a new authoritative server operation keyed
   by (pid, size) at Central — a reservation table the engine would also have to honour — which
   is outside "build on the existing paths"; recorded here for the owner.
+
+### Delta review (Sonnet, `a1eb689a..9f4bc87c`)
+One finding, fixed: a category-policy location entry carrying BOTH a collapsed `target` and a
+`sizes` map is "invalid" to the engine (`policy-resolve.cjs locationEntryMode`) and arms
+nothing, but the client mirror read it as a usable map — a garbled node would have lit Solve
+over cells the engine never refills. `isGarbledEntry` now refuses it in `categoryRun` and
+`categoryPolicyLocs` (which Introduce Existing and the No Target queue also read), pinned by a
+test against the real `resolveTarget` and a mutation. Sound: the prune, `lockKeyFor` against
+the engine's encoder, the bounded lock reads, the sneaker block, the history rewording.
