@@ -442,3 +442,92 @@ test("Central's Out of Stock on the shop's batch is stamped as a withdrawal — 
   assert.equal(plan2.closes.find((c) => c.dest === "trophy" && c.pid === "p1").humanReject, true);
   assert.ok((plan2.retryOps || []).some((o) => o.dest === "trophy" && o.pid === "p1" && o.op === "reject"));
 });
+
+// ── the adversarial pass (PR #607) ───────────────────────────────────────────
+test("Hub 2's target is resolved over EVERY location the resolver reads — a per-size carriedOnly category leg sees Central's units, not a dead size", async () => {
+  const cfg = { ...CONFIG, categoryPolicy: { tees: { perSize: true, hub2: { carriedOnly: true, target: 4, minQty: 2 }, trophy: { target: 2, minQty: 1 } } } };
+  const db = makeFakeDb({
+    config: { refillEngine: cfg },
+    products: { p1: { id: "p1", name: "Tee", productType: "clothing", categoryKey: "tees", sizes: ["M"] } },
+    stock: { central: { p1: { M: cell(9) } }, trophy: { p1: { M: cell(2) } } },
+    refill_requests: { r1: shopReq({ status: "fulfilled" }) },
+  });
+  const r = await run(db);
+  assert.equal(r.raised, true, "the category target (4) resolved — Central's 9 units make the size alive");
+  assert.equal(r.qty, 4);
+});
+
+test("kill switch off at the moment of fulfil: no request, but the seed lands, and the engine raises hub2<-central itself once the switch is back", async () => {
+  const off = { ...CONFIG, ruleBasedTargets: false };
+  const db = makeFakeDb({
+    config: { refillEngine: off }, products: PRODUCTS,
+    stock: { central: { p1: { M: cell(4) } }, trophy: { p1: { M: cell(2) } } },
+    refill_requests: { r1: shopReq({ status: "fulfilled" }) },
+  });
+  const r = await run(db);
+  assert.equal(r.none, "no_hub2_target");
+  assert.equal(r.seeded, true, "Hub 2 carries the size from here");
+  assert.equal(hubRequests(db).length, 0);
+  assert.equal(lockAt(db, "hub2", "p1", "M"), null);
+  // switch back on → the ordinary engine leg, from the seed alone
+  const later = intentsFor(computeRefillPlan({ ...snapshot(db), config: CONFIG }), "hub2", "p1");
+  assert.equal(later.length, 1);
+  assert.equal(later[0].qty, 3);
+});
+
+test("engine disabled or Hub 2 not live: seed only, never a lock or a request nothing would reconcile", async () => {
+  for (const cfg of [{ ...CONFIG, enabled: false }, { ...CONFIG, mode: { ...CONFIG.mode, hub2: "shadow" } }]) {
+    const db = makeFakeDb({
+      config: { refillEngine: cfg }, products: PRODUCTS,
+      stock: { central: { p1: { M: cell(4) } }, trophy: { p1: { M: cell(2) } } },
+      refill_requests: { r1: shopReq({ status: "fulfilled" }) },
+    });
+    const r = await run(db);
+    assert.equal(r.none, "engine_off");
+    assert.equal(db.state.root.stock.hub2.p1.M.mv, "seed");
+    assert.equal(hubRequests(db).length, 0);
+    assert.equal(db.state.root.refill_engine, undefined);
+  }
+});
+
+test("Solve → undo → re-solve: the stale first-batch lock is taken over; a lost claim is retried on the next write, never recorded as done", async () => {
+  // r0 was the undone solve's request (cancelled); its lock is still there.
+  const db = world({
+    refill_requests: {
+      r0: shopReq({ status: "cancelled", cancelReason: SOLVE_UNDONE_REASON, createdFrom: { firstBatch: true, solveId: "fb_p1_OLD", source: "central", store: "trophy" } }),
+      r1: shopReq(),
+    },
+    refill_engine: { open: { trophy: { p1: { M: { qty: 2, source: "central", createdAt: T1, runId: `${FIRST_BATCH_RUN_PREFIX}fb_p1_OLD`, refillId: "r0" } } } } },
+  });
+  const r = await run(db);
+  assert.equal(r.lock.claimed, true, "the stale lock was replaced");
+  assert.equal(lockAt(db, "trophy", "p1", "M").refillId, "r1");
+  assert.equal(db.state.root.refill_requests.r1.firstBatch.lock.claimedAt, T1);
+  // An ENGINE-held lock is never taken over, and the lost claim is retried on the next fire.
+  const db2 = world({
+    refill_engine: { open: { trophy: { p1: { M: { qty: 1, source: "hub2", createdAt: T1, runId: "scan-3", refillId: "eng2", orderId: "R001-1", orderCreatedAt: T1 } } } } },
+    refill_requests: { r1: shopReq(), eng2: { productId: "p1", size: "M", qty: 1, requestingLocation: "trophy", status: "open", createdAt: T1, createdFrom: { engine: true, source: "hub2" } } },
+  });
+  const first = await run(db2);
+  assert.equal(first.lock.claimed, false);
+  assert.equal(db2.state.root.refill_requests.r1.firstBatch.lock.heldBy, "scan-3");
+  assert.equal(lockAt(db2, "trophy", "p1", "M").refillId, "eng2", "the engine's lock stands");
+  // the engine closes its lock; the next write to r1 re-fires and the claim is won
+  delete db2.state.root.refill_engine;
+  const second = await run(db2, "r1", "2026-09-17T10:20:00.000Z");
+  assert.equal(second.lock.claimed, true);
+  assert.equal(lockAt(db2, "trophy", "p1", "M").refillId, "r1");
+});
+
+test("an array-coerced Hub 2 row with a null hole is an absent cell: the seed is written", async () => {
+  const db = makeFakeDb({
+    config: { refillEngine: { ...CONFIG, defaultRunByStore: { hub2: { 2: 3 }, trophy: { 2: 2 } } } },
+    products: { p1: { id: "p1", name: "Kids tee", productType: "clothing", sizes: ["0", "1", "2"] } },
+    stock: { central: { p1: { 2: cell(2) } }, trophy: { p1: { 2: cell(2) } }, hub2: { p1: [cell(1), cell(1), null] } },
+    refill_requests: { r1: shopReq({ size: "2", status: "fulfilled" }) },
+  });
+  const r = await run(db);
+  assert.equal(r.raised, true);
+  assert.equal(r.seeded, true, "the hole at index 2 is an absent cell");
+  assert.equal(db.state.root.stock.hub2.p1[2].mv, "seed");
+});

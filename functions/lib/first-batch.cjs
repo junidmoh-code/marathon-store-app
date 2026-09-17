@@ -107,10 +107,27 @@ async function centralReservations({ db, routes, pid, sizeKey, excludeRefillId, 
 // only the Hub 2 leg's `firstBatch/hub2Leg` marker is that.
 async function claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, now }) {
   const lockPath = `refill_engine/open/${store}/${pid}/${sizeKey}`;
-  const claim = await db.ref(lockPath).transaction((cur) => (cur ? undefined : {
-    qty: Math.max(num(rr.qty) || 1, 1), source: SOURCE, createdAt: now, runId,
-    refillId: requestId, orderId: null, orderCreatedAt: null,
-  }));
+  // A STALE first-batch lock is taken over. The Solve's undo cancels its
+  // requests but cannot touch /refill_engine (client-unwritable), so after
+  // Solve → undo → re-solve the old lock still names a cancelled request; the
+  // engine closes it on its next scan, but until then the new request would
+  // lose the claim and run unguarded. If the existing lock is a first-batch
+  // lock whose request is no longer open, replace it — by CAS on that exact
+  // refillId, so a lock that changed underneath is never overwritten. An
+  // engine-held lock (runId of a scan) is never touched: the engine owns it.
+  // (Adversarial review, PR #607.)
+  const existing = (await db.ref(lockPath).once("value")).val();
+  let staleId = null;
+  if (existing && existing.refillId && existing.refillId !== requestId && String(existing.runId || "").startsWith(FIRST_BATCH_RUN_PREFIX)) {
+    const theirs = (await db.ref(`refill_requests/${existing.refillId}`).once("value")).val();
+    if (!theirs || theirs.status !== "open") staleId = existing.refillId;
+  }
+  const mine = { qty: Math.max(num(rr.qty) || 1, 1), source: SOURCE, createdAt: now, runId, refillId: requestId, orderId: null, orderCreatedAt: null };
+  const claim = await db.ref(lockPath).transaction((cur) => {
+    if (!cur) return mine;
+    if (staleId && cur.refillId === staleId) return mine;
+    return undefined;
+  });
   const cur = claim.snapshot.val();
   const ours = !!cur && cur.runId === runId && cur.refillId === requestId;
   const mark = ours
@@ -173,7 +190,11 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
     // bookkeeping: withdraw when Central runs dry (awaiting_upstream), resize
     // to real demand, close on fulfil. The engine never CREATES a shop→Central
     // request — routes are untouched — it only bookkeeps this one.
-    if (rr.firstBatch && rr.firstBatch.lock) return { skipped: "open_untouched" };
+    // Short-circuit only on a WON claim. A lost one (`heldBy`) is retried on
+    // every later write to the row — a lost claim recorded as "done" would let
+    // the shop run unguarded once the blocking lock is gone. (Adversarial
+    // review, PR #607.)
+    if (rr.firstBatch && rr.firstBatch.lock && rr.firstBatch.lock.claimedAt) return { skipped: "open_untouched" };
     const r = await claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, now });
     return { skipped: "open_untouched", lock: r };
   }
@@ -186,38 +207,66 @@ async function processFirstBatchRequest({ db, requestId, nowIso }) {
   }
 
   // ── scoped reads ───────────────────────────────────────────────────────────
-  const [config, product, hub2TargetRow, centralCell, hub2Cells] = await Promise.all([
+  const [config, product, hub2TargetRow, centralCell, hub2Cells, storeCells] = await Promise.all([
     db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
     db.ref(`products/${pid}`).once("value").then((s) => s.val()),
     db.ref(`stock_targets/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
     db.ref(`stock/${SOURCE}/${pid}/${sizeKey}`).once("value").then((s) => s.val()),
     db.ref(`stock/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
+    db.ref(`stock/${store}/${pid}`).once("value").then((s) => s.val()),
   ]);
   if (!product) {
     await reqRef.update({ "firstBatch/hub2Leg": { none: "product_missing", at: now }, ...declineStamp });
     return { raised: false, none: "product_missing" };
   }
 
+  const seedPath = `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
+  // `== null`, never `=== undefined`: an array-coerced /stock row (dense numeric
+  // size keys) comes back with NULL holes, and a hole is an absent cell.
+  const seedNeeded = !hub2Cells || hub2Cells[sizeKey] == null;
+
+  // THE ENGINE'S SWITCHES. With the engine disabled, or Hub 2 not in live
+  // mode, a real lock and a real request would be written that nothing
+  // reconciles (the scan returns before its reconcile when disabled, and a
+  // shadow/off hub only ever gets shadow rows). Seed only: Hub 2 carries the
+  // size from here, and the engine raises hub2←central itself the moment it
+  // is live again. (Adversarial review, PR #607.)
+  if (config.enabled !== true || (config.mode && config.mode[FIRST_BATCH_HUB] !== "live")) {
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+    await reqRef.update({ "firstBatch/hub2Leg": { none: "engine_off", at: now }, ...declineStamp });
+    return { raised: false, none: "engine_off", seeded: seedNeeded };
+  }
+
   // Hub 2's target for this size, resolved by the REAL engine function over
   // the stock Hub 2 will hold once the seed lands (a clothing target exists
   // only where the location carries a cell — that is the whole reason the
-  // seed is written here). No mirror: this is resolveTarget itself.
+  // seed is written here). No mirror: this is resolveTarget itself. The view
+  // carries EVERY location the resolver reads — Central's cell and the shop's
+  // row as well as Hub 2's — because the per-size category rule asks for
+  // units ANYWHERE, and a Hub 2-only view answered 0 for a size Central held
+  // nine of. (Adversarial review, PR #607.)
   const hub2CellsAfterSeed = { ...(hub2Cells || {}) };
-  if (hub2CellsAfterSeed[sizeKey] === undefined) hub2CellsAfterSeed[sizeKey] = seedCell(now);
+  if (hub2CellsAfterSeed[sizeKey] == null) hub2CellsAfterSeed[sizeKey] = seedCell(now);
   const ctx = {
     config,
     products: { [pid]: product },
     targets: hub2TargetRow ? { [FIRST_BATCH_HUB]: { [pid]: hub2TargetRow } } : {},
-    stock: { [FIRST_BATCH_HUB]: { [pid]: hub2CellsAfterSeed } },
+    stock: {
+      [FIRST_BATCH_HUB]: { [pid]: hub2CellsAfterSeed },
+      [SOURCE]: { [pid]: centralCell ? { [sizeKey]: centralCell } : {} },
+      [store]: { [pid]: storeCells || {} },
+    },
   };
   const t = resolveTarget(ctx, FIRST_BATCH_HUB, pid, size);
   if (!t || !(t.target > 0)) {
+    // No target at Hub 2 right now (kill switch off, policy withdrawn, a dead
+    // size). Not a request — but the seed still lands, so Hub 2 carries the
+    // size and the engine raises hub2←central itself when a target returns.
+    // Without the seed the marker would be terminal with no way back.
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
     await reqRef.update({ "firstBatch/hub2Leg": { none: "no_hub2_target", at: now }, ...declineStamp });
-    return { raised: false, none: "no_hub2_target" };
+    return { raised: false, none: "no_hub2_target", seeded: seedNeeded };
   }
-
-  const seedPath = `stock/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
-  const seedNeeded = !hub2Cells || hub2Cells[sizeKey] === undefined;
   const lockPath = `refill_engine/open/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
   // Somebody already bookkeeps this Hub 2 cell (the engine, or an earlier
   // solve's leg) → ONE request stands; record where the demand went. Read

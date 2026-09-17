@@ -160,7 +160,18 @@ export function firstBatchUndoBlockers({ liveRequests = {}, storeLabel = "the sh
   const blockers = [];
   for (const [id, r] of Object.entries(liveRequests)) {
     if (!r) continue;   // already gone — nothing to cancel
-    if (r.status !== "open") { blockers.push(`Central has already ${r.status === "fulfilled" ? "sent" : "answered"} the ${String(r.size)} request for ${storeLabel} — this solve can no longer be undone.`); continue; }
+    if (r.status !== "open") {
+      // Three different pasts, three different sentences: Central sent it,
+      // Central answered "no", or the ENGINE withdrew it (a cancelReason —
+      // Central ran dry, or the need was met another way). Calling an engine
+      // withdrawal "Central answered" would send the operator to ask Central
+      // about a decision Central never made. (Adversarial review, PR #607.)
+      const past = r.status === "fulfilled" ? "Central has already sent"
+        : r.cancelReason ? `the engine already withdrew (${String(r.cancelReason).replace(/_/g, " ")})`
+        : "Central has already answered";
+      blockers.push(`${past} the ${String(r.size)} request for ${storeLabel} — this solve can no longer be undone.`);
+      continue;
+    }
     if ((Number(r.sentQty) || 0) > 0) blockers.push(`Central has started sending size ${String(r.size)} to ${storeLabel} — this solve can no longer be undone.`);
   }
   return blockers;

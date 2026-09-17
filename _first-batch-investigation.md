@@ -343,3 +343,35 @@ Noted, not changed:
   built for hub destinations. Flag before that lane is ever switched on.
 - `product_missing` / `no_hub2_target` markers are terminal for that row (the
   size was not a qualifying size at Solve time in either case).
+
+## 10. Review round 2 — the adversarial architect pass (the Kimi substitute's second half)
+
+Fixed at the cause, each pinned by a test and a mutation:
+- **Hub 2's target resolved over a Hub 2-only stock view (HIGH):** the
+  per-size category rule asks for units ANYWHERE; with only Hub 2's seed in
+  view it answered 0 — a dead size — and the marker was terminal. The view now
+  carries Central's cell and the shop's row too (one more scoped read).
+- **`no_hub2_target` was terminal with no way back (HIGH):** the kill switch
+  off at the moment of fulfil, or a deactivated product, would strand the leg
+  forever. The seed now lands on that branch (and on `engine_off`), so Hub 2
+  carries the size and the engine raises hub2←central itself when a target
+  returns — the same "let the engine take over" as `central_empty`.
+- **A lost shop-lock claim was recorded as done and never retried (HIGH):**
+  Solve → undo → re-solve left the undone solve's lock in place (clients
+  cannot write `/refill_engine`), so the new request lost the claim and would
+  have run unguarded once the scan closed the stale lock. The short-circuit now
+  keys on `claimedAt` only, and a stale first-batch lock whose request is no
+  longer open is taken over by CAS on its refillId. An engine-held lock is
+  never touched.
+- **Engine switches ignored (MEDIUM):** with `enabled !== true` or Hub 2 not
+  `live`, a real lock and request would have been written that nothing
+  reconciles. Seed only, marker `engine_off`.
+- **Array-coerced rows (LOW):** a null hole read as "cell present"; `== null`.
+- Undo blocker wording distinguishes an engine withdrawal from Central's
+  answer.
+
+Accepted, documented: the engine may RESIZE the shop's Central request (up to
+the shop's own policy target, never above) and may withdraw it when Central
+runs dry — the ordinary bookkeeping of a locked request. The residual of a
+crash between the pending lock claim and the atomic update is that the pending
+lock reserves Central for up to an hour before the engine's self-heal.
