@@ -520,14 +520,17 @@ test("Solve → undo → re-solve: the stale first-batch lock is taken over; a l
 });
 
 test("an array-coerced Hub 2 row with a null hole is an absent cell: the seed is written", async () => {
+  // Sizes 0 and 2 exist at Hub 2, size 1 does not: RTDB coerces the row to
+  // [cell, null, cell] and val() answers NULL at index 1 — not undefined.
   const db = makeFakeDb({
-    config: { refillEngine: { ...CONFIG, defaultRunByStore: { hub2: { 2: 3 }, trophy: { 2: 2 } } } },
+    config: { refillEngine: { ...CONFIG, defaultRunByStore: { hub2: { 1: 3 }, trophy: { 1: 2 } } } },
     products: { p1: { id: "p1", name: "Kids tee", productType: "clothing", sizes: ["0", "1", "2"] } },
-    stock: { central: { p1: { 2: cell(2) } }, trophy: { p1: { 2: cell(2) } }, hub2: { p1: [cell(1), cell(1), null] } },
-    refill_requests: { r1: shopReq({ size: "2", status: "fulfilled" }) },
+    stock: { central: { p1: { 1: cell(2) } }, trophy: { p1: { 1: cell(2) } }, hub2: { p1: [cell(1), null, cell(1)] } },
+    refill_requests: { r1: shopReq({ size: "1", status: "fulfilled" }) },
   });
+  assert.equal((await db.ref("stock/hub2/p1").once("value")).val()[1], null, "the fake answers null in the hole, as the SDK does");
   const r = await run(db);
   assert.equal(r.raised, true);
-  assert.equal(r.seeded, true, "the hole at index 2 is an absent cell");
-  assert.equal(db.state.root.stock.hub2.p1[2].mv, "seed");
+  assert.equal(r.seeded, true, "the hole at index 1 is an absent cell");
+  assert.equal(db.state.root.stock.hub2.p1[1].mv, "seed");
 });
