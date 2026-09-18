@@ -16,6 +16,11 @@
 import { describe, it, expect, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
+import { readFileSync } from "node:fs";
+import { resolve, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 // /config/cardTerminals as at 2026-09-18 12:07 UTC, read from the live database.
 const LIVE_ESTATE = {
@@ -72,6 +77,23 @@ describe("the capture screen against the live estate", () => {
     // here as "not here" would take a trading till off a manager's phone.
     const stamped = renderCards().filter((l) => /Marathon Till [123]|Trophy Till 2/.test(l));
     expect(stamped).toHaveLength(4);
+  });
+
+  it("the registry stamps NEVER leave the screen — the callable is sent a TID and a photo", () => {
+    // Asked directly after the 18 Sep capture failure: does a till carrying
+    // `tillChangedAt` (0000HP1X) send something different from one that does
+    // not (67377843)? It cannot. The payload is built from two values — the map
+    // KEY and the decoded photo — and no registry field of any kind is in it.
+    // A stamp added to a row therefore cannot change what is sent, for any
+    // till, ever.
+    const src = readFileSync(resolve(here, "CardReconScreen.jsx"), "utf8");
+    const call = src.slice(src.indexOf("cardBatchCaptureFn({"), src.indexOf("summaryOnly: true"));
+    expect(call).toMatch(/action: "extract", pickedTid: tid, photos: \[\{ base64 \}\]/);
+    for (const field of ["tillChangedAt", "activeFrom", "retiredAt", "mid", "storeId", "tillId", "label"]) {
+      expect(src.includes(`${field}:`), `${field} must not be part of what the screen sends`).toBe(false);
+    }
+    // And `t` reaches the callable only through its tid.
+    expect(src).toMatch(/onChange=\{onPick\(t\.tid\)\}/);
   });
 
   it("a RETIRED machine is the only one that loses its card", () => {

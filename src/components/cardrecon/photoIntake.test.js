@@ -391,10 +391,40 @@ describe("what must NOT have changed behind the upload", () => {
       .not.toMatch(/reason: (data|done)\.reason/);
   });
 
+  it("NO failure is described by this screen — every one goes through the vocabulary", () => {
+    // The bug this replaced: one hardcoded sentence, "That did not go through.
+    // Check the signal and try again", shown for EVERY rejection — including
+    // the server's own written refusals and, for two days in September 2026, an
+    // AI account with no credit left. The screen must no longer author a
+    // failure sentence at all; captureFailure.js owns the words, and this is
+    // what stops the old one being typed back in.
+    expect(code, "the screen must not hardcode a failure sentence again")
+      .not.toMatch(/Check the signal/);
+    expect(code, "a rejection is classified, never assumed")
+      .toMatch(/describeCallableFailure\(err\)/);
+    // …and what the classifier said is what is shown.
+    const from = code.indexOf("describeCallableFailure(err)");
+    expect(code.slice(from, from + 320)).toMatch(/reason,/);
+    // Every failure path records a breadcrumb through the one recorder, so a
+    // path added later cannot quietly skip it.
+    expect([...code.matchAll(/fail\(tid, \{/g)].length,
+      "pick, decode, payload, extract-refusal, submit-refusal, transport")
+      .toBeGreaterThanOrEqual(6);
+  });
+
   it("a refusal is shown verbatim, and a duplicate can still be corrected", () => {
     // `correction` is the only way to replace a batch already recorded, and it
     // keeps both records. Losing it would leave a bad capture permanent.
-    expect(code).toMatch(/phase: "failed", reason: reasonOf\(data\)/);
+    //
+    // THE ASSERTION IS THAT THE SERVER'S SENTENCE IS WHAT IS SHOWN, not the
+    // spelling of the object it is shown in. It used to read the literal
+    // `phase: "failed", reason: reasonOf(data)`, which broke the moment every
+    // failure path was routed through one recorder — a guard that fails on a
+    // refactor it should not care about teaches the next person to weaken it.
+    expect(code).toMatch(/reason: reasonOf\(data\)/);
+    // …and that path still ends in a failed card, via the one recorder.
+    expect(code).toMatch(/return \{ phase: "failed", reason \};/);
+    expect(code).toMatch(/fail\(tid, \{ stage: STAGE\.EXTRACT/);
     expect(code).toMatch(/already captured\|resubmit as a correction/);
     // …and the words matched are the server's own, so a re-word there is
     // caught here rather than at a till.

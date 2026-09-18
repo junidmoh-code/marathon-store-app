@@ -288,7 +288,19 @@ async function runSlipOcr(photos, apiKey) {
     }),
     signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`gemini HTTP ${res.status}`);
+  if (!res.ok) {
+    // THE BODY IS THE ANSWER, AND THIS USED TO THROW IT AWAY. `gemini HTTP 429`
+    // was all the log ever said, for two days, while the body said "your
+    // prepayment credits are depleted" — the one fact that would have ended the
+    // investigation on the first reading. A status code names a category; the
+    // body names the cause. Bounded, because this is a log line, not a payload,
+    // and it carries no key (the key is a header).
+    let body = "";
+    try { body = (await res.text()).replace(/\s+/g, " ").slice(0, 400); } catch { /* a body we cannot read is a body we do not quote */ }
+    const err = new Error(`gemini HTTP ${res.status}${body ? `: ${body}` : ""}`);
+    err.status = res.status;
+    throw err;
+  }
   const payload = await res.json();
   const text = ((((payload.candidates || [])[0] || {}).content || {}).parts || [])
     .map((p) => p && p.text).filter(Boolean).join("");
@@ -514,7 +526,22 @@ async function handleExtract(db, request) {
     ocr = await runSlipOcr(decoded, geminiApiKey.value());
   } catch (err) {
     console.error("cardBatchCapture: OCR failed:", err.message);
-    throw new HttpsError("unavailable", "Could not read the photos right now — try again.");
+    // THE CATEGORY DECIDES THE ADVICE, and getting that wrong is what kept a
+    // manager retrying for two days. "Try again" is right for a timeout and
+    // actively misleading for an exhausted account: the retry costs nothing,
+    // fixes nothing, and tells everybody the fault is theirs.
+    //
+    // 429 is the one that is not about this slip, this phone or this signal.
+    // The EMAILED path never touches the reader — a PDF is read exactly, with
+    // no model call — so it keeps working, and saying so stops the whole
+    // estate's card reconciliation being declared down.
+    if (err && err.status === 429) {
+      throw new HttpsError(
+        "resource-exhausted",
+        "The slip reader is out of credit, so photographed slips cannot be read until it is topped up. Nothing is wrong with this phone, the photo or the till. Terminals that EMAIL their report are unaffected and are still being recorded. Tell Junid: the Gemini prepaid balance needs topping up.",
+      );
+    }
+    throw new HttpsError("unavailable", "The slip reader could not be reached just now. Try once more; if it says this again, tell Junid.");
   }
   // Cost is logged for EVERY billed call, rejected extractions included.
   const costUSD = +((ocr.tokensIn / 1e6) * IN_PER_MTOK_USD + (ocr.tokensOut / 1e6) * OUT_PER_MTOK_USD).toFixed(6);

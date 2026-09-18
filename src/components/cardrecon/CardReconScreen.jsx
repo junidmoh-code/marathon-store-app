@@ -64,6 +64,7 @@ import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../sho
 import { planPhotoIntake, payloadRefusal } from "./photoIntake";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
+import { STAGE, describeCallableFailure, rememberFailure, readFailures, failureLine } from "./captureFailure";
 import { captureCards } from "./terminalRegistry";
 import { FONT } from "./cardReconStyles";
 
@@ -151,6 +152,16 @@ const T = {
   // its label can always open; display:none inputs are the thing phone browsers
   // and webviews quietly refuse to activate.
   input: { position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" },
+  // The breadcrumb. Deliberately plain and small: it is evidence to read out or
+  // photograph, not part of the ten-second job the rest of this screen is.
+  crumbBtn: { appearance: "none", border: 0, background: "transparent", color: "rgba(233,238,255,.42)",
+              fontFamily: FONT, fontSize: 13, fontWeight: 600, padding: "10px 4px", marginTop: 14,
+              cursor: "pointer", minHeight: 44, display: "block", textAlign: "left", width: "100%" },
+  crumbBox: { marginTop: 4, padding: "10px 12px", borderRadius: 12, background: "rgba(255,255,255,.04)",
+              border: "1px solid rgba(255,255,255,.09)" },
+  crumb: { fontSize: 11.5, lineHeight: 1.45, color: "rgba(233,238,255,.62)",
+           fontFamily: "ui-monospace, SFMono-Regular, Menlo, monospace",
+           wordBreak: "break-word", margin: "0 0 8px" },
 };
 
 /**
@@ -216,6 +227,11 @@ export default function CardReconScreen({ onExit }) {
 
   // tid → { phase: "busy" | "failed", reason, canReplace }
   const [work, setWork] = useState({});
+  // The last few failures, on this device. Read once on mount and kept in state
+  // so a fresh one appears without a reload — see captureFailure.js for why
+  // this is on the handset rather than in the database.
+  const [failures, setFailures] = useState(() => readFailures());
+  const [showFailures, setShowFailures] = useState(false);
   // The photo of the last attempt, kept only so "replace the earlier capture"
   // does not ask for it to be taken again.
   const lastPhoto = useRef({});
@@ -241,6 +257,15 @@ export default function CardReconScreen({ onExit }) {
   // manager to confirm the figures it had read; the figures are no longer shown,
   // so there is nothing to confirm. The callable is untouched: the same two
   // actions, the same payload one photo makes, the same refusals.
+  const fail = (tid, { stage, reason, kind, detail }) => {
+    // ONE PLACE RECORDS, so a path added later cannot forget to. The breadcrumb
+    // is what the owner reads on the phone; the sentence is what the manager
+    // acts on. See captureFailure.js.
+    rememberFailure({ at: serverNowMs(), tid, stage, kind, detail: detail || reason });
+    setFailures(readFailures());
+    return { phase: "failed", reason };
+  };
+
   const send = async (tid, base64, correction) => {
     setPhase(tid, { phase: "busy" });
     try {
@@ -254,29 +279,40 @@ export default function CardReconScreen({ onExit }) {
         summaryOnly: true, correction,
       });
       if (!data.ok) {
-        setPhase(tid, { phase: "failed", reason: reasonOf(data),
-                        // The one refusal with a way out. Matched on the
-                        // server's own words — widened to either half of the
-                        // sentence it writes, so a re-word of one clause does
-                        // not silently strand a manager with a bad capture.
-                        canReplace: /already captured|resubmit as a correction/i.test(data.reason || "") });
+        setPhase(tid, {
+          ...fail(tid, { stage: STAGE.EXTRACT, kind: "refused", reason: reasonOf(data) }),
+          // The one refusal with a way out. Matched on the server's own words —
+          // widened to either half of the sentence it writes, so a re-word of
+          // one clause does not silently strand a manager with a bad capture.
+          canReplace: /already captured|resubmit as a correction/i.test(data.reason || ""),
+        });
         return;
       }
       // `{ data }`, not the envelope: a callable resolves to { data }, and
       // reading .ok off the envelope makes every submit look refused — with an
       // undefined reason, which renders as an empty red box saying nothing.
       const { data: done } = await cardBatchCaptureFn({ action: "submit", draftId: data.draftId });
-      if (!done.ok) { setPhase(tid, { phase: "failed", reason: reasonOf(done) }); return; }
+      if (!done.ok) {
+        setPhase(tid, fail(tid, { stage: STAGE.SUBMIT, kind: "refused", reason: reasonOf(done) }));
+        return;
+      }
       rememberHandCapture(tid, today);
       setMine((prev) => new Set(prev).add(tid));
       setPhase(tid, null);
       delete lastPhoto.current[tid];
     } catch (err) {
-      // A transport failure is not a sentence a manager can act on, so it is
-      // translated. The detail goes to the console, where it can be read by
-      // whoever is asked to look.
+      // EVERY REJECTION USED TO READ "check the signal", including the server's
+      // own carefully-written refusals — which is how an exhausted AI account
+      // was investigated for two days as a phone problem. The failure now names
+      // itself (captureFailure.js), and the raw words are kept on the device
+      // where the owner can read them without a laptop.
       console.error("cardBatchCapture failed", err);
-      setPhase(tid, { phase: "failed", reason: "That did not go through. Check the signal and try again." });
+      const { kind, reason } = describeCallableFailure(err);
+      setPhase(tid, fail(tid, {
+        stage: STAGE.EXTRACT, kind,
+        reason,
+        detail: `${err?.code || "no-code"} ${err?.message || ""}`.trim(),
+      }));
     }
   };
 
@@ -292,19 +328,32 @@ export default function CardReconScreen({ onExit }) {
       current: [], files, cap: 1, replace: true,
       isImage: isAcceptedImageFile, describe: describePickedFile,
     });
-    if (refusal) { setPhase(tid, { phase: "failed", reason: refusal }); return; }
+    if (refusal) {
+      setPhase(tid, fail(tid, { stage: STAGE.PICK, kind: "unusable-file", reason: refusal }));
+      return;
+    }
 
     setPhase(tid, { phase: "busy" });
     let photo;
     try {
       photo = await downscalePhoto(take[0]);
     } catch (err) {
-      setPhase(tid, { phase: "failed", reason: `That photo could not be opened (${err?.message || err}).` });
+      // decodeImageFile throws a sentence a person can read — an unopenable
+      // HEIC, a decoder that would not load, a browser that cannot do it. It is
+      // shown as written rather than wrapped in a second guess.
+      setPhase(tid, fail(tid, {
+        stage: STAGE.DECODE, kind: "decode",
+        reason: `That photo could not be opened (${err?.message || err}).`,
+        detail: String(err?.message || err),
+      }));
       return;
     }
     // Refused HERE rather than as a transport error nobody can read.
     const tooBig = payloadRefusal([photo]);
-    if (tooBig) { setPhase(tid, { phase: "failed", reason: tooBig }); return; }
+    if (tooBig) {
+      setPhase(tid, fail(tid, { stage: STAGE.PAYLOAD, kind: "too-big", reason: tooBig }));
+      return;
+    }
     lastPhoto.current[tid] = photo.base64;
     await send(tid, photo.base64, false);
   };
@@ -355,12 +404,42 @@ export default function CardReconScreen({ onExit }) {
       </div>
 
       {/* A read that was DENIED is not an empty feed, and must never be shown as
-          one: without the mailbox we cannot say whether the three that email
+          one: without the mailbox we cannot say whether the terminals that email
           have reported, and a missing tick would read as "it never arrived". */}
       {intake === null && (
         <div style={T.quiet}>
           What has arrived by email cannot be read right now, so those ticks may be missing.
         </div>
+      )}
+
+      {/* ── THE BREADCRUMB ──────────────────────────────────────────────────
+          Hidden until something has failed, and then one tap away. It exists
+          because "That did not go through" was, for two days, the ONLY thing
+          anybody could see about a capture that was in fact reaching the
+          server and being refused by an AI account with no credit left. The
+          reason now reaches the till; this is the evidence that goes with it,
+          readable without a laptop. */}
+      {failures.length > 0 && (
+        <>
+          <button style={T.crumbBtn} onClick={() => setShowFailures((v) => !v)}>
+            {showFailures ? "▾" : "▸"} What went wrong ({failures.length})
+          </button>
+          {showFailures && (
+            <div style={T.crumbBox}>
+              {failures.map((row, i) => (
+                <p key={i} style={T.crumb}>
+                  {failureLine(row, row.at ? new Date(row.at).toLocaleString("en-ZA", {
+                    timeZone: "Africa/Johannesburg", day: "numeric", month: "short",
+                    hour: "2-digit", minute: "2-digit",
+                  }) : "unknown time")}
+                </p>
+              ))}
+              <div style={{ ...T.crumb, margin: 0, opacity: .75 }}>
+                Read this to Junid as it stands.
+              </div>
+            </div>
+          )}
+        </>
       )}
     </div>
   );
