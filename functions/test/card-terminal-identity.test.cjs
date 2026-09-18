@@ -286,3 +286,64 @@ test("nothing anywhere deletes a TID mapping", () => {
   assert.match(apply, /config\/cardTerminals\/\$\{tid\}`\)\.set\(/,
     "rows are written one TID at a time");
 });
+
+// ─── NO TERMINAL IS WRITTEN DOWN AS AN EXCEPTION ─────────────────────────────
+
+test("no TID appears in the CODE of the capture feature, on either side", () => {
+  // The screen used to say in its own header that three of the four machines
+  // emailed and PE Till 1 (0000HP1X) could not. That was true for three weeks.
+  // The machine has since been replaced with a PAX A920Pro — the same hardware
+  // as the terminals that email themselves — so the estate's one manual-only
+  // terminal may not be manual-only any more, and nobody has tested it yet.
+  //
+  // The manual path stays for EVERY till: a machine that does not email, one
+  // whose email failed tonight, one nobody has tested. What must not exist is a
+  // TID in a BRANCH — "if this is 0000HP1X, then". Which machines email is
+  // answered by what turns up in /card_batch_intake; which machines exist is
+  // answered by /config/cardTerminals. Neither answer is compiled in.
+  //
+  // COMMENTS MAY NAME A MACHINE — this file's own header does, and so does the
+  // history in todaysArrivals.js; explaining what happened is how the next
+  // person understands why the rule exists. CODE may not.
+  const files = [
+    "../cardRecon/cardRecon.js",
+    "../lib/card-recon.cjs",
+    "../lib/card-recon-email.cjs",
+    "../lib/card-terminals.cjs",
+    "../../src/components/cardrecon/CardReconScreen.jsx",
+    "../../src/components/cardrecon/todaysArrivals.js",
+    "../../src/components/cardrecon/terminalRegistry.js",
+    "../../scripts/cardrecon/intakeCore.mjs",
+  ];
+  const offenders = [];
+  let scanned = 0;
+  for (const rel of files) {
+    const raw = readFileSync(resolve(__dirname, rel), "utf8");
+    // Line-wise, for the reason captureOnly.test.js documents at length: the
+    // naive /\*[\s\S]*?\*/ strip treats the `/*` in accept="image/*" as a
+    // comment opener and eats the rest of the file.
+    const code = raw.split("\n").reduce(({ out, inBlock }, line) => {
+      if (inBlock) return { out, inBlock: !/\*\//.test(line) };
+      if (/^\s*\{?\/\*/.test(line)) return { out, inBlock: !/\*\//.test(line) };
+      if (/^\s*\/\//.test(line)) return { out, inBlock: false };
+      return { out: [...out, line], inBlock: false };
+    }, { out: [], inBlock: false }).out.join("\n");
+    scanned++;
+    for (const tid of Object.keys(LIVE)) {
+      if (code.includes(tid)) offenders.push(`${rel} names ${tid} in code`);
+    }
+  }
+  assert.equal(scanned, files.length);
+  assert.deepEqual(offenders, [], offenders.join("\n"));
+
+  // THE SCAN MUST BE ABLE TO FAIL, or it passes on wreckage. Two proofs: the
+  // files it read are not empty after stripping, and a TID placed in code where
+  // this scan looks IS caught.
+  for (const rel of files) {
+    const raw = readFileSync(resolve(__dirname, rel), "utf8");
+    assert.ok(raw.length > 200, `${rel} is suspiciously small`);
+  }
+  const planted = "const only = registry['0000HP1X'];";
+  assert.ok(Object.keys(LIVE).some((tid) => planted.includes(tid)),
+    "the needle this scan looks for does match a real TID in real code");
+});

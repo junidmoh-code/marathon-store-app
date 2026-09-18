@@ -116,9 +116,13 @@ const EXTRACTION_PROMPT = [
   "and totals. Read ONLY what is literally printed. Never invent, infer or",
   "complete a value — an unreadable field is an empty string with confidence 0.",
   "",
+  // THE EXAMPLE TID IS MADE UP, deliberately. It is there to show the model the
+  // SHAPE of the thing — four-to-eight alphanumerics, sometimes leading zeros —
+  // and a real one would be a live machine written into a shipped artefact, in
+  // a feature whose whole rule is that no terminal is named in what ships.
   "HEADER fields: MID (merchant ID, long digits), TID (terminal ID, e.g.",
-  "0000HP1X), the batch number (printed like 'Batch Report (#494)' — return",
-  "the digits), Opened, Closed and Printed timestamps (return exactly as",
+  "0000AB1C or 67000000), the batch number (printed like 'Batch Report (#494)'",
+  "— return the digits), Opened, Closed and Printed timestamps (return exactly as",
   "printed, e.g. '2026/08/26 18:50:04'), the Transactions count, and any",
   "reconciliation line (e.g. '500 - Reconciled, in balance').",
   "",

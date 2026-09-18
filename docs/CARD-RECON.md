@@ -122,6 +122,33 @@ rules engine rather than by reading: a MID-less terminal is accepted, a numeric
 TID is accepted, a terminal missing `storeId` is still refused, and a non-admin
 still cannot write the registry at all.
 
+### Which name a row shows
+
+**A row that has a RECORD shows the name the terminal had WHEN THE SLIP WAS
+CAPTURED. A row with no record shows the current name, because that is the only
+name there is.**
+
+The record carries its own `storeId`, `tillId` and `terminalLabel`, stamped by
+`buildBatchRecord` and never re-read from the registry; the intake row on
+`/card_batch_intake` carries `terminalLabel` for the same reason, stamped by the
+poller from the capture response. Rows written before 2026-09-18 carry none and
+fall back to the **TID** — the right fallback precisely because a TID is the one
+thing about a terminal that never changes.
+
+| surface | what it shows | why |
+|---|---|---|
+| Card recon tab, batch row | `b.terminalLabel \|\| b.tid` + `tillLabel(b.storeId, b.tillId)` | has a record |
+| Card recon tab, NO SLIP row | `info.label` off `/config/cardTerminals` | no record exists |
+| Emailed slips tab | `a.terminalLabel \|\| TID a.tid` | has a record |
+| EFT settlement row | `storeLabel(used.storeId) · tillLabel(used.storeId, used.tillId)` | ids stamped at settle; only the NAME is looked up |
+| Store app capture screen | `t.label` off the registry | nothing captured yet |
+
+This stopped being theoretical on 2026-09-18: three of six terminals were
+renamed and two also moved till. Without it the twelve batches filed under
+`0000HP1X` as "PE Till 1" at `pe/till-1` would have retitled themselves
+"Marathon Till 2" at `pe/till-2` — a report describing money as rung at a till
+it was not rung at.
+
 ### `/card_batches/{storeId}/{tid}/{batchKey}`  ·  TOP-LEVEL, owner-only
 
 Append-only: the `cardBatchCapture` callable (Admin SDK) is the only writer,
@@ -407,7 +434,17 @@ figure**.
 ## Two ways in: the PDF and the photos
 
 An FNB terminal can email its batch report as a **PDF**, and that is the fast
-path. Photographing the printed slip remains for terminals that cannot email.
+path. **Photographing the printed slip remains available for every till, and no
+till is hardcoded as the one that needs it.** A machine that does not email, one
+whose email failed tonight, one nobody has tested yet — the card is tapped and
+the slip is photographed. Which machines email is answered by what turns up in
+`/card_batch_intake`, never by a name in the source: PE Till 1 (`0000HP1X`) was
+the estate's one manual-only terminal until 18 Sep 2026, when it was replaced
+with a PAX A920Pro — the same hardware as the terminals that email themselves —
+and renamed Marathon Till 2. Whether the new machine actually emails is a
+question for the mailbox. Nothing in either app asks it in advance, and
+`functions/test/card-terminal-identity.test.cjs` pins that no TID appears in a
+capability decision anywhere in the feature.
 A submission is **one or the other, never both** — the callable refuses a
 request carrying a PDF and photos together, and the screen enforces the same
 rule by disabling whichever input the other has claimed.
