@@ -913,17 +913,6 @@ async function handleSubmit(db, request) {
   // it is refused and removed.
   const terminalsNow = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
   const mapped = terminalsNow[extraction.tid];
-  // RETIREMENT IS PART OF THAT RE-CHECK, and it has to be asked SEPARATELY.
-  // Retiring a machine does not change its storeId or its tillId, so the
-  // comparison below is blind to it: a slip extracted moments before an admin
-  // retires the machine would otherwise be recorded against a terminal that has
-  // left — during a swap, which is the exact moment this whole mechanism exists
-  // for. The extract paths refuse a retired terminal; without this, submit did
-  // not, and the refusal was only ever as strong as the gap between the two.
-  if (mapped && isRetiredTerminal(mapped)) {
-    await draftRef.remove().catch(() => {});
-    return reject(retiredCaptureRefusal(extraction.tid, mapped));
-  }
   const revalid = !batchNo || !normaliseTid(extraction.tid) || !mapped
     || mapped.storeId !== terminal.storeId || mapped.tillId !== terminal.tillId
     ? { ok: false, reason: "This capture no longer matches a registered terminal — extract the slip again." }
@@ -953,6 +942,26 @@ async function handleSubmit(db, request) {
   if (draft.intake && !draftIntake) {
     await draftRef.remove().catch(() => {});
     return reject("This capture's source could not be verified — nothing was recorded.");
+  }
+  // RETIREMENT IS PART OF THAT RE-CHECK, and it has to be asked SEPARATELY —
+  // retiring a machine changes neither its storeId nor its tillId, so the
+  // re-validation above is blind to it. Without this, a slip extracted moments
+  // before an admin retires the machine was still recorded against a terminal
+  // that had left: the refusal was only ever as strong as the gap between
+  // extract and submit, during a swap, which is the exact moment this mechanism
+  // exists for.
+  //
+  // IT ASKS ONLY OF A HAND CAPTURE, and the position of this block is the whole
+  // reason it is correct. A retired terminal's EMAILED slip is deliberately
+  // RECORDED, with the retirement said out loud on it (lib/card-recon-email.cjs)
+  // — a late final settlement is money that still has to reconcile, and
+  // dropping it to make a point about tidiness is the worse answer. An earlier
+  // version of this guard sat above, before the draft's provenance had been
+  // read, and so refused the emailed slip too: a fix for one path that quietly
+  // broke the other. (CodeRabbit, PR #611.)
+  if (!draftIntake && mapped && isRetiredTerminal(mapped)) {
+    await draftRef.remove().catch(() => {});
+    return reject(retiredCaptureRefusal(extraction.tid, mapped));
   }
   if (draftIntake) {
     await assertEmailIntake(request);
@@ -987,7 +996,10 @@ async function handleSubmit(db, request) {
   // stands now: the till move can land between extract and submit, and the
   // record is written from this side. The draft's own warnings are kept — this
   // adds to them without replacing what extract saw.
-  const straddleNow = tillMoveWarning(extraction.tid, mapped || terminal, extraction.openedAt);
+  // `mapped`, not the draft's copy of the terminal: the move can land between
+  // extract and submit, and this is the side the record is written from. It is
+  // non-null by here — the re-validation above rejects an unmapped TID.
+  const straddleNow = tillMoveWarning(extraction.tid, mapped, extraction.openedAt);
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.

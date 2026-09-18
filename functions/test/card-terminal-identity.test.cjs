@@ -280,6 +280,19 @@ test("the HAND capture path refuses a retired terminal at extract AND at submit"
   // before the retirement.
   assert.match(code, /isRetiredTerminal\(mapped\)/,
     "submit asks about the freshly-read registry row, not the draft's stale copy");
+
+  // AND IT MUST ASK ONLY OF A HAND CAPTURE. A retired terminal's EMAILED slip
+  // is deliberately recorded, with the retirement on the record — a late final
+  // settlement is money that still has to reconcile. The first version of this
+  // guard sat above the provenance check and refused the emailed slip too: a
+  // fix for one path that quietly broke the other, which is the failure this
+  // assertion exists to keep out. (CodeRabbit, PR #611.)
+  assert.match(code, /if \(!draftIntake && mapped && isRetiredTerminal\(mapped\)\)/,
+    "submit refuses a retired terminal only when the draft is NOT an emailed one");
+  const guardAt = code.indexOf("!draftIntake && mapped && isRetiredTerminal");
+  const intakeReadAt = code.indexOf("const draftIntake = readIntake(");
+  assert.ok(intakeReadAt > -1 && guardAt > intakeReadAt,
+    "the guard must sit AFTER the draft's provenance has been read, or `draftIntake` is undefined there and every emailed slip is refused");
 });
 
 test("a window that spans a till move is recorded, and says it cannot be trusted", () => {

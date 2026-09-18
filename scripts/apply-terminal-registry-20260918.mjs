@@ -163,6 +163,31 @@ if (!EXECUTE) {
   process.exit(0);
 }
 
+// ── THE SNAPSHOT MUST STILL BE TRUE ────────────────────────────────────────
+// `before` was read at the top, and three shallow counting walks have happened
+// since. Every row below is a FULL REPLACEMENT built from that snapshot, so
+// anything written to one of these six rows in the meantime — a `retiredAt`
+// from a concurrent `seed-card-terminals.mjs --retire`, a hand edit in the
+// console — would be silently clobbered by a value computed before it existed.
+// update() makes this all-or-nothing; it does not make it a merge. So: re-read,
+// and refuse if the ground moved. (Second-pass review, PR #611.)
+const stillBefore = (await db.ref("config/cardTerminals").get()).val() || {};
+for (const tid of Object.keys(ESTATE)) {
+  if (JSON.stringify(stillBefore[tid] ?? null) !== JSON.stringify(before[tid] ?? null)) {
+    console.error(`REFUSED: ${tid} changed in the registry while this script was running.`);
+    console.error(`  was: ${JSON.stringify(before[tid] ?? null)}`);
+    console.error(`  now: ${JSON.stringify(stillBefore[tid] ?? null)}`);
+    console.error("Nothing was written — the plan above was made against a registry that has moved. Re-run it.");
+    process.exit(1);
+  }
+}
+for (const tid of Object.keys(stillBefore)) {
+  if (!before[tid]) {
+    console.error(`REFUSED: ${tid} was ADDED to the registry while this script was running. Nothing was written; re-run.`);
+    process.exit(1);
+  }
+}
+
 // ONE ATOMIC update() ON THE PARENT, keyed by TID.
 //
 // NOT set() — a set() on /config/cardTerminals would DELETE every row this
