@@ -40,7 +40,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
-const { normaliseTid, validateExtraction, buildBatchRecord } = require("../lib/card-recon.cjs");
+const { normaliseTid, validateExtraction, buildBatchRecord, resolveBatchWrite } = require("../lib/card-recon.cjs");
 const { isRetiredTerminal, wasActiveAt, tillMoveWarning } = require("../lib/card-terminals.cjs");
 const { routeEmailSlip } = require("../lib/card-recon-email.cjs");
 
@@ -428,4 +428,45 @@ test("no TID appears in the CODE of the capture feature, on either side", () => 
   assert.ok(!planted.includes("cannot email"), "the stripper does remove a comment");
   assert.ok(Object.keys(LIVE).some((tid) => planted.includes(tid)),
     "…and a TID in CODE survives the strip, so the scan above could have caught one");
+});
+
+// ─── A MOVED TERMINAL STILL CAPTURES ─────────────────────────────────────────
+
+test("a tillChangedAt stamp WARNS a capture; it never refuses one", () => {
+  // Reported on the evening of 2026-09-18: Marathon Till 2 (0000HP1X, the one
+  // row that carries both a rename and a till move) "will not accept a summary
+  // upload". Replaying the whole decision chain against the live registry
+  // showed every guard passing — so this pins the part that could have been
+  // otherwise, which is that the stamp this change introduced is inert on the
+  // accept/refuse decision. It only ever adds a sentence to the record.
+  const MOVED = Date.parse("2026-09-18T12:07:23Z");
+  const row = { ...LIVE["0000HP1X"], tillChangedAt: MOVED };
+
+  // The guards the extract path runs, in order, for a picked hand capture.
+  assert.ok(row.storeId && row.tillId, "the row still resolves to a till");
+  assert.equal(isRetiredTerminal(row), false, "a till move is not a retirement");
+  assert.equal(normaliseTid("0000HP1X"), "0000HP1X");
+
+  const ex = {
+    tid: "0000HP1X", mid: "000000004977890", batchNo: "510",
+    openedAt: MOVED - 20 * 3600_000, closedAt: MOVED + 4 * 3600_000, printedAt: null,
+    openedText: null, closedText: null, txnCount: 3,
+    purchasesCents: 250000, cashCents: 0, refundsCents: 0, totalCents: 250000,
+    reconLine: null,
+    confidence: { tid: 0.99, batchNo: 0.98, totalCents: 0.97, openedAt: 0.96, closedAt: 0.96, purchasesCents: 0.95, txnCount: 0.95 },
+    lines: [],
+  };
+  const v = validateExtraction(ex, { summaryOnly: true });
+  assert.equal(v.ok, true, `a summary capture on a moved terminal must validate: ${v.reason}`);
+
+  // A batch number this terminal has never filed is a first capture, whatever
+  // the registry row now says about which till it sits at.
+  const w = resolveBatchWrite({ existingKeys: [], batchNo: "510", correction: false });
+  assert.equal(w.ok, true);
+  assert.equal(w.key, "510");
+
+  // And the stamp's ONLY effect: a sentence.
+  const note = tillMoveWarning("0000HP1X", row, ex.openedAt);
+  assert.ok(note && /unreliable/.test(note), "the straddling window is flagged");
+  assert.equal(typeof note, "string", "a warning, not a refusal object");
 });
