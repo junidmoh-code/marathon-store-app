@@ -379,6 +379,14 @@ async function captureOne(getToken, { attachment, message }) {
     tid: extract.review?.tid || null,
     storeId: extract.review?.terminal?.storeId || null,
     tillId: extract.review?.terminal?.tillId || null,
+    // THE NAME THE TILL HAD WHEN THIS SLIP WAS CAPTURED, stamped here rather
+    // than looked up later. The registry row is edited whenever a machine is
+    // renamed or moved — three of the six were on 18 Sep 2026 — and a feed that
+    // resolved the label at RENDER time would retitle every historical row to
+    // whatever the machine is called today. The record on /card_batches keeps
+    // its own `terminalLabel` for exactly this reason; this is the same rule
+    // applied to the intake feed.
+    terminalLabel: extract.review?.terminal?.label || null,
     batchKey: submit.batchKey,
     linesCaptured: submit.linesCaptured === true,
     warnings: submit.warnings || [],

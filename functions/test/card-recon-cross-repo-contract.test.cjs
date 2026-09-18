@@ -210,3 +210,47 @@ test("CONTRACT: the recorded expectation stays on the record even though POS rec
   assert.equal(typeof r.submittedBy.uid, "string");
   assert.equal(typeof r.submittedAt, "number");
 });
+
+// ── THE NAME A HISTORICAL ROW SHOWS ─────────────────────────────────────────
+// THE RULE, AND IT IS THE SAME EVERYWHERE: a row that has a RECORD shows the
+// name the terminal had WHEN THE SLIP WAS CAPTURED; a row with no record — an
+// outstanding evening, a card on the capture screen, the registry itself —
+// shows the name the terminal has NOW, because that is the only name there is.
+//
+// Both halves of that rule are load-bearing and both are reachable from here:
+// the record carries `terminalLabel`, stamped by buildBatchRecord and never
+// re-read from the registry (marathon-pos-app CardReconTab renders
+// `b.terminalLabel || b.tid`, and its Emailed slips tab renders the same field
+// off /card_batch_intake). The outstanding row has no record, so it renders
+// `info.label` off /config/cardTerminals.
+//
+// This became load-bearing on 2026-09-18: three of the six terminals were
+// renamed and two of those also moved till. Twelve batches filed under
+// 0000HP1X as "PE Till 1" at pe/till-1 would otherwise have retitled themselves
+// "Marathon Till 2" at pe/till-2 — a report that says money was rung on a till
+// it was not rung on.
+test("CONTRACT: a renamed, moved terminal does not rewrite the records it already filed", () => {
+  const filedBefore = record({ terminal: { storeId: "pe", tillId: "till-1", label: "PE Till 1" } });
+  const filedAfter = record({ terminal: { storeId: "pe", tillId: "till-2", label: "Marathon Till 2" } });
+
+  assert.equal(filedBefore.terminalLabel, "PE Till 1");
+  assert.equal(filedBefore.tillId, "till-1");
+  assert.equal(filedAfter.terminalLabel, "Marathon Till 2");
+  assert.equal(filedAfter.tillId, "till-2");
+  // The STORE is the same on both, and that is what keeps them in one place:
+  // both are filed under /card_batches/pe/0000HP1X, which is the node the
+  // reader subscribes to using the registry's CURRENT store. A store rename
+  // would have split them across two nodes.
+  assert.equal(filedBefore.storeId, "pe");
+  assert.equal(filedAfter.storeId, "pe");
+});
+
+test("CONTRACT: a record filed by a terminal with no label falls back to its TID, not to nothing", () => {
+  // `b.terminalLabel || b.tid` — so a null label renders as the TID rather than
+  // as an empty cell. The TID is the right fallback precisely because it is the
+  // one thing about a terminal that never changes.
+  const r = record({ terminal: { storeId: "pe", tillId: "till-2" } });
+  assert.equal(r.terminalLabel, null);
+  assert.equal(typeof r.tid, "string");
+  assert.equal(r.terminalLabel || r.tid, "0000HP1X");
+});
