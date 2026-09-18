@@ -95,8 +95,18 @@ if (RETIRE || REINSTATE) {
   if (!existing) { console.error(`REFUSED: ${tid} is not registered, so there is nothing to ${RETIRE ? "retire" : "reinstate"}.`); process.exit(1); }
   row = { ...existing };
   if (RETIRE) {
-    row.retiredAt = SERVER_NOW;
-    if (reason) row.retiredReason = reason;
+    // A REPEAT --retire MUST NOT MOVE THE DATE. The stamp is a reporting
+    // boundary: the outstanding-slip report stops expecting a slip after it, so
+    // re-stamping on a retry or a second run silently rewrites which evenings
+    // that machine owed. Retiring an already-retired terminal is a no-op that
+    // says so. (CodeRabbit, PR #611.)
+    if (Number.isFinite(existing.retiredAt)) {
+      console.log(`${tid} was already retired on ${new Date(existing.retiredAt).toISOString().slice(0, 10)} — the stamp is left alone.`);
+      if (reason && !existing.retiredReason) row.retiredReason = reason;
+    } else {
+      row.retiredAt = SERVER_NOW;
+      if (reason) row.retiredReason = reason;
+    }
   } else {
     delete row.retiredAt;
     delete row.retiredReason;

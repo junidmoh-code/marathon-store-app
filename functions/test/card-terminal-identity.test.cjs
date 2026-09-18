@@ -210,7 +210,7 @@ test("every live row's store id is a POS store id, not a trading name", () => {
 
 test("retirement is the stamp itself, so there is nothing to disagree with", () => {
   assert.equal(isRetiredTerminal(LIVE["0000HP1X"]), false, "nothing is retired today");
-  assert.equal(isRetiredTerminal({ ...LIVE["0000HP1X"], retiredAt: 1758153600000 }), true);
+  assert.equal(isRetiredTerminal({ ...LIVE["0000HP1X"], retiredAt: 1789689600000 }), true);
   // Not a boolean, not a string, not a truthy object: the STAMP. A row carrying
   // `retired: true` and no stamp is a row nobody can date, and it is not retired.
   assert.equal(isRetiredTerminal({ ...LIVE["0000HP1X"], retired: true }), false);
@@ -220,7 +220,7 @@ test("retirement is the stamp itself, so there is nothing to disagree with", () 
 });
 
 test("a terminal is only expected to report between arriving and leaving", () => {
-  const ARRIVED = 1758153600000;          // 2026-09-18
+  const ARRIVED = 1789689600000;          // 2026-09-18
   const row = { ...LIVE["67325636"], activeFrom: ARRIVED };
   assert.equal(wasActiveAt(row, ARRIVED - 1), false, "the day before it arrived");
   assert.equal(wasActiveAt(row, ARRIVED), true);
@@ -242,7 +242,7 @@ test("a terminal is only expected to report between arriving and leaving", () =>
 
 test("a retired machine's EMAILED slip is still recorded, and says so", () => {
   // Refusing it would drop a real settlement to make a point about tidiness.
-  const registry = { ...LIVE, "0000HP1X": { ...LIVE["0000HP1X"], retiredAt: 1758153600000 } };
+  const registry = { ...LIVE, "0000HP1X": { ...LIVE["0000HP1X"], retiredAt: 1789689600000 } };
   const routed = routeEmailSlip({
     extraction: { tid: "0000HP1X", mid: "000000004977890" }, terminals: registry,
   });
@@ -336,8 +336,12 @@ test("nothing anywhere deletes a TID mapping", () => {
     .replace(/^\s*\/\/.*$/gm, "");
   assert.ok(!/ref\("config\/cardTerminals"\)\.set\(/.test(apply),
     "a set() on the registry PARENT deletes every row the script does not name");
-  assert.match(apply, /config\/cardTerminals\/\$\{tid\}`\)\.set\(/,
-    "rows are written one TID at a time");
+  // update(), keyed by TID: it writes only the keys it is given and leaves the
+  // rest alone — and unlike a loop of per-TID writes it commits all or none, so
+  // a lost connection cannot leave half the estate answering to its new till
+  // while the shop is trading.
+  assert.match(apply, /ref\("config\/cardTerminals"\)\.update\(updates\)/,
+    "the estate is applied as ONE atomic update on the parent, keyed by TID");
 });
 
 // ─── NO TERMINAL IS WRITTEN DOWN AS AN EXCEPTION ─────────────────────────────

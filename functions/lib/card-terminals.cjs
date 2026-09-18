@@ -105,12 +105,21 @@ function tillMoveWarning(tid, row, openedAt) {
   return `This batch opened before terminal ${tid} was reassigned to ${row.storeId}/${row.tillId} (${when} UTC), so its window spans the move. The expected figure is the NEW till's takings across the WHOLE window and the old till's are not in it, which makes the variance on this one batch unreliable. Reconcile it by hand; the next batch is clean.`;
 }
 
-/** The warning a retired terminal's emailed slip carries onto its record. */
+/**
+ * The warning a retired terminal's emailed slip carries onto its record.
+ *
+ * IT DOES NOT CLAIM THE REPORT ARRIVED AFTER THE RETIREMENT, because nothing
+ * here knows that: this is called at CAPTURE time, and a message sent before a
+ * machine was retired can be captured after it — a poller retry, a mailbox
+ * backlog, a refused attachment re-run by hand. Saying "this arrived after"
+ * would be a claim made from a timestamp we do not have, on a record the owner
+ * treats as evidence. (CodeRabbit, PR #611.)
+ */
 function retiredSlipWarning(tid, row) {
   const when = Number.isFinite(row && row.retiredAt)
     ? new Date(row.retiredAt).toISOString().slice(0, 10)
     : "an unrecorded date";
-  return `Terminal ${tid} was retired on ${when}, and this report arrived after that. It is recorded against the till it was mapped to — check that this is a late final batch and not a machine still trading that nobody re-registered.`;
+  return `Terminal ${tid} was retired on ${when}. This report is recorded against the till it was mapped to — check that it is a late final batch and not a machine still trading that nobody re-registered.`;
 }
 
 /** The refusal a retired terminal gets on the manual path. */

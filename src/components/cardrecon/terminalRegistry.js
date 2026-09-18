@@ -37,6 +37,12 @@ export function isRetiredTerminal(row) {
 export function captureCards(terminals) {
   return Object.entries(terminals || {})
     .filter(([, row]) => row && typeof row === "object" && !isRetiredTerminal(row))
-    .map(([tid, row]) => ({ tid, ...row }))
+    // THE MAP KEY WINS, spread first. A row that carried a `tid` field of its
+    // own would otherwise replace it — and the screen submits this value as
+    // `pickedTid`, which the callable checks against the TID printed on the
+    // slip, so that card would refuse every photograph taken at it with a
+    // message about the wrong till. The seed writer preserves unknown fields on
+    // an existing row, so a stray `tid` is not hypothetical. (CodeRabbit, #611.)
+    .map(([tid, row]) => ({ ...row, tid }))
     .sort((a, b) => String(a.label || a.tid).localeCompare(String(b.label || b.tid)));
 }

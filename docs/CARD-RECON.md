@@ -25,7 +25,7 @@ cashier name is ever selected anywhere in the feature.
 
 ```json
 { "mid": "000000004977890", "storeId": "pe", "tillId": "till-2",
-  "label": "Marathon Till 2", "activeFrom": 1758153600000 }
+  "label": "Marathon Till 2", "activeFrom": 1789689600000 }
 ```
 
 Seed with `node scripts/seed-card-terminals.mjs --tid <TID> [--mid <MID>] --store <pe|pine|trophy> --till <till-N> --label "<label>" --execute`.

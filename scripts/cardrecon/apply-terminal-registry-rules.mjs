@@ -108,6 +108,21 @@ console.log(JSON.stringify(doc.rules.config.cardTerminals, null, 2));
 
 if (!APPLY) { console.log("\ndry run — nothing written. Re-run with --apply."); process.exit(0); }
 
+// ── THE WRITE IS A FULL REPLACEMENT, so re-read IMMEDIATELY BEFORE IT ───────
+// This PUT replaces the whole rules document. The live endpoint returns no
+// ETag, so there is no If-Match to hold a version with — an administrator
+// editing rules in the console between the GET at the top of this script and
+// this PUT would have their edit silently discarded. Re-reading here narrows
+// that window from "however long the diff took to read" to milliseconds, and
+// turns the collision into a refusal instead of a silent loss. It does not
+// close it; nothing available here can. (CodeRabbit, PR #611.)
+const stillBefore = await getRules("re-check");
+if (stillBefore !== before) {
+  console.error("REFUSED: the live rules changed while this script was running — somebody is editing them.");
+  console.error(`Nothing was written. The document as it was when this started is in ${BACKUP}; diff it against live before trying again.`);
+  process.exit(1);
+}
+
 await putRules(after);
 const check = JSON.parse(await getRules("after"))?.rules?.config?.cardTerminals?.$tid;
 const ok = check
@@ -118,6 +133,16 @@ const ok = check
   && check.storeId?.[".validate"] === "newData.isString()"
   && check.tillId?.[".validate"] === "newData.isString()";
 if (!ok) {
+  // ROLLING BACK IS ITSELF A FULL REPLACEMENT, so it must not clobber a NEWER
+  // document. If what is live is no longer what this script wrote, somebody
+  // else has written since — restoring the backup over that would destroy their
+  // edit to undo ours. Report and stop instead; the backup is on disk.
+  const live = await getRules("before rollback");
+  if (live !== after) {
+    console.error("SURPRISE: the live rules are not what was written, AND they are not what this script would roll back to either.");
+    console.error(`Somebody else has written rules since. NOTHING WAS RESTORED — ${BACKUP} holds the document as it was before this ran. Recover by hand.`);
+    process.exit(1);
+  }
   console.error("SURPRISE: the live rules did not come back as written — RESTORING the backup.");
   await putRules(before);
   console.error(`restored ${BACKUP}. Nothing else was changed.`);

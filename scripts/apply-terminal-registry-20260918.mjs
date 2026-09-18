@@ -98,10 +98,23 @@ function accessToken() {
 }
 const TOKEN = accessToken();
 const DB_URL = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
-async function shallow(path) {
-  const r = await fetch(`${DB_URL}/${path}.json?shallow=true&access_token=${TOKEN}`);
-  if (!r.ok) throw new Error(`GET ${path} → HTTP ${r.status}`);
-  return (await r.json()) || {};
+// RETRIED ON A CONNECTION FAILURE, not on an answer. This laptop intermittently
+// cannot reach Google over IPv6, and a counting pass that dies of a transport
+// hiccup makes an operator re-run a registry script until it does not — which
+// is how a half-considered estate gets applied. An HTTP status is an answer and
+// is never retried.
+async function shallow(path, attempts = 4) {
+  for (let i = 1; ; i++) {
+    try {
+      const r = await fetch(`${DB_URL}/${path}.json?shallow=true&access_token=${TOKEN}`);
+      if (!r.ok) throw new Error(`GET ${path} → HTTP ${r.status}`);
+      return (await r.json()) || {};
+    } catch (err) {
+      if (i >= attempts || /HTTP \d/.test(err.message)) throw err;
+      console.warn(`  ${path}: connection failed (${err?.cause?.code || err.message}) — retrying ${i}/${attempts - 1}`);
+      await new Promise((r) => setTimeout(r, 1500 * i));
+    }
+  }
 }
 
 async function batchCounts() {
@@ -150,27 +163,18 @@ if (!EXECUTE) {
   process.exit(0);
 }
 
-// Per-TID writes, not a single set() on the parent: a set() on
-// /config/cardTerminals would DELETE any row this script does not name, which
-// is the one thing the registry must never do.
+// ONE ATOMIC update() ON THE PARENT, keyed by TID.
 //
-// AND A DEATH PART-WAY THROUGH MUST SAY SO ON THE RUN THAT DIED. Six sequential
-// writes means six chances to lose the network, and a stack trace scrolling past
-// does not tell an operator whether the estate is half-applied. Re-running is
-// safe — every write is idempotent and the store-move guard still holds — but
-// only if the person knows to.
-const written = [];
-try {
-  for (const [tid, row] of Object.entries(updates)) {
-    await db.ref(`config/cardTerminals/${tid}`).set(row);
-    written.push(tid);
-  }
-} catch (err) {
-  console.error(`\nDIED PART-WAY: ${written.length} of ${Object.keys(updates).length} rows written (${written.join(", ") || "none"}).`);
-  console.error("The registry is HALF-APPLIED. Re-run this script — every write is idempotent and nothing was deleted.");
-  console.error(err?.stack || err);
-  process.exit(1);
-}
+// NOT set() — a set() on /config/cardTerminals would DELETE every row this
+// script does not name, which is the one thing the registry must never do.
+// update() writes only the keys it is given and leaves the rest alone.
+//
+// AND NOT A LOOP OF PER-TID set()s, which is what this did first. Six
+// sequential writes is six chances to lose the network half-way, and a
+// half-applied estate is one where some machines answer to their new till and
+// some to their old — while the shop is trading and the poller is running every
+// 120 seconds. One update() commits all six or none. (CodeRabbit, PR #611.)
+await db.ref("config/cardTerminals").update(updates);
 
 const after = (await db.ref("config/cardTerminals").get()).val() || {};
 let bad = 0;
@@ -179,7 +183,17 @@ for (const [tid, want] of Object.entries(ESTATE)) {
   for (const [k, v] of Object.entries(want)) {
     if (!got || got[k] !== v) { console.error(`SURPRISE: ${tid}.${k} is ${JSON.stringify(got && got[k])}, expected ${JSON.stringify(v)}`); bad++; }
   }
-  if (!Number.isFinite(got?.activeFrom)) { console.error(`SURPRISE: ${tid}.activeFrom is not a server timestamp (${JSON.stringify(got?.activeFrom)})`); bad++; }
+  // A NEW row must be stamped. A row that existed before must NOT be — the four
+  // seeded on 2026-08-29 predate the field and have always been active, and
+  // stamping them now would tell the outstanding report they arrived today.
+  // (An earlier version of this check demanded the stamp on every row and would
+  // have failed the run four times over, after writing successfully. CodeRabbit,
+  // PR #611.)
+  if (!before[tid]) {
+    if (!Number.isFinite(got?.activeFrom)) { console.error(`SURPRISE: new row ${tid} carries no activeFrom stamp (${JSON.stringify(got?.activeFrom)})`); bad++; }
+  } else if ("activeFrom" in (got || {}) && !Number.isFinite(got.activeFrom)) {
+    console.error(`SURPRISE: ${tid}.activeFrom is present but unusable (${JSON.stringify(got.activeFrom)})`); bad++;
+  }
   const movedTill = before[tid] && before[tid].tillId && before[tid].tillId !== want.tillId;
   if (movedTill && !Number.isFinite(got?.tillChangedAt)) { console.error(`SURPRISE: ${tid} moved till and carries no tillChangedAt stamp — its next batch would publish an untrustworthy variance silently`); bad++; }
 }
