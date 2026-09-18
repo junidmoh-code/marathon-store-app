@@ -64,6 +64,7 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal } = require("../lib/card-terminals.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -496,6 +497,12 @@ async function handleExtract(db, request) {
   if (!terminal || !terminal.storeId || !terminal.tillId) {
     return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
   }
+  // A RETIRED MACHINE TAKES NO HAND CAPTURE. Its row stays (its batches are
+  // filed under its TID and would be stranded by a delete), but there is no
+  // longer a till to stand at, and a capture made against one is a slip filed
+  // against a machine that left. The screen does not offer the card; this is
+  // the half that holds when someone calls the callable anyway.
+  if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
 
   // ── OCR ──
   let ocr;
@@ -673,6 +680,10 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
     if (!pickedTerminal || !pickedTerminal.storeId || !pickedTerminal.tillId) {
       return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
     }
+    // Retired: same refusal as the photo path. The EMAIL path deliberately does
+    // NOT refuse — see lib/card-recon-email.cjs. A late final batch that
+    // arrives by itself is money that still has to reconcile.
+    if (isRetiredTerminal(pickedTerminal)) return reject(retiredCaptureRefusal(picked, pickedTerminal));
   }
 
   const text = await pdfToLines(buffer);

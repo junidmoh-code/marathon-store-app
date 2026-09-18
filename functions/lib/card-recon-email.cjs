@@ -24,17 +24,20 @@
 //                 refusal with its reason and its source message.
 //
 //   THE MID       the merchant id, which is registered per terminal. It is not
-//                 a shop-wide constant here (the four live terminals carry
-//                 three different values, and one carries none), so a slip
-//                 whose printed MID contradicts the registered one is a slip
-//                 from somewhere else entirely — forwarded, or from a machine
-//                 that was re-registered without the registry being updated.
-//                 Refused.
+//                 a shop-wide constant here (the six live terminals carry four
+//                 different values, one of them shared by two SHOPS and another
+//                 by two stores' tills), so a slip whose printed MID
+//                 contradicts the registered one is a slip from somewhere else
+//                 entirely — forwarded, or from a machine that was
+//                 re-registered without the registry being updated. Refused.
 //
-// WHAT IS MISSING IS A WARNING, NEVER A PASS DISGUISED AS A CHECK. A terminal
-// registered without a MID (Trophy Till 1, today) can only be vouched for by
-// its TID, and the record says so out loud rather than implying two checks ran
-// when one did.
+// WHAT IS MISSING IS A WARNING, NEVER A PASS DISGUISED AS A CHECK. Every
+// terminal carries a registered MID as of 2026-09-18 — Trophy Till 1's was
+// unknown when it was mapped and is now known (its 15 emailed reports all print
+// 100000002816030) — but a machine can still be mapped before its merchant
+// number is, and a slip can still print one that cannot be read. Either way the
+// terminal is vouched for by its TID alone, and the record says so out loud
+// rather than implying two checks ran when one did.
 //
 // A THIRD CHECK LIVES IN THE PARSER, not here: card-recon-pdf.cjs refuses a
 // file that prints two DIFFERENT terminal IDs, so the TID this module routes on
@@ -46,6 +49,7 @@
 "use strict";
 
 const { normaliseTid, normaliseMid } = require("./card-recon.cjs");
+const { isRetiredTerminal, retiredSlipWarning } = require("./card-terminals.cjs");
 
 // The permission that opens the email channel, checked on the CALLER — a
 // second flag beside `card_recon` rather than a wider grant, so the identity
@@ -79,6 +83,14 @@ function routeEmailSlip({ extraction, terminals }) {
   }
 
   const warnings = [];
+  // A RETIRED TERMINAL'S EMAILED SLIP IS RECORDED, LOUDLY. The machine has left
+  // the estate, so nothing can be photographed against it — the manual path
+  // refuses — but a batch report emailing itself in afterwards is a real
+  // settlement, and refusing it would drop money on the floor to make a point.
+  // It is recorded against the till the row still names, with the retirement
+  // said out loud on the record so the owner can tell a late final batch from a
+  // machine that is still trading and was retired in error.
+  if (isRetiredTerminal(terminal)) warnings.push(retiredSlipWarning(tid, terminal));
   const registered = normaliseMid(terminal.mid);
   // EVERY merchant id the file printed, not just the first. A settlement report
   // can carry a second, honest one — Amex or Diners under its own merchant

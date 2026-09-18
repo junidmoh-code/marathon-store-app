@@ -24,36 +24,92 @@ against the wrong till rejects itself because its TID maps elsewhere, and no
 cashier name is ever selected anywhere in the feature.
 
 ```json
-{ "mid": "000000004977890", "storeId": "pe", "tillId": "till-1", "label": "PE Till 1" }
+{ "mid": "000000004977890", "storeId": "pe", "tillId": "till-2",
+  "label": "Marathon Till 2", "activeFrom": 1758153600000 }
 ```
 
 Seed with `node scripts/seed-card-terminals.mjs --tid <TID> [--mid <MID>] --store <pe|pine|trophy> --till <till-N> --label "<label>" --execute`.
 
-**All four terminals, live as of 2026-08-29:**
+**All six terminals, live as of 2026-09-18** (applied by
+`scripts/apply-terminal-registry-20260918.mjs`):
 
-| TID | MID | store · till | prints |
-|---|---|---|---|
-| `0000HP1X` | `000000004977890` | pe · till-1 | THE MARATHON |
-| `67365901` | `100000001178101` | pe · till-2 | OMARS FASHION |
-| `67364485` | `100000001178101` | pine · till-1 | OMARS FASHION |
-| `67377843` | *(none printed)* | trophy · till-1 | Marathon Club |
+| TID | MID | store · till | label | prints | change |
+|---|---|---|---|---|---|
+| `67325636` | `100000002453164` | pe · till-1 | Marathon Till 1 | — | **new**, arrived on batch 57 |
+| `0000HP1X` | `000000004977890` | pe · till-2 | Marathon Till 2 | THE MARATHON | was pe · till-1, "PE Till 1" |
+| `67365901` | `100000001178101` | pe · till-3 | Marathon Till 3 | OMARS FASHION | was pe · till-2, "PE Till 2" |
+| `67377843` | `100000002816030` | trophy · till-1 | Trophy Till 1 | Marathon Club | MID now registered |
+| `0000Z4M6` | `000000004977890` | trophy · till-2 | Trophy Till 2 | — | **new**, arrived on batch 480 |
+| `67364485` | `100000001178101` | pine · till-1 | Pine Till 1 | OMARS FASHION | unchanged |
 
-**Three things that table makes unsafe, and one more beside it.** Each is the
-kind of assumption a later change makes by accident, so each is pinned by
-`functions/test/card-terminal-identity.test.cjs` (6 tests, 5/5 mutations killed):
+**The store key is `pe`, and the shop is called Marathon.** That is not a
+contradiction, it is the distinction the whole estate rests on. `storeId` is a
+**join key**: `/pos/paymentEvents` rows carry `storeId: "pe"`, and the
+expected-card calculator joins the registry's `storeId` + `tillId` against them
+verbatim — a registry saying `marathon` would compute R0 expected for every
+Marathon till and report every batch as a 100% variance. The same id keys
+`/pos/sales`, `/pos/cashups`, the credit ledger and `/card_batches` itself (30
+records live under `/card_batches/pe`). The **trading name lives in `label`**,
+which is exactly what this change moved. The precedent is the owner's own: POS
+PR #26 renamed the shops to "Marathon PE / Marathon Pine / Trophy" and kept the
+ids `pe / pine / trophy`, explicitly to avoid a data migration; POS #357
+(17 Sep 2026) reverted a reader that followed a terminal's *store-mapping
+history*, on the owner's instruction. Nothing migrated in this change and
+nothing was orphaned.
 
-- **A MID is not unique to a store.** `pe/till-2` and `pine/till-1` share
-  `100000001178101` — two different *stores* on one merchant account. Resolving
-  a store from a MID would put Pine's takings on a PE till.
-- **A MID may not exist.** `trophy/till-1` prints no Merchant line, and is
-  registered with **no `mid` key** — not an empty string, not a placeholder.
-  Anything that required one would refuse that shop's slips outright. `mid` is
-  absent from `KEY_FIELDS`, so an unreadable MID cannot fail a capture either.
-- **The trading name identifies nothing.** Three names across four terminals in
+**A till move is safe where a store move would not be.** Two rows changed
+`tillId` — a batch record stamps its own `storeId`, `tillId` and
+`terminalLabel` at capture, so the twelve batches already filed under
+`0000HP1X` still read `pe · till-1 · "PE Till 1"`, which is where that money was
+actually rung. Only new captures join on the new till. A **store** change would
+move where future batches are *filed*, leaving the past ones under a node no
+reader subscribes to — `seed-card-terminals.mjs` refuses one outright while
+records exist under the old path, and prints what would have to be migrated.
+
+**A TID mapping is never deleted; a machine that leaves is retired.**
+
+```
+node scripts/seed-card-terminals.mjs --tid <TID> --retire --reason "..." --execute
+node scripts/seed-card-terminals.mjs --tid <TID> --reinstate --execute
+```
+
+`retiredAt` — the stamp itself, never a boolean beside it — is the flag. The row
+stays, its history keeps resolving, the capture screen stops drawing its card
+and the callable refuses a hand capture against it. **An emailed batch report
+from a retired terminal is still recorded**, with the retirement said out loud
+on the record: a late final settlement is money that still has to reconcile, and
+refusing it to make a point about tidiness is the worse answer. Nothing is
+retired today — the 2026-09-18 change added two machines and removed none — and
+the mechanism exists now because the next swap will need it.
+
+`activeFrom` is when a machine entered **this estate**, which is neither when it
+was made nor batch 1: two of the six arrived second-hand, mid-life, on batches 57
+and 480. It bounds the outstanding-slip report, which would otherwise report a
+terminal registered today as having missed every evening in the range. A row
+seeded before the field existed (the four from 2026-08-29) has **always** been
+active — a missing `activeFrom` is not "not yet arrived".
+
+**Four things that table makes unsafe.** Each is the kind of assumption a later
+change makes by accident, so each is pinned by
+`functions/test/card-terminal-identity.test.cjs`:
+
+- **A MID is not unique to a store.** `pe/till-3` and `pine/till-1` share
+  `100000001178101` — two different *stores* on one merchant account — and since
+  2026-09-18 `pe/till-2` and `trophy/till-2` share `000000004977890`, the same
+  trap across two *shops*. Resolving a store from a MID would put Pine's takings
+  on a Marathon till.
+- **A MID may not exist.** `trophy/till-1` was registered with **no `mid` key**
+  — not an empty string, not a placeholder — because its merchant number was not
+  known. It is known now (all 15 of its emailed reports print
+  `100000002816030`), but a machine can be mapped before its merchant number is,
+  so the MID-less path is still live code and is still tested. `mid` is absent
+  from `KEY_FIELDS`, so an unreadable MID cannot fail a capture either.
+- **The trading name identifies nothing.** Three names across six terminals in
   three stores, one of them shared by two stores. It is not in the OCR schema at
   all, and the test refuses to let it in.
-- **The TID format is not one thing.** One alphanumeric (`0000HP1X`), three
-  8-digit numeric. `normaliseTid` accepts `[A-Z0-9]{4,16}`; nothing narrower.
+- **The TID format is not one thing.** Two alphanumeric (`0000HP1X`,
+  `0000Z4M6`), four 8-digit numeric. `normaliseTid` accepts `[A-Z0-9]{4,16}`;
+  nothing narrower.
 
 **Store identity comes from the TID→store map and from nowhere else.** The test
 asserts the registry is only ever indexed by a TID, and that no code reads a MID
