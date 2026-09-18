@@ -402,7 +402,21 @@ be a decision rather than a surprise on the day. It is the reason this is still
 written down as an option rather than done.
 
 - `batchKey` is the batch number (`"494"`); a **duplicate batch number for the
-  same TID is rejected** (same slip shot twice, or a re-print).
+  same TID is rejected** (same slip shot twice, or a re-print). **Scoped to the
+  terminal, and that is not academic:** 67325636 joined the estate on batch 57
+  while 67365901 — at the same store, `pe` — was live on 59–77 and had filed its
+  own 57 weeks earlier. A refusal scoped to the STORE would have refused the new
+  machine's first slips as "already captured", and would look perfectly correct
+  in any test that used one terminal. The scoping is structural (a batch number
+  is a key under a terminal) and the probe that reads it is pinned by
+  `functions/test/card-batch-numbers.test.cjs`, which asserts the exact paths it
+  touches.
+- **No terminal starts at 1.** Two of the six arrived second-hand, mid-life, on
+  batches 57 and 480; a third is past 509. Nothing anywhere compares a batch
+  number to a previous one, expects a sequence or bounds it by size — only its
+  SHAPE is checked (1–8 digits). TSN contiguity is a different question and is
+  still checked, because those run inside one batch and a gap there is a missing
+  line.
 - A **correction** is a deliberate re-capture: it lands beside the original at
   `494-r2` (`-r3`, …) carrying `supersedes: "494"`. Both records are kept;
   readers take the highest revision.

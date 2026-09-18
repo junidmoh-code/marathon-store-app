@@ -1035,5 +1035,12 @@ exports.toExtraction = toExtraction;
 // The summary-first gate, exported so it can be tested directly: everything
 // else about it lives inside async handlers behind a database.
 exports.totalsAgree = totalsAgree;
+// The duplicate-batch probe, exported for the same reason. What has to be
+// provable about it is WHICH PATHS IT READS — a probe that widened to the store
+// node, or to the registry, would make one terminal's batch number collide with
+// another's. Two of the six machines joined the estate mid-life, on batches 57
+// and 480, and 57 lands inside a sibling terminal's live range in the SAME
+// store. See functions/test/card-batch-numbers.test.cjs.
+exports.readBatchKeysFor = readBatchKeysFor;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;
