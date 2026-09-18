@@ -64,6 +64,7 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning } = require("../lib/card-terminals.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -115,9 +116,13 @@ const EXTRACTION_PROMPT = [
   "and totals. Read ONLY what is literally printed. Never invent, infer or",
   "complete a value — an unreadable field is an empty string with confidence 0.",
   "",
+  // THE EXAMPLE TID IS MADE UP, deliberately. It is there to show the model the
+  // SHAPE of the thing — four-to-eight alphanumerics, sometimes leading zeros —
+  // and a real one would be a live machine written into a shipped artefact, in
+  // a feature whose whole rule is that no terminal is named in what ships.
   "HEADER fields: MID (merchant ID, long digits), TID (terminal ID, e.g.",
-  "0000HP1X), the batch number (printed like 'Batch Report (#494)' — return",
-  "the digits), Opened, Closed and Printed timestamps (return exactly as",
+  "0000AB1C or 67000000), the batch number (printed like 'Batch Report (#494)'",
+  "— return the digits), Opened, Closed and Printed timestamps (return exactly as",
   "printed, e.g. '2026/08/26 18:50:04'), the Transactions count, and any",
   "reconciliation line (e.g. '500 - Reconciled, in balance').",
   "",
@@ -496,6 +501,12 @@ async function handleExtract(db, request) {
   if (!terminal || !terminal.storeId || !terminal.tillId) {
     return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
   }
+  // A RETIRED MACHINE TAKES NO HAND CAPTURE. Its row stays (its batches are
+  // filed under its TID and would be stranded by a delete), but there is no
+  // longer a till to stand at, and a capture made against one is a slip filed
+  // against a machine that left. The screen does not offer the card; this is
+  // the half that holds when someone calls the callable anyway.
+  if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
 
   // ── OCR ──
   let ocr;
@@ -567,6 +578,12 @@ async function handleExtract(db, request) {
   // saying nothing about it left a manager unable to see that a machine had
   // been moved until after they had submitted. (CodeRabbit, PR #516.)
   const warnings = [...verdict.warnings, ...matchNotes(match)];
+  // A WINDOW THAT SPANS A TILL REASSIGNMENT cannot produce a trustworthy
+  // expected figure — the reasoning is in tillMoveWarning (lib/card-terminals.cjs).
+  // Said out loud on the record rather than left to be chased as an ordinary
+  // variance on the one batch most likely to be looked at.
+  const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
+  if (straddle) warnings.push(straddle);
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
   // drafts is bounded by construction — one person holds at most a handful.
@@ -673,6 +690,10 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
     if (!pickedTerminal || !pickedTerminal.storeId || !pickedTerminal.tillId) {
       return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
     }
+    // Retired: same refusal as the photo path. The EMAIL path deliberately does
+    // NOT refuse — see lib/card-recon-email.cjs. A late final batch that
+    // arrives by itself is money that still has to reconcile.
+    if (isRetiredTerminal(pickedTerminal)) return reject(retiredCaptureRefusal(picked, pickedTerminal));
   }
 
   const text = await pdfToLines(buffer);
@@ -765,6 +786,9 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   // owner has to know to look at.
   const warnings = [...routingWarnings, ...verdict.warnings];
   warnings.push(...matchNotes(match));
+  // The same guard as the photo path.
+  const straddleTill = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
+  if (straddleTill) warnings.push(straddleTill);
   if (expected.tailLegs > 0) {
     warnings.push(
       `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
@@ -919,6 +943,26 @@ async function handleSubmit(db, request) {
     await draftRef.remove().catch(() => {});
     return reject("This capture's source could not be verified — nothing was recorded.");
   }
+  // RETIREMENT IS PART OF THAT RE-CHECK, and it has to be asked SEPARATELY —
+  // retiring a machine changes neither its storeId nor its tillId, so the
+  // re-validation above is blind to it. Without this, a slip extracted moments
+  // before an admin retires the machine was still recorded against a terminal
+  // that had left: the refusal was only ever as strong as the gap between
+  // extract and submit, during a swap, which is the exact moment this mechanism
+  // exists for.
+  //
+  // IT ASKS ONLY OF A HAND CAPTURE, and the position of this block is the whole
+  // reason it is correct. A retired terminal's EMAILED slip is deliberately
+  // RECORDED, with the retirement said out loud on it (lib/card-recon-email.cjs)
+  // — a late final settlement is money that still has to reconcile, and
+  // dropping it to make a point about tidiness is the worse answer. An earlier
+  // version of this guard sat above, before the draft's provenance had been
+  // read, and so refused the emailed slip too: a fix for one path that quietly
+  // broke the other. (CodeRabbit, PR #611.)
+  if (!draftIntake && mapped && isRetiredTerminal(mapped)) {
+    await draftRef.remove().catch(() => {});
+    return reject(retiredCaptureRefusal(extraction.tid, mapped));
+  }
   if (draftIntake) {
     await assertEmailIntake(request);
     const rerouted = routeEmailSlip({ extraction, terminals: terminalsNow });
@@ -948,6 +992,14 @@ async function handleSubmit(db, request) {
   const match = reconciledByTotals
     ? null
     : await matchBatch(db, { extraction, terminal, summaryOnly: !!draft.summaryOnly });
+  // The straddle warning is recomputed HERE too, against the registry as it
+  // stands now: the till move can land between extract and submit, and the
+  // record is written from this side. The draft's own warnings are kept — this
+  // adds to them without replacing what extract saw.
+  // `mapped`, not the draft's copy of the terminal: the move can land between
+  // extract and submit, and this is the side the record is written from. It is
+  // non-null by here — the re-validation above rejects an unmapped TID.
+  const straddleNow = tillMoveWarning(extraction.tid, mapped, extraction.openedAt);
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
@@ -961,7 +1013,10 @@ async function handleSubmit(db, request) {
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
     photoPaths: draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,
-    warnings: draft.warnings || [],
+    // The draft's warnings PLUS anything only now can know. Deduped, because
+    // extract computed the straddle too and the same sentence twice on one
+    // record reads like two findings.
+    warnings: [...new Set([...(draft.warnings || []), ...(straddleNow ? [straddleNow] : [])])],
     expected,
     cashiers: expected.cashiers,
     submittedBy: { uid: request.auth.uid, email: request.auth.token?.email || null },
@@ -1020,5 +1075,12 @@ exports.toExtraction = toExtraction;
 // The summary-first gate, exported so it can be tested directly: everything
 // else about it lives inside async handlers behind a database.
 exports.totalsAgree = totalsAgree;
+// The duplicate-batch probe, exported for the same reason. What has to be
+// provable about it is WHICH PATHS IT READS — a probe that widened to the store
+// node, or to the registry, would make one terminal's batch number collide with
+// another's. Two of the six machines joined the estate mid-life, on batches 57
+// and 480, and 57 lands inside a sibling terminal's live range in the SAME
+// store. See functions/test/card-batch-numbers.test.cjs.
+exports.readBatchKeysFor = readBatchKeysFor;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;

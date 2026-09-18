@@ -1,13 +1,21 @@
-// ─── CARD RECON — four tills, one tick each ──────────────────────────────────
+// ─── CARD RECON — one card per till, one tick each ───────────────────────────
 // A manager settles a card machine, tears off the Batch Report, and this screen
 // answers one question: is today's report in? One card per terminal, a tick
 // when it is, nothing loud when it is not. Ten seconds, at arm's length.
 //
-// THREE OF THE FOUR TERMINALS EMAIL THEIR REPORT and tick on their own — the
-// poller on the Mac mini captures the PDF with nobody involved. PE Till 1
-// (0000HP1X) cannot email, so its slip is photographed here. Every card is
-// tappable all the same: a terminal whose email fails is still capturable by
-// hand, which is what this path has always been for.
+// HOW MANY TILLS IS THE REGISTRY'S ANSWER, never this file's. There were four
+// on 29 Aug 2026 and there are six today.
+//
+// MOST TERMINALS EMAIL THEIR REPORT and tick on their own — the poller on the
+// Mac mini captures the PDF with nobody involved. EVERY CARD IS TAPPABLE ALL
+// THE SAME, and no machine is written down here as the one that cannot email: a
+// terminal whose email fails, or which has never emailed, is captured by hand,
+// which is what this path has always been for. The estate changed twice in
+// three weeks — tills renamed, machines swapped for hardware that emails — and
+// a screen that named the exception would have been wrong both times without
+// saying so. What has arrived by email is read from the mailbox's own record
+// (todaysArrivals.js); which machines exist is read from the registry
+// (terminalRegistry.js). Neither answer is written into this file.
 //
 // THE READING IS INVISIBLE. Tapping a card opens the photo picker and that is
 // the whole interaction — the extraction, every validation and the variance all
@@ -56,6 +64,7 @@ import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../sho
 import { planPhotoIntake, payloadRefusal } from "./photoIntake";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
+import { captureCards } from "./terminalRegistry";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -66,9 +75,13 @@ const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeou
 const MAX_PHOTO_DIM = 2000;
 
 // A bounded tail, never the whole node: /card_batch_intake grows by a row per
-// message for ever, and this runs on a handset on shop wifi. Four terminals
-// report once a day, so 25 rows covers several days of arrivals.
-const INTAKE_FEED_SIZE = 25;
+// message for ever, and this runs on a handset on shop wifi. The tail has to
+// cover several DAYS of arrivals, so it is sized against the estate rather than
+// pinned to the four terminals that existed when it was written: six machines
+// reporting once a day fill 25 rows in four days, and each added machine eats
+// into that. 60 keeps a week's arrivals in view with room for the estate to
+// grow again, and is still a tail rather than the node.
+const INTAKE_FEED_SIZE = 60;
 
 // The day key has to move on its own — a phone left on the counter through
 // midnight must clear its ticks without being touched.
@@ -207,11 +220,9 @@ export default function CardReconScreen({ onExit }) {
   // does not ask for it to be taken again.
   const lastPhoto = useRef({});
 
-  const terminalList = useMemo(
-    () => Object.entries(terminals || {}).map(([tid, t]) => ({ tid, ...t }))
-      .sort((a, b) => String(a.label || a.tid).localeCompare(String(b.label || b.tid))),
-    [terminals],
-  );
+  // A RETIRED MACHINE HAS NO CARD. Which ones those are, and the order the rest
+  // are drawn in, is the registry module's decision — see terminalRegistry.js.
+  const terminalList = useMemo(() => captureCards(terminals), [terminals]);
 
   const arrived = useMemo(() => {
     const byEmail = emailedArrivals(intake, today, saDateStringAt);

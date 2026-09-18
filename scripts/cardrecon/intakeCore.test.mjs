@@ -121,6 +121,48 @@ describe("classifyRefusal — a failing terminal must not be filed as noise", ()
   });
 });
 
+describe("the terminal's name is stamped at capture, never resolved later", () => {
+  // A registry row is edited whenever a machine is renamed or moved to the
+  // till next to it. On 18 Sep 2026 three of the six were. A feed that looked
+  // the name up when it RENDERED would retitle every historical row to
+  // whatever the machine is called today — "PE Till 1" becoming "Marathon Till
+  // 2" on a slip captured weeks before either name existed.
+  it("keeps the label the capture returned", () => {
+    const row = attachmentOutcome({
+      filename: "a.pdf",
+      capture: { recorded: true, batchKey: "509", tid: "0000HP1X", storeId: "pe", tillId: "till-1",
+                 terminalLabel: "PE Till 1", linesCaptured: true, warnings: [] },
+    });
+    expect(row.terminalLabel).toBe("PE Till 1");
+    // …and the ids beside it are the ones it was captured against, not the
+    // ones the machine has now.
+    expect(row.tillId).toBe("till-1");
+  });
+
+  it("a row captured before the field existed has none, and the TID is the fallback", () => {
+    const row = attachmentOutcome({
+      filename: "a.pdf",
+      capture: { recorded: true, batchKey: "494", tid: "0000HP1X", storeId: "pe", tillId: "till-1", linesCaptured: true, warnings: [] },
+    });
+    expect(row.terminalLabel).toBeNull();
+    expect(row.tid).toBe("0000HP1X");   // immutable, which is why it is the fallback
+  });
+
+  it("clips a long label rather than storing a whole sentence", () => {
+    const row = attachmentOutcome({
+      filename: "a.pdf",
+      capture: { recorded: true, batchKey: "1", tid: "0000HP1X", terminalLabel: "M".repeat(200), linesCaptured: true, warnings: [] },
+    });
+    expect(row.terminalLabel.length).toBe(60);
+  });
+
+  it("a REFUSED attachment carries no label — there was no capture to take one from", () => {
+    const row = attachmentOutcome({ filename: "a.pdf", capture: { ok: false, reason: "Terminal 9999ZZZZ is not registered" } });
+    expect(row.terminalLabel).toBeUndefined();
+    expect(row.outcome).toBe("refused");
+  });
+});
+
 describe("intakeRecord", () => {
   const message = { key: "k".repeat(40), messageId: "<a@b>", from: "terminal@fnb.co.za", subject: "Batch Report", receivedAt: 1_700_000_000_000 };
 

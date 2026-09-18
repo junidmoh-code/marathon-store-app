@@ -5,21 +5,33 @@
 // as a key computed from the SERVER's clock, because a phone with a wrong date
 // would otherwise tick a till that has not reconciled since Tuesday.
 //
-// TWO SOURCES, BECAUSE THERE ARE TWO WAYS A REPORT LANDS.
+// TWO SOURCES, BECAUSE THERE ARE TWO WAYS A REPORT LANDS — and WHICH tills use
+// WHICH is not written down anywhere, here or in any other file.
 //
-//   BY EMAIL — three of the four terminals email their batch report to the
-//     shop's mailbox and the poller records what it did with each message at
-//     /card_batch_intake. That node carries the TID and the outcome of every
-//     attachment, so it answers for those tills authoritatively, on any device,
-//     with nobody touching anything.
+//   BY EMAIL — a terminal emails its batch report to the shop's mailbox and the
+//     poller records what it did with each message at /card_batch_intake. That
+//     node carries the TID and the outcome of every attachment, so it answers
+//     for a till authoritatively, on any device, with nobody touching anything.
+//     A TID appearing in that feed IS the answer to "does this machine email?".
+//     Nothing asks the question in advance.
 //
-//   BY HAND — PE Till 1 cannot email. Its slip is photographed here, and the
-//     record it produces lives at /card_batches, which this app is not allowed
-//     to read (owner-only, and deliberately so — see captureOnly.test.js). So
-//     the tick for a hand-captured till is remembered on THIS DEVICE, keyed by
-//     the SA day. That is honest about what it is: a receipt for the capture
-//     this phone made, not a claim about what the record holds. The owner's own
-//     reports tab remains the place where the batch itself is read.
+//   BY HAND — any till, at any time. A machine that does not email, one whose
+//     email failed tonight, one nobody has tested yet: the card is tapped and
+//     the slip is photographed. The record that produces lives at /card_batches,
+//     which this app is not allowed to read (owner-only, and deliberately so —
+//     see captureOnly.test.js), so the tick for a hand-captured till is
+//     remembered on THIS DEVICE, keyed by the SA day. That is honest about what
+//     it is: a receipt for the capture this phone made, not a claim about what
+//     the record holds. The owner's own reports tab remains the place where the
+//     batch itself is read.
+//
+// THE EXCEPTION USED TO BE NAMED HERE, and it was wrong within three weeks. PE
+// Till 1 (0000HP1X) was the one machine on the estate that could not email;
+// it has since been replaced with a PAX A920Pro, the same hardware as the
+// terminals that email themselves, and renamed Marathon Till 2. Whether the new
+// machine actually emails is a question for the mailbox, not for this comment —
+// so the manual path stays for every till and no till is written down as the
+// one that needs it.
 //
 // The day key is the whole reset mechanism: nothing is cleared at midnight,
 // because nothing needs to be. A stored "2026-08-31" simply stops matching
