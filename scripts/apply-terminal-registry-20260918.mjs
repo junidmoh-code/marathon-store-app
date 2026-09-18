@@ -181,9 +181,14 @@ for (const tid of Object.keys(ESTATE)) {
     process.exit(1);
   }
 }
+// AND THE WHOLE NODE, not just the six. A row appearing anywhere in the
+// registry while this runs means somebody else is editing it right now — which
+// is the moment to stop, not to write six rows over the top of whatever they
+// are doing. Wider than strictly necessary, on purpose.
 for (const tid of Object.keys(stillBefore)) {
   if (!before[tid]) {
-    console.error(`REFUSED: ${tid} was ADDED to the registry while this script was running. Nothing was written; re-run.`);
+    console.error(`REFUSED: ${tid} was ADDED to the registry while this script was running — somebody else is editing it.`);
+    console.error("Nothing was written. Re-run once they are done.");
     process.exit(1);
   }
 }
