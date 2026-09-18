@@ -64,7 +64,7 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { isRetiredTerminal, retiredCaptureRefusal } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning } = require("../lib/card-terminals.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -578,6 +578,12 @@ async function handleExtract(db, request) {
   // saying nothing about it left a manager unable to see that a machine had
   // been moved until after they had submitted. (CodeRabbit, PR #516.)
   const warnings = [...verdict.warnings, ...matchNotes(match)];
+  // A WINDOW THAT SPANS A TILL REASSIGNMENT cannot produce a trustworthy
+  // expected figure — the reasoning is in tillMoveWarning (lib/card-terminals.cjs).
+  // Said out loud on the record rather than left to be chased as an ordinary
+  // variance on the one batch most likely to be looked at.
+  const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
+  if (straddle) warnings.push(straddle);
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
   // drafts is bounded by construction — one person holds at most a handful.
@@ -780,6 +786,9 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   // owner has to know to look at.
   const warnings = [...routingWarnings, ...verdict.warnings];
   warnings.push(...matchNotes(match));
+  // The same guard as the photo path.
+  const straddleTill = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
+  if (straddleTill) warnings.push(straddleTill);
   if (expected.tailLegs > 0) {
     warnings.push(
       `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
@@ -904,6 +913,17 @@ async function handleSubmit(db, request) {
   // it is refused and removed.
   const terminalsNow = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
   const mapped = terminalsNow[extraction.tid];
+  // RETIREMENT IS PART OF THAT RE-CHECK, and it has to be asked SEPARATELY.
+  // Retiring a machine does not change its storeId or its tillId, so the
+  // comparison below is blind to it: a slip extracted moments before an admin
+  // retires the machine would otherwise be recorded against a terminal that has
+  // left — during a swap, which is the exact moment this whole mechanism exists
+  // for. The extract paths refuse a retired terminal; without this, submit did
+  // not, and the refusal was only ever as strong as the gap between the two.
+  if (mapped && isRetiredTerminal(mapped)) {
+    await draftRef.remove().catch(() => {});
+    return reject(retiredCaptureRefusal(extraction.tid, mapped));
+  }
   const revalid = !batchNo || !normaliseTid(extraction.tid) || !mapped
     || mapped.storeId !== terminal.storeId || mapped.tillId !== terminal.tillId
     ? { ok: false, reason: "This capture no longer matches a registered terminal — extract the slip again." }
@@ -963,6 +983,11 @@ async function handleSubmit(db, request) {
   const match = reconciledByTotals
     ? null
     : await matchBatch(db, { extraction, terminal, summaryOnly: !!draft.summaryOnly });
+  // The straddle warning is recomputed HERE too, against the registry as it
+  // stands now: the till move can land between extract and submit, and the
+  // record is written from this side. The draft's own warnings are kept — this
+  // adds to them without replacing what extract saw.
+  const straddleNow = tillMoveWarning(extraction.tid, mapped || terminal, extraction.openedAt);
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
@@ -976,7 +1001,10 @@ async function handleSubmit(db, request) {
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
     photoPaths: draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,
-    warnings: draft.warnings || [],
+    // The draft's warnings PLUS anything only now can know. Deduped, because
+    // extract computed the straddle too and the same sentence twice on one
+    // record reads like two findings.
+    warnings: [...new Set([...(draft.warnings || []), ...(straddleNow ? [straddleNow] : [])])],
     expected,
     cashiers: expected.cashiers,
     submittedBy: { uid: request.auth.uid, email: request.auth.token?.email || null },

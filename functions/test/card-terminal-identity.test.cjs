@@ -41,7 +41,7 @@ const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { resolve } = require("node:path");
 const { normaliseTid, validateExtraction, buildBatchRecord } = require("../lib/card-recon.cjs");
-const { isRetiredTerminal, wasActiveAt } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, wasActiveAt, tillMoveWarning } = require("../lib/card-terminals.cjs");
 const { routeEmailSlip } = require("../lib/card-recon-email.cjs");
 
 // The live registry as applied 2026-09-18 — the shapes the code must survive.
@@ -256,16 +256,69 @@ test("a retired machine's EMAILED slip is still recorded, and says so", () => {
   assert.equal(fine.warnings.some((w) => /retired/i.test(w)), false);
 });
 
-test("the HAND capture path refuses a retired terminal on both channels", () => {
+test("the HAND capture path refuses a retired terminal at extract AND at submit", () => {
   // The screen does not draw the card; this is the half that holds when the
   // callable is called anyway. Asserted on the source because the alternative
-  // is standing up the whole callable, and what must not regress is that BOTH
-  // picked paths — photo and PDF — consult the predicate.
+  // is standing up the whole callable.
+  //
+  // THREE CALL SITES, AND THE THIRD IS THE ONE THAT MATTERED. Refusing only at
+  // extract makes the refusal exactly as strong as the gap between extract and
+  // submit: extract a slip, have an admin retire the machine while the operator
+  // is still holding the phone, and the submit wrote the record anyway. And
+  // submit's own "re-validate everything" block could not catch it — retiring a
+  // machine changes neither its storeId nor its tillId, so the comparison it
+  // makes is blind to retirement. It has to be asked separately. (Found by the
+  // spec review on this branch; an earlier version of this very test asserted
+  // there were TWO guards, which pinned the gap open.)
   const code = readFileSync(resolve(__dirname, "../cardRecon/cardRecon.js"), "utf8")
     .replace(/^\s*\/\/.*$/gm, "");
   const guards = code.match(/isRetiredTerminal\(/g) || [];
-  assert.equal(guards.length, 2, "the photo path and the picked-PDF path each refuse a retired terminal");
+  assert.equal(guards.length, 3, "photo extract, picked-PDF extract AND submit each refuse a retired terminal");
   assert.match(code, /retiredCaptureRefusal\(/, "and the refusal is the shared sentence, not a second wording");
+  // The submit guard must sit against the registry as it stands NOW, not
+  // against the terminal the draft remembers — the draft's copy was taken
+  // before the retirement.
+  assert.match(code, /isRetiredTerminal\(mapped\)/,
+    "submit asks about the freshly-read registry row, not the draft's stale copy");
+});
+
+test("a window that spans a till move is recorded, and says it cannot be trusted", () => {
+  // The expected-card figure joins the terminal's CURRENT till across the
+  // slip's WHOLE window. A batch settles at ~18:50, so the first window after a
+  // till move opened before the move: the machine's own legs from that part of
+  // the evening are tagged with the old till and excluded, and whatever worked
+  // the new till is included. The number that comes out is confident and wrong.
+  const MOVED = Date.parse("2026-09-18T12:00:00Z");
+  const row = { ...LIVE["0000HP1X"], tillChangedAt: MOVED };
+
+  const spanning = tillMoveWarning("0000HP1X", row, MOVED - 3600_000);
+  assert.ok(spanning, "a window that opened before the move must warn");
+  assert.match(spanning, /reassigned/);
+  assert.match(spanning, /pe\/till-2/, "it names where the figure was computed against");
+  assert.match(spanning, /unreliable/);
+
+  // The NEXT batch opens after the stamp and is clean — the warning expires by
+  // itself rather than staying on every slip for ever.
+  assert.equal(tillMoveWarning("0000HP1X", row, MOVED), null);
+  assert.equal(tillMoveWarning("0000HP1X", row, MOVED + 1), null);
+
+  // A terminal that never moved carries no stamp and never warns.
+  assert.equal(tillMoveWarning("67364485", LIVE["67364485"], MOVED - 3600_000), null);
+  // Junk in either position is silence, not a warning nobody can act on.
+  assert.equal(tillMoveWarning("X", { ...row, tillChangedAt: "yesterday" }, MOVED - 1), null);
+  assert.equal(tillMoveWarning("X", row, null), null);
+  assert.equal(tillMoveWarning("X", null, MOVED - 1), null);
+});
+
+test("both capture paths and the submit attach the till-move warning", () => {
+  const code = readFileSync(resolve(__dirname, "../cardRecon/cardRecon.js"), "utf8")
+    .replace(/^\s*\/\/.*$/gm, "");
+  const calls = code.match(/tillMoveWarning\(/g) || [];
+  assert.equal(calls.length, 3, "photo extract, PDF extract and submit each compute it");
+  // And the record is written from the SUBMIT side, so the warning has to reach
+  // the record's own warnings array rather than only the extract's response.
+  assert.match(code, /warnings: \[\.\.\.new Set\(\[\.\.\.\(draft\.warnings \|\| \[\]\), \.\.\.\(straddleNow/,
+    "submit merges its own finding into the record's warnings, deduped");
 });
 
 test("nothing anywhere deletes a TID mapping", () => {
@@ -315,19 +368,20 @@ test("no TID appears in the CODE of the capture feature, on either side", () => 
     "../../src/components/cardrecon/terminalRegistry.js",
     "../../scripts/cardrecon/intakeCore.mjs",
   ];
+  // Line-wise, for the reason captureOnly.test.js documents at length: the
+  // naive /\*[\s\S]*?\*/ strip treats the `/*` in accept="image/*" as a comment
+  // opener and eats the rest of the file.
+  const strip = (raw) => raw.split("\n").reduce(({ out, inBlock }, line) => {
+    if (inBlock) return { out, inBlock: !/\*\//.test(line) };
+    if (/^\s*\{?\/\*/.test(line)) return { out, inBlock: !/\*\//.test(line) };
+    if (/^\s*\/\//.test(line)) return { out, inBlock: false };
+    return { out: [...out, line], inBlock: false };
+  }, { out: [], inBlock: false }).out.join("\n");
+
   const offenders = [];
   let scanned = 0;
   for (const rel of files) {
-    const raw = readFileSync(resolve(__dirname, rel), "utf8");
-    // Line-wise, for the reason captureOnly.test.js documents at length: the
-    // naive /\*[\s\S]*?\*/ strip treats the `/*` in accept="image/*" as a
-    // comment opener and eats the rest of the file.
-    const code = raw.split("\n").reduce(({ out, inBlock }, line) => {
-      if (inBlock) return { out, inBlock: !/\*\//.test(line) };
-      if (/^\s*\{?\/\*/.test(line)) return { out, inBlock: !/\*\//.test(line) };
-      if (/^\s*\/\//.test(line)) return { out, inBlock: false };
-      return { out: [...out, line], inBlock: false };
-    }, { out: [], inBlock: false }).out.join("\n");
+    const code = strip(readFileSync(resolve(__dirname, rel), "utf8"));
     scanned++;
     for (const tid of Object.keys(LIVE)) {
       if (code.includes(tid)) offenders.push(`${rel} names ${tid} in code`);
@@ -336,14 +390,25 @@ test("no TID appears in the CODE of the capture feature, on either side", () => 
   assert.equal(scanned, files.length);
   assert.deepEqual(offenders, [], offenders.join("\n"));
 
-  // THE SCAN MUST BE ABLE TO FAIL, or it passes on wreckage. Two proofs: the
-  // files it read are not empty after stripping, and a TID placed in code where
-  // this scan looks IS caught.
+  // THE SCAN MUST BE ABLE TO FAIL, or it passes on wreckage — and the wreckage
+  // to worry about is the STRIPPER's, not the disk's. A stray unclosed `/*`
+  // turns a whole file into "comment" and the scan then finds nothing very
+  // convincingly. So: what was scanned must still be substantial, and a planted
+  // TID must survive the same strip-and-scan pipeline these files went through.
+  // A LINE COUNT, not a proportion of the file: these modules are deliberately
+  // comment-heavy — terminalRegistry.js is three quarters prose — and a
+  // proportion would either fail on honest documentation or pass on a file
+  // stripped to one line.
   for (const rel of files) {
-    const raw = readFileSync(resolve(__dirname, rel), "utf8");
-    assert.ok(raw.length > 200, `${rel} is suspiciously small`);
+    const left = strip(readFileSync(resolve(__dirname, rel), "utf8"))
+      .split("\n").filter((l) => l.trim()).length;
+    assert.ok(left >= 8, `${rel}: only ${left} lines survived stripping — this scan would be looking at nothing`);
   }
-  const planted = "const only = registry['0000HP1X'];";
+  const planted = strip([
+    "// 0000HP1X cannot email — a COMMENT, which is allowed and must survive stripping as prose",
+    "const onlyThisOne = registry['0000HP1X'];",
+  ].join("\n"));
+  assert.ok(!planted.includes("cannot email"), "the stripper does remove a comment");
   assert.ok(Object.keys(LIVE).some((tid) => planted.includes(tid)),
-    "the needle this scan looks for does match a real TID in real code");
+    "…and a TID in CODE survives the strip, so the scan above could have caught one");
 });

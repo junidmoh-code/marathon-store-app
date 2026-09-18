@@ -254,3 +254,50 @@ test("CONTRACT: a record filed by a terminal with no label falls back to its TID
   assert.equal(typeof r.tid, "string");
   assert.equal(r.terminalLabel || r.tid, "0000HP1X");
 });
+
+// ── THE ACTIVE-WINDOW TRUTH TABLE ───────────────────────────────────────────
+// `wasActiveAt` exists TWICE, in two repos: here, and as `terminalWasActiveAt`
+// in marathon-pos-app src/reports/cardrecon/batchData.js, where it decides
+// which evenings the outstanding-slip report expects a terminal to have filed
+// for. The retirement half of the pair is fuzzed against its client copy
+// (src/components/cardrecon/terminalRegistry.test.js) because both live in this
+// repo. This one cannot be: nothing builds one repo's modules into the other's
+// test run, and the existing cross-repo cover pins record SHAPE, not LOGIC.
+//
+// So the contract is a TRUTH TABLE, and the same table is asserted verbatim in
+// marathon-pos-app's batchData.test.js under the same heading. It is not a
+// shared test — it is a block that appears identically in both repos, so that
+// changing one side's boundary semantics (inclusive vs exclusive at `retiredAt`,
+// what a junk stamp means) shows up as a diff against a table the other repo
+// also holds, instead of as a silent disagreement about which evenings a
+// terminal owed a slip.
+const ACTIVE_WINDOW_CONTRACT = [
+  // [row, atMs, expected]
+  [{}, 1000, true],                                            // no stamps: always here
+  [{ activeFrom: 1000 }, 999, false],                          // before it arrived
+  [{ activeFrom: 1000 }, 1000, true],                          // the moment it arrived counts
+  [{ activeFrom: 1000 }, 1001, true],
+  [{ retiredAt: 2000 }, 2000, true],                           // its last moment counts
+  [{ retiredAt: 2000 }, 2001, false],                          // after it went
+  [{ activeFrom: 1000, retiredAt: 2000 }, 1500, true],
+  [{ activeFrom: 1000, retiredAt: 2000 }, 2001, false],
+  [{ activeFrom: "2026-09-18" }, 1, true],                     // junk stamp: still here
+  [{ retiredAt: "yesterday" }, 1, true],                       // junk stamp: not retired
+  [{ retired: true }, 1, true],                                // a boolean is NOT the flag
+  [{ activeFrom: null }, 1, true],
+  [{ retiredAt: NaN }, 1, true],
+];
+
+test("CONTRACT: the active window answers exactly this table, in both repos", () => {
+  const { wasActiveAt } = require("../lib/card-terminals.cjs");
+  for (const [row, atMs, want] of ACTIVE_WINDOW_CONTRACT) {
+    assert.equal(wasActiveAt({ storeId: "pe", tillId: "till-1", ...row }, atMs), want,
+      `wasActiveAt(${JSON.stringify(row)}, ${atMs}) must be ${want}`);
+  }
+  // The table must contain both answers, or it agrees on nothing.
+  assert.ok(ACTIVE_WINDOW_CONTRACT.some(([, , w]) => w === true));
+  assert.ok(ACTIVE_WINDOW_CONTRACT.some(([, , w]) => w === false));
+  // And a missing row is not "active" — there is nothing to be active.
+  assert.equal(wasActiveAt(null, 1), false);
+  assert.equal(wasActiveAt({}, NaN), false);
+});

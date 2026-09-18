@@ -73,6 +73,38 @@ function wasActiveAt(row, atMs) {
   return true;
 }
 
+/**
+ * The warning a slip carries when its window STRADDLES a till reassignment.
+ *
+ * This is the one edit to a registry row that silently corrupts a figure. The
+ * expected-card calculator joins the terminal's CURRENT storeId + tillId
+ * against /pos/paymentEvents over the slip's own Opened -> Closed window — and a
+ * batch settles at ~18:50, so the first window after a till move BEGAN BEFORE
+ * THE MOVE and closed after it. Across the pre-move part of that window the
+ * machine's real card legs are tagged with the OLD till (excluded — a false
+ * shortfall) while the till it has now was being worked by something else
+ * (included — a contaminated total). The variance that comes out is confident
+ * and wrong, on exactly the slip somebody will look at hardest, and it will be
+ * chased as an ordinary discrepancy because nothing says otherwise.
+ *
+ * There is no fix that computes the RIGHT figure: the registry holds a
+ * terminal's CURRENT mapping and no history of it, deliberately — POS #357
+ * reverted a reader that followed a terminal's mapping history, on the owner's
+ * instruction. So this refuses to be confident instead. `tillChangedAt` is
+ * stamped whenever a row's tillId changes, and any slip whose window opened
+ * before that stamp says so on its own record, where the owner reads the
+ * variance.
+ *
+ * It stops mattering by itself: the next batch opens after the stamp.
+ */
+function tillMoveWarning(tid, row, openedAt) {
+  const movedAt = Number(row && row.tillChangedAt);
+  if (!Number.isFinite(movedAt) || !Number.isFinite(openedAt)) return null;
+  if (openedAt >= movedAt) return null;
+  const when = new Date(movedAt).toISOString().slice(0, 16).replace("T", " ");
+  return `This batch opened before terminal ${tid} was reassigned to ${row.storeId}/${row.tillId} (${when} UTC), so its window spans the move. The expected figure is the NEW till's takings across the WHOLE window and the old till's are not in it, which makes the variance on this one batch unreliable. Reconcile it by hand; the next batch is clean.`;
+}
+
 /** The warning a retired terminal's emailed slip carries onto its record. */
 function retiredSlipWarning(tid, row) {
   const when = Number.isFinite(row && row.retiredAt)
@@ -87,4 +119,4 @@ function retiredCaptureRefusal(tid, row) {
   return `${label} (${tid}) is retired — it is no longer mapped to a till that can take a capture. If this machine is trading again, an admin reinstates it (scripts/seed-card-terminals.mjs --reinstate) before its slips can be recorded.`;
 }
 
-module.exports = { isRetiredTerminal, wasActiveAt, retiredSlipWarning, retiredCaptureRefusal };
+module.exports = { isRetiredTerminal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };

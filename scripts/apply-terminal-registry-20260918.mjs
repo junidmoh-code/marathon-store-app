@@ -125,6 +125,13 @@ for (const [tid, want] of Object.entries(ESTATE)) {
     process.exit(1);
   }
   const row = { ...(cur || {}), ...want };
+  // A TILL MOVE IS STAMPED. Two rows move till in this change, and the first
+  // batch each of them files afterwards covers a window that OPENED BEFORE the
+  // move — the expected-card figure for it joins the new till across the whole
+  // window and is not to be trusted. The stamp is what makes the capture say so
+  // on the record (tillMoveWarning, functions/lib/card-terminals.cjs) instead of
+  // publishing a confident wrong variance on the one batch anybody will check.
+  if (cur && cur.tillId && cur.tillId !== want.tillId) row.tillChangedAt = SERVER_NOW;
   // Rows seeded before `activeFrom` existed have always been active; stamping
   // them NOW would tell the outstanding report they arrived today and blank
   // their whole history of expected evenings. Only a row being created gets a
@@ -146,7 +153,24 @@ if (!EXECUTE) {
 // Per-TID writes, not a single set() on the parent: a set() on
 // /config/cardTerminals would DELETE any row this script does not name, which
 // is the one thing the registry must never do.
-for (const [tid, row] of Object.entries(updates)) await db.ref(`config/cardTerminals/${tid}`).set(row);
+//
+// AND A DEATH PART-WAY THROUGH MUST SAY SO ON THE RUN THAT DIED. Six sequential
+// writes means six chances to lose the network, and a stack trace scrolling past
+// does not tell an operator whether the estate is half-applied. Re-running is
+// safe — every write is idempotent and the store-move guard still holds — but
+// only if the person knows to.
+const written = [];
+try {
+  for (const [tid, row] of Object.entries(updates)) {
+    await db.ref(`config/cardTerminals/${tid}`).set(row);
+    written.push(tid);
+  }
+} catch (err) {
+  console.error(`\nDIED PART-WAY: ${written.length} of ${Object.keys(updates).length} rows written (${written.join(", ") || "none"}).`);
+  console.error("The registry is HALF-APPLIED. Re-run this script — every write is idempotent and nothing was deleted.");
+  console.error(err?.stack || err);
+  process.exit(1);
+}
 
 const after = (await db.ref("config/cardTerminals").get()).val() || {};
 let bad = 0;
@@ -156,6 +180,8 @@ for (const [tid, want] of Object.entries(ESTATE)) {
     if (!got || got[k] !== v) { console.error(`SURPRISE: ${tid}.${k} is ${JSON.stringify(got && got[k])}, expected ${JSON.stringify(v)}`); bad++; }
   }
   if (!Number.isFinite(got?.activeFrom)) { console.error(`SURPRISE: ${tid}.activeFrom is not a server timestamp (${JSON.stringify(got?.activeFrom)})`); bad++; }
+  const movedTill = before[tid] && before[tid].tillId && before[tid].tillId !== want.tillId;
+  if (movedTill && !Number.isFinite(got?.tillChangedAt)) { console.error(`SURPRISE: ${tid} moved till and carries no tillChangedAt stamp — its next batch would publish an untrustworthy variance silently`); bad++; }
 }
 for (const tid of Object.keys(before)) {
   if (!after[tid]) { console.error(`SURPRISE: ${tid} disappeared from the registry`); bad++; }

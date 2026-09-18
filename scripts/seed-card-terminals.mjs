@@ -126,6 +126,12 @@ if (RETIRE || REINSTATE) {
   // It bounds the outstanding-slip report, which would otherwise report a
   // terminal registered today as having missed every evening in the range.
   if (!Number.isFinite(row.activeFrom)) row.activeFrom = SERVER_NOW;
+  // WHEN ITS TILL LAST CHANGED. A batch settles at ~18:50, so the first window
+  // after a till move began BEFORE the move — and the expected-card figure for
+  // that window joins the NEW till across the whole of it. This stamp is what
+  // lets the capture say so on the record instead of publishing a confident
+  // wrong variance. See tillMoveWarning in functions/lib/card-terminals.cjs.
+  if (existing && existing.tillId && existing.tillId !== tillId) row.tillChangedAt = SERVER_NOW;
   if (row.mid === null) delete row.mid;
 }
 
@@ -137,7 +143,7 @@ if (EXECUTE) {
   console.log("done — verify:", JSON.stringify(after));
   // The sentinel is only a promise until it is read back: a row whose stamp
   // came back as anything but a number was not stamped by the server.
-  for (const field of ["activeFrom", "retiredAt"]) {
+  for (const field of ["activeFrom", "retiredAt", "tillChangedAt"]) {
     if (field in row && !Number.isFinite(after && after[field])) {
       console.error(`SURPRISE: ${field} did not come back as a server timestamp — check /${path} by hand.`);
       process.exit(1);

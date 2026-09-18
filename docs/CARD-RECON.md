@@ -82,6 +82,25 @@ refusing it to make a point about tidiness is the worse answer. Nothing is
 retired today — the 2026-09-18 change added two machines and removed none — and
 the mechanism exists now because the next swap will need it.
 
+**A till move is stamped, and the first batch after it says it cannot be
+trusted.** `tillChangedAt` is written whenever a row's `tillId` changes. The
+expected-card figure joins the terminal's **current** `storeId`+`tillId` against
+`/pos/paymentEvents` over the slip's **own** Opened→Closed window — and a batch
+settles at ~18:50, so the first window after a move *opened before the move*.
+Across that part of the evening the machine's real card legs are tagged with the
+old till (excluded — a false shortfall) while whatever worked the new till is
+included (a contaminated total). The variance that comes out is confident and
+wrong, on exactly the slip somebody will look at hardest.
+
+There is no fix that computes the right figure — the registry holds a terminal's
+current mapping and no history of it, deliberately (POS #357 reverted a reader
+that followed a terminal's mapping history, on the owner's instruction). So the
+capture **refuses to be confident** instead: a slip whose window opened before
+the stamp carries a warning on its own record, where the owner reads the
+variance, on all three paths (photo extract, PDF extract, submit — the last
+recomputed against the registry as it stands at the moment of record). It
+expires by itself: the next batch opens after the stamp.
+
 `activeFrom` is when a machine entered **this estate**, which is neither when it
 was made nor batch 1: two of the six arrived second-hand, mid-life, on batches 57
 and 480. It bounds the outstanding-slip report, which would otherwise report a
