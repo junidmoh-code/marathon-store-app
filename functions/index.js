@@ -2687,7 +2687,20 @@ async function loadStyleKit(db) {
 // to a truncated raw message for anything unrecognised.
 function classifyPhotoError(msg, engName) {
   const m = String(msg || "").trim();
-  if (/HTTP 429|credits are depleted|rate|quota|RESOURCE_EXHAUSTED/i.test(m)) {
+  // ── OUR OWN CAP IS NOT THE PROVIDER'S ────────────────────────────────────
+  // FIRST, and deliberately so. The daily image-generation cap's message
+  // contains the word "generated", and "generated" contains "rate" — so the
+  // provider branch below matched it and reported a refusal we made
+  // ourselves, for free, as "AI credits depleted — check Gemini billing".
+  // That is the worst possible misdirection: it sends the reader to a billing
+  // page to fix a limit that is in this repository.
+  //
+  // (The `rate` alternative below is now anchored to a real rate LIMIT for the
+  // same reason — a bare /rate/ matches "generated", "accelerate" and
+  // "moderate", and an error classifier that guesses is worse than one that
+  // quotes.)
+  if (/daily image-generation (cap|budget)/i.test(m)) return m.slice(0, 140);
+  if (/HTTP 429|credits are depleted|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
     const provider = engName === "openai" ? "OpenAI" : "Gemini";  // gemini + nbpro → Gemini
     return `AI credits depleted or rate-limited (429) — check ${provider} billing`;
   }
@@ -4388,9 +4401,49 @@ async function loadSocialGenerationContext(db, { nowMs, style }) {
  *
  * @returns { ok: true, created } or { ok: false, skipped }
  */
+// ── THE DAY'S IMAGE BUDGET, RESERVED BEFORE THE MONEY IS SPENT ───────────────
+// One RTDB transaction per generation, against a counter keyed on the SA date.
+// Durable (it is in the database, so a restarted instance sees it), shared
+// (the 06:00 autopilot and a Generate-tab run at 06:01 are two processes on
+// one budget), and taken BEFORE the paid call, so a generation that succeeds
+// at Gemini and then dies on the upload has still spent its unit — which is
+// what "retries count against it" means.
+//
+// The path is Admin-SDK-only and carries no rule, like /social_signal: nothing
+// in the browser reads or writes it, and a browser that could forge a spent
+// budget would be a browser that could switch the engine off.
+//
+// A FAILURE TO READ THE COUNTER REFUSES. If RTDB cannot be reached the honest
+// answer is "I do not know how much has been spent today", and the safe
+// reading of that is the cap. A cap that fails open is not a cap.
+async function claimImageGeneration(db, saDate) {
+  const cap = socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY;
+  try {
+    const res = await db.ref(`social_generation_budget/${saDate}/count`)
+      .transaction((cur) => socialBudget.reserveGeneration(cur, cap));
+    // committed is the only outcome that means a unit is ours. An abort is the
+    // cap (or an unreadable counter — see reserveGeneration).
+    if (res.committed) return { ok: true, count: Number(res.snapshot.val()) || 0, cap };
+    // ── "AT THE CAP" AND "I CANNOT READ THE COUNTER" ARE DIFFERENT NIGHTS ───
+    // Both refuse, and they must refuse — but they are not the same message.
+    // reserveGeneration aborts on a counter it does not trust as well as on a
+    // full one, so reporting every abort as "the cap of 4 was already reached"
+    // would tell the reader a deliberate limit had done its job on a morning
+    // when the database was unreachable. That is the same class of
+    // misdirection this whole PR is about: a skip whose stated reason sends
+    // you to the wrong place.
+    const current = res.snapshot.val();
+    const atCap = typeof current === "number" && Number.isFinite(current) && current >= cap;
+    return { ok: false, count: atCap ? current : cap, cap, why: atCap ? "cap" : "unreadable" };
+  } catch (err) {
+    console.error(`socialBudget: could not reserve a generation for ${saDate} — refusing:`, err && err.message);
+    return { ok: false, count: cap, cap, why: "unreadable" };
+  }
+}
+
 async function generateOnePost(db, {
   kind, format, style, platforms, styleKit, library, candidates, used,
-  signal, geminiApiKey, status, scheduledAt, updatedBy,
+  signal, geminiApiKey, status, scheduledAt, updatedBy, saDate,
 }) {
   const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
   if (!picks.length) return { ok: false, skipped: { kind, format, reason } };
@@ -4442,6 +4495,19 @@ async function generateOnePost(db, {
         style,
         styleNotes: library.notes,
       });
+      // ── THE CAP, IMMEDIATELY BEFORE THE ONLY LINE THAT COSTS MONEY ───────
+      // Here and nowhere else: this is the single paid call in the whole
+      // generator, so a unit reserved here can never be a unit spent
+      // somewhere the cap cannot see. Everything above is free — reading the
+      // catalogue, fetching product photographs, building a prompt — and a
+      // refusal at this point has charged nothing.
+      const budgetDay = saDate || saDateForUsage(Date.now());
+      const budget = await claimImageGeneration(db, budgetDay);
+      if (!budget.ok) {
+        throw new Error(budget.why === "unreadable"
+          ? socialBudget.unreadableBudgetReason(budgetDay)
+          : socialBudget.capReachedReason(budgetDay, budget.cap));
+      }
       const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
       costUSD = gen.costUSD;
       const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime, format);
@@ -4574,12 +4640,30 @@ async function generateOnePost(db, {
     //
     // The image is NOT re-uploaded, so the failure cleanup below still has
     // exactly one object to worry about.
-    const twinId = wantsTwin ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
-    const twin = twinId
-      ? socialTwin.buildFeedTwin(record, {
-          twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
-        })
-      : null;
+    // ── OR THE STORY TWIN, WHICH IS THE SAME MECHANISM TURNED AROUND ─────────
+    // A reel also goes out as a story, from the SAME encoded video — the file
+    // does not exist yet (ffmpeg lives on the Mac mini, not here), so the twin
+    // carries `videoFrom` and the publisher resolves it. See social-twin.cjs.
+    //
+    // The two twins are mutually exclusive by construction: wantsFeedTwin only
+    // fires on a story and wantsStoryTwin only on a reel. Written as an
+    // if/else anyway, because "they cannot both be true" is the kind of thing
+    // that stays true until someone adds a format.
+    const storyTwinWanted = socialTwin.wantsStoryTwin(format, media, REEL_ALSO_POSTS_TO_STORY);
+    const twinId = (wantsTwin || storyTwinWanted) ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
+    const twin = !twinId
+      ? null
+      : wantsTwin
+        ? socialTwin.buildFeedTwin(record, {
+            twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
+          })
+        : socialTwin.buildStoryTwin(record, {
+            twinId, reelId: postId,
+            // The reel's model-written caption is NOT copied: nothing can show
+            // a story's caption, and a record claiming one it cannot display is
+            // the exact lie primaryCaptionFields exists to prevent.
+            fallbackCaption: socialCaption.fallbackCaption({ kind, products: picks }),
+          });
     // ── THE ALBUM RIDES THE SAME UPDATE ──────────────────────────────────────
     // Merged into the post's own atomic write rather than written after it. A
     // second, later write is a second thing that can fail, and the failure
@@ -4600,7 +4684,7 @@ async function generateOnePost(db, {
       created: {
         postId, kind, format, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource,
         scheduledAt: scheduledAt || null,
-        ...(twinId ? { twinId, twinFormat: "feed" } : {}),
+        ...(twinId ? { twinId, twinFormat: wantsTwin ? "feed" : "story" } : {}),
       },
     };
   } catch (err) {
@@ -4712,6 +4796,9 @@ exports.generateSocialPosts = onCall(
         signal, geminiApiKey, status: "draft",
         scheduledAt: slots[index] || null,
         updatedBy: request.auth.uid,
+        // ONE budget, shared with the autopilot. A manual run on the morning
+        // the cron already spent the day's four must not get four more.
+        saDate: saDateForUsage(nowMs),
       });
       if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
       else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
@@ -4772,10 +4859,31 @@ exports.generateSocialPosts = onCall(
 // Social screen), read fresh on every run — see loadSocialPolicy below. These
 // are its defaults, used only when nothing has ever been saved there, so the
 // autopilot was never depending on that screen existing to run at all.
+// ── TWO REELS A DAY, AND NOTHING ELSE GENERATED ──────────────────────────────
+// Owner brief, 2026-09-19. Each reel also goes out as a story from the same
+// encoded file (REEL_ALSO_POSTS_TO_STORY), so the day is two generations and
+// four posts: 2 reels + 2 stories.
+//
+// THE FEED PHOTO AND THE STANDALONE STORIES ARE NOT DELETED, THEY ARE EMPTY.
+// `photos` and `stories` are the same lists they always were and every code
+// path behind them is untouched; they simply ask for nothing. Putting a time
+// back in either list — here, or in the Policy tab, which is the live config
+// and wins over these defaults — turns that slot straight back on with no
+// code change and no deploy.
+//
+// RTDB CANNOT STORE AN EMPTY ARRAY: a saved policy with no photos comes back
+// with the key ABSENT, not as []. asRtdbList already reads that as zero, which
+// is why "switched off" and "never configured" are distinguishable only by
+// whether a /social_policy record exists at all.
+//
+// 12:00 and 19:00 SAST: lunch, and after supper. The two windows a South
+// African audience is actually on a phone rather than at work or in traffic.
+// The old 08:00 slot competed with the commute and 18:00 with it in the other
+// direction.
 const DEFAULT_POLICY_TIMES = {
-  reels: ["08:00"],
-  photos: ["11:00"],
-  stories: ["09:00", "13:00", "17:00"],
+  reels: ["12:00", "19:00"],
+  photos: [],
+  stories: [],
 };
 // A safety ceiling on what a saved policy can ask for, independent of
 // whatever the UI itself enforces — the UI is a courtesy, this is the actual
@@ -4837,6 +4945,26 @@ const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
 // making is worse than a screen that says nothing.
 const STORY_ALSO_POSTS_TO_FEED = process.env.STORY_ALSO_POSTS_TO_FEED !== "false";
 
+// ── EVERY REEL IS ALSO A STORY, FROM THE SAME ENCODED FILE ───────────────────
+// Owner brief, 2026-09-19: two reels a day, each one also posted as a story,
+// and nothing generated twice. The day is two image generations, two encodes
+// — one per reel — and four posts.
+//
+// It costs NOTHING extra. The picture is paid for once by the reel; the video
+// is encoded once on the Mac mini at publish time and the story sends the same
+// file (see social-twin.cjs's STORY_TWIN_ROLE and publish.mjs's
+// resolveVideoFor). Not even a caption: a story shows none on either platform,
+// so the twin never calls the model.
+//
+// A BUILD-TIME flag, the same convention as STORY_ALSO_POSTS_TO_FEED: set
+// REEL_ALSO_POSTS_TO_STORY=false in functions/.env and redeploy
+// functions:socialDailyAutopilot and functions:generateSocialPosts.
+//
+// KEEP IN STEP with socialCore.js's REEL_ALSO_POSTS_TO_STORY, which is what
+// the Policy tab reads to describe the day. socialFormat.test.js pins the two
+// literals together.
+const REEL_ALSO_POSTS_TO_STORY = process.env.REEL_ALSO_POSTS_TO_STORY !== "false";
+
 /**
  * The saved policy, or the built-in defaults if nothing has been saved.
  * Every list is clamped to MAX_ITEMS_PER_FORMAT and the whole thing to
@@ -4877,6 +5005,15 @@ async function loadSocialPolicy(db) {
   if (total < rawTotal) {
     console.warn(`socialDailyAutopilot: saved policy asked for ${rawTotal}/day, over MAX_ITEMS_PER_DAY (${MAX_ITEMS_PER_DAY}) and/or MAX_ITEMS_PER_FORMAT (${MAX_ITEMS_PER_FORMAT}) — trimmed to ${total}`);
   }
+  // ── TWO DAY CEILINGS, AND THE SMALLER ONE IS THE ONE THAT BITES ───────────
+  // MAX_ITEMS_PER_DAY (8) is what one unattended RUN can finish; the budget
+  // cap (4) is what the day may PAY for. A policy of six slots is legal by the
+  // clamp above, saves cleanly, and then makes four — every day, with the only
+  // trace in a skip reason. Said out loud here, and the Policy tab refuses to
+  // leave it unsaid too (PolicyCard's MAX_GENERATIONS_PER_DAY mirror).
+  if (total > socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY) {
+    console.warn(`socialDailyAutopilot: the policy asks for ${total} generations a day but the daily cap is ${socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} — ${total - socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} will be skipped every day until one of the two changes`);
+  }
   return clamped;
 }
 
@@ -4912,6 +5049,7 @@ function parseHHMM(s) {
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
 const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
 const socialTwin = require("./lib/social-twin.cjs");
+const socialBudget = require("./lib/social-budget.cjs");
 const socialLibrary = require("./lib/social-library.cjs");
 const DAY_MS = 86400000;
 
@@ -4939,6 +5077,30 @@ function nextHourSlot(fromMs, hour, minute = 0, taken = new Set()) {
   return null;   // exhausted two weeks of the same hour — a bug, not real load
 }
 
+// ── THE SKIPS, AS ONE READABLE SENTENCE PER DISTINCT CAUSE ───────────────────
+// Six skips for one cause is one line, not six. The count is kept because
+// "all six" and "one of six" are different mornings, and the reason is
+// already classified by classifyPhotoError, so a Gemini 429 arrives here as
+// "AI credits depleted or rate-limited (429) — check Gemini billing" rather
+// than a raw HTTP body.
+//
+// Returns null, never [], when there is nothing to say: RTDB cannot store an
+// empty array — it deletes the key — so writing one would leave YESTERDAY'S
+// reasons sitting on a run that had none. See the same guard on
+// social_health/days reasons.
+function summariseSkips(skipped) {
+  const byReason = new Map();
+  for (const s of skipped || []) {
+    const reason = String((s && s.reason) || "skipped").slice(0, 200);
+    byReason.set(reason, (byReason.get(reason) || 0) + 1);
+  }
+  const out = [...byReason.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([reason, count]) => (count > 1 ? `${count}x ${reason}` : reason));
+  return out.length ? out : null;
+}
+
 exports.socialDailyAutopilot = onSchedule(
   {
     schedule: "0 6 * * *",
@@ -4947,6 +5109,11 @@ exports.socialDailyAutopilot = onSchedule(
     secrets: [geminiApiKey, anthropicApiKey],
     memory: "1GiB",
     // Up to MAX_ITEMS_PER_DAY (8) sequential generations, each able to spend
+    // — a WORST CASE that the daily budget cap (4) now makes unreachable in
+    // practice, since the fifth onward is refused before the Gemini call and
+    // returns in milliseconds. Sized for the old worst case anyway: the cap is
+    // a constant somebody may raise, and a timeout that only fits the current
+    // value of another constant is a trap for whoever raises it.
     // up to GEMINI_FETCH_TIMEOUT_MS (180s) on the Gemini call alone before
     // the rest of its own work — worst case that is 1440s before the LAST
     // caption or upload has even started. 540s (the onCall generator's own
@@ -5047,6 +5214,7 @@ exports.socialDailyAutopilot = onSchedule(
           kind: req.kind, format: req.format, style, platforms, styleKit, library, candidates, used,
           signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
           updatedBy: "cron:socialDailyAutopilot",
+          saDate,
         });
         if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
         else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
@@ -5058,8 +5226,27 @@ exports.socialDailyAutopilot = onSchedule(
         // queue, not just what was generated. socialHealthScan judges the day
         // on `created` — the generations — which is the number that goes to
         // zero when the picture engine is broken.
-        feedTwins: created.filter((c) => c.twinId).length,
+        feedTwins: created.filter((c) => c.twinFormat === "feed").length,
+        // Counted apart from feedTwins because they are different things: a
+        // feed twin is a second SURFACE for a picture already paid for, a
+        // story twin is a second surface for a VIDEO already encoded. Folding
+        // them into one number would make "twins" mean nothing.
+        storyTwins: created.filter((c) => c.twinFormat === "story").length,
         estCostUSD: +estCostUSD.toFixed(4),
+        // ── WHY IT SKIPPED, IN THE DATABASE, NOT ONLY IN A LOG ───────────────
+        // Between 2026-09-13 and 2026-09-19 this run wrote `created: 0,
+        // skipped: 6` every morning and nothing else. The REASON — Gemini
+        // answering 429 "prepayment credits are depleted" — existed only as a
+        // console line in Cloud Logging, which needs a Google identity with
+        // logging.viewer to read; the publisher's own service account is
+        // refused ("Permission denied for all log views"). So the one field
+        // that says what to DO about a dead engine was the one field nobody
+        // diagnosing it could reach, and six days of runs looked identical to
+        // a day with nothing worth posting.
+        //
+        // Deduped and bounded: the same reason six times is one entry with a
+        // count, so this stays a sentence rather than a transcript.
+        skipReasons: summariseSkips(skipped),
       });
       await logReorderUsage(db, saDate, {
         at: nowMs, kind: "socialDailyAutopilot", by: "cron",
@@ -5072,8 +5259,8 @@ exports.socialDailyAutopilot = onSchedule(
       // make a six-image day read as nine and quietly inflate every cost
       // comparison against it.
       const twins = created.filter((c) => c.twinId).length;
-      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ${twins} feed twin(s), ~$${estCostUSD.toFixed(3)}`,
-        { created: created.map((c) => `${c.kind}/${c.format}${c.twinId ? "+feed" : ""}`), skipped });
+      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ${twins} twin(s), ~$${estCostUSD.toFixed(3)}`,
+        { created: created.map((c) => `${c.kind}/${c.format}${c.twinFormat ? `+${c.twinFormat}` : ""}`), skipped });
     } catch (err) {
       // The claim must not lie about a run that blew up partway through — a
       // half-finished day (the reel made, the crash before the stories) is
@@ -5156,6 +5343,17 @@ exports.socialHealthScan = onSchedule(
       autopilotLog: logSnap.val(),
       posts,
       publisherTickAt: tickSnap.val() ?? null,
+      // ── THE OBLIGATION FOLLOWS THE TWINS ─────────────────────────────────
+      // Two reel slots owe two reels AND two stories, because each reel is
+      // also posted as a story from the same encoded file. Passed in rather
+      // than re-derived inside the assessor, which is pure and has no
+      // business reading process.env — and passed as the LIVE flags, so
+      // switching a twin off in functions/.env cannot leave the watchdog
+      // alarming for the day about posts nobody is making any more.
+      twins: {
+        reelAlsoPostsToStory: REEL_ALSO_POSTS_TO_STORY,
+        storyAlsoPostsToFeed: STORY_ALSO_POSTS_TO_FEED,
+      },
     });
 
     // The record is written on EVERY run, healthy or not. A watchdog that only

@@ -289,3 +289,149 @@ describe("the twin's picture is the 1080x1350 render", () => {
     assert.deepEqual(twinOf(story()).media, [IMG]);
   });
 });
+
+// ─── THE STORY TWIN — ONE REEL, TWO SURFACES, ONE FILE ───────────────────────
+// Owner brief, 2026-09-19: two reels a day, each also posted as a story, using
+// THE SAME encoded video. Three properties carry it, and each is a way it
+// could go wrong quietly rather than loudly:
+//
+//   1. the twin points at the reel for its video, and never at a URL;
+//   2. the twin does NOT copy the reel's caption (nothing can show it);
+//   3. the twin shares the SLOT, so both go out on one tick.
+const {
+  wantsStoryTwin, buildStoryTwin, STORY_TWIN_ROLE,
+} = require("../lib/social-twin.cjs");
+
+describe("the story twin", () => {
+  const STILL = { url: "https://storage/aiStudio/social/posts/R1/0.jpg", type: "image" };
+  const reel = (over = {}) => ({
+    status: "approved",
+    kind: "pairing",
+    format: "reel",
+    media: [STILL],
+    caption: "Two pieces that go together. Link in bio.",
+    captionSource: "ai",
+    captionNote: "trimmed to 2200",
+    link: "https://shop/x",
+    platforms: { instagram: true, facebook: true, tiktok: false },
+    scheduledAt: SLOT,
+    products: [{ pid: "p1", name: "n", displayName: "d", handle: "h", slot: null }],
+    style: "house",
+    costUSD: 0.134,
+    createdAt: 1, updatedAt: 1, updatedBy: "cron:socialDailyAutopilot",
+    ...over,
+  });
+  const build = (r = reel(), over = {}) =>
+    buildStoryTwin(r, { twinId: "T1", reelId: "R1", fallbackCaption: "Black mesh daypack.", ...over });
+
+  describe("when it is wanted", () => {
+    test("a reel with one still, and the feature on", () => {
+      assert.equal(wantsStoryTwin("reel", [STILL], true), true);
+    });
+
+    test("never when the feature is off — and off means off, not falsy-ish", () => {
+      assert.equal(wantsStoryTwin("reel", [STILL], false), false);
+      for (const notOn of [undefined, null, 0, "", "true", 1, {}]) {
+        assert.equal(wantsStoryTwin("reel", [STILL], notOn), false);
+      }
+    });
+
+    test("never for a story, a feed post, or a missing format", () => {
+      for (const f of ["story", "feed", undefined, null, "reel "]) {
+        assert.equal(wantsStoryTwin(f, [STILL], true), false);
+      }
+    });
+
+    test("never for a carousel — there is no such thing as a story carousel", () => {
+      assert.equal(wantsStoryTwin("reel", [STILL, STILL], true), false);
+      assert.equal(wantsStoryTwin("reel", [], true), false);
+      assert.equal(wantsStoryTwin("reel", null, true), false);
+    });
+
+    test("never from media that is not a still — there is nothing to encode", () => {
+      assert.equal(wantsStoryTwin("reel", [{ type: "video", url: "x" }], true), false);
+      assert.equal(wantsStoryTwin("reel", [null], true), false);
+    });
+  });
+
+  describe("what the twin carries", () => {
+    test("it is a story, and it says which reel it copies", () => {
+      const t = build();
+      assert.equal(t.format, "story");
+      assert.equal(t.twinOf, "R1");
+      assert.equal(t.twinRole, STORY_TWIN_ROLE);
+    });
+
+    test("videoFrom is the reel's ID, never a URL", () => {
+      // At generation no video exists — the encode happens on the Mac mini at
+      // publish time. A URL here could only ever be a stale guess.
+      const t = build();
+      assert.equal(t.videoFrom, "R1");
+      assert.doesNotMatch(String(t.videoFrom), /^https?:/);
+    });
+
+    test("it shares the SLOT — both go out on one tick, not hours apart", () => {
+      assert.equal(build().scheduledAt, SLOT);
+    });
+
+    test("it shares the products, the link and the platforms", () => {
+      const t = build();
+      assert.deepEqual(t.products, reel().products);
+      assert.equal(t.link, reel().link);
+      assert.deepEqual(t.platforms, reel().platforms);
+    });
+
+    test("it does NOT copy the reel's caption — nothing can show a story's", () => {
+      const t = build();
+      assert.equal(t.caption, "Black mesh daypack.");
+      assert.notEqual(t.caption, reel().caption);
+      // "not-needed", not "fallback": fallback means the model failed, and
+      // nothing failed here — the twin was never going to ask for one.
+      assert.equal(t.captionSource, "not-needed");
+      assert.equal("captionNote" in t, false);
+    });
+
+    test("it never inherits artwork — a reel has no second render", () => {
+      const t = build(reel({ artwork: { story: { url: "s" }, feed: { url: "f" } } }));
+      assert.equal("artwork" in t, false);
+    });
+
+    test("a twin is never itself twinned", () => {
+      assert.equal("twinId" in build(reel({ twinId: "SOMETHING" })), false);
+    });
+
+    test("a field nobody thought of is inherited, not dropped", () => {
+      // The inherit-by-default contract: adding a field to a post record must
+      // not silently leave the twin without it.
+      assert.equal(build(reel({ signalSource: "tills" })).signalSource, "tills");
+    });
+
+    test("it refuses to build without both ids", () => {
+      assert.throws(() => buildStoryTwin(reel(), { twinId: "T1" }), /both ids/);
+      assert.throws(() => buildStoryTwin(reel(), { reelId: "R1" }), /both ids/);
+      assert.throws(() => buildStoryTwin(null, { twinId: "T1", reelId: "R1" }), /no reel record/);
+    });
+  });
+
+  describe("it is written with the reel, atomically", () => {
+    test("one update map, and neither path is an ancestor of the other", () => {
+      // RTDB REJECTS an update containing both a path and a descendant of it.
+      const r = reel();
+      const u = twinWriteUpdates("social_posts", "R1", r, "T1", build(r));
+      assert.deepEqual(Object.keys(u).sort(), ["social_posts/R1", "social_posts/T1"]);
+      assert.equal(u["social_posts/R1"].twinId, "T1");
+      assert.equal(u["social_posts/T1"].videoFrom, "R1");
+      for (const a of Object.keys(u)) {
+        for (const b of Object.keys(u)) {
+          if (a !== b) assert.ok(!b.startsWith(`${a}/`), `${b} is under ${a}`);
+        }
+      }
+    });
+
+    test("the twin does not point at itself once the reel is stamped", () => {
+      const r = reel();
+      const u = twinWriteUpdates("social_posts", "R1", r, "T1", build(r));
+      assert.equal("twinId" in u["social_posts/T1"], false);
+    });
+  });
+});

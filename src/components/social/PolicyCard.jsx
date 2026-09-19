@@ -18,7 +18,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { GRAY, GREEN, RED, BLUE_L, GLASS, bBlue, bGray, bRed, input as inputStyle } from "../stock/ui";
 import { loadSocialPolicy, saveSocialPolicy, DEFAULT_POLICY_TIMES } from "./socialStore";
-import { STORY_ALSO_POSTS_TO_FEED } from "./socialCore";
+import { STORY_ALSO_POSTS_TO_FEED, REEL_ALSO_POSTS_TO_STORY } from "./socialCore";
 import { asList } from "../../utils/rtdbList";
 
 // A safety ceiling, not a design opinion. socialDailyAutopilot generates
@@ -31,12 +31,50 @@ import { asList } from "../../utils/rtdbList";
 // number one save then silently trims, not a way to exceed it for real.
 const MAX_PER_FORMAT = 6;
 const MAX_TOTAL_PER_DAY = 8;
+// ── THE SPEND CAP IS LOWER THAN THE SLOT CEILING, AND THE SCREEN MUST SAY SO ──
+// MAX_TOTAL_PER_DAY (8) is how many slots one unattended RUN can finish.
+// MAX_IMAGE_GENERATIONS_PER_DAY (4, functions/lib/social-budget.cjs) is how
+// many pictures the day is allowed to PAY for. They are different limits for
+// different reasons and the smaller one wins.
+//
+// Without this, a policy of six slots saves cleanly, reads "6 posts a day" in
+// green, and then makes four — every day, silently, with the only trace in an
+// alarm email. A screen that accepts a setting it knows will not be honoured
+// is worse than one that refuses it.
+//
+// A MIRROR, like STORY_ALSO_POSTS_TO_FEED: the browser never spends anything,
+// it only describes what the backend will do. socialFormat.test.js pins the
+// two numbers together.
+const MAX_GENERATIONS_PER_DAY = 4;
+
+/**
+ * How many of a day's slots the budget will not pay for.
+ *
+ * Exported and pure so it can be tested with numbers rather than by grepping
+ * the file for the sentence it produces. A source-text assertion catches the
+ * warning being DELETED and nothing else — it goes on passing while the
+ * threshold is off by one or the expression is wired to the wrong constant,
+ * which is the bug that would actually reach the owner.
+ */
+export function budgetShortfall(total, cap = MAX_GENERATIONS_PER_DAY) {
+  const n = Number(total);
+  if (!Number.isFinite(n) || n <= cap) return 0;
+  return n - cap;
+}
 
 // `singular` is spelled out rather than derived (e.g. stripping a trailing
 // "s") because "Stories" does not end in a plain "s" — a regex strip turned
 // it into "Storie" on every row of the timeline below.
 const SECTIONS = [
-  { key: "reels", label: "Reels", singular: "Reel", hint: "A vertical video, made from a still and encoded when it actually sends." },
+  {
+    key: "reels", label: "Reels", singular: "Reel",
+    // Same conditional shape as the stories hint below, and for the same
+    // reason: the second sentence is true only while the backend is making
+    // story twins. See REEL_ALSO_POSTS_TO_STORY in socialCore.js.
+    hint: REEL_ALSO_POSTS_TO_STORY
+      ? "A vertical video, made from a still and encoded when it actually sends — and posted as a story too, the same file."
+      : "A vertical video, made from a still and encoded when it actually sends.",
+  },
   { key: "photos", label: "Photos", singular: "Photo", hint: "The ordinary feed post — the square-ish 4:5 card." },
   {
     key: "stories", label: "Stories", singular: "Story",
@@ -113,6 +151,10 @@ export default function PolicyCard({ onNotice, notice }) {
 
   const total = reels.length + photos.length + stories.length;
   const overTotal = total > MAX_TOTAL_PER_DAY;
+  // Not an error — the policy is legal and will save. It simply will not all
+  // be made, and saying so here is the only place anyone would find out.
+  const shortfall = budgetShortfall(total);
+  const overBudget = !overTotal && shortfall > 0;
 
   // The timeline: every slot, from every section, in the order they'll
   // actually fire — this answers "what's posting when" without anyone having
@@ -249,16 +291,29 @@ export default function PolicyCard({ onNotice, notice }) {
         const twins = STORY_ALSO_POSTS_TO_FEED ? stories.length : 0;
         const feedPhotos = photos.length + twins;
         const feedPosts = feedPhotos + reels.length;
+        // A reel's story twin shares the reel's ENCODED VIDEO, so it costs no
+        // generation and no second encode — the same "nothing extra made"
+        // argument the feed twin makes about a picture.
+        const reelStories = REEL_ALSO_POSTS_TO_STORY ? reels.length : 0;
+        const allStories = stories.length + reelStories;
         const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
         return (
           <div style={{ fontSize: 11.5, color: GRAY, marginTop: 8, lineHeight: 1.55 }}>
             On Instagram and Facebook that lands as <strong>{plural(feedPosts, "feed post", "feed posts")}</strong>
             {feedPosts > 0 && <> ({plural(feedPhotos, "photo", "photos")}, {plural(reels.length, "reel", "reels")})</>}
-            {stories.length > 0 && <> and <strong>{plural(stories.length, "story", "stories")}</strong></>}.
+            {allStories > 0 && <> and <strong>{plural(allStories, "story", "stories")}</strong></>}.
             {twins > 0 && " Each story's picture goes on the feed too — one picture, both places, nothing extra made."}
+            {reelStories > 0 && " Each reel goes out as a story too — the same video file, encoded once."}
           </div>
         );
       })()}
+      {overBudget && (
+        <div style={{ fontSize: 11.5, color: RED, marginTop: 8, lineHeight: 1.5 }}>
+          Only <strong>{MAX_GENERATIONS_PER_DAY} pictures a day</strong> are paid for, so {shortfall} of
+          these {total} would be skipped every day. Remove {shortfall} time{shortfall === 1 ? "" : "s"} above,
+          or raise the cap in <code>functions/lib/social-budget.cjs</code> — that one is a decision about money.
+        </div>
+      )}
       {overTotal && (
         <div style={{ fontSize: 11.5, color: RED, marginTop: 8, lineHeight: 1.5 }}>
           {MAX_TOTAL_PER_DAY} a day is the most one unattended run makes — remove a time above to save.

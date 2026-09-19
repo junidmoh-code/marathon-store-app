@@ -350,9 +350,23 @@ day on four independent questions, any one of which raises the alarm:
 | # | question | catches |
 |---|---|---|
 | 1 | did the 06:00 generator run, and make what the policy asked for? | the 2026-08-27 failure |
+| 1b | did each SURFACE get what the day owed it — 2 reels **and** 2 stories? | a run that made both pictures and twinned neither |
 | 2 | is anything approved, due and 20+ minutes late? | a publisher that has stopped |
 | 3 | was anything owed today, and did nothing publish? | total silence |
 | 4 | has the Mac mini ticked in the last 15 minutes? | a dead launchd agent, *before* the day is lost |
+
+**Updated 2026-09-19 for the two-reels rhythm.** Check 1 counts GENERATIONS;
+check 1b counts POSTS, and since a reel's story is free those are no longer the
+same number. The retired photo and standalone-story slots owe **nothing**, so
+they cannot alarm — the obligation is derived from the policy, so putting a
+time back in the Policy tab turns its check back on the same day.
+
+**And these now reach your phone, which they did not before.** Only `silent`
+sends an email, and "the 06:00 generator made nothing" used to be graded
+`degraded` — which is how the 2026-09-13 outage ran for six days with the
+backlog still draining and nothing saying so. A generator that made nothing,
+and a surface that is short, are both `silent` now. See
+`SOCIAL-OUTAGE-2026-09-13.md`.
 
 **The alarm arrives as an email to junidmoh@gmail.com**, sent by Google Cloud
 Monitoring off a log-based metric — not by this project, and not by the Mac
@@ -461,6 +475,193 @@ They share the picture, the slot, the products and the platforms. They do NOT
 share the caption, the status, or the retries — either can be edited, held or
 thrown away in the queue without touching the other. The twin carries
 `twinOf` and the story carries `twinId`, so the pair is always findable.
+
+---
+
+## 5d. TWO REELS A DAY, EACH ALSO A STORY — LIVE 2026-09-19
+
+Owner brief: *"two reels a day only, each one also posted as a story. No feed
+photo posts, no separate story generations. Cost minimisation is the point."*
+
+The day is now:
+
+| what | when (SAST) | generated | encoded |
+|---|---|---:|---:|
+| Reel | **12:00** | 1 image | 1 video |
+| Story (the reel's twin) | 12:00 | — | — |
+| Reel | **19:00** | 1 image | 1 video |
+| Story (the reel's twin) | 19:00 | — | — |
+| **the day** | | **2 images** | **2 videos** |
+
+**Two generations, four posts.** The story is not a second picture and not a
+second encode: it is the reel's own mp4, sent again to a different surface.
+The twin record carries `videoFrom` — the reel's post id, never a URL,
+because at 06:00 the video does not exist yet — and the publisher resolves it
+on the Mac mini. Whichever of the pair the tick reaches first pays the encode,
+stores the file on the **reel's** record, and the other reuses it.
+
+**12:00 and 19:00**: lunch, and after supper. The two windows a South African
+audience is on a phone rather than at work or in traffic. The old 08:00 slot
+competed with the commute and 18:00 with it in the other direction.
+
+### The feed photo and the standalone stories are OFF, not gone
+
+Nothing was deleted. Both are switched off **by config**, in the place that
+config lives — `/social_policy`, which is the **Policy tab** in the Social
+screen. `photos` and `stories` simply ask for no times.
+
+To bring either back: add a time in the Policy tab. That is the whole
+procedure — no code change, no deploy. `DEFAULT_POLICY_TIMES` in
+`functions/index.js` carries the same empty lists for a fresh install, and the
+saved policy wins over it.
+
+> RTDB cannot store an empty array — it deletes the key — so a saved policy
+> with no photos comes back with `photos` **absent**, not as `[]`.
+> `asRtdbList` already reads that as zero. "Switched off" and "never
+> configured" are distinguishable only by whether a `/social_policy` record
+> exists at all.
+
+### Turning the story twin itself off
+
+Set `REEL_ALSO_POSTS_TO_STORY=false` in `functions/.env`, then redeploy **all
+three** by name:
+
+```
+firebase deploy --only functions:socialDailyAutopilot,functions:generateSocialPosts,functions:socialHealthScan --project marathon-club
+```
+
+A build-time flag, the same convention as `SOCIAL_AUTOPILOT_ENABLED` and
+`STORY_ALSO_POSTS_TO_FEED`.
+
+> **`socialHealthScan` is not optional in that list, and neither is it for
+> `STORY_ALSO_POSTS_TO_FEED`.** Each function carries its OWN copy of the
+> build-time env. The scan derives the day's obligation from these flags, so a
+> flag turned off in the generator but left on in the scan makes the watchdog
+> demand stories nobody is making — an email a day, for ever, about a decision
+> somebody took deliberately. That is precisely the alarm-fatigue this file
+> spent §5b arguing against.
+
+`socialCore.js` carries a **mirror**, which is what the Policy tab reads to
+describe the day. Turn the backend off and flip the mirror too;
+`socialFormat.test.js` pins the two literals together and fails until you do.
+
+### What has to be deployed, BY NAME
+
+Functions are shared with `marathon-pos-app`. **Never** a bare
+`firebase deploy --only functions` — it would redeploy that repo's functions
+from this repo's source.
+
+```
+firebase deploy --only functions:socialDailyAutopilot,functions:generateSocialPosts,functions:socialHealthScan --project marathon-club
+```
+
+All three, and each for its own reason:
+
+| function | why |
+|---|---|
+| `socialDailyAutopilot` | makes the story twin, and holds the generation cap |
+| `generateSocialPosts` | the Generate tab shares `generateOnePost`, so it shares both |
+| `socialHealthScan` | judges the day on the new per-surface obligation |
+
+The publisher is not a function — it runs on the Mac mini and is updated with
+`bash ~/marathon-social/scripts/social/install-on-mac-mini.sh` (§5).
+
+### The live policy record is the switch
+
+`DEFAULT_POLICY_TIMES` applies only when **nothing has ever been saved** to
+`/social_policy`, and something has. The live record is what the autopilot and
+the health scan both read, so the rhythm is not live until that record says:
+
+```json
+{ "reels": { "times": ["12:00", "19:00"] } }
+```
+
+with `photos` and `stories` **absent** — which is what RTDB stores for an empty
+list. Set from the **Policy tab**, or written directly. Until it is, the
+deployed code will go on making the old six-slot day.
+
+### Facebook gets the same rhythm
+
+Both platforms are on every post, as before. A reel goes to the Page as a
+video and the twin goes to `/{page}/video_stories` — the story endpoints wired
+up in §3c, which already handle video. Nothing platform-specific changed.
+
+---
+
+## 5e. WHAT IT COSTS, AND THE CAP THAT BOUNDS IT — 2026-09-19
+
+### Measured, not estimated
+
+`POST_KINDS` says `$0.134` a generation. That is the documented flat rate;
+what is actually billed comes off Nano Banana Pro's output tokens, and the
+autopilot records the real figure on every run. Four consecutive full days
+from `/social_autopilot_log`:
+
+| SA date | generations | charged |
+|---|---:|---:|
+| 2026-09-08 | 6 | $0.9461 |
+| 2026-09-09 | 6 | $0.9565 |
+| 2026-09-10 | 6 | $0.9551 |
+| 2026-09-11 | 6 | $0.9408 |
+| **total** | **24** | **$3.7985** |
+
+**$0.1583 a generation.** Use this number, not $0.134.
+
+### Before and after
+
+| | generations/day | per day | per month (30.44d) |
+|---|---:|---:|---:|
+| **Before** — 2 reels, 1 photo, 3 stories | 6 | $0.950 | **$28.91** |
+| **After** — 2 reels, each also a story | 2 | $0.317 | **$9.64** |
+| At the hard cap, every day | 4 | $0.633 | $19.27 |
+
+**About a third of the cost, for four posts a day instead of nine.** The
+saving is not fewer posts, it is fewer *pictures*: a story used to be its own
+generation, and now it is a video that already exists.
+
+**Captions are NOT in those figures.** `costUSD` on a post — and therefore
+`estCostUSD` on the day's run record — is the Gemini image spend and nothing
+else; `writeSocialCaption` calls Anthropic and returns no cost, so none is
+recorded. It is a small, separate line on a different bill: one short call per
+post that can actually show a caption, which is **two a day** now (one per
+reel) against about six before. A story never calls the model at all — it has
+nowhere to display a caption.
+
+The ffmpeg encode is free either way: it runs on the Mac mini, and the story
+reuses the reel's file rather than encoding a second one.
+
+### The hard cap: 4 image generations a calendar day (SAST)
+
+`MAX_IMAGE_GENERATIONS_PER_DAY` in `functions/lib/social-budget.cjs`.
+
+- **Durable.** One RTDB counter at `/social_generation_budget/{SA date}/count`,
+  incremented in a transaction. It is in the database, so a restarted or
+  recycled Cloud Function instance sees it.
+- **Shared.** The 06:00 autopilot and a Generate-tab run at 06:01 are two
+  processes on one budget. A per-process cap would be four *each*.
+- **Retries count.** The unit is reserved *before* the paid call, never after
+  it — a generation that succeeds at Gemini and then dies on the upload has
+  still spent the money, and that is exactly the failure that retries.
+- **It fails closed.** If the counter cannot be read, the honest answer is "I
+  do not know what has been spent today", and the safe reading of that is the
+  cap. A cap that fails open is not a cap.
+- **At the cap it skips and says so** — in the run's `skipReasons`, so the
+  reason is in the database rather than only in a log.
+
+The counter needs **no database rule**: nothing in the browser reads or writes
+it, and the Admin SDK bypasses rules. If a screen is ever built on it, this is
+the rule and it goes in **Firebase console → Realtime Database → Rules** as
+one new top-level key:
+
+```json
+"social_generation_budget": {
+  ".read": "auth != null && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'",
+  ".write": false
+}
+```
+
+`".write": false` is deliberate, for the same reason as `social_health`: a
+browser must never be able to forge a spent — or an unspent — budget.
 
 ---
 

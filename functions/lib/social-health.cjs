@@ -16,11 +16,16 @@
 // returned ok — a publish-only check would have gone green on the day the
 // engine stopped producing.
 //
-// So the day is assessed on FOUR independent questions, and any one of them
+// So the day is assessed on FIVE independent questions, and any one of them
 // can raise the alarm:
 //
 //   1. GENERATION — did the 06:00 autopilot run, and did it make what the
 //      policy asked for? A run that made 0 of 6 is the 2026-08-27 failure.
+//   1b. SURFACES — did each surface get what the day owed it? Since
+//      2026-09-19 that is a DIFFERENT question from check 1: two reel slots
+//      owe two reels AND two stories, because each reel is also posted as a
+//      story from the same encoded video. A run that made both pictures and
+//      twinned neither passes check 1 and leaves the account with no stories.
 //   2. PUBLISHING — is anything approved, due, past its grace period, and
 //      still sitting there? That is a publisher that has stopped.
 //   3. SILENCE — was anything due today at all, and did nothing publish?
@@ -73,6 +78,23 @@ function timestampOrNull(v) {
   return null;
 }
 
+/**
+ * The autopilot's own account of why it skipped, as one short clause.
+ *
+ * Bounded to two distinct reasons: this ends up in an email subject line and
+ * in the alerted signature, and a six-clause sentence is one nobody finishes
+ * reading. Absent, malformed or empty gives null, and the caller says nothing
+ * rather than "(undefined)".
+ */
+function skipSummary(autopilotLog) {
+  const list = autopilotLog && autopilotLog.skipReasons;
+  const rows = Array.isArray(list)
+    ? list
+    : list && typeof list === "object" ? Object.values(list) : [];
+  const clean = rows.filter((r) => typeof r === "string" && r.trim()).slice(0, 2);
+  return clean.length ? clean.join("; ") : null;
+}
+
 /** Midnight SAST of the SA day containing `ms`, as epoch ms. */
 function sastMidnight(ms) {
   return Math.floor((ms + SAST_OFFSET_MS) / DAY_MS) * DAY_MS - SAST_OFFSET_MS;
@@ -92,6 +114,11 @@ function landedSomewhere(post) {
   return Object.values(r).some((x) => x && x.state === "ok");
 }
 
+/** How many entries a policy list holds, whatever shape RTDB gave it back. */
+function listLen(v) {
+  return Array.isArray(v) ? v.length : v && typeof v === "object" ? Object.keys(v).length : 0;
+}
+
 /**
  * Total items the policy asks for in a day. Mirrors loadSocialPolicy's shape
  * (three named lists of times) but does NOT clamp — clamping is the
@@ -99,8 +126,58 @@ function landedSomewhere(post) {
  */
 function policyTotal(policy) {
   if (!policy) return 0;
-  const len = (v) => (Array.isArray(v) ? v.length : v && typeof v === "object" ? Object.keys(v).length : 0);
-  return len(policy.reels) + len(policy.photos) + len(policy.stories);
+  return listLen(policy.reels) + listLen(policy.photos) + listLen(policy.stories);
+}
+
+// A post record's format, defaulting to "feed". A MIRROR of formatOf in
+// src/components/social/socialCore.js, which this CJS module cannot import.
+// Copied rather than shared because the alternative — a fourth file whose only
+// job is one ternary — buys nothing, and social-health.test.cjs pins the
+// vocabulary it depends on.
+const FORMATS = ["feed", "story", "reel"];
+function formatOfPost(post) {
+  const f = post && post.format;
+  return FORMATS.includes(f) ? f : "feed";
+}
+
+/**
+ * WHAT THE DAY OWES, PER SURFACE.
+ *
+ * `policyTotal` counts GENERATIONS — one picture made per slot — and for a
+ * long time that was the same number as the posts, so one count did both
+ * jobs. It is not the same number any more, and the gap is the whole point of
+ * the 2026-09-19 rhythm:
+ *
+ *   2 reel slots  →  2 generations  →  2 reels AND 2 stories.
+ *
+ * The stories are free — each is its reel's own encoded video, sent again —
+ * so a check that judged the day on generations alone would be satisfied by a
+ * morning that made two pictures and twinned neither, and the account would
+ * simply have no stories on it with nothing complaining.
+ *
+ * The retired slots fall out of this rather than being special-cased: `photos`
+ * and `stories` ask for no times, so the day owes no feed posts and no
+ * standalone stories, and a check that finds none cannot alarm about them. Put
+ * a time back in the Policy tab and the obligation follows it the same day.
+ *
+ * @param policy  { reels, photos, stories } — lists of times
+ * @param flags   the two twin switches, mirroring functions/index.js
+ * @returns { generations, byFormat: { reel, feed, story } }
+ */
+function dayObligation(policy, { reelAlsoPostsToStory = true, storyAlsoPostsToFeed = true } = {}) {
+  const reels = listLen(policy && policy.reels);
+  const photos = listLen(policy && policy.photos);
+  const stories = listLen(policy && policy.stories);
+  return {
+    generations: reels + photos + stories,
+    byFormat: {
+      reel: reels,
+      // A story's feed twin is a feed post that was never a photo slot.
+      feed: photos + (storyAlsoPostsToFeed ? stories : 0),
+      // A reel's story twin is a story that was never a story slot.
+      story: stories + (reelAlsoPostsToStory ? reels : 0),
+    },
+  };
 }
 
 /**
@@ -119,7 +196,7 @@ function policyTotal(policy) {
  *   is what lets the alert say "the engine has stopped" rather than "something
  *   is a bit off" — two different messages for two genuinely different nights.
  */
-function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }) {
+function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins }) {
   const saDate = saDateStringFromMs(nowMs);
   const dayStart = sastMidnight(nowMs);
   const dayEnd = dayStart + DAY_MS;
@@ -128,7 +205,8 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
   const reasons = [];
 
   // ── 1. GENERATION ─────────────────────────────────────────────────────────
-  const wanted = policyTotal(policy);
+  const obligation = dayObligation(policy, twins || {});
+  const wanted = obligation.generations;
   const made = Number(autopilotLog && autopilotLog.created) || 0;
   const skipped = Number(autopilotLog && autopilotLog.skipped) || 0;
   if (wanted > 0) {
@@ -144,10 +222,55 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
         reasons.push("the 06:00 generator started and never finished");
       }
     } else if (made === 0) {
-      reasons.push(`the 06:00 generator made nothing — all ${skipped || wanted} skipped`);
+      // ── THE REASON TRAVELS WITH THE ALARM ─────────────────────────────────
+      // "made nothing — all 6 skipped" is a symptom and every cause looks the
+      // same in it: depleted credits, a revoked key, an empty style library,
+      // a catalogue with nothing in stock. The autopilot now records WHY
+      // (skipReasons on its own run record), so the sentence that reaches a
+      // phone can say "check Gemini billing" instead of sending its reader to
+      // a Cloud Logging console they may not have access to.
+      const why = skipSummary(autopilotLog);
+      reasons.push(`the 06:00 generator made nothing — all ${skipped || wanted} skipped${why ? ` (${why})` : ""}`);
     } else if (made < wanted) {
       reasons.push(`the 06:00 generator made ${made} of ${wanted}`);
     }
+  }
+
+  // ── 1b. WHAT THE DAY OWES EACH SURFACE ────────────────────────────────────
+  // Check 1 asks whether the PICTURES were made. This asks whether the POSTS
+  // exist, which since 2026-09-19 is a different question: two reel slots owe
+  // two reels AND two stories, and the stories cost nothing because each is
+  // its reel's own encoded video. A run that made both pictures and twinned
+  // neither satisfies check 1 completely and leaves the account with no
+  // stories on it.
+  //
+  // COUNTED BY createdAt, NOT BY scheduledAt. What a slot is set to is the
+  // autopilot's choice and it rolls forward: a reclaimed run at 13:00 assigns
+  // the 12:00 reel to TOMORROW's 12:00, and counting by slot would then report
+  // a missing reel on a day the generator did its job. createdAt is when the
+  // record was made, which is the thing being judged.
+  //
+  // Only once the run has FINISHED. Mid-run the counts are honestly
+  // incomplete, and an alarm at 06:01 about a batch still being written is the
+  // false alarm that teaches you to ignore the real one. A run that never
+  // finishes is already check 1's business.
+  const madeToday = all.filter((p) =>
+    Number.isFinite(Number(p.createdAt)) &&
+    Number(p.createdAt) >= dayStart && Number(p.createdAt) < dayEnd &&
+    p.status !== "discarded");
+  const short = [];
+  if (autopilotLog && autopilotLog.finishedAt && made > 0) {
+    for (const [format, owed] of Object.entries(obligation.byFormat)) {
+      if (owed <= 0) continue;                       // a retired slot owes nothing
+      const have = madeToday.filter((p) => formatOfPost(p) === format).length;
+      // "storys" is what `${format}s` produces, and a watchdog that cannot
+      // spell is a watchdog nobody quotes.
+      const PLURAL = { reel: "reels", story: "stories", feed: "feed posts" };
+      if (have < owed) short.push(`${have} of ${owed} ${owed === 1 ? format : PLURAL[format] || `${format}s`}`);
+    }
+  }
+  if (short.length) {
+    reasons.push(`today owes ${short.join(" and ")} — ${short.length === 1 ? "that surface is" : "those surfaces are"} short`);
   }
 
   // ── 2. PUBLISHING ─────────────────────────────────────────────────────────
@@ -223,9 +346,30 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
   // has stopped" and "the engine is limping" are different nights.
   const nothingPublished = earliestDue !== undefined && publishedToday.length === 0;
   const publisherDead = !haveTick || nowMs - tickAt > HEARTBEAT_STALE_MS;
+  // ── A GENERATOR THAT MADE NOTHING IS "DOWN", NOT "A BIT OFF" ───────────────
+  // Only "silent" reaches a phone (see socialHealthScan's own note on why
+  // "degraded" was demoted). "The 06:00 generator made nothing" was landing on
+  // the degraded side, and that is exactly how the 2026-09-13 outage ran for
+  // six days without an email: Gemini's prepayment credits were depleted, the
+  // autopilot made 0 of 6 every morning, and the publisher went on draining a
+  // backlog — so something published most days, the mini kept ticking, and
+  // the one check that had noticed was the one that had been told not to
+  // shout. Two of those six days paged, and only because they ALSO tripped a
+  // different check.
+  //
+  // An engine that cannot make tomorrow's posts is down today, whatever is
+  // still going out of yesterday's queue. The backlog is what hides it, not
+  // what excuses it.
+  const generatorProducedNothing = wanted > 0 && Boolean(autopilotLog) &&
+    (Boolean(autopilotLog.error) || (Boolean(autopilotLog.finishedAt) && made === 0));
+  // A surface that is short PAGES. Owner brief, 2026-09-19: "it must alarm if
+  // either is missed." Two reels a day means one missing reel is half the
+  // day's output, not a rounding error — and its story goes with it, because
+  // the twin is made from the reel.
+  const owesMore = short.length > 0;
   const severity = reasons.length === 0
     ? "ok"
-    : (nothingPublished || publisherDead) ? "silent" : "degraded";
+    : (nothingPublished || publisherDead || generatorProducedNothing || owesMore) ? "silent" : "degraded";
 
   return {
     saDate,
@@ -234,6 +378,14 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
     reasons,
     counts: {
       wanted, made, skipped,
+      // What each surface owed and what it got — the numbers the new rhythm
+      // is judged on, recorded so the day's record explains its own verdict.
+      owed: obligation.byFormat,
+      madeByFormat: {
+        reel: madeToday.filter((p) => formatOfPost(p) === "reel").length,
+        story: madeToday.filter((p) => formatOfPost(p) === "story").length,
+        feed: madeToday.filter((p) => formatOfPost(p) === "feed").length,
+      },
       dueToday: dueToday.length,
       publishedToday: publishedToday.length,
       overdue: overdue.length,
@@ -259,6 +411,6 @@ function alarmMessage(verdict) {
 
 module.exports = {
   assessSocialDay, alarmMessage,
-  policyTotal, landedSomewhere,
+  policyTotal, dayObligation, landedSomewhere,
   PUBLISH_GRACE_MS, HEARTBEAT_STALE_MS,
 };
