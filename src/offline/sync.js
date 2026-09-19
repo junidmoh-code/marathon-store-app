@@ -439,13 +439,15 @@ export function createSyncEngine({
     try {
       let applied = 0;
       let deleted = 0;
+      const paths = [];
       for (let i = 0; i < FEED_PAGES_PER_PASS; i += 1) {
         const res = await runChangeFeedPage({ db, adapter, now });
         applied += res.applied;
         deleted += res.deleted;
+        paths.push(...res.paths);
         if (res.done) break;
       }
-      report.feed = { applied, deleted };
+      report.feed = { applied, deleted, paths };
     } catch (err) {
       if (err instanceof CursorExpiredError) {
         // The honest wall. Every change-fed leg is marked for a fresh download

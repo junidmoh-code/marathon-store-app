@@ -255,6 +255,11 @@ export async function runChangeFeedPage({
 
   return {
     applied, deleted, cursor: lastKey, done: changeKeys.length < pageSize, skipped,
+    // The RTDB paths this page brought up to date. The pending-write echo is
+    // dropped for them (pendingWrites.confirmPending): the feed has now
+    // carried the same fact, so keeping the echo past this point is how it
+    // would start hiding somebody else's later change.
+    paths: rows.map(({ leg, key }) => rowPath(leg, key)),
   };
 }
 

@@ -16,6 +16,38 @@ const POLL_MS = 5 * 60 * 1000;
 const IDLE_MS = 3 * 60 * 1000;
 const RELOAD_LATCH_KEY = "marathon.update.reloadedFor";
 
+// ── FORCED RELOAD, FOR A DEVICE SERVING FROM ITS LOCAL COPY ──────────────────
+//
+// A parked stale bundle once cost about $400/month. A device reading from a
+// local mirror makes that worse, not better: it has no whole-node
+// subscriptions to make a wrong bundle obvious, so it can sit on an old build
+// for days, quietly, reading a schema the new build has moved on from.
+//
+// So on a mirrored device the reload is FORCED rather than advisory — it does
+// not wait for three minutes of stillness, and it does not give up after one
+// attempt per version. What it never does is interrupt:
+//
+//   - nothing may be registered busy. That is the same registry the cart and
+//     the count screens already use (setUpdateBusy), and the mirror adds
+//     "there are unsent writes" to it.
+//   - and it waits FORCED_GRACE_MS after the update is first seen, so a person
+//     mid-sentence gets a moment rather than a reload under their hands.
+//
+// A device NOT serving from the mirror keeps exactly the old behaviour: idle
+// auto-reload, one silent attempt per version, banner otherwise.
+export const FORCED_GRACE_MS = 30 * 1000;
+export const FORCED_RETRY_MS = 60 * 1000;
+let forcedMode = false;
+let firstSeenAt = null;
+
+/** Turned on by the mirror's bootstrap once this device is serving locally. */
+export function setForcedUpdateMode(on) {
+  forcedMode = !!on;
+}
+export function isForcedUpdateMode() {
+  return forcedMode;
+}
+
 /* global __BUILD_VERSION__ -- compile-time constant injected by vite define */
 export const CURRENT_VERSION =
   typeof __BUILD_VERSION__ !== "undefined" ? __BUILD_VERSION__ : "dev";
@@ -42,8 +74,21 @@ export function isNewVersion(currentVersion, fetchedVersion) {
   );
 }
 
-export function shouldAutoReload({ updateAvailable, busy, msSinceActivity, alreadyAttempted, hidden = false }) {
-  if (!updateAvailable || busy || alreadyAttempted) return false;
+export function shouldAutoReload({
+  updateAvailable, busy, msSinceActivity, alreadyAttempted, hidden = false,
+  forced = false, msSinceFirstSeen = 0,
+}) {
+  if (!updateAvailable) return false;
+  // BUSY IS ABSOLUTE, in both modes. It is the cart, the count in progress,
+  // and — on a mirrored device — unsent writes. Nothing reloads over those.
+  if (busy) return false;
+  if (forced) {
+    // No idle requirement and no once-per-version latch: a forced reload is
+    // the point, and a device that stayed busy through its one attempt would
+    // otherwise never take the new bundle at all.
+    return msSinceFirstSeen >= FORCED_GRACE_MS;
+  }
+  if (alreadyAttempted) return false;
   // A hidden tab can't be interrupting anyone; a visible one must be idle.
   return hidden || msSinceActivity >= IDLE_MS;
 }
@@ -78,7 +123,10 @@ export function applyUpdate() {
   window.location.reload();
 }
 
+let forcedTimer = null;
+
 function maybeAutoReload(hidden) {
+  if (updateAvailable && firstSeenAt === null) firstSeenAt = Date.now();
   if (
     shouldAutoReload({
       updateAvailable,
@@ -86,9 +134,21 @@ function maybeAutoReload(hidden) {
       msSinceActivity: Date.now() - lastActivity,
       alreadyAttempted: alreadyAttempted(),
       hidden,
+      forced: forcedMode,
+      msSinceFirstSeen: firstSeenAt === null ? 0 : Date.now() - firstSeenAt,
     })
   ) {
     applyUpdate();
+    return;
+  }
+  // A forced reload that was refused — busy, or inside its grace — comes back
+  // for it. The ordinary mode deliberately does not: its one attempt per
+  // version is what stops a lagging CDN reload-looping a device.
+  if (forcedMode && updateAvailable && forcedTimer === null) {
+    forcedTimer = setTimeout(() => {
+      forcedTimer = null;
+      maybeAutoReload(document.visibilityState === "hidden");
+    }, FORCED_RETRY_MS);
   }
 }
 

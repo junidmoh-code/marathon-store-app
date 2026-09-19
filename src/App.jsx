@@ -22,6 +22,8 @@ import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour 
 import { getTodayKey, getNextOrderNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
+import { useMirroredPath } from "./offline/useMirroredPath";
+import { MirrorDot } from "./offline/MirrorDot.jsx";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
@@ -580,11 +582,15 @@ function useProducts() {
   const authReady = useAuthReady();
   const [products, setProducts] = useState([]);
 
-  useEffect(() => {
-    if (!authReady) return;
-    const productsRef = ref(database, "products");
-    const unsub = onValue(productsRef, (snap) => {
-      const data = snap.val();
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /products is 4.7 MB and this subscription is paid on every cold load. When
+  // this device serves it from its local copy the subscription below is never
+  // opened; `applyProductsSnapshot` is the SAME function either way, so what
+  // the app ends up holding is identical to the byte.
+  const mirrored = useMirroredPath("products", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  const applyProductsSnapshot = useCallback((data, { allowMigration }) => {
       if (!data) { setProducts([]); return; }
 
       // Legacy shape: { items: [...] } written by old useFirebaseState code.
@@ -594,9 +600,16 @@ function useProducts() {
       if (data.items && Array.isArray(data.items) && data.items.length > 0) {
         const validItems = data.items.filter(p => p && p.id && p.name);
         if (validItems.length > 0) {
+          if (!allowMigration) {
+            // Read-only path: present the items, write nothing.
+            ALL_PRODUCTS_BY_ID = Object.fromEntries(validItems.map(p => [p.id, p]));
+            setProducts(filterMergedProducts(validItems));
+            return;
+          }
           const patch = { items: null };
           for (const p of validItems) patch[p.id] = p;
-          update(productsRef, patch).catch(err => console.warn("Product migration failed:", err));
+          update(ref(database, "products"), patch)
+            .catch(err => console.warn("Product migration failed:", err));
           ALL_PRODUCTS_BY_ID = Object.fromEntries(validItems.map(p => [p.id, p]));
           setProducts(filterMergedProducts(validItems));
         }
@@ -618,11 +631,27 @@ function useProducts() {
       const all = Object.values(data).filter(v => v && typeof v === "object" && v.id && v.name);
       ALL_PRODUCTS_BY_ID = Object.fromEntries(all.map(p => [p.id, p]));
       setProducts(filterMergedProducts(all));
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const productsRef = ref(database, "products");
+    const unsub = onValue(productsRef, (snap) => {
+      // The legacy {items:[...]} migration WRITES, so it only ever runs on the
+      // live path — a mirrored read must never write to the database it is a
+      // copy of, and a device holding a stale mirror could otherwise re-post a
+      // migration that has long since happened.
+      applyProductsSnapshot(snap.val(), { allowMigration: true });
     }, (err) => {
       console.warn("Firebase read error on /products:", err);
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applyProductsSnapshot]);
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applyProductsSnapshot(mirrored.value, { allowMigration: false });
+  }, [live, mirrored.settled, mirrored.value, applyProductsSnapshot]);
 
   return products;
 }
@@ -912,8 +941,26 @@ function useOrders(scopeShop = null) {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
 
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
+  // filters locally on the same `destShop` the server query uses — the same
+  // rows, chosen the same way, without the node coming down the wire.
+  const mirroredOrders = useMirroredPath("orders", authReady);
+  const liveOrders = mirroredOrders.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady) return;
+    if (liveOrders || !mirroredOrders.settled) return;
+    const data = mirroredOrders.value;
+    if (!data) { setOrders(Object.assign([], { settled: true })); return; }
+    const arr = Object.values(data)
+      .filter(Boolean)
+      .filter(o => !scopeShop || o?.destShop === scopeShop)
+      .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
+    setOrders(Object.assign(arr, { settled: true }));
+  }, [liveOrders, mirroredOrders.settled, mirroredOrders.value, scopeShop]);
+
+  useEffect(() => {
+    if (!authReady || !liveOrders) return undefined;
     const ordersRef = ref(database, "orders");
     // Legacy /orders can briefly be an ARRAY under .items; a scoped query only
     // makes sense on the per-id map. The migration below rewrites it, after which
@@ -962,7 +1009,7 @@ function useOrders(scopeShop = null) {
       setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
     });
     return () => unsub();
-  }, [authReady, scopeShop]);
+  }, [authReady, scopeShop, liveOrders]);
 
   return orders;
 }
@@ -1089,8 +1136,37 @@ function useInsightsLogRecentDays(days) {
     const t = setInterval(() => setSaDay(saDateString()), 60_000);
     return () => clearInterval(t);
   }, []);
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // The local copy answers the SAME key range, against the same push keys, so
+  // the window is identical — and the caller still filters on `timestamp`
+  // afterwards, as it always has. mirrorVersion re-reads when the feed brings
+  // new entries; without it a screen left open would never see today's.
+  const mirrorInsights = useMirroredPath("insights_log", authReady);
+  const liveInsights = mirrorInsights.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady) return undefined;
+    if (liveInsights) return undefined;
+    let cancelled = false;
+    (async () => {
+      const { startKey } = recentDaysStartKey(days, serverNowMs());
+      const { getMirrorDbHandle } = await import("./offline/mirrorDbHandle");
+      const { readInsightsFromKey } = await import("./offline/localReads");
+      try {
+        const data = await readInsightsFromKey(await getMirrorDbHandle(), startKey);
+        if (cancelled) return;
+        setLog(!data ? [] : Object.values(data).filter(Boolean)
+          .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp)));
+      } catch (err) {
+        // Not an empty window — a local read that failed. Leaving the last
+        // rendered log in place is the honest thing; the next pass re-reads.
+        console.warn("offline mirror: local /insights_log range failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [liveInsights, mirrorInsights.value, days, saDay]);
+
+  useEffect(() => {
+    if (!authReady || !liveInsights) return undefined;
     const { startKey } = recentDaysStartKey(days, serverNowMs());
     const q = query(ref(database, "insights_log"), orderByKey(), startAt(startKey));
     const unsub = onValue(q, snap => {
@@ -1105,7 +1181,7 @@ function useInsightsLogRecentDays(days) {
     return () => unsub();
     // saDay is a DEPENDENCY, not decoration: when the SA date rolls over the
     // query re-anchors to the new day's window.
-  }, [authReady, days, saDay]);
+  }, [authReady, days, saDay, liveInsights]);
   return log;
 }
 
@@ -1594,20 +1670,47 @@ function useClothingSoldMovements(fromSaDate) {
   let start = fromSaDate || dflt;
   if (start < maxBack) start = maxBack;   // cap: never before today-90
   if (start > dflt)    start = dflt;      // floor: always cover the default window
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /stock_movements is 31.8 MB and 90,922 rows. The local copy answers the
+  // same ts range through an IndexedDB index on the same field, so the window
+  // is identical — and the walk stays an indexed one rather than becoming a
+  // scan of every row, which would only move the cost onto the device.
+  const mirrorMv = useMirroredPath("stock_movements", authReady);
+  const liveMv = mirrorMv.verdict === "fallback";
+
+  const shapeMovements = useCallback((data) => {
+    const arr = [];
+    Object.entries(data || {}).forEach(([mvId, m]) => {
+      if (m && typeof m === "object") arr.push({ mvId, ...m });
+    });
+    return arr;
+  }, []);
+
   useEffect(() => {
-    if (!authReady) return;
+    if (liveMv) return undefined;
+    let cancelled = false;
+    (async () => {
+      const { getMirrorDbHandle } = await import("./offline/mirrorDbHandle");
+      const { readMovementsFromTs } = await import("./offline/localReads");
+      try {
+        const data = await readMovementsFromTs(await getMirrorDbHandle(), saStartIso(start));
+        if (!cancelled) setMovements(shapeMovements(data));
+      } catch (err) {
+        console.warn("offline mirror: local /stock_movements range failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [liveMv, mirrorMv.value, start, shapeMovements]);
+
+  useEffect(() => {
+    if (!authReady || !liveMv) return undefined;
     const startIso = saStartIso(start);
     const q = query(ref(database, "stock_movements"), orderByChild("ts"), startAt(startIso));
     const unsub = onValue(q, snap => {
-      const data = snap.val() || {};
-      const arr = [];
-      Object.entries(data).forEach(([mvId, m]) => {
-        if (m && typeof m === "object") arr.push({ mvId, ...m });
-      });
-      setMovements(arr);
+      setMovements(shapeMovements(snap.val()));
     }, err => console.warn("stock_movements read error:", err));
     return () => unsub();
-  }, [authReady, start]);
+  }, [authReady, start, liveMv, shapeMovements]);
   return movements;
 }
 
@@ -1732,13 +1835,20 @@ function returnedCompositeKeySet(returnsLog) {
 function useRestockLogAll() {
   const authReady = useAuthReady();
   const [log, setLog] = useState({});
+  // /restock_log is 8.0 MB read whole.
+  const mirrored = useMirroredPath("restock_log", authReady);
+  const live = mirrored.verdict === "fallback";
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setLog(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "restock_log"), snap => {
       setLog(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live]);
   return log;
 }
 
@@ -1751,8 +1861,19 @@ function logReturn(entry) {
 function useReturnsLog() {
   const authReady = useAuthReady();
   const [log, setLog] = useState([]);
+  const mirrored = useMirroredPath("returns_log", authReady);
+  const live = mirrored.verdict === "fallback";
+  const shape = useCallback((data) => {
+    if (!data) return [];
+    return Object.values(data).filter(Boolean)
+      .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
+  }, []);
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setLog(shape(mirrored.value));
+  }, [live, mirrored.settled, mirrored.value, shape]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "returns_log"), snap => {
       const data = snap.val();
       if (!data) { setLog([]); return; }
@@ -1788,13 +1909,22 @@ function setCustomerOptIn(phone, optedIn) {
 function useCustomersDb() {
   const authReady = useAuthReady();
   const [customers, setCustomers] = useState({});
+  // /customers is 1.8 MB and 9,662 records. Same value either way — `|| {}`
+  // is applied to both, so an empty node is `{}` on both paths exactly as it
+  // is today.
+  const mirrored = useMirroredPath("customers", authReady);
+  const live = mirrored.verdict === "fallback";
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setCustomers(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "customers"), snap => {
       setCustomers(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live]);
   return customers;
 }
 
@@ -20375,6 +20505,14 @@ export default function App() {
           auto-reload (src/update/updateChecker.js). Outside AuthGate so the
           TV shell (which never navigates or re-auths) updates itself too. */}
       <UpdateBanner />
+      {/* The offline mirror's status dot. Renders nothing at all unless this
+          device is running the mirror, so it costs nothing everywhere else.
+          Fixed rather than in a header because this app has several shells
+          (warehouse, assistant, TV) and the one question it answers — "is what
+          I am looking at current?" — is the same in all of them. */}
+      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900 }}>
+        <MirrorDot />
+      </div>
       <AuthGate renderTv={() => <TvOnlyShell />}>
         <AppErrorBoundary>
           <AppInner />

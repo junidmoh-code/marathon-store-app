@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
 import { applyPushDeepLink } from "./push/deepLink.js";
+import { MirrorGate } from "./offline/MirrorGate.jsx";
+import { auth, storage } from "./firebase.js";
 
 // Last-resort crash surface: show ANY uncaught error / promise rejection as a
 // fixed banner on screen, so a failure can never be a silent black screen with
@@ -44,9 +46,17 @@ applyPushDeepLink();
 // Deliberately NOT a service worker — see the SW rollback note below.
 startUpdateChecker();
 
+// ─── THE OFFLINE MIRROR ──────────────────────────────────────────────────────
+// With the flag off (the default) MirrorGate renders App and imports nothing
+// else — the mirror's own module graph is behind a dynamic import inside it,
+// so it is never fetched or parsed and this app is exactly what it was. With
+// the flag on it starts the mirror and blocks on the one setup download.
+// See docs/store-offline-mirror.md.
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <App />
+    <MirrorGate auth={auth} storage={storage}>
+      <App />
+    </MirrorGate>
   </StrictMode>
 );
 
@@ -78,11 +88,30 @@ if ("serviceWorker" in navigator) {
     ))
     .catch(() => {});
 }
-// Caches are still cleared wholesale — the push worker opens none, so there is
-// nothing of its to preserve.
+// Caches were cleared WHOLESALE here, because the push worker opens none and
+// there was nothing to preserve.
+//
+// ── THE ONE EXCEPTION: THE PHOTO MIRROR ─────────────────────────────────────
+// There is now something to preserve. The offline mirror keeps its product
+// thumbnails in Cache Storage (src/offline/photoCache.js) — 111 MB downloaded
+// once per device — and this line ran on every single boot. It would have
+// deleted the lot, every time, and the photos leg would have quietly
+// re-downloaded it, for ever, which is the opposite of the point of the whole
+// exercise. The photo cache is therefore spared BY NAME.
+//
+// It restores nothing of the 2026-05-09 failure: that was a fetch-intercepting
+// service worker. This is a cache the page fills and reads by hand, with no
+// worker and no interception, and deleting it is a thing the mirror's own
+// "delete the offline copy" action does deliberately.
 if (typeof caches !== "undefined" && caches.keys) {
-  caches.keys()
-    .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+  import("./offline/photoCache.js")
+    .then(({ PHOTO_CACHE_NAME }) => PHOTO_CACHE_NAME)
+    // A failed import must not turn into "spare nothing" — that would clear the
+    // photo mirror on any boot where the chunk did not load. The literal is the
+    // fallback, and photoCacheName.pin.test.js pins the two together.
+    .catch(() => "marathon-store-photo-mirror-v1")
+    .then((spare) => caches.keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== spare).map((k) => caches.delete(k)))))
     .catch(() => {});
 }
 

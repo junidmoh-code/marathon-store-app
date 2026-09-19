@@ -128,7 +128,8 @@ export const MIRROR_LEGS = Object.freeze([
   leg("displayRegister", "settings/hubSneakerCount", 3, "changes", "displayRegister", { pageSize: 1 }),
 
   leg("refills", "refill_requests", 1, "changes", "refills", { pageSize: 1000 }),
-  leg("restockRequests", "restock_requests", 1, "changes", "restockRequests"),
+  // /restock_requests is {date}/{key}, like /restock_log — depth 2, not 1.
+  leg("restockRequests", "restock_requests", 2, "changes", "restockRequests", { pageSize: 20 }),
   leg("returnsLog", "returns_log", 1, "changes", "returnsLog"),
   leg("restockLog", "restock_log", 2, "changes", "restockLog", { pageSize: 20 }),
 

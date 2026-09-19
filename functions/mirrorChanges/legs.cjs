@@ -43,7 +43,7 @@ const LEGS = [
   { name: "displayRows",     node: "settings/displayRows",            depth: 3, fn: "mirrorChangeDisplayRows" },
   { name: "displayRegister", node: "settings/hubSneakerCount",        depth: 3, fn: "mirrorChangeDisplayRegister" },
   { name: "refills",         node: "refill_requests",                 depth: 1, fn: "mirrorChangeRefills" },
-  { name: "restockRequests", node: "restock_requests",                depth: 1, fn: "mirrorChangeRestockRequests" },
+  { name: "restockRequests", node: "restock_requests",                depth: 2, fn: "mirrorChangeRestockRequests" },
   { name: "returnsLog",      node: "returns_log",                     depth: 1, fn: "mirrorChangeReturnsLog" },
   { name: "restockLog",      node: "restock_log",                     depth: 2, fn: "mirrorChangeRestockLog" },
 ];

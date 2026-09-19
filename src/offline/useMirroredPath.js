@@ -1,0 +1,121 @@
+// ─── OFFLINE MIRROR — the drop-in for a live read ────────────────────────────
+//
+// `useMirroredPath(path, enabled)` answers with the same three-state shape
+// useStock.js's `usePathState` already returns — { value, settled, error } —
+// and the same `value` a live onValue would have handed over. A caller cannot
+// tell which it got, which is the point: the constraint on this work is that
+// every screen displays exactly what it displays today.
+//
+// ── IT FALLS BACK, ALWAYS ───────────────────────────────────────────────────
+//
+// The mirror answers only when all three of these hold: the flag is on, this
+// device has finished its setup download, and the leg covering `path` is
+// USABLE (health.js — a health record backed by rows actually in the store,
+// never `count() > 0`). Otherwise the caller gets a live subscription, exactly
+// as before. There is no state of this app in which a screen has no data
+// source; the mirror is an alternative source, never a gate.
+//
+// ── WHY useSyncExternalStore ────────────────────────────────────────────────
+//
+// A screen reading from IndexedDB has no onValue to wake it. mirrorSignal.js
+// bumps a version per leg when the change feed applies a page, and this
+// subscribes to the versions of the legs it reads — only those, because a
+// global counter would re-read /insights_log's 112,968 rows every time an
+// order changed.
+
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { offlineMirrorEnabled } from "./mirrorFlag";
+import { getMirrorDbHandle } from "./mirrorDbHandle";
+import { legFor, readMirroredPath, MISS } from "./localReads";
+import { isLegUsable } from "./health";
+import { subscribeMirror, versionKey } from "./mirrorSignal";
+import { isLegServing, subscribeServing, servingKeyFor } from "./serving";
+
+// `verdict` is what a CALLER acts on, and it has three values because the
+// decision it drives — "may I skip the live subscription?" — has three
+// answers. Conflating "not yet" with "no" costs a whole-node download on every
+// first render; conflating it with "yes" leaves a screen blank while a device
+// that cannot serve locally waits for an answer that will never come.
+//
+//   "pending"   the local copy is expected to answer, but has not yet.
+//   "mirror"    it has. `value` is what the server would have returned.
+//   "fallback"  it cannot. Open the live read.
+const PENDING = Object.freeze({ value: null, settled: false, error: false, verdict: "pending" });
+const FALLBACK = Object.freeze({ value: null, settled: false, error: false, verdict: "fallback" });
+
+/**
+ * Can the local copy answer for this path right now?
+ *
+ * Deliberately asked fresh on every read rather than cached: a leg goes
+ * unusable the moment the census marks it drifted or a swap refuses, and a
+ * cached "yes" over that is a screen serving a copy the mirror has already
+ * disowned.
+ */
+export async function mirrorCanAnswer(path) {
+  if (!offlineMirrorEnabled()) return false;
+  const match = legFor(path);
+  if (!match) return false;
+  try {
+    const db = await getMirrorDbHandle();
+    return await isLegUsable(db, match.leg.name);
+  } catch {
+    return false;
+  }
+}
+
+export function useMirroredPath(path, enabled = true) {
+  const legName = useMemo(() => (path ? legFor(path)?.leg?.name ?? null : null), [path]);
+  const legs = useMemo(() => (legName ? [legName] : []), [legName]);
+
+  // Re-read when the feed moves THIS leg, and not when it moves any other.
+  const version = useSyncExternalStore(
+    subscribeMirror,
+    () => versionKey(legs),
+    () => versionKey(legs),
+  );
+
+  // The SYNCHRONOUS hint — see serving.js. This is what makes the first render
+  // able to decide without paying for a whole-node subscription it is about to
+  // close again.
+  const servingHint = useSyncExternalStore(
+    subscribeServing,
+    () => servingKeyFor(legs),
+    () => servingKeyFor(legs),
+  );
+  const expectMirror = !!legName && enabled && isLegServing(legName);
+
+  const [state, setState] = useState(() => (expectMirror ? PENDING : FALLBACK));
+  const liveRef = useRef(0);
+
+  useEffect(() => {
+    if (!enabled || !path || !legName) { setState(FALLBACK); return undefined; }
+    if (!expectMirror) { setState(FALLBACK); return undefined; }
+    let cancelled = false;
+    const token = (liveRef.current += 1);
+    setState(PENDING);
+    (async () => {
+      if (!(await mirrorCanAnswer(path))) {
+        // Not a failure and not an empty node. The hint was stale or the leg
+        // has gone unusable since; the caller opens its live read.
+        if (!cancelled && token === liveRef.current) setState(FALLBACK);
+        return;
+      }
+      try {
+        const db = await getMirrorDbHandle();
+        const value = await readMirroredPath(db, path);
+        if (cancelled || token !== liveRef.current) return;
+        if (value === MISS) { setState(FALLBACK); return; }
+        setState({ value, settled: true, error: false, verdict: "mirror" });
+      } catch (err) {
+        if (cancelled || token !== liveRef.current) return;
+        // A local read that FAILED is not an empty node, and must not be shown
+        // as one. Falling back is the honest answer.
+        console.warn(`offline mirror: local read of /${path} failed:`, err);
+        setState(FALLBACK);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [path, enabled, legName, version, expectMirror, servingHint]);
+
+  return state;
+}
