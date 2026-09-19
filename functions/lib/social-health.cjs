@@ -73,6 +73,23 @@ function timestampOrNull(v) {
   return null;
 }
 
+/**
+ * The autopilot's own account of why it skipped, as one short clause.
+ *
+ * Bounded to two distinct reasons: this ends up in an email subject line and
+ * in the alerted signature, and a six-clause sentence is one nobody finishes
+ * reading. Absent, malformed or empty gives null, and the caller says nothing
+ * rather than "(undefined)".
+ */
+function skipSummary(autopilotLog) {
+  const list = autopilotLog && autopilotLog.skipReasons;
+  const rows = Array.isArray(list)
+    ? list
+    : list && typeof list === "object" ? Object.values(list) : [];
+  const clean = rows.filter((r) => typeof r === "string" && r.trim()).slice(0, 2);
+  return clean.length ? clean.join("; ") : null;
+}
+
 /** Midnight SAST of the SA day containing `ms`, as epoch ms. */
 function sastMidnight(ms) {
   return Math.floor((ms + SAST_OFFSET_MS) / DAY_MS) * DAY_MS - SAST_OFFSET_MS;
@@ -144,7 +161,15 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
         reasons.push("the 06:00 generator started and never finished");
       }
     } else if (made === 0) {
-      reasons.push(`the 06:00 generator made nothing — all ${skipped || wanted} skipped`);
+      // ── THE REASON TRAVELS WITH THE ALARM ─────────────────────────────────
+      // "made nothing — all 6 skipped" is a symptom and every cause looks the
+      // same in it: depleted credits, a revoked key, an empty style library,
+      // a catalogue with nothing in stock. The autopilot now records WHY
+      // (skipReasons on its own run record), so the sentence that reaches a
+      // phone can say "check Gemini billing" instead of sending its reader to
+      // a Cloud Logging console they may not have access to.
+      const why = skipSummary(autopilotLog);
+      reasons.push(`the 06:00 generator made nothing — all ${skipped || wanted} skipped${why ? ` (${why})` : ""}`);
     } else if (made < wanted) {
       reasons.push(`the 06:00 generator made ${made} of ${wanted}`);
     }
@@ -223,9 +248,25 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt }
   // has stopped" and "the engine is limping" are different nights.
   const nothingPublished = earliestDue !== undefined && publishedToday.length === 0;
   const publisherDead = !haveTick || nowMs - tickAt > HEARTBEAT_STALE_MS;
+  // ── A GENERATOR THAT MADE NOTHING IS "DOWN", NOT "A BIT OFF" ───────────────
+  // Only "silent" reaches a phone (see socialHealthScan's own note on why
+  // "degraded" was demoted). "The 06:00 generator made nothing" was landing on
+  // the degraded side, and that is exactly how the 2026-09-13 outage ran for
+  // six days without an email: Gemini's prepayment credits were depleted, the
+  // autopilot made 0 of 6 every morning, and the publisher went on draining a
+  // backlog — so something published most days, the mini kept ticking, and
+  // the one check that had noticed was the one that had been told not to
+  // shout. Two of those six days paged, and only because they ALSO tripped a
+  // different check.
+  //
+  // An engine that cannot make tomorrow's posts is down today, whatever is
+  // still going out of yesterday's queue. The backlog is what hides it, not
+  // what excuses it.
+  const generatorProducedNothing = wanted > 0 && Boolean(autopilotLog) &&
+    (Boolean(autopilotLog.error) || (Boolean(autopilotLog.finishedAt) && made === 0));
   const severity = reasons.length === 0
     ? "ok"
-    : (nothingPublished || publisherDead) ? "silent" : "degraded";
+    : (nothingPublished || publisherDead || generatorProducedNothing) ? "silent" : "degraded";
 
   return {
     saDate,

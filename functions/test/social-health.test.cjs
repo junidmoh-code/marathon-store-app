@@ -81,8 +81,53 @@ describe("REAL_2026_08_27 — the day that reported success and produced nothing
     assert.equal(day(REAL).reasons.some((r) => /nothing has published/.test(r)), false);
   });
 
-  test("it reads as degraded, not silent — a post did go out", () => {
-    assert.equal(day(REAL).severity, "degraded");
+  // ── THIS TEST USED TO ASSERT "degraded", AND THAT IS WHY IT HAPPENED AGAIN ──
+  // Only "silent" pages (socialHealthScan does not email on degraded, owner
+  // ruling 2026-08-31). So this exact shape — generator dead, backlog still
+  // draining, mini still ticking — was recorded, shown, and never sent. It ran
+  // that way for six days from 2026-09-13 with the same cause, Gemini's
+  // prepayment credits, and the only two days that paged did so because they
+  // tripped a DIFFERENT check as well.
+  //
+  // "A post did go out" is the backlog, not the engine. A generator that made
+  // nothing cannot make tomorrow, and that is down.
+  test("it is SILENT — a generator that made nothing is down, backlog or no backlog", () => {
+    assert.equal(day(REAL).severity, "silent");
+  });
+
+  test("…and the day's own published post does not soften it", () => {
+    // The distinction that got this wrong: check 3 is satisfied (something
+    // published) and check 1 is not. One passing check must not downgrade a
+    // failing one.
+    assert.equal(day(REAL).counts.publishedToday, 1);
+    assert.equal(day(REAL).severity, "silent");
+  });
+
+  // ── THE REASON REACHES THE READER, NOT JUST THE SYMPTOM ────────────────────
+  // "made nothing — all 6 skipped" is the same sentence for depleted credits,
+  // a revoked key and an empty style library. The autopilot now records WHY on
+  // its own run record, because the Cloud Logging line that held it is not
+  // readable by the service account that diagnoses this machine.
+  test("the skip reason travels into the alarm when the autopilot recorded one", () => {
+    const v = day({
+      ...REAL,
+      autopilotLog: {
+        ...REAL.autopilotLog,
+        skipReasons: ["6x AI credits depleted or rate-limited (429) — check Gemini billing"],
+      },
+    });
+    assert.match(v.reasons.join(" "), /check Gemini billing/);
+  });
+
+  test("a run with no recorded reasons still reads cleanly — no \"(undefined)\"", () => {
+    const withoutList = day(REAL).reasons.join(" ");
+    assert.match(withoutList, /generator made nothing — all 6 skipped$|generator made nothing — all 6 skipped\b/);
+    assert.doesNotMatch(withoutList, /undefined|\(\)/);
+    // And rubbish in that field is ignored rather than rendered.
+    for (const junk of [[], {}, "", 7, [""], [null]]) {
+      const v = day({ ...REAL, autopilotLog: { ...REAL.autopilotLog, skipReasons: junk } });
+      assert.doesNotMatch(v.reasons.join(" "), /undefined|\(\)/);
+    }
   });
 
   test("the message names the day and the reason in one line", () => {

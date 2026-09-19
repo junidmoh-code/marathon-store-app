@@ -4939,6 +4939,30 @@ function nextHourSlot(fromMs, hour, minute = 0, taken = new Set()) {
   return null;   // exhausted two weeks of the same hour — a bug, not real load
 }
 
+// ── THE SKIPS, AS ONE READABLE SENTENCE PER DISTINCT CAUSE ───────────────────
+// Six skips for one cause is one line, not six. The count is kept because
+// "all six" and "one of six" are different mornings, and the reason is
+// already classified by classifyPhotoError, so a Gemini 429 arrives here as
+// "AI credits depleted or rate-limited (429) — check Gemini billing" rather
+// than a raw HTTP body.
+//
+// Returns null, never [], when there is nothing to say: RTDB cannot store an
+// empty array — it deletes the key — so writing one would leave YESTERDAY'S
+// reasons sitting on a run that had none. See the same guard on
+// social_health/days reasons.
+function summariseSkips(skipped) {
+  const byReason = new Map();
+  for (const s of skipped || []) {
+    const reason = String((s && s.reason) || "skipped").slice(0, 200);
+    byReason.set(reason, (byReason.get(reason) || 0) + 1);
+  }
+  const out = [...byReason.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([reason, count]) => (count > 1 ? `${count}x ${reason}` : reason));
+  return out.length ? out : null;
+}
+
 exports.socialDailyAutopilot = onSchedule(
   {
     schedule: "0 6 * * *",
@@ -5060,6 +5084,20 @@ exports.socialDailyAutopilot = onSchedule(
         // zero when the picture engine is broken.
         feedTwins: created.filter((c) => c.twinId).length,
         estCostUSD: +estCostUSD.toFixed(4),
+        // ── WHY IT SKIPPED, IN THE DATABASE, NOT ONLY IN A LOG ───────────────
+        // Between 2026-09-13 and 2026-09-19 this run wrote `created: 0,
+        // skipped: 6` every morning and nothing else. The REASON — Gemini
+        // answering 429 "prepayment credits are depleted" — existed only as a
+        // console line in Cloud Logging, which needs a Google identity with
+        // logging.viewer to read; the publisher's own service account is
+        // refused ("Permission denied for all log views"). So the one field
+        // that says what to DO about a dead engine was the one field nobody
+        // diagnosing it could reach, and six days of runs looked identical to
+        // a day with nothing worth posting.
+        //
+        // Deduped and bounded: the same reason six times is one entry with a
+        // count, so this stays a sentence rather than a transcript.
+        skipReasons: summariseSkips(skipped),
       });
       await logReorderUsage(db, saDate, {
         at: nowMs, kind: "socialDailyAutopilot", by: "cron",
