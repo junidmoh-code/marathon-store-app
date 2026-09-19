@@ -563,6 +563,30 @@ The live `/stock_movements` block, for the record:
 
 ---
 
+## 10a. What the flag being off actually costs
+
+**Measured on the real bundle, 2026-09-19.**
+
+| | raw | gzipped |
+| --- | ---: | ---: |
+| before this work (`41edf2a8`) | 2,910.04 kB | 824.12 kB |
+| with the mirror merged, flag off | 2,951.16 kB | 835.44 kB |
+| **difference** | **+41.12 kB** | **+11.32 kB (+1.37%)** |
+
+The **engine** — the sync, the change feed, the database, the bootstrap — is
+behind a dynamic import that never runs with the flag off, and is verifiably
+absent from the served main chunk. What IS in it is the part a render path
+cannot make async: the gate, the flag, the serving hint, the read hooks and the
+photo hook. 11 KB gzipped, stated rather than waved at, because "imports
+nothing else" was the claim and it was not quite true.
+
+**Nothing in it RUNS with the flag off.** Every entry point checks the flag
+first, including — since a review of the served bundle — the photo hook, which
+was opening Cache Storage and running a `match()` on every product image
+rendered. The output was always right, because a miss falls through to the
+network url, but it is work that did not happen before, on a device that is
+not using the mirror.
+
 ## 11. Rollout
 
 The flag is `localStorage["marathon-store.offlineMirror"] = "on"`, per device.

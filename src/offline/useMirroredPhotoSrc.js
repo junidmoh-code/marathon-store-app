@@ -18,9 +18,18 @@
 
 import { useEffect, useState } from "react";
 import { isPhotoCacheApiAvailable, openPhotoCache, readCachedPhotoUrl } from "./photoCache";
+import { offlineMirrorEnabled } from "./mirrorFlag";
 
 let sharedCachePromise = null;
 function getSharedCache() {
+  // ── OFF MEANS OFF ────────────────────────────────────────────────────────
+  // Without this, a device with the mirror OFF still opened Cache Storage and
+  // ran a match() on every single product image it rendered. The output was
+  // right — nothing is cached, so it fell through to the network url — but it
+  // is work on a render path that did not happen before, and it opens a
+  // handle on a store the device is not using. "With the flag off the app is
+  // what it was" has to be true of the render path too, not just the engine.
+  if (!offlineMirrorEnabled()) return null;
   if (!isPhotoCacheApiAvailable()) return null;
   if (!sharedCachePromise) {
     sharedCachePromise = openPhotoCache().catch((err) => {
