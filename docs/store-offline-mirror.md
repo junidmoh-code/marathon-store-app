@@ -41,7 +41,8 @@ small. Measured against the live database on 2026-09-19 (RTDB REST, which does
 | `/users` | 12,746 | — |
 | `/locations` | 927 | — |
 
-Per-location `/stock`:
+Per-location `/stock` (the six active locations; `base`, `studio`, `trophy` and
+`in_transit` make up the remainder of the 6.89 MB total):
 
 | location | bytes |
 | --- | ---: |
@@ -111,7 +112,7 @@ switches most of the app.
 | 1 | `useProducts()` — `src/App.jsx:579` | `/products` whole | `products` | `changes` |
 | 2 | `useOrders(scopeShop)` — `src/App.jsx:911` | `/orders` whole or `destShop`-scoped | `orders` | `changes` |
 | 3 | `useCustomersDb()` — `src/App.jsx:1788` | `/customers` whole | `customers` | `changes` |
-| 4 | `usePath(path)` / `usePathState(path)` — `src/components/stock/useStock.js` | `/stock`, `/stock/{loc}`, `/stock_movements`, `/refill_requests`, `/transfers`, `/stock_alerts`, `/locations`, `/settings/displaySlots`, `/settings/displayRows`, `/settings/hubSneakerCount/register/{hub}`, `/settings/missingProductsHidden`, `/settings/stockHold`, `/config/transit` | `stock`, `movements`, `refills`, `displaySlots`, `displayRows`, `displayRegister`, `docs` | `changes` + `movements` |
+| 4 | `usePath(path)` / `usePathState(path)` — `src/components/stock/useStock.js` | `/stock`, `/stock/{loc}`, `/stock_movements`, `/refill_requests`, `/transfers`*, `/stock_alerts`*, `/locations`, `/settings/displaySlots`, `/settings/displayRows`, `/settings/hubSneakerCount/register/{hub}`, `/settings/missingProductsHidden`, `/settings/stockHold`, `/config/transit` | `stock`, `movements`, `refills`, `displaySlots`, `displayRows`, `displayRegister`, `docs` | `changes` + `movements` |
 
 **A leg is scoped to what is actually read whole.** `/settings/hubSneakerCount`
 is 1.15 MB, but the only part any mirrored read touches is `register/{hub}` at
@@ -129,24 +130,39 @@ and it is weight the app pays on every whole-node read today.
 
 | read site | node | local store | feed |
 | --- | --- | --- | --- |
-| `useTvOrders()` `src/App.jsx:983` | `/orders` key range `001…999` | `orders` (same rows, same range filter applied locally) | `changes` |
+| `useTvOrders()` — the always-on kiosk | `/orders` key range `001…999` | `orders`, with the SAME key bound applied locally | `changes` |
 | `useInsightsLogRecentDays(days)` `src/App.jsx:1078` | `/insights_log` key range | `insights` (range applied locally) | `insights` |
-| `useAllSourceResponses()` `src/App.jsx:1304` | `/restock_requests` whole | `restockRequests` | `changes` |
-| `useClothingOos()` `src/App.jsx:1415` | `/clothing_sold_refills` whole (4 B live) | `small` | `changes` |
+| `useAllSourceResponses()` | `/restock_requests` whole (1.4 MB, base64 photos inline) | `restockRequests` | `changes` |
+| `useClothingOos()` | `/clothing_sold_refills` whole (4 B live) | `docs` | `changes` |
 | `useClothingSoldMovements(from)` `src/App.jsx:1586` | `/stock_movements` `orderByChild(ts)` range | `movements` (range applied locally) | `movements` |
-| `useRestockLogRaw(date)` `src/App.jsx:1629` | `/restock_log/{date}` | `restockLog` | `changes` |
+| `useRestockLogRaw(date)` | `/restock_log/{date}` | `restockLog` | `changes` |
 | `useRestockLogAll()` `src/App.jsx:1732` | `/restock_log` whole | `restockLog` | `changes` |
 | `useReturnsLog()` `src/App.jsx:1751` | `/returns_log` whole | `returnsLog` | `changes` |
 | `useCustomerIndex()` `src/App.jsx:1822` | derived from `/insights_log` | `insights` | `insights` |
 | `useBroadcastHistory()` `src/App.jsx:1892` | `/broadcastHistory` (1.8 KB) | not mirrored — live, trivially small | — |
 | `useGroupBroadcastHistory()` `src/App.jsx:1917` | `/broadcasts` (4 B) | not mirrored | — |
 | `useNameProposals()` / `usePhotoProposals()` `src/App.jsx:3364,3379` | `/aiAssistant/*` | not mirrored — admin-only, small | — |
-| `useTaxonomy()` `src/components/admin/useTaxonomy.js:31` | `/settings/productTaxonomy` (19 KB) | `small` | `changes` |
+| `useTaxonomy()` `src/components/admin/useTaxonomy.js` | `/settings/productTaxonomy` (19 KB) | `docs` | `changes` |
+| `RefillHistory` / `MissingFootwear` — one-shot `get()` on a button press | `/refill_requests` whole (9.0 MB) | `refills`, via `readPathOnce` | `changes` |
 | `useStyleCodeConfig()` `src/components/admin/useStyleCodeConfig.js:34` | `/settings/styleCodeConfig` | not mirrored — small, admin | — |
 | `useLayby()` `src/components/layby/useLayby.js:38` | `/laybys` | not mirrored — POS-owned | — |
 | `CardReconScreen` `src/components/cardrecon/CardReconScreen.jsx:187,196` | `/card_batches` | not mirrored — owner-only screen | — |
 | Social / Shopify / admin `get()` call sites | per-record | not mirrored — occasional, per-record | — |
 | `ensureBarcode()` `src/components/stock/barcodeStore.js` | `/products/{id}/barcodes/{size}`, `/barcodes/{code}` per record | not mirrored — the store app never reads `/barcodes` whole | — |
+
+\* `/transfers` (2.2 KB) and `/stock_alerts` (4 B) go through that chokepoint
+but are **not legs**, so `legFor` returns MISS and they stay live. That is
+correct — both are smaller than the change record that would track them — and
+it is listed here because the chokepoint's name would otherwise imply
+otherwise.
+
+**Still live, and named rather than left out.** These render product photos or
+read small nodes on occasional, admin-or-owner-only screens and were not
+switched: `src/components/admin/*` (the bulk-pricing, specials, style-code and
+new-product surfaces), `src/components/social/*`, `src/components/shopify/*`,
+`src/pages/DisplayChecks/*`, `MarketingView`, `useDisplayChecks`,
+`useAttentionLists`, and `armingStore`'s per-hub `get(stock/{hub})`. They are a
+real remaining cost on those screens and a short list rather than a silence.
 
 **Not mirrored, and why.** Anything read one record at a time, anything under a
 kilobyte, and anything on an owner-only or admin-only screen stays live. The
@@ -158,8 +174,14 @@ costs a few hundred bytes when someone presses something.
 
 | surface | object | held where |
 | --- | --- | --- |
-| every grid, list, picker, order card, refill row | `products/{id}/thumb_300.webp` | Cache Storage, pre-downloaded at setup (trickled, non-blocking) |
+| every grid, list, picker, order card, refill row | `products/{id}/thumb_300.webp` | Cache Storage, pre-downloaded at setup (trickled, non-blocking), rendered via `<MirroredImg>` |
 | product detail, label print, re-shoot compare | `products/{id}/photo.jpg` | Cache Storage, **fetched on demand once** and kept — never pre-downloaded |
+
+**31 render sites are wired**: App.jsx's shared `ProductPhoto` helper (and all
+17 of its call sites), its seven grid `<img>`s, and six staff-facing stock
+components. A browse screen showing forty products goes from 4.4 MB to nothing.
+The admin, social and display-check surfaces are still on the network — see
+"Still live" in §3.2.
 
 674 MB of full-size originals is not a thing to put on a phone. The thumbnail
 set is 111 MB and is what every browsing surface actually renders. A full-size
@@ -270,6 +292,32 @@ per mutation. Measured mutation volume over the 7 days to 2026-09-19:
 bound the mutation rate at roughly 6,000 rows/week on the two busiest nodes.
 A `/mirror_changes` record is about 60 bytes.
 
+### 4.3a How fast it is
+
+A cadence alone makes every screen as stale as the cadence, and a minute
+between one device's write and another's screen is not "what it displays
+today". So the 60-second pass is a **floor**, and on top of it sits an
+`onChildAdded` over `/mirror_changes` **from the cursor** — it streams the
+records themselves, about 60 bytes each, never a node.
+
+It is a **signal, not a source**: the callback does not carry the record into
+the mirror, it asks the engine to run a pass, which reads the page properly and
+commits it with its cursor. One path applies changes and it is the tested one.
+A burst is debounced, so a refill run costs one pass rather than hundreds.
+
+### 4.3b The `/stock_movements` cursor is a PAIR
+
+`ts` is not unique — one transfer writes several movements with an identical
+ISO string — so the bound must be inclusive or every movement of a multi-size
+transfer but one is lost. Inclusive on `ts` alone, though, means every pass
+re-reads every row sharing the newest timestamp, for ever: fifty movements at
+one timestamp × 1,440 passes a day is about 25 MB per device per day, against
+a budget of 267 KB.
+
+RTDB's two-argument `startAt(value, key)` is the answer. The cursor carries
+`{ ts, key }`, resumes at the exact row last consumed, and re-reads **one** row
+instead of a timestamp's worth. The duplicate is an upsert and costs nothing.
+
 ### 4.4 What is NOT a feed
 
 Nothing re-reads a whole node after setup. Nothing polls. There is no
@@ -335,8 +383,10 @@ Derived from the measured 7-day mutation volume above, divided by 7:
 | `movements` (`/stock_movements` deltas) | ≈ 267,000 |
 | `changes` log itself (≈ 60 B × mutations) | ≈ 60,000 (estimate) |
 | re-read of changed children (products/stock/orders/refills) | ≈ 400,000 (estimate) |
-| version poll (`/version.json`, 1 × 90 s) | ≈ 40,000 |
-| **total** | **≈ 1.05 MB per device per day** |
+| version poll (`/version.json`, 1 × 5 min) | ≈ 15,000 |
+| the pass itself (3 bounded reads a minute, mostly empty) | ≈ 120,000 (estimate) |
+| the live change signal (`onChildAdded`, ≈ 60 B a record) | ≈ 60,000 (estimate) |
+| **total** | **≈ 1.15 MB per device per day** |
 
 Against ≈ 86 MB per cold pass today, several times a day, per device.
 
@@ -417,16 +467,25 @@ and reads by hand.
 **`database.rules.json` is not edited by this work.** These are printed for the
 owner to paste in the console.
 
-### 10.1 New node `/mirror_changes`
+### 10.1 New nodes `/mirror_changes` and `/mirror_counts`
 
-There is **no live block for `/mirror_changes`** — the node does not exist yet,
-so there is nothing to place beside the new one. It inherits the database root,
-which denies both read and write.
+There is **no live block for either** — neither node exists yet, so there is
+nothing to place beside the new ones. Both inherit the database root, which
+denies read and write.
 
-Add, as a sibling of `"insights_log"`:
+`/mirror_counts` is as load-bearing as `/mirror_changes`: it is the daily
+census, and it is the ONLY check this design has against a change record that
+was never written. Without its read rule every census attempt is
+permission-denied and the completeness backstop never runs at all.
+
+Add, as siblings of `"insights_log"`:
 
 ```json
 "mirror_changes": {
+  ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+  ".write": "false"
+},
+"mirror_counts": {
   ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
   ".write": "false"
 }
@@ -446,7 +505,7 @@ For comparison, the live block for the node it sits beside, unchanged:
 
 ### 10.2 Indexes
 
-**None needed.** Both ranged feeds avoid an index by construction:
+**None needed.** Every feed avoids an index by construction:
 
 | feed | query | index |
 | --- | --- | --- |

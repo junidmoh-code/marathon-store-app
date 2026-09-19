@@ -15,6 +15,7 @@ import { useEffect, useState } from "react";
 import { ref, onValue } from "firebase/database";
 import { database } from "../../firebase.js";
 import { TAXONOMY_SEED } from "../../utils/productTaxonomy.js";
+import { useMirroredPath } from "../../offline/useMirroredPath";
 
 const REGISTRY_PATH = "settings/productTaxonomy";
 
@@ -24,22 +25,34 @@ function usable(v) {
   return !!(v && typeof v === "object" && v.cats && typeof v.cats === "object" && Object.keys(v.cats).length > 0);
 }
 
+// `shape` is the SAME function on both paths, so the registry a screen gets —
+// and its `source`/`error` fields, which callers show — cannot depend on where
+// it came from. "live" is kept as the source name on both: it means "the
+// registry, as opposed to the baked-in seed", which is exactly as true of the
+// mirrored copy as of the subscription.
+const shapeTaxonomy = (v) => (usable(v)
+  ? { registry: v, source: "live", error: null }
+  : { registry: TAXONOMY_SEED, source: "fallback", error: v == null ? "registry not seeded yet" : "registry unusable" });
+
 export function useTaxonomy() {
   const [state, setState] = useState({ registry: TAXONOMY_SEED, source: "loading", error: null });
+  const mirrored = useMirroredPath(REGISTRY_PATH, true);
+  const live = mirrored.verdict === "fallback";
 
   useEffect(() => {
+    if (live || !mirrored.settled) return;
+    setState(shapeTaxonomy(mirrored.value));
+  }, [live, mirrored.settled, mirrored.value]);
+
+  useEffect(() => {
+    if (!live) return undefined;
     const unsub = onValue(
       ref(database, REGISTRY_PATH),
-      (snap) => {
-        const v = snap.val();
-        setState(usable(v)
-          ? { registry: v, source: "live", error: null }
-          : { registry: TAXONOMY_SEED, source: "fallback", error: v == null ? "registry not seeded yet" : "registry unusable" });
-      },
+      (snap) => setState(shapeTaxonomy(snap.val())),
       (err) => setState({ registry: TAXONOMY_SEED, source: "fallback", error: err?.message || "read denied" }),
     );
     return () => unsub();
-  }, []);
+  }, [live]);
 
   return state;
 }

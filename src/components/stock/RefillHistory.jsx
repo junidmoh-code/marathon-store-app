@@ -40,6 +40,7 @@ import {
   STATUS_LABEL, STATUS_EXPLAIN, REASON_TEXT, requestRows, movementRows, mergeRows,
 } from "./refillHistoryCore";
 import { MirroredImg } from "../../offline/MirroredImg.jsx";
+import { readPathOnce } from "../../offline/localReads";
 
 const LOC_LABEL = {
   hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", central: "Central",
@@ -168,7 +169,8 @@ export default function RefillHistory({ products = [] }) {
               return open;
             }),
         ]).then(([a, b, c]) => ({ ...a, ...b, ...c }))
-      : get(ref(database, "refill_requests")).then((s) => s.val() || {});
+      : readPathOnce("refill_requests",
+          () => get(ref(database, "refill_requests")).then((s) => s.val())).then((v) => v || {});
     fetch
       .then((val) => { if (alive) setRequests(Object.entries(val).map(([id, r]) => ({ id, ...r }))); })
       .catch((e) => { if (alive) { setRequests([]); setRrError(e?.message || "read failed"); } });

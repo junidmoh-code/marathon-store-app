@@ -54,8 +54,17 @@ describe("main.jsx still unregisters every OTHER service worker", () => {
     expect(main).toMatch(/\.filter\(/);
   });
 
-  it("still clears every cache", () => {
-    expect(main).toMatch(/caches\.delete/);
+  it("still clears the caches, now through the one function that spares the photo mirror", () => {
+    // It used to be `caches.delete` inline here. The offline mirror keeps 111
+    // MB of product thumbnails in Cache Storage, downloaded once per device,
+    // and this ran on EVERY boot — so the clear moved into
+    // src/offline/cacheClear.js, which deletes everything except that one
+    // cache and is tested behaviourally there.
+    //
+    // What this still guards is that main.jsx has not simply stopped clearing:
+    // the rolled-back service worker's caches must still go on every boot.
+    expect(main).toMatch(/clearCachesExceptPhotos/);
+    expect(main).toMatch(/typeof caches !== "undefined"/);
   });
 });
 

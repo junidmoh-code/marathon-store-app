@@ -50,7 +50,13 @@
 
 import { offlineMirrorEnabled } from "./mirrorFlag";
 
-export const PENDING_TTL_MS = 60 * 1000;
+// COMFORTABLY LONGER THAN THE FEED TAKES. It used to equal the pass interval
+// exactly, so an echo could expire in the same breath as the confirmation it
+// was waiting for and the number would visibly flip back to the old one.
+// (Fable-vs-spec review, PR #618.) The live change signal makes the real
+// round trip a second or two; this is the budget for the case where the
+// signal is lost and the 60-second cadence is doing the work.
+export const PENDING_TTL_MS = 3 * 60 * 1000;
 
 // In memory, not IndexedDB. An echo that survived a reload would be answering
 // for a write whose confirmation it can no longer recognise — and a reload is

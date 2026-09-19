@@ -9,7 +9,7 @@
 import { describe, test, expect } from "vitest";
 import {
   shouldAutoReload, setForcedUpdateMode, isForcedUpdateMode,
-  FORCED_GRACE_MS,
+  FORCED_GRACE_MS, FORCED_MAX_ATTEMPTS,
 } from "../../update/updateChecker";
 
 const base = {
@@ -69,5 +69,22 @@ describe("forced mode, for a device serving from its local copy", () => {
     setForcedUpdateMode(true);
     expect(isForcedUpdateMode()).toBe(true);
     setForcedUpdateMode(false);
+  });
+});
+
+describe("forced mode has a floor", () => {
+  test("it stops after FORCED_MAX_ATTEMPTS — a lying CDN costs five reloads, not a day", () => {
+    // The once-per-version latch forced mode drops exists because a lagging
+    // CDN serves a new version.json beside an old bundle, and the device
+    // reloads into the same old bundle for ever. (Fable-vs-spec review.)
+    const attempted = {
+      ...base, forced: true, msSinceFirstSeen: 10 * 60_000, attempts: FORCED_MAX_ATTEMPTS,
+    };
+    expect(shouldAutoReload(attempted)).toBe(false);
+    expect(shouldAutoReload({ ...attempted, attempts: FORCED_MAX_ATTEMPTS - 1 })).toBe(true);
+  });
+
+  test("the ordinary mode's attempt count is irrelevant to it", () => {
+    expect(shouldAutoReload({ ...base, hidden: true, attempts: 99 })).toBe(true);
   });
 });

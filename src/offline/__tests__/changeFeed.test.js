@@ -332,3 +332,33 @@ describe("a page commits WITH its cursor, or not at all", () => {
     expect(seen[0]).toMatchObject({ store: "products", rows: 1, cursorKey: FEED_CURSOR_META });
   });
 });
+
+describe("every return carries the same shape", () => {
+  test("a page with nothing new still reports `paths`", async () => {
+    // It is the commonest return there is, and a caller spreading `res.paths`
+    // threw a TypeError on every quiet pass — taking the whole feed step down
+    // with it, on a device that was simply up to date.
+    const db = await freshMirrorDb();
+    const w = createFakeRtdb({});
+    const res = await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 });
+    expect(res.paths).toEqual([]);
+    expect(res.done).toBe(true);
+  });
+
+  test("and so does a page whose records were all skipped", async () => {
+    const db = await freshMirrorDb();
+    const w = world([change(0, "a_node_this_build_does_not_know", "x")]);
+    const res = await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 1000 });
+    expect(res.paths).toEqual([]);
+  });
+
+  test("every return has the same keys, so no caller can be surprised", async () => {
+    const db = await freshMirrorDb();
+    const empty = createFakeRtdb({});
+    const full = world([change(0, "products", "p1")], { products: { p1: {} } });
+    const a = await runChangeFeedPage({ db, adapter: empty.adapter, now: () => T0 });
+    const db2 = await freshMirrorDb();
+    const b = await runChangeFeedPage({ db: db2, adapter: full.adapter, now: () => T0 + 1000 });
+    expect(Object.keys(a).sort()).toEqual(Object.keys(b).sort());
+  });
+});

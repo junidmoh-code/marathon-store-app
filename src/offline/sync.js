@@ -223,7 +223,12 @@ export function createSyncEngine({
       manifest = await appendStagingChunk(db, leg.name, {
         manifest, rows, afterKey: lastKey, now,
       });
-      onPage({ leg: leg.name, rows: manifest.rows, skipped });
+      // `staged`, NOT `rows`. The setup screen counts a leg DONE when it sees
+      // `rows`, and emitting it per page marked /products complete after page
+      // one of thirteen — the bar sprinting and then sitting still, which is
+      // the exact thing MirrorSetupScreen's header says it was built to
+      // avoid. (Fable-vs-spec review, PR #618.)
+      onPage({ leg: leg.name, staged: manifest.rows, skipped });
       if (keys.length < leg.pageSize) break;
     }
 
@@ -288,7 +293,13 @@ export function createSyncEngine({
   // difference: setup walks to the end, a pass takes a couple.
   async function runRangeLeg(leg, { maxPages = Infinity } = {}) {
     const cursorMeta = CURSOR_META(leg.name);
+    // A keyRange cursor is a key. A tsRange cursor is a PAIR — { ts, key } —
+    // because `ts` is not unique and a bare ts cursor makes every pass re-read
+    // every row sharing the newest timestamp, for ever. See rtdbAdapter's
+    // childPageConstraints. A cursor stored by an older build is a bare
+    // string, which reads as { ts, key: null } and heals on the first page.
     let cursor = (await db.getMeta(cursorMeta)) ?? null;
+    if (leg.feed === "tsRange" && typeof cursor === "string") cursor = { ts: cursor, key: null };
     let total = 0;
     let pages = 0;
 
@@ -296,39 +307,53 @@ export function createSyncEngine({
       const page = leg.feed === "keyRange"
         ? await adapter.readKeyPage(leg.node, { after: cursor, limit: leg.pageSize, big: true })
         : await adapter.readChildPage(leg.node, leg.tsField, {
-          from: cursor, limit: leg.pageSize, big: true,
+          from: cursor?.ts ?? null, fromKey: cursor?.key ?? null,
+          limit: leg.pageSize, big: true,
         });
       const entries = Object.entries(page ?? {});
       if (entries.length === 0) break;
 
       const records = entries.map(([key, value]) => ({ key, value }));
       let nextCursor;
+      let isAfter;
       if (leg.feed === "keyRange") {
         nextCursor = records.reduce((a, r) => (r.key > a ? r.key : a), records[0].key);
       } else {
-        // The LARGEST ts in the page. The query is inclusive of the cursor
-        // because `ts` is not unique — one transfer writes several movements
-        // with an identical ISO string — so an exclusive bound would skip
-        // every movement sharing the cursor's timestamp but the one that set
-        // it. The overlap is re-read and upserted, which costs nothing.
-        nextCursor = records.reduce((a, r) => {
-          const t = r.value && r.value[leg.tsField];
-          return typeof t === "string" && t > a ? t : a;
-        }, String(cursor ?? ""));
+        // The LAST row in the page, in the node's OWN ordering: (ts, key).
+        // Carrying the key is what stops the next pass re-reading the whole
+        // timestamp. The page arrives in that order, so the last entry is it.
+        const last = records[records.length - 1];
+        const t = last.value && last.value[leg.tsField];
+        nextCursor = {
+          ts: typeof t === "string" ? t : (cursor?.ts ?? null),
+          key: last.key,
+        };
+        isAfter = (next, prev) => {
+          const p = typeof prev === "string" ? { ts: prev, key: null } : prev;
+          if (!p || !p.ts) return true;
+          if (next.ts !== p.ts) return next.ts > p.ts;
+          return String(next.key) > String(p.key ?? "");
+        };
       }
 
-      // A ts page that cannot advance its cursor would loop for ever. This
-      // happens when more rows share one timestamp than fit in a page — real,
-      // for a bulk transfer — so it is a named failure, not a hang.
-      if (leg.feed === "tsRange" && cursor !== null && nextCursor === cursor
-        && entries.length >= leg.pageSize) {
+      // A CAUGHT-UP LEG DOES NOT ADVANCE, AND THAT IS NORMAL. The bound is
+      // inclusive, so a leg with nothing new gets back exactly the one row the
+      // cursor names and the cursor legitimately stands still. That is the
+      // steady state, not a fault.
+      //
+      // What IS a fault is a FULL page that does not advance: there is more to
+      // read and the walk cannot reach it, so it would either loop for ever or
+      // skip. With a compound (ts, key) cursor that can only happen if the
+      // server is not honouring the bound. Named, rather than hung.
+      if (leg.feed === "tsRange" && cursor && entries.length >= leg.pageSize
+        && !isAfter(nextCursor, cursor)) {
         await recordLegFailed(db, leg.name, {
           path: leg.node, reason: "cursor-stuck", at: now(), state: "failed", retryable: false,
-          detail: `${entries.length} rows share the timestamp "${cursor}", which is at or over `
-            + `the page size of ${leg.pageSize}. The walk cannot advance without skipping rows.`,
+          detail: `a page from "${cursor.ts}"/"${cursor.key}" came back without advancing `
+            + "the cursor. The walk cannot continue without either looping or skipping rows.",
         });
         throw new Error(
-          `offline mirror: the "${leg.name}" walk cannot advance past "${cursor}"`,
+          `offline mirror: the "${leg.name}" walk cannot advance past "${cursor.ts}"`,
         );
       }
 
@@ -336,9 +361,13 @@ export function createSyncEngine({
       await db.putPage(leg.store, records, {
         cursorKey: cursorMeta,
         cursorValue: nextCursor,
+        ...(isAfter ? { isAfter } : {}),
         metaEntries: { [LAST_SYNC_META(leg.name)]: at },
       });
-      total += records.length;
+      // Rows that were already held (the one-row overlap the inclusive bound
+      // re-reads) are not NEW. Counting them would make every pass look like
+      // it found work and wake every reader for nothing.
+      total += records.length - (cursor ? 1 : 0);
       cursor = nextCursor;
       onProgress({ phase: "range", leg: leg.name, rows: total });
       if (entries.length < leg.pageSize) { pages += 1; break; }
@@ -397,8 +426,10 @@ export function createSyncEngine({
         const res = isAppendOnly(leg)
           ? await runRangeLeg(leg)
           : await downloadSnapshotLeg(leg, {
-            onPage: ({ rows }) => onProgress({
-              phase: "setup", leg: leg.name, done: i, total: todo.length, rows,
+            // `staged`, never `rows` — see downloadSnapshotLeg. A page in
+            // flight must not be reported in the field that means "finished".
+            onPage: ({ staged }) => onProgress({
+              phase: "setup", leg: leg.name, done: i, total: todo.length, staged,
             }),
           });
         done.push({ leg: leg.name, rows: res.rows });
@@ -474,7 +505,45 @@ export function createSyncEngine({
     try { report.census = await checkCensus(); }
     catch (err) { report.errors.push({ where: "census", reason: err.name, message: err.message }); }
 
+    // 4. ANYTHING THAT NEEDS DOWNLOADING AGAIN, DOWNLOADED AGAIN.
+    //
+    // A census drift and an expired cursor both drop a leg's setup marker and
+    // say "downloading this leg again" — and nothing did. runSetup was only
+    // ever called by the setup screen at gate time, so a drifted leg fell back
+    // to whole-node LIVE reads (the expensive path this work exists to remove)
+    // and stayed there until the next reload, which would then block the whole
+    // app behind a 35 MB download, possibly mid-trade.
+    // (Fable-vs-spec review, PR #618.)
+    //
+    // Repairing inside the pass fixes both halves: the leg comes back without
+    // anyone pressing anything, and it never becomes a blocking screen in the
+    // middle of a trading day. ONE leg per pass, smallest first, so a repair
+    // cannot monopolise a device.
+    try {
+      report.repaired = await repairOneLeg();
+    } catch (err) {
+      report.errors.push({ where: "repair", reason: err.name, message: err.message });
+    }
+
     return report;
+  }
+
+  // The legs that have lost their setup marker, in the order that gets a
+  // device working again soonest: the catalogue and the shelf before the
+  // history. Returns what it repaired, or null.
+  async function repairOneLeg() {
+    for (const leg of MIRROR_LEGS) {
+      if (await legIsSetUp(leg)) continue;
+      const res = isAppendOnly(leg)
+        ? await runRangeLeg(leg)
+        : await downloadSnapshotLeg(leg);
+      // Re-stamp the whole-device marker only when every leg is back.
+      if ((await setupState()).ready) {
+        await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
+      }
+      return { leg: leg.name, rows: res.rows };
+    }
+    return null;
   }
 
   async function markChangeFedLegsForResetup(err) {
@@ -537,6 +606,6 @@ export function createSyncEngine({
 
   return {
     runSetup, setupState, legIsSetUp, runPass, runRangeLeg,
-    downloadSnapshotLeg, checkCensus,
+    downloadSnapshotLeg, checkCensus, repairOneLeg,
   };
 }

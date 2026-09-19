@@ -51,6 +51,7 @@ import { footwearSolveReason, footwearRequestReason, footwearConfirmReason, foot
 import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf } from "./missingFootwearCore";
 import { isDeactivated } from "../../utils/deactivation";
 import { useRefillRequests } from "./useStock";
+import { readPathOnce } from "../../offline/localReads";
 
 const HUBS = ["hub1", "hub2"];   // DETECTION scope: "missing" = zero units at BOTH hubs
 // Where a human may RAISE a line. HUB 1 IS BACK (owner order 2026-08-26,
@@ -139,7 +140,8 @@ export default function MissingFootwear({ products = [] }) {
       // Re-read live: between render and click another hub may have promised
       // these units, or this size may already have been queued here. The plan is
       // recomputed against that read rather than trusting what was on screen.
-      const liveRequests = Object.values((await get(ref(database, "refill_requests"))).val() || {});
+      const liveRequests = Object.values((await readPathOnce("refill_requests",
+        async () => (await get(ref(database, "refill_requests"))).val())) || {});
       const liveOpen = liveRequests
         .filter((r) => r && r.status === "open" && r.requestingLocation === dest && r.productId === card.pid)
         .map((r) => r.size);
@@ -235,7 +237,8 @@ export default function MissingFootwear({ products = [] }) {
     try {
       // Re-read live so a size queued by someone else between render and click is
       // not raised twice; the plan is recomputed against it rather than trusted.
-      const liveRequests = Object.values((await get(ref(database, "refill_requests"))).val() || {});
+      const liveRequests = Object.values((await readPathOnce("refill_requests",
+        async () => (await get(ref(database, "refill_requests"))).val())) || {});
       const liveOpen = liveRequests
         .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === card.pid)
         .map((r) => r.size);

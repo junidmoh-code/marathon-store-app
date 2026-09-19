@@ -48,8 +48,14 @@ ${names.length} functions: ${LEGS.length} change triggers, the daily census, and
 daily retention sweep.
 
 ─── 3. NO INDEX IS NEEDED ───────────────────────────────────────────────────
-Both ranged feeds avoid one by construction:
+Every feed avoids one by construction:
   /${CHANGES_ROOT}   orderByKey().startAfter(cursor)   key order, never indexed
-  /insights_log      orderByKey().startAfter(cursor)   key order, never indexed
-  /stock_movements   orderByChild("ts").startAt(iso)   ".indexOn": ["ts"] is ALREADY LIVE
+  /insights_log      orderByKey().startAfter(cursor)        key order, never indexed
+  /stock_movements   orderByChild("ts").startAt(ts, key)    ".indexOn": ["ts"] is ALREADY LIVE
+
+The /stock_movements cursor is a PAIR, not a timestamp: ts is not unique, so
+the bound must be inclusive or a multi-size transfer loses all but one of its
+movements — and inclusive on ts alone re-reads the whole newest timestamp on
+every pass, for ever. The two-argument startAt(value, key) resumes at the exact
+row last consumed. Same index, no new one.
 `);

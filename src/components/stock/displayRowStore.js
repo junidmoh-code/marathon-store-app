@@ -38,6 +38,7 @@ import {
 } from "./displayRowCore";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot } from "./displaySlots";
+import { notePendingUpdate } from "../../offline/pendingWrites";
 
 /** One row id per transition instant. A retried tap in the same millisecond
  *  rewrites the same row instead of minting a second one; a genuine second
@@ -64,6 +65,10 @@ export async function loadAllRows() {
 
 async function apply(updates) {
   await update(ref(database), updates);
+  // THE OFFLINE MIRROR — a display confirmed must show as confirmed at once,
+  // not when the change feed comes round. After the write; no-op with the
+  // flag off. See src/offline/pendingWrites.js.
+  notePendingUpdate(updates);
 }
 
 /**

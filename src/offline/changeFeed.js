@@ -203,7 +203,12 @@ export async function runChangeFeedPage({
   const page = await adapter.readKeyPage(CHANGES_ROOT, { after: cursor, limit: pageSize });
   const changeKeys = Object.keys(page ?? {});
   if (changeKeys.length === 0) {
-    return { applied: 0, deleted: 0, cursor, done: true, skipped: [] };
+    // `paths` on EVERY return, including this one. It is the commonest return
+    // there is — most passes have nothing new — and a caller spreading it
+    // threw a TypeError on every quiet pass, which took the whole feed step
+    // down with it. Caught by the self-repair test, which was the first thing
+    // to read a report from a pass that found no changes.
+    return { applied: 0, deleted: 0, cursor, done: true, skipped: [], paths: [] };
   }
   // Key order, not object order. Object key order for push keys happens to be
   // insertion order today, but the cursor must be the LARGEST key in the page

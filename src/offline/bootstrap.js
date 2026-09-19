@@ -40,6 +40,7 @@ import { offlineMirrorEnabled } from "./mirrorFlag";
 import { bumpLegs } from "./mirrorSignal";
 import { MIRROR_LEGS } from "./nodes";
 import { confirmPending } from "./pendingWrites";
+import { FEED_CURSOR_META, CHANGES_ROOT } from "./changeFeed";
 import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache } from "./photoCache";
 import { readWholeLeg, MISS } from "./localReads";
 import { setServingLegs } from "./serving";
@@ -47,7 +48,13 @@ import { isLegUsable } from "./health";
 import { setForcedUpdateMode, setUpdateBusy } from "../update/updateChecker";
 import { pendingCount } from "./pendingWrites";
 
+// The FLOOR, not the latency. A live signal on the change log (see below)
+// runs a pass as soon as anything is written; this is the backstop for a
+// signal that never arrives — a dropped socket, a tab the browser throttled.
 export const PASS_INTERVAL_MS = 60 * 1000;
+// A burst of writes is one pass, not one per record. Long enough to coalesce
+// a refill run, short enough that nobody notices.
+export const SIGNAL_DEBOUNCE_MS = 400;
 // After a failed pass, back off rather than hammering a line that is down.
 export const PASS_BACKOFF_MS = 5 * 60 * 1000;
 // The photo leg runs LAST and only once the data legs are complete: a picture
@@ -189,6 +196,28 @@ export async function startOfflineMirror({
     if (connection.isConnected() && !stopped) schedule(0);
   });
 
+  // ── THE LIVE SIGNAL ───────────────────────────────────────────────────────
+  //
+  // Without this the mirror is exactly as stale as PASS_INTERVAL_MS, and a
+  // minute between one device's write and another's screen is not "what it
+  // displays today". The subscription streams change RECORDS (~60 bytes),
+  // never a node, and it only ever asks for a pass — the page is read and
+  // committed by the one tested path.
+  let signalUnsub = null;
+  let signalTimer = null;
+  async function watchChanges() {
+    if (signalUnsub || stopped) return;
+    const after = (await db.getMeta(FEED_CURSOR_META)) ?? null;
+    if (stopped) return;
+    signalUnsub = adapter.subscribeNewChanges(CHANGES_ROOT, after, () => {
+      if (stopped) return;
+      // Debounced: a refill run writes hundreds of records and they should
+      // cost one pass, not hundreds.
+      clearTimeoutFn(signalTimer);
+      signalTimer = setTimeoutFn(() => schedule(0), SIGNAL_DEBOUNCE_MS);
+    });
+  }
+
   const runtime = {
     db, adapter, engine, connection, state,
     // Awaited by the setup screen. Resolves when this device has a complete
@@ -207,11 +236,13 @@ export async function startOfflineMirror({
     refreshServing,
     setupState: () => engine.setupState(),
     runOnePass,
-    start() { schedule(0); },
+    start() { schedule(0); watchChanges(); },
     stop() {
       stopped = true;
       clearTimeoutFn(timer);
       unwatchConnection();
+      if (signalUnsub) { signalUnsub(); signalUnsub = null; }
+      clearTimeoutFn(signalTimer);
       connection.stop();
       // Nothing may go on claiming this device serves locally once the mirror
       // has stopped: every hook reads that hint synchronously and would skip

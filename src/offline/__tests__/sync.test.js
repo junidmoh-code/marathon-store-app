@@ -230,7 +230,11 @@ describe("the append-only legs", () => {
     const e = engineOn(db, w);
     await e.runSetup();
     expect(await db.count("movements")).toBe(2);
-    expect(await db.getMeta(CURSOR_META("movements"))).toBe("2026-09-02T00:00:00.000Z");
+    // A PAIR, not a bare timestamp: `ts` is not unique, and a bare ts cursor
+    // makes every pass re-read every row sharing the newest one — about 25 MB
+    // per device per day after a bulk transfer.
+    expect(await db.getMeta(CURSOR_META("movements")))
+      .toEqual({ ts: "2026-09-02T00:00:00.000Z", key: "b" });
 
     w.write("stock_movements/c", { ts: "2026-09-03T00:00:00.000Z", qty: 3 });
     await e.runRangeLeg(LEG_BY_NAME.movements, { maxPages: 2 });
@@ -251,16 +255,55 @@ describe("the append-only legs", () => {
     expect(await db.count("movements")).toBe(3);
   });
 
-  test("a page of identical timestamps that cannot advance is a named failure, not a hang", async () => {
+  test("MORE ROWS THAN A PAGE SHARING ONE TIMESTAMP still all arrive", async () => {
+    // A bulk transfer writes every movement at one ISO string. With a bare ts
+    // cursor this either loops for ever or skips; the compound (ts, key)
+    // cursor walks through them a page at a time.
     const db = await freshMirrorDb();
     const same = "2026-09-02T00:00:00.000Z";
-    const mv = Object.fromEntries(Array.from({ length: 6 }, (_, i) => [`m${i}`, { ts: same, qty: 1 }]));
+    const mv = Object.fromEntries(Array.from({ length: 7 }, (_, i) => [`m${i}`, { ts: same, qty: 1 }]));
     const w = fullWorld({ stock_movements: mv });
     const leg = { ...LEG_BY_NAME.movements, pageSize: 3 };
     const e = engineOn(db, w);
-    await e.runRangeLeg(leg, { maxPages: 1 });          // sets the cursor
-    await expect(e.runRangeLeg(leg, { maxPages: 3 })).rejects.toThrow(/cannot advance/);
-    expect((await getLegHealth(db, "movements")).reason).toBe("cursor-stuck");
+    await e.runRangeLeg(leg, { maxPages: 10 });
+    expect(await db.count("movements")).toBe(7);
+    expect(await db.getMeta(CURSOR_META("movements"))).toEqual({ ts: same, key: "m6" });
+  });
+
+  test("A CAUGHT-UP LEG RE-READS ONE ROW, NOT A WHOLE TIMESTAMP'S WORTH", async () => {
+    // The cost this compound cursor exists for: 50 movements at one timestamp
+    // × 1,440 passes a day was ~25 MB per device per day, against a budget of
+    // 267 KB. (Fable-vs-spec review, PR #618.)
+    const db = await freshMirrorDb();
+    const same = "2026-09-02T00:00:00.000Z";
+    const mv = Object.fromEntries(Array.from({ length: 20 }, (_, i) => [`m${String(i).padStart(2, "0")}`, { ts: same, qty: 1 }]));
+    const w = fullWorld({ stock_movements: mv });
+    const e = engineOn(db, w);
+    await e.runRangeLeg(LEG_BY_NAME.movements, { maxPages: 10 });
+    expect(await db.count("movements")).toBe(20);
+
+    // A pass with nothing new: exactly one row comes back, and it is a row we
+    // already hold.
+    const res = await e.runRangeLeg(LEG_BY_NAME.movements, { maxPages: 1 });
+    expect(res.added).toBe(0);
+    const lastCall = w.calls.readChildPage.at(-1);
+    expect(lastCall.fromKey).toBe("m19");
+  });
+
+  test("a cursor stored by an older build as a bare string still works", async () => {
+    const db = await freshMirrorDb();
+    const w = fullWorld({
+      stock_movements: {
+        a: { ts: "2026-09-01T00:00:00.000Z" }, b: { ts: "2026-09-02T00:00:00.000Z" },
+      },
+    });
+    await db.setMeta(CURSOR_META("movements"), "2026-09-01T00:00:00.000Z");
+    const e = engineOn(db, w);
+    await e.runRangeLeg(LEG_BY_NAME.movements, { maxPages: 5 });
+    expect(await db.count("movements")).toBe(2);
+    expect(await db.getMeta(CURSOR_META("movements"))).toEqual({
+      ts: "2026-09-02T00:00:00.000Z", key: "b",
+    });
   });
 });
 
@@ -436,5 +479,90 @@ describe("the guarantees the comments claim, checked rather than trusted", () =>
     expect(bigPaths).toContain("products");
     expect(bigPaths).toContain("insights_log");
     expect(w.calls.readChildPage.every((c) => c.big)).toBe(true);
+  });
+});
+
+describe("a leg that needs downloading again, downloads again", () => {
+  test("a census drift is repaired BY THE PASS, not by a reload", async () => {
+    // Before this, a drifted leg fell back to whole-node LIVE reads — the
+    // expensive path this work exists to remove — and stayed there until
+    // someone reloaded, which then blocked the whole app behind a 35 MB
+    // download, possibly mid-trade. (Fable-vs-spec review, PR #618.)
+    const db = await freshMirrorDb();
+    const many = Object.fromEntries(Array.from({ length: 400 }, (_, i) => [`p${i}`, { id: `p${i}` }]));
+    const w = fullWorld({ products: many });
+    const e = engineOn(db, w);
+    await e.runSetup();
+
+    w.write(COUNTS_ROOT, { products: { rows: 900, at: T0 - 3600_000 } });
+    await e.checkCensus({ force: true });
+    expect(await e.legIsSetUp(LEG_BY_NAME.products)).toBe(false);
+
+    // The server really does hold 900 now.
+    for (let i = 400; i < 900; i += 1) w.write(`products/p${i}`, { id: `p${i}` });
+    w.write(COUNTS_ROOT, { products: { rows: 900, at: T0 - 3600_000 } });
+    const report = await e.runPass();
+    expect(report.repaired).toEqual({ leg: "products", rows: 900 });
+    expect(await db.count("products")).toBe(900);
+    expect(await e.legIsSetUp(LEG_BY_NAME.products)).toBe(true);
+  });
+
+  test("ONE leg per pass — a repair cannot monopolise a device", async () => {
+    const db = await freshMirrorDb();
+    const w = fullWorld();
+    const e = engineOn(db, w);
+    await e.runSetup();
+    await db.deleteMetaMany(["setup.products", "setup.customers", SETUP_DONE_META]);
+    const first = await e.runPass();
+    expect(first.repaired).toBeTruthy();
+    const second = await e.runPass();
+    expect(second.repaired).toBeTruthy();
+    expect(second.repaired.leg).not.toBe(first.repaired.leg);
+    expect(await e.runPass().then((r) => r.repaired)).toBeNull();
+  });
+
+  test("the whole-device marker comes back only when every leg is back", async () => {
+    const db = await freshMirrorDb();
+    const w = fullWorld();
+    const e = engineOn(db, w);
+    await e.runSetup();
+    await db.deleteMetaMany(["setup.products", "setup.customers", SETUP_DONE_META]);
+    await e.runPass();
+    expect(await db.getMeta(SETUP_DONE_META)).toBeUndefined();   // one still missing
+    await e.runPass();
+    expect(await db.getMeta(SETUP_DONE_META)).toBeTruthy();
+  });
+
+  test("a repair that fails does not stop the rest of the pass", async () => {
+    const db = await freshMirrorDb();
+    const w = fullWorld();
+    const e = engineOn(db, w);
+    await e.runSetup();
+    await db.deleteMetaMany(["setup.products", SETUP_DONE_META]);
+    w.write("products", null);            // the read now comes back empty
+    const report = await e.runPass();
+    expect(report.errors.some((x) => x.where === "repair")).toBe(true);
+    expect(report.feed).toBeTruthy();
+    // …and the rows that were already there are untouched and still usable.
+    expect(await db.count("products")).toBe(1);
+  });
+});
+
+describe("the setup bar does not count a leg done while it is downloading", () => {
+  test("a paged leg reports `staged` per page and `rows` once", async () => {
+    const db = await freshMirrorDb();
+    const many = Object.fromEntries(
+      Array.from({ length: 900 }, (_, i) => [`p${String(i).padStart(4, "0")}`, { id: `p${i}` }]));
+    const w = fullWorld({ products: many });
+    const seen = [];
+    await createSyncEngine({
+      db, adapter: w.adapter, now: () => T0, buildVersion: "b1",
+      onProgress: (p) => { if (p.leg === "products") seen.push(p); },
+    }).runSetup();
+    const staged = seen.filter((p) => p.staged !== undefined);
+    const finished = seen.filter((p) => p.rows !== undefined);
+    expect(staged.length).toBeGreaterThan(1);       // several pages
+    expect(finished).toHaveLength(1);               // one completion
+    expect(finished[0].rows).toBe(900);
   });
 });

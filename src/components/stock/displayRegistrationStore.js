@@ -43,6 +43,7 @@ import { stockSizeKey, assertSafeSegment } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot, slotIsLive } from "./displaySlots";
 import { HUB_COUNT_ROOT } from "../../config/hubSneakerCount";
 import { isCleanupHub } from "./hubCleanupCore";
+import { notePendingUpdate } from "../../offline/pendingWrites";
 
 export const CARD_VIA = "display_registration_card";
 
@@ -210,6 +211,7 @@ export async function editDisplaySize({ hub, product, fromSizeKey, toSize, slotS
         : null,
     };
     await update(ref(database), updates);
+    notePendingUpdate(updates);   // THE OFFLINE MIRROR — see displayRowStore.js
     const warnings = [];
     for (const store of slotStores) {
       const res = await setDisplaySlot({

@@ -56,14 +56,24 @@ export function createFakeRtdb(initial = {}) {
       if (!keys.length) return null;
       return Object.fromEntries(keys.map((k) => [k, structuredClone(node[k])]));
     },
-    async readChildPage(path, field, { from = null, limit = 500, big = false } = {}) {
-      calls.readChildPage.push({ path, field, from, limit, big });
+    async readChildPage(path, field, { from = null, fromKey = null, limit = 500, big = false } = {}) {
+      calls.readChildPage.push({ path, field, from, fromKey, limit, big });
       const node = at(path);
       if (!node || typeof node !== "object") return null;
+      // RTDB orders by (value, key) and compares strings by UTF-16 code unit —
+      // NOT by localeCompare, which is locale-dependent and would order a
+      // different ts format differently from the real thing.
+      const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
       const rows = Object.entries(node)
         .filter(([, v]) => v && typeof v === "object")
-        .sort((a, b) => String(a[1][field]).localeCompare(String(b[1][field])))
-        .filter(([, v]) => from === null || String(v[field]) >= String(from))
+        .sort((a, b) => cmp(String(a[1][field]), String(b[1][field])) || cmp(a[0], b[0]))
+        // The two-argument startAt(value, key): inclusive of that exact pair.
+        .filter(([k, v]) => {
+          if (from === null) return true;
+          const t = String(v[field]);
+          if (t !== String(from)) return t > String(from);
+          return fromKey === null || k >= String(fromKey);
+        })
         .slice(0, limit);
       if (!rows.length) return null;
       return Object.fromEntries(rows.map(([k, v]) => [k, structuredClone(v)]));

@@ -89,29 +89,17 @@ if ("serviceWorker" in navigator) {
     .catch(() => {});
 }
 // Caches were cleared WHOLESALE here, because the push worker opens none and
-// there was nothing to preserve.
+// there was nothing to preserve. There is now: the offline mirror keeps its
+// product thumbnails in Cache Storage — 111 MB downloaded once per device —
+// and this line ran on every single boot.
 //
-// ── THE ONE EXCEPTION: THE PHOTO MIRROR ─────────────────────────────────────
-// There is now something to preserve. The offline mirror keeps its product
-// thumbnails in Cache Storage (src/offline/photoCache.js) — 111 MB downloaded
-// once per device — and this line ran on every single boot. It would have
-// deleted the lot, every time, and the photos leg would have quietly
-// re-downloaded it, for ever, which is the opposite of the point of the whole
-// exercise. The photo cache is therefore spared BY NAME.
-//
-// It restores nothing of the 2026-05-09 failure: that was a fetch-intercepting
-// service worker. This is a cache the page fills and reads by hand, with no
-// worker and no interception, and deleting it is a thing the mirror's own
-// "delete the offline copy" action does deliberately.
+// The exception, and the argument that it restores nothing of the 2026-05-09
+// service-worker failure, live in src/offline/cacheClear.js. It is a function
+// rather than a line here because a line could only be pinned by matching this
+// file's source text, and a mutation audit walked straight past two such pins.
 if (typeof caches !== "undefined" && caches.keys) {
-  import("./offline/photoCache.js")
-    .then(({ PHOTO_CACHE_NAME }) => PHOTO_CACHE_NAME)
-    // A failed import must not turn into "spare nothing" — that would clear the
-    // photo mirror on any boot where the chunk did not load. The literal is the
-    // fallback, and photoCacheName.pin.test.js pins the two together.
-    .catch(() => "marathon-store-photo-mirror-v1")
-    .then((spare) => caches.keys()
-      .then((keys) => Promise.all(keys.filter((k) => k !== spare).map((k) => caches.delete(k)))))
+  import("./offline/cacheClear.js")
+    .then(({ clearCachesExceptPhotos }) => clearCachesExceptPhotos())
     .catch(() => {});
 }
 

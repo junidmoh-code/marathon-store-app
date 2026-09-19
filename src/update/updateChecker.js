@@ -37,6 +37,17 @@ const RELOAD_LATCH_KEY = "marathon.update.reloadedFor";
 // auto-reload, one silent attempt per version, banner otherwise.
 export const FORCED_GRACE_MS = 30 * 1000;
 export const FORCED_RETRY_MS = 60 * 1000;
+// ── A FORCED RELOAD MUST NOT BE ABLE TO LOOP ────────────────────────────────
+// The once-per-version latch that forced mode drops exists because a lagging
+// CDN serves a new version.json beside an old bundle, and a device that
+// reloads into the same old bundle reloads again, and again. Forced mode needs
+// to keep retrying past a busy moment, so it cannot use that latch — but it
+// must still have a floor. Five attempts at a minute apart is long enough to
+// outlast any busy spell and short enough that a CDN that is lying costs five
+// reloads rather than a day of them, after which the banner remains as the
+// manual path. (Fable-vs-spec review, PR #618.)
+export const FORCED_MAX_ATTEMPTS = 5;
+const FORCED_ATTEMPTS_KEY = "marathon.update.forcedAttempts";
 let forcedMode = false;
 let firstSeenAt = null;
 
@@ -76,7 +87,7 @@ export function isNewVersion(currentVersion, fetchedVersion) {
 
 export function shouldAutoReload({
   updateAvailable, busy, msSinceActivity, alreadyAttempted, hidden = false,
-  forced = false, msSinceFirstSeen = 0,
+  forced = false, msSinceFirstSeen = 0, attempts = 0,
 }) {
   if (!updateAvailable) return false;
   // BUSY IS ABSOLUTE, in both modes. It is the cart, the count in progress,
@@ -85,7 +96,9 @@ export function shouldAutoReload({
   if (forced) {
     // No idle requirement and no once-per-version latch: a forced reload is
     // the point, and a device that stayed busy through its one attempt would
-    // otherwise never take the new bundle at all.
+    // otherwise never take the new bundle at all. There is still a floor —
+    // see FORCED_MAX_ATTEMPTS.
+    if (attempts >= FORCED_MAX_ATTEMPTS) return false;
     return msSinceFirstSeen >= FORCED_GRACE_MS;
   }
   if (alreadyAttempted) return false;
@@ -118,8 +131,21 @@ function alreadyAttempted() {
   try { return sessionStorage.getItem(RELOAD_LATCH_KEY) === fetchedVersion; } catch { return true; }
 }
 
+function forcedAttempts() {
+  try {
+    const raw = JSON.parse(sessionStorage.getItem(FORCED_ATTEMPTS_KEY) || "null");
+    return raw && raw.version === fetchedVersion ? Number(raw.n) || 0 : 0;
+  } catch { return 0; }
+}
+
 export function applyUpdate() {
   try { sessionStorage.setItem(RELOAD_LATCH_KEY, fetchedVersion ?? "unknown"); } catch { /* reload anyway */ }
+  if (forcedMode) {
+    try {
+      sessionStorage.setItem(FORCED_ATTEMPTS_KEY,
+        JSON.stringify({ version: fetchedVersion, n: forcedAttempts() + 1 }));
+    } catch { /* reload anyway */ }
+  }
   window.location.reload();
 }
 
@@ -136,6 +162,7 @@ function maybeAutoReload(hidden) {
       hidden,
       forced: forcedMode,
       msSinceFirstSeen: firstSeenAt === null ? 0 : Date.now() - firstSeenAt,
+      attempts: forcedAttempts(),
     })
   ) {
     applyUpdate();
@@ -144,7 +171,8 @@ function maybeAutoReload(hidden) {
   // A forced reload that was refused — busy, or inside its grace — comes back
   // for it. The ordinary mode deliberately does not: its one attempt per
   // version is what stops a lagging CDN reload-looping a device.
-  if (forcedMode && updateAvailable && forcedTimer === null) {
+  if (forcedMode && updateAvailable && forcedTimer === null
+    && forcedAttempts() < FORCED_MAX_ATTEMPTS) {
     forcedTimer = setTimeout(() => {
       forcedTimer = null;
       maybeAutoReload(document.visibilityState === "hidden");

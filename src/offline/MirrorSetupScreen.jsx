@@ -129,9 +129,11 @@ export function MirrorSetupScreen({ runtime, onDone }) {
     const unsub = runtime.onSetupProgress?.((p) => {
       if (p.phase !== "setup") return;
       setCurrent(p.leg);
-      // `rows` is only present on a leg that has FINISHED. A leg counted as
-      // done while it was still downloading is how a bar reaches 90% and sits
-      // there.
+      // `rows` is only present on a leg that has FINISHED; a page in flight
+      // reports `staged`. They used to be the same field, so /products counted
+      // as done after page one of thirteen — the bar sprinting and then
+      // sitting still. A leg counted done while it is still downloading is
+      // precisely how that happens.
       if (p.rows !== undefined) {
         setDone((prev) => (prev.includes(p.leg) ? prev : [...prev, p.leg]));
       }

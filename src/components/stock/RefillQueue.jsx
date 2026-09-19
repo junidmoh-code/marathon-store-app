@@ -64,6 +64,7 @@ import { recordHeldLine } from "./stockHoldStore";
 import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
 import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, sourceQueueLists } from "./firstBatchCore";
+import { notePendingUpdate } from "../../offline/pendingWrites";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -492,16 +493,21 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // Lock-less requests (Missing Sneakers, former holds) have no twin to
       // desync. Watch item recorded in the engine backlog.
       try {
-        await update(ref(database), {
+        const partial = {
           [`refill_requests/${r.id}/qty`]: remaining,
           [`refill_requests/${r.id}/sentQty`]: already + appliedQty,
-        });
+        };
+        await update(ref(database), partial);
+        // THE OFFLINE MIRROR — see applyMovement. The person who just pressed
+        // Send must see the remaining quantity they created, not the one from
+        // before they pressed it. After the write, so it echoes only what RTDB
+        // accepted; a no-op with the flag off.
+        notePendingUpdate(partial);
       } catch { return { ok: false, reason: "Sent, but updating the remaining quantity failed — retry (stock will not move twice)." }; }
       setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} sent → ${destLabel} ✓ · ${remaining} still open` }));
       return { ok: true };
     }
-    try {
-      await update(ref(database), {
+    const fulfilled = {
         [`refill_requests/${r.id}/status`]: "fulfilled",
         [`refill_requests/${r.id}/fulfilledBy`]: { movementId: mvId, qty: appliedQty, ...(already ? { totalQty: already + appliedQty } : {}), ...(counted ? {} : { uncounted: true }) },
         [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
@@ -509,7 +515,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         // leave its stale reason on a row now marked fulfilled (Kimi, #332).
         [`refill_requests/${r.id}/cancelReason`]: null,
         ...(auth.currentUser?.uid ? { [`refill_requests/${r.id}/resolvedBy`]: auth.currentUser.uid } : {}),
-      });
+    };
+    try {
+      await update(ref(database), fulfilled);
+      notePendingUpdate(fulfilled);            // see the partial-send echo above
     } catch { return { ok: false, reason: "Sent, but marking it fulfilled failed — retry (stock will not move twice)." }; }
     setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} unit${appliedQty === 1 ? "" : "s"} → ${destLabel} ✓` }));
     return { ok: true };
@@ -537,8 +546,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       [`refill_requests/${row.id}/cancelReason`]: isFirstBatchShopLeg(row._r) ? CENTRAL_DECLINED_REASON : null,
       ...(auth.currentUser?.uid ? { [`refill_requests/${row.id}/resolvedBy`]: auth.currentUser.uid } : {}),
     };
-    try { await update(ref(database), upd); }
-    catch { setMsg((m) => ({ ...m, [row.rowKey]: "failed — retry" })); }
+    try {
+      await update(ref(database), upd);
+      notePendingUpdate(upd);                  // see the fulfil echo above
+    } catch { setMsg((m) => ({ ...m, [row.rowKey]: "failed — retry" })); }
     setBusyRow(null);
   };
 

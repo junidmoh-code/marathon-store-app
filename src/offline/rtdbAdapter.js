@@ -15,7 +15,7 @@
 
 import {
   ref, get, query, orderByKey, orderByChild, startAfter, startAt, endAt,
-  limitToFirst, limitToLast, onValue,
+  limitToFirst, limitToLast, onValue, onChildAdded,
 } from "firebase/database";
 import { database } from "../firebase";
 import { withTimeout, READ_TIMEOUT_MS, BIG_READ_TIMEOUT_MS } from "./bounded";
@@ -47,10 +47,27 @@ export function keyPageConstraints({ after = null, limit = 500 }) {
   return parts;
 }
 
-export function childPageConstraints(field, { from = null, limit = 500 }) {
+// ── THE COMPOUND CURSOR, AND WHY THE SIMPLE ONE WAS EXPENSIVE ──────────────
+//
+// `startAt(ts)` alone is inclusive, which it must be — /stock_movements `ts` is
+// not unique, and an exclusive bound loses every movement of a multi-size
+// transfer but one. But inclusive-on-ts-alone means every pass re-reads EVERY
+// row sharing the newest timestamp, for ever. After a bulk transfer of fifty
+// movements written at one ISO string, that is fifty rows × ~350 bytes × 1,440
+// passes a day — about 25 MB per device per day, against a budget of 267 KB.
+// (Fable-vs-spec review, PR #618.)
+//
+// RTDB's two-argument `startAt(value, key)` is exactly the fix: it starts at
+// that (value, key) pair in the node's own ordering, so a cursor carrying both
+// resumes at the last row consumed and re-reads ONE row instead of a
+// timestamp's worth. The duplicate is an upsert and costs nothing.
+export function childPageConstraints(field, { from = null, fromKey = null, limit = 500 }) {
   const parts = [orderByChild(field)];
-  // INCLUSIVE. See above — this one character is the whole comment.
-  if (from !== null && from !== undefined) parts.push(startAt(from));
+  if (from !== null && from !== undefined) {
+    // INCLUSIVE, still — see above. The key narrows WHERE inside the
+    // timestamp we resume, never whether the timestamp is included.
+    parts.push(fromKey ? startAt(from, fromKey) : startAt(from));
+  }
   parts.push(limitToFirst(limit));
   return parts;
 }
@@ -90,8 +107,8 @@ export function createRtdbAdapter({ db = database } = {}) {
     // /stock_movements feed uses it against the live `.indexOn: ["ts"]`. The
     // inclusivity argument, and the mutation that proved it was untested, are
     // in this file's header.
-    async readChildPage(path, field, { from = null, limit = 500, big = false } = {}) {
-      const parts = childPageConstraints(field, { from, limit });
+    async readChildPage(path, field, { from = null, fromKey = null, limit = 500, big = false } = {}) {
+      const parts = childPageConstraints(field, { from, fromKey, limit });
       const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path} (${field} page)`,
@@ -134,6 +151,33 @@ export function createRtdbAdapter({ db = database } = {}) {
       const snap = await withTimeout(get(query(ref(db, path), ...parts)),
         { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (range)` });
       return snap.exists() ? snap.val() : null;
+    },
+
+    // ── A LIVE SIGNAL, WITHOUT A LIVE NODE ──────────────────────────────
+    //
+    // Polling the change log on a cadence makes every screen as stale as the
+    // cadence. At 60 seconds that is a minute between one device's write and
+    // another device's screen — where today an onValue is instant — and
+    // "screens display exactly what they display today" does not survive it.
+    // (Fable-vs-spec review, PR #618.)
+    //
+    // So the cadence keeps its place as a floor, and this sits on top: an
+    // onChildAdded over the change log FROM THE CURSOR. It streams only the
+    // records themselves — about 60 bytes each — never a node, and it is what
+    // turns "up to a minute" into "as fast as the trigger fires".
+    //
+    // It is a SIGNAL, not a source. The callback does not carry the record
+    // into the mirror; it asks the engine to run a pass, which reads the page
+    // properly and commits it with its cursor. One path applies changes, and
+    // it is the tested one.
+    subscribeNewChanges(path, after, onSignal) {
+      const parts = [orderByKey()];
+      if (after !== null && after !== undefined) parts.push(startAfter(after));
+      return onChildAdded(
+        query(ref(db, path), ...parts),
+        (snap) => onSignal(snap.key),
+        (err) => console.warn(`offline mirror: change signal on /${path} failed:`, err),
+      );
     },
 
     // `.info/connected` — the only honest answer to "is the database

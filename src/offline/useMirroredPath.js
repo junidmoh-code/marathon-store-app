@@ -119,3 +119,36 @@ export function useMirroredPath(path, enabled = true) {
 
   return state;
 }
+
+/**
+ * "Is this leg serving, and has it moved?" — WITHOUT reading it.
+ *
+ * The two windowed readers (App.jsx's useInsightsLogRecentDays and
+ * useClothingSoldMovements) called useMirroredPath on the WHOLE node just to
+ * get a change token, which rebuilt all 112,968 /insights_log rows or all
+ * 90,922 /stock_movements rows in memory — on mount and on every pass that
+ * moved the leg — and then threw the value away and did a second, ranged read.
+ * On a tablet that is a heap risk, not merely slow, and it is the exact cost
+ * the ranged local read was added to avoid. (Fable-vs-spec review, PR #618.)
+ *
+ * This is what those two actually need: the synchronous serving hint and a
+ * version that changes when the feed moves the leg. It reads nothing.
+ */
+export function useMirrorLeg(legName, enabled = true) {
+  const legs = useMemo(() => (legName ? [legName] : []), [legName]);
+
+  const version = useSyncExternalStore(
+    subscribeMirror,
+    () => versionKey(legs),
+    () => versionKey(legs),
+  );
+  const servingHint = useSyncExternalStore(
+    subscribeServing,
+    () => servingKeyFor(legs),
+    () => servingKeyFor(legs),
+  );
+  void servingHint;
+
+  const serving = !!legName && enabled && isLegServing(legName);
+  return { serving, version };
+}

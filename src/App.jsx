@@ -22,14 +22,16 @@ import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour 
 import { getTodayKey, getNextOrderNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
-import { useMirroredPath } from "./offline/useMirroredPath";
+import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
 import { MirrorDot } from "./offline/MirrorDot.jsx";
 import { MirroredImg } from "./offline/MirroredImg.jsx";
+import { notePendingUpdate } from "./offline/pendingWrites";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
+import { setUpdateBusy } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
@@ -1108,7 +1110,14 @@ function writeOrder(order) {
     console.error("writeOrder rejected:", err.message, { orderId: order.id ?? null, undefinedFields });
     throw err;
   }
-  return set(ref(database, `orders/${order.id}`), order).catch((err) => {
+  return set(ref(database, `orders/${order.id}`), order).then((ok) => {
+    // THE OFFLINE MIRROR. A person who has just placed an order must see it,
+    // not the shelf as it was a moment ago. Echoed AFTER the write resolves,
+    // so it only ever echoes what RTDB accepted. No-op with the flag off —
+    // src/offline/pendingWrites.js.
+    notePendingUpdate({ [`orders/${order.id}`]: order });
+    return ok;
+  }).catch((err) => {
     // Propagate (don't swallow) so placeOrders / placeRefillRequests surface the
     // real reason AND don't false-clear the cart. Both callers await this inside
     // a try/catch and writeOrder has no other callers. Previously an async
@@ -1178,8 +1187,12 @@ function useInsightsLogRecentDays(days) {
   // the window is identical — and the caller still filters on `timestamp`
   // afterwards, as it always has. mirrorVersion re-reads when the feed brings
   // new entries; without it a screen left open would never see today's.
-  const mirrorInsights = useMirroredPath("insights_log", authReady);
-  const liveInsights = mirrorInsights.verdict === "fallback";
+  // useMirrorLeg, NOT useMirroredPath: this reader wants a RANGE, and asking
+  // for the whole node just to learn that it changed would rebuild 112,968
+  // rows in memory every time the feed moved — which is the cost the ranged
+  // local read exists to avoid, moved onto the device.
+  const { serving: insightsServing, version: insightsVersion } = useMirrorLeg("insights", authReady);
+  const liveInsights = !insightsServing;
 
   useEffect(() => {
     if (liveInsights) return undefined;
@@ -1200,7 +1213,7 @@ function useInsightsLogRecentDays(days) {
       }
     })();
     return () => { cancelled = true; };
-  }, [liveInsights, mirrorInsights.value, days, saDay]);
+  }, [liveInsights, insightsVersion, days, saDay]);
 
   useEffect(() => {
     if (!authReady || !liveInsights) return undefined;
@@ -1743,8 +1756,10 @@ function useClothingSoldMovements(fromSaDate) {
   // same ts range through an IndexedDB index on the same field, so the window
   // is identical — and the walk stays an indexed one rather than becoming a
   // scan of every row, which would only move the cost onto the device.
-  const mirrorMv = useMirroredPath("stock_movements", authReady);
-  const liveMv = mirrorMv.verdict === "fallback";
+  // useMirrorLeg for the same reason as useInsightsLogRecentDays above: a
+  // range reader must not rebuild 90,922 rows to find out the leg moved.
+  const { serving: mvServing, version: mvVersion } = useMirrorLeg("movements", authReady);
+  const liveMv = !mvServing;
 
   const shapeMovements = useCallback((data) => {
     const arr = [];
@@ -1768,7 +1783,7 @@ function useClothingSoldMovements(fromSaDate) {
       }
     })();
     return () => { cancelled = true; };
-  }, [liveMv, mirrorMv.value, start, shapeMovements]);
+  }, [liveMv, mvVersion, start, shapeMovements]);
 
   useEffect(() => {
     if (!authReady || !liveMv) return undefined;
@@ -10294,6 +10309,18 @@ function AssistantView({ products, onExit, orders = [] }) {
 
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
   const closeCheckout = () => { setCheckoutOpen(false); setCustomerName(""); setCustomerPhone(""); setMarketingOptIn(false); };
+
+  // ─── NEVER MID-ORDER ──────────────────────────────────────────────────
+  // The update checker refuses to reload while anything is registered busy,
+  // and on a mirrored device that reload is FORCED. A cart with lines in it is
+  // exactly the thing "never mid-order" means, and nothing in this file was
+  // registering it — only the two count screens were. (Fable-vs-spec review,
+  // PR #618.) Registered while the cart has lines, and cleared when it is
+  // empty or this view goes away, so a forgotten flag can never wedge updates.
+  useEffect(() => {
+    setUpdateBusy("assistant-cart", cart.length > 0);
+    return () => setUpdateBusy("assistant-cart", false);
+  }, [cart.length]);
 
   const placeOrders = async (bypassDestConfirm = false) => {
     if (!cart.length || !customerName || submitting) return;

@@ -179,3 +179,39 @@ export async function readWholeLeg(db, legName) {
   if (!leg) return MISS;
   return readMirroredPath(db, leg.node);
 }
+
+/**
+ * The one-shot read: `get(ref(database, path)).val()` served from the local
+ * copy when this device holds it, and from RTDB when it does not.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM THE HOOK. Several screens do not subscribe —
+ * they read once, on a button press. Two of them read /refill_requests WHOLE,
+ * which is 9.0 MB, and they were left alone by the hook work because there is
+ * no hook to change. A press on Missing Sneakers or Refill History therefore
+ * cost 9 MB on a device that already held every one of those rows.
+ * (Fable-vs-spec review, PR #618.)
+ *
+ * `liveRead` is injected rather than imported so this module stays free of
+ * firebase/database and testable without it.
+ */
+export async function readPathOnce(path, liveRead) {
+  try {
+    const { offlineMirrorEnabled } = await import("./mirrorFlag");
+    const { isLegServing } = await import("./serving");
+    const match = legFor(path);
+    if (offlineMirrorEnabled() && match && isLegServing(match.leg.name)) {
+      const { getMirrorDbHandle } = await import("./mirrorDbHandle");
+      const { isLegUsable } = await import("./health");
+      const db = await getMirrorDbHandle();
+      if (await isLegUsable(db, match.leg.name)) {
+        const value = await readMirroredPath(db, path);
+        if (value !== MISS) return value;
+      }
+    }
+  } catch (err) {
+    // A local read that failed is NOT an empty node. Falling through to the
+    // live read is the honest answer and costs only what it cost before.
+    console.warn(`offline mirror: local one-shot read of /${path} failed:`, err);
+  }
+  return liveRead();
+}
