@@ -14,11 +14,13 @@
 // largest-read lists is at /cost_watch/hourly and is deliberately NOT read
 // here.
 //
-// A live subscription would have been the house style, and it is the wrong
-// choice here: opening `onValue` on /cost_watch/daily would re-download both
-// days every time the watcher republished, which is every ten minutes, for as
-// long as the card is open. A manual Refresh costs one read when the person
-// looking actually wants one.
+// It IS live, and it is live cheaply. `onValue` is opened on ONE node —
+// /cost_watch/latest, a handful of fields the watcher stamps after each rollup
+// — and a change there triggers a fresh `get()` of the two daily nodes. So the
+// ranking updates on its own, and what streams continuously is a few dozen
+// bytes rather than two full day summaries every ten minutes for as long as
+// the card is left open. Subscribing to /cost_watch/daily directly would have
+// been the obvious way and is the expensive one.
 //
 // ─── WHY IT CAN SAY "NO PERMISSION" AND THAT IS FINE ─────────────────────────
 //
@@ -29,7 +31,7 @@
 // carries on working.
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { getDatabase, ref, get } from "firebase/database";
+import { getDatabase, ref, get, onValue } from "firebase/database";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 
 const SAST_OFFSET_MS = 2 * 3600 * 1000;
@@ -79,12 +81,12 @@ function Bar({ share }) {
   );
 }
 
-function Ranking({ title, rows, total }) {
-  if (!rows || !rows.length) return null;
+function Ranking({ title, rows, total, unattributed = null }) {
+  if ((!rows || !rows.length) && !unattributed) return null;
   return (
     <div style={{ marginTop: 18 }}>
       <div style={{ fontSize: 13, color: "#8e8e93", marginBottom: 8, textTransform: "uppercase", letterSpacing: 0.6 }}>{title}</div>
-      {rows.map((r) => (
+      {(rows || []).map((r) => (
         <div key={r.key} style={{ padding: "8px 0", borderBottom: "1px solid #1c1c1e" }}>
           <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
             <span style={{ fontSize: 14, color: "#f2f2f7", wordBreak: "break-word", flex: 1 }}>{r.key}</span>
@@ -93,6 +95,20 @@ function Ranking({ title, rows, total }) {
           <Bar share={total ? r.usd / total : 0} />
         </div>
       ))}
+      {unattributed && (
+        <div style={{ padding: "8px 0", borderBottom: "1px solid #1c1c1e" }}>
+          <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
+            <span style={{ fontSize: 14, color: "#ff9f0a", flex: 1 }}>
+              Unattributed — no known device or cause
+            </span>
+            <strong style={{ fontSize: 14, color: "#ff9f0a", whiteSpace: "nowrap" }}>{money(unattributed.usd)}</strong>
+          </div>
+          <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 2 }}>
+            {pct(unattributed.share)} of the bytes — inside the totals above, never folded into another line
+          </div>
+          <Bar share={total ? unattributed.usd / total : 0} />
+        </div>
+      )}
     </div>
   );
 }
@@ -174,6 +190,21 @@ export default function CostWatchCard({ authUser, onExit }) {
 
   useEffect(() => { load(); }, [load]);
 
+  // LIVE, CHEAPLY. One subscription, to the smallest node the watcher writes.
+  // Its first callback fires immediately with the current value, which would
+  // double the initial load, so the first is skipped: `load()` above has
+  // already fetched.
+  useEffect(() => {
+    if (!isSuperAdmin) return undefined;
+    let first = true;
+    const unsub = onValue(
+      ref(getDatabase(), "cost_watch/latest"),
+      () => { if (first) { first = false; return; } load(); },
+      () => { /* a denied read is already reported by load(); do not loop on it */ },
+    );
+    return () => unsub && unsub();
+  }, [isSuperAdmin, load]);
+
   if (!isSuperAdmin) {
     return (
       <div style={{ padding: 24, color: "#8e8e93", background: "#000", minHeight: "100vh" }}>
@@ -186,6 +217,9 @@ export default function CostWatchCard({ authUser, onExit }) {
   const t = state.today;
   const y = state.yesterday;
   const delta = t && y ? t.usd - y.usd : null;
+  // The day whose rankings are worth showing: today once it has rows, else
+  // yesterday. Checked on length, because [] is truthy.
+  const shown = (t?.byCause?.length || t?.byDevice?.length) ? t : y;
 
   return (
     <div style={{ background: "#000", minHeight: "100vh", color: "#f2f2f7", padding: "16px 16px 60px" }}>
@@ -251,15 +285,23 @@ export default function CostWatchCard({ authUser, onExit }) {
             </div>
           )}
 
-          <Ranking title="By device" rows={t?.byDevice || y?.byDevice} total={(t || y)?.usd} />
-          <Ranking title="By cause" rows={t?.byCause || y?.byCause} total={(t || y)?.usd} />
+          {/* `shown` picks the first day that actually has rows: an empty
+              array is truthy, so `t?.byDevice || y?.byDevice` would render a
+              fresh day's empty ranking instead of falling back to yesterday.
 
-          {(t || y)?.unattributedShare > 0.05 && (
-            <div style={{ marginTop: 14, fontSize: 13, color: "#ff9f0a" }}>
-              {pct((t || y).unattributedShare)} of the bytes could not be attributed to a known device or cause.
-              They are inside the totals above, shown here rather than hidden.
-            </div>
-          )}
+              Unattributed is passed to the cause ranking as a ROW, always, at
+              whatever size it is — including zero. The brief is explicit that
+              these bytes are shown on their own line and never hidden, and a
+              footnote that appears only above some threshold hides them
+              precisely when somebody has half-fixed the attribution and
+              stopped looking. */}
+          <Ranking title="By device" rows={shown?.byDevice} total={shown?.usd} />
+          <Ranking
+            title="By cause"
+            rows={shown?.byCause}
+            total={shown?.usd}
+            unattributed={shown ? { usd: shown.unattributedUsd ?? 0, share: shown.unattributedShare ?? 0 } : null}
+          />
 
           {state.suggestions?.items?.length > 0 && (
             <div style={{ marginTop: 26 }}>

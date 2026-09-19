@@ -96,8 +96,28 @@ describe("CostWatchCard gate", () => {
     for (const p of paths) expect(p).not.toMatch(/cost_watch\/daily\/?$/);
   });
 
-  it("never opens a live subscription — this card must not cost anything to leave open", async () => {
+  it("subscribes to exactly one node, and it is the smallest one", async () => {
+    // The card is live, and it must stay cheap while being live. Exactly one
+    // subscription, on /cost_watch/latest — a handful of fields. Subscribing
+    // to a daily node instead would re-stream a whole day summary on every
+    // rollup, every ten minutes, for as long as the card is left open, and a
+    // card about the cost of reading the database would become a line in its
+    // own report. That regression is invisible in review and obvious in the
+    // bill, so it fails here.
     await render(ADMIN);
+    expect(onValueMock).toHaveBeenCalledTimes(1);
+    expect(onValueMock.mock.calls[0][0].path).toBe("cost_watch/latest");
+  });
+
+  it("never subscribes to a daily or hourly node", async () => {
+    await render(ADMIN);
+    for (const call of onValueMock.mock.calls) {
+      expect(call[0].path).not.toMatch(/cost_watch\/(daily|hourly)/);
+    }
+  });
+
+  it("opens no subscription at all for a viewer who is not the owner", async () => {
+    await render(STAFF);
     expect(onValueMock).not.toHaveBeenCalled();
   });
 
