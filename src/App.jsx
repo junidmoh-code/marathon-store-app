@@ -97,6 +97,7 @@ import PushBanner from "./push/PushBanner";
 import { usePushRegistration } from "./push/usePush";
 import { usePushMute } from "./push/useMute";
 import PushAssignmentsCard from "./push/PushAssignmentsCard";
+import CostWatchCard from "./components/admin/CostWatchCard";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -2888,6 +2889,15 @@ const RoleIcons = {
       <path d="M22 2 11 13"/>
     </svg>
   ),
+  cost_watch: (
+    // lucide-style "trending line in a frame": a cost chart, not a currency
+    // symbol — the card is about where the money goes, not about money.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v16a2 2 0 0 0 2 2h16"/>
+      <path d="m7 15 3.5-4 3 2.5L20 7"/>
+      <path d="M20 11V7h-4"/>
+    </svg>
+  ),
   push_alerts: (
     // lucide-style "bell + check": the alert bell with a small tick, so it
     // reads as "who is signed up for alerts" rather than as an alert itself.
@@ -3318,6 +3328,13 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // lock out the one person the card exists for. GATE 1 of 3; the RTDB rule
       // on /push_assignments is the one that actually enforces it.
       isSuperAdmin && { key:"push_alerts", icon:RoleIcons.push_alerts, name:"Order Alerts", desc:"Who is alerted, and for which hub", onClick:()=>(window.location.hash = "#admin/notifications") },
+      // Cost Watch — what Firebase costs, by device and by cause, measured
+      // continuously by marathon-cost-watch on the Mac mini. Super-admin ONLY,
+      // on the email, for the same reason as the tile above: the breakdown
+      // names individual staff devices, and Junid's /users record carries no
+      // permissions array, so a permission-keyed gate would lock out the one
+      // person the card is for. GATE 1 of 2; the route gate below is the twin.
+      isSuperAdmin && { key:"cost_watch", icon:RoleIcons.cost_watch, name:"Cost Watch", desc:"What Firebase costs, and who is spending it", onClick:()=>(window.location.hash = "#admin/cost") },
       // Card Recon — capture the card machine's batch slip, see the variance
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
@@ -19747,6 +19764,10 @@ function AppInner() {
   // grants nothing; authorization happens at the mount below, and the real
   // enforcement is the RTDB rule on /push_assignments.
   const wantPushAssign = hash === "#admin/notifications" || hash === "#admin/notifications/";
+  // /#admin/cost — COST WATCH. Recognises the HASH only and grants nothing;
+  // authorization happens at the mount below, and the RTDB rule on
+  // /cost_watch is what actually refuses the read.
+  const wantCostWatch = hash === "#admin/cost" || hash === "#admin/cost/";
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -19999,7 +20020,16 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantPushAssign) {
+  if (wantCostWatch) {
+    // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
+    // A non-super-admin never gets the card mounted, so none of its reads
+    // happen. Layer 2 is the component's own identical check, evaluated
+    // independently; deleting either still leaves a working client gate. The
+    // enforcement that matters is the RTDB rule on /cost_watch.
+    view = isSuperAdmin
+      ? <CostWatchCard authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantPushAssign) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
     // A non-super-admin never gets the card mounted at all, so none of its
     // reads happen. Layer 1 is the tile; layer 3 — the only one that is
