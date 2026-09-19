@@ -13,8 +13,8 @@ being written, two parallel sessions shipped the two largest lines it found —
 #617 for the display-checks sweep, and #618, the store-app offline mirror, for
 the 84%. What was built here was measured, reviewed, and then dropped rather
 than shipped alongside a better design. The measurement is the deliverable, plus
-an unattended Monday capture (§9) and two things the owner has to decide (§10) —
-one of which is that **hosting has not deployed since 17 September**.
+an unattended Monday capture (§9) and two things the owner may want to decide
+(§10).
 
 Every figure below is **measured** (read off the billing console, a live
 profiler capture, or a live bounded query) or **derived** (arithmetic on
@@ -541,30 +541,57 @@ Two details that are load-bearing and easy to lose:
 Nothing in the two fixes needs a rule or an index pasted (§7). These are the
 things this work found that it could not fix itself.
 
-### 10.1 The hosting deploy has been broken since at least 17 September
+### 10.1 The CI deploy workflow has never worked. Hosting is fine.
 
-`.github/workflows/deploy.yml` builds and then calls
+**A correction, and it is this report's own mistake.** An earlier revision of
+this section said hosting "has not deployed since at least 17 September" and
+called it a silent outage. That was wrong, and it was wrong in the way this
+report keeps warning about: it was inferred from one measurement instead of
+checked against the thing itself.
+
+What is true: `.github/workflows/deploy.yml` calls
 `FirebaseExtended/action-hosting-deploy` with
-`firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}`. That secret
-does not exist — `gh secret list` returns nothing — so every run since at least
-17 September has ended:
+`firebaseServiceAccount: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}`, that secret
+does not exist (`gh secret list` returns nothing), and **no run has succeeded in
+the last 40**, each ending:
 
 ```
 Error: Input required and not supplied: firebaseServiceAccount
 ```
 
-**No hosting deploy has succeeded in the last 40 workflow runs.** The build step
-passes, so the failure looks like a red tick on a merged PR rather than an
-outage, and the live site has been quietly stuck while main moved on.
+What is also true, and settles it — the live build, and the Hosting release
+history:
 
-This is not something to fix by minting a key unasked: it means creating a
-Google service account credential and storing it in a public repository's
-secrets, which is the owner's call, not a side effect of a cost investigation.
-**To restore it:** create a service account with the Firebase Hosting Admin
-role, download a JSON key, and set it with
-`gh secret set FIREBASE_SERVICE_ACCOUNT < key.json`. Until then, hosting deploys
-are manual: from a **fresh clone of `origin/main`** (never a worktree),
-`npm ci && npm run build && firebase deploy --only hosting:marathon-club`.
+```
+$ curl -s https://marathon-club.web.app/version.json
+{"version":"020b1fd.1789841444074","builtAt":"2026-09-19T18:10:45.983Z"}
+
+releases (firebasehosting.googleapis.com), most recent first:
+  2026-09-19T18:10:53  cli-firebase
+  2026-09-19T18:01:43  cli-firebase
+  2026-09-18T17:18:42  cli-firebase
+  2026-09-17T22:30:15  cli-firebase
+  …
+```
+
+`020b1fd` is #620, merged forty minutes before this was written. **Hosting is
+current and is deployed by hand from the CLI**, several times on a busy day,
+and it has been all along. The workflow is not an outage; it is dead weight that
+paints a red tick on every merge to main and trains everyone to ignore it.
+
+So this is a tidy-up, not an emergency, and it has two honest options:
+
+- **Restore the secret** — create a service account with the Firebase Hosting
+  Admin role and `gh secret set FIREBASE_SERVICE_ACCOUNT < key.json`. That means
+  putting a Google credential into a public repository's secrets, which is the
+  owner's call and not a side effect of a cost investigation.
+- **Or delete the workflow**, and keep deploying the way the estate actually
+  deploys: from a **fresh clone of `origin/main`** (never a worktree),
+  `npm ci && npm run build && firebase deploy --only hosting:marathon-club`.
+  `scripts/deploy-preflight.mjs` already refuses a dirty or behind-main tree, so
+  the manual path has the guard rail the CI path never had.
+
+Either is fine. Leaving a check that always fails is the one option that is not.
 
 ### 10.2 Optional, and worth knowing about
 
