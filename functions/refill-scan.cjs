@@ -1,5 +1,5 @@
 // ─── REFILL HEALTH SCAN (Cloud Function I/O wrapper) ──────────────────────────
-// Every 15 minutes during trading hours (07:00-19:00 SAST): snapshot the RTDB,
+// ONCE a day at 18:00 SAST (owner decision 2026-09-19): snapshot the RTDB,
 // ask lib/refill-engine.cjs (pure, tested)
 // what should happen, then apply it:
 //   • close finished/cancelled refill locks
@@ -11,7 +11,7 @@
 //                battle-tested fulfillCRBatch split-lock does the actual move);
 //                hub2 legs get /refill_requests only, fulfilled via the
 //                Transfer screen's "Open refill requests" prefill.
-//   • write /stock_exceptions/latest (dashboard) and /stock_confidence (hourly)
+//   • write /stock_exceptions/latest (dashboard) and /stock_confidence (every run)
 //
 // SAFETY: the engine NEVER writes /stock. Claim-before-act lock so overlapping
 // runs can't double-create. Idempotency = one open lock per (dest,product,size)
@@ -800,7 +800,7 @@ async function runScan() {
       }
     }
 
-    // ── exceptions snapshot + hourly confidence ──────────────────────────────
+    // ── exceptions snapshot + confidence ─────────────────────────────────────
     counts.exceptions = Object.values(plan.exceptions).reduce((t, e) => t + e.count, 0);
     // Plan-side resize suppression (engine stats) — surfaced through the SAME
     // counts object as resizeDropped so both halves of the resize pipeline are
@@ -827,10 +827,18 @@ async function runScan() {
     } catch (e) {
       console.error("[refill-scan] stock audit pass failed:", e && e.message ? e.message : e);
     }
-    if (new Date(nowMs).getUTCMinutes() < 15) {
-      const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
-      await safeSet(db, "stock_confidence", { computedAt: startedAt, byLocation: confidence }, "confidence");
-    }
+    // CONFIDENCE — EVERY RUN, ungated.
+    // This used to sit behind a minute-of-hour gate (fire only in the first
+    // quarter of an hour): a throttle that turned four runs an hour into one.
+    // The literal is deliberately not repeated here — refill-cadence.test.cjs
+    // asserts the code is gone, and a comment quoting it would trip that test.
+    // At one run a day the gate is not a
+    // throttle, it is a coin toss — Cloud Scheduler is allowed to dispatch a
+    // minute or two late, and a single run landing at 18:16 SAST would skip
+    // /stock_confidence for the whole day. Ungated, the gate's purpose (don't
+    // recompute a 30-day lookback 96 times a day) is served by the schedule.
+    const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
+    await safeSet(db, "stock_confidence", { computedAt: startedAt, byLocation: confidence }, "confidence");
 
     // ── run record + prune old runs (keys are time-sortable) ─────────────────
     await safeSet(db, `refill_engine/runs/${runId}`, {
@@ -885,7 +893,7 @@ async function runScan() {
 // project (see the header note).
 exports.refillHealthScan = onSchedule(
   {
-    schedule: "every 15 minutes from 07:00 to 19:00",
+    schedule: "0 18 * * *",            // ONCE a day, 18:00 SAST — owner decision 2026-09-19
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     timeoutSeconds: 300,

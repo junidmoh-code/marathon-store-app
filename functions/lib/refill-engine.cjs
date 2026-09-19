@@ -1243,6 +1243,31 @@ function computeRefillPlan(snapshot) {
   // One definition of the evidence-based window — used by the propose gate AND
   // the srcParked labelling so they can never drift apart.
   const effWindowMs = (denierHas) => (denierHas > 0 ? recheckMs : cooldownMs);
+  // ── DUE SLACK — the cadence fix (2026-09-19) ───────────────────────────────
+  // Every window above is checked by "has it elapsed YET?", which was harmless
+  // when the scan ran every 15 minutes: a 24h cooldown that missed by 10
+  // minutes was re-asked 10 minutes later. At ONE run a day (18:00 SAST) the
+  // same near-miss costs a whole day — a cell rejected at 18:30 is only 23h30m
+  // old at the next 18:00 run, so its 24h cooldown silently becomes 48h, and
+  // every rejection taken in the trading day's tail inherits that doubling.
+  //
+  // The fix is to treat a window as elapsed if it WILL have elapsed before the
+  // next scan can look again. `dueSlackMinutes` (default 120) covers the
+  // evening tail of the trading day; raising it beyond the gap between runs
+  // would start firing windows genuinely early, so it is clamped to 12h.
+  // 0 and negatives are NOT a way to switch this off — they fall back to the
+  // default; pass a small positive number instead.
+  //
+  // PROPORTIONAL, never absolute: the slack applied to a window is capped at a
+  // QUARTER of that window. A flat 2h would swallow the 30-minute re-check
+  // window whole and quietly delete the 2026-07-19 recheck contract — the thing
+  // that decides whether a "no" from a denier that still counts stock rests 30
+  // minutes or a day. Capped, the 24h cooldown gets the full 2h it needs and
+  // the 30-minute window gets 7.5 minutes, which changes nothing about it.
+  const rawSlackMin = num(config?.dueSlackMinutes);
+  const dueSlackMs = Math.min(12 * 3600e3, (rawSlackMin > 0 ? rawSlackMin : 120) * 60e3);
+  const slackFor = (windowMs) => Math.min(dueSlackMs, Math.max(0, windowMs) * 0.25);
+  const windowElapsed = (sinceTs, windowMs) => (nowMs + slackFor(windowMs)) - sinceTs >= windowMs;
   const rejectedAt = new Map();
   const setDenial = (map, key, ts, by) => {
     const cur = map.get(key);
@@ -1551,7 +1576,7 @@ function computeRefillPlan(snapshot) {
         // still has inventory. It is the cooldown policy for ORDINARY
         // rejections — the streak guard above still parks pathological ones.
         const rt = retryOf(dest, pid, sizeKey);
-        if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs) {
+        if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs + slackFor(cooldownMs)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: denier, rejectedAt: rt.lastRejectedAt,
             note: `retry ${rt.retryCount || 0} scheduled for ${rt.nextRetryAt} — last rejected at ${rt.lastRejectedAt}`,
@@ -1561,7 +1586,7 @@ function computeRefillPlan(snapshot) {
         // RE-CHECK ON REJECT: denier still counting stock → short recheck
         // window (the mismatch resolves fast either way); denier counted empty
         // → the full cooldown, as before. Arrival lift still beats both.
-        if (nowMs - rejTs < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
+        if (!windowElapsed(rejTs, effWindowMs(denierHas)) && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: denier, rejectedAt: new Date(rejTs).toISOString(),
             note: denierHas > 0
@@ -1610,7 +1635,7 @@ function computeRefillPlan(snapshot) {
           // clothing, so this is the main remaining signal that an upstream leg
           // is genuinely stuck rather than merely waiting.
           const srcStreakFlagged = streakState(src, pid, sizeKey, size, upstreamOfSrc).flagged;
-          const srcParked = (srcRej && nowMs - srcRej.ts < effWindowMs(srcDenierHas) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
+          const srcParked = (srcRej && !windowElapsed(srcRej.ts, effWindowMs(srcDenierHas)) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
             || srcStreakFlagged
             || confirmedOut(pid, sizeKey);
           // "Chain is flowing" additionally requires the source to HAVE a

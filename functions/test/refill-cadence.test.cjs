@@ -1,16 +1,18 @@
-// ─── REFILL SCAN CADENCE — trading hours only ────────────────────────────────
+// ─── REFILL SCAN CADENCE — ONCE A DAY, 18:00 SAST ────────────────────────────
 // Run: cd functions && node --test
 //
 // Pins the three things PR "refill-scan cadence" changed, so a revert to the
 // 96-runs-a-day schedule or the 45-day ledger window fails here rather than
 // showing up on a bill six weeks later:
 //
-//   1. the SCHEDULE — 07:00→19:00 inclusive, Africa/Johannesburg, and NOT the
-//      unix-cron form that would overshoot past 19:00
+//   1. the SCHEDULE — "0 18 * * *", Africa/Johannesburg: ONE run a day, and
+//      nothing that reintroduces a multi-run-per-day cadence
 //   2. the WINDOW — held at 45, with the max() guard intact, and a regression
 //      test for the in-flight ledger evidence that forced it to stay
-//   3. IDEMPOTENCY ACROSS THE OVERNIGHT GAP — the 07:00 run produces exactly
-//      the plan the skipped 19:00–07:00 runs would have produced
+//   3. IDEMPOTENCY ACROSS A FULL DAY'S GAP — the 18:00 run produces exactly
+//      the plan the 95 skipped runs of the day would have produced, a morning
+//      sale is picked up at 18:00, and an open intent is not duplicated
+//   4. DUE SLACK — a 24h cooldown must not silently become 48h at one run/day
 //
 // (1) and (2) are asserted against the SOURCE, following the house pattern in
 // UserManagement.gate.test.jsx / DisplayRegister.gate.test.jsx: requiring
@@ -26,27 +28,38 @@ const { computeRefillPlan } = require("../lib/refill-engine.cjs");
 const SRC = readFileSync(join(__dirname, "..", "refill-scan.cjs"), "utf8");
 
 // ── 1. THE SCHEDULE ──────────────────────────────────────────────────────────
-test("schedule runs 07:00 to 19:00 inclusive, not around the clock", () => {
-  assert.match(SRC, /schedule:\s*"every 15 minutes from 07:00 to 19:00"/);
-  // The bare form this replaces — 96 runs/day, ~31 MB each.
+test("schedule is ONCE a day at 18:00, not a repeating interval", () => {
+  assert.match(SRC, /schedule:\s*"0 18 \* \* \*"/);
+  // The two forms this replaces — 96 runs/day and 49 runs/day.
   assert.doesNotMatch(SRC, /schedule:\s*"every 15 minutes"\s*,/);
+  assert.doesNotMatch(SRC, /schedule:\s*"every 15 minutes from 07:00 to 19:00"/);
+});
+
+test("the schedule fires exactly once a day", () => {
+  // A cron with a list, step or range in the hour or minute field would fire
+  // more than once — the whole point of this change is one dispatch per day.
+  const scheduleValue = /schedule:\s*"([^"]+)"/.exec(SRC)?.[1];
+  assert.ok(scheduleValue, "the schedule must be a literal string");
+  const [minute, hour, dom, mon, dow] = scheduleValue.split(/\s+/);
+  assert.equal(minute, "0");
+  assert.equal(hour, "18");
+  assert.deepEqual([dom, mon, dow], ["*", "*", "*"], "every day");
+  for (const f of [minute, hour]) assert.doesNotMatch(f, /[,\/-]/, "no list, step or range");
 });
 
 test("timeZone is set EXPLICITLY to Africa/Johannesburg", () => {
   // Cloud Scheduler defaults to UTC. SAST is UTC+2 with no DST, so relying on
-  // the default would run the "morning sweep" at 09:00 local and leave
-  // 05:00–07:00 uncovered.
+  // the default would fire the one daily run at 20:00 local, after close.
   assert.match(SRC, /timeZone:\s*"Africa\/Johannesburg"/);
 });
 
-test("does NOT use the unix-cron form, which overshoots past 19:00", () => {
-  // `*/15 7-19 * * *` also fires at 19:15, 19:30 and 19:45 — inside the window
-  // this change exists to close. Asserted on the schedule VALUE, not on the
-  // whole file: the comment above the schedule cites that cron form as the
-  // thing being avoided, and must not trip its own test.
-  const scheduleValue = /schedule:\s*"([^"]+)"/.exec(SRC)?.[1];
-  assert.ok(scheduleValue, "the schedule must be a literal string");
-  assert.doesNotMatch(scheduleValue, /[*\/]/, "the schedule must not be unix-cron");
+test("confidence is written on EVERY run, not behind an hourly minute gate", () => {
+  // The old minute-of-hour throttle turned 4 runs/hour into 1. With one run a
+  // day it is a coin toss: a dispatch 16 minutes late would skip
+  // /stock_confidence for the whole day. Asserted on the CODE, so this comment
+  // cannot trip its own test.
+  assert.doesNotMatch(SRC, /if\s*\(new Date\(nowMs\)\.getUTCMinutes\(\)/);
+  assert.match(SRC, /computeConfidence\(/);
 });
 
 test("the scoped-deploy instruction survives next to the schedule", () => {
@@ -103,11 +116,12 @@ test("a present scanIntervalMinutes announces itself as dead", () => {
   assert.match(SRC, /scanIntervalMinutes is DEAD and controls nothing/);
 });
 
-// ── 4. IDEMPOTENCY ACROSS THE OVERNIGHT GAP ──────────────────────────────────
-// The claim: skipping 19:00→07:00 loses nothing, because the plan is a pure
-// function of STATE, never of how many runs preceded it. computeRefillPlan
-// takes a snapshot and no run history, so a single 07:00 run over the morning's
-// state produces exactly what a night of runs would have converged on.
+// ── 4. IDEMPOTENCY ACROSS A FULL DAY'S GAP ───────────────────────────────────
+// The claim: dropping from 96 runs a day to ONE loses nothing, because the plan
+// is a pure function of STATE, never of how many runs preceded it.
+// computeRefillPlan takes a snapshot and no run history, so a single 18:00 run
+// over the day's state produces exactly what a day of runs would have
+// converged on.
 const CONFIG = {
   enabled: true,
   routes: { "marathon-pe": "hub2", hub2: "central" },
@@ -132,55 +146,141 @@ const snapshot = (nowMs, over = {}) => ({
   ...over,
 });
 
-const CLOSE = Date.parse("2026-08-04T15:30:00.000Z");  // 17:30 SAST
-const OPEN  = Date.parse("2026-08-05T05:00:00.000Z");  // 07:00 SAST next day
+const YDAY_RUN = Date.parse("2026-08-04T16:00:00.000Z");  // 18:00 SAST, the previous run
+const TODAY_RUN = Date.parse("2026-08-05T16:00:00.000Z"); // 18:00 SAST, the only run today
+const shape = (p) => JSON.stringify({
+  intents: (p.intents || []).map((i) => [i.dest, i.productId, i.sizeKey, i.qty]).sort(),
+  exceptions: Object.keys(p.exceptions || {}).sort(),
+});
 
-test("the 07:00 plan equals what the skipped overnight runs would have produced", () => {
-  // Every 15 minutes from 19:00 to 07:00, on UNCHANGED state — what the old
-  // cadence would have done.
+test("the 18:00 plan equals what the 95 skipped runs of the day would have produced", () => {
+  // Every 15 minutes across the whole 24h since the previous run, on UNCHANGED
+  // state — what the old cadence would have done.
   const skipped = [];
-  for (let t = Date.parse("2026-08-04T17:00:00.000Z"); t <= OPEN; t += 15 * 60_000) {
-    skipped.push(computeRefillPlan(snapshot(t)));
-  }
-  const morning = computeRefillPlan(snapshot(OPEN));
-  const shape = (p) => JSON.stringify({
-    intents: (p.intents || []).map((i) => [i.dest, i.productId, i.sizeKey, i.qty]).sort(),
-    exceptions: Object.keys(p.exceptions || {}).sort(),
-  });
-  // Every skipped run would have produced the same plan as the morning run.
-  for (const p of skipped) assert.equal(shape(p), shape(morning));
-  assert.ok(skipped.length >= 48, `expected a full night of skipped runs, got ${skipped.length}`);
+  for (let t = YDAY_RUN; t <= TODAY_RUN; t += 15 * 60_000) skipped.push(computeRefillPlan(snapshot(t)));
+  const evening = computeRefillPlan(snapshot(TODAY_RUN));
+  for (const p of skipped) assert.equal(shape(p), shape(evening));
+  assert.ok(skipped.length >= 96, `expected a full day of skipped runs, got ${skipped.length}`);
 });
 
 test("the plan is a function of state, not of elapsed runs", () => {
-  const once = computeRefillPlan(snapshot(OPEN));
-  const again = computeRefillPlan(snapshot(OPEN));
+  const once = computeRefillPlan(snapshot(TODAY_RUN));
+  const again = computeRefillPlan(snapshot(TODAY_RUN));
   assert.deepEqual(again.intents, once.intents);
   assert.deepEqual(again.exceptions, once.exceptions);
 });
 
-test("an overnight transfer is picked up by the 07:00 run", () => {
-  // The one thing the gap can defer: an evening movement. It changes STATE, so
-  // the morning run sees it — deferred, never lost.
-  const evening = snapshot(OPEN, {
-    stock: { "marathon-pe": { p1: { M: { qty: 2 }, L: { qty: 0 } } },
+test("a MORNING sale is picked up by the 18:00 run", () => {
+  // The one thing the gap defers: a sale that empties a cell at 09:00 is no
+  // longer seen at 09:15. It changes STATE, so the 18:00 run sees it —
+  // deferred by hours, never lost.
+  const beforeSale = snapshot(TODAY_RUN, {
+    stock: { "marathon-pe": { p1: { M: { qty: 2 }, L: { qty: 2 } } },   // at target
              hub2:          { p1: { M: { qty: 10 }, L: { qty: 10 } } },
              central:       { p1: { M: { qty: 10 }, L: { qty: 10 } } } },
   });
-  const before = computeRefillPlan(snapshot(CLOSE));
-  const after = computeRefillPlan(evening);
-  assert.notDeepEqual(after.intents, before.intents,
-    "a stock change between close and open must alter the morning plan");
+  const atTarget = computeRefillPlan(beforeSale);
+  assert.equal((atTarget.intents || []).length, 0, "a cell at target asks for nothing");
+
+  // 09:00 — both sizes sell out. Nothing runs until 18:00.
+  const afterSale = computeRefillPlan(snapshot(TODAY_RUN));
+  const asked = (afterSale.intents || []).filter((i) => i.dest === "marathon-pe" && i.productId === "p1");
+  assert.equal(asked.length, 2, "the 18:00 run must raise the morning's deficit for both sizes");
+  assert.deepEqual(asked.map((i) => i.sizeKey).sort(), ["L", "M"]);
 });
 
-test("an already-open intent is not duplicated by the morning run", () => {
-  // Idempotency guard: one open lock per (dest, product, size). If the evening
-  // run had created an intent, the morning run must not create it again.
-  const withOpen = snapshot(OPEN, {
+test("an already-open intent is not duplicated by the next day's run", () => {
+  // Idempotency guard: one open lock per (dest, product, size). If yesterday's
+  // 18:00 run created an intent, today's must not create it again — a full day
+  // of elapsed time must not weaken the lock.
+  const withOpen = snapshot(TODAY_RUN, {
     // NESTED, as the engine reads it: openIndex[dest][pid][sizeKey].
-    openIndex: { "marathon-pe": { p1: { M: { qty: 2, createdAt: CLOSE }, L: { qty: 2, createdAt: CLOSE } } } },
+    openIndex: { "marathon-pe": { p1: { M: { qty: 2, createdAt: YDAY_RUN }, L: { qty: 2, createdAt: YDAY_RUN } } } },
   });
   const plan = computeRefillPlan(withOpen);
   const dupes = (plan.intents || []).filter((i) => i.dest === "marathon-pe" && i.productId === "p1");
   assert.equal(dupes.length, 0, "an open intent must suppress a second one for the same cell");
+});
+
+// ── 5. DUE SLACK — a 24h cooldown must not become 48h ────────────────────────
+// At 15-minute cadence a window that missed by minutes was re-checked minutes
+// later. At one run a day, a cell REJECTED AFTER 18:00 is a few minutes short
+// of its 24h cooldown when the next run looks, so without slack it rests a
+// second full day. dueSlackMinutes (default 120) treats a window that will
+// elapse before the next scan as elapsed now — capped at a QUARTER of the
+// window so the 30-minute re-check contract is left intact.
+const REJ_EVENING = Date.parse("2026-08-04T16:30:00.000Z"); // 18:30 SAST — AFTER yesterday's run
+// Both windows pinned to 24h so the test exercises the LONG window whichever
+// branch the denier's stock count selects.
+const LONG_WINDOWS = { rejectCooldownHours: 24, recheckCooldownMinutes: 1440 };
+const rejectedSnapshot = (nowMs, cfg = {}) => snapshot(nowMs, {
+  config: { ...CONFIG, ...cfg },
+  refillRequests: {
+    rr1: {
+      status: "cancelled", requestingLocation: "marathon-pe", productId: "p1", size: "M",
+      source: "hub2", resolvedAt: new Date(REJ_EVENING).toISOString(),
+    },
+  },
+});
+const askedM = (plan) => (plan.intents || []).find((i) => i.dest === "marathon-pe" && i.sizeKey === "M");
+
+test("a cell rejected at 18:30 is re-asked at the NEXT 18:00 run, not the one after", () => {
+  // 23h30m elapsed. Without slack this is short of 24h, so the cell would rest
+  // until the run AFTER next — a 24h cooldown silently served as 48h.
+  const plan = computeRefillPlan(rejectedSnapshot(TODAY_RUN, LONG_WINDOWS));
+  assert.ok(askedM(plan), "23h30m + 2h slack must clear the 24h cooldown");
+});
+
+test("without the slack the same cell would still be parked — the fix is load-bearing", () => {
+  // dueSlackMinutes clamps to a quarter of the window, so 1 minute of slack is
+  // as close to "off" as the dial goes. The cell must then rest.
+  const plan = computeRefillPlan(rejectedSnapshot(TODAY_RUN, { ...LONG_WINDOWS, dueSlackMinutes: 1 }));
+  assert.equal(askedM(plan), undefined, "this is what the 48h doubling looked like");
+});
+
+test("the slack does not collapse a window: a fresh rejection still rests", () => {
+  // Same rejection, looked at only 30 minutes later. 0h30m + 2h is nowhere near
+  // 24h, so the cell must still be parked.
+  const plan = computeRefillPlan(rejectedSnapshot(REJ_EVENING + 30 * 60_000, LONG_WINDOWS));
+  assert.equal(askedM(plan), undefined, "a fresh rejection must still rest out its window");
+});
+
+test("the 30-minute RE-CHECK contract survives: the slack is capped at a QUARTER of the window", () => {
+  // A flat 2h slack would swallow the 30-minute recheck window whole and
+  // silently delete the 2026-07-19 contract. 15 minutes in, with the default
+  // 30-minute recheck (hub2 still counts stock), the cell must still rest.
+  const plan = computeRefillPlan(rejectedSnapshot(REJ_EVENING + 15 * 60_000));
+  assert.equal(askedM(plan), undefined, "15min + 7.5min slack < 30min recheck → still resting");
+  // …and 45 minutes in it re-asks, exactly as before this change.
+  const after = computeRefillPlan(rejectedSnapshot(REJ_EVENING + 45 * 60_000));
+  assert.ok(askedM(after), "past the recheck window → re-asks, unchanged");
+});
+
+test("dueSlackMinutes is clamped to 12h AND to a quarter of the window", () => {
+  const dueSlack = (mins) => {
+    const raw = Number(mins);
+    return Math.min(12 * 3600e3, (raw > 0 ? raw : 120) * 60e3);
+  };
+  const slackFor = (mins, windowMs) => Math.min(dueSlack(mins), Math.max(0, windowMs) * 0.25);
+  assert.equal(dueSlack(undefined), 120 * 60e3, "default 2h");
+  assert.equal(dueSlack(0), 120 * 60e3, "0 is not an off switch — it falls back to the default");
+  assert.equal(dueSlack(-5), 120 * 60e3, "a negative must not silently mean zero slack");
+  assert.equal(dueSlack("nonsense"), 120 * 60e3);
+  assert.equal(dueSlack(99999), 12 * 3600e3, "absolute clamp");
+  // Proportional cap.
+  assert.equal(slackFor(undefined, 24 * 3600e3), 120 * 60e3, "24h window → the full 2h");
+  assert.equal(slackFor(undefined, 30 * 60e3), 7.5 * 60e3, "30min window → 7.5min, contract intact");
+  assert.equal(slackFor(undefined, 14 * 86400e3), 120 * 60e3, "a 14-day gate is never slacked away");
+  assert.equal(slackFor(99999, 30 * 60e3), 7.5 * 60e3, "the proportional cap survives a silly dial");
+});
+
+test("the engine source carries the due-slack guard, not a bare elapsed check", () => {
+  const ENGINE = readFileSync(join(__dirname, "..", "lib", "refill-engine.cjs"), "utf8");
+  assert.match(ENGINE, /const dueSlackMs =/);
+  assert.match(ENGINE, /const slackFor =/);
+  assert.match(ENGINE, /const windowElapsed =/);
+  // The three re-ask gates must all go through it.
+  assert.doesNotMatch(ENGINE, /nowMs - rejTs < effWindowMs/);
+  assert.doesNotMatch(ENGINE, /nowMs - srcRej\.ts < effWindowMs/);
+  assert.match(ENGINE, /Date\.parse\(rt\.nextRetryAt\) > nowMs \+ slackFor\(cooldownMs\)/);
 });
