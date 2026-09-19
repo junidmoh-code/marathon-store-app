@@ -49,13 +49,35 @@ export const FAILURE = {
   OFFLINE: "offline",               // the device knows it has no network
   TRANSPORT: "transport",           // the call never reached the server
   SERVER_REFUSED: "server-refused", // the server answered, and said no, and why
-  SERVER_ERROR: "server-error",     // the server threw, with its own sentence
   UNKNOWN: "unknown",               // genuinely unidentified — log and tag it
 };
 
 // A callable rejection carries a `code` like "functions/unavailable". The bare
 // status is what we key on.
 const bareCode = (err) => String(err?.code || "").replace(/^functions\//, "");
+
+/**
+ * Did this come back from the CALLABLE, or was it thrown here?
+ *
+ * ── THE DISTINCTION IS THE WHOLE SAFETY OF THIS MODULE ───────────────────────
+ * Everything below shows a callable's message VERBATIM, because the server
+ * writes its refusals for the person holding the slip. Nothing else in the
+ * world has earned that, and prose is not a passport: the `try` around the
+ * capture also covers this file's own state updates, so a local TypeError
+ * ("Cannot read properties of undefined (reading 'tid')") is a sentence by
+ * every shape test — spaces, punctuation, plenty long — and would have been
+ * shown to a manager as though the server had said it.
+ *
+ * That is the exact failure this module exists to prevent, pointing the other
+ * way, so the origin is established from the ERROR'S SHAPE and never from its
+ * words. The Firebase SDK names its rejections `FirebaseError` and prefixes
+ * every status with `functions/`; either mark is accepted, because the two
+ * have varied across SDK versions and requiring both would silently demote
+ * real refusals to "unknown". (CodeRabbit, PR #615.)
+ */
+export function isCallableError(err) {
+  return err?.name === "FirebaseError" || String(err?.code || "").startsWith("functions/");
+}
 
 // ── IS THIS MESSAGE THE SERVER'S OWN WORDS, OR THE TRANSPORT'S? ──────────────
 // A Firebase callable uses the SAME error shape for "the server refused and
@@ -104,16 +126,32 @@ export function describeCallableError(err, { online = true } = {}) {
   const raw = String(err?.message || "");
   const logLine = `cardBatchCapture failed [code=${code || "none"}] [name=${err?.name || "none"}] ${raw || "(no message)"}`;
 
-  // The device itself says there is no network. Nothing else can be true yet,
-  // so this is checked before the error is read at all.
-  if (!online) {
-    return { kind: FAILURE.OFFLINE, logLine,
-      message: "This phone is offline, so the slip was not sent. Reconnect and tap the till again — the photo is not lost." };
+  const offline = {
+    kind: FAILURE.OFFLINE, logLine,
+    message: "This phone is offline, so the slip was not sent. Reconnect and tap the till again — the photo is not lost.",
+  };
+
+  // ── ANYTHING NOT FROM THE CALLABLE IS OURS, AND IS NEVER QUOTED ────────────
+  // A local exception's message is a stack-trace fragment, not an answer about
+  // the slip. It goes to the log, where it can be read by whoever is asked to
+  // look, and the manager gets the honest catch-all sentence.
+  if (!isCallableError(err)) {
+    return !online ? offline : {
+      kind: FAILURE.UNKNOWN, logLine,
+      message: "The slip was not recorded and the reason was not identifiable. Tell Junid, and say it happened on this till — the details are in the phone's log.",
+    };
   }
 
   // ── THE SERVER ANSWERED, AND SAID WHY ──────────────────────────────────────
   // Shown VERBATIM. These sentences are written for the person holding the
   // slip, and they are the whole point of this change.
+  //
+  // CHECKED BEFORE `online`, deliberately. A refusal that HAS arrived is a
+  // fact about the slip and outranks what the radio is doing a moment later —
+  // a phone that drops off the shop wifi between the answer and this line must
+  // not turn "Batch #58 is already captured" into "you are offline", which
+  // would send the manager back to re-capture a slip the server has already
+  // dealt with. Only a call with nothing of the server's in it can be offline.
   if (looksLikeServerProse(raw)) {
     // `unauthenticated` is the one status worth a word of its own, because the
     // server's sentence ("Sign in required.") does not say that the session
@@ -130,6 +168,7 @@ export function describeCallableError(err, { online = true } = {}) {
   // server's to show, so this says what it actually knows: the request did not
   // complete. Distinguished from OFFLINE because the device believes it HAS a
   // connection, which is the shop-wifi case — associated, no route.
+  if (!online) return offline;
   if (code === "deadline-exceeded" || /timeout|timed out|aborted/i.test(raw)) {
     return { kind: FAILURE.TRANSPORT, logLine,
       message: "The slip took too long to send and the connection gave up. Try again on a stronger signal." };

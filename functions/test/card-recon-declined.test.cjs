@@ -185,7 +185,9 @@ test("a report with no declined section reports none — and reads nothing twice
   const out = parseSlipPdf(realReportLines());
   assert.equal(out.ok, true, out.reason);
   assert.deepEqual(out.extraction.declined, []);
-  assert.equal(out.extraction.declinedCount, 0);
+  // NULL, not 0: this report STATED NOTHING about declines, which is not the
+  // same as stating none. buildBatchRecord's contract reserves null for it.
+  assert.equal(out.extraction.declinedCount, null);
   assert.equal(out.extraction.txnCount, REAL_REPORT.items, "still 40 approved");
 
   const rows = realReportLines().map(tidy).filter(Boolean);
@@ -214,4 +216,53 @@ test("the batch spans two days, which is why it collided with the interim report
   const day = (ms) => new Date(ms + 2 * 60 * 60 * 1000).toISOString().slice(0, 10);
   assert.equal(day(ex.openedAt), "2026-09-18");
   assert.equal(day(ex.lastTxnAt), "2026-09-19");
+});
+
+// ═══ AN UNREADABLE DECLINED SECTION NEVER COSTS THE REPORT ═══════════════════
+// This was a refusal for about an hour, and it was the wrong trade: it would
+// have thrown away forty good transactions and a correct total because a
+// supplementary section did not parse. The declined list is evidence; the
+// approved list and the total are the money.
+
+test("a declined section whose lines cannot be read WARNS — it does not refuse", () => {
+  const { realReportLines, REAL_REPORT } = require("./fixtures/makeSlipPdf.cjs");
+  const lines = realReportLines();
+  const totals = lines.findIndex((l) => /^TOTALS SUMMARY$/.test(l));
+  // A heading and a count with NO transaction blocks beneath it — which is
+  // what an unparseable section looks like from here.
+  const withEmptyDeclined = [
+    ...lines.slice(0, totals - 1),
+    "______________________________",
+    "DECLINED TRANSACTIONS",
+    "Items: 5",
+    "______________________________",
+    ...lines.slice(totals - 1),
+  ];
+  const out = parseSlipPdf(withEmptyDeclined);
+  assert.equal(out.ok, true, `an unreadable declined section refused the report: ${out.reason}`);
+
+  const ex = out.extraction;
+  // The money is untouched and still checked on its own.
+  assert.equal(ex.txnCount, REAL_REPORT.items, "the APPROVED count, not the declined one");
+  assert.equal(ex.lines.length, REAL_REPORT.items);
+  assert.equal(ex.totalCents, REAL_REPORT.totalCents);
+  // Nothing claims a decline it could not read.
+  assert.deepEqual(ex.declined, []);
+  assert.equal(ex.declinedCount, 5, "the figure the report stated still stands");
+  assert.equal(ex.declinedUnread, 5);
+
+  // …and the gap is reported rather than swallowed.
+  const v = validateExtraction(ex, { source: "pdf" });
+  assert.equal(v.ok, true, v.reason);
+  const warned = v.warnings.find((w) => /declined/i.test(w));
+  assert.ok(warned, `no warning named the unread declines: ${JSON.stringify(v.warnings)}`);
+  assert.match(warned, /5 of them could not be read/);
+  assert.match(warned, /total are unaffected/);
+});
+
+test("the real file reads its declined section fully, so it warns about nothing", () => {
+  const ex = real();
+  assert.equal(ex.declinedUnread, 0);
+  const v = validateExtraction(ex, { source: "pdf" });
+  assert.equal(v.warnings.some((w) => /could not be read/i.test(w)), false);
 });

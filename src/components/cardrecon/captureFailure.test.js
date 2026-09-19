@@ -73,16 +73,61 @@ describe("transport is told apart from the server's words", () => {
     expect(message).toMatch(/too long/i);
   });
 
-  it("offline is checked before the error is read at all", () => {
+  it("a call with nothing of the server's in it, while offline, says offline", () => {
     const { kind, message } = describeCallableError(callableError("internal", "internal"), { online: false });
     expect(kind).toBe(FAILURE.OFFLINE);
     expect(message).toMatch(/offline/i);
     expect(message).toMatch(/not lost/i);
   });
 
-  it("offline wins even over a real server sentence, which cannot have arrived", () => {
-    const err = callableError("unavailable", "Could not read the photos right now — try again.");
-    expect(describeCallableError(err, { online: false }).kind).toBe(FAILURE.OFFLINE);
+  it("a refusal that ALREADY ARRIVED outranks the radio dropping a moment later", () => {
+    // The phone can fall off the shop wifi between the server's answer and
+    // this line. Showing "you are offline" would send the manager back to
+    // re-capture a slip the server has already dealt with.
+    const err = callableError("already-exists", "Batch #58 for this terminal is already captured.");
+    const { kind, message } = describeCallableError(err, { online: false });
+    expect(kind).toBe(FAILURE.SERVER_REFUSED);
+    expect(message).toContain("Batch #58");
+  });
+});
+
+describe("only the CALLABLE gets to speak in its own words", () => {
+  // The `try` around the capture also covers the screen's own state updates,
+  // so a local exception lands in exactly the same catch. Prose is not a
+  // passport: origin is read from the error's shape, never from its words.
+  const localThrow = new TypeError("Cannot read properties of undefined (reading 'tid')");
+
+  it("a local TypeError is UNKNOWN, not a server refusal", () => {
+    const { kind } = describeCallableError(localThrow);
+    expect(kind).toBe(FAILURE.UNKNOWN);
+  });
+
+  it("…and its raw message is never shown to the manager", () => {
+    const { message, logLine } = describeCallableError(localThrow);
+    expect(message).not.toContain("Cannot read properties");
+    expect(message).not.toContain("undefined");
+    expect(message).toMatch(/not identifiable/i);
+    // It still has to be findable afterwards.
+    expect(logLine).toContain("Cannot read properties of undefined");
+    expect(logLine).toContain("[name=TypeError]");
+  });
+
+  it("a local throw while offline still says offline", () => {
+    expect(describeCallableError(localThrow, { online: false }).kind).toBe(FAILURE.OFFLINE);
+  });
+
+  it("recognises a callable error by EITHER mark, not both", () => {
+    // The two have varied across SDK versions; requiring both would silently
+    // demote real refusals to "unknown".
+    const byName = Object.assign(new Error("Batch #58 is already captured."), { name: "FirebaseError" });
+    const byCode = Object.assign(new Error("Batch #58 is already captured."), { code: "functions/already-exists" });
+    expect(describeCallableError(byName).kind).toBe(FAILURE.SERVER_REFUSED);
+    expect(describeCallableError(byCode).kind).toBe(FAILURE.SERVER_REFUSED);
+  });
+
+  it("a bare status code with no functions/ prefix is not treated as the server", () => {
+    const impostor = Object.assign(new Error("Something plausible happened here."), { code: "unavailable" });
+    expect(describeCallableError(impostor).kind).toBe(FAILURE.UNKNOWN);
   });
 });
 

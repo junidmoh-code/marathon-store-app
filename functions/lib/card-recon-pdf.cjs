@@ -972,7 +972,13 @@ function parseEmailedReport(rows) {
   // each list is checked against its own figure.
   const declinedSpan = declinedSection(rows, totalsRegionIdx);
   const declined = [];
-  let declinedCount = 0;
+  let declinedUnread = 0;
+  // NULL, NOT ZERO. A report with no declined section STATED NOTHING about
+  // declines; one that prints "Items: 0" stated zero. Those are different
+  // facts and buildBatchRecord's contract reserves null for the first, so
+  // starting at 0 would record "the terminal reported no declines" for a
+  // report that never mentioned them. (CodeRabbit, PR #615.)
+  let declinedCount = null;
   if (declinedSpan) {
     const stated = sectionItemCount(rows, declinedSpan, "declined");
     if (!stated.ok) return bad(stated.reason);
@@ -985,9 +991,20 @@ function parseEmailedReport(rows) {
       // which array a line came out of to know what it is.
       declined.push({ ...read.txn, outcome: "declined" });
     }
-    if (declined.length !== declinedCount) {
-      return bad(`That report's declined section states ${declinedCount} item${declinedCount === 1 ? "" : "s"} but ${declined.length} could be read. Nothing was recorded — photograph the slip instead.`);
-    }
+    // ── A DECLINED SECTION NEVER REFUSES THE REPORT ─────────────────────────
+    // This was a refusal for about an hour, and it was the wrong trade. The
+    // declined list is SUPPLEMENTARY EVIDENCE; the approved list and the total
+    // are the money, and each is validated on its own. Refusing the whole file
+    // because a supplementary section did not parse would have thrown away
+    // forty good transactions and a correct R30,120 total — caught by an
+    // existing test whose fixture prints a declined heading with no readable
+    // blocks beneath it, which is exactly what an unparseable section looks
+    // like.
+    //
+    // So the discrepancy is REPORTED, not fatal: the stated figure and the
+    // lines actually read both stand, and the gap between them becomes a
+    // warning on the record. Nothing claims a decline it could not read.
+    declinedUnread = Math.max(0, declinedCount - declined.length);
   }
 
   // ── the figures live in the TOTALS REGION, and nowhere else ──
@@ -1129,6 +1146,9 @@ function parseEmailedReport(rows) {
       // section above.
       declined,
       declinedCount,
+      // How many declines the report SAID it had that could not be read. Zero
+      // on every report on file; a warning rather than a refusal when not.
+      declinedUnread,
     },
   };
 }

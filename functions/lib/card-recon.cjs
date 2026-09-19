@@ -482,6 +482,13 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   if (!tsn.ok) {
     warnings.push(`${tsn.gaps.length} sequence number${tsn.gaps.length === 1 ? "" : "s"} between ${tsn.first} and ${tsn.last} are not in this report (${tsn.gaps.slice(0, 8).join(", ")}${tsn.gaps.length > 8 ? "…" : ""}) — expected on a banking report, which lists approved transactions only.`);
   }
+  // A DECLINED SECTION THAT DID NOT FULLY PARSE IS REPORTED, NEVER FATAL. The
+  // approved list and the total are the money and are checked on their own; a
+  // decline is supplementary evidence, and losing a whole report over it would
+  // throw away every good transaction in it. See card-recon-pdf.cjs.
+  if (Number.isInteger(ex.declinedUnread) && ex.declinedUnread > 0) {
+    warnings.push(`This report states ${ex.declinedCount} declined transaction${ex.declinedCount === 1 ? "" : "s"} but ${ex.declinedUnread} of them could not be read. The approved transactions and the total are unaffected; a declined attempt that was re-swiped is a common cause of a variance, so check the slip if this batch looks wrong.`);
+  }
   for (const l of lines) {
     if (!Number.isInteger(l.amountCents)) {
       return { ok: false, reason: `Transaction line TSN ${l.tsn} did not read a clean amount — reshoot that part of the roll.` };
@@ -624,6 +631,8 @@ function buildBatchRecord({
     linesCaptured: !summaryOnly,
     lineCount: summaryOnly ? 0 : (extraction.lines || []).length,
     declined,
+    declinedUnread: summaryOnly || !Number.isInteger(extraction.declinedUnread)
+      ? null : extraction.declinedUnread,
     // The figure the report STATED for its declined section, which the parser
     // has already checked against the list it read. null where the report has
     // no declined section at all — which is not the same as a stated zero.
