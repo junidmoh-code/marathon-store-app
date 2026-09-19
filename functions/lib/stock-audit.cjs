@@ -120,7 +120,8 @@ function saWeekday(saDate) {
 }
 
 // ── the once-a-day gate ──────────────────────────────────────────────────────
-// The scan fires every 15 minutes; this pass must run ONCE. The guard is a
+// However often the host scan fires — 96/day, 49/day, and since 2026-09-19 once
+// a day at 18:00 — this pass must run ONCE per SA day. The guard is a
 // stored SA date string, not a timestamp and not a counter: re-running the same
 // scan, a retry, an overlapping run and a redeploy all compare equal and do
 // nothing. `lastPassDate` in the FUTURE (a clock skew, a hand-edited node) must

@@ -150,6 +150,22 @@ function saTodayKey(nowMs) {
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
 
+// ── DUE SLACK (pure, exported so it is TESTED rather than re-implemented) ─────
+// How much early a time window may be treated as elapsed. See the long note at
+// the call site in computeRefillPlan for why it exists and why it is capped at
+// a quarter of the window. Exported because a test that re-declares this
+// arithmetic proves nothing about the code that runs.
+const DUE_SLACK_DEFAULT_MINUTES = 120;
+const DUE_SLACK_MAX_MS = 12 * 3600e3;
+function dueSlackFor(config, windowMs) {
+  // num() yields 0 for anything that is not a finite number — including the
+  // STRING "60" — so a non-numeric, zero or negative dial falls back to the
+  // default rather than silently meaning "no slack".
+  const raw = num(config && config.dueSlackMinutes);
+  const absolute = Math.min(DUE_SLACK_MAX_MS, (raw > 0 ? raw : DUE_SLACK_DEFAULT_MINUTES) * 60e3);
+  return Math.min(absolute, Math.max(0, num(windowMs)) * 0.25);
+}
+
 // Deterministic fingerprint of a product's stock across the whole network —
 // the "ignore until inventory changes" decision stores this; ANY movement
 // (receive, sale, transfer, adjustment) changes it and resurfaces the card.
@@ -1260,13 +1276,21 @@ function computeRefillPlan(snapshot) {
   //
   // PROPORTIONAL, never absolute: the slack applied to a window is capped at a
   // QUARTER of that window. A flat 2h would swallow the 30-minute re-check
-  // window whole and quietly delete the 2026-07-19 recheck contract — the thing
+  // window WHOLE and quietly delete the 2026-07-19 recheck contract — the thing
   // that decides whether a "no" from a denier that still counts stock rests 30
-  // minutes or a day. Capped, the 24h cooldown gets the full 2h it needs and
-  // the 30-minute window gets 7.5 minutes, which changes nothing about it.
-  const rawSlackMin = num(config?.dueSlackMinutes);
-  const dueSlackMs = Math.min(12 * 3600e3, (rawSlackMin > 0 ? rawSlackMin : 120) * 60e3);
-  const slackFor = (windowMs) => Math.min(dueSlackMs, Math.max(0, windowMs) * 0.25);
+  // minutes or a day. Capped, the 24h cooldown gets the full 2h it needs.
+  //
+  // Be exact about what the cap does and does not do: a 30-minute window gets
+  // 7.5 minutes of slack, so its EFFECTIVE length is 22.5 minutes, not 30. That
+  // is a real 25% shortening, not zero — it is bounded and proportional rather
+  // than total, which is the whole point. It is unobservable from the only
+  // caller today (refill-scan, once a day: both windows have long elapsed by
+  // the next look), but any future caller running at finer granularity WILL see
+  // it. Set dueSlackMinutes low if that caller needs the window exact.
+  //
+  // Live note 2026-09-19: recheckCooldownMinutes is 1440 in production, not the
+  // 30-minute default, so both windows are 24h and both need the slack.
+  const slackFor = (windowMs) => dueSlackFor(config, windowMs);
   const windowElapsed = (sinceTs, windowMs) => (nowMs + slackFor(windowMs)) - sinceTs >= windowMs;
   const rejectedAt = new Map();
   const setDenial = (map, key, ts, by) => {
@@ -2314,4 +2338,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor };
+module.exports = { computeRefillPlan, dueSlackFor, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor };

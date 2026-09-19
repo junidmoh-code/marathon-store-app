@@ -23,7 +23,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
-const { computeRefillPlan } = require("../lib/refill-engine.cjs");
+const { computeRefillPlan, dueSlackFor } = require("../lib/refill-engine.cjs");
 
 const SRC = readFileSync(join(__dirname, "..", "refill-scan.cjs"), "utf8");
 
@@ -79,8 +79,13 @@ test("MOVEMENTS_WINDOW_DAYS is held at 45", () => {
 });
 
 test("the window still covers the 30-day confidence lookback", () => {
-  assert.ok(45 > 30,
-    "the ledger slice must outlast the confidence lookback, or arrivals stop counting as lift evidence");
+  // Read the CONSTANT out of the source. `assert.ok(45 > 30)` compares two
+  // literals baked into this file and stays green however the production value
+  // is edited — it proves nothing (Sonnet review, PR #616).
+  const windowDays = Number(/const MOVEMENTS_WINDOW_DAYS = (\d+);/.exec(SRC)?.[1]);
+  assert.ok(Number.isFinite(windowDays), "MOVEMENTS_WINDOW_DAYS must be a literal in the source");
+  assert.ok(windowDays > 30,
+    `the ledger slice must outlast the 30-day confidence lookback, got ${windowDays}`);
 });
 
 test("the window records WHY it cannot simply be narrowed", () => {
@@ -257,27 +262,44 @@ test("the 30-minute RE-CHECK contract survives: the slack is capped at a QUARTER
 });
 
 test("dueSlackMinutes is clamped to 12h AND to a quarter of the window", () => {
-  const dueSlack = (mins) => {
-    const raw = Number(mins);
-    return Math.min(12 * 3600e3, (raw > 0 ? raw : 120) * 60e3);
-  };
-  const slackFor = (mins, windowMs) => Math.min(dueSlack(mins), Math.max(0, windowMs) * 0.25);
-  assert.equal(dueSlack(undefined), 120 * 60e3, "default 2h");
-  assert.equal(dueSlack(0), 120 * 60e3, "0 is not an off switch — it falls back to the default");
-  assert.equal(dueSlack(-5), 120 * 60e3, "a negative must not silently mean zero slack");
-  assert.equal(dueSlack("nonsense"), 120 * 60e3);
-  assert.equal(dueSlack(99999), 12 * 3600e3, "absolute clamp");
-  // Proportional cap.
-  assert.equal(slackFor(undefined, 24 * 3600e3), 120 * 60e3, "24h window → the full 2h");
-  assert.equal(slackFor(undefined, 30 * 60e3), 7.5 * 60e3, "30min window → 7.5min, contract intact");
-  assert.equal(slackFor(undefined, 14 * 86400e3), 120 * 60e3, "a 14-day gate is never slacked away");
-  assert.equal(slackFor(99999, 30 * 60e3), 7.5 * 60e3, "the proportional cap survives a silly dial");
+  // Drives the REAL exported helper. Re-declaring the arithmetic in the test
+  // was vacuous: removing the quarter-of-window cap in production left this
+  // green, because it only ever checked the test's own copy of the maths
+  // (proven by mutation, Sonnet review, PR #616).
+  const DAY = 24 * 3600e3;
+  assert.equal(dueSlackFor({}, DAY), 120 * 60e3, "default 2h on a 24h window");
+  assert.equal(dueSlackFor({ dueSlackMinutes: 0 }, DAY), 120 * 60e3, "0 is not an off switch");
+  assert.equal(dueSlackFor({ dueSlackMinutes: -5 }, DAY), 120 * 60e3, "a negative must not mean zero slack");
+  assert.equal(dueSlackFor({ dueSlackMinutes: "60" }, DAY), 120 * 60e3, "a STRING is not a number here");
+  assert.equal(dueSlackFor({ dueSlackMinutes: NaN }, DAY), 120 * 60e3);
+  assert.equal(dueSlackFor(undefined, DAY), 120 * 60e3, "absent config");
+  assert.equal(dueSlackFor({ dueSlackMinutes: 60 }, DAY), 60 * 60e3, "an honest dial is honoured");
+
+  // The 12h absolute clamp, seen on a window big enough not to bind first.
+  assert.equal(dueSlackFor({ dueSlackMinutes: 99999 }, 14 * 86400e3), 12 * 3600e3);
+
+  // The proportional cap — this is the one that protects the recheck contract.
+  assert.equal(dueSlackFor({}, 30 * 60e3), 7.5 * 60e3, "30min window → 7.5min, not 2h");
+  assert.equal(dueSlackFor({ dueSlackMinutes: 99999 }, 30 * 60e3), 7.5 * 60e3,
+    "the proportional cap survives a silly dial");
+  assert.equal(dueSlackFor({}, 0), 0, "a zero window gets no slack");
+  assert.equal(dueSlackFor({}, -1), 0, "a negative window gets no slack, never a negative one");
+});
+
+test("the slack is a fraction of the window, so it can never reach the window itself", () => {
+  // The property that makes this safe: slack < window for every positive
+  // window, so a cooldown can never be declared elapsed at the moment it starts.
+  for (const w of [1, 60e3, 30 * 60e3, 3600e3, 24 * 3600e3, 14 * 86400e3, 365 * 86400e3]) {
+    const slack = dueSlackFor({}, w);
+    assert.ok(slack < w, `slack ${slack} must stay under the window ${w}`);
+    assert.ok(slack <= w * 0.25 + 1e-9, "never more than a quarter");
+  }
 });
 
 test("the engine source carries the due-slack guard, not a bare elapsed check", () => {
   const ENGINE = readFileSync(join(__dirname, "..", "lib", "refill-engine.cjs"), "utf8");
-  assert.match(ENGINE, /const dueSlackMs =/);
-  assert.match(ENGINE, /const slackFor =/);
+  assert.match(ENGINE, /function dueSlackFor\(/);
+  assert.match(ENGINE, /const slackFor = \(windowMs\) => dueSlackFor\(config, windowMs\);/);
   assert.match(ENGINE, /const windowElapsed =/);
   // The three re-ask gates must all go through it.
   assert.doesNotMatch(ENGINE, /nowMs - rejTs < effWindowMs/);

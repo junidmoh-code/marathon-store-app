@@ -864,29 +864,37 @@ async function runScan() {
   }
 }
 
-// ── CADENCE — trading hours only ─────────────────────────────────────────────
-// Was "every 15 minutes", i.e. 96 runs/day. Each run snapshots the RTDB
-// (stock_targets, products, refill_requests, orders, per-location stock, plus a
-// 45-day stock_movements slice) — ~31 MB measured live on 2026-08-04, of which
-// 14 MB is the ledger. Overnight that snapshot recomputes a picture that has not
-// changed: movements between 19:00 and 07:00 SAST are 4.27% of all ledger
-// activity, and once scripts and migrations are excluded, ~69 per night across
-// 22 nights. Roughly a third of the daily cost bought nothing.
+// ── CADENCE — ONCE A DAY, 18:00 SAST ─────────────────────────────────────────
+// History: "every 15 minutes" (96 runs/day) → "every 15 minutes from 07:00 to
+// 19:00" (49 runs/day, 2026-08-04) → this, ONE run a day (owner decision
+// 2026-09-19).
 //
-// 07:00 to 19:00 inclusive, every 15 minutes = 49 runs/day (was 96):
-//   • 07:00      — morning sweep, before the 08:30 open, catches anything an
-//                  evening transfer left behind
-//   • 08:30–17:30 — trading; unchanged behaviour, still 15-minute cadence
-//   • 17:30–19:00 — the catch-up window after close
+// Each run snapshots the RTDB — stock_targets, products, refill_requests,
+// orders, per-location stock, plus a 45-day stock_movements slice. Measured
+// live 2026-09-19: 39.9 MB, of which 16.6 MB is the ledger and 9.0 MB is
+// refill_requests. At 49 runs a day that was ~1.9 GB a day of reads to
+// recompute a picture that mostly had not changed.
 //
-// App Engine cron syntax ("every N minutes from HH:MM to HH:MM") is used rather
-// than unix-cron because it is INCLUSIVE of the end time: `*/15 7-19 * * *`
-// would also fire at 19:15/19:30/19:45, which is exactly the window we are
-// closing. The previous value used the same syntax family ("every 15 minutes").
+// Unix-cron is used now rather than the App Engine "every N minutes from HH:MM
+// to HH:MM" form. The inclusive-end-time argument that chose that form no
+// longer applies: there is no interval and no window end to overshoot, just a
+// single fixed hour. "0 18 * * *" fires exactly once a day.
 //
 // timeZone is set EXPLICITLY: Cloud Scheduler defaults to UTC, which in SAST
-// (UTC+2, no DST) would shift the whole window two hours and run the "morning
-// sweep" at 09:00 local while leaving 05:00–07:00 uncovered.
+// (UTC+2, no DST) would fire the one daily run at 20:00 local — after close.
+//
+// WHAT RIDES ON THIS SCHEDULE, and therefore moved with it:
+//   • the once-a-day stock-audit shelf walk (stockAudit/dailyPass.cjs) fires on
+//     the first run at or after cfg.passHour (default 07:00). With 49 runs that
+//     meant "just after 07:00"; with one run it means 18:00. The lists are now
+//     generated at close and are in hand for the next morning.
+//   • /stock_confidence, which used to be throttled to one run an hour, is now
+//     written every run — see the note at its call site.
+//   • the rejection cooldowns in lib/refill-engine.cjs, which needed a due-slack
+//     so a 24h window checked once a day does not become 48h.
+//   • maxIntentsPerRun (live config, 75). It was a PER-15-MINUTE throttle; at
+//     one run a day it is a daily ceiling. Undealt intents are re-proposed, so
+//     nothing is lost, but the queue now drains at most that many cells a day.
 //
 // DEPLOY: scoped only — `firebase deploy --only functions:refillHealthScan`.
 // A bare `--only functions` would touch the POS app's functions in this shared

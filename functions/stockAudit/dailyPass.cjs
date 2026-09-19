@@ -1,15 +1,24 @@
 // ─── STOCK AUDIT — the once-a-day I/O pass ───────────────────────────────────
 //
-// refillHealthScan runs every 15 minutes and already snapshots /orders, /stock,
-// /products and 45 days of movements. This pass rides on that snapshot: once
-// per SA day, on the first run at or after 07:00, it hands the data the run
-// ALREADY HOLDS to lib/stock-audit.cjs and writes small render caches — one
-// per hub for the sneaker out-of-stock checks, one per shop for the clothing
-// rotation. Nothing here re-reads anything the scan read.
+// refillHealthScan already snapshots /orders, /stock, /products and 45 days of
+// movements. This pass rides on that snapshot: once per SA day, on the first
+// run at or after `passHour` (default 07:00), it hands the data the run ALREADY
+// HOLDS to lib/stock-audit.cjs and writes small render caches — one per hub for
+// the sneaker out-of-stock checks, one per shop for the clothing rotation.
+// Nothing here re-reads anything the scan read.
+//
+// WHEN IT ACTUALLY FIRES — READ THIS BEFORE TRUSTING "07:00".
+// "The first run at or after passHour" is a gate on the HOST's schedule, and
+// that schedule changed on 2026-09-19: refillHealthScan now runs ONCE a day, at
+// 18:00 SAST. 18 >= 7, so the gate passes on that single run and the pass fires
+// at 18:00, not shortly after 07:00. The lists are therefore generated at close
+// of trading and are in hand for the next morning, rather than being rebuilt
+// before the doors open. Raising passHour cannot move it earlier — only the
+// host schedule can. (Sonnet review, PR #616.)
 //
 // WHAT IT COSTS, exactly (measured on live data 2026-09-08):
 //
-//   EVERY RUN (48/day)   settings/stockAudit/config      ~250 B   the kill switch
+//   EVERY RUN (1/day now) settings/stockAudit/config      ~250 B   the kill switch
 //   THE DAILY PASS ONLY  settings/stockAudit/state       ~200 B   the date guard
 //                        settings/stockAudit/rotation/*  ~90 KB   the check stamps
 //                        settings/stockAudit/*/results (SHALLOW)  ~2 KB  prune
