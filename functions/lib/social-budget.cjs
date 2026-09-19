@@ -79,4 +79,19 @@ function capReachedReason(saDate, cap = MAX_IMAGE_GENERATIONS_PER_DAY) {
   return `the daily image-generation cap of ${cap} was already reached on ${saDate} — nothing generated, nothing charged`;
 }
 
-module.exports = { MAX_IMAGE_GENERATIONS_PER_DAY, reserveGeneration, capReachedReason };
+/**
+ * What to say when the counter could not be read at all.
+ *
+ * Deliberately NOT capReachedReason. Both refuse — a cap that fails open is
+ * not a cap — but "the limit you set did its job" and "the database was
+ * unreachable" send the reader to different places, and only one of them is a
+ * reason to do nothing about it.
+ */
+function unreadableBudgetReason(saDate) {
+  return `the daily image-generation budget for ${saDate} could not be read — refused rather than risk exceeding the cap`;
+}
+
+module.exports = {
+  MAX_IMAGE_GENERATIONS_PER_DAY, reserveGeneration,
+  capReachedReason, unreadableBudgetReason,
+};

@@ -532,6 +532,41 @@ build-time flag, the same convention as `SOCIAL_AUTOPILOT_ENABLED` and
 describe the day. Turn the backend off and flip the mirror too;
 `socialFormat.test.js` pins the two literals together and fails until you do.
 
+### What has to be deployed, BY NAME
+
+Functions are shared with `marathon-pos-app`. **Never** a bare
+`firebase deploy --only functions` — it would redeploy that repo's functions
+from this repo's source.
+
+```
+firebase deploy --only functions:socialDailyAutopilot,functions:generateSocialPosts,functions:socialHealthScan --project marathon-club
+```
+
+All three, and each for its own reason:
+
+| function | why |
+|---|---|
+| `socialDailyAutopilot` | makes the story twin, and holds the generation cap |
+| `generateSocialPosts` | the Generate tab shares `generateOnePost`, so it shares both |
+| `socialHealthScan` | judges the day on the new per-surface obligation |
+
+The publisher is not a function — it runs on the Mac mini and is updated with
+`bash ~/marathon-social/scripts/social/install-on-mac-mini.sh` (§5).
+
+### The live policy record is the switch
+
+`DEFAULT_POLICY_TIMES` applies only when **nothing has ever been saved** to
+`/social_policy`, and something has. The live record is what the autopilot and
+the health scan both read, so the rhythm is not live until that record says:
+
+```json
+{ "reels": { "times": ["12:00", "19:00"] } }
+```
+
+with `photos` and `stories` **absent** — which is what RTDB stores for an empty
+list. Set from the **Policy tab**, or written directly. Until it is, the
+deployed code will go on making the old six-slot day.
+
 ### Facebook gets the same rhythm
 
 Both platforms are on every post, as before. A reel goes to the Page as a
@@ -571,10 +606,16 @@ from `/social_autopilot_log`:
 saving is not fewer posts, it is fewer *pictures*: a story used to be its own
 generation, and now it is a video that already exists.
 
-Captions are a few hundredths of a cent and are inside those figures. A story
-never calls the model at all — it has nowhere to show a caption — so the day
-is two caption calls, one per reel. The ffmpeg encode is free: it runs on the
-Mac mini.
+**Captions are NOT in those figures.** `costUSD` on a post — and therefore
+`estCostUSD` on the day's run record — is the Gemini image spend and nothing
+else; `writeSocialCaption` calls Anthropic and returns no cost, so none is
+recorded. It is a small, separate line on a different bill: one short call per
+post that can actually show a caption, which is **two a day** now (one per
+reel) against about six before. A story never calls the model at all — it has
+nowhere to display a caption.
+
+The ffmpeg encode is free either way: it runs on the Mac mini, and the story
+reuses the reel's file rather than encoding a second one.
 
 ### The hard cap: 4 image generations a calendar day (SAST)
 

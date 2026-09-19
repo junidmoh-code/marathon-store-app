@@ -31,6 +31,21 @@ import { asList } from "../../utils/rtdbList";
 // number one save then silently trims, not a way to exceed it for real.
 const MAX_PER_FORMAT = 6;
 const MAX_TOTAL_PER_DAY = 8;
+// ── THE SPEND CAP IS LOWER THAN THE SLOT CEILING, AND THE SCREEN MUST SAY SO ──
+// MAX_TOTAL_PER_DAY (8) is how many slots one unattended RUN can finish.
+// MAX_IMAGE_GENERATIONS_PER_DAY (4, functions/lib/social-budget.cjs) is how
+// many pictures the day is allowed to PAY for. They are different limits for
+// different reasons and the smaller one wins.
+//
+// Without this, a policy of six slots saves cleanly, reads "6 posts a day" in
+// green, and then makes four — every day, silently, with the only trace in an
+// alarm email. A screen that accepts a setting it knows will not be honoured
+// is worse than one that refuses it.
+//
+// A MIRROR, like STORY_ALSO_POSTS_TO_FEED: the browser never spends anything,
+// it only describes what the backend will do. socialFormat.test.js pins the
+// two numbers together.
+const MAX_GENERATIONS_PER_DAY = 4;
 
 // `singular` is spelled out rather than derived (e.g. stripping a trailing
 // "s") because "Stories" does not end in a plain "s" — a regex strip turned
@@ -121,6 +136,9 @@ export default function PolicyCard({ onNotice, notice }) {
 
   const total = reels.length + photos.length + stories.length;
   const overTotal = total > MAX_TOTAL_PER_DAY;
+  // Not an error — the policy is legal and will save. It simply will not all
+  // be made, and saying so here is the only place anyone would find out.
+  const overBudget = !overTotal && total > MAX_GENERATIONS_PER_DAY;
 
   // The timeline: every slot, from every section, in the order they'll
   // actually fire — this answers "what's posting when" without anyone having
@@ -273,6 +291,13 @@ export default function PolicyCard({ onNotice, notice }) {
           </div>
         );
       })()}
+      {overBudget && (
+        <div style={{ fontSize: 11.5, color: RED, marginTop: 8, lineHeight: 1.5 }}>
+          Only <strong>{MAX_GENERATIONS_PER_DAY} pictures a day</strong> are paid for, so {total - MAX_GENERATIONS_PER_DAY} of
+          these {total} would be skipped every day. Remove {total - MAX_GENERATIONS_PER_DAY} time{total - MAX_GENERATIONS_PER_DAY === 1 ? "" : "s"} above,
+          or raise the cap in <code>functions/lib/social-budget.cjs</code> — that one is a decision about money.
+        </div>
+      )}
       {overTotal && (
         <div style={{ fontSize: 11.5, color: RED, marginTop: 8, lineHeight: 1.5 }}>
           {MAX_TOTAL_PER_DAY} a day is the most one unattended run makes — remove a time above to save.

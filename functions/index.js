@@ -2699,7 +2699,7 @@ function classifyPhotoError(msg, engName) {
   // same reason — a bare /rate/ matches "generated", "accelerate" and
   // "moderate", and an error classifier that guesses is worse than one that
   // quotes.)
-  if (/daily image-generation cap/i.test(m)) return m.slice(0, 140);
+  if (/daily image-generation (cap|budget)/i.test(m)) return m.slice(0, 140);
   if (/HTTP 429|credits are depleted|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
     const provider = engName === "openai" ? "OpenAI" : "Gemini";  // gemini + nbpro → Gemini
     return `AI credits depleted or rate-limited (429) — check ${provider} billing`;
@@ -4424,10 +4424,20 @@ async function claimImageGeneration(db, saDate) {
     // committed is the only outcome that means a unit is ours. An abort is the
     // cap (or an unreadable counter — see reserveGeneration).
     if (res.committed) return { ok: true, count: Number(res.snapshot.val()) || 0, cap };
-    return { ok: false, count: Number(res.snapshot.val()) || cap, cap };
+    // ── "AT THE CAP" AND "I CANNOT READ THE COUNTER" ARE DIFFERENT NIGHTS ───
+    // Both refuse, and they must refuse — but they are not the same message.
+    // reserveGeneration aborts on a counter it does not trust as well as on a
+    // full one, so reporting every abort as "the cap of 4 was already reached"
+    // would tell the reader a deliberate limit had done its job on a morning
+    // when the database was unreachable. That is the same class of
+    // misdirection this whole PR is about: a skip whose stated reason sends
+    // you to the wrong place.
+    const current = res.snapshot.val();
+    const atCap = typeof current === "number" && Number.isFinite(current) && current >= cap;
+    return { ok: false, count: atCap ? current : cap, cap, why: atCap ? "cap" : "unreadable" };
   } catch (err) {
     console.error(`socialBudget: could not reserve a generation for ${saDate} — refusing:`, err && err.message);
-    return { ok: false, count: cap, cap, unreadable: true };
+    return { ok: false, count: cap, cap, why: "unreadable" };
   }
 }
 
@@ -4491,9 +4501,12 @@ async function generateOnePost(db, {
       // somewhere the cap cannot see. Everything above is free — reading the
       // catalogue, fetching product photographs, building a prompt — and a
       // refusal at this point has charged nothing.
-      const budget = await claimImageGeneration(db, saDate || saDateForUsage(Date.now()));
+      const budgetDay = saDate || saDateForUsage(Date.now());
+      const budget = await claimImageGeneration(db, budgetDay);
       if (!budget.ok) {
-        throw new Error(socialBudget.capReachedReason(saDate || saDateForUsage(Date.now()), budget.cap));
+        throw new Error(budget.why === "unreadable"
+          ? socialBudget.unreadableBudgetReason(budgetDay)
+          : socialBudget.capReachedReason(budgetDay, budget.cap));
       }
       const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
       costUSD = gen.costUSD;
@@ -4992,6 +5005,15 @@ async function loadSocialPolicy(db) {
   if (total < rawTotal) {
     console.warn(`socialDailyAutopilot: saved policy asked for ${rawTotal}/day, over MAX_ITEMS_PER_DAY (${MAX_ITEMS_PER_DAY}) and/or MAX_ITEMS_PER_FORMAT (${MAX_ITEMS_PER_FORMAT}) — trimmed to ${total}`);
   }
+  // ── TWO DAY CEILINGS, AND THE SMALLER ONE IS THE ONE THAT BITES ───────────
+  // MAX_ITEMS_PER_DAY (8) is what one unattended RUN can finish; the budget
+  // cap (4) is what the day may PAY for. A policy of six slots is legal by the
+  // clamp above, saves cleanly, and then makes four — every day, with the only
+  // trace in a skip reason. Said out loud here, and the Policy tab refuses to
+  // leave it unsaid too (PolicyCard's MAX_GENERATIONS_PER_DAY mirror).
+  if (total > socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY) {
+    console.warn(`socialDailyAutopilot: the policy asks for ${total} generations a day but the daily cap is ${socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} — ${total - socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} will be skipped every day until one of the two changes`);
+  }
   return clamped;
 }
 
@@ -5087,6 +5109,11 @@ exports.socialDailyAutopilot = onSchedule(
     secrets: [geminiApiKey, anthropicApiKey],
     memory: "1GiB",
     // Up to MAX_ITEMS_PER_DAY (8) sequential generations, each able to spend
+    // — a WORST CASE that the daily budget cap (4) now makes unreachable in
+    // practice, since the fifth onward is refused before the Gemini call and
+    // returns in milliseconds. Sized for the old worst case anyway: the cap is
+    // a constant somebody may raise, and a timeout that only fits the current
+    // value of another constant is a trap for whoever raises it.
     // up to GEMINI_FETCH_TIMEOUT_MS (180s) on the Gemini call alone before
     // the rest of its own work — worst case that is 1440s before the LAST
     // caption or upload has even started. 540s (the onCall generator's own

@@ -169,6 +169,39 @@ describe("REEL_ALSO_POSTS_TO_STORY does not drift", () => {
   });
 });
 
+// ── THE SCREEN MUST NOT ACCEPT A POLICY THE BUDGET WILL NOT PAY FOR ──────────
+// Two day ceilings exist for different reasons: MAX_TOTAL_PER_DAY (8) is what
+// one unattended run can FINISH, MAX_IMAGE_GENERATIONS_PER_DAY (4) is what the
+// day may PAY for. The smaller one wins, and a Policy tab that says "6 posts a
+// day" in green while four are made is a screen you stop trusting.
+describe("the Policy tab's budget mirror does not drift", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("the screen's cap matches the backend's", () => {
+    const backend = read("../../../functions/lib/social-budget.cjs")
+      .match(/const MAX_IMAGE_GENERATIONS_PER_DAY = (\d+);/);
+    const screen = read("./PolicyCard.jsx").match(/const MAX_GENERATIONS_PER_DAY = (\d+);/);
+    expect(backend, "social-budget.cjs must declare the cap").toBeTruthy();
+    expect(screen, "PolicyCard must mirror it").toBeTruthy();
+    expect(screen[1]).toBe(backend[1]);
+  });
+
+  it("the screen warns when a policy asks for more than the budget pays for", () => {
+    // Deleting the warning must fail this, which a check on the constant alone
+    // would not: the number could stay and the sentence could go.
+    const card = read("./PolicyCard.jsx");
+    expect(card).toMatch(/overBudget/);
+    expect(card).toMatch(/would be skipped every day/);
+  });
+
+  it("the slot ceiling is still the HIGHER of the two, so the budget is what bites", () => {
+    const card = read("./PolicyCard.jsx");
+    const total = Number(card.match(/const MAX_TOTAL_PER_DAY = (\d+);/)[1]);
+    const budget = Number(card.match(/const MAX_GENERATIONS_PER_DAY = (\d+);/)[1]);
+    expect(budget).toBeLessThanOrEqual(total);
+  });
+});
+
 // ── A STORY TWIN GOES OUT AS THE REEL'S VIDEO, NOT AS A STILL ────────────────
 // needsVideo used to be "is this a reel", full stop. A reel's story twin is
 // NOT a reel and would have been sent as its cover image — a still where a

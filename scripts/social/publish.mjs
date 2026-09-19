@@ -323,7 +323,33 @@ async function readCredential(name, problems) {
 
 // ── ONE ENCODE, TWO SURFACES ─────────────────────────────────────────────────
 // A reel and its story twin share the SAME mp4. That is the whole cost saving
-// of the two-reels-a-day rhythm, and it is enforced here rather than trusted.
+// of the two-reels-a-day rhythm.
+//
+// ── WHAT ACTUALLY MAKES IT ONE FILE, STATED HONESTLY ─────────────────────────
+// Not a transaction, and this function does not enforce it on its own. Three
+// things do, and it is worth naming them rather than letting a confident
+// comment imply a guarantee that lives elsewhere:
+//
+//   1. ensureReelVideo is IDEMPOTENT — a reel that already carries a video
+//      reuses it instead of encoding again (reel-media.mjs).
+//   2. ONE PUBLISHER AT A TIME. publish-runner.mjs holds a pid-carrying
+//      lockfile (lib/launchdRunner.mjs, staleLockMs 45 min) and the launchd
+//      agent is KeepAlive + ThrottleInterval 120, so a second tick cannot
+//      overlap a running one.
+//   3. WITHIN one run the due posts are processed SEQUENTIALLY, and the mp4 is
+//      persisted to the owner reel BEFORE anything is sent — so by the time
+//      the second of the pair is reached, it is a reuse.
+//
+// Take (2) away — two publishers started by hand, or a future refactor that
+// drops the lock — and two runs could each see a reel with no video, both
+// encode, and the later write win: two files, one orphaned in Storage, and the
+// two surfaces carrying different videos. The lock is the load-bearing part.
+//
+// The one residue that survives all three: a run killed between the upload and
+// the persist leaves an orphaned mp4 and the next run encodes again. That
+// window is unchanged from before this file knew about twins — a reel already
+// wrote its own media the same way — and it costs a fraction of a cent, never
+// a wrong or duplicated post.
 //
 // The twin carries `videoFrom` — the reel's post id — never a URL, because at
 // generation there is no video to point at. So:
@@ -355,6 +381,16 @@ async function resolveVideoFor(item) {
     const src = (await db.ref(`${POSTS}/${sourceId}`).once("value")).val();
     if (!src) {
       return { ok: false, reason: `the reel this story copies (${sourceId}) no longer exists` };
+    }
+    // ── THE SOURCE MUST ACTUALLY BE A REEL ────────────────────────────────
+    // ensureReelVideo builds a 1080x1920 Ken Burns video from whatever still
+    // it is handed, and stores it as that post's media. Pointed at a FEED
+    // post it would silently replace a 1080x1350 photo record with a video —
+    // turning someone else's post into something it is not, days after the
+    // fact, on a live account. A pointer is only as good as what it points
+    // at, so it is checked rather than assumed.
+    if (formatOf({ ...src }) !== "reel") {
+      return { ok: false, reason: `videoFrom names ${sourceId}, which is a ${formatOf({ ...src })} post, not a reel` };
     }
     owner = { ...src, id: sourceId };
   } else if (formatOf(item) !== "reel") {
