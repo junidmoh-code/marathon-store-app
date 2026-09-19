@@ -54,7 +54,7 @@ const {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX,
   parseSlipTimestamp, parseRandsToCents,
-  normaliseTid, normaliseBatchNo, resolveBatchWrite, MAX_REVISIONS,
+  normaliseTid, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
 } = require("../lib/card-recon.cjs");
@@ -288,7 +288,20 @@ async function runSlipOcr(photos, apiKey) {
     }),
     signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`gemini HTTP ${res.status}`);
+  // The STATUS travels with the error. It used to be formatted into a string
+  // and nothing else, which made "out of credit" (402) indistinguishable from
+  // "the reader is down" (503) by the time anyone could act on it — and on
+  // 19 Sept 2026 that cost a full day of captures across the whole estate,
+  // because the one sentence both produced told managers to check the signal.
+  if (!res.ok) {
+    const err = new Error(`gemini HTTP ${res.status}`);
+    err.httpStatus = res.status;
+    // The body carries Google's own explanation ("Your prepayment credits are
+    // depleted"). Read best-effort and kept for the LOG only — it names an
+    // internal billing account and never goes to a shop floor.
+    try { err.body = (await res.text()).slice(0, 400); } catch { /* body is a bonus */ }
+    throw err;
+  }
   const payload = await res.json();
   const text = ((((payload.candidates || [])[0] || {}).content || {}).parts || [])
     .map((p) => p && p.text).filter(Boolean).join("");
@@ -379,6 +392,64 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
     keys.push(key);
   }
   return keys;
+}
+
+/**
+ * The APPROVED lines of the capture currently in force for this batch — the
+ * highest revision, which is the last key readBatchKeysFor found.
+ *
+ * Read so a fuller report of the same batch can be told from a re-send of it;
+ * see comparePriorCapture. Only the three fields the comparison uses are kept,
+ * because this runs on every second-and-later report of a batch and the whole
+ * roll is not needed to answer whether one list contains another.
+ *
+ * RTDB HANDS BACK A SPARSE ARRAY AS AN OBJECT, and a dense integer-keyed one
+ * as a real array WITH NULL HOLES (560 of 5,793 /stock rows were array-coerced
+ * on 15 Sept 2026). Both shapes are walked, and null cells are skipped rather
+ * than read — a hole is not a transaction.
+ */
+async function readRecordedLinesFor(db, storeId, tid, keys) {
+  if (!keys.length) return [];
+  const key = keys[keys.length - 1];
+  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${key}/lines`).once("value");
+  const raw = snap.val();
+  const rows = Array.isArray(raw) ? raw : Object.values(raw || {});
+  return rows
+    .filter((r) => r && typeof r === "object")
+    .map((r) => ({ tsn: Number(r.tsn), amountCents: Number(r.amountCents), rrn: r.rrn || "" }))
+    .filter((r) => Number.isInteger(r.tsn));
+}
+
+/**
+ * Decide the write for a batch, reading what is already recorded.
+ *
+ * ONE place, used by both extract paths and by submit, so the three cannot
+ * drift — the extract-time answer is the message the operator hears and the
+ * submit-time answer is the guarantee, and they must agree about what counts
+ * as a fuller report.
+ *
+ * A refusal caused by a CONTRADICTION says what the contradiction was. "Batch
+ * #58 is already captured" is the right sentence for a re-send and the wrong
+ * one for a report that disagrees with the record, which is a thing somebody
+ * has to look at.
+ */
+async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines }) {
+  const existingKeys = await readBatchKeysFor(db, storeId, tid, batchNo);
+  let comparison = null;
+  if (existingKeys.length && !correction) {
+    const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
+    comparison = comparePriorCapture(recorded, lines || []);
+  }
+  const write = resolveBatchWrite({
+    existingKeys, batchNo, correction,
+    extends: comparison ? comparison.relation === "extends" : false,
+  });
+  if (!write.ok && comparison && comparison.reason &&
+      (comparison.relation === "conflict" || comparison.relation === "shrinks")) {
+    return { existingKeys, comparison, write: { ok: false,
+      reason: `Batch #${batchNo} is already captured, and this report does not agree with it: ${comparison.reason}. Nothing was recorded — tell Junid, and keep the slip.` } };
+  }
+  return { existingKeys, comparison, write };
 }
 
 
@@ -552,8 +623,10 @@ async function handleExtract(db, request) {
   // The submit transaction re-checks — this one is for the message, that one
   // is the guarantee.
   const batchNo = normaliseBatchNo(extraction.batchNo);
-  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
-  const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
+  const { write } = await resolveWriteFor(db, {
+    storeId: terminal.storeId, tid: extraction.tid, batchNo,
+    correction: !!request.data.correction, lines: extraction.lines,
+  });
   if (!write.ok) return reject(write.reason);
 
   // ── EXPECTED — the POS ledger's answer for the slip's own window ──
@@ -668,7 +741,28 @@ async function handleExtract(db, request) {
 // a reason naming what it could not find. A fuzzy second attempt would be the
 // one thing worse than refusing: a figure nobody can vouch for, recorded as a
 // variance against a named person's till. Photos remain, and the refusal says so.
-async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
+// ─── WHICH TERMINAL WAS REFUSED ──────────────────────────────────────────────
+// A REFUSAL HAS TO NAME ITS TILL, or it cannot be shown against one.
+//
+// On the email channel nobody picks a till: the PDF's own printed TID is the
+// routing key. So until the file is parsed there is no terminal to blame — but
+// AFTER it is parsed there always is, and every refusal from that point on was
+// still answering `{ ok:false, reason }` and nothing else.
+//
+// The cost was exact. On 19 Sept 2026 all 24 refused attachments on file
+// carried no TID, against 53 of 53 recorded ones that did — so the poller wrote
+// "refused" rows the capture screen could not attribute to any card, and
+// Marathon Till 1's refusal was invisible for a day. The TID is stamped on the
+// way out here rather than at each of the dozen `reject` sites inside, so a
+// refusal added later cannot forget to carry it.
+async function handleExtractPdf(db, request, opts) {
+  const seen = { tid: null };
+  const out = await handleExtractPdfBody(db, request, opts, seen);
+  if (out && out.ok === false && !out.tid && seen.tid) return { ...out, tid: seen.tid };
+  return out;
+}
+
+async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }, seen) {
   // Intactness, size and the magic bytes, all in one pure seam — see
   // readPdfPayload. A malformed upload is a sentence, never a transport error.
   const payload = readPdfPayload(pdf.base64, MAX_PDF_BYTES);
@@ -701,6 +795,8 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   const parsed = parseSlipPdf(text.lines);
   if (!parsed.ok) return reject(parsed.reason);
   const extraction = parsed.extraction;
+  // From here on every refusal can name its terminal — see handleExtractPdf.
+  seen.tid = normaliseTid(extraction.tid) || null;
 
   // ── WHICH TILL, AND WHAT VOUCHES FOR THAT ANSWER ──────────────────────────
   // TWO PATHS, ONE PRINCIPLE: the answer is never allowed to be a guess.
@@ -755,8 +851,10 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
   if (!verdict.ok) return reject(verdict.reason);
   const batchNo = normaliseBatchNo(extraction.batchNo);
-  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
-  const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
+  const { write } = await resolveWriteFor(db, {
+    storeId: terminal.storeId, tid: extraction.tid, batchNo,
+    correction: !!request.data.correction, lines: extraction.lines,
+  });
   if (!write.ok) return reject(write.reason);
 
   const expected = await computeExpectedCard(db, {
@@ -1004,13 +1102,16 @@ async function handleSubmit(db, request) {
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
   const tidRef = db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`);
-  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
-  const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!draft.correction });
+  const { write } = await resolveWriteFor(db, {
+    storeId: terminal.storeId, tid: extraction.tid, batchNo,
+    correction: !!draft.correction, lines: extraction.lines,
+  });
   if (!write.ok) return reject(write.reason);
 
   const record = buildBatchRecord({
     extraction, terminal, tid: extraction.tid, match, reconciledByTotals,
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
+    autoSuperseded: !!write.autoSuperseded,
     photoPaths: draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,
     // The draft's warnings PLUS anything only now can know. Deduped, because
@@ -1082,5 +1183,10 @@ exports.totalsAgree = totalsAgree;
 // and 480, and 57 lands inside a sibling terminal's live range in the SAME
 // store. See functions/test/card-batch-numbers.test.cjs.
 exports.readBatchKeysFor = readBatchKeysFor;
+// Exported for the same reason as readBatchKeysFor: what decides whether a
+// second report of a batch is a fuller account or a re-send is a rule about
+// LIVE data, and it is tested against a fake database rather than by reading it.
+exports.readRecordedLinesFor = readRecordedLinesFor;
+exports.resolveWriteFor = resolveWriteFor;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;

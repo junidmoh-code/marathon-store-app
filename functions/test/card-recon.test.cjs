@@ -69,7 +69,7 @@ test("TID and batch number normalisation", () => {
 // ── duplicates and corrections ───────────────────────────────────────────────
 test("first capture writes the bare batch number", () => {
   const r = resolveBatchWrite({ existingKeys: [], batchNo: "494", correction: false });
-  assert.deepEqual(r, { ok: true, key: "494", revision: 1, supersedes: null });
+  assert.deepEqual(r, { ok: true, key: "494", revision: 1, supersedes: null, autoSuperseded: false });
 });
 
 test("a duplicate batchNo for the same TID is rejected, not overwritten", () => {
@@ -80,9 +80,9 @@ test("a duplicate batchNo for the same TID is rejected, not overwritten", () => 
 
 test("a correction supersedes and keeps both", () => {
   const r = resolveBatchWrite({ existingKeys: ["494"], batchNo: "494", correction: true });
-  assert.deepEqual(r, { ok: true, key: "494-r2", revision: 2, supersedes: "494" });
+  assert.deepEqual(r, { ok: true, key: "494-r2", revision: 2, supersedes: "494", autoSuperseded: false });
   const r3 = resolveBatchWrite({ existingKeys: ["494", "494-r2"], batchNo: "494", correction: true });
-  assert.deepEqual(r3, { ok: true, key: "494-r3", revision: 3, supersedes: "494-r2" });
+  assert.deepEqual(r3, { ok: true, key: "494-r3", revision: 3, supersedes: "494-r2", autoSuperseded: false });
 });
 
 test("a correction of a never-captured batch is refused", () => {

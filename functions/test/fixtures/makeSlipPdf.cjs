@@ -331,7 +331,36 @@ const REAL_REPORT = {
   missingTsns: [5, 21, 22, 23, 24, 30, 31, 33, 34, 43],
 };
 
+// ─── THE REPORT WITH A DECLINED SECTION ──────────────────────────────────────
+// Till1-Batch58-Declined-FNB-Txn-Notification.pdf: Marathon Till 1's batch 58,
+// settled 19 Sept 2026, nine pages, 68 KB. The real file, refused live.
+//
+// It is here because it is the first report on file with TWO transaction
+// sections. It prints DECLINED TRANSACTIONS with "Items: 1" ABOVE APPROVED
+// TRANSACTIONS with "Items: 48" — two lists, two counts, in one document. A
+// reader that assumes one Items figure reads the wrong one; a reader that sums
+// them expects 49 lines and finds 48.
+//
+// It also spans TWO DAYS (18 Sept 11:25 → 19 Sept 16:12), because the batch was
+// left open overnight, which is what made it collide with the interim report
+// recorded the evening before. See card-batch-supersede.test.cjs.
+const DECLINED_REPORT_PDF = require("node:path").join(__dirname, "Till1-Batch58-Declined-FNB-Txn-Notification.pdf");
+const declinedReportPdf = () => require("node:fs").readFileSync(DECLINED_REPORT_PDF);
+const declinedReportLines = () => require("./real-report-declined-lines.json").lines.slice();
+
+// Its own figures, read off the file.
+const DECLINED_REPORT = {
+  tid: "67325636", batchNo: 58, mid: "100000002453164", pages: 9,
+  approvedItems: 48, declinedItems: 1,
+  totalCents: 4353000,
+  // The one declined attempt: R750 at 12:01:33 on 19 Sept, auth code all
+  // zeros, and its sequence number is absent from the approved list.
+  declinedTsn: 25, declinedCents: 75000, declinedAuth: "000000",
+  firstTsn: 2, lastTsn: 55,
+};
+
 module.exports = {
+  declinedReportPdf, declinedReportLines, DECLINED_REPORT,
   makeSlipPdf, makeSlipPdfFragmented, makeSlipPdfPaged, slipLines,
   emailedLines, REAL_TSNS, realReportPdf, realReportLines, REAL_REPORT, REAL_REPORT_PDF,
 };

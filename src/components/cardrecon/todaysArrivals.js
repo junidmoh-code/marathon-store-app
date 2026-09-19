@@ -72,6 +72,88 @@ export function emailedArrivals(intakeNode, dayKey, dayOf) {
   return out;
 }
 
+/**
+ * The terminal named in a bank report's subject line, or null.
+ *
+ * "Banking Report for Batch 58 of Terminal 67325636" → "67325636".
+ *
+ * A FALLBACK, never the primary answer — see refusedArrivals. NO LOOKBEHIND
+ * (or any other regex a parse-time SyntaxError could blank the whole app with
+ * on Safari below 16.4); this is a plain capture group.
+ */
+export function tidFromSubject(subject) {
+  const m = /\bterminal\s+([A-Za-z0-9]{4,16})\b/i.exec(String(subject || ""));
+  return m ? m[1].toUpperCase() : null;
+}
+
+/**
+ * The tills whose emailed report ARRIVED TODAY AND WAS REFUSED, with the
+ * server's reason.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ * A refused attachment used to produce nothing at all. `emailedArrivals` takes
+ * only `outcome === "recorded"`, quite rightly — a refused report must never
+ * tick — but the card then showed a camera glyph, which is the same thing it
+ * shows for a till that has simply not reported yet. The two are not the same
+ * fact and must not look alike.
+ *
+ * On 19 Sept 2026 Marathon Till 1's report was refused at 16:40 with a reason
+ * the server had already written in plain words — "Batch #58 for this terminal
+ * is already captured" — and nobody saw it, because nothing rendered it. The
+ * owner spent the day believing the terminal had not reported.
+ *
+ * NOT A TICK AND NOT A SILENCE: a third state. The screen shows the reason.
+ *
+ * A TILL THAT WAS REFUSED AND THEN RECORDED IS NOT IN TROUBLE — the retry
+ * worked — so anything that recorded today is excluded here, whatever else it
+ * did. That is the Marathon Till 3 case on the same day: batch 79 recorded at
+ * 16:38 and three later re-sends were refused as duplicates, which is the
+ * system working exactly as intended and must not be reported as a problem.
+ *
+ * @param {object|null} intakeNode   the /card_batch_intake tail, as read
+ * @param {string} dayKey            "YYYY-MM-DD", SA, from the server clock
+ * @param {(ms:number)=>string} dayOf  the same formula, applied to a stamp
+ * @returns {Map<string,string>}  tid → the most recent refusal reason
+ */
+export function refusedArrivals(intakeNode, dayKey, dayOf) {
+  const out = new Map();
+  const at = new Map();
+  const recorded = emailedArrivals(intakeNode, dayKey, dayOf);
+  for (const rec of Object.values(intakeNode || {})) {
+    const stamp = Number(rec?.receivedAt) || Number(rec?.at) || 0;
+    if (!stamp || dayOf(stamp) !== dayKey) continue;
+    const attachments = Array.isArray(rec?.attachments)
+      ? rec.attachments
+      : Object.values(rec?.attachments || {});
+    for (const a of attachments) {
+      if (a?.outcome !== "refused") continue;
+      // THE ROW'S OWN TID FIRST, and the subject only as a fallback.
+      //
+      // Refusals written before 19 Sept 2026 carry no TID at all — all 24 on
+      // file, against 53 of 53 recorded rows that do — because the poller had
+      // nothing to write: the callable refused before naming a terminal. Both
+      // sides are fixed, so new rows carry it; this fallback is what makes the
+      // refusals ALREADY in the feed visible, including the ones from the day
+      // this was found.
+      //
+      // The subject is the bank's own ("Banking Report for Batch 58 of
+      // Terminal 67325636") and is used for one thing only: deciding which
+      // card to show a message against. No figure, no outcome and no identity
+      // is ever read out of it.
+      const tid = String(a.tid || tidFromSubject(rec?.subject) || "");
+      if (!tid) continue;
+      // A report that later recorded is not an outstanding refusal.
+      if (recorded.has(tid)) continue;
+      // The LATEST refusal for a till, not the first: a terminal that was
+      // refused twice for different reasons should show the current one.
+      if ((at.get(tid) || 0) > stamp) continue;
+      at.set(tid, stamp);
+      out.set(tid, String(a.reason || "Its emailed report was not recorded, and no reason came back."));
+    }
+  }
+  return out;
+}
+
 /** What this device captured by hand on `dayKey`. Never throws: a browser with
  *  storage disabled (private window, a locked-down handset) must show a screen
  *  with no ticks, not a blank one. */
