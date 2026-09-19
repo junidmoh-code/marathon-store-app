@@ -651,6 +651,58 @@ function approvedSection(rows, totalsIdx) {
   return { from: approved.at, to: Math.min(next ? next.at - 1 : limit, limit) };
 }
 
+/**
+ * The span of the DECLINED TRANSACTIONS section, or null when there is none.
+ *
+ * ── WHY THIS IS NOT approvedSection WITH A DIFFERENT WORD ────────────────────
+ * The fallback is the opposite one, and that is the whole point. A report with
+ * no APPROVED heading falls back to the whole document, because the
+ * transactions are in there somewhere and older firmware prints no dividers. A
+ * report with no DECLINED heading has NO DECLINES — falling back to the whole
+ * document would read the approved list a second time and report every sale as
+ * a decline. Absent means absent here, and it says so by returning null.
+ *
+ * Marathon Till 1's batch 58 on 19 Sept 2026 prints this section FIRST, above
+ * the approved list: one declined attempt (TSN 25, R750, auth code 000000)
+ * followed by 48 approved. The order is the terminal's, not a rule, so nothing
+ * here depends on which section comes first.
+ */
+function declinedSection(rows, totalsIdx) {
+  const limit = totalsIdx >= 0 ? totalsIdx : rows.length;
+  const starts = sectionStarts(rows);
+  const sec = starts.find((s) => /declined/i.test(s.heading) && s.at < limit);
+  if (!sec) return null;
+  const next = starts.find((s) => s.at > sec.at);
+  return { from: sec.at, to: Math.min(next ? next.at - 1 : limit, limit) };
+}
+
+/**
+ * The "Items: n" figure stated inside one section.
+ *
+ * EACH SECTION STATES ITS OWN, AND THEY ARE DIFFERENT FACTS. A report with a
+ * decline prints "Items: 1" under DECLINED and "Items: 48" under APPROVED;
+ * summing them, or reading the first, or treating the pair as a contradiction,
+ * are three different ways of getting the same wrong answer. Within ONE section
+ * a repeated count must still agree, because there it IS the same fact twice.
+ *
+ * @returns {{ok:true, count:number} | {ok:false, reason:string}}
+ */
+function sectionItemCount(rows, span, what) {
+  const counts = [];
+  for (const row of rows.slice(span.from, span.to + 1)) {
+    const m = EMAILED.items.exec(row);
+    if (m) counts.push(Number(m[1]));
+  }
+  if (!counts.length) {
+    return { ok: false, reason: `That banking report's ${what} section does not print an Items count. If it is the right file, photograph the slip instead.` };
+  }
+  const disagreeing = [...new Set(counts)];
+  if (disagreeing.length > 1) {
+    return { ok: false, reason: `That report states its ${what} Items count more than once and the counts differ (${disagreeing.join(" and ")}). Nothing was recorded — photograph the slip instead.` };
+  }
+  return { ok: true, count: counts[0] };
+}
+
 // ─── A TRANSACTION IS A BLOCK, NOT A ROW ─────────────────────────────────────
 // This is the shape the real emailed report actually uses — one transaction
 // spread over eight or nine lines rather than printed across one:
@@ -874,19 +926,16 @@ function parseEmailedReport(rows) {
   // repeated count must still agree, because there it IS the same fact stated
   // twice, and this figure is what the line-count check measures a missed
   // transaction against.
-  const itemCounts = [];
-  for (const row of rows.slice(approved.from, approved.to + 1)) {
-    const m = EMAILED.items.exec(row);
-    if (m) itemCounts.push(Number(m[1]));
+  const approvedCount = sectionItemCount(rows, approved, "approved");
+  if (!approvedCount.ok) {
+    // The wording for a report with no sections at all stays what it was: the
+    // span is then the whole document and "the approved section" would name
+    // something the reader cannot see.
+    return bad(approved.from === 0
+      ? "That banking report does not print an Items count. If it is the right file, photograph the slip instead."
+      : approvedCount.reason);
   }
-  if (!itemCounts.length) {
-    return bad("That banking report does not print an Items count. If it is the right file, photograph the slip instead.");
-  }
-  const disagreeing = [...new Set(itemCounts)];
-  if (disagreeing.length > 1) {
-    return bad(`That report states its Items count more than once and the counts differ (${disagreeing.join(" and ")}). Nothing was recorded — photograph the slip instead.`);
-  }
-  const txnCount = itemCounts[0];
+  const txnCount = approvedCount.count;
 
 
   // ── THE TRANSACTIONS, WHICH ARE BLOCKS AND NOT ROWS ──
@@ -903,6 +952,42 @@ function parseEmailedReport(rows) {
     if (read.skip) continue;    // a stamp with no TSN under it is not a transaction
     if (read.err) return bad(read.err);
     txns.push(read.txn);
+  }
+
+  // ── THE DECLINED SECTION, READ AND KEPT ───────────────────────────────────
+  // A decline is not money and never enters a total — but it is evidence. A
+  // card that declines and is re-swiped a minute later is one of the real
+  // causes of a variance, and the terminal's own report is the ONLY place that
+  // attempt is visible at all: the till has no leg for it, and the approved
+  // list simply skips its sequence number.
+  //
+  // So these lines are captured, marked, and carried to the record for the
+  // investigation view. They are NOT in `lines`, so nothing downstream can add
+  // them to the card total or measure them against the till's takings — and
+  // this is structural rather than remembered, because `lines` is the only
+  // thing the total and the match ever read.
+  //
+  // THE TWO COUNTS ARE VALIDATED SEPARATELY AND NEVER SUMMED. "Items: 1" under
+  // DECLINED and "Items: 48" under APPROVED are two facts about two lists;
+  // each list is checked against its own figure.
+  const declinedSpan = declinedSection(rows, totalsRegionIdx);
+  const declined = [];
+  let declinedCount = 0;
+  if (declinedSpan) {
+    const stated = sectionItemCount(rows, declinedSpan, "declined");
+    if (!stated.ok) return bad(stated.reason);
+    declinedCount = stated.count;
+    for (const blk of collectTxnBlocks(rows.slice(0, declinedSpan.to + 1), declinedSpan.from)) {
+      const read = readTxnBlock(blk, batchNo);
+      if (read.skip) continue;
+      if (read.err) return bad(read.err);
+      // Marked at the point of reading. A consumer must never have to know
+      // which array a line came out of to know what it is.
+      declined.push({ ...read.txn, outcome: "declined" });
+    }
+    if (declined.length !== declinedCount) {
+      return bad(`That report's declined section states ${declinedCount} item${declinedCount === 1 ? "" : "s"} but ${declined.length} could be read. Nothing was recorded — photograph the slip instead.`);
+    }
   }
 
   // ── the figures live in the TOTALS REGION, and nowhere else ──
@@ -1039,6 +1124,11 @@ function parseEmailedReport(rows) {
       windowSource: closesAtPrint ? "transactions-to-print" : "transactions",
       lastTxnAt,
       lines: txns,
+      // The declined attempts, and the figure the report states for them.
+      // Never part of `lines`, never part of a total — see the declined
+      // section above.
+      declined,
+      declinedCount,
     },
   };
 }
@@ -1066,7 +1156,7 @@ function parseSlipPdf(lines) {
 module.exports = {
   parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
-  sectionStarts, approvedSection,
+  sectionStarts, approvedSection, declinedSection, sectionItemCount,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
   // The email-intake path's seams: `field`/`fieldAll` read a labelled header row
   // (and every row that matches, which is how a file naming two terminals is
