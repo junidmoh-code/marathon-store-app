@@ -6,6 +6,7 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
 import { FORMATS, DEFAULT_FORMAT, formatOf, needsVideo, videoSourceOf, mediaForSurface, STORY_ALSO_POSTS_TO_FEED, REEL_ALSO_POSTS_TO_STORY } from "./socialCore.js";
+import { budgetShortfall } from "./PolicyCard.jsx";
 import { hasVideo, stillOf } from "../../../scripts/social/reel-media.mjs";
 
 const require = createRequire(import.meta.url);
@@ -186,12 +187,36 @@ describe("the Policy tab's budget mirror does not drift", () => {
     expect(screen[1]).toBe(backend[1]);
   });
 
-  it("the screen warns when a policy asks for more than the budget pays for", () => {
-    // Deleting the warning must fail this, which a check on the constant alone
-    // would not: the number could stay and the sentence could go.
+  // ── THE NUMBER, NOT THE TITLE ─────────────────────────────────────────────
+  // Grepping the file for the warning's sentence proves only that the sentence
+  // exists. It goes on passing while the threshold is off by one or the
+  // expression reads the wrong constant — which is the version of this bug
+  // that would actually reach the owner, because the screen would still LOOK
+  // like it was checking.
+  it("counts exactly how many slots the budget will not pay for", () => {
+    expect(budgetShortfall(0)).toBe(0);
+    expect(budgetShortfall(4)).toBe(0);     // four is affordable — no warning
+    expect(budgetShortfall(5)).toBe(1);     // the first slot that is not
+    expect(budgetShortfall(6)).toBe(2);
+    expect(budgetShortfall(8)).toBe(4);     // the whole slot ceiling
+  });
+
+  it("a nonsense total never invents a shortfall", () => {
+    for (const junk of [null, undefined, NaN, "six", -3, {}]) {
+      expect(budgetShortfall(junk)).toBe(0);
+    }
+  });
+
+  it("the warning is still on the screen, and still derived", () => {
+    // Deleting the block must fail something too — budgetShortfall would go on
+    // returning the right number into nothing.
     const card = read("./PolicyCard.jsx");
     expect(card).toMatch(/overBudget/);
     expect(card).toMatch(/would be skipped every day/);
+    // Derived from the helper, never recomputed inline — two copies of one
+    // threshold is how the sentence and the condition drift apart.
+    expect(card).toMatch(/const shortfall = budgetShortfall\(total\);/);
+    expect(card).not.toMatch(/total - MAX_GENERATIONS_PER_DAY/);
   });
 
   it("the slot ceiling is still the HIGHER of the two, so the budget is what bites", () => {

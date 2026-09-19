@@ -389,8 +389,8 @@ async function resolveVideoFor(item) {
     // turning someone else's post into something it is not, days after the
     // fact, on a live account. A pointer is only as good as what it points
     // at, so it is checked rather than assumed.
-    if (formatOf({ ...src }) !== "reel") {
-      return { ok: false, reason: `videoFrom names ${sourceId}, which is a ${formatOf({ ...src })} post, not a reel` };
+    if (formatOf(src) !== "reel") {
+      return { ok: false, reason: `videoFrom names ${sourceId}, which is a ${formatOf(src)} post, not a reel` };
     }
     owner = { ...src, id: sourceId };
   } else if (formatOf(item) !== "reel") {

@@ -11,7 +11,7 @@ const { test, describe } = require("node:test");
 const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const {
-  MAX_IMAGE_GENERATIONS_PER_DAY, reserveGeneration, capReachedReason,
+  MAX_IMAGE_GENERATIONS_PER_DAY, reserveGeneration, capReachedReason, unreadableBudgetReason,
 } = require("../lib/social-budget.cjs");
 
 const INDEX = readFileSync(require("node:path").join(__dirname, "../index.js"), "utf8");
@@ -87,6 +87,16 @@ describe("reserveGeneration — the transaction body", () => {
 });
 
 describe("what it says when it refuses", () => {
+  test("an unreadable counter and a full day say DIFFERENT things", () => {
+    // Both refuse. Only one of them is a reason to do nothing about it.
+    const cap = capReachedReason("2026-09-19");
+    const unreadable = unreadableBudgetReason("2026-09-19");
+    assert.notEqual(cap, unreadable);
+    assert.match(cap, /already reached/);
+    assert.match(unreadable, /could not be read/);
+    assert.doesNotMatch(unreadable, /already reached/);
+  });
+
   test("it names the number and the day, and says nothing was charged", () => {
     const r = capReachedReason("2026-09-19");
     assert.match(r, /cap of 4/);
@@ -132,11 +142,40 @@ describe("where the cap sits in the generator", () => {
   // The cap's message contains "generated", and "generated" contains "rate" —
   // so a bare /rate/ in the error classifier matched it and told the reader to
   // go and check Gemini billing for a limit that is in this repository.
-  test("the cap's own message is not classified as a provider 429", () => {
-    const capMessage = capReachedReason("2026-09-19");
-    assert.doesNotMatch(capMessage, /\brate[ -]?limit/i);
-    assert.match(INDEX, /if \(\/daily image-generation cap\/i\.test\(m\)\) return m\.slice\(0, 140\);/);
-    // And the provider branch is anchored to a real rate limit.
-    assert.doesNotMatch(INDEX, /HTTP 429\|credits are depleted\|rate\|quota/);
+  // ── PINNED TO THE BEHAVIOUR, NOT TO THE CHARACTERS ────────────────────────
+  // The first version of this test quoted the classifier's line verbatim. The
+  // very next commit widened that regex to also cover the unreadable-counter
+  // message — a correct change — and this test failed for spelling. A test
+  // that breaks when the code it guards is IMPROVED teaches you to edit the
+  // test without reading it, which is how the guard quietly stops guarding.
+  //
+  // So the classifier's own regex is LIFTED OUT OF THE SOURCE and run against
+  // the real messages. Delete the branch and there is no regex to lift; break
+  // it and the messages stop matching.
+  test("both of our own refusals are classified before the provider branch", () => {
+    const ours = INDEX.match(/if \((\/daily image-generation[^/]*\/i)\.test\(m\)\) return m\.slice\(0, 140\);/);
+    assert.ok(ours, "classifyPhotoError must classify our own budget refusals first");
+    const ourBranch = eval(ours[1]);                       // the live regex, not a copy
+    for (const message of [capReachedReason("2026-09-19"), unreadableBudgetReason("2026-09-19")]) {
+      assert.match(message, ourBranch, `"${message}" must be recognised as ours`);
+    }
+    // …and FIRST: the provider branch below would otherwise swallow them.
+    const oursAt = INDEX.indexOf("daily image-generation");
+    const providerAt = INDEX.indexOf("credits are depleted|");
+    assert.ok(oursAt > -1 && providerAt > -1);
+    assert.ok(oursAt < providerAt, "ours must be tested before the provider 429 branch");
+  });
+
+  test("the provider branch no longer matches the word 'generated'", () => {
+    // This is the defect that started it: a bare /rate/ matches "generated",
+    // so our own cap reported itself as depleted Gemini credits.
+    const provider = INDEX.match(/if \((\/HTTP 429\|[^/]*\/i)\.test\(m\)\)/);
+    assert.ok(provider, "the provider branch must still exist");
+    const providerBranch = eval(provider[1]);
+    assert.doesNotMatch(capReachedReason("2026-09-19"), providerBranch);
+    assert.doesNotMatch(unreadableBudgetReason("2026-09-19"), providerBranch);
+    // …while still catching what it is actually for.
+    assert.match("gemini HTTP 429: RESOURCE_EXHAUSTED", providerBranch);
+    assert.match("You have been rate-limited", providerBranch);
   });
 });

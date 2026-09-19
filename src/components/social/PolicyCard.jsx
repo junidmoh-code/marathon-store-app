@@ -47,6 +47,21 @@ const MAX_TOTAL_PER_DAY = 8;
 // two numbers together.
 const MAX_GENERATIONS_PER_DAY = 4;
 
+/**
+ * How many of a day's slots the budget will not pay for.
+ *
+ * Exported and pure so it can be tested with numbers rather than by grepping
+ * the file for the sentence it produces. A source-text assertion catches the
+ * warning being DELETED and nothing else — it goes on passing while the
+ * threshold is off by one or the expression is wired to the wrong constant,
+ * which is the bug that would actually reach the owner.
+ */
+export function budgetShortfall(total, cap = MAX_GENERATIONS_PER_DAY) {
+  const n = Number(total);
+  if (!Number.isFinite(n) || n <= cap) return 0;
+  return n - cap;
+}
+
 // `singular` is spelled out rather than derived (e.g. stripping a trailing
 // "s") because "Stories" does not end in a plain "s" — a regex strip turned
 // it into "Storie" on every row of the timeline below.
@@ -138,7 +153,8 @@ export default function PolicyCard({ onNotice, notice }) {
   const overTotal = total > MAX_TOTAL_PER_DAY;
   // Not an error — the policy is legal and will save. It simply will not all
   // be made, and saying so here is the only place anyone would find out.
-  const overBudget = !overTotal && total > MAX_GENERATIONS_PER_DAY;
+  const shortfall = budgetShortfall(total);
+  const overBudget = !overTotal && shortfall > 0;
 
   // The timeline: every slot, from every section, in the order they'll
   // actually fire — this answers "what's posting when" without anyone having
@@ -293,8 +309,8 @@ export default function PolicyCard({ onNotice, notice }) {
       })()}
       {overBudget && (
         <div style={{ fontSize: 11.5, color: RED, marginTop: 8, lineHeight: 1.5 }}>
-          Only <strong>{MAX_GENERATIONS_PER_DAY} pictures a day</strong> are paid for, so {total - MAX_GENERATIONS_PER_DAY} of
-          these {total} would be skipped every day. Remove {total - MAX_GENERATIONS_PER_DAY} time{total - MAX_GENERATIONS_PER_DAY === 1 ? "" : "s"} above,
+          Only <strong>{MAX_GENERATIONS_PER_DAY} pictures a day</strong> are paid for, so {shortfall} of
+          these {total} would be skipped every day. Remove {shortfall} time{shortfall === 1 ? "" : "s"} above,
           or raise the cap in <code>functions/lib/social-budget.cjs</code> — that one is a decision about money.
         </div>
       )}

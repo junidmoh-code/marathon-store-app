@@ -523,10 +523,23 @@ saved policy wins over it.
 
 ### Turning the story twin itself off
 
-Set `REEL_ALSO_POSTS_TO_STORY=false` in `functions/.env`, then redeploy
-`functions:socialDailyAutopilot` and `functions:generateSocialPosts`. A
-build-time flag, the same convention as `SOCIAL_AUTOPILOT_ENABLED` and
+Set `REEL_ALSO_POSTS_TO_STORY=false` in `functions/.env`, then redeploy **all
+three** by name:
+
+```
+firebase deploy --only functions:socialDailyAutopilot,functions:generateSocialPosts,functions:socialHealthScan --project marathon-club
+```
+
+A build-time flag, the same convention as `SOCIAL_AUTOPILOT_ENABLED` and
 `STORY_ALSO_POSTS_TO_FEED`.
+
+> **`socialHealthScan` is not optional in that list, and neither is it for
+> `STORY_ALSO_POSTS_TO_FEED`.** Each function carries its OWN copy of the
+> build-time env. The scan derives the day's obligation from these flags, so a
+> flag turned off in the generator but left on in the scan makes the watchdog
+> demand stories nobody is making — an email a day, for ever, about a decision
+> somebody took deliberately. That is precisely the alarm-fatigue this file
+> spent §5b arguing against.
 
 `socialCore.js` carries a **mirror**, which is what the Policy tab reads to
 describe the day. Turn the backend off and flip the mirror too;
