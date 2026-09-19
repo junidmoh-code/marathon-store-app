@@ -32,6 +32,8 @@ small. Measured against the live database on 2026-09-19 (RTDB REST, which does
 | `/orders` | 2,647,522 | 3,016 |
 | `/customers` | 1,808,403 | 9,662 |
 | `/restock_requests` | 1,388,860 | — |
+| `/settings/stockHold` | 2,044,835 | — |
+| — of which `config`, the only part read | 149 | — |
 | `/settings/hubSneakerCount` | 1,158,028 | — |
 | — of which `register`, the only part read whole | 353,404 | — |
 | `/returns_log` | 750,814 | — |
@@ -357,14 +359,27 @@ Measured, 2026-09-19.
 | `/orders` | 2,647,522 |
 | `/customers` | 1,808,403 |
 | `/restock_requests` | 1,388,860 |
-| `/settings/hubSneakerCount/register` | 353,404 |
 | `/returns_log` | 750,814 |
+| `/settings/hubSneakerCount/register` | 353,404 |
 | `/settings/displayRows` | 333,910 |
 | `/settings/displaySlots` | 138,896 |
 | `/settings/productTaxonomy` | 19,346 |
 | `/users` | 12,746 |
+| `/settings/missingProductsHidden` | 9,991 |
 | `/locations` | 927 |
-| **total** | **103,664,632 (≈ 103.7 MB)** |
+| `/settings/stockHold/config` | 149 |
+| `/config/transit` | 99 |
+| `/settings/stockHold/held` | 4 |
+| `/clothing_sold_refills` | 4 |
+| **total** | **103,674,879 (≈ 103.7 MB)** |
+
+Twenty-one legs. The same table drives the setup screen's progress bar
+(`MirrorSetupScreen.LEG_BYTES`), because a bar weighted by legs-done rather than
+bytes would show 18 of 21 at under 40% of the download — `/insights_log` and
+`/stock_movements` are 65% of it between them — and then sit still for minutes.
+`setupScreen.test.js` asserts the two agree and that every leg in the registry
+has a size, so a leg added without one cannot leave the bar short of 100% for
+ever.
 
 ### 5.2 Photos — background, non-blocking
 
