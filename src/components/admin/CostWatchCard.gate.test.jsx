@@ -80,9 +80,31 @@ describe("CostWatchCard gate", () => {
     }
   });
 
-  it("admits the owner regardless of the case of the address", async () => {
+  it("compares the address strictly, like every other gate and like the rule", async () => {
+    // Deliberately NOT case-insensitive. Every other ADMIN_EMAIL gate in this
+    // app compares strictly, and so does the RTDB rule that actually enforces
+    // the read. A card that admitted "GUNIDMOH@Gmail.com" would then be
+    // refused by the database, turning a clean "not for you" into a
+    // PERMISSION_DENIED nobody can explain.
     await render({ uid: "admin-uid", email: "GUNIDMOH@Gmail.com" });
+    expect(getMock).not.toHaveBeenCalled();
+    getMock.mockClear();
+    await render(ADMIN);
     expect(getMock).toHaveBeenCalled();
+  });
+
+  it("a subscription-triggered reload does not re-read the suggestions", async () => {
+    // The suggestions change when a day's totals change, not on every rollup
+    // tick. Re-reading them every ten minutes for as long as the card is open
+    // is exactly the kind of quiet waste this card exists to find.
+    await render(ADMIN);
+    getMock.mockClear();
+    const cb = onValueMock.mock.calls[0][1];
+    await act(async () => { cb({ exists: () => true, val: () => ({ n: 1 }) }); }); // first: skipped
+    await act(async () => { cb({ exists: () => true, val: () => ({ n: 2 }) }); }); // second: reloads
+    const paths = getMock.mock.calls.map((c) => c[0].path);
+    expect(paths).not.toContain("cost_watch/suggestions");
+    expect(paths.filter((p) => p.startsWith("cost_watch/daily/"))).toHaveLength(2);
   });
 
   it("reads exactly three cost_watch nodes, by exact path, for the owner", async () => {

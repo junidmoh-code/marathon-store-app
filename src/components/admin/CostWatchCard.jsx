@@ -16,7 +16,8 @@
 //
 // It IS live, and it is live cheaply. `onValue` is opened on ONE node —
 // /cost_watch/latest, a handful of fields the watcher stamps after each rollup
-// — and a change there triggers a fresh `get()` of the two daily nodes. So the
+// — and a change there re-reads ONLY the two daily nodes, not the suggestions,
+// which change when a day's totals change rather than on every tick. So the
 // ranking updates on its own, and what streams continuously is a few dozen
 // bytes rather than two full day summaries every ten minutes for as long as
 // the card is left open. Subscribing to /cost_watch/daily directly would have
@@ -30,7 +31,7 @@
 // the rule it needs rather than an error, and everything else the watcher does
 // carries on working.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { getDatabase, ref, get, onValue } from "firebase/database";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 
@@ -157,36 +158,60 @@ export default function CostWatchCard({ authUser, onExit }) {
   // same email condition. Deleting either leaves a working gate. The card
   // reads nothing that is not already super-admin-only, but a cost breakdown
   // names people's devices and it should not render for anyone else.
-  const isSuperAdmin = String(authUser?.email || "").toLowerCase() === ADMIN_EMAIL;
+  // Strict, case-sensitive, exactly like every other ADMIN_EMAIL gate in this
+  // app (AuthGate, PushAssignmentsCard, UserManagement, config/enginePolicy).
+  // A lowercasing comparison here would fail SAFE, but it would also admit an
+  // address that the RTDB rule -- which is strict === -- then refuses, turning
+  // a clean "not for you" into a PERMISSION_DENIED nobody can explain. The
+  // client gate must match the rule that actually enforces it.
+  const isSuperAdmin = authUser?.email === ADMIN_EMAIL;
 
   const [state, setState] = useState({ loading: true });
-  const today = useMemo(() => sastDate(0), []);
-  const yesterday = useMemo(() => sastDate(-1), []);
 
-  const load = useCallback(async () => {
+  // EVERY RUN TAKES A TICKET; a run whose ticket is stale writes nothing.
+  // There are three independent triggers -- mount, the Refresh button, and the
+  // /cost_watch/latest subscription -- and nothing orders them. Without this,
+  // a Refresh tapped just as the watcher's ten-minute rollup fires can resolve
+  // second and overwrite the fresher numbers with older ones, silently, with
+  // nothing on screen looking wrong. The same guard, for the same reason, is
+  // in PushAssignmentsCard.
+  const loadGen = useRef(0);
+
+  const load = useCallback(async ({ suggestions: withSuggestions = true } = {}) => {
     if (!isSuperAdmin) return;
+    const gen = ++loadGen.current;
+    const live = () => loadGen.current === gen;
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
       const db = getDatabase();
+      // The day strings are computed HERE, not memoised at mount: a card left
+      // open across SAST midnight would otherwise keep refetching yesterday's
+      // pair for ever.
+      const today = sastDate(0);
+      const yesterday = sastDate(-1);
       const [t, y, sg] = await Promise.all([
         get(ref(db, `cost_watch/daily/${today}`)),
         get(ref(db, `cost_watch/daily/${yesterday}`)),
-        get(ref(db, "cost_watch/suggestions")),
+        // The suggestions change when a day's totals change, not on every
+        // rollup tick, so a subscription-triggered reload skips them.
+        withSuggestions ? get(ref(db, "cost_watch/suggestions")) : Promise.resolve(null),
       ]);
-      setState({
+      if (!live()) return;
+      setState((s) => ({
         loading: false,
         today: t.exists() ? t.val() : null,
         yesterday: y.exists() ? y.val() : null,
-        suggestions: sg.exists() ? sg.val() : null,
-      });
+        suggestions: sg ? (sg.exists() ? sg.val() : null) : s.suggestions,
+      }));
     } catch (e) {
+      if (!live()) return;
       // A missing rule reads as PERMISSION_DENIED. That is a known, expected
       // state with a known fix, so it is shown as the fix rather than as an
       // error somebody has to decode.
       const denied = /permission_denied/i.test(String(e?.message || e));
       setState({ loading: false, error: denied ? "denied" : String(e?.message || e) });
     }
-  }, [isSuperAdmin, today, yesterday]);
+  }, [isSuperAdmin]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -199,7 +224,7 @@ export default function CostWatchCard({ authUser, onExit }) {
     let first = true;
     const unsub = onValue(
       ref(getDatabase(), "cost_watch/latest"),
-      () => { if (first) { first = false; return; } load(); },
+      () => { if (first) { first = false; return; } load({ suggestions: false }); },
       () => { /* a denied read is already reported by load(); do not loop on it */ },
     );
     return () => unsub && unsub();
@@ -226,7 +251,7 @@ export default function CostWatchCard({ authUser, onExit }) {
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
         <h1 style={{ fontSize: 20, margin: 0 }}>Cost Watch</h1>
         <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={load} style={{ background: "#2c2c2e", color: "#f2f2f7", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 14, cursor: "pointer" }}>Refresh</button>
+          <button onClick={() => load()} style={{ background: "#2c2c2e", color: "#f2f2f7", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 14, cursor: "pointer" }}>Refresh</button>
           <button onClick={onExit} style={{ background: "#2c2c2e", color: "#f2f2f7", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 14, cursor: "pointer" }}>Back</button>
         </div>
       </div>
