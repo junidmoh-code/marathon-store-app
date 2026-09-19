@@ -32,8 +32,7 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { parseSlipPdf, declinedSection, approvedSection, sectionStarts, tidy } = require("../lib/card-recon-pdf.cjs");
 const { validateExtraction, buildBatchRecord } = require("../lib/card-recon.cjs");
-const { declinedReportPdf, declinedReportLines, DECLINED_REPORT } = require("./fixtures/makeSlipPdf.cjs");
-const { pdfToLines } = require("../cardRecon/pdfText.js");
+const { declinedReportLines, DECLINED_REPORT } = require("./fixtures/makeSlipPdf.cjs");
 
 const real = () => {
   const out = parseSlipPdf(declinedReportLines());
@@ -41,22 +40,40 @@ const real = () => {
   return out.extraction;
 };
 
-// ═══ THE FIXTURE IS THE REAL FILE ════════════════════════════════════════════
+// ═══ THE FIXTURE ════════════════════════════════════════════════════════════
+// Built line-for-line from the real nine-page file and then sanitised — see
+// makeSlipPdf.cjs. This repository is public; the structure is what the parser
+// reads, and the structure is what is kept.
 
-test("the committed text matches the committed PDF — the fixture cannot drift", async () => {
-  const t = await pdfToLines(declinedReportPdf());
-  assert.equal(t.ok, true, t.reason);
-  assert.equal(t.pages, DECLINED_REPORT.pages, "nine pages");
-  assert.deepEqual(t.lines, declinedReportLines(),
-    "real-report-declined-lines.json no longer matches the PDF — regenerate it");
+test("the report is ACCEPTED, not refused", () => {
+  // The real file was refused live on 19 Sept 2026 — by the duplicate check,
+  // before the parser ever saw it. This asserts the parser itself is sound on
+  // a report of this shape.
+  const out = parseSlipPdf(declinedReportLines());
+  assert.equal(out.ok, true, `REFUSED: ${out.reason}`);
 });
 
-test("the real file is ACCEPTED, not refused", async () => {
-  // It was refused live on 19 Sept 2026 — by the duplicate check, before the
-  // parser ever saw it. This asserts the parser itself is sound on it.
-  const t = await pdfToLines(declinedReportPdf());
-  const out = parseSlipPdf(t.lines);
-  assert.equal(out.ok, true, `REFUSED: ${out.reason}`);
+test("the fixture still has the shape the rest of this file relies on", () => {
+  // If the fixture is ever regenerated wrongly, every test below would pass
+  // vacuously against a one-section report.
+  const lines = declinedReportLines();
+  assert.equal(lines.length, 488, "the real file's line count, preserved");
+  assert.equal(lines.filter((l) => /^Items: \d+$/.test(l)).length, 2, "two Items counts");
+  assert.ok(lines.includes("DECLINED TRANSACTIONS"));
+  assert.ok(lines.includes("APPROVED TRANSACTIONS"));
+});
+
+test("no production identifiers survived the sanitiser", () => {
+  // The guard on the thing that made this fixture safe to publish. A
+  // regenerated fixture that skipped the sanitiser fails here, loudly.
+  const text = declinedReportLines().join("\n");
+  assert.doesNotMatch(text, /Merchant: 100000002453164/, "the real merchant id");
+  assert.doesNotMatch(text, /04YUTM/, "real retrieval reference numbers");
+  assert.doesNotMatch(text, /5(28497|31594|19612)\*{6}/, "real masked card numbers");
+  // Every PAN is the one synthetic value.
+  for (const l of declinedReportLines()) {
+    if (/^\d{6}\*{6}\d{4}$/.test(l)) assert.equal(l, "400000******0000");
+  }
 });
 
 // ═══ THE TWO SECTIONS ════════════════════════════════════════════════════════
@@ -122,9 +139,10 @@ test("the declined amount is in NO total", () => {
   assert.equal(ex.totalCents, DECLINED_REPORT.totalCents, "ZAR 43530.00");
   assert.equal(ex.lines.reduce((a, l) => a + l.amountCents, 0), ex.totalCents,
     "the approved transactions alone must sum to the printed total");
-  // The decline is R750. Had it been counted anywhere, the sum above would be
-  // R43,530 + R750 and this assertion would be the one that caught it.
-  assert.equal(ex.totalCents + DECLINED_REPORT.declinedCents, 4428000);
+  // Had the decline been counted anywhere, the total would be the sum below
+  // and the assertion above would be the one that caught it. Derived from the
+  // fixture's own constants so a regenerated fixture cannot silently pass.
+  assert.notEqual(ex.totalCents, DECLINED_REPORT.totalCents + DECLINED_REPORT.declinedCents);
 });
 
 test("the declined sequence number explains a gap in the approved list", () => {
@@ -148,7 +166,7 @@ const terminal = { storeId: "pe", tillId: "till-1", label: "Marathon Till 1" };
 const recordFor = (ex, opts = {}) => buildBatchRecord({
   extraction: ex, terminal, tid: ex.tid, batchKey: "58", revision: 1, supersedes: null,
   photoPaths: [], summaryOnly: false, warnings: [],
-  expected: { cardCents: 4353000, legs: 48, byKind: { sale: 48 } }, cashiers: [],
+  expected: { cardCents: DECLINED_REPORT.totalCents, legs: 48, byKind: { sale: 48 } }, cashiers: [],
   submittedBy: { uid: "u" }, submittedAt: 1, draftId: "d", ocr: null,
   capturedVia: "pdf", ...opts,
 });
@@ -158,7 +176,7 @@ test("the record carries the declines, keyed separately from the approved lines"
   assert.equal(rec.lineCount, 48);
   assert.equal(Object.keys(rec.lines).length, 48);
   assert.deepEqual(Object.keys(rec.declined), ["25"]);
-  assert.equal(rec.declined["25"].amountCents, 75000);
+  assert.equal(rec.declined["25"].amountCents, DECLINED_REPORT.declinedCents);
   assert.equal(rec.declined["25"].outcome, "declined");
   assert.equal(rec.declinedCount, 1);
   // The thing that makes this structural rather than remembered: a reader that
@@ -265,4 +283,62 @@ test("the real file reads its declined section fully, so it warns about nothing"
   assert.equal(ex.declinedUnread, 0);
   const v = validateExtraction(ex, { source: "pdf" });
   assert.equal(v.warnings.some((w) => /could not be read/i.test(w)), false);
+});
+
+test("a MALFORMED declined block is counted as unread, not fatal", () => {
+  // The same trade as the count mismatch above, which was left inconsistent:
+  // a declined line the parser could not read would have refused a report
+  // whose approved transactions and printed total were perfectly sound.
+  const { realReportLines, REAL_REPORT } = require("./fixtures/makeSlipPdf.cjs");
+  const lines = realReportLines();
+  const totals = lines.findIndex((l) => /^TOTALS SUMMARY$/.test(l));
+  const withBadDeclined = [
+    ...lines.slice(0, totals - 1),
+    "______________________________",
+    "DECLINED TRANSACTIONS",
+    "Items: 1",
+    "______________________________",
+    // A block that OPENS like a transaction — so it is not skipped — and then
+    // carries a TSN line the reader cannot make sense of.
+    "19-09-2026 12:01:33",
+    "TSN:notanumber Batch:59",
+    "Total: ZAR not-an-amount",
+    ...lines.slice(totals - 1),
+  ];
+  const out = parseSlipPdf(withBadDeclined);
+  assert.equal(out.ok, true, `a malformed declined block refused the report: ${out.reason}`);
+
+  const ex = out.extraction;
+  assert.equal(ex.txnCount, REAL_REPORT.items, "the approved list is untouched");
+  assert.equal(ex.lines.length, REAL_REPORT.items);
+  assert.equal(ex.totalCents, REAL_REPORT.totalCents, "and so is the total");
+  assert.equal(ex.declinedCount, 1, "the stated figure stands");
+  assert.equal(ex.declined.length, 0, "nothing claims a decline it could not read");
+  assert.equal(ex.declinedUnread, 1);
+
+  const v = validateExtraction(ex, { source: "pdf" });
+  assert.equal(v.ok, true, v.reason);
+  assert.ok(v.warnings.some((w) => /could not be read/i.test(w)), "the gap is reported");
+});
+
+test("an unreadable block is not double-counted against the shortfall", () => {
+  // A failed block is ALSO missing from `declined`, so it is already inside
+  // the shortfall; adding both would report 2 unread where 1 is true.
+  const { realReportLines } = require("./fixtures/makeSlipPdf.cjs");
+  const lines = realReportLines();
+  const totals = lines.findIndex((l) => /^TOTALS SUMMARY$/.test(l));
+  const out = parseSlipPdf([
+    ...lines.slice(0, totals - 1),
+    "______________________________", "DECLINED TRANSACTIONS", "Items: 1", "______________________________",
+    "19-09-2026 12:01:33", "TSN:notanumber Batch:59", "Total: ZAR not-an-amount",
+    ...lines.slice(totals - 1),
+  ]);
+  assert.equal(out.extraction.declinedUnread, 1, "one unread decline, not two");
+});
+
+test("a report with no declined section reports declinedUnread as null, not 0", () => {
+  const { realReportLines } = require("./fixtures/makeSlipPdf.cjs");
+  const ex = parseSlipPdf(realReportLines()).extraction;
+  assert.equal(ex.declinedUnread, null);
+  assert.equal(ex.declinedCount, null);
 });

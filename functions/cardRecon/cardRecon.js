@@ -584,7 +584,28 @@ async function handleExtract(db, request) {
   try {
     ocr = await runSlipOcr(decoded, geminiApiKey.value());
   } catch (err) {
-    console.error("cardBatchCapture: OCR failed:", err.message);
+    // ── THE SENTENCE THE MANAGER GETS IS THE POINT OF ALL THIS ──────────────
+    // "Could not read the photos right now — try again." was the answer to
+    // EVERY OCR failure, including an account with no money in it, and trying
+    // again never once helped. Attaching the status to the error was only half
+    // the fix; this is the half a person reads.
+    //
+    // THE LOG KEEPS THE DETAIL, THE SCREEN NEVER SEES IT. Google's body names
+    // an internal billing account and links a console nobody at a till can
+    // open, so it goes to Cloud Logging and no further.
+    console.error(`cardBatchCapture: OCR failed: ${err.message}`
+      + `${err.httpStatus ? ` [status=${err.httpStatus}]` : ""}`
+      + `${err.body ? ` body=${String(err.body).slice(0, 300)}` : ""}`);
+    // 402 is prepayment credits depleted; 429 is the same wall with a
+    // different number on it (a depleted PREPAY account answers 429 to image
+    // generation and 402 here, which is how one outage wore two faces for six
+    // days). Both mean the same thing to the person holding the slip: this
+    // will not work until somebody puts money in, so DO NOT retake the photo.
+    if (err.httpStatus === 402 || err.httpStatus === 429) {
+      throw new HttpsError("resource-exhausted",
+        "The slip reader has run out of credit, so photographed slips cannot be read until it is topped up. "
+        + "Retaking the photo will not help. Tell Junid — the machines that email their report are still recording normally.");
+    }
     throw new HttpsError("unavailable", "Could not read the photos right now — try again.");
   }
   // Cost is logged for EVERY billed call, rejected extractions included.

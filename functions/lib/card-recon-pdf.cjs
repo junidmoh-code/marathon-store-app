@@ -972,7 +972,11 @@ function parseEmailedReport(rows) {
   // each list is checked against its own figure.
   const declinedSpan = declinedSection(rows, totalsRegionIdx);
   const declined = [];
-  let declinedUnread = 0;
+  // Declined blocks this parser could not read. See the loop below.
+  let unreadableBlocks = 0;
+  // NULL FOR THE SAME REASON declinedCount IS: a report with no declined
+  // section has no unread declines, it has no declines to speak of at all.
+  let declinedUnread = null;
   // NULL, NOT ZERO. A report with no declined section STATED NOTHING about
   // declines; one that prints "Items: 0" stated zero. Those are different
   // facts and buildBatchRecord's contract reserves null for the first, so
@@ -986,7 +990,13 @@ function parseEmailedReport(rows) {
     for (const blk of collectTxnBlocks(rows.slice(0, declinedSpan.to + 1), declinedSpan.from)) {
       const read = readTxnBlock(blk, batchNo);
       if (read.skip) continue;
-      if (read.err) return bad(read.err);
+      // A MALFORMED DECLINED BLOCK IS COUNTED, NOT FATAL — the same trade as
+      // the count mismatch below, and it was left inconsistent here: a
+      // declined line this parser could not read would have refused a report
+      // whose forty approved transactions and printed total were perfectly
+      // sound. The approved loop above still refuses on a bad block, because
+      // there a misread IS the money. (CodeRabbit, PR #615.)
+      if (read.err) { unreadableBlocks++; continue; }
       // Marked at the point of reading. A consumer must never have to know
       // which array a line came out of to know what it is.
       declined.push({ ...read.txn, outcome: "declined" });
@@ -1004,7 +1014,12 @@ function parseEmailedReport(rows) {
     // So the discrepancy is REPORTED, not fatal: the stated figure and the
     // lines actually read both stand, and the gap between them becomes a
     // warning on the record. Nothing claims a decline it could not read.
-    declinedUnread = Math.max(0, declinedCount - declined.length);
+    // NOT unreadableBlocks + shortfall: a block that failed to read is ALSO
+    // missing from `declined`, so it is already inside the shortfall and
+    // adding both would double-count it. The shortfall is the whole truth —
+    // the block count only matters when the stated figure is itself wrong,
+    // which is why the larger of the two is taken rather than their sum.
+    declinedUnread = Math.max(0, declinedCount - declined.length, unreadableBlocks);
   }
 
   // ── the figures live in the TOTALS REGION, and nowhere else ──
