@@ -1,6 +1,7 @@
 # The store app, read from a local copy
 
-**Status:** design + measurements, taken live on **2026-09-19**.
+**Status:** BUILT, behind a flag that is off. Measurements taken live on
+**2026-09-19**.
 **Purpose:** cut this app's Firebase read bandwidth to near zero by giving every
 device one full download at setup and nothing but small change records
 afterwards.
@@ -109,7 +110,7 @@ switches most of the app.
 | 1 | `useProducts()` — `src/App.jsx:579` | `/products` whole | `products` | `changes` |
 | 2 | `useOrders(scopeShop)` — `src/App.jsx:911` | `/orders` whole or `destShop`-scoped | `orders` | `changes` |
 | 3 | `useCustomersDb()` — `src/App.jsx:1788` | `/customers` whole | `customers` | `changes` |
-| 4 | `usePath(path)` / `usePathState(path)` — `src/components/stock/useStock.js:25,56` | `/stock`, `/stock/{loc}`, `/stock_movements`, `/refill_requests`, `/transfers`, `/stock_alerts`, `/locations`, `/settings/displaySlots`, `/settings/displayRows`, `/settings/hubSneakerCount/register/{hub}`, `/settings/missingProductsHidden`, `/settings/stockHold`, `/config/transit` | `stock`, `movements`, `refills`, `settings`, `small` | `changes` + `movements` |
+| 4 | `usePath(path)` / `usePathState(path)` — `src/components/stock/useStock.js` | `/stock`, `/stock/{loc}`, `/stock_movements`, `/refill_requests`, `/transfers`, `/stock_alerts`, `/locations`, `/settings/displaySlots`, `/settings/displayRows`, `/settings/hubSneakerCount/register/{hub}`, `/settings/missingProductsHidden`, `/settings/stockHold`, `/config/transit` | `stock`, `movements`, `refills`, `settings`, `small` | `changes` + `movements` |
 | 5 | `InsightsLogProvider` — `src/insights/InsightsLogProvider.jsx:41` | `/insights_log` whole | `insights` | `insights` |
 
 ### 3.2 The rest, by node
@@ -152,6 +153,55 @@ costs a few hundred bytes when someone presses something.
 set is 111 MB and is what every browsing surface actually renders. A full-size
 photo is fetched the first time a person opens that one product and never
 again.
+
+### 3.4 How a screen actually switches
+
+One function answers every screen:
+
+```js
+readMirroredPath(db, path)   // exactly what get(ref(database, path)).val() would return
+```
+
+The same tree, entered at any height; `null` — never `{}` — for an empty node,
+because RTDB cannot store an empty object and every `if (!data)` in this app
+depends on that; and `MISS` for a path no leg covers, which is a *different*
+answer from null and is what makes a live fallback possible.
+
+Every switched hook keeps its own shaping function and uses it for **both**
+sources, so what a screen holds cannot depend on where the rows came from. The
+one deliberate exception is the legacy `{items:[…]}` products migration, which
+WRITES — a mirrored read must never write to the database it is a copy of.
+
+**The decision is synchronous.** A hook decides on its first render whether to
+open a live `onValue`, and opening one costs the whole node. So "is this device
+serving locally" cannot be an answer that arrives later: it is a hint in
+`localStorage` (`src/offline/serving.js`), refreshed after every pass. It is a
+hint and not data — every hook falls back to a live read the moment the local
+copy cannot actually answer, so a stale hint costs one check and never a blank
+screen.
+
+`src/offline/__tests__/servingSkipsTheSubscription.test.jsx` counts `onValue`
+calls, including on the first render. A version of this work that read locally
+*and* subscribed would pass every other test and save nothing.
+
+### 3.5 A person never sees their own action undone
+
+On a mirrored device the path from "I pressed Send" to "the screen shows it" is
+RTDB → trigger → change record → this device's feed, which is a second or two.
+That is long enough to press a button, see the old number, and press it again.
+
+`src/offline/pendingWrites.js` echoes the paths just written until the feed
+carries the same fact back round. It is an **echo, not a queue**:
+
+- writes are completely unchanged — orders and the five warehouse actions go
+  straight to RTDB with the same transactions and the same failure behaviour;
+- it is recorded *after* RTDB accepts, so it echoes what the database took,
+  never what we hoped it would;
+- it expires, so it can never pin a value on screen after somebody else has
+  changed it.
+
+It is fed at `applyMovement.js`, which every fulfil, transfer, receive, count
+and adjust in this app goes through, rather than at all fifty-odd write sites.
 
 ---
 
@@ -317,15 +367,36 @@ Timestamps on fields the rules validate use `serverNowMs()`, never `Date.now()`.
 
 ## 9. Forced update
 
-A parked stale bundle once cost about $400/month. The update checker already
-polls `/version.json`. With a mirror in play it becomes a **forced** reload
-rather than an advisory banner, gated on two conditions that are never
-overridden:
+A parked stale bundle once cost about $400/month, and a mirrored device makes
+that worse rather than better: it has no whole-node subscriptions to make a
+wrong bundle obvious, so it can sit on an old build for days reading a schema
+the new build has moved on from.
 
-- no order is in progress, and
-- the outbox is empty.
+So on a device serving from its local copy the reload is **forced** rather than
+advisory: no three-minute idle requirement, and no once-per-version latch —
+that latch would mean "busy at that moment" equals "never takes this build at
+all".
 
-When either holds the reload waits, and the dot says so.
+Forced never means rude. Two things hold it off, and the first is absolute:
+
+- **busy** — the same registry the cart and the count screens already use, plus
+  "there are unsent writes", which the mirror registers;
+- **a 30-second grace** after the update is first seen, so nobody is reloaded
+  mid-sentence.
+
+A device not serving from the mirror keeps exactly the old behaviour.
+
+## 9a. The photo cache had to be spared by name
+
+`main.jsx` cleared Cache Storage wholesale on every boot. That line predates the
+photo mirror and would have deleted 111 MB of thumbnails on each load, which the
+photos leg would then re-download for ever — the exact opposite of the point.
+
+It now spares the photo cache by name, with a literal fallback so a failed
+dynamic import cannot mean "spare nothing", and `photoCacheName.pin.test.js`
+pins the two together. This restores nothing of the 2026-05-09 service-worker
+rollback: that was a fetch-intercepting worker; this is a cache the page fills
+and reads by hand.
 
 ---
 
@@ -383,7 +454,13 @@ The live `/stock_movements` block, for the record:
 
 ## 11. Rollout
 
-1. Build behind `mirrorFlag` — off for everyone.
+The flag is `localStorage["marathon-store.offlineMirror"] = "on"`, per device.
+There is deliberately **no UI anywhere in this app that writes it** — a
+per-staff "work offline" switch is how half a shop ends up on one code path and
+half on the other with nobody able to say which. It is a rollout control, and
+once it is on the download starts by itself on the next open.
+
+1. Build behind `mirrorFlag` — off for everyone. **Done: merged, flag off.**
 2. Paste the `/mirror_changes` rule. Deploy the change-log functions, scoped by
    name.
 3. Turn the flag on for **one** device. Watch the setup screen finish. Trade a
