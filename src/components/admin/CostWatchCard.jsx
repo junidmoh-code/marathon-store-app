@@ -125,8 +125,13 @@ function Suggestion({ item }) {
   return (
     <div style={{ border: "1px solid #2c2c2e", borderRadius: 10, padding: 12, marginTop: 10, background: "#1c1c1e" }}>
       <div style={{ fontSize: 14, color: "#f2f2f7", fontWeight: 600 }}>{item.title}</div>
+      {/* A cause with no measured cost yet must not read as "costs $0.00/day,
+          saves $0.00/day", which says "this is free" — the opposite of why the
+          entry is here. It says what it is: not measured yet. */}
       <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 6 }}>
-        Costs {money(item.costNowUsdPerDay)}/day · saves about <strong style={{ color: "#30d158" }}>{money(item.savingUsdPerDay)}/day</strong> ({money(item.savingUsdPerMonth)}/month)
+        {item.costNowUsdPerDay > 0
+          ? <>Costs {money(item.costNowUsdPerDay)}/day · saves about <strong style={{ color: "#30d158" }}>{money(item.savingUsdPerDay)}/day</strong> ({money(item.savingUsdPerMonth)}/month)</>
+          : <>Not yet measured over a full day — the prompt says so, and tells whoever runs it to size the saving from the capture.</>}
       </div>
       <div style={{ fontSize: 13, color: "#8e8e93", marginTop: 4 }}>Risk: {item.riskShort || item.risk}</div>
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
@@ -333,6 +338,13 @@ export default function CostWatchCard({ authUser, onExit }) {
               <div style={{ fontSize: 13, color: "#8e8e93", textTransform: "uppercase", letterSpacing: 0.6 }}>
                 Suggested fixes — copy a prompt and paste it into Claude Code
               </div>
+              {state.suggestions.notYetMeasured && (
+                <div style={{ fontSize: 13, color: "#ff9f0a", marginTop: 6 }}>
+                  No full day has been measured yet, so these are not yet ranked by what they
+                  actually cost here. The fixes and the prompts are correct; the figures fill in
+                  as the capture runs.
+                </div>
+              )}
               {state.suggestions.items.map((item) => <Suggestion key={item.id} item={item} />)}
             </div>
           )}
