@@ -419,3 +419,22 @@ describe("the steady-state pass", () => {
     w.adapter.readChildPage = real;
   });
 });
+
+describe("the guarantees the comments claim, checked rather than trusted", () => {
+  test("a big node is read with the BIG budget, not the counter-facing one", async () => {
+    // A 35.8 MB node on a shop line cannot answer inside READ_TIMEOUT_MS. If a
+    // change here dropped `big: true` the setup download would time out on
+    // every large leg — and until the fake recorded its options, nothing
+    // could see it. (Opus test audit, PR #618.)
+    const db = await freshMirrorDb();
+    const w = fullWorld({
+      insights_log: { "-A": { timestamp: 1 } },
+      stock_movements: { m1: { ts: "2026-09-01T00:00:00.000Z" } },
+    });
+    await engineOn(db, w).runSetup();
+    const bigPaths = w.calls.readKeyPage.filter((c) => c.big).map((c) => c.path);
+    expect(bigPaths).toContain("products");
+    expect(bigPaths).toContain("insights_log");
+    expect(w.calls.readChildPage.every((c) => c.big)).toBe(true);
+  });
+});

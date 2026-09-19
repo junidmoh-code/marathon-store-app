@@ -109,7 +109,14 @@ const leg = (name, node, depth, feed, store, extra = {}) =>
 export const MIRROR_LEGS = Object.freeze([
   leg("locations", "locations", 0, "changes", "docs"),
   leg("taxonomy", "settings/productTaxonomy", 0, "changes", "docs"),
-  leg("stockHold", "settings/stockHold", 0, "changes", "docs"),
+  // /settings/stockHold is 2.04 MB, and 2.04 MB of it is `released` — the
+  // history of every hold ever lifted, which NO mirrored read touches. The two
+  // things useStock actually subscribes to are `config` (149 bytes) and `held`
+  // (empty today). Same lesson as displayRegister below: a leg is scoped to
+  // what is read whole, not to the node someone happened to name. Measured
+  // live 2026-09-19.
+  leg("stockHoldConfig", "settings/stockHold/config", 0, "changes", "docs"),
+  leg("stockHoldHeld", "settings/stockHold/held", 1, "changes", "docs"),
   leg("hiddenProducts", "settings/missingProductsHidden", 0, "changes", "docs"),
   leg("transitConfig", "config/transit", 0, "changes", "docs"),
   leg("clothingOos", "clothing_sold_refills", 0, "changes", "docs"),
@@ -125,7 +132,13 @@ export const MIRROR_LEGS = Object.freeze([
 
   leg("displaySlots", "settings/displaySlots", 2, "changes", "displaySlots", { pageSize: 2 }),
   leg("displayRows", "settings/displayRows", 3, "changes", "displayRows", { pageSize: 2 }),
-  leg("displayRegister", "settings/hubSneakerCount", 3, "changes", "displayRegister", { pageSize: 1 }),
+  // /settings/hubSneakerCount is 1.15 MB, of which `counted` is 796 KB and
+  // `sessions` more — and this app reads NONE of it through a mirrored path.
+  // The one thing it reads whole is `register/{hub}` (useStock.useDisplayRegister),
+  // which is 353 KB. Mirroring the parent would have put 800 KB on every device
+  // for ever to serve reads that go through one-shot get()s and always will.
+  // Measured on the live node 2026-09-19.
+  leg("displayRegister", "settings/hubSneakerCount/register", 2, "changes", "displayRegister", { pageSize: 1 }),
 
   leg("refills", "refill_requests", 1, "changes", "refills", { pageSize: 1000 }),
   // /restock_requests is {date}/{key}, like /restock_log — depth 2, not 1.

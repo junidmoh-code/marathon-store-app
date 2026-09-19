@@ -34,7 +34,33 @@ export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIM
   const enabled = offlineMirrorEnabled();
   const [runtime, setRuntime] = useState(null);
   const [ready, setReady] = useState(!enabled);
-  const [failed, setFailed] = useState(false);
+  const [signedIn, setSignedIn] = useState(false);
+
+  // ── THE CHILDREN ALWAYS RENDER ───────────────────────────────────────────
+  //
+  // An earlier version returned the setup screen INSTEAD of the app. That is
+  // a deadlock on a fresh device: every mirrored node is rules-gated on a
+  // signed-in, non-anonymous user, the sign-in screen lives inside <App>, and
+  // the setup screen was covering it — so the download failed with
+  // PERMISSION_DENIED and nobody could reach the PIN screen to fix it. The
+  // same trap caught the anonymous TV session. (Fable-vs-spec review, PR #618.)
+  //
+  // So the app mounts underneath and the setup screen is an OVERLAY on top of
+  // it, shown only once there is a user whose credentials the download can
+  // actually use. Blocking is what the overlay does, not what this gate does.
+  useEffect(() => {
+    if (!enabled || !auth) return undefined;
+    let cancelled = false;
+    let unsub = null;
+    (async () => {
+      const { onAuthStateChanged } = await import("firebase/auth");
+      if (cancelled) return;
+      unsub = onAuthStateChanged(auth, (user) => {
+        setSignedIn(!!user && user.isAnonymous !== true);
+      });
+    })();
+    return () => { cancelled = true; if (unsub) unsub(); };
+  }, [enabled, auth]);
 
   useEffect(() => {
     if (!enabled) return undefined;
@@ -48,7 +74,7 @@ export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIM
     setOfflineMirrorRuntime(promise);
 
     promise.then(async (rt) => {
-      if (cancelled || !rt) { if (!cancelled) { setFailed(!rt); setReady(true); } return; }
+      if (cancelled || !rt) { if (!cancelled) setReady(true); return; }
       setRuntime(rt);
       const state = await rt.setupState();
       if (cancelled) return;
@@ -57,7 +83,6 @@ export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIM
       if (cancelled) return;
       // See the header: a mirror that cannot start must not stop the app.
       console.warn("offline mirror: could not start —", err);
-      setFailed(true);
       setReady(true);
     });
 
@@ -71,12 +96,19 @@ export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIM
     return () => { cancelled = true; clearTimeout(bail); };
   }, [enabled, auth, storage, startTimeoutMs]);
 
-  if (!enabled || ready || failed) return children;
-  if (!runtime) return null;   // a blank instant while IndexedDB opens
+  // The one condition under which a person is held: the mirror is on, it
+  // started, somebody is signed in, and this device has no complete copy yet.
+  const blocking = enabled && !ready && !!runtime && signedIn;
+
   return (
-    <MirrorSetupScreen
-      runtime={runtime}
-      onDone={() => { setReady(true); runtime.start(); }}
-    />
+    <>
+      {children}
+      {blocking && (
+        <MirrorSetupScreen
+          runtime={runtime}
+          onDone={() => { setReady(true); runtime.start(); }}
+        />
+      )}
+    </>
   );
 }

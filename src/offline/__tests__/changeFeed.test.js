@@ -250,3 +250,85 @@ describe("where a device's cursor starts", () => {
     expect((await db.get("products", "p1")).price).toBe(88);
   });
 });
+
+describe("a page commits WITH its cursor, or not at all", () => {
+  // The claim at the top of changeFeed.js, and until now untested: a mutation
+  // audit moved the cursor write to its own transaction BEFORE every putPage
+  // and all 57 tests here stayed green. The one test that looked like it
+  // covered this only fails the FETCH, which happens before any store is
+  // touched. (Opus test audit, PR #618.)
+  //
+  // What these fail instead is a STORE WRITE, mid-page, which is the shape of
+  // "the tab was closed" and "the quota ran out".
+
+  const wrapDb = (db, onPut) => ({
+    ...db,
+    putPage: (...args) => onPut(args) ?? db.putPage(...args),
+  });
+
+  test("a store write that fails leaves the cursor exactly where it was", async () => {
+    const db = await freshMirrorDb();
+    const w = world([change(0, "products", "p1")], { products: { p1: { price: 1 } } });
+    const failing = wrapDb(db, () => { throw new Error("quota exceeded mid-page"); });
+    await expect(runChangeFeedPage({ db: failing, adapter: w.adapter, now: () => T0 + 1000 }))
+      .rejects.toThrow("quota exceeded");
+    expect(await db.getMeta(FEED_CURSOR_META)).toBeUndefined();
+  });
+
+  test("a page touching TWO stores does not advance the cursor if the second fails", async () => {
+    // This is the ordering the code comments claim: the cursor rides the LAST
+    // store's transaction, so a later failure cannot leave it ahead of rows
+    // that never landed.
+    const db = await freshMirrorDb();
+    const w = world([change(0, "products", "p1"), change(1, "customers", "c1")], {
+      products: { p1: { price: 1 } }, customers: { c1: { name: "Ndu" } },
+    });
+    let n = 0;
+    const failing = wrapDb(db, () => {
+      n += 1;
+      if (n === 2) throw new Error("second store failed");
+      return undefined;
+    });
+    await expect(runChangeFeedPage({ db: failing, adapter: w.adapter, now: () => T0 + 1000 }))
+      .rejects.toThrow("second store failed");
+    expect(await db.getMeta(FEED_CURSOR_META)).toBeUndefined();
+    // The first store's rows DID land — that is fine and deliberate: they are
+    // upserts of current values, so the retry re-applies them harmlessly.
+    expect(await db.count("products")).toBe(1);
+  });
+
+  test("and the retry then completes the page and moves the cursor once", async () => {
+    const db = await freshMirrorDb();
+    const recs = [change(0, "products", "p1"), change(1, "customers", "c1")];
+    const w = world(recs, { products: { p1: { price: 1 } }, customers: { c1: { name: "Ndu" } } });
+    let n = 0;
+    const failing = wrapDb(db, () => {
+      n += 1;
+      if (n === 2) throw new Error("second store failed");
+      return undefined;
+    });
+    await expect(runChangeFeedPage({ db: failing, adapter: w.adapter, now: () => T0 + 1000 }))
+      .rejects.toThrow();
+    const res = await runChangeFeedPage({ db, adapter: w.adapter, now: () => T0 + 2000 });
+    expect(res.applied).toBe(2);
+    expect(await db.getMeta(FEED_CURSOR_META)).toBe(recs[1][0]);
+    expect(await db.count("customers")).toBe(1);
+  });
+
+  test("the cursor is written by the page commit, not beside it", async () => {
+    // The atomicity itself: the cursor must arrive in the SAME putPage call as
+    // the last store's rows. A version that called setMeta separately would
+    // pass every test above and still lose a change on a reload between the
+    // two writes.
+    const db = await freshMirrorDb();
+    const w = world([change(0, "products", "p1")], { products: { p1: { price: 1 } } });
+    const seen = [];
+    const watched = { ...db, putPage: (store, records, opts) => {
+      seen.push({ store, rows: records.length, cursorKey: opts?.cursorKey });
+      return db.putPage(store, records, opts);
+    } };
+    await runChangeFeedPage({ db: watched, adapter: w.adapter, now: () => T0 + 1000 });
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({ store: "products", rows: 1, cursorKey: FEED_CURSOR_META });
+  });
+});

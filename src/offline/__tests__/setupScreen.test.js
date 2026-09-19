@@ -11,7 +11,7 @@ describe("the bar is weighted by BYTES, not by legs done", () => {
     // which teaches people that progress bars lie.
     const allButTheBigTwo = MIRROR_LEGS
       .map((l) => l.name).filter((n) => n !== "insights" && n !== "movements");
-    expect(allButTheBigTwo).toHaveLength(18);
+    expect(allButTheBigTwo).toHaveLength(MIRROR_LEGS.length - 2);
     const { pct } = progressFor(allButTheBigTwo);
     expect(pct).toBeLessThan(40);
     expect(pct).toBeGreaterThan(25);
@@ -31,10 +31,13 @@ describe("the bar is weighted by BYTES, not by legs done", () => {
     expect(each.reduce((a, b) => a + b, 0)).toBe(all.bytes);
   });
 
-  test("the total is the measured 104.5 MB, within rounding", () => {
+  test("the total is the measured 103.7 MB, within rounding", () => {
+    // docs/store-offline-mirror.md §5.1. If this moves, that table moved too —
+    // the number a person is told to expect and the number the bar divides by
+    // have to be the same number.
     const { total } = progressFor([]);
-    expect(total).toBeGreaterThan(104_000_000);
-    expect(total).toBeLessThan(105_000_000);
+    expect(total).toBeGreaterThan(103_000_000);
+    expect(total).toBeLessThan(104_500_000);
   });
 });
 

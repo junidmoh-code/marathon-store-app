@@ -33,6 +33,7 @@ small. Measured against the live database on 2026-09-19 (RTDB REST, which does
 | `/customers` | 1,808,403 | 9,662 |
 | `/restock_requests` | 1,388,860 | — |
 | `/settings/hubSneakerCount` | 1,158,028 | — |
+| — of which `register`, the only part read whole | 353,404 | — |
 | `/returns_log` | 750,814 | — |
 | `/settings/displayRows` | 333,910 | — |
 | `/settings/displaySlots` | 138,896 | — |
@@ -110,7 +111,18 @@ switches most of the app.
 | 1 | `useProducts()` — `src/App.jsx:579` | `/products` whole | `products` | `changes` |
 | 2 | `useOrders(scopeShop)` — `src/App.jsx:911` | `/orders` whole or `destShop`-scoped | `orders` | `changes` |
 | 3 | `useCustomersDb()` — `src/App.jsx:1788` | `/customers` whole | `customers` | `changes` |
-| 4 | `usePath(path)` / `usePathState(path)` — `src/components/stock/useStock.js` | `/stock`, `/stock/{loc}`, `/stock_movements`, `/refill_requests`, `/transfers`, `/stock_alerts`, `/locations`, `/settings/displaySlots`, `/settings/displayRows`, `/settings/hubSneakerCount/register/{hub}`, `/settings/missingProductsHidden`, `/settings/stockHold`, `/config/transit` | `stock`, `movements`, `refills`, `settings`, `small` | `changes` + `movements` |
+| 4 | `usePath(path)` / `usePathState(path)` — `src/components/stock/useStock.js` | `/stock`, `/stock/{loc}`, `/stock_movements`, `/refill_requests`, `/transfers`, `/stock_alerts`, `/locations`, `/settings/displaySlots`, `/settings/displayRows`, `/settings/hubSneakerCount/register/{hub}`, `/settings/missingProductsHidden`, `/settings/stockHold`, `/config/transit` | `stock`, `movements`, `refills`, `displaySlots`, `displayRows`, `displayRegister`, `docs` | `changes` + `movements` |
+
+**A leg is scoped to what is actually read whole.** `/settings/hubSneakerCount`
+is 1.15 MB, but the only part any mirrored read touches is `register/{hub}` at
+353 KB — `counted` and `sessions` are reached by one-shot `get()`s and always
+will be. Mirroring the parent would have put 800 KB on every device for ever to
+serve nothing. The mirrored leg is `/settings/hubSneakerCount/register`, and a
+read of a sibling returns MISS and goes live, which is correct.
+
+Two nodes carry **base64 images inline**: `/restock_requests` and
+`/restock_log`. That is real weight in the setup download (8.0 MB and 1.4 MB),
+and it is weight the app pays on every whole-node read today.
 | 5 | `InsightsLogProvider` — `src/insights/InsightsLogProvider.jsx:41` | `/insights_log` whole | `insights` | `insights` |
 
 ### 3.2 The rest, by node
@@ -283,14 +295,14 @@ Measured, 2026-09-19.
 | `/orders` | 2,647,522 |
 | `/customers` | 1,808,403 |
 | `/restock_requests` | 1,388,860 |
-| `/settings/hubSneakerCount` | 1,158,028 |
+| `/settings/hubSneakerCount/register` | 353,404 |
 | `/returns_log` | 750,814 |
 | `/settings/displayRows` | 333,910 |
 | `/settings/displaySlots` | 138,896 |
 | `/settings/productTaxonomy` | 19,346 |
 | `/users` | 12,746 |
 | `/locations` | 927 |
-| **total** | **104,469,256 (≈ 104.5 MB)** |
+| **total** | **103,664,632 (≈ 103.7 MB)** |
 
 ### 5.2 Photos — background, non-blocking
 
@@ -300,8 +312,8 @@ Measured, 2026-09-19.
 
 The setup screen blocks on the data legs only. Thumbnails trickle afterwards, a
 few per pass, and a missing thumbnail degrades to the placeholder the app
-already shows — it never blocks a screen. A device is *usable* after ≈ 104.5 MB
-and *complete* after ≈ 216 MB.
+already shows — it never blocks a screen. A device is *usable* after ≈ 103.7 MB
+and *complete* after ≈ 215 MB.
 
 ### 5.3 What that replaces
 

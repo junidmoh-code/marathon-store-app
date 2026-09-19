@@ -131,18 +131,35 @@ export function InsightsLogProvider({
   );
   const chosen = open ?? (isLegServing("insights") ? openMirroredInsightsLog : openInsightsLog);
 
+  // ── THE STORE IS BUILT IN RENDER, AND TORN DOWN IN AN EFFECT ─────────────
+  // Creating it lazily in render is the pattern this provider already used and
+  // is safe: createInsightsLogStore opens nothing until the first retain().
+  // DESTROYING one is different — destroy() closes a live subscription — and
+  // doing that in the render body breaks React's purity contract: a render
+  // that is thrown away (a concurrent re-render, StrictMode's double pass)
+  // would have already closed a subscription the surviving render still
+  // depends on. So the swap is decided in render and the OLD store is
+  // destroyed in an effect, after the commit that stopped using it.
+  // (Sonnet architect review, PR #618.)
   const storeRef = useRef(null);
   const sourceRef = useRef(null);
-  // If the device starts serving from the mirror (or stops) mid-session, the
-  // store is rebuilt so the next retain() opens the other source. Rebuilding
-  // destroys the old one, which closes its subscription and drops its rows.
+  const retiredRef = useRef([]);
   if (!storeRef.current || sourceRef.current !== chosen) {
-    if (storeRef.current) storeRef.current.destroy();
+    if (storeRef.current) retiredRef.current.push(storeRef.current);
     storeRef.current = createInsightsLogStore({ open: chosen, releaseDelayMs });
     sourceRef.current = chosen;
   }
   const store = storeRef.current;
   void serving;
+
+  useEffect(() => {
+    if (retiredRef.current.length === 0) return;
+    const retired = retiredRef.current;
+    retiredRef.current = [];
+    for (const old of retired) {
+      try { old.destroy(); } catch { /* a teardown must never break a render */ }
+    }
+  });
 
   const log = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 

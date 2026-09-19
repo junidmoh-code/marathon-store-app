@@ -73,6 +73,11 @@ const {
 const { changeRecord, pushKeyForMs } = require("./lib.cjs");
 
 const INSTANCE = "marathon-club-default-rtdb";
+// Records per delete batch, and batches per invocation. The product is what one
+// nightly run can drain; the cap is what stops one runaway day turning into one
+// runaway invocation that times out having committed nothing it can report.
+const SWEEP_BATCH = 5000;
+const SWEEP_MAX_BATCHES = 40;
 const REGION = "europe-west1";
 
 const baseOpts = {
@@ -219,17 +224,46 @@ const mirrorChangesSweep = onSchedule(
   async () => {
     const db = admin.database();
     const cutoffKey = pushKeyForMs(Date.now() - CHANGE_RETENTION_MS);
-    // endBefore, not endAt: the cutoff key is a PREFIX, and a record whose key
-    // begins with it was written at the cutoff millisecond. Deleting it would
-    // be deleting a record inside the window by one tick.
-    const snap = await db.ref(CHANGES_ROOT)
-      .orderByKey().endBefore(cutoffKey).limitToFirst(5000).get();
-    const val = snap.val();
-    if (!val) return;
-    const patch = {};
-    for (const k of Object.keys(val)) patch[k] = null;
-    await db.ref(CHANGES_ROOT).update(patch);
-    console.log(`mirrorChangesSweep: removed ${Object.keys(patch).length} record(s) older than 30 days`);
+    let removed = 0;
+    // A BATCH IS NOT A DAY'S WORK. One limitToFirst(5000) and a return meant
+    // that any day whose expiring backlog exceeded the batch left the surplus
+    // standing with no second attempt until tomorrow — and tomorrow's would be
+    // larger. The log would then grow without bound while the sweep reported
+    // success every night. Harmless to readers, and a cost nobody would see
+    // until the bill. (Sonnet architect review, PR #618.)
+    //
+    // So it drains, bounded by the invocation's own 540-second timeout and by
+    // a pass cap that keeps one runaway day from becoming one runaway
+    // invocation. What it does not do is stop after one batch and call that
+    // finished.
+    for (let batch = 0; batch < SWEEP_MAX_BATCHES; batch += 1) {
+      // endBefore, not endAt: the cutoff key is a PREFIX, and a record whose
+      // key begins with it was written at the cutoff millisecond. Deleting it
+      // would be deleting a record inside the window by one tick.
+      const snap = await db.ref(CHANGES_ROOT)
+        .orderByKey().endBefore(cutoffKey).limitToFirst(SWEEP_BATCH).get();
+      const val = snap.val();
+      if (!val) break;
+      const keys = Object.keys(val);
+      if (keys.length === 0) break;
+      const patch = {};
+      for (const k of keys) patch[k] = null;
+      await db.ref(CHANGES_ROOT).update(patch);
+      removed += keys.length;
+      // A short batch is the end of the expired range; anything else would be
+      // the query lying about its own limit.
+      if (keys.length < SWEEP_BATCH) break;
+      if (batch === SWEEP_MAX_BATCHES - 1) {
+        console.warn(
+          `MIRROR_ALARM mirrorChangesSweep hit its pass cap after ${removed} record(s) — `
+          + "the expired backlog is larger than one invocation can drain. "
+          + "It will continue tomorrow, but the log is growing faster than the sweep.",
+        );
+      }
+    }
+    if (removed > 0) {
+      console.log(`mirrorChangesSweep: removed ${removed} record(s) older than 30 days`);
+    }
   },
 );
 

@@ -20,6 +20,46 @@ import {
 import { database } from "../firebase";
 import { withTimeout, READ_TIMEOUT_MS, BIG_READ_TIMEOUT_MS } from "./bounded";
 
+// ─── THE QUERY SHAPES, NAMED ────────────────────────────────────────────────
+//
+// WHY THIS EXISTS. Every sync test runs against a FAKE adapter, and a fake
+// re-implements the query semantics it is standing in for. That is fine until
+// the two disagree — and the disagreement that matters here is one character:
+//
+//   readChildPage uses startAt (INCLUSIVE) because /stock_movements `ts` is not
+//   unique — one transfer writes several movements with an identical ISO
+//   string — so startAfter would keep the movement that set the cursor and
+//   silently lose every other one sharing its timestamp.
+//
+// A mutation audit found exactly that: flipping startAt to startAfter here left
+// all 206 tests green, because the fake implements inclusivity independently.
+// The test named "the ts cursor is INCLUSIVE" was proving the fake.
+//
+// So the builders are pure, exported, and pinned by
+// __tests__/adapterQueryShapes.test.js against the constraint NAMES. The
+// functions below are the only callers.
+export function keyPageConstraints({ after = null, limit = 500 }) {
+  const parts = [orderByKey()];
+  // EXCLUSIVE. A change-log key or a push key is unique and we have already
+  // consumed the one the cursor names, so re-reading it would be waste.
+  if (after !== null && after !== undefined) parts.push(startAfter(after));
+  parts.push(limitToFirst(limit));
+  return parts;
+}
+
+export function childPageConstraints(field, { from = null, limit = 500 }) {
+  const parts = [orderByChild(field)];
+  // INCLUSIVE. See above — this one character is the whole comment.
+  if (from !== null && from !== undefined) parts.push(startAt(from));
+  parts.push(limitToFirst(limit));
+  return parts;
+}
+
+// What a constraint is, for a test that must name it. The SDK's own
+// `_QueryConstraint` carries `type`; reading it here keeps the assertion about
+// the real object rather than about a string we chose.
+export const constraintNames = (parts) => parts.map((p) => p.type ?? String(p));
+
 // A whole node, or a child of one. Used by the setup download and by the
 // per-row re-read the change feed does.
 export function createRtdbAdapter({ db = database } = {}) {
@@ -38,9 +78,7 @@ export function createRtdbAdapter({ db = database } = {}) {
     // /insights_log feed both use it; neither needs an index, because key
     // order is free.
     async readKeyPage(path, { after = null, limit = 500, big = false } = {}) {
-      const parts = [orderByKey()];
-      if (after !== null && after !== undefined) parts.push(startAfter(after));
-      parts.push(limitToFirst(limit));
+      const parts = keyPageConstraints({ after, limit });
       const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path} (key page)`,
@@ -49,17 +87,11 @@ export function createRtdbAdapter({ db = database } = {}) {
     },
 
     // A page of children by an INDEXED child field, inclusive of `from`. The
-    // /stock_movements feed uses it against the live `.indexOn: ["ts"]`.
-    //
-    // INCLUSIVE, deliberately. `ts` is not unique — a single transfer writes
-    // several movements with the identical ISO string — so an exclusive bound
-    // would skip every movement sharing the cursor's timestamp but for the one
-    // that set it. The overlap is re-read instead, and an upsert makes that
-    // free; missing a movement is not.
+    // /stock_movements feed uses it against the live `.indexOn: ["ts"]`. The
+    // inclusivity argument, and the mutation that proved it was untested, are
+    // in this file's header.
     async readChildPage(path, field, { from = null, limit = 500, big = false } = {}) {
-      const parts = [orderByChild(field)];
-      if (from !== null && from !== undefined) parts.push(startAt(from));
-      parts.push(limitToFirst(limit));
+      const parts = childPageConstraints(field, { from, limit });
       const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path} (${field} page)`,

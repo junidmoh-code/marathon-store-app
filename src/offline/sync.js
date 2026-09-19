@@ -99,13 +99,14 @@ export const RANGE_PAGES_PER_PASS = 2;
 //     empty on a quiet day, and /clothing_sold_refills is empty right now.
 //   displaySlots / displayRows / displayRegister — a shop with no displays up.
 //   insights / movements — a device syncing an empty window.
-//   stockHold / hiddenProducts / transitConfig / taxonomy — absent means
-//     "off"/"none", which is the default these features are written around.
+//   stockHoldConfig / stockHoldHeld / hiddenProducts / transitConfig /
+//     taxonomy — absent means "off"/"none", which is the default these
+//     features are written around. `held` is empty on the live database today.
 const CAN_BE_EMPTY = new Set([
   "returnsLog", "restockLog", "restockRequests", "clothingOos",
   "displaySlots", "displayRows", "displayRegister",
   "insights", "movements",
-  "stockHold", "hiddenProducts", "transitConfig", "taxonomy",
+  "stockHoldConfig", "stockHoldHeld", "hiddenProducts", "transitConfig", "taxonomy",
 ]);
 
 // The legs where an empty read is a FAILED read. /products with no products,

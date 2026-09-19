@@ -12,6 +12,11 @@
 //   - a key range is compared as STRINGS, in RTDB key order.
 //   - `readPath` on a missing child answers null, which is how a delete
 //     reaches the mirror.
+//   - and every method RECORDS ITS OPTIONS. A fake that took only `(path)`
+//     let production drop `{ big: true }` — reverting every large setup read
+//     from the 30-second budget to the 8-second one, i.e. guaranteed timeouts
+//     on a 35.8 MB node — with nothing to see. A fake that ignores an argument
+//     lies about the code that ignores the same argument.
 
 export function createFakeRtdb(initial = {}) {
   const tree = structuredClone(initial);
@@ -33,15 +38,16 @@ export function createFakeRtdb(initial = {}) {
     return structuredClone(v);
   };
 
-  const calls = { readPath: [], readKeyPage: [], readChildPage: [] };
+  const calls = { readPath: [], readPathOpts: [], readKeyPage: [], readChildPage: [] };
 
   const adapter = {
-    async readPath(path) {
+    async readPath(path, opts = {}) {
       calls.readPath.push(path);
+      calls.readPathOpts.push({ path, ...opts });
       return normalise(at(path));
     },
-    async readKeyPage(path, { after = null, limit = 500 } = {}) {
-      calls.readKeyPage.push({ path, after, limit });
+    async readKeyPage(path, { after = null, limit = 500, big = false } = {}) {
+      calls.readKeyPage.push({ path, after, limit, big });
       const node = at(path);
       if (!node || typeof node !== "object") return null;
       const keys = Object.keys(node).sort()
@@ -50,8 +56,8 @@ export function createFakeRtdb(initial = {}) {
       if (!keys.length) return null;
       return Object.fromEntries(keys.map((k) => [k, structuredClone(node[k])]));
     },
-    async readChildPage(path, field, { from = null, limit = 500 } = {}) {
-      calls.readChildPage.push({ path, field, from, limit });
+    async readChildPage(path, field, { from = null, limit = 500, big = false } = {}) {
+      calls.readChildPage.push({ path, field, from, limit, big });
       const node = at(path);
       if (!node || typeof node !== "object") return null;
       const rows = Object.entries(node)

@@ -1035,25 +1035,51 @@ function useOrders(scopeShop = null) {
 function useTvOrders() {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState([]);
+
+  const shapeTvOrders = useCallback((data) => (
+    data
+      ? Object.values(data).filter(Boolean)
+          .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+      : []
+  ), []);
+
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // THE TV IS THE WORST CASE THIS WORK EXISTS FOR. It is always on, it
+  // auto-reloads, and every reload re-pays the key range — 465 KB of customer
+  // orders out of the 2,150 KB the unscoped listen used to cost (measured
+  // 2026-08-13). On a mirrored device the range is applied to the LOCAL copy
+  // of /orders instead, by the same key comparison the server query uses, so
+  // the rows are identical and the reload costs nothing.
+  const mirrored = useMirroredPath("orders", authReady);
+  const live = mirrored.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    const data = mirrored.value;
+    if (!data) { setOrders([]); return; }
+    // The SAME bound as the server query. TV_ORDER_KEY_END's \uf8ff is
+    // invisible in an editor and must never be "tidied" — see
+    // src/utils/tvOrdersRange.js for why the range is what it is.
+    const inRange = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) inRange[key] = value;
+    }
+    setOrders(shapeTvOrders(Object.keys(inRange).length ? inRange : null));
+  }, [live, mirrored.settled, mirrored.value, shapeTvOrders]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const readRef = query(
       ref(database, "orders"),
       orderByKey(), startAt(TV_ORDER_KEY_START), endAt(TV_ORDER_KEY_END)
     );
     const unsub = onValue(readRef, (snap) => {
-      const data = snap.val();
-      setOrders(
-        data
-          ? Object.values(data).filter(Boolean)
-              .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
-          : []
-      );
+      setOrders(shapeTvOrders(snap.val()));
     }, (err) => {
       console.warn("Firebase read error on /orders (TV key range):", err);
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, shapeTvOrders]);
   return orders;
 }
 
@@ -1386,10 +1412,12 @@ function useAllSourceResponses() {
   const authReady = useAuthReady();
   const [responses, setResponses] = useState({});
   const [progress, setProgress] = useState({});
-  useEffect(() => {
-    if (!authReady) return;
-    const unsub = onValue(ref(database, "restock_requests"), snap => {
-      const data = snap.val() || {};
+
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /restock_requests is 1.4 MB and carries base64 photos inline. Six screens
+  // read it. The shaping below is the SAME function on both paths, so what
+  // they render cannot depend on where the rows came from.
+  const applySourceResponses = useCallback((data) => {
       const result = {};
       const prog = {};
       Object.entries(data).forEach(([date, dateNode]) => {
@@ -1418,9 +1446,24 @@ function useAllSourceResponses() {
       });
       setResponses(result);
       setProgress(prog);
+  }, []);
+
+  const mirrored = useMirroredPath("restock_requests", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applySourceResponses(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value, applySourceResponses]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const unsub = onValue(ref(database, "restock_requests"), snap => {
+      applySourceResponses(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applySourceResponses]);
+
   return { responses, progress };
 }
 
@@ -1496,10 +1539,9 @@ function clearSourceResponse(date, productKeys, size) {
 function useClothingOos() {
   const authReady = useAuthReady();
   const [oos, setOos] = useState({});
-  useEffect(() => {
-    if (!authReady) return;
-    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
-      const data = snap.val() || {};
+
+  // Same shaping on both paths — see useAllSourceResponses.
+  const applyClothingOos = useCallback((data) => {
       const result = {};
       Object.entries(data).forEach(([store, storeNode]) => {
         if (!storeNode || typeof storeNode !== "object") return;
@@ -1516,9 +1558,24 @@ function useClothingOos() {
         if (Object.keys(byProduct).length) result[store] = byProduct;
       });
       setOos(result);
+  }, []);
+
+  const mirrored = useMirroredPath("clothing_sold_refills", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applyClothingOos(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value, applyClothingOos]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
+      applyClothingOos(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applyClothingOos]);
+
   return oos;
 }
 
@@ -1737,15 +1794,27 @@ function relativeTimeFromIso(iso) {
 function useRestockLogRaw(date) {
   const authReady = useAuthReady();
   const [entries, setEntries] = useState([]);
+  // One day of /restock_log. Small on its own, but the whole node is 8.0 MB
+  // and already mirrored, so reading one day from the local copy costs
+  // nothing at all rather than a subscription per day viewed.
+  const mirrored = useMirroredPath(date ? `restock_log/${date}` : null, authReady && !!date);
+  const live = mirrored.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady || !date) return;
+    if (live || !mirrored.settled) return;
+    const data = mirrored.value;
+    setEntries(data ? Object.values(data).filter(Boolean) : []);
+  }, [live, mirrored.settled, mirrored.value]);
+
+  useEffect(() => {
+    if (!authReady || !date || !live) return undefined;
     const unsub = onValue(ref(database, `restock_log/${date}`), snap => {
       const data = snap.val();
       if (!data) { setEntries([]); return; }
       setEntries(Object.values(data).filter(Boolean));
     });
     return () => unsub();
-  }, [authReady, date]);
+  }, [authReady, date, live]);
   return entries;
 }
 
@@ -1880,13 +1949,15 @@ function useReturnsLog() {
   useEffect(() => {
     if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "returns_log"), snap => {
-      const data = snap.val();
-      if (!data) { setLog([]); return; }
-      setLog(Object.values(data).filter(Boolean)
-        .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp)));
+      setLog(shape(snap.val()));
     });
     return () => unsub();
-  }, [authReady]);
+    // `live` is LOAD-BEARING in this list. Without it the effect only re-runs
+    // when authReady moves, so a device whose mirror goes unusable mid-session
+    // — a census drift, an expired cursor — would fall back to the live path
+    // and never open the subscription, leaving Returns frozen on the last
+    // mirrored value until a reload. (Sonnet architect review, PR #618.)
+  }, [authReady, live, shape]);
   return log;
 }
 

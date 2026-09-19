@@ -30,7 +30,8 @@
 const LEGS = [
   { name: "locations",       node: "locations",                       depth: 0, fn: "mirrorChangeLocations" },
   { name: "taxonomy",        node: "settings/productTaxonomy",        depth: 0, fn: "mirrorChangeTaxonomy" },
-  { name: "stockHold",       node: "settings/stockHold",              depth: 0, fn: "mirrorChangeStockHold" },
+  { name: "stockHoldConfig", node: "settings/stockHold/config",       depth: 0, fn: "mirrorChangeStockHoldConfig" },
+  { name: "stockHoldHeld",   node: "settings/stockHold/held",         depth: 1, fn: "mirrorChangeStockHoldHeld" },
   { name: "hiddenProducts",  node: "settings/missingProductsHidden",  depth: 0, fn: "mirrorChangeHiddenProducts" },
   { name: "transitConfig",   node: "config/transit",                  depth: 0, fn: "mirrorChangeTransitConfig" },
   { name: "clothingOos",     node: "clothing_sold_refills",           depth: 0, fn: "mirrorChangeClothingOos" },
@@ -41,7 +42,7 @@ const LEGS = [
   { name: "customers",       node: "customers",                       depth: 1, fn: "mirrorChangeCustomers" },
   { name: "displaySlots",    node: "settings/displaySlots",           depth: 2, fn: "mirrorChangeDisplaySlots" },
   { name: "displayRows",     node: "settings/displayRows",            depth: 3, fn: "mirrorChangeDisplayRows" },
-  { name: "displayRegister", node: "settings/hubSneakerCount",        depth: 3, fn: "mirrorChangeDisplayRegister" },
+  { name: "displayRegister", node: "settings/hubSneakerCount/register", depth: 2, fn: "mirrorChangeDisplayRegister" },
   { name: "refills",         node: "refill_requests",                 depth: 1, fn: "mirrorChangeRefills" },
   { name: "restockRequests", node: "restock_requests",                depth: 2, fn: "mirrorChangeRestockRequests" },
   { name: "returnsLog",      node: "returns_log",                     depth: 1, fn: "mirrorChangeReturnsLog" },

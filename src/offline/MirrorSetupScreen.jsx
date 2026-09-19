@@ -38,17 +38,21 @@ const LEG_BYTES = Object.freeze({
   orders: 2_647_522,
   customers: 1_808_403,
   restockRequests: 1_388_860,
-  displayRegister: 1_158_028,
+  displayRegister: 353_404,
   returnsLog: 750_814,
   displayRows: 333_910,
   displaySlots: 138_896,
   taxonomy: 19_346,
   users: 12_746,
+  hiddenProducts: 9_991,
   locations: 927,
-  stockHold: 500,
-  hiddenProducts: 500,
-  transitConfig: 500,
-  clothingOos: 500,
+  stockHoldConfig: 149,
+  transitConfig: 99,
+  // RTDB answers 4 bytes ("null") for a node with nothing in it. Kept as a
+  // real measurement rather than rounded to zero, because a leg with no entry
+  // at all contributes nothing to the bar and it would stop short of 100%.
+  stockHoldHeld: 4,
+  clothingOos: 4,
 });
 
 const TOTAL_BYTES = Object.values(LEG_BYTES).reduce((a, b) => a + b, 0);
@@ -70,7 +74,8 @@ const LEG_LABEL = Object.freeze({
   taxonomy: "Categories",
   users: "Staff",
   locations: "Locations",
-  stockHold: "Settings",
+  stockHoldConfig: "Settings",
+  stockHoldHeld: "Settings",
   hiddenProducts: "Settings",
   transitConfig: "Settings",
   clothingOos: "Settings",
