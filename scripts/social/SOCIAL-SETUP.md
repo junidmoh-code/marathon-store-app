@@ -526,6 +526,77 @@ up in §3c, which already handle video. Nothing platform-specific changed.
 
 ---
 
+## 5e. WHAT IT COSTS, AND THE CAP THAT BOUNDS IT — 2026-09-19
+
+### Measured, not estimated
+
+`POST_KINDS` says `$0.134` a generation. That is the documented flat rate;
+what is actually billed comes off Nano Banana Pro's output tokens, and the
+autopilot records the real figure on every run. Four consecutive full days
+from `/social_autopilot_log`:
+
+| SA date | generations | charged |
+|---|---:|---:|
+| 2026-09-08 | 6 | $0.9461 |
+| 2026-09-09 | 6 | $0.9565 |
+| 2026-09-10 | 6 | $0.9551 |
+| 2026-09-11 | 6 | $0.9408 |
+| **total** | **24** | **$3.7985** |
+
+**$0.1583 a generation.** Use this number, not $0.134.
+
+### Before and after
+
+| | generations/day | per day | per month (30.44d) |
+|---|---:|---:|---:|
+| **Before** — 2 reels, 1 photo, 3 stories | 6 | $0.950 | **$28.91** |
+| **After** — 2 reels, each also a story | 2 | $0.317 | **$9.64** |
+| At the hard cap, every day | 4 | $0.633 | $19.27 |
+
+**About a third of the cost, for four posts a day instead of nine.** The
+saving is not fewer posts, it is fewer *pictures*: a story used to be its own
+generation, and now it is a video that already exists.
+
+Captions are a few hundredths of a cent and are inside those figures. A story
+never calls the model at all — it has nowhere to show a caption — so the day
+is two caption calls, one per reel. The ffmpeg encode is free: it runs on the
+Mac mini.
+
+### The hard cap: 4 image generations a calendar day (SAST)
+
+`MAX_IMAGE_GENERATIONS_PER_DAY` in `functions/lib/social-budget.cjs`.
+
+- **Durable.** One RTDB counter at `/social_generation_budget/{SA date}/count`,
+  incremented in a transaction. It is in the database, so a restarted or
+  recycled Cloud Function instance sees it.
+- **Shared.** The 06:00 autopilot and a Generate-tab run at 06:01 are two
+  processes on one budget. A per-process cap would be four *each*.
+- **Retries count.** The unit is reserved *before* the paid call, never after
+  it — a generation that succeeds at Gemini and then dies on the upload has
+  still spent the money, and that is exactly the failure that retries.
+- **It fails closed.** If the counter cannot be read, the honest answer is "I
+  do not know what has been spent today", and the safe reading of that is the
+  cap. A cap that fails open is not a cap.
+- **At the cap it skips and says so** — in the run's `skipReasons`, so the
+  reason is in the database rather than only in a log.
+
+The counter needs **no database rule**: nothing in the browser reads or writes
+it, and the Admin SDK bypasses rules. If a screen is ever built on it, this is
+the rule and it goes in **Firebase console → Realtime Database → Rules** as
+one new top-level key:
+
+```json
+"social_generation_budget": {
+  ".read": "auth != null && root.child('users').child(auth.uid).child('stockRole').val() === 'admin'",
+  ".write": false
+}
+```
+
+`".write": false` is deliberate, for the same reason as `social_health`: a
+browser must never be able to forge a spent — or an unspent — budget.
+
+---
+
 ## 6. Day to day
 
 App → **Social**.

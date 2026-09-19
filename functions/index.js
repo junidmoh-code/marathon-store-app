@@ -2687,7 +2687,20 @@ async function loadStyleKit(db) {
 // to a truncated raw message for anything unrecognised.
 function classifyPhotoError(msg, engName) {
   const m = String(msg || "").trim();
-  if (/HTTP 429|credits are depleted|rate|quota|RESOURCE_EXHAUSTED/i.test(m)) {
+  // ── OUR OWN CAP IS NOT THE PROVIDER'S ────────────────────────────────────
+  // FIRST, and deliberately so. The daily image-generation cap's message
+  // contains the word "generated", and "generated" contains "rate" — so the
+  // provider branch below matched it and reported a refusal we made
+  // ourselves, for free, as "AI credits depleted — check Gemini billing".
+  // That is the worst possible misdirection: it sends the reader to a billing
+  // page to fix a limit that is in this repository.
+  //
+  // (The `rate` alternative below is now anchored to a real rate LIMIT for the
+  // same reason — a bare /rate/ matches "generated", "accelerate" and
+  // "moderate", and an error classifier that guesses is worse than one that
+  // quotes.)
+  if (/daily image-generation cap/i.test(m)) return m.slice(0, 140);
+  if (/HTTP 429|credits are depleted|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
     const provider = engName === "openai" ? "OpenAI" : "Gemini";  // gemini + nbpro → Gemini
     return `AI credits depleted or rate-limited (429) — check ${provider} billing`;
   }
@@ -4388,9 +4401,39 @@ async function loadSocialGenerationContext(db, { nowMs, style }) {
  *
  * @returns { ok: true, created } or { ok: false, skipped }
  */
+// ── THE DAY'S IMAGE BUDGET, RESERVED BEFORE THE MONEY IS SPENT ───────────────
+// One RTDB transaction per generation, against a counter keyed on the SA date.
+// Durable (it is in the database, so a restarted instance sees it), shared
+// (the 06:00 autopilot and a Generate-tab run at 06:01 are two processes on
+// one budget), and taken BEFORE the paid call, so a generation that succeeds
+// at Gemini and then dies on the upload has still spent its unit — which is
+// what "retries count against it" means.
+//
+// The path is Admin-SDK-only and carries no rule, like /social_signal: nothing
+// in the browser reads or writes it, and a browser that could forge a spent
+// budget would be a browser that could switch the engine off.
+//
+// A FAILURE TO READ THE COUNTER REFUSES. If RTDB cannot be reached the honest
+// answer is "I do not know how much has been spent today", and the safe
+// reading of that is the cap. A cap that fails open is not a cap.
+async function claimImageGeneration(db, saDate) {
+  const cap = socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY;
+  try {
+    const res = await db.ref(`social_generation_budget/${saDate}/count`)
+      .transaction((cur) => socialBudget.reserveGeneration(cur, cap));
+    // committed is the only outcome that means a unit is ours. An abort is the
+    // cap (or an unreadable counter — see reserveGeneration).
+    if (res.committed) return { ok: true, count: Number(res.snapshot.val()) || 0, cap };
+    return { ok: false, count: Number(res.snapshot.val()) || cap, cap };
+  } catch (err) {
+    console.error(`socialBudget: could not reserve a generation for ${saDate} — refusing:`, err && err.message);
+    return { ok: false, count: cap, cap, unreadable: true };
+  }
+}
+
 async function generateOnePost(db, {
   kind, format, style, platforms, styleKit, library, candidates, used,
-  signal, geminiApiKey, status, scheduledAt, updatedBy,
+  signal, geminiApiKey, status, scheduledAt, updatedBy, saDate,
 }) {
   const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
   if (!picks.length) return { ok: false, skipped: { kind, format, reason } };
@@ -4442,6 +4485,16 @@ async function generateOnePost(db, {
         style,
         styleNotes: library.notes,
       });
+      // ── THE CAP, IMMEDIATELY BEFORE THE ONLY LINE THAT COSTS MONEY ───────
+      // Here and nowhere else: this is the single paid call in the whole
+      // generator, so a unit reserved here can never be a unit spent
+      // somewhere the cap cannot see. Everything above is free — reading the
+      // catalogue, fetching product photographs, building a prompt — and a
+      // refusal at this point has charged nothing.
+      const budget = await claimImageGeneration(db, saDate || saDateForUsage(Date.now()));
+      if (!budget.ok) {
+        throw new Error(socialBudget.capReachedReason(saDate || saDateForUsage(Date.now()), budget.cap));
+      }
       const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
       costUSD = gen.costUSD;
       const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime, format);
@@ -4730,6 +4783,9 @@ exports.generateSocialPosts = onCall(
         signal, geminiApiKey, status: "draft",
         scheduledAt: slots[index] || null,
         updatedBy: request.auth.uid,
+        // ONE budget, shared with the autopilot. A manual run on the morning
+        // the cron already spent the day's four must not get four more.
+        saDate: saDateForUsage(nowMs),
       });
       if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
       else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
@@ -4971,6 +5027,7 @@ function parseHHMM(s) {
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
 const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
 const socialTwin = require("./lib/social-twin.cjs");
+const socialBudget = require("./lib/social-budget.cjs");
 const socialLibrary = require("./lib/social-library.cjs");
 const DAY_MS = 86400000;
 
@@ -5130,6 +5187,7 @@ exports.socialDailyAutopilot = onSchedule(
           kind: req.kind, format: req.format, style, platforms, styleKit, library, candidates, used,
           signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
           updatedBy: "cron:socialDailyAutopilot",
+          saDate,
         });
         if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
         else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
