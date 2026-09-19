@@ -5316,6 +5316,17 @@ exports.socialHealthScan = onSchedule(
       autopilotLog: logSnap.val(),
       posts,
       publisherTickAt: tickSnap.val() ?? null,
+      // ── THE OBLIGATION FOLLOWS THE TWINS ─────────────────────────────────
+      // Two reel slots owe two reels AND two stories, because each reel is
+      // also posted as a story from the same encoded file. Passed in rather
+      // than re-derived inside the assessor, which is pure and has no
+      // business reading process.env — and passed as the LIVE flags, so
+      // switching a twin off in functions/.env cannot leave the watchdog
+      // alarming for the day about posts nobody is making any more.
+      twins: {
+        reelAlsoPostsToStory: REEL_ALSO_POSTS_TO_STORY,
+        storyAlsoPostsToFeed: STORY_ALSO_POSTS_TO_FEED,
+      },
     });
 
     // The record is written on EVERY run, healthy or not. A watchdog that only

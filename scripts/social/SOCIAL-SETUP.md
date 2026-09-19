@@ -350,9 +350,23 @@ day on four independent questions, any one of which raises the alarm:
 | # | question | catches |
 |---|---|---|
 | 1 | did the 06:00 generator run, and make what the policy asked for? | the 2026-08-27 failure |
+| 1b | did each SURFACE get what the day owed it — 2 reels **and** 2 stories? | a run that made both pictures and twinned neither |
 | 2 | is anything approved, due and 20+ minutes late? | a publisher that has stopped |
 | 3 | was anything owed today, and did nothing publish? | total silence |
 | 4 | has the Mac mini ticked in the last 15 minutes? | a dead launchd agent, *before* the day is lost |
+
+**Updated 2026-09-19 for the two-reels rhythm.** Check 1 counts GENERATIONS;
+check 1b counts POSTS, and since a reel's story is free those are no longer the
+same number. The retired photo and standalone-story slots owe **nothing**, so
+they cannot alarm — the obligation is derived from the policy, so putting a
+time back in the Policy tab turns its check back on the same day.
+
+**And these now reach your phone, which they did not before.** Only `silent`
+sends an email, and "the 06:00 generator made nothing" used to be graded
+`degraded` — which is how the 2026-09-13 outage ran for six days with the
+backlog still draining and nothing saying so. A generator that made nothing,
+and a surface that is short, are both `silent` now. See
+`SOCIAL-OUTAGE-2026-09-13.md`.
 
 **The alarm arrives as an email to junidmoh@gmail.com**, sent by Google Cloud
 Monitoring off a log-based metric — not by this project, and not by the Mac
