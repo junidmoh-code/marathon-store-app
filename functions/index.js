@@ -5464,3 +5464,20 @@ function socialScheduleSlots(existingPosts, count, fromMs) {
 
 // The usage ledger is keyed by SA calendar date, like every other entry in it.
 const saDateForUsage = (ms) => require("./lib/sa-time.cjs").saDateStringFromMs(ms);
+
+// ─── OFFLINE MIRROR — the change log every device reads ──────────────────────
+// One trigger per mutable mirrored node appends a tiny pointer record to
+// /mirror_changes; a daily census publishes row counts to /mirror_counts so a
+// dropped invocation self-heals instead of drifting for ever; a daily sweep
+// holds the log to thirty days. Design and the rule to paste:
+// docs/store-offline-mirror.md. Deploy scoped by name — the full list is
+// printed by `node scripts/print-mirror-deploy.mjs`.
+{
+  const mirror = require("./mirrorChanges/mirrorChanges.js");
+  for (const name of Object.keys(mirror)) {
+    // The underscore-prefixed exports are the pure helpers the node:test suite
+    // imports. They are not functions and must never be deployed as any.
+    if (name.startsWith("_")) continue;
+    exports[name] = mirror[name];
+  }
+}
