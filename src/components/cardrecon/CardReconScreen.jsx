@@ -66,6 +66,7 @@ import { describeCallableError, describeDecodeError } from "./captureFailure";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
 import { captureCards } from "./terminalRegistry";
+import { captureCreditNotice } from "./creditNotice";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -147,6 +148,12 @@ const T = {
   again: { appearance: "none", width: "100%", minHeight: 46, marginTop: -2, borderRadius: 14, cursor: "pointer",
            fontFamily: FONT, fontSize: 14.5, fontWeight: 600, color: "rgba(233,238,255,.8)",
            background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.14)" },
+  // Amber, not red: red is a refusal of something you did; nobody at a till
+  // caused this or can clear it.
+  creditOut: { marginTop: 22, fontSize: 13.5, lineHeight: 1.5, color: "#FFD9A0",
+               background: "rgba(255,176,32,.08)", border: "1px solid rgba(255,176,32,.3)",
+               borderRadius: 14, padding: "13px 15px" },
+  creditTitle: { fontWeight: 700, marginBottom: 5, color: "#FFC46B" },
   quiet: { fontSize: 13, color: "rgba(233,238,255,.35)", lineHeight: 1.55, marginTop: 26 },
   // Rendered, not display:none. A file input the browser has laid out is one
   // its label can always open; display:none inputs are the thing phone browsers
@@ -201,6 +208,21 @@ export default function CardReconScreen({ onExit }) {
     return () => off();
   }, []);
 
+  // ── WHY A FEATURE IS DARK, WHEN IT IS THE MONEY ───────────────────────────
+  // The shared Gemini wallet pays for slip OCR; when it empties, capture stops
+  // at every till. aiCreditScan writes its verdict hourly and creditNotice.js
+  // decides whether there is anything to say. THE FIGURE-FREE NODE on purpose
+  // — the full verdict carries the owner's spend and stays off this handset.
+  // A denied read is silence, never an alarm.
+  const [credit, setCredit] = useState(null);
+  useEffect(() => {
+    const off = onValue(
+      dbRef(database, "ai_credit_public"),
+      (snap) => setCredit(snap.val() || null),
+      (err) => { setCredit(null); console.warn("card recon: credit status read failed", err?.code || err); });
+    return () => off();
+  }, []);
+
   // THE SERVER'S CLOCK, not the device's, and re-read while the screen sits
   // open so the ticks clear at midnight on their own.
   const [nowMs, setNowMs] = useState(() => serverNowMs());
@@ -237,6 +259,8 @@ export default function CardReconScreen({ onExit }) {
   // that had not reported at all. Marathon Till 1's refusal on 19 Sept 2026
   // was invisible all day for exactly that reason, while the server's own
   // sentence explaining it sat unread in the feed. See refusedArrivals.
+  const creditNotice = useMemo(() => captureCreditNotice(credit, nowMs), [credit, nowMs]);
+
   const refused = useMemo(
     () => refusedArrivals(intake, today, saDateStringAt),
     [intake, today]);
@@ -340,6 +364,14 @@ export default function CardReconScreen({ onExit }) {
       <button onClick={onExit} style={T.back}>← Home</button>
       <h1 style={T.h1}>Card machines</h1>
       <div style={T.day}>{dayLabel(nowMs)}</div>
+
+      {/* Above the cards: it is true of every till at once. */}
+      {creditNotice && (
+        <div style={T.creditOut}>
+          <div style={T.creditTitle}>{creditNotice.title}</div>
+          <div>{creditNotice.detail}</div>
+        </div>
+      )}
 
       <div style={T.list}>
         {terminals === null && <div style={T.quiet}>Loading…</div>}
