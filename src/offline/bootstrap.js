@@ -236,7 +236,11 @@ export async function startOfflineMirror({
     refreshServing,
     setupState: () => engine.setupState(),
     runOnePass,
-    start() { schedule(0); watchChanges(); },
+    // `stopped` is cleared here as well as on an auth transition: a public
+    // start()/stop() pair whose start() silently does nothing after a stop()
+    // is a trap for the next caller, even though nothing does that today.
+    // (Sonnet verification review, PR #618.)
+    start() { stopped = false; schedule(0); watchChanges(); },
     stop() {
       stopped = true;
       clearTimeoutFn(timer);

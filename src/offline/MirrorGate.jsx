@@ -16,7 +16,7 @@
 // that can never finish is a shop that cannot trade. The dot says the mirror
 // is off, which is a thing someone can act on.
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { offlineMirrorEnabled } from "./mirrorFlag";
 import { setOfflineMirrorRuntime } from "./mirrorRuntime";
 import { MirrorSetupScreen } from "./MirrorSetupScreen";
@@ -35,6 +35,9 @@ export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIM
   const [runtime, setRuntime] = useState(null);
   const [ready, setReady] = useState(!enabled);
   const [signedIn, setSignedIn] = useState(false);
+  // Whether the start bound has already elapsed — read by the late-start path
+  // below, which must know that the overlay will never mount.
+  const bailed = useRef(false);
 
   // ── THE CHILDREN ALWAYS RENDER ───────────────────────────────────────────
   //
@@ -78,7 +81,20 @@ export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIM
       setRuntime(rt);
       const state = await rt.setupState();
       if (cancelled) return;
-      if (state.done) { setReady(true); rt.start(); }
+      if (state.done) { setReady(true); rt.start(); return; }
+      // ── A LATE START MUST NOT LEAVE THE MIRROR DORMANT ────────────────
+      // If the 8-second bail has already fired, `ready` is true, so the
+      // overlay will never mount — and the overlay is the only thing that
+      // calls setup(). Without this the mirror would sit there, started and
+      // idle, for the whole session, on exactly the slow device the bail
+      // exists for. So a late start runs its setup in the BACKGROUND: the
+      // app is already working on live reads, and nobody is held.
+      // (Sonnet verification review, PR #618.)
+      if (bailed.current) {
+        rt.setup()
+          .then(() => rt.start())
+          .catch((err) => console.warn("offline mirror: background setup failed —", err));
+      }
     }, (err) => {
       if (cancelled) return;
       // See the header: a mirror that cannot start must not stop the app.
@@ -88,6 +104,7 @@ export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIM
 
     const bail = setTimeout(() => {
       if (cancelled) return;
+      bailed.current = true;
       console.warn("offline mirror: did not start within "
         + `${startTimeoutMs} ms — rendering the app on its live reads.`);
       setReady(true);

@@ -566,3 +566,53 @@ describe("the setup bar does not count a leg done while it is downloading", () =
     expect(finished[0].rows).toBe(900);
   });
 });
+
+describe("`added` means NEW rows, on both kinds of forward walk", () => {
+  test("ONE new /insights_log row reports added: 1 — the signal every reader waits on", async () => {
+    // The keyRange bound is EXCLUSIVE, so there is no overlap row to discount.
+    // Subtracting one anyway made the commonest case /insights_log has — a
+    // single append per sale — report zero, so bumpLegs never fired and a
+    // screen sat on yesterday's total until a pass happened to bring two rows
+    // at once. (Sonnet verification review, PR #618.)
+    const db = await freshMirrorDb();
+    const log = Object.fromEntries(Array.from({ length: 3 }, (_, i) =>
+      [pushKeyForMs(T0 + i * 1000, String(i).padStart(12, "A")), { timestamp: T0 + i * 1000 }]));
+    const w = fullWorld({ insights_log: log });
+    const e = engineOn(db, w);
+    await e.runSetup();
+
+    w.write(`insights_log/${pushKeyForMs(T0 + 9000, "ZZZZZZZZZZZZ")}`, { timestamp: T0 + 9000 });
+    const res = await e.runRangeLeg(LEG_BY_NAME.insights, { maxPages: 2 });
+    expect(res.added).toBe(1);
+    expect(await db.count("insights")).toBe(4);
+  });
+
+  test("a caught-up /insights_log leg reports added: 0", async () => {
+    const db = await freshMirrorDb();
+    const w = fullWorld({ insights_log: { "-A": { timestamp: T0 } } });
+    const e = engineOn(db, w);
+    await e.runSetup();
+    expect((await e.runRangeLeg(LEG_BY_NAME.insights, { maxPages: 2 })).added).toBe(0);
+  });
+
+  test("ONE new /stock_movements row also reports added: 1, overlap discounted", async () => {
+    // The tsRange bound IS inclusive, so its resumed page carries the cursor's
+    // own row plus the new one — two records, one of them new.
+    const db = await freshMirrorDb();
+    const w = fullWorld({ stock_movements: { a: { ts: "2026-09-01T00:00:00.000Z" } } });
+    const e = engineOn(db, w);
+    await e.runSetup();
+    w.write("stock_movements/b", { ts: "2026-09-02T00:00:00.000Z" });
+    const res = await e.runRangeLeg(LEG_BY_NAME.movements, { maxPages: 2 });
+    expect(res.added).toBe(1);
+    expect(await db.count("movements")).toBe(2);
+  });
+
+  test("a caught-up /stock_movements leg reports added: 0, not -1 or 1", async () => {
+    const db = await freshMirrorDb();
+    const w = fullWorld({ stock_movements: { a: { ts: "2026-09-01T00:00:00.000Z" } } });
+    const e = engineOn(db, w);
+    await e.runSetup();
+    expect((await e.runRangeLeg(LEG_BY_NAME.movements, { maxPages: 2 })).added).toBe(0);
+  });
+});

@@ -364,10 +364,19 @@ export function createSyncEngine({
         ...(isAfter ? { isAfter } : {}),
         metaEntries: { [LAST_SYNC_META(leg.name)]: at },
       });
-      // Rows that were already held (the one-row overlap the inclusive bound
-      // re-reads) are not NEW. Counting them would make every pass look like
-      // it found work and wake every reader for nothing.
-      total += records.length - (cursor ? 1 : 0);
+      // Rows that were already held are not NEW. Counting them would make
+      // every pass look like it found work and wake every reader for nothing.
+      //
+      // ONLY THE tsRange LEG HAS AN OVERLAP. Its bound is inclusive, so a
+      // resumed page re-reads exactly the one row the cursor names. The
+      // keyRange leg's bound is EXCLUSIVE (startAfter), so it has none — and
+      // subtracting one there made a page of exactly ONE new row report zero,
+      // which is the commonest case /insights_log has (one row per sale). The
+      // reader signal then never fired and a screen sat on yesterday's total
+      // until some later pass happened to bring two rows at once.
+      // (Sonnet verification review, PR #618.)
+      const overlap = leg.feed === "tsRange" && cursor ? 1 : 0;
+      total += records.length - overlap;
       cursor = nextCursor;
       onProgress({ phase: "range", leg: leg.name, rows: total });
       if (entries.length < leg.pageSize) { pages += 1; break; }
