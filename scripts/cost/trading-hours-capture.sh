@@ -30,6 +30,15 @@
 
 set -uo pipefail
 
+# ─── THE ARTEFACTS ARE NOT WORLD-READABLE ────────────────────────────────────
+# The raw capture is the one thing here that keeps what the published analysis
+# deliberately strips: real client addresses, user agents and full paths, for
+# every read in the hour. It never leaves the mini, and on a shared machine
+# "never leaves" should not depend on nobody looking. umask before anything is
+# created, and the directory itself locked down, so a capture cannot be written
+# readable and tightened afterwards.
+umask 077
+
 export PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin
 # Application Default Credentials carry no quota project of their own, and
 # firebasedatabase.googleapis.com refuses a request without one — a 403
@@ -53,7 +62,10 @@ DURATION="${1:-3900}"
 # branch is merged, which is how this script was verified end to end.
 REF="${COSTCAPTURE_REF:-}"
 
-mkdir -p "$OUTDIR"
+if ! mkdir -p "$OUTDIR" || ! chmod 700 "$OUTDIR"; then
+  echo "COSTCAPTURE_ALARM: cannot create or secure $OUTDIR — refusing to write captures" >&2
+  exit 1
+fi
 exec >>"$OUTDIR/costcapture.log" 2>&1
 echo "── costcapture start $(date) (duration ${DURATION}s) ──"
 

@@ -20,6 +20,11 @@ Every figure below is **measured** (read off the billing console, a live
 profiler capture, or a live bounded query) or **derived** (arithmetic on
 measured figures, always shown). Nothing is modelled.
 
+**Units, because they caused the only arithmetic mistakes in this report:** MB
+here is decimal (10⁶ bytes), because that is what the profiler analyser prints;
+GiB is binary (2³⁰), because that is what Google bills. Converting between them
+is ÷1,073.74, not ÷1,024, and getting that wrong inflates a saving by 5%.
+
 **What this investigation cost to produce:** 65,082 B of live reads — one
 bounded `orderByChild("resolvedAt").equalTo(null)` query against
 `/refill_requests` (§5.1), and a `gcloud logging read` that cost nothing — plus a 51,550 B read of `/.settings/rules.json`,
@@ -315,7 +320,7 @@ five hours this investigation ran two parallel sessions shipped the same two
 lines with better designs:
 
 - **#617, merged 18:55 SAST** — the display-checks sweep (`wakeHeldChecks`) from
-  288 runs a day to 5. That is §4 line 3, from $0.42/day to about $0.01/day — a $0.43/day saving once the runs it removes are counted.
+  288 runs a day to 5. That is §4 line 3, from $0.42/day to about $0.01/day.
 - **#618, merged 20:00 SAST** — an offline mirror for the store app: "one
   download at setup, then only what changed". It routes `usePath` — the
   chokepoint for `/stock`, `/refill_requests`, `/stock_movements`, `/products`
@@ -446,7 +451,7 @@ is stale against live.
 | | Working | $/day |
 |---|---|---:|
 | Measured bill, 5–18 September average | subtotal column, §1.3 | **$15.34** |
-| less #617, display-checks sweep 288 → 5 runs | 283 fewer runs × 1.61 MB = 456 MB/day = 0.445 GiB | −$0.43 |
+| less #617, display-checks sweep 288 → 5 runs | 283 fewer runs × 1.61 MB = 455.6 MB/day = 0.424 GiB | −$0.41 |
 | less #618, store-app mirror — **per device, as each is set up** | at the §2.4 rate, a device that stops re-reading `/insights_log`, `/stock`, `/products` and `/refill_requests` is worth up to ~$4 – 9/day across the estate | −$4 to −$9 |
 | **Expected** | | **≈ $6 – 11** |
 
@@ -466,7 +471,7 @@ arrives gradually:
 
 What *is* firm is the shape of the remainder. The after-hours window contained
 242.26 MB of staff-phone reads, which the mirror removes once a device is set
-up — held flat across a day that is 5.70 GiB, **$5.56/day**, and a trading day
+up — held flat across a day that is 5.43 GiB, **$5.30/day**, and a trading day
 has more phones on it than a Saturday evening does. It also contained 163.38 MB
 of refillHealthScan reads, which the mirror does not touch at all.
 
