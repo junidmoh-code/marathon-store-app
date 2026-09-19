@@ -953,7 +953,12 @@ function useOrders(scopeShop = null) {
     const data = mirroredOrders.value;
     if (!data) { setOrders(Object.assign([], { settled: true })); return; }
     const arr = Object.values(data)
-      .filter(Boolean)
+      // Not just filter(Boolean). The legacy {items:[...]} shape would yield
+      // ONE element that is an array, which sorts by an undefined createdAt
+      // and renders as a broken order row. The live path detects and MIGRATES
+      // that shape; a read-only path cannot, so it declines to render it —
+      // same guard useProducts applies, for the same reason.
+      .filter(o => o && typeof o === "object" && !Array.isArray(o))
       .filter(o => !scopeShop || o?.destShop === scopeShop)
       .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
     setOrders(Object.assign(arr, { settled: true }));

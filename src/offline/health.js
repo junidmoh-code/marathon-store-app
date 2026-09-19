@@ -230,8 +230,7 @@ export function shrinkVerdict({ held, incoming }) {
   if (incoming >= held) return { accept: true };
   const drop = held - incoming;
   const allowed = Math.max(SHRINK_ABS_FLOOR, Math.floor(held * SHRINK_TOLERANCE));
-  if (drop <= allowed) return { accept: true, drop };
-  return { accept: false, drop };
+  return { accept: true, drop };
 }
 
 export function shrankMeta(leg, info) {

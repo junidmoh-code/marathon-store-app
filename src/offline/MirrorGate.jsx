@@ -21,7 +21,16 @@ import { offlineMirrorEnabled } from "./mirrorFlag";
 import { setOfflineMirrorRuntime } from "./mirrorRuntime";
 import { MirrorSetupScreen } from "./MirrorSetupScreen";
 
-export function MirrorGate({ auth, storage, children }) {
+// A mirror that cannot START must not hold the app hostage. openMirrorDb()
+// can block indefinitely — a browser with IndexedDB disabled, a profile in a
+// state it will not explain — and `await` on it has no timeout of its own. A
+// blank screen with no error is the worst outcome available here, so the start
+// is raced against a bound and the app is rendered if it is not ready in time.
+// The mirror is still starting behind it; if it finishes later the serving
+// hint turns on and the hooks switch over on their next render.
+export const START_TIMEOUT_MS = 8000;
+
+export function MirrorGate({ auth, storage, children, startTimeoutMs = START_TIMEOUT_MS }) {
   const enabled = offlineMirrorEnabled();
   const [runtime, setRuntime] = useState(null);
   const [ready, setReady] = useState(!enabled);
@@ -52,8 +61,15 @@ export function MirrorGate({ auth, storage, children }) {
       setReady(true);
     });
 
-    return () => { cancelled = true; };
-  }, [enabled, auth, storage]);
+    const bail = setTimeout(() => {
+      if (cancelled) return;
+      console.warn("offline mirror: did not start within "
+        + `${startTimeoutMs} ms — rendering the app on its live reads.`);
+      setReady(true);
+    }, startTimeoutMs);
+
+    return () => { cancelled = true; clearTimeout(bail); };
+  }, [enabled, auth, storage, startTimeoutMs]);
 
   if (!enabled || ready || failed) return children;
   if (!runtime) return null;   // a blank instant while IndexedDB opens
