@@ -15,8 +15,25 @@ import TestRenderer, { act } from "react-test-renderer";
 import { readFileSync } from "node:fs";
 
 const realCreate = globalThis.URL.createObjectURL;
-beforeAll(() => { globalThis.URL.createObjectURL = () => "blob:local-thumb"; });
-afterAll(() => { globalThis.URL.createObjectURL = realCreate; });
+// The node test environment has no localStorage, and the mirror flag lives
+// there — so without this every test below would exercise the flag-OFF path
+// and the three above it would pass for the wrong reason.
+const store = new Map();
+globalThis.localStorage = {
+  getItem: (k) => (store.has(k) ? store.get(k) : null),
+  setItem: (k, v) => store.set(k, String(v)),
+  removeItem: (k) => store.delete(k),
+};
+beforeAll(async () => {
+  globalThis.URL.createObjectURL = () => "blob:local-thumb";
+  const { setOfflineMirrorEnabled } = await import("../mirrorFlag");
+  setOfflineMirrorEnabled(true);
+});
+afterAll(async () => {
+  globalThis.URL.createObjectURL = realCreate;
+  const { setOfflineMirrorEnabled } = await import("../mirrorFlag");
+  setOfflineMirrorEnabled(false);
+});
 
 const held = new Map();
 vi.mock("../photoCache", async (orig) => {
@@ -100,5 +117,20 @@ describe("the call sites are wired", () => {
     expect(app).not.toMatch(/<img src=\{p\.photoUrl(\s|\})/);
     expect(app).not.toMatch(/<img src=\{p\.photoUrl \|\| ""\}/);
     expect(app).not.toMatch(/<img src=\{product\.photoUrl\} alt=\{product\.name\}/);
+  });
+});
+
+describe("with the mirror OFF, the render path is what it was", () => {
+  it("does not touch Cache Storage at all", async () => {
+    // The output was always right — a miss falls through to the network url —
+    // but opening Cache Storage and running a match() on every product image
+    // is work that did not happen before this branch, on a device that is not
+    // using the mirror.
+    const { setOfflineMirrorEnabled } = await import("../mirrorFlag");
+    setOfflineMirrorEnabled(false);
+    held.set(photoCacheRequest("p1").url, true);   // a hit is available…
+    const tree = await render(<MirroredImg productId="p1" src={NETWORK} alt="" />);
+    expect(tree.toJSON().props.src).toBe(NETWORK);  // …and deliberately unused
+    held.clear();
   });
 });
