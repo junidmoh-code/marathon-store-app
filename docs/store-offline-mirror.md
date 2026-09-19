@@ -179,6 +179,17 @@ costs a few hundred bytes when someone presses something.
 | every grid, list, picker, order card, refill row | `products/{id}/thumb_300.webp` | Cache Storage, pre-downloaded at setup (trickled, non-blocking), rendered via `<MirroredImg>` |
 | product detail, label print, re-shoot compare | `products/{id}/photo.jpg` | Cache Storage, **fetched on demand once** and kept — never pre-downloaded |
 
+**THE ONE PLACE A SCREEN CAN DIFFER FROM TODAY, stated rather than buried.**
+An order, batch or refill card renders `productPhotoUrl` — a copy of the
+product's photo url taken AT THE TIME THE ORDER WAS PLACED. The photo cache is
+keyed by product id, so on a mirrored device such a card shows the product's
+CURRENT thumbnail, not the one captured then. It only diverges for a product
+that has been re-shot since, and when it does it shows the picker the shoe as
+it is now rather than as it was — which is the more useful of the two. It is
+recorded here because "exactly what it displays today" is the constraint this
+work is held to, and this is the single exception. The POS mirror made the same
+trade.
+
 **31 render sites are wired**: App.jsx's shared `ProductPhoto` helper (and all
 17 of its call sites), its seven grid `<img>`s, and six staff-facing stock
 components. A browse screen showing forty products goes from 4.4 MB to nothing.
