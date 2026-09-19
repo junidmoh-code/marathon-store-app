@@ -69,8 +69,35 @@ export const STORE_INDEXES = Object.freeze({
   movements: Object.freeze([{ name: "ts", keyPath: "ts" }]),
 });
 
+// ── PAGE SIZE ───────────────────────────────────────────────────────────────
+//
+// How many TOP-LEVEL children the setup download asks for at a time. This is
+// not a tuning knob, it is a memory bound: a key page carries each child's
+// WHOLE subtree, so for a depth-1 leg it is that many records and for a
+// depth-2 leg it is that many entire /stock locations. One location is 1.6 MB;
+// twenty dates of /restock_log are a few hundred kilobytes. Hence the spread.
+const DEFAULT_PAGE_SIZE = 500;
+
+// ── CENSUS TOLERANCE ────────────────────────────────────────────────────────
+//
+// The daily census counts each node server-side and publishes the number; a
+// device compares its own count against it and re-downloads a leg that
+// disagrees (sync.js). The census is a DAY old by the time most devices read
+// it, so an exact match would mean re-downloading every leg every day.
+//
+// The default 2% matches health.js's shrink tolerance, which is the same
+// question asked about a different pair of numbers. /orders is the one leg
+// that needs more: its ids are recycled daily and a trading day turns over far
+// more than 2% of ~3,000 rows.
+const DEFAULT_CENSUS_TOLERANCE = 0.02;
+
 const leg = (name, node, depth, feed, store, extra = {}) =>
-  Object.freeze({ name, node, depth, feed, store, ...extra });
+  Object.freeze({
+    name, node, depth, feed, store,
+    pageSize: DEFAULT_PAGE_SIZE,
+    censusTolerance: DEFAULT_CENSUS_TOLERANCE,
+    ...extra,
+  });
 
 // ─── THE LEGS ───────────────────────────────────────────────────────────────
 //
@@ -88,25 +115,30 @@ export const MIRROR_LEGS = Object.freeze([
   leg("clothingOos", "clothing_sold_refills", 0, "changes", "docs"),
   leg("users", "users", 1, "changes", "docs"),
 
-  leg("products", "products", 1, "changes", "products"),
-  leg("stock", "stock", 2, "changes", "stock"),
-  leg("orders", "orders", 1, "changes", "orders"),
+  leg("products", "products", 1, "changes", "products", { pageSize: 400 }),
+  // One /stock location per page: marathon-pe alone is 1.6 MB.
+  leg("stock", "stock", 2, "changes", "stock", { pageSize: 1 }),
+  // /orders ids are recycled daily, so a trading day turns over far more of
+  // this node than any other. See DEFAULT_CENSUS_TOLERANCE.
+  leg("orders", "orders", 1, "changes", "orders", { censusTolerance: 0.25 }),
   leg("customers", "customers", 1, "changes", "customers"),
 
-  leg("displaySlots", "settings/displaySlots", 2, "changes", "displaySlots"),
-  leg("displayRows", "settings/displayRows", 3, "changes", "displayRows"),
-  leg("displayRegister", "settings/hubSneakerCount", 3, "changes", "displayRegister"),
+  leg("displaySlots", "settings/displaySlots", 2, "changes", "displaySlots", { pageSize: 2 }),
+  leg("displayRows", "settings/displayRows", 3, "changes", "displayRows", { pageSize: 2 }),
+  leg("displayRegister", "settings/hubSneakerCount", 3, "changes", "displayRegister", { pageSize: 1 }),
 
-  leg("refills", "refill_requests", 1, "changes", "refills"),
+  leg("refills", "refill_requests", 1, "changes", "refills", { pageSize: 1000 }),
   leg("restockRequests", "restock_requests", 1, "changes", "restockRequests"),
   leg("returnsLog", "returns_log", 1, "changes", "returnsLog"),
-  leg("restockLog", "restock_log", 2, "changes", "restockLog"),
+  leg("restockLog", "restock_log", 2, "changes", "restockLog", { pageSize: 20 }),
 
   // The two big append-only histories. Neither needs the change log: their own
   // key or field IS a forward cursor, which is cheaper and cannot fall behind a
   // retention window.
-  leg("movements", "stock_movements", 1, "tsRange", "movements", { tsField: "ts" }),
-  leg("insights", "insights_log", 1, "keyRange", "insights"),
+  leg("movements", "stock_movements", 1, "tsRange", "movements",
+    { tsField: "ts", pageSize: 2000, censusTolerance: 0.05 }),
+  leg("insights", "insights_log", 1, "keyRange", "insights",
+    { pageSize: 2000, censusTolerance: 0.05 }),
 ]);
 
 export const LEG_BY_NAME = Object.freeze(
@@ -120,6 +152,20 @@ export const LEG_BY_NAME = Object.freeze(
 export const CHANGE_FED_LEGS = Object.freeze(
   MIRROR_LEGS.filter((l) => l.feed === "changes"),
 );
+
+// ─── APPEND-ONLY vs SNAPSHOT ────────────────────────────────────────────────
+//
+// The two append-only legs are downloaded and maintained by the SAME code
+// path: a forward walk from a cursor. Their setup download is just that walk
+// starting from nothing, so they need no staging and no atomic swap — a
+// part-finished download of an append-only node is a correct PREFIX of it, and
+// the next pass continues from where it stopped.
+//
+// Every other leg is a SNAPSHOT: it is read whole at setup, staged page by
+// page, validated (non-empty, not shrunk) and swapped in one transaction, and
+// thereafter never read whole again. The distinction decides which guards
+// apply, so it is asked of the registry rather than restated at each leg.
+export const isAppendOnly = (l) => l.feed === "keyRange" || l.feed === "tsRange";
 
 // node path -> leg. The change record carries the node, never the leg name, so
 // a rename on this side cannot orphan records already in the log.
