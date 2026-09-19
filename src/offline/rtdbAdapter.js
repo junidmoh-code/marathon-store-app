@@ -1,0 +1,189 @@
+// ─── OFFLINE MIRROR — the RTDB transport ─────────────────────────────────────
+//
+// The ONLY place in the mirror that imports firebase/database. Everything else
+// — the sync engine, the change feed, the setup run — takes an `adapter` and is
+// therefore testable against a plain object with no SDK, no emulator and no
+// network. That is the insightsLogStore.js precedent in this repo, and the
+// sync.js precedent on the tills.
+//
+// EVERY READ HERE IS BOUNDED. The firebase SDKs do not fail fast offline: a
+// `get()` is queued against a connection that may return, and the caller waits
+// for ever. A sync pass that hangs stops the whole engine, because the next
+// pass is only scheduled in this one's `.finally`. So every method goes through
+// withTimeout and the answer is always a value or an honest failure — never
+// silence. See bounded.js.
+
+import {
+  ref, get, query, orderByKey, orderByChild, startAfter, startAt, endAt,
+  limitToFirst, limitToLast, onValue, onChildAdded,
+} from "firebase/database";
+import { database } from "../firebase";
+import { withTimeout, READ_TIMEOUT_MS, BIG_READ_TIMEOUT_MS } from "./bounded";
+
+// ─── THE QUERY SHAPES, NAMED ────────────────────────────────────────────────
+//
+// WHY THIS EXISTS. Every sync test runs against a FAKE adapter, and a fake
+// re-implements the query semantics it is standing in for. That is fine until
+// the two disagree — and the disagreement that matters here is one character:
+//
+//   readChildPage uses startAt (INCLUSIVE) because /stock_movements `ts` is not
+//   unique — one transfer writes several movements with an identical ISO
+//   string — so startAfter would keep the movement that set the cursor and
+//   silently lose every other one sharing its timestamp.
+//
+// A mutation audit found exactly that: flipping startAt to startAfter here left
+// all 206 tests green, because the fake implements inclusivity independently.
+// The test named "the ts cursor is INCLUSIVE" was proving the fake.
+//
+// So the builders are pure, exported, and pinned by
+// __tests__/adapterQueryShapes.test.js against the constraint NAMES. The
+// functions below are the only callers.
+export function keyPageConstraints({ after = null, limit = 500 }) {
+  const parts = [orderByKey()];
+  // EXCLUSIVE. A change-log key or a push key is unique and we have already
+  // consumed the one the cursor names, so re-reading it would be waste.
+  if (after !== null && after !== undefined) parts.push(startAfter(after));
+  parts.push(limitToFirst(limit));
+  return parts;
+}
+
+// ── THE COMPOUND CURSOR, AND WHY THE SIMPLE ONE WAS EXPENSIVE ──────────────
+//
+// `startAt(ts)` alone is inclusive, which it must be — /stock_movements `ts` is
+// not unique, and an exclusive bound loses every movement of a multi-size
+// transfer but one. But inclusive-on-ts-alone means every pass re-reads EVERY
+// row sharing the newest timestamp, for ever. After a bulk transfer of fifty
+// movements written at one ISO string, that is fifty rows × ~350 bytes × 1,440
+// passes a day — about 25 MB per device per day, against a budget of 267 KB.
+// (Fable-vs-spec review, PR #618.)
+//
+// RTDB's two-argument `startAt(value, key)` is exactly the fix: it starts at
+// that (value, key) pair in the node's own ordering, so a cursor carrying both
+// resumes at the last row consumed and re-reads ONE row instead of a
+// timestamp's worth. The duplicate is an upsert and costs nothing.
+export function childPageConstraints(field, { from = null, fromKey = null, limit = 500 }) {
+  const parts = [orderByChild(field)];
+  if (from !== null && from !== undefined) {
+    // INCLUSIVE, still — see above. The key narrows WHERE inside the
+    // timestamp we resume, never whether the timestamp is included.
+    parts.push(fromKey ? startAt(from, fromKey) : startAt(from));
+  }
+  parts.push(limitToFirst(limit));
+  return parts;
+}
+
+// What a constraint is, for a test that must name it. The SDK's own
+// `_QueryConstraint` carries `type`; reading it here keeps the assertion about
+// the real object rather than about a string we chose.
+export const constraintNames = (parts) => parts.map((p) => p.type ?? String(p));
+
+// A whole node, or a child of one. Used by the setup download and by the
+// per-row re-read the change feed does.
+export function createRtdbAdapter({ db = database } = {}) {
+  return {
+    // One path, whole. `big` raises the budget for the setup download's large
+    // nodes — /insights_log is 35.8 MB and a shop line is a shop line.
+    async readPath(path, { big = false } = {}) {
+      const snap = await withTimeout(get(ref(db, path)), {
+        ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
+        label: `/${path}`,
+      });
+      return snap.exists() ? snap.val() : null;
+    },
+
+    // A page of children by key, exclusive of `after`. The change feed and the
+    // /insights_log feed both use it; neither needs an index, because key
+    // order is free.
+    async readKeyPage(path, { after = null, limit = 500, big = false } = {}) {
+      const parts = keyPageConstraints({ after, limit });
+      const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
+        ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
+        label: `/${path} (key page)`,
+      });
+      return snap.exists() ? snap.val() : null;
+    },
+
+    // A page of children by an INDEXED child field, inclusive of `from`. The
+    // /stock_movements feed uses it against the live `.indexOn: ["ts"]`. The
+    // inclusivity argument, and the mutation that proved it was untested, are
+    // in this file's header.
+    async readChildPage(path, field, { from = null, fromKey = null, limit = 500, big = false } = {}) {
+      const parts = childPageConstraints(field, { from, fromKey, limit });
+      const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
+        ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
+        label: `/${path} (${field} page)`,
+      });
+      return snap.exists() ? snap.val() : null;
+    },
+
+    // The oldest key a node still holds. The change feed asks it to tell
+    // "nothing has happened" from "everything that happened has been swept".
+    async firstKey(path) {
+      const snap = await withTimeout(
+        get(query(ref(db, path), orderByKey(), limitToFirst(1))),
+        { ms: READ_TIMEOUT_MS, label: `/${path} (first key)` },
+      );
+      if (!snap.exists()) return null;
+      const val = snap.val();
+      const keys = Object.keys(val || {});
+      return keys.length ? keys[0] : null;
+    },
+
+    // The NEWEST key a node holds. The change feed asks it once, at the start
+    // of a setup download, to know where its cursor begins.
+    async lastKey(path) {
+      const snap = await withTimeout(
+        get(query(ref(db, path), orderByKey(), limitToLast(1))),
+        { ms: READ_TIMEOUT_MS, label: `/${path} (last key)` },
+      );
+      if (!snap.exists()) return null;
+      const keys = Object.keys(snap.val() || {});
+      return keys.length ? keys[0] : null;
+    },
+
+    // A bounded key range, for the setup download's paged walk of a big
+    // append-only node.
+    async readKeyRange(path, { from = null, to = null, limit = 500 } = {}) {
+      const parts = [orderByKey()];
+      if (from !== null) parts.push(startAt(from));
+      if (to !== null) parts.push(endAt(to));
+      parts.push(limitToFirst(limit));
+      const snap = await withTimeout(get(query(ref(db, path), ...parts)),
+        { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (range)` });
+      return snap.exists() ? snap.val() : null;
+    },
+
+    // ── A LIVE SIGNAL, WITHOUT A LIVE NODE ──────────────────────────────
+    //
+    // Polling the change log on a cadence makes every screen as stale as the
+    // cadence. At 60 seconds that is a minute between one device's write and
+    // another device's screen — where today an onValue is instant — and
+    // "screens display exactly what they display today" does not survive it.
+    // (Fable-vs-spec review, PR #618.)
+    //
+    // So the cadence keeps its place as a floor, and this sits on top: an
+    // onChildAdded over the change log FROM THE CURSOR. It streams only the
+    // records themselves — about 60 bytes each — never a node, and it is what
+    // turns "up to a minute" into "as fast as the trigger fires".
+    //
+    // It is a SIGNAL, not a source. The callback does not carry the record
+    // into the mirror; it asks the engine to run a pass, which reads the page
+    // properly and commits it with its cursor. One path applies changes, and
+    // it is the tested one.
+    subscribeNewChanges(path, after, onSignal) {
+      const parts = [orderByKey()];
+      if (after !== null && after !== undefined) parts.push(startAfter(after));
+      return onChildAdded(
+        query(ref(db, path), ...parts),
+        (snap) => onSignal(snap.key),
+        (err) => console.warn(`offline mirror: change signal on /${path} failed:`, err),
+      );
+    },
+
+    // `.info/connected` — the only honest answer to "is the database
+    // answering". Never navigator.onLine, which says "some network exists".
+    subscribeConnected(cb) {
+      return onValue(ref(db, ".info/connected"), (snap) => cb(snap.val() === true));
+    },
+  };
+}

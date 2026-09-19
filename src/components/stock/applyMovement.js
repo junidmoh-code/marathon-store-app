@@ -43,6 +43,7 @@ import { database, auth } from "../../firebase";
 import { stockCellPath } from "../../utils/sizeKey";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { reactivateUpdates, REACTIVATED_EVENT } from "../../utils/deactivation";
+import { notePendingUpdate } from "../../offline/pendingWrites";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -290,6 +291,18 @@ export async function applyMovement(movement, opts = {}) {
 
     try {
       await update(ref(database), updates);
+      // ─── THE OFFLINE MIRROR ───────────────────────────────────────────────
+      // Every fulfil, transfer, receive, count and adjust in this app lands
+      // here, and on a device reading from its local copy the new quantity is
+      // a second or two away — RTDB, then the change trigger, then this
+      // device's feed. A second is long enough for someone to press a button,
+      // see the old number and press it again. So the paths just written are
+      // echoed locally until the feed carries the same fact back round.
+      //
+      // AFTER the write, deliberately: this echoes what RTDB has ACCEPTED,
+      // never what we hoped it would. It is a no-op with the mirror flag off.
+      // See src/offline/pendingWrites.js.
+      notePendingUpdate(updates);
       if (reactivation && typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
         // Every receive surface announces the reactivation without opting in.
         window.dispatchEvent(new CustomEvent(REACTIVATED_EVENT, {
@@ -332,6 +345,7 @@ export async function setCellState(loc, productId, size, state) {
   }
   try {
     await update(ref(database), updates);
+    notePendingUpdate(updates);           // see applyMovement above
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: "write_failed", error: String(err?.message || err) };

@@ -22,11 +22,16 @@ import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour 
 import { getTodayKey, getNextOrderNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
+import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
+import { MirrorDot } from "./offline/MirrorDot.jsx";
+import { MirroredImg } from "./offline/MirroredImg.jsx";
+import { notePendingUpdate } from "./offline/pendingWrites";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
+import { setUpdateBusy } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
@@ -341,12 +346,17 @@ function ProductThumb({ name, photoMap, size = 40 }) {
 }
 
 // Helper to render product photo or icon — replaces inline `{p.photoUrl ? <img> : "👟"}` patterns
-function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)" }) {
+//
+// `productId` is optional and is the offline mirror's hook: given one, this
+// serves the device's own 300px thumbnail instead of fetching the ~109 KB
+// original from Storage. Without one it behaves exactly as it always has, so
+// a call site that has no id is not a bug — it is simply not mirrored.
+function ProductPhoto({ productId = null, url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)" }) {
   const src = url || (photo && (photo.startsWith("data:") || photo.startsWith("http")) ? photo : null);
   return (
     <div style={{ width:size, height:size, borderRadius:radius, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
       {src
-        ? <img src={src} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}/>
+        ? <MirroredImg productId={productId} src={src} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}/>
         : <ProductIcon size={Math.round(size * 0.5)} />}
     </div>
   );
@@ -580,11 +590,15 @@ function useProducts() {
   const authReady = useAuthReady();
   const [products, setProducts] = useState([]);
 
-  useEffect(() => {
-    if (!authReady) return;
-    const productsRef = ref(database, "products");
-    const unsub = onValue(productsRef, (snap) => {
-      const data = snap.val();
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /products is 4.7 MB and this subscription is paid on every cold load. When
+  // this device serves it from its local copy the subscription below is never
+  // opened; `applyProductsSnapshot` is the SAME function either way, so what
+  // the app ends up holding is identical to the byte.
+  const mirrored = useMirroredPath("products", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  const applyProductsSnapshot = useCallback((data, { allowMigration }) => {
       if (!data) { setProducts([]); return; }
 
       // Legacy shape: { items: [...] } written by old useFirebaseState code.
@@ -594,9 +608,16 @@ function useProducts() {
       if (data.items && Array.isArray(data.items) && data.items.length > 0) {
         const validItems = data.items.filter(p => p && p.id && p.name);
         if (validItems.length > 0) {
+          if (!allowMigration) {
+            // Read-only path: present the items, write nothing.
+            ALL_PRODUCTS_BY_ID = Object.fromEntries(validItems.map(p => [p.id, p]));
+            setProducts(filterMergedProducts(validItems));
+            return;
+          }
           const patch = { items: null };
           for (const p of validItems) patch[p.id] = p;
-          update(productsRef, patch).catch(err => console.warn("Product migration failed:", err));
+          update(ref(database, "products"), patch)
+            .catch(err => console.warn("Product migration failed:", err));
           ALL_PRODUCTS_BY_ID = Object.fromEntries(validItems.map(p => [p.id, p]));
           setProducts(filterMergedProducts(validItems));
         }
@@ -618,11 +639,27 @@ function useProducts() {
       const all = Object.values(data).filter(v => v && typeof v === "object" && v.id && v.name);
       ALL_PRODUCTS_BY_ID = Object.fromEntries(all.map(p => [p.id, p]));
       setProducts(filterMergedProducts(all));
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const productsRef = ref(database, "products");
+    const unsub = onValue(productsRef, (snap) => {
+      // The legacy {items:[...]} migration WRITES, so it only ever runs on the
+      // live path — a mirrored read must never write to the database it is a
+      // copy of, and a device holding a stale mirror could otherwise re-post a
+      // migration that has long since happened.
+      applyProductsSnapshot(snap.val(), { allowMigration: true });
     }, (err) => {
       console.warn("Firebase read error on /products:", err);
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applyProductsSnapshot]);
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applyProductsSnapshot(mirrored.value, { allowMigration: false });
+  }, [live, mirrored.settled, mirrored.value, applyProductsSnapshot]);
 
   return products;
 }
@@ -912,8 +949,31 @@ function useOrders(scopeShop = null) {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
 
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
+  // filters locally on the same `destShop` the server query uses — the same
+  // rows, chosen the same way, without the node coming down the wire.
+  const mirroredOrders = useMirroredPath("orders", authReady);
+  const liveOrders = mirroredOrders.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady) return;
+    if (liveOrders || !mirroredOrders.settled) return;
+    const data = mirroredOrders.value;
+    if (!data) { setOrders(Object.assign([], { settled: true })); return; }
+    const arr = Object.values(data)
+      // Not just filter(Boolean). The legacy {items:[...]} shape would yield
+      // ONE element that is an array, which sorts by an undefined createdAt
+      // and renders as a broken order row. The live path detects and MIGRATES
+      // that shape; a read-only path cannot, so it declines to render it —
+      // same guard useProducts applies, for the same reason.
+      .filter(o => o && typeof o === "object" && !Array.isArray(o))
+      .filter(o => !scopeShop || o?.destShop === scopeShop)
+      .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
+    setOrders(Object.assign(arr, { settled: true }));
+  }, [liveOrders, mirroredOrders.settled, mirroredOrders.value, scopeShop]);
+
+  useEffect(() => {
+    if (!authReady || !liveOrders) return undefined;
     const ordersRef = ref(database, "orders");
     // Legacy /orders can briefly be an ARRAY under .items; a scoped query only
     // makes sense on the per-id map. The migration below rewrites it, after which
@@ -962,7 +1022,7 @@ function useOrders(scopeShop = null) {
       setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
     });
     return () => unsub();
-  }, [authReady, scopeShop]);
+  }, [authReady, scopeShop, liveOrders]);
 
   return orders;
 }
@@ -983,25 +1043,51 @@ function useOrders(scopeShop = null) {
 function useTvOrders() {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState([]);
+
+  const shapeTvOrders = useCallback((data) => (
+    data
+      ? Object.values(data).filter(Boolean)
+          .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+      : []
+  ), []);
+
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // THE TV IS THE WORST CASE THIS WORK EXISTS FOR. It is always on, it
+  // auto-reloads, and every reload re-pays the key range — 465 KB of customer
+  // orders out of the 2,150 KB the unscoped listen used to cost (measured
+  // 2026-08-13). On a mirrored device the range is applied to the LOCAL copy
+  // of /orders instead, by the same key comparison the server query uses, so
+  // the rows are identical and the reload costs nothing.
+  const mirrored = useMirroredPath("orders", authReady);
+  const live = mirrored.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    const data = mirrored.value;
+    if (!data) { setOrders([]); return; }
+    // The SAME bound as the server query. TV_ORDER_KEY_END's \uf8ff is
+    // invisible in an editor and must never be "tidied" — see
+    // src/utils/tvOrdersRange.js for why the range is what it is.
+    const inRange = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) inRange[key] = value;
+    }
+    setOrders(shapeTvOrders(Object.keys(inRange).length ? inRange : null));
+  }, [live, mirrored.settled, mirrored.value, shapeTvOrders]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const readRef = query(
       ref(database, "orders"),
       orderByKey(), startAt(TV_ORDER_KEY_START), endAt(TV_ORDER_KEY_END)
     );
     const unsub = onValue(readRef, (snap) => {
-      const data = snap.val();
-      setOrders(
-        data
-          ? Object.values(data).filter(Boolean)
-              .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
-          : []
-      );
+      setOrders(shapeTvOrders(snap.val()));
     }, (err) => {
       console.warn("Firebase read error on /orders (TV key range):", err);
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, shapeTvOrders]);
   return orders;
 }
 
@@ -1024,7 +1110,14 @@ function writeOrder(order) {
     console.error("writeOrder rejected:", err.message, { orderId: order.id ?? null, undefinedFields });
     throw err;
   }
-  return set(ref(database, `orders/${order.id}`), order).catch((err) => {
+  return set(ref(database, `orders/${order.id}`), order).then((ok) => {
+    // THE OFFLINE MIRROR. A person who has just placed an order must see it,
+    // not the shelf as it was a moment ago. Echoed AFTER the write resolves,
+    // so it only ever echoes what RTDB accepted. No-op with the flag off —
+    // src/offline/pendingWrites.js.
+    notePendingUpdate({ [`orders/${order.id}`]: order });
+    return ok;
+  }).catch((err) => {
     // Propagate (don't swallow) so placeOrders / placeRefillRequests surface the
     // real reason AND don't false-clear the cart. Both callers await this inside
     // a try/catch and writeOrder has no other callers. Previously an async
@@ -1089,8 +1182,41 @@ function useInsightsLogRecentDays(days) {
     const t = setInterval(() => setSaDay(saDateString()), 60_000);
     return () => clearInterval(t);
   }, []);
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // The local copy answers the SAME key range, against the same push keys, so
+  // the window is identical — and the caller still filters on `timestamp`
+  // afterwards, as it always has. mirrorVersion re-reads when the feed brings
+  // new entries; without it a screen left open would never see today's.
+  // useMirrorLeg, NOT useMirroredPath: this reader wants a RANGE, and asking
+  // for the whole node just to learn that it changed would rebuild 112,968
+  // rows in memory every time the feed moved — which is the cost the ranged
+  // local read exists to avoid, moved onto the device.
+  const { serving: insightsServing, version: insightsVersion } = useMirrorLeg("insights", authReady);
+  const liveInsights = !insightsServing;
+
   useEffect(() => {
-    if (!authReady) return undefined;
+    if (liveInsights) return undefined;
+    let cancelled = false;
+    (async () => {
+      const { startKey } = recentDaysStartKey(days, serverNowMs());
+      const { getMirrorDbHandle } = await import("./offline/mirrorDbHandle");
+      const { readInsightsFromKey } = await import("./offline/localReads");
+      try {
+        const data = await readInsightsFromKey(await getMirrorDbHandle(), startKey);
+        if (cancelled) return;
+        setLog(!data ? [] : Object.values(data).filter(Boolean)
+          .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp)));
+      } catch (err) {
+        // Not an empty window — a local read that failed. Leaving the last
+        // rendered log in place is the honest thing; the next pass re-reads.
+        console.warn("offline mirror: local /insights_log range failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [liveInsights, insightsVersion, days, saDay]);
+
+  useEffect(() => {
+    if (!authReady || !liveInsights) return undefined;
     const { startKey } = recentDaysStartKey(days, serverNowMs());
     const q = query(ref(database, "insights_log"), orderByKey(), startAt(startKey));
     const unsub = onValue(q, snap => {
@@ -1105,7 +1231,7 @@ function useInsightsLogRecentDays(days) {
     return () => unsub();
     // saDay is a DEPENDENCY, not decoration: when the SA date rolls over the
     // query re-anchors to the new day's window.
-  }, [authReady, days, saDay]);
+  }, [authReady, days, saDay, liveInsights]);
   return log;
 }
 
@@ -1305,10 +1431,12 @@ function useAllSourceResponses() {
   const authReady = useAuthReady();
   const [responses, setResponses] = useState({});
   const [progress, setProgress] = useState({});
-  useEffect(() => {
-    if (!authReady) return;
-    const unsub = onValue(ref(database, "restock_requests"), snap => {
-      const data = snap.val() || {};
+
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /restock_requests is 1.4 MB and carries base64 photos inline. Six screens
+  // read it. The shaping below is the SAME function on both paths, so what
+  // they render cannot depend on where the rows came from.
+  const applySourceResponses = useCallback((data) => {
       const result = {};
       const prog = {};
       Object.entries(data).forEach(([date, dateNode]) => {
@@ -1337,9 +1465,24 @@ function useAllSourceResponses() {
       });
       setResponses(result);
       setProgress(prog);
+  }, []);
+
+  const mirrored = useMirroredPath("restock_requests", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applySourceResponses(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value, applySourceResponses]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const unsub = onValue(ref(database, "restock_requests"), snap => {
+      applySourceResponses(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applySourceResponses]);
+
   return { responses, progress };
 }
 
@@ -1415,10 +1558,9 @@ function clearSourceResponse(date, productKeys, size) {
 function useClothingOos() {
   const authReady = useAuthReady();
   const [oos, setOos] = useState({});
-  useEffect(() => {
-    if (!authReady) return;
-    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
-      const data = snap.val() || {};
+
+  // Same shaping on both paths — see useAllSourceResponses.
+  const applyClothingOos = useCallback((data) => {
       const result = {};
       Object.entries(data).forEach(([store, storeNode]) => {
         if (!storeNode || typeof storeNode !== "object") return;
@@ -1435,9 +1577,24 @@ function useClothingOos() {
         if (Object.keys(byProduct).length) result[store] = byProduct;
       });
       setOos(result);
+  }, []);
+
+  const mirrored = useMirroredPath("clothing_sold_refills", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applyClothingOos(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value, applyClothingOos]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
+      applyClothingOos(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applyClothingOos]);
+
   return oos;
 }
 
@@ -1594,20 +1751,49 @@ function useClothingSoldMovements(fromSaDate) {
   let start = fromSaDate || dflt;
   if (start < maxBack) start = maxBack;   // cap: never before today-90
   if (start > dflt)    start = dflt;      // floor: always cover the default window
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /stock_movements is 31.8 MB and 90,922 rows. The local copy answers the
+  // same ts range through an IndexedDB index on the same field, so the window
+  // is identical — and the walk stays an indexed one rather than becoming a
+  // scan of every row, which would only move the cost onto the device.
+  // useMirrorLeg for the same reason as useInsightsLogRecentDays above: a
+  // range reader must not rebuild 90,922 rows to find out the leg moved.
+  const { serving: mvServing, version: mvVersion } = useMirrorLeg("movements", authReady);
+  const liveMv = !mvServing;
+
+  const shapeMovements = useCallback((data) => {
+    const arr = [];
+    Object.entries(data || {}).forEach(([mvId, m]) => {
+      if (m && typeof m === "object") arr.push({ mvId, ...m });
+    });
+    return arr;
+  }, []);
+
   useEffect(() => {
-    if (!authReady) return;
+    if (liveMv) return undefined;
+    let cancelled = false;
+    (async () => {
+      const { getMirrorDbHandle } = await import("./offline/mirrorDbHandle");
+      const { readMovementsFromTs } = await import("./offline/localReads");
+      try {
+        const data = await readMovementsFromTs(await getMirrorDbHandle(), saStartIso(start));
+        if (!cancelled) setMovements(shapeMovements(data));
+      } catch (err) {
+        console.warn("offline mirror: local /stock_movements range failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [liveMv, mvVersion, start, shapeMovements]);
+
+  useEffect(() => {
+    if (!authReady || !liveMv) return undefined;
     const startIso = saStartIso(start);
     const q = query(ref(database, "stock_movements"), orderByChild("ts"), startAt(startIso));
     const unsub = onValue(q, snap => {
-      const data = snap.val() || {};
-      const arr = [];
-      Object.entries(data).forEach(([mvId, m]) => {
-        if (m && typeof m === "object") arr.push({ mvId, ...m });
-      });
-      setMovements(arr);
+      setMovements(shapeMovements(snap.val()));
     }, err => console.warn("stock_movements read error:", err));
     return () => unsub();
-  }, [authReady, start]);
+  }, [authReady, start, liveMv, shapeMovements]);
   return movements;
 }
 
@@ -1629,15 +1815,27 @@ function relativeTimeFromIso(iso) {
 function useRestockLogRaw(date) {
   const authReady = useAuthReady();
   const [entries, setEntries] = useState([]);
+  // One day of /restock_log. Small on its own, but the whole node is 8.0 MB
+  // and already mirrored, so reading one day from the local copy costs
+  // nothing at all rather than a subscription per day viewed.
+  const mirrored = useMirroredPath(date ? `restock_log/${date}` : null, authReady && !!date);
+  const live = mirrored.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady || !date) return;
+    if (live || !mirrored.settled) return;
+    const data = mirrored.value;
+    setEntries(data ? Object.values(data).filter(Boolean) : []);
+  }, [live, mirrored.settled, mirrored.value]);
+
+  useEffect(() => {
+    if (!authReady || !date || !live) return undefined;
     const unsub = onValue(ref(database, `restock_log/${date}`), snap => {
       const data = snap.val();
       if (!data) { setEntries([]); return; }
       setEntries(Object.values(data).filter(Boolean));
     });
     return () => unsub();
-  }, [authReady, date]);
+  }, [authReady, date, live]);
   return entries;
 }
 
@@ -1732,13 +1930,20 @@ function returnedCompositeKeySet(returnsLog) {
 function useRestockLogAll() {
   const authReady = useAuthReady();
   const [log, setLog] = useState({});
+  // /restock_log is 8.0 MB read whole.
+  const mirrored = useMirroredPath("restock_log", authReady);
+  const live = mirrored.verdict === "fallback";
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setLog(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "restock_log"), snap => {
       setLog(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live]);
   return log;
 }
 
@@ -1751,16 +1956,29 @@ function logReturn(entry) {
 function useReturnsLog() {
   const authReady = useAuthReady();
   const [log, setLog] = useState([]);
+  const mirrored = useMirroredPath("returns_log", authReady);
+  const live = mirrored.verdict === "fallback";
+  const shape = useCallback((data) => {
+    if (!data) return [];
+    return Object.values(data).filter(Boolean)
+      .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
+  }, []);
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setLog(shape(mirrored.value));
+  }, [live, mirrored.settled, mirrored.value, shape]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "returns_log"), snap => {
-      const data = snap.val();
-      if (!data) { setLog([]); return; }
-      setLog(Object.values(data).filter(Boolean)
-        .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp)));
+      setLog(shape(snap.val()));
     });
     return () => unsub();
-  }, [authReady]);
+    // `live` is LOAD-BEARING in this list. Without it the effect only re-runs
+    // when authReady moves, so a device whose mirror goes unusable mid-session
+    // — a census drift, an expired cursor — would fall back to the live path
+    // and never open the subscription, leaving Returns frozen on the last
+    // mirrored value until a reload. (Sonnet architect review, PR #618.)
+  }, [authReady, live, shape]);
   return log;
 }
 
@@ -1788,13 +2006,22 @@ function setCustomerOptIn(phone, optedIn) {
 function useCustomersDb() {
   const authReady = useAuthReady();
   const [customers, setCustomers] = useState({});
+  // /customers is 1.8 MB and 9,662 records. Same value either way — `|| {}`
+  // is applied to both, so an empty node is `{}` on both paths exactly as it
+  // is today.
+  const mirrored = useMirroredPath("customers", authReady);
+  const live = mirrored.verdict === "fallback";
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setCustomers(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "customers"), snap => {
       setCustomers(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live]);
   return customers;
 }
 
@@ -3430,7 +3657,7 @@ function RecentPickCard({ p, selected, onToggle }) {
                   border:"1px solid " + (selected ? "rgba(74,202,122,.65)" : "rgba(255,255,255,.08)"),
                   boxShadow: selected ? "0 0 0 1px rgba(74,202,122,.65), 0 4px 18px rgba(74,202,122,.14)" : "none",
                   transition:"border-color .15s ease, box-shadow .15s ease" }}>
-      <img src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
+      <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
            style={{ width:"100%", aspectRatio:"1", objectFit:"cover", display:"block",
                     opacity: loaded ? 1 : 0, transition:"opacity .25s ease" }}/>
       {!loaded && (
@@ -3862,7 +4089,7 @@ function AdminReviewPhotosTab({ products = [] }) {
                 <div key={p.id} onClick={() => toggleSel(p.id)}
                      style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
                               background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
-                  <img src={p.photoUrl} alt="" loading="lazy" decoding="async"
+                  <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async"
                        style={{ width:38, height:38, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
                   <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
                   <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
@@ -4672,7 +4899,7 @@ function AdminReviewCategoriesTab({ products = [] }) {
                         border: checked ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.07)" }}>
             <input type="checkbox" checked={checked} readOnly
                    style={{ width:17, height:17, accentColor:"#4A7FFF", flexShrink:0, cursor:"pointer" }}/>
-            <img src={p.photoUrl || ""} alt="" loading="lazy"
+            <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
                  style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
@@ -5032,7 +5259,7 @@ function MissingPricesTab({ products = [] }) {
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
                 <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
                   style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
-                <img src={p.photoUrl || ""} alt="" loading="lazy"
+                <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
@@ -5274,7 +5501,7 @@ function AdminReviewNamesTab({ products }) {
           const changed = (row.suggested || "") !== (row.current || "");
           return (
             <div key={row.id} style={{ display:"flex", gap:11, background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:11 }}>
-              <ProductPhoto url={row.photoUrl} size={64} radius={10}/>
+              <ProductPhoto productId={row.id} url={row.photoUrl} size={64} radius={10}/>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
                   <span style={{ fontSize:10, fontWeight:800, color: confColor(row.confidence || 0), background:"rgba(255,255,255,.05)", border:`1px solid ${confColor(row.confidence || 0)}55`, borderRadius:10, padding:"2px 8px" }}>{pct}% sure</span>
@@ -6838,7 +7065,7 @@ function AdminProductRow({ product }) {
            border:"1px solid rgba(255,255,255,.07)",
            borderRadius:14, padding:"10px 14px", marginBottom:8, cursor:"pointer",
          }}>
-      <ProductPhoto url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
+      <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:16, fontWeight:600, color:"#fff", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{product.name}</div>
         <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:4, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{meta}</div>
@@ -7336,7 +7563,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
           <div onClick={photos.length ? () => setGalleryView(photos) : undefined}
                title={photos.length > 1 ? `View ${photos.length} photos` : (photos.length ? "View photo" : undefined)}
                style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-            <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+            <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
           </div>
           <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
             <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
@@ -7708,7 +7935,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
           </button>
           <div style={{ display:"flex", justifyContent:"center", padding:"4px 0" }}>
             <div onClick={photos.length ? () => setGalleryView(photos) : undefined} style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-              <ProductPhoto url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
+              <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
             </div>
           </div>
           <div>
@@ -7802,7 +8029,7 @@ function ClothingCard({ product, onAdd, onViewPhoto, allProducts = [] }) {
              title={product.photoUrl ? (product.gallery?.length ? `View ${productPhotos(product).length} photos` : "View full photo") : undefined}
              style={{ position:"relative", width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
           {product.photoUrl
-            ? <img src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+            ? <MirroredImg productId={product.id} src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
           {product.gallery?.length > 0 && (
             <span style={{ position:"absolute", bottom:5, left:5, display:"inline-flex", alignItems:"center", gap:3, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:999 }}>
@@ -8012,7 +8239,7 @@ function RefillTrackingProductCard({ group, onViewPhoto }) {
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(group.photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
-          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          <ProductPhoto productId={group.productId} url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-4, bottom:-4, width:18, height:18, borderRadius:9, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -8320,7 +8547,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // portrait photo in a landscape cover box lost ~half the shoe on laptops;
   // contain shows the whole product on the card's dark stage instead.
   const Photo = ({ p, big }) => p.photoUrl
-    ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
+    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
 
   return (
@@ -10083,6 +10310,18 @@ function AssistantView({ products, onExit, orders = [] }) {
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
   const closeCheckout = () => { setCheckoutOpen(false); setCustomerName(""); setCustomerPhone(""); setMarketingOptIn(false); };
 
+  // ─── NEVER MID-ORDER ──────────────────────────────────────────────────
+  // The update checker refuses to reload while anything is registered busy,
+  // and on a mirrored device that reload is FORCED. A cart with lines in it is
+  // exactly the thing "never mid-order" means, and nothing in this file was
+  // registering it — only the two count screens were. (Fable-vs-spec review,
+  // PR #618.) Registered while the cart has lines, and cleared when it is
+  // empty or this view goes away, so a forgotten flag can never wedge updates.
+  useEffect(() => {
+    setUpdateBusy("assistant-cart", cart.length > 0);
+    return () => setUpdateBusy("assistant-cart", false);
+  }, [cart.length]);
+
   const placeOrders = async (bypassDestConfirm = false) => {
     if (!cart.length || !customerName || submitting) return;
     // Phone is required for customer orders and must be a valid 10-digit SA
@@ -10929,7 +11168,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       cropped ~45% of the shoe in this 140px-tall box on phone
                       and tablet too, not just the desktop grid. */}
                   {p.photoUrl
-                    ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
+                    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
                     : <span>{p.photo}</span>}
                   {/* View full photo(s) — opens the gallery viewer (primary + extra
                       angles) without triggering the card's add-to-cart tap. */}
@@ -12803,7 +13042,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           </div>
           {!onHoldExpanded && onHoldOrders[0] && (
             <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)" }}>
-              <ProductPhoto url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
+              <ProductPhoto productId={onHoldOrders[0].productId} url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
               <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF" }}>#{onHoldOrders[0].id}</div>
               <div style={{ fontSize:13, color:"rgba(255,255,255,.8)", flex:1 }}>{onHoldOrders[0].productName}{onHoldOrders[0].size ? ` — Size ${onHoldOrders[0].size}` : ""}</div>
               {onHoldOrders.length > 1 && <div style={{ fontSize:12, color:"#4A7FFF", fontWeight:600 }}>+{onHoldOrders.length - 1} more</div>}
@@ -12813,7 +13052,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             <div style={{ marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)", display:"flex", flexDirection:"column", gap:10 }}>
               {onHoldOrders.map(order => (
                 <div key={order.id} style={{ background:"rgba(60,110,255,.05)", border:"1px solid rgba(60,110,255,.15)", borderRadius:12, padding:12, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
+                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontWeight:800, color:"#6A9FFF", fontSize:14 }}>#{order.id}</div>
                     <div style={{ fontWeight:600, fontSize:13 }}>{order.productName}{order.size ? ` — Sz ${order.size}` : ""}</div>
@@ -12918,7 +13157,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                 {/* color bar */}
                 <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:`linear-gradient(180deg,transparent,${barColor},transparent)` }}/>
                 <div style={{ padding:"12px 12px 12px 16px", display:"flex", alignItems:"flex-start", gap:11 }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
+                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
                       <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>
@@ -13618,7 +13857,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
           renderItem={(order) => (
             <div style={{ background:CARD, border:"1px solid rgba(245,158,11,.4)", borderLeft:"3px solid #F59E0B", borderRadius:RADIUS, padding:14, boxShadow:"0 0 12px rgba(245,158,11,.1)" }}>
               <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
-                <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={10}/>
+                <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={10}/>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                     <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1.1rem", color:BLUE_L, lineHeight:1 }}>#{order.id}</span>
@@ -13695,7 +13934,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
               return (
                 <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:8 }}>
-                    <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
+                    <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                         <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1rem", color:"rgba(255,255,255,.85)", lineHeight:1 }}>#{order.id}</span>
@@ -13862,7 +14101,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:8 }}>
-          <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
+          <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-3, bottom:-3, width:14, height:14, borderRadius:7, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -14087,7 +14326,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
             return (
               <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:8 }}>
-                  <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
+                  <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                       <span style={{ fontWeight:700, color:"rgba(255,255,255,.85)", fontSize:13 }}>{batch.productName}</span>
@@ -14255,7 +14494,7 @@ function CustomerView({ orders, onExit }) {
                 <button key={o.id} className="ot-row" onClick={() => { setOrderId(o.id); setFound(o); setSearched(true); }}
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer", textAlign: "left", fontFamily: FONT,
                            background: on ? "rgba(74,127,255,.14)" : "transparent", border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid transparent" }}>
-                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
+                  <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
                     <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.customerName || "—"}</div>
@@ -14401,7 +14640,7 @@ function CustomerView({ orders, onExit }) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-              <ProductPhoto url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
+              <ProductPhoto productId={found.productId} url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>{found.productName}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 7, flexWrap: "wrap" }}>
@@ -14482,7 +14721,7 @@ function CustomerView({ orders, onExit }) {
               return (
                 <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
                         style={{ width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: 10, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
-                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
+                  <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
                     <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", marginTop: 2 }}>{o.customerName || "—"}{orderShopLabel(o) ? ` · ${orderShopLabel(o)}` : ""}</div>
@@ -15161,7 +15400,7 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
         <div onClick={hasPhotos ? () => onViewPhoto(group.photos) : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
-          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          <ProductPhoto productId={group.productId} url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-3, bottom:-3, width:16, height:16, borderRadius:"50%", background:"rgba(4,5,10,.95)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>
@@ -16392,7 +16631,7 @@ function ReturnsView({ orders, products = [], onExit }) {
     return (
       <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.28)" : isExpanded ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.08)", borderRadius:16, overflow:"hidden", transition:"border-color .18s, box-shadow .18s", boxShadow: isExpanded ? "0 18px 44px -26px rgba(74,127,255,.55)" : "none", opacity: isReturned ? .78 : 1 }}>
         <div style={{ display:"flex", alignItems:"center", gap:13, padding:14 }}>
-          <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
+          <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span className="ret-siri" style={{ fontSize:14, fontWeight:800, letterSpacing:".04em", fontVariantNumeric:"tabular-nums" }}>#{order.id}</span>
@@ -20375,6 +20614,14 @@ export default function App() {
           auto-reload (src/update/updateChecker.js). Outside AuthGate so the
           TV shell (which never navigates or re-auths) updates itself too. */}
       <UpdateBanner />
+      {/* The offline mirror's status dot. Renders nothing at all unless this
+          device is running the mirror, so it costs nothing everywhere else.
+          Fixed rather than in a header because this app has several shells
+          (warehouse, assistant, TV) and the one question it answers — "is what
+          I am looking at current?" — is the same in all of them. */}
+      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900 }}>
+        <MirrorDot />
+      </div>
       <AuthGate renderTv={() => <TvOnlyShell />}>
         <AppErrorBoundary>
           <AppInner />

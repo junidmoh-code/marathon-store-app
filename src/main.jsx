@@ -3,6 +3,8 @@ import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
 import { applyPushDeepLink } from "./push/deepLink.js";
+import { MirrorGate } from "./offline/MirrorGate.jsx";
+import { auth, storage } from "./firebase.js";
 
 // Last-resort crash surface: show ANY uncaught error / promise rejection as a
 // fixed banner on screen, so a failure can never be a silent black screen with
@@ -44,9 +46,17 @@ applyPushDeepLink();
 // Deliberately NOT a service worker — see the SW rollback note below.
 startUpdateChecker();
 
+// ─── THE OFFLINE MIRROR ──────────────────────────────────────────────────────
+// With the flag off (the default) MirrorGate renders App and imports nothing
+// else — the mirror's own module graph is behind a dynamic import inside it,
+// so it is never fetched or parsed and this app is exactly what it was. With
+// the flag on it starts the mirror and blocks on the one setup download.
+// See docs/store-offline-mirror.md.
 createRoot(document.getElementById("root")).render(
   <StrictMode>
-    <App />
+    <MirrorGate auth={auth} storage={storage}>
+      <App />
+    </MirrorGate>
   </StrictMode>
 );
 
@@ -78,11 +88,18 @@ if ("serviceWorker" in navigator) {
     ))
     .catch(() => {});
 }
-// Caches are still cleared wholesale — the push worker opens none, so there is
-// nothing of its to preserve.
+// Caches were cleared WHOLESALE here, because the push worker opens none and
+// there was nothing to preserve. There is now: the offline mirror keeps its
+// product thumbnails in Cache Storage — 111 MB downloaded once per device —
+// and this line ran on every single boot.
+//
+// The exception, and the argument that it restores nothing of the 2026-05-09
+// service-worker failure, live in src/offline/cacheClear.js. It is a function
+// rather than a line here because a line could only be pinned by matching this
+// file's source text, and a mutation audit walked straight past two such pins.
 if (typeof caches !== "undefined" && caches.keys) {
-  caches.keys()
-    .then((keys) => Promise.all(keys.map((k) => caches.delete(k))))
+  import("./offline/cacheClear.js")
+    .then(({ clearCachesExceptPhotos }) => clearCachesExceptPhotos())
     .catch(() => {});
 }
 

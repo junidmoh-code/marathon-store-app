@@ -8,6 +8,7 @@ import { useEffect, useMemo, useState } from "react";
 import { ref, onValue } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
+import { useMirroredPath } from "../../offline/useMirroredPath";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { STOCK_HOLD_ROOT } from "../../config/stockHold";
 import { DISPLAY_SLOTS_ROOT } from "./displaySlots";
@@ -20,22 +21,32 @@ function useAuthReady() {
   return ready;
 }
 
+// ─── THE OFFLINE MIRROR ENTERS HERE ──────────────────────────────────────────
+//
+// usePath and usePathState are the chokepoint for /stock, /stock_movements,
+// /refill_requests, /transfers, /locations and the /settings display nodes —
+// most of the megabytes this app reads. When this device is serving those from
+// its local copy, the live subscription below is NEVER OPENED: skipping it is
+// the whole saving, and opening it "just for a moment" while the local read
+// resolves would pay the full node every time.
+//
+// That decision has to be made synchronously, on the first render, which is
+// what the serving hint in src/offline/serving.js is for. The mirror hook
+// returns one of three verdicts and this reads them literally:
+//
+//   "mirror"    serve the local value; open nothing.
+//   "pending"   the local copy is expected to answer and has not yet. Open
+//               nothing, and report `settled: false` — which is exactly what a
+//               live read reports before its first snapshot, so a caller that
+//               gates on `settled` behaves identically.
+//   "fallback"  the mirror cannot answer. Subscribe, exactly as before.
+//
+// With the flag off, `verdict` is always "fallback" and every line below runs
+// as it did before this change.
+
 // Generic single-path live read. Returns the raw snapshot value (object or null).
 function usePath(path, enabled = true) {
-  const authReady = useAuthReady();
-  const [value, setValue] = useState(null);
-  useEffect(() => {
-    // Drop any cached snapshot when we lose read permission (sign-out / auth loss),
-    // so a previous user's stock data can't linger on screen.
-    if (!authReady || !enabled || !path) { setValue(null); return; }
-    const unsub = onValue(
-      ref(database, path),
-      (snap) => setValue(snap.val()),
-      (err) => console.warn(`Stock read error on /${path}:`, err)
-    );
-    return () => unsub();
-  }, [authReady, enabled, path]);
-  return value;
+  return usePathState(path, enabled).value;
 }
 
 // usePath, but reporting the THREE states RTDB's null conflates. `snap.val()` is
@@ -54,9 +65,18 @@ function usePath(path, enabled = true) {
 //             unreadable node means "this input is unknown", not "stop".
 export function usePathState(path, enabled = true) {
   const authReady = useAuthReady();
+  const mirrored = useMirroredPath(path, enabled && authReady);
+  const live = mirrored.verdict === "fallback";
   const [state, setState] = useState({ value: null, settled: false, error: false });
   useEffect(() => {
-    if (!authReady || !enabled || !path) { setState({ value: null, settled: false, error: false }); return; }
+    // `live` is a DEPENDENCY, not an early return: a device that falls back
+    // after the local copy turns out to be unusable must then open the read it
+    // skipped, and a device whose setup finishes mid-session must close the
+    // one it opened.
+    if (!authReady || !enabled || !path || !live) {
+      setState({ value: null, settled: false, error: false });
+      return;
+    }
     const unsub = onValue(
       ref(database, path),
       (snap) => setState({ value: snap.val(), settled: true, error: false }),
@@ -66,8 +86,11 @@ export function usePathState(path, enabled = true) {
       },
     );
     return () => unsub();
-  }, [authReady, enabled, path]);
-  return state;
+  }, [authReady, enabled, path, live]);
+  // "pending" reports settled:false — the same thing a live read reports
+  // before its first snapshot — so every caller that gates on `settled`
+  // behaves identically whichever source it is on.
+  return live ? state : mirrored;
 }
 
 // /locations -> { id: {label,kind,sellable,active} } (object map, as stored).

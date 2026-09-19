@@ -15,6 +15,7 @@ import {
   productPhotoThumbPath,
   PHOTO_THUMB_MAX_EDGE,
   PHOTO_THUMB_FORMAT,
+  photoContentMarker,
 } from "./productPhotoPaths.js";
 
 describe("productPhotoPaths (matched pair with marathon-pos-app)", () => {
@@ -42,5 +43,37 @@ describe("productPhotoPaths (matched pair with marathon-pos-app)", () => {
     expect(() => productPhotoObjectPath(null)).toThrow();
     expect(() => productPhotoThumbPath(undefined)).toThrow();
     expect(() => productPhotoThumbPath("")).toThrow();
+  });
+});
+
+describe("photoContentMarker (matched pair with marathon-pos-app)", () => {
+  // LITERAL expectations, for the same reason the paths above are literal: a
+  // marker that drifts between the two apps means one of them re-downloads a
+  // catalogue it already has, or keeps showing a photo that was replaced.
+  it("a stamp and a url both contribute, joined by a pipe", () => {
+    expect(photoContentMarker({ photoUpdatedAt: 1757000000000, photoUrl: "https://x/y.jpg" }))
+      .toBe("1757000000000|https://x/y.jpg");
+  });
+
+  it("a string stamp is kept verbatim", () => {
+    expect(photoContentMarker({ photoUpdatedAt: "2026-09-19T00:00:00.000Z" }))
+      .toBe("2026-09-19T00:00:00.000Z");
+  });
+
+  it("the legacy `photo` field is used only when photoUrl is absent", () => {
+    expect(photoContentMarker({ photoUrl: "https://new", photo: "https://old" })).toBe("https://new");
+    expect(photoContentMarker({ photo: "https://old" })).toBe("https://old");
+  });
+
+  it("no photo at all is a STABLE marker, not an empty string", () => {
+    // An empty string would compare equal to a missing index entry, so a
+    // product that later gains a photo could read as already current.
+    expect(photoContentMarker({})).toBe("no-photo");
+    expect(photoContentMarker(null)).toBe("no-photo");
+  });
+
+  it("a zero or empty stamp does not contribute", () => {
+    expect(photoContentMarker({ photoUpdatedAt: 0, photoUrl: "https://x" })).toBe("https://x");
+    expect(photoContentMarker({ photoUpdatedAt: "", photoUrl: "https://x" })).toBe("https://x");
   });
 });
