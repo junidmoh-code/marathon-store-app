@@ -1,7 +1,8 @@
 // ─── DISPLAY CHECKS — wakeHeldChecks SWEEP (no UI) ────────────────────────────
-// Every 5 minutes, walk the active index and move held checks through the
-// hold→wake lifecycle (§1.3), all IN PLACE — the never-null model means a check
-// never changes address, so there is no relocation and no relocation race:
+// Five times a day in trading hours (09:00, 11:00, 13:00, 15:00, 16:00 SAST;
+// owner decision 2026-09-19), walk the active index and move held checks
+// through the hold→wake lifecycle (§1.3), all IN PLACE — the never-null model
+// means a check never changes address, so there is no relocation race:
 //   stock appears (qty>0) + not seen  → stockSeenAt = now, grace clock started
 //   grace elapsed + stock still there → status flips held → OPEN in place
 //                                       (activatedSaDate stamped, §PR-12)
@@ -19,7 +20,24 @@
 // /stock_movements.
 //
 // TIMEZONE: schedule declares timeZone "Africa/Johannesburg"; the day key is the
-// shared sa-time.cjs helper. Deploy: firebase deploy --only functions:wakeHeldChecks
+// shared sa-time.cjs helper. With the schedule now expressed in hours rather
+// than as a bare interval, the timeZone is load-bearing: left to the UTC
+// default the "09:00" run would fire at 11:00 SAST and the last at 18:00.
+//
+// NOTHING IS LOST OUTSIDE THE WINDOW, only deferred. A held check lives in
+// /displayChecks_active until something wakes it; it has no expiry, and the
+// sweep's decision (lib.cjs wakeTransition) is a pure function of the record
+// and the current stock cell, not of how many sweeps preceded it. A check held
+// at 16:30, overnight, or over a weekend is picked up by the next 09:00 run.
+// The per-sale trigger (onClothingSale) is an onValueCreated RTDB trigger and
+// fires on its own, independently of this schedule — sales still raise and bump
+// checks at 20:00 and on a Sunday; only the hold→wake transition waits.
+//
+// WHAT DOES CHANGE: the grace clock (wakeDelayMinutes, default 20) is now
+// observed at sweep resolution, so a check whose stock appears at 09:05 is
+// stock_seen at 11:00 and activated at 13:00 rather than ~25 minutes later.
+//
+// Deploy: firebase deploy --only functions:wakeHeldChecks
 
 "use strict";
 
@@ -203,7 +221,11 @@ exports.runWakeSweep = runWakeSweep;
 
 exports.wakeHeldChecks = onSchedule(
   {
-    schedule: "every 5 minutes",
+    // FIVE runs a day, trading hours only — owner decision 2026-09-19.
+    // 09:00, 11:00, 13:00, 15:00, 16:00 SAST. Nothing outside that window: the
+    // sweep used to run 288 times a day, 200-odd of them against an index that
+    // could not have changed because the shop was shut.
+    schedule: "0 9,11,13,15,16 * * *",
     region: "europe-west1",
     timeZone: "Africa/Johannesburg",
     timeoutSeconds: 120,
