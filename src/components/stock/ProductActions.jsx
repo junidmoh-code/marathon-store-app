@@ -42,6 +42,7 @@ import { decodeSizeKey } from "../../utils/sizeKey";
 import { formatSize } from "../../utils/sizeLabel";
 import MergeProducts from "./MergeProducts.jsx";
 import { GLASS_SOLID, GRAY, GREEN, RED, AMBER, BLUE_L, BORDER, FONT, bGreen, bRed, bGray, bBlue } from "./ui";
+import { MirroredImg } from "../../offline/MirroredImg.jsx";
 
 /** Is this viewer allowed to retire products? Same gate as the Leftovers tab. */
 export function useCanRetireProducts() {
@@ -217,7 +218,7 @@ export function ProductActionSheet({ product, products = [], onChanged, onClose 
       <div onClick={swallow} style={{ ...GLASS_SOLID, width: "min(520px, 100%)", maxHeight: "86vh", overflowY: "auto", padding: 18 }}>
         <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 14 }}>
           {product.photoUrl
-            ? <img src={product.photoUrl} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 10, flexShrink: 0 }} />
+            ? <MirroredImg productId={product.id} src={product.photoUrl} alt="" style={{ width: 60, height: 60, objectFit: "cover", borderRadius: 10, flexShrink: 0 }} />
             : <div style={{ width: 60, height: 60, borderRadius: 10, background: "rgba(120,150,255,.08)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 26, flexShrink: 0 }}>👟</div>}
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: 16, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>

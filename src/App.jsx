@@ -24,6 +24,7 @@ import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { useMirroredPath } from "./offline/useMirroredPath";
 import { MirrorDot } from "./offline/MirrorDot.jsx";
+import { MirroredImg } from "./offline/MirroredImg.jsx";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
@@ -343,12 +344,17 @@ function ProductThumb({ name, photoMap, size = 40 }) {
 }
 
 // Helper to render product photo or icon — replaces inline `{p.photoUrl ? <img> : "👟"}` patterns
-function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)" }) {
+//
+// `productId` is optional and is the offline mirror's hook: given one, this
+// serves the device's own 300px thumbnail instead of fetching the ~109 KB
+// original from Storage. Without one it behaves exactly as it always has, so
+// a call site that has no id is not a bug — it is simply not mirrored.
+function ProductPhoto({ productId = null, url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)" }) {
   const src = url || (photo && (photo.startsWith("data:") || photo.startsWith("http")) ? photo : null);
   return (
     <div style={{ width:size, height:size, borderRadius:radius, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
       {src
-        ? <img src={src} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}/>
+        ? <MirroredImg productId={productId} src={src} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}/>
         : <ProductIcon size={Math.round(size * 0.5)} />}
     </div>
   );
@@ -3636,7 +3642,7 @@ function RecentPickCard({ p, selected, onToggle }) {
                   border:"1px solid " + (selected ? "rgba(74,202,122,.65)" : "rgba(255,255,255,.08)"),
                   boxShadow: selected ? "0 0 0 1px rgba(74,202,122,.65), 0 4px 18px rgba(74,202,122,.14)" : "none",
                   transition:"border-color .15s ease, box-shadow .15s ease" }}>
-      <img src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
+      <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
            style={{ width:"100%", aspectRatio:"1", objectFit:"cover", display:"block",
                     opacity: loaded ? 1 : 0, transition:"opacity .25s ease" }}/>
       {!loaded && (
@@ -4068,7 +4074,7 @@ function AdminReviewPhotosTab({ products = [] }) {
                 <div key={p.id} onClick={() => toggleSel(p.id)}
                      style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
                               background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
-                  <img src={p.photoUrl} alt="" loading="lazy" decoding="async"
+                  <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async"
                        style={{ width:38, height:38, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
                   <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
                   <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
@@ -4878,7 +4884,7 @@ function AdminReviewCategoriesTab({ products = [] }) {
                         border: checked ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.07)" }}>
             <input type="checkbox" checked={checked} readOnly
                    style={{ width:17, height:17, accentColor:"#4A7FFF", flexShrink:0, cursor:"pointer" }}/>
-            <img src={p.photoUrl || ""} alt="" loading="lazy"
+            <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
                  style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
@@ -5238,7 +5244,7 @@ function MissingPricesTab({ products = [] }) {
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
                 <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
                   style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
-                <img src={p.photoUrl || ""} alt="" loading="lazy"
+                <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
@@ -5480,7 +5486,7 @@ function AdminReviewNamesTab({ products }) {
           const changed = (row.suggested || "") !== (row.current || "");
           return (
             <div key={row.id} style={{ display:"flex", gap:11, background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:11 }}>
-              <ProductPhoto url={row.photoUrl} size={64} radius={10}/>
+              <ProductPhoto productId={row.id} url={row.photoUrl} size={64} radius={10}/>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
                   <span style={{ fontSize:10, fontWeight:800, color: confColor(row.confidence || 0), background:"rgba(255,255,255,.05)", border:`1px solid ${confColor(row.confidence || 0)}55`, borderRadius:10, padding:"2px 8px" }}>{pct}% sure</span>
@@ -7044,7 +7050,7 @@ function AdminProductRow({ product }) {
            border:"1px solid rgba(255,255,255,.07)",
            borderRadius:14, padding:"10px 14px", marginBottom:8, cursor:"pointer",
          }}>
-      <ProductPhoto url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
+      <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:16, fontWeight:600, color:"#fff", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{product.name}</div>
         <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:4, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{meta}</div>
@@ -7542,7 +7548,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
           <div onClick={photos.length ? () => setGalleryView(photos) : undefined}
                title={photos.length > 1 ? `View ${photos.length} photos` : (photos.length ? "View photo" : undefined)}
                style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-            <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+            <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
           </div>
           <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
             <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
@@ -7914,7 +7920,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
           </button>
           <div style={{ display:"flex", justifyContent:"center", padding:"4px 0" }}>
             <div onClick={photos.length ? () => setGalleryView(photos) : undefined} style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-              <ProductPhoto url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
+              <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
             </div>
           </div>
           <div>
@@ -8008,7 +8014,7 @@ function ClothingCard({ product, onAdd, onViewPhoto, allProducts = [] }) {
              title={product.photoUrl ? (product.gallery?.length ? `View ${productPhotos(product).length} photos` : "View full photo") : undefined}
              style={{ position:"relative", width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
           {product.photoUrl
-            ? <img src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+            ? <MirroredImg productId={product.id} src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
           {product.gallery?.length > 0 && (
             <span style={{ position:"absolute", bottom:5, left:5, display:"inline-flex", alignItems:"center", gap:3, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:999 }}>
@@ -8218,7 +8224,7 @@ function RefillTrackingProductCard({ group, onViewPhoto }) {
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(group.photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
-          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          <ProductPhoto productId={group.productId} url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-4, bottom:-4, width:18, height:18, borderRadius:9, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -8526,7 +8532,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // portrait photo in a landscape cover box lost ~half the shoe on laptops;
   // contain shows the whole product on the card's dark stage instead.
   const Photo = ({ p, big }) => p.photoUrl
-    ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
+    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
 
   return (
@@ -11135,7 +11141,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       cropped ~45% of the shoe in this 140px-tall box on phone
                       and tablet too, not just the desktop grid. */}
                   {p.photoUrl
-                    ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
+                    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
                     : <span>{p.photo}</span>}
                   {/* View full photo(s) — opens the gallery viewer (primary + extra
                       angles) without triggering the card's add-to-cart tap. */}
@@ -13009,7 +13015,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           </div>
           {!onHoldExpanded && onHoldOrders[0] && (
             <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)" }}>
-              <ProductPhoto url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
+              <ProductPhoto productId={onHoldOrders[0].productId} url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
               <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF" }}>#{onHoldOrders[0].id}</div>
               <div style={{ fontSize:13, color:"rgba(255,255,255,.8)", flex:1 }}>{onHoldOrders[0].productName}{onHoldOrders[0].size ? ` — Size ${onHoldOrders[0].size}` : ""}</div>
               {onHoldOrders.length > 1 && <div style={{ fontSize:12, color:"#4A7FFF", fontWeight:600 }}>+{onHoldOrders.length - 1} more</div>}
@@ -13019,7 +13025,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             <div style={{ marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)", display:"flex", flexDirection:"column", gap:10 }}>
               {onHoldOrders.map(order => (
                 <div key={order.id} style={{ background:"rgba(60,110,255,.05)", border:"1px solid rgba(60,110,255,.15)", borderRadius:12, padding:12, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
+                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontWeight:800, color:"#6A9FFF", fontSize:14 }}>#{order.id}</div>
                     <div style={{ fontWeight:600, fontSize:13 }}>{order.productName}{order.size ? ` — Sz ${order.size}` : ""}</div>
@@ -13124,7 +13130,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                 {/* color bar */}
                 <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:`linear-gradient(180deg,transparent,${barColor},transparent)` }}/>
                 <div style={{ padding:"12px 12px 12px 16px", display:"flex", alignItems:"flex-start", gap:11 }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
+                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
                       <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>
@@ -13824,7 +13830,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
           renderItem={(order) => (
             <div style={{ background:CARD, border:"1px solid rgba(245,158,11,.4)", borderLeft:"3px solid #F59E0B", borderRadius:RADIUS, padding:14, boxShadow:"0 0 12px rgba(245,158,11,.1)" }}>
               <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
-                <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={10}/>
+                <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={10}/>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                     <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1.1rem", color:BLUE_L, lineHeight:1 }}>#{order.id}</span>
@@ -13901,7 +13907,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
               return (
                 <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:8 }}>
-                    <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
+                    <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                         <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1rem", color:"rgba(255,255,255,.85)", lineHeight:1 }}>#{order.id}</span>
@@ -14068,7 +14074,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:8 }}>
-          <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
+          <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-3, bottom:-3, width:14, height:14, borderRadius:7, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -14293,7 +14299,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
             return (
               <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:8 }}>
-                  <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
+                  <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                       <span style={{ fontWeight:700, color:"rgba(255,255,255,.85)", fontSize:13 }}>{batch.productName}</span>
@@ -14461,7 +14467,7 @@ function CustomerView({ orders, onExit }) {
                 <button key={o.id} className="ot-row" onClick={() => { setOrderId(o.id); setFound(o); setSearched(true); }}
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer", textAlign: "left", fontFamily: FONT,
                            background: on ? "rgba(74,127,255,.14)" : "transparent", border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid transparent" }}>
-                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
+                  <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
                     <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.customerName || "—"}</div>
@@ -14607,7 +14613,7 @@ function CustomerView({ orders, onExit }) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-              <ProductPhoto url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
+              <ProductPhoto productId={found.productId} url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>{found.productName}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 7, flexWrap: "wrap" }}>
@@ -14688,7 +14694,7 @@ function CustomerView({ orders, onExit }) {
               return (
                 <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
                         style={{ width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: 10, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
-                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
+                  <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
                     <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", marginTop: 2 }}>{o.customerName || "—"}{orderShopLabel(o) ? ` · ${orderShopLabel(o)}` : ""}</div>
@@ -15367,7 +15373,7 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
         <div onClick={hasPhotos ? () => onViewPhoto(group.photos) : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
-          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          <ProductPhoto productId={group.productId} url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-3, bottom:-3, width:16, height:16, borderRadius:"50%", background:"rgba(4,5,10,.95)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>
@@ -16598,7 +16604,7 @@ function ReturnsView({ orders, products = [], onExit }) {
     return (
       <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.28)" : isExpanded ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.08)", borderRadius:16, overflow:"hidden", transition:"border-color .18s, box-shadow .18s", boxShadow: isExpanded ? "0 18px 44px -26px rgba(74,127,255,.55)" : "none", opacity: isReturned ? .78 : 1 }}>
         <div style={{ display:"flex", alignItems:"center", gap:13, padding:14 }}>
-          <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
+          <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span className="ret-siri" style={{ fontSize:14, fontWeight:800, letterSpacing:".04em", fontVariantNumeric:"tabular-nums" }}>#{order.id}</span>

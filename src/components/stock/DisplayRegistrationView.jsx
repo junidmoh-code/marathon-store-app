@@ -66,6 +66,7 @@ import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizePicker, HistoryToggle } from "./displayRowUi";
 import { FONT } from "./ui";
+import { MirroredImg } from "../../offline/MirroredImg.jsx";
 
 // The two walls. Pine's displays are booked at hub3, outside
 // GATED_SNEAKER_HUBS, so Pine is deliberately not offered.
@@ -225,7 +226,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   };
 
   const Thumb = ({ p }) => (p?.photoUrl
-    ? <img src={p.photoUrl} alt="" style={sheet.thumb} />
+    ? <MirroredImg productId={p.id} src={p.photoUrl} alt="" style={sheet.thumb} />
     : <div style={{ ...sheet.thumb, display: "grid", placeItems: "center", fontSize: 20 }}>👟</div>);
 
   return (

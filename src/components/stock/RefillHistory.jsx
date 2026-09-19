@@ -39,6 +39,7 @@ import {
   REQUESTS_INDEXED, resolveRange, saDayOf, shiftDay, HUB_STEPS, stepHub,
   STATUS_LABEL, STATUS_EXPLAIN, REASON_TEXT, requestRows, movementRows, mergeRows,
 } from "./refillHistoryCore";
+import { MirroredImg } from "../../offline/MirroredImg.jsx";
 
 const LOC_LABEL = {
   hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", central: "Central",
@@ -273,7 +274,7 @@ export default function RefillHistory({ products = [] }) {
               <div key={r.key} style={{ ...CARD, padding: "14px 15px", borderColor: `${tone}44` }}>
                 <div style={{ display: "flex", gap: 12, alignItems: "flex-start" }}>
                   {p?.photoUrl
-                    ? <img src={p.photoUrl} alt="" style={{ width: 48, height: 48, borderRadius: 9, objectFit: "cover", flexShrink: 0 }} />
+                    ? <MirroredImg productId={p.id} src={p.photoUrl} alt="" style={{ width: 48, height: 48, borderRadius: 9, objectFit: "cover", flexShrink: 0 }} />
                     : <span style={{ width: 48, height: 48, borderRadius: 9, background: "rgba(60,110,255,.08)", flexShrink: 0 }} />}
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 15.5, fontWeight: 700, color: "#fff", lineHeight: 1.3, overflowWrap: "anywhere" }}>
