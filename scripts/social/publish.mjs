@@ -42,7 +42,7 @@
 import { createRequire } from "module";
 import {
   postBlocker, outstandingPlatforms, attemptsExhausted, captionFor, needsVerification,
-  formatOf, needsVideo, mediaForSurface,
+  formatOf, needsVideo, videoSourceOf, mediaForSurface,
   MAX_ATTEMPTS, STALE_CLAIM_MS, describePost, formatSlot, nextSlots,
 } from "../../src/components/social/socialCore.js";
 import { readSecret, credentialStatus } from "./secrets.mjs";
@@ -321,6 +321,61 @@ async function readCredential(name, problems) {
   }
 }
 
+// ── ONE ENCODE, TWO SURFACES ─────────────────────────────────────────────────
+// A reel and its story twin share the SAME mp4. That is the whole cost saving
+// of the two-reels-a-day rhythm, and it is enforced here rather than trusted.
+//
+// The twin carries `videoFrom` — the reel's post id — never a URL, because at
+// generation there is no video to point at. So:
+//
+//   · a REEL encodes its own still and stores the mp4 on itself.
+//   · a STORY TWIN looks up its reel and runs the SAME ensureReelVideo against
+//     THAT record. ensureReelVideo is idempotent: if the reel already carries
+//     a video it is reused, and if it does not, one is made and stored on the
+//     reel. Either way the twin sends the reel's file.
+//
+// ORDER DOES NOT MATTER, which is the point. Both records share a scheduledAt,
+// so they arrive in the same tick in whatever order the queue sorts them; the
+// first one through pays the encode and the second reuses it. If the story is
+// reached first it encodes ONTO THE REEL, so the reel two lines later is a
+// reuse, not a second encode.
+//
+// A twin whose reel has been deleted, or which points at a post with no still,
+// FAILS LOUDLY. Falling back to encoding the twin's own copy of the still
+// would produce a second file that is nearly-but-not-quite the reel's, which
+// is exactly the thing this is meant to make impossible.
+async function resolveVideoFor(item) {
+  const sourceId = videoSourceOf(item);
+  const ownerId = sourceId || item.id;
+  let owner = item;
+  if (sourceId) {
+    if (sourceId === item.id) {
+      return { ok: false, reason: `this post points at itself for its video (${sourceId})` };
+    }
+    const src = (await db.ref(`${POSTS}/${sourceId}`).once("value")).val();
+    if (!src) {
+      return { ok: false, reason: `the reel this story copies (${sourceId}) no longer exists` };
+    }
+    owner = { ...src, id: sourceId };
+  } else if (formatOf(item) !== "reel") {
+    // needsVideo() is true for exactly two shapes; anything else reaching here
+    // means the two have drifted apart, and guessing would post the wrong
+    // medium to a live account.
+    return { ok: false, reason: `a ${formatOf(item)} post needs a video but names no reel to take it from` };
+  }
+
+  const r = await ensureReelVideo(owner, {
+    admin,
+    fetchImage: async (url) => {
+      const res = await fetch(url);
+      if (!res.ok) throw new Error(`could not fetch the still (HTTP ${res.status})`);
+      return Buffer.from(await res.arrayBuffer());
+    },
+    log,
+  });
+  return r.ok ? { ...r, ownerId } : r;
+}
+
 async function main() {
   const credProblems = {};
   const creds = {
@@ -448,16 +503,8 @@ async function main() {
       // at once, and it is idempotent: a post that already carries a video
       // reuses it rather than paying the encode again and leaving an orphan in
       // Storage every time a publish fails.
-      if (formatOf(item) === "reel" && needsVideo(item)) {
-        const r = await ensureReelVideo(item, {
-          admin,
-          fetchImage: async (url) => {
-            const res = await fetch(url);
-            if (!res.ok) throw new Error(`could not fetch the still (HTTP ${res.status})`);
-            return Buffer.from(await res.arrayBuffer());
-          },
-          log,
-        });
+      if (needsVideo(item)) {
+        const r = await resolveVideoFor(item);
         if (!r.ok) {
           // Deliberately a FAILURE, not a fallback to the still. Publishing a
           // 9:16 card to the feed because a reel would not encode puts the
@@ -466,7 +513,10 @@ async function main() {
           await db.ref(`${POSTS}/${post.id}`).update({ status: "failed", failedReason: `reel: ${r.reason}` });
           failed++; continue;
         }
-        if (r.encoded) await db.ref(`${POSTS}/${post.id}/media`).set(r.media);
+        // The mp4 is stored on the post that OWNS it — the reel — which is
+        // this post for a reel and the source post for a story twin. Writing
+        // it onto the twin as well would be a second copy of one fact.
+        if (r.encoded) await db.ref(`${POSTS}/${r.ownerId}/media`).set(r.media);
         item = { ...item, media: r.media };
       }
 

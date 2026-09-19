@@ -464,6 +464,68 @@ thrown away in the queue without touching the other. The twin carries
 
 ---
 
+## 5d. TWO REELS A DAY, EACH ALSO A STORY — LIVE 2026-09-19
+
+Owner brief: *"two reels a day only, each one also posted as a story. No feed
+photo posts, no separate story generations. Cost minimisation is the point."*
+
+The day is now:
+
+| what | when (SAST) | generated | encoded |
+|---|---|---:|---:|
+| Reel | **12:00** | 1 image | 1 video |
+| Story (the reel's twin) | 12:00 | — | — |
+| Reel | **19:00** | 1 image | 1 video |
+| Story (the reel's twin) | 19:00 | — | — |
+| **the day** | | **2 images** | **2 videos** |
+
+**Two generations, four posts.** The story is not a second picture and not a
+second encode: it is the reel's own mp4, sent again to a different surface.
+The twin record carries `videoFrom` — the reel's post id, never a URL,
+because at 06:00 the video does not exist yet — and the publisher resolves it
+on the Mac mini. Whichever of the pair the tick reaches first pays the encode,
+stores the file on the **reel's** record, and the other reuses it.
+
+**12:00 and 19:00**: lunch, and after supper. The two windows a South African
+audience is on a phone rather than at work or in traffic. The old 08:00 slot
+competed with the commute and 18:00 with it in the other direction.
+
+### The feed photo and the standalone stories are OFF, not gone
+
+Nothing was deleted. Both are switched off **by config**, in the place that
+config lives — `/social_policy`, which is the **Policy tab** in the Social
+screen. `photos` and `stories` simply ask for no times.
+
+To bring either back: add a time in the Policy tab. That is the whole
+procedure — no code change, no deploy. `DEFAULT_POLICY_TIMES` in
+`functions/index.js` carries the same empty lists for a fresh install, and the
+saved policy wins over it.
+
+> RTDB cannot store an empty array — it deletes the key — so a saved policy
+> with no photos comes back with `photos` **absent**, not as `[]`.
+> `asRtdbList` already reads that as zero. "Switched off" and "never
+> configured" are distinguishable only by whether a `/social_policy` record
+> exists at all.
+
+### Turning the story twin itself off
+
+Set `REEL_ALSO_POSTS_TO_STORY=false` in `functions/.env`, then redeploy
+`functions:socialDailyAutopilot` and `functions:generateSocialPosts`. A
+build-time flag, the same convention as `SOCIAL_AUTOPILOT_ENABLED` and
+`STORY_ALSO_POSTS_TO_FEED`.
+
+`socialCore.js` carries a **mirror**, which is what the Policy tab reads to
+describe the day. Turn the backend off and flip the mirror too;
+`socialFormat.test.js` pins the two literals together and fails until you do.
+
+### Facebook gets the same rhythm
+
+Both platforms are on every post, as before. A reel goes to the Page as a
+video and the twin goes to `/{page}/video_stories` — the story endpoints wired
+up in §3c, which already handle video. Nothing platform-specific changed.
+
+---
+
 ## 6. Day to day
 
 App → **Social**.

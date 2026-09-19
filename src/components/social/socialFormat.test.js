@@ -5,7 +5,7 @@
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
-import { FORMATS, DEFAULT_FORMAT, formatOf, needsVideo, mediaForSurface, STORY_ALSO_POSTS_TO_FEED } from "./socialCore.js";
+import { FORMATS, DEFAULT_FORMAT, formatOf, needsVideo, videoSourceOf, mediaForSurface, STORY_ALSO_POSTS_TO_FEED, REEL_ALSO_POSTS_TO_STORY } from "./socialCore.js";
 import { hasVideo, stillOf } from "../../../scripts/social/reel-media.mjs";
 
 const require = createRequire(import.meta.url);
@@ -67,12 +67,39 @@ describe("the publisher's contract with formats", () => {
 
   it("encodes a reel INSIDE the claim, so two ticks cannot race", () => {
     // Anchored on the CALL, not the identifier: the first occurrence of
-    // "ensureReelVideo" is the import at the top of the file, which is of
-    // course before the claim and makes this pass or fail for the wrong reason.
+    // "resolveVideoFor" is its own declaration above main(), which is of
+    // course before the claim and would make this pass or fail for the wrong
+    // reason.
+    //
+    // resolveVideoFor, not ensureReelVideo: the encode now lives behind that
+    // one helper, because a reel and its story twin must share ONE file and
+    // that decision needs a single place. The property being protected is
+    // unchanged — nothing encodes until the post is claimed — so the test
+    // follows the call rather than the name.
     const claimAt = src.indexOf("if (!(await claim(post.id)))");
-    const encodeAt = src.indexOf("await ensureReelVideo(");
+    const resolveAt = src.indexOf("await resolveVideoFor(item)");
     expect(claimAt).toBeGreaterThan(-1);
-    expect(encodeAt).toBeGreaterThan(claimAt);
+    expect(resolveAt).toBeGreaterThan(claimAt);
+  });
+
+  it("there is exactly ONE encode call site, and it is inside that helper", () => {
+    // Two call sites is how a reel and its twin end up with two files. The
+    // import line is excluded by anchoring on the call.
+    const calls = src.match(/await ensureReelVideo\(/g) || [];
+    expect(calls.length).toBe(1);
+    const helperAt = src.indexOf("async function resolveVideoFor(");
+    const mainAt = src.indexOf("async function main()");
+    const encodeAt = src.indexOf("await ensureReelVideo(");
+    expect(helperAt).toBeGreaterThan(-1);
+    expect(encodeAt).toBeGreaterThan(helperAt);
+    expect(encodeAt).toBeLessThan(mainAt);
+  });
+
+  it("a story twin's video is taken from the REEL's record, not re-encoded", () => {
+    // The whole cost argument for two-reels-a-day rests on this: the mp4 is
+    // stored on the post that owns it, and the twin reuses that file.
+    expect(src).toMatch(/videoSourceOf\(item\)/);
+    expect(src).toMatch(/POSTS\}\/\$\{r\.ownerId\}\/media/);
   });
 
   it("FAILS a reel that cannot be encoded — never falls back to the still", () => {
@@ -115,7 +142,67 @@ describe("STORY_ALSO_POSTS_TO_FEED does not drift", () => {
 
   it("the browser never creates a twin — it only describes one", () => {
     const core = read("./socialCore.js");
-    expect(core).not.toMatch(/buildFeedTwin|twinWriteUpdates/);
+    expect(core).not.toMatch(/buildFeedTwin|buildStoryTwin|twinWriteUpdates/);
+  });
+});
+
+// ── THE SAME DRIFT GUARD, FOR THE REEL'S STORY TWIN ──────────────────────────
+// Two reels a day, each also a story from the same encoded file. The Policy
+// tab reads the mirror to say so; if the backend stops making story twins and
+// the mirror does not follow, the screen promises stories nobody is posting.
+describe("REEL_ALSO_POSTS_TO_STORY does not drift", () => {
+  const read = (rel) => readFileSync(new URL(rel, import.meta.url), "utf8");
+
+  it("the mirror and the backend flag agree", () => {
+    const fn = read("../../../functions/index.js");
+    const backend = /const REEL_ALSO_POSTS_TO_STORY = process\.env\.REEL_ALSO_POSTS_TO_STORY !== "false";/.test(fn);
+    expect(backend).toBe(true);           // the backend default is ON
+    expect(REEL_ALSO_POSTS_TO_STORY).toBe(true);
+  });
+
+  it("the backend flag is still an ENV switch, not a hardcoded literal", () => {
+    // The off switch documented in SOCIAL-SETUP must exist. A bare `true`
+    // would document a switch that does nothing.
+    const fn = read("../../../functions/index.js");
+    expect(fn).not.toMatch(/const REEL_ALSO_POSTS_TO_STORY = true;/);
+    expect(fn).toMatch(/process\.env\.REEL_ALSO_POSTS_TO_STORY/);
+  });
+});
+
+// ── A STORY TWIN GOES OUT AS THE REEL'S VIDEO, NOT AS A STILL ────────────────
+// needsVideo used to be "is this a reel", full stop. A reel's story twin is
+// NOT a reel and would have been sent as its cover image — a still where a
+// video was promised, quietly, on a live account.
+describe("videoSourceOf and the story twin", () => {
+  it("an ordinary story is still a still", () => {
+    expect(needsVideo({ format: "story" })).toBe(false);
+    expect(videoSourceOf({ format: "story" })).toBeNull();
+  });
+
+  it("a story that names a reel needs that reel's video", () => {
+    const twin = { format: "story", videoFrom: "-Pabc123" };
+    expect(videoSourceOf(twin)).toBe("-Pabc123");
+    expect(needsVideo(twin)).toBe(true);
+  });
+
+  it("a reel needs a video whether or not it names a source", () => {
+    expect(needsVideo({ format: "reel" })).toBe(true);
+  });
+
+  it("a videoFrom that is not a usable id is not a source", () => {
+    // Anything but a non-empty string: a half-written record must fall back to
+    // "this is an ordinary still", never to "encode something unnamed".
+    for (const junk of ["", null, undefined, 0, 7, true, {}, []]) {
+      expect(videoSourceOf({ format: "story", videoFrom: junk })).toBeNull();
+      expect(needsVideo({ format: "story", videoFrom: junk })).toBe(false);
+    }
+  });
+
+  it("a story twin's video is NOT swapped by mediaForSurface", () => {
+    // mediaForSurface only ever swaps a single IMAGE for its sibling render.
+    // A video must reach the platform untouched.
+    const media = [{ type: "video", url: "https://s/reel.mp4" }];
+    expect(mediaForSurface({ format: "story", media, videoFrom: "-Pabc123" })).toBe(media);
   });
 });
 

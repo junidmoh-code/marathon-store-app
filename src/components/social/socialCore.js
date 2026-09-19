@@ -167,6 +167,16 @@ export const postKind = (key) => KIND_BY_KEY.get(key) || null;
 // Mon/Wed/Sat plist and SLOT_DAYS already live under.
 export const STORY_ALSO_POSTS_TO_FEED = true;
 
+// ── EVERY REEL IS ALSO A STORY ───────────────────────────────────────────────
+// Owner brief, 2026-09-19: two reels a day, each also posted as a story, from
+// THE SAME ENCODED VIDEO FILE. A MIRROR of REEL_ALSO_POSTS_TO_STORY in
+// functions/index.js, where the decision is actually made — the browser never
+// creates a twin, it only describes what the backend will do.
+//
+// socialFormat.test.js asserts the two literals agree, the same drift guard
+// STORY_ALSO_POSTS_TO_FEED lives under.
+export const REEL_ALSO_POSTS_TO_STORY = true;
+
 //   feed   1080x1350, a still, media_type from the media
 //   story  1080x1920, a still, media_type=STORIES, no caption, 24h
 //   reel   1080x1920, a VIDEO, media_type=REELS
@@ -178,8 +188,30 @@ export const STORY_ALSO_POSTS_TO_FEED = true;
 export const FORMATS = ["feed", "story", "reel"];
 export const DEFAULT_FORMAT = "feed";
 export const formatOf = (post) => (FORMATS.includes(post?.format) ? post.format : DEFAULT_FORMAT);
-/** Only a reel needs a video; the others are stills. */
-export const needsVideo = (post) => formatOf(post) === "reel";
+
+// ── A STORY THAT SHARES A REEL'S VIDEO ───────────────────────────────────────
+// `videoFrom` is another post's id, written by the generator onto a reel's
+// story twin (functions/lib/social-twin.cjs). It is NEVER a URL: at generation
+// no video exists yet, because the encode happens on the Mac mini at publish
+// time. The publisher resolves it — whichever of the pair it reaches first
+// encodes once onto the REEL's record and the other reuses that same file.
+//
+// A pointer rather than a copied URL on purpose. Two records holding the same
+// URL is two copies of one fact, and they drift the first time anything
+// re-encodes.
+export const videoSourceOf = (post) => {
+  const id = post?.videoFrom;
+  return typeof id === "string" && id ? id : null;
+};
+
+/**
+ * Does this post go out as a video?
+ *
+ * A reel always does. A story does ONLY when it is a reel's twin — an
+ * ordinary story is a still, and encoding one would spend CPU and bandwidth on
+ * a slideshow of a single frame.
+ */
+export const needsVideo = (post) => formatOf(post) === "reel" || videoSourceOf(post) !== null;
 
 // ── THE FILE FOR THE SURFACE ─────────────────────────────────────────────────
 // A generated story carries `artwork: { story, feed }` — one design rendered at

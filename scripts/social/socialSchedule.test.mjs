@@ -86,15 +86,31 @@ describe("the agent ticks; the schedule lives in the data", () => {
   //
   // This is also what makes "Post now" possible without a second publisher:
   // the button moves scheduledAt to now and the next tick takes it.
-  const interval = PLIST.match(/<key>StartInterval<\/key>\s*<integer>(\d+)<\/integer>/);
+  // ── IT IS KeepAlive + ThrottleInterval, NOT StartInterval — 2026-08-31 ─────
+  // At 01:16 that morning launchd silently stopped firing every StartInterval
+  // agent in this session at once: spawns "pended", no error, no reboot, no
+  // sleep. The one agent with KeepAlive survived, so the publisher was moved
+  // onto it — launchd MUST keep a KeepAlive job running and respawns it on any
+  // exit, including the wedge that killed the interval schedule.
+  //
+  // The runner still runs ONE tick and exits; ThrottleInterval is what spaces
+  // the respawns to the old cadence, so this is not a hot loop. This test
+  // asserted StartInterval for three weeks after the plist stopped carrying
+  // one, and was red the whole time — which is worse than no test, because a
+  // permanently red test is one nobody reads.
+  const throttle = PLIST.match(/<key>ThrottleInterval<\/key>\s*<integer>(\d+)<\/integer>/);
 
-  it("declares a StartInterval", () => {
-    expect(interval, "no StartInterval in the plist").toBeTruthy();
+  it("is kept alive by launchd, so a wedged scheduler cannot silence it", () => {
+    expect(PLIST).toMatch(/<key>KeepAlive<\/key>\s*<true\s*\/>/);
+  });
+
+  it("declares a ThrottleInterval — without it KeepAlive IS a hot loop", () => {
+    expect(throttle, "no ThrottleInterval in the plist").toBeTruthy();
   });
 
   it("ticks often enough that Post now means minutes, not hours", () => {
-    expect(Number(interval[1])).toBeLessThanOrEqual(300);
-    expect(Number(interval[1])).toBeGreaterThanOrEqual(60);   // and not a hot loop
+    expect(Number(throttle[1])).toBeLessThanOrEqual(300);
+    expect(Number(throttle[1])).toBeGreaterThanOrEqual(60);   // and not a hot loop
   });
 
   it("carries no calendar entries — two sources of cadence is the bug this removed", () => {

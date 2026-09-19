@@ -37,6 +37,29 @@
 // records that happen to share an image touch none of them.
 const TWIN_ROLE = "feed-copy-of-story";
 
+// ─── THE STORY TWIN — ONE REEL, TWO SURFACES ─────────────────────────────────
+//
+// Owner brief, 2026-09-19: two reels a day, and each one also goes out as a
+// story, using THE SAME ENCODED VIDEO FILE. No second image is generated and
+// no second video is encoded — that is the whole point of the change, which is
+// cost.
+//
+// The mechanism is deliberately the feed twin's, turned around. Same reasons:
+// one record is one thing that goes to one place, so the publisher, the queue,
+// the retry budget and the per-platform results need to learn nothing new.
+//
+// WHERE THE VIDEO COMES FROM. A reel has no video when it is generated — the
+// encode happens on the Mac mini at publish time, because that is where ffmpeg
+// is (see reel-media.mjs). So the twin cannot be handed a video URL here;
+// there is none yet. It carries `videoFrom`, the reel's own post id, and the
+// publisher resolves it: whichever of the pair is reached first encodes once,
+// stores the mp4 on the REEL's record, and the other reuses it. One encode,
+// one upload, one file, whatever order the tick happens to take them in.
+//
+// Storing the video URL on the twin instead would have been a second copy of
+// the same fact, and the two would drift the first time a re-encode happened.
+const STORY_TWIN_ROLE = "story-copy-of-reel";
+
 /**
  * Should this generation produce a feed twin?
  *
@@ -59,6 +82,67 @@ function feedArtworkOf(record) {
  */
 function hasFeedArtwork(record) {
   return feedArtworkOf(record) !== null;
+}
+
+/**
+ * Should this generation produce a story twin?
+ *
+ * Only a reel, only when the feature is on, and only when there is exactly ONE
+ * still to build from — the same guard wantsFeedTwin uses, for the same
+ * reason: there is no such thing as a story carousel, so a multi-media post
+ * cannot be twinned into one.
+ *
+ * At generation a reel's media IS its still; the video does not exist yet.
+ */
+function wantsStoryTwin(format, media, enabled) {
+  return enabled === true
+    && format === "reel"
+    && Array.isArray(media)
+    && media.length === 1
+    && media[0] != null
+    && media[0].type === "image";
+}
+
+/**
+ * The story record that copies a reel.
+ *
+ * Inherits by default, exactly as buildFeedTwin does, so a field added to a
+ * post record in future is on the twin without anyone remembering this file.
+ * The exceptions are the ones that are genuinely about the surface:
+ *
+ *   format      — story, not reel.
+ *   caption     — a story shows none. Meta drops the field on Instagram and
+ *                 Facebook's story endpoints have no message field at all, so
+ *                 the reel's model-written caption must not be copied here and
+ *                 claimed. The plain line goes on instead, marked
+ *                 "not-needed" rather than "fallback": "fallback" means the
+ *                 model failed, and nothing failed here.
+ *   videoFrom   — the reel whose encode this shares. See STORY_TWIN_ROLE.
+ *   artwork     — a reel has no second render, and an inherited one would
+ *                 make mediaForSurface swap the story's picture for a file
+ *                 that was never made for it.
+ */
+function buildStoryTwin(reel, { twinId, reelId, fallbackCaption }) {
+  if (!reel || typeof reel !== "object") throw new Error("buildStoryTwin: no reel record");
+  if (!twinId || !reelId) throw new Error("buildStoryTwin: both ids are required");
+
+  const twin = {
+    ...reel,
+    format: "story",
+    caption: fallbackCaption == null ? null : fallbackCaption,
+    captionSource: "not-needed",
+    twinOf: reelId,
+    twinRole: STORY_TWIN_ROLE,
+    // The publisher reads this and encodes ONCE, onto the reel. Never a URL:
+    // at generation there is no video to point at.
+    videoFrom: reelId,
+  };
+  delete twin.captionNote;
+  delete twin.artwork;
+  // A twin is never itself twinned — inheriting this would point the twin at
+  // itself the moment the reel's own twinId is stamped on.
+  delete twin.twinId;
+  return twin;
 }
 
 function wantsFeedTwin(format, media, enabled) {
@@ -166,4 +250,8 @@ function primaryCaptionFields(format, { fallback, caption, captionSource, captio
   };
 }
 
-module.exports = { wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields, feedArtworkOf, hasFeedArtwork, TWIN_ROLE };
+module.exports = {
+  wantsFeedTwin, buildFeedTwin, twinWriteUpdates, primaryCaptionFields,
+  feedArtworkOf, hasFeedArtwork, TWIN_ROLE,
+  wantsStoryTwin, buildStoryTwin, STORY_TWIN_ROLE,
+};

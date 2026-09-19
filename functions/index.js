@@ -4574,12 +4574,30 @@ async function generateOnePost(db, {
     //
     // The image is NOT re-uploaded, so the failure cleanup below still has
     // exactly one object to worry about.
-    const twinId = wantsTwin ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
-    const twin = twinId
-      ? socialTwin.buildFeedTwin(record, {
-          twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
-        })
-      : null;
+    // ── OR THE STORY TWIN, WHICH IS THE SAME MECHANISM TURNED AROUND ─────────
+    // A reel also goes out as a story, from the SAME encoded video — the file
+    // does not exist yet (ffmpeg lives on the Mac mini, not here), so the twin
+    // carries `videoFrom` and the publisher resolves it. See social-twin.cjs.
+    //
+    // The two twins are mutually exclusive by construction: wantsFeedTwin only
+    // fires on a story and wantsStoryTwin only on a reel. Written as an
+    // if/else anyway, because "they cannot both be true" is the kind of thing
+    // that stays true until someone adds a format.
+    const storyTwinWanted = socialTwin.wantsStoryTwin(format, media, REEL_ALSO_POSTS_TO_STORY);
+    const twinId = (wantsTwin || storyTwinWanted) ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
+    const twin = !twinId
+      ? null
+      : wantsTwin
+        ? socialTwin.buildFeedTwin(record, {
+            twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
+          })
+        : socialTwin.buildStoryTwin(record, {
+            twinId, reelId: postId,
+            // The reel's model-written caption is NOT copied: nothing can show
+            // a story's caption, and a record claiming one it cannot display is
+            // the exact lie primaryCaptionFields exists to prevent.
+            fallbackCaption: socialCaption.fallbackCaption({ kind, products: picks }),
+          });
     // ── THE ALBUM RIDES THE SAME UPDATE ──────────────────────────────────────
     // Merged into the post's own atomic write rather than written after it. A
     // second, later write is a second thing that can fail, and the failure
@@ -4600,7 +4618,7 @@ async function generateOnePost(db, {
       created: {
         postId, kind, format, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource,
         scheduledAt: scheduledAt || null,
-        ...(twinId ? { twinId, twinFormat: "feed" } : {}),
+        ...(twinId ? { twinId, twinFormat: wantsTwin ? "feed" : "story" } : {}),
       },
     };
   } catch (err) {
@@ -4772,10 +4790,31 @@ exports.generateSocialPosts = onCall(
 // Social screen), read fresh on every run — see loadSocialPolicy below. These
 // are its defaults, used only when nothing has ever been saved there, so the
 // autopilot was never depending on that screen existing to run at all.
+// ── TWO REELS A DAY, AND NOTHING ELSE GENERATED ──────────────────────────────
+// Owner brief, 2026-09-19. Each reel also goes out as a story from the same
+// encoded file (REEL_ALSO_POSTS_TO_STORY), so the day is two generations and
+// four posts: 2 reels + 2 stories.
+//
+// THE FEED PHOTO AND THE STANDALONE STORIES ARE NOT DELETED, THEY ARE EMPTY.
+// `photos` and `stories` are the same lists they always were and every code
+// path behind them is untouched; they simply ask for nothing. Putting a time
+// back in either list — here, or in the Policy tab, which is the live config
+// and wins over these defaults — turns that slot straight back on with no
+// code change and no deploy.
+//
+// RTDB CANNOT STORE AN EMPTY ARRAY: a saved policy with no photos comes back
+// with the key ABSENT, not as []. asRtdbList already reads that as zero, which
+// is why "switched off" and "never configured" are distinguishable only by
+// whether a /social_policy record exists at all.
+//
+// 12:00 and 19:00 SAST: lunch, and after supper. The two windows a South
+// African audience is actually on a phone rather than at work or in traffic.
+// The old 08:00 slot competed with the commute and 18:00 with it in the other
+// direction.
 const DEFAULT_POLICY_TIMES = {
-  reels: ["08:00"],
-  photos: ["11:00"],
-  stories: ["09:00", "13:00", "17:00"],
+  reels: ["12:00", "19:00"],
+  photos: [],
+  stories: [],
 };
 // A safety ceiling on what a saved policy can ask for, independent of
 // whatever the UI itself enforces — the UI is a courtesy, this is the actual
@@ -4836,6 +4875,26 @@ const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
 // together, because a screen that promises feed copies the backend is not
 // making is worse than a screen that says nothing.
 const STORY_ALSO_POSTS_TO_FEED = process.env.STORY_ALSO_POSTS_TO_FEED !== "false";
+
+// ── EVERY REEL IS ALSO A STORY, FROM THE SAME ENCODED FILE ───────────────────
+// Owner brief, 2026-09-19: two reels a day, each one also posted as a story,
+// and nothing generated twice. The day is two image generations, two encodes
+// — one per reel — and four posts.
+//
+// It costs NOTHING extra. The picture is paid for once by the reel; the video
+// is encoded once on the Mac mini at publish time and the story sends the same
+// file (see social-twin.cjs's STORY_TWIN_ROLE and publish.mjs's
+// resolveVideoFor). Not even a caption: a story shows none on either platform,
+// so the twin never calls the model.
+//
+// A BUILD-TIME flag, the same convention as STORY_ALSO_POSTS_TO_FEED: set
+// REEL_ALSO_POSTS_TO_STORY=false in functions/.env and redeploy
+// functions:socialDailyAutopilot and functions:generateSocialPosts.
+//
+// KEEP IN STEP with socialCore.js's REEL_ALSO_POSTS_TO_STORY, which is what
+// the Policy tab reads to describe the day. socialFormat.test.js pins the two
+// literals together.
+const REEL_ALSO_POSTS_TO_STORY = process.env.REEL_ALSO_POSTS_TO_STORY !== "false";
 
 /**
  * The saved policy, or the built-in defaults if nothing has been saved.
@@ -5082,7 +5141,12 @@ exports.socialDailyAutopilot = onSchedule(
         // queue, not just what was generated. socialHealthScan judges the day
         // on `created` — the generations — which is the number that goes to
         // zero when the picture engine is broken.
-        feedTwins: created.filter((c) => c.twinId).length,
+        feedTwins: created.filter((c) => c.twinFormat === "feed").length,
+        // Counted apart from feedTwins because they are different things: a
+        // feed twin is a second SURFACE for a picture already paid for, a
+        // story twin is a second surface for a VIDEO already encoded. Folding
+        // them into one number would make "twins" mean nothing.
+        storyTwins: created.filter((c) => c.twinFormat === "story").length,
         estCostUSD: +estCostUSD.toFixed(4),
         // ── WHY IT SKIPPED, IN THE DATABASE, NOT ONLY IN A LOG ───────────────
         // Between 2026-09-13 and 2026-09-19 this run wrote `created: 0,
@@ -5110,8 +5174,8 @@ exports.socialDailyAutopilot = onSchedule(
       // make a six-image day read as nine and quietly inflate every cost
       // comparison against it.
       const twins = created.filter((c) => c.twinId).length;
-      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ${twins} feed twin(s), ~$${estCostUSD.toFixed(3)}`,
-        { created: created.map((c) => `${c.kind}/${c.format}${c.twinId ? "+feed" : ""}`), skipped });
+      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ${twins} twin(s), ~$${estCostUSD.toFixed(3)}`,
+        { created: created.map((c) => `${c.kind}/${c.format}${c.twinFormat ? `+${c.twinFormat}` : ""}`), skipped });
     } catch (err) {
       // The claim must not lie about a run that blew up partway through — a
       // half-finished day (the reel made, the crash before the stories) is

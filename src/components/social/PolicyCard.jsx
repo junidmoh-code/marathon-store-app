@@ -18,7 +18,7 @@
 import React, { useEffect, useMemo, useState } from "react";
 import { GRAY, GREEN, RED, BLUE_L, GLASS, bBlue, bGray, bRed, input as inputStyle } from "../stock/ui";
 import { loadSocialPolicy, saveSocialPolicy, DEFAULT_POLICY_TIMES } from "./socialStore";
-import { STORY_ALSO_POSTS_TO_FEED } from "./socialCore";
+import { STORY_ALSO_POSTS_TO_FEED, REEL_ALSO_POSTS_TO_STORY } from "./socialCore";
 import { asList } from "../../utils/rtdbList";
 
 // A safety ceiling, not a design opinion. socialDailyAutopilot generates
@@ -36,7 +36,15 @@ const MAX_TOTAL_PER_DAY = 8;
 // "s") because "Stories" does not end in a plain "s" — a regex strip turned
 // it into "Storie" on every row of the timeline below.
 const SECTIONS = [
-  { key: "reels", label: "Reels", singular: "Reel", hint: "A vertical video, made from a still and encoded when it actually sends." },
+  {
+    key: "reels", label: "Reels", singular: "Reel",
+    // Same conditional shape as the stories hint below, and for the same
+    // reason: the second sentence is true only while the backend is making
+    // story twins. See REEL_ALSO_POSTS_TO_STORY in socialCore.js.
+    hint: REEL_ALSO_POSTS_TO_STORY
+      ? "A vertical video, made from a still and encoded when it actually sends — and posted as a story too, the same file."
+      : "A vertical video, made from a still and encoded when it actually sends.",
+  },
   { key: "photos", label: "Photos", singular: "Photo", hint: "The ordinary feed post — the square-ish 4:5 card." },
   {
     key: "stories", label: "Stories", singular: "Story",
@@ -249,13 +257,19 @@ export default function PolicyCard({ onNotice, notice }) {
         const twins = STORY_ALSO_POSTS_TO_FEED ? stories.length : 0;
         const feedPhotos = photos.length + twins;
         const feedPosts = feedPhotos + reels.length;
+        // A reel's story twin shares the reel's ENCODED VIDEO, so it costs no
+        // generation and no second encode — the same "nothing extra made"
+        // argument the feed twin makes about a picture.
+        const reelStories = REEL_ALSO_POSTS_TO_STORY ? reels.length : 0;
+        const allStories = stories.length + reelStories;
         const plural = (n, one, many) => `${n} ${n === 1 ? one : many}`;
         return (
           <div style={{ fontSize: 11.5, color: GRAY, marginTop: 8, lineHeight: 1.55 }}>
             On Instagram and Facebook that lands as <strong>{plural(feedPosts, "feed post", "feed posts")}</strong>
             {feedPosts > 0 && <> ({plural(feedPhotos, "photo", "photos")}, {plural(reels.length, "reel", "reels")})</>}
-            {stories.length > 0 && <> and <strong>{plural(stories.length, "story", "stories")}</strong></>}.
+            {allStories > 0 && <> and <strong>{plural(allStories, "story", "stories")}</strong></>}.
             {twins > 0 && " Each story's picture goes on the feed too — one picture, both places, nothing extra made."}
+            {reelStories > 0 && " Each reel goes out as a story too — the same video file, encoded once."}
           </div>
         );
       })()}
