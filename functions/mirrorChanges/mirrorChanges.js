@@ -192,12 +192,27 @@ async function countAtDepth(db, path, depth) {
   return total;
 }
 
-// The child keys of a node, without its values. The admin SDK has no shallow
-// read, so this goes through the REST API with the SDK's own credentials.
+// The child keys of a node, WITHOUT its values — 112,968 keys instead of
+// 35.8 MB of records. The admin SDK has no shallow read, so this goes through
+// the REST API with the SDK's own credentials.
+//
+// The credential is fetched two ways because `app().options.credential` is set
+// by initializeApp and an app initialised without an explicit one has held
+// different shapes across admin-SDK majors. A census that cannot authenticate
+// publishes nothing — which checkCensus reads as "no evidence", not as "every
+// leg is wrong" — but it is worth not failing for a reason this trivial.
+async function accessToken() {
+  const fromApp = admin.app().options.credential;
+  if (fromApp && typeof fromApp.getAccessToken === "function") {
+    return (await fromApp.getAccessToken()).access_token;
+  }
+  return (await admin.credential.applicationDefault().getAccessToken()).access_token;
+}
+
 async function shallowKeys(db, path) {
-  const token = await admin.app().options.credential.getAccessToken();
+  const token = await accessToken();
   const url = `https://${INSTANCE}.${REGION}.firebasedatabase.app/${path}.json`
-    + `?shallow=true&access_token=${encodeURIComponent(token.access_token)}`;
+    + `?shallow=true&access_token=${encodeURIComponent(token)}`;
   const res = await fetch(url);
   if (!res.ok) throw new Error(`shallow read of /${path} failed: ${res.status}`);
   const body = await res.json();

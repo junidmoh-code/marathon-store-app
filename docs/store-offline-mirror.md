@@ -318,6 +318,20 @@ RTDB's two-argument `startAt(value, key)` is the answer. The cursor carries
 `{ ts, key }`, resumes at the exact row last consumed, and re-reads **one** row
 instead of a timestamp's worth. The duplicate is an upsert and costs nothing.
 
+**Verified against the live database, 2026-09-19** (read-only, from the Mac
+mini, since node on the laptop cannot reach Google):
+
+- `/stock_movements` under `orderByChild("ts")` is ordered by **(ts, key)** —
+  confirmed over a live page.
+- `startAt(ts, key)` is **inclusive of that exact pair**: resuming at the last
+  row consumed returns that row first.
+- a row sharing the cursor's `ts` but sorting before its key is **excluded**.
+
+And the hazard is not theoretical. In that one eight-row live page, three
+movements share `2026-09-15T07:35:13.608Z` and two share
+`2026-09-15T07:21:12.205Z` — a single sale writing several lines at one
+instant. An exclusive bound would have lost two of the first three.
+
 ### 4.4 What is NOT a feed
 
 Nothing re-reads a whole node after setup. Nothing polls. There is no

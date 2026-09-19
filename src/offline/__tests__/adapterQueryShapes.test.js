@@ -60,3 +60,30 @@ describe("the two are not the same query", () => {
     expect(keyBound).not.toBe(tsBound);
   });
 });
+
+describe("the compound ts cursor", () => {
+  test("carries the key as well as the value, so a resume is one row not a timestamp", () => {
+    expect(constraintNames(childPageConstraints("ts", {
+      from: "2026-09-15T07:35:13.608Z", fromKey: "sold:abc", limit: 10,
+    }))).toEqual(["orderByChild", "startAt", "limitToFirst"]);
+  });
+
+  test("a cursor with no key still bounds on the value alone", () => {
+    // A cursor stored by an older build, and the first page of a fresh walk.
+    const parts = childPageConstraints("ts", { from: "2026-09-15T00:00:00.000Z", fromKey: null, limit: 10 });
+    expect(constraintNames(parts)).toEqual(["orderByChild", "startAt", "limitToFirst"]);
+  });
+
+  // VERIFIED AGAINST THE LIVE DATABASE, 2026-09-19 (read-only, from the Mac
+  // mini — node on the laptop cannot reach Google). Recorded here because the
+  // semantics are the SERVER's and no unit test can establish them:
+  //
+  //   /stock_movements under orderByChild("ts") is ordered by (ts, key).
+  //   startAt(ts, key) is INCLUSIVE of that exact pair.
+  //   A row sharing the ts but sorting before the key is EXCLUDED.
+  //
+  // And in one eight-row live page, three movements shared
+  // 2026-09-15T07:35:13.608Z and two shared 2026-09-15T07:21:12.205Z — a
+  // single sale writing several lines at one instant. An exclusive bound would
+  // have lost two of the first three. The hazard is measured, not imagined.
+});
