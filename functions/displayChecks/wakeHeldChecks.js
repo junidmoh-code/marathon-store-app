@@ -24,8 +24,8 @@
 // than as a bare interval, the timeZone is load-bearing: left to the UTC
 // default the "09:00" run would fire at 11:00 SAST and the last at 18:00.
 //
-// NOTHING IS LOST OUTSIDE THE WINDOW, only deferred. A held check lives in
-// /displayChecks_active until something wakes it; it has no expiry, and the
+// NO HELD CHECK IS EVER LOST. A held check lives in /displayChecks_active until
+// something wakes it; it has no expiry, nothing here ages one out, and the
 // sweep's decision (lib.cjs wakeTransition) is a pure function of the record
 // and the current stock cell, not of how many sweeps preceded it. A check held
 // at 16:30, overnight, or over a weekend is picked up by the next 09:00 run.
@@ -33,9 +33,34 @@
 // fires on its own, independently of this schedule — sales still raise and bump
 // checks at 20:00 and on a Sunday; only the hold→wake transition waits.
 //
-// WHAT DOES CHANGE: the grace clock (wakeDelayMinutes, default 20) is now
-// observed at sweep resolution, so a check whose stock appears at 09:05 is
-// stock_seen at 11:00 and activated at 13:00 rather than ~25 minutes later.
+// WHAT DOES CHANGE — three things, stated plainly rather than waved past as
+// "only deferred", because two of them are not deferral (adversarial review,
+// PR #616):
+//
+// 1. TRANSIENT STOCK NO LONGER WAKES A CHECK. Waking needs stock present at TWO
+//    sweeps: one to stamp stockSeenAt, a later one to activate. Stock therefore
+//    had to survive ~25 minutes; it must now survive ~2 hours. Stock that
+//    arrives at 09:10 and sells out by 10:40 is invisible to this sweep — the
+//    11:00 pass reads qty 0 and does nothing. The CHECK is not lost (it stays
+//    held and wakes whenever stock next lasts a gap), but that particular
+//    opportunity to put the item on display is gone, not postponed. That is the
+//    honest cost of the cadence, and it is pinned by a test.
+//
+// 2. wakeDelayMinutes IS EFFECTIVELY DEAD. With a minimum two-hour gap between
+//    sweeps, every value from 0 to 119 minutes behaves identically: the check
+//    activates at the sweep AFTER the one that saw stock. The settings screen
+//    still presents it as a real dial. Only a value above the sweep gap does
+//    anything now.
+//
+// 3. THE PRIOR-DAY TOMBSTONE REAP MOVES PAST THE 08:30 OPEN. It used to happen
+//    within five minutes of midnight; the first sweep is now 09:00. A sale
+//    between 08:30 and 09:00 against a slot completed YESTERDAY therefore still
+//    finds the tombstone, and resolveSale classifies it as repeat_detected — or
+//    contradiction_detected if yesterday's result was no_stock — with
+//    repeatWithinMinutes around a thousand. Nothing is lost (the record is
+//    archived before it is overwritten, and archiving is idempotent), but a
+//    cross-day "contradiction" is a FALSE alarm. Anyone reading that log line
+//    should check repeatWithinMinutes before believing it.
 //
 // Deploy: firebase deploy --only functions:wakeHeldChecks
 

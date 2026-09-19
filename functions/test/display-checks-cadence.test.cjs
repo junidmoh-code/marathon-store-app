@@ -28,7 +28,7 @@ const assert = require("node:assert/strict");
 const { readFileSync } = require("node:fs");
 const { join } = require("node:path");
 const { runWakeSweep } = require("../displayChecks/wakeHeldChecks.js");
-const { saDateStringFromMs, wakeTransition, wakeDelayMs } = require("../displayChecks/lib.cjs");
+const { saDateStringFromMs, wakeTransition, wakeDelayMs, resolveSale } = require("../displayChecks/lib.cjs");
 
 const SRC = readFileSync(join(__dirname, "..", "displayChecks", "wakeHeldChecks.js"), "utf8");
 const SALE_SRC = readFileSync(join(__dirname, "..", "displayChecks", "onClothingSale.js"), "utf8");
@@ -233,4 +233,102 @@ test("the sweep NEVER drops a held check it cannot act on", async () => {
   const r = await runWakeSweep({ db, nowMs: HELD_AT + 72 * 3600e3 });
   assert.deepEqual(r, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 });
   assert.equal(JSON.stringify(node(db)), before, "byte-identical — nothing expires a hold");
+});
+
+// ── 5. THE HONEST COSTS OF A 2-HOUR GAP ──────────────────────────────────────
+// The first version of this file only ever held qty CONSTANT across the gap, so
+// it could not see any of the three changes below. A cadence test that only
+// tests the case the cadence cannot hurt is not a test (adversarial review).
+
+test("TRANSIENT stock between sweeps does NOT wake a check — and the check is not lost", async () => {
+  // Stock arrives at 09:10 (just after the 09:00 sweep) and sells out by 10:40,
+  // before the 11:00 one. Under 5-minute sweeps this raised a check. It no
+  // longer does: waking needs stock present at TWO sweeps.
+  const NINE = Date.parse("2026-07-17T07:00:00.000Z");     // 09:00 SAST
+  const ELEVEN = Date.parse("2026-07-17T09:00:00.000Z");   // 11:00 SAST
+  const db = fakeDb({
+    displayChecks_active: { "marathon-pe": { [DK]: record({ heldAt: NINE - 3600e3, createdAt: NINE - 3600e3 }) } },
+    stock: { "marathon-pe": { p1: { M: { qty: 0 } } } },   // 09:00 — nothing there
+  });
+  const at9 = await runWakeSweep({ db, nowMs: NINE });
+  assert.deepEqual(at9, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 });
+
+  // 09:10 stock lands, 10:40 it is gone again. No sweep runs in between.
+  db.state.stock["marathon-pe"].p1.M.qty = 3;
+  db.state.stock["marathon-pe"].p1.M.qty = 0;
+
+  const at11 = await runWakeSweep({ db, nowMs: ELEVEN });
+  assert.deepEqual(at11, { stockSeen: 0, activated: 0, reHeld: 0, reaped: 0 },
+    "the blip is invisible — this is the real cost of the 2-hour gap");
+  assert.equal(node(db).status, "held", "the CHECK survives; only that display opportunity is gone");
+  assert.equal(node(db).stockSeenAt, undefined, "no grace clock was ever started");
+});
+
+test("stock that LASTS a gap still wakes the check — the contrast that gives the test above meaning", async () => {
+  const NINE = Date.parse("2026-07-17T07:00:00.000Z");
+  const ELEVEN = Date.parse("2026-07-17T09:00:00.000Z");
+  const THIRTEEN = Date.parse("2026-07-17T11:00:00.000Z");
+  const db = fakeDb({
+    displayChecks_active: { "marathon-pe": { [DK]: record({ heldAt: NINE - 3600e3, createdAt: NINE - 3600e3 }) } },
+    stock: { "marathon-pe": { p1: { M: { qty: 0 } } } },
+  });
+  await runWakeSweep({ db, nowMs: NINE });
+  db.state.stock["marathon-pe"].p1.M.qty = 3;                       // arrives and STAYS
+  assert.deepEqual(await runWakeSweep({ db, nowMs: ELEVEN }), { stockSeen: 1, activated: 0, reHeld: 0, reaped: 0 });
+  assert.deepEqual(await runWakeSweep({ db, nowMs: THIRTEEN }), { stockSeen: 0, activated: 1, reHeld: 0, reaped: 0 });
+  assert.equal(node(db).status, "open");
+});
+
+test("stock present at one sweep and gone by the next is RE-HELD, never dropped", async () => {
+  const NINE = Date.parse("2026-07-17T07:00:00.000Z");
+  const ELEVEN = Date.parse("2026-07-17T09:00:00.000Z");
+  const db = fakeDb({
+    displayChecks_active: { "marathon-pe": { [DK]: record({ heldAt: NINE - 3600e3, createdAt: NINE - 3600e3 }) } },
+    stock: { "marathon-pe": { p1: { M: { qty: 2 } } } },
+  });
+  await runWakeSweep({ db, nowMs: NINE });                 // stamps stockSeenAt
+  assert.equal(node(db).stockSeenAt, NINE);
+  db.state.stock["marathon-pe"].p1.M.qty = 0;              // sold out before 11:00
+  const at11 = await runWakeSweep({ db, nowMs: ELEVEN });
+  assert.deepEqual(at11, { stockSeen: 0, activated: 0, reHeld: 1, reaped: 0 });
+  assert.equal(node(db).status, "held", "back to held, still in the index");
+  assert.equal(node(db).stockSeenAt, undefined, "grace clock cleared, ready to start again");
+});
+
+test("wakeDelayMinutes is now a DEAD dial: every value under the sweep gap behaves the same", () => {
+  // Documented so nobody tunes it expecting an effect. The sweep gap is 2 hours;
+  // the grace is compared against the sweep's clock, so anything shorter than
+  // the gap has already elapsed by the time the next sweep looks.
+  const SEEN = Date.parse("2026-07-17T07:00:00.000Z");     // stamped at the 09:00 sweep
+  const NEXT_SWEEP = Date.parse("2026-07-17T09:00:00.000Z"); // 11:00
+  const rec = held({ stockSeenAt: SEEN });
+  for (const minutes of [0, 5, 20, 60, 119]) {
+    const t = wakeTransition(rec, { qty: 2, nowMs: NEXT_SWEEP, delayMs: wakeDelayMs({ wakeDelayMinutes: minutes }) });
+    assert.equal(t.action, "activate", `wakeDelayMinutes=${minutes} must behave identically`);
+  }
+  // Only a value ABOVE the gap still does anything.
+  const long = wakeTransition(rec, { qty: 2, nowMs: NEXT_SWEEP, delayMs: wakeDelayMs({ wakeDelayMinutes: 180 }) });
+  assert.equal(long, null, "3 hours still holds across a 2-hour gap — the dial is not gone, just mostly inert");
+});
+
+test("the prior-day tombstone reap now happens AFTER the 08:30 open", () => {
+  // Was within 5 minutes of midnight; the first sweep is 09:00. A sale in that
+  // 08:30-09:00 window still finds yesterday's tombstone. Nothing is lost — the
+  // record is archived before it is overwritten — but the cross-day
+  // repeatWithinMinutes makes "contradiction_detected" a FALSE alarm.
+  const hours = SCHEDULE.split(/\s+/)[1].split(",").map(Number);
+  assert.ok(Math.min(...hours) > 8.5,
+    "the first sweep is after the 08:30 open, so the reap is too — see the header note");
+  const YESTERDAY_DONE = Date.parse("2026-07-16T13:00:00.000Z");  // 15:00 SAST yesterday
+  const SALE = Date.parse("2026-07-17T06:45:00.000Z");            // 08:45 SAST, pre-sweep
+  const t = resolveSale(
+    { dedupeKey: DK, checkId: "c1", status: "completed", result: "no_stock", completedAt: YESTERDAY_DONE },
+    DK, SALE,
+  );
+  assert.equal(t.kind, "create");
+  assert.equal(t.overwrite, true);
+  assert.equal(t.archiveCheckId, "c1", "archived before overwrite — nothing is lost");
+  assert.equal(t.repeat.logType, "contradiction_detected");
+  assert.ok(t.repeat.repeatWithinMinutes > 600,
+    `a cross-day gap (${t.repeat.repeatWithinMinutes} min) is what makes this alarm false`);
 });
