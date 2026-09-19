@@ -206,7 +206,7 @@ capture was flagged**, so nothing is silently falling back to a scan.
 | `/orders` | 29,122,489 | 6.7% | 81 | 60 | 2,647,499 B |
 | `/displayChecks_active` | 19,342,584 | 4.4% | 18 | 0 | 1,280,013 B |
 | `/stock_targets` | 12,225,759 | 2.8% | 7 | 0 | 1,746,537 B |
-| everything else | 27,886,090 | 6.4% | | | |
+| everything else | 27,887,035 | 6.4% | | | |
 | **total** | **436,064,345** | **100%** | | | |
 
 The two paths with **zero** ranged reads are exactly the two this PR fixes.
@@ -275,18 +275,22 @@ Line 1 is the remainder. Conversions use the bill's own $0.97604/GiB.
 
 | # | Line | Schedule, as Cloud Scheduler holds it | Per run | Runs/day | GiB/day | $/day | Share of RTDB |
 |---:|---|---|---:|---:|---:|---:|---:|
-| 1 | **Store app whole-node reads on staff phones and browsers** | — | — | — | **12.97** | **$12.66** | **83.7%** |
+| 1 | **Store app whole-node reads on staff phones and browsers** | — | — | — | **12.95** | **$12.64** | **83.6%** |
 | 2 | refillHealthScan | `every 15 minutes from 07:00 to 19:00` (Africa/Johannesburg) | 40.85 MB | 49 | 1.86 | $1.82 | 12.0% |
 | 3 | wakeHeldChecks | `every 5 minutes` *(until #617 — see §5.3)* | 1.61 MB | 288 | 0.43 | $0.42 | 2.8% |
-| 4 | Mac mini — every process on it | 2-minute loop, `KeepAlive` | 6.23 MB/h | — | 0.14 | $0.14 | 0.9% |
-| 5 | All other Cloud Functions | various | 4.82 MB/h | — | 0.11 | $0.10 | 0.7% |
+| 4 | Mac mini — every process on it | 2-minute loop, `KeepAlive` | 6.23 MB | — | 0.14 | $0.14 | 0.9% |
+| 5 | All other Cloud Functions | various | 4.82 MB | — | 0.11 | $0.11 | 0.7% |
 | | **RTDB total** | | | | **15.49** | **$15.12** | 100% |
+
+The GiB column sums exactly to the bill's 15.49. The dollar column is each line
+rounded on its own, so adding it up gives $15.13 against the bill's $15.12 —
+a cent of rounding, not a missing line.
 
 **On line 2's 49 runs, not 96.** The capture saw four refillHealthScan runs in
 59.8 minutes, which reads like 96 a day if you assume it runs around the clock.
 It does not: the schedule is `every 15 minutes from 07:00 to 19:00`, so four an
 hour for twelve hours is 48–49, and the capture hour (18:14–19:14) sits at the
-very end of that window. The distinction is worth $1.83/day on line 1, which is
+very end of that window. The distinction is worth $1.82/day on line 1, which is
 why the schedule string is quoted rather than summarised.
 
 Line 1 is a remainder, and remainders deserve suspicion. It is more trustworthy
@@ -311,7 +315,7 @@ five hours this investigation ran two parallel sessions shipped the same two
 lines with better designs:
 
 - **#617, merged 18:55 SAST** — the display-checks sweep (`wakeHeldChecks`) from
-  288 runs a day to 5. That is §4 line 3, from $0.42/day to about $0.01/day.
+  288 runs a day to 5. That is §4 line 3, from $0.42/day to about $0.01/day — a $0.43/day saving once the runs it removes are counted.
 - **#618, merged 20:00 SAST** — an offline mirror for the store app: "one
   download at setup, then only what changed". It routes `usePath` — the
   chokepoint for `/stock`, `/refill_requests`, `/stock_movements`, `/products`
@@ -442,7 +446,7 @@ is stale against live.
 | | Working | $/day |
 |---|---|---:|
 | Measured bill, 5–18 September average | subtotal column, §1.3 | **$15.34** |
-| less #617, display-checks sweep 288 → 5 runs | 283 fewer runs × 1.61 MB = 456 MB/day = 0.42 GiB | −$0.41 |
+| less #617, display-checks sweep 288 → 5 runs | 283 fewer runs × 1.61 MB = 456 MB/day = 0.445 GiB | −$0.43 |
 | less #618, store-app mirror — **per device, as each is set up** | at the §2.4 rate, a device that stops re-reading `/insights_log`, `/stock`, `/products` and `/refill_requests` is worth up to ~$4 – 9/day across the estate | −$4 to −$9 |
 | **Expected** | | **≈ $6 – 11** |
 
@@ -460,11 +464,16 @@ arrives gradually:
    `/products` and `/stock` — so the first day or two after a device is set up
    is dearer than the steady state.
 
-What *is* firm: the after-hours floor of $9.55/day measured in §2 contains
-242.26 MB of staff-phone reads that the mirror removes once set up, and
-163.38 MB of refillHealthScan reads that it does not touch at all. **The floor
-cannot go below roughly $3.50/day** — refillHealthScan, the mini and the other
-Cloud Functions — until §6's server-side lines are addressed.
+What *is* firm is the shape of the remainder. The after-hours window contained
+242.26 MB of staff-phone reads, which the mirror removes once a device is set
+up — held flat across a day that is 5.70 GiB, **$5.56/day**, and a trading day
+has more phones on it than a Saturday evening does. It also contained 163.38 MB
+of refillHealthScan reads, which the mirror does not touch at all.
+
+So **the floor this estate cannot get below without §6 is about $2.08/day** —
+refillHealthScan $1.82, the Mac mini $0.14, the other Cloud Functions $0.11, and
+the display-checks sweep's remaining $0.01. Everything above that line is
+client-side reading, and #618 is the thing that removes it.
 
 
 ## 9. The trading-hours capture, running unattended
