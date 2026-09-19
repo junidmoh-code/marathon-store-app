@@ -57,10 +57,19 @@
 //    between 08:30 and 09:00 against a slot completed YESTERDAY therefore still
 //    finds the tombstone, and resolveSale classifies it as repeat_detected — or
 //    contradiction_detected if yesterday's result was no_stock — with
-//    repeatWithinMinutes around a thousand. Nothing is lost (the record is
-//    archived before it is overwritten, and archiving is idempotent), but a
-//    cross-day "contradiction" is a FALSE alarm. Anyone reading that log line
-//    should check repeatWithinMinutes before believing it.
+//    repeatWithinMinutes around a thousand. A cross-day "contradiction" is a
+//    FALSE alarm; anyone reading that log line should check repeatWithinMinutes
+//    before believing it.
+//
+//    The compliance record is not lost: resolveSale returns archiveCheckId, and
+//    onClothingSale archives the tombstone to the day node before overwriting
+//    the slot. Scope that claim honestly — the REAP path here is the resilient
+//    one (its archive is wrapped, and a failed archive skips the delete and
+//    retries next sweep). onClothingSale's archive write is NOT wrapped, so a
+//    throw there aborts the invocation before the create. That is pre-existing
+//    and unchanged by the cadence, but this window is where it would now be
+//    reached more often, so it is named rather than covered by a blanket
+//    "archiving is idempotent".
 //
 // Deploy: firebase deploy --only functions:wakeHeldChecks
 
