@@ -14,7 +14,7 @@
 // silence. See bounded.js.
 
 import {
-  ref, get, query, orderByKey, orderByChild, startAfter, startAt, endAt,
+  ref, get, set, query, orderByKey, orderByChild, startAfter, startAt, endAt,
   limitToFirst, limitToLast, onValue, onChildAdded,
 } from "firebase/database";
 import { database } from "../firebase";
@@ -77,9 +77,33 @@ export function childPageConstraints(field, { from = null, fromKey = null, limit
 // the real object rather than about a string we chose.
 export const constraintNames = (parts) => parts.map((p) => p.type ?? String(p));
 
+// ── HOW MANY BYTES DID THIS DEVICE ACTUALLY READ? ───────────────────────────
+//
+// The mirror's whole claim is a number, and a number nobody measures is a
+// number nobody believes. Every read that returns a value is weighed here, at
+// the one place every read passes through, and the count is what the fleet
+// screen reports as "bytes today".
+//
+// It is the JSON length of the value, which is what RTDB put on the wire
+// (uncompressed — reference_rtdb_read_costs_measured: RTDB REST does NOT
+// gzip). It is not free: stringifying a 500-row page costs a few milliseconds.
+// It is measured rather than estimated because the estimate is the thing under
+// test, and the pages are paged precisely so that none of them is large.
+export function measureBytes(value) {
+  if (value === null || value === undefined) return 4;   // RTDB answers "null"
+  try { return JSON.stringify(value).length; } catch { return 0; }
+}
+
 // A whole node, or a child of one. Used by the setup download and by the
 // per-row re-read the change feed does.
-export function createRtdbAdapter({ db = database } = {}) {
+//
+// `onBytes` is optional and defaults to nothing, so every existing caller and
+// every test is unchanged by its presence.
+export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
+  const weigh = (value) => {
+    if (onBytes) { try { onBytes(measureBytes(value)); } catch { /* never breaks a read */ } }
+    return value;
+  };
   return {
     // One path, whole. `big` raises the budget for the setup download's large
     // nodes — /insights_log is 35.8 MB and a shop line is a shop line.
@@ -88,7 +112,7 @@ export function createRtdbAdapter({ db = database } = {}) {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path}`,
       });
-      return snap.exists() ? snap.val() : null;
+      return weigh(snap.exists() ? snap.val() : null);
     },
 
     // A page of children by key, exclusive of `after`. The change feed and the
@@ -100,7 +124,7 @@ export function createRtdbAdapter({ db = database } = {}) {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path} (key page)`,
       });
-      return snap.exists() ? snap.val() : null;
+      return weigh(snap.exists() ? snap.val() : null);
     },
 
     // A page of children by an INDEXED child field, inclusive of `from`. The
@@ -113,7 +137,7 @@ export function createRtdbAdapter({ db = database } = {}) {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path} (${field} page)`,
       });
-      return snap.exists() ? snap.val() : null;
+      return weigh(snap.exists() ? snap.val() : null);
     },
 
     // The oldest key a node still holds. The change feed asks it to tell
@@ -124,7 +148,7 @@ export function createRtdbAdapter({ db = database } = {}) {
         { ms: READ_TIMEOUT_MS, label: `/${path} (first key)` },
       );
       if (!snap.exists()) return null;
-      const val = snap.val();
+      const val = weigh(snap.val());
       const keys = Object.keys(val || {});
       return keys.length ? keys[0] : null;
     },
@@ -137,7 +161,7 @@ export function createRtdbAdapter({ db = database } = {}) {
         { ms: READ_TIMEOUT_MS, label: `/${path} (last key)` },
       );
       if (!snap.exists()) return null;
-      const keys = Object.keys(snap.val() || {});
+      const keys = Object.keys(weigh(snap.val()) || {});
       return keys.length ? keys[0] : null;
     },
 
@@ -150,7 +174,7 @@ export function createRtdbAdapter({ db = database } = {}) {
       parts.push(limitToFirst(limit));
       const snap = await withTimeout(get(query(ref(db, path), ...parts)),
         { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (range)` });
-      return snap.exists() ? snap.val() : null;
+      return weigh(snap.exists() ? snap.val() : null);
     },
 
     // ── A LIVE SIGNAL, WITHOUT A LIVE NODE ──────────────────────────────
@@ -178,6 +202,16 @@ export function createRtdbAdapter({ db = database } = {}) {
         (snap) => onSignal(snap.key),
         (err) => console.warn(`offline mirror: change signal on /${path} failed:`, err),
       );
+    },
+
+    // THE ONE WRITE THIS ADAPTER DOES: the device's own health record. Bounded
+    // like every read here, because a write that never settles in a `finally`-
+    // scheduled loop stops the loop just as surely as a read does.
+    async writePath(path, value) {
+      await withTimeout(set(ref(db, path), value), {
+        ms: READ_TIMEOUT_MS, label: `/${path} (write)`,
+      });
+      return true;
     },
 
     // `.info/connected` — the only honest answer to "is the database

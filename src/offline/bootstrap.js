@@ -36,16 +36,19 @@ import { openMirrorDb } from "./db";
 import { createRtdbAdapter } from "./rtdbAdapter";
 import { createConnectionTracker } from "./connection";
 import { createSyncEngine } from "./sync";
-import { offlineMirrorEnabled } from "./mirrorFlag";
+import { offlineMirrorEnabled } from "./killSwitch";
 import { bumpLegs } from "./mirrorSignal";
 import { MIRROR_LEGS } from "./nodes";
 import { confirmPending } from "./pendingWrites";
 import { FEED_CURSOR_META, CHANGES_ROOT } from "./changeFeed";
-import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache } from "./photoCache";
+import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache, heldPhotoCount } from "./photoCache";
 import { readWholeLeg, MISS } from "./localReads";
 import { setServingLegs } from "./serving";
-import { isLegUsable } from "./health";
+import { isLegUsable, getLegHealth, vouchingRecord } from "./health";
 import { setForcedUpdateMode, setUpdateBusy } from "../update/updateChecker";
+import {
+  addBytes, bytesToday, deviceRecord, reportDeviceHealth, thisDevice,
+} from "./deviceHealth";
 import { pendingCount } from "./pendingWrites";
 
 // The FLOOR, not the latency. A live signal on the change log (see below)
@@ -60,6 +63,21 @@ export const PASS_BACKOFF_MS = 5 * 60 * 1000;
 // The photo leg runs LAST and only once the data legs are complete: a picture
 // must never be downloading while a number is missing.
 export const PHOTO_PASS_EVERY = 2;
+// A setup download that fails is retried, quietly, for as long as the app is
+// open. Nobody is waiting on it — the app is working on live reads — so the
+// retry is slow enough to be free and frequent enough to finish a download
+// over a shaky afternoon.
+export const SETUP_RETRY_MS = 5 * 60 * 1000;
+
+// "This device's staff have asked for the local copy." Written when the
+// Download button is tapped and read on every open afterwards, so the question
+// is asked ONCE per device and the download resumes by itself from then on.
+//
+// It lives under the `setup.` prefix deliberately: health.js purges that
+// prefix whenever the snapshot is purged, so a device whose copy is thrown
+// away by a schema change asks again rather than silently re-downloading
+// 104 MB in the background.
+export const CONSENT_META = "setup.consented";
 
 export async function startOfflineMirror({
   auth,
@@ -69,10 +87,21 @@ export async function startOfflineMirror({
   setTimeoutFn = setTimeout,
   clearTimeoutFn = clearTimeout,
   now = Date.now,
+  // ── INJECTED, SO THIS FUNCTION ITSELF CAN BE TESTED ───────────────────────
+  //
+  // Everything below used to be reachable only through a real IndexedDB and a
+  // real firebase connection, so every test stopped at the engine or at a fake
+  // runtime — and a spec review found that the most expensive behaviour on the
+  // branch lived in exactly the gap between them: a pass loop that started
+  // itself before anybody had agreed to a download. A fake adapter and a test
+  // database are the difference between "we believe it does not" and a
+  // counted zero. (Fable-vs-spec review, PR #624.)
+  openDb = openMirrorDb,
+  makeAdapter = createRtdbAdapter,
 } = {}) {
   if (!offlineMirrorEnabled()) return null;
 
-  const db = await openMirrorDb();
+  const db = await openDb();
   await db.ensureSchema({ buildVersion });
 
   // Best effort, and deliberately not awaited for its answer: a device that
@@ -86,20 +115,47 @@ export async function startOfflineMirror({
     }
   } catch { /* not available */ }
 
-  const adapter = createRtdbAdapter();
+  // Every read this device does is weighed as it happens — see
+  // rtdbAdapter.measureBytes — and the running total is what the fleet screen
+  // reports. A failure to record bytes must never fail a read, so addBytes is
+  // fire-and-forget.
+  const adapter = makeAdapter({
+    onBytes: (n) => { addBytes(db, n, { now }).catch(() => {}); },
+  });
   const connection = createConnectionTracker({ subscribeConnected: adapter.subscribeConnected, now });
   connection.start();
+
+  const state = {
+    setup: null, lastPass: null, lastError: null, photos: null,
+    // The download, as it happens: which leg, which legs have landed, and the
+    // last failure if there was one.
+    setupProgress: null, setupDone: [], setupError: null, downloading: false,
+    setupCensus: null,
+  };
 
   // The setup screen listens here. The engine takes ONE onProgress at
   // construction, so the runtime fans it out rather than the screen reaching
   // into the engine.
   const progressListeners = new Set();
   const fanOut = (p) => {
+    // Kept so the dot can show the download to somebody who is working
+    // through it. `rows` is only present on a leg that has FINISHED.
+    if (p.phase === "setup") {
+      state.setupProgress = { leg: p.leg, done: p.done, total: p.total, at: now() };
+      if (p.rows !== undefined && !state.setupDone.includes(p.leg)) state.setupDone.push(p.leg);
+    }
     onProgress(p);
     for (const l of progressListeners) { try { l(p); } catch { /* a listener never breaks a pass */ } };
   };
 
-  const engine = createSyncEngine({ db, adapter, now, buildVersion, onProgress: fanOut });
+  // `mayRepair` is the consent gate reaching into the pass loop. The loop's
+  // step 4 re-downloads any leg that has lost its setup marker — which on a
+  // device that has never set up is EVERY leg — so without this the pass loop
+  // is a second, unasked download path that also stamps the device complete.
+  const engine = createSyncEngine({
+    db, adapter, now, buildVersion, onProgress: fanOut,
+    mayRepair: () => consented,
+  });
 
   // WHICH LEGS THIS DEVICE IS ACTUALLY SERVING FROM, refreshed after setup and
   // after every pass and written to the synchronous hint every hook reads on
@@ -112,6 +168,7 @@ export async function startOfflineMirror({
       try { if (await isLegUsable(db, leg.name)) serving.push(leg.name); }
       catch { /* an unreadable leg is not a serving one */ }
     }
+    lastServing = serving;
     setServingLegs(serving);
     // A device serving locally has no whole-node subscriptions to make a stale
     // bundle obvious, so its reload becomes forced rather than advisory.
@@ -122,7 +179,22 @@ export async function startOfflineMirror({
   let timer = null;
   let stopped = false;
   let passes = 0;
-  const state = { setup: null, lastPass: null, lastError: null, photos: null };
+  // ── THE TWO FACTS THAT DECIDE WHETHER ANYTHING READS RTDB ─────────────────
+  //
+  // `consented` — has somebody on this device tapped Download? Read once at
+  // start and set by the tap. NOTHING in this engine may read the database
+  // before it is true. The consent gate is not a screen with a button on it;
+  // it is this variable, and the screen is how it gets set.
+  //
+  // `wanted` — has anything actually asked for the steady-state pass loop?
+  // The auth listener used to schedule a pass by itself, which turned sign-in
+  // into a download on a device nobody had asked: the pass loop repairs any
+  // leg without a setup marker, one per pass, which on a fresh device is ALL
+  // of them — a complete second download path, unconsented, and finishing
+  // without the forced census that makes a first copy safe to serve.
+  // (Fable-vs-spec review, PR #624.)
+  let consented = !!(await db.getMeta(CONSENT_META));
+  let wanted = false;
 
   async function runOnePass() {
     const report = await engine.runPass();
@@ -148,6 +220,7 @@ export async function startOfflineMirror({
     await refreshServing();
     passes += 1;
     if (passes % PHOTO_PASS_EVERY === 0) await runPhotoPass();
+    await reportHealth();
     return report;
   }
 
@@ -176,6 +249,13 @@ export async function startOfflineMirror({
 
   async function tick() {
     if (stopped) return;
+    // ── THE KILL SWITCH, CHECKED BY THE ENGINE ITSELF ───────────────────────
+    // MirrorGate stops the runtime when the switch goes false, and that is the
+    // path that runs. This is the second lock on the same door: a runtime
+    // started by anything else — a future caller, a test, a gate someone
+    // deletes — still cannot do a single pass against a switch that is off.
+    // It costs one synchronous localStorage read a minute.
+    if (!offlineMirrorEnabled() || !consented) { runtime.stop(); return; }
     let ms = PASS_INTERVAL_MS;
     try {
       const report = await runOnePass();
@@ -218,16 +298,152 @@ export async function startOfflineMirror({
     });
   }
 
+  // ── THE DOWNLOAD RUNS BEHIND THE STAFF, NOT IN FRONT OF THEM ──────────────
+  //
+  // The first version of this held the app behind a progress bar until 104 MB
+  // had landed. That is the wrong trade on a shop floor: the app works
+  // perfectly well on live reads — it is what it did for two years — and a
+  // person who cannot serve a customer because a bar is at 38% is a person
+  // whose till is a phone in someone else's hand.
+  //
+  // So: one tap on Download, the app opens THAT INSTANT, and this runs
+  // underneath it. Until it finishes, nothing serves locally (refreshServing
+  // only runs at the end) and every screen reads live exactly as it does
+  // today. The only thing that changes at the end is where the numbers come
+  // from.
+  //
+  // IT RESUMES. runSetup skips a leg that is already set up and staging.js
+  // resumes a part-finished leg from the last page that actually landed, so a
+  // download interrupted by a closed tab, a flat battery or a dropped line
+  // picks up where it stopped rather than starting again. A failure retries on
+  // its own every SETUP_RETRY_MS for as long as the app is open.
+  let setupLoop = null;
+  function downloadInBackground() {
+    if (setupLoop) return setupLoop;
+    state.downloading = true;
+    setupLoop = (async () => {
+      for (;;) {
+        // The kill switch, and a sign-out, both end the download. Asked here
+        // AND passed into runSetup, which asks it between legs.
+        if (stopped || !offlineMirrorEnabled()) { state.downloading = false; return null; }
+        try {
+          state.setup = await engine.runSetup({
+            keepGoing: () => !stopped && offlineMirrorEnabled() && signedInEnough(),
+          });
+          // ABANDONED IS NOT FINISHED. A kill switch, a sign-out or a stop
+          // ends the leg loop without throwing, and treating that as a
+          // completed download would census a copy that is not there, stamp
+          // the serving hint from it and start the pass loop on a device that
+          // has just been told to stop. It simply stands down; the next open,
+          // or the switch coming back, resumes it.
+          if (state.setup?.abandoned) { state.downloading = false; return null; }
+          state.setupError = null;
+
+          // ── VERIFIED BEFORE IT IS SERVED ─────────────────────────────────
+          //
+          // A first download has nothing to compare itself against: the shrink
+          // guard protects a copy that already exists, and on a fresh device
+          // `held` is 0, so a catalogue truncated to a fifth of itself is
+          // "bigger than what I had" and is accepted. That is precisely the
+          // POS incident — 4,654 products read as 799 because a short page was
+          // taken for the end of the node — in the one state the guard cannot
+          // see.
+          //
+          // /mirror_counts is the outside opinion, and it is asked HERE,
+          // FORCED, before refreshServing decides what this device may serve.
+          // A leg that disagrees with the census is marked failed and its
+          // setup marker dropped, so it is not served and the ordinary pass
+          // loop downloads it again. Nothing is deleted, and nothing short is
+          // ever vouched for.
+          try { state.setupCensus = await engine.checkCensus({ force: true }); }
+          catch (err) { state.setupCensus = { error: err.message }; }
+
+          await refreshServing();
+          bumpLegs(MIRROR_LEGS.map((l) => l.name));
+          state.downloading = false;
+          await reportHealth();
+          runtime.start();
+          return state.setup;
+        } catch (err) {
+          // NOTHING IS LOST. Every leg that landed is on disk with its health
+          // record; the next attempt starts from the first one that did not.
+          state.setupError = { at: now(), reason: err.name, message: err.message };
+          console.warn("offline mirror: the download stopped —", err.message,
+            "— it will try again by itself.");
+          await new Promise((resolve) => setTimeoutFn(resolve, SETUP_RETRY_MS));
+        }
+      }
+    })().finally(() => { setupLoop = null; });
+    return setupLoop;
+  }
+
   const runtime = {
     db, adapter, engine, connection, state,
-    // Awaited by the setup screen. Resolves when this device has a complete
-    // copy; rejects only if a leg that cannot be empty came back empty, which
-    // is a fault to show rather than to retry silently.
+    // Awaited by nothing on the staff's path. Kept as a promise for the tests
+    // and for a caller that wants to know when the copy is complete.
     async setup(opts) {
       state.setup = await engine.runSetup(opts);
       await refreshServing();
       bumpLegs(MIRROR_LEGS.map((l) => l.name));
       return state.setup;
+    },
+
+    // ── THE ONE QUESTION A DEVICE IS EVER ASKED ─────────────────────────────
+    //
+    // "Has somebody on this device tapped Download?" Asked once per device;
+    // afterwards the copy resumes by itself on every open until it is complete.
+    async hasConsented() {
+      return !!(await db.getMeta(CONSENT_META));
+    },
+    // Awaits the one small IndexedDB write that records the tap, and NOT the
+    // download it starts. Returning the loop's promise would be the obvious
+    // thing and is the bug: the gate awaits this call, so it would sit on the
+    // screen for the whole 104 MB and the button would say "Starting…" over a
+    // covered app for four minutes. The download is deliberately dropped on
+    // the floor here — it reports through state and the status dot.
+    async consentAndDownload() {
+      await db.setMeta(CONSENT_META, { at: now(), buildVersion });
+      consented = true;
+      downloadInBackground();
+      return true;
+    },
+    downloadInBackground,
+
+    // ── WHAT THIS DEVICE SHOULD BE DOING, RIGHT NOW ─────────────────────────
+    //
+    // Called on a start, and again every time the fleet switch comes back on.
+    // Three states and one of them is a question: a complete copy runs the
+    // pass loop, an incomplete copy that has been agreed to resumes its
+    // download, and a device nobody has asked yet is left alone for the gate
+    // to ask. Before this existed, a switch flipped back ON called start()
+    // only — so a device killed mid-download never finished it except through
+    // the pass loop's repair side door, unverified.
+    async resume() {
+      if (!offlineMirrorEnabled()) return "off";
+      if (!consented) return "needs-consent";
+      if ((await engine.setupState()).done) { runtime.start(); return "running"; }
+      downloadInBackground();
+      return "downloading";
+    },
+    // ── PROGRESS COMES FROM THE DISK, NOT FROM THIS SESSION'S MEMORY ────────
+    //
+    // `state.setupDone` only knows what THIS session downloaded, and runSetup
+    // skips the legs that are already there — so a device that had 90 MB on
+    // disk and was reloaded showed "0% (0 MB of 104 MB)" while it finished the
+    // last leg. The legs that are set up are a fact on the device; ask it.
+    // (Fable-vs-spec review, PR #624.)
+    async downloadProgress() {
+      let legsDone = [...state.setupDone];
+      try {
+        const setup = await engine.setupState();
+        legsDone = setup.legs.filter((l) => l.ready).map((l) => l.leg);
+      } catch { /* the session's own list is a fair fallback */ }
+      return {
+        downloading: state.downloading,
+        legsDone,
+        current: state.setupProgress?.leg ?? null,
+        error: state.setupError,
+      };
     },
     onSetupProgress(listener) {
       progressListeners.add(listener);
@@ -240,9 +456,19 @@ export async function startOfflineMirror({
     // start()/stop() pair whose start() silently does nothing after a stop()
     // is a trap for the next caller, even though nothing does that today.
     // (Sonnet verification review, PR #618.)
-    start() { stopped = false; schedule(0); watchChanges(); },
+    // Refuses against a switch that is off, against a device that has not
+    // agreed to hold a copy, and against a session with nobody signed in —
+    // every mirrored node's read rule requires a signed-in, non-anonymous
+    // user, and a listener registered before that is refused without retrying.
+    start() {
+      if (!offlineMirrorEnabled() || !consented) return;
+      wanted = true;
+      if (!signedInEnough()) return;
+      stopped = false; schedule(0); watchChanges();
+    },
     stop() {
       stopped = true;
+      wanted = false;
       clearTimeoutFn(timer);
       unwatchConnection();
       if (signalUnsub) { signalUnsub(); signalUnsub = null; }
@@ -256,15 +482,88 @@ export async function startOfflineMirror({
     },
   };
 
+  // ── THE DEVICE'S OWN REPORT ───────────────────────────────────────────────
+  //
+  // One small record per device at /mirror_devices/{deviceId}, written only
+  // when something a person would act on has changed (deviceHealth.js decides,
+  // and rate-limits). It is the only way to answer "is the fleet actually
+  // working" without picking up twenty tablets.
+  // "Is there a user whose credentials a mirrored read can actually use?"
+  // With no auth object at all — the tests, and only the tests — the answer is
+  // yes, because there is nothing to wait for.
+  function signedInEnough() {
+    if (!auth) return true;
+    const u = currentUser ?? auth.currentUser ?? null;
+    return !!u && u.isAnonymous !== true;
+  }
+
+  let lastReport = null;
+  // The last serving list refreshServing computed. reportHealth used to
+  // recompute it — 21 more IndexedDB reads on every pass — for a number the
+  // pass had just worked out.
+  let lastServing = [];
+  // Who is signed in on this device, for the report. Read, never enforced —
+  // every rule in this database is enforced by the database.
+  let currentUser = auth?.currentUser ?? null;
+  async function reportHealth({ user = null } = {}) {
+    try {
+      const legs = [];
+      for (const leg of MIRROR_LEGS) {
+        const health = await getLegHealth(db, leg.name).catch(() => null);
+        const vouched = vouchingRecord(health);
+        legs.push({
+          name: leg.name,
+          ok: health?.ok === true,
+          reason: health?.reason ?? null,
+          rows: vouched?.rows ?? null,
+          at: vouched?.at ?? null,
+        });
+      }
+      const { deviceId, label } = thisDevice();
+      const setup = await engine.setupState();
+      const record = deviceRecord({
+        deviceId, label, buildVersion, now,
+        uid: user?.uid ?? currentUser?.uid ?? null,
+        email: user?.email ?? currentUser?.email ?? null,
+        legs,
+        serving: lastServing,
+        complete: setup.done,
+        downloading: state.downloading,
+        switchOn: offlineMirrorEnabled(),
+        lastSyncAt: legs.reduce((m, l) => Math.max(m, l.at ?? 0), 0) || null,
+        lastPassAt: state.lastPass?.at ?? null,
+        lastError: state.lastError,
+        bytes: await bytesToday(db, { now }),
+        photos: await heldPhotoCount(db).catch(() => null),
+        pending: pendingCount(),
+      });
+      const written = await reportDeviceHealth({
+        write: (path, value) => adapter.writePath(path, value),
+        record,
+        last: lastReport,
+      });
+      if (written) lastReport = written;
+    } catch (err) {
+      // A device that cannot report its health goes on working perfectly well.
+      console.warn("offline mirror: health report failed —", err?.message ?? err);
+    }
+  }
+  runtime.reportHealth = reportHealth;
+
   // Nothing runs until there is a signed-in, non-anonymous user, and
   // everything stops when there is not — every mirrored node's read rule says
   // so, and a read registered before sign-in is rejected without retrying.
   if (auth) {
     const { onAuthStateChanged } = await import("firebase/auth");
     onAuthStateChanged(auth, (user) => {
-      const usable = !!user && user.isAnonymous !== true;
-      if (usable) { stopped = false; schedule(0); }
-      else { clearTimeoutFn(timer); stopped = true; }
+      currentUser = user ?? null;
+      const usable = signedInEnough() && offlineMirrorEnabled();
+      // It RESUMES what was already wanted. It does not decide that something
+      // should run: a sign-in is not a request for a 104 MB download, and
+      // treating it as one is how this engine used to download the whole shop
+      // onto a device whose staff had never been asked.
+      if (usable && wanted) { stopped = false; schedule(0); }
+      else if (!usable) { clearTimeoutFn(timer); stopped = true; }
     });
   }
 

@@ -357,7 +357,7 @@ for `/products` and which would defeat the purpose here.
 
 Measured, 2026-09-19.
 
-### 5.1 Data — blocking
+### 5.1 Data — in the background, behind a working app
 
 | node | bytes |
 | --- | ---: |
@@ -384,13 +384,30 @@ Measured, 2026-09-19.
 | `/clothing_sold_refills` | 4 |
 | **total** | **103,674,879 (≈ 103.7 MB)** |
 
-Twenty-one legs. The same table drives the setup screen's progress bar
-(`MirrorSetupScreen.LEG_BYTES`), because a bar weighted by legs-done rather than
-bytes would show 18 of 21 at under 40% of the download — `/insights_log` and
-`/stock_movements` are 65% of it between them — and then sit still for minutes.
-`setupScreen.test.js` asserts the two agree and that every leg in the registry
-has a size, so a leg added without one cannot leave the bar short of 100% for
-ever.
+Twenty-one legs. The same table drives the progress line
+(`MirrorDownloadGate.LEG_BYTES`), because a bar weighted by legs-done rather
+than bytes would show 18 of 21 at under 40% of the download — `/insights_log`
+and `/stock_movements` are 65% of it between them — and then sit still for
+minutes. `downloadGate.test.js` asserts the two agree and that every leg in the
+registry has a size, so a leg added without one cannot leave the bar short of
+100% for ever.
+
+**It does not block, since PR #624.** The first open shows one card with one
+button, Download. Tapping it records the consent, opens the app on the spot and
+runs the download underneath — the device is asked once, and every open after
+that resumes it by itself until the copy is complete. Until it IS complete,
+`refreshServing` has written nothing, so every screen reads live exactly as it
+does today. The progress moves to the status dot.
+
+**And it can be abandoned.** `runSetup` takes a `keepGoing` callback and asks
+it between legs, so a kill switch arriving in the middle of 104 MB stops the
+download as well as the reads. Between legs, so a leg is never half-swapped.
+
+**A short FIRST download is refused by the census, not by the shrink guard.**
+The shrink guard protects a copy that already exists; on a fresh device `held`
+is 0, so a catalogue truncated to a fifth of itself reads as "more than I had".
+So `/mirror_counts` is asked, FORCED, at the end of the download and before
+anything is served.
 
 ### 5.2 Photos — background, non-blocking
 
@@ -563,49 +580,96 @@ The live `/stock_movements` block, for the record:
 
 ---
 
-## 10a. What the flag being off actually costs
+## 10a. What the switch being off actually costs
 
 **Measured on the real bundle, 2026-09-19.**
 
 | | raw | gzipped |
 | --- | ---: | ---: |
 | before this work (`41edf2a8`) | 2,910.04 kB | 824.12 kB |
-| with the mirror merged, flag off | 2,951.16 kB | 835.44 kB |
+| with the mirror merged, switch off | 2,951.16 kB | 835.44 kB |
 | **difference** | **+41.12 kB** | **+11.32 kB (+1.37%)** |
 
 The **engine** — the sync, the change feed, the database, the bootstrap — is
-behind a dynamic import that never runs with the flag off, and is verifiably
+behind a dynamic import that never runs with the switch off, and is verifiably
 absent from the served main chunk. What IS in it is the part a render path
-cannot make async: the gate, the flag, the serving hint, the read hooks and the
-photo hook. 11 KB gzipped, stated rather than waved at, because "imports
+cannot make async: the gate, the switch, the serving hint, the read hooks and
+the photo hook. 11 KB gzipped, stated rather than waved at, because "imports
 nothing else" was the claim and it was not quite true.
 
-**Nothing in it RUNS with the flag off.** Every entry point checks the flag
+**Nothing in it RUNS with the switch off.** Every entry point checks the switch
 first, including — since a review of the served bundle — the photo hook, which
 was opening Cache Storage and running a `match()` on every product image
 rendered. The output was always right, because a miss falls through to the
 network url, but it is work that did not happen before, on a device that is
 not using the mirror.
 
-## 11. Rollout
+## 11. The fleet switch, the rollout, and the fleet screen
 
-The flag is `localStorage["marathon-store.offlineMirror"] = "on"`, per device.
-There is deliberately **no UI anywhere in this app that writes it** — a
-per-staff "work offline" switch is how half a shop ends up on one code path and
-half on the other with nobody able to say which. It is a rollout control, and
-once it is on the download starts by itself on the next open.
+### 11.1 One value decides it, for every device
 
-1. Build behind `mirrorFlag` — off for everyone. **Done: merged, flag off.**
-2. Paste the `/mirror_changes` rule. Deploy the change-log functions, scoped by
-   name.
-3. Turn the flag on for **one** device. Watch the setup screen finish. Trade a
-   day.
-4. Measure that day with the RTDB profiler, **summing both billing accounts**
-   (they were split on 22 Aug — see `project_bandwidth_capture_sept`).
-5. Replace the estimates in §6 with the measured figures.
-6. Turn the flag on for everyone.
+`/mirror_switch/enabled`. Every device watches it with one `onValue` on a
+five-byte path and obeys it **live — no reload, no deploy**. Set it to `false`
+and every open device drops to live reads within a second; set it back and they
+serve from the copies they still hold, at no further download.
 
----
+It is wired at `offlineMirrorEnabled()` in `src/offline/killSwitch.js`, the one
+function the hook gate, the serving hint, the one-shot read, the pending-write
+echo, the photo hook and the engine all already call — one conjunct rather than
+six that can drift apart. A flip reaches React because `subscribeServing` also
+subscribes to the switch, so every mirror-reading hook re-renders onto its live
+subscription the moment the answer changes.
+
+**Only a value somebody wrote is ON.** `true`, or a string saying so.
+Everything else is off, including ABSENT — so pasting the read rule changes
+nothing by itself, and clearing the node is a kill rather than a start. A
+device that cannot read the switch at all reads live, which is what this app
+did for two years. A device that HAS heard an answer keeps it in
+`localStorage` across a reload and across a dead line, so the tablet in the
+back room goes on serving its copy: a failed re-read is not a kill.
+
+**Nothing reads the database before somebody taps Download.** The consent is a
+fact on the device (`setup.consented`), and the engine refuses every path
+without it: the pass loop, `start()`, and — the one that was actually
+happening — the pass loop's repair step, which re-downloads any leg missing a
+setup marker and on a fresh device would quietly download the whole shop and
+stamp it complete. `engineReadsNothingUnasked.test.js` drives the real
+`startOfflineMirror` against a counting fake adapter and asserts a zero.
+
+**The per-device flag is gone** (PR #624). There is no per-device opinion about
+whether to mirror, because that is how half a shop ends up on one code path and
+half on the other with nobody able to say which.
+
+### 11.2 What each device reports
+
+`/mirror_devices/{deviceId}`, written by the device itself
+(`src/offline/deviceHealth.js`): is the copy complete, when did it last sync,
+bytes spent today (measured, at the adapter, rolled over at the SAST
+boundary), which build, which guard has tripped if any. Written only when
+something a person would act on changes, and never more than once every ten
+minutes — except a guard tripping, which reports at once. About 300 bytes, a
+handful of times a day.
+
+**Mirror Fleet** — super-admin tile, `#admin/mirror` — lists them all, newest
+first, and carries the kill switch behind one confirmation. It reads
+`/mirror_devices` ONCE with `get()` and subscribes only to the switch: a screen
+about the cost of the database must not re-download every device's record each
+time any device reports.
+
+A device that has not reported for six hours reads as **silent**, never as
+healthy. The failure that hides is the one where nothing arrives.
+
+### 11.3 The rollout itself
+
+1. Build behind the switch — off for everyone. **Done.**
+2. Paste the `/mirror_changes` and `/mirror_counts` rules. Deploy the
+   change-log functions, scoped by name. **Done 2026-09-19.**
+3. Paste the `/mirror_switch` and `/mirror_devices` rules
+   (`node scripts/print-mirror-deploy.mjs` prints them).
+4. Set `/mirror_switch/enabled = true`. Every device asks its one question on
+   its next open and downloads behind a working app.
+5. Watch Mirror Fleet. Replace the estimates in §6 with the `bytesToday`
+   figures once devices have traded a full day on their copies.
 
 ## 12. Failure patterns this design is built against
 

@@ -24,7 +24,7 @@
 // order changed.
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
-import { offlineMirrorEnabled } from "./mirrorFlag";
+import { offlineMirrorEnabled } from "./killSwitch";
 import { getMirrorDbHandle } from "./mirrorDbHandle";
 import { legFor, readMirroredPath, MISS } from "./localReads";
 import { isLegUsable } from "./health";

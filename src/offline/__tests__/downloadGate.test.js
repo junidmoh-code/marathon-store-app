@@ -1,7 +1,8 @@
-// The setup screen's two pure decisions: how far along the download is, and
-// what to say when it stops.
+// The download gate's two pure decisions: how far along the download is, and
+// what to say when it stops. Both are also what the status dot prints while
+// the copy comes down behind the app.
 import { describe, test, expect } from "vitest";
-import { progressFor, explainFailure } from "../MirrorSetupScreen";
+import { progressFor, explainFailure } from "../MirrorDownloadGate";
 import { MIRROR_LEGS } from "../nodes";
 
 describe("the bar is weighted by BYTES, not by legs done", () => {
@@ -42,14 +43,17 @@ describe("the bar is weighted by BYTES, not by legs done", () => {
 });
 
 describe("what it says when the download stops", () => {
-  test("permission denied names the rule that has not been pasted", () => {
-    expect(explainFailure(new Error("PERMISSION_DENIED: Permission denied")))
-      .toMatch(/rule for the change log/);
+  test("permission denied names the ONE thing the person holding it can do", () => {
+    // Shop words, not developer words: the person reading this is at a till.
+    // Signing in is the thing they can act on; the rest is Junid's job.
+    const said = explainFailure(new Error("PERMISSION_DENIED: Permission denied"));
+    expect(said).toMatch(/signed in/i);
+    expect(said).not.toMatch(/rule|json|docs\/|database rule for/i);
   });
 
-  test("a timeout says the connection, and that nothing is lost", () => {
+  test("a dropped line says so, and that nothing is lost", () => {
     expect(explainFailure(new Error("/insights_log did not answer within 30000 ms")))
-      .toMatch(/nothing downloaded so far has been lost/);
+      .toMatch(/nothing downloaded so far is lost/);
   });
 
   test("anything else is shown verbatim rather than guessed at", () => {

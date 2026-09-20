@@ -19,15 +19,22 @@
 
 import { useEffect, useState } from "react";
 import { getOfflineMirrorRuntime } from "./mirrorRuntime";
-import { offlineMirrorEnabled } from "./mirrorFlag";
+import { offlineMirrorEnabled, subscribeMirrorSwitch } from "./killSwitch";
 import { MIRROR_LEGS } from "./nodes";
 import { getLegHealth, vouchingRecord } from "./health";
 import { heldPhotoCount } from "./photoCache";
 import { pendingCount } from "./pendingWrites";
+import { downloadLine } from "./MirrorDownloadGate";
 
 const COLOURS = { ok: "#22c55e", behind: "#f59e0b", offline: "#9ca3af" };
 
-export function mirrorStatus({ connected, legs, pending }) {
+export function mirrorStatus({ connected, legs, pending, download }) {
+  // A device whose copy is still coming down is not "behind" in the sense the
+  // amber dot usually means — it is working, on live reads, exactly as it
+  // always did. It gets the same amber, because the honest answer to "is what
+  // I am looking at current" is yes-and-this-device-is-busy, and the panel
+  // says which.
+  if (download?.downloading) return "behind";
   if (!connected) return "offline";
   if (pending > 0) return "behind";
   if (legs.some((l) => !l.ok)) return "behind";
@@ -37,11 +44,22 @@ export function mirrorStatus({ connected, legs, pending }) {
 export function MirrorDot({ style }) {
   const [state, setState] = useState(null);
   const [open, setOpen] = useState(false);
+  // ── IT HAS TO BE ABLE TO APPEAR LATER ────────────────────────────────────
+  //
+  // This used to read the switch once, on mount, with an empty dependency
+  // list. On a device that had never heard the switch — every genuinely new
+  // one — that read was false at first paint, so the dot never mounted and
+  // the download promised by the gate had no visible evidence anywhere until
+  // the next reload. It now watches the switch like everything else does.
+  // (Fable-vs-spec review, PR #624.)
+  const [on, setOn] = useState(() => offlineMirrorEnabled());
+  useEffect(() => subscribeMirrorSwitch(() => setOn(offlineMirrorEnabled())), []);
 
   useEffect(() => {
-    if (!offlineMirrorEnabled()) return undefined;
+    if (!on) return undefined;
     let cancelled = false;
     let timer = null;
+    let fastTimer = null;
     let unsub = null;
 
     const refresh = async (rt) => {
@@ -58,10 +76,12 @@ export function MirrorDot({ style }) {
         });
       }
       const photos = await heldPhotoCount(rt.db).catch(() => null);
+      const download = await (rt.downloadProgress?.() ?? null);
       if (cancelled) return;
       setState({
         connected: rt.connection.isConnected(),
         legs, photos, pending: pendingCount(),
+        download,
       });
     };
 
@@ -70,15 +90,26 @@ export function MirrorDot({ style }) {
       if (!rt || cancelled) return;
       unsub = rt.connection.subscribe(() => refresh(rt));
       await refresh(rt);
+      // Faster while the copy is coming down — a bar that moves once every
+      // twenty seconds reads as a bar that has stopped.
       timer = setInterval(() => refresh(rt), 20_000);
+      const fast = setInterval(() => {
+        // `cancelled` as well as the download's own end: this interval is
+        // assigned AFTER an await, so an unmount that lands in between would
+        // leave the cleanup below with nothing to clear.
+        if (cancelled || !rt.state?.downloading) clearInterval(fast);
+        else refresh(rt);
+      }, 3_000);
+      fastTimer = fast;
     })();
 
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
+      if (fastTimer) clearInterval(fastTimer);
       if (unsub) unsub();
     };
-  }, []);
+  }, [on]);
 
   if (!state) return null;
   const status = mirrorStatus(state);
@@ -98,10 +129,17 @@ export function MirrorDot({ style }) {
       {open && (
         <div style={panel}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            {status === "ok" && "Up to date"}
-            {status === "behind" && "Catching up"}
-            {status === "offline" && "Not connected — showing this device's copy"}
+            {state.download?.downloading
+              ? "Setting this device up"
+              : (<>
+                {status === "ok" && "Up to date"}
+                {status === "behind" && "Catching up"}
+                {status === "offline" && "Not connected — showing this device's copy"}
+              </>)}
           </div>
+          {state.download?.downloading && (
+            <div style={line}>{downloadLine(state.download)}</div>
+          )}
           {state.pending > 0 && <div style={line}>{state.pending} write(s) still going up</div>}
           {behind.length > 0 && behind.map((l) => (
             <div key={l.name} style={line}>{l.name}: {l.reason ?? "behind"}</div>
