@@ -22,10 +22,12 @@
 
 import { useCallback, useEffect, useMemo, useRef, useSyncExternalStore } from "react";
 import { isLegServing, subscribeServing, servingKeyFor } from "../offline/serving";
-import { onValue, ref } from "firebase/database";
+import { onChildAdded, orderByKey, query, ref, startAt } from "firebase/database";
 import { database } from "../firebase";
 import { InsightsLogContext, EMPTY_LOG } from "./InsightsLogContext";
 import { createInsightsLogStore } from "./insightsLogStore";
+import { readWholeLogBounded, PAGE_SIZE, MAX_PAGES } from "./insightsLogWholeRead";
+import { readByKeyPages } from "../push/pagedRead";
 
 export const RELEASE_DELAY_MS = 5 * 60 * 1000;
 
@@ -47,12 +49,40 @@ function shapeLog(data) {
     : EMPTY_LOG;
 }
 
-// The real SDK subscription, in the shape the store expects.
+// ─── THE LIVE SOURCE — PAGED HISTORY, THEN A TAIL, NEVER A BARE NODE READ ────
+//
+// This used to be `onValue(ref(database, "insights_log"))`: one read, no query,
+// 35.99 MB measured on the wire, ~97 times a day. It is now a bounded forward
+// walk plus an onChildAdded tail — see src/insights/insightsLogWholeRead.js for
+// why the shape of the read matters as much as its size (a rule can refuse a
+// query-less read; it cannot refuse "a big one"), and the ordering guarantees.
+//
+// The query builders live HERE, next to the real SDK, and the walk lives in
+// that module with the builders injected, so the query SHAPE is asserted in a
+// unit test instead of being trusted.
+// ── startAt, NOT startAfter, AND THAT IS DELIBERATE ─────────────────────────
+// The read rule keys on `query.startAt`. `startAfter(k)` is the SDK's own
+// construction and there is no rule variable that is guaranteed to name it, so
+// a tail built on it could be refused by a rule that a tail built on startAt
+// plainly satisfies. startAt is inclusive, so the tail re-delivers the one row
+// the history walk ended on; openTail is told which key that is and drops it.
+// One duplicated row of about 300 bytes, in exchange for a read whose shape the
+// rule can see. (See RULES-INSIGHTS-LOG-QUERY.md.)
+export const insightsLogQueries = {
+  tail: ({ after }) => query(ref(database, "insights_log"), orderByKey(), startAt(after)),
+};
+
 function openInsightsLog(onData) {
-  const unsub = onValue(ref(database, "insights_log"), (snap) => {
-    onData(shapeLog(snap.val()));
+  return readWholeLogBounded(onData, {
+    readAll: () => readByKeyPages(ref(database, "insights_log"), {
+      pageSize: PAGE_SIZE, maxPages: MAX_PAGES,
+    }),
+    openTail: ({ after, skipKey }, onRow) =>
+      onChildAdded(insightsLogQueries.tail({ after }), (child) => {
+        if (skipKey !== null && child.key === skipKey) return;
+        onRow(child.val());
+      }),
   });
-  return unsub;
 }
 
 // ─── THE OFFLINE MIRROR ──────────────────────────────────────────────────────
