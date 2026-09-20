@@ -5481,3 +5481,56 @@ const saDateForUsage = (ms) => require("./lib/sa-time.cjs").saDateStringFromMs(m
     exports[name] = mirror[name];
   }
 }
+
+// ─── INSIGHTS ROLLUP SWEEP ───────────────────────────────────────────────────
+//
+// Writes one node per finished SA day at /insights_rollup/days/{date}, holding
+// that day's /insights_log rows dictionary-encoded — about a fifth of the bytes
+// (measured: 338,270 -> 72,439 on 2026-09-18). The Insights, Customers and
+// Admin screens read the days their window needs instead of the whole 35.99 MB
+// node, and read today live and bounded because today is still being written.
+//
+// Every read the sweep makes is bounded, even though the Admin SDK bypasses
+// the rules that would insist on it: this project's largest bill is database
+// egress, and a server-side once("value") costs the same 35.99 MB a browser's
+// does.
+//
+// All the logic is in functions/insightsRollup/builder.cjs and is unit-tested
+// against a fake database that actually honours key ranges and page limits.
+// This is the wiring.
+//
+// FOUR TIMES A DAY. A rebuild is idempotent and the sweep is cheap — one short
+// page of what is new, plus two or three day rebuilds — so the cadence is set
+// by how soon a finished day should appear rather than by cost. 00:20 SA closes
+// yesterday twenty minutes after midnight; the other three catch late writes.
+//
+//   firebase deploy --only functions:insightsRollupSweep
+const { runSweep: _runInsightsRollupSweep } = require("./insightsRollup/builder.cjs");
+const { makeIo: _insightsRollupIo } = require("./insightsRollup/io.cjs");
+
+exports.insightsRollupSweep = onSchedule(
+  {
+    schedule: "20 0,7,13,19 * * *",
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    memory: "512MiB",
+    timeoutSeconds: 540,
+    // ONE at a time. Two overlapping sweeps would write identical bytes (a day
+    // node is a pure function of its day), so this is belt and braces rather
+    // than the correctness story — but there is no reason to pay twice.
+    maxInstances: 1,
+  },
+  async () => {
+    const db = admin.database();
+    const res = await _runInsightsRollupSweep({
+      io: _insightsRollupIo(db),
+      nowMs: Date.now(),
+      log: (m) => console.log(m),
+    });
+    console.log(
+      `insightsRollupSweep: built ${res.dates.length} day(s), ${res.rows} rows` +
+      (res.late ? `, ${res.late} late row(s) bucketed` : "") +
+      (res.truncated ? " — CATCH-UP TRUNCATED, another run is needed" : ""),
+    );
+  },
+);
