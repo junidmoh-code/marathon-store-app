@@ -408,7 +408,13 @@ export function createSyncEngine({
   // already be correct — where starting from the end would skip them silently
   // and for ever. Re-read what you might already have; never skip what you
   // might not.
-  async function runSetup({ force = false } = {}) {
+  // `keepGoing` is asked BETWEEN LEGS, and it is what makes a 104 MB download
+  // abandonable. The fleet kill switch can arrive in the middle of one, and a
+  // device that has been told to stop mirroring must stop DOWNLOADING too —
+  // otherwise the one control that is supposed to end an incident goes on
+  // spending money on it for several minutes. Between legs rather than
+  // mid-leg, so a leg is never half-swapped: the worst overrun is one leg.
+  async function runSetup({ force = false, keepGoing = () => true } = {}) {
     if (setupRunning) return setupRunning;
     setupRunning = (async () => {
       const startedAt = now();
@@ -431,6 +437,7 @@ export function createSyncEngine({
       const done = [];
       for (let i = 0; i < todo.length; i += 1) {
         const leg = todo[i];
+        if (!keepGoing()) return { alreadyDone: false, abandoned: true, legs: done };
         onProgress({ phase: "setup", leg: leg.name, done: i, total: todo.length });
         const res = isAppendOnly(leg)
           ? await runRangeLeg(leg)

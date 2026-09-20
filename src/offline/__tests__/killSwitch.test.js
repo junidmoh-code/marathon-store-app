@@ -21,11 +21,10 @@ globalThis.localStorage = {
 
 import {
   switchVerdict, mirrorSwitchOn, mirrorSwitchKnown, mirrorSwitchState,
-  setMirrorSwitchValue, noteMirrorSwitchUnreadable, subscribeMirrorSwitch,
+  setMirrorSwitchValue, noteMirrorSwitchUnreadable, subscribeMirrorSwitch, offlineMirrorEnabled,
   watchMirrorSwitch, ensureMirrorSwitch, SWITCH_CACHE_KEY, MIRROR_SWITCH_PATH,
   _resetMirrorSwitchForTests,
 } from "../killSwitch";
-import { offlineMirrorEnabled, setOfflineMirrorEnabled } from "../mirrorFlag";
 import { isLegServing, setServingLegs, subscribeServing, servingKeyFor, _resetServingForTests } from "../serving";
 import { notePendingUpdate, pendingCount, _clearPendingForTests } from "../pendingWrites";
 import { readPathOnce } from "../localReads";
@@ -36,7 +35,6 @@ beforeEach(() => {
   _resetMirrorSwitchForTests();
   _resetServingForTests();
   _clearPendingForTests();
-  setOfflineMirrorEnabled(true);
 });
 
 describe("what the value in the database means", () => {
@@ -217,18 +215,18 @@ describe("the first-answer wait", () => {
   });
 });
 
-describe("the rollout flag and the switch are an AND", () => {
-  it("a device out of the rollout does not mirror however on the switch is", () => {
-    setMirrorSwitchValue(true);
-    setOfflineMirrorEnabled(false);
-    expect(offlineMirrorEnabled()).toBe(false);
-  });
-
-  it("a device in the rollout mirrors only once the switch says so", () => {
-    setOfflineMirrorEnabled(true);
+describe("the switch is the ONLY answer — there is no per-device flag left", () => {
+  it("offlineMirrorEnabled is the switch, and nothing else", () => {
+    // PR #624 removed the per-device localStorage flag. Every device in the
+    // fleet mirrors, and the only thing that can say otherwise is the one
+    // value in the database. A second, per-device opinion is exactly how half
+    // a shop ends up on one code path and half on the other with nobody able
+    // to say which.
     expect(offlineMirrorEnabled()).toBe(false);
     setMirrorSwitchValue(true);
     expect(offlineMirrorEnabled()).toBe(true);
+    setMirrorSwitchValue(false);
+    expect(offlineMirrorEnabled()).toBe(false);
   });
 });
 

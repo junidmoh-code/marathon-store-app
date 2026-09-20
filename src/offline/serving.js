@@ -18,8 +18,7 @@
 // It is deliberately NOT the source of truth. The truth is health.js, read
 // from IndexedDB, and it is what every actual read is gated on.
 
-import { offlineMirrorEnabled } from "./mirrorFlag";
-import { subscribeMirrorSwitch } from "./killSwitch";
+import { offlineMirrorEnabled, subscribeMirrorSwitch } from "./killSwitch";
 
 export const SERVING_KEY = "marathon-store.offlineMirror.serving";
 

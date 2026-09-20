@@ -47,11 +47,13 @@ applyPushDeepLink();
 startUpdateChecker();
 
 // ─── THE OFFLINE MIRROR ──────────────────────────────────────────────────────
-// With the flag off (the default) MirrorGate renders App and imports nothing
-// else — the mirror's own module graph is behind a dynamic import inside it,
-// so it is never fetched or parsed and this app is exactly what it was. With
-// the flag on it starts the mirror and blocks on the one setup download.
-// See docs/store-offline-mirror.md.
+// Whether a device mirrors is ONE value in the database — /mirror_switch/
+// enabled — watched live and obeyed without a reload. With it off, MirrorGate
+// renders App and imports nothing else: the mirror's own module graph is
+// behind a dynamic import inside it, so it is never fetched or parsed and this
+// app is exactly what it was. With it on, the device is asked ONCE for a tap
+// on Download and the copy comes down behind a working app — nothing here ever
+// holds the screen. See docs/store-offline-mirror.md.
 createRoot(document.getElementById("root")).render(
   <StrictMode>
     <MirrorGate auth={auth} storage={storage}>

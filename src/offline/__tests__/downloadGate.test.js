@@ -1,7 +1,8 @@
-// The setup screen's two pure decisions: how far along the download is, and
-// what to say when it stops.
+// The download gate's two pure decisions: how far along the download is, and
+// what to say when it stops. Both are also what the status dot prints while
+// the copy comes down behind the app.
 import { describe, test, expect } from "vitest";
-import { progressFor, explainFailure } from "../MirrorSetupScreen";
+import { progressFor, explainFailure } from "../MirrorDownloadGate";
 import { MIRROR_LEGS } from "../nodes";
 
 describe("the bar is weighted by BYTES, not by legs done", () => {
@@ -44,7 +45,7 @@ describe("the bar is weighted by BYTES, not by legs done", () => {
 describe("what it says when the download stops", () => {
   test("permission denied names the rule that has not been pasted", () => {
     expect(explainFailure(new Error("PERMISSION_DENIED: Permission denied")))
-      .toMatch(/rule for the change log/);
+      .toMatch(/rule still has to be pasted/);
   });
 
   test("a timeout says the connection, and that nothing is lost", () => {

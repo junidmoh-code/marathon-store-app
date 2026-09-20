@@ -1,0 +1,227 @@
+// ─── THE DOWNLOAD MUST NEVER STAND BETWEEN STAFF AND THE APP ─────────────────
+//
+// PR #618 held the whole app behind a progress bar until 104 MB had landed.
+// On a shop floor that is a member of staff standing in front of a customer
+// waiting for a bar. These tests are the claim that replaced it, stated as
+// behaviour rather than as intent:
+//
+//   · the app renders underneath the gate, always — including while it is up
+//   · one tap opens it, IMMEDIATELY, without awaiting a single byte
+//   · a device that has already tapped is never asked again; it resumes
+//   · nothing serves locally until the copy is complete and verified
+//
+// The gate is rendered through react-test-renderer, like every other component
+// test here, against a fake runtime with the same surface bootstrap.js returns.
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import React from "react";
+import TestRenderer, { act } from "react-test-renderer";
+
+const store = new Map();
+globalThis.localStorage = {
+  getItem: (k) => (store.has(k) ? store.get(k) : null),
+  setItem: (k, v) => store.set(k, String(v)),
+  removeItem: (k) => store.delete(k),
+  clear: () => store.clear(),
+};
+
+let authUser = { uid: "u1", isAnonymous: false };
+vi.mock("firebase/auth", () => ({
+  onAuthStateChanged: (auth, cb) => { cb(authUser); return () => {}; },
+}));
+vi.mock("firebase/database", () => ({
+  ref: (db, path) => ({ path }),
+  onValue: () => () => {},
+}));
+vi.mock("../../firebase", () => ({ database: {}, auth: {}, storage: {} }));
+
+// The gate imports bootstrap dynamically. This is the runtime it gets.
+let runtime = null;
+vi.mock("../bootstrap", () => ({ startOfflineMirror: async () => runtime }));
+
+import { MirrorGate } from "../MirrorGate";
+import { MirrorDownloadGate, downloadLine } from "../MirrorDownloadGate";
+import { setMirrorSwitchValue, _resetMirrorSwitchForTests } from "../killSwitch";
+import { _resetServingForTests, isLegServing, setServingLegs } from "../serving";
+import { _resetOfflineMirrorRuntimeForTests } from "../mirrorRuntime";
+
+function fakeRuntime({ setupDone = false, consented = false } = {}) {
+  const calls = { setup: 0, background: 0, start: 0, stop: 0, consent: 0 };
+  let downloadResolve = null;
+  return {
+    calls,
+    state: { downloading: false, setupDone: [], setupProgress: null, setupError: null },
+    setupState: async () => ({ done: setupDone, ready: setupDone, legs: [] }),
+    hasConsented: async () => consented,
+    consentAndDownload: async () => {
+      calls.consent += 1;
+      // A download that NEVER settles: the whole point is that the tap does not
+      // wait for it. If the gate awaited this, the test would hang.
+      return new Promise((r) => { downloadResolve = r; calls.background += 1; });
+    },
+    downloadInBackground: () => { calls.background += 1; return new Promise(() => {}); },
+    downloadProgress: () => ({ downloading: false, legsDone: [], current: null, error: null }),
+    setup: async () => { calls.setup += 1; },
+    start: () => { calls.start += 1; },
+    stop: () => { calls.stop += 1; },
+    finishDownload: () => downloadResolve?.(),
+  };
+}
+
+const APP_TEXT = "the app, working";
+function App() { return React.createElement("div", null, APP_TEXT); }
+
+async function mount() {
+  let tree;
+  await act(async () => {
+    tree = TestRenderer.create(
+      React.createElement(MirrorGate, { auth: {}, storage: {} }, React.createElement(App)),
+    );
+  });
+  for (let i = 0; i < 8; i += 1) {
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+  return tree;
+}
+
+const text = (tree) => JSON.stringify(tree.toJSON());
+const findButton = (tree) => tree.root.findAllByType("button")[0];
+
+beforeEach(() => {
+  store.clear();
+  authUser = { uid: "u1", isAnonymous: false };
+  _resetMirrorSwitchForTests();
+  _resetServingForTests();
+  _resetOfflineMirrorRuntimeForTests();
+  setMirrorSwitchValue(true);
+});
+afterEach(() => { _resetMirrorSwitchForTests(); _resetServingForTests(); });
+
+describe("a device nobody has asked yet", () => {
+  it("shows the gate — and the app is rendered underneath it the whole time", async () => {
+    runtime = fakeRuntime({ setupDone: false, consented: false });
+    const tree = await mount();
+    expect(text(tree)).toContain("Download");
+    // THE POINT. Not "instead of the app" — over it. The sign-in screen lives
+    // inside <App>, so a gate that replaced its children would deadlock a
+    // fresh device: no sign-in, no permission, no download. (PR #618.)
+    expect(text(tree)).toContain(APP_TEXT);
+    tree.unmount();
+  });
+
+  it("one tap opens the app IMMEDIATELY — it does not await a single byte", async () => {
+    runtime = fakeRuntime({ setupDone: false, consented: false });
+    const tree = await mount();
+    await act(async () => { findButton(tree).props.onClick(); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+
+    // The gate is gone while the download it started is still running.
+    expect(text(tree)).not.toContain("Download");
+    expect(text(tree)).toContain(APP_TEXT);
+    expect(runtime.calls.consent).toBe(1);
+    expect(runtime.calls.background).toBe(1);
+    tree.unmount();
+  });
+
+  it("offers ONE button and no way to say no", async () => {
+    runtime = fakeRuntime({ setupDone: false, consented: false });
+    const tree = await mount();
+    expect(tree.root.findAllByType("button")).toHaveLength(1);
+    tree.unmount();
+  });
+
+  it("is not asked before there is a signed-in, non-anonymous user", async () => {
+    // Every mirrored node is rules-gated on one. Asking the TV shell, or
+    // somebody still on the PIN screen, is asking a device that cannot
+    // download and is covering the screen that would let it.
+    authUser = null;
+    runtime = fakeRuntime({ setupDone: false, consented: false });
+    const tree = await mount();
+    expect(text(tree)).not.toContain("Download");
+    expect(text(tree)).toContain(APP_TEXT);
+    tree.unmount();
+  });
+});
+
+describe("a device that has already tapped", () => {
+  it("is never asked again — an incomplete copy resumes in the background", async () => {
+    runtime = fakeRuntime({ setupDone: false, consented: true });
+    const tree = await mount();
+    expect(text(tree)).not.toContain("Download");
+    expect(text(tree)).toContain(APP_TEXT);
+    expect(runtime.calls.background).toBe(1);
+    expect(runtime.calls.start).toBe(0);   // the loop starts when the copy is complete
+    tree.unmount();
+  });
+
+  it("with a COMPLETE copy, goes straight into the steady-state loop", async () => {
+    runtime = fakeRuntime({ setupDone: true, consented: true });
+    const tree = await mount();
+    expect(text(tree)).not.toContain("Download");
+    expect(runtime.calls.start).toBe(1);
+    expect(runtime.calls.background).toBe(0);
+    tree.unmount();
+  });
+});
+
+describe("the fleet switch still governs all of it", () => {
+  it("a device with the switch OFF is never asked, and nothing starts", async () => {
+    setMirrorSwitchValue(false);
+    runtime = fakeRuntime({ setupDone: false, consented: false });
+    const tree = await mount();
+    expect(text(tree)).not.toContain("Download");
+    expect(runtime.calls.background).toBe(0);
+    expect(runtime.calls.start).toBe(0);
+    tree.unmount();
+  });
+
+  it("a kill mid-download stops the engine, and the app carries on", async () => {
+    runtime = fakeRuntime({ setupDone: false, consented: true });
+    const tree = await mount();
+    expect(runtime.calls.background).toBe(1);
+    await act(async () => { setMirrorSwitchValue(false); });
+    expect(runtime.calls.stop).toBe(1);
+    expect(text(tree)).toContain(APP_TEXT);
+    tree.unmount();
+  });
+});
+
+describe("nothing is served locally until the copy is complete", () => {
+  it("a half-downloaded device reads live, exactly as it does today", async () => {
+    // The serving hint is what every hook consults on its first render, and
+    // the engine only writes it at the END of a setup run (refreshServing).
+    // So during a download it is empty and every screen opens its live read.
+    runtime = fakeRuntime({ setupDone: false, consented: true });
+    const tree = await mount();
+    expect(isLegServing("products")).toBe(false);
+    expect(isLegServing("stock")).toBe(false);
+    tree.unmount();
+  });
+
+  it("and serves once it is — the hint is the only thing that changes", async () => {
+    setServingLegs(["products"]);
+    expect(isLegServing("products")).toBe(true);
+  });
+});
+
+describe("what the gate and the dot say", () => {
+  it("the gate names the size, so a tap is an informed one", async () => {
+    runtime = fakeRuntime();
+    let tree;
+    await act(async () => {
+      tree = TestRenderer.create(
+        React.createElement(MirrorDownloadGate, { runtime, onStart: () => {} }),
+      );
+    });
+    expect(text(tree)).toContain("104 MB");
+    expect(text(tree)).toContain("read live");
+    tree.unmount();
+  });
+
+  it("the dot's line is weighted by BYTES and names what is downloading", () => {
+    expect(downloadLine({ legsDone: [], current: "products" })).toContain("0%");
+    expect(downloadLine({ legsDone: ["insights"], current: "movements" }))
+      .toMatch(/34%|35%|Stock movements/);
+    expect(downloadLine({ error: new Error("PERMISSION_DENIED") }))
+      .toMatch(/paused/);
+  });
+});

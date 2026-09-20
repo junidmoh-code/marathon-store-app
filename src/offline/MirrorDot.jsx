@@ -19,15 +19,22 @@
 
 import { useEffect, useState } from "react";
 import { getOfflineMirrorRuntime } from "./mirrorRuntime";
-import { offlineMirrorEnabled } from "./mirrorFlag";
+import { offlineMirrorEnabled } from "./killSwitch";
 import { MIRROR_LEGS } from "./nodes";
 import { getLegHealth, vouchingRecord } from "./health";
 import { heldPhotoCount } from "./photoCache";
 import { pendingCount } from "./pendingWrites";
+import { downloadLine } from "./MirrorDownloadGate";
 
 const COLOURS = { ok: "#22c55e", behind: "#f59e0b", offline: "#9ca3af" };
 
-export function mirrorStatus({ connected, legs, pending }) {
+export function mirrorStatus({ connected, legs, pending, download }) {
+  // A device whose copy is still coming down is not "behind" in the sense the
+  // amber dot usually means — it is working, on live reads, exactly as it
+  // always did. It gets the same amber, because the honest answer to "is what
+  // I am looking at current" is yes-and-this-device-is-busy, and the panel
+  // says which.
+  if (download?.downloading) return "behind";
   if (!connected) return "offline";
   if (pending > 0) return "behind";
   if (legs.some((l) => !l.ok)) return "behind";
@@ -42,6 +49,7 @@ export function MirrorDot({ style }) {
     if (!offlineMirrorEnabled()) return undefined;
     let cancelled = false;
     let timer = null;
+    let fastTimer = null;
     let unsub = null;
 
     const refresh = async (rt) => {
@@ -62,6 +70,7 @@ export function MirrorDot({ style }) {
       setState({
         connected: rt.connection.isConnected(),
         legs, photos, pending: pendingCount(),
+        download: rt.downloadProgress?.() ?? null,
       });
     };
 
@@ -70,12 +79,19 @@ export function MirrorDot({ style }) {
       if (!rt || cancelled) return;
       unsub = rt.connection.subscribe(() => refresh(rt));
       await refresh(rt);
+      // Faster while the copy is coming down — a bar that moves once every
+      // twenty seconds reads as a bar that has stopped.
       timer = setInterval(() => refresh(rt), 20_000);
+      const fast = setInterval(() => {
+        if (rt.state?.downloading) refresh(rt); else clearInterval(fast);
+      }, 3_000);
+      fastTimer = fast;
     })();
 
     return () => {
       cancelled = true;
       if (timer) clearInterval(timer);
+      if (fastTimer) clearInterval(fastTimer);
       if (unsub) unsub();
     };
   }, []);
@@ -98,10 +114,17 @@ export function MirrorDot({ style }) {
       {open && (
         <div style={panel}>
           <div style={{ fontWeight: 600, marginBottom: 6 }}>
-            {status === "ok" && "Up to date"}
-            {status === "behind" && "Catching up"}
-            {status === "offline" && "Not connected — showing this device's copy"}
+            {state.download?.downloading
+              ? "Setting this device up"
+              : (<>
+                {status === "ok" && "Up to date"}
+                {status === "behind" && "Catching up"}
+                {status === "offline" && "Not connected — showing this device's copy"}
+              </>)}
           </div>
+          {state.download?.downloading && (
+            <div style={line}>{downloadLine(state.download)}</div>
+          )}
           {state.pending > 0 && <div style={line}>{state.pending} write(s) still going up</div>}
           {behind.length > 0 && behind.map((l) => (
             <div key={l.name} style={line}>{l.name}: {l.reason ?? "behind"}</div>
