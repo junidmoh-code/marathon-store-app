@@ -188,9 +188,12 @@ describe("readWindow", () => {
     });
     expect(io.calls.ranges.length).toBeGreaterThan(0);
     for (const r of io.calls.ranges) {
-      expect(typeof r.startKey).toBe("string");
-      expect(typeof r.endKey).toBe("string");
-      expect(r.startKey.length).toBeGreaterThan(0);
+      // Real push-key bounds in the right order — not merely non-empty
+      // strings, which "" and "x" would also have satisfied.
+      expect(r.startKey).toMatch(/^[-0-9A-Z_a-z]{8}$/);
+      expect(r.endKey).toMatch(/^[-0-9A-Z_a-z]{8}$/);
+      expect(r.startKey < r.endKey).toBe(true);
+      expect(r.endMs).toBeGreaterThan(r.startMs);
     }
   });
 

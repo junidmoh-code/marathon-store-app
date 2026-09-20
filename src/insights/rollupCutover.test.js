@@ -62,7 +62,7 @@ describe("the all-time screens read a window, not the whole node", () => {
     }
   });
 
-  it("the sidebar total comes from the rollup index, not from the loaded window", () => {
+  it("the sidebar total comes from the rollup's running counter, not the loaded window", () => {
     // `filteredLog.length` was every event the store had ever logged, because
     // the array held all of history. It no longer does. Leaving that expression
     // in place would have turned an all-time total into a window total without

@@ -25,7 +25,10 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../firebase", () => ({ database: { __db: true } }));
 
-const { readWindow, readLogRange, LOG_PAGE } = await import("./rollupStore");
+const {
+  readWindow, readLogRange, readDayNodes, readDayIndex, readUndated, readLate,
+  readLogTotals, LOG_PAGE,
+} = await import("./rollupStore");
 const { saDayStartMs, shiftSaDate } = await import("./rollupWindow");
 const { pushKeyForMs } = await import("./insightsLogRange");
 
@@ -130,16 +133,30 @@ describe("readLogRange", () => {
     expect(r.liveKeys.size).toBeLessThanOrEqual(2);
   });
 
-  it("never reads /insights_rollup/days without a key range", async () => {
+  it("never reads /insights_rollup without a key range", async () => {
+    // The REAL rollup readers, not the stubs the other cases use — otherwise
+    // this asserts the shape of queries that were never issued.
     serve([]);
     await readWindow({
       startIso: isoOf(saDayStartMs(shiftSaDate(TODAY, -5))),
       endIso: isoOf(saDayStartMs(TODAY) + 86400000),
       nowMs: NOW_MS,
-      io: { ...io, readLogRange, readDayIndex: async () => ({ [shiftSaDate(TODAY, -1)]: { n: 1 } }) },
+      allTime: true,
+      io: {
+        readLogRange, readDayNodes, readUndated, readLate, readLogTotals,
+        readDayIndex: async () => ({ [shiftSaDate(TODAY, -1)]: { n: 1 } }),
+        getCached: () => undefined,
+      },
     });
-    for (const q of calls.filter((x) => String(x.__ref).startsWith("insights_rollup"))) {
-      expect(mods(q).length).toBeGreaterThan(0);
+    // Not merely "has a modifier" — a bare orderByKey() would pass that and
+    // is still a whole-node read. Every rollup query must carry a real bound.
+    const rollupQueries = calls.filter((x) => String(x.__ref).startsWith("insights_rollup"));
+    expect(rollupQueries.length).toBeGreaterThan(0);
+    for (const q of rollupQueries) {
+      const names = mods(q);
+      expect(names).toContain("orderByKey");
+      expect(names.some((m) => m === "startAt" || m === "endAt" || m === "limitToFirst")).toBe(true);
     }
+    void readDayIndex;
   });
 });

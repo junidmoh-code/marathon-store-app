@@ -46,6 +46,14 @@
 // once, and summing the day index instead would omit every late row, every
 // undated row and every day not yet built.
 //
+// The cursor and that counter are written ONCE, at the end, through the same
+// compare-and-set the sweep uses. Writing them page by page was resumable and
+// wrong: a scheduled sweep landing in the middle would read a half-advanced
+// cursor, walk from there and fold its counts on top of partial ones —
+// double-counting, permanently, with nothing to show it. (Fable-vs-spec
+// review.) A kill mid-walk now costs the walk (~33 MB) and nothing else; the
+// day builds, which are the expensive part, resume as they always did.
+//
 // --skip-walk is for a re-run that only needs to finish building days. It
 // leaves the counter alone rather than writing a wrong one.
 //
@@ -64,7 +72,7 @@ const admin = require("firebase-admin");
 const localRequire = createRequire(import.meta.url);
 const {
   buildDay, saDateStringOf, saDateOf, shiftSaDate, isWithinDayRange,
-  DAYS_PATH, INDEX_PATH, LATE_PATH, UNDATED_BUCKET, CURSOR_PATH, LOG_TOTALS_PATH,
+  DAYS_PATH, INDEX_PATH, LATE_PATH, UNDATED_BUCKET,
   CATCHUP_PAGE,
 } = localRequire("../functions/insightsRollup/builder.cjs");
 const { storeBucketOf } = localRequire("../functions/insightsRollup/rollupCodec.cjs");
@@ -107,10 +115,17 @@ async function firstDate() {
  * cursor is already stored.
  */
 async function forwardWalk() {
-  let cursor = RECOUNT ? null : await io.readCursor();
+  // The cursor the compare-and-set will insist is still there. A recount walks
+  // from nothing, but it still has to agree with whatever is stored before it
+  // overwrites it — otherwise a recount racing a sweep silently wins.
+  const serverCursor = await io.readCursor();
+  let cursor = RECOUNT ? null : serverCursor;
   const before = RECOUNT ? null : await io.readLogTotals();
   const totals = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
   for (const k of Object.keys(totals)) totals[k] = Number(before?.[k]) || 0;
+  // What was already counted, so the compare-and-set folds in only THIS walk.
+  const baseN = totals.n;
+  const baseP = { ...totals };
   let seen = 0;
   let bytes = 0;
   let filed = 0;
@@ -147,16 +162,33 @@ async function forwardWalk() {
       cursor = r.key;
     }
     // The cursor advances only with the rows it justified, in one update.
-    pending[CURSOR_PATH] = cursor;
-    // The counter moves with the cursor, in the same update: it is only ever
-    // meaningful as "exact up to here".
-    pending[LOG_TOTALS_PATH] = { ...totals, cursor, at: new Date().toISOString() };
+    // Late rows only. The cursor and the counter move at the END, together,
+    // through the compare-and-set — see the header.
     await flush();
     process.stdout.write(`\r  walked ${seen} rows, ${(bytes / 1024 / 1024).toFixed(1)} MB, ${filed} filed…    `);
     if (sent < CATCHUP_PAGE) break;
   }
   console.log("");
-  return { seen, bytes, filed, cursor, totals };
+  if (!DRY) {
+    const advanced = await io.advanceCursor({
+      expect: serverCursor ?? null,
+      cursor,
+      // A recount SETS the counter, because it has walked the whole log and
+      // knows the answer. An ordinary walk folds in only what IT saw.
+      replace: RECOUNT,
+      seen: RECOUNT ? totals : {
+        n: totals.n - baseN, pe: totals.pe - baseP.pe, trophy: totals.trophy - baseP.trophy,
+        pine: totals.pine - baseP.pine, other: totals.other - baseP.other,
+      },
+      at: new Date().toISOString(),
+    });
+    if (!advanced) {
+      console.log("  ✗ the cursor moved while this walk ran — nothing was folded in.");
+      console.log("    Something else advanced it (a scheduled sweep?). Re-run when it is idle.");
+      return { seen, bytes, filed, cursor, totals, advanced: false };
+    }
+  }
+  return { seen, bytes, filed, cursor, totals, advanced: true };
 }
 
 async function main() {

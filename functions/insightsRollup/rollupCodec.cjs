@@ -34,11 +34,19 @@
 //
 // The consequence that matters: the client EXPANDS these rows back into
 // ordinary event objects and hands them to the UNCHANGED production selectors
-// (readyEventsForPeriod, dedupeByOrderNumber, groupCount, and the rest). There
-// is no second implementation of any figure, so there is no second
-// implementation to drift. Equivalence is a property of this codec — expand
-// (compact (events)) === events, restricted to the kept fields — and that is
-// what the tests assert against real production days.
+// (readyEventsForPeriod, dedupeByOrderNumber, groupCount, and the rest), so no
+// figure on those screens is computed twice and none can drift. Equivalence is
+// a property of this codec — expand(compact(events)) === events, restricted to
+// the kept fields — and that is what the tests assert against real production
+// days.
+//
+// ONE figure is an exception, and saying "no second implementation of any
+// figure" was overstating it: the Insights sidebar's "N events in view" counts
+// every event the store has ever logged, which no window can produce. It comes
+// from storeBucketOf below — a transcription of App.jsx's matchesStore — and a
+// counter the sweep keeps. The transcription is compared against the originals
+// over a whole real day in rollupCodec.test.js, because a transcription is
+// exactly the kind of thing that drifts. (Fable-vs-spec review.)
 //
 // ── WHY .cjs, AND WHY THERE IS A TWIN ───────────────────────────────────────
 //

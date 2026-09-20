@@ -102,7 +102,7 @@ export function totalsFromIndex(index) {
   return out;
 }
 
-async function readDayNodes(dates) {
+export async function readDayNodes(dates) {
   if (dates.length === 0) return;
   // Contiguous runs are fetched as ONE key range; a scattered set falls back to
   // per-day reads. Windows are contiguous by construction, so the first branch
@@ -160,7 +160,7 @@ export async function readLogRange({ startKey, endKey }) {
  *  live tail uses. A late row's push key is by definition recent, so it can
  *  easily still be inside the tail's window; without its key it would arrive
  *  once from here and once from the tail. (Sonnet architect review.) */
-async function readUndated() {
+export async function readUndated() {
   const snap = await get(query(
     ref(database, `${LATE_PATH}/${UNDATED_BUCKET}`), orderByKey(), limitToFirst(LOG_PAGE),
   ));
@@ -169,7 +169,7 @@ async function readUndated() {
   return rows;
 }
 
-async function readLate({ from, to }) {
+export async function readLate({ from, to }) {
   if (!from || !to || from > to) return [];
   const snap = await get(query(
     ref(database, LATE_PATH), orderByKey(), startAt(from), endAt(to),
@@ -182,7 +182,7 @@ async function readLate({ from, to }) {
 }
 
 /** The whole log's running totals, maintained by the sweep's own walk. */
-async function readLogTotals() {
+export async function readLogTotals() {
   const snap = await get(ref(database, LOG_TOTALS_PATH));
   return snap.val();
 }

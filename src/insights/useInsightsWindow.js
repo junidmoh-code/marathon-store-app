@@ -18,10 +18,24 @@
 //                                       1,011,265 B   against 35,990,882 B
 //
 // 97.2% less. All-time — Customers and the Admin product line — is the whole
-// rollup plus today: 7.43 MB + 919 KB + the index, about 8.36 MB, 76.8% less.
+// rollup plus today: 7,790,919 + 919,423 + 8,992 + 427 = 8,719,761 bytes,
+// 75.8% less. (An earlier version of this comment said 8.36 MB and 76.8%: the
+// rollup's own figure is MiB, the rest is decimal, and the two were added
+// together. Every number here is now bytes. Fable-vs-spec review.)
+//
 // That one is the codec's saving and nothing more; a per-customer and a
 // per-product index would take those two screens much further, and are the
 // obvious next step rather than this one.
+//
+// ── WHAT THIS COSTS THAT THE OLD READ DID NOT ───────────────────────────────
+//
+// The provider kept the whole log for five minutes after the last consumer
+// unmounted, so Insights → Customers → Insights inside that window rendered
+// instantly. Every mount now re-reads the index, today's range and the totals,
+// and renders empty until they arrive — a moment of zeros on each screen
+// switch that did not happen before. Finished day nodes ARE cached for the
+// session, so the day-by-day part of a repeat is free; today never is, because
+// today is still being written to.
 //
 // Today's share is most of what is left, and it is a padded range: the key
 // bound reaches 48 hours either side because a row's key can sit that far from
@@ -54,6 +68,12 @@
 // already the cheapest possible answer — the device downloaded the node once
 // and follows it by change feed — and routing it back through the rollup would
 // put it back on the network to save bytes it is no longer spending.
+//
+// It re-reads when the mirror's insights leg moves, which is what keeps a
+// mirrored screen live. The network tail is skipped on such a device, so
+// without this a mirrored Insights screen left open would have shown nothing
+// new until the SA date changed — the local copy's own feed being the only
+// thing that knows an event landed. (Fable-vs-spec review.)
 //
 // ── A FAILED READ IS NOT AN EMPTY WINDOW ────────────────────────────────────
 //
@@ -148,6 +168,19 @@ export function useInsightsWindow({ startIso, endIso, allTime = false, enabled =
       return { log, plan: { missingDays: [], todaySA: null }, corruptDays: [], liveKeys: new Set(), totals };
     };
 
+    let stopMirrorSignal = null;
+    const watchMirror = async () => {
+      const { subscribeMirror, legVersion } = await import("../offline/mirrorSignal");
+      if (cancelled) return;
+      let seen = legVersion("insights");
+      stopMirrorSignal = subscribeMirror(() => {
+        const v = legVersion("insights");
+        if (v === seen || cancelled) return;
+        seen = v;
+        attempt(0);
+      });
+    };
+
     const attempt = async (tryNo) => {
       try {
         const res = isLegServing("insights")
@@ -179,9 +212,13 @@ export function useInsightsWindow({ startIso, endIso, allTime = false, enabled =
           );
         }
 
-        // The tail. Only worth opening for a window that reaches the present —
-        // and never on a mirrored device, whose local copy has its own feed.
-        if (windowEndMs >= readAtMs && !isLegServing("insights")) {
+        // A mirrored device follows its local copy's feed instead of a tail.
+        if (isLegServing("insights")) {
+          if (!stopMirrorSignal) watchMirror();
+          return;
+        }
+        // The tail. Only worth opening for a window that reaches the present.
+        if (windowEndMs >= readAtMs) {
           const after = pushKeyForMs(readAtMs - TAIL_BACKDATE_PAD_MS);
           stopTail = onChildAdded(
             query(ref(database, "insights_log"), orderByKey(), startAt(after)),
@@ -225,6 +262,7 @@ export function useInsightsWindow({ startIso, endIso, allTime = false, enabled =
       cancelled = true;
       if (retryTimer !== null) clearTimeout(retryTimer);
       if (stopTail) { try { stopTail(); } catch { /* teardown never throws */ } }
+      if (stopMirrorSignal) { try { stopMirrorSignal(); } catch { /* same */ } }
     };
   }, [startIso, endIso, allTime, enabled, saDay]);
 

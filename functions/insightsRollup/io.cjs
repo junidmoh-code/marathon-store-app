@@ -84,13 +84,44 @@ function makeIo(db) {
     // index write is not clobbered — but it is the reason not to put anything
     // LARGE under meta. A big node here would make every sweep read and
     // rewrite it four times a day.
-    async advanceCursor({ expect, cursor, seen, at }) {
+    // `replace: true` SETS the counter instead of adding to it. That is for a
+    // full recount — a pass that has walked the whole log from nothing and
+    // therefore knows the answer, rather than a delta to fold in. It still
+    // goes through the same compare-and-set, so a recount that raced a sweep
+    // is refused rather than silently overwriting its work.
+    async advanceCursor({ expect, cursor, seen, at, replace = false }) {
       const ref = db.ref(`${ROLLUP_ROOT}/meta`);
+
+      // ── THE NULL-FIRST TRAP ───────────────────────────────────────────────
+      //
+      // RTDB runs a transaction's update function against whatever the client
+      // has CACHED, which for a node it has never read whole is `null`, and
+      // only then retries against the server. A callback that aborts on
+      // "the cursor is not what I expected" therefore aborts on that first
+      // null — before any round trip — and the transaction reports
+      // committed: false for ever. Nothing else in the sweep reads this node
+      // whole (readCursor and listDayKeys read children), so the cache is
+      // always cold and the advance would NEVER have happened: the cursor
+      // would have stayed at wherever the backfill left it, every run would
+      // re-walk a growing backlog, and the counter would never move.
+      //
+      // Priming with once("value") is the documented answer — it puts the
+      // server's value in the cache, so the first invocation sees the real
+      // one. This project has met this before
+      // (reference-attribute-extraction-traps: "RTDB txn null-first").
+      await ref.once("value");
+
+      let sawNullFirst = false;
       const res = await ref.transaction((meta) => {
+        // A null here AFTER priming means one of two things: the node really
+        // is empty, or this is the cache talking anyway. If we expected a
+        // cursor, it cannot be the former — so abort rather than write a
+        // counter on top of nothing, and say that is what happened.
+        if (meta === null && (expect ?? null) !== null) { sawNullFirst = true; return undefined; }
         const cur = meta || {};
         const have = cur.cursor ?? null;
-        if ((have ?? null) !== (expect ?? null)) return undefined;   // abort
-        const base = cur.logTotals || {};
+        if (have !== (expect ?? null)) return undefined;             // somebody else moved it
+        const base = replace ? {} : (cur.logTotals || {});
         return {
           ...cur,
           cursor: cursor ?? null,
@@ -105,12 +136,21 @@ function makeIo(db) {
           },
         };
       });
+      if (!res.committed && sawNullFirst) {
+        console.warn("insightsRollup: cursor advance saw a null /insights_rollup/meta after priming — not advancing");
+      }
       return !!res.committed;
     },
 
     async commit({ updates }) {
-      // ONE multi-path update: the day nodes and the cursor land together, so
-      // the cursor can never be ahead of the days it justified.
+      // ONE multi-path update for everything that is a RECOMPUTATION: the day
+      // nodes, the day index, the late bucket, the run record. All idempotent,
+      // so a repeat writes the same bytes.
+      //
+      // The cursor is NOT here. It moves with the running counter, which is a
+      // fold and has to be applied exactly once — see advanceCursor — and it
+      // moves AFTER this lands, so it can only ever be behind the aggregates
+      // it justified, never ahead of them.
       await db.ref().update(updates);
     },
   };

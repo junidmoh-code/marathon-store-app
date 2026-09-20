@@ -15,21 +15,25 @@ One child per finished South African day, at `/insights_rollup/days/{YYYY-MM-DD}
 holding that day's `/insights_log` rows dictionary-encoded.
 
 Measured on the live node after the backfill: **139 days, 112,968 rows,
-7.43 MB of rollup, 54.7 KB a day**, against 35.99 MB for the log itself. One
+7,790,919 bytes of rollup, about 56 KB a day**, against 35,990,882 bytes for
+the log itself. One
 busy day (2026-09-18, 1,030 rows) is 335,409 bytes of log and 72,085 bytes of
 rollup.
 
-What a screen pays, measured part by part: a default Insights mount is
-**1,011,265 bytes** — yesterday's node 82,423, today's padded live range
-919,423, the day index 8,992, the running totals and what is after their cursor
-427 — against 35,990,882. **97.2% less.**
+What a screen pays, measured part by part:
+
+| | bytes |
+|---|---|
+| a default Insights mount (yesterday's node 82,423 + today's padded live range 919,423 + the day index 8,992 + the totals and what is after their cursor 427) | **1,011,265** — 97.2% less |
+| an all-time mount, Customers or the Admin product line (the whole rollup 7,790,919 + today 919,423 + index 8,992 + totals 427) | **8,719,761** — 75.8% less |
+| the whole log, before | 35,990,882 |
 
 Alongside it:
 
 | Path | What it holds | Who reads it |
 |---|---|---|
 | `/insights_rollup/days/{date}` | the day's rows, encoded | Insights, Customers, the Admin product line |
-| `/insights_rollup/meta/built/{date}` | `{n, pe, trophy, pine, other}` — how many rows that day holds, per store | the sweep: which days are missing |
+| `/insights_rollup/meta/built/{date}` | `{n, pe, trophy, pine, other}` — how many rows that day holds, per store | the sweep (which days are missing) and the client (which days it can serve from a node) |
 | `/insights_rollup/meta/logTotals` | the whole log's running per-store counts, stamped with the cursor they are exact as far as | the Insights sidebar's "N events in view" |
 | `/insights_rollup/meta/cursor` | the sweep's high-water push key | the sweep |
 | `/insights_rollup/meta/lastBuild` | what the last run did | people |
