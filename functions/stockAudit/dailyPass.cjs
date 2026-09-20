@@ -1,15 +1,15 @@
 // ─── STOCK AUDIT — the once-a-day I/O pass ───────────────────────────────────
 //
-// refillHealthScan runs every 15 minutes and already snapshots /orders, /stock,
-// /products and 45 days of movements. This pass rides on that snapshot: once
-// per SA day, on the first run at or after 07:00, it hands the data the run
-// ALREADY HOLDS to lib/stock-audit.cjs and writes small render caches — one
+// refillHealthScan runs hourly (07:00-19:00 SAST) and already snapshots /orders,
+// /stock, /products and 45 days of movements. This pass rides on that snapshot:
+// once per SA day, on the first run at or after 07:00, it hands the data the
+// run ALREADY HOLDS to lib/stock-audit.cjs and writes small render caches — one
 // per hub for the sneaker out-of-stock checks, one per shop for the clothing
 // rotation. Nothing here re-reads anything the scan read.
 //
 // WHAT IT COSTS, exactly (measured on live data 2026-09-08):
 //
-//   EVERY RUN (48/day)   settings/stockAudit/config      ~250 B   the kill switch
+//   EVERY RUN (13/day)   settings/stockAudit/config      ~250 B   the kill switch
 //   THE DAILY PASS ONLY  settings/stockAudit/state       ~200 B   the date guard
 //                        settings/stockAudit/rotation/*  ~90 KB   the check stamps
 //                        settings/stockAudit/*/results (SHALLOW)  ~2 KB  prune
@@ -105,7 +105,7 @@ async function runStockAuditPass({
   // 3. CLAIM THE DAY BEFORE DOING THE WORK. The scan holds an exclusive run
   //    lock, so two passes cannot overlap today — but a run that crashes AFTER
   //    the snapshot writes and BEFORE the stamp would recompute the whole pass
-  //    every 15 minutes for the rest of the day. Stamping first makes the pass
+  //    every run for the rest of the day. Stamping first makes the pass
   //    at-most-once: a crash costs one day's lists, not a loop. The lists are
   //    a render cache, so a lost day is recoverable and a loop is not.
   //

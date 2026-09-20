@@ -7,7 +7,7 @@
 //   • the same order notified twice because Eventarc delivered it twice
 //   • a RECYCLED order id making tomorrow's 005 a replay of today's, so a real
 //     order is silently never announced
-//   • shadow orders — read-only artifacts rewritten every 15 minutes —
+//   • shadow orders — read-only artifacts rewritten on every scan —
 //     notifying forever about work that does not exist
 //   • a dead token kept alive so the server writes to nobody, or a live one
 //     deleted because of a transient quota error
@@ -162,7 +162,7 @@ const run = (db, messaging, orderId, record, over = {}) => notifyOrderPlaced({
 
 // ── THE GUARDS: what must NOT produce a notification ─────────────────────────
 
-test("a shadow order notifies nobody — it is a preview the sweep rewrites every 15 minutes", async () => {
+test("a shadow order notifies nobody — it is a preview the sweep rewrites every scan", async () => {
   assert.equal(shouldNotify("R056-1", SHADOW({ id: "R056-1" }), AT), "shadow");
   // Guarded twice, because the flag and the key prefix are written by the same
   // line in refill-scan.cjs and either could be the one that changes.

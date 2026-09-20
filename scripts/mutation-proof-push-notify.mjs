@@ -657,7 +657,7 @@ const MUTATIONS = [
   // ── SHADOW ROWS ───────────────────────────────────────────────────────────
   {
     id: "M13",
-    guard: "Shadow orders notify NOBODY — they are a preview the sweep rewrites every 15 minutes",
+    guard: "Shadow orders notify NOBODY — they are a preview the sweep rewrites every scan",
     file: PUSH,
     from: `  if (typeof orderId === "string" && orderId.startsWith("SHDW-")) return "shadow_key";`,
     to: ``,
