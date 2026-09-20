@@ -1,7 +1,7 @@
 // ─── REFILL HEALTH SCAN (Cloud Function I/O wrapper) ──────────────────────────
-// Every 15 minutes during trading hours (07:00-19:00 SAST): snapshot the RTDB,
-// ask lib/refill-engine.cjs (pure, tested)
-// what should happen, then apply it:
+// Hourly, on the hour, during trading hours (07:00-19:00 SAST inclusive, 13 runs
+// a day): snapshot the RTDB, ask lib/refill-engine.cjs (pure, tested) what
+// should happen, then apply it:
 //   • close finished/cancelled refill locks
 //   • create refill intents — per destination MODE from /config/refillEngine:
 //       off    → compute exceptions only
@@ -11,7 +11,8 @@
 //                battle-tested fulfillCRBatch split-lock does the actual move);
 //                hub2 legs get /refill_requests only, fulfilled via the
 //                Transfer screen's "Open refill requests" prefill.
-//   • write /stock_exceptions/latest (dashboard) and /stock_confidence (hourly)
+//   • write /stock_exceptions/latest (dashboard) and /stock_confidence (hourly
+//     — and now genuinely hourly: every run starts on the hour)
 //
 // SAFETY: the engine NEVER writes /stock. Claim-before-act lock so overlapping
 // runs can't double-create. Idempotency = one open lock per (dest,product,size)
@@ -435,7 +436,7 @@ async function runScan() {
       console.warn(
         "refillHealthScan: /config/refillEngine/scanIntervalMinutes is DEAD and controls nothing " +
         `(value: ${JSON.stringify(config.scanIntervalMinutes)}). Cadence comes from the function's ` +
-        "schedule (every 15 minutes from 07:00 to 19:00, Africa/Johannesburg). Delete the field."
+        "schedule (every 60 minutes from 07:00 to 19:00, Africa/Johannesburg). Delete the field."
       );
     }
     if (!config || config.enabled !== true) {
@@ -856,25 +857,76 @@ async function runScan() {
   }
 }
 
-// ── CADENCE — trading hours only ─────────────────────────────────────────────
-// Was "every 15 minutes", i.e. 96 runs/day. Each run snapshots the RTDB
-// (stock_targets, products, refill_requests, orders, per-location stock, plus a
-// 45-day stock_movements slice) — ~31 MB measured live on 2026-08-04, of which
-// 14 MB is the ledger. Overnight that snapshot recomputes a picture that has not
-// changed: movements between 19:00 and 07:00 SAST are 4.27% of all ledger
-// activity, and once scripts and migrations are excluded, ~69 per night across
-// 22 nights. Roughly a third of the daily cost bought nothing.
+// ── CADENCE — hourly, on the hour, trading hours only ────────────────────────
+// "every 15 minutes from 07:00 to 19:00" (49 runs/day) → "every 60 minutes from
+// 07:00 to 19:00" (13 runs/day). Measured live on 2026-09-20 by the cost watcher
+// (/cost_watch/daily), which attributes RTDB egress to the function that read it:
+// 1,053 MB and $0.96 across the day's 42 runs, i.e. ~25 MB a run. Thirty-six runs
+// a day stop happening; nothing else about the scan changes.
 //
-// 07:00 to 19:00 inclusive, every 15 minutes = 49 runs/day (was 96):
-//   • 07:00      — morning sweep, before the 08:30 open, catches anything an
-//                  evening transfer left behind
-//   • 08:30–17:30 — trading; unchanged behaviour, still 15-minute cadence
-//   • 17:30–19:00 — the catch-up window after close
+// WHY NOT ONCE A DAY (PR #616, held 2026-09-19). Store-leg orders are minted at
+// `orders/${refillNum}-${lineIdx}` — see the apply loop above. refillNum comes
+// from /refillCounter, which RESETS every SA day, and lineIdx restarts at 1 per
+// destination per run. So the keys a run occupies are decided by how many draws
+// precede it that day, and yesterday's run-k orders are overwritten by today's
+// run-k orders. The engine detects that (refill-engine.cjs: `orderLost`),
+// cancels the request and drops the lock, and the NEXT run re-proposes.
+//
+// That self-heal is what the cadence has to keep alive, and it needs two things:
+//
+//   1. the re-proposal must happen soon. It is ONE run: the same plan that
+//      raises the order_lost close also carries a fresh intent for the cell,
+//      and the closes are applied above, before the apply loop, so the lock is
+//      gone by the time the new claim is made. At 60 minutes a vanished
+//      warehouse card is back within the hour. At one run a day, 24 hours.
+//   2. the re-proposal must land on a DIFFERENT key. /refillCounter is strictly
+//      increasing within a day, so run k+1 always draws a number run k did not.
+//      At one run a day there IS no run k+1: the re-proposal comes round the
+//      next day, draws R001 again, and lands on the very key that was just
+//      clobbered — it never converges. That is the hazard, and it is a property
+//      of having exactly one run, not of having fewer runs.
+//
+// Pinned in test/refill-hourly-order-keys.test.cjs, which drives the real
+// drawRefillNumber and the real computeRefillPlan rather than restating either.
+//
+// MEASURED, not modelled: the number of live order keys a day's draws rewrite is
+// cadence-INVARIANT, because it equals the number of lines written, which the
+// cadence does not change. Replaying the last five trading days' own orders
+// against an hourly draw table (scripts/audit/refill-cadence-key-reach.mjs):
+// 231 vs 292, 59 vs 64, 113 vs 112, 135 vs 134, 122 vs 128 — hourly never
+// reaches more keys than the 15-minute cadence it replaces.
+//
+// EVERY TIMER RE-CHECKED AGAINST A 60-MINUTE GAP:
+//   • LOCK_STEAL_MS (10 min) — the next run is 60 min later, so a dead run's
+//     lock is always stale and always steals cleanly. Strictly safer than at 15
+//     minutes, where a run lasting >10 min could be joined by the next one.
+//   • the /stock_confidence gate (getUTCMinutes() < 15) — every scheduled run
+//     starts at minute 0, so it fires on EVERY run: hourly confidence, which is
+//     what /stock_confidence claims to be. (The sibling job already on this
+//     exact schedule, strandedTransitSweep, has fired at :00 or :01 every hour
+//     for the last two days — checked in Cloud Logging, 2026-09-20.)
+//   • recheckCooldownMinutes — LIVE VALUE 1440, and rejectCooldownHours
+//     defaults to 24h. A 60-minute gap is ≤4% late on a 24h window, not the
+//     doubling that one run a day would have caused.
+//   • rejectStreakLimit (live 4) — counts human rejections, not runs.
+//   • staleIntentHours (live 168) — REPORTS stuckRefills, never withdraws.
+//   • the daily /refillCounter — ~16 draws a day instead of ~39; 999 is
+//     unreachable either way, and fewer draws means fewer R-numbers recycled.
+//   • RUNS_KEEP_DAYS (7) — 91 run records instead of ~342.
+//   • the 200s apply budget — bounded by maxIntentsPerRun, not by the gap.
+//
+// WHAT THE OWNER MAY WANT TO TURN: maxIntentsPerRun is LIVE 75. It was a
+// per-15-minute throttle; it is now a per-hour one, so the ceiling is 13 × 75 =
+// 975 intents a day against 199–667 observed. The busiest single hour in the
+// last week would have computed ~161 and been throttled to 75, spilling 86 into
+// the next hour — a delay, since the engine is stateless and re-proposes.
+// It is live config at /config/refillEngine/maxIntentsPerRun; no deploy needed.
 //
 // App Engine cron syntax ("every N minutes from HH:MM to HH:MM") is used rather
-// than unix-cron because it is INCLUSIVE of the end time: `*/15 7-19 * * *`
-// would also fire at 19:15/19:30/19:45, which is exactly the window we are
-// closing. The previous value used the same syntax family ("every 15 minutes").
+// than unix-cron because it is INCLUSIVE of the end time: it fires at 07:00,
+// 08:00 … 19:00, thirteen times. `*/60 7-19 * * *` is the same thing only by
+// accident of the minute field, and the family it belongs to (`*/15 7-19`) is
+// exactly the overshoot this window was drawn to avoid.
 //
 // timeZone is set EXPLICITLY: Cloud Scheduler defaults to UTC, which in SAST
 // (UTC+2, no DST) would shift the whole window two hours and run the "morning
@@ -885,7 +937,7 @@ async function runScan() {
 // project (see the header note).
 exports.refillHealthScan = onSchedule(
   {
-    schedule: "every 15 minutes from 07:00 to 19:00",
+    schedule: "every 60 minutes from 07:00 to 19:00",
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     timeoutSeconds: 300,
