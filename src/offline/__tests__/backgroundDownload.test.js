@@ -17,7 +17,7 @@
 import { describe, test, expect } from "vitest";
 import { freshMirrorDb } from "./helpers";
 import { createFakeRtdb } from "./fakeAdapter";
-import { createSyncEngine, SETUP_META_PREFIX } from "../sync";
+import { createSyncEngine, SETUP_META_PREFIX, SETUP_DONE_META } from "../sync";
 import { isLegUsable, getLegHealth } from "../health";
 import { COUNTS_ROOT } from "../changeFeed";
 
@@ -152,5 +152,98 @@ describe("a FIRST download that comes back short is never served", () => {
     w.write("products", null);
     await expect(e.runSetup({ force: true })).rejects.toThrow(/ZERO rows/);
     expect(await db.count("products")).toBe(40);
+  });
+});
+
+// ─── THE REPAIR STEP IS A DOWNLOAD, AND IT NEEDS THE SAME PERMISSION ─────────
+//
+// runPass's step 4 re-downloads any leg that has lost its setup marker, one
+// per pass. That is right for a device whose census found a drifted leg. On a
+// device that has never set up it is EVERY leg — a complete download of the
+// whole shop, arriving through a door the Download button knows nothing about,
+// and stamping the device complete at the end of it.
+//
+// bootstrap's pass loop refuses to run at all without consent, so this door is
+// currently unreachable from outside. This pins the door itself, so that
+// removing the outer guard does not silently reopen it.
+// (Fable-vs-spec review, PR #624.)
+describe("the pass loop's repair step", () => {
+  test("downloads NOTHING on a device that may not repair", async () => {
+    const db = await freshMirrorDb();
+    const w = world();
+    const e = createSyncEngine({
+      db, adapter: w.adapter, now: () => T0, buildVersion: "b1",
+      mayRepair: () => false,
+    });
+    const before = w.calls.readKeyPage.length + w.calls.readPath.length;
+    const report = await e.runPass();
+    expect(report.repaired).toBe(null);
+    expect(await db.count("products")).toBe(0);
+    // The feed and the census still run — this is a device that is allowed to
+    // stay in step, just not one that may start a 104 MB download by itself.
+    const reads = w.calls.readKeyPage.length + w.calls.readPath.length - before;
+    expect(reads).toBeLessThan(10);
+  });
+
+  test("and repairs exactly one leg when it may", async () => {
+    const db = await freshMirrorDb();
+    const w = world({ products: manyProducts(30) });
+    const e = createSyncEngine({
+      db, adapter: w.adapter, now: () => T0, buildVersion: "b1",
+      mayRepair: () => true,
+    });
+    const report = await e.runPass();
+    expect(report.repaired).not.toBe(null);
+    expect((await db.count(report.repaired.leg === "products" ? "products" : "docs")) > 0).toBe(true);
+  });
+});
+
+// ─── A DEVICE THAT BECOMES COMPLETE THROUGH REPAIRS IS STILL A FIRST COPY ────
+//
+// The forced census at the end of the download is what stops a short first
+// copy being served. The repair step reaches the SAME state by a different
+// route — every leg back, device stamped complete — and if it stamped without
+// asking, the census would not be due again for six hours. Six hours is a
+// trading day.
+// (Fable-vs-spec review, PR #624.)
+describe("the repair path is censused before it declares a device complete", () => {
+  test("a leg the census refuses does not become 'complete' by being repaired", async () => {
+    const db = await freshMirrorDb();
+    // The server holds 4,654 products. This device can only ever read 799 of
+    // them — a short page taken for the end of the node, the POS incident.
+    const w = world({
+      products: manyProducts(799),
+      [COUNTS_ROOT]: { products: { rows: 4654, at: T0 } },
+    });
+    const e = engineOn(db, w);
+
+    await e.runSetup();
+    await e.checkCensus({ force: true });
+    expect(await isLegUsable(db, "products")).toBe(false);
+    expect(await db.getMeta(SETUP_META_PREFIX + "products")).toBeUndefined();
+
+    // Now the pass loop repairs it — and re-reads the same 799 rows, which
+    // the shrink guard accepts because 799 is not a shrink from 799.
+    const report = await e.runPass();
+    expect(report.repaired?.leg).toBe("products");
+
+    // It must NOT be complete. The census was asked again before the stamp.
+    expect(await db.getMeta(SETUP_DONE_META)).toBeUndefined();
+    expect((await e.setupState()).done).toBe(false);
+    expect(await isLegUsable(db, "products")).toBe(false);
+    // And nothing was deleted, as ever.
+    expect(await db.count("products")).toBe(799);
+  });
+
+  test("a leg the census agrees with DOES complete the device", async () => {
+    const db = await freshMirrorDb();
+    const w = world({
+      products: manyProducts(40),
+      [COUNTS_ROOT]: { products: { rows: 40, at: T0 } },
+    });
+    const e = engineOn(db, w);
+    await e.runSetup();
+    expect((await e.setupState()).done).toBe(true);
+    expect(await isLegUsable(db, "products")).toBe(true);
   });
 });

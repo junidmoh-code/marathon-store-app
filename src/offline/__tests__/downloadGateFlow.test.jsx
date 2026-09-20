@@ -121,6 +121,16 @@ async function mount() {
 }
 
 const text = (tree) => JSON.stringify(tree.toJSON());
+
+// Flush macrotasks until the start is actually under way. The auth listener is
+// behind a dynamic import, so the number of ticks that takes is not a constant
+// a test may assume.
+async function untilStarted(max = 40) {
+  for (let i = 0; i < max && startCalls === 0; i += 1) {
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+  }
+  expect(startCalls).toBe(1);
+}
 const findButton = (tree) => tree.root.findAllByType("button")[0];
 
 beforeEach(() => {
@@ -287,9 +297,7 @@ describe("a switch flip while the mirror is still starting", () => {
         React.createElement(MirrorGate, { auth: {}, storage: {} }, React.createElement(App)),
       );
     });
-    for (let i = 0; i < 4; i += 1) {
-      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    }
+    await untilStarted();
     await act(async () => { setMirrorSwitchValue(false); });
     await act(async () => { setMirrorSwitchValue(true); });
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
@@ -312,11 +320,10 @@ describe("a switch flip while the mirror is still starting", () => {
       );
     });
     // Let sign-in land and the start actually get under way — nothing starts
-    // before there is a user, so a flip before that would prove nothing.
-    for (let i = 0; i < 4; i += 1) {
-      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-    }
-    expect(startCalls).toBe(1);
+    // before there is a user, so a flip before that would prove nothing. A
+    // FIXED number of ticks made this flaky: the auth listener is behind a
+    // dynamic import, so how many macrotasks it takes is not ours to decide.
+    await untilStarted();
     await act(async () => { setMirrorSwitchValue(false); });
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
     for (let i = 0; i < 5; i += 1) {
