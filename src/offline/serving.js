@@ -19,6 +19,7 @@
 // from IndexedDB, and it is what every actual read is gated on.
 
 import { offlineMirrorEnabled } from "./mirrorFlag";
+import { subscribeMirrorSwitch } from "./killSwitch";
 
 export const SERVING_KEY = "marathon-store.offlineMirror.serving";
 
@@ -65,9 +66,20 @@ export function setServingLegs(legNames) {
 
 export function clearServing() { return setServingLegs([]); }
 
+// ── A KILL-SWITCH FLIP IS A SERVING CHANGE ──────────────────────────────────
+//
+// `isLegServing` consults the kill switch, so the moment the switch goes false
+// every leg stops serving — but React does not know that unless something
+// tells it. Every mirror-reading hook is already subscribed HERE, through
+// useSyncExternalStore, so subscribing to the switch alongside the local
+// listener is what turns "the value changed" into "every screen re-rendered
+// and opened its live read", with no reload. Without this line the switch
+// would only take effect on the next render that happened for some other
+// reason, which on a tablet left open on one screen could be hours.
 export function subscribeServing(listener) {
   listeners.add(listener);
-  return () => listeners.delete(listener);
+  const offSwitch = subscribeMirrorSwitch(listener);
+  return () => { listeners.delete(listener); offSwitch(); };
 }
 
 export function _resetServingForTests() {

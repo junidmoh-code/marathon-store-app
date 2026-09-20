@@ -176,6 +176,13 @@ export async function startOfflineMirror({
 
   async function tick() {
     if (stopped) return;
+    // ── THE KILL SWITCH, CHECKED BY THE ENGINE ITSELF ───────────────────────
+    // MirrorGate stops the runtime when the switch goes false, and that is the
+    // path that runs. This is the second lock on the same door: a runtime
+    // started by anything else — a future caller, a test, a gate someone
+    // deletes — still cannot do a single pass against a switch that is off.
+    // It costs one synchronous localStorage read a minute.
+    if (!offlineMirrorEnabled()) { runtime.stop(); return; }
     let ms = PASS_INTERVAL_MS;
     try {
       const report = await runOnePass();
@@ -240,7 +247,12 @@ export async function startOfflineMirror({
     // start()/stop() pair whose start() silently does nothing after a stop()
     // is a trap for the next caller, even though nothing does that today.
     // (Sonnet verification review, PR #618.)
-    start() { stopped = false; schedule(0); watchChanges(); },
+    // Refuses against a switch that is off, so no caller can start an engine
+    // the fleet has been told to stop.
+    start() {
+      if (!offlineMirrorEnabled()) return;
+      stopped = false; schedule(0); watchChanges();
+    },
     stop() {
       stopped = true;
       clearTimeoutFn(timer);
@@ -262,7 +274,7 @@ export async function startOfflineMirror({
   if (auth) {
     const { onAuthStateChanged } = await import("firebase/auth");
     onAuthStateChanged(auth, (user) => {
-      const usable = !!user && user.isAnonymous !== true;
+      const usable = !!user && user.isAnonymous !== true && offlineMirrorEnabled();
       if (usable) { stopped = false; schedule(0); }
       else { clearTimeoutFn(timer); stopped = true; }
     });

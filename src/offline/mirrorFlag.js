@@ -19,15 +19,30 @@
 //
 // See docs/store-offline-mirror.md §11 for the rollout this gates.
 
+// ── AND THE REMOTE KILL SWITCH ──────────────────────────────────────────────
+//
+// Since PR #623 the per-device flag is only half the answer. `/mirror_switch/
+// enabled` in the database is the other half, and it is an AND: a device
+// mirrors only if it is in the rollout AND the fleet switch is on. Set the
+// switch to false and every device drops to live reads on the spot, with no
+// reload and no deploy, because this is the one function every mirror read
+// path already calls. See killSwitch.js.
+
+import { mirrorSwitchOn } from "./killSwitch";
+
 export const MIRROR_FLAG_KEY = "marathon-store.offlineMirror";
 
-export function offlineMirrorEnabled({ storage } = {}) {
+export function deviceInRollout({ storage } = {}) {
   try {
     const s = storage ?? (typeof localStorage !== "undefined" ? localStorage : null);
     return !!s && s.getItem(MIRROR_FLAG_KEY) === "on";
   } catch {
     return false; // storage refused (private mode etc.) reads as OFF
   }
+}
+
+export function offlineMirrorEnabled(opts) {
+  return deviceInRollout(opts) && mirrorSwitchOn();
 }
 
 // Used by the rollout, and by the tests that prove the app is unchanged with
