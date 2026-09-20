@@ -148,9 +148,13 @@ export function planWindow({ startIso, endIso, nowMs, haveDays, allTime = false 
     // so asking only about the rollup days would rescue those rows on the days
     // that least need rescuing and abandon them on the days that do.
     // (Sonnet architect review.)
+    // The END is EXCLUSIVE, so the last real day is endMs - 1. Taking
+    // saDateStringOf(endMs) named the day AFTER the window, and the reader's
+    // range over /insights_rollup/late is inclusive — so a historical window
+    // pulled in the next day's late bucket. (Sonnet architect re-review.)
     lateDates: {
       from: saDateStringOf(Math.max(startMs, saDayStartMs(shiftSaDate(todaySA, -MAX_SCAN_DAYS)))),
-      to: saDateStringOf(Math.min(endMs, saDayStartMs(todaySA) + DAY_MS - 1)),
+      to: saDateStringOf(Math.min(endMs - 1, saDayStartMs(todaySA) + DAY_MS - 1)),
     },
     liveRanges: gapsOutside(startMs, endMs, covered).map(([s, e]) => liveRange(s, e)),
   };

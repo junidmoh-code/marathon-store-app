@@ -18609,16 +18609,27 @@ function InsightsView({ onExit }) {
   // ─── "N EVENTS IN VIEW" IS NOT THE WINDOW'S COUNT ────────────────────────
   // It never was: it counted every event this store has ever logged, sliced by
   // the store filter, whatever period was selected. The log array no longer
-  // holds all of history, so the number comes from the rollup's day index plus
-  // today — which is the same arithmetic over the same events, and a few KB
-  // instead of 35.99 MB. Before the rollup exists it falls back to counting
-  // what is loaded, which is what the old expression did.
+  // holds all of history, so the number comes from the counter the rollup
+  // sweep keeps over its own walk — the same arithmetic over the same events,
+  // and a few hundred bytes instead of 35.99 MB.
+  //
+  // THE FALLBACK COUNTS THE PERIOD, NOT THE ARRAY. Before the rollup is
+  // readable there is no all-time figure to show, so this counts what is
+  // loaded — and what is loaded is the selected period PLUS the previous one,
+  // because the Overview deltas need it. Counting `filteredLog` would show
+  // close to double. It is still not the all-time number the label promises;
+  // it is the closest honest thing available until the rule is pasted, and the
+  // rollup doc says so. (Sonnet architect re-review.)
   const allTimeEventCount = useMemo(() => {
-    if (!logTotals) return filteredLog.length;
-    if (storeFilter === "all") return logTotals.n;
-    const key = storeFilter === "marathon-pe" ? "pe" : storeFilter;
-    return Number(logTotals[key]) || 0;
-  }, [logTotals, storeFilter, filteredLog.length]);
+    if (logTotals) {
+      if (storeFilter === "all") return logTotals.n;
+      const key = storeFilter === "marathon-pe" ? "pe" : storeFilter;
+      return Number(logTotals[key]) || 0;
+    }
+    return filteredLog.filter(
+      (e) => e && e.timestamp >= filterStart && e.timestamp < filterEnd,
+    ).length;
+  }, [logTotals, storeFilter, filteredLog, filterStart, filterEnd]);
   const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
   const filteredOrders     = useMemo(() => orders.filter(matchesStore),      [orders, matchesStore]);
 

@@ -43,7 +43,7 @@
 // a working rollup.
 
 import {
-  get, limitToFirst, orderByKey, query, ref, startAfter, startAt, endAt,
+  get, limitToFirst, orderByKey, query, ref, startAt, endAt,
 } from "firebase/database";
 import { database } from "../firebase";
 import { expandDay, storeBucketOf } from "./rollupCodec";
@@ -124,19 +124,34 @@ async function readDayNodes(dates) {
 /** Returns {key, value} pairs: the KEYS are what the caller's live tail needs
  *  to know it has already seen a row. Rollup rows carry no key and need none —
  *  a finished day is not something the tail can re-offer. */
-async function readLogRange({ startKey, endKey }) {
+export async function readLogRange({ startKey, endKey }) {
   const rows = [];
-  let after = null;
+  let cursor = null;
   for (;;) {
-    const parts = [orderByKey()];
-    parts.push(after === null ? startAt(startKey) : startAfter(after));
-    parts.push(endAt(endKey), limitToFirst(LOG_PAGE));
+    // ── startAt, NEVER startAfter ──────────────────────────────────────────
+    // `startAfter(cursor) + limitToFirst(n)` returns n-1 children: the server
+    // applies the limit counting the cursor's own row, the SDK then drops it.
+    // So a walk that ends on "the page came back short" ends on its SECOND
+    // request. That defect was shipped once (#626, 19,999 rows of 112,968 on
+    // three screens) and found twice more in the sweep and the backfill — and
+    // it was still here, in the live path, including the "everything since the
+    // counter's cursor" read. The bound is inclusive and the cursor's own row
+    // is skipped where it can be counted. (Sonnet architect re-review.)
+    const parts = [orderByKey(), startAt(cursor === null ? startKey : cursor),
+      endAt(endKey), limitToFirst(LOG_PAGE)];
     const snap = await get(query(ref(database, "insights_log"), ...parts));
-    let n = 0;
-    let last = after;
-    snap.forEach((child) => { rows.push({ key: child.key, value: child.val() }); last = child.key; n += 1; });
-    if (n < LOG_PAGE || last === after) break;
-    after = last;
+    let sent = 0;
+    let last = cursor;
+    snap.forEach((child) => {
+      sent += 1;
+      if (child.key === cursor) return;       // the inclusive bound's own row
+      rows.push({ key: child.key, value: child.val() });
+      last = child.key;
+    });
+    // Judged on what the SERVER sent, not on how many were new.
+    if (sent < LOG_PAGE) break;
+    if (cursor !== null && !(last > cursor)) break;   // no forward progress
+    cursor = last;
   }
   return rows;
 }
@@ -305,7 +320,18 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
   for (const p of late) if (p && p.key) liveKeys.add(p.key);
   for (const p of undated) if (p && p.key) liveKeys.add(p.key);
   if (liveKeys2) for (const p of liveKeys2) if (p && p.key) liveKeys.add(p.key);
-  const lateRows = late.map((p) => p.value).filter(Boolean);
+  // Late rows go through the SAME window filter as live rows. They were merged
+  // unfiltered, which made the date range they were fetched over load-bearing
+  // — and it was one day too wide. Filtering here makes the range an
+  // optimisation rather than a correctness boundary: a row from a day outside
+  // the window cannot get in whatever the range says.
+  // (Sonnet architect re-review.)
+  const lateRows = rowsInRange(late.map((p) => p.value).filter(Boolean), {
+    startMs: Date.parse(startIso), endMs: Date.parse(endIso),
+  });
+  // Undated rows have no timestamp to filter on and belong to no window; they
+  // are read only for an all-time read, which is the only window they can
+  // appear in.
   const undatedRows = undated.map((p) => p.value).filter(Boolean);
   if (lateRows.length) parts.push(lateRows);
   if (undatedRows.length) parts.push(undatedRows);

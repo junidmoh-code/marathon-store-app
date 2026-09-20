@@ -8,7 +8,7 @@
 // Separated from builder.cjs so the sweep's logic can be tested against a fake
 // that actually honours the constraints, without an emulator.
 
-const { CURSOR_PATH, INDEX_PATH, LOG_TOTALS_PATH } = require("./builder.cjs");
+const { CURSOR_PATH, INDEX_PATH, LOG_TOTALS_PATH, ROLLUP_ROOT } = require("./builder.cjs");
 
 /**
  * @param {import("firebase-admin").database.Database} db
@@ -69,6 +69,37 @@ function makeIo(db) {
       const snap = await db.ref(INDEX_PATH).once("value");
       const v = snap.val();
       return v ? Object.keys(v) : [];
+    },
+
+    // ── COMPARE-AND-SET, because the counter is a FOLD ─────────────────────
+    // Everything else the sweep writes is a recomputation and can be redone.
+    // The running counter cannot: two runs that both read cursor C0 and both
+    // add their own walk would count the overlap twice, and a late commit from
+    // a shorter walk would drag the cursor backwards so the next run re-walks
+    // and re-adds. A transaction that refuses unless the cursor is still where
+    // the run found it makes the fold exactly-once.
+    async advanceCursor({ expect, cursor, seen, at }) {
+      const ref = db.ref(`${ROLLUP_ROOT}/meta`);
+      const res = await ref.transaction((meta) => {
+        const cur = meta || {};
+        const have = cur.cursor ?? null;
+        if ((have ?? null) !== (expect ?? null)) return undefined;   // abort
+        const base = cur.logTotals || {};
+        return {
+          ...cur,
+          cursor: cursor ?? null,
+          logTotals: {
+            n: (Number(base.n) || 0) + (seen.n || 0),
+            pe: (Number(base.pe) || 0) + (seen.pe || 0),
+            trophy: (Number(base.trophy) || 0) + (seen.trophy || 0),
+            pine: (Number(base.pine) || 0) + (seen.pine || 0),
+            other: (Number(base.other) || 0) + (seen.other || 0),
+            cursor: cursor ?? null,
+            at,
+          },
+        };
+      });
+      return !!res.committed;
     },
 
     async commit({ updates }) {

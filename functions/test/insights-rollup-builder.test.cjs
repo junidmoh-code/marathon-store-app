@@ -49,9 +49,13 @@ function makeLog(entries) {
 function makeIo(rows, { dayKeys = [], cursor = null } = {}) {
   const commits = [];
   const reads = [];
+  const advances = [];
+  const meta = { cursor, logTotals: null };
   return {
     commits,
     reads,
+    advances,
+    meta,
     async readCursor() { return cursor; },
     async readKeyRange(startKey, endKey) {
       reads.push({ kind: "range", startKey, endKey });
@@ -64,7 +68,20 @@ function makeIo(rows, { dayKeys = [], cursor = null } = {}) {
       return from.slice(0, limit);
     },
     async listDayKeys() { return dayKeys; },
+    async readLogTotals() { return null; },
     async commit({ updates }) { commits.push(updates); },
+    // The compare-and-set the real io does with a transaction.
+    async advanceCursor({ expect, cursor, seen, at }) {
+      advances.push({ expect, cursor, seen, at });
+      if ((meta.cursor ?? null) !== (expect ?? null)) return false;
+      meta.cursor = cursor ?? null;
+      const b = meta.logTotals || { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+      meta.logTotals = {
+        n: b.n + seen.n, pe: b.pe + seen.pe, trophy: b.trophy + seen.trophy,
+        pine: b.pine + seen.pine, other: b.other + seen.other, cursor, at,
+      };
+      return true;
+    },
   };
 }
 
@@ -159,16 +176,34 @@ test("a day inside the backstop window with no node heals itself", async () => {
   assert.ok(!r.dates.includes(shiftSaDate(TODAY, -15)), "…and no further");
 });
 
-test("the cursor and the day nodes land in ONE update", async () => {
+test("the day nodes land in ONE update, and the cursor follows them", async () => {
   const rows = makeLog([sale(Date.parse("2026-09-19T08:00:00.000Z"))]);
   const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
   await runSweep({ io, nowMs: NOW });
 
   assert.strictEqual(io.commits.length, 1, "one atomic update, not several");
   const upd = io.commits[0];
-  assert.ok(Object.prototype.hasOwnProperty.call(upd, CURSOR_PATH));
-  assert.strictEqual(upd[CURSOR_PATH], rows[rows.length - 1].key);
   assert.ok(Object.keys(upd).some((k) => k.startsWith(`${DAYS_PATH}/`)));
+  // The cursor is NOT in the multi-path update. It moves with the running
+  // counter, which is a fold and has to be applied exactly once — so it goes
+  // through a compare-and-set instead, AFTER the aggregates it justifies.
+  assert.strictEqual(upd[CURSOR_PATH], undefined);
+  assert.strictEqual(io.advances.length, 1);
+  assert.strictEqual(io.advances[0].cursor, rows[rows.length - 1].key);
+  assert.strictEqual(io.meta.cursor, rows[rows.length - 1].key);
+});
+
+test("a run whose cursor moved under it does NOT advance the counter", async () => {
+  // Two overlapping runs that both read the same cursor: the second must be
+  // refused, or the overlap is counted twice for ever.
+  const rows = makeLog([sale(Date.parse("2026-09-19T08:00:00.000Z"))]);
+  const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
+  io.meta.cursor = "somebody-else-moved-it";
+  const r = await runSweep({ io, nowMs: NOW });
+  assert.strictEqual(r.advanced, false);
+  assert.strictEqual(io.meta.logTotals, null, "nothing was folded in");
+  // …and the day nodes still landed, because they are recomputations.
+  assert.ok(Object.keys(io.commits[0]).some((k) => k.startsWith(`${DAYS_PATH}/`)));
 });
 
 test("the cursor advances to the last key SEEN, so the next run reads only what is new", async () => {
@@ -178,7 +213,7 @@ test("the cursor advances to the last key SEEN, so the next run reads only what 
   ]);
   const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
   await runSweep({ io, nowMs: NOW });
-  const cursor = io.commits[0][CURSOR_PATH];
+  const cursor = io.advances[0].cursor;
 
   const io2 = makeIo(rows, { dayKeys: allBackstopDays(TODAY), cursor });
   await runSweep({ io: io2, nowMs: NOW });
@@ -292,35 +327,34 @@ test("the walk keeps a running per-store count of the whole log", async () => {
     sale(Date.parse("2026-09-20T08:02:00.000Z"), { placedAtHub: "hub3" }),   // today counts too
   ]);
   const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
-  io.readLogTotals = async () => null;
   await runSweep({ io, nowMs: NOW });
 
-  const t = io.commits[0][LOG_TOTALS_PATH];
+  const t = io.meta.logTotals;
   assert.strictEqual(t.n, 3);
   assert.strictEqual(t.pe, 1);
   assert.strictEqual(t.trophy, 1);
   assert.strictEqual(t.pine, 1);
   // It is only meaningful as "exact up to here", so it carries the cursor.
-  assert.strictEqual(t.cursor, io.commits[0][CURSOR_PATH]);
+  assert.strictEqual(t.cursor, io.meta.cursor);
 });
 
 test("a later run ADDS to the counter rather than replacing it", async () => {
   const rows = makeLog([sale(Date.parse("2026-09-19T08:00:00.000Z"), { destShop: "trophy" })]);
   const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
-  io.readLogTotals = async () => ({ n: 100, pe: 60, trophy: 30, pine: 10, other: 0, cursor: "old" });
+  io.meta.logTotals = { n: 100, pe: 60, trophy: 30, pine: 10, other: 0, cursor: null };
   await runSweep({ io, nowMs: NOW });
 
-  const t = io.commits[0][LOG_TOTALS_PATH];
+  const t = io.meta.logTotals;
   assert.strictEqual(t.n, 101);
   assert.strictEqual(t.trophy, 31);
   assert.strictEqual(t.pe, 60);
 });
 
-test("a run that saw nothing new leaves the counter alone", async () => {
+test("a run that saw nothing new adds nothing to the counter", async () => {
   const io = makeIo([], { dayKeys: allBackstopDays(TODAY) });
-  io.readLogTotals = async () => ({ n: 100, pe: 100, trophy: 0, pine: 0, other: 0, cursor: "old" });
+  io.meta.logTotals = { n: 100, pe: 100, trophy: 0, pine: 0, other: 0, cursor: null };
   await runSweep({ io, nowMs: NOW });
-  assert.strictEqual(io.commits[0][LOG_TOTALS_PATH], undefined);
+  assert.strictEqual(io.meta.logTotals.n, 100);
 });
 
 // ─── THE WALK MUST NOT END ON ITS SECOND REQUEST ─────────────────────────────

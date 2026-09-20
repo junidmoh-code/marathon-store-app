@@ -22,6 +22,12 @@
 // partial failure and late arrival all right at once, and a fold that drifts
 // is invisible: the numbers stay plausible.
 //
+// The running counter is the ONE thing here that is a fold rather than a
+// recomputation, and it is therefore the one thing overlapping runs could get
+// wrong — so it does not ride in the atomic update with everything else. It is
+// advanced by a TRANSACTION that only applies if the cursor is still where
+// this run read it. See commitMeta below. (Sonnet architect re-review.)
+//
 // What a rebuild costs, measured rather than guessed: a day is fetched by a
 // key range padded 48 hours at BOTH ends, so re-reading one day reads about
 // 2.7 days of rows — 919 KB on the live node. A run rebuilds two or three
@@ -233,11 +239,9 @@ function datesToBuild({ touched = [], missing = [], todaySA }) {
  */
 async function runSweep({ io, nowMs, log = () => {} }) {
   const todaySA = saDateStringOf(nowMs);
+  // The cursor this run starts from, and the value advanceCursor will insist
+  // is still there before it folds this run's counts in.
   const cursorBefore = await io.readCursor();
-  // Read BEFORE the walk: the counter is a fold over what the walk sees, and a
-  // run that read it afterwards could add its own rows twice if the read
-  // happened to land after another writer's.
-  const beforeTotals = io.readLogTotals ? await io.readLogTotals() : null;
 
   // ── 1. what has landed since last time ──────────────────────────────────
   const touched = new Set();
@@ -298,21 +302,6 @@ async function runSweep({ io, nowMs, log = () => {} }) {
   // The cursor moves only in the same atomic update as the nodes the walk
   // justified. If this commit never lands, the next run rediscovers exactly
   // the same days and writes exactly the same bytes.
-  updates[CURSOR_PATH] = cursor ?? null;
-  // The counter moves with the cursor, in the same atomic update, because it
-  // is only meaningful as "exact up to here".
-  if (seenByStore.n > 0 || !beforeTotals) {
-    const base = beforeTotals || { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
-    updates[LOG_TOTALS_PATH] = {
-      n: (Number(base.n) || 0) + seenByStore.n,
-      pe: (Number(base.pe) || 0) + seenByStore.pe,
-      trophy: (Number(base.trophy) || 0) + seenByStore.trophy,
-      pine: (Number(base.pine) || 0) + seenByStore.pine,
-      other: (Number(base.other) || 0) + seenByStore.other,
-      cursor: cursor ?? null,
-      at: new Date(nowMs).toISOString(),
-    };
-  }
   updates[BUILT_PATH] = {
     at: new Date(nowMs).toISOString(),
     todaySA,
@@ -321,9 +310,35 @@ async function runSweep({ io, nowMs, log = () => {} }) {
     truncated,
     lateRows: Object.keys(late).length,
   };
+  // Day nodes, the index, the late bucket and the run record: all
+  // recomputations, all idempotent, one atomic update. The cursor is NOT here
+  // any more — it moves with the counter, which is a fold, and a fold has to
+  // be applied exactly once.
   await io.commit({ updates });
 
-  return { dates, rows, cursorBefore, cursor, truncated, late: Object.keys(late).length };
+  // ── THE CURSOR AND THE COUNTER MOVE TOGETHER, EXACTLY ONCE ──────────────
+  //
+  // Everything above can be redone safely; this cannot. Two runs that read the
+  // same cursor and both add their own walk would count the overlap twice, and
+  // a late commit from a shorter walk would drag the cursor BACKWARDS, so the
+  // next run re-walks the gap and adds it again — a counter that is wrong for
+  // ever with nothing to show it.
+  //
+  // So it is a compare-and-set: advance only if the cursor is still where this
+  // run found it. A refused advance costs a repeat of a walk that has already
+  // written its (idempotent) day nodes, and the cursor stays BEHIND the
+  // aggregates rather than ahead of them — which is the safe direction.
+  const advanced = await io.advanceCursor({
+    expect: cursorBefore ?? null,
+    cursor: cursor ?? null,
+    seen: seenByStore,
+    at: new Date(nowMs).toISOString(),
+  });
+
+  return {
+    dates, rows, cursorBefore, cursor, truncated, advanced,
+    late: Object.keys(late).length,
+  };
 }
 
 module.exports = {
