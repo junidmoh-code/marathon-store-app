@@ -859,10 +859,31 @@ async function runScan() {
 
 // ── CADENCE — hourly, on the hour, trading hours only ────────────────────────
 // "every 15 minutes from 07:00 to 19:00" (49 runs/day) → "every 60 minutes from
-// 07:00 to 19:00" (13 runs/day). Measured live on 2026-09-20 by the cost watcher
-// (/cost_watch/daily), which attributes RTDB egress to the function that read it:
-// 1,053 MB and $0.96 across the day's 42 runs, i.e. ~25 MB a run. Thirty-six runs
-// a day stop happening; nothing else about the scan changes.
+// 07:00 to 19:00" (13 runs/day). Thirty-six runs a day stop happening; nothing
+// else about the scan changes.
+//
+// WHAT A RUN READS, weighed node by node against live data 2026-09-20 by
+// reading exactly what the snapshot block below reads:
+//
+//   stock_movements (45d)  15.73 MB      stock/hub1              0.52 MB
+//   refill_requests         8.68 MB      stock/trophy            0.49 MB
+//   products                4.47 MB      stock/marathon-pine     0.29 MB
+//   orders                  2.51 MB      refill_engine/*         0.25 MB
+//   stock_targets           1.67 MB      stock/hub3              0.12 MB
+//   stock/marathon-pe       1.54 MB      config + 3 small nodes  0.01 MB
+//   stock/hub2              1.48 MB      ─────────────────────────────────
+//   stock/central           1.35 MB      TOTAL PER RUN          39.11 MB
+//
+// So 49 runs is 1.87 GB/day and 13 runs is 0.50 GB/day — about $1.87/day
+// falling to $0.50/day, ~$41 a month.
+//
+// NOT the figure the Cost Watch card shows, and the difference is worth
+// knowing. That card attributes Admin-SDK reads from Google addresses BY PATH
+// SIGNATURE, not by function name (the profiler does not record one): the
+// `fn:refillHealthScan*` lines cover /refill_requests, /stock_movements and
+// /stock_targets only — 26 MB of the 39 — while this run's reads of /products,
+// /orders and the seven /stock nodes land under generic `cloud-function:` lines
+// it shares with every other function. The card is a floor, not the total.
 //
 // WHY NOT ONCE A DAY (PR #616, held 2026-09-19). Store-leg orders are minted at
 // `orders/${refillNum}-${lineIdx}` — see the apply loop above. refillNum comes
@@ -892,19 +913,26 @@ async function runScan() {
 // MEASURED, not modelled: the number of live order keys a day's draws rewrite is
 // cadence-INVARIANT, because it equals the number of lines written, which the
 // cadence does not change. Replaying the last five trading days' own orders
-// against an hourly draw table (scripts/audit/refill-cadence-key-reach.mjs):
-// 231 vs 292, 59 vs 64, 113 vs 112, 135 vs 134, 122 vs 128 — hourly never
-// reaches more keys than the 15-minute cadence it replaces.
+// against an hourly draw table (scripts/audit/refill-cadence-key-reach.mjs),
+// hourly vs the 15-minute cadence it replaces: 231 vs 292, 59 vs 64, 113 vs
+// 112, 135 vs 134, 122 vs 128. Lower on three days and higher by ONE on two —
+// not "never more", which is what an earlier draft of this comment claimed
+// while the counter-examples sat in the same sentence. The honest reading is
+// that the cadence changes how a day's lines are grouped, not how many there
+// are, so the reach does not move.
 //
 // EVERY TIMER RE-CHECKED AGAINST A 60-MINUTE GAP:
 //   • LOCK_STEAL_MS (10 min) — the next run is 60 min later, so a dead run's
 //     lock is always stale and always steals cleanly. Strictly safer than at 15
 //     minutes, where a run lasting >10 min could be joined by the next one.
 //   • the /stock_confidence gate (getUTCMinutes() < 15) — every scheduled run
-//     starts at minute 0, so it fires on EVERY run: hourly confidence, which is
-//     what /stock_confidence claims to be. (The sibling job already on this
-//     exact schedule, strandedTransitSweep, has fired at :00 or :01 every hour
-//     for the last two days — checked in Cloud Logging, 2026-09-20.)
+//     starts at minute 0, so it fires on EVERY run. Confidence was ALREADY
+//     hourly (the :00 run of each hour passed the gate); what changes is that
+//     the gate stops being a throttle over 4 runs and becomes a no-op, so a
+//     skipped or late run is the only way an hour goes uncomputed. (The sibling
+//     job already on this exact schedule, strandedTransitSweep, has fired at
+//     :00 — once :01 — every hour for the last two days; Cloud Logging,
+//     2026-09-20.)
 //   • recheckCooldownMinutes — LIVE VALUE 1440, and rejectCooldownHours
 //     defaults to 24h. A 60-minute gap is ≤4% late on a 24h window, not the
 //     doubling that one run a day would have caused.
@@ -920,7 +948,9 @@ async function runScan() {
 // 975 intents a day against 199–667 observed. The busiest single hour in the
 // last week would have computed ~161 and been throttled to 75, spilling 86 into
 // the next hour — a delay, since the engine is stateless and re-proposes.
-// It is live config at /config/refillEngine/maxIntentsPerRun; no deploy needed.
+// maxFootwearIntentsPerRun is LIVE 25, i.e. 325 a day, and that breaker has
+// already fired at the current cadence (44 computed, capped to 25, 2026-09-17).
+// Both are live config under /config/refillEngine; neither needs a deploy.
 //
 // App Engine cron syntax ("every N minutes from HH:MM to HH:MM") is used rather
 // than unix-cron because it is INCLUSIVE of the end time: it fires at 07:00,

@@ -12,7 +12,7 @@
 //                card-by-card cleanup; Central queue → per-size availability
 //                transfer), read-only where it's intelligence.
 //
-// Data producers: functions/refill-scan.cjs (15-min scan) → /stock_exceptions,
+// Data producers: functions/refill-scan.cjs (hourly scan) → /stock_exceptions,
 // /refill_engine/shadow, /stock_confidence. All styling comes from ui.js tokens
 // + healthWidgets.jsx — the existing design language, no new system.
 

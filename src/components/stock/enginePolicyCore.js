@@ -566,9 +566,14 @@ export function changedFields(before, after, { perSize = null } = {}) {
 //
 // This predictor is rendered as "Next scan" in the Engine Policy tile, in the
 // save toast ("the next scan (11:00) uses these numbers") and in Seating
-// actions. It is the one place in the app that restates the function's
-// schedule, so it has to move whenever the schedule does — the cadence test in
-// this file's suite pins the two together.
+// actions. It is the one place in the app that RESTATES the function's
+// schedule, so it has to move whenever the schedule does.
+//
+// Nothing enforces that automatically, and it is worth saying so plainly: this
+// module cannot read refill-scan.cjs, so its test pins the thirteen labels
+// independently. The functions-side test parses the real schedule string; this
+// one asserts the answer it should produce. Two halves of the same contract,
+// held together by a reader rather than by code.
 //
 // Returns { at: epochMs, label } — or { at: null } when the day's last scan has
 // run, because "in 13 hours" is a worse answer than "tomorrow from 07:00".

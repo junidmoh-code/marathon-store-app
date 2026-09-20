@@ -121,12 +121,15 @@ test("the counter resets the next SA day — the recycling is real, not hypothet
 });
 
 // ── THE CONVERGENCE PROPERTY ─────────────────────────────────────────────────
-// A cell is clobbered at run k. The engine detects it at run k+1 and drops the
-// lock; run k+2 re-proposes and mints a NEW order. Does that new order land on
-// a key that is about to be clobbered again?
+// A cell is clobbered when the next day's run k writes over it. The engine
+// detects that at the FIRST run whose snapshot sees the mismatch — run k+1 —
+// and the same plan re-proposes the cell (proved against the real engine
+// further down, and the reason the model below uses k+1 and not k+2). So the
+// question is only: does the replacement land on a key that is itself about to
+// be clobbered?
 //
-// Modelled with the real counter: the answer is decided entirely by whether
-// there IS a run k+1 and k+2 in the same day.
+// Modelled with the real counter. The answer is decided entirely by whether
+// there IS a run k+1 in the same day.
 function reproposeKey(runsPerDay) {
   const draw = makeCounter();
   const day0 = Date.parse("2026-09-21T05:00:00.000Z");
@@ -138,49 +141,49 @@ function reproposeKey(runsPerDay) {
   // Day 1: run 0 draws again — the same number, so the day-0 order is clobbered.
   const clobberer = draw(at(1, 0));
   assert.equal(clobberer, minted.R, "the next day's run 0 always lands on run 0's number");
-  // Detection is one run later; the re-proposal one run after that.
-  const detectRun = 1, reproposeRun = 2;
-  let reproposed = null;
-  for (let k = 1; k < Math.max(runsPerDay, reproposeRun + 1); k++) {
-    const r = draw(k < runsPerDay ? at(1, k) : at(1 + Math.floor(k / runsPerDay), k % runsPerDay));
-    if (k === reproposeRun) reproposed = { R: r, line: 1 };
-  }
-  const sameDay = reproposeRun < runsPerDay;
-  return { minted, clobberer, reproposed, sameDay, detectRun, reproposeRun,
-    gapMs: (reproposeRun - 0) * (sameDay ? stepMs : 24 * 3600e3) };
+  // Detect AND re-propose at the next run. With one run a day there is no next
+  // run today, so it is the following day's run 0 — the counter has reset and
+  // the draw comes back to the same number.
+  const sameDay = runsPerDay > 1;
+  const reproposed = { R: draw(sameDay ? at(1, 1) : at(2, 0)), line: 1 };
+  return { minted, clobberer, reproposed, sameDay,
+    gapMs: sameDay ? stepMs : 24 * 3600e3 };
 }
 
-test("hourly: the re-proposal lands on a DIFFERENT key, within two hours", () => {
+test("hourly: the re-proposal lands on a DIFFERENT key, within the hour", () => {
   const r = reproposeKey(SCHEDULE.runs.length);
-  assert.equal(r.sameDay, true, "detection and re-proposal both happen the same trading day");
+  assert.equal(r.sameDay, true, "detection and re-proposal happen the same trading day");
   assert.notEqual(`${r.reproposed.R}-${r.reproposed.line}`, `${r.minted.R}-${r.minted.line}`,
     "the replacement order must not be minted onto the key that was just overwritten");
-  assert.equal(r.reproposed.R, "R003");
-  // Two runs at the schedule's own step.
-  assert.equal(r.gapMs, 2 * SCHEDULE.stepMin * 60e3);
-  assert.equal(r.gapMs, 2 * 3600e3, "≤2 hours from clobber to a fresh order");
+  assert.equal(r.reproposed.R, "R002");
+  assert.equal(r.gapMs, SCHEDULE.stepMin * 60e3);
+  assert.equal(r.gapMs, 3600e3, "≤1 hour from clobber to a fresh order");
 });
 
 test("once a day: the re-proposal lands on the SAME key it was just clobbered on", () => {
   // This is PR #616's hold reason, reproduced. With one run a day there is no
-  // run k+1 to detect in and no run k+2 to re-propose in, so both come round on
-  // the counter's reset and draw R001 again — the loop never converges.
+  // next run today, so the re-proposal comes round on the counter's reset and
+  // draws R001 again — the loop never converges.
   const r = reproposeKey(1);
   assert.equal(r.sameDay, false);
   assert.equal(r.reproposed.R, r.minted.R,
     "at one run a day the replacement is minted onto the very key that was overwritten");
-  assert.equal(r.gapMs, 2 * 24 * 3600e3, "48 hours, twice over the same key");
+  assert.equal(r.gapMs, 24 * 3600e3);
 });
 
 test("the property holds for every cadence with two or more runs a day", () => {
-  // Not a special fact about 13. Any cadence that leaves a run k+2 inside the
-  // same day converges; only a single run a day does not.
+  // Not a special fact about 13. Any cadence with a second run in the day
+  // converges; only a single run a day does not. Asserted for EVERY n in the
+  // list including n=2 — an earlier cut guarded this with `if (n > 2)`, which
+  // made the interesting boundary case assert nothing at all.
   for (const n of [2, 3, 5, 13, 25, 49]) {
     const r = reproposeKey(n);
-    assert.equal(r.sameDay, n > 2, `${n} runs/day: re-proposal should be same-day`);
-    if (n > 2) assert.notEqual(r.reproposed.R, r.minted.R, `${n} runs/day must re-propose on a fresh number`);
+    assert.equal(r.sameDay, true, `${n} runs/day: re-proposal should be same-day`);
+    assert.notEqual(r.reproposed.R, r.minted.R, `${n} runs/day must re-propose on a fresh number`);
   }
-  assert.equal(reproposeKey(1).reproposed.R, reproposeKey(1).minted.R);
+  const one = reproposeKey(1);
+  assert.equal(one.sameDay, false);
+  assert.equal(one.reproposed.R, one.minted.R);
 });
 
 // ── orderLost → close → re-propose, through the REAL engine ──────────────────
@@ -323,9 +326,13 @@ test("LOCK_STEAL_MS is shorter than the gap between runs", () => {
   const stealMin = Number(steal[1]);
   assert.ok(stealMin < SCHEDULE.stepMin,
     `a run's lock must be stale by the time the next run starts (${stealMin}min steal vs ${SCHEDULE.stepMin}min gap)`);
-  // And the converse hazard is gone: at 15 minutes a run lasting >10 min could
-  // be joined by the next one. At 60 it would have to hang for an hour.
-  assert.ok(stealMin < 15 === false || SCHEDULE.stepMin >= 15);
+  // And the converse hazard shrinks: the run would have to outlast the gap
+  // before the next one could join it, and timeoutSeconds caps a run well
+  // under that.
+  const timeoutSec = Number(/timeoutSeconds:\s*(\d+)/.exec(SRC)?.[1]);
+  assert.ok(Number.isFinite(timeoutSec), "timeoutSeconds must stay a literal");
+  assert.ok(timeoutSec * 1000 < SCHEDULE.stepMin * 60e3,
+    `a run is capped at ${timeoutSec}s, which must be shorter than the ${SCHEDULE.stepMin}min gap`);
 });
 
 test("the /stock_confidence gate fires on EVERY run, because every run is on the hour", () => {
