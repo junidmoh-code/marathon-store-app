@@ -98,7 +98,7 @@ describe("and still returns everything", () => {
 
   it("an empty node is complete, not an error", async () => {
     serve({});
-    expect(await readByKeyPages(NODE)).toEqual({ data: {}, complete: true, pages: 1 });
+    expect(await readByKeyPages(NODE)).toEqual({ data: {}, complete: true, pages: 1, lastKey: null });
   });
 });
 
@@ -125,5 +125,31 @@ describe("truncation is reported, never passed off as the whole node", () => {
     expect(getMock).toHaveBeenCalledTimes(2);
     expect(Object.keys(data)).toEqual(["a", "b"]);
     expect(complete).toBe(true);
+  });
+});
+
+// ── lastKey: the cursor a caller needs to follow the node forward ────────────
+// Added for the /insights_log all-time reader, which pages the history and
+// then tails from where the walk stopped. A walk that reported no cursor
+// would leave the tail either re-reading the whole node or starting after
+// nothing — both of which are the unbounded read this pager exists to avoid.
+describe("readByKeyPages — the forward cursor", () => {
+  it("reports the highest key it read", async () => {
+    serve(roster(3));
+    const { lastKey } = await readByKeyPages(NODE);
+    expect(lastKey).toBe("u0002");
+  });
+
+  it("reports null for an empty node — there is nothing to continue from", async () => {
+    serve({});
+    const { lastKey } = await readByKeyPages(NODE);
+    expect(lastKey).toBeNull();
+  });
+
+  it("reports a cursor even when the page budget ran out", async () => {
+    serve(roster(30));
+    const r = await readByKeyPages(NODE, { pageSize: 10, maxPages: 2 });
+    expect(r.complete).toBe(false);
+    expect(r.lastKey).toBe("u0019");
   });
 });

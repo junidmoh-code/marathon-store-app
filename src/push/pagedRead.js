@@ -55,9 +55,11 @@ export const MAX_PAGES = 25;
  *
  * @param {import("firebase/database").DatabaseReference} node
  * @param {{pageSize?: number, maxPages?: number}} [opts]
- * @returns {Promise<{data: Record<string, any>, complete: boolean, pages: number}>}
+ * @returns {Promise<{data: Record<string, any>, complete: boolean, pages: number, lastKey: string|null}>}
  *   `data` is key → value; `complete` is false only when the page budget ran out
- *   with more children still to come.
+ *   with more children still to come; `lastKey` is the highest key read, which
+ *   is what a caller needs to follow the node forward from here (the insights
+ *   log's all-time reader tails from it) and is null for an empty node.
  */
 export async function readByKeyPages(node, opts = {}) {
   const pageSize = opts.pageSize || PAGE_SIZE;
@@ -85,11 +87,11 @@ export async function readByKeyPages(node, opts = {}) {
 
     // A short page is the last page. This is the ONLY exit that means "read it
     // all" — falling out of the loop below means the budget ran out.
-    if (seen < pageSize) return { data, complete: true, pages };
+    if (seen < pageSize) return { data, complete: true, pages, lastKey: last };
     // A full page that advanced nothing would loop forever; treat it as done.
-    if (last === cursor) return { data, complete: true, pages };
+    if (last === cursor) return { data, complete: true, pages, lastKey: last };
     cursor = last;
   }
 
-  return { data, complete: false, pages };
+  return { data, complete: false, pages, lastKey: cursor };
 }
