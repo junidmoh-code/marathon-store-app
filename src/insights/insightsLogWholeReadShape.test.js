@@ -74,12 +74,14 @@ describe("the all-time /insights_log reader", () => {
     for (const q of calls) expect(mods(q)).toContain("orderByKey");
   });
 
-  it("pages the history with orderByKey + limitToFirst, and a cursor after that", async () => {
+  it("pages the history with orderByKey + limitToFirst, and an INCLUSIVE cursor after that", async () => {
     calls.length = 0;
     let n = 0;
     get.mockImplementation(async () => {
-      // First page full (forces a second request), second page short.
-      const keys = n++ === 0 ? ["-A", "-B"] : ["-C"];
+      // First page full (forces a second request), second page short. The
+      // second page re-sends the cursor's own row, which is what an inclusive
+      // bound does and what the pager skips.
+      const keys = n++ === 0 ? ["-A", "-B"] : ["-B"];
       return { forEach: (cb) => { for (const k of keys) cb({ key: k, val: () => ({ k }) }); return false; } };
     });
     await readByKeyPages({ __ref: "insights_log" }, { pageSize: 2, maxPages: 5 });
@@ -87,8 +89,10 @@ describe("the all-time /insights_log reader", () => {
     expect(calls.length).toBe(2);
     expect(calls[0].__ref).toBe("insights_log");
     expect(mods(calls[0])).toEqual(["orderByKey", "limitToFirst"]);
-    expect(mods(calls[1])).toEqual(["orderByKey", "startAfter", "limitToFirst"]);
-    expect(calls[1].__mods.find((m) => m.__mod === "startAfter").value).toBe("-B");
+    // startAt, never startAfter: startAfter makes the server return one fewer
+    // child than asked for, which ends the walk on its second request.
+    expect(mods(calls[1])).toEqual(["orderByKey", "startAt", "limitToFirst"]);
+    expect(calls[1].__mods.find((m) => m.__mod === "startAt").value).toBe("-B");
   });
 
   it("tails with startAt — the bound the rule can actually name", () => {
