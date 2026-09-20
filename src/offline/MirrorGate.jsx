@@ -49,6 +49,23 @@ export function MirrorGate({ auth, storage, children }) {
   // arrives, and a flip back on has to reuse the runtime rather than build a
   // second one alongside the first.
   const runtimeRef = useRef(null);
+  // ── AND THE START THAT HAS NOT FINISHED YET ───────────────────────────────
+  //
+  // `startOfflineMirror()` is not a pure constructor. By the time it resolves
+  // it has opened IndexedDB, started the connection tracker and registered its
+  // own auth listener — and that listener schedules a pass by itself, with no
+  // dependence on anyone calling start(). So a runtime that is built and then
+  // dropped is not garbage: it is a second engine, reading and reporting on
+  // the same device, owned by nobody.
+  //
+  // Two flips while one is in flight is all it takes: the effect re-runs,
+  // `runtimeRef.current` is still null because nothing has resolved, and it
+  // builds a second one. The promise is held here so a re-run ADOPTS the start
+  // already running instead of starting another, and the resolve handler
+  // adopts the runtime even when its own effect run was cancelled — so there
+  // is always exactly one engine and something that can stop it.
+  // (Sonnet architect review, PR #624.)
+  const startPromiseRef = useRef(null);
 
   const enabled = switchOn;
 
@@ -103,21 +120,32 @@ export function MirrorGate({ auth, storage, children }) {
       return undefined;
     }
 
-    const promise = (async () => {
-      const { startOfflineMirror } = await import("./bootstrap");
-      return startOfflineMirror({ auth, storage });
-    })();
-    // Registered synchronously in the same tick the import starts, so the dot
-    // and every reader see a pending promise rather than "not yet decided".
-    setOfflineMirrorRuntime(promise);
+    if (!startPromiseRef.current) {
+      startPromiseRef.current = (async () => {
+        const { startOfflineMirror } = await import("./bootstrap");
+        return startOfflineMirror({ auth, storage });
+      })();
+      // Registered synchronously in the same tick the import starts, so the
+      // dot and every reader see a pending promise rather than "not yet
+      // decided".
+      setOfflineMirrorRuntime(startPromiseRef.current);
+    }
+    const promise = startPromiseRef.current;
 
     promise.then(async (rt) => {
-      if (cancelled || !rt) return;
+      if (!rt) return;
+      // ADOPTED EVEN IF THIS EFFECT RUN WAS CANCELLED. The engine belongs to
+      // the component, not to the effect run that happened to ask for it;
+      // leaving it unadopted is what makes it an orphan nothing can stop.
       runtimeRef.current = rt;
       setRuntime(rt);
       // The switch may have gone off during the start. Nothing may run against
-      // a switch that is already false.
+      // a switch that is already false — and this is the line that stops the
+      // engine built during a flip that has since been reversed.
       if (!offlineMirrorEnabled()) { rt.stop(); return; }
+      // A later, live effect run is driving it; this one only had to make sure
+      // it was adopted.
+      if (cancelled) return;
       const state = await rt.setupState();
       if (cancelled) return;
 

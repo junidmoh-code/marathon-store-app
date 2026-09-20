@@ -35,8 +35,26 @@ vi.mock("firebase/database", () => ({
 vi.mock("../../firebase", () => ({ database: {}, auth: {}, storage: {} }));
 
 // The gate imports bootstrap dynamically. This is the runtime it gets.
+//
+// `startCalls` and `deferStart` exist for the orphan tests at the bottom: a
+// start is not a pure constructor — by the time it resolves it has opened
+// IndexedDB, started the connection tracker and registered an auth listener
+// that schedules passes by itself — so building two is building two engines.
 let runtime = null;
-vi.mock("../bootstrap", () => ({ startOfflineMirror: async () => runtime }));
+let startCalls = 0;
+let deferred = null;
+vi.mock("../bootstrap", () => ({
+  startOfflineMirror: async () => {
+    startCalls += 1;
+    if (deferred) await deferred.promise;
+    return runtime;
+  },
+}));
+function deferStart() {
+  let release;
+  deferred = { promise: new Promise((r) => { release = r; }) };
+  return () => { const d = deferred; deferred = null; release(); return d; };
+}
 
 import { MirrorGate } from "../MirrorGate";
 import { MirrorDownloadGate, downloadLine } from "../MirrorDownloadGate";
@@ -93,6 +111,8 @@ const findButton = (tree) => tree.root.findAllByType("button")[0];
 
 beforeEach(() => {
   store.clear();
+  startCalls = 0;
+  deferred = null;
   authUser = { uid: "u1", isAnonymous: false };
   _resetMirrorSwitchForTests();
   _resetServingForTests();
@@ -230,5 +250,61 @@ describe("what the gate and the dot say", () => {
       .toMatch(/34%|35%|Stock movements/);
     expect(downloadLine({ error: new Error("PERMISSION_DENIED") }))
       .toMatch(/paused/);
+  });
+});
+
+// ─── ONE ENGINE, EVER ───────────────────────────────────────────────────────
+//
+// startOfflineMirror() takes a while — it opens IndexedDB — and it has side
+// effects the moment it resolves, including an auth listener that schedules a
+// pass by itself. A runtime that is built and then dropped is therefore not
+// garbage; it is a second engine on the same device, reading and reporting,
+// owned by nobody and stoppable by nobody. Two flips of the fleet switch
+// inside that window used to be all it took.
+// (Sonnet architect review, PR #624.)
+describe("a switch flip while the mirror is still starting", () => {
+  it("builds ONE engine, however many times the switch is flipped", async () => {
+    runtime = fakeRuntime({ setupDone: true, consented: true });
+    const release = deferStart();
+
+    let tree;
+    await act(async () => {
+      tree = TestRenderer.create(
+        React.createElement(MirrorGate, { auth: {}, storage: {} }, React.createElement(App)),
+      );
+    });
+    await act(async () => { setMirrorSwitchValue(false); });
+    await act(async () => { setMirrorSwitchValue(true); });
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    }
+
+    expect(startCalls).toBe(1);
+    tree.unmount();
+  });
+
+  it("and an engine that resolves into a switch that is now OFF is STOPPED, not orphaned", async () => {
+    runtime = fakeRuntime({ setupDone: true, consented: true });
+    const release = deferStart();
+
+    let tree;
+    await act(async () => {
+      tree = TestRenderer.create(
+        React.createElement(MirrorGate, { auth: {}, storage: {} }, React.createElement(App)),
+      );
+    });
+    await act(async () => { setMirrorSwitchValue(false); });
+    await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    }
+
+    // It was adopted and stopped. Never started, and never left running with
+    // nothing holding a reference to it.
+    expect(startCalls).toBe(1);
+    expect(runtime.calls.stop).toBeGreaterThanOrEqual(1);
+    expect(runtime.calls.start).toBe(0);
+    tree.unmount();
   });
 });
