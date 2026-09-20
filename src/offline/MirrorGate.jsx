@@ -109,15 +109,26 @@ export function MirrorGate({ auth, storage, children }) {
   useEffect(() => subscribeMirrorSwitch((on) => setSwitchOn(on)), []);
 
   // ── STARTING, AND THE ONE QUESTION ────────────────────────────────────────
+  //
+  // NOTHING HAPPENS BEFORE SIGN-IN. Every mirrored node's read rule wants a
+  // signed-in, non-anonymous user, and a listener or read registered before
+  // that is refused without retrying — so a start that ran at first paint
+  // (which it did, because the switch answer is cached and true from the cache
+  // on every reload) left the change-log signal permanently dead for the
+  // session, and told a member of staff that a database rule had not been
+  // pasted when the truth was "you have not typed your PIN yet".
+  // (Fable-vs-spec review, PR #624.)
   useEffect(() => {
-    if (!enabled) return undefined;
+    if (!enabled || !signedIn) return undefined;
     let cancelled = false;
 
-    // Already running, and the switch has just come back on: start the same
+    // Already running, and the switch has just come back on: resume the same
     // engine rather than building a second one against the same IndexedDB.
     if (runtimeRef.current) {
-      runtimeRef.current.start();
-      return undefined;
+      runtimeRef.current.resume().then((what) => {
+        if (!cancelled && what === "needs-consent") setNeedsConsent(true);
+      }).catch(() => {});
+      return () => { cancelled = true; };
     }
 
     if (!startPromiseRef.current) {
@@ -146,25 +157,12 @@ export function MirrorGate({ auth, storage, children }) {
       // A later, live effect run is driving it; this one only had to make sure
       // it was adopted.
       if (cancelled) return;
-      const state = await rt.setupState();
-      if (cancelled) return;
 
-      // A complete copy: straight into the steady-state loop.
-      if (state.done) { rt.start(); return; }
-
-      // An INCOMPLETE copy, and somebody on this device has already tapped
-      // Download. It resumes by itself, in the background, from the first leg
-      // that did not land — no question, no screen, nobody held. This is the
-      // ordinary case for every open between the tap and the copy being
-      // finished, which on a slow line can be several.
-      if (await rt.hasConsented()) {
-        if (cancelled) return;
-        rt.downloadInBackground();
-        return;
-      }
-
-      // Nobody has been asked yet. One button, once, over a working app.
-      if (!cancelled) setNeedsConsent(true);
+      // ONE call decides what this device needs next: run the pass loop on a
+      // complete copy, resume the download on an agreed but unfinished one, or
+      // say that nobody has been asked yet.
+      const what = await rt.resume();
+      if (!cancelled && what === "needs-consent") setNeedsConsent(true);
     }, (err) => {
       if (cancelled) return;
       // See the header: a mirror that cannot start must not stop the app.
@@ -172,7 +170,7 @@ export function MirrorGate({ auth, storage, children }) {
     });
 
     return () => { cancelled = true; };
-  }, [enabled, auth, storage]);
+  }, [enabled, signedIn, auth, storage]);
 
   // ── THE KILL ──────────────────────────────────────────────────────────────
   //

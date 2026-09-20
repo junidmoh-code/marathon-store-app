@@ -620,12 +620,21 @@ six that can drift apart. A flip reaches React because `subscribeServing` also
 subscribes to the switch, so every mirror-reading hook re-renders onto its live
 subscription the moment the answer changes.
 
-**An answer this device has never heard is OFF.** A device that cannot read the
-switch — the rule not pasted, the line down on a cold boot, nobody signed in —
-reads live, which is what this app did for two years. A device that HAS heard
-one keeps it in `localStorage` across a reload and across a dead line, so the
-tablet in the back room goes on serving its copy: a failed re-read is not a
-kill, only an explicit `false` is.
+**Only a value somebody wrote is ON.** `true`, or a string saying so.
+Everything else is off, including ABSENT — so pasting the read rule changes
+nothing by itself, and clearing the node is a kill rather than a start. A
+device that cannot read the switch at all reads live, which is what this app
+did for two years. A device that HAS heard an answer keeps it in
+`localStorage` across a reload and across a dead line, so the tablet in the
+back room goes on serving its copy: a failed re-read is not a kill.
+
+**Nothing reads the database before somebody taps Download.** The consent is a
+fact on the device (`setup.consented`), and the engine refuses every path
+without it: the pass loop, `start()`, and — the one that was actually
+happening — the pass loop's repair step, which re-downloads any leg missing a
+setup marker and on a fresh device would quietly download the whole shop and
+stamp it complete. `engineReadsNothingUnasked.test.js` drives the real
+`startOfflineMirror` against a counting fake adapter and asserts a zero.
 
 **The per-device flag is gone** (PR #624). There is no per-device opinion about
 whether to mirror, because that is how half a shop ends up on one code path and

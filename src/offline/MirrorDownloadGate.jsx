@@ -106,15 +106,18 @@ export function progressFor(doneLegs) {
 export function explainFailure(err) {
   const msg = String(err?.message ?? err ?? "");
   if (/permission|PERMISSION_DENIED/i.test(msg)) {
-    return "This device is not allowed to read part of the database yet. "
-      + "A database rule still has to be pasted — the change log, the census "
-      + "or the fleet switch. See docs/store-offline-mirror.md.";
+    // Written for whoever is holding the tablet, not for whoever wrote the
+    // rules. The one thing they can act on is signing in; the rest is
+    // somebody else's job and saying so is kinder than naming a JSON file.
+    return "This device is not allowed to download the copy yet. "
+      + "Make sure you are signed in — if you are, it is a setting on the "
+      + "database that Junid has to switch on.";
   }
   if (/did not answer|timeout|network|offline/i.test(msg)) {
-    return "The database did not answer. Check the connection and try again — "
-      + "nothing downloaded so far has been lost.";
+    return "The connection dropped. It will pick up where it stopped by "
+      + "itself — nothing downloaded so far is lost.";
   }
-  return msg || "The download stopped for a reason this screen could not read.";
+  return msg || "The download stopped and will try again by itself.";
 }
 
 export function MirrorDownloadGate({ runtime, onStart }) {
@@ -148,11 +151,12 @@ export function MirrorDownloadGate({ runtime, onStart }) {
   return (
     <div style={S.wrap}>
       <div style={S.card}>
-        <div style={S.title}>Make this device faster</div>
+        <div style={S.title}>Keep the shop on this device</div>
         <div style={S.sub}>
-          This device can keep its own copy of the shop — stock, products,
-          orders, history — so screens open instantly and cost almost no data.
-          It downloads about {MB(total)} once, in the background.
+          This device can hold its own copy of the shop — stock, products,
+          orders, history — so screens open instantly and the shop stops paying
+          to fetch the same numbers over and over. It downloads about {MB(total)}
+          once. Best on Wi-Fi.
         </div>
         <button type="button" style={S.button} onClick={start}>Download</button>
         <div style={S.note}>
@@ -170,7 +174,7 @@ export function MirrorDownloadGate({ runtime, onStart }) {
  * so the weighting — BYTES, not legs done — is the same in both places.
  */
 export function downloadLine({ legsDone = [], current = null, error = null }) {
-  if (error) return `Download paused — ${explainFailure(error)} It will try again.`;
+  if (error) return `Download paused — ${explainFailure(error)}`;
   const { pct, bytes, total } = progressFor(legsDone);
   const what = current ? `${LEG_LABEL[current] ?? current}` : "the catalogue";
   return `Downloading this device's copy — ${pct}% (${MB(bytes)} of ${MB(total)}), on ${what}`;

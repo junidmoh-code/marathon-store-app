@@ -38,7 +38,7 @@ vi.mock("firebase/database", () => ({
 vi.mock("../PermissionsContext", () => ({ ADMIN_EMAIL: "gunidmoh@gmail.com" }));
 
 const MirrorFleetCard = (await import("./MirrorFleetCard.jsx")).default;
-const { deviceState, ago, STALE_MS } = await import("./MirrorFleetCard.jsx");
+const { deviceState, ago, STALE_MS, guardWords } = await import("./MirrorFleetCard.jsx");
 
 const ADMIN = { uid: "admin-uid", email: "gunidmoh@gmail.com" };
 const STAFF = { uid: "staff-uid", email: "rashid@marathon.internal" };
@@ -161,9 +161,19 @@ describe("what a device's row says", () => {
     expect(deviceState(ok, T + STALE_MS + 1).text).toMatch(/^silent/);
   });
 
-  it("a tripped guard is named, and outranks everything else on the row", () => {
-    expect(deviceState({ ...ok, guard: { leg: "products", reason: "shrank" } }, T).text)
-      .toBe("products: shrank");
+  it("a tripped guard is named in SHOP WORDS, and outranks everything else", () => {
+    // The owner is operationally savvy and not a programmer. "products:
+    // shrank" is a grep term; this is a sentence somebody can act on.
+    const said = deviceState({ ...ok, guard: { leg: "products", reason: "shrank" } }, T).text;
+    expect(said).toBe("the catalogue came back short, so the copy already here was kept");
+    // Every leg word is a SINGULAR noun phrase, so it agrees with the verb
+    // whichever way the two are paired.
+    expect(guardWords({ leg: "stock", reason: "count-drift" }))
+      .toBe("the stock copy does not match the server's count — downloading it again");
+    // A reason nobody has written words for still says something true rather
+    // than nothing.
+    expect(guardWords({ leg: "products", reason: "brand-new-reason" }))
+      .toBe("the catalogue brand-new-reason");
   });
 
   it("a downloading device and an incomplete one both say they are reading live", () => {

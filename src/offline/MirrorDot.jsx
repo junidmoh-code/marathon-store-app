@@ -19,7 +19,7 @@
 
 import { useEffect, useState } from "react";
 import { getOfflineMirrorRuntime } from "./mirrorRuntime";
-import { offlineMirrorEnabled } from "./killSwitch";
+import { offlineMirrorEnabled, subscribeMirrorSwitch } from "./killSwitch";
 import { MIRROR_LEGS } from "./nodes";
 import { getLegHealth, vouchingRecord } from "./health";
 import { heldPhotoCount } from "./photoCache";
@@ -44,9 +44,19 @@ export function mirrorStatus({ connected, legs, pending, download }) {
 export function MirrorDot({ style }) {
   const [state, setState] = useState(null);
   const [open, setOpen] = useState(false);
+  // ── IT HAS TO BE ABLE TO APPEAR LATER ────────────────────────────────────
+  //
+  // This used to read the switch once, on mount, with an empty dependency
+  // list. On a device that had never heard the switch — every genuinely new
+  // one — that read was false at first paint, so the dot never mounted and
+  // the download promised by the gate had no visible evidence anywhere until
+  // the next reload. It now watches the switch like everything else does.
+  // (Fable-vs-spec review, PR #624.)
+  const [on, setOn] = useState(() => offlineMirrorEnabled());
+  useEffect(() => subscribeMirrorSwitch(() => setOn(offlineMirrorEnabled())), []);
 
   useEffect(() => {
-    if (!offlineMirrorEnabled()) return undefined;
+    if (!on) return undefined;
     let cancelled = false;
     let timer = null;
     let fastTimer = null;
@@ -66,11 +76,12 @@ export function MirrorDot({ style }) {
         });
       }
       const photos = await heldPhotoCount(rt.db).catch(() => null);
+      const download = await (rt.downloadProgress?.() ?? null);
       if (cancelled) return;
       setState({
         connected: rt.connection.isConnected(),
         legs, photos, pending: pendingCount(),
-        download: rt.downloadProgress?.() ?? null,
+        download,
       });
     };
 
@@ -98,7 +109,7 @@ export function MirrorDot({ style }) {
       if (fastTimer) clearInterval(fastTimer);
       if (unsub) unsub();
     };
-  }, []);
+  }, [on]);
 
   if (!state) return null;
   const status = mirrorStatus(state);

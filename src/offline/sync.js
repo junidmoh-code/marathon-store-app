@@ -190,6 +190,12 @@ export function createSyncEngine({
   // "Is the app doing something a person is waiting on?" The engine defers to
   // it, but never indefinitely — see runPass.
   isBusy = () => false,
+  // "May this device re-download a leg that has lost its setup marker?"
+  // FALSE on a device whose staff have never agreed to hold a copy, because
+  // on such a device EVERY leg is missing its marker and the repair step is
+  // therefore a complete, unasked, unverified download of the whole shop.
+  // (Fable-vs-spec review, PR #624.)
+  mayRepair = () => true,
 } = {}) {
   let setupRunning = null;
 
@@ -536,7 +542,7 @@ export function createSyncEngine({
     // middle of a trading day. ONE leg per pass, smallest first, so a repair
     // cannot monopolise a device.
     try {
-      report.repaired = await repairOneLeg();
+      report.repaired = mayRepair() ? await repairOneLeg() : null;
     } catch (err) {
       report.errors.push({ where: "repair", reason: err.name, message: err.message });
     }
@@ -553,9 +559,15 @@ export function createSyncEngine({
       const res = isAppendOnly(leg)
         ? await runRangeLeg(leg)
         : await downloadSnapshotLeg(leg);
-      // Re-stamp the whole-device marker only when every leg is back.
+      // Re-stamp the whole-device marker only when every leg is back — and
+      // ask the census FIRST. A device that becomes complete through repairs
+      // reaches exactly the state the download path forces a census for, and
+      // it would otherwise not be asked again for six hours.
       if ((await setupState()).ready) {
-        await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
+        await checkCensus({ force: true }).catch(() => {});
+        if ((await setupState()).ready) {
+          await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
+        }
       }
       return { leg: leg.name, rows: res.rows };
     }

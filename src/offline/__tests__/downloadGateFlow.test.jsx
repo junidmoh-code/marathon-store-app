@@ -62,27 +62,41 @@ import { setMirrorSwitchValue, _resetMirrorSwitchForTests } from "../killSwitch"
 import { _resetServingForTests, isLegServing, setServingLegs } from "../serving";
 import { _resetOfflineMirrorRuntimeForTests } from "../mirrorRuntime";
 
+// A faithful stand-in for what startOfflineMirror returns — faithful in the
+// ways that matter here: `resume()` makes the same three-way decision the real
+// one makes (run the loop / resume the download / nobody has been asked), and
+// a tap flips `consented` exactly as the real one does. A fake that answered
+// "downloading" to everything would let a gate that never asks anybody pass.
 function fakeRuntime({ setupDone = false, consented = false } = {}) {
-  const calls = { setup: 0, background: 0, start: 0, stop: 0, consent: 0 };
+  const calls = { setup: 0, background: 0, start: 0, stop: 0, consent: 0, resume: 0 };
   let downloadResolve = null;
-  return {
+  const rt = {
     calls,
     state: { downloading: false, setupDone: [], setupProgress: null, setupError: null },
     setupState: async () => ({ done: setupDone, ready: setupDone, legs: [] }),
     hasConsented: async () => consented,
+    async resume() {
+      calls.resume += 1;
+      if (!consented) return "needs-consent";
+      if (setupDone) { rt.start(); return "running"; }
+      rt.downloadInBackground();
+      return "downloading";
+    },
     consentAndDownload: async () => {
       calls.consent += 1;
+      consented = true;
       // A download that NEVER settles: the whole point is that the tap does not
       // wait for it. If the gate awaited this, the test would hang.
       return new Promise((r) => { downloadResolve = r; calls.background += 1; });
     },
     downloadInBackground: () => { calls.background += 1; return new Promise(() => {}); },
-    downloadProgress: () => ({ downloading: false, legsDone: [], current: null, error: null }),
+    downloadProgress: async () => ({ downloading: false, legsDone: [], current: null, error: null }),
     setup: async () => { calls.setup += 1; },
     start: () => { calls.start += 1; },
     stop: () => { calls.stop += 1; },
     finishDownload: () => downloadResolve?.(),
   };
+  return rt;
 }
 
 const APP_TEXT = "the app, working";
@@ -90,7 +104,7 @@ const APP_TEXT = "the app, working";
 // these tests asserted the absence of "Download", which a gate that had merely
 // swapped its button to "Starting…" satisfied while still covering the app —
 // so a gate that awaited the whole 104 MB passed. Assert the CARD is gone.
-const GATE_TEXT = "Make this device faster";
+const GATE_TEXT = "Keep the shop on this device";
 function App() { return React.createElement("div", null, APP_TEXT); }
 
 async function mount() {
@@ -273,6 +287,9 @@ describe("a switch flip while the mirror is still starting", () => {
         React.createElement(MirrorGate, { auth: {}, storage: {} }, React.createElement(App)),
       );
     });
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    }
     await act(async () => { setMirrorSwitchValue(false); });
     await act(async () => { setMirrorSwitchValue(true); });
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
@@ -294,6 +311,12 @@ describe("a switch flip while the mirror is still starting", () => {
         React.createElement(MirrorGate, { auth: {}, storage: {} }, React.createElement(App)),
       );
     });
+    // Let sign-in land and the start actually get under way — nothing starts
+    // before there is a user, so a flip before that would prove nothing.
+    for (let i = 0; i < 4; i += 1) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    }
+    expect(startCalls).toBe(1);
     await act(async () => { setMirrorSwitchValue(false); });
     await act(async () => { release(); await new Promise((r) => setTimeout(r, 0)); });
     for (let i = 0; i < 5; i += 1) {

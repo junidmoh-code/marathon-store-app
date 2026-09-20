@@ -38,18 +38,18 @@ beforeEach(() => {
 });
 
 describe("what the value in the database means", () => {
-  it("reads false, and every spelling of it a person might type, as OFF", () => {
-    for (const raw of [false, 0, "false", "FALSE", " false ", "off", "Off", "no", "0"]) {
-      expect(switchVerdict(raw)).toBe(false);
+  it("reads ONLY a value somebody wrote on purpose as ON", () => {
+    for (const raw of [true, 1, "true", "TRUE", " true ", "on", "yes", "1"]) {
+      expect(switchVerdict(raw)).toBe(true);
     }
   });
 
-  it("reads true, and an ABSENT node, as ON", () => {
-    // Absent is the steady state of a fleet that has never needed killing.
-    // It only ever gets here after a read SUCCEEDED, which is what proves the
-    // rule is pasted and the line is up.
-    for (const raw of [true, null, undefined, "true", "on", 1]) {
-      expect(switchVerdict(raw)).toBe(true);
+  it("reads an ABSENT node as OFF — clearing the value is a kill, never a start", () => {
+    // A switch whose absence means ON is safe in the wrong direction: pasting
+    // the read rule would turn the fleet on before anyone wrote anything, and
+    // an admin clearing the node to reset something would turn it on.
+    for (const raw of [null, undefined, false, 0, "false", "off", "no", "0", "", "maybe"]) {
+      expect(switchVerdict(raw)).toBe(false);
     }
   });
 });

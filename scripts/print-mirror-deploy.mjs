@@ -77,7 +77,8 @@ rollout as much as it is the gate on the kill.
   "mirror_devices": {
     ".read": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
     "$deviceId": {
-      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+      ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+      ".validate": "newData.child('deviceId').val() === $deviceId"
     }
   }
 
@@ -85,8 +86,14 @@ TO TURN THE MIRROR ON FOR THE FLEET — set, in the console:
 
   /mirror_switch/enabled = true
 
-TO KILL IT — set the same value to false. Every open device drops to live
-reads within a second, and every device that opens afterwards reads live too.
+Pasting the rule alone changes NOTHING: an absent value reads as OFF, on
+purpose. Only a value somebody wrote turns the fleet on, so the paste and the
+decision are two separate acts and clearing the node is a kill, never a start.
+
+TO KILL IT — set the same value to false, or delete it. Every open device
+drops to live reads within a second, and every device that opens afterwards
+reads live too. The copies stay on the devices, so turning it back on costs
+nobody another download.
 
 /mirror_devices is the fleet's own health: one small record per device (is its
 copy complete, when did it last sync, how many bytes today, which build, any

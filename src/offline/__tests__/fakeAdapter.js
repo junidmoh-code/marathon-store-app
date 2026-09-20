@@ -38,7 +38,11 @@ export function createFakeRtdb(initial = {}) {
     return structuredClone(v);
   };
 
-  const calls = { readPath: [], readPathOpts: [], readKeyPage: [], readChildPage: [] };
+  const calls = {
+    readPath: [], readPathOpts: [], readKeyPage: [], readChildPage: [],
+    subscribeNewChanges: [], writePath: [],
+  };
+  const signalListeners = new Set();
 
   const adapter = {
     async readPath(path, opts = {}) {
@@ -100,6 +104,22 @@ export function createFakeRtdb(initial = {}) {
       return keys.length ? keys[keys.length - 1] : null;
     },
     subscribeConnected() { return () => {}; },
+
+    // The live change SIGNAL, and the device's own health WRITE. Both are part
+    // of the adapter contract, and a fake that simply lacked them made the
+    // engine throw an unhandled TypeError the moment a test drove the real
+    // startOfflineMirror — which is how a fake stops standing in for the thing
+    // it is standing in for.
+    subscribeNewChanges(path, after, onSignal) {
+      calls.subscribeNewChanges.push({ path, after });
+      signalListeners.add(onSignal);
+      return () => signalListeners.delete(onSignal);
+    },
+    async writePath(path, value) {
+      calls.writePath.push({ path, value });
+      write(path, value);
+      return true;
+    },
   };
 
   // Test-side writers.
@@ -115,7 +135,10 @@ export function createFakeRtdb(initial = {}) {
     else node[last] = structuredClone(value);
   };
 
-  return { adapter, tree, write, read: (p) => normalise(at(p)), calls };
+  // Fire the live change signal, as one device's write reaches another's tab.
+  const signal = (key) => { for (const l of signalListeners) l(key); };
+
+  return { adapter, tree, write, read: (p) => normalise(at(p)), calls, signal };
 }
 
 // A push key for a given millisecond, so a test can place a change record at a

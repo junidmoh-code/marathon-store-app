@@ -33,18 +33,22 @@
 //   a read that fails             → the last cached answer, unchanged
 //   no answer ever, no cache      → OFF, live reads, today's behaviour
 //
-// ── WHAT COUNTS AS "OFF" ────────────────────────────────────────────────────
+// ── WHAT COUNTS AS "ON" ─────────────────────────────────────────────────────
 //
-// Anything that could plausibly have been typed to mean off. `false`, the
-// string "false", 0, "off", "no". Everything else — true, absent, a value
-// nobody expected — is on. The asymmetry is deliberate: a fat-fingered kill is
-// still a kill, and the failure that matters is a switch that was flipped and
-// did not take.
+// Only a value somebody wrote on purpose. `true`, or a string saying so.
+// Everything else is off: `false`, "false", 0, "off", "no" — and, crucially,
+// ABSENT.
 //
-// The node being ABSENT reads as on, once the read has actually succeeded. A
-// successful read proves the rule is pasted and the line is up; "nobody has
-// ever written the value" is then the normal steady state of a fleet that has
-// never needed killing, not an outage.
+// An earlier version of this read an absent node as ON, on the argument that a
+// successful read proves the rule is pasted and a fleet that has never needed
+// killing has never written the value. A spec review pointed out what that
+// actually means: pasting the read rule becomes the moment the whole fleet
+// turns on, before anyone has written anything, and an admin who CLEARS the
+// node in the console to reset something turns it on rather than off. A switch
+// whose absence means ON is safe in the wrong direction. (PR #624.)
+//
+// So the rollout is two separate acts — paste the rule, then write `true` —
+// and every way of removing the value is a kill.
 
 // The node, and the one child devices read. Reading the CHILD rather than the
 // node means a future sibling (a note saying who flipped it and why) costs the
@@ -79,9 +83,9 @@ const listeners = new Set();
  * infer.
  */
 export function switchVerdict(raw) {
-  if (raw === false || raw === 0) return false;
-  if (typeof raw === "string" && /^(false|off|no|0)$/i.test(raw.trim())) return false;
-  return true;
+  if (raw === true || raw === 1) return true;
+  if (typeof raw === "string" && /^(true|on|yes|1)$/i.test(raw.trim())) return true;
+  return false;
 }
 
 function loadCache() {

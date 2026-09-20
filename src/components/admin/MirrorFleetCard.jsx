@@ -36,7 +36,8 @@ const RULE_TEXT = `"mirror_switch": {
 "mirror_devices": {
   ".read": "auth != null && auth.token.email === '${ADMIN_EMAIL}'",
   "$deviceId": {
-    ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'"
+    ".write": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
+    ".validate": "newData.child('deviceId').val() === $deviceId"
   }
 }`;
 
@@ -60,10 +61,42 @@ export function ago(at, now = Date.now()) {
 // dot and of the social silence alarm.
 export const STALE_MS = 6 * 3600 * 1000;
 
+// A guard's reason is health.js's vocabulary, and this screen is read by the
+// owner, who is operationally savvy and not a programmer. "products: shrank"
+// is a grep term; "the catalogue copy came back short — downloading it again"
+// is a sentence somebody can act on.
+// Every one of these is a SINGULAR noun phrase, so it agrees with the verbs
+// below whichever way they are paired: "the stock copy does not match", never
+// "the stock numbers does not match".
+const LEG_WORDS = Object.freeze({
+  products: "the catalogue", stock: "the stock copy", orders: "the orders copy",
+  customers: "the customer list", insights: "the order history",
+  movements: "the stock-movement copy", refills: "the refill-request copy",
+  restockLog: "the out-of-stock log", restockRequests: "the source-request copy",
+  returnsLog: "the returns copy", users: "the staff list",
+  locations: "the locations copy", taxonomy: "the category list",
+  displaySlots: "the displays copy", displayRows: "the display-row copy",
+  displayRegister: "the display register",
+});
+const GUARD_WORDS = Object.freeze({
+  shrank: "came back short, so the copy already here was kept",
+  "count-drift": "does not match the server's count — downloading it again",
+  empty: "came back empty, which it cannot be — the copy here was kept",
+  "did-not-land": "did not save properly — downloading it again",
+  "cursor-expired": "fell too far behind to catch up — downloading it again",
+  "timed-out": "timed out — it will try again",
+});
+export function guardWords(guard) {
+  if (!guard) return null;
+  const what = LEG_WORDS[guard.leg] ?? guard.leg;
+  const why = GUARD_WORDS[guard.reason] ?? guard.reason;
+  return `${what} ${why}`;
+}
+
 export function deviceState(d, now = Date.now()) {
   if (!d) return { tone: "#8e8e93", text: "no report" };
   if (now - (d.at ?? 0) > STALE_MS) return { tone: "#8e8e93", text: `silent · last heard ${ago(d.at, now)}` };
-  if (d.guard) return { tone: "#ff453a", text: `${d.guard.leg}: ${d.guard.reason}` };
+  if (d.guard) return { tone: "#ff453a", text: guardWords(d.guard) };
   if (!d.switchOn) return { tone: "#8e8e93", text: "reading live — switch off" };
   if (d.downloading) return { tone: "#ff9f0a", text: "downloading its copy" };
   if (!d.complete) return { tone: "#ff9f0a", text: "copy incomplete — reading live" };
@@ -102,6 +135,10 @@ export default function MirrorFleetCard({ authUser, onExit }) {
 
   const [state, setState] = useState({ loading: true, devices: [] });
   const [switchOn, setSwitchOn] = useState(null);
+  // "Not answered yet" and "refused" are different things, and showing the
+  // paste-the-rule warning during the half-second before the first answer
+  // taught whoever opened this screen to ignore it.
+  const [denied, setDenied] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const [flipping, setFlipping] = useState(false);
   const [flipError, setFlipError] = useState(null);
@@ -132,8 +169,8 @@ export default function MirrorFleetCard({ authUser, onExit }) {
     if (!isSuperAdmin) return undefined;
     const unsub = onValue(
       ref(getDatabase(), MIRROR_SWITCH_PATH),
-      (snap) => setSwitchOn(switchVerdict(snap.exists() ? snap.val() : null)),
-      () => setSwitchOn(null),
+      (snap) => { setDenied(false); setSwitchOn(switchVerdict(snap.exists() ? snap.val() : null)); },
+      () => { setDenied(true); setSwitchOn(null); },
     );
     return () => unsub && unsub();
   }, [isSuperAdmin]);
@@ -182,7 +219,7 @@ export default function MirrorFleetCard({ authUser, onExit }) {
       <div style={{ marginTop: 18, border: `1px solid ${switchOn === false ? "#ff9f0a" : "#2c2c2e"}`, borderRadius: 10, padding: 14, background: "#1c1c1e" }}>
         <div style={{ fontSize: 12, color: "#8e8e93", textTransform: "uppercase", letterSpacing: 0.6 }}>The fleet switch</div>
         <div style={{ fontSize: 17, fontWeight: 600, marginTop: 4, color: switchOn === false ? "#ff9f0a" : "#30d158" }}>
-          {switchOn === null && "Cannot read it — the rule below may not be pasted"}
+          {switchOn === null && (denied ? "Cannot read it — the rule below is not pasted yet" : "Reading…")}
           {switchOn === true && "ON — devices serve from their own copy"}
           {switchOn === false && "OFF — every device is reading live"}
         </div>
@@ -235,8 +272,8 @@ export default function MirrorFleetCard({ authUser, onExit }) {
 
       {!state.loading && !state.error && devices.length === 0 && (
         <div style={{ marginTop: 20, color: "#8e8e93", fontSize: 14 }}>
-          No device has reported yet. A device reports once its copy is complete,
-          and then a few times a day.
+          No device has reported yet. A device reports as soon as its copy has
+          finished downloading, and then a few times a day.
         </div>
       )}
 
@@ -249,9 +286,10 @@ export default function MirrorFleetCard({ authUser, onExit }) {
           </div>
           {tripped.length > 0 && (
             <div style={{ marginTop: 12, fontSize: 13, color: "#ff453a" }}>
-              {tripped.length} device(s) have a guard tripped — they are NOT
-              serving the affected leg, and are reading it live until it
-              downloads again.
+              {tripped.length} device(s) found something wrong with part of
+              their copy. They are reading that part live from the database
+              until it downloads again — nothing is lost and nothing is wrong
+              on their screens.
             </div>
           )}
           <div style={{ marginTop: 18 }}>
