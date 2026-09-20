@@ -53,6 +53,7 @@ vi.mock("firebase/database", () => ({
   orderByKey: () => ({ kind: "orderByKey" }),
   limitToFirst: (n) => ({ kind: "limitToFirst", value: n }),
   startAfter: (v) => ({ kind: "startAfter", value: v }),
+  startAt: (v) => ({ kind: "startAt", value: v }),
   get: (...args) => getMock(...args),
   update: (...args) => updateMock(...args),
 }));
@@ -560,8 +561,12 @@ describe("a PARTIAL assignment read is an unknown one, not an empty one", () => 
         // back FULL and with an advancing cursor, so the read runs out of
         // pages instead of running out of children.
         const limit = r.constraints.find((c) => c.kind === "limitToFirst").value;
-        const after = r.constraints.find((c) => c.kind === "startAfter");
-        let n = after ? Number(after.value.slice(1)) + 1 : 0;
+        // INCLUSIVE bound — the page starts WITH the cursor's own row, which
+        // the pager skips. See src/push/pagedRead.js: startAfter makes the
+        // server return one fewer child than asked for, so a walk that ends on
+        // a short page ends on its second request.
+        const from = r.constraints.find((c) => c.kind === "startAt");
+        let n = from ? Number(from.value.slice(1)) : 0;
         const keys = Array.from({ length: limit }, () => `k${String(n++).padStart(8, "0")}`);
         return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => ({ hub1: true }) })) return true; return false; } };
       }
@@ -584,8 +589,8 @@ describe("a PARTIAL assignment read is an unknown one, not an empty one", () => 
       const base = worldReader({ users: { a0: { displayName: "Ayanda" } } });
       if (r.path !== "push_assignments") return base(r);
       const limit = r.constraints.find((c) => c.kind === "limitToFirst").value;
-      const after = r.constraints.find((c) => c.kind === "startAfter");
-      let n = after ? Number(after.value.slice(1)) + 1 : 0;
+      const from = r.constraints.find((c) => c.kind === "startAt");   // inclusive
+      let n = from ? Number(from.value.slice(1)) : 0;
       const keys = Array.from({ length: limit }, () => `k${String(n++).padStart(8, "0")}`);
       return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => ({ hub1: true }) })) return true; return false; } };
     });
@@ -613,8 +618,12 @@ describe("a truncated ROSTER raises its own banner", () => {
   const TILL = { stockRole: "pos", posAccess: { role: "cashier" } };
   const fullPages = (r, real) => {
     const limit = r.constraints.find((c) => c.kind === "limitToFirst").value;
-    const after = r.constraints.find((c) => c.kind === "startAfter");
-    let n = after ? Number(after.value.slice(1)) + 1 : 0;
+    // The bound is INCLUSIVE (startAt), so a full page begins WITH the cursor's
+    // own row and the pager skips it. startAfter was abandoned because the
+    // server returns one fewer child than asked for under it, which ended
+    // every walk on its second request. See src/push/pagedRead.js.
+    const from = r.constraints.find((c) => c.kind === "startAt");
+    let n = from ? Number(from.value.slice(1)) : 0;
     const keys = Array.from({ length: limit }, () => `u${String(n++).padStart(8, "0")}`);
     const val = (k) => (real && k === "u00000000" ? { displayName: "Ayanda" } : TILL);
     return { forEach: (cb) => { for (const k of keys) if (cb({ key: k, val: () => val(k) })) return true; return false; } };

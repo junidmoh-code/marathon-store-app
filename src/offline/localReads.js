@@ -196,7 +196,7 @@ export async function readWholeLeg(db, legName) {
  */
 export async function readPathOnce(path, liveRead) {
   try {
-    const { offlineMirrorEnabled } = await import("./mirrorFlag");
+    const { offlineMirrorEnabled } = await import("./killSwitch");
     const { isLegServing } = await import("./serving");
     const match = legFor(path);
     if (offlineMirrorEnabled() && match && isLegServing(match.leg.name)) {

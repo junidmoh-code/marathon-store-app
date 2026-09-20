@@ -18,7 +18,7 @@
 
 import { useEffect, useState } from "react";
 import { isPhotoCacheApiAvailable, openPhotoCache, readCachedPhotoUrl } from "./photoCache";
-import { offlineMirrorEnabled } from "./mirrorFlag";
+import { offlineMirrorEnabled } from "./killSwitch";
 
 let sharedCachePromise = null;
 function getSharedCache() {

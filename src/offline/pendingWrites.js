@@ -48,7 +48,7 @@
 // With the mirror flag off, every function here returns immediately and
 // records nothing.
 
-import { offlineMirrorEnabled } from "./mirrorFlag";
+import { offlineMirrorEnabled } from "./killSwitch";
 
 // COMFORTABLY LONGER THAN THE FEED TAKES. It used to equal the pass interval
 // exactly, so an echo could expire in the same breath as the confirmation it

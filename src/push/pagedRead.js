@@ -37,11 +37,29 @@
 // back an ARRAY rather than an object when the keys look like small integers.
 // DataSnapshot.forEach preserves query order and always yields child keys as
 // strings, so the cursor for the next page is correct for any key shape.
+//
+// ── startAt, NOT startAfter: startAfter SILENTLY SHORTENS EVERY PAGE ────────
+//
+// `startAfter(cursor) + limitToFirst(n)` returns n-1 children, always. The
+// limit is applied by the server, which counts the cursor's own row; the SDK
+// then drops that row on the way back. Measured against production on
+// 2026-09-20, asking for 500 four times: 500, 499, 499, 499.
+//
+// A pager that ends on "a page came back short" therefore ends on its SECOND
+// request, and reports `complete: true` while holding a fraction of the node.
+// That is not a hypothetical: this helper was used to read /insights_log
+// (112,968 rows) and returned 19,999 of them, with every all-time figure on
+// three screens computed from the fraction and nothing on screen to say so.
+//
+// So the bound is startAt — INCLUSIVE — and the cursor's own row is skipped
+// here, where it can be counted. Completeness is decided on the number of
+// children the SERVER sent, not on how many survived the skip.
 
-import { get, limitToFirst, orderByKey, query, startAfter } from "firebase/database";
+import { get, limitToFirst, orderByKey, query, startAt } from "firebase/database";
 
 /** Children per request. Small enough to bound one response, large enough that
- *  a 35-account roster is a single round trip. */
+ *  a 35-account roster is a single round trip. One slot of every page after the
+ *  first is spent re-reading the cursor's own row — see the header. */
 export const PAGE_SIZE = 200;
 
 /** Requests per read. PAGE_SIZE × MAX_PAGES is the ceiling on how much this
@@ -72,24 +90,39 @@ export async function readByKeyPages(node, opts = {}) {
   while (pages < maxPages) {
     const constraints = cursor === null
       ? [orderByKey(), limitToFirst(pageSize)]
-      : [orderByKey(), startAfter(cursor), limitToFirst(pageSize)];
+      : [orderByKey(), startAt(cursor), limitToFirst(pageSize)];
 
     const snap = await get(query(node, ...constraints));
     pages += 1;
 
-    let seen = 0;
+    let sent = 0;                 // children the SERVER returned
+    let seen = 0;                 // children that were new to us
     let last = cursor;
     // forEach, not val(): see the header. Returning nothing keeps the walk going.
     snap.forEach((child) => {
       const key = child.key;
-      if (typeof key === "string") { data[key] = child.val(); last = key; seen += 1; }
+      if (typeof key !== "string") return;
+      sent += 1;
+      // The inclusive lower bound re-sends the cursor's own row. It is already
+      // in `data`; counting it again would be harmless, but treating it as
+      // progress would not be.
+      if (key === cursor) return;
+      data[key] = child.val();
+      last = key;
+      seen += 1;
     });
 
-    // A short page is the last page. This is the ONLY exit that means "read it
-    // all" — falling out of the loop below means the budget ran out.
-    if (seen < pageSize) return { data, complete: true, pages, lastKey: last };
-    // A full page that advanced nothing would loop forever; treat it as done.
-    if (last === cursor) return { data, complete: true, pages, lastKey: last };
+    // A page the SERVER sent short is the last page. Judging this on `seen`
+    // would end the walk one request in, because the first row of every page
+    // after the first is the cursor being re-sent.
+    if (sent < pageSize) return { data, complete: true, pages, lastKey: last };
+    // A page that did not move the cursor FORWARD would loop forever. With an
+    // inclusive bound a correct server only ever returns keys >= cursor, so
+    // "did not move forward" is the whole misbehaviour test, and it covers the
+    // alternating case a plain `last === cursor` check does not.
+    if (seen === 0 || (cursor !== null && !(last > cursor))) {
+      return { data, complete: true, pages, lastKey: last };
+    }
     cursor = last;
   }
 

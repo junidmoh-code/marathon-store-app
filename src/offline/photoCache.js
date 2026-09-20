@@ -278,7 +278,9 @@ export async function primePhotoCachePass({
     attempt();
   });
 
-  const summary = { cached: 0, skipped: 0, missing: 0, evicted: 0, stopped: null };
+  // `bytes` is what this pass actually pulled from Storage. The fleet screen
+  // reports it beside the RTDB bytes, because a device's bill is both.
+  const summary = { cached: 0, skipped: 0, missing: 0, evicted: 0, bytes: 0, stopped: null };
   let processed = 0;
   let scanned = 0;
 
@@ -387,6 +389,7 @@ export async function primePhotoCachePass({
       }
 
       const bytes = blob.size ?? 0;
+      summary.bytes += bytes;
       // A single blob bigger than the WHOLE budget (a mis-generated thumbnail,
       // say) must never be cached at all — byteBudget - bytes would be
       // negative, and evictOldestUntil would try to shrink existing usage down

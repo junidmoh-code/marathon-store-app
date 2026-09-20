@@ -190,6 +190,12 @@ export function createSyncEngine({
   // "Is the app doing something a person is waiting on?" The engine defers to
   // it, but never indefinitely — see runPass.
   isBusy = () => false,
+  // "May this device re-download a leg that has lost its setup marker?"
+  // FALSE on a device whose staff have never agreed to hold a copy, because
+  // on such a device EVERY leg is missing its marker and the repair step is
+  // therefore a complete, unasked, unverified download of the whole shop.
+  // (Fable-vs-spec review, PR #624.)
+  mayRepair = () => true,
 } = {}) {
   let setupRunning = null;
 
@@ -408,7 +414,13 @@ export function createSyncEngine({
   // already be correct — where starting from the end would skip them silently
   // and for ever. Re-read what you might already have; never skip what you
   // might not.
-  async function runSetup({ force = false } = {}) {
+  // `keepGoing` is asked BETWEEN LEGS, and it is what makes a 104 MB download
+  // abandonable. The fleet kill switch can arrive in the middle of one, and a
+  // device that has been told to stop mirroring must stop DOWNLOADING too —
+  // otherwise the one control that is supposed to end an incident goes on
+  // spending money on it for several minutes. Between legs rather than
+  // mid-leg, so a leg is never half-swapped: the worst overrun is one leg.
+  async function runSetup({ force = false, keepGoing = () => true } = {}) {
     if (setupRunning) return setupRunning;
     setupRunning = (async () => {
       const startedAt = now();
@@ -431,6 +443,7 @@ export function createSyncEngine({
       const done = [];
       for (let i = 0; i < todo.length; i += 1) {
         const leg = todo[i];
+        if (!keepGoing()) return { alreadyDone: false, abandoned: true, legs: done };
         onProgress({ phase: "setup", leg: leg.name, done: i, total: todo.length });
         const res = isAppendOnly(leg)
           ? await runRangeLeg(leg)
@@ -529,7 +542,7 @@ export function createSyncEngine({
     // middle of a trading day. ONE leg per pass, smallest first, so a repair
     // cannot monopolise a device.
     try {
-      report.repaired = await repairOneLeg();
+      report.repaired = mayRepair() ? await repairOneLeg() : null;
     } catch (err) {
       report.errors.push({ where: "repair", reason: err.name, message: err.message });
     }
@@ -546,9 +559,15 @@ export function createSyncEngine({
       const res = isAppendOnly(leg)
         ? await runRangeLeg(leg)
         : await downloadSnapshotLeg(leg);
-      // Re-stamp the whole-device marker only when every leg is back.
+      // Re-stamp the whole-device marker only when every leg is back — and
+      // ask the census FIRST. A device that becomes complete through repairs
+      // reaches exactly the state the download path forces a census for, and
+      // it would otherwise not be asked again for six hours.
       if ((await setupState()).ready) {
-        await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
+        await checkCensus({ force: true }).catch(() => {});
+        if ((await setupState()).ready) {
+          await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
+        }
       }
       return { leg: leg.name, rows: res.rows };
     }

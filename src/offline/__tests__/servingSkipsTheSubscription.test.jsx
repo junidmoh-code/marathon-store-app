@@ -50,7 +50,7 @@ vi.mock("../../firebase", () => ({
 import { freshMirrorDb } from "./helpers";
 import { createFakeRtdb } from "./fakeAdapter";
 import { createSyncEngine } from "../sync";
-import { setOfflineMirrorEnabled } from "../mirrorFlag";
+import { setMirrorSwitchValue, _resetMirrorSwitchForTests } from "../killSwitch";
 import { setServingLegs, _resetServingForTests } from "../serving";
 import { _resetMirrorSignalForTests } from "../mirrorSignal";
 import { _resetMirrorDbHandleForTests } from "../mirrorDbHandle";
@@ -122,10 +122,12 @@ beforeEach(() => {
   _resetServingForTests();
   _resetMirrorSignalForTests();
   _resetMirrorDbHandleForTests();
-  setOfflineMirrorEnabled(true);
+  _resetMirrorSwitchForTests();
+  // The fleet switch is the only thing that decides whether a device mirrors.
+  setMirrorSwitchValue(true);
 });
 afterEach(() => {
-  setOfflineMirrorEnabled(false);
+  _resetMirrorSwitchForTests();
   _resetServingForTests();
 });
 
@@ -167,9 +169,9 @@ describe("a device NOT serving from its local copy", () => {
     tree.unmount();
   });
 
-  it("opens one with the FLAG OFF, however healthy the local copy is", async () => {
+  it("opens one with the SWITCH OFF, however healthy the local copy is", async () => {
     await seedMirror();
-    setOfflineMirrorEnabled(false);
+    setMirrorSwitchValue(false);
     const { usePathState } = await import("../../components/stock/useStock");
     const tree = await renderHook(() => usePathState("stock/hub1"));
     expect(onValue).toHaveBeenCalledTimes(1);
@@ -193,6 +195,59 @@ describe("a device NOT serving from its local copy", () => {
     const { usePathState } = await import("../../components/stock/useStock");
     const tree = await renderHook(() => usePathState("stock/hub1"));
     expect(onValue).toHaveBeenCalledTimes(1);
+    tree.unmount();
+  });
+});
+
+// ─── THE KILL SWITCH, AT THE ONE PLACE IT HAS TO WORK ───────────────────────
+//
+// Not "the boolean changed" — that is killSwitch.test.js. This is the claim
+// the rollout rests on: a tablet that is ALREADY rendering from its local copy,
+// left open on one screen, with nobody touching it, opens its live
+// subscription the moment the switch goes false. No reload, no navigation, no
+// remount. If this test is deleted the switch still passes every other test in
+// the suite and is a note in a runbook rather than a control.
+describe("the fleet kill switch", () => {
+  it("puts a screen that is ALREADY serving locally back on the live read, with no reload", async () => {
+    await seedMirror();
+    const { usePathState } = await import("../../components/stock/useStock");
+    const tree = await renderHook(() => usePathState("stock/hub1"));
+    expect(onValue).not.toHaveBeenCalled();          // serving locally…
+
+    await act(async () => { setMirrorSwitchValue(false); });   // …and killed
+    for (let i = 0; i < 5; i += 1) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    }
+
+    expect(onValue).toHaveBeenCalledTimes(1);
+    expect(onValue.mock.calls[0][0]).toEqual({ path: "stock/hub1" });
+    tree.unmount();
+  });
+
+  it("a device with the switch OFF never reads locally, however healthy its copy", async () => {
+    await seedMirror();
+    setMirrorSwitchValue(false);
+    const { usePathState } = await import("../../components/stock/useStock");
+    const tree = await renderHook(() => usePathState("products"));
+    expect(onValue).toHaveBeenCalledTimes(1);
+    tree.unmount();
+  });
+
+  it("and comes back onto the local copy when the switch goes back on", async () => {
+    await seedMirror();
+    setMirrorSwitchValue(false);
+    const { usePathState } = await import("../../components/stock/useStock");
+    const tree = await renderHook(() => usePathState("stock/hub1"));
+    expect(onValue).toHaveBeenCalledTimes(1);
+
+    await act(async () => { setMirrorSwitchValue(true); });
+    for (let i = 0; i < 20; i += 1) {
+      await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+      const parsed = JSON.parse(tree.toJSON().children[0]);
+      if (parsed && parsed.settled) break;
+    }
+    const rendered = JSON.parse(tree.toJSON().children[0]);
+    expect(rendered.value).toEqual({ p1: { 9: { qty: 3, v: 0 } } });
     tree.unmount();
   });
 });

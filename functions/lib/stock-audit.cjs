@@ -120,12 +120,13 @@ function saWeekday(saDate) {
 }
 
 // ── the once-a-day gate ──────────────────────────────────────────────────────
-// The scan fires every 15 minutes; this pass must run ONCE. The guard is a
-// stored SA date string, not a timestamp and not a counter: re-running the same
-// scan, a retry, an overlapping run and a redeploy all compare equal and do
-// nothing. `lastPassDate` in the FUTURE (a clock skew, a hand-edited node) must
-// not wedge the pass forever — a strict inequality would. It compares !== so a
-// wrong-direction stamp self-corrects on the next SA day.
+// The scan fires every hour, 07:00-19:00 SAST; this pass must run ONCE. The
+// guard is a stored SA date string, not a timestamp and not a counter:
+// re-running the same scan, a retry, an overlapping run and a redeploy all
+// compare equal and do nothing. `lastPassDate` in the FUTURE (a clock skew, a
+// hand-edited node) must not wedge the pass forever — a strict inequality
+// would. It compares !== so a wrong-direction stamp self-corrects on the next
+// SA day.
 function shouldRunDailyPass({ nowMs, lastPassDate, passHour = DEFAULTS.passHour }) {
   const saDate = saDateStringFromMs(nowMs);
   if (saHour(nowMs) < passHour) return { run: false, saDate, why: "before_pass_hour" };
