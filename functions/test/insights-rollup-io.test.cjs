@@ -22,15 +22,23 @@ const test = require("node:test");
 const assert = require("node:assert");
 const { makeIo } = require("../insightsRollup/io.cjs");
 
-/** A database that reproduces the null-first behaviour and the priming cure. */
+/** A database that reproduces the null-first behaviour and the cure.
+ *
+ *  The cure is NOT once() — that fetches and keeps nothing, and against
+ *  production the transaction still saw null. It is holding a LISTENER open
+ *  across the transaction, which is what makes the SDK keep the server's value
+ *  in the cache. So that is what this fake models: `on` primes, `once` does
+ *  not. A fake where once() primed would have let the broken version pass. */
 function fakeDb(initial) {
   let server = initial;
   const primed = new Set();
   const seen = [];
   const refFor = (path) => ({
-    async once() { primed.add(path); return { val: () => server }; },
+    on(_evt, _cb) { primed.add(path); },
+    off(_evt, _cb) { primed.delete(path); },
+    async once() { return { val: () => server }; },
     async transaction(fn) {
-      // The cache is cold unless once() has run against this path.
+      // The cache is cold unless a listener is attached to this path.
       const first = primed.has(path) ? server : null;
       seen.push(first);
       let out = fn(first);

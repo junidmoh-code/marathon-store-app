@@ -105,14 +105,30 @@ function makeIo(db) {
       // would have stayed at wherever the backfill left it, every run would
       // re-walk a growing backlog, and the counter would never move.
       //
-      // Priming with once("value") is the documented answer — it puts the
-      // server's value in the cache, so the first invocation sees the real
-      // one. This project has met this before
-      // (reference-attribute-extraction-traps: "RTDB txn null-first").
-      await ref.once("value");
+      // once("value") is NOT enough, which was the second thing this taught:
+      // it fetches, but it keeps nothing, so the cache is cold again by the
+      // time the transaction starts. Measured against production — the run
+      // still reported "saw a null after priming".
+      //
+      // What does work is holding a LISTENER open across the transaction. With
+      // an active on("value") the SDK keeps the node's server value, and the
+      // update function is called with it rather than with null. The listener
+      // is detached in a finally, so a throw cannot leak it.
+      // (This project has met the null-first trap before —
+      // reference-attribute-extraction-traps.)
+      const noop = () => {};
+      ref.on("value", noop);
+      try {
+        await ref.once("value");
+        return await runAdvance();
+      } finally {
+        ref.off("value", noop);
+      }
 
+      // eslint-disable-next-line no-unreachable
+      async function runAdvance() {
       let sawNullFirst = false;
-      const res = await ref.transaction((meta) => {
+      const resP = ref.transaction((meta) => {
         // A null here AFTER priming means one of two things: the node really
         // is empty, or this is the cache talking anyway. If we expected a
         // cursor, it cannot be the former — so abort rather than write a
@@ -136,10 +152,12 @@ function makeIo(db) {
           },
         };
       });
+      const res = await resP;
       if (!res.committed && sawNullFirst) {
-        console.warn("insightsRollup: cursor advance saw a null /insights_rollup/meta after priming — not advancing");
+        console.warn("insightsRollup: cursor advance saw a null /insights_rollup/meta even with a listener open — not advancing");
       }
       return !!res.committed;
+      }
     },
 
     async commit({ updates }) {
