@@ -20,7 +20,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const {
   runSweep, buildDay, datesToBuild, keyRangeForDate, saDateOf, shiftSaDate,
-  pushKeyForMs, DAYS_PATH, LATE_PATH, CURSOR_PATH, BUILT_PATH, CATCHUP_PAGE,
+  pushKeyForMs, DAYS_PATH, LATE_PATH, CURSOR_PATH, BUILT_PATH, INDEX_PATH, CATCHUP_PAGE,
 } = require("../insightsRollup/builder.cjs");
 const { expandDay, keptFieldsOf } = require("../insightsRollup/rollupCodec.cjs");
 
@@ -258,4 +258,23 @@ test("a row with NO usable timestamp is kept, in the undated bucket", async () =
   assert.strictEqual(io.commits[0][`${LATE_PATH}/undated/${rows[1].key}`].productName, "Bad");
   // …and no day node was invented for it.
   assert.strictEqual(io.commits[0][`${DAYS_PATH}/`], undefined);
+});
+
+test("the index carries per-store counts, because the sidebar total is not the window's", async () => {
+  // "N events in view" is every event the store has ever logged. A screen that
+  // loaded one day could not produce it from the day it loaded, and loading all
+  // of history to render one number is the cost this change exists to remove.
+  const rows = makeLog([
+    sale(Date.parse("2026-09-19T08:00:00.000Z"), { destShop: "marathon-pe" }),
+    sale(Date.parse("2026-09-19T08:01:00.000Z"), { destShop: "trophy" }),
+    sale(Date.parse("2026-09-19T08:02:00.000Z"), { placedAtHub: "hub3" }),
+    sale(Date.parse("2026-09-19T08:03:00.000Z"), { destShop: "somewhere-new" }),
+  ]);
+  const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
+  await runSweep({ io, nowMs: NOW });
+
+  const idx = io.commits[0][`${INDEX_PATH}/2026-09-19`];
+  assert.deepStrictEqual(idx, { n: 4, pe: 1, trophy: 1, pine: 1, other: 1 });
+  // The three store filters plus the unfiltered remainder add up to the day.
+  assert.strictEqual(idx.pe + idx.trophy + idx.pine + idx.other, idx.n);
 });

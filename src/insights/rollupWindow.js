@@ -157,6 +157,14 @@ function liveRange(startMs, endMs) {
   };
 }
 
+/** The live range covering one whole SA day. Used when a day's node exists but
+ *  will not expand — an unknown shape, a dangling dictionary index — and the
+ *  day has to be read from the log instead. */
+export function liveRangeFor(dateStr) {
+  const s = saDayStartMs(dateStr);
+  return liveRange(s, s + DAY_MS);
+}
+
 /** [startMs, endMs) minus the covered intervals, as a list of gaps. */
 export function gapsOutside(startMs, endMs, covered) {
   const sorted = covered.slice().sort((a, b) => a[0] - b[0]);

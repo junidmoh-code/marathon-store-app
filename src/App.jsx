@@ -28,6 +28,7 @@ import { MirroredImg } from "./offline/MirroredImg.jsx";
 import { notePendingUpdate } from "./offline/pendingWrites";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
+import { useInsightsWindow } from "./insights/useInsightsWindow";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
@@ -1236,6 +1237,24 @@ function useInsightsLogRecentDays(days) {
   return log;
 }
 
+// The sentinels InsightsView already uses for its All Time period, hoisted so
+// the two all-time screens ask for the same window in the same words.
+const ALL_TIME_START = "0000-01-01T00:00:00.000Z";
+const ALL_TIME_END   = "9999-12-31T23:59:59.999Z";
+
+// The SA date, re-stamped on a slow tick. A window read is an effect, and a
+// millisecond clock as its dependency would re-run it on every render; a till
+// is also left open across midnight, so the boundary still has to move. Same
+// pattern as useInsightsLogRecentDays.
+function useSaDayTick() {
+  const [day, setDay] = useState(() => saDateString());
+  useEffect(() => {
+    const t = setInterval(() => setDay(saDateString()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return day;
+}
+
 // ─── SOUTH AFRICA TIME HELPERS ────────────────────────────────────────────────
 // Server-anchored (see src/utils/serverTime.js). These are load-bearing in BOTH
 // directions: getSADateString() stamps the restock log's `date` AND decides what
@@ -2249,7 +2268,19 @@ const CUSTOMERS_SESSION_KEY = "customersAuth";
 
 function CustomersView({ onExit }) {
   const [tab, setTab] = usePersistedTab("customers", "insights");
-  const insightsLog  = useInsightsLog();
+  // ALL-TIME, and it has to be: the customer list is every `placed` event ever,
+  // deduplicated by phone, and the stats walk the same set. What changes is
+  // where it comes from — rollup day nodes plus a bounded read for today,
+  // rather than 35.99 MB of /insights_log on every mount.
+  const customersSaDay = useSaDayTick();
+  const customersAuthReady = useAuthReady();
+  const { log: insightsLog } = useInsightsWindow({
+    startIso: ALL_TIME_START,
+    endIso: ALL_TIME_END,
+    allTime: true,
+    enabled: customersAuthReady,
+    saDay: customersSaDay,
+  });
   const customersDb  = useCustomersDb();
   const broadcasts   = useBroadcastHistory();
   const returnsLog   = useReturnsLog();
@@ -5977,7 +6008,19 @@ function AdminView({ products, orders, onExit }) {
   // Insights log → fuels the detail page's "Last sold X · N orders all-time"
   // context line. orders[] alone isn't enough — it's daily-counter-ephemeral
   // (see project-insights-past-days-pattern memory).
-  const insightsLog = useInsightsLog();
+  //
+  // All-time, from the rollup: the line is a count and a most-recent timestamp
+  // over every event this product has, so the window cannot be narrowed. The
+  // 35.99 MB whole-node read it used to make can.
+  const adminSaDay = useSaDayTick();
+  const adminAuthReady = useAuthReady();
+  const { log: insightsLog } = useInsightsWindow({
+    startIso: ALL_TIME_START,
+    endIso: ALL_TIME_END,
+    allTime: true,
+    enabled: adminAuthReady,
+    saDay: adminSaDay,
+  });
   // Desktop workspace gate (≥1024px). Mobile keeps the single column.
   const isWide = !useIsNarrow(1024);
 
@@ -18445,10 +18488,73 @@ function InsightsView({ onExit }) {
   const [storeFilter, setStoreFilter] = useState("all");
   const [auditOpen,  setAuditOpen]  = useState(false);
   const touchStartX = useRef(null);
-  const log        = useInsightsLog();
   const returnsLog = useReturnsLog();
   const products   = useProducts();
   const orders     = useOrders();
+
+  // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
+  const { filterStart, filterEnd, filterLabel } = useMemo(() => {
+    // All Time short-circuit — sentinel ISO strings that pass every
+    // existing `iso >= filterStart && iso < filterEnd` comparison in tabs.
+    // Day-mode special branches naturally skip because filterMode !== "day".
+    if (filterMode === "all") {
+      return {
+        filterStart: "0000-01-01T00:00:00.000Z",
+        filterEnd:   "9999-12-31T23:59:59.999Z",
+        filterLabel: "All Time",
+      };
+    }
+    const base = dateStrToLocal(filterDate);
+    let start, end, label;
+    if (filterMode === "day") {
+      start = new Date(base); start.setHours(0,0,0,0);
+      end   = new Date(base); end.setDate(end.getDate()+1); end.setHours(0,0,0,0);
+      label = filterDate === getSADateString() ? "today"
+        : base.toLocaleDateString([], { day:"numeric", month:"short", year:"numeric" });
+    } else if (filterMode === "week") {
+      const dow = (base.getDay()+6)%7;
+      start = new Date(base); start.setDate(base.getDate()-dow); start.setHours(0,0,0,0);
+      end   = new Date(start); end.setDate(start.getDate()+7);
+      const sunday = new Date(end.getTime()-1);
+      const fmt = d => `${d.getDate()} ${_MONTHS[d.getMonth()].slice(0,3)}`;
+      label = `${fmt(start)} – ${fmt(sunday)}`;
+    } else if (filterMode === "month") {
+      start = new Date(base.getFullYear(), base.getMonth(), 1);
+      end   = new Date(base.getFullYear(), base.getMonth()+1, 1);
+      label = `${_MONTHS[base.getMonth()]} ${base.getFullYear()}`;
+    } else {
+      // year
+      start = new Date(base.getFullYear(), 0, 1);
+      end   = new Date(base.getFullYear()+1, 0, 1);
+      label = `${base.getFullYear()}`;
+    }
+    return { filterStart: start.toISOString(), filterEnd: end.toISOString(), filterLabel: label };
+  }, [filterMode, filterDate]);
+
+  // ─── THE LOG, WINDOWED ────────────────────────────────────────────────────
+  // This used to be `useInsightsLog()` — all 35.99 MB of /insights_log, on
+  // every mount, whichever period was selected. It now reads the window that
+  // is actually on screen: rollup nodes for the finished days, a bounded live
+  // read for today and for a partial day at an edge. Same events, same order,
+  // same numbers (src/insights/rollupWindow.test.js proves that against a real
+  // trading day); the selectors below are untouched.
+  //
+  // saDay, not a clock: this is an effect dependency, and a till is left open
+  // across midnight, so the day boundary has to move without the read re-running
+  // on every render. Same pattern as useInsightsLogRecentDays.
+  const [insightsSaDay, setInsightsSaDay] = useState(() => saDateString());
+  useEffect(() => {
+    const t = setInterval(() => setInsightsSaDay(saDateString()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  const insightsAuthReady = useAuthReady();
+  const { log, totals: logTotals } = useInsightsWindow({
+    startIso: filterStart,
+    endIso: filterEnd,
+    allTime: filterMode === "all",
+    enabled: insightsAuthReady,
+    saDay: insightsSaDay,
+  });
 
   // Pre-filter the three event streams by storeFilter so every downstream
   // tab/audit consumes an already-narrowed slice. dedupeByOrderNumber and
@@ -18467,6 +18573,19 @@ function InsightsView({ onExit }) {
     return (e) => e && (e.destShop === "marathon-pe" || (e.destShop == null && e.placedAtHub !== "hub3")); // marathon-pe
   }, [storeFilter]);
   const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
+  // ─── "N EVENTS IN VIEW" IS NOT THE WINDOW'S COUNT ────────────────────────
+  // It never was: it counted every event this store has ever logged, sliced by
+  // the store filter, whatever period was selected. The log array no longer
+  // holds all of history, so the number comes from the rollup's day index plus
+  // today — which is the same arithmetic over the same events, and a few KB
+  // instead of 35.99 MB. Before the rollup exists it falls back to counting
+  // what is loaded, which is what the old expression did.
+  const allTimeEventCount = useMemo(() => {
+    if (!logTotals) return filteredLog.length;
+    if (storeFilter === "all") return logTotals.n;
+    const key = storeFilter === "marathon-pe" ? "pe" : storeFilter;
+    return Number(logTotals[key]) || 0;
+  }, [logTotals, storeFilter, filteredLog.length]);
   const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
   const filteredOrders     = useMemo(() => orders.filter(matchesStore),      [orders, matchesStore]);
 
@@ -18542,44 +18661,6 @@ function InsightsView({ onExit }) {
     };
   }, [filteredOrders, filteredReturnsLog]);
 
-  // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
-  const { filterStart, filterEnd, filterLabel } = useMemo(() => {
-    // All Time short-circuit — sentinel ISO strings that pass every
-    // existing `iso >= filterStart && iso < filterEnd` comparison in tabs.
-    // Day-mode special branches naturally skip because filterMode !== "day".
-    if (filterMode === "all") {
-      return {
-        filterStart: "0000-01-01T00:00:00.000Z",
-        filterEnd:   "9999-12-31T23:59:59.999Z",
-        filterLabel: "All Time",
-      };
-    }
-    const base = dateStrToLocal(filterDate);
-    let start, end, label;
-    if (filterMode === "day") {
-      start = new Date(base); start.setHours(0,0,0,0);
-      end   = new Date(base); end.setDate(end.getDate()+1); end.setHours(0,0,0,0);
-      label = filterDate === getSADateString() ? "today"
-        : base.toLocaleDateString([], { day:"numeric", month:"short", year:"numeric" });
-    } else if (filterMode === "week") {
-      const dow = (base.getDay()+6)%7;
-      start = new Date(base); start.setDate(base.getDate()-dow); start.setHours(0,0,0,0);
-      end   = new Date(start); end.setDate(start.getDate()+7);
-      const sunday = new Date(end.getTime()-1);
-      const fmt = d => `${d.getDate()} ${_MONTHS[d.getMonth()].slice(0,3)}`;
-      label = `${fmt(start)} – ${fmt(sunday)}`;
-    } else if (filterMode === "month") {
-      start = new Date(base.getFullYear(), base.getMonth(), 1);
-      end   = new Date(base.getFullYear(), base.getMonth()+1, 1);
-      label = `${_MONTHS[base.getMonth()]} ${base.getFullYear()}`;
-    } else {
-      // year
-      start = new Date(base.getFullYear(), 0, 1);
-      end   = new Date(base.getFullYear()+1, 0, 1);
-      label = `${base.getFullYear()}`;
-    }
-    return { filterStart: start.toISOString(), filterEnd: end.toISOString(), filterLabel: label };
-  }, [filterMode, filterDate]);
 
   // Build name → { photoUrl, photo } lookup for thumbnail display in every tab.
   // Also indexes by normalized name (lowercase, collapsed spaces, no spaces around
@@ -18693,7 +18774,7 @@ function InsightsView({ onExit }) {
           })}
           <div style={{ flex:1 }} />
           <div style={{ padding:"9px 11px", borderRadius:11, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", fontSize:11, color:"rgba(233,238,255,.5)" }}>
-            <span style={{ color:"#9DBCFF", fontWeight:800, fontVariantNumeric:"tabular-nums" }}>{filteredLog.length.toLocaleString()}</span> events in view
+            <span style={{ color:"#9DBCFF", fontWeight:800, fontVariantNumeric:"tabular-nums" }}>{allTimeEventCount.toLocaleString()}</span> events in view
           </div>
         </aside>
 
@@ -18732,7 +18813,7 @@ function InsightsView({ onExit }) {
           </svg>
           <div style={{ fontSize:12, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>INTERNAL INSIGHTS</div>
         </div>
-        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{filteredLog.length} entries</div>
+        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{allTimeEventCount} entries</div>
       </div>
       {/* Store filter — All / Marathon PE / Trophy / Pine. Hidden on the AI
           Reorder tab (global analysis, not store-sliced). */}

@@ -173,7 +173,7 @@ async function main() {
     await io.commit({
       updates: {
         [built.path]: built.node,
-        [`${INDEX_PATH}/${date}`]: built.rows,
+        [`${INDEX_PATH}/${date}`]: built.counts,
       },
     });
     done += 1;

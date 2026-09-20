@@ -86,10 +86,16 @@ const LATE_PATH = `${ROLLUP_ROOT}/late`;
  *  accident — it has to be asked for. */
 const UNDATED_BUCKET = "undated";
 const CURSOR_PATH = `${ROLLUP_ROOT}/meta/cursor`;
-// A tiny index of which days have a node, and how many rows each holds. It
-// exists so "which days are missing?" is a 3 KB read of short keys rather than
-// a walk of the day nodes themselves, which would download the entire rollup
-// once a run to answer a question about its index.
+// A tiny index of which days have a node, and how many rows each holds — as a
+// whole and per store. It exists for two readers:
+//
+//   · the sweep, so "which days are missing?" is a 3 KB read of short keys
+//     rather than a walk of the day nodes, which would download the entire
+//     rollup once a run to answer a question about its index;
+//   · the Insights sidebar, whose "N events in view" is NOT the window's count
+//     but every event the store has ever logged. A screen that loads one day
+//     cannot produce that from the day it loaded, and loading all of history to
+//     render one number is the cost this whole change exists to remove.
 const INDEX_PATH = `${ROLLUP_ROOT}/meta/built`;
 const BUILT_PATH = `${ROLLUP_ROOT}/meta/lastBuild`;
 
@@ -168,7 +174,12 @@ async function buildDay(io, dateStr) {
     anchorMs: saDayStartMs(dateStr),
     cursorEnd: page.length ? page[page.length - 1].key : null,
   });
-  return { path: `${DAYS_PATH}/${dateStr}`, node, rows: rows.length };
+  return {
+    path: `${DAYS_PATH}/${dateStr}`,
+    node,
+    rows: rows.length,
+    counts: { n: rows.length, ...node.byStore },
+  };
 }
 
 /**
@@ -249,7 +260,7 @@ async function runSweep({ io, nowMs, log = () => {} }) {
   for (const d of dates) {
     const built = await buildDay(io, d);
     updates[built.path] = built.node;
-    updates[`${INDEX_PATH}/${d}`] = built.rows;
+    updates[`${INDEX_PATH}/${d}`] = built.counts;
     rows += built.rows;
   }
   // The cursor moves only in the same atomic update as the nodes the walk
