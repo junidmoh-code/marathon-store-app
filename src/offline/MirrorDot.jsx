@@ -83,7 +83,11 @@ export function MirrorDot({ style }) {
       // twenty seconds reads as a bar that has stopped.
       timer = setInterval(() => refresh(rt), 20_000);
       const fast = setInterval(() => {
-        if (rt.state?.downloading) refresh(rt); else clearInterval(fast);
+        // `cancelled` as well as the download's own end: this interval is
+        // assigned AFTER an await, so an unmount that lands in between would
+        // leave the cleanup below with nothing to clear.
+        if (cancelled || !rt.state?.downloading) clearInterval(fast);
+        else refresh(rt);
       }, 3_000);
       fastTimer = fast;
     })();
