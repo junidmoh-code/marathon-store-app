@@ -26,17 +26,52 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../firebase", () => ({ database: { __db: true } }));
 
-const { insightsLogQueries } = await import("./InsightsLogProvider");
+const { insightsLogQueries, openInsightsLog } = await import("./InsightsLogProvider");
 const { readByKeyPages } = await import("../push/pagedRead");
-const { get, onValue } = await import("firebase/database");
+const { get, onValue, onChildAdded } = await import("firebase/database");
 
 const mods = (q) => q.__mods.map((m) => m.__mod);
 
 describe("the all-time /insights_log reader", () => {
   it("never calls onValue on the node — that is the read the rule refuses", async () => {
-    // The provider module has been imported; nothing at module scope may have
-    // opened a bare subscription, and openInsightsLog must not use onValue.
+    // RUN it. An assertion made only at import time would stay green with a
+    // bare `onValue(ref(db,"insights_log"))` sitting unexecuted inside
+    // openInsightsLog, which is a test that proves nothing.
+    calls.length = 0;
+    onValue.mockClear();
+    get.mockImplementation(async () => ({ forEach: () => false }));
+
+    const stop = openInsightsLog(() => {});
+    await vi.waitFor(() => expect(onChildAdded).toHaveBeenCalled());
+    stop();
+
     expect(onValue).not.toHaveBeenCalled();
+    // and every query it did issue carries a modifier
+    for (const q of calls) {
+      expect(q.__ref).toBe("insights_log");
+      expect(q.__mods.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("the tail it actually opens is bounded below, and the walk is limited", async () => {
+    calls.length = 0;
+    let n = 0;
+    get.mockImplementation(async () => {
+      const keys = n++ === 0 ? ["-KA", "-KB"] : [];
+      return { forEach: (cb) => { for (const k of keys) cb({ key: k, val: () => ({ k }) }); return false; } };
+    });
+    onChildAdded.mockClear();
+
+    const stop = openInsightsLog(() => {});
+    await vi.waitFor(() => expect(onChildAdded).toHaveBeenCalled());
+    stop();
+
+    const tailQuery = onChildAdded.mock.calls[0][0];
+    expect(mods(tailQuery)).toEqual(["orderByKey", "startAt"]);
+    // The bound sits at or below where the walk ended — never above it, which
+    // is what would silently drop a backdated row.
+    expect(tailQuery.__mods.find((m) => m.__mod === "startAt").value <= "-KB").toBe(true);
+    for (const q of calls) expect(mods(q)).toContain("orderByKey");
   });
 
   it("pages the history with orderByKey + limitToFirst, and a cursor after that", async () => {

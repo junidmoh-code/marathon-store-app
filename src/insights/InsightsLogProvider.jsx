@@ -64,24 +64,25 @@ function shapeLog(data) {
 // The read rule keys on `query.startAt`. `startAfter(k)` is the SDK's own
 // construction and there is no rule variable that is guaranteed to name it, so
 // a tail built on it could be refused by a rule that a tail built on startAt
-// plainly satisfies. startAt is inclusive, so the tail re-delivers the one row
-// the history walk ended on; openTail is told which key that is and drops it.
-// One duplicated row of about 300 bytes, in exchange for a read whose shape the
-// rule can see. (See RULES-INSIGHTS-LOG-QUERY.md.)
+// plainly satisfies. (See RULES-INSIGHTS-LOG-QUERY.md.) The bound is inclusive
+// and deliberately sits BELOW where the walk ended — see insightsLogWholeRead.js
+// — so the reader drops what it already has by key.
 export const insightsLogQueries = {
   tail: ({ after }) => query(ref(database, "insights_log"), orderByKey(), startAt(after)),
 };
 
-function openInsightsLog(onData) {
+// EXPORTED so the query-shape test can actually CALL it. A test that only
+// imported the module could assert "onValue was never called" while a bare
+// whole-node read sat unexecuted inside this function — vacuous, and exactly
+// the class of test this project has been bitten by before. (Fable-vs-spec
+// review.)
+export function openInsightsLog(onData) {
   return readWholeLogBounded(onData, {
     readAll: () => readByKeyPages(ref(database, "insights_log"), {
       pageSize: PAGE_SIZE, maxPages: MAX_PAGES,
     }),
-    openTail: ({ after, skipKey }, onRow) =>
-      onChildAdded(insightsLogQueries.tail({ after }), (child) => {
-        if (skipKey !== null && child.key === skipKey) return;
-        onRow(child.val());
-      }),
+    openTail: ({ after }, onRow) =>
+      onChildAdded(insightsLogQueries.tail({ after }), (child) => onRow(child.key, child.val())),
   });
 }
 
