@@ -78,6 +78,12 @@ function makeIo(db) {
     // a shorter walk would drag the cursor backwards so the next run re-walks
     // and re-adds. A transaction that refuses unless the cursor is still where
     // the run found it makes the fold exactly-once.
+    // SCOPE NOTE: the transaction is applied to /insights_rollup/meta, which
+    // also holds the day index. That is fine today — the whole node is about
+    // 9 KB and a transaction re-reads and retries on conflict, so a concurrent
+    // index write is not clobbered — but it is the reason not to put anything
+    // LARGE under meta. A big node here would make every sweep read and
+    // rewrite it four times a day.
     async advanceCursor({ expect, cursor, seen, at }) {
       const ref = db.ref(`${ROLLUP_ROOT}/meta`);
       const res = await ref.transaction((meta) => {
