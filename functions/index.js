@@ -1801,6 +1801,23 @@ exports.analyzeReorderNeeds = onCall(
       }
 
       // ── 2. Load full operational history in parallel.
+      //
+      // /insights_log is read WHOLE here, deliberately, and it is the last
+      // whole-node read of it left in the project.
+      //
+      // It cannot be narrowed by a key range: the planner's inputs include
+      // per-product ALL-TIME totals (totalSales, salesPerDay over the product's
+      // whole life) alongside the REORDER_RECENT_DAYS window, so a bounded
+      // window would change the numbers the model is given.
+      //
+      // It COULD be served from /insights_rollup — about 10 MB of day nodes
+      // against 35.99 MB — and that is worth doing. It is not done here, for
+      // two reasons stated rather than implied: this function is inside the
+      // refill engine's maintenance-mode governance, which wants evidence
+      // before a change; and it does not appear in the measured cost at all
+      // (the cost watcher's table for 2026-09-20 has no line for it), so it
+      // would be a change made against no measurement. Deferred, not
+      // overlooked. (Fable-vs-spec review.)
       let productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap;
       try {
         [productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap] = await Promise.all([
@@ -2952,6 +2969,11 @@ exports.generateProductPhotos = onCall(
 const CHAT_MODEL                  = "claude-sonnet-4-6";
 const CHAT_MAX_TOKENS             = 4096;
 const CHAT_CONTEXT_RECENT_LIMIT   = 100;
+// How many rows the bounded read pulls before the newest CHAT_CONTEXT_RECENT_LIMIT
+// are picked out of them by timestamp. Twenty times the slice — about two days
+// of trading — so the key/timestamp disagreement on this node cannot change
+// which hundred the model sees.
+const CHAT_CONTEXT_FETCH          = 2000;
 const CHAT_ALLOWED_ORIGINS = new Set([
   "https://marathon-club-ai.web.app",
   "http://localhost:5174",
@@ -3030,13 +3052,25 @@ exports.chatStream = onRequest(
     }
 
     // ── Load live context. RTDB reads under Admin SDK bypass security rules.
+    //
+    // /insights_log is read BOUNDED. This used to be once("value") on the whole
+    // node — 35.99 MB, per chat turn — to hand the model its newest 100 rows.
+    // The Admin SDK bypasses the rule that would refuse that shape, but the
+    // egress is the same egress, and this project's largest bill is egress.
+    //
+    // limitToLast(CHAT_CONTEXT_FETCH) by KEY, then the same sort-by-timestamp
+    // and slice the prompt builder always did. Key order and timestamp order
+    // disagree by up to a few minutes on this node, so the fetch is twenty
+    // times the slice — two days of trading against a hundred rows — and the
+    // hundred that come out are the same hundred.
     const db = admin.database();
-    let ordersSnap, logsSnap, planSnap;
+    let ordersSnap, logsSnap, planSnap, totalsSnap;
     try {
-      [ordersSnap, logsSnap, planSnap] = await Promise.all([
+      [ordersSnap, logsSnap, planSnap, totalsSnap] = await Promise.all([
         db.ref("orders").once("value"),
-        db.ref("insights_log").once("value"),
+        db.ref("insights_log").orderByKey().limitToLast(CHAT_CONTEXT_FETCH).once("value"),
         db.ref("insights/reorderPlan/latest").once("value"),
+        db.ref("insights_rollup/meta/logTotals").once("value"),
       ]);
     } catch (err) {
       console.error("chatStream: context read failed:", err.message);
@@ -3047,7 +3081,11 @@ exports.chatStream = onRequest(
     const logs   = logsSnap.val()   || {};
     const plan   = planSnap.val()   || null;
     const ordersCount = Object.keys(orders).length;
-    const logsCount   = Object.keys(logs).length;
+    // "of N total" in the prompt. The bounded read cannot know it, so it comes
+    // from the rollup's running counter; with no counter the prompt says how
+    // many rows it is looking at rather than inventing a total.
+    const logTotals = totalsSnap.val();
+    const logsCount   = Number(logTotals && logTotals.n) || Object.keys(logs).length;
     const ordersSent  = Math.min(ordersCount, CHAT_CONTEXT_RECENT_LIMIT);
     const logsSent    = Math.min(logsCount,   CHAT_CONTEXT_RECENT_LIMIT);
 

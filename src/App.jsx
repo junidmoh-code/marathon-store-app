@@ -18560,15 +18560,29 @@ function InsightsView({ onExit }) {
   //
   // saDay, not a clock: this is an effect dependency, and a till is left open
   // across midnight, so the day boundary has to move without the read re-running
-  // on every render. Same pattern as useInsightsLogRecentDays.
-  const [insightsSaDay, setInsightsSaDay] = useState(() => saDateString());
-  useEffect(() => {
-    const t = setInterval(() => setInsightsSaDay(saDateString()), 60_000);
-    return () => clearInterval(t);
-  }, []);
+  // on every render. Same helper the other two all-time screens use.
+  const insightsSaDay = useSaDayTick();
   const insightsAuthReady = useAuthReady();
+  // ── THE WINDOW IS WIDER THAN THE ONE ON SCREEN, ON PURPOSE ───────────────
+  // The Overview KPIs carry a "vs previous" figure, and it is computed by
+  // running the same selectors over the PREVIOUS equal-length window
+  // (InsightOverviewTab's `deltas`). With an array holding only the selected
+  // period those chips read zero and vanish — a rendered figure quietly
+  // changing, which is the one thing this work is not allowed to do. So the
+  // read covers the period AND the period before it, and every selector still
+  // filters to its own bounds exactly as before. (Fable-vs-spec review.)
+  const logStart = useMemo(() => {
+    const a = Date.parse(filterStart);
+    const b = Date.parse(filterEnd);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return filterStart;
+    const prev = a - (b - a);
+    // The All Time sentinel is already before everything; doubling it just
+    // overflows into an unusable date.
+    if (!Number.isFinite(prev) || prev < 0) return filterStart;
+    return new Date(prev).toISOString();
+  }, [filterStart, filterEnd]);
   const { log, totals: logTotals } = useInsightsWindow({
-    startIso: filterStart,
+    startIso: logStart,
     endIso: filterEnd,
     allTime: filterMode === "all",
     enabled: insightsAuthReady,

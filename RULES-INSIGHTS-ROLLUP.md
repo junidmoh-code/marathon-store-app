@@ -12,15 +12,20 @@ depends on the other having landed.
 ## What the node is
 
 One child per finished South African day, at `/insights_rollup/days/{YYYY-MM-DD}`,
-holding that day's `/insights_log` rows dictionary-encoded. Measured on a real
-trading day, 2026-09-18: **338,270 bytes → 72,439**, with every row intact.
+holding that day's `/insights_log` rows dictionary-encoded.
+
+Measured on the live node after the backfill: **139 days, 112,968 rows,
+7.43 MB of rollup, 54.7 KB a day**, against 35.99 MB for the log itself. One
+busy day (2026-09-18, 1,030 rows) is 335,409 bytes of log and 72,085 bytes of
+rollup.
 
 Alongside it:
 
 | Path | What it holds | Who reads it |
 |---|---|---|
 | `/insights_rollup/days/{date}` | the day's rows, encoded | Insights, Customers, the Admin product line |
-| `/insights_rollup/meta/built/{date}` | `{n, pe, trophy, pine, other}` — how many rows that day holds, per store | the sweep (which days are missing), and the Insights sidebar's "N events in view" |
+| `/insights_rollup/meta/built/{date}` | `{n, pe, trophy, pine, other}` — how many rows that day holds, per store | the sweep: which days are missing |
+| `/insights_rollup/meta/logTotals` | the whole log's running per-store counts, stamped with the cursor they are exact as far as | the Insights sidebar's "N events in view" |
 | `/insights_rollup/meta/cursor` | the sweep's high-water push key | the sweep |
 | `/insights_rollup/meta/lastBuild` | what the last run did | people |
 | `/insights_rollup/late/{date}/{pushKey}` | a row written far later than its own day, or with no usable timestamp | the readers, merged in |
@@ -80,11 +85,26 @@ So the order is whatever is convenient:
 
 1. paste this block;
 2. `firebase deploy --only functions:insightsRollupSweep`;
-3. `node scripts/backfill-insights-rollup.mjs --dry-run`, then without it;
+3. `node scripts/backfill-insights-rollup.mjs --dry-run`, then without it
+   (one pass, about 160 MB of server-side reads, roughly $0.15);
 4. deploy hosting.
 
 Until step 3 finishes there is no rollup to read and every window is served
 live — correct, and costing what it costs today.
+
+## Verifying it landed
+
+The running counter and the day index are built by two different passes over
+the same log, so they cross-check each other. Run 2026-09-20, after the
+backfill:
+
+```
+day index (139 finished days)   112,968   pe 88,121  trophy 10,362  pine 14,485
+running counter (whole log)     113,608   pe 88,653  trophy 10,425  pine 14,530
+difference                          640   pe    532  trophy     63  pine     45
+```
+
+The difference is today, which is never rolled up. Every column agrees.
 
 ## Rollback
 

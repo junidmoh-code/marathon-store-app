@@ -6,7 +6,7 @@
 //
 // ── IT IS RESUMABLE, AND THAT IS NOT A CONVENIENCE ─────────────────────────
 //
-// The log spans about 140 days and 35.99 MB. A pass that has to start over
+// The log spans 139 finished days and 35.99 MB. A pass that has to start over
 // because a laptop slept is a pass nobody finishes. So progress is the DATA:
 // after each day is written, /insights_rollup/meta/built/{date} exists, and a
 // re-run skips every date that already has an entry. Kill it and run it again
@@ -40,13 +40,20 @@
 // the log, which is what the sweep needs to start following only what is new
 // instead of rediscovering all of history on its first run.
 //
-// That walk is the one expensive thing here: ~35.99 MB, about $0.03, once.
-// --skip-walk is for a re-run that only needs to finish building days.
+// The walk also seeds the running per-store counter the Insights sidebar's
+// all-time total is read from (/insights_rollup/meta/logTotals). It has to be
+// the walk that does it: the walk is the only pass that sees every row exactly
+// once, and summing the day index instead would omit every late row, every
+// undated row and every day not yet built.
+//
+// --skip-walk is for a re-run that only needs to finish building days. It
+// leaves the counter alone rather than writing a wrong one.
 //
 //   node scripts/backfill-insights-rollup.mjs --dry-run
 //   node scripts/backfill-insights-rollup.mjs
 //   node scripts/backfill-insights-rollup.mjs --from 2026-05-01 --to 2026-06-30
 //   node scripts/backfill-insights-rollup.mjs --force
+//   node scripts/backfill-insights-rollup.mjs --recount --skip-days
 
 import { createRequire } from "module";
 import { adminRequire } from "./adminRequire.mjs";
@@ -57,8 +64,10 @@ const admin = require("firebase-admin");
 const localRequire = createRequire(import.meta.url);
 const {
   buildDay, saDateStringOf, saDateOf, shiftSaDate, isWithinDayRange,
-  DAYS_PATH, INDEX_PATH, LATE_PATH, UNDATED_BUCKET, CURSOR_PATH, CATCHUP_PAGE,
+  DAYS_PATH, INDEX_PATH, LATE_PATH, UNDATED_BUCKET, CURSOR_PATH, LOG_TOTALS_PATH,
+  CATCHUP_PAGE,
 } = localRequire("../functions/insightsRollup/builder.cjs");
+const { storeBucketOf } = localRequire("../functions/insightsRollup/rollupCodec.cjs");
 const { makeIo } = localRequire("../functions/insightsRollup/io.cjs");
 
 const DB = "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app";
@@ -69,7 +78,13 @@ const val = (f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : nu
 
 const DRY = has("--dry-run");
 const FORCE = has("--force");
+const SKIP_DAYS = has("--skip-days");
 const SKIP_WALK = has("--skip-walk");
+// Start the walk — and the running counter — from nothing. The counter is a
+// FOLD over what the walk sees, so a walk that was interrupted, or that ran
+// before the counter existed, leaves a figure that is neither right nor
+// obviously wrong. This is how you get a clean one: one pass over the log.
+const RECOUNT = has("--recount");
 
 admin.initializeApp({ credential: admin.credential.applicationDefault(), databaseURL: DB });
 const db = admin.database();
@@ -92,7 +107,10 @@ async function firstDate() {
  * cursor is already stored.
  */
 async function forwardWalk() {
-  let cursor = await io.readCursor();
+  let cursor = RECOUNT ? null : await io.readCursor();
+  const before = RECOUNT ? null : await io.readLogTotals();
+  const totals = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+  for (const k of Object.keys(totals)) totals[k] = Number(before?.[k]) || 0;
   let seen = 0;
   let bytes = 0;
   let filed = 0;
@@ -107,10 +125,20 @@ async function forwardWalk() {
   for (;;) {
     const page = await io.readPageAfter(cursor, CATCHUP_PAGE);
     if (!page || page.length === 0) break;
+    // Children the SERVER sent, which is NOT how many were new: the inclusive
+    // lower bound re-sends the cursor's own row. Ending the walk on the NEW
+    // count ends it one request in — this walk's first run stopped at 9,999
+    // rows of 112,968 and called it done. See functions/insightsRollup/io.cjs.
+    const sent = typeof page.sent === "number" ? page.sent : page.length;
     for (const r of page) {
       if (!r || !r.key) continue;
       seen += 1;
       bytes += JSON.stringify(r.value ?? null).length;
+      if (r.value) {
+        const b = storeBucketOf(r.value);
+        totals.n += 1;
+        if (b) totals[b] += 1;
+      }
       const d = r.value ? saDateOf(r.value.timestamp) : "";
       if (!d || !isWithinDayRange(r.key, d)) {
         pending[`${LATE_PATH}/${d || UNDATED_BUCKET}/${r.key}`] = r.value;
@@ -120,12 +148,15 @@ async function forwardWalk() {
     }
     // The cursor advances only with the rows it justified, in one update.
     pending[CURSOR_PATH] = cursor;
+    // The counter moves with the cursor, in the same update: it is only ever
+    // meaningful as "exact up to here".
+    pending[LOG_TOTALS_PATH] = { ...totals, cursor, at: new Date().toISOString() };
     await flush();
     process.stdout.write(`\r  walked ${seen} rows, ${(bytes / 1024 / 1024).toFixed(1)} MB, ${filed} filed…    `);
-    if (page.length < CATCHUP_PAGE) break;
+    if (sent < CATCHUP_PAGE) break;
   }
   console.log("");
-  return { seen, bytes, filed, cursor };
+  return { seen, bytes, filed, cursor, totals };
 }
 
 async function main() {
@@ -137,17 +168,20 @@ async function main() {
   if (from > to) { console.log(`nothing to do: ${from} is after ${to}`); return; }
 
   if (!SKIP_WALK) {
-    console.log("▸ forward walk (once): seeding the cursor, filing rows no day read can find");
+    console.log(RECOUNT
+      ? "▸ forward walk from ZERO (--recount): one pass over the whole log"
+      : "▸ forward walk (once): seeding the cursor, filing rows no day read can find");
     const w = await forwardWalk();
     console.log(`  ${w.seen} rows, ${(w.bytes / 1024 / 1024).toFixed(2)} MB read, ${w.filed} filed under /${LATE_PATH}`);
     console.log(`  cursor -> ${w.cursor}`);
+    console.log(`  totals -> ${w.totals.n} events (pe ${w.totals.pe}, trophy ${w.totals.trophy}, pine ${w.totals.pine}, other ${w.totals.other})`);
     console.log("");
   }
 
   const already = new Set(await io.listDayKeys());
 
   const dates = [];
-  for (let d = from; d <= to; d = shiftSaDate(d, 1)) {
+  for (let d = SKIP_DAYS ? to : from; d <= to && !SKIP_DAYS; d = shiftSaDate(d, 1)) {
     if (d >= todaySA) break;               // today is never built
     if (!FORCE && already.has(d)) continue;
     dates.push(d);

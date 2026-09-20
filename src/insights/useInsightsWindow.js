@@ -5,6 +5,15 @@
 // showing: rollup nodes for the finished days, a bounded live read for today
 // and for any partial day at the edges.
 //
+// MEASURED on the live node, 2026-09-20:
+//   Insights, default period          35.99 MB -> 1.18 MB   (96.7% less)
+//   Customers / Admin, all-time       35.99 MB -> 8.6 MB    (76% less)
+// The default period costs more than one day because the padded key range
+// reaches 48 hours either side, and because the Overview KPIs need the
+// previous period too (see the App.jsx call site). All-time is the codec's
+// saving and nothing more; a per-customer and a per-product index would take
+// those two screens much further and are the obvious next step, not this one.
+//
 // What a screen gets back is the same array it got before, for that window:
 // the same events, newest-first, in the same order. Every figure is still
 // computed by the untouched production selectors from that array, which is why
@@ -49,6 +58,15 @@ import { storeBucketOf } from "./rollupCodec";
 import { insertNewestFirst, TAIL_BACKDATE_PAD_MS, RETRY_BASE_MS, RETRY_MAX_MS } from "./insightsLogWholeRead";
 import { pushKeyForMs } from "./insightsLogRange";
 import { EMPTY_LOG } from "./InsightsLogContext";
+
+/** The all-time counts, plus one event. Null stays null — an unknown total
+ *  must not start counting from zero and look like a real one. */
+function bumped(totals, bucket) {
+  if (!totals) return totals;
+  const next = { ...totals, n: (totals.n || 0) + 1 };
+  if (bucket) next[bucket] = (next[bucket] || 0) + 1;
+  return next;
+}
 
 // Same contract as everywhere else in this folder: null/NaN sorts oldest.
 function tsMs(v) {
@@ -160,9 +178,18 @@ export function useInsightsWindow({ startIso, endIso, allTime = false, enabled =
               if (seenRef.current.has(key)) return;
               seenRef.current.add(key);
               const row = child.val();
-              if (!row || !inWindow(row)) return;
+              if (!row) return;
+              // The all-time total counts EVERY event, in or out of the
+              // window. Leaving it at its mount-time value meant the rows on
+              // screen grew through a trading day while the count above them
+              // stayed still. (Sonnet architect review.)
+              const bucket = storeBucketOf(row);
+              if (!inWindow(row)) {
+                setState((s) => ({ ...s, totals: bumped(s.totals, bucket) }));
+                return;
+              }
               logRef.current = insertNewestFirst(logRef.current, row);
-              setState((s) => ({ ...s, log: logRef.current }));
+              setState((s) => ({ ...s, log: logRef.current, totals: bumped(s.totals, bucket) }));
             },
             (err) => console.warn("insights rollup: tail failed:", err),
           );

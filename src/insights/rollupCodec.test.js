@@ -52,20 +52,37 @@ describe("rollupCodec — a real day", () => {
     if (pidless >= 0) expect("productId" in back[pidless]).toBe(false);
   });
 
-  it("drops only fields no served screen reads", () => {
-    const kept = new Set(Object.keys(back[0]));
-    const dropped = new Set();
-    for (const e of eventsInKeyOrder) for (const k of Object.keys(e)) if (!kept.has(k)) dropped.add(k);
-    // Whatever else this day contains, these are the ones it may drop.
-    for (const k of dropped) {
-      expect(["autoRefill", "source", "saleId", "by", "matchedProductIds",
-        "matchedProductNames", "matchedUnits", "qty", "size", "productId",
-        "orderNumber", "placedAtHub", "destShop", "customerName", "customerPhone",
-        "displayRefilledBy", "productCategory", "productType"]).toContain(k);
+  it("drops EXACTLY the fields no served screen reads — no more, no less", () => {
+    // The first version of this compared against an allow-list that contained
+    // most of the KEPT fields, so the codec could have dropped `size`,
+    // `orderNumber` or `customerPhone` and it would still have passed. It was
+    // a test of nothing. (Fable-vs-spec review.)
+    //
+    // Now: every field ANY row of the real day carries, minus every field the
+    // codec kept, must equal the known-unused set exactly.
+    const present = new Set();
+    for (const e of eventsInKeyOrder) for (const k of Object.keys(e)) present.add(k);
+    const kept = new Set();
+    for (const e of back) for (const k of Object.keys(e)) kept.add(k);
+
+    const dropped = [...present].filter((k) => !kept.has(k)).sort();
+    expect(dropped).toEqual([
+      // The refill engine's own marker, POS sale identity, and the
+      // duplicate-audit trail. No screen served from this node reads any of
+      // them — `autoRefill` in particular is read by the WAREHOUSE batch card
+      // off /orders, never off an insights_log row, and none of the Insights
+      // selectors exclude engine events. Adding a reader means adding a column
+      // and bumping ROLLUP_SHAPE, not reading around the rollup.
+      "autoRefill", "by", "matchedProductIds", "matchedProductNames",
+      "matchedUnits", "saleId", "source",
+    ].sort());
+
+    // …and every field the screens DO read survived, on this real day.
+    for (const k of ["action", "timestamp", "productName", "productId", "size",
+      "productType", "productCategory", "orderNumber", "placedAtHub", "destShop",
+      "qty", "customerName", "customerPhone"]) {
+      expect(kept.has(k), `${k} must survive the codec`).toBe(true);
     }
-    // …and these three may never be dropped, because every window filter and
-    // every group-by is built on them.
-    for (const k of ["action", "timestamp", "productName"]) expect(kept.has(k)).toBe(true);
   });
 
   it("is materially smaller than the day it encodes", () => {

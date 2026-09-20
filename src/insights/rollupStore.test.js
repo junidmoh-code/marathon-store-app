@@ -26,9 +26,9 @@ const evt = (dateStr, hour, name) => ({
 });
 
 /** A fake with its own cache, so "was this re-read?" is observable. */
-function makeIo({ days = {}, log = [], late = {}, undated = [] } = {}) {
+function makeIo({ days = {}, log = [], late = {}, undated = [], logTotals = null } = {}) {
   const cache = new Map();
-  const calls = { index: 0, nodes: [], ranges: [], undated: 0, late: 0 };
+  const calls = { index: 0, nodes: [], ranges: [], undated: 0, late: 0, totals: 0 };
   return {
     calls,
     cache,
@@ -53,8 +53,17 @@ function makeIo({ days = {}, log = [], late = {}, undated = [] } = {}) {
         })
         .map((e, i) => ({ key: `k${e.productName}${i}`, value: e }));
     },
-    async readUndated() { calls.undated += 1; return undated; },
-    async readLate(dates) { calls.late += 1; return dates.flatMap((d) => late[d] || []); },
+    async readUndated() {
+      calls.undated += 1;
+      return undated.map((e, i) => ({ key: `u${i}`, value: e }));
+    },
+    async readLate({ from, to }) {
+      calls.late += 1;
+      return Object.keys(late)
+        .filter((d) => d >= from && d <= to)
+        .flatMap((d) => late[d].map((e, i) => ({ key: `l${d}${i}`, value: e })));
+    },
+    async readLogTotals() { calls.totals += 1; return logTotals; },
   };
 }
 
@@ -197,6 +206,54 @@ describe("readWindow", () => {
     expect(r.log.map((e) => e.productName)).toEqual(["LATE", "A"]);
   });
 
+  it("a late row for a day read LIVE is merged in too", async () => {
+    // The day the late bucket most needs to be consulted for is the one with
+    // no node — its rows are fetched by a padded key range, and a late row is
+    // precisely the row that range cannot reach. Asking only about the rollup
+    // days rescued the rows that least needed it. (Sonnet architect review.)
+    const io = makeIo({
+      days: {},                                   // no node for d1 at all
+      log: [evt(d1, 9, "A")],
+      late: { [d1]: [evt(d1, 10, "LATE")] },
+    });
+    const r = await readWindow({
+      startIso: isoOf(saDayStartMs(d1)), endIso: isoOf(saDayStartMs(d1) + DAY_MS),
+      nowMs: NOW_MS, io,
+    });
+    expect(r.log.map((e) => e.productName)).toEqual(["LATE", "A"]);
+  });
+
+  it("a late row for TODAY is merged in", async () => {
+    const io = makeIo({
+      days: {},
+      log: [evt(TODAY, 9, "A")],
+      late: { [TODAY]: [evt(TODAY, 10, "LATE")] },
+    });
+    const r = await readWindow({
+      startIso: isoOf(saDayStartMs(TODAY)), endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
+      nowMs: NOW_MS, io,
+    });
+    expect(r.log.map((e) => e.productName)).toEqual(["LATE", "A"]);
+  });
+
+  it("late and undated rows carry their KEYS into the de-duplication set", async () => {
+    // Their push keys are recent by definition — that is why they are late —
+    // so they can still be inside the live tail's window. Without the key they
+    // would arrive once from the bucket and once from the tail, and be counted
+    // twice. (Sonnet architect review.)
+    const io = makeIo({
+      days: {},
+      late: { [d1]: [evt(d1, 10, "LATE")] },
+      undated: [{ action: "placed", productName: "NoTimestamp" }],
+    });
+    const r = await readWindow({
+      startIso: "0000-01-01T00:00:00.000Z", endIso: "9999-12-31T23:59:59.999Z",
+      nowMs: NOW_MS, allTime: true, io,
+    });
+    expect([...r.liveKeys].some((k) => k.startsWith("l"))).toBe(true);
+    expect(r.liveKeys.has("u0")).toBe(true);
+  });
+
   it("a failing read rejects — it does not return a short log", async () => {
     const io = makeIo({ days: {} });
     io.readLogRange = vi.fn(async () => { throw new Error("PERMISSION_DENIED"); });
@@ -210,58 +267,72 @@ describe("readWindow", () => {
 // ─── THE ALL-TIME TOTAL ──────────────────────────────────────────────────────
 //
 // "N events in view" is every event the store has ever logged, not the
-// window's count. It comes from the day index plus today, and it has to be the
-// same number whichever period the screen is showing — otherwise the sidebar
-// quietly starts reporting the window instead.
+// window's count, and it has to be the same number whichever period is on
+// screen. It comes from the counter the sweep keeps over its own walk —
+// exact as far as its cursor — plus one bounded read of everything after it.
+//
+// It deliberately does NOT come from summing the day index: a day the backfill
+// has not reached is simply absent from that index, and would be silently
+// absent from the total.
 describe("totals", () => {
   const d1 = shiftSaDate(TODAY, -3);
-  const d3 = shiftSaDate(TODAY, -1);
 
-  function ioWithIndex(index, log) {
-    const io = makeIo({ days: {}, log });
-    io.readDayIndex = async () => index;
+  const COUNTER = { n: 100, pe: 60, trophy: 30, pine: 9, other: 1, cursor: "kSINCE" };
+
+  function ioWithCounter(sinceRows) {
+    const io = makeIo({ days: {}, logTotals: COUNTER });
+    io.readLogRange = async (r) => {
+      // The "everything since the cursor" read, and the window's own reads.
+      if (r.startKey === COUNTER.cursor) return sinceRows;
+      return [];
+    };
     return io;
   }
 
-  it("is the index plus today, and does not change with the window", async () => {
-    const index = {
-      [d1]: { n: 10, pe: 6, trophy: 3, pine: 1, other: 0 },
-      [d3]: { n: 5, pe: 5, trophy: 0, pine: 0, other: 0 },
-    };
-    const today = [
-      { ...evt(TODAY, 9, "T1"), destShop: "marathon-pe" },
-      { ...evt(TODAY, 10, "T2"), destShop: "trophy" },
-    ];
+  it("is the sweep's counter plus what has landed since its cursor", async () => {
+    const io = ioWithCounter([
+      { key: COUNTER.cursor, value: { destShop: "marathon-pe" } },   // the cursor's own row
+      { key: "kA", value: { destShop: "marathon-pe" } },
+      { key: "kB", value: { destShop: "trophy" } },
+      { key: "kC", value: { placedAtHub: "hub3" } },
+    ]);
+    const r = await readWindow({
+      startIso: isoOf(saDayStartMs(d1)), endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
+      nowMs: NOW_MS, io,
+    });
+    // The cursor's own row is already inside the counter and is not counted twice.
+    expect(r.totals).toEqual({ n: 103, pe: 61, trophy: 31, pine: 10, other: 1 });
+  });
 
+  it("does not change with the window", async () => {
+    const rows = [{ key: "kA", value: { destShop: "trophy" } }];
     const wide = await readWindow({
       startIso: isoOf(saDayStartMs(d1)), endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
-      nowMs: NOW_MS, io: ioWithIndex(index, today),
+      nowMs: NOW_MS, io: ioWithCounter(rows),
     });
     const narrow = await readWindow({
-      startIso: isoOf(saDayStartMs(d1)), endIso: isoOf(saDayStartMs(d1) + DAY_MS),
-      nowMs: NOW_MS, io: ioWithIndex(index, today),
+      startIso: isoOf(saDayStartMs(TODAY)), endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
+      nowMs: NOW_MS, io: ioWithCounter(rows),
     });
-
-    expect(wide.totals).toEqual({ n: 17, pe: 12, trophy: 4, pine: 1, other: 0 });
     expect(narrow.totals).toEqual(wide.totals);
   });
 
-  it("counts today ONCE when the window already covers it", async () => {
-    const index = { [d3]: { n: 1, pe: 1, trophy: 0, pine: 0, other: 0 } };
-    const today = [{ ...evt(TODAY, 9, "T1"), destShop: "marathon-pe" }];
+  it("is null, not wrong, when the counter has never been written", async () => {
+    const io = makeIo({ days: {}, logTotals: null });
     const r = await readWindow({
-      startIso: isoOf(saDayStartMs(TODAY)), endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
-      nowMs: NOW_MS, io: ioWithIndex(index, today),
+      startIso: isoOf(saDayStartMs(d1)), endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
+      nowMs: NOW_MS, io,
     });
-    expect(r.totals.n).toBe(2);
+    expect(r.totals).toBeNull();
   });
 
-  it("an index entry with a missing store key does not produce NaN", async () => {
+  it("the rows it counted are in the de-duplication set the tail uses", async () => {
+    const io = ioWithCounter([{ key: "kA", value: { destShop: "trophy" } }]);
     const r = await readWindow({
-      startIso: isoOf(saDayStartMs(d1)), endIso: isoOf(saDayStartMs(d1) + DAY_MS),
-      nowMs: NOW_MS, io: ioWithIndex({ [d1]: { n: 4 } }, []),
+      startIso: isoOf(saDayStartMs(TODAY)), endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
+      nowMs: NOW_MS, io,
     });
-    expect(r.totals).toEqual({ n: 4, pe: 0, trophy: 0, pine: 0, other: 0 });
+    expect(r.liveKeys.has("kA")).toBe(true);
   });
 });
 

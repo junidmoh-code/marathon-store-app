@@ -280,3 +280,99 @@ describe("the comparison can fail", () => {
     expect(log.map(inferProductType)).toEqual(legacy.map(inferProductType));
   });
 });
+
+// ─── THE FIGURES THAT READ OUTSIDE THE WINDOW ────────────────────────────────
+//
+// The Overview KPIs carry a "vs previous" figure, computed by running the same
+// selectors over the PREVIOUS equal-length window. With an array holding only
+// the selected period those read zero and the chips vanish — a rendered figure
+// changing, which is exactly what this work is not allowed to do, and the
+// earlier version of this harness could not see it because it pre-filtered the
+// legacy side to the window too. (Fable-vs-spec review.)
+//
+// So the screen now reads [previous period, this period) and these tests
+// compare BOTH figures against a legacy side holding the whole log.
+describe("period-over-period deltas", () => {
+  /** The whole log, newest-first — what the old whole-node read handed over. */
+  function legacyAll() {
+    const tsMs = (v) => (v == null || v === "" ? 0 : (Number.isNaN(new Date(v).getTime()) ? 0 : new Date(v).getTime()));
+    return ROWS.map((r) => r.value).sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
+  }
+
+  /** InsightsView's own widening, transcribed. */
+  function logStartFor(startIso, endIso) {
+    const a = Date.parse(startIso);
+    const b = Date.parse(endIso);
+    const prev = a - (b - a);
+    return prev < 0 ? startIso : new Date(prev).toISOString();
+  }
+
+  /** InsightOverviewTab's `deltas`, transcribed. */
+  function deltas(log, returnsLog, startIso, endIso) {
+    const a = new Date(startIso).getTime();
+    const b = new Date(endIso).getTime();
+    const pStart = new Date(a - (b - a)).toISOString();
+    const pEnd = startIso;
+    return {
+      net: readyEventsForPeriod({ log, returnsLog, filterStart: pStart, filterEnd: pEnd, category: "both" }).length,
+      oos: oosEventsForPeriod({ log, returnsLog, filterStart: pStart, filterEnd: pEnd, category: "both" }).length,
+    };
+  }
+
+  it("the previous period is in the array, and its figures match the whole log", () => {
+    const startIso = isoOf(saDayStartMs(MID));
+    const endIso = isoOf(saDayStartMs(MID) + DAY_MS);
+    const { log } = compose({ startIso: logStartFor(startIso, endIso), endIso });
+
+    const got = deltas(log, [], startIso, endIso);
+    const want = deltas(legacyAll(), [], startIso, endIso);
+    expect(got).toEqual(want);
+    // …and it is not vacuously equal because both are zero.
+    expect(want.net).toBeGreaterThan(0);
+  });
+
+  it("a window with NO widening would report zero — the canary for that regression", () => {
+    const startIso = isoOf(saDayStartMs(MID));
+    const endIso = isoOf(saDayStartMs(MID) + DAY_MS);
+    const { log } = compose({ startIso, endIso });          // the old, narrow read
+    expect(deltas(log, [], startIso, endIso)).toEqual({ net: 0, oos: 0 });
+  });
+});
+
+// ─── RETURNS ─────────────────────────────────────────────────────────────────
+//
+// Every fulfilment figure drops the events whose (SA-date, orderNumber) is in
+// /returns_log within the window. The harness ran with an empty returns log
+// throughout, so that branch was never exercised on either side.
+// (Fable-vs-spec review.)
+describe("the returns-exclusion branch", () => {
+  const startIso = isoOf(saDayStartMs(MID));
+  const endIso = isoOf(saDayStartMs(MID) + DAY_MS);
+
+  /** Real returns, built from the day's own ready events so they attach. */
+  function returnsFor(n) {
+    const ready = ROWS.map((r) => r.value)
+      .filter((e) => e.action === "ready" && e.timestamp >= startIso && e.timestamp < endIso && e.orderNumber != null);
+    return ready.slice(0, n).map((e) => ({
+      timestamp: e.timestamp,
+      date: new Date(Date.parse(e.timestamp) + 2 * 3600 * 1000).toISOString().slice(0, 10),
+      orderNumber: e.orderNumber,
+      customerName: e.customerName,
+    }));
+  }
+
+  it("excludes the same events on both sides", () => {
+    const returnsLog = returnsFor(5);
+    expect(returnsLog.length).toBe(5);
+    const { log } = compose({ startIso, endIso });
+    const legacy = legacyWindow(startIso, endIso);
+    const args = (l) => ({ log: l, returnsLog, filterStart: startIso, filterEnd: endIso, category: "both" });
+
+    const got = readyEventsForPeriod(args(log));
+    const want = readyEventsForPeriod(args(legacy));
+    expect(got.map(keptFieldsOf)).toEqual(want.map(keptFieldsOf));
+    // …and the returns actually removed something, so this is not vacuous.
+    expect(readyEventsForPeriod({ ...args(log), returnsLog: [] }).length)
+      .toBeGreaterThan(got.length);
+  });
+});

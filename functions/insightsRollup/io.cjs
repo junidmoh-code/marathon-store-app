@@ -8,7 +8,7 @@
 // Separated from builder.cjs so the sweep's logic can be tested against a fake
 // that actually honours the constraints, without an emulator.
 
-const { CURSOR_PATH, INDEX_PATH } = require("./builder.cjs");
+const { CURSOR_PATH, INDEX_PATH, LOG_TOTALS_PATH } = require("./builder.cjs");
 
 /**
  * @param {import("firebase-admin").database.Database} db
@@ -31,13 +31,34 @@ function makeIo(db) {
       return out;
     },
 
+    // ── startAt, NOT startAfter ────────────────────────────────────────────
+    // `startAfter(cursor) + limitToFirst(n)` returns n-1 children: the server
+    // applies the limit counting the cursor's own row, then the SDK drops that
+    // row. Measured against production on 2026-09-20. A walk that ends on "the
+    // page came back short" therefore ends on its SECOND request — which is
+    // exactly what this backfill's first run did, stopping at 9,999 rows of
+    // 112,968 and reporting success. The same defect in the client's pager was
+    // shipped and fixed separately (#626).
+    //
+    // So the bound is inclusive and the caller is told how many children the
+    // SERVER sent, separately from how many were new.
     async readPageAfter(after, limit) {
       let q = log.orderByKey();
-      if (after) q = q.startAfter(after);
+      if (after) q = q.startAt(after);
       const snap = await q.limitToFirst(limit).once("value");
       const out = [];
-      snap.forEach((child) => { out.push({ key: child.key, value: child.val() }); });
+      snap.forEach((child) => {
+        if (after && child.key === after) return;   // the bound's own row
+        out.push({ key: child.key, value: child.val() });
+      });
+      out.sent = 0;
+      snap.forEach(() => { out.sent += 1; });
       return out;
+    },
+
+    async readLogTotals() {
+      const snap = await db.ref(LOG_TOTALS_PATH).once("value");
+      return snap.val();
     },
 
     async listDayKeys() {

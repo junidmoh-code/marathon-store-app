@@ -20,8 +20,13 @@
 //
 // The alternative, a running fold with a cursor, has to get merge order,
 // partial failure and late arrival all right at once, and a fold that drifts
-// is invisible: the numbers stay plausible. Re-reading a day costs about
-// 335 KB server-side, a handful of times a day.
+// is invisible: the numbers stay plausible.
+//
+// What a rebuild costs, measured rather than guessed: a day is fetched by a
+// key range padded 48 hours at BOTH ends, so re-reading one day reads about
+// 2.7 days of rows — 919 KB on the live node. A run rebuilds two or three
+// days, so the sweep costs roughly 2.8 MB a run and 11 MB a day against the
+// 3.5 GB a day it removes from the clients.
 //
 // ── WHICH DAYS GET REBUILT ──────────────────────────────────────────────────
 //
@@ -72,7 +77,7 @@
 // readers include whenever their window is all-time — which is the only window
 // such a row can appear in, since every window filter compares its timestamp.
 
-const { compactDay } = require("./rollupCodec.cjs");
+const { compactDay, storeBucketOf } = require("./rollupCodec.cjs");
 
 const SA_OFFSET_MS = 2 * 60 * 60 * 1000;   // SA has no DST, so a fixed offset is exact
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -97,6 +102,21 @@ const CURSOR_PATH = `${ROLLUP_ROOT}/meta/cursor`;
 //     cannot produce that from the day it loaded, and loading all of history to
 //     render one number is the cost this whole change exists to remove.
 const INDEX_PATH = `${ROLLUP_ROOT}/meta/built`;
+// ─── THE WHOLE LOG'S RUNNING TOTALS ─────────────────────────────────────────
+//
+// The Insights sidebar shows "N events in view" — every event the store has
+// ever logged, sliced by the store filter, whatever period is selected. A
+// screen that loads one day cannot produce that.
+//
+// Summing the day index was the obvious source and it is wrong in a way that
+// looks right: a day the backfill has not reached, or one the sweep has not
+// built, is simply absent from the index and silently absent from the total —
+// and late and undated rows belong to no day at all. (Fable-vs-spec review.)
+//
+// So the counter is kept over the WALK, which sees every row exactly once, and
+// is stamped with the cursor it is exact as far as. A reader adds whatever has
+// landed since that cursor, which is one bounded read of at most a few hours.
+const LOG_TOTALS_PATH = `${ROLLUP_ROOT}/meta/logTotals`;
 const BUILT_PATH = `${ROLLUP_ROOT}/meta/lastBuild`;
 
 /** How far back a run will notice a day that has no node at all. */
@@ -214,10 +234,15 @@ function datesToBuild({ touched = [], missing = [], todaySA }) {
 async function runSweep({ io, nowMs, log = () => {} }) {
   const todaySA = saDateStringOf(nowMs);
   const cursorBefore = await io.readCursor();
+  // Read BEFORE the walk: the counter is a fold over what the walk sees, and a
+  // run that read it afterwards could add its own rows twice if the read
+  // happened to land after another writer's.
+  const beforeTotals = io.readLogTotals ? await io.readLogTotals() : null;
 
   // ── 1. what has landed since last time ──────────────────────────────────
   const touched = new Set();
   const late = {};
+  const seenByStore = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
   let cursor = cursorBefore;
   let pages = 0;
   let truncated = false;
@@ -226,8 +251,15 @@ async function runSweep({ io, nowMs, log = () => {} }) {
     const page = await io.readPageAfter(cursor, CATCHUP_PAGE);
     pages += 1;
     if (!page || page.length === 0) break;
+    // How many children the SERVER sent, which is not how many were new: the
+    // inclusive lower bound re-sends the cursor's own row. Judging the end of
+    // the node on the NEW count ends the walk one request in.
+    const sent = typeof page.sent === "number" ? page.sent : page.length;
     for (const r of page) {
       if (r && r.value) {
+        const b = storeBucketOf(r.value);
+        seenByStore.n += 1;
+        if (b) seenByStore[b] += 1;
         const d = saDateOf(r.value.timestamp);
         touched.add(d);
         // A row whose key is outside its own day's padded range would be
@@ -240,7 +272,7 @@ async function runSweep({ io, nowMs, log = () => {} }) {
       }
       if (r && r.key) cursor = r.key;
     }
-    if (page.length < CATCHUP_PAGE) break;
+    if (sent < CATCHUP_PAGE) break;
   }
 
   // ── 2. days inside the backstop window that have no node ────────────────
@@ -267,6 +299,20 @@ async function runSweep({ io, nowMs, log = () => {} }) {
   // justified. If this commit never lands, the next run rediscovers exactly
   // the same days and writes exactly the same bytes.
   updates[CURSOR_PATH] = cursor ?? null;
+  // The counter moves with the cursor, in the same atomic update, because it
+  // is only meaningful as "exact up to here".
+  if (seenByStore.n > 0 || !beforeTotals) {
+    const base = beforeTotals || { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+    updates[LOG_TOTALS_PATH] = {
+      n: (Number(base.n) || 0) + seenByStore.n,
+      pe: (Number(base.pe) || 0) + seenByStore.pe,
+      trophy: (Number(base.trophy) || 0) + seenByStore.trophy,
+      pine: (Number(base.pine) || 0) + seenByStore.pine,
+      other: (Number(base.other) || 0) + seenByStore.other,
+      cursor: cursor ?? null,
+      at: new Date(nowMs).toISOString(),
+    };
+  }
   updates[BUILT_PATH] = {
     at: new Date(nowMs).toISOString(),
     todaySA,
@@ -282,6 +328,7 @@ async function runSweep({ io, nowMs, log = () => {} }) {
 
 module.exports = {
   ROLLUP_ROOT, DAYS_PATH, LATE_PATH, UNDATED_BUCKET, CURSOR_PATH, BUILT_PATH, INDEX_PATH,
+  LOG_TOTALS_PATH,
   BACKSTOP_DAYS, MAX_CATCHUP_PAGES, CATCHUP_PAGE, PAD_MS,
   pushKeyForMs, saDateOf, saDayStartMs, saDateStringOf, shiftSaDate, keyRangeForDate,
   isWithinDayRange,

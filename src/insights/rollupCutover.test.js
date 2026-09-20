@@ -33,9 +33,21 @@ describe("the all-time screens read a window, not the whole node", () => {
   it("InsightsView asks for the window it is rendering, not for all of history", () => {
     const view = APP.slice(APP.indexOf("function InsightsView("));
     const call = view.slice(view.indexOf("useInsightsWindow({"), view.indexOf("useInsightsWindow({") + 400);
-    expect(call).toContain("startIso: filterStart");
+    // logStart, not filterStart: the Overview KPIs carry a "vs previous"
+    // figure computed over the PREVIOUS equal-length window, so the read has
+    // to cover both. A revert to filterStart makes those chips read zero and
+    // disappear, which is a rendered figure changing.
+    expect(call).toContain("startIso: logStart");
     expect(call).toContain("endIso: filterEnd");
     expect(call).toContain('allTime: filterMode === "all"');
+    expect(view).toMatch(/const logStart = useMemo/);
+  });
+
+  it("the previous-period read is derived from the window, never hard-coded", () => {
+    const view = APP.slice(APP.indexOf("function InsightsView("));
+    const memo = view.slice(view.indexOf("const logStart = useMemo"), view.indexOf("const logStart = useMemo") + 800);
+    expect(memo).toContain("a - (b - a)");
+    expect(memo).toContain("[filterStart, filterEnd]");
   });
 
   it("the two genuinely all-time screens ask for all of it, in the same words", () => {

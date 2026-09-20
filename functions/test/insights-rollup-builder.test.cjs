@@ -20,7 +20,7 @@ const test = require("node:test");
 const assert = require("node:assert");
 const {
   runSweep, buildDay, datesToBuild, keyRangeForDate, saDateOf, shiftSaDate,
-  pushKeyForMs, DAYS_PATH, LATE_PATH, CURSOR_PATH, BUILT_PATH, INDEX_PATH, CATCHUP_PAGE,
+  pushKeyForMs, DAYS_PATH, LATE_PATH, CURSOR_PATH, BUILT_PATH, INDEX_PATH, LOG_TOTALS_PATH, CATCHUP_PAGE,
 } = require("../insightsRollup/builder.cjs");
 const { expandDay, keptFieldsOf } = require("../insightsRollup/rollupCodec.cjs");
 
@@ -277,4 +277,79 @@ test("the index carries per-store counts, because the sidebar total is not the w
   assert.deepStrictEqual(idx, { n: 4, pe: 1, trophy: 1, pine: 1, other: 1 });
   // The three store filters plus the unfiltered remainder add up to the day.
   assert.strictEqual(idx.pe + idx.trophy + idx.pine + idx.other, idx.n);
+});
+
+// ─── THE RUNNING COUNTER ─────────────────────────────────────────────────────
+//
+// The Insights sidebar shows every event the store has ever logged. Summing the
+// day index would silently omit any day the backfill has not reached and every
+// late or undated row. The counter is kept over the WALK, which sees each row
+// exactly once, and is stamped with the cursor it is exact as far as.
+test("the walk keeps a running per-store count of the whole log", async () => {
+  const rows = makeLog([
+    sale(Date.parse("2026-09-19T08:00:00.000Z"), { destShop: "marathon-pe" }),
+    sale(Date.parse("2026-09-19T08:01:00.000Z"), { destShop: "trophy" }),
+    sale(Date.parse("2026-09-20T08:02:00.000Z"), { placedAtHub: "hub3" }),   // today counts too
+  ]);
+  const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
+  io.readLogTotals = async () => null;
+  await runSweep({ io, nowMs: NOW });
+
+  const t = io.commits[0][LOG_TOTALS_PATH];
+  assert.strictEqual(t.n, 3);
+  assert.strictEqual(t.pe, 1);
+  assert.strictEqual(t.trophy, 1);
+  assert.strictEqual(t.pine, 1);
+  // It is only meaningful as "exact up to here", so it carries the cursor.
+  assert.strictEqual(t.cursor, io.commits[0][CURSOR_PATH]);
+});
+
+test("a later run ADDS to the counter rather than replacing it", async () => {
+  const rows = makeLog([sale(Date.parse("2026-09-19T08:00:00.000Z"), { destShop: "trophy" })]);
+  const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
+  io.readLogTotals = async () => ({ n: 100, pe: 60, trophy: 30, pine: 10, other: 0, cursor: "old" });
+  await runSweep({ io, nowMs: NOW });
+
+  const t = io.commits[0][LOG_TOTALS_PATH];
+  assert.strictEqual(t.n, 101);
+  assert.strictEqual(t.trophy, 31);
+  assert.strictEqual(t.pe, 60);
+});
+
+test("a run that saw nothing new leaves the counter alone", async () => {
+  const io = makeIo([], { dayKeys: allBackstopDays(TODAY) });
+  io.readLogTotals = async () => ({ n: 100, pe: 100, trophy: 0, pine: 0, other: 0, cursor: "old" });
+  await runSweep({ io, nowMs: NOW });
+  assert.strictEqual(io.commits[0][LOG_TOTALS_PATH], undefined);
+});
+
+// ─── THE WALK MUST NOT END ON ITS SECOND REQUEST ─────────────────────────────
+//
+// `startAfter(cursor) + limitToFirst(n)` returns n-1 children — the server
+// applies the limit counting the cursor's own row, the SDK then drops it. A
+// walk that ends on "the page came back short" therefore ends immediately.
+// This backfill's first real run did exactly that: 9,999 rows of 112,968,
+// reported as success.
+test("catches up across many pages when the bound re-sends the cursor's row", async () => {
+  // A fake that behaves the way the real one does: an INCLUSIVE bound, so the
+  // caller sees pageSize-1 NEW rows and a `sent` of pageSize.
+  const total = CATCHUP_PAGE * 3 + 17;
+  const all = [];
+  for (let i = 0; i < total; i++) {
+    all.push({
+      key: `${pushKeyForMs(NOW - 86400000 + i)}${String(i).padStart(12, "0")}`,
+      value: { action: "ready", productName: "P", timestamp: new Date(NOW - 86400000).toISOString() },
+    });
+  }
+  const io = makeIo([], { dayKeys: allBackstopDays(TODAY) });
+  io.readPageAfter = async (after, limit) => {
+    const from = after === null || after === undefined ? 0 : all.findIndex((r) => r.key === after);
+    const slice = all.slice(from < 0 ? 0 : from, (from < 0 ? 0 : from) + limit);
+    const out = slice.filter((r) => r.key !== after);
+    out.sent = slice.length;
+    return out;
+  };
+  const r = await runSweep({ io, nowMs: NOW });
+  assert.strictEqual(r.truncated, false, "the walk must reach the end of the node");
+  assert.strictEqual(r.cursor, all[all.length - 1].key);
 });

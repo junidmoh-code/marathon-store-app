@@ -55,6 +55,7 @@ export const ROLLUP_ROOT = "insights_rollup";
 export const DAYS_PATH = `${ROLLUP_ROOT}/days`;
 export const INDEX_PATH = `${ROLLUP_ROOT}/meta/built`;
 export const LATE_PATH = `${ROLLUP_ROOT}/late`;
+export const LOG_TOTALS_PATH = `${ROLLUP_ROOT}/meta/logTotals`;
 
 /** Day nodes per request when a window needs a run of them. A month is 30 and
  *  a year is 365; at ~72 KB a node, 60 keeps one response around 4 MB. */
@@ -74,10 +75,10 @@ const VOLATILE_DAYS = 2;
 export function _clearRollupCacheForTests() { dayCache.clear(); }
 export function _cachedDayCountForTests() { return dayCache.size; }
 
-/** The small index: which days have a node, and how many rows each holds as a
- *  whole and per store. Short keys, a few KB — and it is what the Insights
- *  sidebar's all-time total is built from, since a screen that loads one day
- *  cannot count every event the store has ever logged from the day it loaded. */
+/** The small index: which days have a node, and how many rows each holds.
+ *  Short keys, a few KB. It answers "which days are missing" — NOT the
+ *  sidebar's all-time total, which comes from the sweep's own running counter
+ *  (see readWindow). */
 export async function readDayIndex() {
   const snap = await get(query(ref(database, INDEX_PATH), orderByKey()));
   return snap.val() || {};
@@ -140,27 +141,35 @@ async function readLogRange({ startKey, endKey }) {
   return rows;
 }
 
+/** {key, value} pairs — the keys go into the de-duplication set the caller's
+ *  live tail uses. A late row's push key is by definition recent, so it can
+ *  easily still be inside the tail's window; without its key it would arrive
+ *  once from here and once from the tail. (Sonnet architect review.) */
 async function readUndated() {
   const snap = await get(query(
     ref(database, `${LATE_PATH}/${UNDATED_BUCKET}`), orderByKey(), limitToFirst(LOG_PAGE),
   ));
   const rows = [];
-  snap.forEach((child) => { rows.push(child.val()); });
+  snap.forEach((child) => { rows.push({ key: child.key, value: child.val() }); });
   return rows;
 }
 
-async function readLate(dates) {
-  if (dates.length === 0) return [];
-  const sorted = dates.slice().sort();
+async function readLate({ from, to }) {
+  if (!from || !to || from > to) return [];
   const snap = await get(query(
-    ref(database, LATE_PATH),
-    orderByKey(), startAt(sorted[0]), endAt(sorted[sorted.length - 1]),
+    ref(database, LATE_PATH), orderByKey(), startAt(from), endAt(to),
   ));
   const rows = [];
-  // /insights_rollup/late/{date}/{key} — two levels, and it is expected to be
-  // empty. See the builder's header for when it is not.
-  snap.forEach((day) => { day.forEach((child) => { rows.push(child.val()); }); });
+  // /insights_rollup/late/{date}/{key} — two levels, and expected to be empty.
+  // See the builder's header for when it is not.
+  snap.forEach((day) => { day.forEach((child) => { rows.push({ key: child.key, value: child.val() }); }); });
   return rows;
+}
+
+/** The whole log's running totals, maintained by the sweep's own walk. */
+async function readLogTotals() {
+  const snap = await get(ref(database, LOG_TOTALS_PATH));
+  return snap.val();
 }
 
 /**
@@ -171,7 +180,7 @@ async function readLate(dates) {
  */
 export async function readWindow({ startIso, endIso, nowMs, allTime = false, io = null }) {
   const readers = io || {
-    readDayIndex, readDayNodes, readLogRange, readUndated, readLate,
+    readDayIndex, readDayNodes, readLogRange, readUndated, readLate, readLogTotals,
     getCached: (d) => dayCache.get(d),
   };
 
@@ -238,44 +247,68 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
   // ── THE ALL-TIME TOTAL THE SIDEBAR SHOWS ────────────────────────────────
   //
   // "N events in view" is every event the store has ever logged, sliced by the
-  // store filter — not the window's count. The index gives that for every day
-  // that has a node; today never has one, so today is counted separately.
+  // store filter — not the window's count. A screen that loads one day cannot
+  // produce it from the day it loaded.
   //
-  // For the default window (today) that read has already happened and costs
-  // nothing extra. For a historical window it is one more bounded day — about
-  // 335 KB against the 35.99 MB this change removes — and it is what keeps the
-  // number on screen the same number as before rather than one that quietly
-  // stops counting today.
-  // With no index there is nothing to add today to, and the caller falls back
-  // to counting what it loaded — which, degraded, IS the whole window.
-  const totals = degraded === "index" ? null : totalsFromIndex(index);
-  const todayRange = liveRangeFor(plan.todaySA);
-  const coversToday = ranges.some((r) => r.startMs <= todayRange.startMs && r.endMs >= todayRange.endMs);
-  const todayRows = !totals ? []
-    : coversToday
-      ? parts.flat().filter((e) => inDay(e, plan.todaySA))
-      : rowsInRange((await readers.readLogRange(todayRange)).map((p) => p.value), todayRange);
-  if (totals) {
-    for (const e of todayRows) {
-      const b = storeBucketOf(e);
-      totals.n += 1;
-      if (b) totals[b] += 1;
+  // It does NOT come from summing the day index. That was the first attempt and
+  // it is wrong in a way that looks right: a day the backfill has not reached,
+  // or one the sweep has not built yet, is simply absent from the index and
+  // silently absent from the total, with nothing to say so — and late and
+  // undated rows are in no day at all. (Fable-vs-spec review.)
+  //
+  // It comes from a counter the sweep keeps over its own walk of the log:
+  // exact as far as its cursor, which is where the walk stopped. Everything
+  // after that cursor is one bounded read — at most the few hours since the
+  // last sweep — counted here. Exact, and a few KB.
+  let totals = null;
+  let liveKeys2 = null;
+  try {
+    const stored = await readers.readLogTotals();
+    if (stored && typeof stored === "object" && stored.cursor) {
+      totals = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+      for (const k of Object.keys(totals)) totals[k] = Number(stored[k]) || 0;
+      const sinceRange = { startKey: stored.cursor, endKey: "\uffff", startMs: 0, endMs: 0 };
+      const since = await readers.readLogRange(sinceRange);
+      liveKeys2 = since;
+      for (const p of since) {
+        // startAt is inclusive, so the cursor's own row comes back and is
+        // already counted in `stored`.
+        if (!p || !p.key || p.key === stored.cursor || !p.value) continue;
+        const b = storeBucketOf(p.value);
+        totals.n += 1;
+        if (b) totals[b] += 1;
+      }
     }
+  } catch (err) {
+    console.warn("insights rollup: the log totals could not be read —", err);
+    degraded = degraded || "totals";
   }
 
-  // The late and undated buckets are expected to be empty, and they are part
-  // of the same node: if it cannot be read, that has already been reported.
+  // ── THE LATE AND UNDATED BUCKETS ────────────────────────────────────────
+  //
+  // Expected to be empty. Asked for across EVERY day the window touches, not
+  // just the days served from a node: a late row is by definition one whose
+  // key sits outside its own day's padded range, which is exactly the row a
+  // live range cannot find either. (Sonnet architect review.)
+  //
+  // Their keys go into the de-duplication set for the same reason — a late
+  // row's push key is recent, so the caller's tail can offer it again.
   let late = [];
   let undated = [];
   try {
-    late = await readers.readLate(plan.days);
+    late = await readers.readLate(plan.lateDates);
     if (plan.includeUndated) undated = await readers.readUndated();
   } catch (err) {
     console.warn("insights rollup: late buckets unreadable —", err);
     degraded = degraded || "late";
   }
-  if (late.length) parts.push(late);
-  if (undated.length) parts.push(undated);
+  for (const p of late) if (p && p.key) liveKeys.add(p.key);
+  for (const p of undated) if (p && p.key) liveKeys.add(p.key);
+  if (liveKeys2) for (const p of liveKeys2) if (p && p.key) liveKeys.add(p.key);
+  const lateRows = late.map((p) => p.value).filter(Boolean);
+  const undatedRows = undated.map((p) => p.value).filter(Boolean);
+  if (lateRows.length) parts.push(lateRows);
+  if (undatedRows.length) parts.push(undatedRows);
 
   return {
     log: mergeNewestFirst(parts), plan, fromRollup, fromLive, corruptDays, liveKeys,

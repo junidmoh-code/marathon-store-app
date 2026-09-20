@@ -86,6 +86,7 @@ export function planWindow({ startIso, endIso, nowMs, haveDays, allTime = false 
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     return {
       days: [], missingDays: [], includeUndated: allTime, todaySA,
+      lateDates: { from: "0000-01-01", to: "9999-12-31" },
       liveRanges: [liveRange(0, nowMs + DAY_MS)],
     };
   }
@@ -141,6 +142,16 @@ export function planWindow({ startIso, endIso, nowMs, haveDays, allTime = false 
     missingDays,
     includeUndated: allTime,
     todaySA,
+    // EVERY SA day the window touches, not just the ones served from a node.
+    // The late bucket exists for rows whose key sits outside their own day's
+    // padded range — which is exactly the row a live range cannot find either,
+    // so asking only about the rollup days would rescue those rows on the days
+    // that least need rescuing and abandon them on the days that do.
+    // (Sonnet architect review.)
+    lateDates: {
+      from: saDateStringOf(Math.max(startMs, saDayStartMs(shiftSaDate(todaySA, -MAX_SCAN_DAYS)))),
+      to: saDateStringOf(Math.min(endMs, saDayStartMs(todaySA) + DAY_MS - 1)),
+    },
     liveRanges: gapsOutside(startMs, endMs, covered).map(([s, e]) => liveRange(s, e)),
   };
 }
