@@ -5,14 +5,27 @@
 // showing: rollup nodes for the finished days, a bounded live read for today
 // and for any partial day at the edges.
 //
-// MEASURED on the live node, 2026-09-20:
-//   Insights, default period          35.99 MB -> 1.18 MB   (96.7% less)
-//   Customers / Admin, all-time       35.99 MB -> 8.6 MB    (76% less)
-// The default period costs more than one day because the padded key range
-// reaches 48 hours either side, and because the Overview KPIs need the
-// previous period too (see the App.jsx call site). All-time is the codec's
-// saving and nothing more; a per-customer and a per-product index would take
-// those two screens much further and are the obvious next step, not this one.
+// MEASURED on the live node, 2026-09-20, part by part rather than estimated.
+// A default Insights mount (day mode, today, widened to yesterday for the
+// Overview deltas):
+//
+//   yesterday, from its rollup node      82,423 B
+//   today, one padded live key range    919,423 B
+//   the day index                         8,992 B
+//   the running totals + what is after
+//     their cursor                            427 B
+//                                      ───────────
+//                                       1,011,265 B   against 35,990,882 B
+//
+// 97.2% less. All-time — Customers and the Admin product line — is the whole
+// rollup plus today: 7.43 MB + 919 KB + the index, about 8.36 MB, 76.8% less.
+// That one is the codec's saving and nothing more; a per-customer and a
+// per-product index would take those two screens much further, and are the
+// obvious next step rather than this one.
+//
+// Today's share is most of what is left, and it is a padded range: the key
+// bound reaches 48 hours either side because a row's key can sit that far from
+// its own timestamp. The rows that padding drags in are dropped by timestamp.
 //
 // What a screen gets back is the same array it got before, for that window:
 // the same events, newest-first, in the same order. Every figure is still

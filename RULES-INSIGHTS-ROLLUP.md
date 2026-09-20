@@ -19,6 +19,11 @@ Measured on the live node after the backfill: **139 days, 112,968 rows,
 busy day (2026-09-18, 1,030 rows) is 335,409 bytes of log and 72,085 bytes of
 rollup.
 
+What a screen pays, measured part by part: a default Insights mount is
+**1,011,265 bytes** — yesterday's node 82,423, today's padded live range
+919,423, the day index 8,992, the running totals and what is after their cursor
+427 — against 35,990,882. **97.2% less.**
+
 Alongside it:
 
 | Path | What it holds | Who reads it |
