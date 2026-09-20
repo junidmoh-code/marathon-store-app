@@ -216,3 +216,37 @@ describe("storeBucketOf — transcribed from App.jsx matchesStore", () => {
     for (const m of Object.values(matchers)) expect(!!m({ destShop: "somewhere-new" })).toBe(false);
   });
 });
+
+// ─── A DAY THE SHOP LOGGED NOTHING ON ────────────────────────────────────────
+//
+// RTDB cannot store an empty array or an empty object — writing one removes the
+// key — so a day with no events comes back with no `rows` and no `dict` at all.
+// Treating that as a broken node meant every window containing 2026-06-30 (a
+// real, genuinely empty day) did a needless live read and warned about a node
+// that was perfectly correct. Found on production by
+// scripts/verify-insights-rollup.mjs, not here, which is why this test exists.
+describe("an empty day, as RTDB actually returns it", () => {
+  it("decodes to an empty day, not to a refusal", async () => {
+    const { expandDay: ex, ROLLUP_SHAPE: V } = await import("./rollupCodec");
+    // Exactly what the live node for 2026-06-30 looks like: no rows, no dict.
+    const stored = { v: V, n: 0, date: "2026-06-30", anchorMs: 0, cursorEnd: null, byStore: { pe: 0, trophy: 0, pine: 0, other: 0 } };
+    expect(ex(stored)).toEqual([]);
+  });
+
+  it("still refuses a node that claims rows and carries none", async () => {
+    const { expandDay: ex, ROLLUP_SHAPE: V } = await import("./rollupCodec");
+    expect(ex({ v: V, n: 12, date: "2026-06-30", anchorMs: 0 })).toBeNull();
+  });
+
+  it("a compacted empty day survives the round trip RTDB would give it", () => {
+    const node = compactDay([], { date: "2026-06-30", anchorMs: 0 });
+    // Strip what RTDB strips: empty arrays and empty objects.
+    const stored = JSON.parse(JSON.stringify(node, (k, v) => {
+      if (Array.isArray(v) && v.length === 0) return undefined;
+      if (v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).length === 0) return undefined;
+      return v;
+    }));
+    expect(stored.rows).toBeUndefined();
+    expect(expandDay(stored)).toEqual([]);
+  });
+});

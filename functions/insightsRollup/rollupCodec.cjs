@@ -188,7 +188,23 @@ function compactDay(events, meta) {
  * with absent fields absent — ready for the production selectors.
  */
 function expandDay(node) {
-  if (!node || node.v !== ROLLUP_SHAPE || !Array.isArray(node.rows)) return null;
+  if (!node || node.v !== ROLLUP_SHAPE) return null;
+  // ── AN EMPTY DAY IS A DAY, NOT A BROKEN NODE ────────────────────────────
+  // RTDB cannot store an empty array or an empty object: writing one removes
+  // the key, and it reads back as absent. A day on which the shop logged
+  // nothing therefore comes back with no `rows` and no `dict` at all — and
+  // treating that as corruption meant every window containing it did a
+  // needless live read and warned about a node that was perfectly correct.
+  // Found by scripts/verify-insights-rollup.mjs on 2026-06-30, which is
+  // genuinely empty. (The same trap as reference-rtdb-cannot-store-empty-arrays.)
+  //
+  // The check that this is an empty day and not a mangled one is `n`: the
+  // writer always stamps it, and a node claiming rows while carrying none is
+  // still refused.
+  if (node.rows === undefined || node.rows === null) {
+    return (Number(node.n) || 0) === 0 ? [] : null;
+  }
+  if (!Array.isArray(node.rows)) return null;
   const dicts = node.dict || {};
   const anchorMs = Number(node.anchorMs) || 0;
   const odd = node.odd || {};
