@@ -5570,5 +5570,16 @@ exports.insightsRollupSweep = onSchedule(
       (res.late ? `, ${res.late} late row(s) bucketed` : "") +
       (res.truncated ? " — CATCH-UP TRUNCATED, another run is needed" : ""),
     );
+    // A refused cursor advance is not a no-op to log and move on from. The day
+    // nodes landed — they are recomputations — but this run's rows were NOT
+    // folded into the counter the Insights sidebar reads, and the next run
+    // starts from the same place. Returning normally would make a run that
+    // never advances look exactly like a quiet day, for ever. (CodeRabbit.)
+    if (res.advanced === false) {
+      throw new Error(
+        "insightsRollupSweep: the cursor advance was refused — the counter did not move. " +
+        "Either another writer moved it (a backfill?), or the transaction is failing.",
+      );
+    }
   },
 );

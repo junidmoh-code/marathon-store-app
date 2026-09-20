@@ -98,14 +98,28 @@ admin.initializeApp({ credential: admin.credential.applicationDefault(), databas
 const db = admin.database();
 const io = makeIo(db);
 
-/** The first SA date the log holds — read from the single oldest key, not from
- *  a scan of the node. */
+/** The first SA date the log holds.
+ *
+ *  Reading only the single oldest row was wrong: an ordinary row can have no
+ *  usable timestamp (they go to the undated bucket), and if the oldest one is
+ *  such a row this returned null and the script announced that the whole log
+ *  was empty — skipping the walk and every day. (CodeRabbit.) It walks bounded
+ *  pages until it finds a usable one, and gives up only when the log really
+ *  has none. */
 async function firstDate() {
-  const snap = await db.ref("insights_log").orderByKey().limitToFirst(1).once("value");
-  let iso = null;
-  snap.forEach((c) => { iso = c.val()?.timestamp ?? null; });
-  if (!iso) return null;
-  return saDateStringOf(Date.parse(iso));
+  let cursor = null;
+  for (let page = 0; page < 20; page += 1) {
+    const rows = await io.readPageAfter(cursor, 200);
+    if (!rows || rows.length === 0) return null;
+    for (const r of rows) {
+      const ms = Date.parse(r?.value?.timestamp);
+      if (Number.isFinite(ms)) return saDateStringOf(ms);
+      cursor = r.key;
+    }
+    const sent = typeof rows.sent === "number" ? rows.sent : rows.length;
+    if (sent < 200) return null;
+  }
+  return null;
 }
 
 /**
@@ -205,6 +219,15 @@ async function main() {
       : "▸ forward walk (once): seeding the cursor, filing rows no day read can find");
     const w = await forwardWalk();
     console.log(`  ${w.seen} rows, ${(w.bytes / 1024 / 1024).toFixed(2)} MB read, ${w.filed} filed under /${LATE_PATH}`);
+    if (w.advanced === false) {
+      // A refused advance is not a warning to scroll past: the counter the
+      // sidebar reads did not move, and it will not until a run succeeds.
+      // Carrying on and exiting 0 would have reported success. (CodeRabbit.)
+      console.log("");
+      console.log("✗ STOPPING: the cursor did not advance, so the counter was not updated.");
+      process.exitCode = 1;
+      return;
+    }
     console.log(`  cursor -> ${w.cursor}`);
     console.log(`  totals -> ${w.totals.n} events (pe ${w.totals.pe}, trophy ${w.totals.trophy}, pine ${w.totals.pine}, other ${w.totals.other})`);
     console.log("");
@@ -257,4 +280,4 @@ async function main() {
   console.log(`  path       /${DAYS_PATH}/{date}`);
 }
 
-main().then(() => process.exit(0)).catch((e) => { console.error(e); process.exit(1); });
+main().then(() => process.exit(process.exitCode || 0)).catch((e) => { console.error(e); process.exit(1); });

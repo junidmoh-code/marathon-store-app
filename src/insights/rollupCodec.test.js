@@ -250,3 +250,45 @@ describe("an empty day, as RTDB actually returns it", () => {
     expect(expandDay(stored)).toEqual([]);
   });
 });
+
+// ─── A NEGATIVE QUANTITY IS A QUANTITY ───────────────────────────────────────
+//
+// qty used to be a column with -1 for "absent" — a sentinel inside the value's
+// own range. The refill engine emits a negative intent.qty when
+// config.maxUnitsPerIntent is negative, refill-scan writes it to the log, and
+// the decoder restored it as ABSENT; the clothing refill selector's
+// `e.qty || 1` then turned a stored −2 into 1. A quantity silently becoming a
+// different quantity. (CodeRabbit.)
+describe("qty, including the values a sentinel would have eaten", () => {
+  const meta = { date: "2026-09-18", anchorMs: Date.parse("2026-09-18T00:00:00.000+02:00") };
+
+  it("keeps a negative quantity", () => {
+    const events = [{ action: "placed", productName: "A", qty: -2 }];
+    expect(expandDay(compactDay(events, meta))[0].qty).toBe(-2);
+  });
+
+  it("keeps -1 itself, which was the old sentinel", () => {
+    const events = [{ action: "placed", productName: "A", qty: -1 }];
+    expect(expandDay(compactDay(events, meta))[0].qty).toBe(-1);
+  });
+
+  it("still tells 0 apart from absent", () => {
+    const back = expandDay(compactDay([
+      { action: "placed", productName: "A", qty: 0 },
+      { action: "placed", productName: "B" },
+    ], meta));
+    expect(back[0].qty).toBe(0);
+    expect("qty" in back[1]).toBe(false);
+  });
+
+  it("and the selector that reads it agrees on both sides", async () => {
+    const { clothingRefillEventsForPeriod } = await import("../utils/insights");
+    const events = [
+      { action: "placed", productType: "clothing", productName: "A", size: "M", orderNumber: "1", qty: -2, timestamp: "2026-09-18T08:00:00.000Z" },
+      { action: "placed", productType: "clothing", productName: "B", size: "L", orderNumber: "2", timestamp: "2026-09-18T09:00:00.000Z" },
+    ];
+    const args = (log) => ({ isToday: false, log, filterStart: "2026-09-18T00:00:00.000Z", filterEnd: "2026-09-19T00:00:00.000Z" });
+    expect(clothingRefillEventsForPeriod(args(expandDay(compactDay(events, meta)))))
+      .toEqual(clothingRefillEventsForPeriod(args(events)));
+  });
+});

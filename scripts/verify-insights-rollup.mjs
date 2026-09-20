@@ -10,12 +10,17 @@
 //
 // ── WHAT IT COMPARES, AND WHY THAT IS NOT CIRCULAR ─────────────────────────
 //
-// The two sides come from different places. The rollup side is the node the
-// Cloud Function wrote, decoded by the same codec the browser uses. The log
-// side is a fresh bounded key-range read of /insights_log, bucketed by the
-// event's own timestamp. Nothing is shared but the codec's decoder, which is
-// the thing under test; a day that was built wrong, or has drifted, shows up
-// as a row-count difference or a first-difference dump.
+// The log side does NOT go through the codec. An earlier version of this
+// script built the day again with buildDay() and compared the two decoded
+// results — which put the production ENCODER on both sides, so a codec defect
+// that dropped or transformed a field would have affected them identically and
+// passed. It was checking that the rollup agreed with itself. (CodeRabbit, and
+// the same trap as feedback-differential-test-the-mirror-not-the-copy.)
+//
+// The log side is now the raw rows: a bounded key-range read, filtered by each
+// event's own SA date, reduced with keptFieldsOf — which is a projection, not
+// an encoding. The rollup side is the stored node decoded. Nothing but the
+// decoder is shared, and the decoder is what is under test.
 //
 // ── BOUNDED, AND IT SAYS WHAT IT SPENT ──────────────────────────────────────
 //
@@ -35,7 +40,7 @@ const require = adminRequire(import.meta.url);
 const admin = require("firebase-admin");
 
 const localRequire = createRequire(import.meta.url);
-const { buildDay, saDateOf, DAYS_PATH, INDEX_PATH } =
+const { keyRangeForDate, saDateOf, DAYS_PATH, INDEX_PATH } =
   localRequire("../functions/insightsRollup/builder.cjs");
 const { makeIo } = localRequire("../functions/insightsRollup/io.cjs");
 const { expandDay, keptFieldsOf } = localRequire("../functions/insightsRollup/rollupCodec.cjs");
@@ -83,10 +88,12 @@ async function main() {
     const node = snap.val();
     if (!node) { console.log(`  ✗ ${date}  no node, but the index says there is one`); bad += 1; continue; }
 
-    // The log side: a fresh bounded read, bucketed by the event's own
-    // timestamp — the same rule the builder used, applied independently.
-    const rebuilt = await buildDay(io, date);
-    const fromLog = expandDay(rebuilt.node);
+    // The log side: raw rows, never encoded. See the header.
+    const { startKey, endKey } = keyRangeForDate(date);
+    const page = await io.readKeyRange(startKey, endKey);
+    const fromLog = page
+      .filter((r) => r && r.value && saDateOf(r.value.timestamp) === date)
+      .map((r) => keptFieldsOf(r.value));
     const fromRollup = expandDay(node);
 
     bytes += JSON.stringify(node).length;

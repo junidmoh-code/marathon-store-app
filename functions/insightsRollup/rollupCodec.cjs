@@ -65,7 +65,7 @@
 // know must fall back to the log rather than guess: an older reader silently
 // mapping a new column onto an old field would put one product's numbers under
 // another product's name, which looks like data rather than like a bug.
-const ROLLUP_SHAPE = 1;
+const ROLLUP_SHAPE = 2;
 
 // The row layout. Index into a dictionary, or a literal where a dictionary
 // would cost more than it saves. -1 means "the field was absent", which is NOT
@@ -82,12 +82,24 @@ const COL = {
   ORDER: 7,         // index into dict.o (orderNumber — a STRING in the log)
   HUB: 8,           // index into dict.h (placedAtHub)
   SHOP: 9,          // index into dict.d (destShop)
-  QTY: 10,          // literal integer, -1 when absent
-  CNAME: 11,        // index into dict.n (customerName)
-  CPHONE: 12,       // index into dict.f (customerPhone)
-  REFILLED: 13,     // index into dict.r (displayRefilledBy)
+  CNAME: 10,        // index into dict.n (customerName)
+  CPHONE: 11,       // index into dict.f (customerPhone)
+  REFILLED: 12,     // index into dict.r (displayRefilledBy)
 };
-const COL_COUNT = 14;
+const COL_COUNT = 13;
+
+// ── qty IS NOT A COLUMN, BECAUSE -1 IS A QUANTITY ──────────────────────────
+//
+// It was one, with -1 meaning "absent". That is a sentinel inside the value's
+// own range: the refill engine emits a negative intent.qty when
+// config.maxUnitsPerIntent is negative, refill-scan writes it to the log, and
+// the decoder would have restored it as ABSENT — after which the clothing
+// refill selector's `e.qty || 1` turns it into 1. A stored quantity silently
+// becoming a different quantity. (CodeRabbit.)
+//
+// So qty lives in a side map keyed by row index, present only for the rows
+// that have one. Absent is absent because the key is not there, which no value
+// can imitate. Same shape as `odd` below, and the same reason.
 
 // dictionary key -> the event field it encodes. The order here IS the
 // serialisation order of the dictionaries; adding one means a new ROLLUP_SHAPE.
@@ -155,12 +167,14 @@ function compactDay(events, meta) {
   // lossless for a real instant near the anchor, and a screen filters on the
   // timestamp string, not on a number.
   const odd = {};
+  // Row index -> qty, for the rows that have one. See the note on COL.
+  const qty = {};
 
   events.forEach((e, i) => {
     if (!e) return;
     const row = new Array(COL_COUNT).fill(-1);
     for (const [k, field] of DICTS) row[COL_OF_DICT[k]] = intern(k, e[field]);
-    row[COL.QTY] = typeof e.qty === "number" && Number.isFinite(e.qty) ? e.qty : -1;
+    if (typeof e.qty === "number" && Number.isFinite(e.qty)) qty[String(rows.length)] = e.qty;
 
     const ts = e.timestamp;
     const ms = typeof ts === "string" ? Date.parse(ts) : NaN;
@@ -185,6 +199,7 @@ function compactDay(events, meta) {
     cursorEnd: meta.cursorEnd || null,
     n: rows.length,
     byStore: countByStore(events),
+    qty,
     dict: dicts,
     odd,
     rows,
@@ -216,6 +231,7 @@ function expandDay(node) {
   const dicts = node.dict || {};
   const anchorMs = Number(node.anchorMs) || 0;
   const odd = node.odd || {};
+  const qtys = node.qty || {};
   const out = [];
 
   for (let i = 0; i < node.rows.length; i++) {
@@ -234,8 +250,11 @@ function expandDay(node) {
         e[field] = table[at];
       }
     }
-    const q = row[COL.QTY];
-    if (typeof q === "number" && q >= 0) e.qty = q;
+    const qk = String(i);
+    if (Object.prototype.hasOwnProperty.call(qtys, qk)) {
+      const q = Number(qtys[qk]);
+      if (Number.isFinite(q)) e.qty = q;
+    }
 
     const key = String(i);
     if (Object.prototype.hasOwnProperty.call(odd, key)) {
