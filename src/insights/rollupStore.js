@@ -28,6 +28,19 @@
 //
 // The live ranges. They cover today, which is still being written to, and a
 // partial day at a window edge. They are read every time.
+//
+// ── IF THE ROLLUP CANNOT BE READ AT ALL, THE SCREENS STILL WORK ─────────────
+//
+// /insights_rollup is a new node and needs its own read rule, which is pasted
+// into the console by hand. Between a hosting deploy and that paste, every
+// read here is PERMISSION_DENIED — and a screen that showed an error for that
+// window would be a worse outcome than the bill it is fixing.
+//
+// So an unreadable rollup is not an error: it degrades to reading the whole
+// window from /insights_log, by bounded key range, which is exactly what the
+// screens did before this change. It costs what it used to cost and it is
+// reported on the result as `degraded`, so nobody mistakes a missing rule for
+// a working rollup.
 
 import {
   get, limitToFirst, orderByKey, query, ref, startAfter, startAt, endAt,
@@ -162,14 +175,29 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
     getCached: (d) => dayCache.get(d),
   };
 
-  const index = await readers.readDayIndex();
+  let index = {};
+  let degraded = null;
+  try {
+    index = await readers.readDayIndex();
+  } catch (err) {
+    // No rule yet, or the node is gone. Every day becomes a live range below.
+    console.warn("insights rollup: index unreadable, falling back to the log —", err);
+    degraded = "index";
+    index = {};
+  }
   const haveDays = Array.isArray(index) ? index : Object.keys(index || {});
   const plan = planWindow({ startIso, endIso, nowMs, haveDays, allTime });
 
   // A day the sweep may still rebuild is never served from the cache.
   const volatileFrom = shiftSaDate(plan.todaySA, -VOLATILE_DAYS);
   const needed = plan.days.filter((d) => d >= volatileFrom || readers.getCached(d) === undefined);
-  await readers.readDayNodes(needed);
+  try {
+    await readers.readDayNodes(needed);
+  } catch (err) {
+    // Same reasoning as the index: the days simply become live ranges.
+    console.warn("insights rollup: day nodes unreadable, falling back to the log —", err);
+    degraded = degraded || "days";
+  }
 
   const parts = [];
   const corruptDays = [];
@@ -218,27 +246,40 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
   // 335 KB against the 35.99 MB this change removes — and it is what keeps the
   // number on screen the same number as before rather than one that quietly
   // stops counting today.
-  const totals = totalsFromIndex(index);
+  // With no index there is nothing to add today to, and the caller falls back
+  // to counting what it loaded — which, degraded, IS the whole window.
+  const totals = degraded === "index" ? null : totalsFromIndex(index);
   const todayRange = liveRangeFor(plan.todaySA);
   const coversToday = ranges.some((r) => r.startMs <= todayRange.startMs && r.endMs >= todayRange.endMs);
-  const todayRows = coversToday
-    ? parts.flat().filter((e) => inDay(e, plan.todaySA))
-    : rowsInRange((await readers.readLogRange(todayRange)).map((p) => p.value), todayRange);
-  for (const e of todayRows) {
-    const b = storeBucketOf(e);
-    totals.n += 1;
-    if (b) totals[b] += 1;
+  const todayRows = !totals ? []
+    : coversToday
+      ? parts.flat().filter((e) => inDay(e, plan.todaySA))
+      : rowsInRange((await readers.readLogRange(todayRange)).map((p) => p.value), todayRange);
+  if (totals) {
+    for (const e of todayRows) {
+      const b = storeBucketOf(e);
+      totals.n += 1;
+      if (b) totals[b] += 1;
+    }
   }
 
-  const late = await readers.readLate(plan.days);
-  if (late.length) parts.push(late);
-  if (plan.includeUndated) {
-    const undated = await readers.readUndated();
-    if (undated.length) parts.push(undated);
+  // The late and undated buckets are expected to be empty, and they are part
+  // of the same node: if it cannot be read, that has already been reported.
+  let late = [];
+  let undated = [];
+  try {
+    late = await readers.readLate(plan.days);
+    if (plan.includeUndated) undated = await readers.readUndated();
+  } catch (err) {
+    console.warn("insights rollup: late buckets unreadable —", err);
+    degraded = degraded || "late";
   }
+  if (late.length) parts.push(late);
+  if (undated.length) parts.push(undated);
 
   return {
-    log: mergeNewestFirst(parts), plan, fromRollup, fromLive, corruptDays, liveKeys, totals,
+    log: mergeNewestFirst(parts), plan, fromRollup, fromLive, corruptDays, liveKeys,
+    totals, degraded,
   };
 }
 

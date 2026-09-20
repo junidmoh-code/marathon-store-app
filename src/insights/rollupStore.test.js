@@ -264,3 +264,46 @@ describe("totals", () => {
     expect(r.totals).toEqual({ n: 4, pe: 0, trophy: 0, pine: 0, other: 0 });
   });
 });
+
+// ─── BEFORE THE RULE IS PASTED ───────────────────────────────────────────────
+//
+// /insights_rollup needs its own read rule, pasted by hand. Between a hosting
+// deploy and that paste, every read of it is PERMISSION_DENIED. A screen
+// showing an error for that window would be worse than the bill this change
+// exists to fix, so the reader degrades to the log — which is what the screens
+// did before — and says that it did.
+describe("an unreadable rollup", () => {
+  const d1 = shiftSaDate(TODAY, -2);
+
+  it("falls back to the log for the whole window, and says so", async () => {
+    const io = makeIo({ days: {}, log: [evt(d1, 9, "A"), evt(TODAY, 9, "B")] });
+    io.readDayIndex = async () => { throw new Error("PERMISSION_DENIED"); };
+
+    const r = await readWindow({
+      startIso: isoOf(saDayStartMs(d1)),
+      endIso: isoOf(saDayStartMs(TODAY) + DAY_MS),
+      nowMs: NOW_MS, io,
+    });
+    expect(r.degraded).toBe("index");
+    expect(r.log.map((e) => e.productName)).toEqual(["B", "A"]);
+    // No index means no all-time total; the caller counts what it loaded,
+    // which is exactly what the old expression did.
+    expect(r.totals).toBeNull();
+  });
+
+  it("degrades when the day NODES are refused but the index is not", async () => {
+    const io = makeIo({
+      days: { [d1]: nodeFor(d1, [evt(d1, 9, "A")]) },
+      log: [evt(d1, 9, "A")],
+    });
+    io.readDayNodes = async () => { throw new Error("PERMISSION_DENIED"); };
+
+    const r = await readWindow({
+      startIso: isoOf(saDayStartMs(d1)), endIso: isoOf(saDayStartMs(d1) + DAY_MS),
+      nowMs: NOW_MS, io,
+    });
+    expect(r.degraded).toBe("days");
+    expect(r.corruptDays).toEqual([d1]);
+    expect(r.log.map((e) => e.productName)).toEqual(["A"]);
+  });
+});
