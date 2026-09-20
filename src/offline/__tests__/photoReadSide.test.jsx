@@ -27,7 +27,10 @@ globalThis.localStorage = {
 beforeAll(async () => {
   globalThis.URL.createObjectURL = () => "blob:local-thumb";
   const { setOfflineMirrorEnabled } = await import("../mirrorFlag");
+  const { setMirrorSwitchValue } = await import("../killSwitch");
   setOfflineMirrorEnabled(true);
+  // A device mirrors only if it is in the rollout AND the fleet switch is on.
+  setMirrorSwitchValue(true);
 });
 afterAll(async () => {
   globalThis.URL.createObjectURL = realCreate;
