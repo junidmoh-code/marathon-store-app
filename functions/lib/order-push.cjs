@@ -22,9 +22,9 @@
 //     never created one.
 //   • the engine's resize and close transactions (refill-scan.cjs) rewrite an
 //     existing order without touching createdAt.
-//   • the shadow sync rewrites SHDW- artifacts every 15 minutes but preserves
-//     `existing.createdAt`, so only their first appearance is an event at all —
-//     and shadow rows are refused twice over regardless.
+//   • the shadow sync rewrites SHDW- artifacts on every scan (hourly) but
+//     preserves `existing.createdAt`, so only their first appearance is an
+//     event at all — and shadow rows are refused twice over regardless.
 //   • the legacy {items:[…]} migration in useOrders would create nodes, but it
 //     is long done (every live key is per-id) and a migrated row is not
 //     "incoming", so it is refused.
@@ -349,8 +349,8 @@ function shouldNotify(orderId, rec, expectedCreatedAt) {
   // SHADOW ROWS ARE NOT WORK. While a destination runs in shadow mode the
   // engine writes read-only "AUTO (Shadow)" orders into /orders so staff can
   // see what live mode would look like. Nobody picks them, and the sweep
-  // rewrites the whole set every 15 minutes — notifying on them would mean a
-  // burst every quarter of an hour, forever, for work that does not exist.
+  // rewrites the whole set on every scan — notifying on them would mean a burst
+  // every hour, forever, for work that does not exist.
   // Checked two independent ways because the flag and the key prefix are
   // written by the same line and either could be the one that changes.
   if (rec.autoShadow === true) return "shadow";

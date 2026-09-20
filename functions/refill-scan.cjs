@@ -262,7 +262,7 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
 // A closure consumes on passing the check, not on the transaction committing. An
 // aborted transaction means the request was resolved by someone else in the gap;
 // re-crediting its units would need a second pass for a case whose only cost is
-// that one sibling stays visible as work for another 15 minutes — the safe
+// that one sibling stays visible as work until the next scan — the safe
 // direction, and self-healing.
 //
 // db is injected so the whole apply path is testable without firebase-admin.

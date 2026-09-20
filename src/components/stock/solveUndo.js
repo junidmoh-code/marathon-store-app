@@ -31,7 +31,7 @@
 //
 // KNOWN, ACCEPTED GAPS (documented, not silent): the engine can claim a lock
 // between the guard read and the cell transactions — a window of seconds
-// against a 15-minute scan cadence (07:00–19:00 SAST only); closing it fully
+// against an hourly scan cadence (07:00–19:00 SAST only); closing it fully
 // needs a server-side conditional (a functions change, out of scope by owner
 // constraint). And a write racing the SOLVE's own seed-if-absent update can
 // be overwritten by the seed itself — pre-existing solve behaviour, whose

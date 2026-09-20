@@ -214,7 +214,7 @@ function RecountChip({ row, actorRole }) {
     setState("busy");
     try {
       await set(ref(database, `refill_engine/rejectStreak/${row.loc}/${row.pid}/${encodeSizeKey(row.size)}`), null);
-      setState("cleared");   // exception list refreshes on the next scan (≤15 min)
+      setState("cleared");   // exception list refreshes on the next scan (≤1 h)
     } catch { setState("failed"); }
   };
   return (
@@ -299,7 +299,7 @@ export default function HealthView({ products = [], onExit }) {
   );
 
   // Live negative clothing cells across the whole network (never the snapshot:
-  // the scan exceptions lag up to 15 min, which made fixed cells look unfixed).
+  // the scan exceptions lag up to an hour, which made fixed cells look unfixed).
   const liveNegatives = useMemo(() => {
     if (!allStock || !Object.keys(allStock).length) return null; // still loading
     const isClothingP = (p) => p?.productType === "clothing" ||
