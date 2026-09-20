@@ -98,6 +98,7 @@ import { usePushRegistration } from "./push/usePush";
 import { usePushMute } from "./push/useMute";
 import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
+import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -2898,6 +2899,17 @@ const RoleIcons = {
       <path d="M20 11V7h-4"/>
     </svg>
   ),
+  mirror_fleet: (
+    // lucide-style "tablet + arrow down": a device with a copy coming into it.
+    // Deliberately NOT a cloud — the point of this screen is the devices, not
+    // the database.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="2" width="16" height="20" rx="2"/>
+      <path d="M12 7v7"/>
+      <path d="m9 11 3 3 3-3"/>
+      <path d="M10 18.5h4"/>
+    </svg>
+  ),
   push_alerts: (
     // lucide-style "bell + check": the alert bell with a small tick, so it
     // reads as "who is signed up for alerts" rather than as an alert itself.
@@ -3335,6 +3347,13 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // permissions array, so a permission-keyed gate would lock out the one
       // person the card is for. GATE 1 of 2; the route gate below is the twin.
       isSuperAdmin && { key:"cost_watch", icon:RoleIcons.cost_watch, name:"Cost Watch", desc:"What Firebase costs, and who is spending it", onClick:()=>(window.location.hash = "#admin/cost") },
+      // Mirror Fleet — every device's own report of its offline copy, and the
+      // one switch that drops the whole fleet back to live reads. Super-admin
+      // ONLY, on the email, for the same reason as the two tiles above: the
+      // list names individual staff devices. GATE 1 of 3; the route gate and
+      // the card's own check are the others, and the RTDB rules on
+      // /mirror_devices and /mirror_switch are what actually enforce it.
+      isSuperAdmin && { key:"mirror_fleet", icon:RoleIcons.mirror_fleet, name:"Mirror Fleet", desc:"Every device's offline copy, and the kill switch", onClick:()=>(window.location.hash = "#admin/mirror") },
       // Card Recon — capture the card machine's batch slip, see the variance
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
@@ -19768,6 +19787,10 @@ function AppInner() {
   // authorization happens at the mount below, and the RTDB rule on
   // /cost_watch is what actually refuses the read.
   const wantCostWatch = hash === "#admin/cost" || hash === "#admin/cost/";
+  // /#admin/mirror — MIRROR FLEET. Recognises the HASH only and grants
+  // nothing; authorization happens at the mount below, and the RTDB rules on
+  // /mirror_devices and /mirror_switch are what actually refuse.
+  const wantMirrorFleet = hash === "#admin/mirror" || hash === "#admin/mirror/";
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -20020,7 +20043,15 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantCostWatch) {
+  if (wantMirrorFleet) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // A non-super-admin never gets the card mounted, so none of its reads
+    // happen and the kill switch is never rendered. Layer 1 is the tile,
+    // layer 3 the component's own identical check.
+    view = isSuperAdmin
+      ? <MirrorFleetCard authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantCostWatch) {
     // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
     // A non-super-admin never gets the card mounted, so none of its reads
     // happen. Layer 2 is the component's own identical check, evaluated

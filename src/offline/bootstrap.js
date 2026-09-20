@@ -41,11 +41,14 @@ import { bumpLegs } from "./mirrorSignal";
 import { MIRROR_LEGS } from "./nodes";
 import { confirmPending } from "./pendingWrites";
 import { FEED_CURSOR_META, CHANGES_ROOT } from "./changeFeed";
-import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache } from "./photoCache";
+import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache, heldPhotoCount } from "./photoCache";
 import { readWholeLeg, MISS } from "./localReads";
 import { setServingLegs } from "./serving";
-import { isLegUsable } from "./health";
+import { isLegUsable, getLegHealth, vouchingRecord } from "./health";
 import { setForcedUpdateMode, setUpdateBusy } from "../update/updateChecker";
+import {
+  addBytes, bytesToday, deviceRecord, reportDeviceHealth, thisDevice,
+} from "./deviceHealth";
 import { pendingCount } from "./pendingWrites";
 
 // The FLOOR, not the latency. A live signal on the change log (see below)
@@ -101,7 +104,13 @@ export async function startOfflineMirror({
     }
   } catch { /* not available */ }
 
-  const adapter = createRtdbAdapter();
+  // Every read this device does is weighed as it happens — see
+  // rtdbAdapter.measureBytes — and the running total is what the fleet screen
+  // reports. A failure to record bytes must never fail a read, so addBytes is
+  // fire-and-forget.
+  const adapter = createRtdbAdapter({
+    onBytes: (n) => { addBytes(db, n, { now }).catch(() => {}); },
+  });
   const connection = createConnectionTracker({ subscribeConnected: adapter.subscribeConnected, now });
   connection.start();
 
@@ -176,6 +185,7 @@ export async function startOfflineMirror({
     await refreshServing();
     passes += 1;
     if (passes % PHOTO_PASS_EVERY === 0) await runPhotoPass();
+    await reportHealth();
     return report;
   }
 
@@ -307,6 +317,7 @@ export async function startOfflineMirror({
           await refreshServing();
           bumpLegs(MIRROR_LEGS.map((l) => l.name));
           state.downloading = false;
+          await reportHealth();
           runtime.start();
           return state.setup;
         } catch (err) {
@@ -383,12 +394,68 @@ export async function startOfflineMirror({
     },
   };
 
+  // ── THE DEVICE'S OWN REPORT ───────────────────────────────────────────────
+  //
+  // One small record per device at /mirror_devices/{deviceId}, written only
+  // when something a person would act on has changed (deviceHealth.js decides,
+  // and rate-limits). It is the only way to answer "is the fleet actually
+  // working" without picking up twenty tablets.
+  let lastReport = null;
+  // Who is signed in on this device, for the report. Read, never enforced —
+  // every rule in this database is enforced by the database.
+  let currentUser = auth?.currentUser ?? null;
+  async function reportHealth({ user = null } = {}) {
+    try {
+      const legs = [];
+      for (const leg of MIRROR_LEGS) {
+        const health = await getLegHealth(db, leg.name).catch(() => null);
+        const vouched = vouchingRecord(health);
+        legs.push({
+          name: leg.name,
+          ok: health?.ok === true,
+          reason: health?.reason ?? null,
+          rows: vouched?.rows ?? null,
+          at: vouched?.at ?? null,
+        });
+      }
+      const { deviceId, label } = thisDevice();
+      const setup = await engine.setupState();
+      const record = deviceRecord({
+        deviceId, label, buildVersion, now,
+        uid: user?.uid ?? currentUser?.uid ?? null,
+        email: user?.email ?? currentUser?.email ?? null,
+        legs,
+        serving: await refreshServing(),
+        complete: setup.done,
+        downloading: state.downloading,
+        switchOn: offlineMirrorEnabled(),
+        lastSyncAt: legs.reduce((m, l) => Math.max(m, l.at ?? 0), 0) || null,
+        lastPassAt: state.lastPass?.at ?? null,
+        lastError: state.lastError,
+        bytes: await bytesToday(db, { now }),
+        photos: await heldPhotoCount(db).catch(() => null),
+        pending: pendingCount(),
+      });
+      const written = await reportDeviceHealth({
+        write: (path, value) => adapter.writePath(path, value),
+        record,
+        last: lastReport,
+      });
+      if (written) lastReport = written;
+    } catch (err) {
+      // A device that cannot report its health goes on working perfectly well.
+      console.warn("offline mirror: health report failed —", err?.message ?? err);
+    }
+  }
+  runtime.reportHealth = reportHealth;
+
   // Nothing runs until there is a signed-in, non-anonymous user, and
   // everything stops when there is not — every mirrored node's read rule says
   // so, and a read registered before sign-in is rejected without retrying.
   if (auth) {
     const { onAuthStateChanged } = await import("firebase/auth");
     onAuthStateChanged(auth, (user) => {
+      currentUser = user ?? null;
       const usable = !!user && user.isAnonymous !== true && offlineMirrorEnabled();
       if (usable) { stopped = false; schedule(0); }
       else { clearTimeoutFn(timer); stopped = true; }
