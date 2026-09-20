@@ -241,3 +241,21 @@ test("the rows a day node returns are the events, field for field", async () => 
   const built = await buildDay(io, "2026-09-18");
   assert.deepStrictEqual(expandDay(built.node), rows.map((r) => keptFieldsOf(r.value)));
 });
+
+test("a row with NO usable timestamp is kept, in the undated bucket", async () => {
+  // It belongs to no day, and it is still on two screens today: the Insights
+  // sidebar counts every event, and the Customers list walks every `placed`
+  // without a window. Dropping it would change a number.
+  const rows = [
+    { key: `${pushKeyForMs(NOW)}000000000001`, value: { action: "placed", productName: "Ghost" } },
+    { key: `${pushKeyForMs(NOW)}000000000002`, value: { action: "placed", productName: "Bad", timestamp: "not a date" } },
+  ];
+  const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
+  const r = await runSweep({ io, nowMs: NOW });
+
+  assert.strictEqual(r.late, 2);
+  assert.strictEqual(io.commits[0][`${LATE_PATH}/undated/${rows[0].key}`].productName, "Ghost");
+  assert.strictEqual(io.commits[0][`${LATE_PATH}/undated/${rows[1].key}`].productName, "Bad");
+  // …and no day node was invented for it.
+  assert.strictEqual(io.commits[0][`${DAYS_PATH}/`], undefined);
+});

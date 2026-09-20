@@ -61,6 +61,16 @@
 //
 // This is expected to stay empty. It exists so that if it ever is not, the
 // rows are IN the figures and countable, rather than absent and plausible.
+//
+// ── AND A ROW WITH NO USABLE TIMESTAMP BELONGS TO NO DAY AT ALL ─────────────
+//
+// It still belongs to the LOG. The Insights sidebar counts every event the
+// store has logged, and the Customers list walks every `placed` event without
+// looking at a window, so a row whose timestamp is missing or unparseable is
+// visible on those screens today. Dropping it because it has no day would
+// change a number. It goes to /insights_rollup/late/undated/{pushKey}, which
+// readers include whenever their window is all-time — which is the only window
+// such a row can appear in, since every window filter compares its timestamp.
 
 const { compactDay } = require("./rollupCodec.cjs");
 
@@ -71,6 +81,10 @@ const PAD_MS = 48 * 60 * 60 * 1000;
 const ROLLUP_ROOT = "insights_rollup";
 const DAYS_PATH = `${ROLLUP_ROOT}/days`;
 const LATE_PATH = `${ROLLUP_ROOT}/late`;
+/** Where a row with no usable timestamp goes. Not a date, on purpose: it sorts
+ *  after every "YYYY-MM-DD" key, so a reader's date range never picks it up by
+ *  accident — it has to be asked for. */
+const UNDATED_BUCKET = "undated";
 const CURSOR_PATH = `${ROLLUP_ROOT}/meta/cursor`;
 // A tiny index of which days have a node, and how many rows each holds. It
 // exists so "which days are missing?" is a 3 KB read of short keys rather than
@@ -206,10 +220,11 @@ async function runSweep({ io, nowMs, log = () => {} }) {
         const d = saDateOf(r.value.timestamp);
         touched.add(d);
         // A row whose key is outside its own day's padded range would be
-        // invisible to that day's rebuild. Keep it where the readers can find
-        // it. Keyed by its own push key, so this is idempotent.
-        if (d && r.key && !isWithinDayRange(r.key, d)) {
-          late[`${LATE_PATH}/${d}/${r.key}`] = r.value;
+        // invisible to that day's rebuild; a row with no usable timestamp
+        // belongs to no day at all. Both go where readers can still find them,
+        // keyed by their own push key, so re-discovery is idempotent.
+        if (r.key && (!d || !isWithinDayRange(r.key, d))) {
+          late[`${LATE_PATH}/${d || UNDATED_BUCKET}/${r.key}`] = r.value;
         }
       }
       if (r && r.key) cursor = r.key;
@@ -255,7 +270,7 @@ async function runSweep({ io, nowMs, log = () => {} }) {
 }
 
 module.exports = {
-  ROLLUP_ROOT, DAYS_PATH, LATE_PATH, CURSOR_PATH, BUILT_PATH, INDEX_PATH,
+  ROLLUP_ROOT, DAYS_PATH, LATE_PATH, UNDATED_BUCKET, CURSOR_PATH, BUILT_PATH, INDEX_PATH,
   BACKSTOP_DAYS, MAX_CATCHUP_PAGES, CATCHUP_PAGE, PAD_MS,
   pushKeyForMs, saDateOf, saDayStartMs, saDateStringOf, shiftSaDate, keyRangeForDate,
   isWithinDayRange,
