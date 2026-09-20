@@ -15,9 +15,9 @@ import TestRenderer, { act } from "react-test-renderer";
 import { readFileSync } from "node:fs";
 
 const realCreate = globalThis.URL.createObjectURL;
-// The node test environment has no localStorage, and the mirror flag lives
-// there — so without this every test below would exercise the flag-OFF path
-// and the three above it would pass for the wrong reason.
+// The node test environment has no localStorage, and the fleet switch caches
+// its answer there — so without this every test below would exercise the
+// switch-OFF path and the three above it would pass for the wrong reason.
 const store = new Map();
 globalThis.localStorage = {
   getItem: (k) => (store.has(k) ? store.get(k) : null),
@@ -26,16 +26,14 @@ globalThis.localStorage = {
 };
 beforeAll(async () => {
   globalThis.URL.createObjectURL = () => "blob:local-thumb";
-  const { setOfflineMirrorEnabled } = await import("../mirrorFlag");
   const { setMirrorSwitchValue } = await import("../killSwitch");
-  setOfflineMirrorEnabled(true);
-  // A device mirrors only if it is in the rollout AND the fleet switch is on.
+  // The fleet switch is the only thing that decides whether a device mirrors.
   setMirrorSwitchValue(true);
 });
 afterAll(async () => {
   globalThis.URL.createObjectURL = realCreate;
-  const { setOfflineMirrorEnabled } = await import("../mirrorFlag");
-  setOfflineMirrorEnabled(false);
+  const { setMirrorSwitchValue } = await import("../killSwitch");
+  setMirrorSwitchValue(false);
 });
 
 const held = new Map();
@@ -123,14 +121,14 @@ describe("the call sites are wired", () => {
   });
 });
 
-describe("with the mirror OFF, the render path is what it was", () => {
+describe("with the fleet switch OFF, the render path is what it was", () => {
   it("does not touch Cache Storage at all", async () => {
     // The output was always right — a miss falls through to the network url —
     // but opening Cache Storage and running a match() on every product image
     // is work that did not happen before this branch, on a device that is not
     // using the mirror.
-    const { setOfflineMirrorEnabled } = await import("../mirrorFlag");
-    setOfflineMirrorEnabled(false);
+    const { setMirrorSwitchValue } = await import("../killSwitch");
+    setMirrorSwitchValue(false);
     held.set(photoCacheRequest("p1").url, true);   // a hit is available…
     const tree = await render(<MirroredImg productId="p1" src={NETWORK} alt="" />);
     expect(tree.toJSON().props.src).toBe(NETWORK);  // …and deliberately unused

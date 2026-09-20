@@ -36,7 +36,7 @@ import { openMirrorDb } from "./db";
 import { createRtdbAdapter } from "./rtdbAdapter";
 import { createConnectionTracker } from "./connection";
 import { createSyncEngine } from "./sync";
-import { offlineMirrorEnabled } from "./mirrorFlag";
+import { offlineMirrorEnabled } from "./killSwitch";
 import { bumpLegs } from "./mirrorSignal";
 import { MIRROR_LEGS } from "./nodes";
 import { confirmPending } from "./pendingWrites";
@@ -60,6 +60,21 @@ export const PASS_BACKOFF_MS = 5 * 60 * 1000;
 // The photo leg runs LAST and only once the data legs are complete: a picture
 // must never be downloading while a number is missing.
 export const PHOTO_PASS_EVERY = 2;
+// A setup download that fails is retried, quietly, for as long as the app is
+// open. Nobody is waiting on it — the app is working on live reads — so the
+// retry is slow enough to be free and frequent enough to finish a download
+// over a shaky afternoon.
+export const SETUP_RETRY_MS = 5 * 60 * 1000;
+
+// "This device's staff have asked for the local copy." Written when the
+// Download button is tapped and read on every open afterwards, so the question
+// is asked ONCE per device and the download resumes by itself from then on.
+//
+// It lives under the `setup.` prefix deliberately: health.js purges that
+// prefix whenever the snapshot is purged, so a device whose copy is thrown
+// away by a schema change asks again rather than silently re-downloading
+// 104 MB in the background.
+export const CONSENT_META = "setup.consented";
 
 export async function startOfflineMirror({
   auth,
@@ -90,11 +105,25 @@ export async function startOfflineMirror({
   const connection = createConnectionTracker({ subscribeConnected: adapter.subscribeConnected, now });
   connection.start();
 
+  const state = {
+    setup: null, lastPass: null, lastError: null, photos: null,
+    // The download, as it happens: which leg, which legs have landed, and the
+    // last failure if there was one.
+    setupProgress: null, setupDone: [], setupError: null, downloading: false,
+    setupCensus: null,
+  };
+
   // The setup screen listens here. The engine takes ONE onProgress at
   // construction, so the runtime fans it out rather than the screen reaching
   // into the engine.
   const progressListeners = new Set();
   const fanOut = (p) => {
+    // Kept so the dot can show the download to somebody who is working
+    // through it. `rows` is only present on a leg that has FINISHED.
+    if (p.phase === "setup") {
+      state.setupProgress = { leg: p.leg, done: p.done, total: p.total, at: now() };
+      if (p.rows !== undefined && !state.setupDone.includes(p.leg)) state.setupDone.push(p.leg);
+    }
     onProgress(p);
     for (const l of progressListeners) { try { l(p); } catch { /* a listener never breaks a pass */ } };
   };
@@ -122,7 +151,6 @@ export async function startOfflineMirror({
   let timer = null;
   let stopped = false;
   let passes = 0;
-  const state = { setup: null, lastPass: null, lastError: null, photos: null };
 
   async function runOnePass() {
     const report = await engine.runPass();
@@ -225,17 +253,104 @@ export async function startOfflineMirror({
     });
   }
 
+  // ── THE DOWNLOAD RUNS BEHIND THE STAFF, NOT IN FRONT OF THEM ──────────────
+  //
+  // The first version of this held the app behind a progress bar until 104 MB
+  // had landed. That is the wrong trade on a shop floor: the app works
+  // perfectly well on live reads — it is what it did for two years — and a
+  // person who cannot serve a customer because a bar is at 38% is a person
+  // whose till is a phone in someone else's hand.
+  //
+  // So: one tap on Download, the app opens THAT INSTANT, and this runs
+  // underneath it. Until it finishes, nothing serves locally (refreshServing
+  // only runs at the end) and every screen reads live exactly as it does
+  // today. The only thing that changes at the end is where the numbers come
+  // from.
+  //
+  // IT RESUMES. runSetup skips a leg that is already set up and staging.js
+  // resumes a part-finished leg from the last page that actually landed, so a
+  // download interrupted by a closed tab, a flat battery or a dropped line
+  // picks up where it stopped rather than starting again. A failure retries on
+  // its own every SETUP_RETRY_MS for as long as the app is open.
+  let setupLoop = null;
+  function downloadInBackground() {
+    if (setupLoop) return setupLoop;
+    state.downloading = true;
+    setupLoop = (async () => {
+      for (;;) {
+        // The kill switch, and a sign-out, both end the download. Asked here
+        // AND passed into runSetup, which asks it between legs.
+        if (stopped || !offlineMirrorEnabled()) { state.downloading = false; return null; }
+        try {
+          state.setup = await engine.runSetup({ keepGoing: () => !stopped && offlineMirrorEnabled() });
+          state.setupError = null;
+
+          // ── VERIFIED BEFORE IT IS SERVED ─────────────────────────────────
+          //
+          // A first download has nothing to compare itself against: the shrink
+          // guard protects a copy that already exists, and on a fresh device
+          // `held` is 0, so a catalogue truncated to a fifth of itself is
+          // "bigger than what I had" and is accepted. That is precisely the
+          // POS incident — 4,654 products read as 799 because a short page was
+          // taken for the end of the node — in the one state the guard cannot
+          // see.
+          //
+          // /mirror_counts is the outside opinion, and it is asked HERE,
+          // FORCED, before refreshServing decides what this device may serve.
+          // A leg that disagrees with the census is marked failed and its
+          // setup marker dropped, so it is not served and the ordinary pass
+          // loop downloads it again. Nothing is deleted, and nothing short is
+          // ever vouched for.
+          try { state.setupCensus = await engine.checkCensus({ force: true }); }
+          catch (err) { state.setupCensus = { error: err.message }; }
+
+          await refreshServing();
+          bumpLegs(MIRROR_LEGS.map((l) => l.name));
+          state.downloading = false;
+          runtime.start();
+          return state.setup;
+        } catch (err) {
+          // NOTHING IS LOST. Every leg that landed is on disk with its health
+          // record; the next attempt starts from the first one that did not.
+          state.setupError = { at: now(), reason: err.name, message: err.message };
+          console.warn("offline mirror: the download stopped —", err.message,
+            "— it will try again by itself.");
+          await new Promise((resolve) => setTimeoutFn(resolve, SETUP_RETRY_MS));
+        }
+      }
+    })().finally(() => { setupLoop = null; });
+    return setupLoop;
+  }
+
   const runtime = {
     db, adapter, engine, connection, state,
-    // Awaited by the setup screen. Resolves when this device has a complete
-    // copy; rejects only if a leg that cannot be empty came back empty, which
-    // is a fault to show rather than to retry silently.
+    // Awaited by nothing on the staff's path. Kept as a promise for the tests
+    // and for a caller that wants to know when the copy is complete.
     async setup(opts) {
       state.setup = await engine.runSetup(opts);
       await refreshServing();
       bumpLegs(MIRROR_LEGS.map((l) => l.name));
       return state.setup;
     },
+
+    // ── THE ONE QUESTION A DEVICE IS EVER ASKED ─────────────────────────────
+    //
+    // "Has somebody on this device tapped Download?" Asked once per device;
+    // afterwards the copy resumes by itself on every open until it is complete.
+    async hasConsented() {
+      return !!(await db.getMeta(CONSENT_META));
+    },
+    async consentAndDownload() {
+      await db.setMeta(CONSENT_META, { at: now(), buildVersion });
+      return downloadInBackground();
+    },
+    downloadInBackground,
+    downloadProgress: () => ({
+      downloading: state.downloading,
+      legsDone: [...state.setupDone],
+      current: state.setupProgress?.leg ?? null,
+      error: state.setupError,
+    }),
     onSetupProgress(listener) {
       progressListeners.add(listener);
       return () => progressListeners.delete(listener);

@@ -50,7 +50,6 @@ vi.mock("../../firebase", () => ({
 import { freshMirrorDb } from "./helpers";
 import { createFakeRtdb } from "./fakeAdapter";
 import { createSyncEngine } from "../sync";
-import { setOfflineMirrorEnabled } from "../mirrorFlag";
 import { setMirrorSwitchValue, _resetMirrorSwitchForTests } from "../killSwitch";
 import { setServingLegs, _resetServingForTests } from "../serving";
 import { _resetMirrorSignalForTests } from "../mirrorSignal";
@@ -124,12 +123,11 @@ beforeEach(() => {
   _resetMirrorSignalForTests();
   _resetMirrorDbHandleForTests();
   _resetMirrorSwitchForTests();
-  setOfflineMirrorEnabled(true);
-  // A device mirrors only if it is in the rollout AND the fleet switch is on.
+  // The fleet switch is the only thing that decides whether a device mirrors.
   setMirrorSwitchValue(true);
 });
 afterEach(() => {
-  setOfflineMirrorEnabled(false);
+  _resetMirrorSwitchForTests();
   _resetServingForTests();
 });
 
@@ -171,9 +169,9 @@ describe("a device NOT serving from its local copy", () => {
     tree.unmount();
   });
 
-  it("opens one with the FLAG OFF, however healthy the local copy is", async () => {
+  it("opens one with the SWITCH OFF, however healthy the local copy is", async () => {
     await seedMirror();
-    setOfflineMirrorEnabled(false);
+    setMirrorSwitchValue(false);
     const { usePathState } = await import("../../components/stock/useStock");
     const tree = await renderHook(() => usePathState("stock/hub1"));
     expect(onValue).toHaveBeenCalledTimes(1);

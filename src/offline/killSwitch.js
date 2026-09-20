@@ -107,6 +107,21 @@ export function mirrorSwitchOn() {
   return state?.on === true;
 }
 
+// ── THE ONE NAME EVERY READ PATH CALLS ──────────────────────────────────────
+//
+// Until PR #624 this lived in mirrorFlag.js and meant "is this device in the
+// rollout", a per-device string somebody set by hand. The rollout is over —
+// every device mirrors — so the per-device flag is gone and this is now the
+// fleet switch and nothing else.
+//
+// The NAME is kept because it is the chokepoint: the hook gate, the
+// synchronous serving hint, the one-shot read, the pending-write echo, the
+// photo reader and the engine all ask this one function, and a question asked
+// in one place is a question that cannot be answered inconsistently in eight.
+export function offlineMirrorEnabled() {
+  return mirrorSwitchOn();
+}
+
 /** Has this device ever heard an answer? Used by the health record and the gate. */
 export function mirrorSwitchKnown() {
   loadCache();
