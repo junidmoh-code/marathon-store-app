@@ -34,7 +34,7 @@
 // `progressFor` and `explainFailure` stay here, and the status dot uses them
 // to show the download while it runs.
 
-import { useCallback, useState } from "react";
+import { useCallback } from "react";
 import { MIRROR_LEGS } from "./nodes";
 
 // Measured bytes per leg, 2026-09-19. Shares of the whole, used only to weight
@@ -118,17 +118,25 @@ export function explainFailure(err) {
 }
 
 export function MirrorDownloadGate({ runtime, onStart }) {
-  const [busy, setBusy] = useState(false);
   const { total } = progressFor([]);
 
-  const start = useCallback(async () => {
-    setBusy(true);
+  // ── IT DOES NOT AWAIT ANYTHING ────────────────────────────────────────────
+  //
+  // Not the download, obviously — but not the consent write either. `await`ing
+  // even one IndexedDB write here means the gate is still on screen, over the
+  // app, for however long that write takes on a tablet that is busy doing
+  // something else; and an `await` on a call that also STARTS the download is
+  // how the first version of this held the gate up for the whole 104 MB with
+  // the button reading "Starting…". (Found by mutating the await back in.)
+  //
+  // A tab closed in that same millisecond loses the consent record and the
+  // device is asked once more next time. That is the entire downside.
+  const start = useCallback(() => {
     try {
-      // Records the consent, kicks the download off in the background and
-      // returns WITHOUT awaiting it. The await here is on the one small
-      // IndexedDB write, so the tap cannot be lost by a person who closes the
-      // tab a second later.
-      await runtime.consentAndDownload();
+      const p = runtime.consentAndDownload();
+      if (p && typeof p.catch === "function") {
+        p.catch((err) => console.warn("offline mirror: could not record the download consent —", err));
+      }
     } catch (err) {
       // A device that cannot record its consent still gets its app, and will
       // be asked again next time. Never a dead end.
@@ -146,9 +154,7 @@ export function MirrorDownloadGate({ runtime, onStart }) {
           orders, history — so screens open instantly and cost almost no data.
           It downloads about {MB(total)} once, in the background.
         </div>
-        <button type="button" style={S.button} onClick={start} disabled={busy}>
-          {busy ? "Starting…" : "Download"}
-        </button>
+        <button type="button" style={S.button} onClick={start}>Download</button>
         <div style={S.note}>
           The app opens straight away and you can carry on working. Nothing
           changes on screen until the copy is complete — until then everything

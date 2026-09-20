@@ -68,6 +68,11 @@ function fakeRuntime({ setupDone = false, consented = false } = {}) {
 }
 
 const APP_TEXT = "the app, working";
+// The gate's own heading, and NOT the word on its button. An earlier version of
+// these tests asserted the absence of "Download", which a gate that had merely
+// swapped its button to "Starting…" satisfied while still covering the app —
+// so a gate that awaited the whole 104 MB passed. Assert the CARD is gone.
+const GATE_TEXT = "Make this device faster";
 function App() { return React.createElement("div", null, APP_TEXT); }
 
 async function mount() {
@@ -100,7 +105,7 @@ describe("a device nobody has asked yet", () => {
   it("shows the gate — and the app is rendered underneath it the whole time", async () => {
     runtime = fakeRuntime({ setupDone: false, consented: false });
     const tree = await mount();
-    expect(text(tree)).toContain("Download");
+    expect(text(tree)).toContain(GATE_TEXT);
     // THE POINT. Not "instead of the app" — over it. The sign-in screen lives
     // inside <App>, so a gate that replaced its children would deadlock a
     // fresh device: no sign-in, no permission, no download. (PR #618.)
@@ -114,8 +119,10 @@ describe("a device nobody has asked yet", () => {
     await act(async () => { findButton(tree).props.onClick(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
 
-    // The gate is gone while the download it started is still running.
-    expect(text(tree)).not.toContain("Download");
+    // The gate is gone while the download it started is still running — and
+    // the download in this fake NEVER settles, so a gate that waited for it
+    // would still be on screen here.
+    expect(text(tree)).not.toContain(GATE_TEXT);
     expect(text(tree)).toContain(APP_TEXT);
     expect(runtime.calls.consent).toBe(1);
     expect(runtime.calls.background).toBe(1);
@@ -136,7 +143,7 @@ describe("a device nobody has asked yet", () => {
     authUser = null;
     runtime = fakeRuntime({ setupDone: false, consented: false });
     const tree = await mount();
-    expect(text(tree)).not.toContain("Download");
+    expect(text(tree)).not.toContain(GATE_TEXT);
     expect(text(tree)).toContain(APP_TEXT);
     tree.unmount();
   });
@@ -146,7 +153,7 @@ describe("a device that has already tapped", () => {
   it("is never asked again — an incomplete copy resumes in the background", async () => {
     runtime = fakeRuntime({ setupDone: false, consented: true });
     const tree = await mount();
-    expect(text(tree)).not.toContain("Download");
+    expect(text(tree)).not.toContain(GATE_TEXT);
     expect(text(tree)).toContain(APP_TEXT);
     expect(runtime.calls.background).toBe(1);
     expect(runtime.calls.start).toBe(0);   // the loop starts when the copy is complete
@@ -156,7 +163,7 @@ describe("a device that has already tapped", () => {
   it("with a COMPLETE copy, goes straight into the steady-state loop", async () => {
     runtime = fakeRuntime({ setupDone: true, consented: true });
     const tree = await mount();
-    expect(text(tree)).not.toContain("Download");
+    expect(text(tree)).not.toContain(GATE_TEXT);
     expect(runtime.calls.start).toBe(1);
     expect(runtime.calls.background).toBe(0);
     tree.unmount();
@@ -168,7 +175,7 @@ describe("the fleet switch still governs all of it", () => {
     setMirrorSwitchValue(false);
     runtime = fakeRuntime({ setupDone: false, consented: false });
     const tree = await mount();
-    expect(text(tree)).not.toContain("Download");
+    expect(text(tree)).not.toContain(GATE_TEXT);
     expect(runtime.calls.background).toBe(0);
     expect(runtime.calls.start).toBe(0);
     tree.unmount();

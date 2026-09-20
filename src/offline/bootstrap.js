@@ -351,9 +351,16 @@ export async function startOfflineMirror({
     async hasConsented() {
       return !!(await db.getMeta(CONSENT_META));
     },
+    // Awaits the one small IndexedDB write that records the tap, and NOT the
+    // download it starts. Returning the loop's promise would be the obvious
+    // thing and is the bug: the gate awaits this call, so it would sit on the
+    // screen for the whole 104 MB and the button would say "Starting…" over a
+    // covered app for four minutes. The download is deliberately dropped on
+    // the floor here — it reports through state and the status dot.
     async consentAndDownload() {
       await db.setMeta(CONSENT_META, { at: now(), buildVersion });
-      return downloadInBackground();
+      downloadInBackground();
+      return true;
     },
     downloadInBackground,
     downloadProgress: () => ({
