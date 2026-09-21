@@ -214,7 +214,14 @@ const MV_PAGE = () => MIRROR_LEGS.find((l) => l.name === "movements").pageSize;
 // An inclusive (ts, key) walk: the first page brings P new rows, every later
 // page P-1 (it re-reads the row its cursor names). Derived, not hard-coded, so
 // a page-size change is not a test change.
-const tsWalkPages = (n, P = MV_PAGE()) => (n <= P ? 1 : 1 + Math.ceil((n - P + 1) / (P - 1)));
+// A FULL page never proves the end, so exactly P rows (or any n that fills its
+// last page) needs one more read, which comes back holding just the cursor row.
+const tsWalkPages = (n, P = MV_PAGE()) => {
+  if (n < P) return 1;
+  const later = n - P;                         // rows still to bring after page one
+  const full = Math.floor(later / (P - 1));    // later pages that come back full
+  return 1 + full + 1;                         // …and the one that is short
+};
 const ISO = (i) => new Date(Date.UTC(2026, 6, 1) + i * 60_000).toISOString();
 
 // ── THE KEYSPACES ────────────────────────────────────────────────────────────
@@ -976,5 +983,28 @@ describe("a partial walk never vouches for a leg that was never finished", () =>
     while (!(await e.legIsSetUp(leg))) await e.repairOneLeg();
     expect(await db.count("movements")).toBe(4500);
     expect(await isLegUsable(db, "movements")).toBe(true);
+  });
+});
+
+describe("the end of a walk is SEEN, not inferred from the page budget", () => {
+  test("a short page on the last allowed read is caught up", async () => {
+    const P = MV_PAGE();
+    const n = P + Math.floor(P / 2);
+    const movements = {};
+    for (let i = 0; i < n; i += 1) movements[pushKeyForMs(T0 + i, "A".repeat(12))] = { ts: ISO(i) };
+    sdk.state.tree = fullTree({ movements });
+    const db = await freshMirrorDb();
+    const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => T0, buildVersion: "b1" });
+    const leg = MIRROR_LEGS.find((l) => l.name === "movements");
+    const res = await e.runRangeLeg(leg, { maxPages: 2 });
+    expect(res.caughtUp).toBe(true);
+    expect(await e.legIsSetUp(leg)).toBe(true);
+    expect(sdk.state.reads.filter((r) => r.path === "stock_movements").length).toBe(tsWalkPages(n));
+  });
+
+  test("exactly one page of rows takes two reads — a full page never proves the end", () => {
+    const P = MV_PAGE();
+    expect(tsWalkPages(P)).toBe(2);
+    expect(tsWalkPages(P - 1)).toBe(1);
   });
 });
