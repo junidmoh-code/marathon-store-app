@@ -449,6 +449,17 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   if (summaryOnly) return { ok: true, warnings: ["Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
 
   const lines = Array.isArray(ex.lines) ? ex.lines : [];
+  // AN EMPTY BATCH (lib/card-recon-pdf.cjs → emptyBatchExtraction): the
+  // terminal settled a batch in which no card was taken. Only the emailed
+  // parser sets the flag, and only this exact shape passes — zero lines, a
+  // zero count, every figure zero. Anything else with the flag is refused.
+  if (ex.emptyBatch === true) {
+    if (reportFormat === "emailed" && !lines.length && ex.txnCount === 0 && ex.totalCents === 0
+        && ex.purchasesCents === 0 && ex.cashCents === 0 && ex.refundsCents === 0) {
+      return { ok: true, warnings: ["This batch closed with no card transactions — recorded as R0.00. There is nothing to reconcile."] };
+    }
+    return { ok: false, reason: "That report claims to be an empty batch but carries figures or lines. Nothing was recorded — tell Junid." };
+  }
   if (!lines.length) {
     return { ok: false, reason: "No transaction lines could be read from the detail photos. Reshoot the detail roll, or submit as summary-only." };
   }
