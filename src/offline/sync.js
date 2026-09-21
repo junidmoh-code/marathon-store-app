@@ -783,6 +783,9 @@ export function createSyncEngine({
   // copy nobody is keeping current. The next open tries the feed again.
   async function unserveChangeFedLegs(err) {
     for (const leg of MIRROR_LEGS.filter((l) => !isAppendOnly(l))) {
+      // A leg already failing for its own reason keeps that reason — it is
+      // the more useful one on the fleet screen, and it is unserved already.
+      if ((await getLegHealth(db, leg.name))?.ok === false) continue;
       await recordLegFailed(db, leg.name, {
         path: leg.node, reason: "feed-stuck", at: now(), state: "failed",
         retryable: false, keepVouched: false, detail: err.message,
