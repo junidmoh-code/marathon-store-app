@@ -400,7 +400,16 @@ export async function startOfflineMirror({
             state.setupError = { ...state.setupError, gaveUp: [...benched] };
             console.warn("offline mirror: the download gave up on", [...benched].join(", "),
               "for this session — it will try again the next time the app is opened.");
+            // The legs that DID land are still worth keeping current, and a
+            // device that served them before must not leave them frozen. So:
+            // the same forced census the success path runs, then serving from
+            // what is verified, then the pass loop. The benched leg is not
+            // served (it has no setup marker) and the loop never retries it.
+            try { state.setupCensus = await engine.checkCensus({ force: true }); }
+            catch (e) { state.setupCensus = { error: e.message }; }
+            await refreshServing();
             await reportHealth();
+            runtime.start();
             return null;
           }
           const wait = Math.min(SETUP_RETRY_MAX_MS, SETUP_RETRY_MS * 2 ** (failedAttempts - 1));

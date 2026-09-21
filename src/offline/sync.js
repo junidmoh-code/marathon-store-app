@@ -283,6 +283,11 @@ export function createSyncEngine({
     if (attempts >= LEG_MAX_ATTEMPTS && !leg.pseudo) {
       await recordLegFailed(db, leg.name, {
         path: leg.node, reason: "gave-up", at: now(), state: "failed", retryable: false,
+        // An append-only leg has no change feed behind it: benched, its copy
+        // stops growing, so it stops being SERVED (screens read live) rather
+        // than answer from a history that is missing today. A snapshot leg
+        // keeps its last good copy — the change feed keeps that current.
+        keepVouched: !isAppendOnly(leg),
         detail: `failed ${attempts} times this session (last: ${reason}: ${err?.message ?? err}). `
           + "Not attempted again until the app is next opened.",
       }).catch(() => {});
@@ -681,20 +686,23 @@ export function createSyncEngine({
     } else try {
       let applied = 0;
       let deleted = 0;
+      let caughtUp = false;
       const paths = [];
       for (let i = 0; i < FEED_PAGES_PER_PASS; i += 1) {
         const res = await runChangeFeedPage({ db, adapter, now });
         applied += res.applied;
         deleted += res.deleted;
         paths.push(...res.paths);
+        caughtUp = res.done;
         if (res.done) break;
       }
       report.feed = { applied, deleted, paths };
       failures.delete(FEED_LEDGER);
       // A feed that works again has replayed everything since the cursor it
       // was stuck on (the cursor never moved while it was stuck), so the legs
-      // it had to stop serving are current again and are vouched for again.
-      await reserveChangeFedLegs();
+      // it had to stop serving are current again and are vouched for again —
+      // once it has read to the END, not after four pages of a longer backlog.
+      if (caughtUp) await reserveChangeFedLegs();
     } catch (err) {
       if (err instanceof CursorExpiredError) {
         // The honest wall. Every change-fed leg is marked for a fresh download
@@ -784,8 +792,17 @@ export function createSyncEngine({
   async function unserveChangeFedLegs(err) {
     for (const leg of MIRROR_LEGS.filter((l) => !isAppendOnly(l))) {
       // A leg already failing for its own reason keeps that reason — it is
-      // the more useful one on the fleet screen, and it is unserved already.
-      if ((await getLegHealth(db, leg.name))?.ok === false) continue;
+      // the more useful one on the fleet screen — but it may still be vouched
+      // for (a refused shrink keeps its last good copy), so the vouch goes.
+      const prior = await getLegHealth(db, leg.name);
+      if (prior?.ok === false) {
+        await recordLegFailed(db, leg.name, {
+          path: prior.path ?? leg.node, reason: prior.reason, at: prior.at ?? now(),
+          state: prior.state ?? "failed", retryable: prior.retryable ?? false,
+          detail: prior.detail ?? null, keepVouched: false,
+        });
+        continue;
+      }
       await recordLegFailed(db, leg.name, {
         path: leg.node, reason: "feed-stuck", at: now(), state: "failed",
         retryable: false, keepVouched: false, detail: err.message,
@@ -837,6 +854,9 @@ export function createSyncEngine({
       const entry = counts[leg.name];
       if (!entry || !Number.isFinite(entry.rows) || !Number.isFinite(entry.at)) continue;
       if (at - entry.at > CENSUS_MAX_AGE_MS) continue;    // stale: not evidence
+      // A benched leg is already failed and named; a census verdict over the
+      // top would hide WHY (it is short because it was benched).
+      if (legGate(leg.name).benched) continue;
       const held = (await heldRows(db, leg.name)) ?? 0;
       checked.push(leg.name);
       const allowed = Math.max(25, Math.floor(entry.rows * leg.censusTolerance));

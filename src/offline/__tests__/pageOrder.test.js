@@ -581,10 +581,14 @@ describe("a leg that cannot advance is BENCHED, and costs a bounded number of by
     ]);
     expect(rec.guard.leg).toBe("movements");
     expect(rec.guard.reason).toBe("gave-up");
-    expect(rec.lastError.where).toBe("movements");
     expect(rec.complete).toBe(false);
     // …and no copy is served on the strength of a download that did not finish.
     expect(isLegServing("movements")).toBe(false);
+    // The legs that DID land were censused and are served, and the pass loop
+    // keeps them current — a give-up does not freeze the rest of the device.
+    expect(rt.state.setupCensus.drifted).toEqual([]);
+    expect(isLegServing("products")).toBe(true);
+    expect(rt.state.lastPass).not.toBe(null);
     rt.stop();
   });
 
@@ -655,6 +659,27 @@ describe("a change feed that cannot advance is benched too, and serves nothing s
     const next = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => now, buildVersion: "b1" });
     const rep = await next.runPass();
     expect(rep.feed.applied).toBeGreaterThan(0);
+    expect(await isLegUsable(db, "products")).toBe(true);
+  });
+});
+
+describe("a range leg benched in the steady state stops being served", () => {
+  test("its history is missing today, so screens read it live — and it is not retried", async () => {
+    const tree = fullTree();
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    let now = T0;
+    const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => now, buildVersion: "b1" });
+    await e.runSetup();
+    expect(await isLegUsable(db, "movements")).toBe(true);
+
+    sdk.state.ignoreBoundOn = "stock_movements";      // every page is page one now
+    const before = sdk.state.reads.filter((r) => r.path === "stock_movements").length;
+    for (let i = 0; i < 6; i += 1) { await e.runPass(); now += LEG_RETRY_MAX_MS; }
+    expect(sdk.state.reads.filter((r) => r.path === "stock_movements").length - before).toBe(LEG_MAX_ATTEMPTS);
+    expect(await isLegUsable(db, "movements")).toBe(false);
+    expect((await getLegHealth(db, "movements")).reason).toBe("gave-up");
+    // A snapshot leg is unaffected: the feed keeps it current.
     expect(await isLegUsable(db, "products")).toBe(true);
   });
 });

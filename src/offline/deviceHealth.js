@@ -162,7 +162,7 @@ export function worthWriting(prev, next, { every = WRITE_EVERY_MS } = {}) {
   const key = (r) => [
     r.complete, r.serving, r.downloading, r.switchOn, r.build,
     r.guard ? `${r.guard.leg}:${r.guard.reason}` : "",
-    (r.failing ?? []).map((f) => `${f.leg}:${f.attempts}:${f.benched}`).join(","),
+    (r.failing ?? []).map((f) => `${f.leg}:${f.attempts}:${f.benched}:${f.reason}`).join(","),
   ].join("|");
   if (key(prev) !== key(next)) return true;
   return (next.at - prev.at) >= every;
