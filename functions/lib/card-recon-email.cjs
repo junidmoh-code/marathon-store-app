@@ -78,7 +78,7 @@ function routeEmailSlip({ extraction, terminals }) {
   if (!terminal || !terminal.storeId || !terminal.tillId) {
     return {
       ok: false, tid, unmapped: true,
-      reason: `Terminal ${tid} is not registered under /config/cardTerminals, so this batch has no till to be recorded against. An admin must map it (scripts/seed-card-terminals.mjs) — until then this terminal's slips cannot reconcile.`,
+      reason: `Terminal ${tid} is not registered under /config/cardTerminals, so this batch has no till to be recorded against. Junid adds it in Card machines → settings — until then this terminal's slips cannot reconcile.`,
     };
   }
 

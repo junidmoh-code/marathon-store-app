@@ -671,7 +671,21 @@ async function handleExtract(db, request) {
         "Google's slip reader is overloaded right now (it refused every attempt, on two models), so the photo could not be read. "
         + "It is not your signal and not the photo — wait a few minutes and tap the till again.");
     }
-    throw new HttpsError("unavailable", "Could not read the photos right now — try again.");
+    // EVERY OTHER FAILURE STILL SAYS WHAT IT WAS. A reader that took too long
+    // and one that answered with an error are different things to do about.
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new HttpsError("deadline-exceeded",
+        "Google's slip reader took over two minutes and gave up, so the photo was not read. "
+        + "It is not your signal — try again in a few minutes.");
+    }
+    if (err.httpStatus) {
+      throw new HttpsError("unavailable",
+        `Google's slip reader answered with an error (HTTP ${err.httpStatus}), so the photo was not read. `
+        + "It is not your signal and not the photo — try again in a few minutes, and tell Junid if it keeps happening.");
+    }
+    throw new HttpsError("unavailable",
+      "The slip reader could not be reached from the server, so the photo was not read. "
+      + "It is not your phone's signal — try again in a few minutes, and tell Junid if it keeps happening.");
   }
   // Cost is logged for EVERY billed call, rejected extractions included.
   const rate = OCR_RATES[ocr.model] || { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD };

@@ -1262,8 +1262,9 @@ function parseSlipPdf(lines) {
   // The bank can email that a batch FAILED to settle. It carries a terminal and
   // perhaps a batch number, but no settled figures, and reading it as a batch
   // would record money that never moved. Said plainly, before any parse. (No
-  // real notice is on file yet; the wording is matched loosely on purpose, and
-  // only against a document that is not already a readable report.)
+  // real notice is on file yet; the wording is matched loosely on purpose.
+  // LIMIT: this sees only a notice that arrives as a PDF — the poller hands
+  // nothing else to the parser. A notice in an email BODY produces no row.)
   if (rows.some((r) => SETTLEMENT_FAILED.test(r))) {
     return {
       ok: false,

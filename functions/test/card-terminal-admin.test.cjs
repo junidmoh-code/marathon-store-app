@@ -135,9 +135,13 @@ test("replace: refuses a new TID already registered, the same TID, or a retired 
 function fakeDb(initial, { beforeTxn } = {}) {
   const data = JSON.parse(JSON.stringify(initial));
   const pushed = [];
-  const resolve = (v) => {
-    if (v && typeof v === "object" && v[".sv"] === "timestamp") return NOW;
-    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x)]));
+  // A SERVER stamp and the caller's view of it DIFFER, as in the real SDK: a
+  // transaction completes with the node resolved against the instance's local
+  // clock estimate, never the value the server stored. The fake stores NOW and
+  // hands the caller NOW - 250 — so nothing may compare the two.
+  const resolve = (v, t = NOW) => {
+    if (v && typeof v === "object" && v[".sv"] === "timestamp") return t;
+    if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).map(([k, x]) => [k, resolve(x, t)]));
     return v;
   };
   const get = (p) => p.split("/").reduce((o, k) => (o == null ? undefined : o[k]), data) ?? null;
@@ -161,7 +165,8 @@ function fakeDb(initial, { beforeTxn } = {}) {
           if (out === undefined) return { committed: false, snapshot: { val: () => real } };
         }
         set(p, out === null ? null : resolve(out));
-        return { committed: true, snapshot: { val: () => get(p) } };
+        const local = out === null ? null : resolve(out, NOW - 250);
+        return { committed: true, snapshot: { val: () => local } };
       },
     }),
   };

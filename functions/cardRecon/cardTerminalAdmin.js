@@ -23,6 +23,7 @@
 "use strict";
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { randomUUID } = require("node:crypto");
 const admin = require("firebase-admin");
 const { CARD_TERMINALS_PATH } = require("../lib/card-recon.cjs");
 const {
@@ -102,7 +103,8 @@ async function handle(db, request) {
 
   if (action === "options") return { ok: true, stores: await readStores(db) };
 
-  const stores = await readStores(db);
+  // Retire and reinstate never look at a till; only the others read the POS.
+  const stores = action === "retire" || action === "reinstate" ? [] : await readStores(db);
   const input = data.terminal || {};
 
   if (action === "add" || action === "edit" || action === "retire" || action === "reinstate") {
@@ -126,11 +128,16 @@ async function handle(db, request) {
     if (!oldTid) return { ok: false, reason: "Pick the terminal being replaced." };
     if (!newTid) return { ok: false, reason: "The new TID is 4 to 16 letters and digits, exactly as printed after TID: on the new machine's slip." };
     const oldNow = (await db.ref(`${CARD_TERMINALS_PATH}/${oldTid}`).once("value")).val();
-    // 1. The NEW row first, created only if its TID is free.
+    // 1. The NEW row first, created only if its TID is free. It carries this
+    //    call's own id, which is what the rollback below recognises it by —
+    //    NOT activeFrom: a ServerValue stamp reads back from a transaction as
+    //    the instance's local ESTIMATE, never the server's value, so comparing
+    //    the two would miss in production and strand the row.
+    const replaceId = randomUUID();
     let planned = null;
     const created = await writeRow(db, newTid, (cur) => {
       planned = planReplace({ ...input, oldTid, newTid }, oldNow, cur, { stores, now });
-      return planned.ok ? { ok: true, row: planned.newRow } : planned;
+      return planned.ok ? { ok: true, row: { ...planned.newRow, replaceId } } : planned;
     });
     if (!created.ok) return created;
     // 2. Then retire the OLD row, decided against its value at that moment.
@@ -152,10 +159,9 @@ async function handle(db, request) {
       // anything else has touched it since.
       // Null-first here too: returning undefined on the first (uncached) null
       // would abort without ever seeing the row, and leave it behind.
-      const mine = created.after;
       await db.ref(`${CARD_TERMINALS_PATH}/${newTid}`).transaction((cur) => {
         if (cur === null) return null;
-        return cur.replaces === oldTid && cur.activeFrom === mine.activeFrom ? null : undefined;
+        return cur.replaceId === replaceId && cur.replaces === oldTid ? null : undefined;
       });
       return { ok: false, reason: `${retired.reason} The new terminal was not added. Nothing changed.` };
     }

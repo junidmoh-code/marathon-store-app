@@ -157,8 +157,11 @@ const foldTid = (t) => String(t || "").replace(/O/g, "0").replace(/I/g, "1");
 /**
  * Is the TID read off the slip the PICKED till's, allowing for O/0 and I/1?
  * Only ever used to confirm the pick — never to choose a terminal — and only
- * when no OTHER registered terminal folds to the same characters, so the
- * tolerance cannot route a slip anywhere the exact reading would not.
+ * when no OTHER registered terminal folds to the same characters. The one
+ * thing it cannot rule out is an UNREGISTERED machine whose TID differs from
+ * the picked one only by O/0 or I/1; that slip would be filed on the picked
+ * till where the exact reading would have refused it. Accepted: two FNB TIDs
+ * that close, one of them unregistered, in the same shop, is not a real risk.
  */
 function slipTidMatchesPicked(readTid, picked, registeredTids = []) {
   if (!readTid || !picked) return false;
