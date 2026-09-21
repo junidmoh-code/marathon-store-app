@@ -19,11 +19,26 @@
 // from IndexedDB, and it is what every actual read is gated on.
 
 import { offlineMirrorEnabled, subscribeMirrorSwitch } from "./killSwitch";
+import { auth } from "../firebase";
 
 export const SERVING_KEY = "marathon-store.offlineMirror.serving";
 
 let cache = null;     // parsed hint, per tab, invalidated on write
+let cacheUid = null;  // the account the hint was written FOR
 const listeners = new Set();
+
+// ── THE HINT BELONGS TO ONE ACCOUNT ─────────────────────────────────────────
+// A tablet is shared. The hint is the list of legs served to the account that
+// was signed in when it was written, and it is honoured ONLY while that same
+// account is signed in — read synchronously from firebase auth, which every
+// mirror-reading hook already waits on (authReady) before it reads anything.
+// A different account, or nobody, gets live reads until bootstrap has checked
+// that account's read rights and written a hint for it. (Sonnet review, PR
+// #629: the previous session's hint was otherwise served in the gap before
+// the mirror's own auth listener attached, and after a sign-out.)
+const currentUid = () => {
+  try { return auth?.currentUser?.uid ?? null; } catch { return null; }
+};
 
 function read() {
   if (cache) return cache;
@@ -31,8 +46,10 @@ function read() {
     const raw = typeof localStorage !== "undefined" ? localStorage.getItem(SERVING_KEY) : null;
     const parsed = raw ? JSON.parse(raw) : null;
     cache = Array.isArray(parsed?.legs) ? new Set(parsed.legs) : new Set();
+    cacheUid = typeof parsed?.uid === "string" ? parsed.uid : null;
   } catch {
     cache = new Set();
+    cacheUid = null;
   }
   return cache;
 }
@@ -40,7 +57,9 @@ function read() {
 /** Synchronous, and safe to call in a render. */
 export function isLegServing(legName) {
   if (!legName || !offlineMirrorEnabled()) return false;
-  return read().has(legName);
+  const legs = read();
+  if (cacheUid !== currentUid()) return false;
+  return legs.has(legName);
 }
 
 export function servingKeyFor(legNames) {
@@ -51,16 +70,24 @@ export function servingKeyFor(legNames) {
 
 export function setServingLegs(legNames) {
   const next = [...new Set(legNames ?? [])].sort();
+  const uid = currentUid();
   const before = [...read()].sort().join(",");
-  if (before === next.join(",")) return false;
+  if (before === next.join(",") && cacheUid === uid) return false;
   cache = new Set(next);
+  cacheUid = uid;
   try {
     if (typeof localStorage !== "undefined") {
-      localStorage.setItem(SERVING_KEY, JSON.stringify({ legs: next, at: Date.now() }));
+      localStorage.setItem(SERVING_KEY, JSON.stringify({ legs: next, uid, at: Date.now() }));
     }
   } catch { /* private mode: the hint is per-tab only, which still works */ }
   for (const l of listeners) l();
   return true;
+}
+
+// The signed-in account changed. isLegServing already answers for the new
+// account; this tells every subscribed screen to ask again.
+export function notifyServingChanged() {
+  for (const l of listeners) l();
 }
 
 export function clearServing() { return setServingLegs([]); }
@@ -83,6 +110,7 @@ export function subscribeServing(listener) {
 
 export function _resetServingForTests() {
   cache = null;
+  cacheUid = null;
   listeners.clear();
   try { localStorage?.removeItem(SERVING_KEY); } catch { /* ignore */ }
 }

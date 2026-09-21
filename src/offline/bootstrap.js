@@ -43,7 +43,7 @@ import { confirmPending } from "./pendingWrites";
 import { FEED_CURSOR_META, CHANGES_ROOT } from "./changeFeed";
 import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache, heldPhotoCount } from "./photoCache";
 import { readWholeLeg, MISS } from "./localReads";
-import { setServingLegs } from "./serving";
+import { setServingLegs, notifyServingChanged } from "./serving";
 import { isLegUsable, getLegHealth, vouchingRecord } from "./health";
 import { setForcedUpdateMode, setUpdateBusy } from "../update/updateChecker";
 import {
@@ -662,6 +662,9 @@ export async function startOfflineMirror({
       // rights have been checked (ensureAccess, on the next pass). Synchronous,
       // so no screen renders one account's copy for another in between.
       if (user?.uid && readAccessUid() !== user.uid) setServingLegs([]);
+      // Signed out, or someone else: serving.js already refuses the old hint
+      // (it is keyed to the account); every screen is told to ask again.
+      notifyServingChanged();
       const usable = signedInEnough() && offlineMirrorEnabled();
       // It RESUMES what was already wanted. It does not decide that something
       // should run: a sign-in is not a request for a 104 MB download, and

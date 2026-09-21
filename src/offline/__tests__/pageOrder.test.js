@@ -167,11 +167,15 @@ const sdk = vi.hoisted(() => {
     onValue(r, cb) { cb(valueSnap(r.path === ".info/connected" ? true : at(r.path))); return () => {}; },
     onChildAdded() { return () => {}; },
   };
-  return { state, module, write, keyCmp };
+  // firebase auth, as serving.js reads it: whoever state.authUid names.
+  const auth = {
+    get currentUser() { return state.authUid ? { uid: state.authUid, isAnonymous: false } : null; },
+  };
+  return { state, module, write, keyCmp, auth };
 });
 
 vi.mock("firebase/database", () => sdk.module);
-vi.mock("../../firebase", () => ({ database: {}, auth: {}, storage: {} }));
+vi.mock("../../firebase", () => ({ database: {}, auth: sdk.auth, storage: {} }));
 vi.mock("firebase/auth", () => ({
   onAuthStateChanged: (auth, cb) => { cb({ uid: sdk.state.authUid, isAnonymous: false }); return () => {}; },
 }));
@@ -920,5 +924,28 @@ describe("an access check the line could not answer is not an answer", () => {
     expect(isLegServing("products")).toBe(true);
     expect(isLegServing("stock")).toBe(true);
     rt.stop();
+  });
+});
+
+describe("the serving hint belongs to the account it was written for", () => {
+  test("another account, or nobody, is never served from it — before the mirror even starts", async () => {
+    const { setServingLegs } = await import("../serving");
+    sdk.state.authUid = "admin";
+    setServingLegs(["orders", "products"]);
+    expect(isLegServing("orders")).toBe(true);
+
+    // A shop account signs in: the hint from the admin's session is refused
+    // synchronously, with no mirror code having run at all.
+    sdk.state.authUid = "prince";
+    expect(isLegServing("orders")).toBe(false);
+    expect(isLegServing("products")).toBe(false);
+
+    // Signed out on a shared tablet: nothing.
+    sdk.state.authUid = null;
+    expect(isLegServing("orders")).toBe(false);
+
+    // The admin again: the hint is theirs, and it applies.
+    sdk.state.authUid = "admin";
+    expect(isLegServing("orders")).toBe(true);
   });
 });
