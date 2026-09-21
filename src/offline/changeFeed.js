@@ -130,6 +130,18 @@ export function cursorIsResumable(cursor, nowMs, {
  * `skipped` names what was dropped and why, so a pass can record it rather
  * than discard it silently.
  */
+// ── A ROW THIS ACCOUNT MAY NOT READ ─────────────────────────────────────────
+// /orders is readable by a SHOP-BOUND account (users/{uid}/destShop) only
+// through a destShop query, so its per-row re-read here is refused. That used
+// to reject the whole page — "a failed row read abandons the page" — so the
+// cursor never moved and every change-fed leg on a Marathon PE or Pine tablet
+// silently stopped updating while it went on being served. (Fleet, 2026-09-21.)
+// A refusal is not a failure to retry: the row is skipped, named, and the rest
+// of the page is applied. It is never read as a DELETE.
+export const isPermissionDenied = (err) =>
+  /permission[_ ]denied/i.test(`${err?.code ?? ""} ${err?.message ?? ""}`);
+const NOT_PERMITTED = Symbol("not-permitted");
+
 // Thrown when a change page does not move the cursor forward. sync.js counts
 // these and benches the feed after LEG_MAX_ATTEMPTS — see runPass.
 export class FeedCursorStuckError extends Error {
@@ -237,14 +249,23 @@ export async function runChangeFeedPage({
   // Every row's current value, fetched once each however many records named
   // it. A rejection here abandons the page WITHOUT moving the cursor.
   const values = await mapWithLimit(rows, concurrency, ({ leg, key }) =>
-    adapter.readPath(rowPath(leg, key)));
+    adapter.readPath(rowPath(leg, key)).catch((err) => {
+      if (isPermissionDenied(err)) return NOT_PERMITTED;
+      throw err;
+    }));
 
   // Group by object store so each store commits its rows and the shared cursor
   // in one transaction.
   const byStore = new Map();
+  const appliedRows = [];
   for (let i = 0; i < rows.length; i += 1) {
     const { leg, key } = rows[i];
     const value = values[i];
+    if (value === NOT_PERMITTED) {
+      skipped.push({ why: "not-permitted", node: leg.node, leg: leg.name, key });
+      continue;
+    }
+    appliedRows.push(rows[i]);
     const bucket = byStore.get(leg.store) ?? { records: [], deleteKeys: [] };
     const k = storeKey(leg, key);
     if (value === null || value === undefined) bucket.deleteKeys.push(k);
@@ -284,7 +305,7 @@ export async function runChangeFeedPage({
     // dropped for them (pendingWrites.confirmPending): the feed has now
     // carried the same fact, so keeping the echo past this point is how it
     // would start hiding somebody else's later change.
-    paths: rows.map(({ leg, key }) => rowPath(leg, key)),
+    paths: appliedRows.map(({ leg, key }) => rowPath(leg, key)),
   };
 }
 

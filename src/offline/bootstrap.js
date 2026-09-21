@@ -43,7 +43,7 @@ import { confirmPending } from "./pendingWrites";
 import { FEED_CURSOR_META, CHANGES_ROOT } from "./changeFeed";
 import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache, heldPhotoCount } from "./photoCache";
 import { readWholeLeg, MISS } from "./localReads";
-import { setServingLegs } from "./serving";
+import { setServingLegs, notifyServingChanged } from "./serving";
 import { isLegUsable, getLegHealth, vouchingRecord } from "./health";
 import { setForcedUpdateMode, setUpdateBusy } from "../update/updateChecker";
 import {
@@ -84,6 +84,21 @@ export const SETUP_RETRY_MAX_MS = 60 * 60 * 1000;
 // away by a schema change asks again rather than silently re-downloading
 // 104 MB in the background.
 export const CONSENT_META = "setup.consented";
+
+// The account whose read rights the serving hint was last checked against.
+// localStorage, not IndexedDB, because the auth listener must decide
+// SYNCHRONOUSLY whether the hint still applies — a hook reads it on its very
+// first render. A different account on the tablet clears the hint at once and
+// it comes back only after checkAccess() has asked the database.
+export const ACCESS_UID_KEY = "marathon-store.offlineMirror.accessUid";
+const readAccessUid = () => {
+  try { return typeof localStorage !== "undefined" ? localStorage.getItem(ACCESS_UID_KEY) : null; }
+  catch { return null; }
+};
+const writeAccessUid = (uid) => {
+  try { if (typeof localStorage !== "undefined") localStorage.setItem(ACCESS_UID_KEY, uid ?? ""); }
+  catch { /* per-tab only */ }
+};
 
 export async function startOfflineMirror({
   auth,
@@ -169,6 +184,16 @@ export async function startOfflineMirror({
   // census drift — drops out here, and the hooks reading it open their live
   // subscriptions again on the next render.
   async function refreshServing() {
+    // THE ACCESS GATE: nothing is served to a signed-in account whose read
+    // rights have not been checked on this device (ensureAccess). Every pass
+    // comes through here, so this is the one place it can be enforced.
+    const uid = currentUser?.uid ?? auth?.currentUser?.uid ?? null;
+    if (uid && readAccessUid() !== uid) {
+      lastServing = [];
+      setServingLegs([]);
+      setForcedUpdateMode(false);
+      return [];
+    }
     const serving = [];
     for (const leg of MIRROR_LEGS) {
       try { if (await isLegUsable(db, leg.name)) serving.push(leg.name); }
@@ -264,6 +289,7 @@ export async function startOfflineMirror({
     if (!offlineMirrorEnabled() || !consented) { runtime.stop(); return; }
     let ms = PASS_INTERVAL_MS;
     try {
+      await ensureAccess();
       const report = await runOnePass();
       if (report.errors.length) ms = PASS_BACKOFF_MS;
     } catch (err) {
@@ -334,6 +360,7 @@ export async function startOfflineMirror({
         // AND passed into runSetup, which asks it between legs.
         if (stopped || !offlineMirrorEnabled()) { state.downloading = false; return null; }
         try {
+          await ensureAccess();
           state.setup = await engine.runSetup({
             keepGoing: () => !stopped && offlineMirrorEnabled() && signedInEnough(),
           });
@@ -596,6 +623,21 @@ export async function startOfflineMirror({
   }
   runtime.reportHealth = reportHealth;
 
+  // Asks the database, once per signed-in account, which held legs that
+  // account may read — see engine.checkAccess. Only ever called from the two
+  // consented paths (a pass, a download), so it never reads unasked.
+  async function ensureAccess() {
+    const uid = currentUser?.uid ?? auth?.currentUser?.uid ?? null;
+    if (!uid || readAccessUid() === uid) return;
+    const { unchecked } = await engine.checkAccess();
+    // Anything unanswered (a timeout) leaves this account UNCHECKED: nothing
+    // is served to it yet, and the next pass asks again.
+    if (unchecked.length) return;
+    writeAccessUid(uid);
+    await refreshServing();
+  }
+  runtime.ensureAccess = ensureAccess;
+
   // A copy taken by the old pager may be short and still be in the serving
   // hint from the last session. Retire it before anything trusts the hint.
   // Local only: IndexedDB in, health records out, no RTDB read. (Here, below
@@ -603,6 +645,8 @@ export async function startOfflineMirror({
   try {
     const retired = await engine.retireOldPagerCopies();
     if (retired.length) await refreshServing();
+    // A leg the LAST account could not read is asked again for this one.
+    await engine.clearNotPermitted();
   } catch (err) {
     console.warn("offline mirror: could not retire old-pager copies —", err?.message ?? err);
   }
@@ -614,6 +658,13 @@ export async function startOfflineMirror({
     const { onAuthStateChanged } = await import("firebase/auth");
     onAuthStateChanged(auth, (user) => {
       currentUser = user ?? null;
+      // A DIFFERENT ACCOUNT: nothing is served from the copy until its read
+      // rights have been checked (ensureAccess, on the next pass). Synchronous,
+      // so no screen renders one account's copy for another in between.
+      if (user?.uid && readAccessUid() !== user.uid) setServingLegs([]);
+      // Signed out, or someone else: serving.js already refuses the old hint
+      // (it is keyed to the account); every screen is told to ask again.
+      notifyServingChanged();
       const usable = signedInEnough() && offlineMirrorEnabled();
       // It RESUMES what was already wanted. It does not decide that something
       // should run: a sign-in is not a request for a 104 MB download, and

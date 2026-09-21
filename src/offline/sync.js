@@ -65,6 +65,7 @@ import {
 } from "./staging";
 import {
   runChangeFeedPage, changeCursorAtSetupStart, CursorExpiredError, FeedCursorStuckError,
+  isPermissionDenied,
   FEED_CURSOR_META, COUNTS_ROOT, CHANGES_ROOT,
 } from "./changeFeed";
 import { isCanonicalLocationId } from "./locationIds";
@@ -305,12 +306,79 @@ export function createSyncEngine({
         failures.delete(leg.name);
         return res;
       } catch (err) {
+        // NOT A FAILURE: this account may not read this node (see
+        // markNotPermitted). Nothing to retry, nothing to bench.
+        if (isPermissionDenied(err)) {
+          await markNotPermitted(leg, err);
+          return { rows: 0, added: 0, caughtUp: true, notPermitted: true };
+        }
         await noteLegFailure(leg, err);
         throw err;
       }
     })().finally(() => { inFlight.delete(leg.name); });
     inFlight.set(leg.name, p);
     return p;
+  }
+
+  // ── A LEG THIS ACCOUNT MAY NOT READ ─────────────────────────────────────
+  // A shop-bound account (users/{uid}/destShop) may read /orders only through
+  // its own destShop query, so the whole-node download is refused — on every
+  // Marathon PE and Pine tablet, every time. That is a RULE, not a fault: the
+  // leg is recorded as not mirrored for this account, is never served (the
+  // screens read it live, exactly as they always have), is not censused and
+  // does not hold the rest of the setup back. The marker is dropped at every
+  // start (clearNotPermitted), so a different account on the same device is
+  // asked again — one refused request, no bytes.
+  async function markNotPermitted(leg, err) {
+    await recordLegFailed(db, leg.name, {
+      path: leg.node, reason: "not-permitted", at: now(), state: "skipped",
+      retryable: false, keepVouched: false,
+      detail: `this account may not read /${leg.node} whole (${err?.message ?? err}). Read live instead.`,
+    });
+    await db.setMeta(`${SETUP_META_PREFIX}${leg.name}`, {
+      at: now(), rows: 0, notPermitted: true, pager: PAGER_VERSION,
+    });
+  }
+  const notPermitted = async (leg) =>
+    !!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))?.notPermitted;
+
+  // ── WHO IS SIGNED IN DECIDES WHAT MAY BE SERVED ─────────────────────────
+  // A tablet is shared. If an admin's account downloaded /orders whole and a
+  // shop account signs in next, the local copy holds every shop's orders — more
+  // than the rules would ever hand that account — and the feed, re-reading
+  // /orders rows as the shop account, is refused on every one, so the copy
+  // would also stop updating. (Sonnet review, PR #629.)
+  //
+  // So, for the account now signed in, every leg this device HOLDS is asked
+  // once: one limitToFirst(1) read — a few hundred bytes — and a refusal marks
+  // the leg not mirrored for this account, which stops it being served.
+  async function checkAccess() {
+    const refused = [];
+    const unchecked = [];
+    for (const leg of MIRROR_LEGS) {
+      const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
+      if (!marker || marker.notPermitted) continue;
+      try {
+        if (leg.depth === 0) await adapter.readPath(leg.node);
+        else await adapter.firstKey(leg.node);
+      } catch (err) {
+        // A slow line is not a refusal — but it is not an answer either, so
+        // the caller must not treat this account as checked.
+        if (!isPermissionDenied(err)) { unchecked.push(leg.name); continue; }
+        await markNotPermitted(leg, err);
+        refused.push(leg.name);
+      }
+    }
+    return { refused, unchecked };
+  }
+
+  async function clearNotPermitted() {
+    const cleared = [];
+    for (const leg of MIRROR_LEGS) {
+      if (await notPermitted(leg)) cleared.push(`${SETUP_META_PREFIX}${leg.name}`);
+    }
+    if (cleared.length) await db.deleteMetaMany([...cleared, SETUP_DONE_META]);
+    return cleared.length;
   }
 
   // What the device reports: every leg that is failing this session.
@@ -658,6 +726,8 @@ export function createSyncEngine({
   async function legIsSetUp(leg) {
     const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
     if (!marker) return false;
+    // Decided, not missing: see markNotPermitted.
+    if (marker.notPermitted) return true;
     if (isPagedSnapshot(leg) && marker.pager !== PAGER_VERSION) return false;
     const health = await getLegHealth(db, leg.name);
     if (!health) return false;
@@ -688,16 +758,23 @@ export function createSyncEngine({
       let deleted = 0;
       let caughtUp = false;
       const paths = [];
+      const refusedLegs = [];
       for (let i = 0; i < FEED_PAGES_PER_PASS; i += 1) {
         const res = await runChangeFeedPage({ db, adapter, now });
         applied += res.applied;
         deleted += res.deleted;
         paths.push(...res.paths);
+        for (const sk of res.skipped ?? []) {
+          if (sk.why === "not-permitted" && sk.leg) refusedLegs.push(sk.leg);
+        }
         caughtUp = res.done;
         if (res.done) break;
       }
       report.feed = { applied, deleted, paths };
       failures.delete(FEED_LEDGER);
+      // A row this account was refused means the leg's copy can no longer be
+      // kept current FOR THIS ACCOUNT: it stops being served, never deleted.
+      for (const name of new Set(refusedLegs)) await markNotPermitted(LEG_BY_NAME[name], new Error("permission_denied (change feed)"));
       // A feed that works again has replayed everything since the cursor it
       // was stuck on (the cursor never moved while it was stuck), so the legs
       // it had to stop serving are current again and are vouched for again —
@@ -722,6 +799,7 @@ export function createSyncEngine({
 
     // 2. The two forward walks.
     for (const leg of MIRROR_LEGS.filter(isAppendOnly)) {
+      if (await notPermitted(leg)) continue;
       try {
         const res = await attemptLeg(leg, () => runRangeLeg(leg, { maxPages: RANGE_PAGES_PER_PASS }));
         if (res === null) continue;            // backing off, or benched this session
@@ -875,6 +953,13 @@ export function createSyncEngine({
       // A benched leg is already failed and named; a census verdict over the
       // top would hide WHY (it is short because it was benched).
       if (legGate(leg.name).benched) continue;
+      // Not mirrored for this account: there is nothing local to count.
+      if (await notPermitted(leg)) continue;
+      // NOT DOWNLOADED YET is not DRIFT. A download that gave up part-way used
+      // to census every leg, found 0 rows where the server has 38 users, and
+      // painted "does not match the server's count" on legs it had simply not
+      // reached. Only a leg this device claims to hold is judged.
+      if (!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))) continue;
       const held = (await heldRows(db, leg.name)) ?? 0;
       checked.push(leg.name);
       const allowed = Math.max(25, Math.floor(entry.rows * leg.censusTolerance));
@@ -902,5 +987,6 @@ export function createSyncEngine({
   return {
     runSetup, setupState, legIsSetUp, runPass, runRangeLeg,
     downloadSnapshotLeg, checkCensus, repairOneLeg, legFailures, retireOldPagerCopies,
+    clearNotPermitted, checkAccess,
   };
 }
