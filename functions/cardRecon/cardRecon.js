@@ -418,6 +418,21 @@ function toExtraction(parsed) {
   };
 }
 
+// ── WHAT THE MODEL READ, ONE LINE PER EXTRACTION ─────────────────────────────
+// One OCR call reads every photo of a capture together, so this is one line per
+// extraction, not per photo. On 21 Sept a retake at Junid's till was refused
+// after its TID matched and nothing said why. An ALLOWLIST of header fields and
+// confidences — never a transaction line, PAN, RRN, UTI or auth code.
+const LOGGED_HEADER_FIELDS = ["tid", "batchNo", "total", "purchases", "refunds", "cash", "opened", "closed", "txnCount", "confidence"];
+function photoReadLogLine(picked, ocr) {
+  const p = (ocr && ocr.parsed) || {};
+  const header = Object.fromEntries(LOGGED_HEADER_FIELDS.map((k) => [k, p[k] ?? null]));
+  return `cardBatchCapture: photo read picked=${picked} model=${ocr && ocr.model} attempts=${ocr && ocr.attempts} ${JSON.stringify(header)}`;
+}
+function refusalLogLine(picked, reason) {
+  return `cardBatchCapture: extract refused picked=${picked || "(email)"} reason=${JSON.stringify(reason)}`;
+}
+
 // A reject the operator can act on — travels as a NORMAL response, not an
 // exception, so the screen renders it as copy instead of a red toast.
 const reject = (reason) => ({ ok: false, reason });
@@ -699,6 +714,7 @@ async function handleExtract(db, request) {
 
   if (!ocr.parsed) return reject("The photos could not be read as a batch report — retake them, filling the frame with the slip.");
   const extraction = toExtraction(ocr.parsed);
+  console.log(photoReadLogLine(picked, ocr));
 
   // ── THE TID DECIDES, NOT THE PICKER — a wrong slip rejects itself ──
   // The model's RAW answer is logged on a TID refusal. On 20 Sept Marathon
@@ -1313,7 +1329,15 @@ exports.cardBatchCapture = onCall(
     await assertCardRecon(request);
     const db = admin.database();
     const action = request.data?.action;
-    if (action === "extract") return handleExtract(db, request);
+    if (action === "extract") {
+      const out = await handleExtract(db, request);
+      // Every refusal leaves its reason in the log, not only on the phone —
+      // so "it said try again" can be read back exactly afterwards.
+      if (out && out.ok === false) {
+        console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+      }
+      return out;
+    }
     if (action === "submit") return handleSubmit(db, request);
     throw new HttpsError("invalid-argument", "action must be 'extract' or 'submit'.");
   },
@@ -1341,3 +1365,5 @@ exports.OCR_MODEL = OCR_MODEL;
 exports.EXTRACTION_PROMPT = EXTRACTION_PROMPT;
 exports.OCR_FALLBACK_MODEL = OCR_FALLBACK_MODEL;
 exports.runSlipOcr = runSlipOcr;
+exports.photoReadLogLine = photoReadLogLine;
+exports.refusalLogLine = refusalLogLine;
