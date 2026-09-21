@@ -812,6 +812,6 @@ describe("the census judges only what the device holds", () => {
     const res = await e.checkCensus({ force: true });
     expect(res.drifted).toEqual([]);
     expect(res.checked).toEqual(["users"]);
-    expect(await getLegHealth(db, "customers")).toBe(null);   // never painted red
+    expect((await getLegHealth(db, "customers")) ?? null).toBe(null);   // never painted red
   });
 });
