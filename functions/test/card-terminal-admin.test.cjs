@@ -263,3 +263,18 @@ test("a REPLACED terminal cannot be reinstated — its till has a new owner", ()
   assert.equal(out.ok, false);
   assert.match(out.reason, /replaced by 0000CD2E/);
 });
+
+test("a row with NO capture field saved as Both is a no-op — nothing is written", () => {
+  // Pine Till 1 as it stands live: no `capture`, which already means Both.
+  const pine = { label: "Pine Till 1", mid: "100000001178101", storeId: "pine", tillId: "till-1" };
+  const same = planEdit({ tid: "67364485", storeId: "pine", tillId: "till-1", label: "Pine Till 1", mid: "100000001178101", capture: "both" }, pine, { stores, now: NOW });
+  assert.equal(same.ok, false);
+  assert.match(same.reason, /Nothing changed/);
+  // A real change on that row still leaves the absent field absent…
+  const relabel = planEdit({ tid: "67364485", storeId: "pine", tillId: "till-1", label: "Pine Till", mid: "100000001178101", capture: "both" }, pine, { stores, now: NOW });
+  assert.equal(relabel.ok, true);
+  assert.equal("capture" in relabel.row, false);
+  // …and choosing Email on it writes Email.
+  const email = planEdit({ tid: "67364485", storeId: "pine", tillId: "till-1", label: "Pine Till 1", mid: "100000001178101", capture: "email" }, pine, { stores, now: NOW });
+  assert.equal(email.row.capture, "email");
+});

@@ -38,7 +38,7 @@
 
 "use strict";
 
-const { isRetiredTerminal } = require("./card-terminals.cjs");
+const { isRetiredTerminal, captureMode } = require("./card-terminals.cjs");
 
 /** How a terminal's report reaches us. Absent on a row = "both". */
 const CAPTURE_MODES = Object.freeze(["email", "photo", "both"]);
@@ -146,8 +146,15 @@ function planEdit(input, current, { stores, now }) {
   if (c.mid) row.mid = c.mid; else delete row.mid;
   // THE ONE EDIT THAT CAN MAKE A FIGURE WRONG — see tillMoveWarning.
   if (current.tillId && current.tillId !== c.tillId) row.tillChangedAt = now;
-  const changed = ["label", "tillId", "capture", "mid"].some((k) => (current[k] ?? null) !== (row[k] ?? null));
+  // `capture` is compared by its MEANING: a row written before the field
+  // existed has none, which is "both" — so saving "both" over it is no change
+  // and must not write. (Found live on 21 Sept 2026: a no-op save of Pine
+  // Till 1 stamped `capture: "both"` onto it.)
+  const changed = ["label", "tillId", "mid"].some((k) => (current[k] ?? null) !== (row[k] ?? null))
+    || captureMode(current) !== c.capture;
   if (!changed) return { ok: false, reason: "Nothing changed." };
+  // Unchanged meaning, unchanged row: an absent field stays absent.
+  if (current.capture === undefined && c.capture === "both") delete row.capture;
   return { ok: true, tid, row };
 }
 
