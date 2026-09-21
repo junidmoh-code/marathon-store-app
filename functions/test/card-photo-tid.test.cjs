@@ -147,10 +147,29 @@ test("an Email-only terminal is refused BEFORE any OCR is paid for", () => {
   assert.ok(gate < body.indexOf("runSlipOcr("), "…and comes before the paid call");
 });
 
-test("every photo read and every extract refusal leaves a log line — header only, no card data", () => {
+test("the photo-read log line carries the header and NOTHING from the transaction roll", () => {
+  const { photoReadLogLine, refusalLogLine } = require("../cardRecon/cardRecon.js");
+  // The real HP1X response, plus a transaction line carrying card data that
+  // must never reach Cloud Logging.
+  const parsed = { ...REAL_HP1X, transactions: [{ date: "2026/09/10", time: "10:00:00", uti: "UTI-SECRET-1",
+    rrn: "RRN-SECRET-2", authCode: "AUTH-SECRET-3", tsn: 7, pan: "518103******4436", amount: "R900.00", type: "purchase" }] };
+  const line = photoReadLogLine("0000HP1X", { parsed, model: OCR_MODEL, attempts: 3 });
+  assert.match(line, /^cardBatchCapture: photo read picked=0000HP1X model=gemini-3\.6-flash attempts=3 /);
+  const header = JSON.parse(line.slice(line.indexOf("{")));
+  assert.equal(header.tid, "0000HP1X");
+  assert.equal(header.batchNo, "509");
+  assert.equal(header.total, "R21,250.00");
+  assert.equal(header.confidence.tid, 0.99);
+  for (const secret of ["UTI-SECRET-1", "RRN-SECRET-2", "AUTH-SECRET-3", "518103", "4436", "transactions", "R900.00"]) {
+    assert.ok(!line.includes(secret), `${secret} leaked into the log`);
+  }
+  assert.equal(refusalLogLine("0000Z4M6", "Could not read the slip's TOTAL confidently — retake that photo in better light."),
+    'cardBatchCapture: extract refused picked=0000Z4M6 reason="Could not read the slip\'s TOTAL confidently — retake that photo in better light."');
+});
+
+test("the callable logs both lines on the extract path", () => {
   const src = require("node:fs").readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
-  const read = src.slice(src.indexOf("cardBatchCapture: photo read"), src.indexOf("cardBatchCapture: photo read") + 700);
-  for (const field of ["tid:", "batchNo:", "total:", "confidence:"]) assert.ok(read.includes(field), field);
-  for (const secret of ["transactions", "pan", "rrn", "authCode", "uti"]) assert.ok(!new RegExp(`\\b${secret}\\b`).test(read), `${secret} must never be logged`);
-  assert.match(src, /cardBatchCapture: extract refused picked=/);
+  const extract = src.slice(src.indexOf("async function handleExtract("), src.indexOf("async function handleExtractPdf("));
+  assert.ok(extract.indexOf("console.log(photoReadLogLine(") > extract.indexOf("toExtraction(ocr.parsed)"));
+  assert.match(src, /if \(out && out\.ok === false\) \{\s*console\.warn\(refusalLogLine\(/);
 });
