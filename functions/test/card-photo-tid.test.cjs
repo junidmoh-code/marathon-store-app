@@ -146,3 +146,11 @@ test("an Email-only terminal is refused BEFORE any OCR is paid for", () => {
   assert.ok(gate > 0, "the capture-mode gate is in the photo path");
   assert.ok(gate < body.indexOf("runSlipOcr("), "…and comes before the paid call");
 });
+
+test("every photo read and every extract refusal leaves a log line — header only, no card data", () => {
+  const src = require("node:fs").readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
+  const read = src.slice(src.indexOf("cardBatchCapture: photo read"), src.indexOf("cardBatchCapture: photo read") + 700);
+  for (const field of ["tid:", "batchNo:", "total:", "confidence:"]) assert.ok(read.includes(field), field);
+  for (const secret of ["transactions", "pan", "rrn", "authCode", "uti"]) assert.ok(!new RegExp(`\\b${secret}\\b`).test(read), `${secret} must never be logged`);
+  assert.match(src, /cardBatchCapture: extract refused picked=/);
+});

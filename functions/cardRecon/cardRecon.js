@@ -699,6 +699,16 @@ async function handleExtract(db, request) {
 
   if (!ocr.parsed) return reject("The photos could not be read as a batch report — retake them, filling the frame with the slip.");
   const extraction = toExtraction(ocr.parsed);
+  // WHAT THE MODEL READ, ONE LINE, EVERY PHOTO. On 21 Sept a retake at Junid's
+  // till was refused after its TID matched and nothing said why. Header fields
+  // and confidences only — never a transaction line, PAN, RRN or auth code.
+  console.log(`cardBatchCapture: photo read picked=${picked} model=${ocr.model} attempts=${ocr.attempts} `
+    + JSON.stringify({
+      tid: ocr.parsed.tid, batchNo: ocr.parsed.batchNo, total: ocr.parsed.total,
+      purchases: ocr.parsed.purchases, refunds: ocr.parsed.refunds, cash: ocr.parsed.cash,
+      opened: ocr.parsed.opened, closed: ocr.parsed.closed, txnCount: ocr.parsed.txnCount,
+      confidence: ocr.parsed.confidence || null,
+    }));
 
   // ── THE TID DECIDES, NOT THE PICKER — a wrong slip rejects itself ──
   // The model's RAW answer is logged on a TID refusal. On 20 Sept Marathon
@@ -1313,7 +1323,15 @@ exports.cardBatchCapture = onCall(
     await assertCardRecon(request);
     const db = admin.database();
     const action = request.data?.action;
-    if (action === "extract") return handleExtract(db, request);
+    if (action === "extract") {
+      const out = await handleExtract(db, request);
+      // Every refusal leaves its reason in the log, not only on the phone —
+      // so "it said try again" can be read back exactly afterwards.
+      if (out && out.ok === false) {
+        console.warn(`cardBatchCapture: extract refused picked=${request.data?.pickedTid || "(email)"} reason=${JSON.stringify(out.reason)}`);
+      }
+      return out;
+    }
     if (action === "submit") return handleSubmit(db, request);
     throw new HttpsError("invalid-argument", "action must be 'extract' or 'submit'.");
   },
