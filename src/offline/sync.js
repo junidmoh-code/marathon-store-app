@@ -354,6 +354,7 @@ export function createSyncEngine({
   // the leg not mirrored for this account, which stops it being served.
   async function checkAccess() {
     const refused = [];
+    const unchecked = [];
     for (const leg of MIRROR_LEGS) {
       const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
       if (!marker || marker.notPermitted) continue;
@@ -361,12 +362,14 @@ export function createSyncEngine({
         if (leg.depth === 0) await adapter.readPath(leg.node);
         else await adapter.firstKey(leg.node);
       } catch (err) {
-        if (!isPermissionDenied(err)) continue;   // a slow line is not a refusal
+        // A slow line is not a refusal — but it is not an answer either, so
+        // the caller must not treat this account as checked.
+        if (!isPermissionDenied(err)) { unchecked.push(leg.name); continue; }
         await markNotPermitted(leg, err);
         refused.push(leg.name);
       }
     }
-    return refused;
+    return { refused, unchecked };
   }
 
   async function clearNotPermitted() {

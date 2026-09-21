@@ -40,6 +40,7 @@ const sdk = vi.hoisted(() => {
     // rule for a shop-bound account (users/{uid}/destShop).
     denied: [],
     authUid: "u1",        // who the (mocked) auth listener says is signed in
+    timeoutOnce: [],      // nodes whose NEXT read times out (a slow line)
     reads: [],            // { path, rows, bytes }
   };
   const INT = /^-?(0*)\d{1,10}$/;
@@ -141,6 +142,11 @@ const sdk = vi.hoisted(() => {
     limitToLast: (n) => c("limitToLast", { _limit: n }),
     async get(q) {
       const root = String(q.path).split("/")[0];
+      const slow = state.timeoutOnce.indexOf(root);
+      if (slow >= 0) {
+        state.timeoutOnce.splice(slow, 1);
+        throw Object.assign(new Error(`/${q.path} did not answer within 8000 ms`), { name: "OfflineTimeoutError" });
+      }
       if (state.denied.includes(root)) {
         state.reads.push({ path: q.path, rows: 0, bytes: 0, denied: true });
         throw new Error("Permission denied");
@@ -301,6 +307,7 @@ beforeEach(() => {
   sdk.state.ignoreBoundOn = null;
   sdk.state.denied = [];
   sdk.state.authUid = "u1";
+  sdk.state.timeoutOnce = [];
   sdk.state.reads = [];
   _resetMirrorSwitchForTests();
   _resetServingForTests();
@@ -884,5 +891,34 @@ describe("a shared tablet: one account's copy is never served to another it was 
     expect(await db.getMeta(FEED_CURSOR_META)).toBe(k1);
     expect(await isLegUsable(db, "orders")).toBe(false);
     expect(await db.count("orders")).toBe(650);
+  });
+});
+
+describe("an access check the line could not answer is not an answer", () => {
+  test("a timeout leaves the new account unchecked: nothing served, asked again next pass", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    sdk.state.authUid = "admin";
+    const t0 = clockAndTimers();
+    const first = await startReal(t0, db);
+    await first.consentAndDownload();
+    await settle(first.downloadInBackground(), t0);
+    first.stop();
+
+    sdk.state.authUid = "someone-else";
+    sdk.state.timeoutOnce = ["products"];
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.ensureAccess();
+    await rt.refreshServing();
+    expect(isLegServing("products")).toBe(false);          // unchecked: live
+    expect(isLegServing("stock")).toBe(false);
+    // The line answers next time: now it is checked, and served.
+    await rt.ensureAccess();
+    expect(isLegServing("products")).toBe(true);
+    expect(isLegServing("stock")).toBe(true);
+    rt.stop();
   });
 });

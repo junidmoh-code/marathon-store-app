@@ -184,6 +184,16 @@ export async function startOfflineMirror({
   // census drift — drops out here, and the hooks reading it open their live
   // subscriptions again on the next render.
   async function refreshServing() {
+    // THE ACCESS GATE: nothing is served to a signed-in account whose read
+    // rights have not been checked on this device (ensureAccess). Every pass
+    // comes through here, so this is the one place it can be enforced.
+    const uid = currentUser?.uid ?? auth?.currentUser?.uid ?? null;
+    if (uid && readAccessUid() !== uid) {
+      lastServing = [];
+      setServingLegs([]);
+      setForcedUpdateMode(false);
+      return [];
+    }
     const serving = [];
     for (const leg of MIRROR_LEGS) {
       try { if (await isLegUsable(db, leg.name)) serving.push(leg.name); }
@@ -619,12 +629,12 @@ export async function startOfflineMirror({
   async function ensureAccess() {
     const uid = currentUser?.uid ?? auth?.currentUser?.uid ?? null;
     if (!uid || readAccessUid() === uid) return;
-    try {
-      await engine.checkAccess();
-      writeAccessUid(uid);
-    } finally {
-      await refreshServing();
-    }
+    const { unchecked } = await engine.checkAccess();
+    // Anything unanswered (a timeout) leaves this account UNCHECKED: nothing
+    // is served to it yet, and the next pass asks again.
+    if (unchecked.length) return;
+    writeAccessUid(uid);
+    await refreshServing();
   }
   runtime.ensureAccess = ensureAccess;
 
