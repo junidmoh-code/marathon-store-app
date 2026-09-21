@@ -93,7 +93,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the card recon screen reads exactly two nodes, and each is named here on purpose", () => {
+  it("the card recon screen reads exactly three nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -124,8 +124,22 @@ describe("the store app is capture-only", () => {
     // list again it means an owner-only surface has been put back on a
     // manager's handset.
     //
+    //   ai_credit_public       ADDED DELIBERATELY, 2026-09-19. The level and
+    //                          timestamp of the shared Gemini wallet, and NOT
+    //                          ONE FIGURE — the full verdict at
+    //                          /ai_credit_status carries the owner's AI spend,
+    //                          remaining balance and burn rate and stays off
+    //                          this handset entirely. It is read for one
+    //                          reason: when that wallet empties, slip OCR
+    //                          stops at every till, and on 2026-09-19 a
+    //                          manager spent a day being told to check the
+    //                          signal. A capture that cannot work must name
+    //                          its cause. The same "outcomes, never figures"
+    //                          rule that governs card_batch_intake is why this
+    //                          is a second node rather than the real one.
+    //
     // Everything else about a slip still goes to the callable and comes back as
-    // an acknowledgement. A THIRD node appearing here is a change of policy and
+    // an acknowledgement. A FOURTH node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
     // EVERY file in the directory, not a named one: a scan naming a single file
     // goes stale the moment something is extracted into a sibling.
@@ -140,7 +154,7 @@ describe("the store app is capture-only", () => {
     // feed — and the same node read twice is still one node. What this pins is
     // the SET of nodes this feature touches, which is the thing that must not
     // grow quietly.
-    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "config/cardTerminals"]);
+    expect([...new Set(reads)].sort()).toEqual(["ai_credit_public", "card_batch_intake", "config/cardTerminals"]);
   });
 
   it("the intake node is read as a bounded TAIL, never as a whole node", () => {

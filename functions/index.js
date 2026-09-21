@@ -3967,6 +3967,144 @@ exports.cardReconHealthScan = onSchedule(
   },
 );
 
+// ─── AI CREDIT — aiCreditScan (the wallet's dead-man switch) ────────────────
+// ONE prepaid Gemini wallet pays for the social image engine, product photo
+// generation, the AI assistant and card-recon slip OCR. On 2026-09-13 it
+// emptied and the social feed went dark; on 2026-09-19 a manager discovered
+// the same outage by standing at a till with a slip in hand, because photo
+// capture had been failing estate-wide all day. Nothing watched the money, and
+// each feature failed in its own quiet way.
+//
+// TWO WITNESSES, BECAUSE NEITHER IS SUFFICIENT ALONE:
+//
+//   THE PROJECTION is the warning. A top-up the owner records, minus the spend
+//     already metered at /aiAssistant/usage, gives a remaining balance and a
+//     burn rate — so the email arrives with days to spare rather than after
+//     the fact. There is no balance API to read instead: the Gemini discovery
+//     document has no credit resource, and generativelanguage.googleapis.com
+//     is DISABLED on this project because the key bills to the AI Studio
+//     prepay wallet, outside Cloud Billing altogether.
+//
+//   THE CANARY is the backstop. One near-empty generateContent call; a 402 or
+//     429 means the wallet has answered for itself. It costs a few tokens an
+//     hour and catches everything the projection cannot see — spend nobody
+//     metered, a price change, another consumer of the same key, or simply no
+//     top-up ever recorded. When the two disagree the canary wins.
+//
+// It runs on Google's scheduler and NEVER on the Mac mini: an alarm must not
+// run on anything the outage it watches could take with it. The marker is what
+// Cloud Monitoring turns into an email — see scripts/install-ai-credit-alarm.mjs,
+// the same machinery as the poller and social alarms.
+//
+// THE MARKER IS LOAD-BEARING: renaming AI_CREDIT_ALARM without re-running the
+// installer disconnects the alarm while every green check stays green. The
+// installer's --verify pins the two together.
+//   firebase deploy --only functions:aiCreditScan
+const { spendSince, assessCredit, creditAlarmDecision, creditAlarmLine } = require("./lib/ai-credit.cjs");
+
+// Where the owner records a top-up: { amountUSD, at }. Absent means the
+// projection cannot run, which is reported as "unknown" and never as healthy.
+const AI_CREDITS_PATH = "config/aiCredits";
+// What the app reads to explain a degraded feature in words. Written on EVERY
+// run: a status node that only appears when something is wrong is
+// indistinguishable from one whose writer has died.
+const AI_CREDIT_STATUS_PATH = "ai_credit_status";
+// WHAT A HANDSET IS ALLOWED TO KNOW: the level and when it was decided, and
+// NOT ONE FIGURE. The full status carries the owner's AI spend, his remaining
+// balance and his burn rate, and a capture screen used by shop managers has no
+// business holding any of that — the same rule that keeps figures off the
+// emailed-slip feed (see captureOnly.test.js). A manager needs exactly one
+// bit: is photo capture dark because the money ran out? This node answers that
+// and nothing else, so the read rule that exposes it can be generous.
+const AI_CREDIT_PUBLIC_PATH = "ai_credit_public";
+
+/**
+ * Ask the wallet directly, as cheaply as the API allows.
+ *
+ * REFUSES TO GUESS. Only an explicit 402/429 counts as exhausted; a timeout, a
+ * 500 or a DNS failure is this scan's problem and must never be reported as an
+ * empty wallet — a false "you are out of credit" would send the owner to top
+ * up an account that is fine, and teach him to disbelieve the next one.
+ */
+async function probeGeminiCredit(apiKey) {
+  try {
+    const res = await fetch(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-3.6-flash:generateContent",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
+        // The smallest call the API will bill: one token in, one token out.
+        body: JSON.stringify({
+          contents: [{ role: "user", parts: [{ text: "hi" }] }],
+          generationConfig: { maxOutputTokens: 1 },
+        }),
+        signal: AbortSignal.timeout(30000),
+      },
+    );
+    if (res.ok) return { exhausted: false, reachable: true, status: res.status };
+    if (res.status === 402 || res.status === 429) {
+      return { exhausted: true, reachable: true, status: res.status };
+    }
+    return { exhausted: false, reachable: true, status: res.status };
+  } catch (err) {
+    return { exhausted: false, reachable: false, status: null, error: err.message };
+  }
+}
+
+exports.aiCreditScan = onSchedule(
+  { schedule: "17 * * * *", timeZone: "Africa/Johannesburg", region: "europe-west1",
+    memory: "256MiB", timeoutSeconds: 120, secrets: [geminiApiKey] },
+  async () => {
+    const db = admin.database();
+    const nowMs = Date.now();
+    const [creditsSnap, usageSnap, statusSnap] = await Promise.all([
+      db.ref(AI_CREDITS_PATH).once("value"),
+      db.ref("aiAssistant/usage").once("value"),
+      db.ref(AI_CREDIT_STATUS_PATH).once("value"),
+    ]);
+    const credits = creditsSnap.val() || {};
+    const prior = statusSnap.val() || {};
+
+    const toppedUpAt = Number(credits.at) || 0;
+    const spend = spendSince(usageSnap.val(), toppedUpAt, nowMs);
+    const canary = await probeGeminiCredit(geminiApiKey.value());
+    const state = assessCredit({
+      toppedUpUSD: credits.amountUSD,
+      toppedUpAt,
+      spend,
+      canaryExhausted: canary.exhausted,
+      nowMs,
+    });
+
+    const decision = creditAlarmDecision(state, prior.lastAlarm || null, nowMs);
+    const update = {
+      ...state,
+      // Kept so a status the app shows can say whether the wallet itself was
+      // asked, or only the arithmetic consulted.
+      canary: { exhausted: canary.exhausted, reachable: canary.reachable, status: canary.status ?? null, at: nowMs },
+    };
+    if (decision.alarm) update.lastAlarm = { at: nowMs, signature: decision.signature };
+    // RECOVERY CLEARS THE MEMORY, so the next emptying is a new alarm rather
+    // than a reminder on an old one.
+    if (decision.recovered) update.lastAlarm = null;
+    await db.ref(AI_CREDIT_STATUS_PATH).update(update);
+    // Written on EVERY run, like the status itself: a node that only appears
+    // when something is wrong is indistinguishable from one whose writer has
+    // died, and the screen treats a stale verdict as no verdict.
+    await db.ref(AI_CREDIT_PUBLIC_PATH).set({ level: state.level, checkedAt: nowMs });
+
+    if (decision.alarm) {
+      console.error(creditAlarmLine(state));
+    } else if (decision.recovered) {
+      console.log(`aiCreditScan: recovered — level ${state.level}, ${state.remainingUSD === null ? "no projection" : `$${state.remainingUSD} left`}.`);
+    } else {
+      console.log(`aiCreditScan: level=${state.level} spend=$${state.spendUSD} burn=$${state.burnPerDayUSD}/day `
+        + `remaining=${state.remainingUSD === null ? "unknown" : `$${state.remainingUSD}`} `
+        + `canary=${canary.reachable ? (canary.exhausted ? "EXHAUSTED" : `ok(${canary.status})`) : "unreachable"}`);
+    }
+  },
+);
+
 // ─── EFT POOL — the till's window on an owner-only node ──────────────────────
 // /eft_pool (payment notifications the mailbox poller verified) is owner-only
 // by rule; the POS settles EFT sales against it through these callables, which
