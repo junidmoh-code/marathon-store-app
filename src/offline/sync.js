@@ -918,6 +918,11 @@ export function createSyncEngine({
       if (legGate(leg.name).benched) continue;
       // Not mirrored for this account: there is nothing local to count.
       if (await notPermitted(leg)) continue;
+      // NOT DOWNLOADED YET is not DRIFT. A download that gave up part-way used
+      // to census every leg, found 0 rows where the server has 38 users, and
+      // painted "does not match the server's count" on legs it had simply not
+      // reached. Only a leg this device claims to hold is judged.
+      if (!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))) continue;
       const held = (await heldRows(db, leg.name)) ?? 0;
       checked.push(leg.name);
       const allowed = Math.max(25, Math.floor(entry.rows * leg.censusTolerance));

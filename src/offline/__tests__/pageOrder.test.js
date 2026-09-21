@@ -560,6 +560,10 @@ describe("a leg that cannot advance is BENCHED, and costs a bounded number of by
     const { done } = await settle(rt.downloadInBackground(), t, 200);
     expect(done).toBe(true);
 
+    // The census judged only what landed: the benched, never-finished leg is
+    // not "drift", and nothing else is either.
+    expect(rt.state.setupCensus.drifted).toEqual([]);
+    expect(rt.state.setupCensus.checked).not.toContain("movements");
     // Every OTHER leg finished: one failing leg no longer holds the rest back.
     const notReady = (await rt.setupState()).legs.filter((l) => !l.ready).map((l) => l.leg);
     expect(notReady).toEqual(["movements"]);
@@ -793,5 +797,21 @@ describe("a SHOP account may not read /orders whole — that is a rule, not a fa
     expect(await db.count("orders")).toBe(650);
     expect(isLegServing("orders")).toBe(true);
     rt.stop();
+  });
+});
+
+describe("the census judges only what the device holds", () => {
+  test("a leg not downloaded yet is not 'does not match the server's count'", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => T0, buildVersion: "b1" });
+    await e.downloadSnapshotLeg(MIRROR_LEGS.find((l) => l.name === "users"));
+    await db.setMeta(`${SETUP_META_PREFIX}users`, { at: T0, rows: 1, pager: 2 });
+    const res = await e.checkCensus({ force: true });
+    expect(res.drifted).toEqual([]);
+    expect(res.checked).toEqual(["users"]);
+    expect(await getLegHealth(db, "customers")).toBe(null);   // never painted red
   });
 });
