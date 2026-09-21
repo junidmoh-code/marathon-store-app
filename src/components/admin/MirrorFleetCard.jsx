@@ -61,6 +61,20 @@ export function ago(at, now = Date.now()) {
 // dot and of the social silence alarm.
 export const STALE_MS = 6 * 3600 * 1000;
 
+// ── NOT HEARD FROM IN A WEEK: NOT IN USE ────────────────────────────────────
+// Every browser a person has ever signed in on is its own device here, so an
+// old laptop tab or a replaced phone stays on the list for ever. After a week
+// of silence a device is greyed into its own list and left out of the totals
+// (owner decision, 21 Sep 2026). It comes back the moment it reports again.
+export const INACTIVE_MS = 7 * 24 * 3600 * 1000;
+export const isInactive = (d, now = Date.now()) => now - (d?.at ?? 0) > INACTIVE_MS;
+
+// "Was this device serving from its own copy when it last reported?" Silence
+// is shown on the row; it does not un-count a device that was serving, or
+// every tablet would drop out of the total overnight.
+export const reportedServing = (d) =>
+  !!d && d.switchOn === true && d.complete === true && !d.guard;
+
 // A guard's reason is health.js's vocabulary, and this screen is read by the
 // owner, who is operationally savvy and not a programmer. "products: shrank"
 // is a grep term; "the catalogue copy came back short — downloading it again"
@@ -104,7 +118,10 @@ export function deviceState(d, now = Date.now()) {
   if (!d.switchOn) return { tone: "#8e8e93", text: "reading live — switch off" };
   if (d.downloading) return { tone: "#ff9f0a", text: "downloading its copy" };
   if (!d.complete) return { tone: "#ff9f0a", text: "copy incomplete — reading live" };
-  if (d.pending > 0) return { tone: "#ff9f0a", text: `${d.pending} write(s) still going up` };
+  // A save still being confirmed is not a problem with the copy: it clears in
+  // at most three minutes (pendingWrites.PENDING_TTL_MS), and a tablet that
+  // went to sleep right after a save used to sit orange for hours.
+  if (d.pending > 0) return { tone: "#30d158", text: `serving from its own copy · ${d.pending} save(s) confirming` };
   return { tone: "#30d158", text: "serving from its own copy" };
 }
 
@@ -203,8 +220,10 @@ export default function MirrorFleetCard({ authUser, onExit }) {
     );
   }
 
-  const devices = state.devices || [];
-  const serving = devices.filter((d) => deviceState(d, now).text === "serving from its own copy").length;
+  const everyDevice = state.devices || [];
+  const devices = everyDevice.filter((d) => !isInactive(d, now));
+  const inactive = everyDevice.filter((d) => isInactive(d, now));
+  const serving = devices.filter(reportedServing).length;
   const bytes = devices.reduce((n, d) => n + (d.bytesToday || 0), 0);
   const tripped = devices.filter((d) => d.guard);
 
@@ -277,14 +296,14 @@ export default function MirrorFleetCard({ authUser, onExit }) {
         <div style={{ marginTop: 20, color: "#ff453a", fontSize: 14 }}>Could not read the fleet: {state.error}</div>
       )}
 
-      {!state.loading && !state.error && devices.length === 0 && (
+      {!state.loading && !state.error && everyDevice.length === 0 && (
         <div style={{ marginTop: 20, color: "#8e8e93", fontSize: 14 }}>
           No device has reported yet. A device reports as soon as its copy has
           finished downloading, and then a few times a day.
         </div>
       )}
 
-      {devices.length > 0 && (
+      {everyDevice.length > 0 && (
         <>
           <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
             <Tile label="Devices" value={devices.length} />
@@ -303,6 +322,15 @@ export default function MirrorFleetCard({ authUser, onExit }) {
             {devices.map((d) => <DeviceRow key={d.deviceId} d={d} now={now} />)}
           </div>
         </>
+      )}
+
+      {inactive.length > 0 && (
+        <div style={{ marginTop: 24, opacity: 0.45 }}>
+          <div style={{ fontSize: 12, color: "#8e8e93", textTransform: "uppercase", letterSpacing: 0.6 }}>
+            Not heard from in a week ({inactive.length}) — not counted above
+          </div>
+          {inactive.map((d) => <DeviceRow key={d.deviceId} d={d} now={now} />)}
+        </div>
       )}
     </div>
   );
