@@ -9,7 +9,10 @@
 //   - an absent node answers null, and so does an EMPTY one. RTDB cannot store
 //     an empty object or an empty array; writing one removes the key. A fake
 //     that answered {} would hide every bug about telling those apart.
-//   - a key range is compared as STRINGS, in RTDB key order.
+//   - keys are compared in RTDB KEY ORDER: 32-bit integer-looking keys first
+//     and numerically ("9" < "10" < "001x"), then strings by code unit. It used
+//     to be plain string order, which cannot represent /customers ("1".."9709")
+//     or /orders ("001".."650") — the two legs the fleet failed on.
 //   - `readPath` on a missing child answers null, which is how a delete
 //     reaches the mirror.
 //   - and every method RECORDS ITS OPTIONS. A fake that took only `(path)`
@@ -17,6 +20,19 @@
 //     from the 30-second budget to the 8-second one, i.e. guaranteed timeouts
 //     on a 35.8 MB node — with nothing to see. A fake that ignores an argument
 //     lies about the code that ignores the same argument.
+
+// Written here independently of src/offline/rtdbOrder.js, so a disagreement
+// between the two is a failing test rather than a shared mistake.
+const INT_KEY = /^-?(0*)\d{1,10}$/;
+const intOf = (k) => (INT_KEY.test(k) && Math.abs(Number(k)) <= 2147483647 ? Number(k) : null);
+export function rtdbKeyCompare(a, b) {
+  if (a === b) return 0;
+  const ai = intOf(a); const bi = intOf(b);
+  if (ai !== null && bi !== null) return ai - bi || a.length - b.length;
+  if (ai !== null) return -1;
+  if (bi !== null) return 1;
+  return a < b ? -1 : 1;
+}
 
 export function createFakeRtdb(initial = {}) {
   const tree = structuredClone(initial);
@@ -54,8 +70,8 @@ export function createFakeRtdb(initial = {}) {
       calls.readKeyPage.push({ path, after, limit, big });
       const node = at(path);
       if (!node || typeof node !== "object") return null;
-      const keys = Object.keys(node).sort()
-        .filter((k) => after === null || after === undefined || k > after)
+      const keys = Object.keys(node).sort(rtdbKeyCompare)
+        .filter((k) => after === null || after === undefined || rtdbKeyCompare(k, String(after)) > 0)
         .slice(0, limit);
       if (!keys.length) return null;
       return Object.fromEntries(keys.map((k) => [k, structuredClone(node[k])]));
@@ -70,13 +86,13 @@ export function createFakeRtdb(initial = {}) {
       const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
       const rows = Object.entries(node)
         .filter(([, v]) => v && typeof v === "object")
-        .sort((a, b) => cmp(String(a[1][field]), String(b[1][field])) || cmp(a[0], b[0]))
+        .sort((a, b) => cmp(String(a[1][field]), String(b[1][field])) || rtdbKeyCompare(a[0], b[0]))
         // The two-argument startAt(value, key): inclusive of that exact pair.
         .filter(([k, v]) => {
           if (from === null) return true;
           const t = String(v[field]);
           if (t !== String(from)) return t > String(from);
-          return fromKey === null || k >= String(fromKey);
+          return fromKey === null || rtdbKeyCompare(k, String(fromKey)) >= 0;
         })
         .slice(0, limit);
       if (!rows.length) return null;
@@ -85,8 +101,8 @@ export function createFakeRtdb(initial = {}) {
     async readKeyRange(path, { from = null, to = null, limit = 500 } = {}) {
       const node = at(path);
       if (!node || typeof node !== "object") return null;
-      const keys = Object.keys(node).sort()
-        .filter((k) => (from === null || k >= from) && (to === null || k <= to))
+      const keys = Object.keys(node).sort(rtdbKeyCompare)
+        .filter((k) => (from === null || rtdbKeyCompare(k, from) >= 0) && (to === null || rtdbKeyCompare(k, to) <= 0))
         .slice(0, limit);
       if (!keys.length) return null;
       return Object.fromEntries(keys.map((k) => [k, structuredClone(node[k])]));
@@ -94,13 +110,13 @@ export function createFakeRtdb(initial = {}) {
     async firstKey(path) {
       const node = at(path);
       if (!node || typeof node !== "object") return null;
-      const keys = Object.keys(node).sort();
+      const keys = Object.keys(node).sort(rtdbKeyCompare);
       return keys.length ? keys[0] : null;
     },
     async lastKey(path) {
       const node = at(path);
       if (!node || typeof node !== "object") return null;
-      const keys = Object.keys(node).sort();
+      const keys = Object.keys(node).sort(rtdbKeyCompare);
       return keys.length ? keys[keys.length - 1] : null;
     },
     subscribeConnected() { return () => {}; },

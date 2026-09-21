@@ -68,6 +68,12 @@ export const PHOTO_PASS_EVERY = 2;
 // retry is slow enough to be free and frequent enough to finish a download
 // over a shaky afternoon.
 export const SETUP_RETRY_MS = 5 * 60 * 1000;
+// …doubling after each failure up to this, so a download that keeps failing
+// costs less every time it is tried rather than the same again. With the
+// engine's own per-leg cap (sync.js LEG_MAX_ATTEMPTS) this is what ended the
+// #624 loop: a leg that fails three times in a session is benched, and once
+// every leg still missing is benched the download stops and says so.
+export const SETUP_RETRY_MAX_MS = 60 * 60 * 1000;
 
 // "This device's staff have asked for the local copy." Written when the
 // Download button is tapped and read on every open afterwards, so the question
@@ -322,6 +328,7 @@ export async function startOfflineMirror({
     if (setupLoop) return setupLoop;
     state.downloading = true;
     setupLoop = (async () => {
+      let failedAttempts = 0;
       for (;;) {
         // The kill switch, and a sign-out, both end the download. Asked here
         // AND passed into runSetup, which asks it between legs.
@@ -366,11 +373,49 @@ export async function startOfflineMirror({
           return state.setup;
         } catch (err) {
           // NOTHING IS LOST. Every leg that landed is on disk with its health
-          // record; the next attempt starts from the first one that did not.
-          state.setupError = { at: now(), reason: err.name, message: err.message };
+          // record; the next attempt starts from the first one that did not,
+          // and a range leg from the cursor it last committed.
+          failedAttempts += 1;
+          const failedLegs = err.failedLegs ?? [];
+          state.setupError = {
+            at: now(), reason: err.name, message: err.message,
+            legs: failedLegs.map((f) => f.leg),
+          };
+          // WHERE is the failing LEG, not "setup" — it is what the fleet
+          // screen shows, and "movements" is what somebody can act on.
+          state.lastError = {
+            where: failedLegs[0]?.leg ?? err.leg ?? "setup", reason: err.name, message: err.message,
+          };
+          // Reported NOW. A device stuck in its download used to report
+          // nothing at all, which is why the fleet screen could not see #624.
+          await reportHealth();
+
+          // Nothing left this session can try? Stop, and say so — never loop.
+          let missing = [];
+          try { missing = (await engine.setupState()).legs.filter((l) => !l.ready).map((l) => l.leg); }
+          catch { /* treat as "unknown": keep the backoff, never a tight loop */ }
+          const benched = new Set(engine.legFailures().filter((f) => f.benched).map((f) => f.leg));
+          if (missing.length > 0 && missing.every((l) => benched.has(l))) {
+            state.downloading = false;
+            state.setupError = { ...state.setupError, gaveUp: [...benched] };
+            console.warn("offline mirror: the download gave up on", [...benched].join(", "),
+              "for this session — it will try again the next time the app is opened.");
+            // The legs that DID land are still worth keeping current, and a
+            // device that served them before must not leave them frozen. So:
+            // the same forced census the success path runs, then serving from
+            // what is verified, then the pass loop. The benched leg is not
+            // served (it has no setup marker) and the loop never retries it.
+            try { state.setupCensus = await engine.checkCensus({ force: true }); }
+            catch (e) { state.setupCensus = { error: e.message }; }
+            await refreshServing();
+            await reportHealth();
+            runtime.start();
+            return null;
+          }
+          const wait = Math.min(SETUP_RETRY_MAX_MS, SETUP_RETRY_MS * 2 ** (failedAttempts - 1));
           console.warn("offline mirror: the download stopped —", err.message,
-            "— it will try again by itself.");
-          await new Promise((resolve) => setTimeoutFn(resolve, SETUP_RETRY_MS));
+            `— it will try again by itself in ${Math.round(wait / 60000)} min.`);
+          await new Promise((resolve) => setTimeoutFn(resolve, wait));
         }
       }
     })().finally(() => { setupLoop = null; });
@@ -536,6 +581,7 @@ export async function startOfflineMirror({
         bytes: await bytesToday(db, { now }),
         photos: await heldPhotoCount(db).catch(() => null),
         pending: pendingCount(),
+        failing: engine.legFailures(),
       });
       const written = await reportDeviceHealth({
         write: (path, value) => adapter.writePath(path, value),
@@ -549,6 +595,17 @@ export async function startOfflineMirror({
     }
   }
   runtime.reportHealth = reportHealth;
+
+  // A copy taken by the old pager may be short and still be in the serving
+  // hint from the last session. Retire it before anything trusts the hint.
+  // Local only: IndexedDB in, health records out, no RTDB read. (Here, below
+  // every `let` refreshServing touches — not at the top of the function.)
+  try {
+    const retired = await engine.retireOldPagerCopies();
+    if (retired.length) await refreshServing();
+  } catch (err) {
+    console.warn("offline mirror: could not retire old-pager copies —", err?.message ?? err);
+  }
 
   // Nothing runs until there is a signed-in, non-anonymous user, and
   // everything stops when there is not — every mirrored node's read rule says

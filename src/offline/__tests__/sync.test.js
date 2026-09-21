@@ -1,7 +1,9 @@
 import { describe, test, expect } from "vitest";
 import { freshMirrorDb } from "./helpers";
 import { createFakeRtdb, pushKeyForMs } from "./fakeAdapter";
-import { createSyncEngine, flattenPage, MUST_NOT_BE_EMPTY, SETUP_DONE_META, CURSOR_META } from "../sync";
+import {
+  createSyncEngine, flattenPage, MUST_NOT_BE_EMPTY, SETUP_DONE_META, CURSOR_META, LEG_RETRY_BASE_MS,
+} from "../sync";
 import { LEG_BY_NAME, MIRROR_LEGS, isAppendOnly } from "../nodes";
 import { getLegHealth, healthKey, isLegUsable } from "../health";
 import { EmptyMirrorReadError, MirrorSnapshotShrankError } from "../health";
@@ -185,12 +187,16 @@ describe("a download is resumable, never a restart", () => {
       }
       return real(path, opts);
     };
-    const e = engineOn(db, w);
+    // A clock that moves: a failed leg now backs off (LEG_RETRY_BASE_MS)
+    // before the same session tries it again.
+    let clock = T0;
+    const e = engineOn(db, w, { now: () => clock });
     await expect(e.runSetup()).rejects.toThrow("line dropped");
 
     // Resume: the two pages that landed are staged, so only the rest is read.
     const pagesBefore = pages;
     w.adapter.readKeyPage = real;
+    clock += LEG_RETRY_BASE_MS;
     await e.runSetup();
     expect(await db.count("products")).toBe(1200);
     // 400 per page, 1200 rows: 3 full pages plus the short one that ends it.

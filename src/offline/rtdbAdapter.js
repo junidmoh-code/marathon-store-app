@@ -19,6 +19,7 @@ import {
 } from "firebase/database";
 import { database } from "../firebase";
 import { withTimeout, READ_TIMEOUT_MS, BIG_READ_TIMEOUT_MS } from "./bounded";
+import { orderedChildren } from "./rtdbOrder";
 
 // ─── THE QUERY SHAPES, NAMED ────────────────────────────────────────────────
 //
@@ -40,10 +41,25 @@ import { withTimeout, READ_TIMEOUT_MS, BIG_READ_TIMEOUT_MS } from "./bounded";
 // functions below are the only callers.
 export function keyPageConstraints({ after = null, limit = 500 }) {
   const parts = [orderByKey()];
-  // EXCLUSIVE. A change-log key or a push key is unique and we have already
-  // consumed the one the cursor names, so re-reading it would be waste.
-  if (after !== null && after !== undefined) parts.push(startAfter(after));
-  parts.push(limitToFirst(limit));
+  // EXCLUSIVE IN EFFECT, INCLUSIVE ON THE WIRE. A change-log key or a push key
+  // is unique and the one the cursor names is already consumed, so the page
+  // the caller gets never contains it — but the QUERY is startAt, asking for
+  // one extra child, and readKeyPage drops the cursor's own row itself.
+  //
+  // Because startAfter + limitToFirst(n) comes back SHORT on this database:
+  // the server counts the cursor's row against the limit and the SDK then
+  // drops it. Measured live 2026-09-21 on /insights_log, /mirror_changes and
+  // /customers (5 asked, 4 returned) and on /stock (1 asked, ZERO returned).
+  // Every leg that ends its walk on "a page came back short" therefore ended
+  // it on page two — /displaySlots, /restockLog and /orders all drifted from
+  // the census across the fleet — and /stock's page of one location came back
+  // empty. src/push/pagedRead.js found the same thing a day earlier.
+  if (after !== null && after !== undefined) {
+    parts.push(startAt(after));
+    parts.push(limitToFirst(limit + 1));
+  } else {
+    parts.push(limitToFirst(limit));
+  }
   return parts;
 }
 
@@ -91,6 +107,17 @@ export const constraintNames = (parts) => parts.map((p) => p.type ?? String(p));
 // test, and the pages are paged precisely so that none of them is large.
 export function measureBytes(value) {
   if (value === null || value === undefined) return 4;   // RTDB answers "null"
+  // A page is a Map (rtdbOrder.js), which JSON.stringify writes as "{}". It is
+  // weighed as the object it was on the wire: the braces, and per child its
+  // quoted key, a colon, its value and a comma between.
+  if (value instanceof Map) {
+    if (value.size === 0) return 4;
+    let n = 2 + (value.size - 1);
+    try {
+      for (const [k, v] of value) n += JSON.stringify(k).length + 1 + JSON.stringify(v ?? null).length;
+    } catch { return 0; }
+    return n;
+  }
   try { return JSON.stringify(value).length; } catch { return 0; }
 }
 
@@ -118,13 +145,25 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
     // A page of children by key, exclusive of `after`. The change feed and the
     // /insights_log feed both use it; neither needs an index, because key
     // order is free.
+    //
+    // The page is a Map in query order (rtdbOrder.js), never snap.val(). The
+    // cursor's own row, which the inclusive bound re-sends, is dropped here;
+    // at most `limit` rows come back, so "shorter than the limit" still means
+    // "this was the last page".
     async readKeyPage(path, { after = null, limit = 500, big = false } = {}) {
       const parts = keyPageConstraints({ after, limit });
       const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path} (key page)`,
       });
-      return weigh(snap.exists() ? snap.val() : null);
+      const all = weigh(orderedChildren(snap));
+      const page = new Map();
+      for (const [k, v] of all) {
+        if (after !== null && after !== undefined && k === String(after)) continue;
+        if (page.size >= limit) break;
+        page.set(k, v);
+      }
+      return page.size ? page : null;
     },
 
     // A page of children by an INDEXED child field, inclusive of `from`. The
@@ -137,7 +176,10 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
         label: `/${path} (${field} page)`,
       });
-      return weigh(snap.exists() ? snap.val() : null);
+      // forEach, NOT val(). val() is in key order, and taking its last entry
+      // as the cursor is the #624 fleet download loop — see rtdbOrder.js.
+      const page = weigh(orderedChildren(snap));
+      return page.size ? page : null;
     },
 
     // The oldest key a node still holds. The change feed asks it to tell
@@ -147,9 +189,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
         get(query(ref(db, path), orderByKey(), limitToFirst(1))),
         { ms: READ_TIMEOUT_MS, label: `/${path} (first key)` },
       );
-      if (!snap.exists()) return null;
-      const val = weigh(snap.val());
-      const keys = Object.keys(val || {});
+      const keys = [...weigh(orderedChildren(snap)).keys()];
       return keys.length ? keys[0] : null;
     },
 
@@ -160,9 +200,8 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
         get(query(ref(db, path), orderByKey(), limitToLast(1))),
         { ms: READ_TIMEOUT_MS, label: `/${path} (last key)` },
       );
-      if (!snap.exists()) return null;
-      const keys = Object.keys(weigh(snap.val()) || {});
-      return keys.length ? keys[0] : null;
+      const keys = [...weigh(orderedChildren(snap)).keys()];
+      return keys.length ? keys[keys.length - 1] : null;
     },
 
     // A bounded key range, for the setup download's paged walk of a big
@@ -174,7 +213,8 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
       parts.push(limitToFirst(limit));
       const snap = await withTimeout(get(query(ref(db, path), ...parts)),
         { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (range)` });
-      return weigh(snap.exists() ? snap.val() : null);
+      const page = weigh(orderedChildren(snap));
+      return page.size ? page : null;
     },
 
     // ── A LIVE SIGNAL, WITHOUT A LIVE NODE ──────────────────────────────

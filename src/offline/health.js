@@ -140,6 +140,19 @@ export function vouchedSnapshot(prev) {
 
 // Merge a failure over whatever the leg last vouched for.
 export function failedOver(prev, record) {
+  // A vouch PARKED by a benched change feed (sync.js unserveChangeFedLegs)
+  // rides every later failure too, or the next failure on that leg would drop
+  // it and nothing would ever give it back. It stays parked — not vouching.
+  // A new refusal's own `heldRows` vouches too (isRefusedRead), so it is
+  // parked with the rest — the latest count wins.
+  if (prev?.feedParked) {
+    const { heldRows, ...rest } = record;
+    return {
+      ...rest, feedParked: true,
+      parkedVouch: prev.parkedVouch ?? null,
+      parkedHeldRows: heldRows ?? prev.parkedHeldRows ?? null,
+    };
+  }
   const vouched = vouchedSnapshot(prev);
   return vouched ? { ...record, vouched } : record;
 }

@@ -44,6 +44,7 @@
 
 import { LEG_BY_NODE, rowPath, storeKey, rowKeySegments } from "./nodes";
 import { isCanonicalLocationId } from "./locationIds";
+import { pageEntries, maxKey, compareKeys } from "./rtdbOrder";
 
 export const CHANGES_ROOT = "mirror_changes";
 export const COUNTS_ROOT = "mirror_counts";
@@ -129,11 +130,20 @@ export function cursorIsResumable(cursor, nowMs, {
  * `skipped` names what was dropped and why, so a pass can record it rather
  * than discard it silently.
  */
+// Thrown when a change page does not move the cursor forward. sync.js counts
+// these and benches the feed after LEG_MAX_ATTEMPTS — see runPass.
+export class FeedCursorStuckError extends Error {
+  constructor(cursor) {
+    super(`offline mirror: the change feed cannot advance past "${cursor}"`);
+    this.name = "FeedCursorStuckError";
+  }
+}
+
 export function rowsFromChangePage(page) {
   const seen = new Set();
   const rows = [];
   const skipped = [];
-  for (const [changeKey, rec] of Object.entries(page ?? {})) {
+  for (const [changeKey, rec] of pageEntries(page, { keepNull: true })) {
     if (!rec || typeof rec !== "object") { skipped.push({ changeKey, why: "malformed" }); continue; }
     const leg = LEG_BY_NODE[rec.n];
     if (!leg) { skipped.push({ changeKey, why: "unknown-node", node: rec.n }); continue; }
@@ -201,7 +211,7 @@ export async function runChangeFeedPage({
   }
 
   const page = await adapter.readKeyPage(CHANGES_ROOT, { after: cursor, limit: pageSize });
-  const changeKeys = Object.keys(page ?? {});
+  const changeKeys = pageEntries(page).map(([k]) => k);
   if (changeKeys.length === 0) {
     // `paths` on EVERY return, including this one. It is the commonest return
     // there is — most passes have nothing new — and a caller spreading it
@@ -210,10 +220,17 @@ export async function runChangeFeedPage({
     // to read a report from a pass that found no changes.
     return { applied: 0, deleted: 0, cursor, done: true, skipped: [], paths: [] };
   }
-  // Key order, not object order. Object key order for push keys happens to be
-  // insertion order today, but the cursor must be the LARGEST key in the page
-  // by RTDB ordering, and that is a property to establish rather than inherit.
-  const lastKey = changeKeys.reduce((a, b) => (b > a ? b : a));
+  // Key order, not object order. The cursor must be the LARGEST key in the
+  // page by RTDB ordering, and that is a property to establish rather than
+  // inherit — "the last entry" is how the #624 fleet loop happened. See
+  // rtdbOrder.js.
+  const lastKey = maxKey(changeKeys);
+  // A page that does not move the cursor forward would be read again on every
+  // pass, four times a pass, for ever. Thrown, and sync.js backs the feed off
+  // and benches it after LEG_MAX_ATTEMPTS.
+  if (cursor !== null && compareKeys(lastKey, cursor) <= 0) {
+    throw new FeedCursorStuckError(cursor);
+  }
 
   const { rows, skipped } = rowsFromChangePage(page);
 
@@ -247,7 +264,10 @@ export async function runChangeFeedPage({
     const isLast = i === stores.length - 1;
     await db.putPage(store, bucket.records, {
       deleteKeys: bucket.deleteKeys,
-      ...(isLast ? { cursorKey: FEED_CURSOR_META, cursorValue: lastKey } : {}),
+      ...(isLast ? {
+        cursorKey: FEED_CURSOR_META, cursorValue: lastKey,
+        isAfter: (next, prev) => prev === null || prev === undefined || compareKeys(next, prev) > 0,
+      } : {}),
     });
     applied += bucket.records.length;
     deleted += bucket.deleteKeys.length;
