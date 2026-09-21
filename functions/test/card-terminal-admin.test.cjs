@@ -171,12 +171,14 @@ function fakeDb(initial, { beforeTxn } = {}) {
     }),
   };
 }
-const REQ = (data) => ({ data, auth: { uid: "owner", token: { email: "gunidmoh@gmail.com" } } });
+const REQ = (data) => ({ data, auth: { uid: "owner", token: { email: "gunidmoh@gmail.com", email_verified: true } } });
 const estate = () => ({ config: { cardTerminals: { "0000HP1X": { ...TILL2 } } }, card_batches: { pe: { "0000HP1X": { 509: { x: 1 } } } } });
 
 test("only Junid's account may call it", () => {
   assert.throws(() => _assertOwner({ auth: { uid: "u", token: { email: "junidmoh@gmail.com" } } }), /Only Junid/);
   assert.throws(() => _assertOwner({}), /Only Junid/);
+  assert.throws(() => _assertOwner({ auth: { uid: "x", token: { email: "gunidmoh@gmail.com", email_verified: false } } }), /Only Junid/,
+    "an UNVERIFIED account carrying the owner's address is refused");
   assert.doesNotThrow(() => _assertOwner(REQ({})));
 });
 
@@ -254,4 +256,10 @@ test("replace: a THROWN failure retiring the old row also rolls the new row back
   assert.match(rep.reason, /network went away.*not added/);
   assert.equal(db.data.config.cardTerminals["0000CD2E"], undefined);
   assert.equal(db.data.config.cardTerminals["0000HP1X"].retiredAt, undefined);
+});
+
+test("a REPLACED terminal cannot be reinstated — its till has a new owner", () => {
+  const out = planReinstate({ tid: "0000HP1X" }, { ...TILL2, retiredAt: 5, replacedBy: "0000CD2E" });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /replaced by 0000CD2E/);
 });

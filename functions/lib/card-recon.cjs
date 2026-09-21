@@ -178,7 +178,10 @@ function slipTidMatchesPicked(readTid, picked, registeredTids = []) {
 function emptyBatchOpenedAt(prevClosedAt, printedAt) {
   if (!Number.isFinite(prevClosedAt) || !Number.isFinite(printedAt)) return null;
   if (prevClosedAt >= printedAt) return null;
-  if (printedAt - prevClosedAt > MAX_WINDOW_MS) return null;
+  // The window closes at printedAt + 1 (emptyBatchExtraction), and
+  // validateExtraction refuses closedAt - openedAt > MAX_WINDOW_MS — measured
+  // the same way here, so an accepted opening can never be refused there.
+  if (printedAt + 1 - prevClosedAt > MAX_WINDOW_MS) return null;
   return prevClosedAt;
 }
 

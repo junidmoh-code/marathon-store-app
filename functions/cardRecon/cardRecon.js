@@ -964,17 +964,29 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
   if (extraction.emptyBatch === true) {
     const prevNo = Number(normaliseBatchNo(extraction.batchNo)) - 1;
     if (prevNo > 0) {
+      // THE REVISION IN FORCE, not the bare key: a batch reported twice
+      // (58 → 58-r2) closed when its FULLER report says it did.
+      // A READ THAT FAILS REFUSES — recording R0 over a window that could not
+      // be worked out would hide the very gap this exists to show. The poller
+      // records the refusal and the file can be re-run.
+      let prevClosed;
       try {
-        const prevClosed = (await db.ref(
-          `${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}/${prevNo}/slip/closedAt`).once("value")).val();
-        const opened = emptyBatchOpenedAt(prevClosed, extraction.printedAt);
-        if (opened !== null) {
-          extraction.openedAt = opened;
-          extraction.openedFrom = "previous-batch";
-        }
-      } catch (err) { console.warn("cardBatchCapture: previous batch read failed:", err.message); }
+        const keys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, String(prevNo));
+        prevClosed = keys.length
+          ? (await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}/${keys.at(-1)}/slip/closedAt`).once("value")).val()
+          : null;
+      } catch (err) {
+        console.error("cardBatchCapture: previous batch read failed:", err.message);
+        return reject(`Batch ${extraction.batchNo} is an empty batch, and the batch before it could not be read to place it. Nothing was recorded — it can be re-run once the database answers.`);
+      }
+      const opened = emptyBatchOpenedAt(prevClosed, extraction.printedAt);
+      if (opened !== null) {
+        extraction.openedAt = opened;
+        extraction.openedFrom = "previous-batch";
+      }
     }
   }
+
 
   // Overlapping sections cannot happen in a single file, but a terminal that
   // prints a line twice still must not be averaged away.

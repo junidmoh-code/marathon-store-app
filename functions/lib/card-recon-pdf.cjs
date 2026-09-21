@@ -875,6 +875,8 @@ function readTxnBlock(block, batchNo) {
 function isEmptyBatchShape(rows) {
   const txnSection = sectionStarts(rows).some((sec) => /transactions?\b/i.test(sec.heading));
   if (txnSection) return false;
+  // …and a heading printed WITHOUT a divider above it (older firmware).
+  if (rows.some((r) => EMAILED.approved.test(r) || /^\s*declined transactions\b/i.test(r))) return false;
   if (rows.some((r) => EMAILED.items.test(r))) return false;
   if (rows.some((r) => BLOCK.tsnBatch.test(r) || /^\s*TSN\s*:/i.test(r))) return false;
   return rows.some((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));

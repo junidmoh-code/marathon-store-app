@@ -161,3 +161,31 @@ test("the callable widens the window only for an empty batch, before validating 
   assert.ok(at > 0 && body.lastIndexOf("if (extraction.emptyBatch === true)", at) > 0);
   assert.ok(at < body.indexOf("validateExtraction(extraction"), "…before validation and the expected-figure read");
 });
+
+test("a dividerless APPROVED heading is not an empty batch", () => {
+  const src = lines();
+  const at = src.indexOf("TOTALS SUMMARY") - 1;
+  const bare = [...src.slice(0, at), "APPROVED TRANSACTIONS", ...src.slice(at)];
+  assert.equal(isEmptyBatchShape(bare.map(tidy).filter(Boolean)), false);
+});
+
+test("the 7-day edge is measured exactly as validation measures it", () => {
+  const { emptyBatchOpenedAt, MAX_WINDOW_MS } = require("../lib/card-recon.cjs");
+  const printed = Date.UTC(2026, 8, 21, 15, 15, 31);
+  for (const back of [MAX_WINDOW_MS - 2, MAX_WINDOW_MS - 1, MAX_WINDOW_MS, MAX_WINDOW_MS + 1]) {
+    const opened = emptyBatchOpenedAt(printed - back, printed);
+    if (opened === null) continue;
+    const ex = { ...parseSlipPdf(lines()).extraction, openedAt: opened };
+    assert.equal(validateExtraction(ex, { source: "pdf" }).ok, true, `accepted at ${back} ms back, then refused`);
+  }
+  assert.equal(emptyBatchOpenedAt(printed - (MAX_WINDOW_MS - 1), printed), printed - (MAX_WINDOW_MS - 1));
+  assert.equal(emptyBatchOpenedAt(printed - MAX_WINDOW_MS, printed), null);
+});
+
+test("the previous batch is read at its revision in force, and a failed read refuses", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
+  const block = src.slice(src.indexOf("if (extraction.emptyBatch === true) {"), src.indexOf("emptyBatchOpenedAt(prevClosed"));
+  assert.match(block, /readBatchKeysFor\(/);
+  assert.match(block, /keys\.at\(-1\)/);
+  assert.match(block, /return reject\(/);
+});

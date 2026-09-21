@@ -164,6 +164,11 @@ function planReinstate(input, current) {
   const tid = readTypedTid(input && input.tid);
   if (!tid || !current) return { ok: false, reason: `${tid || "That TID"} is not registered.` };
   if (!isRetiredTerminal(current)) return { ok: false, reason: `${current.label || tid} is not retired.` };
+  // A REPLACED machine stays retired: its till belongs to its replacement, and
+  // reinstating it would put two live TIDs on one till.
+  if (current.replacedBy) {
+    return { ok: false, reason: `${tid} was replaced by ${current.replacedBy}, which now has its till. Retire ${current.replacedBy} first if this machine is really back.` };
+  }
   const row = { ...current };
   delete row.retiredAt;
   delete row.retiredReason;
