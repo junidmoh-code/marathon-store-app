@@ -62,24 +62,50 @@ export const ASSET_TIMEOUT_MS = 2500;       // a Storage object (a photo, a labe
 // `sleepAware` (the mirror's reads) therefore counts only time the page was
 // AWAKE: the clock stops while the document is hidden, and a timer that fires
 // much later than it was due (the page was frozen) re-arms with WAKE_GRACE_MS
-// for the socket to come back, rather than failing. Bounded: at most
-// MAX_WAKES re-arms, so a read can never wait for ever.
+// for the socket to come back, rather than failing. Bounded twice over: at
+// most MAX_WAKES re-arms of any kind, and HIDDEN_CEILING_MS of running while
+// hidden — so a read can never wait for ever.
 export const WAKE_GRACE_MS = 20000;
+// While HIDDEN but still running (a desktop background tab — not frozen), the
+// awake clock is stopped, so this separate ceiling is what keeps the read
+// bounded: if it fires ON TIME the page was running all along and the read
+// fails honestly. If it fires LATE the page was frozen, which is the case the
+// wake grace exists for. (Sonnet review, PR #633.)
+export const HIDDEN_CEILING_MS = 10 * 60 * 1000;
 const LATE_BY_MS = 5000;
+// Every re-arm — a late (frozen) timer AND a hidden→visible return — counts
+// against this, so hide/show cycling cannot extend a read without end.
 const MAX_WAKES = 5;
 
 const docHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
 
 function sleepAwareTimeout(ms, label) {
   let timer = null;
+  let ceiling = null;
   let remaining = ms;
   let armedAt = 0;
   let wakes = 0;
   let settle = null;
+  const fail = () => { const s = settle; settle = null; s?.(new OfflineTimeoutError(label, ms)); };
+  const armCeiling = () => {
+    if (ceiling !== null || !settle) return;
+    const due = Date.now() + HIDDEN_CEILING_MS;
+    ceiling = setTimeout(() => {
+      ceiling = null;
+      if (Date.now() - due > LATE_BY_MS) return;   // frozen, not running: the wake path handles it
+      fail();                                        // running in the background all along
+    }, HIDDEN_CEILING_MS);
+  };
+  const clearCeiling = () => { if (ceiling !== null) { clearTimeout(ceiling); ceiling = null; } };
   const onVisibility = () => {
+    if (!settle) return;
     if (docHidden()) {
       if (timer !== null) { clearTimeout(timer); timer = null; remaining -= Date.now() - armedAt; }
-    } else if (timer === null && settle) {
+      armCeiling();
+    } else if (timer === null) {
+      clearCeiling();
+      if (wakes >= MAX_WAKES) { fail(); return; }
+      wakes += 1;
       remaining = Math.max(remaining, WAKE_GRACE_MS);
       arm();
     }
@@ -98,17 +124,18 @@ function sleepAwareTimeout(ms, label) {
         arm();
         return;
       }
-      settle?.(new OfflineTimeoutError(label, ms));
+      fail();
     }, Math.max(0, remaining));
   };
   const promise = new Promise((_resolve, reject) => {
     settle = reject;
-    if (!docHidden()) arm();
+    if (docHidden()) armCeiling(); else arm();
   });
   if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
   const clear = () => {
     settle = null;
     if (timer !== null) clearTimeout(timer);
+    clearCeiling();
     if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
   };
   return { promise, clear };

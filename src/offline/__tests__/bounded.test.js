@@ -1,5 +1,7 @@
 import { describe, test, expect, vi, beforeEach, afterEach } from "vitest";
-import { withTimeout, isTimeout, OfflineTimeoutError, READ_TIMEOUT_MS, WAKE_GRACE_MS } from "../bounded";
+import {
+  withTimeout, isTimeout, OfflineTimeoutError, READ_TIMEOUT_MS, WAKE_GRACE_MS, HIDDEN_CEILING_MS,
+} from "../bounded";
 import { createConnectionTracker } from "../connection";
 
 describe("nothing may hang", () => {
@@ -106,7 +108,7 @@ describe("sleepAware: only time the page was awake counts", () => {
     withTimeout(never(), { ms: 1000, label: "/x", sleepAware: true }).catch((e) => { failed = e; });
     await vi.advanceTimersByTimeAsync(500);
     setHidden(true);
-    await vi.advanceTimersByTimeAsync(10 * 60_000);    // ten minutes asleep
+    await vi.advanceTimersByTimeAsync(5 * 60_000);     // five minutes hidden (under the ceiling)
     expect(failed).toBe(null);
     setHidden(false);
     await vi.advanceTimersByTimeAsync(WAKE_GRACE_MS - 10);
@@ -137,6 +139,29 @@ describe("sleepAware: only time the page was awake counts", () => {
     for (let i = 0; i < 10 && !failed; i += 1) {
       vi.setSystemTime(Date.now() + 60_000);            // frozen again, and again
       await vi.advanceTimersByTimeAsync(WAKE_GRACE_MS + 1);
+    }
+    expect(failed?.name).toBe("OfflineTimeoutError");
+  });
+
+  test("a read started in a HIDDEN, running tab is still bounded (the ceiling)", async () => {
+    setHidden(true);
+    let failed = null;
+    withTimeout(never(), { ms: 1000, label: "/x", sleepAware: true }).catch((e) => { failed = e; });
+    await vi.advanceTimersByTimeAsync(HIDDEN_CEILING_MS - 10);
+    expect(failed).toBe(null);
+    await vi.advanceTimersByTimeAsync(20);
+    expect(failed?.name).toBe("OfflineTimeoutError");
+    expect(listeners.size).toBe(0);
+  });
+
+  test("hide/show cycling cannot extend a read without end", async () => {
+    let failed = null;
+    withTimeout(never(), { ms: 1000, label: "/x", sleepAware: true }).catch((e) => { failed = e; });
+    for (let i = 0; i < 20 && !failed; i += 1) {
+      await vi.advanceTimersByTimeAsync(500);
+      setHidden(true);
+      await vi.advanceTimersByTimeAsync(1000);
+      setHidden(false);
     }
     expect(failed?.name).toBe("OfflineTimeoutError");
   });
