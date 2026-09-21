@@ -513,6 +513,10 @@ export function createSyncEngine({
     if (leg.feed === "tsRange" && typeof cursor === "string") cursor = { ts: cursor, key: null };
     let total = 0;
     let pages = 0;
+    // Did the walk SEE the end (an empty or short page)? Not "did it stop
+    // before maxPages": a short final page on the last allowed read is the
+    // end too. (CodeRabbit, PR #631.)
+    let reachedEnd = false;
 
     for (; pages < maxPages; pages += 1) {
       const page = leg.feed === "keyRange"
@@ -522,7 +526,7 @@ export function createSyncEngine({
           limit: leg.pageSize, big: true,
         });
       const entries = pageEntries(page);
-      if (entries.length === 0) break;
+      if (entries.length === 0) { reachedEnd = true; break; }
 
       const records = entries.map(([key, value]) => ({ key, value }));
       // THE NEXT CURSOR IS THE PAGE'S MAXIMUM IN THE QUERY'S OWN ORDER, found by
@@ -598,7 +602,7 @@ export function createSyncEngine({
       total += records.length - overlap;
       cursor = nextCursor;
       onProgress({ phase: "range", leg: leg.name, rows: total });
-      if (entries.length < leg.pageSize) { pages += 1; break; }
+      if (entries.length < leg.pageSize) { pages += 1; reachedEnd = true; break; }
     }
 
     const rowsNow = (await heldRows(db, leg.name)) ?? 0;
@@ -608,7 +612,7 @@ export function createSyncEngine({
       });
       throw new EmptyMirrorReadError(leg.name, leg.node);
     }
-    const caughtUp = pages < maxPages;
+    const caughtUp = reachedEnd;
     // A PARTIAL WALK NEVER VOUCHES FOR A LEG THAT WAS NOT SET UP. The pass
     // loop walks two pages at a time; it used to stamp the leg healthy and set
     // up after those two pages, so a history that had never been completely
