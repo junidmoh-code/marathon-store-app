@@ -1,0 +1,26 @@
+{
+  "tid": "0000HP1X",
+  "batchNo": "509",
+  "total": "R21,250.00",
+  "confidence": {
+    "batchNo": 0.99,
+    "closed": 0.99,
+    "mid": 0.99,
+    "opened": 0.99,
+    "purchases": 0.99,
+    "refunds": 0.99,
+    "tid": 0.99,
+    "total": 0.99,
+    "txnCount": 0.99
+  },
+  "cash": "R0.00",
+  "closed": "2026/09/10 17:14:36",
+  "mid": "000000004977890",
+  "opened": "2026/09/09 17:10:06",
+  "printed": "2026/09/10 17:14:37",
+  "purchases": "R21,250.00",
+  "reconLine": "500 - Reconciled, in balance",
+  "refunds": "R0.00",
+  "transactions": [],
+  "txnCount": 23
+}

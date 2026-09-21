@@ -135,6 +135,39 @@ function normaliseTid(raw) {
 }
 
 /**
+ * The TID as a MODEL returned it, read tolerantly. The slip prints
+ * "TID:0000HP1X", and a model asked for the field sometimes hands back the
+ * label with it, or a space in the middle ("0000 HP1X"). normaliseTid refuses
+ * both, which reads as "no terminal ID could be read" about a slip that
+ * printed one plainly. Only a leading TID label and separators are dropped —
+ * the characters themselves are never changed here.
+ */
+function readSlipTid(raw) {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim().toUpperCase()
+    .replace(/^(?:TID|TERMINAL(?:\s*ID)?)\s*(?:NO\.?|#)?\s*[:.#-]?\s*/, "")
+    .replace(/[\s-]/g, "");
+  return normaliseTid(s);
+}
+
+// O and 0, I and 1: the pairs a thermal-print read confuses. Two TIDs that
+// differ ONLY in those are the same printed characters read two ways.
+const foldTid = (t) => String(t || "").replace(/O/g, "0").replace(/I/g, "1");
+
+/**
+ * Is the TID read off the slip the PICKED till's, allowing for O/0 and I/1?
+ * Only ever used to confirm the pick — never to choose a terminal — and only
+ * when no OTHER registered terminal folds to the same characters, so the
+ * tolerance cannot route a slip anywhere the exact reading would not.
+ */
+function slipTidMatchesPicked(readTid, picked, registeredTids = []) {
+  if (!readTid || !picked) return false;
+  if (readTid === picked) return true;
+  if (foldTid(readTid) !== foldTid(picked)) return false;
+  return !registeredTids.some((t) => t !== picked && foldTid(t) === foldTid(readTid));
+}
+
+/**
  * Merchant ids print with leading zeros and are stored the same way, but a
  * terminal registered by hand may carry one form and the slip the other.
  * Compared as DIGITS ONLY with leading zeros dropped, so "000000004977890" and
@@ -765,7 +798,7 @@ module.exports = {
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
   MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
-  normaliseTid, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
 };

@@ -54,7 +54,7 @@ const {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX,
   parseSlipTimestamp, parseRandsToCents,
-  normaliseTid, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
 } = require("../lib/card-recon.cjs");
@@ -78,7 +78,19 @@ const geminiApiKey = defineSecret("GEMINI_API_KEY");
 // low-contrast thermal print and misreading a digit here becomes a recorded
 // "variance", so this is not a Flash-Lite job. ONE constant, one-line swap.
 const OCR_MODEL = "gemini-3.6-flash";
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${OCR_MODEL}:generateContent`;
+// ── WHEN THE MODEL IS OVERLOADED ─────────────────────────────────────────────
+// On 20-21 Sept 2026 gemini-3.6-flash answered "503 — This model is currently
+// experiencing high demand" to most slip photos: every Trophy Till 2 attempt
+// in the log, and 12 of 13 probes of a real Marathon Till 2 slip (the 13th read
+// it perfectly on its 7th try). The account was funded throughout. So a 503 is
+// retried a few times, briefly, and then ONE attempt goes to the next model
+// tier, which read the same real slips correctly (TID, batch, total) while
+// 3.6 was refusing. Every other status fails at once — a 402 does not get
+// better by asking twice.
+const OCR_FALLBACK_MODEL = "gemini-3.8-flash";
+const OCR_503_RETRIES = 3;
+const OCR_503_BACKOFF_MS = [1500, 3000, 5000];
+const geminiEndpoint = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 const GEMINI_TIMEOUT_MS = 120000;
 
 // Published gemini-2.5-flash rates; 3.6-flash had no separate public sheet at
@@ -121,7 +133,8 @@ const EXTRACTION_PROMPT = [
   // and a real one would be a live machine written into a shipped artefact, in
   // a feature whose whole rule is that no terminal is named in what ships.
   "HEADER fields: MID (merchant ID, long digits), TID (terminal ID, e.g.",
-  "0000AB1C or 67000000), the batch number (printed like 'Batch Report (#494)'",
+  "0000AB1C or 67000000 — letters AND digits are both normal; return only the",
+  "ID itself, without the 'TID:' label), the batch number (printed like 'Batch Report (#494)'",
   "— return the digits), Opened, Closed and Printed timestamps (return exactly as",
   "printed, e.g. '2026/08/26 18:50:04'), the Transactions count, and any",
   "reconciliation line (e.g. '500 - Reconciled, in balance').",
@@ -271,8 +284,32 @@ function decodePhoto(raw, i) {
 }
 
 // ── OCR — one structured-JSON Gemini call over every photo ───────────────────
-async function runSlipOcr(photos, apiKey) {
-  const res = await fetch(GEMINI_ENDPOINT, {
+// One photo set, tried against the primary model with a short 503 retry, then
+// once against the fallback. `deps` is the test seam: fetch and sleep.
+async function runSlipOcr(photos, apiKey, deps = {}) {
+  const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const plan = [
+    ...Array.from({ length: 1 + OCR_503_RETRIES }, () => OCR_MODEL),
+    OCR_FALLBACK_MODEL,
+  ];
+  let last;
+  for (let i = 0; i < plan.length; i++) {
+    try {
+      const out = await runSlipOcrOnce(photos, apiKey, plan[i], deps.fetch || fetch);
+      return { ...out, model: plan[i], attempts: i + 1 };
+    } catch (err) {
+      last = err;
+      if (err.httpStatus !== 503) throw err;
+      const wait = OCR_503_BACKOFF_MS[i];
+      if (wait && plan[i + 1] === OCR_MODEL) await sleep(wait);
+    }
+  }
+  last.attempts = plan.length;
+  throw last;
+}
+
+async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
+  const res = await fetchImpl(geminiEndpoint(model), {
     method: "POST",
     // Key in a HEADER, never the query string — URLs land in logs and traces.
     headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
@@ -338,7 +375,7 @@ function toExtraction(parsed) {
   });
   return {
     mid: typeof parsed.mid === "string" && parsed.mid.trim() ? parsed.mid.trim() : null,
-    tid: normaliseTid(parsed.tid),
+    tid: readSlipTid(parsed.tid),
     batchNo: parsed.batchNo,
     openedAt: parseSlipTimestamp(parsed.opened),
     closedAt: parseSlipTimestamp(parsed.closed),
@@ -606,13 +643,20 @@ async function handleExtract(db, request) {
         "The slip reader has run out of credit, so photographed slips cannot be read until it is topped up. "
         + "Retaking the photo will not help. Tell Junid — the machines that email their report are still recording normally.");
     }
+    // 503 after every retry and the fallback: Google's reader is overloaded.
+    // Not the signal, not the photo — and it passes, usually within minutes.
+    if (err.httpStatus === 503) {
+      throw new HttpsError("unavailable",
+        "Google's slip reader is overloaded right now (it said so, five times), so the photo could not be read. "
+        + "It is not your signal and not the photo — wait a few minutes and tap the till again.");
+    }
     throw new HttpsError("unavailable", "Could not read the photos right now — try again.");
   }
   // Cost is logged for EVERY billed call, rejected extractions included.
   const costUSD = +((ocr.tokensIn / 1e6) * IN_PER_MTOK_USD + (ocr.tokensOut / 1e6) * OUT_PER_MTOK_USD).toFixed(6);
   try {
     await db.ref(`aiAssistant/usage/${new Date().toISOString().slice(0, 10)}`).push({
-      at: Date.now(), kind: "cardBatchOcr", by: request.auth.uid, model: OCR_MODEL,
+      at: Date.now(), kind: "cardBatchOcr", by: request.auth.uid, model: ocr.model, attempts: ocr.attempts,
       photos: decoded.length, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD,
     });
   } catch (err) { console.warn("cardBatchCapture: usage log failed:", err.message); }
@@ -621,7 +665,20 @@ async function handleExtract(db, request) {
   const extraction = toExtraction(ocr.parsed);
 
   // ── THE TID DECIDES, NOT THE PICKER — a wrong slip rejects itself ──
+  // The model's RAW answer is logged on a TID refusal. On 20 Sept Marathon
+  // Till 2's slip was refused here and nothing recorded what the model had
+  // actually returned, so the cause could not be established afterwards.
+  if (!extraction.tid || extraction.tid !== picked) {
+    console.warn(`cardBatchCapture: TID refusal picked=${picked} raw=${JSON.stringify(ocr.parsed.tid)}`
+      + ` conf=${JSON.stringify((ocr.parsed.confidence || {}).tid)} batch=${JSON.stringify(ocr.parsed.batchNo)}`
+      + ` model=${ocr.model} tokensOut=${ocr.tokensOut}`);
+  }
   if (!extraction.tid) return reject("No terminal ID could be read off the slip — retake the header photo.");
+  // An O read for a 0 (or I for 1) on the PICKED till's own TID is that TID.
+  // From here on the record carries the registry's spelling, never the misread.
+  if (extraction.tid !== picked && slipTidMatchesPicked(extraction.tid, picked, Object.keys(terminals))) {
+    extraction.tid = picked;
+  }
   if (extraction.tid !== picked) {
     const mapped = terminals[extraction.tid];
     const where = mapped && mapped.label ? ` (that slip belongs to ${mapped.label})` : mapped ? ` (that slip belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
@@ -719,7 +776,7 @@ async function handleExtract(db, request) {
     // What the REVIEW screen showed — kept so submit can say out loud when the
     // ledger moved between review and record (architect review, 2026-08-28).
     reviewedExpectedCents: expected.cardCents,
-    ocr: { model: OCR_MODEL, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD },
+    ocr: { model: ocr.model, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD },
   };
   await draftRef.set(draft);
 
@@ -1211,3 +1268,6 @@ exports.readRecordedLinesFor = readRecordedLinesFor;
 exports.resolveWriteFor = resolveWriteFor;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;
+exports.EXTRACTION_PROMPT = EXTRACTION_PROMPT;
+exports.OCR_FALLBACK_MODEL = OCR_FALLBACK_MODEL;
+exports.runSlipOcr = runSlipOcr;
