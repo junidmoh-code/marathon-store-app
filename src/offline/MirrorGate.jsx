@@ -27,7 +27,6 @@ import {
   mirrorSwitchOn, offlineMirrorEnabled, subscribeMirrorSwitch, watchMirrorSwitchLive,
 } from "./killSwitch";
 import { setOfflineMirrorRuntime } from "./mirrorRuntime";
-import { MirrorDownloadGate } from "./MirrorDownloadGate";
 
 // PR #618 raced the start against an 8-second bound, because a start that
 // hung left the app behind a setup screen that could never finish. Nothing is
@@ -36,14 +35,21 @@ import { MirrorDownloadGate } from "./MirrorDownloadGate";
 // indefinitely on a browser with IndexedDB disabled; the only consequence now
 // is a device that never mirrors, which is a device behaving exactly as it did
 // before any of this existed.
+// ── NO QUESTION ANY MORE (owner decision, 21 Sep 2026) ──────────────────
+// A device with the switch on and somebody signed in starts its download the
+// moment it is in use. The one-button "Keep the shop on this device" gate
+// used to stand here; the owner asked that every device in use download
+// without being asked. The download still runs BEHIND the working app, still
+// only after sign-in, still only while the switch is on — the switch is the
+// consent now, and turning it off still stops every device within a second.
+const autoConsent = (rt) => rt.consentAndDownload().catch((err) => {
+  console.warn("offline mirror: could not start the download —", err);
+});
+
 export function MirrorGate({ auth, storage, children }) {
   const [switchOn, setSwitchOn] = useState(() => mirrorSwitchOn());
   const [runtime, setRuntime] = useState(null);
   const [signedIn, setSignedIn] = useState(false);
-  // "Nobody on this device has tapped Download yet." False until the runtime
-  // has actually looked, so the gate can never flash up on a device that
-  // answered the question months ago.
-  const [needsConsent, setNeedsConsent] = useState(false);
   // The live runtime, for the effects that must reach it without waiting for a
   // re-render: a kill-switch flip has to stop the engine in the same tick it
   // arrives, and a flip back on has to reuse the runtime rather than build a
@@ -125,8 +131,9 @@ export function MirrorGate({ auth, storage, children }) {
     // Already running, and the switch has just come back on: resume the same
     // engine rather than building a second one against the same IndexedDB.
     if (runtimeRef.current) {
-      runtimeRef.current.resume().then((what) => {
-        if (!cancelled && what === "needs-consent") setNeedsConsent(true);
+      const rt = runtimeRef.current;
+      rt.resume().then((what) => {
+        if (!cancelled && what === "needs-consent") autoConsent(rt);
       }).catch(() => {});
       return () => { cancelled = true; };
     }
@@ -162,7 +169,7 @@ export function MirrorGate({ auth, storage, children }) {
       // complete copy, resume the download on an agreed but unfinished one, or
       // say that nobody has been asked yet.
       const what = await rt.resume();
-      if (!cancelled && what === "needs-consent") setNeedsConsent(true);
+      if (!cancelled && what === "needs-consent") autoConsent(rt);
     }, (err) => {
       if (cancelled) return;
       // See the header: a mirror that cannot start must not stop the app.
@@ -185,20 +192,8 @@ export function MirrorGate({ auth, storage, children }) {
     runtimeRef.current.stop();
   }, [enabled]);
 
-  // The one moment a person is asked anything: the mirror is on, it started,
-  // somebody is signed in, this device has no complete copy, and nobody on it
-  // has tapped Download yet. One tap and it is gone for good.
-  const asking = enabled && !!runtime && signedIn && needsConsent;
-
-  return (
-    <>
-      {children}
-      {asking && (
-        <MirrorDownloadGate
-          runtime={runtime}
-          onStart={() => setNeedsConsent(false)}
-        />
-      )}
-    </>
-  );
+  // Nothing is ever shown over the app: see autoConsent. `runtime` is kept
+  // for the status dot, which reads it through mirrorRuntime.
+  void runtime;
+  return <>{children}</>;
 }

@@ -145,49 +145,32 @@ beforeEach(() => {
 });
 afterEach(() => { _resetMirrorSwitchForTests(); _resetServingForTests(); });
 
-describe("a device nobody has asked yet", () => {
-  it("shows the gate — and the app is rendered underneath it the whole time", async () => {
+// ── NO QUESTION ANY MORE (owner decision, 21 Sep 2026) ─────────────────────
+// Every device in use downloads as soon as somebody signs in with the switch
+// on. The one-button gate is gone; what must still hold is that the app is
+// never covered, nothing starts before a real sign-in, and the switch rules.
+describe("a device that has never downloaded", () => {
+  it("starts its download by itself, with the app on screen and nothing over it", async () => {
     runtime = fakeRuntime({ setupDone: false, consented: false });
     const tree = await mount();
-    expect(text(tree)).toContain(GATE_TEXT);
-    // THE POINT. Not "instead of the app" — over it. The sign-in screen lives
-    // inside <App>, so a gate that replaced its children would deadlock a
-    // fresh device: no sign-in, no permission, no download. (PR #618.)
-    expect(text(tree)).toContain(APP_TEXT);
-    tree.unmount();
-  });
-
-  it("one tap opens the app IMMEDIATELY — it does not await a single byte", async () => {
-    runtime = fakeRuntime({ setupDone: false, consented: false });
-    const tree = await mount();
-    await act(async () => { findButton(tree).props.onClick(); });
     await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
-
-    // The gate is gone while the download it started is still running — and
-    // the download in this fake NEVER settles, so a gate that waited for it
-    // would still be on screen here.
     expect(text(tree)).not.toContain(GATE_TEXT);
     expect(text(tree)).toContain(APP_TEXT);
+    expect(tree.root.findAllByType("button")).toHaveLength(0);
     expect(runtime.calls.consent).toBe(1);
     expect(runtime.calls.background).toBe(1);
     tree.unmount();
   });
 
-  it("offers ONE button and no way to say no", async () => {
-    runtime = fakeRuntime({ setupDone: false, consented: false });
-    const tree = await mount();
-    expect(tree.root.findAllByType("button")).toHaveLength(1);
-    tree.unmount();
-  });
-
-  it("is not asked before there is a signed-in, non-anonymous user", async () => {
-    // Every mirrored node is rules-gated on one. Asking the TV shell, or
-    // somebody still on the PIN screen, is asking a device that cannot
-    // download and is covering the screen that would let it.
+  it("does not start before there is a signed-in, non-anonymous user", async () => {
+    // Every mirrored node is rules-gated on one; the TV shell or somebody on
+    // the PIN screen cannot download, and must not be recorded as agreeing.
     authUser = null;
     runtime = fakeRuntime({ setupDone: false, consented: false });
     const tree = await mount();
-    expect(text(tree)).not.toContain(GATE_TEXT);
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    expect(runtime.calls.consent).toBe(0);
+    expect(runtime.calls.background).toBe(0);
     expect(text(tree)).toContain(APP_TEXT);
     tree.unmount();
   });

@@ -38,7 +38,9 @@ vi.mock("firebase/database", () => ({
 vi.mock("../PermissionsContext", () => ({ ADMIN_EMAIL: "gunidmoh@gmail.com" }));
 
 const MirrorFleetCard = (await import("./MirrorFleetCard.jsx")).default;
-const { deviceState, ago, STALE_MS, guardWords } = await import("./MirrorFleetCard.jsx");
+const {
+  deviceState, ago, STALE_MS, guardWords, INACTIVE_MS, isInactive, reportedServing,
+} = await import("./MirrorFleetCard.jsx");
 
 const ADMIN = { uid: "admin-uid", email: "gunidmoh@gmail.com" };
 const STAFF = { uid: "staff-uid", email: "rashid@marathon.internal" };
@@ -191,5 +193,28 @@ describe("what a device's row says", () => {
     expect(ago(T - 20 * 60_000, T)).toBe("20 min ago");
     expect(ago(T - 5 * 3600_000, T)).toBe("5h ago");
     expect(ago(T - 3 * 24 * 3600_000, T)).toBe("3d ago");
+  });
+});
+
+describe("devices not in use, and what counts as serving", () => {
+  const T = 1_790_000_000_000;
+  const ok = { at: T, switchOn: true, complete: true, downloading: false, pending: 0, guard: null };
+
+  it("a week of silence is inactive; six days is not", () => {
+    expect(isInactive({ at: T - INACTIVE_MS - 1 }, T)).toBe(true);
+    expect(isInactive({ at: T - 6 * 24 * 3600 * 1000 }, T)).toBe(false);
+  });
+
+  it("a serving device that has gone quiet overnight still counts as serving", () => {
+    expect(reportedServing({ ...ok, at: T - STALE_MS - 1 })).toBe(true);
+    expect(reportedServing({ ...ok, complete: false })).toBe(false);
+    expect(reportedServing({ ...ok, switchOn: false })).toBe(false);
+    expect(reportedServing({ ...ok, guard: { leg: "stock", reason: "gave-up" } })).toBe(false);
+  });
+
+  it("a save still confirming is green, not a warning", () => {
+    const s = deviceState({ ...ok, pending: 1 }, T);
+    expect(s.tone).toBe("#30d158");
+    expect(s.text).toMatch(/^serving from its own copy/);
   });
 });
