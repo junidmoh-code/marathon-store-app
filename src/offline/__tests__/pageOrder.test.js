@@ -177,7 +177,7 @@ import { FEED_CURSOR_META } from "../changeFeed";
 import { createRtdbAdapter } from "../rtdbAdapter";
 import { startOfflineMirror } from "../bootstrap";
 import { MIRROR_LEGS } from "../nodes";
-import { isLegUsable, getLegHealth } from "../health";
+import { isLegUsable, getLegHealth, recordLegFailed } from "../health";
 import { setMirrorSwitchValue, _resetMirrorSwitchForTests } from "../killSwitch";
 import { _resetServingForTests, isLegServing } from "../serving";
 import { _resetMirrorSignalForTests } from "../mirrorSignal";
@@ -625,6 +625,13 @@ describe("a change feed that cannot advance is benched too, and serves nothing s
     await e.runSetup();
     expect(await isLegUsable(db, "products")).toBe(true);
 
+    // A leg already failing for its OWN reason, still serving its last good
+    // copy (a refused shrink does exactly this).
+    await recordLegFailed(db, "customers", {
+      path: "customers", reason: "shrank", at: now, state: "failed", retryable: false, heldRows: 1202,
+    });
+    expect(await isLegUsable(db, "customers")).toBe(true);
+
     // A cursor, then a log whose every key sorts BEFORE it, and a server that
     // ignores the bound: every page is one that cannot move the cursor.
     const cursor = pushKeyForMs(now, "zzzzzzzzzzzz");
@@ -645,6 +652,8 @@ describe("a change feed that cannot advance is benched too, and serves nothing s
     // Nothing keeps the change-fed legs current now, so none is served…
     expect(await isLegUsable(db, "products")).toBe(false);
     expect((await getLegHealth(db, "products")).reason).toBe("feed-stuck");
+    expect(await isLegUsable(db, "customers")).toBe(false);
+    expect((await getLegHealth(db, "customers")).reason).toBe("shrank");
     // …and none is re-downloaded to make up for it.
     expect(await e.legIsSetUp(MIRROR_LEGS.find((l) => l.name === "products"))).toBe(true);
 
@@ -660,6 +669,10 @@ describe("a change feed that cannot advance is benched too, and serves nothing s
     const rep = await next.runPass();
     expect(rep.feed.applied).toBeGreaterThan(0);
     expect(await isLegUsable(db, "products")).toBe(true);
+    // The shrink-refused leg was unserved too, and gets its OWN vouch back
+    // with its own reason intact — it is not stranded.
+    expect(await isLegUsable(db, "customers")).toBe(true);
+    expect((await getLegHealth(db, "customers")).reason).toBe("shrank");
   });
 });
 

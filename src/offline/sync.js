@@ -794,12 +794,18 @@ export function createSyncEngine({
       // A leg already failing for its own reason keeps that reason — it is
       // the more useful one on the fleet screen — but it may still be vouched
       // for (a refused shrink keeps its last good copy), so the vouch goes.
+      // The vouch is PARKED on the record, not thrown away, so the feed coming
+      // back can restore exactly what was there (reserveChangeFedLegs).
       const prior = await getLegHealth(db, leg.name);
       if (prior?.ok === false) {
-        await recordLegFailed(db, leg.name, {
-          path: prior.path ?? leg.node, reason: prior.reason, at: prior.at ?? now(),
-          state: prior.state ?? "failed", retryable: prior.retryable ?? false,
-          detail: prior.detail ?? null, keepVouched: false,
+        if (prior.feedParked) continue;
+        // `heldRows` vouches too, on a refused-shrink record (health.js
+        // isRefusedRead), so it is parked with the vouch.
+        const { vouched, heldRows: held, ...rest } = prior;
+        await db.setMetaMany({
+          [healthKey(leg.name)]: {
+            ...rest, feedParked: true, parkedVouch: vouched ?? null, parkedHeldRows: held ?? null,
+          },
         });
         continue;
       }
@@ -813,6 +819,18 @@ export function createSyncEngine({
   async function reserveChangeFedLegs() {
     for (const leg of MIRROR_LEGS.filter((l) => !isAppendOnly(l))) {
       const health = await getLegHealth(db, leg.name);
+      if (health?.feedParked) {
+        // Its own failure stands; only the vouch the feed took away comes back.
+        const { feedParked, parkedVouch, parkedHeldRows, ...rest } = health;
+        await db.setMetaMany({
+          [healthKey(leg.name)]: {
+            ...rest,
+            ...(parkedVouch ? { vouched: parkedVouch } : {}),
+            ...(parkedHeldRows !== null && parkedHeldRows !== undefined ? { heldRows: parkedHeldRows } : {}),
+          },
+        });
+        continue;
+      }
       if (health?.reason !== "feed-stuck") continue;
       const rows = (await heldRows(db, leg.name)) ?? 0;
       if (rows === 0 && !CAN_BE_EMPTY.has(leg.name)) continue;
