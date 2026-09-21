@@ -135,9 +135,13 @@ async function handle(db, request) {
       // Undo step 1 — and ONLY the row this call created a moment ago, which
       // has no batches: removed if it is still exactly ours, left alone if
       // anything else has touched it since.
+      // Null-first here too: returning undefined on the first (uncached) null
+      // would abort without ever seeing the row, and leave it behind.
       const mine = created.after;
-      await db.ref(`${CARD_TERMINALS_PATH}/${newTid}`).transaction((cur) => (
-        cur && cur.replaces === oldTid && cur.activeFrom === mine.activeFrom ? null : undefined));
+      await db.ref(`${CARD_TERMINALS_PATH}/${newTid}`).transaction((cur) => {
+        if (cur === null) return null;
+        return cur.replaces === oldTid && cur.activeFrom === mine.activeFrom ? null : undefined;
+      });
       return { ok: false, reason: `${retired.reason} The new terminal was not added. Nothing changed.` };
     }
     await audit(db, request, {
