@@ -654,6 +654,13 @@ describe("a change feed that cannot advance is benched too, and serves nothing s
     expect((await getLegHealth(db, "products")).reason).toBe("feed-stuck");
     expect(await isLegUsable(db, "customers")).toBe(false);
     expect((await getLegHealth(db, "customers")).reason).toBe("shrank");
+    // A SECOND failure on the parked leg must not drop the park (Sonnet, on
+    // d7a269c0): it is recorded, and still unserved, and still restorable.
+    await recordLegFailed(db, "customers", {
+      path: "customers", reason: "shrank", at: now, state: "failed", retryable: false, heldRows: 1202,
+    });
+    expect(await isLegUsable(db, "customers")).toBe(false);
+    expect((await getLegHealth(db, "customers")).feedParked).toBe(true);
     // …and none is re-downloaded to make up for it.
     expect(await e.legIsSetUp(MIRROR_LEGS.find((l) => l.name === "products"))).toBe(true);
 
