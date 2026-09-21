@@ -30,9 +30,10 @@ const listeners = new Set();
 // ── THE HINT BELONGS TO ONE ACCOUNT ─────────────────────────────────────────
 // A tablet is shared. The hint is the list of legs served to the account that
 // was signed in when it was written, and it is honoured ONLY while that same
-// account is signed in — read synchronously from firebase auth, which every
-// mirror-reading hook already waits on (authReady) before it reads anything.
-// A different account, or nobody, gets live reads until bootstrap has checked
+// account is signed in — read synchronously from firebase auth on EVERY call.
+// Before auth has restored its user, currentUser is null, so the hint is
+// refused and the screen reads live (a cost, never a leak). A different
+// account, or nobody, gets live reads until bootstrap has checked
 // that account's read rights and written a hint for it. (Sonnet review, PR
 // #629: the previous session's hint was otherwise served in the gap before
 // the mirror's own auth listener attached, and after a sign-out.)
