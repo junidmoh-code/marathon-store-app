@@ -50,11 +50,113 @@ export const READ_TIMEOUT_MS = 8000;        // a bounded, indexed RTDB read
 export const BIG_READ_TIMEOUT_MS = 90000;   // a setup page, or a whole-node fallback read
 export const ASSET_TIMEOUT_MS = 2500;       // a Storage object (a photo, a label)
 
+// ── A SLEEPING TABLET IS NOT A SLOW LINE ────────────────────────────────────
+// When an Android tablet's screen goes off, Chrome freezes the page. Nothing
+// runs; the socket may drop. On wake every overdue timer fires at once, so a
+// read that had no chance to answer is reported as "did not answer within
+// 90000 ms" — and the mirror then counts it towards benching the leg and
+// re-downloads the page. On 21 Sep a PE tablet spent 164 MB that way, and
+// devices that were otherwise healthy reported 8-second reads of a single row
+// timing out.
+//
+// `sleepAware` (the mirror's reads) therefore counts only time the page was
+// AWAKE: the clock stops while the document is hidden, and a timer that fires
+// much later than it was due (the page was frozen) re-arms with WAKE_GRACE_MS
+// for the socket to come back, rather than failing. Bounded twice over: at
+// most MAX_WAKES re-arms of any kind, and HIDDEN_CEILING_MS of running while
+// hidden — so a read can never wait for ever.
+export const WAKE_GRACE_MS = 20000;
+// While HIDDEN but still running (a desktop background tab — not frozen), the
+// awake clock is stopped, so this separate ceiling is what keeps the read
+// bounded: if it fires ON TIME the page was running all along and the read
+// fails honestly. If it fires LATE the page was frozen, which is the case the
+// wake grace exists for. (Sonnet review, PR #633.)
+export const HIDDEN_CEILING_MS = 10 * 60 * 1000;
+const LATE_BY_MS = 5000;
+// Every re-arm — a late (frozen) timer AND a hidden→visible return — counts
+// against this, so hide/show cycling cannot extend a read without end.
+const MAX_WAKES = 5;
+
+const docHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
+function sleepAwareTimeout(ms, label) {
+  let timer = null;
+  let ceiling = null;
+  let remaining = ms;
+  let armedAt = 0;
+  let wakes = 0;
+  let settle = null;
+  const fail = () => { const s = settle; settle = null; s?.(new OfflineTimeoutError(label, ms)); };
+  const armCeiling = () => {
+    if (ceiling !== null || !settle) return;
+    const due = Date.now() + HIDDEN_CEILING_MS;
+    ceiling = setTimeout(() => {
+      ceiling = null;
+      if (Date.now() - due > LATE_BY_MS) {
+        // Frozen, not running. It may now stay hidden but RUN, so the ceiling
+        // is re-armed — as a wake, so this cannot repeat without end.
+        if (wakes >= MAX_WAKES) { fail(); return; }
+        wakes += 1;
+        armCeiling();
+        return;
+      }
+      fail();                                        // running in the background all along
+    }, HIDDEN_CEILING_MS);
+  };
+  const clearCeiling = () => { if (ceiling !== null) { clearTimeout(ceiling); ceiling = null; } };
+  const onVisibility = () => {
+    if (!settle) return;
+    if (docHidden()) {
+      if (timer !== null) { clearTimeout(timer); timer = null; remaining -= Date.now() - armedAt; }
+      armCeiling();
+    } else if (timer === null) {
+      clearCeiling();
+      if (wakes >= MAX_WAKES) { fail(); return; }
+      wakes += 1;
+      remaining = Math.max(remaining, WAKE_GRACE_MS);
+      arm();
+    }
+  };
+  const arm = () => {
+    armedAt = Date.now();
+    const due = armedAt + remaining;
+    timer = setTimeout(() => {
+      timer = null;
+      const late = Date.now() - due;
+      if (late > LATE_BY_MS && wakes < MAX_WAKES) {
+        // The page was frozen: this read never had its time. Give the socket
+        // a moment to come back instead of calling it a failure.
+        wakes += 1;
+        remaining = WAKE_GRACE_MS;
+        arm();
+        return;
+      }
+      fail();
+    }, Math.max(0, remaining));
+  };
+  const promise = new Promise((_resolve, reject) => {
+    settle = reject;
+    if (docHidden()) armCeiling(); else arm();
+  });
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+  const clear = () => {
+    settle = null;
+    if (timer !== null) clearTimeout(timer);
+    clearCeiling();
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+  };
+  return { promise, clear };
+}
+
 // Reject with OfflineTimeoutError if `promise` has not settled in `ms`.
 // The timer is always cleared, so a screen that searches on every keystroke does
 // not accumulate live timers.
-export function withTimeout(promise, { ms = READ_TIMEOUT_MS, label = "the read" } = {}) {
+export function withTimeout(promise, { ms = READ_TIMEOUT_MS, label = "the read", sleepAware = false } = {}) {
   if (!(ms > 0)) return Promise.resolve(promise);
+  if (sleepAware) {
+    const t = sleepAwareTimeout(ms, label);
+    return Promise.race([Promise.resolve(promise), t.promise]).finally(t.clear);
+  }
   let timer = null;
   const timeout = new Promise((_resolve, reject) => {
     timer = setTimeout(() => reject(new OfflineTimeoutError(label, ms)), ms);

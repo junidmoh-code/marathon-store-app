@@ -137,7 +137,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
     async readPath(path, { big = false } = {}) {
       const snap = await withTimeout(get(ref(db, path)), {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
-        label: `/${path}`,
+        label: `/${path}`, sleepAware: true,
       });
       return weigh(snap.exists() ? snap.val() : null);
     },
@@ -154,7 +154,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
       const parts = keyPageConstraints({ after, limit });
       const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
-        label: `/${path} (key page)`,
+        label: `/${path} (key page)`, sleepAware: true,
       });
       const all = weigh(orderedChildren(snap));
       const page = new Map();
@@ -174,7 +174,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
       const parts = childPageConstraints(field, { from, fromKey, limit });
       const snap = await withTimeout(get(query(ref(db, path), ...parts)), {
         ms: big ? BIG_READ_TIMEOUT_MS : READ_TIMEOUT_MS,
-        label: `/${path} (${field} page)`,
+        label: `/${path} (${field} page)`, sleepAware: true,
       });
       // forEach, NOT val(). val() is in key order, and taking its last entry
       // as the cursor is the #624 fleet download loop — see rtdbOrder.js.
@@ -187,7 +187,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
     async firstKey(path) {
       const snap = await withTimeout(
         get(query(ref(db, path), orderByKey(), limitToFirst(1))),
-        { ms: READ_TIMEOUT_MS, label: `/${path} (first key)` },
+        { ms: READ_TIMEOUT_MS, label: `/${path} (first key)`, sleepAware: true },
       );
       const keys = [...weigh(orderedChildren(snap)).keys()];
       return keys.length ? keys[0] : null;
@@ -198,7 +198,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
     async lastKey(path) {
       const snap = await withTimeout(
         get(query(ref(db, path), orderByKey(), limitToLast(1))),
-        { ms: READ_TIMEOUT_MS, label: `/${path} (last key)` },
+        { ms: READ_TIMEOUT_MS, label: `/${path} (last key)`, sleepAware: true },
       );
       const keys = [...weigh(orderedChildren(snap)).keys()];
       return keys.length ? keys[keys.length - 1] : null;
@@ -212,7 +212,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
       if (to !== null) parts.push(endAt(to));
       parts.push(limitToFirst(limit));
       const snap = await withTimeout(get(query(ref(db, path), ...parts)),
-        { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (range)` });
+        { ms: BIG_READ_TIMEOUT_MS, label: `/${path} (range)`, sleepAware: true });
       const page = weigh(orderedChildren(snap));
       return page.size ? page : null;
     },
@@ -249,7 +249,7 @@ export function createRtdbAdapter({ db = database, onBytes = null } = {}) {
     // scheduled loop stops the loop just as surely as a read does.
     async writePath(path, value) {
       await withTimeout(set(ref(db, path), value), {
-        ms: READ_TIMEOUT_MS, label: `/${path} (write)`,
+        ms: READ_TIMEOUT_MS, label: `/${path} (write)`, sleepAware: true,
       });
       return true;
     },
