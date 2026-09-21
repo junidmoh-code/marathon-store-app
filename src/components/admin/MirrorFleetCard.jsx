@@ -88,6 +88,7 @@ const GUARD_WORDS = Object.freeze({
   "gave-up": "kept failing, so this device stopped trying until the app is reopened",
   "cursor-stuck": "could not move past one page — stopped rather than read it again",
   "re-paging": "was taken by the old downloader — downloading it again",
+  "feed-stuck": "stopped receiving changes, so it is read live until the app is reopened",
 });
 export function guardWords(guard) {
   if (!guard) return null;

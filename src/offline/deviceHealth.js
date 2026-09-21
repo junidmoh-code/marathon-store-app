@@ -92,7 +92,7 @@ export function guardTripped(legs) {
   // A leg this device has stopped trying outranks everything: it is the one
   // that will not fix itself before somebody looks.
   const RANK = {
-    "gave-up": 0, "cursor-stuck": 1, shrank: 2, "count-drift": 3, empty: 4, "did-not-land": 5,
+    "gave-up": 0, "feed-stuck": 0, "cursor-stuck": 1, shrank: 2, "count-drift": 3, empty: 4, "did-not-land": 5,
   };
   bad.sort((a, b) => (RANK[a.reason] ?? 9) - (RANK[b.reason] ?? 9));
   return { leg: bad[0].name ?? bad[0].leg, reason: bad[0].reason, at: bad[0].at ?? null, of: bad.length };

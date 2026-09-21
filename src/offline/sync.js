@@ -64,8 +64,8 @@ import {
   readStaging, appendStagingChunk, loadStagingRecords, clearStaging, stagingKeys,
 } from "./staging";
 import {
-  runChangeFeedPage, changeCursorAtSetupStart, CursorExpiredError,
-  FEED_CURSOR_META, COUNTS_ROOT,
+  runChangeFeedPage, changeCursorAtSetupStart, CursorExpiredError, FeedCursorStuckError,
+  FEED_CURSOR_META, COUNTS_ROOT, CHANGES_ROOT,
 } from "./changeFeed";
 import { isCanonicalLocationId } from "./locationIds";
 import {
@@ -133,11 +133,18 @@ export const MUST_NOT_BE_EMPTY = Object.freeze(
 // THE BYTE BOUND. A range leg writes its cursor with every page, and a stuck
 // page throws BEFORE it is written, so a failed attempt costs the pages it
 // read and a retry resumes where the walk stood — never from the start. A
-// stuck walk therefore costs at most LEG_MAX_ATTEMPTS pages a session. A
-// snapshot leg that fails validation costs at most LEG_MAX_ATTEMPTS × the leg.
+// stuck snapshot walk KEEPS its staged pages for the same reason. A stuck
+// walk therefore costs at most LEG_MAX_ATTEMPTS pages a session. A snapshot
+// leg that fails VALIDATION (empty, shrank, did-not-land) clears its staging —
+// those pages are the thing in doubt — so it costs at most LEG_MAX_ATTEMPTS ×
+// the leg. The change feed is benched the same way (FEED_LEDGER below).
 export const LEG_MAX_ATTEMPTS = 3;
 export const LEG_RETRY_BASE_MS = 5 * 60 * 1000;
 export const LEG_RETRY_MAX_MS = 60 * 60 * 1000;
+// The change feed's place in the same ledger. It is not a leg, so a stuck feed
+// is not recorded against one: once benched, every change-fed leg stops being
+// SERVED (its rows would go stale) and screens read live until the next open.
+export const FEED_LEDGER = "changeFeed";
 
 // ─── A COPY TAKEN BY THE OLD PAGER IS NOT TRUSTED ───────────────────────────
 //
@@ -273,7 +280,7 @@ export function createSyncEngine({
     const wait = Math.min(LEG_RETRY_MAX_MS, LEG_RETRY_BASE_MS * 2 ** (attempts - 1));
     const reason = err?.name ?? "Error";
     failures.set(leg.name, { attempts, nextAt: now() + wait, reason, message: err?.message ?? String(err) });
-    if (attempts >= LEG_MAX_ATTEMPTS) {
+    if (attempts >= LEG_MAX_ATTEMPTS && !leg.pseudo) {
       await recordLegFailed(db, leg.name, {
         path: leg.node, reason: "gave-up", at: now(), state: "failed", retryable: false,
         detail: `failed ${attempts} times this session (last: ${reason}: ${err?.message ?? err}). `
@@ -341,7 +348,8 @@ export function createSyncEngine({
       const lastKey = maxKey(keys);
       if (manifest.afterKey !== null && manifest.afterKey !== undefined
         && compareKeys(lastKey, manifest.afterKey) <= 0) {
-        await clearStaging(db, leg.name, manifest);
+        // Staging is KEPT: every chunk in it ended before this page, so a
+        // retry resumes from the last good one rather than from page one.
         await recordLegFailed(db, leg.name, {
           path: leg.node, reason: "cursor-stuck", at: now(), state: "failed", retryable: false,
           detail: `a page after "${manifest.afterKey}" ended on "${lastKey}", which is not past it.`,
@@ -665,8 +673,12 @@ export function createSyncEngine({
   async function runPass() {
     const report = { feed: null, range: [], census: null, errors: [] };
 
-    // 1. The change feed, which is what keeps eighteen legs true.
-    try {
+    // 1. The change feed, which is what keeps eighteen legs true — unless it
+    // is backing off or benched after stuck pages (FEED_LEDGER).
+    const feedGate = legGate(FEED_LEDGER);
+    if (!feedGate.ok) {
+      report.feed = { applied: 0, deleted: 0, paths: [], skipped: feedGate.benched ? "benched" : "backing-off" };
+    } else try {
       let applied = 0;
       let deleted = 0;
       const paths = [];
@@ -678,12 +690,19 @@ export function createSyncEngine({
         if (res.done) break;
       }
       report.feed = { applied, deleted, paths };
+      failures.delete(FEED_LEDGER);
     } catch (err) {
       if (err instanceof CursorExpiredError) {
         // The honest wall. Every change-fed leg is marked for a fresh download
         // and the cursor is dropped, so the next setup run takes a new one.
         await markChangeFedLegsForResetup(err);
         report.errors.push({ where: "feed", reason: "cursor-expired" });
+      } else if (err instanceof FeedCursorStuckError) {
+        // Counted like a leg; a timeout is not (it costs no page, and the
+        // pass backoff already spaces it).
+        await noteLegFailure({ name: FEED_LEDGER, node: CHANGES_ROOT, pseudo: true }, err);
+        if (!legGate(FEED_LEDGER).ok && legGate(FEED_LEDGER).benched) await unserveChangeFedLegs(err);
+        report.errors.push({ where: "feed", reason: err.name, message: err.message });
       } else {
         report.errors.push({ where: "feed", reason: err.name, message: err.message });
       }
@@ -753,6 +772,18 @@ export function createSyncEngine({
       return { leg: leg.name, rows: res.rows };
     }
     return null;
+  }
+
+  // A benched feed: the change-fed legs keep their rows and their setup
+  // markers (nothing re-downloads) but stop VOUCHING, so no screen is served a
+  // copy nobody is keeping current. The next open tries the feed again.
+  async function unserveChangeFedLegs(err) {
+    for (const leg of MIRROR_LEGS.filter((l) => !isAppendOnly(l))) {
+      await recordLegFailed(db, leg.name, {
+        path: leg.node, reason: "feed-stuck", at: now(), state: "failed",
+        retryable: false, keepVouched: false, detail: err.message,
+      });
+    }
   }
 
   async function markChangeFedLegsForResetup(err) {

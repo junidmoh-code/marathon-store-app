@@ -171,7 +171,9 @@ import { freshMirrorDb } from "./helpers";
 import { createFakeRtdb, pushKeyForMs } from "./fakeAdapter";
 import {
   createSyncEngine, CURSOR_META, SETUP_META_PREFIX, LEG_MAX_ATTEMPTS, LEG_RETRY_BASE_MS,
+  LEG_RETRY_MAX_MS,
 } from "../sync";
+import { FEED_CURSOR_META } from "../changeFeed";
 import { createRtdbAdapter } from "../rtdbAdapter";
 import { startOfflineMirror } from "../bootstrap";
 import { MIRROR_LEGS } from "../nodes";
@@ -489,9 +491,6 @@ describe("END TO END: the real start function, the real adapter, to COMPLETION",
     expect(rt.state.setupError).toBe(null);
     expect(rt.state.setupCensus.drifted).toEqual([]);
     expect(rt.state.setupCensus.checked.length).toBe(MIRROR_LEGS.length);
-    for (const leg of MIRROR_LEGS) {
-      expect(await db.count(leg.store === "docs" ? "docs" : leg.store) >= 0).toBe(true);
-    }
     expect(await db.count("movements")).toBe(4500);
     expect(await db.count("insights")).toBe(4500);
     expect(await db.count("customers")).toBe(1202);
@@ -562,8 +561,12 @@ describe("a leg that cannot advance is BENCHED, and costs a bounded number of by
     // page per failed attempt — never a restart from the beginning.
     const mv = sdk.state.reads.filter((r) => r.path === "stock_movements");
     expect(mv.length).toBe(1 + LEG_MAX_ATTEMPTS);
-    const pageBytes = Math.max(...mv.map((r) => r.bytes));
-    expect(mv.reduce((n, r) => n + r.bytes, 0)).toBeLessThanOrEqual((1 + LEG_MAX_ATTEMPTS) * pageBytes);
+    // Every one of those reads was THE SAME first page (the server ignores the
+    // bound), so the whole leg cost exactly (1 + attempts) × one page.
+    const onePage = JSON.stringify(Object.fromEntries(Object.entries(tree.stock_movements)
+      .sort((a, b) => a[1].ts.localeCompare(b[1].ts) || sdk.keyCmp(a[0], b[0])).slice(0, 2000))).length;
+    expect(mv.every((r) => r.bytes === onePage)).toBe(true);
+    expect(mv.reduce((n, r) => n + r.bytes, 0)).toBe((1 + LEG_MAX_ATTEMPTS) * onePage);
 
     // …and nothing more, however long the app stays open.
     for (let i = 0; i < 30; i += 1) if (!(await t.fireNext())) break;
@@ -604,5 +607,41 @@ describe("a leg that cannot advance is BENCHED, and costs a bounded number of by
     now += LEG_RETRY_BASE_MS;
     await expect(e.runSetup()).rejects.toThrow(/cannot advance/);
     expect(e.legFailures()[0].attempts).toBe(2);
+  });
+});
+
+describe("a change feed that cannot advance is benched too, and serves nothing stale", () => {
+  test("three stuck pages, then no more feed reads this session and the change-fed legs read live", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    let now = T0;
+    const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => now, buildVersion: "b1" });
+    await e.runSetup();
+    expect(await isLegUsable(db, "products")).toBe(true);
+
+    // A cursor, then a log whose every key sorts BEFORE it, and a server that
+    // ignores the bound: every page is one that cannot move the cursor.
+    const cursor = pushKeyForMs(now, "zzzzzzzzzzzz");
+    await db.setMeta(FEED_CURSOR_META, cursor);
+    sdk.state.tree.mirror_changes = Object.fromEntries(Array.from({ length: 3 }, (_, i) =>
+      [pushKeyForMs(now - 60_000 + i, "A".repeat(12)), { n: "products", k: "p0001" }]));
+    sdk.state.ignoreBoundOn = "mirror_changes";
+    const before = sdk.state.reads.filter((r) => r.path === "mirror_changes").length;
+    const feedReads = () => sdk.state.reads.filter((r) => r.path === "mirror_changes").length - before;
+
+    for (let i = 0; i < 6; i += 1) {
+      const rep = await e.runPass();
+      if (i === 0) expect(rep.errors[0]).toMatchObject({ where: "feed", reason: "FeedCursorStuckError" });
+      now += LEG_RETRY_MAX_MS;                      // past any backoff
+    }
+    expect(feedReads()).toBe(LEG_MAX_ATTEMPTS);
+    expect(e.legFailures().find((f) => f.leg === "changeFeed")).toMatchObject({ attempts: LEG_MAX_ATTEMPTS, benched: true });
+    // Nothing keeps the change-fed legs current now, so none is served…
+    expect(await isLegUsable(db, "products")).toBe(false);
+    expect((await getLegHealth(db, "products")).reason).toBe("feed-stuck");
+    // …and none is re-downloaded to make up for it.
+    expect(await e.legIsSetUp(MIRROR_LEGS.find((l) => l.name === "products"))).toBe(true);
   });
 });

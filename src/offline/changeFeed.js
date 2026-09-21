@@ -130,6 +130,15 @@ export function cursorIsResumable(cursor, nowMs, {
  * `skipped` names what was dropped and why, so a pass can record it rather
  * than discard it silently.
  */
+// Thrown when a change page does not move the cursor forward. sync.js counts
+// these and benches the feed after LEG_MAX_ATTEMPTS — see runPass.
+export class FeedCursorStuckError extends Error {
+  constructor(cursor) {
+    super(`offline mirror: the change feed cannot advance past "${cursor}"`);
+    this.name = "FeedCursorStuckError";
+  }
+}
+
 export function rowsFromChangePage(page) {
   const seen = new Set();
   const rows = [];
@@ -217,9 +226,10 @@ export async function runChangeFeedPage({
   // rtdbOrder.js.
   const lastKey = maxKey(changeKeys);
   // A page that does not move the cursor forward would be read again on every
-  // pass, four times a pass, for ever. Named instead.
+  // pass, four times a pass, for ever. Thrown, and sync.js backs the feed off
+  // and benches it after LEG_MAX_ATTEMPTS.
   if (cursor !== null && compareKeys(lastKey, cursor) <= 0) {
-    throw new Error(`offline mirror: the change feed cannot advance past "${cursor}"`);
+    throw new FeedCursorStuckError(cursor);
   }
 
   const { rows, skipped } = rowsFromChangePage(page);
