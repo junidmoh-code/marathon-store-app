@@ -316,7 +316,7 @@ export function createSyncEngine({
   // What the device reports: every leg that is failing this session.
   function legFailures() {
     return [...failures.entries()].map(([leg, f]) => ({
-      leg, attempts: f.attempts, reason: f.reason,
+      leg, attempts: f.attempts, reason: f.reason, message: f.message ?? null,
       benched: f.attempts >= LEG_MAX_ATTEMPTS, nextAt: f.nextAt,
     }));
   }

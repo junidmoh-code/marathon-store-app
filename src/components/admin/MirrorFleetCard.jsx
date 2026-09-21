@@ -123,7 +123,7 @@ function DeviceRow({ d, now }) {
         {` · synced ${ago(d.lastSyncAt, now)}`}
         {` · reported ${ago(d.at, now)}`}
         {Array.isArray(d.failing) && d.failing.length > 0 && (
-          ` · failing: ${d.failing.map((f) => `${LEG_WORDS[f.leg] ?? f.leg} ×${f.attempts}${f.benched ? " (stopped)" : ""}`).join(", ")}`
+          ` · failing: ${d.failing.map((f) => `${LEG_WORDS[f.leg] ?? f.leg} ×${f.attempts}${f.benched ? " (stopped)" : ""}${f.message ? ` — ${f.message}` : ""}`).join("; ")}`
         )}
         {d.build ? ` · build ${String(d.build).slice(0, 12)}` : " · build unknown"}
       </div>
