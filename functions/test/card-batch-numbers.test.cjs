@@ -40,7 +40,7 @@ function fakeDb(present) {
 
 test("a first capture at batch 480 is an ordinary first capture", () => {
   const w = resolveBatchWrite({ existingKeys: [], batchNo: "480", correction: false });
-  assert.deepEqual(w, { ok: true, key: "480", revision: 1, supersedes: null });
+  assert.deepEqual(w, { ok: true, key: "480", revision: 1, supersedes: null, autoSuperseded: false });
 });
 
 test("every batch number the live estate actually carries parses", () => {
@@ -68,7 +68,7 @@ test("the duplicate probe reads ONE terminal's node, by exact key", async () => 
   assert.deepEqual(db.read, ["card_batches/pe/67325636/57/batchKey"]);
   // And so the write resolves as a first capture, not a refusal.
   assert.deepEqual(resolveBatchWrite({ existingKeys: keys, batchNo: "57", correction: false }),
-    { ok: true, key: "57", revision: 1, supersedes: null });
+    { ok: true, key: "57", revision: 1, supersedes: null, autoSuperseded: false });
 });
 
 test("the same number on the SAME terminal is still refused", () => {
@@ -78,7 +78,7 @@ test("the same number on the SAME terminal is still refused", () => {
   // …and a correction of it lands beside it at a high number just as at a low
   // one. Nothing about the revision suffix cares how big the batch number is.
   const c = resolveBatchWrite({ existingKeys: ["480"], batchNo: "480", correction: true });
-  assert.deepEqual(c, { ok: true, key: "480-r2", revision: 2, supersedes: "480" });
+  assert.deepEqual(c, { ok: true, key: "480-r2", revision: 2, supersedes: "480", autoSuperseded: false });
 });
 
 test("the probe walks a high number's revision chain and stops at the first gap", async () => {

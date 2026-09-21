@@ -370,7 +370,12 @@ async function captureOne(getToken, { attachment, message }) {
       receivedAt: message.receivedAt,
     },
   });
-  if (!extract.ok) return { ok: false, reason: extract.reason };
+  // THE TID TRAVELS WITH THE REFUSAL. The duplicate check runs at EXTRACT, so
+  // the commonest refusal of all was returning here — and returning no
+  // terminal, which left the capture screen unable to show it against any
+  // card. The callable now stamps the TID onto every refusal it makes once the
+  // file has been parsed; this carries it through.
+  if (!extract.ok) return { ok: false, reason: extract.reason, tid: extract.tid || null };
 
   const submit = await callCapture(await getToken(), { action: "submit", draftId: extract.draftId });
   if (!submit.ok) return { ok: false, reason: submit.reason, tid: extract.review?.tid };

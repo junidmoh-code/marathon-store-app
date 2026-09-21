@@ -62,8 +62,9 @@ import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../../firebase";
 import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
 import { planPhotoIntake, payloadRefusal } from "./photoIntake";
+import { describeCallableError, describeDecodeError } from "./captureFailure";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
-import { emailedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
+import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
 import { captureCards } from "./terminalRegistry";
 import { FONT } from "./cardReconStyles";
 
@@ -230,6 +231,16 @@ export default function CardReconScreen({ onExit }) {
     return byEmail;
   }, [intake, today, mine]);
 
+  // ── A REFUSED REPORT IS NEITHER A TICK NOR A SILENCE ──────────────────────
+  // It used to be a silence: `arrived` takes recorded rows only — rightly — so
+  // a refused report left the card showing the same camera glyph as a till
+  // that had not reported at all. Marathon Till 1's refusal on 19 Sept 2026
+  // was invisible all day for exactly that reason, while the server's own
+  // sentence explaining it sat unread in the feed. See refusedArrivals.
+  const refused = useMemo(
+    () => refusedArrivals(intake, today, saDateStringAt),
+    [intake, today]);
+
   const setPhase = (tid, value) => setWork((prev) => {
     const next = { ...prev };
     if (value) next[tid] = value; else delete next[tid];
@@ -272,11 +283,21 @@ export default function CardReconScreen({ onExit }) {
       setPhase(tid, null);
       delete lastPhoto.current[tid];
     } catch (err) {
-      // A transport failure is not a sentence a manager can act on, so it is
-      // translated. The detail goes to the console, where it can be read by
-      // whoever is asked to look.
-      console.error("cardBatchCapture failed", err);
-      setPhase(tid, { phase: "failed", reason: "That did not go through. Check the signal and try again." });
+      // ── THE FAILURE NAMES ITSELF ─────────────────────────────────────────
+      // This used to answer EVERY thrown error with "That did not go through.
+      // Check the signal and try again." — including the whole of 19 Sept
+      // 2026, when the signal was fine and the OCR account was out of credit.
+      // A refusal the server wrote is now shown in the server's own words; a
+      // transport failure says it was the connection; anything unidentified
+      // says so and is logged with its code, so it can be chased afterwards.
+      // See captureFailure.js.
+      const online = typeof navigator === "undefined" ? true : navigator.onLine !== false;
+      const failure = describeCallableError(err, { online });
+      console.error(failure.logLine, err);
+      setPhase(tid, { phase: "failed", reason: failure.message,
+                      // A duplicate refusal thrown as an error carries the same
+                      // way out as one returned in the envelope.
+                      canReplace: /already captured|resubmit as a correction/i.test(failure.message) });
     }
   };
 
@@ -299,7 +320,12 @@ export default function CardReconScreen({ onExit }) {
     try {
       photo = await downscalePhoto(take[0]);
     } catch (err) {
-      setPhase(tid, { phase: "failed", reason: `That photo could not be opened (${err?.message || err}).` });
+      // The decoder writes its own sentences for a person — an unsupported or
+      // Apple-format photo is named as such rather than parenthesised into a
+      // raw message. See captureFailure.js.
+      const failure = describeDecodeError(err);
+      console.error(failure.logLine, err);
+      setPhase(tid, { phase: "failed", reason: failure.message });
       return;
     }
     // Refused HERE rather than as a transport error nobody can read.
@@ -343,6 +369,13 @@ export default function CardReconScreen({ onExit }) {
                   : <CameraGlyph />}
               </label>
               {state.phase === "failed" && <div style={T.fail}>{state.reason}</div>}
+              {/* The mailbox's own refusal, when this card has no capture of
+                  its own on screen to say something more current. */}
+              {state.phase !== "failed" && !done && refused.has(t.tid) && (
+                <div style={T.fail}>
+                  Its emailed report arrived today and was not recorded. {refused.get(t.tid)}
+                </div>
+              )}
               {state.phase === "failed" && state.canReplace && lastPhoto.current[t.tid] && (
                 <button style={T.again}
                         onClick={() => send(t.tid, lastPhoto.current[t.tid], true)}>
