@@ -25,6 +25,11 @@
 // src/offline/rtdbOrder.js, so the two can disagree and a test can see it.
 import { describe, test, expect, beforeEach, vi } from "vitest";
 
+// These drive a real (fake-indexeddb) database over thousands of rows, and the
+// end-to-end ones wait on real time between fake timers. Under a full parallel
+// run the default 5 s is not enough and a slow machine is not a failure.
+vi.setConfig({ testTimeout: 30_000 });
+
 const sdk = vi.hoisted(() => {
   const state = {
     tree: {},
