@@ -278,3 +278,10 @@ test("a row with NO capture field saved as Both is a no-op — nothing is writte
   const email = planEdit({ tid: "67364485", storeId: "pine", tillId: "till-1", label: "Pine Till 1", mid: "100000001178101", capture: "email" }, pine, { stores, now: NOW });
   assert.equal(email.row.capture, "email");
 });
+
+test("a junk capture value is repaired by choosing Both, not refused as no change", () => {
+  const bent = { label: "Pine Till 1", mid: "100000001178101", storeId: "pine", tillId: "till-1", capture: "fax" };
+  const p = planEdit({ tid: "67364485", storeId: "pine", tillId: "till-1", label: "Pine Till 1", mid: "100000001178101", capture: "both" }, bent, { stores, now: NOW });
+  assert.equal(p.ok, true, p.reason);
+  assert.equal(p.row.capture, "both");
+});
