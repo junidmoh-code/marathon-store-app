@@ -40,7 +40,14 @@ export const isTimeout = (err) => err instanceof OfflineTimeoutError
 // a network is capable of: a device that cannot answer in this long must
 // say so and move on, because the mirror can answer instead.
 export const READ_TIMEOUT_MS = 8000;        // a bounded, indexed RTDB read
-export const BIG_READ_TIMEOUT_MS = 30000;   // a whole-node fallback read
+// 90 s, not 30. A /stock page is ONE location — up to 1.6 MB (marathon-pe,
+// hub2, central) — and on a shop line that is not a 30-second read. Worse, a
+// device's reads share one websocket, so while a big page crawls in, every
+// small read queued behind it times out too. On 21 Sep five tablets (PE, the
+// TV, Xoli, Zee, Shukulan) timed out on nearly every leg and benched them.
+// A timed-out read is not cancelled — its bytes arrive anyway — so a longer
+// wait costs nothing and a retry costs the page again.
+export const BIG_READ_TIMEOUT_MS = 90000;   // a setup page, or a whole-node fallback read
 export const ASSET_TIMEOUT_MS = 2500;       // a Storage object (a photo, a label)
 
 // Reject with OfflineTimeoutError if `promise` has not settled in `ms`.

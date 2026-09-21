@@ -502,6 +502,8 @@ export function createSyncEngine({
   // difference: setup walks to the end, a pass takes a couple.
   async function runRangeLeg(leg, { maxPages = Infinity } = {}) {
     const cursorMeta = CURSOR_META(leg.name);
+    // Was this leg already vouched for before this walk? See the end.
+    const wasSetUp = !!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`));
     // A keyRange cursor is a key. A tsRange cursor is a PAIR — { ts, key } —
     // because `ts` is not unique and a bare ts cursor makes every pass re-read
     // every row sharing the newest timestamp, for ever. See rtdbAdapter's
@@ -606,11 +608,21 @@ export function createSyncEngine({
       });
       throw new EmptyMirrorReadError(leg.name, leg.node);
     }
+    const caughtUp = pages < maxPages;
+    // A PARTIAL WALK NEVER VOUCHES FOR A LEG THAT WAS NOT SET UP. The pass
+    // loop walks two pages at a time; it used to stamp the leg healthy and set
+    // up after those two pages, so a history that had never been completely
+    // downloaded was SERVED, the census then called it drift, and the repair
+    // step never ran because the leg claimed to be set up. (Rashid and Asanda,
+    // Pine, 21 Sep: "stock movements do not match" that never cleared.) Only a
+    // walk that reached the end may set a leg up; a leg already set up keeps
+    // its stamp as it moves forward.
+    if (!caughtUp && !wasSetUp) return { rows: rowsNow, added: total, caughtUp };
     await db.setMetaMany({
       ...healthyMeta(leg.name, { path: leg.node, rows: rowsNow, at: now() }),
       [`${SETUP_META_PREFIX}${leg.name}`]: { at: now(), rows: rowsNow },
     });
-    return { rows: rowsNow, added: total, caughtUp: pages < maxPages };
+    return { rows: rowsNow, added: total, caughtUp };
   }
 
   // ── THE SETUP DOWNLOAD ────────────────────────────────────────────────────

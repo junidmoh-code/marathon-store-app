@@ -210,6 +210,11 @@ import {
 } from "../rtdbOrder";
 
 const T0 = 1_790_000_000_000;
+const MV_PAGE = () => MIRROR_LEGS.find((l) => l.name === "movements").pageSize;
+// An inclusive (ts, key) walk: the first page brings P new rows, every later
+// page P-1 (it re-reads the row its cursor names). Derived, not hard-coded, so
+// a page-size change is not a test change.
+const tsWalkPages = (n, P = MV_PAGE()) => (n <= P ? 1 : 1 + Math.ceil((n - P + 1) / (P - 1)));
 const ISO = (i) => new Date(Date.UTC(2026, 6, 1) + i * 60_000).toISOString();
 
 // ── THE KEYSPACES ────────────────────────────────────────────────────────────
@@ -372,8 +377,8 @@ describe("the ENGINE, given pages in KEY order (the #624 fleet loop)", () => {
     const last = Object.entries(tree.stock_movements)
       .sort((a, b) => a[1].ts.localeCompare(b[1].ts) || sdk.keyCmp(a[0], b[0])).at(-1);
     expect(cursor).toEqual({ ts: last[1].ts, key: last[0] });
-    // Three pages of 2,000 — not a page read over and over.
-    expect(w.calls.readChildPage.length).toBe(3);
+    // The minimum number of pages — not a page read over and over.
+    expect(w.calls.readChildPage.length).toBe(tsWalkPages(4500));
   });
 
   test("the SAME walk resumes from the stuck cursor the fleet is holding, and moves", async () => {
@@ -530,10 +535,10 @@ describe("END TO END: the real start function, the real adapter, to COMPLETION",
       expect(isLegServing(name)).toBe(true);
     }
 
-    // BOUNDED: no page of /stock_movements was read twice. 4,500 rows at
-    // 2,000 a page is exactly three reads.
+    // BOUNDED: no page of /stock_movements was read twice — exactly the
+    // minimum number of pages for 4,500 rows.
     const mv = sdk.state.reads.filter((r) => r.path === "stock_movements");
-    expect(mv.length).toBe(3);
+    expect(mv.length).toBe(tsWalkPages(4500));
     rt.stop();
   });
 
@@ -595,7 +600,7 @@ describe("a leg that cannot advance is BENCHED, and costs a bounded number of by
     // Every one of those reads was THE SAME first page (the server ignores the
     // bound), so the whole leg cost exactly (1 + attempts) × one page.
     const onePage = JSON.stringify(Object.fromEntries(Object.entries(tree.stock_movements)
-      .sort((a, b) => a[1].ts.localeCompare(b[1].ts) || sdk.keyCmp(a[0], b[0])).slice(0, 2000))).length;
+      .sort((a, b) => a[1].ts.localeCompare(b[1].ts) || sdk.keyCmp(a[0], b[0])).slice(0, MV_PAGE()))).length;
     expect(mv.every((r) => r.bytes === onePage)).toBe(true);
     expect(mv.reduce((n, r) => n + r.bytes, 0)).toBe((1 + LEG_MAX_ATTEMPTS) * onePage);
 
@@ -947,5 +952,29 @@ describe("the serving hint belongs to the account it was written for", () => {
     // The admin again: the hint is theirs, and it applies.
     sdk.state.authUid = "admin";
     expect(isLegServing("orders")).toBe(true);
+  });
+});
+
+describe("a partial walk never vouches for a leg that was never finished", () => {
+  test("the pass loop's two pages do not set up movements; the repair finishes it", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => T0, buildVersion: "b1" });
+    const leg = MIRROR_LEGS.find((l) => l.name === "movements");
+
+    // Two pages, as a steady-state pass takes them, on a leg never set up.
+    const res = await e.runRangeLeg(leg, { maxPages: 2 });
+    expect(res.caughtUp).toBe(false);
+    expect(await e.legIsSetUp(leg)).toBe(false);
+    expect(await isLegUsable(db, "movements")).toBe(false);   // not served half-done
+
+    // So the repair still sees it, and walks it to the end.
+    const repaired = await e.repairOneLeg();
+    expect(repaired?.leg).not.toBe(undefined);
+    while (!(await e.legIsSetUp(leg))) await e.repairOneLeg();
+    expect(await db.count("movements")).toBe(4500);
+    expect(await isLegUsable(db, "movements")).toBe(true);
   });
 });

@@ -150,9 +150,12 @@ export const MIRROR_LEGS = Object.freeze([
   // key or field IS a forward cursor, which is cheaper and cannot fall behind a
   // retention window.
   leg("movements", "stock_movements", 1, "tsRange", "movements",
-    { tsField: "ts", pageSize: 2000, censusTolerance: 0.05 }),
+    // 1,000 a page (~335 KB), not 2,000: on a slow shop line a smaller page
+    // lands inside its timeout and holds the device's one websocket for half
+    // as long. Same bytes in total. (Fleet, 21 Sep.)
+    { tsField: "ts", pageSize: 1000, censusTolerance: 0.05 }),
   leg("insights", "insights_log", 1, "keyRange", "insights",
-    { pageSize: 2000, censusTolerance: 0.05 }),
+    { pageSize: 1000, censusTolerance: 0.05 }),
 ]);
 
 export const LEG_BY_NAME = Object.freeze(
