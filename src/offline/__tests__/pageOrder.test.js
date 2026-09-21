@@ -643,5 +643,18 @@ describe("a change feed that cannot advance is benched too, and serves nothing s
     expect((await getLegHealth(db, "products")).reason).toBe("feed-stuck");
     // …and none is re-downloaded to make up for it.
     expect(await e.legIsSetUp(MIRROR_LEGS.find((l) => l.name === "products"))).toBe(true);
+
+    // NEXT OPEN: a new session (fresh ledger), and the feed works again. The
+    // legs it had stopped serving are vouched for again — not left live for ever.
+    sdk.state.ignoreBoundOn = null;
+    sdk.state.tree.mirror_changes = {
+      [pushKeyForMs(now, "zzzzzzzzzzzz")]: { n: "products", k: "p0001" },
+      [pushKeyForMs(now + 1, "A".repeat(12))]: { n: "products", k: "p0002" },
+    };
+    await db.setMeta(FEED_CURSOR_META, pushKeyForMs(now, "zzzzzzzzzzzz"));
+    const next = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => now, buildVersion: "b1" });
+    const rep = await next.runPass();
+    expect(rep.feed.applied).toBeGreaterThan(0);
+    expect(await isLegUsable(db, "products")).toBe(true);
   });
 });

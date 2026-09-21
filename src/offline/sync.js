@@ -691,6 +691,10 @@ export function createSyncEngine({
       }
       report.feed = { applied, deleted, paths };
       failures.delete(FEED_LEDGER);
+      // A feed that works again has replayed everything since the cursor it
+      // was stuck on (the cursor never moved while it was stuck), so the legs
+      // it had to stop serving are current again and are vouched for again.
+      await reserveChangeFedLegs();
     } catch (err) {
       if (err instanceof CursorExpiredError) {
         // The honest wall. Every change-fed leg is marked for a fresh download
@@ -783,6 +787,16 @@ export function createSyncEngine({
         path: leg.node, reason: "feed-stuck", at: now(), state: "failed",
         retryable: false, keepVouched: false, detail: err.message,
       });
+    }
+  }
+
+  async function reserveChangeFedLegs() {
+    for (const leg of MIRROR_LEGS.filter((l) => !isAppendOnly(l))) {
+      const health = await getLegHealth(db, leg.name);
+      if (health?.reason !== "feed-stuck") continue;
+      const rows = (await heldRows(db, leg.name)) ?? 0;
+      if (rows === 0 && !CAN_BE_EMPTY.has(leg.name)) continue;
+      await db.setMetaMany(healthyMeta(leg.name, { path: leg.node, rows, at: now() }));
     }
   }
 
