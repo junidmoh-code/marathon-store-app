@@ -200,19 +200,19 @@ describe("devices not in use, and what counts as serving", () => {
   const T = 1_790_000_000_000;
   const ok = { at: T, switchOn: true, complete: true, downloading: false, pending: 0, guard: null };
 
-  test("a week of silence is inactive; six days is not", () => {
+  it("a week of silence is inactive; six days is not", () => {
     expect(isInactive({ at: T - INACTIVE_MS - 1 }, T)).toBe(true);
     expect(isInactive({ at: T - 6 * 24 * 3600 * 1000 }, T)).toBe(false);
   });
 
-  test("a serving device that has gone quiet overnight still counts as serving", () => {
+  it("a serving device that has gone quiet overnight still counts as serving", () => {
     expect(reportedServing({ ...ok, at: T - STALE_MS - 1 })).toBe(true);
     expect(reportedServing({ ...ok, complete: false })).toBe(false);
     expect(reportedServing({ ...ok, switchOn: false })).toBe(false);
     expect(reportedServing({ ...ok, guard: { leg: "stock", reason: "gave-up" } })).toBe(false);
   });
 
-  test("a save still confirming is green, not a warning", () => {
+  it("a save still confirming is green, not a warning", () => {
     const s = deviceState({ ...ok, pending: 1 }, T);
     expect(s.tone).toBe("#30d158");
     expect(s.text).toMatch(/^serving from its own copy/);

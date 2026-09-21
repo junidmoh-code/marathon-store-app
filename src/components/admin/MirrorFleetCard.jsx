@@ -307,7 +307,7 @@ export default function MirrorFleetCard({ authUser, onExit }) {
         <>
           <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
             <Tile label="Devices" value={devices.length} />
-            <Tile label="Serving locally" value={serving} tone={serving === devices.length ? "#30d158" : "#ff9f0a"} />
+            <Tile label="Serving locally" value={serving} tone={devices.length > 0 && serving === devices.length ? "#30d158" : "#ff9f0a"} />
             <Tile label="Bytes today" value={MB(bytes)} />
           </div>
           {tripped.length > 0 && (
