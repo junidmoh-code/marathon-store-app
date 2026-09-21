@@ -50,11 +50,79 @@ export const READ_TIMEOUT_MS = 8000;        // a bounded, indexed RTDB read
 export const BIG_READ_TIMEOUT_MS = 90000;   // a setup page, or a whole-node fallback read
 export const ASSET_TIMEOUT_MS = 2500;       // a Storage object (a photo, a label)
 
+// ── A SLEEPING TABLET IS NOT A SLOW LINE ────────────────────────────────────
+// When an Android tablet's screen goes off, Chrome freezes the page. Nothing
+// runs; the socket may drop. On wake every overdue timer fires at once, so a
+// read that had no chance to answer is reported as "did not answer within
+// 90000 ms" — and the mirror then counts it towards benching the leg and
+// re-downloads the page. On 21 Sep a PE tablet spent 164 MB that way, and
+// devices that were otherwise healthy reported 8-second reads of a single row
+// timing out.
+//
+// `sleepAware` (the mirror's reads) therefore counts only time the page was
+// AWAKE: the clock stops while the document is hidden, and a timer that fires
+// much later than it was due (the page was frozen) re-arms with WAKE_GRACE_MS
+// for the socket to come back, rather than failing. Bounded: at most
+// MAX_WAKES re-arms, so a read can never wait for ever.
+export const WAKE_GRACE_MS = 20000;
+const LATE_BY_MS = 5000;
+const MAX_WAKES = 5;
+
+const docHidden = () => typeof document !== "undefined" && document.visibilityState === "hidden";
+
+function sleepAwareTimeout(ms, label) {
+  let timer = null;
+  let remaining = ms;
+  let armedAt = 0;
+  let wakes = 0;
+  let settle = null;
+  const onVisibility = () => {
+    if (docHidden()) {
+      if (timer !== null) { clearTimeout(timer); timer = null; remaining -= Date.now() - armedAt; }
+    } else if (timer === null && settle) {
+      remaining = Math.max(remaining, WAKE_GRACE_MS);
+      arm();
+    }
+  };
+  const arm = () => {
+    armedAt = Date.now();
+    const due = armedAt + remaining;
+    timer = setTimeout(() => {
+      timer = null;
+      const late = Date.now() - due;
+      if (late > LATE_BY_MS && wakes < MAX_WAKES) {
+        // The page was frozen: this read never had its time. Give the socket
+        // a moment to come back instead of calling it a failure.
+        wakes += 1;
+        remaining = WAKE_GRACE_MS;
+        arm();
+        return;
+      }
+      settle?.(new OfflineTimeoutError(label, ms));
+    }, Math.max(0, remaining));
+  };
+  const promise = new Promise((_resolve, reject) => {
+    settle = reject;
+    if (!docHidden()) arm();
+  });
+  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibility);
+  const clear = () => {
+    settle = null;
+    if (timer !== null) clearTimeout(timer);
+    if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibility);
+  };
+  return { promise, clear };
+}
+
 // Reject with OfflineTimeoutError if `promise` has not settled in `ms`.
 // The timer is always cleared, so a screen that searches on every keystroke does
 // not accumulate live timers.
-export function withTimeout(promise, { ms = READ_TIMEOUT_MS, label = "the read" } = {}) {
+export function withTimeout(promise, { ms = READ_TIMEOUT_MS, label = "the read", sleepAware = false } = {}) {
   if (!(ms > 0)) return Promise.resolve(promise);
+  if (sleepAware) {
+    const t = sleepAwareTimeout(ms, label);
+    return Promise.race([Promise.resolve(promise), t.promise]).finally(t.clear);
+  }
   let timer = null;
   const timeout = new Promise((_resolve, reject) => {
     timer = setTimeout(() => reject(new OfflineTimeoutError(label, ms)), ms);
