@@ -10,7 +10,7 @@
 // writes `retired: true` instead of a stamp.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { captureCards, isRetiredTerminal } from "./terminalRegistry";
+import { captureCards, isRetiredTerminal, captureMode, takesPhoto } from "./terminalRegistry";
 
 const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/card-terminals.cjs");
@@ -36,6 +36,18 @@ describe("the client and server halves of the registry agree", () => {
     // ever produces `false` is not a fuzz.)
     expect(isRetiredTerminal({ ...ROW, retiredAt: 1789689600000 })).toBe(true);
     expect(isRetiredTerminal(ROW)).toBe(false);
+  });
+
+  it("agree on the capture mode for every shape the field takes", () => {
+    const values = [undefined, null, "", "email", "photo", "both", "EMAIL", "fax", 1, true, {}, []];
+    for (const capture of values) {
+      const row = { ...ROW, ...(capture === undefined ? {} : { capture }) };
+      expect(captureMode(row), JSON.stringify(capture)).toBe(server.captureMode(row));
+      expect(takesPhoto(row), JSON.stringify(capture)).toBe(server.takesPhoto(row));
+    }
+    expect(new Set(values.map((capture) => captureMode({ capture })))).toEqual(new Set(["email", "photo", "both"]));
+    expect(takesPhoto({ capture: "email" })).toBe(false);
+    expect(takesPhoto({})).toBe(true);
   });
 
   it("a row with no stamp is live, and a row with a junk stamp is live", () => {

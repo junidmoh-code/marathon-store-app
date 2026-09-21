@@ -867,6 +867,60 @@ function readTxnBlock(block, batchNo) {
 }
 
 /**
+ * Does this banking report have the shape of a batch in which NO card was
+ * taken? No section headings of its own (the TOTALS SUMMARY / CARD TOTALS
+ * dividers aside), and not a single transaction block anywhere in it. The
+ * caller still requires the printed TOTAL to be exactly zero.
+ */
+function isEmptyBatchShape(rows) {
+  const txnSection = sectionStarts(rows).some((sec) => /transactions?\b/i.test(sec.heading));
+  if (txnSection) return false;
+  // …and a heading printed WITHOUT a divider above it (older firmware).
+  if (rows.some((r) => EMAILED.approved.test(r) || /^\s*declined transactions\b/i.test(r))) return false;
+  if (rows.some((r) => EMAILED.items.test(r))) return false;
+  if (rows.some((r) => BLOCK.tsnBatch.test(r) || /^\s*TSN\s*:/i.test(r))) return false;
+  return rows.some((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+}
+
+/**
+ * The extraction for an empty batch: R0.00, no lines, and a one-millisecond
+ * window at the moment the report was printed — the same "a millisecond puts
+ * the instant inside its own half-open window" convention the transaction
+ * windows use. A batch with no transactions declares no span of trading, so
+ * there is nothing wider to reconcile; the record says so via windowSource.
+ */
+function emptyBatchExtraction(rows, { tid, batchNo }) {
+  const headerStamp = rows.map(parseEmailedStamp).find((v) => v !== null) ?? null;
+  const labelledPrinted = field(rows, EMAILED.printed);
+  const printedAt = headerStamp ?? (labelledPrinted ? parseSlipTimestamp(labelledPrinted) : null);
+  if (printedAt === null) {
+    return { ok: false, reason: "That banking report is for an empty batch but prints no date, so it cannot be placed. Nothing was recorded." };
+  }
+  return {
+    ok: true,
+    extraction: {
+      mid: field(rows, EMAILED.mid),
+      mids: [...new Set(fieldAll(rows, EMAILED.mid).map(normaliseMid).filter(Boolean))],
+      tid, batchNo: String(batchNo),
+      openedAt: printedAt, closedAt: printedAt + 1, printedAt,
+      openedText: null, closedText: null,
+      txnCount: 0,
+      purchasesCents: 0, cashCents: 0, refundsCents: 0, totalCents: 0,
+      reconLine: field(rows, RE.reconLine),
+      confidence: null,
+      format: "emailed",
+      windowSource: "empty-batch",
+      emptyBatch: true,
+      lastTxnAt: null,
+      lines: [],
+      declined: [],
+      declinedCount: null,
+      declinedUnread: null,
+    },
+  };
+}
+
+/**
  * Read an emailed banking report.
  *
  * @param {string[]} rows  tidied text, one entry per visual line
@@ -927,7 +981,19 @@ function parseEmailedReport(rows) {
   // twice, and this figure is what the line-count check measures a missed
   // transaction against.
   const approvedCount = sectionItemCount(rows, approved, "approved");
-  if (!approvedCount.ok) {
+  // ── AN EMPTY BATCH IS A BATCH ─────────────────────────────────────────────
+  // Marathon Till 3 (67365901) emailed batch 81 on 21 Sept 2026 with NO
+  // transaction sections at all — header, "TOTALS SUMMARY / Total ZAR 0.00",
+  // "CARD TOTALS" with nothing under it. The terminal settled a batch in which
+  // no card was taken. There is no Items count because there are no items, and
+  // refusing it for that left the till looking like it had not reported.
+  //
+  // Recognised NARROWLY, so it cannot swallow a report this parser simply
+  // failed to read: no section headings, not one transaction block anywhere in
+  // the document, and a printed TOTAL of exactly zero (checked further down).
+  // Anything else missing its Items count still refuses, as before.
+  const emptyBatch = !approvedCount.ok && isEmptyBatchShape(rows);
+  if (!approvedCount.ok && !emptyBatch) {
     // The wording for a report with no sections at all stays what it was: the
     // span is then the whole document and "the approved section" would name
     // something the reader cannot see.
@@ -935,7 +1001,7 @@ function parseEmailedReport(rows) {
       ? "That banking report does not print an Items count. If it is the right file, photograph the slip instead."
       : approvedCount.reason);
   }
-  const txnCount = approvedCount.count;
+  const txnCount = emptyBatch ? 0 : approvedCount.count;
 
 
   // ── THE TRANSACTIONS, WHICH ARE BLOCKS AND NOT ROWS ──
@@ -1067,7 +1133,9 @@ function parseEmailedReport(rows) {
     }
     return found;
   };
-  const purchases = money(MONEY.purchases, "purchases figure", { required: true });
+  // An empty batch prints its TOTAL and nothing else — no purchases row to
+  // read, because there were none.
+  const purchases = money(MONEY.purchases, "purchases figure", { required: !emptyBatch });
   if (purchases.err) return bad(purchases.err);
   const total = money(MONEY.total, "TOTAL", { required: true });
   if (total.err) return bad(total.err);
@@ -1083,6 +1151,15 @@ function parseEmailedReport(rows) {
   // file it reads 16:26:31, seventeen minutes after the batch's last sale.
   const headerStamp = rows.slice(0, approved.from)
     .map(parseEmailedStamp).find((v) => v !== null) ?? null;
+  if (emptyBatch) {
+    // THE ZERO IS WHAT MAKES IT EMPTY. A report with no sections that prints
+    // a non-zero TOTAL is one whose transactions this parser could not find,
+    // and recording it as R0 would lose money.
+    if (total.cents !== 0 || purchases.cents !== 0 || refunds.cents !== 0 || cash.cents !== 0) {
+      return bad("That banking report does not print an Items count. If it is the right file, photograph the slip instead.");
+    }
+    return emptyBatchExtraction(rows, { tid, batchNo });
+  }
   if (!txns.length) {
     return bad("No transactions could be read from that banking report. If it is the right file, photograph the slip instead.");
   }
@@ -1168,6 +1245,10 @@ function parseEmailedReport(rows) {
   };
 }
 
+// "Settlement failed", "failed to settle", "settlement unsuccessful"… Never a
+// phrase a real batch report prints.
+const SETTLEMENT_FAILED = /\bsettlement\b[^.]{0,40}\b(?:fail(?:ed|ure)?|unsuccessful|not\s+completed|rejected)\b|\b(?:failed|unable)\s+to\s+settle\b|\bnot\s+(?:been\s+)?settled\b/i;
+
 /**
  * Read whichever of the two reports this is.
  *
@@ -1178,6 +1259,19 @@ function parseSlipPdf(lines) {
   const rows = (Array.isArray(lines) ? lines : []).map(tidy).filter(Boolean);
   if (!rows.length) {
     return { ok: false, reason: "That PDF has no readable text — it may be a scan rather than the terminal's own file. Photograph the slip instead." };
+  }
+  // ── A SETTLEMENT-FAILURE NOTICE IS NOT A BATCH ────────────────────────────
+  // The bank can email that a batch FAILED to settle. It carries a terminal and
+  // perhaps a batch number, but no settled figures, and reading it as a batch
+  // would record money that never moved. Said plainly, before any parse. (No
+  // real notice is on file yet; the wording is matched loosely on purpose.
+  // LIMIT: this sees only a notice that arrives as a PDF — the poller hands
+  // nothing else to the parser. A notice in an email BODY produces no row.)
+  if (rows.some((r) => SETTLEMENT_FAILED.test(r))) {
+    return {
+      ok: false,
+      reason: "That email is a settlement-failure notice from the bank, not a batch report — the batch did not settle, so there is nothing to record. The terminal will report the batch once it settles; if it does not, call FNB Merchant Services.",
+    };
   }
   const format = detectReportFormat(rows);
   if (format === "emailed") return parseEmailedReport(rows);
@@ -1191,7 +1285,7 @@ function parseSlipPdf(lines) {
 module.exports = {
   parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
-  sectionStarts, approvedSection, declinedSection, sectionItemCount,
+  sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, SETTLEMENT_FAILED,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
   // The email-intake path's seams: `field`/`fieldAll` read a labelled header row
   // (and every row that matches, which is how a file naming two terminals is

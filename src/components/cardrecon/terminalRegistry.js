@@ -28,6 +28,21 @@ export function isRetiredTerminal(row) {
 }
 
 /**
+ * "email" | "photo" | "both" — the server half is captureMode in
+ * functions/lib/card-terminals.cjs. Absent or mangled is "both": a card only
+ * loses its camera when the settings sheet says so.
+ */
+export function captureMode(row) {
+  const m = row?.capture;
+  return m === "email" || m === "photo" ? m : "both";
+}
+
+/** Does this card open the camera? An email-only till shows its tick and nothing else. */
+export function takesPhoto(row) {
+  return captureMode(row) !== "email";
+}
+
+/**
  * The registry map → the cards to draw, in the order they are drawn.
  *
  * Sorted by label so the list does not reshuffle when a row is edited, and

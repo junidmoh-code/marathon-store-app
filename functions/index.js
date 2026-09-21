@@ -3896,6 +3896,13 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 //   firebase deploy --only functions:cardBatchCapture
 exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
 
+// ─── CARD RECON — cardTerminalAdmin (the terminal settings sheet) ────────────
+// Owner-only add / edit / retire / reinstate / replace of /config/cardTerminals,
+// through the Admin SDK — the Card machines screen's settings sheet is its only
+// caller. Decisions in lib/card-terminal-admin.cjs.
+//   firebase deploy --only functions:cardTerminalAdmin
+exports.cardTerminalAdmin = require("./cardRecon/cardTerminalAdmin.js").cardTerminalAdmin;
+
 // ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
 // Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
 // for every transaction in a batch. Storage rules cannot read RTDB, so the

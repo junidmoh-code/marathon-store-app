@@ -135,6 +135,57 @@ function normaliseTid(raw) {
 }
 
 /**
+ * The TID as a MODEL returned it, read tolerantly. The slip prints
+ * "TID:0000HP1X", and a model asked for the field sometimes hands back the
+ * label with it, or a space in the middle ("0000 HP1X"). normaliseTid refuses
+ * both, which reads as "no terminal ID could be read" about a slip that
+ * printed one plainly. Only a leading TID label and separators are dropped —
+ * the characters themselves are never changed here.
+ */
+function readSlipTid(raw) {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim().toUpperCase()
+    .replace(/^(?:TID|TERMINAL(?:\s*ID)?)\s*(?:NO\.?|#)?\s*[:.#-]?\s*/, "")
+    .replace(/[\s-]/g, "");
+  return normaliseTid(s);
+}
+
+// O and 0, I and 1: the pairs a thermal-print read confuses. Two TIDs that
+// differ ONLY in those are the same printed characters read two ways.
+const foldTid = (t) => String(t || "").replace(/O/g, "0").replace(/I/g, "1");
+
+/**
+ * Is the TID read off the slip the PICKED till's, allowing for O/0 and I/1?
+ * Only ever used to confirm the pick — never to choose a terminal — and only
+ * when no OTHER registered terminal folds to the same characters. The one
+ * thing it cannot rule out is an UNREGISTERED machine whose TID differs from
+ * the picked one only by O/0 or I/1; that slip would be filed on the picked
+ * till where the exact reading would have refused it. Accepted: two FNB TIDs
+ * that close, one of them unregistered, in the same shop, is not a real risk.
+ */
+function slipTidMatchesPicked(readTid, picked, registeredTids = []) {
+  if (!readTid || !picked) return false;
+  if (readTid === picked) return true;
+  if (foldTid(readTid) !== foldTid(picked)) return false;
+  return !registeredTids.some((t) => t !== picked && foldTid(t) === foldTid(readTid));
+}
+
+/**
+ * Where an EMPTY batch's window opens: at the previous batch's close, when
+ * that is on file, before this report's print, and no more than the 7-day
+ * window cap back. Otherwise null, and the 1 ms window at print time stands.
+ */
+function emptyBatchOpenedAt(prevClosedAt, printedAt) {
+  if (!Number.isFinite(prevClosedAt) || !Number.isFinite(printedAt)) return null;
+  if (prevClosedAt >= printedAt) return null;
+  // The window closes at printedAt + 1 (emptyBatchExtraction), and
+  // validateExtraction refuses closedAt - openedAt > MAX_WINDOW_MS — measured
+  // the same way here, so an accepted opening can never be refused there.
+  if (printedAt + 1 - prevClosedAt > MAX_WINDOW_MS) return null;
+  return prevClosedAt;
+}
+
+/**
  * Merchant ids print with leading zeros and are stored the same way, but a
  * terminal registered by hand may carry one form and the slip the other.
  * Compared as DIGITS ONLY with leading zeros dropped, so "000000004977890" and
@@ -449,6 +500,17 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   if (summaryOnly) return { ok: true, warnings: ["Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
 
   const lines = Array.isArray(ex.lines) ? ex.lines : [];
+  // AN EMPTY BATCH (lib/card-recon-pdf.cjs → emptyBatchExtraction): the
+  // terminal settled a batch in which no card was taken. Only the emailed
+  // parser sets the flag, and only this exact shape passes — zero lines, a
+  // zero count, every figure zero. Anything else with the flag is refused.
+  if (ex.emptyBatch === true) {
+    if (reportFormat === "emailed" && !lines.length && ex.txnCount === 0 && ex.totalCents === 0
+        && ex.purchasesCents === 0 && ex.cashCents === 0 && ex.refundsCents === 0) {
+      return { ok: true, warnings: ["This batch closed with no card transactions — recorded as R0.00. Any card sale the till rang since the previous batch shows as this batch's variance."] };
+    }
+    return { ok: false, reason: "That report claims to be an empty batch but carries figures or lines. Nothing was recorded — tell Junid." };
+  }
   if (!lines.length) {
     return { ok: false, reason: "No transaction lines could be read from the detail photos. Reshoot the detail roll, or submit as summary-only." };
   }
@@ -754,7 +816,7 @@ module.exports = {
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
   MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
-  normaliseTid, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
 };

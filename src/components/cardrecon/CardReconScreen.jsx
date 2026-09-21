@@ -59,13 +59,15 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
-import { database, functions } from "../../firebase";
+import { database, functions, auth } from "../../firebase";
+import { ADMIN_EMAIL } from "../PermissionsContext";
 import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../shopify/imageDecode";
 import { planPhotoIntake, payloadRefusal } from "./photoIntake";
 import { describeCallableError, describeDecodeError } from "./captureFailure";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
-import { captureCards } from "./terminalRegistry";
+import { captureCards, takesPhoto } from "./terminalRegistry";
+import TerminalSettings from "./TerminalSettings";
 import { FONT } from "./cardReconStyles";
 
 const cardBatchCaptureFn = httpsCallable(functions, "cardBatchCapture", { timeout: 300000 });
@@ -129,6 +131,11 @@ const T = {
           fontFamily: FONT, fontSize: 15, fontWeight: 600, padding: "8px 4px", margin: "0 0 18px -4px",
           cursor: "pointer", minHeight: 44, display: "block" },
   h1: { fontSize: 27, fontWeight: 700, letterSpacing: "-0.5px", margin: 0 },
+  titleRow: { display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 },
+  gear: { appearance: "none", border: 0, background: "transparent", cursor: "pointer", width: 44, height: 44,
+          margin: "-6px -10px 0 0", display: "flex", alignItems: "center", justifyContent: "center",
+          color: "rgba(233,238,255,.55)" },
+  cardStatic: { cursor: "default" },
   day: { fontSize: 14, color: "rgba(233,238,255,.42)", marginTop: 5, letterSpacing: "-0.1px" },
   list: { marginTop: 30, display: "grid", gap: 12 },
   card: { position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -178,10 +185,27 @@ function CameraGlyph() {
   );
 }
 
+/** Owner-only: the way into the terminal settings. */
+function GearGlyph() {
+  return (
+    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+         strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <circle cx="12" cy="12" r="3" />
+      <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1.1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.5-1.1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z" />
+    </svg>
+  );
+}
+
 const dayLabel = (ms) => new Date(ms).toLocaleDateString("en-ZA", {
   timeZone: "Africa/Johannesburg", weekday: "long", day: "numeric", month: "long" });
 
 export default function CardReconScreen({ onExit }) {
+  // ── THE SETTINGS SHEET IS JUNID'S ALONE ────────────────────────────────────
+  // The same account the card-recon reports are gated to. Hiding the icon is
+  // convenience; the callable refuses everyone else regardless.
+  const isOwner = auth.currentUser?.email === ADMIN_EMAIL;
+  const [settingsOpen, setSettingsOpen] = useState(false);
+
   // ── the registry: which machines exist, and what each till is called ──
   const [terminals, setTerminals] = useState(null);   // null = loading
   useEffect(() => {
@@ -338,10 +362,21 @@ export default function CardReconScreen({ onExit }) {
   return (
     <div style={T.page}>
       <button onClick={onExit} style={T.back}>← Home</button>
-      <h1 style={T.h1}>Card machines</h1>
+      <div style={T.titleRow}>
+        <h1 style={T.h1}>Card machines</h1>
+        {isOwner && !settingsOpen && (
+          <button style={T.gear} aria-label="Terminal settings" onClick={() => setSettingsOpen(true)}>
+            <GearGlyph />
+          </button>
+        )}
+      </div>
       <div style={T.day}>{dayLabel(nowMs)}</div>
 
-      <div style={T.list}>
+      {isOwner && settingsOpen && (
+        <TerminalSettings terminals={terminals} onClose={() => setSettingsOpen(false)} />
+      )}
+
+      {!settingsOpen && <div style={T.list}>
         {terminals === null && <div style={T.quiet}>Loading…</div>}
         {terminals !== null && terminalList.length === 0 && (
           <div style={T.quiet}>
@@ -353,21 +388,33 @@ export default function CardReconScreen({ onExit }) {
           const state = work[t.tid] || {};
           const busy = state.phase === "busy";
           const done = arrived.has(t.tid);
+          // AN EMAIL-ONLY TILL HAS NO CAMERA — set in the terminal settings.
+          // Its card is the tick and nothing else: no input, nothing to tap.
+          const camera = takesPhoto(t);
+          const cardStyle = { ...T.card, ...(done ? T.cardDone : null), ...(busy ? T.cardBusy : null) };
+          const face = (
+            <>
+              <span style={T.name}>{t.label || `${t.storeId} · ${t.tillId}`}</span>
+              {busy ? <span style={T.working}>Reading…</span>
+                : done ? <span style={T.tick} aria-label="today's report is in">✓</span>
+                /* Quiet on purpose: a till with nothing in raises no alarm,
+                   only the hint that a photo is what it takes. Drawn rather
+                   than typed — an emoji renders as a grey smudge at this
+                   opacity, and differently on every handset. */
+                : camera ? <CameraGlyph /> : null}
+            </>
+          );
           return (
             <React.Fragment key={t.tid}>
-              <label
-                style={{ ...T.card, ...(done ? T.cardDone : null), ...(busy ? T.cardBusy : null) }}>
-                <input type="file" accept="image/*" style={T.input}
-                       disabled={busy} onChange={onPick(t.tid)} />
-                <span style={T.name}>{t.label || `${t.storeId} · ${t.tillId}`}</span>
-                {busy ? <span style={T.working}>Reading…</span>
-                  : done ? <span style={T.tick} aria-label="today's report is in">✓</span>
-                  /* Quiet on purpose: a till with nothing in raises no alarm,
-                     only the hint that a photo is what it takes. Drawn rather
-                     than typed — an emoji renders as a grey smudge at this
-                     opacity, and differently on every handset. */
-                  : <CameraGlyph />}
-              </label>
+              {camera ? (
+                <label style={cardStyle}>
+                  <input type="file" accept="image/*" style={T.input}
+                         disabled={busy} onChange={onPick(t.tid)} />
+                  {face}
+                </label>
+              ) : (
+                <div style={{ ...cardStyle, ...T.cardStatic }}>{face}</div>
+              )}
               {state.phase === "failed" && <div style={T.fail}>{state.reason}</div>}
               {/* The mailbox's own refusal, when this card has no capture of
                   its own on screen to say something more current. */}
@@ -385,7 +432,7 @@ export default function CardReconScreen({ onExit }) {
             </React.Fragment>
           );
         })}
-      </div>
+      </div>}
 
       {/* A read that was DENIED is not an empty feed, and must never be shown as
           one: without the mailbox we cannot say whether the three that email

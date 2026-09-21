@@ -52,6 +52,22 @@ function isRetiredTerminal(row) {
 }
 
 /**
+ * How this machine's report reaches us: "email", "photo" or "both". Set from
+ * the terminal settings sheet; a row without it (every row written before
+ * 21 Sept 2026) is "both", which is how every card behaved until then — so
+ * nothing loses its camera by the field being absent or mangled.
+ */
+function captureMode(row) {
+  const m = row && row.capture;
+  return m === "email" || m === "photo" ? m : "both";
+}
+
+/** Does this machine's card take a photograph? */
+function takesPhoto(row) {
+  return captureMode(row) !== "email";
+}
+
+/**
  * Was this machine in the estate at `atMs`?
  *
  * `activeFrom` is when the terminal entered THIS estate, which is not when it
@@ -125,7 +141,7 @@ function retiredSlipWarning(tid, row) {
 /** The refusal a retired terminal gets on the manual path. */
 function retiredCaptureRefusal(tid, row) {
   const label = (row && row.label) || tid;
-  return `${label} (${tid}) is retired — it is no longer mapped to a till that can take a capture. If this machine is trading again, an admin reinstates it (scripts/seed-card-terminals.mjs --reinstate) before its slips can be recorded.`;
+  return `${label} (${tid}) is retired — it is no longer mapped to a till that can take a capture. If this machine is trading again, Junid reinstates it from Card machines → settings before its slips can be recorded.`;
 }
 
-module.exports = { isRetiredTerminal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
+module.exports = { isRetiredTerminal, captureMode, takesPhoto, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
