@@ -92,7 +92,14 @@ function sleepAwareTimeout(ms, label) {
     const due = Date.now() + HIDDEN_CEILING_MS;
     ceiling = setTimeout(() => {
       ceiling = null;
-      if (Date.now() - due > LATE_BY_MS) return;   // frozen, not running: the wake path handles it
+      if (Date.now() - due > LATE_BY_MS) {
+        // Frozen, not running. It may now stay hidden but RUN, so the ceiling
+        // is re-armed — as a wake, so this cannot repeat without end.
+        if (wakes >= MAX_WAKES) { fail(); return; }
+        wakes += 1;
+        armCeiling();
+        return;
+      }
       fail();                                        // running in the background all along
     }, HIDDEN_CEILING_MS);
   };

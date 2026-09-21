@@ -154,6 +154,17 @@ describe("sleepAware: only time the page was awake counts", () => {
     expect(listeners.size).toBe(0);
   });
 
+  test("frozen while hidden, then running while still hidden: still bounded", async () => {
+    setHidden(true);
+    let failed = null;
+    withTimeout(never(), { ms: 1000, label: "/x", sleepAware: true }).catch((e) => { failed = e; });
+    vi.setSystemTime(Date.now() + 60 * 60_000);          // frozen for an hour
+    await vi.advanceTimersByTimeAsync(HIDDEN_CEILING_MS); // the ceiling fires LATE
+    expect(failed).toBe(null);
+    await vi.advanceTimersByTimeAsync(HIDDEN_CEILING_MS + 10); // running, still hidden
+    expect(failed?.name).toBe("OfflineTimeoutError");
+  });
+
   test("hide/show cycling cannot extend a read without end", async () => {
     let failed = null;
     withTimeout(never(), { ms: 1000, label: "/x", sleepAware: true }).catch((e) => { failed = e; });
