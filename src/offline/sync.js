@@ -342,6 +342,33 @@ export function createSyncEngine({
   const notPermitted = async (leg) =>
     !!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))?.notPermitted;
 
+  // ── WHO IS SIGNED IN DECIDES WHAT MAY BE SERVED ─────────────────────────
+  // A tablet is shared. If an admin's account downloaded /orders whole and a
+  // shop account signs in next, the local copy holds every shop's orders — more
+  // than the rules would ever hand that account — and the feed, re-reading
+  // /orders rows as the shop account, is refused on every one, so the copy
+  // would also stop updating. (Sonnet review, PR #629.)
+  //
+  // So, for the account now signed in, every leg this device HOLDS is asked
+  // once: one limitToFirst(1) read — a few hundred bytes — and a refusal marks
+  // the leg not mirrored for this account, which stops it being served.
+  async function checkAccess() {
+    const refused = [];
+    for (const leg of MIRROR_LEGS) {
+      const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
+      if (!marker || marker.notPermitted) continue;
+      try {
+        if (leg.depth === 0) await adapter.readPath(leg.node);
+        else await adapter.firstKey(leg.node);
+      } catch (err) {
+        if (!isPermissionDenied(err)) continue;   // a slow line is not a refusal
+        await markNotPermitted(leg, err);
+        refused.push(leg.name);
+      }
+    }
+    return refused;
+  }
+
   async function clearNotPermitted() {
     const cleared = [];
     for (const leg of MIRROR_LEGS) {
@@ -728,16 +755,23 @@ export function createSyncEngine({
       let deleted = 0;
       let caughtUp = false;
       const paths = [];
+      const refusedLegs = [];
       for (let i = 0; i < FEED_PAGES_PER_PASS; i += 1) {
         const res = await runChangeFeedPage({ db, adapter, now });
         applied += res.applied;
         deleted += res.deleted;
         paths.push(...res.paths);
+        for (const sk of res.skipped ?? []) {
+          if (sk.why === "not-permitted" && sk.leg) refusedLegs.push(sk.leg);
+        }
         caughtUp = res.done;
         if (res.done) break;
       }
       report.feed = { applied, deleted, paths };
       failures.delete(FEED_LEDGER);
+      // A row this account was refused means the leg's copy can no longer be
+      // kept current FOR THIS ACCOUNT: it stops being served, never deleted.
+      for (const name of new Set(refusedLegs)) await markNotPermitted(LEG_BY_NAME[name], new Error("permission_denied (change feed)"));
       // A feed that works again has replayed everything since the cursor it
       // was stuck on (the cursor never moved while it was stuck), so the legs
       // it had to stop serving are current again and are vouched for again —
@@ -950,6 +984,6 @@ export function createSyncEngine({
   return {
     runSetup, setupState, legIsSetUp, runPass, runRangeLeg,
     downloadSnapshotLeg, checkCensus, repairOneLeg, legFailures, retireOldPagerCopies,
-    clearNotPermitted,
+    clearNotPermitted, checkAccess,
   };
 }

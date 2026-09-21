@@ -262,7 +262,7 @@ export async function runChangeFeedPage({
     const { leg, key } = rows[i];
     const value = values[i];
     if (value === NOT_PERMITTED) {
-      skipped.push({ why: "not-permitted", node: leg.node, key });
+      skipped.push({ why: "not-permitted", node: leg.node, leg: leg.name, key });
       continue;
     }
     appliedRows.push(rows[i]);

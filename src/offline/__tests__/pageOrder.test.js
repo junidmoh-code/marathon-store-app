@@ -39,6 +39,7 @@ const sdk = vi.hoisted(() => {
     // Nodes this ACCOUNT may not read, whole or row by row — the live /orders
     // rule for a shop-bound account (users/{uid}/destShop).
     denied: [],
+    authUid: "u1",        // who the (mocked) auth listener says is signed in
     reads: [],            // { path, rows, bytes }
   };
   const INT = /^-?(0*)\d{1,10}$/;
@@ -166,7 +167,7 @@ const sdk = vi.hoisted(() => {
 vi.mock("firebase/database", () => sdk.module);
 vi.mock("../../firebase", () => ({ database: {}, auth: {}, storage: {} }));
 vi.mock("firebase/auth", () => ({
-  onAuthStateChanged: (auth, cb) => { cb({ uid: "u1", isAnonymous: false }); return () => {}; },
+  onAuthStateChanged: (auth, cb) => { cb({ uid: sdk.state.authUid, isAnonymous: false }); return () => {}; },
 }));
 vi.mock("../../update/updateChecker", () => ({
   setForcedUpdateMode: () => {}, setUpdateBusy: () => {},
@@ -299,6 +300,7 @@ beforeEach(() => {
   sdk.state.tree = {};
   sdk.state.ignoreBoundOn = null;
   sdk.state.denied = [];
+  sdk.state.authUid = "u1";
   sdk.state.reads = [];
   _resetMirrorSwitchForTests();
   _resetServingForTests();
@@ -476,7 +478,7 @@ async function settle(promise, t, maxTimers = 50) {
 
 async function startReal(t, db) {
   return startOfflineMirror({
-    auth: { currentUser: { uid: "u1", isAnonymous: false } },
+    auth: { currentUser: { uid: sdk.state.authUid, isAnonymous: false } },
     storage: null,
     buildVersion: "test",
     now: t.now,
@@ -818,5 +820,69 @@ describe("the census judges only what the device holds", () => {
     expect(res.drifted).toEqual([]);
     expect(res.checked).toEqual(["users"]);
     expect((await getLegHealth(db, "customers")) ?? null).toBe(null);   // never painted red
+  });
+});
+
+describe("a shared tablet: one account's copy is never served to another it was not meant for", () => {
+  test("an admin's full /orders copy, then a SHOP account signs in: orders stops being served", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+
+    // The admin downloads everything, orders included.
+    sdk.state.authUid = "admin";
+    const t0 = clockAndTimers();
+    const first = await startReal(t0, db);
+    await first.consentAndDownload();
+    await settle(first.downloadInBackground(), t0);
+    expect(isLegServing("orders")).toBe(true);
+    first.stop();
+    _resetServingForTests();
+    // The hint as the NEXT session finds it in localStorage.
+    const { setServingLegs } = await import("../serving");
+    setServingLegs(["orders", "products"]);
+
+    // A shop account signs in on the same tablet.
+    sdk.state.authUid = "prince";
+    sdk.state.denied = ["orders"];
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    // Nothing is served the moment a different account appears…
+    expect(isLegServing("orders")).toBe(false);
+    expect(isLegServing("products")).toBe(false);
+    // …and after one pass the access check has decided, cheaply.
+    expect(await rt.resume()).toBe("running");
+    for (let i = 0; i < 5 && !(await rt.engine.legIsSetUp(MIRROR_LEGS.find((l) => l.name === "orders")) && isLegServing("products")); i += 1) {
+      await t.fireNext();
+    }
+    await settle(new Promise((r) => setTimeout(r, 200)), t, 3);
+    expect(isLegServing("orders")).toBe(false);             // live, destShop-scoped, as the rules intend
+    expect(isLegServing("products")).toBe(true);
+    expect((await getLegHealth(db, "orders")).reason).toBe("not-permitted");
+    // The admin's orders rows stay on disk (another account may use them),
+    // they are simply not served to this one.
+    expect(await db.count("orders")).toBe(650);
+    rt.stop();
+  });
+
+  test("a held leg whose change the account is refused stops being served, never deleted", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => T0, buildVersion: "b1" });
+    await e.runSetup();
+    expect(await isLegUsable(db, "orders")).toBe(true);
+
+    sdk.state.denied = ["orders"];
+    const k1 = pushKeyForMs(T0 + 1, "A".repeat(12));
+    sdk.state.tree.mirror_changes = { [k1]: { n: "orders", k: "001" } };
+    await db.setMeta(FEED_CURSOR_META, pushKeyForMs(T0, "A".repeat(12)));
+    const rep = await e.runPass();
+    expect(rep.errors).toEqual([]);
+    expect(await db.getMeta(FEED_CURSOR_META)).toBe(k1);
+    expect(await isLegUsable(db, "orders")).toBe(false);
+    expect(await db.count("orders")).toBe(650);
   });
 });
