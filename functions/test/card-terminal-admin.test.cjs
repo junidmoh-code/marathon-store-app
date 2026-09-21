@@ -132,7 +132,7 @@ test("replace: refuses a new TID already registered, the same TID, or a retired 
 // Transactions call the update function with NULL first (nothing cached) and
 // re-run with the real value when the server disagrees — the behaviour the
 // handler's null-first handling exists for. Server timestamps resolve to NOW.
-function fakeDb(initial) {
+function fakeDb(initial, { beforeTxn } = {}) {
   const data = JSON.parse(JSON.stringify(initial));
   const pushed = [];
   const resolve = (v) => {
@@ -152,6 +152,7 @@ function fakeDb(initial) {
       once: async () => ({ val: () => JSON.parse(JSON.stringify(get(p))) }),
       push: async (v) => { pushed.push(resolve(v)); },
       transaction: async (fn) => {
+        if (beforeTxn) beforeTxn(p, { get, set });
         let out = fn(null);                          // null first, always
         const real = get(p);
         if (out === undefined) return { committed: false, snapshot: { val: () => real } };
@@ -222,4 +223,19 @@ test("an unknown TID cannot be edited or retired, and nothing is created by tryi
     assert.equal(out.ok, false, action);
   }
   assert.deepEqual(Object.keys(db.data.config.cardTerminals), ["0000HP1X"]);
+});
+
+test("replace: if the old row is retired mid-way, the new row is removed again and nothing changed", async () => {
+  // Someone retires 0000HP1X between the replace's read and its retire step.
+  const db = fakeDb(estate(), {
+    beforeTxn: (p, { get, set }) => {
+      if (p.endsWith("/0000HP1X") && !get(p).retiredAt) set(p, { ...get(p), retiredAt: 7 });
+    },
+  });
+  const rep = await _handle(db, REQ({ action: "replace", oldTid: "0000HP1X", terminal: { tid: "0000CD2E" } }));
+  assert.equal(rep.ok, false);
+  assert.match(rep.reason, /new terminal was not added/);
+  assert.equal(db.data.config.cardTerminals["0000CD2E"], undefined, "the half-made new row is rolled back");
+  assert.equal(db.data.config.cardTerminals["0000HP1X"].retiredAt, 7, "the other writer's retirement stands");
+  assert.equal(db.data.config.cardTerminals["0000HP1X"].replacedBy, undefined);
 });
