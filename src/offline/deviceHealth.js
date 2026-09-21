@@ -85,7 +85,9 @@ export async function bytesToday(db, { now = Date.now } = {}) {
  * reading this screen is the person who would grep for them.
  */
 export function guardTripped(legs) {
-  const bad = (legs ?? []).filter((l) => l && l.ok === false && l.reason);
+  // "not-permitted" is a rule, not a fault — a shop account reading /orders
+  // live, as it always has. It must never paint a device red.
+  const bad = (legs ?? []).filter((l) => l && l.ok === false && l.reason && l.reason !== "not-permitted");
   if (bad.length === 0) return null;
   // A refused swap or a census drift outranks a timeout: one says the copy
   // disagrees with the server, the other says the line was slow.

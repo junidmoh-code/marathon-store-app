@@ -31,6 +31,9 @@ const sdk = vi.hoisted(() => {
     // "the server does not honour the bound on this path" — every page is the
     // first page. Used to prove a stuck leg is benched and its bytes bounded.
     ignoreBoundOn: null,
+    // Nodes this ACCOUNT may not read, whole or row by row — the live /orders
+    // rule for a shop-bound account (users/{uid}/destShop).
+    denied: [],
     reads: [],            // { path, rows, bytes }
   };
   const INT = /^-?(0*)\d{1,10}$/;
@@ -131,6 +134,11 @@ const sdk = vi.hoisted(() => {
     limitToFirst: (n) => c("limitToFirst", { _limit: n }),
     limitToLast: (n) => c("limitToLast", { _limit: n }),
     async get(q) {
+      const root = String(q.path).split("/")[0];
+      if (state.denied.includes(root)) {
+        state.reads.push({ path: q.path, rows: 0, bytes: 0, denied: true });
+        throw new Error("Permission denied");
+      }
       if (!q.cons) {
         const v = at(q.path);
         state.reads.push({ path: q.path, rows: null, bytes: JSON.stringify(v ?? null).length });
@@ -285,6 +293,7 @@ beforeEach(() => {
   store.clear();
   sdk.state.tree = {};
   sdk.state.ignoreBoundOn = null;
+  sdk.state.denied = [];
   sdk.state.reads = [];
   _resetMirrorSwitchForTests();
   _resetServingForTests();
@@ -704,5 +713,85 @@ describe("a range leg benched in the steady state stops being served", () => {
     expect((await getLegHealth(db, "movements")).reason).toBe("gave-up");
     // A snapshot leg is unaffected: the feed keeps it current.
     expect(await isLegUsable(db, "products")).toBe(true);
+  });
+});
+
+describe("a SHOP account may not read /orders whole — that is a rule, not a fault", () => {
+  test("setup completes, orders reads live, and nothing retries or turns red", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    sdk.state.denied = ["orders"];
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    const { done } = await settle(rt.downloadInBackground(), t);
+    expect(done).toBe(true);
+
+    expect((await rt.setupState()).done).toBe(true);
+    expect(rt.state.setupCensus.drifted).toEqual([]);
+    expect(isLegServing("orders")).toBe(false);            // read live, as always
+    expect(isLegServing("products")).toBe(true);
+    expect((await getLegHealth(db, "orders")).reason).toBe("not-permitted");
+    // ONE refused request, not a retry ladder.
+    expect(sdk.state.reads.filter((r) => r.path === "orders").length).toBe(1);
+    expect(rt.engine.legFailures()).toEqual([]);
+    const rec = Object.values(sdk.state.tree.mirror_devices ?? {})[0];
+    expect(rec.guard).toBe(null);
+    expect(rec.complete).toBe(true);
+    rt.stop();
+  });
+
+  test("the change feed applies what it may read and MOVES ON past an orders row", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    sdk.state.denied = ["orders"];
+    const db = await freshMirrorDb();
+    const now = T0;
+    const e = createSyncEngine({ db, adapter: createRtdbAdapter({ db: {} }), now: () => now, buildVersion: "b1" });
+    await e.runSetup();
+
+    // Before the fix this page was abandoned whole: the cursor never moved
+    // and every change-fed leg on a shop tablet stopped updating.
+    const k1 = pushKeyForMs(now + 1, "A".repeat(12));
+    const k2 = pushKeyForMs(now + 2, "A".repeat(12));
+    sdk.state.tree.mirror_changes = {
+      [k1]: { n: "orders", k: "001" },
+      [k2]: { n: "products", k: "p0001" },
+    };
+    sdk.state.tree.products.p0001 = { id: "p0001", name: "renamed" };
+    await db.setMeta(FEED_CURSOR_META, pushKeyForMs(now, "A".repeat(12)));
+    const rep = await e.runPass();
+    expect(rep.errors).toEqual([]);
+    expect(rep.feed.applied).toBe(1);
+    expect(await db.getMeta(FEED_CURSOR_META)).toBe(k2);
+    expect((await db.get("products", "p0001")).name).toBe("renamed");
+    // The refused orders row was skipped, never read as a delete.
+    expect(await db.count("orders")).toBe(0);
+  });
+
+  test("the next account on the device is asked again — one request, no bytes", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    sdk.state.denied = ["orders"];
+    const db = await freshMirrorDb();
+    const t0 = clockAndTimers();
+    const first = await startReal(t0, db);
+    await first.consentAndDownload();
+    await settle(first.downloadInBackground(), t0);
+    first.stop();
+
+    // An admin signs in on the same tablet: /orders is readable now.
+    sdk.state.denied = [];
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    expect(await rt.resume()).toBe("downloading");
+    await settle(rt.downloadInBackground(), t);
+    expect(await db.count("orders")).toBe(650);
+    expect(isLegServing("orders")).toBe(true);
+    rt.stop();
   });
 });

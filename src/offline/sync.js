@@ -65,6 +65,7 @@ import {
 } from "./staging";
 import {
   runChangeFeedPage, changeCursorAtSetupStart, CursorExpiredError, FeedCursorStuckError,
+  isPermissionDenied,
   FEED_CURSOR_META, COUNTS_ROOT, CHANGES_ROOT,
 } from "./changeFeed";
 import { isCanonicalLocationId } from "./locationIds";
@@ -305,12 +306,49 @@ export function createSyncEngine({
         failures.delete(leg.name);
         return res;
       } catch (err) {
+        // NOT A FAILURE: this account may not read this node (see
+        // markNotPermitted). Nothing to retry, nothing to bench.
+        if (isPermissionDenied(err)) {
+          await markNotPermitted(leg, err);
+          return { rows: 0, added: 0, caughtUp: true, notPermitted: true };
+        }
         await noteLegFailure(leg, err);
         throw err;
       }
     })().finally(() => { inFlight.delete(leg.name); });
     inFlight.set(leg.name, p);
     return p;
+  }
+
+  // ── A LEG THIS ACCOUNT MAY NOT READ ─────────────────────────────────────
+  // A shop-bound account (users/{uid}/destShop) may read /orders only through
+  // its own destShop query, so the whole-node download is refused — on every
+  // Marathon PE and Pine tablet, every time. That is a RULE, not a fault: the
+  // leg is recorded as not mirrored for this account, is never served (the
+  // screens read it live, exactly as they always have), is not censused and
+  // does not hold the rest of the setup back. The marker is dropped at every
+  // start (clearNotPermitted), so a different account on the same device is
+  // asked again — one refused request, no bytes.
+  async function markNotPermitted(leg, err) {
+    await recordLegFailed(db, leg.name, {
+      path: leg.node, reason: "not-permitted", at: now(), state: "skipped",
+      retryable: false, keepVouched: false,
+      detail: `this account may not read /${leg.node} whole (${err?.message ?? err}). Read live instead.`,
+    });
+    await db.setMeta(`${SETUP_META_PREFIX}${leg.name}`, {
+      at: now(), rows: 0, notPermitted: true, pager: PAGER_VERSION,
+    });
+  }
+  const notPermitted = async (leg) =>
+    !!(await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`))?.notPermitted;
+
+  async function clearNotPermitted() {
+    const cleared = [];
+    for (const leg of MIRROR_LEGS) {
+      if (await notPermitted(leg)) cleared.push(`${SETUP_META_PREFIX}${leg.name}`);
+    }
+    if (cleared.length) await db.deleteMetaMany([...cleared, SETUP_DONE_META]);
+    return cleared.length;
   }
 
   // What the device reports: every leg that is failing this session.
@@ -658,6 +696,8 @@ export function createSyncEngine({
   async function legIsSetUp(leg) {
     const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
     if (!marker) return false;
+    // Decided, not missing: see markNotPermitted.
+    if (marker.notPermitted) return true;
     if (isPagedSnapshot(leg) && marker.pager !== PAGER_VERSION) return false;
     const health = await getLegHealth(db, leg.name);
     if (!health) return false;
@@ -722,6 +762,7 @@ export function createSyncEngine({
 
     // 2. The two forward walks.
     for (const leg of MIRROR_LEGS.filter(isAppendOnly)) {
+      if (await notPermitted(leg)) continue;
       try {
         const res = await attemptLeg(leg, () => runRangeLeg(leg, { maxPages: RANGE_PAGES_PER_PASS }));
         if (res === null) continue;            // backing off, or benched this session
@@ -875,6 +916,8 @@ export function createSyncEngine({
       // A benched leg is already failed and named; a census verdict over the
       // top would hide WHY (it is short because it was benched).
       if (legGate(leg.name).benched) continue;
+      // Not mirrored for this account: there is nothing local to count.
+      if (await notPermitted(leg)) continue;
       const held = (await heldRows(db, leg.name)) ?? 0;
       checked.push(leg.name);
       const allowed = Math.max(25, Math.floor(entry.rows * leg.censusTolerance));
@@ -902,5 +945,6 @@ export function createSyncEngine({
   return {
     runSetup, setupState, legIsSetUp, runPass, runRangeLeg,
     downloadSnapshotLeg, checkCensus, repairOneLeg, legFailures, retireOldPagerCopies,
+    clearNotPermitted,
   };
 }

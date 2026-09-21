@@ -603,6 +603,8 @@ export async function startOfflineMirror({
   try {
     const retired = await engine.retireOldPagerCopies();
     if (retired.length) await refreshServing();
+    // A leg the LAST account could not read is asked again for this one.
+    await engine.clearNotPermitted();
   } catch (err) {
     console.warn("offline mirror: could not retire old-pager copies —", err?.message ?? err);
   }
