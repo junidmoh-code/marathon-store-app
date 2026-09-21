@@ -168,6 +168,18 @@ function slipTidMatchesPicked(readTid, picked, registeredTids = []) {
 }
 
 /**
+ * Where an EMPTY batch's window opens: at the previous batch's close, when
+ * that is on file, before this report's print, and no more than the 7-day
+ * window cap back. Otherwise null, and the 1 ms window at print time stands.
+ */
+function emptyBatchOpenedAt(prevClosedAt, printedAt) {
+  if (!Number.isFinite(prevClosedAt) || !Number.isFinite(printedAt)) return null;
+  if (prevClosedAt >= printedAt) return null;
+  if (printedAt - prevClosedAt > MAX_WINDOW_MS) return null;
+  return prevClosedAt;
+}
+
+/**
  * Merchant ids print with leading zeros and are stored the same way, but a
  * terminal registered by hand may carry one form and the slip the other.
  * Compared as DIGITS ONLY with leading zeros dropped, so "000000004977890" and
@@ -489,7 +501,7 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   if (ex.emptyBatch === true) {
     if (reportFormat === "emailed" && !lines.length && ex.txnCount === 0 && ex.totalCents === 0
         && ex.purchasesCents === 0 && ex.cashCents === 0 && ex.refundsCents === 0) {
-      return { ok: true, warnings: ["This batch closed with no card transactions — recorded as R0.00. There is nothing to reconcile."] };
+      return { ok: true, warnings: ["This batch closed with no card transactions — recorded as R0.00. Any card sale the till rang since the previous batch shows as this batch's variance."] };
     }
     return { ok: false, reason: "That report claims to be an empty batch but carries figures or lines. Nothing was recorded — tell Junid." };
   }
@@ -798,7 +810,7 @@ module.exports = {
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
   MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
-  normaliseTid, readSlipTid, slipTidMatchesPicked, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
 };

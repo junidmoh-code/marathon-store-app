@@ -126,3 +126,23 @@ test("402 (no credit) is NOT retried — asking twice does not top up the accoun
   await assert.rejects(runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep }), (err) => err.httpStatus === 402);
   assert.equal(f.calls.length, 1);
 });
+
+test("no attempt starts that could not finish inside the callable's timeout", async () => {
+  // A clock that jumps 100 s per call: after the first attempt, starting a
+  // second would overrun the 270 s budget with a 120 s timeout in hand.
+  let t = 0;
+  const f = fakeFetch([503, 503, 503, 503, 200]);
+  await assert.rejects(
+    runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep, now: () => (t += 100000) }),
+    (err) => err.httpStatus === 503 && err.attempts < 5,
+  );
+  assert.ok(f.calls.length < 5);
+});
+
+test("an Email-only terminal is refused BEFORE any OCR is paid for", () => {
+  const src = require("node:fs").readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
+  const body = src.slice(src.indexOf("async function handleExtract("), src.indexOf("async function handleExtractPdf("));
+  const gate = body.indexOf("if (!takesPhoto(terminal))");
+  assert.ok(gate > 0, "the capture-mode gate is in the photo path");
+  assert.ok(gate < body.indexOf("runSlipOcr("), "…and comes before the paid call");
+});

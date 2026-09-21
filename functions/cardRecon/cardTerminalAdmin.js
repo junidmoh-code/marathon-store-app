@@ -66,7 +66,14 @@ async function writeRow(db, tid, decide) {
   let before = null;
   const res = await db.ref(`${CARD_TERMINALS_PATH}/${tid}`).transaction((cur) => {
     before = cur;
-    verdict = decide(cur);
+    try {
+      verdict = decide(cur);
+    } catch (err) {
+      // A bug in the planner would otherwise abort silently as "Nothing was
+      // written" with no trace anywhere.
+      console.error(`cardTerminalAdmin: planner threw for ${tid}:`, err && err.stack || err);
+      verdict = { ok: false, reason: "That change could not be worked out — nothing was written. Tell Claude." };
+    }
     if (!verdict.ok) return cur === null ? null : undefined;
     return verdict.row;
   });
@@ -127,10 +134,18 @@ async function handle(db, request) {
     });
     if (!created.ok) return created;
     // 2. Then retire the OLD row, decided against its value at that moment.
-    const retired = await writeRow(db, oldTid, (cur) => {
-      if (!cur || cur.retiredAt !== undefined) return { ok: false, reason: `${oldTid} was retired or removed while this was saving.` };
-      return { ok: true, row: { ...cur, retiredAt: now, retiredReason: "replaced", replacedBy: newTid } };
-    });
+    //    A THROWN failure (network, timeout) is compensated exactly like a
+    //    refusal — otherwise the new TID would be left active beside the old.
+    let retired;
+    try {
+      retired = await writeRow(db, oldTid, (cur) => {
+        if (!cur || cur.retiredAt !== undefined) return { ok: false, reason: `${oldTid} was retired or removed while this was saving.` };
+        return { ok: true, row: { ...cur, retiredAt: now, retiredReason: "replaced", replacedBy: newTid } };
+      });
+    } catch (err) {
+      console.error(`cardTerminalAdmin: retiring ${oldTid} failed:`, err && err.message);
+      retired = { ok: false, reason: `Retiring ${oldTid} failed (${err && err.message ? err.message : "no reason"}).` };
+    }
     if (!retired.ok) {
       // Undo step 1 — and ONLY the row this call created a moment ago, which
       // has no batches: removed if it is still exactly ours, left alone if

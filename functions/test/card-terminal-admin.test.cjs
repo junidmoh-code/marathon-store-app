@@ -239,3 +239,14 @@ test("replace: if the old row is retired mid-way, the new row is removed again a
   assert.equal(db.data.config.cardTerminals["0000HP1X"].retiredAt, 7, "the other writer's retirement stands");
   assert.equal(db.data.config.cardTerminals["0000HP1X"].replacedBy, undefined);
 });
+
+test("replace: a THROWN failure retiring the old row also rolls the new row back", async () => {
+  const db = fakeDb(estate(), {
+    beforeTxn: (p) => { if (p.endsWith("/0000HP1X")) throw new Error("network went away"); },
+  });
+  const rep = await _handle(db, REQ({ action: "replace", oldTid: "0000HP1X", terminal: { tid: "0000CD2E" } }));
+  assert.equal(rep.ok, false);
+  assert.match(rep.reason, /network went away.*not added/);
+  assert.equal(db.data.config.cardTerminals["0000CD2E"], undefined);
+  assert.equal(db.data.config.cardTerminals["0000HP1X"].retiredAt, undefined);
+});

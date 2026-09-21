@@ -137,3 +137,27 @@ test("no real report on file trips the settlement-failure check", () => {
     assert.equal(out.ok, true, `${name}: ${out.reason}`);
   }
 });
+
+// ── THE WINDOW REACHES BACK TO THE PREVIOUS BATCH ────────────────────────────
+// Batch 80's record closed at its print time, 20 Sept 22:01:43 SAST. Batch 81
+// says no card was taken since — so a card leg the till rang in between is
+// this batch's variance, not something that falls between two windows.
+test("an empty batch's window opens at the previous batch's close", () => {
+  const { emptyBatchOpenedAt } = require("../lib/card-recon.cjs");
+  const printed = Date.UTC(2026, 8, 21, 15, 15, 31);
+  const prev = Date.UTC(2026, 8, 20, 20, 1, 43);
+  assert.equal(emptyBatchOpenedAt(prev, printed), prev);
+  assert.equal(emptyBatchOpenedAt(null, printed), null, "no previous batch on file");
+  assert.equal(emptyBatchOpenedAt(printed + 1, printed), null, "a previous close after this print is nonsense");
+  assert.equal(emptyBatchOpenedAt(printed - 8 * 86400000, printed), null, "more than the 7-day cap back");
+  const ex = { ...parseSlipPdf(lines()).extraction, openedAt: prev };
+  assert.equal(validateExtraction(ex, { source: "pdf" }).ok, true, "the widened window still validates");
+});
+
+test("the callable widens the window only for an empty batch, before validating it", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../cardRecon/cardRecon.js"), "utf8");
+  const body = src.slice(src.indexOf("async function handleExtractPdfBody("), src.indexOf("async function handleSubmit("));
+  const at = body.indexOf("emptyBatchOpenedAt(");
+  assert.ok(at > 0 && body.lastIndexOf("if (extraction.emptyBatch === true)", at) > 0);
+  assert.ok(at < body.indexOf("validateExtraction(extraction"), "…before validation and the expected-figure read");
+});
