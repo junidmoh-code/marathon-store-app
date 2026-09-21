@@ -135,7 +135,10 @@ export function deviceRecord({
     bytesDate: bytes?.date ?? null,
     reads: bytes?.reads ?? 0,
     guard: guardTripped(legs),
-    lastError: lastError ? { reason: lastError.reason ?? null, where: lastError.where ?? null } : null,
+    lastError: lastError ? {
+      reason: lastError.reason ?? null, where: lastError.where ?? null,
+      message: typeof lastError.message === "string" ? lastError.message.slice(0, 160) : null,
+    } : null,
     // Every leg failing THIS SESSION, with how often and whether it has been
     // benched (sync.js LEG_MAX_ATTEMPTS). A leg that loops is named here, on
     // the fleet screen, instead of being found on the bill. null, never [] —
@@ -143,6 +146,10 @@ export function deviceRecord({
     failing: failing.length
       ? failing.map((f) => ({
         leg: f.leg, attempts: f.attempts ?? 0, reason: f.reason ?? null, benched: !!f.benched,
+        // The error's own words, short. "Error" alone could not tell a swap
+        // that did not land from an IndexedDB transaction the browser aborted,
+        // and those need different fixes. (Fleet, 2026-09-21.)
+        message: typeof f.message === "string" ? f.message.slice(0, 160) : null,
       }))
       : null,
     at: now(),

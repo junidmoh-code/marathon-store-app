@@ -577,7 +577,10 @@ describe("a leg that cannot advance is BENCHED, and costs a bounded number of by
     expect(devices).toHaveLength(1);
     const rec = devices[0];
     expect(rec.failing).toEqual([
-      { leg: "movements", attempts: LEG_MAX_ATTEMPTS, reason: "MirrorCursorStuckError", benched: true },
+      {
+        leg: "movements", attempts: LEG_MAX_ATTEMPTS, reason: "MirrorCursorStuckError", benched: true,
+        message: expect.stringMatching(/cannot advance past/),
+      },
     ]);
     expect(rec.guard.leg).toBe("movements");
     expect(rec.guard.reason).toBe("gave-up");
