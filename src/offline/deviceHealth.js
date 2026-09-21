@@ -89,7 +89,11 @@ export function guardTripped(legs) {
   if (bad.length === 0) return null;
   // A refused swap or a census drift outranks a timeout: one says the copy
   // disagrees with the server, the other says the line was slow.
-  const RANK = { shrank: 0, "count-drift": 1, empty: 2, "did-not-land": 3 };
+  // A leg this device has stopped trying outranks everything: it is the one
+  // that will not fix itself before somebody looks.
+  const RANK = {
+    "gave-up": 0, "cursor-stuck": 1, shrank: 2, "count-drift": 3, empty: 4, "did-not-land": 5,
+  };
   bad.sort((a, b) => (RANK[a.reason] ?? 9) - (RANK[b.reason] ?? 9));
   return { leg: bad[0].name ?? bad[0].leg, reason: bad[0].reason, at: bad[0].at ?? null, of: bad.length };
 }
@@ -104,6 +108,7 @@ export function deviceRecord({
   legs = [], serving = [], complete = false, downloading = false,
   switchOn = true, lastSyncAt = null, lastPassAt = null, lastError = null,
   bytes = { date: null, bytes: 0, reads: 0 }, photos = null, pending = 0,
+  failing = [],
   now = Date.now,
 }) {
   const rows = legs.reduce((n, l) => n + (l.rows ?? 0), 0);
@@ -131,6 +136,15 @@ export function deviceRecord({
     reads: bytes?.reads ?? 0,
     guard: guardTripped(legs),
     lastError: lastError ? { reason: lastError.reason ?? null, where: lastError.where ?? null } : null,
+    // Every leg failing THIS SESSION, with how often and whether it has been
+    // benched (sync.js LEG_MAX_ATTEMPTS). A leg that loops is named here, on
+    // the fleet screen, instead of being found on the bill. null, never [] —
+    // RTDB cannot store an empty array.
+    failing: failing.length
+      ? failing.map((f) => ({
+        leg: f.leg, attempts: f.attempts ?? 0, reason: f.reason ?? null, benched: !!f.benched,
+      }))
+      : null,
     at: now(),
   };
 }
@@ -148,6 +162,7 @@ export function worthWriting(prev, next, { every = WRITE_EVERY_MS } = {}) {
   const key = (r) => [
     r.complete, r.serving, r.downloading, r.switchOn, r.build,
     r.guard ? `${r.guard.leg}:${r.guard.reason}` : "",
+    (r.failing ?? []).map((f) => `${f.leg}:${f.attempts}:${f.benched}`).join(","),
   ].join("|");
   if (key(prev) !== key(next)) return true;
   return (next.at - prev.at) >= every;

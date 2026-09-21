@@ -68,6 +68,9 @@ import {
   FEED_CURSOR_META, COUNTS_ROOT,
 } from "./changeFeed";
 import { isCanonicalLocationId } from "./locationIds";
+import {
+  pageEntries, maxKey, compareKeys, compareChildOrder, compareChildValues,
+} from "./rtdbOrder";
 
 export const SETUP_META_PREFIX = "setup.";
 export const SETUP_DONE_META = "setup.done";
@@ -117,6 +120,52 @@ export const MUST_NOT_BE_EMPTY = Object.freeze(
   MIRROR_LEGS.filter((l) => !CAN_BE_EMPTY.has(l.name)).map((l) => l.name),
 );
 
+// ─── A LEG THAT KEEPS FAILING IS BENCHED, NOT RETRIED FOR EVER ──────────────
+//
+// The #624 incident was not only a wrong cursor. It was a wrong cursor with
+// nothing to stop it: setup retried every five minutes, each retry read the
+// same page, and the fleet spent 214 MB in a morning on one row. A failing leg
+// now backs off (LEG_RETRY_BASE_MS, doubling, capped at LEG_RETRY_MAX_MS) and
+// after LEG_MAX_ATTEMPTS failures in one session it is BENCHED — not attempted
+// again until the app is next opened, recorded as `gave-up` in its health and
+// therefore named in /mirror_devices.
+//
+// THE BYTE BOUND. A range leg writes its cursor with every page, and a stuck
+// page throws BEFORE it is written, so a failed attempt costs the pages it
+// read and a retry resumes where the walk stood — never from the start. A
+// stuck walk therefore costs at most LEG_MAX_ATTEMPTS pages a session. A
+// snapshot leg that fails validation costs at most LEG_MAX_ATTEMPTS × the leg.
+export const LEG_MAX_ATTEMPTS = 3;
+export const LEG_RETRY_BASE_MS = 5 * 60 * 1000;
+export const LEG_RETRY_MAX_MS = 60 * 60 * 1000;
+
+// ─── A COPY TAKEN BY THE OLD PAGER IS NOT TRUSTED ───────────────────────────
+//
+// Before this version, a paged snapshot leg ended its walk on a page the
+// server had sent one row short (see rtdbAdapter.keyPageConstraints), so a
+// device could hold a truncated leg whose shortfall was inside the census
+// tolerance and was therefore served. A setup marker now records the pager
+// that wrote it, and a paged snapshot leg whose marker predates this one is
+// downloaded again and stops being served until it is.
+export const PAGER_VERSION = 2;
+const isPagedSnapshot = (leg) => !isAppendOnly(leg) && leg.depth > 0;
+
+export class MirrorCursorStuckError extends Error {
+  constructor(leg, at) {
+    super(`offline mirror: the "${leg}" walk cannot advance past "${at}"`);
+    this.name = "MirrorCursorStuckError";
+    this.leg = leg;
+  }
+}
+
+export class MirrorSetupIncompleteError extends Error {
+  constructor(failed) {
+    super(`offline mirror: setup did not finish — ${failed.map((f) => `${f.leg} (${f.reason})`).join(", ")}`);
+    this.name = "MirrorSetupIncompleteError";
+    this.failed = failed;
+  }
+}
+
 // ─── FLATTENING A PAGE INTO ROWS ────────────────────────────────────────────
 
 /**
@@ -163,8 +212,9 @@ export function flattenPage(leg, page) {
     return { rows, skipped };
   }
 
-  for (const [top, subtree] of Object.entries(page ?? {})) {
-    if (subtree === null || subtree === undefined) continue;
+  // pageEntries, not Object.entries: a page from the adapter is a Map, and
+  // Object.entries of a Map is [] — every row silently gone.
+  for (const [top, subtree] of pageEntries(page)) {
     if (leg.name === "stock" && !isCanonicalLocationId(top)) {
       // See changeFeed.js: /stock's keys ARE the canonical ids, so anything
       // else means a path was written that nothing reads. Storing it under a
@@ -199,6 +249,66 @@ export function createSyncEngine({
 } = {}) {
   let setupRunning = null;
 
+  // ── the per-session retry ledger (see LEG_MAX_ATTEMPTS) ───────────────────
+  // In memory ON PURPOSE: "per session" is the promise, and a reload is the
+  // one thing that should give a benched leg another go.
+  const failures = new Map();   // leg -> { attempts, nextAt, reason }
+  // ONE WALK OF A LEG AT A TIME. The setup download and the pass loop's repair
+  // can both reach the same leg; two concurrent walks of a snapshot leg stage
+  // over each other (StagingIncompleteError on the fleet) and two range walks
+  // read the same pages twice. The second caller waits for the first.
+  const inFlight = new Map();
+
+  function legGate(legName) {
+    const f = failures.get(legName);
+    if (!f) return { ok: true };
+    if (f.attempts >= LEG_MAX_ATTEMPTS) return { ok: false, benched: true, reason: f.reason };
+    if (now() < f.nextAt) return { ok: false, benched: false, reason: f.reason, nextAt: f.nextAt };
+    return { ok: true };
+  }
+
+  async function noteLegFailure(leg, err) {
+    const prev = failures.get(leg.name);
+    const attempts = (prev?.attempts ?? 0) + 1;
+    const wait = Math.min(LEG_RETRY_MAX_MS, LEG_RETRY_BASE_MS * 2 ** (attempts - 1));
+    const reason = err?.name ?? "Error";
+    failures.set(leg.name, { attempts, nextAt: now() + wait, reason, message: err?.message ?? String(err) });
+    if (attempts >= LEG_MAX_ATTEMPTS) {
+      await recordLegFailed(db, leg.name, {
+        path: leg.node, reason: "gave-up", at: now(), state: "failed", retryable: false,
+        detail: `failed ${attempts} times this session (last: ${reason}: ${err?.message ?? err}). `
+          + "Not attempted again until the app is next opened.",
+      }).catch(() => {});
+    }
+  }
+
+  // Every walk of a leg goes through here: the gate, the one-at-a-time rule,
+  // and the ledger. `null` means "not attempted" (backing off, or benched).
+  async function attemptLeg(leg, run) {
+    if (!legGate(leg.name).ok) return null;
+    if (inFlight.has(leg.name)) return inFlight.get(leg.name);
+    const p = (async () => {
+      try {
+        const res = await run();
+        failures.delete(leg.name);
+        return res;
+      } catch (err) {
+        await noteLegFailure(leg, err);
+        throw err;
+      }
+    })().finally(() => { inFlight.delete(leg.name); });
+    inFlight.set(leg.name, p);
+    return p;
+  }
+
+  // What the device reports: every leg that is failing this session.
+  function legFailures() {
+    return [...failures.entries()].map(([leg, f]) => ({
+      leg, attempts: f.attempts, reason: f.reason,
+      benched: f.attempts >= LEG_MAX_ATTEMPTS, nextAt: f.nextAt,
+    }));
+  }
+
   // ── one leg's snapshot download ───────────────────────────────────────────
   async function downloadSnapshotLeg(leg, { onPage = () => {} } = {}) {
     const at = now();
@@ -222,10 +332,22 @@ export function createSyncEngine({
         break;
       }
 
-      const keys = Object.keys(page ?? {});
+      const keys = pageEntries(page).map(([k]) => k);
       if (keys.length === 0) break;
       const { rows, skipped } = flattenPage(leg, page);
-      const lastKey = keys.reduce((a, b) => (b > a ? b : a));
+      // The page's LARGEST key by RTDB key order — never its last entry, and
+      // never a JS string comparison, which puts "99" after "123" and walked
+      // /customers backwards into pages it had already staged.
+      const lastKey = maxKey(keys);
+      if (manifest.afterKey !== null && manifest.afterKey !== undefined
+        && compareKeys(lastKey, manifest.afterKey) <= 0) {
+        await clearStaging(db, leg.name, manifest);
+        await recordLegFailed(db, leg.name, {
+          path: leg.node, reason: "cursor-stuck", at: now(), state: "failed", retryable: false,
+          detail: `a page after "${manifest.afterKey}" ended on "${lastKey}", which is not past it.`,
+        });
+        throw new MirrorCursorStuckError(leg.name, manifest.afterKey);
+      }
       manifest = await appendStagingChunk(db, leg.name, {
         manifest, rows, afterKey: lastKey, now,
       });
@@ -270,7 +392,7 @@ export function createSyncEngine({
     const meta = {
       ...healthyMeta(leg.name, { path: leg.node, rows: records.length, at }),
       [LAST_SYNC_META(leg.name)]: at,
-      [`${SETUP_META_PREFIX}${leg.name}`]: { at, rows: records.length },
+      [`${SETUP_META_PREFIX}${leg.name}`]: { at, rows: records.length, pager: PAGER_VERSION },
     };
     const deleteMetaKeys = stagingKeys(leg.name, manifest);
     const landed = leg.store === "docs"
@@ -316,58 +438,65 @@ export function createSyncEngine({
           from: cursor?.ts ?? null, fromKey: cursor?.key ?? null,
           limit: leg.pageSize, big: true,
         });
-      const entries = Object.entries(page ?? {});
+      const entries = pageEntries(page);
       if (entries.length === 0) break;
 
       const records = entries.map(([key, value]) => ({ key, value }));
+      // THE NEXT CURSOR IS THE PAGE'S MAXIMUM IN THE QUERY'S OWN ORDER, found by
+      // comparing, never by position. Taking "the last entry" is the #624
+      // fleet download loop: the page arrived in key order, its last entry was
+      // the row it had started from, and fifteen devices read the same 670 KB
+      // page 319 times. See rtdbOrder.js.
       let nextCursor;
       let isAfter;
       if (leg.feed === "keyRange") {
-        nextCursor = records.reduce((a, r) => (r.key > a ? r.key : a), records[0].key);
+        nextCursor = maxKey(records.map((r) => r.key));
+        isAfter = (next, prev) => prev === null || prev === undefined || compareKeys(next, prev) > 0;
       } else {
-        // The LAST row in the page, in the node's OWN ordering: (ts, key).
-        // Carrying the key is what stops the next pass re-reading the whole
-        // timestamp. The page arrives in that order, so the last entry is it.
-        const last = records[records.length - 1];
-        const t = last.value && last.value[leg.tsField];
-        nextCursor = {
-          ts: typeof t === "string" ? t : (cursor?.ts ?? null),
-          key: last.key,
-        };
+        const pos = (r) => ({ value: r.value ? r.value[leg.tsField] : null, key: r.key });
+        const top = records.map(pos).reduce((a, b) => (compareChildOrder(b, a) > 0 ? b : a));
+        if (top.value !== null && typeof top.value === "object") {
+          // RTDB orders objects last and startAt cannot name one. Refused
+          // rather than turned into a cursor that re-reads from the start.
+          throw new Error(`offline mirror: the "${leg.name}" row ${top.key} has an object for "${leg.tsField}" and cannot be a cursor`);
+        }
+        nextCursor = { ts: top.value ?? null, key: top.key };
         isAfter = (next, prev) => {
           const p = typeof prev === "string" ? { ts: prev, key: null } : prev;
-          if (!p || !p.ts) return true;
-          if (next.ts !== p.ts) return next.ts > p.ts;
-          return String(next.key) > String(p.key ?? "");
+          if (!p || !p.key && (p.ts === null || p.ts === undefined)) return true;
+          // A cursor stored by an older build has no key: it means "from this
+          // ts, inclusive", so anything at or after the ts is progress.
+          if (!p.key) return compareChildValues(next.ts, p.ts) >= 0;
+          return compareChildOrder({ value: next.ts, key: next.key }, { value: p.ts, key: p.key }) > 0;
         };
       }
 
-      // A CAUGHT-UP LEG DOES NOT ADVANCE, AND THAT IS NORMAL. The bound is
+      // A CAUGHT-UP LEG DOES NOT ADVANCE, AND THAT IS NORMAL. The ts bound is
       // inclusive, so a leg with nothing new gets back exactly the one row the
       // cursor names and the cursor legitimately stands still. That is the
       // steady state, not a fault.
       //
       // What IS a fault is a FULL page that does not advance: there is more to
       // read and the walk cannot reach it, so it would either loop for ever or
-      // skip. With a compound (ts, key) cursor that can only happen if the
-      // server is not honouring the bound. Named, rather than hung.
-      if (leg.feed === "tsRange" && cursor && entries.length >= leg.pageSize
-        && !isAfter(nextCursor, cursor)) {
+      // skip. With the cursor taken as the page's maximum that can only happen
+      // if the server is not honouring the bound. Named, rather than hung —
+      // and it throws BEFORE the page is written, so the next attempt resumes
+      // from the same stored cursor rather than from the start.
+      if (cursor && entries.length >= leg.pageSize && !isAfter(nextCursor, cursor)) {
+        const where = leg.feed === "keyRange" ? `"${cursor}"` : `"${cursor.ts}"/"${cursor.key}"`;
         await recordLegFailed(db, leg.name, {
           path: leg.node, reason: "cursor-stuck", at: now(), state: "failed", retryable: false,
-          detail: `a page from "${cursor.ts}"/"${cursor.key}" came back without advancing `
+          detail: `a page from ${where} came back without advancing `
             + "the cursor. The walk cannot continue without either looping or skipping rows.",
         });
-        throw new Error(
-          `offline mirror: the "${leg.name}" walk cannot advance past "${cursor.ts}"`,
-        );
+        throw new MirrorCursorStuckError(leg.name, leg.feed === "keyRange" ? cursor : cursor.ts);
       }
 
       const at = now();
       await db.putPage(leg.store, records, {
         cursorKey: cursorMeta,
         cursorValue: nextCursor,
-        ...(isAfter ? { isAfter } : {}),
+        isAfter,
         metaEntries: { [LAST_SYNC_META(leg.name)]: at },
       });
       // Rows that were already held are not NEW. Counting them would make
@@ -381,7 +510,8 @@ export function createSyncEngine({
       // reader signal then never fired and a screen sat on yesterday's total
       // until some later pass happened to bring two rows at once.
       // (Sonnet verification review, PR #618.)
-      const overlap = leg.feed === "tsRange" && cursor ? 1 : 0;
+      const overlap = leg.feed === "tsRange" && cursor?.key
+        ? records.filter((r) => r.key === cursor.key).length : 0;
       total += records.length - overlap;
       cursor = nextCursor;
       onProgress({ phase: "range", leg: leg.name, rows: total });
@@ -440,22 +570,46 @@ export function createSyncEngine({
         await db.setMeta(FEED_CURSOR_META, await changeCursorAtSetupStart({ adapter }));
       }
 
+      await retireOldPagerCopies();
+
+      // ONE LEG FAILING NO LONGER STOPS THE OTHERS. A failed leg is recorded
+      // and the download moves on; the setup is not done until every leg is,
+      // and the error names every leg that is not.
       const done = [];
+      const failed = [];
       for (let i = 0; i < todo.length; i += 1) {
         const leg = todo[i];
-        if (!keepGoing()) return { alreadyDone: false, abandoned: true, legs: done };
+        if (!keepGoing()) return { alreadyDone: false, abandoned: true, legs: done, failed };
         onProgress({ phase: "setup", leg: leg.name, done: i, total: todo.length });
-        const res = isAppendOnly(leg)
-          ? await runRangeLeg(leg)
-          : await downloadSnapshotLeg(leg, {
-            // `staged`, never `rows` — see downloadSnapshotLeg. A page in
-            // flight must not be reported in the field that means "finished".
-            onPage: ({ staged }) => onProgress({
-              phase: "setup", leg: leg.name, done: i, total: todo.length, staged,
-            }),
-          });
+        let res;
+        try {
+          res = await attemptLeg(leg, () => (isAppendOnly(leg)
+            ? runRangeLeg(leg)
+            : downloadSnapshotLeg(leg, {
+              // `staged`, never `rows` — see downloadSnapshotLeg. A page in
+              // flight must not be reported in the field that means "finished".
+              onPage: ({ staged }) => onProgress({
+                phase: "setup", leg: leg.name, done: i, total: todo.length, staged,
+              }),
+            })));
+        } catch (err) {
+          failed.push({ leg: leg.name, reason: err?.name ?? "Error", message: err?.message ?? String(err), err });
+          continue;
+        }
+        if (res === null) {
+          const gate = legGate(leg.name);
+          failed.push({ leg: leg.name, reason: gate.benched ? "gave-up" : "backing-off" });
+          continue;
+        }
         done.push({ leg: leg.name, rows: res.rows });
         onProgress({ phase: "setup", leg: leg.name, done: i + 1, total: todo.length, rows: res.rows });
+      }
+      // The FIRST real error is what is thrown — it is the one a caller (and
+      // a test) can act on — carrying the full list of every leg that failed.
+      if (failed.length) {
+        const first = failed.find((f) => f.err)?.err ?? new MirrorSetupIncompleteError(failed);
+        try { first.failedLegs = failed.map(({ err, ...f }) => f); } catch { /* frozen */ }
+        throw first;
       }
 
       await db.setMeta(SETUP_DONE_META, { at: now(), legs: MIRROR_LEGS.length });
@@ -464,12 +618,34 @@ export function createSyncEngine({
     return setupRunning;
   }
 
+  // A copy the old pager took stops being served NOW, not when its
+  // replacement lands: it may be short, and the census could not see it.
+  // Local only — it reads IndexedDB and writes health records, never RTDB — so
+  // bootstrap runs it at start, before the serving hint is trusted.
+  async function retireOldPagerCopies() {
+    const retired = [];
+    for (const leg of MIRROR_LEGS) {
+      if (!isPagedSnapshot(leg)) continue;
+      const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
+      if (!marker || marker.pager === PAGER_VERSION) continue;
+      await recordLegFailed(db, leg.name, {
+        path: leg.node, reason: "re-paging", at: now(), state: "failed",
+        retryable: true, keepVouched: false,
+        detail: "this copy was taken by a pager that could stop one page early. Downloading it again.",
+      });
+      await db.deleteMetaMany([`${SETUP_META_PREFIX}${leg.name}`, SETUP_DONE_META]);
+      retired.push(leg.name);
+    }
+    return retired;
+  }
+
   // A leg counts as set up only if BOTH its setup marker and its health record
   // stand, and the health record is backed by rows actually in the store. A
   // marker alone is how a device walks past the setup screen into a blank app.
   async function legIsSetUp(leg) {
     const marker = await db.getMeta(`${SETUP_META_PREFIX}${leg.name}`);
     if (!marker) return false;
+    if (isPagedSnapshot(leg) && marker.pager !== PAGER_VERSION) return false;
     const health = await getLegHealth(db, leg.name);
     if (!health) return false;
     const rows = (await heldRows(db, leg.name)) ?? 0;
@@ -516,7 +692,8 @@ export function createSyncEngine({
     // 2. The two forward walks.
     for (const leg of MIRROR_LEGS.filter(isAppendOnly)) {
       try {
-        const res = await runRangeLeg(leg, { maxPages: RANGE_PAGES_PER_PASS });
+        const res = await attemptLeg(leg, () => runRangeLeg(leg, { maxPages: RANGE_PAGES_PER_PASS }));
+        if (res === null) continue;            // backing off, or benched this session
         report.range.push({ leg: leg.name, added: res.added });
       } catch (err) {
         report.errors.push({ where: leg.name, reason: err.name, message: err.message });
@@ -556,9 +733,13 @@ export function createSyncEngine({
   async function repairOneLeg() {
     for (const leg of MIRROR_LEGS) {
       if (await legIsSetUp(leg)) continue;
-      const res = isAppendOnly(leg)
-        ? await runRangeLeg(leg)
-        : await downloadSnapshotLeg(leg);
+      // A leg that is backing off or benched is passed over, so one broken leg
+      // cannot hold every other repair behind it.
+      if (!legGate(leg.name).ok) continue;
+      const res = await attemptLeg(leg, () => (isAppendOnly(leg)
+        ? runRangeLeg(leg)
+        : downloadSnapshotLeg(leg)));
+      if (res === null) continue;
       // Re-stamp the whole-device marker only when every leg is back — and
       // ask the census FIRST. A device that becomes complete through repairs
       // reaches exactly the state the download path forces a census for, and
@@ -634,6 +815,6 @@ export function createSyncEngine({
 
   return {
     runSetup, setupState, legIsSetUp, runPass, runRangeLeg,
-    downloadSnapshotLeg, checkCensus, repairOneLeg,
+    downloadSnapshotLeg, checkCensus, repairOneLeg, legFailures, retireOldPagerCopies,
   };
 }

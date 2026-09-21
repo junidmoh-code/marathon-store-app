@@ -85,6 +85,9 @@ const GUARD_WORDS = Object.freeze({
   "did-not-land": "did not save properly — downloading it again",
   "cursor-expired": "fell too far behind to catch up — downloading it again",
   "timed-out": "timed out — it will try again",
+  "gave-up": "kept failing, so this device stopped trying until the app is reopened",
+  "cursor-stuck": "could not move past one page — stopped rather than read it again",
+  "re-paging": "was taken by the old downloader — downloading it again",
 });
 export function guardWords(guard) {
   if (!guard) return null;
@@ -118,6 +121,9 @@ function DeviceRow({ d, now }) {
         {d.photos != null && ` · ${d.photos.toLocaleString()} pictures`}
         {` · synced ${ago(d.lastSyncAt, now)}`}
         {` · reported ${ago(d.at, now)}`}
+        {Array.isArray(d.failing) && d.failing.length > 0 && (
+          ` · failing: ${d.failing.map((f) => `${LEG_WORDS[f.leg] ?? f.leg} ×${f.attempts}${f.benched ? " (stopped)" : ""}`).join(", ")}`
+        )}
         {d.build ? ` · build ${String(d.build).slice(0, 12)}` : " · build unknown"}
       </div>
     </div>

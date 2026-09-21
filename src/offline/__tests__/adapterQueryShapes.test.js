@@ -18,16 +18,21 @@ import {
 } from "../rtdbAdapter";
 
 describe("the key-page query", () => {
-  test("is EXCLUSIVE of the cursor — a consumed key is not re-read", () => {
-    expect(constraintNames(keyPageConstraints({ after: "-Oz1", limit: 10 })))
-      .toEqual(["orderByKey", "startAfter", "limitToFirst"]);
+  // startAfter + limitToFirst(n) comes back n-1 on this database — the server
+  // counts the cursor's row and the SDK drops it — and on /stock (limit 1) it
+  // came back EMPTY. Measured live 2026-09-21. So the wire query is INCLUSIVE
+  // and asks for one extra; readKeyPage drops the cursor's row itself.
+  test("is INCLUSIVE on the wire and asks for one extra row", () => {
+    const parts = keyPageConstraints({ after: "-Oz1", limit: 10 });
+    expect(constraintNames(parts)).toEqual(["orderByKey", "startAt", "limitToFirst"]);
+    expect(constraintNames(parts)).not.toContain("startAfter");
+    expect(parts[2]._limit).toBe(11);
   });
 
-  test("has no bound at all when there is no cursor", () => {
+  test("has no bound at all when there is no cursor, and no extra row", () => {
     expect(constraintNames(keyPageConstraints({ after: null, limit: 10 })))
       .toEqual(["orderByKey", "limitToFirst"]);
-    expect(constraintNames(keyPageConstraints({ limit: 10 })))
-      .toEqual(["orderByKey", "limitToFirst"]);
+    expect(keyPageConstraints({ limit: 10 })[1]._limit).toBe(10);
   });
 
   test("takes the page from the FRONT — a forward walk, not the tail", () => {
@@ -51,13 +56,12 @@ describe("the ts-page query", () => {
   });
 });
 
-describe("the two are not the same query", () => {
-  test("one is exclusive and the other inclusive, deliberately", () => {
+describe("neither query uses startAfter", () => {
+  test("both bounds are startAt — the key page drops its cursor row itself", () => {
     const keyBound = constraintNames(keyPageConstraints({ after: "x", limit: 1 }))[1];
     const tsBound = constraintNames(childPageConstraints("ts", { from: "x", limit: 1 }))[1];
-    expect(keyBound).toBe("startAfter");
+    expect(keyBound).toBe("startAt");
     expect(tsBound).toBe("startAt");
-    expect(keyBound).not.toBe(tsBound);
   });
 });
 
