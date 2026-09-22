@@ -42,6 +42,10 @@ const sdk = vi.hoisted(() => {
     authUid: "u1",        // who the (mocked) auth listener says is signed in
     timeoutOnce: [],      // nodes whose NEXT read times out (a slow line)
     reads: [],            // { path, rows, bytes }
+    childSubs: [],        // onChildAdded queries, as opened; `closed` once unsubscribed
+    gate: null,           // { path, promise }: reads of `path` wait on it; inFlight counts them
+    inFlight: 0,
+    maxInFlight: 0,
   };
   const INT = /^-?(0*)\d{1,10}$/;
   const asInt = (k) => (INT.test(k) && Math.abs(Number(k)) <= 2147483647 ? Number(k) : null);
@@ -142,6 +146,11 @@ const sdk = vi.hoisted(() => {
     limitToLast: (n) => c("limitToLast", { _limit: n }),
     async get(q) {
       const root = String(q.path).split("/")[0];
+      if (state.gate && state.gate.path === q.path) {
+        state.inFlight += 1;
+        state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
+        try { await state.gate.promise; } finally { state.inFlight -= 1; }
+      }
       const slow = state.timeoutOnce.indexOf(root);
       if (slow >= 0) {
         state.timeoutOnce.splice(slow, 1);
@@ -165,7 +174,7 @@ const sdk = vi.hoisted(() => {
     },
     async set(r, value) { write(r.path, value); },
     onValue(r, cb) { cb(valueSnap(r.path === ".info/connected" ? true : at(r.path))); return () => {}; },
-    onChildAdded() { return () => {}; },
+    onChildAdded(q) { const sub = { ...q, closed: false }; state.childSubs.push(sub); return () => { sub.closed = true; }; },
   };
   // firebase auth, as serving.js reads it: whoever state.authUid names.
   const auth = {
@@ -201,7 +210,9 @@ import { FEED_CURSOR_META } from "../changeFeed";
 import { createRtdbAdapter } from "../rtdbAdapter";
 import { startOfflineMirror } from "../bootstrap";
 import { MIRROR_LEGS } from "../nodes";
+import { readMirroredPath } from "../localReads";
 import { isLegUsable, getLegHealth, recordLegFailed } from "../health";
+import { FEED_STALE_MS, UNKNOWN_GRACE_MS } from "../servingDecision";
 import { setMirrorSwitchValue, _resetMirrorSwitchForTests } from "../killSwitch";
 import { _resetServingForTests, isLegServing } from "../serving";
 import { _resetMirrorSignalForTests } from "../mirrorSignal";
@@ -474,6 +485,8 @@ function clockAndTimers() {
       return true;
     },
     pending: () => pending.size,
+    advance(ms) { now += ms; },
+    nextDue: () => Math.min(...[...pending.values()].map((x) => x.due)),
   };
 }
 
@@ -1006,5 +1019,289 @@ describe("the end of a walk is SEEN, not inferred from the page budget", () => {
     const P = MV_PAGE();
     expect(tsWalkPages(P)).toBe(2);
     expect(tsWalkPages(P - 1)).toBe(1);
+  });
+});
+
+// ─── A LIVE SUBSCRIPTION IS SKIPPED ONLY WHILE THE COPY IS VERIFIED AND CURRENT ─
+//
+// The gate that lets a mirrored device drop its whole-node live reads is the
+// serving hint refreshServing writes after every pass. These drive the REAL
+// start function through the real adapter and check the hint — the thing every
+// screen reads on its first render — in both directions.
+describe("the serving gate: verified, current, and back to live the moment it is not", () => {
+  async function completeDevice() {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const real = await freshMirrorDb();
+    // The database the device holds, with a switch that makes every read of
+    // it fail the way a closed IndexedDB connection does.
+    let broken = false;
+    const fail = () => { throw Object.assign(new Error("The database connection is closing."), { name: "InvalidStateError" }); };
+    const db = new Proxy(real, {
+      get(target, prop) {
+        const v = target[prop];
+        if (typeof v !== "function") return v;
+        return (...args) => (broken && ["getMeta", "count", "countPrefixed"].includes(prop) ? fail() : v.apply(target, args));
+      },
+    });
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    const allServing = () => MIRROR_LEGS.every((l) => isLegServing(l.name));
+    const noneServing = () => MIRROR_LEGS.every((l) => !isLegServing(l.name));
+    return { rt, t, db: real, setBroken: (b) => { broken = b; }, allServing, noneServing };
+  }
+
+  test("a feed that has failed for FEED_STALE_MS on a live line drops every leg; it comes back when the feed does", async () => {
+    const { rt, t, allServing, noneServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+
+    // The feed stops answering. Inside the window: still served.
+    const failFeed = () => { sdk.state.timeoutOnce.push(...Array(8).fill("mirror_changes")); };
+    failFeed();
+    t.advance(FEED_STALE_MS - 60_000);
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+
+    // Past it: NOTHING is served — every screen reopens its live read.
+    sdk.state.timeoutOnce.length = 0; failFeed();
+    t.advance(2 * 60_000);
+    const rep = await rt.runOnePass();
+    expect(rep.errors.some((e) => e.where === "feed")).toBe(true);
+    expect(noneServing()).toBe(true);
+
+    // The feed answers again: served again, with no download.
+    sdk.state.timeoutOnce.length = 0;
+    const before = sdk.state.reads.length;
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+    expect(sdk.state.reads.slice(before).filter((r) => r.path !== "mirror_changes" && r.path !== "mirror_counts"
+      && !String(r.path).startsWith("insights_log") && !String(r.path).startsWith("stock_movements"))).toEqual([]);
+    rt.stop();
+  });
+
+  test("a leg whose copy goes bad leaves the hint at the next pass, alone", async () => {
+    const { rt, db, allServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+    // A guard trips on products: nothing vouches for its rows any more.
+    await recordLegFailed(db, "products", {
+      path: "products", reason: "count-drift", at: T0, state: "failed", retryable: false, keepVouched: false,
+    });
+    await rt.refreshServing();
+    expect(isLegServing("products")).toBe(false);
+    expect(isLegServing("orders")).toBe(true);
+    rt.stop();
+  });
+
+  test("a check that cannot be ASKED keeps a served leg for UNKNOWN_GRACE_MS, then reads live", async () => {
+    const { rt, t, setBroken, allServing, noneServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+
+    // A phone wakes with its IndexedDB handle dead. Not "the copy is bad".
+    setBroken(true);
+    await rt.refreshServing();
+    expect(allServing()).toBe(true);
+    t.advance(UNKNOWN_GRACE_MS / 2);
+    await rt.refreshServing();
+    expect(allServing()).toBe(true);
+
+    // Past the grace: a device whose database has really gone reads live.
+    t.advance(UNKNOWN_GRACE_MS);
+    await rt.refreshServing();
+    expect(noneServing()).toBe(true);
+
+    // …and "unknown" never turns a live read into a local one.
+    await rt.refreshServing();
+    expect(noneServing()).toBe(true);
+
+    setBroken(false);
+    await rt.refreshServing();
+    expect(allServing()).toBe(true);
+    rt.stop();
+  });
+
+  test("the switch going off drops everything at once, whatever the copy", async () => {
+    const { rt, allServing, noneServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+    setMirrorSwitchValue(false);
+    expect(noneServing()).toBe(true);
+    rt.stop();
+  });
+});
+
+// ─── A SUSPEND MISSES NOTHING, AND RESUMING IS A CATCH-UP, NOT A DOWNLOAD ─────
+describe("idle suspend and resume (bootstrap suspendLive / resumeLive)", () => {
+  test("changes made while suspended all land on resume, read from the STORED cursor", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    // One change before the suspend, so the device holds a real cursor.
+    sdk.write("products/p0003", { id: "p0003", name: "shoe 3 — before" });
+    sdk.write(`mirror_changes/${pushKeyForMs(T0, "B00000000000")}`, { n: "products", k: "p0003", t: T0 });
+    await rt.runOnePass();
+    const cursorBefore = await db.getMeta(FEED_CURSOR_META);
+    expect(cursorBefore).toBe(pushKeyForMs(T0, "B00000000000"));
+    expect((await readMirroredPath(db, "products/p0003")).name).toBe("shoe 3 — before");
+
+    expect(rt.suspendLive()).toBe(true);
+    // Every signal the mirror held is closed, and no pass is scheduled.
+    expect(sdk.state.childSubs.filter((q) => q.path === "mirror_changes" && !q.closed)).toEqual([]);
+    const readsAtSuspend = sdk.state.reads.length;
+
+    // The shop goes on trading while this device sleeps.
+    const at = (i) => T0 + 60_000 * (i + 1);
+    const changes = [
+      ["products/p0001", { id: "p0001", name: "shoe 1 — renamed" }, "products", "p0001"],
+      ["products/p0002", null, "products", "p0002"],                                   // deleted
+      ["orders/999", { id: "999", destShop: "marathon-pe", createdAt: at(3) }, "orders", "999"],
+    ];
+    changes.forEach(([path, value, n, k], i) => {
+      sdk.write(path, value);
+      sdk.write(`mirror_changes/${pushKeyForMs(at(i), `S${String(i).padStart(11, "0")}`)}`, { n, k, t: at(i) });
+    });
+    // Time passes, timers fire: nothing is read while suspended.
+    t.advance(30 * 60_000);
+    while (await t.fireNext()) { /* drain */ }
+    expect(sdk.state.reads.length).toBe(readsAtSuspend);
+
+    // Resume: the signal reopens FROM THE STORED CURSOR, and a pass runs now.
+    expect(rt.resumeLive()).toBe(true);
+    await new Promise((r) => setTimeout(r, 20));
+    const reopened = sdk.state.childSubs.filter((q) => q.path === "mirror_changes" && !q.closed);
+    expect(reopened.length).toBe(1);
+    expect(reopened[0].cons.find((c) => c.type === "startAfter")?.value).toBe(cursorBefore);
+    await settle(new Promise((r) => setTimeout(r, 400)), t);
+
+    expect((await readMirroredPath(db, "products/p0001")).name).toBe("shoe 1 — renamed");
+    expect(await readMirroredPath(db, "products/p0002")).toBe(null);
+    expect((await readMirroredPath(db, "orders/999")).destShop).toBe("marathon-pe");
+
+    // A catch-up, not a download: after resuming, only the feed, the rows it
+    // named, and the two append-only walks' forward pages were read.
+    const since = sdk.state.reads.slice(readsAtSuspend).map((r) => r.path);
+    const unexpected = since.filter((p) => !/^(mirror_changes|mirror_counts|products\/p000[12]|orders\/999|insights_log|stock_movements)$/.test(p));
+    expect(unexpected).toEqual([]);
+    expect(since.filter((p) => p === "products" || p === "orders")).toEqual([]);   // never a whole leg
+    rt.stop();
+  });
+
+  test("a suspended runtime cannot be woken into a pass by a reconnect or a stray schedule", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    rt.suspendLive();
+    const n = sdk.state.reads.length;
+    rt.start();                               // what an auth callback would do
+    t.advance(10 * 60_000);
+    while (await t.fireNext()) { /* drain */ }
+    expect(sdk.state.reads.length).toBe(n);
+    expect(rt.isSuspended()).toBe(true);
+    rt.stop();
+  });
+});
+
+describe("one pass at a time (Sonnet architect review, PR #639)", () => {
+  test("a resume while a pass is still resolving never runs a second pass beside it, and still gets its catch-up", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    rt.suspendLive();                                   // clean slate: no timer
+
+    // The feed read hangs, as a network call parked by goOffline does.
+    let release;
+    sdk.state.gate = { path: "mirror_changes", promise: new Promise((r) => { release = r; }) };
+    sdk.state.maxInFlight = 0;
+    rt.resumeLive();
+    const first = t.fireNext();                         // pass 1 starts, and hangs
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sdk.state.inFlight).toBe(1);
+
+    rt.suspendLive();                                   // idle again…
+    rt.resumeLive();                                    // …and back: schedule(0)
+    await t.fireNext();                                 // the resume's tick
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sdk.state.maxInFlight).toBe(1);              // never two passes at once
+
+    release();
+    sdk.state.gate = null;
+    await first;
+    // The resume's catch-up was queued, not dropped: due now, not in a minute.
+    expect(t.pending()).toBeGreaterThan(0);
+    expect(t.nextDue()).toBe(t.now());
+    const before = sdk.state.reads.filter((r) => r.path === "mirror_changes").length;
+    await t.fireNext();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sdk.state.reads.filter((r) => r.path === "mirror_changes").length).toBeGreaterThan(before);
+    rt.stop();
+  });
+});
+
+describe("review fixes (Fable-vs-spec, PR #639)", () => {
+  async function complete() {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    await rt.runOnePass();
+    return { rt, t, db };
+  }
+
+  test("FULLY mirrored means every leg this account may read — a leg it may not read does not count", async () => {
+    const { rt, db } = await complete();
+    expect(rt.fullyMirrored()).toBe(true);
+    // A leg this account is refused: no live source either way.
+    await recordLegFailed(db, "users", {
+      path: "users", reason: "not-permitted", at: T0, state: "skipped", retryable: false, keepVouched: false,
+    });
+    await rt.refreshServing();
+    expect(isLegServing("users")).toBe(false);
+    expect(rt.fullyMirrored()).toBe(true);
+    // A leg it CAN read, read live: some screen may be holding that
+    // subscription, so the device must not park its connection.
+    await recordLegFailed(db, "products", {
+      path: "products", reason: "count-drift", at: T0, state: "failed", retryable: false, keepVouched: false,
+    });
+    await rt.refreshServing();
+    expect(rt.fullyMirrored()).toBe(false);
+    rt.stop();
+  });
+
+  test("time spent suspended is not time the feed failed: a slow first read after resume drops nothing", async () => {
+    const { rt, t } = await complete();
+    expect(isLegServing("products")).toBe(true);
+    rt.suspendLive();
+    t.advance(8 * 3600 * 1000);                  // a night, suspended
+    rt.resumeLive();
+    sdk.state.timeoutOnce.push(...Array(8).fill("mirror_changes"));
+    const rep = await rt.runOnePass();
+    expect(rep.errors.some((e) => e.where === "feed")).toBe(true);
+    expect(isLegServing("products")).toBe(true);
+    sdk.state.timeoutOnce.length = 0;
+    rt.stop();
   });
 });

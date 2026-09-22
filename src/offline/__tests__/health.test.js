@@ -3,7 +3,7 @@ import { freshMirrorDb, rec } from "./helpers";
 import {
   healthKey, healthyMeta, recordLegFailed, isLegUsable, getLegHealth,
   shrinkVerdict, shrankInfo, vouchingRecord, heldRows, claimIsBackedByRows,
-  SHRINK_TOLERANCE, SHRINK_ABS_FLOOR, SNAPSHOT_META_PREFIXES,
+  SHRINK_TOLERANCE, SHRINK_ABS_FLOOR, SNAPSHOT_META_PREFIXES, legVerdict,
 } from "../health";
 
 const good = (rows) => healthyMeta("products", { path: "products", rows, at: 1 })[healthKey("products")];
@@ -130,5 +130,30 @@ describe("what a schema purge must take with it", () => {
     expect(SNAPSHOT_META_PREFIXES).toContain("setup.");
     expect(SNAPSHOT_META_PREFIXES).toContain("mirror.health.");
     expect(SNAPSHOT_META_PREFIXES).toContain("staging.");
+  });
+});
+
+describe("legVerdict keeps \"no\" and \"could not ask\" apart", () => {
+  const closing = () => Promise.reject(Object.assign(new Error("The database connection is closing."), { name: "InvalidStateError" }));
+
+  test("yes, no — the same facts isLegUsable answers", async () => {
+    const db = await freshMirrorDb();
+    expect(await legVerdict(db, "products")).toBe("no");                 // nothing vouches
+    await db.replaceAll("products", [rec("p1", {})], { [healthKey("products")]: good(1) });
+    expect(await legVerdict(db, "products")).toBe("yes");
+    await db.replaceAll("products", []);                                  // emptied underneath
+    expect(await legVerdict(db, "products")).toBe("no");
+  });
+
+  test("a health record that cannot be read is UNKNOWN, not no", async () => {
+    const db = await freshMirrorDb();
+    await db.replaceAll("products", [rec("p1", {})], { [healthKey("products")]: good(1) });
+    expect(await legVerdict({ ...db, getMeta: closing }, "products")).toBe("unknown");
+  });
+
+  test("rows that cannot be COUNTED are unknown, not no — the record is read fine", async () => {
+    const db = await freshMirrorDb();
+    await db.replaceAll("products", [rec("p1", {})], { [healthKey("products")]: good(1) });
+    expect(await legVerdict({ ...db, count: closing, countPrefixed: closing }, "products")).toBe("unknown");
   });
 });

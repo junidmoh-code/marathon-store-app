@@ -447,3 +447,40 @@ export async function isLegUsable(db, leg, expect = null) {
   }
   return true;
 }
+
+// ─── "NO" AND "I COULD NOT ASK" ARE DIFFERENT ANSWERS ────────────────────────
+//
+// isLegUsable answers a yes/no question and folds every way of failing to ASK
+// it — a closed IndexedDB connection, an aborted transaction, a count that
+// could not run — into "no". For a reader that is the safe direction, and for
+// the one decision that costs money it is the expensive one: "no" means "open
+// the whole-node live subscription", and a phone waking from its pocket, with
+// every row still on disk and only its database handle dead, paid ~15 MB of
+// whole-node reads for every such "no" (cost watch, 22 Sep 2026).
+//
+// legVerdict keeps the three apart:
+//
+//   "yes"      the rows are there and a record vouches for them
+//   "no"       they are not, or nothing vouches — a FACT about the copy.
+//              Guard trips, drift, a failed leg: the caller opens live, now.
+//   "unknown"  the question could not be put. Not a fact about the copy, and
+//              the caller decides — keep what it last knew for a moment and
+//              ask again, or treat it as "no" once the moment has passed.
+export async function legVerdict(db, leg, expect = null) {
+  let health;
+  try { health = await getLegHealth(db, leg); } catch { return "unknown"; }
+  const snapshot = vouchingRecord(health);
+  if (!snapshot) return "no";
+  const claimed = vouchedRows(health);
+  if (Number.isFinite(claimed) && (LEG_STORES[leg] || DOC_LEG_PREFIX[leg])) {
+    const held = await heldRows(db, leg);
+    if (!Number.isFinite(held)) return "unknown";
+    if (held < claimed) return "no";
+  }
+  if (expect) {
+    for (const [field, value] of Object.entries(expect)) {
+      if (snapshot[field] !== value) return "no";
+    }
+  }
+  return "yes";
+}

@@ -43,8 +43,9 @@ import { confirmPending } from "./pendingWrites";
 import { FEED_CURSOR_META, CHANGES_ROOT } from "./changeFeed";
 import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache, heldPhotoCount } from "./photoCache";
 import { readWholeLeg, MISS } from "./localReads";
-import { setServingLegs, notifyServingChanged } from "./serving";
-import { isLegUsable, getLegHealth, vouchingRecord } from "./health";
+import { setServingLegs, notifyServingChanged, isLegServing } from "./serving";
+import { legVerdict, getLegHealth, vouchingRecord } from "./health";
+import { decideServing, feedIsStale } from "./servingDecision";
 import { setForcedUpdateMode, setUpdateBusy } from "../update/updateChecker";
 import {
   addBytes, bytesToday, deviceRecord, reportDeviceHealth, thisDevice,
@@ -152,6 +153,7 @@ export async function startOfflineMirror({
     // last failure if there was one.
     setupProgress: null, setupDone: [], setupError: null, downloading: false,
     setupCensus: null,
+    feedOkAt: null,
   };
 
   // The setup screen listens here. The engine takes ONE onProgress at
@@ -183,6 +185,13 @@ export async function startOfflineMirror({
   // its first render (serving.js). A leg that goes unusable — a refused swap, a
   // census drift — drops out here, and the hooks reading it open their live
   // subscriptions again on the next render.
+  // When the change feed last read cleanly, and since when each leg's check
+  // could not be asked. In memory: a reload is a fresh start (servingDecision).
+  // `let`: a resume from idle suspend is a fresh start too — the time spent
+  // suspended is not time the feed failed (Fable-vs-spec review, PR #639).
+  let startedAt = now();
+  const unknownVerdictSince = new Map();
+  let readableUnserved = MIRROR_LEGS.map((l) => l.name);   // until the first refresh says otherwise
   async function refreshServing() {
     // THE ACCESS GATE: nothing is served to a signed-in account whose read
     // rights have not been checked on this device (ensureAccess). Every pass
@@ -194,12 +203,37 @@ export async function startOfflineMirror({
       setForcedUpdateMode(false);
       return [];
     }
-    const serving = [];
+    // See servingDecision.js: complete-and-vouched AND a current feed, with
+    // "could not ask" kept apart from "no".
+    const verdicts = {};
     for (const leg of MIRROR_LEGS) {
-      try { if (await isLegUsable(db, leg.name)) serving.push(leg.name); }
-      catch { /* an unreadable leg is not a serving one */ }
+      try { verdicts[leg.name] = await legVerdict(db, leg.name); }
+      catch { verdicts[leg.name] = "unknown"; }
     }
+    const serving = decideServing({
+      verdicts,
+      wasServing: (name) => isLegServing(name),
+      unknownSince: unknownVerdictSince,
+      feedStale: feedIsStale({
+        connected: connection.isConnected(), feedOkAt: state.feedOkAt, startedAt, now: now(),
+      }),
+      now: now(),
+    });
     lastServing = serving;
+    // Legs this account COULD read that are not served locally — each one is
+    // a live subscription some screen may be holding. A leg the account may
+    // not read at all (not-permitted) has no live source either, so it does
+    // not count against the device. idleSuspend asks this: a device parks its
+    // connection only when nothing it could read is being read live.
+    // (Fable-vs-spec review, PR #639: "mirrored" used to mean ANY leg served.)
+    const unserved = [];
+    for (const leg of MIRROR_LEGS) {
+      if (serving.includes(leg.name)) continue;
+      let reason = null;
+      try { reason = (await getLegHealth(db, leg.name))?.reason ?? null; } catch { /* unknown: counts */ }
+      if (reason !== "not-permitted") unserved.push(leg.name);
+    }
+    readableUnserved = unserved;
     setServingLegs(serving);
     // A device serving locally has no whole-node subscriptions to make a stale
     // bundle obvious, so its reload becomes forced rather than advisory.
@@ -209,6 +243,7 @@ export async function startOfflineMirror({
 
   let timer = null;
   let stopped = false;
+  let suspended = false;
   let passes = 0;
   // ── THE TWO FACTS THAT DECIDE WHETHER ANYTHING READS RTDB ─────────────────
   //
@@ -230,6 +265,11 @@ export async function startOfflineMirror({
   async function runOnePass() {
     const report = await engine.runPass();
     state.lastPass = { at: now(), ...report };
+    // The feed is CURRENT only if this pass actually read it. Skipped (backing
+    // off, benched) or failed is not current, however recent the pass.
+    if (report.feed && !report.feed.skipped && !report.errors.some((e) => e.where === "feed")) {
+      state.feedOkAt = now();
+    }
     state.lastError = report.errors.length ? report.errors[0] : null;
 
     // Wake the screens whose nodes moved — and only those.
@@ -273,13 +313,29 @@ export async function startOfflineMirror({
   }
 
   function schedule(ms) {
-    if (stopped) return;
+    if (stopped || suspended) return;
     clearTimeoutFn(timer);
     timer = setTimeoutFn(tick, ms);
   }
 
+  // ONE pass at a time. A pass still resolving when the device suspended (its
+  // network call parked by goOffline) must not run alongside the pass a
+  // resume starts: the late one finishes, and its own `finally` schedules the
+  // next. (Sonnet architect review, PR #639.)
+  // A tick that arrives meanwhile (a resume's catch-up) is not dropped: it
+  // runs as soon as the pass in flight has finished.
+  let passRunning = false;
+  let passAgain = false;
   async function tick() {
     if (stopped) return;
+    if (passRunning) { passAgain = true; return; }
+    passRunning = true;
+    try { await tickOnce(); } finally {
+      passRunning = false;
+      if (passAgain) { passAgain = false; schedule(0); }
+    }
+  }
+  async function tickOnce() {
     // ── THE KILL SWITCH, CHECKED BY THE ENGINE ITSELF ───────────────────────
     // MirrorGate stops the runtime when the switch goes false, and that is the
     // path that runs. This is the second lock on the same door: a runtime
@@ -295,6 +351,10 @@ export async function startOfflineMirror({
     } catch (err) {
       state.lastError = { where: "pass", reason: err.name, message: err.message };
       ms = PASS_BACKOFF_MS;
+      // A pass that could not finish still has to re-decide what is served:
+      // a feed that has been failing on a live line for FEED_STALE_MS must
+      // leave the hint even if no pass ever gets as far as refreshServing.
+      await refreshServing().catch(() => {});
     } finally {
       // See the header: the ONLY place the next pass is scheduled.
       schedule(ms);
@@ -318,9 +378,9 @@ export async function startOfflineMirror({
   let signalUnsub = null;
   let signalTimer = null;
   async function watchChanges() {
-    if (signalUnsub || stopped) return;
+    if (signalUnsub || stopped || suspended) return;
     const after = (await db.getMeta(FEED_CURSOR_META)) ?? null;
-    if (stopped) return;
+    if (stopped || suspended || signalUnsub) return;
     signalUnsub = adapter.subscribeNewChanges(CHANGES_ROOT, after, () => {
       if (stopped) return;
       // Debounced: a refill run writes hundreds of records and they should
@@ -538,6 +598,36 @@ export async function startOfflineMirror({
       if (!signedInEnough()) return;
       stopped = false; schedule(0); watchChanges();
     },
+    // ── IDLE: SUSPEND AND RESUME (idleSuspend.js decides when) ──────────────
+    //
+    // Suspending stops the pass loop and closes the change-feed signal; it
+    // does not stop serving — the copy on disk is still the copy, and a
+    // suspended device is one nobody is looking at. Nothing is dropped:
+    // resuming re-opens the signal from the cursor STORED IN INDEXEDDB (not
+    // the one the signal was first opened with at boot, which on a device
+    // left open all day re-downloaded every change since the morning on each
+    // reconnect) and runs a pass at once, which reads the feed from that same
+    // cursor. A resume is a catch-up, never a fresh download.
+    suspendLive() {
+      if (stopped || suspended) return false;
+      suspended = true;
+      clearTimeoutFn(timer);
+      clearTimeoutFn(signalTimer);
+      if (signalUnsub) { signalUnsub(); signalUnsub = null; }
+      return true;
+    },
+    resumeLive() {
+      if (!suspended) return false;
+      suspended = false;
+      startedAt = now();
+      if (stopped || !wanted) return true;
+      schedule(0);
+      watchChanges();
+      return true;
+    },
+    isSuspended: () => suspended,
+    // Every leg this account may read is served from the local copy.
+    fullyMirrored: () => lastServing.length > 0 && readableUnserved.length === 0,
     stop() {
       stopped = true;
       wanted = false;

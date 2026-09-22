@@ -61,6 +61,11 @@ export function openMirrorDb({
   indexedDBFactory = globalThis.indexedDB,
   dbName = MIRROR_DB_NAME,
 } = {}) {
+  const open = () => openConnection(indexedDBFactory, dbName);
+  return open().then((conn) => wrap(conn, open));
+}
+
+function openConnection(indexedDBFactory, dbName) {
   return new Promise((resolve, reject) => {
     if (!indexedDBFactory) { reject(new Error("IndexedDB unavailable")); return; }
     const req = indexedDBFactory.open(dbName, 1);
@@ -76,19 +81,80 @@ export function openMirrorDb({
       }
     };
     req.onerror = () => reject(asError(req, "mirror db open failed"));
-    req.onsuccess = () => resolve(wrap(req.result));
+    req.onsuccess = () => resolve(req.result);
   });
 }
 
-function wrap(db) {
+// ─── A CONNECTION THE BROWSER CLOSED IS REOPENED, NOT MOURNED ────────────────
+//
+// A phone that freezes a backgrounded page — iOS Safari especially, Chrome on
+// Android too — may close the page's IndexedDB connection underneath it. The
+// rows are all still on disk; only the handle is dead, and every
+// `db.transaction()` on it throws InvalidStateError for the rest of the
+// session.
+//
+// Measured 22 Sep 2026 (cost watch, Mike's iPhone and his shop Android): on
+// every wake, every mirrored screen fell back to a WHOLE-NODE live read —
+// /products, /orders, /stock, /returns_log, ~15 MB — for the 20–26 seconds
+// until the next pass succeeded. The mirror was complete the whole time; the
+// device just could not open a transaction on it.
+//
+// So a transaction that cannot be opened, or a connection the browser has
+// announced it closed, gets ONE fresh connection and one retry. Never more: a
+// device whose IndexedDB is genuinely gone must fail loudly, so the callers
+// fall back to live reads rather than wait on a store that will never answer.
+class TxnOpenFailed extends Error {
+  constructor(cause) { super("mirror db transaction could not open"); this.cause = cause; }
+}
+const isClosedConnectionError = (err) =>
+  err?.name === "InvalidStateError" || /closing|closed|connection.*lost/i.test(String(err?.message ?? ""));
+
+function wrap(initial, reopen = null) {
+  let db = initial;
+  let closed = false;
+  let reopening = null;
+  const watch = (conn) => {
+    // The browser tells us, when it can. A tab that is upgrading the schema
+    // elsewhere asks us to close; we do, and reopen on the next transaction.
+    try {
+      conn.onclose = () => { if (conn === db) closed = true; };
+      conn.onversionchange = () => { try { conn.close(); } catch { /* ignore */ } if (conn === db) closed = true; };
+    } catch { /* a fake without these properties */ }
+  };
+  watch(db);
+  async function freshConnection() {
+    if (!reopen) throw new Error("mirror db connection closed");
+    if (!reopening) {
+      reopening = reopen().then((conn) => { db = conn; closed = false; watch(conn); return conn; })
+        .finally(() => { reopening = null; });
+    }
+    return reopening;
+  }
+
   // Every method funnels through txn() so a failure anywhere in a batch aborts
   // the WHOLE transaction — that atomicity is what "interrupted mid-write
   // leaves the store consistent" rests on.
-  function txn(storeNames, mode, body) {
+  async function txn(storeNames, mode, body) {
+    if (closed && reopen) await freshConnection();
+    try {
+      return await txnOn(db, storeNames, mode, body, { retryable: !!reopen });
+    } catch (err) {
+      if (!(err instanceof TxnOpenFailed)) throw err;
+      await freshConnection();
+      return txnOn(db, storeNames, mode, body, { retryable: false });
+    }
+  }
+  function txnOn(conn, storeNames, mode, body, { retryable }) {
     return new Promise((resolve, reject) => {
       let tx;
-      try { tx = db.transaction(storeNames, mode); }
-      catch (err) { reject(err); return; }
+      try { tx = conn.transaction(storeNames, mode); }
+      catch (err) {
+        // Only a failure to OPEN the transaction is retried: nothing has run,
+        // so running the body again cannot apply anything twice.
+        if (retryable && isClosedConnectionError(err)) reject(new TxnOpenFailed(err));
+        else reject(err);
+        return;
+      }
       const stores = {};
       for (const n of Array.isArray(storeNames) ? storeNames : [storeNames]) {
         stores[n] = tx.objectStore(n);
@@ -402,7 +468,7 @@ function wrap(db) {
       return removed;
     },
 
-    close() { db.close(); },
+    close() { reopen = null; closed = true; db.close(); },
   };
   return handle;
 }

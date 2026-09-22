@@ -865,6 +865,14 @@ export function createSyncEngine({
         ? runRangeLeg(leg)
         : downloadSnapshotLeg(leg)));
       if (res === null) continue;
+      // NOT censused here, one leg at a time, and deliberately so. A repaired
+      // leg is served on its own vouch (and the shrink guard, which compares
+      // it to what was held) until the device is whole again — censused just
+      // below — or the next scheduled census. Forcing the census after EVERY
+      // repair was tried (Fable-vs-spec review, PR #639) and is a byte bomb:
+      // a leg that still disagrees with /mirror_counts loses its marker again
+      // and is re-downloaded on the next pass, every minute, instead of once
+      // per CENSUS_CHECK_MS.
       // Re-stamp the whole-device marker only when every leg is back — and
       // ask the census FIRST. A device that becomes complete through repairs
       // reaches exactly the state the download path forces a census for, and
