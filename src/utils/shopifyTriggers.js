@@ -283,6 +283,174 @@ export const TRIGGERS = [
   T("baccarat"),
   T("l1212", { label: "l.12.12" }),                   // Lacoste fragrance code (squash of L.12.12)
   T("l12", { mode: "word" }),
+  // ─── CLASSES ADDED 2026-08-22, AFTER A LEXICON-INDEPENDENT SCAN ───────────
+  // The list above was built from sneaker and apparel labels. A scan of every
+  // pushed field on all 703 live products — deliberately NOT driven by this
+  // lexicon, but by subtracting the vocabulary a compliant listing is allowed
+  // to use and reading the residue — found 88 marks it did not know, on 139
+  // products, 19.8% of the shop. They fall into classes nobody had considered.
+  //
+  // Every entry below was checked against all live titles before being added,
+  // and the mode chosen from what it actually collides with. That check is not
+  // optional: "roam" in squash mode matches "Ret-RO A M-a Maniaire", and
+  // "verto" matches "Fold O-VER TO-ngue". Squash spans word joins, which is
+  // what makes it powerful and what makes short terms dangerous.
+
+  // (d) CAR MARQUES & MOTORSPORT — licensed apparel and team caps. A class with
+  // no presence at all in the old list, and the one that prompted this pass.
+  T("ferrari", { cat: "parent" }),
+  T("mclaren", { cat: "parent" }),
+  T("mercedes", { cat: "parent", mode: "word" }),          // also a given name
+  T("nascar", { cat: "parent", alts: ["naskar"] }),        // misspelling is live
+  T("porsche", { cat: "parent" }),
+  T("lamborghini", { cat: "parent" }),
+  T("maserati", { cat: "parent" }),
+  T("bugatti", { cat: "parent" }),
+  T("aston martin", { cat: "parent" }),
+  T("alfa romeo", { cat: "parent" }),
+  T("scuderia", { cat: "parent" }),
+  T("petronas", { cat: "parent" }),
+
+  // (e) SHIRT SPONSORS — the corporate marks printed across retro football
+  // shirts. NOT covered by the "teams are the product, not the maker" note
+  // below: an airline, a brewery, a bank and a telco are third-party marks that
+  // have nothing to do with what the garment IS. This was the largest
+  // unconsidered class after model names.
+  T("fly emirates", { cat: "parent" }),
+  T("emirates", { cat: "parent", mode: "word" }),
+  T("jvc", { cat: "parent", mode: "word" }),               // inside "jvc"-free words? word mode anyway
+  T("sharp", { cat: "parent", mode: "word" }),             // ordinary adjective — word mode is mandatory
+  T("carlsberg", { cat: "parent" }),
+  T("bwin", { cat: "parent", mode: "word" }),
+  T("parmalat", { cat: "parent" }),
+  T("vodafone", { cat: "parent" }),
+  T("aig", { cat: "parent", mode: "word" }),               // inside "craig", "aigrette"
+  T("autoglass", { cat: "parent" }),
+  T("crown paints", { cat: "parent" }),
+  T("standard chartered", { cat: "parent" }),
+  T("teka", { cat: "parent", mode: "word" }),
+  T("candy", { cat: "parent", mode: "word" }),             // also a colour word ("candy pink")
+  T("o2", { cat: "parent", mode: "word" }),                // two chars — word mode or it shreds everything
+  T("holsten", { cat: "parent" }),
+  T("sanyo", { cat: "parent" }),
+  T("chevrolet", { cat: "parent" }),
+  T("etihad", { cat: "parent" }),
+
+  // (f) MUSICIANS & ARTIST COLLABORATIONS — the class already existed in spirit
+  // (Travis Scott, Certified Lover Boy) but was never filled in.
+  T("central cee", { cat: "sublabel" }),
+  T("drake", { cat: "sublabel", mode: "word" }),           // also a surname and a duck
+  T("bad bunny", { cat: "sublabel" }),
+  T("benito", { cat: "sublabel", mode: "word" }),          // Bad Bunny's given name, used alone on one shoe
+  T("kaws", { cat: "sublabel", mode: "word" }),
+  T("wales bonner", { cat: "sublabel" }),
+  T("a ma maniere", { cat: "sublabel", alts: ["a ma maniaire"] }),
+  T("liberty london", { cat: "sublabel" }),
+
+  // (g) LICENSED CHARACTERS & IP — a licensed character is a mark like any
+  // other, and these are the ones a gateway is most likely to key on.
+  T("hello kitty", { cat: "parent" }),
+  T("sanrio", { cat: "parent" }),
+  T("snorlax", { cat: "parent" }),
+  T("pokemon", { cat: "parent" }),
+  T("pikachu", { cat: "parent" }),
+  T("disney", { cat: "parent" }),
+  T("marvel", { cat: "parent", mode: "word" }),            // ordinary verb
+  T("star wars", { cat: "parent" }),
+
+  // (h) LUXURY HOUSES the original census missed, including the live misspelling.
+  // NO "dg" / "d&g" ALT. Both were in the first draft of this block and both are
+  // disasters in squash mode: "dg" matched "re-D G-ingham", "Tame D G-reen" and
+  // "Leron-D G-rey" — 11 innocent live titles from one two-letter alt. Word mode
+  // would not save it either, since "d&g" tokenises to the words "d" and "g".
+  // The full name and the live misspelling are enough.
+  T("dolce gabbana", { cat: "parent", alts: ["dose gabbana"] }),
+  T("gabbana", { cat: "parent" }),
+  T("barrow", { cat: "parent", mode: "word" }),            // also a wheelbarrow
+
+  // (i) FRAGRANCE HOUSES & LINES — perfume only became a category recently and
+  // the lexicon never grew to meet it.
+  T("acqua di gio", { cat: "parent", alts: ["acquadi gio", "acquadi"] }),
+  T("gio", { cat: "parent", mode: "word" }),               // inside "region", "religion" — word mode mandatory
+  T("gentleman", { cat: "parent", mode: "word" }),         // ordinary noun; only a mark in perfume context
+  T("invictus", { cat: "parent" }),
+  T("sauvage", { cat: "parent" }),
+  T("bleu de chanel", { cat: "parent" }),
+
+  // (j) COMPONENT / MATERIAL MARKS — printed on the product itself.
+  T("goodyear", { cat: "parent", mode: "word" }),
+  T("vibram", { cat: "parent" }),
+  T("gore tex", { cat: "parent", alts: ["goretex"] }),
+  T("cordura", { cat: "parent" }),
+  T("primaloft", { cat: "parent" }),
+
+  // (k) MODEL / SILHOUETTE NAMES the census missed. Same category as Air Max and
+  // Samba above — these are simply the ones nobody had seen yet.
+  T("flightposite", { cat: "model" }),
+  T("fuelcell", { cat: "model", alts: ["fuel cell"] }),
+  T("tasman", { cat: "model", mode: "word" }),
+  T("fontanka", { cat: "model" }),
+  T("mayze", { cat: "model", mode: "word" }),
+  T("osweego", { cat: "model" }),
+  T("adistar", { cat: "model" }),
+  T("adios", { cat: "model", mode: "word" }),              // Spanish word
+  T("sl72", { cat: "model", alts: ["sl 72"] }),
+  T("spinor", { cat: "model" }),
+  T("ukiyo", { cat: "model", mode: "word" }),
+  T("athene", { cat: "model", mode: "word" }),
+  T("glenclyffe", { cat: "model" }),
+  T("cragstone", { cat: "model" }),
+  T("verto", { cat: "model", mode: "word" }),              // "fold oVER TOngue" in squash mode
+  T("phatty", { cat: "model", mode: "word" }),
+  T("northstar", { cat: "model", alts: ["north star"] }),
+  T("maddsen", { cat: "model" }),
+  T("lerond", { cat: "model" }),
+  T("audysol", { cat: "model", alts: ["audyssol", "audyssey", "audyssor"], label: "audysol" }),
+  T("roam", { cat: "model", mode: "word" }),               // "retRO A Ma" in squash mode
+  T("karpri", { cat: "model" }),
+  T("cabo rojo", { cat: "model" }),
+  T("evo sl", { cat: "model", mode: "word" }),
+
+  // (l) SPORTS TEAMS, CLUBS AND LEAGUES — THIS REVERSES A DOCUMENTED DECISION.
+  // The note below this list says team names "stay — they are the product, not
+  // the maker", and names Red Sox as an example. That reasoning is coherent, but
+  // the owner's instruction of 2026-08-22 is explicit that teams and leagues are
+  // a class the lexicon must cover. Reversed here, deliberately and on the
+  // record, rather than quietly.
+  //
+  // BARE COUNTRY NAMES ARE STILL NOT TRIGGERS. "England", "Brazil", "Portugal"
+  // are places; stripping them would mangle honest descriptions and they are not
+  // themselves marks. The national federations' crests are the mark, and the
+  // word is not the crest. Flagged for the owner rather than decided silently.
+  T("seattle mariners", { cat: "parent" }),
+  T("atlanta braves", { cat: "parent" }),
+  T("red sox", { cat: "parent" }),
+  T("sox", { cat: "parent", mode: "word" }),
+  T("yankees", { cat: "parent" }),
+  T("dodgers", { cat: "parent" }),
+  T("lakers", { cat: "parent" }),
+  T("clemson", { cat: "parent", mode: "word" }),
+  T("nba", { cat: "parent", mode: "word" }),
+  T("mlb", { cat: "parent", mode: "word" }),
+  T("nfl", { cat: "parent", mode: "word" }),
+  T("manchester united", { cat: "parent", alts: ["man united", "man utd"] }),
+  T("manchester city", { cat: "parent", alts: ["man city"] }),
+  T("liverpool", { cat: "parent", mode: "word" }),
+  T("chelsea", { cat: "parent", mode: "word" }),
+  T("arsenal", { cat: "parent", mode: "word" }),           // ordinary noun
+  T("tottenham", { cat: "parent", mode: "word" }),
+  T("newcastle", { cat: "parent", mode: "word" }),
+  T("real madrid", { cat: "parent" }),
+  T("barcelona", { cat: "parent", mode: "word" }),
+  T("ac milan", { cat: "parent" }),
+  T("inter milan", { cat: "parent" }),
+  T("juventus", { cat: "parent", mode: "word" }),
+  T("lazio", { cat: "parent", mode: "word" }),
+  T("ajax", { cat: "parent", mode: "word" }),              // also a cleaning brand and a Greek hero
+  T("bayern munich", { cat: "parent" }),
+  T("sporting cp", { cat: "parent" }),                     // NOT bare "sporting" — ordinary adjective
+  T("paris saint germain", { cat: "parent", alts: ["psg", "paris saint-germain"] }),
+
 ];
 
 // "On" (On Running): leading word only, in front of its own model vocabulary.
