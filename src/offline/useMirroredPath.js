@@ -84,40 +84,58 @@ export function useMirroredPath(path, enabled = true) {
   );
   const expectMirror = !!legName && enabled && isLegServing(legName);
 
-  const [state, setState] = useState(() => (expectMirror ? PENDING : FALLBACK));
+  // The state carries the PATH it answers for. A render for a new path must
+  // never be handed the previous path's rows, and it would be for one render
+  // (before the effect below runs) if this were a bare answer.
+  const [state, setState] = useState(() => ({ path, answer: expectMirror ? PENDING : FALLBACK }));
   const liveRef = useRef(0);
 
   useEffect(() => {
-    if (!enabled || !path || !legName) { setState(FALLBACK); return undefined; }
-    if (!expectMirror) { setState(FALLBACK); return undefined; }
+    if (!enabled || !path || !legName) { setState({ path, answer: FALLBACK }); return undefined; }
+    if (!expectMirror) { setState({ path, answer: FALLBACK }); return undefined; }
     let cancelled = false;
     const token = (liveRef.current += 1);
-    setState(PENDING);
+    // ── A RE-READ KEEPS THE ANSWER IT IS REPLACING ──────────────────────────
+    //
+    // This effect re-runs on every version bump — every change-feed pass that
+    // applied anything, several a minute on a trading day. It used to reset to
+    // PENDING here, and PENDING's value is null, so for the length of the
+    // IndexedDB rebuild every screen reading this path was told the node was
+    // EMPTY. On the refill screens that was the whole list of requests
+    // vanishing and coming back every few seconds, with staff unable to fulfil
+    // a line that kept disappearing under them (21 Sep 2026). The rows had
+    // not changed at all; the order that moved was somebody else's.
+    //
+    // A local copy that has answered for THIS path keeps showing that answer
+    // until the new one lands, exactly as a live onValue keeps its last
+    // snapshot until the next. Only a first read — or a new path — is pending.
+    setState((prev) => (prev.path === path && prev.answer.verdict === "mirror" ? prev : { path, answer: PENDING }));
     (async () => {
       if (!(await mirrorCanAnswer(path))) {
         // Not a failure and not an empty node. The hint was stale or the leg
         // has gone unusable since; the caller opens its live read.
-        if (!cancelled && token === liveRef.current) setState(FALLBACK);
+        if (!cancelled && token === liveRef.current) setState({ path, answer: FALLBACK });
         return;
       }
       try {
         const db = await getMirrorDbHandle();
         const value = await readMirroredPath(db, path);
         if (cancelled || token !== liveRef.current) return;
-        if (value === MISS) { setState(FALLBACK); return; }
-        setState({ value, settled: true, error: false, verdict: "mirror" });
+        if (value === MISS) { setState({ path, answer: FALLBACK }); return; }
+        setState({ path, answer: { value, settled: true, error: false, verdict: "mirror" } });
       } catch (err) {
         if (cancelled || token !== liveRef.current) return;
         // A local read that FAILED is not an empty node, and must not be shown
         // as one. Falling back is the honest answer.
         console.warn(`offline mirror: local read of /${path} failed:`, err);
-        setState(FALLBACK);
+        setState({ path, answer: FALLBACK });
       }
     })();
     return () => { cancelled = true; };
   }, [path, enabled, legName, version, expectMirror, servingHint]);
 
-  return state;
+  if (state.path === path) return state.answer;
+  return expectMirror ? PENDING : FALLBACK;
 }
 
 /**
