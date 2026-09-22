@@ -192,6 +192,39 @@ export function MirrorGate({ auth, storage, children }) {
     runtimeRef.current.stop();
   }, [enabled]);
 
+  // ── IDLE: A DEVICE NOBODY IS USING STOPS LISTENING ────────────────────────
+  //
+  // See idleSuspend.js for when, and what never suspends. Started only once a
+  // runtime exists and the switch is on; turning the switch off STOPS it,
+  // which resumes first — a device must never be left suspended with the
+  // mirror off, since then it would have neither source.
+  useEffect(() => {
+    if (!enabled || !runtime) return undefined;
+    let stopIdle = null;
+    let cancelled = false;
+    (async () => {
+      const [{ startIdleSuspend }, { goOffline, goOnline }, { database }, { isLegServing }, { MIRROR_LEGS }, { isUpdateBusy }, { pendingCount }] =
+        await Promise.all([
+          import("./idleSuspend"),
+          import("firebase/database"),
+          import("../firebase"),
+          import("./serving"),
+          import("./nodes"),
+          import("../update/updateChecker"),
+          import("./pendingWrites"),
+        ]);
+      if (cancelled) return;
+      stopIdle = startIdleSuspend({
+        isMirrored: () => MIRROR_LEGS.some((l) => isLegServing(l.name)),
+        isBusy: () => isUpdateBusy() || pendingCount() > 0,
+        isWatchSurface: () => typeof window !== "undefined" && window.location.hash === "#tv",
+        suspend: () => { runtime.suspendLive(); goOffline(database); },
+        resume: () => { goOnline(database); runtime.resumeLive(); },
+      }).stop;
+    })().catch((err) => console.warn("offline mirror: idle suspend unavailable —", err?.message ?? err));
+    return () => { cancelled = true; if (stopIdle) stopIdle(); };
+  }, [enabled, runtime]);
+
   // Nothing is ever shown over the app: see autoConsent. `runtime` is kept
   // for the status dot, which reads it through mirrorRuntime.
   void runtime;

@@ -226,6 +226,7 @@ export async function startOfflineMirror({
 
   let timer = null;
   let stopped = false;
+  let suspended = false;
   let passes = 0;
   // ── THE TWO FACTS THAT DECIDE WHETHER ANYTHING READS RTDB ─────────────────
   //
@@ -295,7 +296,7 @@ export async function startOfflineMirror({
   }
 
   function schedule(ms) {
-    if (stopped) return;
+    if (stopped || suspended) return;
     clearTimeoutFn(timer);
     timer = setTimeoutFn(tick, ms);
   }
@@ -344,9 +345,9 @@ export async function startOfflineMirror({
   let signalUnsub = null;
   let signalTimer = null;
   async function watchChanges() {
-    if (signalUnsub || stopped) return;
+    if (signalUnsub || stopped || suspended) return;
     const after = (await db.getMeta(FEED_CURSOR_META)) ?? null;
-    if (stopped) return;
+    if (stopped || suspended || signalUnsub) return;
     signalUnsub = adapter.subscribeNewChanges(CHANGES_ROOT, after, () => {
       if (stopped) return;
       // Debounced: a refill run writes hundreds of records and they should
@@ -564,6 +565,33 @@ export async function startOfflineMirror({
       if (!signedInEnough()) return;
       stopped = false; schedule(0); watchChanges();
     },
+    // ── IDLE: SUSPEND AND RESUME (idleSuspend.js decides when) ──────────────
+    //
+    // Suspending stops the pass loop and closes the change-feed signal; it
+    // does not stop serving — the copy on disk is still the copy, and a
+    // suspended device is one nobody is looking at. Nothing is dropped:
+    // resuming re-opens the signal from the cursor STORED IN INDEXEDDB (not
+    // the one the signal was first opened with at boot, which on a device
+    // left open all day re-downloaded every change since the morning on each
+    // reconnect) and runs a pass at once, which reads the feed from that same
+    // cursor. A resume is a catch-up, never a fresh download.
+    suspendLive() {
+      if (stopped || suspended) return false;
+      suspended = true;
+      clearTimeoutFn(timer);
+      clearTimeoutFn(signalTimer);
+      if (signalUnsub) { signalUnsub(); signalUnsub = null; }
+      return true;
+    },
+    resumeLive() {
+      if (!suspended) return false;
+      suspended = false;
+      if (stopped || !wanted) return true;
+      schedule(0);
+      watchChanges();
+      return true;
+    },
+    isSuspended: () => suspended,
     stop() {
       stopped = true;
       wanted = false;
