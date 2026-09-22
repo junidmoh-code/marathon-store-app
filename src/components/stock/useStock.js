@@ -4,7 +4,7 @@
 // rules require auth != null — a listener registered before sign-in is rejected
 // and does NOT auto-retry on permission errors.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { ref, onValue } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
@@ -107,15 +107,17 @@ export function usePathState(path, enabled = true) {
   // kept on screen until the new source answers — the same thing a live
   // onValue does between two snapshots. A different path, a disabled read or
   // a signed-out device holds nothing.
+  //
+  // The hold is WRITTEN only once a render has committed (the layout effect),
+  // never during render: a render React starts and then discards must not
+  // leave behind an answer the screen never showed. (Sonnet architect review.)
   const heldRef = useRef(null);
-  if (!authReady || !enabled || !path) {
-    heldRef.current = null;
-    return answer;
-  }
-  if (answer.settled) {
-    heldRef.current = { path, answer };
-    return answer;
-  }
+  const active = authReady && enabled && !!path;
+  useLayoutEffect(() => {
+    if (!active) heldRef.current = null;
+    else if (answer.settled) heldRef.current = { path, answer };
+  });
+  if (!active || answer.settled) return answer;
   if (heldRef.current && heldRef.current.path === path) return heldRef.current.answer;
   return answer;
 }
