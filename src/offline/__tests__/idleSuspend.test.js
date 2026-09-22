@@ -1,6 +1,6 @@
 import { describe, test, expect, beforeEach } from "vitest";
 import {
-  startIdleSuspend, shouldSuspend, isTradingHours, IDLE_MS, IDLE_CHECK_MS,
+  startIdleSuspend, shouldSuspend, isTradingHours, IDLE_MS, IDLE_CHECK_MS, SUSPEND_MAX_MS, HEARTBEAT_MS,
 } from "../idleSuspend";
 
 // 22 Sep 2026, SAST. 22:00 SAST = 20:00 UTC; 11:00 SAST = 09:00 UTC.
@@ -123,6 +123,33 @@ describe("and resumes", () => {
     const p = page(NIGHT);
     p.pass(IDLE_MS);
     p.ctl.stop();
+    expect(p.calls).toEqual(["suspend", "resume"]);
+  });
+});
+
+describe("a suspend is bounded, so the kill switch is still heard", () => {
+  test("every SUSPEND_MAX_MS it reconnects for HEARTBEAT_MS, then suspends again", () => {
+    const p = page(NIGHT);
+    p.hide();
+    p.pass(IDLE_MS);
+    expect(p.calls).toEqual(["suspend"]);
+    p.pass(SUSPEND_MAX_MS - IDLE_CHECK_MS);
+    expect(p.calls).toEqual(["suspend"]);
+    p.pass(IDLE_CHECK_MS);
+    expect(p.calls).toEqual(["suspend", "resume"]);          // heartbeat: connected
+    p.pass(HEARTBEAT_MS - IDLE_CHECK_MS);
+    expect(p.calls).toEqual(["suspend", "resume"]);          // …for the whole heartbeat
+    p.pass(IDLE_CHECK_MS);
+    expect(p.calls).toEqual(["suspend", "resume", "suspend"]);
+  });
+
+  test("a switch heard OFF during the heartbeat keeps it connected", () => {
+    const p = page(NIGHT);
+    p.hide();
+    p.pass(IDLE_MS + SUSPEND_MAX_MS);
+    expect(p.calls).toEqual(["suspend", "resume"]);
+    p.state.mirrored = false;                                 // the hint drops with the switch
+    p.pass(3 * HEARTBEAT_MS);
     expect(p.calls).toEqual(["suspend", "resume"]);
   });
 });

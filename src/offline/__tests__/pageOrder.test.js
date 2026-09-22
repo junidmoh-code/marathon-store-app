@@ -43,6 +43,9 @@ const sdk = vi.hoisted(() => {
     timeoutOnce: [],      // nodes whose NEXT read times out (a slow line)
     reads: [],            // { path, rows, bytes }
     childSubs: [],        // onChildAdded queries, as opened; `closed` once unsubscribed
+    gate: null,           // { path, promise }: reads of `path` wait on it; inFlight counts them
+    inFlight: 0,
+    maxInFlight: 0,
   };
   const INT = /^-?(0*)\d{1,10}$/;
   const asInt = (k) => (INT.test(k) && Math.abs(Number(k)) <= 2147483647 ? Number(k) : null);
@@ -143,6 +146,11 @@ const sdk = vi.hoisted(() => {
     limitToLast: (n) => c("limitToLast", { _limit: n }),
     async get(q) {
       const root = String(q.path).split("/")[0];
+      if (state.gate && state.gate.path === q.path) {
+        state.inFlight += 1;
+        state.maxInFlight = Math.max(state.maxInFlight, state.inFlight);
+        try { await state.gate.promise; } finally { state.inFlight -= 1; }
+      }
       const slow = state.timeoutOnce.indexOf(root);
       if (slow >= 0) {
         state.timeoutOnce.splice(slow, 1);
@@ -478,6 +486,7 @@ function clockAndTimers() {
     },
     pending: () => pending.size,
     advance(ms) { now += ms; },
+    nextDue: () => Math.min(...[...pending.values()].map((x) => x.due)),
   };
 }
 
@@ -1203,6 +1212,96 @@ describe("idle suspend and resume (bootstrap suspendLive / resumeLive)", () => {
     while (await t.fireNext()) { /* drain */ }
     expect(sdk.state.reads.length).toBe(n);
     expect(rt.isSuspended()).toBe(true);
+    rt.stop();
+  });
+});
+
+describe("one pass at a time (Sonnet architect review, PR #639)", () => {
+  test("a resume while a pass is still resolving never runs a second pass beside it, and still gets its catch-up", async () => {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    rt.suspendLive();                                   // clean slate: no timer
+
+    // The feed read hangs, as a network call parked by goOffline does.
+    let release;
+    sdk.state.gate = { path: "mirror_changes", promise: new Promise((r) => { release = r; }) };
+    sdk.state.maxInFlight = 0;
+    rt.resumeLive();
+    const first = t.fireNext();                         // pass 1 starts, and hangs
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sdk.state.inFlight).toBe(1);
+
+    rt.suspendLive();                                   // idle again…
+    rt.resumeLive();                                    // …and back: schedule(0)
+    await t.fireNext();                                 // the resume's tick
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sdk.state.maxInFlight).toBe(1);              // never two passes at once
+
+    release();
+    sdk.state.gate = null;
+    await first;
+    // The resume's catch-up was queued, not dropped: due now, not in a minute.
+    expect(t.pending()).toBeGreaterThan(0);
+    expect(t.nextDue()).toBe(t.now());
+    const before = sdk.state.reads.filter((r) => r.path === "mirror_changes").length;
+    await t.fireNext();
+    await new Promise((r) => setTimeout(r, 30));
+    expect(sdk.state.reads.filter((r) => r.path === "mirror_changes").length).toBeGreaterThan(before);
+    rt.stop();
+  });
+});
+
+describe("review fixes (Fable-vs-spec, PR #639)", () => {
+  async function complete() {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const db = await freshMirrorDb();
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    await rt.runOnePass();
+    return { rt, t, db };
+  }
+
+  test("FULLY mirrored means every leg this account may read — a leg it may not read does not count", async () => {
+    const { rt, db } = await complete();
+    expect(rt.fullyMirrored()).toBe(true);
+    // A leg this account is refused: no live source either way.
+    await recordLegFailed(db, "users", {
+      path: "users", reason: "not-permitted", at: T0, state: "skipped", retryable: false, keepVouched: false,
+    });
+    await rt.refreshServing();
+    expect(isLegServing("users")).toBe(false);
+    expect(rt.fullyMirrored()).toBe(true);
+    // A leg it CAN read, read live: some screen may be holding that
+    // subscription, so the device must not park its connection.
+    await recordLegFailed(db, "products", {
+      path: "products", reason: "count-drift", at: T0, state: "failed", retryable: false, keepVouched: false,
+    });
+    await rt.refreshServing();
+    expect(rt.fullyMirrored()).toBe(false);
+    rt.stop();
+  });
+
+  test("time spent suspended is not time the feed failed: a slow first read after resume drops nothing", async () => {
+    const { rt, t } = await complete();
+    expect(isLegServing("products")).toBe(true);
+    rt.suspendLive();
+    t.advance(8 * 3600 * 1000);                  // a night, suspended
+    rt.resumeLive();
+    sdk.state.timeoutOnce.push(...Array(8).fill("mirror_changes"));
+    const rep = await rt.runOnePass();
+    expect(rep.errors.some((e) => e.where === "feed")).toBe(true);
+    expect(isLegServing("products")).toBe(true);
+    sdk.state.timeoutOnce.length = 0;
     rt.stop();
   });
 });

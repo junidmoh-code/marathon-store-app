@@ -187,8 +187,11 @@ export async function startOfflineMirror({
   // subscriptions again on the next render.
   // When the change feed last read cleanly, and since when each leg's check
   // could not be asked. In memory: a reload is a fresh start (servingDecision).
-  const startedAt = now();
+  // `let`: a resume from idle suspend is a fresh start too — the time spent
+  // suspended is not time the feed failed (Fable-vs-spec review, PR #639).
+  let startedAt = now();
   const unknownVerdictSince = new Map();
+  let readableUnserved = MIRROR_LEGS.map((l) => l.name);   // until the first refresh says otherwise
   async function refreshServing() {
     // THE ACCESS GATE: nothing is served to a signed-in account whose read
     // rights have not been checked on this device (ensureAccess). Every pass
@@ -217,6 +220,20 @@ export async function startOfflineMirror({
       now: now(),
     });
     lastServing = serving;
+    // Legs this account COULD read that are not served locally — each one is
+    // a live subscription some screen may be holding. A leg the account may
+    // not read at all (not-permitted) has no live source either, so it does
+    // not count against the device. idleSuspend asks this: a device parks its
+    // connection only when nothing it could read is being read live.
+    // (Fable-vs-spec review, PR #639: "mirrored" used to mean ANY leg served.)
+    const unserved = [];
+    for (const leg of MIRROR_LEGS) {
+      if (serving.includes(leg.name)) continue;
+      let reason = null;
+      try { reason = (await getLegHealth(db, leg.name))?.reason ?? null; } catch { /* unknown: counts */ }
+      if (reason !== "not-permitted") unserved.push(leg.name);
+    }
+    readableUnserved = unserved;
     setServingLegs(serving);
     // A device serving locally has no whole-node subscriptions to make a stale
     // bundle obvious, so its reload becomes forced rather than advisory.
@@ -301,8 +318,24 @@ export async function startOfflineMirror({
     timer = setTimeoutFn(tick, ms);
   }
 
+  // ONE pass at a time. A pass still resolving when the device suspended (its
+  // network call parked by goOffline) must not run alongside the pass a
+  // resume starts: the late one finishes, and its own `finally` schedules the
+  // next. (Sonnet architect review, PR #639.)
+  // A tick that arrives meanwhile (a resume's catch-up) is not dropped: it
+  // runs as soon as the pass in flight has finished.
+  let passRunning = false;
+  let passAgain = false;
   async function tick() {
     if (stopped) return;
+    if (passRunning) { passAgain = true; return; }
+    passRunning = true;
+    try { await tickOnce(); } finally {
+      passRunning = false;
+      if (passAgain) { passAgain = false; schedule(0); }
+    }
+  }
+  async function tickOnce() {
     // ── THE KILL SWITCH, CHECKED BY THE ENGINE ITSELF ───────────────────────
     // MirrorGate stops the runtime when the switch goes false, and that is the
     // path that runs. This is the second lock on the same door: a runtime
@@ -586,12 +619,15 @@ export async function startOfflineMirror({
     resumeLive() {
       if (!suspended) return false;
       suspended = false;
+      startedAt = now();
       if (stopped || !wanted) return true;
       schedule(0);
       watchChanges();
       return true;
     },
     isSuspended: () => suspended,
+    // Every leg this account may read is served from the local copy.
+    fullyMirrored: () => lastServing.length > 0 && readableUnserved.length === 0,
     stop() {
       stopped = true;
       wanted = false;

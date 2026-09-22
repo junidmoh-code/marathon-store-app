@@ -5,12 +5,14 @@
 // another window, a tablet on a counter — holding their database connection and
 // running a mirror pass every minute for nobody.
 //
-// On a MIRRORED device (the copy is complete, verified and serving — see
-// servingDecision.js) nothing on screen needs the live connection to be
+// On a FULLY MIRRORED device (every leg this account may read is served from a
+// complete, verified, current copy — see servingDecision.js and bootstrap's
+// fullyMirrored) nothing on screen needs the live connection to be
 // correct: the rows are on disk. So after IDLE_MS of nobody using the device,
 // this closes it — firebase's goOffline, which parks every listener the SDK
 // holds, and the mirror's own pass loop and change signal — and reopens all of
-// it the instant somebody comes back.
+// it the instant somebody comes back — and, while nobody does, reconnects
+// briefly every half hour so the kill switch is still heard (SUSPEND_MAX_MS).
 //
 // ── WHAT COUNTS AS "NOBODY IS USING IT" ─────────────────────────────────────
 //
@@ -44,6 +46,18 @@ export const IDLE_MS = 15 * 60 * 1000;
 // How often the idle clock is looked at. Coarse on purpose: the deadline is
 // fifteen minutes, and a check a minute costs nothing.
 export const IDLE_CHECK_MS = 60 * 1000;
+// ── A SUSPEND IS BOUNDED ────────────────────────────────────────────────────
+// goOffline parks EVERY listener on the one shared connection, the kill switch
+// included, so a suspended device cannot hear /mirror_switch go off. Left
+// unattended overnight it would not hear it until somebody touched it — and
+// the switch is the thing that has to work on a bad night. (Sonnet architect
+// review, PR #639.) So a suspend lasts at most SUSPEND_MAX_MS; then the device
+// reconnects for HEARTBEAT_MS — long enough for the switch listener to answer
+// and one mirror pass to catch up from its cursor — and, if still idle and
+// still mirrored, suspends again. Worst case, an unattended device obeys the
+// switch half an hour late; a device somebody is using obeys it at once.
+export const SUSPEND_MAX_MS = 30 * 60 * 1000;
+export const HEARTBEAT_MS = 2 * 60 * 1000;
 export const TRADING_OPEN_HOUR_SAST = 7;
 export const TRADING_CLOSE_HOUR_SAST = 19;
 
@@ -92,10 +106,13 @@ export function startIdleSuspend({
   let lastActivityAt = now();
   let hiddenSince = hiddenNow() ? now() : null;
   let suspended = false;
+  let suspendedAt = null;
+  let heartbeatUntil = null;
 
   const doResume = () => {
     if (!suspended) return;
     suspended = false;
+    suspendedAt = null;
     try { resume(); } catch (err) { console.warn("offline mirror: resume failed —", err?.message ?? err); }
   };
 
@@ -103,10 +120,19 @@ export function startIdleSuspend({
     if (suspended) {
       // Nothing on this device may go on believing it is mirrored once it is
       // not — a switch turned off from the office reaches a suspended device
-      // only after it reconnects, but a hint dropped locally (sign-out, a
+      // only at its next heartbeat, but a hint dropped locally (sign-out, a
       // failed leg) must reopen the connection now.
-      if (!isMirrored()) doResume();
+      if (!isMirrored()) { doResume(); return; }
+      if (now() - suspendedAt >= SUSPEND_MAX_MS) {
+        doResume();
+        heartbeatUntil = now() + HEARTBEAT_MS;
+      }
       return;
+    }
+    // Connected for the heartbeat: hear the switch, catch up, then decide.
+    if (heartbeatUntil !== null) {
+      if (now() < heartbeatUntil) return;
+      heartbeatUntil = null;
     }
     const verdict = shouldSuspend({
       now: now(),
@@ -119,6 +145,7 @@ export function startIdleSuspend({
     });
     if (!verdict) return;
     suspended = true;
+    suspendedAt = now();
     try { suspend(); } catch (err) {
       suspended = false;
       console.warn("offline mirror: suspend failed —", err?.message ?? err);
@@ -127,6 +154,7 @@ export function startIdleSuspend({
 
   const onActivity = () => {
     lastActivityAt = now();
+    heartbeatUntil = null;
     doResume();
   };
   const onVisibility = () => {

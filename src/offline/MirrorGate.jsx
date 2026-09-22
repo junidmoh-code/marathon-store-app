@@ -215,7 +215,9 @@ export function MirrorGate({ auth, storage, children }) {
         ]);
       if (cancelled) return;
       stopIdle = startIdleSuspend({
-        isMirrored: () => MIRROR_LEGS.some((l) => isLegServing(l.name)),
+        // Every readable leg served (runtime) AND still served right now (the
+        // hint, which folds in the switch and the signed-in account).
+        isMirrored: () => runtime.fullyMirrored() && MIRROR_LEGS.some((l) => isLegServing(l.name)),
         isBusy: () => isUpdateBusy() || pendingCount() > 0,
         isWatchSurface: () => typeof window !== "undefined" && window.location.hash === "#tv",
         suspend: () => { runtime.suspendLive(); goOffline(database); },
