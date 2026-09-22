@@ -4,7 +4,7 @@
 // rules require auth != null — a listener registered before sign-in is rejected
 // and does NOT auto-retry on permission errors.
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { ref, onValue } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
@@ -63,26 +63,30 @@ function usePath(path, enabled = true) {
 //             gate, never `value != null`.
 //   error   — the read failed. Callers must degrade rather than block: an
 //             unreadable node means "this input is unknown", not "stop".
+const UNSETTLED = Object.freeze({ value: null, settled: false, error: false });
+
 export function usePathState(path, enabled = true) {
   const authReady = useAuthReady();
   const mirrored = useMirroredPath(path, enabled && authReady);
   const live = mirrored.verdict === "fallback";
-  const [state, setState] = useState({ value: null, settled: false, error: false });
+  // Tagged with the path it answers for, so a render for a new path is never
+  // handed the old path's snapshot before the effect below has reset it.
+  const [state, setState] = useState({ path, answer: UNSETTLED });
   useEffect(() => {
     // `live` is a DEPENDENCY, not an early return: a device that falls back
     // after the local copy turns out to be unusable must then open the read it
     // skipped, and a device whose setup finishes mid-session must close the
     // one it opened.
     if (!authReady || !enabled || !path || !live) {
-      setState({ value: null, settled: false, error: false });
+      setState({ path, answer: UNSETTLED });
       return;
     }
     const unsub = onValue(
       ref(database, path),
-      (snap) => setState({ value: snap.val(), settled: true, error: false }),
+      (snap) => setState({ path, answer: { value: snap.val(), settled: true, error: false } }),
       (err) => {
         console.warn(`Stock read error on /${path}:`, err);
-        setState({ value: null, settled: true, error: true });
+        setState({ path, answer: { value: null, settled: true, error: true } });
       },
     );
     return () => unsub();
@@ -90,7 +94,30 @@ export function usePathState(path, enabled = true) {
   // "pending" reports settled:false — the same thing a live read reports
   // before its first snapshot — so every caller that gates on `settled`
   // behaves identically whichever source it is on.
-  return live ? state : mirrored;
+  const liveAnswer = state.path === path ? state.answer : UNSETTLED;
+  const answer = live ? liveAnswer : mirrored;
+
+  // ── A SOURCE SWITCH IS NOT AN EMPTY NODE ──────────────────────────────────
+  //
+  // The mirror going unusable, the kill switch going off, a device's setup
+  // finishing mid-session: each moves this path from one source to the other,
+  // and the new source has not answered yet. Handing that unanswered state to
+  // the screen blanked every refill, fulfil and transfer list for the length
+  // of the switch (21 Sep 2026). What was last KNOWN about this same path is
+  // kept on screen until the new source answers — the same thing a live
+  // onValue does between two snapshots. A different path, a disabled read or
+  // a signed-out device holds nothing.
+  const heldRef = useRef(null);
+  if (!authReady || !enabled || !path) {
+    heldRef.current = null;
+    return answer;
+  }
+  if (answer.settled) {
+    heldRef.current = { path, answer };
+    return answer;
+  }
+  if (heldRef.current && heldRef.current.path === path) return heldRef.current.answer;
+  return answer;
 }
 
 // /locations -> { id: {label,kind,sellable,active} } (object map, as stored).
