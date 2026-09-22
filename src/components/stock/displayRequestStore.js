@@ -33,6 +33,30 @@
 // requests their own sequence would put two numbering schemes in the same queue
 // for the same kind of work.
 //
+// ── THERE IS NO UNDO HERE, AND THAT IS A DECISION ────────────────────────────
+// (Owner asked for one, 2026-09-09. It is deliberately NOT here.) Undoing means
+// removing a live warehouse job, and three things stand in the way of doing that
+// safely from a client:
+//
+//   1. THE READ IS DENIED TO THE PEOPLE WHO NEED IT. /orders has no per-child
+//      .read — a destShop-pinned device may only read it through the
+//      orderByChild("destShop") query useOrders already runs. A store operator
+//      is the only person who walks a wall, and they cannot read orders/{id}
+//      directly, so an undo that checks before deleting fails for exactly them.
+//   2. READ-THEN-DELETE IS NOT ATOMIC. The one guard that matters is "the
+//      warehouse has not started". Between the check and the delete the
+//      warehouse can mark it Ready — and then a pair is off a shelf and in
+//      somebody's hand with no order left to explain it. A transaction would
+//      close that window, and a transaction needs the same denied read.
+//   3. NOTHING IN THIS APP HAS EVER DELETED AN ORDER. A wall-walk request is
+//      written nowhere else, so a delete would destroy the only copy — raisedBy
+//      included — and leave no trace it ever existed.
+//
+// The confirm step in DisplayRegistrationView is what actually stops the
+// accidental request, and it needs none of this. A real undo belongs behind a
+// callable that can read the order with admin rights, refuse it atomically, and
+// write a tombstone before it removes anything.
+//
 // ── CLAUSE 1 IS ENFORCED HERE TOO ────────────────────────────────────────────
 // At most one open display request per product per store. The caller passes the
 // orders it already holds and this refuses a second — the same guard the
