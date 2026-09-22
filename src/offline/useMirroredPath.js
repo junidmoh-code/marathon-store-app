@@ -27,7 +27,7 @@ import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "reac
 import { offlineMirrorEnabled } from "./killSwitch";
 import { getMirrorDbHandle } from "./mirrorDbHandle";
 import { legFor, readMirroredPath, MISS } from "./localReads";
-import { isLegUsable } from "./health";
+import { legVerdict } from "./health";
 import { subscribeMirror, versionKey } from "./mirrorSignal";
 import { isLegServing, subscribeServing, servingKeyFor } from "./serving";
 
@@ -44,24 +44,44 @@ const PENDING = Object.freeze({ value: null, settled: false, error: false, verdi
 const FALLBACK = Object.freeze({ value: null, settled: false, error: false, verdict: "fallback" });
 
 /**
- * Can the local copy answer for this path right now?
+ * Can the local copy answer for this path right now? "yes", "no" or "unknown".
  *
  * Deliberately asked fresh on every read rather than cached: a leg goes
  * unusable the moment the census marks it drifted or a swap refuses, and a
  * cached "yes" over that is a screen serving a copy the mirror has already
  * disowned.
+ *
+ * "unknown" — the question could not be put (health.js legVerdict). It is NOT
+ * "no": a phone whose IndexedDB handle died in its pocket still holds every
+ * row, and treating that as "no" opened a whole-node live read on every
+ * mounted screen, every wake (cost watch, 22 Sep 2026).
  */
-export async function mirrorCanAnswer(path) {
-  if (!offlineMirrorEnabled()) return false;
+export async function mirrorVerdict(path) {
+  if (!offlineMirrorEnabled()) return "no";
   const match = legFor(path);
-  if (!match) return false;
+  if (!match) return "no";
   try {
     const db = await getMirrorDbHandle();
-    return await isLegUsable(db, match.leg.name);
+    return await legVerdict(db, match.leg.name);
   } catch {
-    return false;
+    return "unknown";
   }
 }
+
+/** The yes/no form, for callers that only need to know "may I read it now". */
+export async function mirrorCanAnswer(path) {
+  return (await mirrorVerdict(path)) === "yes";
+}
+
+// ── HOW LONG "I COULD NOT ASK" IS GIVEN ─────────────────────────────────────
+//
+// A check or a local read that fails is asked again after each of these
+// delays. While it is being asked, a screen that already had a local answer
+// for this path KEEPS it — the same thing a live onValue does between
+// snapshots. When they are used up, the path falls back to its live read, so
+// a device whose database has genuinely gone never sits on a copy it cannot
+// check: ~4.5 seconds, then live.
+export const UNKNOWN_RETRY_MS = Object.freeze([250, 1000, 3000]);
 
 export function useMirroredPath(path, enabled = true) {
   const legName = useMemo(() => (path ? legFor(path)?.leg?.name ?? null : null), [path]);
@@ -84,17 +104,33 @@ export function useMirroredPath(path, enabled = true) {
   );
   const expectMirror = !!legName && enabled && isLegServing(legName);
 
-  // The state carries the PATH it answers for. A render for a new path must
-  // never be handed the previous path's rows, and it would be for one render
-  // (before the effect below runs) if this were a bare answer.
-  const [state, setState] = useState(() => ({ path, answer: expectMirror ? PENDING : FALLBACK }));
+  // The state carries the PATH it answers for AND the decision it was made
+  // under (`mirror`: was this device expected to serve it locally). A render
+  // for a new path must never be handed the previous path's rows — and a
+  // render whose decision has changed must never be handed an answer made
+  // under the old one. Without the second tag, the render in which `enabled`
+  // first became true (auth restored) returned the FALLBACK computed while it
+  // was false, and every caller opened its whole-node live read for that one
+  // render before the effect below could correct it.
+  const [state, setState] = useState(() => ({
+    path, mirror: expectMirror, answer: expectMirror ? PENDING : FALLBACK,
+  }));
+  // Consecutive "could not ask" answers for this path, and the retry they
+  // schedule. A number in state so a retry is an ordinary re-run of the
+  // effect below, through the one tested path.
+  const [unknownTries, setUnknownTries] = useState(0);
   const liveRef = useRef(0);
 
   useEffect(() => {
-    if (!enabled || !path || !legName) { setState({ path, answer: FALLBACK }); return undefined; }
-    if (!expectMirror) { setState({ path, answer: FALLBACK }); return undefined; }
+    if (!enabled || !path || !legName || !expectMirror) {
+      setState({ path, mirror: false, answer: FALLBACK });
+      setUnknownTries(0);
+      return undefined;
+    }
     let cancelled = false;
+    let retryTimer = null;
     const token = (liveRef.current += 1);
+    const current = () => !cancelled && token === liveRef.current;
     // ── A RE-READ KEEPS THE ANSWER IT IS REPLACING ──────────────────────────
     //
     // This effect re-runs on every version bump — every change-feed pass that
@@ -109,32 +145,49 @@ export function useMirroredPath(path, enabled = true) {
     // A local copy that has answered for THIS path keeps showing that answer
     // until the new one lands, exactly as a live onValue keeps its last
     // snapshot until the next. Only a first read — or a new path — is pending.
-    setState((prev) => (prev.path === path && prev.answer.verdict === "mirror" ? prev : { path, answer: PENDING }));
+    setState((prev) => (
+      prev.path === path && prev.mirror && prev.answer.verdict === "mirror"
+        ? prev
+        : { path, mirror: true, answer: PENDING }
+    ));
+    // Could not ask. Keep what is on screen (the setState above already did)
+    // and ask again; when the retries are spent, go live.
+    const couldNotAsk = (err) => {
+      if (!current()) return;
+      if (unknownTries < UNKNOWN_RETRY_MS.length) {
+        retryTimer = setTimeout(() => { if (current()) setUnknownTries((n) => n + 1); }, UNKNOWN_RETRY_MS[unknownTries]);
+        return;
+      }
+      if (err) console.warn(`offline mirror: local read of /${path} failed:`, err);
+      setState({ path, mirror: true, answer: FALLBACK });
+    };
     (async () => {
-      if (!(await mirrorCanAnswer(path))) {
-        // Not a failure and not an empty node. The hint was stale or the leg
-        // has gone unusable since; the caller opens its live read.
-        if (!cancelled && token === liveRef.current) setState({ path, answer: FALLBACK });
+      const verdict = await mirrorVerdict(path);
+      if (!current()) return;
+      if (verdict === "unknown") { couldNotAsk(null); return; }
+      if (verdict !== "yes") {
+        // Not a failure and not an empty node — a FACT: the hint was stale or
+        // the leg has gone unusable since. The caller opens its live read now.
+        setState({ path, mirror: true, answer: FALLBACK });
         return;
       }
       try {
         const db = await getMirrorDbHandle();
         const value = await readMirroredPath(db, path);
-        if (cancelled || token !== liveRef.current) return;
-        if (value === MISS) { setState({ path, answer: FALLBACK }); return; }
-        setState({ path, answer: { value, settled: true, error: false, verdict: "mirror" } });
+        if (!current()) return;
+        if (value === MISS) { setState({ path, mirror: true, answer: FALLBACK }); return; }
+        setUnknownTries(0);
+        setState({ path, mirror: true, answer: { value, settled: true, error: false, verdict: "mirror" } });
       } catch (err) {
-        if (cancelled || token !== liveRef.current) return;
         // A local read that FAILED is not an empty node, and must not be shown
-        // as one. Falling back is the honest answer.
-        console.warn(`offline mirror: local read of /${path} failed:`, err);
-        setState({ path, answer: FALLBACK });
+        // as one. Asked again first; falling back is the honest answer after.
+        couldNotAsk(err);
       }
     })();
-    return () => { cancelled = true; };
-  }, [path, enabled, legName, version, expectMirror, servingHint]);
+    return () => { cancelled = true; if (retryTimer) clearTimeout(retryTimer); };
+  }, [path, enabled, legName, version, expectMirror, servingHint, unknownTries]);
 
-  if (state.path === path) return state.answer;
+  if (state.path === path && state.mirror === expectMirror) return state.answer;
   return expectMirror ? PENDING : FALLBACK;
 }
 

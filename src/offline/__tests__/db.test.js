@@ -1,7 +1,8 @@
 import { describe, test, expect } from "vitest";
 import { freshMirrorDb, rec } from "./helpers";
 import { MIRROR_STORES } from "../nodes";
-import { DATA_STORES } from "../db";
+import { DATA_STORES, openMirrorDb } from "../db";
+import { IDBFactory } from "fake-indexeddb";
 
 describe("the mirror database", () => {
   test("creates an object store for every leg in the registry", async () => {
@@ -157,5 +158,54 @@ describe("the mirror database", () => {
       { key: "hub1|p1", value: { 9: { qty: 2 } } },
       { key: "hub2|p1", value: { 9: { qty: 5 } } },
     ]);
+  });
+});
+
+// ─── THE BROWSER CLOSING THE CONNECTION IS SURVIVED ───────────────────────────
+//
+// A phone that freezes a backgrounded page may close its IndexedDB connection.
+// The rows are still on disk; before this, every transaction on the dead handle
+// threw for the rest of the session and every mirrored screen fell back to a
+// whole-node live read (cost watch, 22 Sep 2026).
+describe("a connection the browser closed", () => {
+  async function openCounting() {
+    const factory = new IDBFactory();
+    const raw = [];
+    const counting = {
+      open: (...args) => {
+        const req = factory.open(...args);
+        req.addEventListener("success", () => raw.push(req.result));
+        return req;
+      },
+    };
+    const db = await openMirrorDb({ indexedDBFactory: counting, dbName: "closed-under-us" });
+    await db.ensureSchema({ buildVersion: "t" });
+    return { db, raw };
+  }
+
+  test("is reopened, and the read that found it closed still answers", async () => {
+    const { db, raw } = await openCounting();
+    await db.setMeta("k", 42);
+    raw.at(-1).close();                          // the browser, not us
+    await expect(db.getMeta("k")).resolves.toBe(42);
+    expect(raw.length).toBe(2);                  // exactly one fresh connection
+    await expect(db.count("products")).resolves.toBe(0);
+    expect(raw.length).toBe(2);                  // and it is kept
+  });
+
+  test("an announced close (onclose) reopens before the next transaction", async () => {
+    const { db, raw } = await openCounting();
+    await db.setMeta("k", 1);
+    raw.at(-1).close();
+    raw.at(-1).onclose?.();
+    await expect(db.getMeta("k")).resolves.toBe(1);
+    expect(raw.length).toBe(2);
+  });
+
+  test("OUR close() is final — nothing reopens behind it", async () => {
+    const { db, raw } = await openCounting();
+    db.close();
+    await expect(db.getMeta("k")).rejects.toThrow();
+    expect(raw.length).toBe(1);
   });
 });

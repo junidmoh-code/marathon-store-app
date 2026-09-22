@@ -43,8 +43,9 @@ import { confirmPending } from "./pendingWrites";
 import { FEED_CURSOR_META, CHANGES_ROOT } from "./changeFeed";
 import { primePhotoCachePass, isPhotoCacheApiAvailable, openPhotoCache, heldPhotoCount } from "./photoCache";
 import { readWholeLeg, MISS } from "./localReads";
-import { setServingLegs, notifyServingChanged } from "./serving";
-import { isLegUsable, getLegHealth, vouchingRecord } from "./health";
+import { setServingLegs, notifyServingChanged, isLegServing } from "./serving";
+import { legVerdict, getLegHealth, vouchingRecord } from "./health";
+import { decideServing, feedIsStale } from "./servingDecision";
 import { setForcedUpdateMode, setUpdateBusy } from "../update/updateChecker";
 import {
   addBytes, bytesToday, deviceRecord, reportDeviceHealth, thisDevice,
@@ -152,6 +153,7 @@ export async function startOfflineMirror({
     // last failure if there was one.
     setupProgress: null, setupDone: [], setupError: null, downloading: false,
     setupCensus: null,
+    feedOkAt: null,
   };
 
   // The setup screen listens here. The engine takes ONE onProgress at
@@ -183,6 +185,10 @@ export async function startOfflineMirror({
   // its first render (serving.js). A leg that goes unusable — a refused swap, a
   // census drift — drops out here, and the hooks reading it open their live
   // subscriptions again on the next render.
+  // When the change feed last read cleanly, and since when each leg's check
+  // could not be asked. In memory: a reload is a fresh start (servingDecision).
+  const startedAt = now();
+  const unknownVerdictSince = new Map();
   async function refreshServing() {
     // THE ACCESS GATE: nothing is served to a signed-in account whose read
     // rights have not been checked on this device (ensureAccess). Every pass
@@ -194,11 +200,22 @@ export async function startOfflineMirror({
       setForcedUpdateMode(false);
       return [];
     }
-    const serving = [];
+    // See servingDecision.js: complete-and-vouched AND a current feed, with
+    // "could not ask" kept apart from "no".
+    const verdicts = {};
     for (const leg of MIRROR_LEGS) {
-      try { if (await isLegUsable(db, leg.name)) serving.push(leg.name); }
-      catch { /* an unreadable leg is not a serving one */ }
+      try { verdicts[leg.name] = await legVerdict(db, leg.name); }
+      catch { verdicts[leg.name] = "unknown"; }
     }
+    const serving = decideServing({
+      verdicts,
+      wasServing: (name) => isLegServing(name),
+      unknownSince: unknownVerdictSince,
+      feedStale: feedIsStale({
+        connected: connection.isConnected(), feedOkAt: state.feedOkAt, startedAt, now: now(),
+      }),
+      now: now(),
+    });
     lastServing = serving;
     setServingLegs(serving);
     // A device serving locally has no whole-node subscriptions to make a stale
@@ -230,6 +247,11 @@ export async function startOfflineMirror({
   async function runOnePass() {
     const report = await engine.runPass();
     state.lastPass = { at: now(), ...report };
+    // The feed is CURRENT only if this pass actually read it. Skipped (backing
+    // off, benched) or failed is not current, however recent the pass.
+    if (report.feed && !report.feed.skipped && !report.errors.some((e) => e.where === "feed")) {
+      state.feedOkAt = now();
+    }
     state.lastError = report.errors.length ? report.errors[0] : null;
 
     // Wake the screens whose nodes moved — and only those.
@@ -295,6 +317,10 @@ export async function startOfflineMirror({
     } catch (err) {
       state.lastError = { where: "pass", reason: err.name, message: err.message };
       ms = PASS_BACKOFF_MS;
+      // A pass that could not finish still has to re-decide what is served:
+      // a feed that has been failing on a live line for FEED_STALE_MS must
+      // leave the hint even if no pass ever gets as far as refreshServing.
+      await refreshServing().catch(() => {});
     } finally {
       // See the header: the ONLY place the next pass is scheduled.
       schedule(ms);

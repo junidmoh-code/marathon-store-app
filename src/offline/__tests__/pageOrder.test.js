@@ -202,6 +202,7 @@ import { createRtdbAdapter } from "../rtdbAdapter";
 import { startOfflineMirror } from "../bootstrap";
 import { MIRROR_LEGS } from "../nodes";
 import { isLegUsable, getLegHealth, recordLegFailed } from "../health";
+import { FEED_STALE_MS, UNKNOWN_GRACE_MS } from "../servingDecision";
 import { setMirrorSwitchValue, _resetMirrorSwitchForTests } from "../killSwitch";
 import { _resetServingForTests, isLegServing } from "../serving";
 import { _resetMirrorSignalForTests } from "../mirrorSignal";
@@ -474,6 +475,7 @@ function clockAndTimers() {
       return true;
     },
     pending: () => pending.size,
+    advance(ms) { now += ms; },
   };
 }
 
@@ -1006,5 +1008,118 @@ describe("the end of a walk is SEEN, not inferred from the page budget", () => {
     const P = MV_PAGE();
     expect(tsWalkPages(P)).toBe(2);
     expect(tsWalkPages(P - 1)).toBe(1);
+  });
+});
+
+// ─── A LIVE SUBSCRIPTION IS SKIPPED ONLY WHILE THE COPY IS VERIFIED AND CURRENT ─
+//
+// The gate that lets a mirrored device drop its whole-node live reads is the
+// serving hint refreshServing writes after every pass. These drive the REAL
+// start function through the real adapter and check the hint — the thing every
+// screen reads on its first render — in both directions.
+describe("the serving gate: verified, current, and back to live the moment it is not", () => {
+  async function completeDevice() {
+    const tree = fullTree();
+    tree.mirror_counts = census(tree, T0);
+    sdk.state.tree = tree;
+    const real = await freshMirrorDb();
+    // The database the device holds, with a switch that makes every read of
+    // it fail the way a closed IndexedDB connection does.
+    let broken = false;
+    const fail = () => { throw Object.assign(new Error("The database connection is closing."), { name: "InvalidStateError" }); };
+    const db = new Proxy(real, {
+      get(target, prop) {
+        const v = target[prop];
+        if (typeof v !== "function") return v;
+        return (...args) => (broken && ["getMeta", "count", "countPrefixed"].includes(prop) ? fail() : v.apply(target, args));
+      },
+    });
+    const t = clockAndTimers();
+    const rt = await startReal(t, db);
+    await rt.consentAndDownload();
+    await settle(rt.downloadInBackground(), t);
+    const allServing = () => MIRROR_LEGS.every((l) => isLegServing(l.name));
+    const noneServing = () => MIRROR_LEGS.every((l) => !isLegServing(l.name));
+    return { rt, t, db: real, setBroken: (b) => { broken = b; }, allServing, noneServing };
+  }
+
+  test("a feed that has failed for FEED_STALE_MS on a live line drops every leg; it comes back when the feed does", async () => {
+    const { rt, t, allServing, noneServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+
+    // The feed stops answering. Inside the window: still served.
+    const failFeed = () => { sdk.state.timeoutOnce.push(...Array(8).fill("mirror_changes")); };
+    failFeed();
+    t.advance(FEED_STALE_MS - 60_000);
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+
+    // Past it: NOTHING is served — every screen reopens its live read.
+    sdk.state.timeoutOnce.length = 0; failFeed();
+    t.advance(2 * 60_000);
+    const rep = await rt.runOnePass();
+    expect(rep.errors.some((e) => e.where === "feed")).toBe(true);
+    expect(noneServing()).toBe(true);
+
+    // The feed answers again: served again, with no download.
+    sdk.state.timeoutOnce.length = 0;
+    const before = sdk.state.reads.length;
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+    expect(sdk.state.reads.slice(before).filter((r) => r.path !== "mirror_changes" && r.path !== "mirror_counts"
+      && !String(r.path).startsWith("insights_log") && !String(r.path).startsWith("stock_movements"))).toEqual([]);
+    rt.stop();
+  });
+
+  test("a leg whose copy goes bad leaves the hint at the next pass, alone", async () => {
+    const { rt, db, allServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+    // A guard trips on products: nothing vouches for its rows any more.
+    await recordLegFailed(db, "products", {
+      path: "products", reason: "count-drift", at: T0, state: "failed", retryable: false, keepVouched: false,
+    });
+    await rt.refreshServing();
+    expect(isLegServing("products")).toBe(false);
+    expect(isLegServing("orders")).toBe(true);
+    rt.stop();
+  });
+
+  test("a check that cannot be ASKED keeps a served leg for UNKNOWN_GRACE_MS, then reads live", async () => {
+    const { rt, t, setBroken, allServing, noneServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+
+    // A phone wakes with its IndexedDB handle dead. Not "the copy is bad".
+    setBroken(true);
+    await rt.refreshServing();
+    expect(allServing()).toBe(true);
+    t.advance(UNKNOWN_GRACE_MS / 2);
+    await rt.refreshServing();
+    expect(allServing()).toBe(true);
+
+    // Past the grace: a device whose database has really gone reads live.
+    t.advance(UNKNOWN_GRACE_MS);
+    await rt.refreshServing();
+    expect(noneServing()).toBe(true);
+
+    // …and "unknown" never turns a live read into a local one.
+    await rt.refreshServing();
+    expect(noneServing()).toBe(true);
+
+    setBroken(false);
+    await rt.refreshServing();
+    expect(allServing()).toBe(true);
+    rt.stop();
+  });
+
+  test("the switch going off drops everything at once, whatever the copy", async () => {
+    const { rt, allServing, noneServing } = await completeDevice();
+    await rt.runOnePass();
+    expect(allServing()).toBe(true);
+    setMirrorSwitchValue(false);
+    expect(noneServing()).toBe(true);
+    rt.stop();
   });
 });

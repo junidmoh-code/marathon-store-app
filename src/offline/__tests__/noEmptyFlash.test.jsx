@@ -34,8 +34,9 @@ const onValue = vi.fn((r, cb) => {
     const empty = node == null || (typeof node === "object" && Object.keys(node).length === 0);
     cb({ val: () => (empty ? null : structuredClone(node)) });
   }, 5);
-  return () => clearTimeout(t);
+  return () => { liveUnsubs += 1; clearTimeout(t); };
 });
+let liveUnsubs = 0;
 
 vi.mock("firebase/database", () => ({
   ref: (db, path) => ({ path }),
@@ -171,6 +172,7 @@ function expectNoEmptyFlash(renders) {
 
 beforeEach(() => {
   onValue.mockClear();
+  liveUnsubs = 0;
   _resetServingForTests();
   _resetMirrorSignalForTests();
   _resetMirrorDbHandleForTests();
@@ -305,4 +307,123 @@ describe("the refill list never goes empty while its rows exist", () => {
     expect(rowCount(h.renders.at(-1))).toBe(2);
     h.unmount();
   });
+});
+
+// ─── LIVE ↔ LOCAL: THE HANDOVER, BOTH WAYS, AND WHAT MAY NOT HAPPEN ON IT ─────
+//
+// A mirrored device drops its whole-node live reads (22 Sep 2026: /products,
+// /orders, /stock were still being downloaded by devices whose copy was
+// complete). These pin the handover itself: nothing blank either way, the live
+// read closed when the copy takes over, opened the moment it cannot, and never
+// opened for nothing.
+describe("live ↔ local handover", () => {
+  it("live → local: the copy taking over CLOSES the live read, and the list never blanks", async () => {
+    await seedMirror();
+    setServingLegs([]);                         // this device is not serving yet
+    const { usePathState } = await import("../../components/stock/useStock");
+    const h = mount(() => usePathState("refill_requests"));
+    await settle();
+    expect(onValue).toHaveBeenCalledTimes(1);   // live, as before the mirror
+    expect(rowCount(h.renders.at(-1))).toBe(2);
+
+    await act(async () => { setServingLegs(MIRROR_LEGS.map((l) => l.name)); });
+    await settle();
+    expect(liveUnsubs).toBe(1);                 // the whole-node read is gone
+    expect(onValue).toHaveBeenCalledTimes(1);   // and nothing re-opened it
+    expectNoEmptyFlash(h.renders);
+    expect(rowCount(h.renders.at(-1))).toBe(2);
+    h.unmount();
+  });
+
+  it("local → live: a guard trip on the leg reopens the live read at once, and the list never blanks", async () => {
+    await seedMirror();
+    const { usePathState } = await import("../../components/stock/useStock");
+    const h = mount(() => usePathState("refill_requests"));
+    await settle();
+    expect(onValue).not.toHaveBeenCalled();
+    // What refreshServing writes when the census marks /refill_requests drifted.
+    await act(async () => { setServingLegs(MIRROR_LEGS.map((l) => l.name).filter((n) => n !== "refills")); });
+    expect(onValue).toHaveBeenCalledTimes(1);   // in the same act — no pass to wait for
+    await settle();
+    expectNoEmptyFlash(h.renders);
+    expect(rowCount(h.renders.at(-1))).toBe(2);
+    h.unmount();
+  });
+
+  it("the render in which sign-in finishes opens NO live read on a serving device", async () => {
+    await seedMirror();
+    const { useMirroredPath } = await import("../useMirroredPath");
+    // App.jsx's pattern exactly: useProducts, useOrders, useTvOrders.
+    let ready = false;
+    const verdicts = [];
+    function Probe() {
+      const m = useMirroredPath("products", ready);
+      const live = m.verdict === "fallback";
+      verdicts.push({ ready, verdict: m.verdict });
+      React.useEffect(() => {
+        if (!ready || !live) return undefined;
+        return onValue({ path: "products" }, () => {});
+      }, [live]);
+      return null;
+    }
+    let tree;
+    act(() => { tree = TestRenderer.create(React.createElement(Probe)); });
+    await settle();
+    ready = true;                               // auth restored
+    await act(async () => { tree.update(React.createElement(Probe)); });
+    await settle();
+    expect(verdicts.filter((v) => v.ready && v.verdict === "fallback")).toEqual([]);
+    expect(verdicts.at(-1).verdict).toBe("mirror");
+    expect(onValue).not.toHaveBeenCalled();
+    act(() => tree.unmount());
+  });
+
+  // What a phone waking from a pocket looks like: every row on disk, the
+  // IndexedDB handle closed by the browser, every transaction refused.
+  const brokenDb = (db) => new Proxy(db, {
+    get(target, prop) {
+      const v = target[prop];
+      if (typeof v !== "function") return v;
+      return () => Promise.reject(Object.assign(new Error("The database connection is closing."), { name: "InvalidStateError" }));
+    },
+  });
+
+  it("a dead database handle KEEPS the rows on screen and opens no live read; it recovers by itself", async () => {
+    await seedMirror();
+    const { usePathState } = await import("../../components/stock/useStock");
+    const h = mount(() => usePathState("refill_requests"));
+    await settle();
+    const good = testDb;
+    testDb = brokenDb(good);
+    await act(async () => { bumpLegs(["refills"]); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 400)); });   // one retry spent
+    expect(onValue).not.toHaveBeenCalled();
+    testDb = good;                                                              // handle reopened
+    for (let i = 0; i < 30; i += 1) await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    await settle();
+    expect(onValue).not.toHaveBeenCalled();
+    expectNoEmptyFlash(h.renders);
+    expect(h.renders.at(-1).value).toEqual(REFILLS);
+    h.unmount();
+  });
+
+  it("a database that STAYS dead goes live after the retries — never neither source, never blank", async () => {
+    await seedMirror();
+    const { usePathState } = await import("../../components/stock/useStock");
+    const { UNKNOWN_RETRY_MS } = await import("../useMirroredPath");
+    const h = mount(() => usePathState("refill_requests"));
+    await settle();
+    testDb = brokenDb(testDb);
+    await act(async () => { bumpLegs(["refills"]); });
+    const total = UNKNOWN_RETRY_MS.reduce((a, b) => a + b, 0);
+    // Real time in short acts: React holds a timer's state update until the
+    // act it fired in ends, so one long act would let only one retry through.
+    const until = Date.now() + total + 800;
+    while (Date.now() < until) await act(async () => { await new Promise((r) => setTimeout(r, 50)); });
+    await settle();
+    expect(onValue).toHaveBeenCalledTimes(1);
+    expectNoEmptyFlash(h.renders);
+    expect(rowCount(h.renders.at(-1))).toBe(2);
+    h.unmount();
+  }, 15_000);
 });
