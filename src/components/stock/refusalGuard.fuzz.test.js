@@ -1,7 +1,8 @@
 // Property fuzz of refusalGuard.refusalTxn — 20,000 seeded random request
 // nodes. Stands in for the unavailable external reviewer (PR #643) alongside a
 // differently briefed second review. The invariants are the spec, not the code:
-//   • a sent request is never written (abort), and is left byte-identical;
+//   • a sent, closed or mid-send request is never written (abort), and is
+//     left byte-identical; only an OPEN request is refused;
 //   • a refusal NEVER produces the corrupted live shape (cancelled + fulfilledBy);
 //   • every field the refusal does not set survives unchanged; nulls clear;
 //   • a cold-cache null is a probe (null), never an abort.
@@ -13,7 +14,7 @@ const pick = (r, xs) => xs[Math.floor(r() * xs.length)];
 
 function randomNode(r) {
   const n = { productId: "p", size: pick(r, ["M", "7", "_", "10.5"]), qty: Math.floor(r() * 5), requestingLocation: pick(r, ["hub1", "hub2", "trophy"]) };
-  const status = pick(r, ["open", "fulfilled", "cancelled", undefined]);
+  const status = pick(r, ["open", "open", "fulfilled", "cancelled", undefined]);
   if (status !== undefined) n.status = status;
   if (r() < 0.3) n.sentQty = Math.floor(r() * 4);
   if (r() < 0.3) n.fulfilledBy = pick(r, [{ movementId: "rrf_x", qty: 1 }, { movementId: "rrf_x", qty: 2, uncounted: true }, "junk", null, 0]);
@@ -41,9 +42,11 @@ describe("refusalTxn — property fuzz", () => {
       const fields = randomFields(r);
       const before = JSON.stringify(cur);
       expect(refusalTxn(null, fields)).toBeNull();
-      const next = refusalTxn(cur, fields);
+      const sendingAt = r() < 0.15 ? pick(r, [0, 1, 2]) : null;
+      const next = refusalTxn(cur, fields, { sendingAt });
       expect(JSON.stringify(cur)).toBe(before);                         // never mutates its input
-      if (alreadySent(cur)) {
+      const midSend = sendingAt !== null && (Number(cur.sentQty) || 0) === sendingAt;
+      if (alreadySent(cur) || cur.status !== "open" || midSend) {
         aborted++;
         expect(next).toBeUndefined();
         continue;
@@ -59,7 +62,8 @@ describe("refusalTxn — property fuzz", () => {
       for (const k of Object.keys(cur)) if (!(k in fields)) expect(next[k]).toEqual(cur[k]);
       for (const v of Object.values(next)) expect(v).not.toBeNull();   // nothing RTDB would reject/drop
       // a second tap on the same (now refused) node writes the same thing
-      expect(refusalTxn(next, fields)).toEqual(next);
+      // a second tap on the same (now refused) node is blocked — it is closed
+      expect(refusalTxn(next, fields)).toBeUndefined();
     }
     expect(aborted).toBeGreaterThan(1000);
     expect(written).toBeGreaterThan(1000);

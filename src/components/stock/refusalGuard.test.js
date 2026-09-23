@@ -1,6 +1,6 @@
 // refusalGuard.js — the transaction body behind "Out of Stock" on a request.
 import { describe, it, expect } from "vitest";
-import { alreadySent, refusalTxn } from "./refusalGuard";
+import { alreadySent, refusalTxn, trancheMovementId } from "./refusalGuard";
 
 const OPEN = { productId: "p", size: "M", qty: 2, requestingLocation: "hub2", status: "open", createdAt: "2026-09-23T06:00:00.000Z" };
 const FIELDS = { status: "cancelled", resolvedAt: "2026-09-23T09:00:00.000Z", rejectedBy: "warehouse", cancelReason: null, resolvedBy: "u1" };
@@ -36,6 +36,25 @@ describe("refusalTxn", () => {
     const next = refusalTxn({ ...OPEN, cancelReason: "awaiting_upstream", sentQty: 1 }, FIELDS);
     expect(next).toEqual({ ...OPEN, sentQty: 1, status: "cancelled", resolvedAt: FIELDS.resolvedAt, rejectedBy: "warehouse", resolvedBy: "u1" });
     expect(next).not.toHaveProperty("cancelReason");
+  });
+  it("aborts on a request already CLOSED — an engine withdrawal or another person's refusal keeps its shape", () => {
+    const withdrawn = { ...OPEN, status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: "2026-09-22T10:00:00.000Z" };
+    expect(refusalTxn(withdrawn, FIELDS)).toBeUndefined();
+    const refused = { ...OPEN, status: "cancelled", resolvedBy: "u_first", resolvedAt: "2026-09-22T10:00:00.000Z" };
+    expect(refusalTxn(refused, FIELDS)).toBeUndefined();
+    expect(refusalTxn({ ...OPEN, status: undefined }, FIELDS)).toBeUndefined();
+    expect(refusalTxn("junk", FIELDS)).toBeUndefined();
+  });
+  it("aborts MID-SEND: the tranche's movement is recorded at the sentQty the request is still at", () => {
+    expect(refusalTxn(OPEN, FIELDS, { sendingAt: 0 })).toBeUndefined();
+    expect(refusalTxn({ ...OPEN, qty: 1, sentQty: 1 }, FIELDS, { sendingAt: 1 })).toBeUndefined();
+    // the movement found was an EARLIER tranche — the request has moved on; the remainder is refusable
+    expect(refusalTxn({ ...OPEN, qty: 1, sentQty: 1 }, FIELDS, { sendingAt: 0 })).toMatchObject({ status: "cancelled", sentQty: 1 });
+  });
+  it("names the tranche movement exactly as Fulfil does", () => {
+    expect(trancheMovementId("abc", 0)).toBe("rrf_abc");
+    expect(trancheMovementId("abc", undefined)).toBe("rrf_abc");
+    expect(trancheMovementId("abc", 2)).toBe("rrf_abc_2");
   });
   it("never mutates the value it was handed", () => {
     const cur = { ...OPEN };

@@ -371,10 +371,13 @@ describe("2 · one list, one design — identical rows, identical actions, ident
   it.each([
     ["fulfilled by another device", { status: "fulfilled", fulfilledBy: { movementId: "rrf_bootreq", qty: 2 }, resolvedBy: "u9" }],
     ["fulfilledBy recorded, status not yet caught up", { fulfilledBy: { movementId: "rrf_bootreq", qty: 2, uncounted: true } }],
-  ])("Out of Stock on a request already SENT (%s) is a no-op, logged as blocked", async (_label, sent) => {
+    ["withdrawn by the engine", { status: "cancelled", cancelReason: "no_longer_needed" }],
+    ["mid-send: the movement is recorded, the request not yet marked", {}, { "stock_movements/rrf_bootreq": { qty: 2, productId: "boot" } }],
+  ])("Out of Stock on a request already SENT or CLOSED (%s) is a no-op, logged as blocked", async (_label, sent, moved = {}) => {
     const tree = renderQueue();                        // the list: still open
     const oosBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock");
-    Object.assign(paths["refill_requests"].bootreq, sent);   // the server: already sent
+    Object.assign(paths["refill_requests"].bootreq, sent);   // the server: already sent / closed
+    Object.assign(gets, moved);
     const before = JSON.parse(JSON.stringify(paths["refill_requests"].bootreq));
     await act(async () => { await oosBtn.props.onClick(); });
     const out = textOf(tree.toJSON());
@@ -385,7 +388,8 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     expect(updateMock).toHaveBeenCalledTimes(1);        // …only the blocked-tap log
     const [logRef, log] = updateMock.mock.calls[0];
     expect(logRef.path).toBe(`refill_requests/bootreq/blockedRefusals/${NOW}`);
-    expect(log).toEqual({ atMs: NOW, byUid: "u1", byRole: "warehouse", sawStatus: sent.status || "open" });
+    expect(log).toEqual({ atMs: NOW, byUid: "u1", byRole: "warehouse", sawStatus: sent.status || "open",
+      ...(Object.keys(moved).length ? { midSend: true } : {}) });
     expect(out).not.toContain("failed — retry");        // staff see nothing new
   });
 
