@@ -26,9 +26,14 @@
 //     non-open request the same way.
 //   • MID-SEND — Fulfil moves the stock FIRST (movement rrf_{id}, or
 //     rrf_{id}_{sentQty} for a later tranche) and writes the request after.
-//     The caller looks that one movement up; if it is recorded for the tranche
-//     the request is still at, units are on their way and a refusal landing in
-//     the gap would leave moved stock under a "cancelled" request.
+//     The caller looks that one movement up; if it was recorded in the last
+//     MID_SEND_MS for the tranche the request is still at, units are on their
+//     way and a refusal landing in the gap would leave moved stock under a
+//     "cancelled" request. An OLDER movement is not a send in flight but a
+//     stuck one (its bookkeeping write failed and nobody retried): blocking
+//     there would silence the button on that row for good, so the refusal
+//     goes through as it always has — and the #642 write-off still counts the
+//     ledger transfer as a fulfilment (review of the fix delta, PR #643).
 // A PARTLY sent request is still open for its remainder, and "Out of Stock" on
 // that remainder is a real answer the queue has always accepted: it stays
 // allowed, and the sentQty already recorded survives the write (the
@@ -41,6 +46,19 @@ export function alreadySent(rr) {
 
 const sentOf = (rr) => Number(rr?.sentQty) || 0;
 
+// How long after its movement a send counts as still in flight. Fulfil's
+// bookkeeping follows the movement within one round trip; two minutes is a
+// wide margin for a slow connection.
+export const MID_SEND_MS = 2 * 60 * 1000;
+
+// Was this tranche movement recorded recently enough to be a send in flight?
+// An unreadable time is treated as NOT in flight — never wedge the button.
+export function sendInFlight(movement, nowMs) {
+  if (!movement || typeof movement !== "object") return false;
+  const t = Date.parse(movement.ts || "");
+  return Number.isFinite(t) && nowMs - t >= -MID_SEND_MS && nowMs - t <= MID_SEND_MS;
+}
+
 // The id Fulfil gives the tranche a request is at (RefillQueue fulfilRequest).
 export function trancheMovementId(id, sentQty) {
   const already = Number(sentQty) || 0;
@@ -52,7 +70,7 @@ export function trancheMovementId(id, sentQty) {
  *   cur          the live node (null on a cold cache first pass)
  *   fields       the refusal fields; a null value clears that field
  *   sendingAt    the sentQty whose tranche movement the caller found recorded
- *                (null when none was found or it could not be read)
+ *                AND still in flight (sendInFlight); null otherwise
  * → the next node, null (probe: see below), or undefined (blocked — abort).
  */
 export function refusalTxn(cur, fields, { sendingAt = null } = {}) {

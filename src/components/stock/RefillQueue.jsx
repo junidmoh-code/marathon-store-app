@@ -65,7 +65,7 @@ import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
 import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, sourceQueueLists } from "./firstBatchCore";
 import { notePendingUpdate } from "../../offline/pendingWrites";
-import { refusalTxn, trancheMovementId } from "./refusalGuard";
+import { refusalTxn, trancheMovementId, sendInFlight } from "./refusalGuard";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -559,13 +559,15 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       ...(auth.currentUser?.uid ? { resolvedBy: auth.currentUser.uid } : {}),
     };
     // MID-SEND: Fulfil records the tranche's movement before it marks the
-    // request. One single-record read; if it can't be made (offline) the
-    // refusal proceeds as it always has and the status guard still applies.
+    // request. One single-record read; a movement older than MID_SEND_MS is a
+    // stuck send, not one in flight, and does not block (refusalGuard.js). If
+    // the read can't be made (offline) the refusal proceeds as it always has
+    // and the status guard still applies.
     const listSent = Number(row._r?.sentQty) || 0;
     let sendingAt = null;
     try {
       const mv = (await get(ref(database, `stock_movements/${trancheMovementId(row.id, listSent)}`))).val();
-      if (mv) sendingAt = listSent;
+      if (sendInFlight(mv, serverNowMs())) sendingAt = listSent;
     } catch { sendingAt = null; }
     try {
       // applyLocally stays at the SDK default (true), like the update() this

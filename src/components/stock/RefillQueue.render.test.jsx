@@ -372,7 +372,7 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     ["fulfilled by another device", { status: "fulfilled", fulfilledBy: { movementId: "rrf_bootreq", qty: 2 }, resolvedBy: "u9" }],
     ["fulfilledBy recorded, status not yet caught up", { fulfilledBy: { movementId: "rrf_bootreq", qty: 2, uncounted: true } }],
     ["withdrawn by the engine", { status: "cancelled", cancelReason: "no_longer_needed" }],
-    ["mid-send: the movement is recorded, the request not yet marked", {}, { "stock_movements/rrf_bootreq": { qty: 2, productId: "boot" } }],
+    ["mid-send: the movement is recorded, the request not yet marked", {}, { "stock_movements/rrf_bootreq": { qty: 2, productId: "boot", ts: new Date(NOW - 5000).toISOString() } }],
   ])("Out of Stock on a request already SENT or CLOSED (%s) is a no-op, logged as blocked", async (_label, sent, moved = {}) => {
     const tree = renderQueue();                        // the list: still open
     const oosBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock");
@@ -391,6 +391,19 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     expect(log).toEqual({ atMs: NOW, byUid: "u1", byRole: "warehouse", sawStatus: sent.status || "open",
       ...(Object.keys(moved).length ? { midSend: true } : {}) });
     expect(out).not.toContain("failed — retry");        // staff see nothing new
+  });
+
+  // A STUCK send (movement recorded long ago, the request never marked — the
+  // fulfiller's bookkeeping write failed and nobody retried) must not wedge
+  // the button: the row sits in the list, and Out of Stock works as it always
+  // has (review of the fix delta, PR #643).
+  it("an OLD tranche movement with the request still open does not block Out of Stock", async () => {
+    gets["stock_movements/rrf_bootreq"] = { qty: 2, productId: "boot", ts: new Date(NOW - 3 * 3600e3).toISOString() };
+    const tree = renderQueue();
+    await act(async () => { await lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock").props.onClick(); });
+    tree.unmount();
+    expect(txnWrites).toHaveLength(1);
+    expect(txnWrites[0].value.status).toBe("cancelled");
   });
 
   it("Out of Stock on the REMAINDER of a partly sent request still refuses it — and keeps what was sent", async () => {

@@ -1,6 +1,6 @@
 // refusalGuard.js — the transaction body behind "Out of Stock" on a request.
 import { describe, it, expect } from "vitest";
-import { alreadySent, refusalTxn, trancheMovementId } from "./refusalGuard";
+import { alreadySent, refusalTxn, trancheMovementId, sendInFlight, MID_SEND_MS } from "./refusalGuard";
 
 const OPEN = { productId: "p", size: "M", qty: 2, requestingLocation: "hub2", status: "open", createdAt: "2026-09-23T06:00:00.000Z" };
 const FIELDS = { status: "cancelled", resolvedAt: "2026-09-23T09:00:00.000Z", rejectedBy: "warehouse", cancelReason: null, resolvedBy: "u1" };
@@ -50,6 +50,17 @@ describe("refusalTxn", () => {
     expect(refusalTxn({ ...OPEN, qty: 1, sentQty: 1 }, FIELDS, { sendingAt: 1 })).toBeUndefined();
     // the movement found was an EARLIER tranche — the request has moved on; the remainder is refusable
     expect(refusalTxn({ ...OPEN, qty: 1, sentQty: 1 }, FIELDS, { sendingAt: 0 })).toMatchObject({ status: "cancelled", sentQty: 1 });
+  });
+  it("a send is in flight only while its movement is recent — an unreadable or old one never blocks", () => {
+    const now = Date.parse("2026-09-23T10:00:00.000Z");
+    const at = (ms) => ({ ts: new Date(now - ms).toISOString() });
+    expect(sendInFlight(at(5000), now)).toBe(true);
+    expect(sendInFlight(at(MID_SEND_MS), now)).toBe(true);
+    expect(sendInFlight(at(MID_SEND_MS + 1), now)).toBe(false);
+    expect(sendInFlight(at(-5000), now)).toBe(true);           // a device clock a little ahead
+    expect(sendInFlight({}, now)).toBe(false);
+    expect(sendInFlight({ ts: "garbage" }, now)).toBe(false);
+    expect(sendInFlight(null, now)).toBe(false);
   });
   it("names the tranche movement exactly as Fulfil does", () => {
     expect(trancheMovementId("abc", 0)).toBe("rrf_abc");
