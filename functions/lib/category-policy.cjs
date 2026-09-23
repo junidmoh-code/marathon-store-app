@@ -63,7 +63,7 @@
 // real engine alongside the model on the live snapshot — so the residual gap is
 // measured rather than assumed.
 
-const { resolveTarget, encodeSizeKey, policyCategoryKey } = require("./refill-engine.cjs");
+const { resolveTarget, encodeSizeKey, policyCategoryKey, passThroughExcluded } = require("./refill-engine.cjs");
 // Group and per-size resolution, from the leaf module the ENGINE consumes — so
 // "which policy speaks here" is answered once. A copy on this side would drift
 // the first time the precedence changed, and the model's whole value is that it
@@ -433,12 +433,37 @@ function modelCategoryPolicy({
     }
   }
 
+  // ── PASS-THROUGH (refill-engine.cjs, 2026-09-23) ──────────────────────────
+  // A shop leg whose hub is empty and resolves NO target for the size no
+  // longer parks: the engine raises ONE Central→hub request carrying the
+  // shops' shortfall. It is a request the scan makes, so a ceiling that left
+  // it out would under-report — the dangerous direction (the differential fuzz
+  // found exactly that the day it shipped). Modelled with the engine's own
+  // gates: hub resolves null (an explicit 0 is a decision, not a gap), nothing
+  // already open at the hub, Central net of reservations, the per-intent cap.
+  // The DISPUTED variant (a shop cell streak-parked while its hub counts
+  // stock) is not modelled: it needs a reject streak, and the model walks no
+  // rejections. There the model counts the shop leg as a request the engine
+  // will not make and omits the hub leg the engine will — the request COUNT
+  // still balances, but the units can differ (the shop leg is capped by the
+  // hub's disputed count, the hub leg by Central). Only on streak-parked cells.
+  //
+  // Walk order matters for WHO gets a scarce Central unit, so the legs are
+  // walked in the ENGINE's destination order (a shop before the hub that
+  // feeds it) and reported in the original order.
+  const passThrough = new Map();
+  const walkOrder = [...legLocs].sort((a, b) => {
+    if (routes[a] === b) return -1;
+    if (routes[b] === a) return 1;
+    return a.localeCompare(b);
+  });
+
   const legs = [];
   const overriddenPids = new Set();
   const legacyPids = new Set();
-  for (const loc of legLocs) {
+  for (const loc of walkOrder) {
     let cells = 0, wouldRequest = 0, unitsWanted = 0, silent = 0, atTarget = 0, onHand = 0, overrides = 0;
-    let parkedNoSource = 0, parkedNothingAnywhere = 0, inFlight = 0, legacyRows = 0;
+    let parkedNoSource = 0, parkedNothingAnywhere = 0, inFlight = 0, legacyRows = 0, carriedThroughHub = 0;
     const overrideRows = [], legacyRowList = [];
     const src = routes[loc] || null;
     for (const pid of pids) {
@@ -531,7 +556,10 @@ function modelCategoryPolicy({
         const have = qtyAt(loc, pid, sizeKey);
         onHand += have;
         const inboundEntry = openIndex?.[loc]?.[pid]?.[sizeKey];
-        const inbound = inboundEntry ? (engineNum(inboundEntry.qty) || 1) : 0;
+        // A pass-through leg raised for this hub cell earlier in the walk is
+        // inbound here, exactly as the engine counts it.
+        const inbound = (inboundEntry ? (engineNum(inboundEntry.qty) || 1) : 0)
+          + (passThrough.get(`${loc}|${pid}|${sizeKey}`)?.qty || 0);
         const deficit = t.target - have - inbound;
         if (deficit <= 0) { atTarget += 1; continue; }
         // The gate reads PHYSICAL on-hand only — inbound is already inside
@@ -545,7 +573,28 @@ function modelCategoryPolicy({
         // ACTIONABLE-ONLY: a request exists only if the source can fill it now.
         const srcKey = `${src}|${pid}|${sizeKey}`;
         const srcAvail = src ? qtyAt(src, pid, sizeKey) - (reserved.get(srcKey) || 0) : 0;
-        if (srcAvail <= 0) { parkedNoSource += 1; continue; }
+        if (srcAvail <= 0) {
+          const up = src ? routes[src] : null;
+          const ptKey = `${src}|${pid}|${sizeKey}`;
+          if (up && !openIndex?.[src]?.[pid]?.[sizeKey] && resolveTarget(ctx, src, pid, size) === null
+              && qtyAt(up, pid, sizeKey) > 0 && !passThroughExcluded(products[pid])) {
+            const cur = passThrough.get(ptKey);
+            const upKey = `${up}|${pid}|${sizeKey}`;
+            const take = Math.min(deficit, qtyAt(up, pid, sizeKey) - (reserved.get(upKey) || 0), capUnits - (cur ? cur.qty : 0));
+            if (take > 0) {
+              reserved.set(upKey, (reserved.get(upKey) || 0) + take);
+              passThrough.set(ptKey, { hub: src, qty: (cur ? cur.qty : 0) + take });
+              carriedThroughHub += 1;
+              continue;
+            }
+            // No share left for THIS shop (Central already taken, or the leg
+            // at its cap): parked, exactly as the engine parks it — never
+            // "carried" by a leg that holds none of its need (CodeRabbit,
+            // PR #641; the engine's own fix was fuzz seed 53).
+          }
+          parkedNoSource += 1;
+          continue;
+        }
         const qty = Math.min(deficit, srcAvail, capUnits);
         reserved.set(srcKey, (reserved.get(srcKey) || 0) + qty);
         wouldRequest += 1;
@@ -583,6 +632,9 @@ function modelCategoryPolicy({
       source: src,
       cells, wouldRequest, unitsWanted, silent, atTarget, onHand,
       inFlight, parkedNoSource, parkedNothingAnywhere,
+      // Shop cells whose shortfall rides a Central→hub pass-through request
+      // (counted ONCE per hub cell in passThroughRequests, not here).
+      carriedThroughHub,
       legacyRows, legacyRowList,
       // Everything below target that produces no request: in flight, nothing
       // anywhere, or the source is empty. The card shows this so "0 requests"
@@ -604,13 +656,20 @@ function modelCategoryPolicy({
     }
   }
 
-  const totalRequests = legs.reduce((n, l) => n + l.wouldRequest, 0);
-  const totalUnits = legs.reduce((n, l) => n + l.unitsWanted, 0);
+  // Report legs in the caller's order, not the walk order.
+  legs.sort((a, b) => legLocs.indexOf(a.loc) - legLocs.indexOf(b.loc));
+  const ptList = [...passThrough.values()];
+  const passThroughRequests = ptList.length;
+  const passThroughUnits = ptList.reduce((n, p) => n + p.qty, 0);
+  const totalRequests = legs.reduce((n, l) => n + l.wouldRequest, 0) + passThroughRequests;
+  const totalUnits = legs.reduce((n, l) => n + l.unitsWanted, 0) + passThroughUnits;
   // The subset the scan actually writes. Reported alongside the total rather
   // than replacing it, so the number stays comparable to computeRefillPlan
   // while the card can still say "of which N land at a live shop".
-  const liveRequests = legs.filter((l) => l.mode === "live").reduce((n, l) => n + l.wouldRequest, 0);
-  const liveUnits = legs.filter((l) => l.mode === "live").reduce((n, l) => n + l.unitsWanted, 0);
+  const liveRequests = legs.filter((l) => l.mode === "live").reduce((n, l) => n + l.wouldRequest, 0)
+    + ptList.filter((p) => modeOf(p.hub) === "live").length;
+  const liveUnits = legs.filter((l) => l.mode === "live").reduce((n, l) => n + l.unitsWanted, 0)
+    + ptList.filter((p) => modeOf(p.hub) === "live").reduce((n, p) => n + p.qty, 0);
   const cap = typeof maxIntentsPerRun === "number" && maxIntentsPerRun > 0
     ? maxIntentsPerRun : ENGINE_DEFAULT_MAX_INTENTS_PER_RUN;
   return {
@@ -629,6 +688,9 @@ function modelCategoryPolicy({
     centralOnHand,
     totalRequests,
     totalUnits,
+    // Central→hub requests the engine raises FOR shops (included in the totals).
+    passThroughRequests,
+    passThroughUnits,
     liveRequests,
     liveUnits,
     nonLiveLegs: legs.filter((l) => l.mode !== "live" && l.wouldRequest > 0).map((l) => ({ loc: l.loc, mode: l.mode, requests: l.wouldRequest })),

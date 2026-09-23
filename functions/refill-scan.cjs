@@ -338,6 +338,30 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
   return { satisfied, stale, deferred, errors };
 }
 
+// ─── the request + lock records for ONE live intent (pure) ────────────────────
+// Extracted so the fields the NEXT scan depends on are testable without
+// firebase-admin. A PASS-THROUGH leg (refill-engine.cjs, 2026-09-23) is a
+// Central→hub request raised for the shops the hub feeds; its lock MUST carry
+// `passThrough`, because that is the only thing that tells the next scan's
+// reconcile to judge it by the shops' need rather than the hub's own target —
+// without it the leg reads "not needed" and is withdrawn an hour later. The
+// request carries the same two fields (inside createdFrom, with the rest of
+// its provenance, and `forDests` at the top level so a queue can say who it
+// is for) — never undefined: absent unless the intent is a pass-through.
+function intentRecords({ intent, startedAt, runId, rrKey, orderId = null, orderCreatedAt = null }) {
+  const { productId: pid, size, qty, source, dest } = intent;
+  const pt = intent.passThrough
+    ? { passThrough: intent.passThrough, forDests: Array.isArray(intent.forDests) ? intent.forDests : [] }
+    : null;
+  const rr = {
+    productId: pid, size, qty, requestingLocation: dest, status: "open",
+    createdFrom: { engine: true, runId, source, ...(pt || {}) }, createdAt: startedAt,
+    ...(pt ? { forDests: pt.forDests } : {}),
+  };
+  const lock = { qty, source, createdAt: startedAt, runId, refillId: rrKey, orderId, orderCreatedAt, ...(pt || {}) };
+  return { rr, lock };
+}
+
 function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt }) {
       const upd = {};
       const wantOrders = new Set();
@@ -362,7 +386,9 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
                 // ("5_5"→"5.5") so queue availability lookups and the UI match.
                 productId: pid, size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), qty: s.qty,
                 requestingLocation: dest, status: "open", shadow: true,
-                createdFrom: { engine: true, shadow: true, runId, source: s.source },
+                // A pass-through preview says who it is for, like the live row.
+                ...(s.passThrough ? { forDests: s.forDests || [] } : {}),
+                createdFrom: { engine: true, shadow: true, runId, source: s.source, ...(s.passThrough ? { passThrough: s.passThrough, forDests: s.forDests || [] } : {}) },
                 createdAt: existing?.createdAt || startedAt,
               };
             } else {
@@ -678,6 +704,7 @@ async function runScan() {
       if (mode === "shadow") {
         ((shadowNode[intent.dest] ||= {})[intent.productId] ||= {})[intent.sizeKey] = {
           qty: intent.qty, source: intent.source, priority: intent.priority, runId, computedAt: startedAt,
+          ...(intent.passThrough ? { passThrough: intent.passThrough, forDests: intent.forDests || [] } : {}),
         };
         counts.shadow++;
       } else if (mode === "live") {
@@ -740,10 +767,6 @@ async function runScan() {
         if (!claim.committed || claim.snapshot.val()?.runId !== runId) continue;
 
         const rrKey = db.ref("refill_requests").push().key;
-        const rr = {
-          productId: pid, size, qty, requestingLocation: dest, status: "open",
-          createdFrom: { engine: true, runId, source }, createdAt: startedAt,
-        };
         let orderId = null, orderCreatedAt = null, order = null, insight = null;
         if (isStoreLeg) {
           if (!refillNum) refillNum = await drawRefillNumber(db, nowMs);
@@ -783,9 +806,10 @@ async function runScan() {
         // order, insight and the finalized lock land together or not at all —
         // no window where a claimed lock points at nothing (the orphaned-
         // pending self-heal in the engine covers a crash before this line).
+        const { rr, lock } = intentRecords({ intent, startedAt, runId, rrKey, orderId, orderCreatedAt });
         const upd = {
           [`refill_requests/${rrKey}`]: rr,
-          [lockPath]: { qty, source, createdAt: startedAt, runId, refillId: rrKey, orderId, orderCreatedAt },
+          [lockPath]: lock,
         };
         if (order) {
           upd[`orders/${orderId}`] = order;
@@ -980,3 +1004,4 @@ exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/re
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
 exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
+exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable

@@ -217,11 +217,21 @@ function RecountChip({ row, actorRole }) {
       setState("cleared");   // exception list refreshes on the next scan (≤1 h)
     } catch { setState("failed"); }
   };
+  // PASS-THROUGH (2026-09-23): while the shop's need is being routed round
+  // the disputed count — or after it was — the row says so, so nobody reads
+  // "the shop is stuck" when Central is already sending. The count is still
+  // the thing to fix, which is why the row stays.
+  const routed = row.passThrough === "raised" || row.passThrough === "in_flight"
+    ? `Central is sending ${locLabel(row.source)} this shop's ${row.deficit} — the shop asks again when it lands`
+    : row.countDisputed
+      ? `Stock was routed round this count — recount ${locLabel(row.source)} (a Count or Adjust clears this)`
+      : null;
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 3, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
       <span style={{ fontWeight: 800, color: "#fff" }}>{row.size || "One size"}</span>
       <span style={{ fontWeight: 700, color: RED }}>
-        for {locLabel(row.loc)} · {row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
+        for {locLabel(row.loc)} · {row.countDisputed ? "count disputed" : row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
       </span>
       {/* confirmedOut rows (rejections == null) have no streak node to clear —
           their suppression is the 14-day both-levels window, which a recount
@@ -232,6 +242,8 @@ function RecountChip({ row, actorRole }) {
           {state === "busy" ? "…" : state === "cleared" ? "Cleared ✓" : state === "failed" ? "Retry" : "Recounted — ask again"}
         </button>
       )}
+    </span>
+      {routed && <span data-routed style={{ fontSize: 11, color: "rgba(255,255,255,.7)" }}>{routed}</span>}
     </span>
   );
 }
@@ -656,6 +668,52 @@ export default function HealthView({ products = [], onExit }) {
       // that hub) or the Seating tab (move it to a hub) — never a write from
       // this screen, because a policy says HOW MANY and this screen must not
       // decide WHERE.
+      // ── SHORT BUT NOT REQUESTED (2026-09-23) ────────────────────────────────
+      // The scan's standing check: every shop cell below its keep, with the
+      // size at its hub or Central, and NOTHING on its way. Read-only — every
+      // row names why the engine parked it, so what is here is either a
+      // person's call (a recount, a refusal upstream) or a defect. Owner report
+      // that started it: PE / M of the Brown 2 tracksuit, empty for weeks with
+      // 38 mediums at Central. Computed by refill-engine.cjs on every scan from
+      // the snapshot it already holds; this screen only draws it.
+      case "shortNotRequested": {
+        const snr = ex.shortNotRequested || {};
+        const REASON = {
+          recount: "Hub said “not there” repeatedly while its count shows stock, and Central could not be asked instead (it has none, has refused, or its units are promised) — recount the hub",
+          confirmed_out: "Refused at both the hub and Central in the last 14 days — the shelves beat the count",
+          upstream_blocked: "Central recently refused the hub's restock — the engine asks again after the cooldown",
+          cooldown: "Refused recently — the engine asks again on its own after the retry window",
+          awaiting_upstream: "Hub is empty and its own restock is not open yet",
+          hub_no_target: "The hub keeps none of this size (a deliberate 0) or Central's units are already promised",
+          throttled: "Raised on the next scan — this scan hit its request cap",
+        };
+        const shops = (snr.shops || []).map(locLabel);
+        const summary = Object.entries(snr.byReason || {}).map(([k, n]) => `${n} ${k.replace(/_/g, " ")}`).join(" · ");
+        return (
+          <DetailShell title="Short but not requested"
+            sub={`Shop sizes below their keep, with stock at the hub or Central, and no request on its way. Checked every scan${shops.length ? ` for ${shops.join(" and ")}` : ""}${(snr.shops || []).includes("marathon-pine") ? "" : " (Pine has no keep numbers, so nothing there can be short)"}.${summary ? ` ${summary}.` : ""}${count("shortNotRequested") > items("shortNotRequested").length ? ` Showing ${items("shortNotRequested").length} of ${count("shortNotRequested")}.` : ""}`}
+            count={count("shortNotRequested")} onBack={back}>
+            {count("shortNotRequested") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every short shop size has a request on its way 🎉</div>
+            )}
+            {groupByProduct(items("shortNotRequested")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={RED}>NOTHING ASKED</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {rows.map((r) => (
+                    <div key={`${r.loc}|${r.size}`} data-snr-row={`${r.loc}|${r.size}`} style={{ marginBottom: 6 }}>
+                      <SizeFactChip size={r.size || "one size"}
+                        value={`${locLabel(r.loc)} ${r.have}/${r.keep} · ${locLabel(r.hub)} ${r.hubHas} · ${locLabel(r.upstream)} ${r.upHas}`}
+                        tone={RED} />
+                      <div style={{ marginTop: 3 }}>{REASON[r.reason] || `Unexplained (${r.reason}) — report this`}</div>
+                    </div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       case "unarmedFootwear": {
         const REASON = {
           no_category_key: "no category on the record — assign one",
@@ -855,6 +913,13 @@ export default function HealthView({ products = [], onExit }) {
               <StatCard label="Auto Refill Status" value={modeSummary} tone={modeTone}
                         sub={lastRun?.counts ? `${lastRun.counts.intents || 0} created · ${lastRun.counts.shadow || 0} planned last scan` : undefined}
                         onClick={() => setScreen("activity")} />
+              {/* SHORT BUT NOT REQUESTED (2026-09-23) — the standing check that a
+                  shop size below its keep, with stock upstream, is never left
+                  with nothing asked. Scan-computed, read-only; up front
+                  because a non-zero here is a shop shelf the engine is NOT
+                  going to fill on its own. */}
+              <StatCard label="Short but not requested" value={count("shortNotRequested")} tone={count("shortNotRequested") ? RED : GREEN}
+                        sub="Shop below keep, stock upstream, nothing asked" onClick={() => setScreen("shortNotRequested")} />
               <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}
                         sub="Store refills · in Warehouse → Clothing" onClick={() => setScreen("autorefills")} />
               <StatCard label="Waiting for Central" value={centralQueue} tone={centralQueue ? BLUE_L : GREEN}

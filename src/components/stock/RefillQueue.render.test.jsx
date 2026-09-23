@@ -442,3 +442,25 @@ describe("4 · the quiet page — one status line, none of the old chrome", () =
     expect(out).toContain("Nothing to pick — next batch lands 14:00 · 1 waiting");
   });
 });
+
+// ── PASS-THROUGH requests name the shops they are for (2026-09-23) ──────────
+// The refill engine now raises a Central→hub request FOR a shop when the hub
+// keeps none of the size or its count is disputed. The row must say who it is
+// for — the hub does not stock the line, so an unexplained ask reads as a bug.
+describe("pass-through request rows", () => {
+  it("tag the shop(s) the request is for; an ordinary request carries no tag", () => {
+    paths["refill_requests"] = {
+      pt: { productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "open", createdAt: RELEASED_AT,
+            forDests: ["marathon-pe"], createdFrom: { engine: true, source: "central", passThrough: "disputed", forDests: ["marathon-pe"] } },
+      own: { productId: "tee", size: "L", qty: 1, requestingLocation: "hub2", status: "open", createdAt: RELEASED_AT,
+             createdFrom: { engine: true, source: "central" } },
+    };
+    const tree = renderQueue({ dest: "hub2", saleRows: [] });
+    const pt = rowLineOf(tree, "req:pt");
+    const own = rowLineOf(tree, "req:own");
+    expect(pt, "the pass-through row renders").toBeTruthy();
+    expect(textOf(pt.children)).toContain("for Marathon PE");
+    expect(own.findAll((n) => n.props && n.props["data-for-shops"] != null)).toHaveLength(0);
+    tree.unmount();
+  });
+});
