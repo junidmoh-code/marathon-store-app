@@ -41,7 +41,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getDatabase, ref, get, set, remove, onValue } from "firebase/database";
 import { ADMIN_EMAIL } from "../PermissionsContext";
-import { DEVICES_ROOT, sastDate } from "../../offline/deviceHealth";
+import { DEVICES_ROOT, SAST_OFFSET_MS, sastDate } from "../../offline/deviceHealth";
 import { MIRROR_SWITCH_PATH, switchVerdict } from "../../offline/killSwitch";
 import { DEVICE_OFF_ROOT, deviceOffPath, deviceOffVerdict } from "../../offline/deviceOff";
 import {
@@ -145,7 +145,10 @@ export function storageWords(st, now = Date.now()) {
   if (st.persisted === true) parts.push("storage protected");
   else if (st.persisted === false) parts.push("storage NOT protected — the browser may delete the copy");
   if (st.wipes > 0) {
-    parts.push(`wiped ${st.wipesToday || 0}× today, ${st.wipes}× in all, last ${ago(st.lastWipeAt, now)}`);
+    // "Today" only while the last wipe is on today's SAST date — the same
+    // test isEvicting uses, so the line and the red status never disagree.
+    const today = st.lastWipeAt != null && sastDate(st.lastWipeAt) === sastDate(now) ? (st.wipesToday || 0) : 0;
+    parts.push(`wiped ${today}× today, ${st.wipes}× in all, last ${ago(st.lastWipeAt, now)}`);
   }
   if (st.usageMB != null && st.quotaMB != null) parts.push(`${st.usageMB} of ${st.quotaMB} MB used`);
   return parts.length ? parts.join(" · ") : null;
@@ -266,6 +269,17 @@ export default function MirrorFleetCard({ authUser, onExit }) {
   // "Quarantine" with no way to release it. (CodeRabbit, PR #640.)
   const [flagsReady, setFlagsReady] = useState(null);
   const [flagBusy, setFlagBusy] = useState(null);
+  // "Evicting" means wiped TODAY, in SAST. A screen left open over midnight
+  // re-renders at the boundary so yesterday's red does not linger.
+  const [, setDayTick] = useState(0);
+  useEffect(() => {
+    const next = (() => {
+      const t = Date.now() + SAST_OFFSET_MS;
+      return (Math.floor(t / 86_400_000) + 1) * 86_400_000 - SAST_OFFSET_MS;
+    })();
+    const timer = setTimeout(() => setDayTick((n) => n + 1), Math.max(1000, next - Date.now() + 1000));
+    return () => clearTimeout(timer);
+  });
   const [flagError, setFlagError] = useState(null);
   const now = Date.now();
 
@@ -386,7 +400,11 @@ export default function MirrorFleetCard({ authUser, onExit }) {
   const evicting = devices.filter((d) => isEvicting(d, now));
   const isFlagged = (id) => quarantineVerdict(flags?.[id]);
   const known = new Set(everyDevice.map((d) => d.deviceId));
-  const flaggedUnknown = Object.keys(flags || {}).filter((id) => isFlagged(id) && !known.has(id));
+  // Only from a list that was actually read: after a failed read the old
+  // flags are stale and must not offer a Release. (CodeRabbit, PR #640.)
+  const flaggedUnknown = flagsReady === true
+    ? Object.keys(flags || {}).filter((id) => isFlagged(id) && !known.has(id))
+    : [];
   const rowProps = (d) => ({
     quarantined: isFlagged(d.deviceId), onQuarantine: flagsReady === true ? setQuarantine : null, qBusy: flagBusy === d.deviceId,
   });

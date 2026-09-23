@@ -301,6 +301,15 @@ describe("quarantine: one device, one tap, its own path only", () => {
     expect(JSON.stringify(tree.toJSON())).toMatch(/Cannot read the quarantine list/);
   });
 
+  it("a flag list that stops being readable offers no stale Release either", async () => {
+    const tree = await renderFleet();
+    const ghost = "0f0f0f0f-0000-4000-8000-000000000000";
+    await act(async () => { quarantineListener()[1]({ exists: () => true, val: () => ({ [ghost]: { on: true } }) }); });
+    expect(JSON.stringify(tree.toJSON())).toMatch(/Quarantined, but not in the list below/);
+    await act(async () => { quarantineListener()[2](new Error("permission_denied")); });
+    expect(JSON.stringify(tree.toJSON())).not.toMatch(/Quarantined, but not in the list below/);
+  });
+
   it("a staff viewer is never offered the button", async () => {
     const tree = await render(STAFF);
     expect(JSON.stringify(tree.toJSON())).not.toMatch(/Quarantine/);
@@ -314,6 +323,7 @@ describe("quarantine: one device, one tap, its own path only", () => {
     // A wipe reported before SAST midnight is not "today" the next morning.
     const yesterday = { ...fleet[EVICTING], storage: { ...fleet[EVICTING].storage, lastWipeAt: T - 26 * 3600_000 } };
     expect(isEvicting(yesterday, T)).toBe(false);
+    expect(storageWords(yesterday.storage, T)).toMatch(/wiped 0× today, 7× in all/);
     // A live guard still outranks a wipe: it is the thing to act on now.
     expect(deviceState({ ...fleet[EVICTING], guard: { leg: "products", reason: "gave-up" } }, T).text)
       .toMatch(/^the catalogue kept failing/);
