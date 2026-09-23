@@ -126,7 +126,8 @@ const remaining = after.exceptions.recountNeeded.items.map((r) => {
   const src = r.source, sk = stockCellKey(r.size);
   const d = plan.deferred.find((x) => x.loc === src && x.pid === r.pid && x.cellKey === sk);
   const refusedDays = new Set(Object.values(refillRequests).filter((q) => q && q.productId === r.pid && stockCellKey(q.size) === sk
-    && wo.refusingLocation(q, routes) === src && q.status === "cancelled" && !q.cancelReason).map((q) => wo.sastDay(Date.parse(q.resolvedAt))));
+    && wo.refusingLocation(q, routes) === src && q.status === "cancelled" && !q.cancelReason
+    && Number.isFinite(Date.parse(q.refusedAt || q.resolvedAt))).map((q) => wo.sastDay(Date.parse(q.refusedAt || q.resolvedAt))));
   const reason = d ? (d.reason === "request_open" ? "a request to that location is open right now — it is written off the scan after it is refused again (or kept if it is fulfilled)" : "its refusals are older than the 45-day ledger and the cell has been written since — cannot prove what arrived")
     : r.countDisputed ? "Central already sent stock round the disputed count; clears on a count, an adjust, or a write-off"
     : refusedDays.size < 4 ? `refused on only ${refusedDays.size} different day${refusedDays.size === 1 ? "" : "s"} (needs 4)`

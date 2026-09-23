@@ -137,6 +137,9 @@ function planRefusalWriteoffs(snapshot) {
   const openAt = new Set();   // cells with a request still OPEN against them
   for (const [id, rr] of Object.entries(refillRequests || {})) {
     if (!rr || !rr.productId || rr.size == null) continue;
+    // Shadow-mode PREVIEW rows (refill-scan shadowSyncUpdates) are never
+    // picked, fulfilled or refused — they say nothing. (CodeRabbit)
+    if (rr.shadow === true || String(id).startsWith("SHDWrr-")) continue;
     const loc = refusingLocation(rr, routes);
     if (!allowed.has(loc)) continue;
     const cellKey = stockCellKey(rr.size);

@@ -548,3 +548,9 @@ test("a repair gives the engine the LIVE count, not the old ledger after", async
   const { snapshot } = await scan(db, { now: NOW + 3600e3 });
   assert.equal(snapshot.stock.hub2[PID].M.qty, 2);
 });
+
+test("a shadow-mode preview row never defers a write-off (nobody picks it)", async () => {
+  const rr = RR();
+  rr["SHDWrr-hub2-x"] = { ...refusal("2026-09-23T09:00:00.000Z"), status: "open", resolvedAt: null, shadow: true };
+  assert.equal((await scan(world({ rr }))).plan.writeoffs.length, 1);
+});

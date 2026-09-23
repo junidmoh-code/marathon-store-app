@@ -967,8 +967,9 @@ export default function HealthView({ products = [], onExit }) {
                         sub="Shop below keep, stock upstream, nothing asked" onClick={() => setScreen("shortNotRequested")} />
               {/* WRITTEN OFF AFTER REFUSAL (2026-09-23) — super admin only. */}
               {isSuperAdmin && (
-                <StatCard label="Written off after refusal" value={writeoffState.settled ? recentCount(writeoffList, serverNowMs()) : "…"}
-                          tone={AMBER} sub="Refused on 4 different days · last 30 days" onClick={() => setScreen("refusalWriteoffs")} />
+                <StatCard label="Written off after refusal"
+                          value={!writeoffState.settled ? "…" : writeoffState.error ? "!" : recentCount(writeoffList, serverNowMs())}
+                          tone={writeoffState.error ? RED : AMBER} sub="Refused on 4 different days · last 30 days" onClick={() => setScreen("refusalWriteoffs")} />
               )}
               <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}
                         sub="Store refills · in Warehouse → Clothing" onClick={() => setScreen("autorefills")} />
