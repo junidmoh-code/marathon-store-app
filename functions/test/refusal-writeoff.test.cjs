@@ -284,16 +284,18 @@ test("a fulfilment of the size in between restarts the count", async () => {
 test("the cell moved between plan and apply → nothing is erased (next scan re-plans)", async () => {
   const db = world({
     hooks: {
-      // A sale lands at Hub 2 M the moment the writer reads the cell.
+      // A return lands at Hub 2 M the moment the writer reads the cell — a
+      // stale plan must not erase 3 from a count it never saw. (A sale in the
+      // gap is also refused, by the writer's no-overdraw floor.)
       beforeRead: async (path, state) => {
-        if (path === `stock/hub2/${PID}/M` && state.root.stock.hub2[PID].M.qty === 3) state.root.stock.hub2[PID].M.qty = 2;
+        if (path === `stock/hub2/${PID}/M` && state.root.stock.hub2[PID].M.qty === 3) state.root.stock.hub2[PID].M.qty = 4;
       },
     },
   });
   const { res } = await scan(db);
   assert.equal(res.applied.length, 0);
   assert.equal(res.skipped[0].reason, "cell_changed");
-  assert.equal((await read(db, `stock/hub2/${PID}/M`)).qty, 2);
+  assert.equal((await read(db, `stock/hub2/${PID}/M`)).qty, 4);
   assert.equal(await read(db, "refill_engine/refusalWriteoffCursor"), null);
 });
 

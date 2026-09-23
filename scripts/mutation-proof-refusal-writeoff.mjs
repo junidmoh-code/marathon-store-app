@@ -26,7 +26,7 @@ const MUTATIONS = [
   { id: "M-ARRIVALS-PROTECTED", guard: "stock that arrived after the first refusal is never erased", file: WO,
     from: "        if (m.to === loc && ARRIVAL_TYPES.has(m.type) && num(Number(m.qty)) > 0) protectedQty += num(Number(m.qty));", to: "", nodeTests: T },
   { id: "M-PRE-REFUSAL-BOUND", guard: "never more than was on paper when the refusals began", file: WO,
-    from: "      if (first && b != null) preRefusalQty = Math.max(b, 0);", to: "", nodeTests: T },
+    from: "      if (first && b != null) preRefusalQty = Math.max(b, 0);", to: "      if (first && b != null) preRefusalQty = paperQty;", nodeTests: T },
   { id: "M-CURSOR", guard: "one run is written off once (cursor)", file: WO,
     from: "    const evs = g.events.filter((e) => e.ts > through)", to: "    const evs = g.events.filter((e) => e.ts > -1)", nodeTests: T },
   { id: "M-OPEN-DEFERS", guard: "an open request to the location defers it", file: WO,
