@@ -787,26 +787,37 @@ function computeRefillPlan(snapshot) {
     Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
   // ── WHAT A PASS-THROUGH HUB LEG IS STILL OWED (2026-09-23) ─────────────────
   // A pass-through leg (see "PASS-THROUGH" in the deficit loop) is a Central→
-  // hub request raised FOR the shops the hub feeds, not for the hub's own
-  // buffer — so it must be reconciled against THEIR need. Judged by the hub's
-  // own target it would read "not needed" (the hub may keep nothing of the
-  // size, or already count its full target in units its staff cannot find)
-  // and be withdrawn by the very next scan.
+  // hub request raised FOR named shops, not for the hub's own buffer — so it
+  // must be reconciled against THEIR need. Judged by the hub's own target it
+  // would read "not needed" (the hub may keep nothing of the size, or already
+  // count its full target in units its staff cannot find) and be withdrawn by
+  // the very next scan.
   //
-  // need = Σ over the shops routed from this hub of (target − on hand −
-  // inbound), less what the hub can already hand over. A DISPUTED leg ignores
-  // the hub's count: those are the units its staff have repeatedly said are
-  // not there, and counting them would withdraw the leg on the evidence it
-  // exists to route around.
-  const passThroughNeed = (hub, pid, sizeKey, size, kind) => {
+  // need = Σ over the shops the lock CARRIES (entry.forDests, written with
+  // it) of (target − on hand − inbound) — the same deficit the raise used, so
+  // a leg is never grown for a shop it was not raised for (a sibling held
+  // quiet by its own ask-at, say: the property fuzz caught exactly that
+  // growing a fresh leg 4→5 the next hour). Less, for a no_target leg, the
+  // hub units NOT already promised to other open legs — those can serve the
+  // shop directly. A DISPUTED leg ignores the hub's count altogether: those
+  // are the units its staff have repeatedly said are not there, and counting
+  // them would withdraw the leg on the evidence it exists to route around.
+  // A lock with no forDests (never written by this engine) falls back to
+  // every shop the hub feeds.
+  const passThroughNeed = (hub, pid, sizeKey, size, entry) => {
+    const shops = Array.isArray(entry.forDests) && entry.forDests.length
+      ? entry.forDests
+      : Object.keys(routes).filter((d) => routes[d] === hub);
     let need = 0;
-    for (const shop of Object.keys(routes)) {
+    for (const shop of shops) {
       if (routes[shop] !== hub) continue;
       const ts = resolveTarget(ctx, shop, pid, size);
       if (!ts || ts.target <= 0) continue;
       need += Math.max(ts.target - avail(cellQty(stock, shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
     }
-    if (kind !== "disputed") need -= avail(cellQty(stock, hub, pid, size));
+    if (entry.passThrough !== "disputed") {
+      need -= Math.max(avail(cellQty(stock, hub, pid, size)) - (sourceReserved.get(`${hub}|${pid}|${sizeKey}`) || 0), 0);
+    }
     return Math.max(need, 0);
   };
   for (const [dest, byPid] of Object.entries(openIndex)) {
@@ -864,7 +875,7 @@ function computeRefillPlan(snapshot) {
         const otherInbound = Math.max((inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) - (num(entry.qty) || 1), 0);
         // A pass-through leg answers to the shops it carries, never to the
         // hub's own target (see passThroughNeed).
-        const ptNeed = unresolvedOurs && entry.passThrough ? passThroughNeed(dest, pid, sizeKey, size, entry.passThrough) : null;
+        const ptNeed = unresolvedOurs && entry.passThrough ? passThroughNeed(dest, pid, sizeKey, size, entry) : null;
         const needGone = unresolvedOurs && (ptNeed != null
           ? ptNeed <= 0
           : (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0));
@@ -1528,7 +1539,11 @@ function computeRefillPlan(snapshot) {
     const room = maxUnits - (cur ? cur.qty : 0);
     const upAvail = avail(cellQty(stock, upstream, pid, size)) - (sourceReserved.get(upKey) || 0);
     const take = Math.min(want, upAvail, room);
-    if (take <= 0) return cur ? "raised" : null;
+    // Nothing left for THIS shop (Central's units already taken by a sibling,
+    // or the leg is at the per-intent cap): the shop is not carried and must
+    // say so — answering "raised" here labelled it in transit while the leg
+    // held none of its need (found by the property fuzz, seed 53).
+    if (take <= 0) return null;
     bump(sourceReserved, upKey, take);
     const pt = cur || { hub, upstream, pid, size, sizeKey, qty: 0, kind, forDests: [], high: false };
     pt.qty += take;
