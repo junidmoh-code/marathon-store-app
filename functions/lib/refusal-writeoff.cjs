@@ -83,7 +83,9 @@ function refusingLocation(rr, routes) {
 // A request the location actually SENT is a fulfilment whatever its status
 // says: an "Out of Stock" tap on a stale list can overwrite a row that was
 // already fulfilled (live: -P28C3fKttMx5YtJGvp2, cancelled with fulfilledBy
-// and a real transfer out of Central — second-brain review, PR #642).
+// and a real transfer out of Central — second-brain review, PR #642). The
+// button itself refuses that since 2026-09-23 (src/.../refusalGuard.js); this
+// check stays for rows written before, and for any other writer.
 const isFulfilment = (rr) => rr.status === "fulfilled" || num(Number(rr.sentQty)) > 0
   || !!(rr.fulfilledBy && typeof rr.fulfilledBy === "object");
 // Stock physically LEAVING the cell by transfer is the location finding the

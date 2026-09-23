@@ -14,8 +14,9 @@ export const dayLabel = (d) => {
   return m ? `${Number(day)} ${MON[Number(m) - 1]}` : String(d || "");
 };
 
-// Who said no, in words. The Central queue records the account; Hub 2's
-// "out of stock" on a shop order has only ever recorded the hub — name the
+// Who said no, in words. The Central queue records the account; so does
+// Hub 2's "out of stock" on a shop order since 2026-09-23 (the scan copies it
+// into resolvedBy). Refusals from before then recorded only the hub — name the
 // hub and say no person was recorded, rather than invent a name.
 export function refuserLabel(r, loc) {
   if (r?.byName) return r.byName;
