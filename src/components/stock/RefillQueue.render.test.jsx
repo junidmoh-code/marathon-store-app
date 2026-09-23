@@ -26,10 +26,24 @@ const paths = {};   // onValue subscriptions
 const gets = {};    // one-shot get() reads
 const rejects = new Set();   // paths whose get() fails (offline simulation)
 const updateMock = vi.fn(() => Promise.resolve());
+// runTransaction, modelled on the real client: the FIRST pass sees the cold
+// local cache (null); a null answer is a probe that fails the server's
+// compare, so the body re-runs against the true node. undefined = abort.
+const txnWrites = [];
+const txnMock = vi.fn(async (r, fn) => {
+  const id = r.path.split("/")[1];
+  const server = paths["refill_requests"]?.[id] ?? null;
+  let next = fn(null);
+  if (next === null && server !== null) next = fn(JSON.parse(JSON.stringify(server)));
+  if (next === undefined) return { committed: false, snapshot: { val: () => server } };
+  txnWrites.push({ path: r.path, value: next });
+  return { committed: true, snapshot: { val: () => next } };
+});
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
+  runTransaction: (...a) => txnMock(...a),
   get: (r) => rejects.has(r.path) ? Promise.reject(new Error("offline")) : Promise.resolve({ val: () => gets[r.path] ?? null }),
 }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
@@ -107,7 +121,7 @@ function renderText(props = {}) {
 beforeEach(() => {
   for (const k of Object.keys(paths)) delete paths[k];
   for (const k of Object.keys(gets)) delete gets[k];
-  updateMock.mockClear();
+  updateMock.mockClear(); txnMock.mockClear(); txnWrites.length = 0;
   applyMovementMock.mockClear();
   rejects.clear();
   perm.permRecord = { stockRole: "warehouse" };
@@ -326,19 +340,80 @@ describe("2 · one list, one design — identical rows, identical actions, ident
   it("Out of Stock on a REQUEST row is the human rejection — cancelled with NO cancelReason", async () => {
     const tree = renderQueue();
     const oosBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock");
+    paths["refill_requests"].bootreq.cancelReason = "awaiting_upstream";   // stale, from an earlier lifecycle
     await act(async () => { await oosBtn.props.onClick(); });
     tree.unmount();
-    expect(updateMock).toHaveBeenCalledTimes(1);
-    const patch = updateMock.mock.calls[0][1];
-    expect(patch["refill_requests/bootreq/status"]).toBe("cancelled");
-    expect(patch["refill_requests/bootreq/rejectedBy"]).toBe("warehouse");
-    expect(patch["refill_requests/bootreq/resolvedBy"]).toBe("u1");
-    // cancelReason is EXPLICITLY CLEARED (null = RTDB delete), never set to a
-    // value: the engine reads "cancelled with no cancelReason" as the human
-    // rejection. A stale reason from an earlier lifecycle must not survive the
-    // reject and demote it to an engine withdrawal (CodeRabbit, PR #337).
-    expect(patch["refill_requests/bootreq/cancelReason"]).toBeNull();
+    expect(updateMock).not.toHaveBeenCalled();
+    // optimistic like the update() it replaced — the row leaves the list on
+    // the tap, not after a round trip (Sonnet review, PR #643)
+    expect(txnMock.mock.calls[0][2]?.applyLocally).not.toBe(false);
+    expect(txnWrites).toHaveLength(1);
+    const { path, value } = txnWrites[0];
+    expect(path).toBe("refill_requests/bootreq");
+    expect(value.status).toBe("cancelled");
+    expect(value.rejectedBy).toBe("warehouse");
+    expect(value.resolvedBy).toBe("u1");
+    expect(value.resolvedAt).toBe(new Date(NOW).toISOString());
+    // cancelReason is CLEARED, never set to a value: the engine reads
+    // "cancelled with no cancelReason" as the human rejection. A stale reason
+    // from an earlier lifecycle must not survive the reject and demote it to
+    // an engine withdrawal (CodeRabbit, PR #337).
+    expect(value).not.toHaveProperty("cancelReason");
+    // every field the refusal does not set survives the whole-node write
+    expect(value).toMatchObject({ productId: "boot", size: "7", requestingLocation: "hub1" });
     expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+
+  // REGRESSION (live -P28C3fKttMx5YtJGvp2, PR #642 second-brain review): the
+  // list still showed the request open, but another device had already sent
+  // it. Out of Stock must leave the sent request exactly as it is, and log
+  // the blocked tap on the request.
+  it.each([
+    ["fulfilled by another device", { status: "fulfilled", fulfilledBy: { movementId: "rrf_bootreq", qty: 2 }, resolvedBy: "u9" }],
+    ["fulfilledBy recorded, status not yet caught up", { fulfilledBy: { movementId: "rrf_bootreq", qty: 2, uncounted: true } }],
+    ["withdrawn by the engine", { status: "cancelled", cancelReason: "no_longer_needed" }],
+    ["mid-send: the movement is recorded, the request not yet marked", {}, { "stock_movements/rrf_bootreq": { qty: 2, productId: "boot", ts: new Date(NOW - 5000).toISOString() } }],
+  ])("Out of Stock on a request already SENT or CLOSED (%s) is a no-op, logged as blocked", async (_label, sent, moved = {}) => {
+    const tree = renderQueue();                        // the list: still open
+    const oosBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock");
+    Object.assign(paths["refill_requests"].bootreq, sent);   // the server: already sent / closed
+    Object.assign(gets, moved);
+    const before = JSON.parse(JSON.stringify(paths["refill_requests"].bootreq));
+    await act(async () => { await oosBtn.props.onClick(); });
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(txnMock).toHaveBeenCalledTimes(1);
+    expect(txnWrites).toHaveLength(0);                  // nothing written to the request
+    expect(paths["refill_requests"].bootreq).toEqual(before);
+    expect(updateMock).toHaveBeenCalledTimes(1);        // …only the blocked-tap log
+    const [logRef, log] = updateMock.mock.calls[0];
+    expect(logRef.path).toBe(`refill_requests/bootreq/blockedRefusals/${NOW}`);
+    expect(log).toEqual({ atMs: NOW, byUid: "u1", byRole: "warehouse", sawStatus: sent.status || "open",
+      ...(Object.keys(moved).length ? { midSend: true } : {}) });
+    expect(out).not.toContain("failed — retry");        // staff see nothing new
+  });
+
+  // A STUCK send (movement recorded long ago, the request never marked — the
+  // fulfiller's bookkeeping write failed and nobody retried) must not wedge
+  // the button: the row sits in the list, and Out of Stock works as it always
+  // has (review of the fix delta, PR #643).
+  it("an OLD tranche movement with the request still open does not block Out of Stock", async () => {
+    gets["stock_movements/rrf_bootreq"] = { qty: 2, productId: "boot", ts: new Date(NOW - 3 * 3600e3).toISOString() };
+    const tree = renderQueue();
+    await act(async () => { await lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock").props.onClick(); });
+    tree.unmount();
+    expect(txnWrites).toHaveLength(1);
+    expect(txnWrites[0].value.status).toBe("cancelled");
+  });
+
+  it("Out of Stock on the REMAINDER of a partly sent request still refuses it — and keeps what was sent", async () => {
+    Object.assign(paths["refill_requests"].bootreq, { qty: 1, sentQty: 1 });
+    const tree = renderQueue();
+    const oosBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock");
+    await act(async () => { await oosBtn.props.onClick(); });
+    tree.unmount();
+    expect(txnWrites).toHaveLength(1);
+    expect(txnWrites[0].value).toMatchObject({ status: "cancelled", sentQty: 1 });
   });
 
   it("a THROWING confirm never wedges the row or the panel at 'Transferring…' (finally reset)", async () => {

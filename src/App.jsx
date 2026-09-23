@@ -13007,7 +13007,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           // function returns — the engine's scan treats an unresolved order
           // whose source just emptied as withdrawable, and a fire-and-forget
           // write here widens that race for no benefit.
-          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
+          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
@@ -13019,8 +13019,11 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
       } else if (reject) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
+        // clothingOutOfStockByUid: WHO pressed it (2026-09-23), the same account
+        // Central's queue records as resolvedBy. The hourly scan copies it onto
+        // the request it closes, so the refusal write-off can name the person.
         ok++;
-        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
+        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
         logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
       }
       // qty 0 & not rejected → left pending for a later pass.
@@ -13067,7 +13070,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
       }
       ok++;
-      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
     }
     return { ok, fail, errors };
   };

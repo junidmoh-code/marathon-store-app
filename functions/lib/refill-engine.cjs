@@ -951,7 +951,11 @@ function computeRefillPlan(snapshot) {
               // The moment staff pressed "out of stock" (the order line holds
               // it; the order node recycles daily). The refusal write-off
               // counts calendar days, so the scan's close time is not enough.
-              refusedAt: order.clothingOutOfStockAt || null }),
+              refusedAt: order.clothingOutOfStockAt || null,
+              // …and WHO pressed it (the app records the account since
+              // 2026-09-23; older lines carry none and stay unnamed).
+              refusedByUid: typeof order.clothingOutOfStockByUid === "string" && order.clothingOutOfStockByUid
+                ? order.clothingOutOfStockByUid : null }),
           });
         } else if (nowMs - Date.parse(entry.createdAt || 0) > staleMs) {
           stuckRefills.push({ dest, pid, sizeKey, refillId: entry.refillId || null, ageHours: Math.round((nowMs - Date.parse(entry.createdAt || 0)) / 3600e3) });

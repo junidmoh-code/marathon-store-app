@@ -39,7 +39,7 @@
 //     Out of Stock writes the same response record it always has.
 
 import React, { useEffect, useMemo, useState } from "react";
-import { ref, update, get } from "firebase/database";
+import { ref, update, get, runTransaction } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig, useStockHoldConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
@@ -65,6 +65,7 @@ import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
 import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, sourceQueueLists } from "./firstBatchCore";
 import { notePendingUpdate } from "../../offline/pendingWrites";
+import { refusalTxn, trancheMovementId, sendInFlight } from "./refusalGuard";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -533,13 +534,17 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
 
   // Out of Stock on a request = the human rejection: cancelled with NO
   // cancelReason (the engine reads exactly that shape — cooldown + learning).
+  // Written in a TRANSACTION that refuses to touch a request already sent
+  // (refusalGuard.js): a stale list can no longer turn a fulfilled request
+  // into a refusal. A blocked tap is logged on the request and otherwise
+  // silent — the row leaves the list as fulfilled, as it would have anyway.
   const rejectRequest = async (row) => {
     if (busyRow || !canTransfer) return;
     setBusyRow(row.rowKey);
-    const upd = {
-      [`refill_requests/${row.id}/status`]: "cancelled",
-      [`refill_requests/${row.id}/resolvedAt`]: serverNowIso(),
-      [`refill_requests/${row.id}/rejectedBy`]: actorRole || "unknown",
+    const fields = {
+      status: "cancelled",
+      resolvedAt: serverNowIso(),
+      rejectedBy: actorRole || "unknown",
       // Clear any stale reason from an earlier lifecycle, mirroring the fulfil
       // path: the engine recognises a HUMAN rejection precisely as "cancelled
       // with NO cancelReason" — a leftover reason would silently skip the
@@ -550,12 +555,42 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // stamps it too, but a scan landing between the two writes would have
       // read the bare cancel (Sonnet round 2, PR #607). Hub 2's own leg keeps
       // the human shape: that "no" is the Central-level answer.
-      [`refill_requests/${row.id}/cancelReason`]: isFirstBatchShopLeg(row._r) ? CENTRAL_DECLINED_REASON : null,
-      ...(auth.currentUser?.uid ? { [`refill_requests/${row.id}/resolvedBy`]: auth.currentUser.uid } : {}),
+      cancelReason: isFirstBatchShopLeg(row._r) ? CENTRAL_DECLINED_REASON : null,
+      ...(auth.currentUser?.uid ? { resolvedBy: auth.currentUser.uid } : {}),
     };
+    // MID-SEND: Fulfil records the tranche's movement before it marks the
+    // request. One single-record read; a movement older than MID_SEND_MS is a
+    // stuck send, not one in flight, and does not block (refusalGuard.js). If
+    // the read can't be made (offline) the refusal proceeds as it always has
+    // and the status guard still applies.
+    const listSent = Number(row._r?.sentQty) || 0;
+    let sendingAt = null;
     try {
-      await update(ref(database), upd);
-      notePendingUpdate(upd);                  // see the fulfil echo above
+      const mv = (await get(ref(database, `stock_movements/${trancheMovementId(row.id, listSent)}`))).val();
+      if (sendInFlight(mv, serverNowMs())) sendingAt = listSent;
+    } catch { sendingAt = null; }
+    try {
+      // applyLocally stays at the SDK default (true), like the update() this
+      // replaced: the row leaves the list the instant it is tapped, whatever
+      // the connection. The server still decides — a local guess that the
+      // server's copy contradicts is rolled back and the body re-runs on truth.
+      const res = await runTransaction(ref(database, `refill_requests/${row.id}`),
+        (cur) => refusalTxn(cur, fields, { sendingAt }));
+      const live = res?.snapshot?.val?.() ?? null;
+      if (res?.committed && live) {
+        // see the fulfil echo above — the same paths the old update wrote
+        notePendingUpdate(Object.fromEntries(Object.entries(fields).map(([k, v]) => [`refill_requests/${row.id}/${k}`, v])));
+      } else if (!res?.committed && live) {
+        // BLOCKED: the request was sent, closed or mid-send before this tap
+        // landed. Keep a trace on the request (who, when, what it said) and
+        // change nothing else.
+        const atMs = serverNowMs();
+        console.warn(`Out of Stock on ${row.id} blocked — ${sendingAt !== null ? "mid-send" : `already ${live.status || "sent"}`}`);
+        update(ref(database, `refill_requests/${row.id}/blockedRefusals/${atMs}`), {
+          atMs, byUid: auth.currentUser?.uid || null, byRole: actorRole || null,
+          sawStatus: live.status || null, ...(sendingAt !== null ? { midSend: true } : {}),
+        }).catch((e) => console.warn(`blocked-refusal log for ${row.id} failed`, e));
+      }
     } catch { setMsg((m) => ({ ...m, [row.rowKey]: "failed — retry" })); }
     setBusyRow(null);
   };

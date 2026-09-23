@@ -432,6 +432,31 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
       return upd;
 }
 
+// The transaction body that closes one /refill_requests row for a plan close
+// (lifted out of runScan unchanged so it can be tested without firebase-admin).
+function closeRequestTxn(cur, c, startedAt) {
+  // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
+  // way): the FIRST pass runs against the cold local cache and sees
+  // null even when the node exists. Returning undefined there ABORTS
+  // permanently — 2,304 statuses silently never wrote. Returning
+  // null probes: a real node fails the compare and the callback
+  // re-runs with true data; a genuinely-missing node no-ops.
+  if (cur === null) return null;
+  if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
+  return {
+    ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}),
+    // A hub's "out of stock" on a shop line: keep WHEN it was said
+    // and WHICH location said it — the refusal write-off counts
+    // calendar days by it — and, since 2026-09-23, WHO: the account
+    // lands in resolvedBy, the field Central's queue has always
+    // written, so the write-off names both the same way. Lines
+    // refused before then carry no account and stay as they were.
+    ...(c.humanReject && c.refusedAt ? { refusedAt: c.refusedAt } : {}),
+    ...(c.humanReject && c.denier ? { refusedByLoc: c.denier } : {}),
+    ...(c.humanReject && c.refusedByUid && !cur.resolvedBy ? { resolvedBy: c.refusedByUid } : {}),
+  };
+}
+
 async function runScan() {
   const db = admin.database();
   const nowMs = Date.now();
@@ -579,24 +604,7 @@ async function runScan() {
         if (!proceed) continue;   // fulfilment won the race — leave rr + lock for the next scan
         if (c.refillId && c.rrStatus) {
           try {
-            const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
-              // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
-              // way): the FIRST pass runs against the cold local cache and sees
-              // null even when the node exists. Returning undefined there ABORTS
-              // permanently — 2,304 statuses silently never wrote. Returning
-              // null probes: a real node fails the compare and the callback
-              // re-runs with true data; a genuinely-missing node no-ops.
-              if (cur === null) return null;
-              if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
-              return {
-                ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}),
-                // A hub's "out of stock" on a shop line: keep WHEN it was said
-                // and WHICH location said it (no person is recorded for this
-                // action) — the refusal write-off counts calendar days by it.
-                ...(c.humanReject && c.refusedAt ? { refusedAt: c.refusedAt } : {}),
-                ...(c.humanReject && c.denier ? { refusedByLoc: c.denier } : {}),
-              };
-            });
+            const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => closeRequestTxn(cur, c, startedAt));
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one
             // window): the fulfilment wins — never record a strike against a
@@ -1048,4 +1056,5 @@ exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/re
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
 exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
+exports._closeRequestTxn = closeRequestTxn; // pure — the request side of a plan close
 exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable
