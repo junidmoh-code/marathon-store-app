@@ -559,8 +559,12 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       ...(auth.currentUser?.uid ? { resolvedBy: auth.currentUser.uid } : {}),
     };
     try {
+      // applyLocally stays at the SDK default (true), like the update() this
+      // replaced: the row leaves the list the instant it is tapped, whatever
+      // the connection. The server still decides — a local guess that the
+      // server's copy contradicts is rolled back and the body re-runs on truth.
       const res = await runTransaction(ref(database, `refill_requests/${row.id}`),
-        (cur) => refusalTxn(cur, fields), { applyLocally: false });
+        (cur) => refusalTxn(cur, fields));
       const live = res?.snapshot?.val?.() ?? null;
       if (res?.committed && live) {
         // see the fulfil echo above — the same paths the old update wrote

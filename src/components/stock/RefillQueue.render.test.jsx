@@ -344,6 +344,9 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     await act(async () => { await oosBtn.props.onClick(); });
     tree.unmount();
     expect(updateMock).not.toHaveBeenCalled();
+    // optimistic like the update() it replaced — the row leaves the list on
+    // the tap, not after a round trip (Sonnet review, PR #643)
+    expect(txnMock.mock.calls[0][2]?.applyLocally).not.toBe(false);
     expect(txnWrites).toHaveLength(1);
     const { path, value } = txnWrites[0];
     expect(path).toBe("refill_requests/bootreq");
