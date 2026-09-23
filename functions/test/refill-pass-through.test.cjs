@@ -285,3 +285,24 @@ test("units a no_target leg landed at hub2 are in transit to the shop — not a 
   }));
   assert.ok(idle.exceptions.noTarget.items.some((n) => n.loc === "hub2" && n.pid === "p9" && n.units === 2));
 });
+
+test("the Engine Policy preview model parks a shop that got no share of a capped leg (CodeRabbit, PR #641)", () => {
+  const { modelCategoryPolicy } = require("../lib/category-policy.cjs");
+  const products = { c1: { name: "Cap", productType: "clothing", categoryKey: "cat", sizes: ["_"] } };
+  const config = {
+    mode: { hub2: "live", "marathon-pe": "live", trophy: "live" },
+    routes: { hub2: "central", "marathon-pe": "hub2", trophy: "hub2" },
+    ruleBasedTargets: false, maxUnitsPerIntent: 20,
+    categoryPolicy: { cat: { "marathon-pe": { target: 2, minQty: 1 }, trophy: { target: 2, minQty: 1 } } },
+  };
+  const stock = { "marathon-pe": { c1: { _: cell(0) } }, trophy: { c1: { _: cell(0) } }, hub2: {}, central: { c1: { _: cell(1) } } };
+  const m = modelCategoryPolicy({ config, products, stock, targets: {}, openIndex: {}, categoryKey: "cat",
+    locations: ["marathon-pe", "trophy", "hub2", "central"], maxUnitsPerIntent: 20 });
+  const eng = computeRefillPlan({ nowMs: NOW, config, products, stock, targets: {}, openIndex: {}, refillRequests: {}, orders: {}, movements: [] });
+  assert.equal(m.passThroughRequests, 1);
+  assert.equal(m.passThroughUnits, 1);
+  const legs = Object.fromEntries(m.legs.map((l) => [l.loc, l]));
+  assert.equal(legs["marathon-pe"].carriedThroughHub + legs.trophy.carriedThroughHub, 1, "only the shop that got the unit is carried");
+  assert.equal(legs["marathon-pe"].parkedNoSource + legs.trophy.parkedNoSource, 1, "the other is parked, as the engine parks it");
+  assert.deepEqual([m.totalRequests, m.totalUnits], [eng.intents.length, eng.intents.reduce((n, i) => n + i.qty, 0)]);
+});

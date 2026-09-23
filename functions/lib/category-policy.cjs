@@ -63,7 +63,7 @@
 // real engine alongside the model on the live snapshot — so the residual gap is
 // measured rather than assumed.
 
-const { resolveTarget, encodeSizeKey, policyCategoryKey } = require("./refill-engine.cjs");
+const { resolveTarget, encodeSizeKey, policyCategoryKey, passThroughExcluded } = require("./refill-engine.cjs");
 // Group and per-size resolution, from the leaf module the ENGINE consumes — so
 // "which policy speaks here" is answered once. A copy on this side would drift
 // the first time the precedence changed, and the model's whole value is that it
@@ -577,7 +577,7 @@ function modelCategoryPolicy({
           const up = src ? routes[src] : null;
           const ptKey = `${src}|${pid}|${sizeKey}`;
           if (up && !openIndex?.[src]?.[pid]?.[sizeKey] && resolveTarget(ctx, src, pid, size) === null
-              && qtyAt(up, pid, sizeKey) > 0) {
+              && qtyAt(up, pid, sizeKey) > 0 && !passThroughExcluded(products[pid])) {
             const cur = passThrough.get(ptKey);
             const upKey = `${up}|${pid}|${sizeKey}`;
             const take = Math.min(deficit, qtyAt(up, pid, sizeKey) - (reserved.get(upKey) || 0), capUnits - (cur ? cur.qty : 0));
@@ -587,7 +587,10 @@ function modelCategoryPolicy({
               carriedThroughHub += 1;
               continue;
             }
-            if (cur) { carriedThroughHub += 1; continue; }
+            // No share left for THIS shop (Central already taken, or the leg
+            // at its cap): parked, exactly as the engine parks it — never
+            // "carried" by a leg that holds none of its need (CodeRabbit,
+            // PR #641; the engine's own fix was fuzz seed 53).
           }
           parkedNoSource += 1;
           continue;

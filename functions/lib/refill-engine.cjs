@@ -446,6 +446,13 @@ function subcategoryRun(config, products, pid, dest) {
 // buckets and the pass-through carve-out read ONE list.
 const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
 
+// SNEAKERS ARE SALES-ONLY at the hubs (owner rule): a pass-through leg is
+// never raised for a footwear product. One predicate, exported, so the
+// Engine Policy preview model (category-policy.cjs) asks the same question.
+function passThroughExcluded(product) {
+  return isFootwear(product) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(product));
+}
+
 function policyCategoryKey(product) {
   const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
   if (key) return key;
@@ -1540,8 +1547,7 @@ function computeRefillPlan(snapshot) {
     // SNEAKERS ARE SALES-ONLY at the hubs (owner rule): no automatic
     // Central→hub footwear leg, ever, whatever a shop row says. The shop's
     // existing labels stand.
-    const fp = products?.[pid];
-    if (isFootwear(fp) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(fp))) return null;
+    if (passThroughExcluded(products?.[pid])) return null;
     if ((inbound.get(`${hub}|${pid}|${sizeKey}`) || 0) > 0) return "in_flight";
     if (hubLegState(hub, pid, sizeKey, size).parked) return null;
     const k = `${hub}|${pid}|${sizeKey}`;
@@ -2599,4 +2605,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor };
+module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor, passThroughExcluded };
