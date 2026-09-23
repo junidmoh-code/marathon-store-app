@@ -3569,26 +3569,9 @@ exports.refusalWriteoffDigest = onSchedule(
   { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 300 },
   async () => {
     const digest = require("./lib/writeoff-digest.cjs");
-    const db = admin.database();
-    const nowMs = Date.now();
-    const channels = [digest.emailViaAlertLog()];
-    let res;
-    try {
-      res = await digest.runDigest({ db, nowMs, channels });
-    } catch (e) {
-      await digest.recordStatus(db, { atMs: nowMs, outcome: "error", why: String(e?.message || e).slice(0, 300) }).catch(() => {});
-      throw e;
-    }
-    if (!res.sent) {
-      await digest.recordStatus(db, { atMs: nowMs, outcome: res.reason });
-      console.log(`refusalWriteoffDigest: ${res.reason}`);
-      return;
-    }
-    const delivery = await digest.confirmDelivery({ api: digest.monitoringApi(), digest: res.digest, sentAtMs: nowMs });
-    await db.ref().update({ [`${digest.ARCHIVE}/${res.archiveKey}/delivery`]: delivery });
-    await digest.recordStatus(db, { atMs: nowMs, outcome: "sent", count: res.digest.count, units: res.digest.units, archiveKey: res.archiveKey, delivery });
-    const line = `refusalWriteoffDigest: ${res.digest.count} write-off(s) — email ${delivery.state}${delivery.why ? ` (${delivery.why})` : ""}`;
-    if (delivery.state === "emailed") console.log(line); else console.error(line);
+    await digest.runDigestAndConfirm({
+      db: admin.database(), nowMs: Date.now(), channels: [digest.emailViaAlertLog()], api: digest.monitoringApi(),
+    });
   }
 );
 

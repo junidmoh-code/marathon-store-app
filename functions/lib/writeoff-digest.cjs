@@ -212,7 +212,32 @@ async function runDigest({ db, nowMs, channels }) {
   return { sent: true, digest, results, archiveKey: `${digest.date}_${nowMs}` };
 }
 
+// The whole scheduled run: digest → ask Google → record the verdict. The
+// function in index.js only wires the real db and API into this (so this, the
+// real entry point, is what the tests drive). A run that throws is recorded
+// before it rethrows, so a crash shows on the card too.
+async function runDigestAndConfirm({ db, nowMs, channels, api, confirm = confirmDelivery, log = console.log, warn = console.error }) {
+  let res;
+  try {
+    res = await runDigest({ db, nowMs, channels });
+  } catch (e) {
+    await recordStatus(db, { atMs: nowMs, outcome: "error", why: String(e?.message || e).slice(0, 300) }).catch(() => {});
+    throw e;
+  }
+  if (!res.sent) {
+    await recordStatus(db, { atMs: nowMs, outcome: res.reason });
+    log(`refusalWriteoffDigest: ${res.reason}`);
+    return { ...res };
+  }
+  const delivery = await confirm({ api, digest: res.digest, sentAtMs: nowMs });
+  await db.ref().update({ [`${ARCHIVE}/${res.archiveKey}/delivery`]: delivery });
+  await recordStatus(db, { atMs: nowMs, outcome: "sent", count: res.digest.count, units: res.digest.units, archiveKey: res.archiveKey, delivery });
+  const line = `refusalWriteoffDigest: ${res.digest.count} write-off(s) — email ${delivery.state}${delivery.why ? ` (${delivery.why})` : ""}`;
+  (delivery.state === "emailed" ? log : warn)(line);
+  return { ...res, delivery };
+}
+
 module.exports = {
-  buildDigest, runDigest, emailViaAlertLog, lineFor, judgeDelivery, monitoringApi, confirmDelivery, recordStatus,
+  buildDigest, runDigest, runDigestAndConfirm, emailViaAlertLog, lineFor, judgeDelivery, monitoringApi, confirmDelivery, recordStatus,
   MARKER, QUEUE, RECORDS, ARCHIVE, STATUS, POLICY_NAME, RECIPIENT, EMAIL_MAX_CHARS,
 };

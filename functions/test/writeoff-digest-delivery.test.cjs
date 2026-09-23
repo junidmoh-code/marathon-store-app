@@ -6,7 +6,7 @@
 // named, never reported as sent.
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
-const { judgeDelivery, confirmDelivery, monitoringApi, runDigest, emailViaAlertLog, POLICY_NAME, RECIPIENT, STATUS } = require("../lib/writeoff-digest.cjs");
+const { judgeDelivery, confirmDelivery, monitoringApi, runDigest, runDigestAndConfirm, emailViaAlertLog, POLICY_NAME, RECIPIENT, STATUS } = require("../lib/writeoff-digest.cjs");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
 
 const SENT = Date.parse("2026-09-23T17:40:03.000Z");
@@ -107,4 +107,55 @@ test("runDigest returns the archive key the verdict is written under", async () 
   assert.equal(res.archiveKey, `2026-09-23_${SENT}`);
   assert.ok((await db.ref(`refill_engine/refusalWriteoffDigests/${res.archiveKey}`).once("value")).val());
   assert.equal(STATUS, "refill_engine/refusalWriteoffDigestStatus");
+});
+
+// ── the real entry point: what the scheduled function runs ──────────────────
+function world() {
+  return makeFakeDb({ refill_engine: {
+    refusalWriteoffDigestQueue: { w1: SENT },
+    refusalWriteoffs: { w1: { loc: "hub2", pid: "p", productName: "Tee", size: "M", qty: 1, days: ["2026-09-12"], refusals: [] } },
+  } });
+}
+const quiet = { log: () => {}, warn: () => {} };
+// A fake Google that answers with an alert carrying whatever was LOGGED — the
+// real chain: log line → label extractor → alert.
+function googleThatSees(logged) {
+  return { policies: async () => [POLICY], channel: async () => CHANNEL,
+    alerts: async () => logged.map((line) => ({ ...ALERT, log: { extractedLabels: { digest: line.replace(/^REFUSAL_WRITEOFF_DIGEST /, "") } } })) };
+}
+
+test("entry point: the logged digest is found at Google → 'emailed' on the archive AND the status node", async () => {
+  const db = world(); const logged = [];
+  const res = await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaAlertLog((l) => logged.push(l))], api: googleThatSees(logged), ...quiet });
+  assert.equal(res.delivery.state, "emailed");
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st.outcome, "sent"); assert.equal(st.count, 1); assert.equal(st.delivery.state, "emailed");
+  assert.equal((await db.ref(`refill_engine/refusalWriteoffDigests/${res.archiveKey}/delivery/state`).once("value")).val(), "emailed");
+});
+
+test("entry point: Google raised nothing → 'not_sent' recorded (the 23 Sep silence can't recur unseen)", async () => {
+  const db = world();
+  const api = { policies: async () => [POLICY], channel: async () => CHANNEL, alerts: async () => [] };
+  const res = await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaAlertLog(() => {})], api,
+    confirm: (a) => confirmDelivery({ ...a, waitMs: 0 }), ...quiet });
+  assert.equal(res.delivery.state, "not_sent");
+  assert.equal((await db.ref(STATUS).once("value")).val().delivery.state, "not_sent");
+});
+
+test("entry point: a run that throws is recorded as an error, then rethrows", async () => {
+  const db = world();
+  const boom = { name: "email", deliver: async () => ({ ok: true }) };
+  const broken = { ...db, ref: (p) => (p === "refill_engine/refusalWriteoffDigestQueue" ? { once: async () => { throw new Error("read failed"); } } : db.ref(p)) };
+  await assert.rejects(runDigestAndConfirm({ db: broken, nowMs: SENT, channels: [boom], api: googleThatSees([]), ...quiet }), /read failed/);
+  const st = (await db.ref(STATUS).once("value")).val();
+  assert.equal(st.outcome, "error"); assert.match(st.why, /read failed/);
+});
+
+test("entry point: nothing new → status says so, no Google call", async () => {
+  const db = makeFakeDb({ refill_engine: {} });
+  let asked = 0;
+  const api = { policies: async () => { asked++; return []; } };
+  await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaAlertLog(() => {})], api, ...quiet });
+  assert.equal(asked, 0);
+  assert.equal((await db.ref(STATUS).once("value")).val().outcome, "nothing_new");
 });
