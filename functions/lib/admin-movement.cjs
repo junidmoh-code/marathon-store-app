@@ -33,15 +33,22 @@
 // A crash between legs is completed by the caller's next attempt with the SAME
 // movement id (the stranded-transit sweep re-plans hourly).
 //
-// Only the movement types the sweep and the repair need are admitted
-// (transfer_in, adjustment) — widen deliberately, with a test, not by default.
+// Only the movement types the sweep, the repair and the refusal write-off need
+// are admitted (transfer_in, adjustment, refusal_writeoff) — widen
+// deliberately, with a test, not by default.
+//
+// refusal_writeoff (2026-09-23, functions/lib/refusal-writeoff.cjs) is a debit
+// of ONE cell (`from`) and nothing else. It is written with `expectQty`: the
+// transaction refuses unless the cell still holds exactly the count the scan
+// planned from, so a sale or an arrival landing in between is never erased on
+// a stale plan — the next scan re-plans from the new count.
 //
 // `db` is injected (firebase-admin Database or the test fake): this module never
 // initialises the SDK itself.
 
 "use strict";
 
-const ADMITTED_TYPES = new Set(["transfer_in", "adjustment"]);
+const ADMITTED_TYPES = new Set(["transfer_in", "adjustment", "refusal_writeoff"]);
 
 const emptyLink = (link) => ({ orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, ...(link || {}) });
 const read = async (db, path) => (await db.ref(path).once("value")).val();
@@ -63,12 +70,21 @@ function clampsNegativeBase(movement, delta, loc) {
   return delta > 0 && movement.type !== "adjustment" && loc !== "in_transit";
 }
 
+// The CELL's lastType must stay inside the live /stock rule's enum
+// (received|opening|sold|transfer_in|transfer_out|adjustment|return): device
+// writers that leave lastType untouched are validated against the stored value,
+// so an unknown one would refuse the next sale on that cell. A refusal
+// write-off is a count correction, so the cell says "adjustment"; the LEDGER
+// row keeps the precise type "refusal_writeoff".
+const cellLastType = (type) => (type === "refusal_writeoff" ? "adjustment" : type);
+
 function cellDeltas(m) {
   const qty = Number(m.qty);
   switch (m.type) {
     // negative leg FIRST — see the header
     case "transfer_in": return m.from && m.to ? [{ loc: m.from, delta: -qty }, { loc: m.to, delta: +qty }] : null;
     case "adjustment": return m.to ? [{ loc: m.to, delta: +qty }] : (m.from ? [{ loc: m.from, delta: -qty }] : null);
+    case "refusal_writeoff": return m.from && !m.to ? [{ loc: m.from, delta: -qty }] : null;
     default: return null;
   }
 }
@@ -76,7 +92,8 @@ function cellDeltas(m) {
 /**
  * movement: { type, productId, size, sizeKey?, qty(>0), from?, to?, reason?, link?,
  *             movementId (REQUIRED — deterministic, the idempotency key),
- *             actor (REQUIRED — "system:…"), actorRole?, allowNegative? }
+ *             actor (REQUIRED — "system:…"), actorRole?, allowNegative?,
+ *             expectQty? — the cell must hold exactly this qty, else refused }
  * → { ok:true, movementId, idempotent?, newQty? } | { ok:false, reason, … }
  */
 async function applyMovementAdmin(db, movement, { nowIso }) {
@@ -117,6 +134,7 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
       // the row existed can never re-apply a leg — CodeRabbit, PR #602).
       if (cur && (cur.relMv === mvId || cur.lastRelMv === mvId)) return undefined;
       const curQty = cur && typeof cur.qty === "number" ? cur.qty : 0;
+      if (movement.expectQty != null && curQty !== Number(movement.expectQty)) return undefined;   // moved since the plan — reported below
       const clearedDebt = curQty < 0 && clampsNegativeBase(movement, d.delta, d.loc) ? curQty : 0;
       const newQty = (curQty - clearedDebt) + d.delta;
       if (d.delta < 0 && newQty < 0 && !movement.allowNegative) return undefined;   // floor — reported below
@@ -127,7 +145,7 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
         mv: mvId,
         relMv: mvId,
         relBefore: curQty,   // so a resumed call can still write an honest before/after
-        lastType: movement.type,
+        lastType: cellLastType(movement.type),
         updatedAt: nowIso,
         updatedBy: movement.actor,
       };
@@ -141,7 +159,9 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
         after[d.loc] = curQty;
         continue;
       }
-      refusal = { ok: false, reason: "insufficient_stock", location: d.loc, available: curQty, requested: qty };
+      refusal = movement.expectQty != null && curQty !== Number(movement.expectQty)
+        ? { ok: false, reason: "cell_changed", location: d.loc, available: curQty, expected: Number(movement.expectQty) }
+        : { ok: false, reason: "insufficient_stock", location: d.loc, available: curQty, requested: qty };
       break;
     }
     const written = res.snapshot.val();
@@ -158,6 +178,8 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
     ts: movement.ts || nowIso, appliedAt: nowIso, reason: movement.reason ?? null,
     link: emptyLink(movement.link),
     ...(Object.keys(negativeCleared).length ? { negativeCleared } : {}),
+    // A refusal write-off carries its evidence (refusal ids, days) on the row.
+    ...(movement.writeoff && typeof movement.writeoff === "object" ? { writeoff: movement.writeoff } : {}),
   };
   // create-once: a device that wrote the same id first wins the row
   await db.ref(`stock_movements/${mvId}`).transaction((cur) => (cur == null ? mv : undefined));
@@ -175,4 +197,4 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
   return { ok: true, movementId: mvId, newQty: after[movement.to || movement.from] };
 }
 
-module.exports = { applyMovementAdmin, clampsNegativeBase, cellPath, stockCellKey };
+module.exports = { applyMovementAdmin, clampsNegativeBase, cellPath, stockCellKey, cellLastType };
