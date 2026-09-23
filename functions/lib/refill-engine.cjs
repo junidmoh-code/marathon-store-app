@@ -785,6 +785,30 @@ function computeRefillPlan(snapshot) {
   // Total on-hand for a (pid,size) across every location the scan can see.
   const networkQtyOf = (pid, size) =>
     Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
+  // ── WHAT A PASS-THROUGH HUB LEG IS STILL OWED (2026-09-23) ─────────────────
+  // A pass-through leg (see "PASS-THROUGH" in the deficit loop) is a Central→
+  // hub request raised FOR the shops the hub feeds, not for the hub's own
+  // buffer — so it must be reconciled against THEIR need. Judged by the hub's
+  // own target it would read "not needed" (the hub may keep nothing of the
+  // size, or already count its full target in units its staff cannot find)
+  // and be withdrawn by the very next scan.
+  //
+  // need = Σ over the shops routed from this hub of (target − on hand −
+  // inbound), less what the hub can already hand over. A DISPUTED leg ignores
+  // the hub's count: those are the units its staff have repeatedly said are
+  // not there, and counting them would withdraw the leg on the evidence it
+  // exists to route around.
+  const passThroughNeed = (hub, pid, sizeKey, size, kind) => {
+    let need = 0;
+    for (const shop of Object.keys(routes)) {
+      if (routes[shop] !== hub) continue;
+      const ts = resolveTarget(ctx, shop, pid, size);
+      if (!ts || ts.target <= 0) continue;
+      need += Math.max(ts.target - avail(cellQty(stock, shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
+    }
+    if (kind !== "disputed") need -= avail(cellQty(stock, hub, pid, size));
+    return Math.max(need, 0);
+  };
   for (const [dest, byPid] of Object.entries(openIndex)) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
@@ -838,7 +862,12 @@ function computeRefillPlan(snapshot) {
         // the warehouse deliver a surplus.
         const t = unresolvedOurs ? resolveTarget(ctx, dest, pid, size) : null;
         const otherInbound = Math.max((inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) - (num(entry.qty) || 1), 0);
-        const needGone = unresolvedOurs && (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0);
+        // A pass-through leg answers to the shops it carries, never to the
+        // hub's own target (see passThroughNeed).
+        const ptNeed = unresolvedOurs && entry.passThrough ? passThroughNeed(dest, pid, sizeKey, size, entry.passThrough) : null;
+        const needGone = unresolvedOurs && (ptNeed != null
+          ? ptNeed <= 0
+          : (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0));
         // Certainly-unfillable PURGE (owner rule 2026-07-13): zero stock
         // anywhere upstream → withdrawn; staff never see unpickable requests.
         const unfillable = unresolvedOurs && networkQtyOf(pid, size) - destHave <= 0;
@@ -922,7 +951,7 @@ function computeRefillPlan(snapshot) {
           // promise 16 units against 10 physical, and a grow + a same-scan new
           // intent overcommit a shared source. Every decision below is
           // immediately visible to later siblings AND to the deficit loop).
-          const desired = Math.min(Math.max((t?.target || 0) - destHave - otherInbound, 0), num(config?.maxUnitsPerIntent) || 20);
+          const desired = Math.min(ptNeed != null ? ptNeed : Math.max((t?.target || 0) - destHave - otherInbound, 0), num(config?.maxUnitsPerIntent) || 20);
           // Sequential fair allocation: my share = source on-hand minus what
           // everyone ELSE currently reserves (threaded — later siblings see my
           // decision). If my share is zero but I am oversized, I still shrink
@@ -1422,6 +1451,86 @@ function computeRefillPlan(snapshot) {
     });
   }
 
+  // ── IS A HUB'S OWN UPSTREAM LEG PARKED? ────────────────────────────────────
+  // One definition, used by the "chain is flowing" label below AND by the
+  // pass-through gate, so the two can never disagree about whether Central has
+  // said no. Parked = the hub's leg for this cell was rejected inside its
+  // effective window with no arrival since, OR it is streak-flagged (awaiting
+  // a Central recount), OR the size is confirmed out at both levels.
+  const hubLegState = (hub, pid, sizeKey, size) => {
+    const upstream = routes[hub];
+    const rej = rejectedAt.get(`${hub}|${pid}|${sizeKey}`);
+    const denier = rej?.by || upstream;
+    const denierHas = denier ? avail(cellQty(stock, denier, pid, size)) : 0;
+    const streakFlagged = streakState(hub, pid, sizeKey, size, upstream).flagged;
+    const parked = !!(rej && nowMs - rej.ts < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rej.ts))
+      || streakFlagged
+      || confirmedOut(pid, sizeKey);
+    return { parked, streakFlagged, denierHas };
+  };
+
+  // ═══ PASS-THROUGH — a shop's demand must never dead-end at its hub (2026-09-23)
+  // A shop can only ask its hub (config.routes). Two live states left that
+  // ask with nowhere to go while Central held the units, and NOTHING ever
+  // fired again (SHORT-NOT-REQUESTED-INVESTIGATION.md — 43 shop cells on the
+  // day, including the owner's report, PE / M of the Brown 2 tracksuit):
+  //
+  //   no_target  the hub is empty and resolves NO target for the size (it has
+  //              never carried it), so the hub never computes a deficit of its
+  //              own and no Central→hub leg can form. The shop was labelled
+  //              "hub2 has no buffer target — set one" and waited for a person.
+  //   disputed   the reject-streak loop guard parked the shop cell: the hub
+  //              said "not there" N times while its count still shows stock.
+  //              The hub's count meets its own target, so it never asks Central
+  //              either. The cell waited for a person to recount.
+  //
+  // In both, the engine now raises ONE Central→hub request FOR the shop — a
+  // pass-through leg, sized to the shop's own shortfall (its keep, never a
+  // number invented for the hub). It rides the existing hub-leg flow exactly:
+  // /refill_requests at the hub, fulfilled from the Transfer screen, reconciled
+  // against the shops' need (passThroughNeed above). When it lands the normal
+  // cascade takes over — the arrival is new stock at the hub, which lifts the
+  // streak (arrivedAfter) and gives the shop leg a source on the next scan.
+  //
+  // HOW MANY, NEVER WHERE. Nothing here seats anything or writes a target:
+  // the shop already keeps the product (its own row or rule says how many),
+  // and the hub is the route config already names. An explicit hub target of 0
+  // — a human's "not here" — resolves a target object, not null, and is NOT
+  // passed through (see the no_target gate); neither is anything Central has
+  // itself refused (hubLegState.parked), nor a cell whose hub already has a
+  // leg in flight.
+  //
+  // Accumulated per hub cell while the shops are walked, then emitted as
+  // intents after the loop — two shops short of the same size get ONE leg
+  // carrying both shortfalls, and Central's units are reserved the moment each
+  // shop's share is taken, so the hub's own deficit pass (and any sibling)
+  // sees them as spoken for.
+  const passThrough = new Map();
+  const passThroughPlanned = (hub, pid, sizeKey) => passThrough.get(`${hub}|${pid}|${sizeKey}`)?.qty || 0;
+  // Returns "raised" | "in_flight" | null (not eligible — the caller keeps its
+  // existing label).
+  const raisePassThrough = ({ shop, hub, pid, size, sizeKey, want, kind, high }) => {
+    const upstream = routes[hub];
+    if (!upstream || !routes[shop] || routes[shop] !== hub) return null;
+    if ((inbound.get(`${hub}|${pid}|${sizeKey}`) || 0) > 0) return "in_flight";
+    if (hubLegState(hub, pid, sizeKey, size).parked) return null;
+    const k = `${hub}|${pid}|${sizeKey}`;
+    const upKey = `${upstream}|${pid}|${sizeKey}`;
+    const cur = passThrough.get(k);
+    const room = maxUnits - (cur ? cur.qty : 0);
+    const upAvail = avail(cellQty(stock, upstream, pid, size)) - (sourceReserved.get(upKey) || 0);
+    const take = Math.min(want, upAvail, room);
+    if (take <= 0) return cur ? "raised" : null;
+    bump(sourceReserved, upKey, take);
+    const pt = cur || { hub, upstream, pid, size, sizeKey, qty: 0, kind, forDests: [], high: false };
+    pt.qty += take;
+    if (!pt.forDests.includes(shop)) pt.forDests.push(shop);
+    if (kind === "disputed") pt.kind = "disputed";   // the hub's count is not to be trusted for ANY shop on this leg
+    if (high) pt.high = true;
+    passThrough.set(k, pt);
+    return "raised";
+  };
+
   for (const dest of dests) {
     const mode = config?.mode?.[dest] || "off";
     const src = routes[dest];
@@ -1443,7 +1552,9 @@ function computeRefillPlan(snapshot) {
         if (isFootwear(products?.[pid])) footwearManagedCells++; else managedCells++;
         const q = cellQty(stock, dest, pid, size);
         const have = avail(q);
-        const inb = inbound.get(`${dest}|${pid}|${sizeKey}`) || 0;
+        // A pass-through leg planned for this hub cell earlier in THIS scan is
+        // inbound here too — the hub must not ask Central twice for one box.
+        const inb = (inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) + passThroughPlanned(dest, pid, sizeKey);
         const deficit = t.target - have - inb;
         if (deficit <= 0) continue;
 
@@ -1540,10 +1651,23 @@ function computeRefillPlan(snapshot) {
         // ("streak park beats the 24h auto-retry").
         const st = streakState(dest, pid, sizeKey, size, denier);
         if (st.flagged) {
+          // The recount card stays — the hub's count IS suspect — but the
+          // shop's demand no longer waits on it: Central is asked to send the
+          // hub the shop's shortfall (PASS-THROUGH, disputed). Only when the
+          // parked denier is the shop's own hub; a streak against anyone else
+          // is not a hub count dispute.
+          const pt = st.denier === src
+            ? raisePassThrough({ shop: dest, hub: src, pid, size, sizeKey, want: deficit, kind: "disputed", high: have < t.minQty })
+            : null;
           recountNeeded.push({
             loc: dest, pid, size, deficit, source: st.denier,
             rejections: st.count, showing: st.has,
-            note: `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount, then "Ask again" in Health`,
+            note: pt === "raised"
+              ? `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — asked ${routes[src]} to send ${st.denier} this shop's ${deficit}; the shop asks again when it lands`
+              : pt === "in_flight"
+                ? `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — stock is on its way to ${st.denier}; the shop asks again when it lands`
+                : `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount, then "Ask again" in Health`,
+            ...(pt ? { passThrough: pt } : {}),
           });
           continue;
         }
@@ -1600,13 +1724,10 @@ function computeRefillPlan(snapshot) {
           // way to the source, or stock one level up AND the source's own leg
           // is not itself parked behind a rejection cooldown / confirmed-out
           // (Codex P2 — otherwise demand sits mislabelled for the whole window).
-          const srcRej = rejectedAt.get(`${src}|${pid}|${sizeKey}`);
           // Same effective window as the propose gate: a source leg whose
           // denier still counts stock re-checks fast, so it is only "parked"
           // inside the SHORT window — the blocked label must not outlive the
           // gate that causes it.
-          const srcDenier = srcRej?.by || upstreamOfSrc;
-          const srcDenierHas = srcDenier ? avail(cellQty(stock, srcDenier, pid, size)) : 0;
           // A streak-FLAGGED source leg is parked indefinitely (Recount Needed
           // awaits a human) — the store demand must say "blocked", not
           // "flowing", or it starves behind a self-healing label. RESTORED
@@ -1614,10 +1735,8 @@ function computeRefillPlan(snapshot) {
           // targets, because srcCanPull is now almost always true for carried
           // clothing, so this is the main remaining signal that an upstream leg
           // is genuinely stuck rather than merely waiting.
-          const srcStreakFlagged = streakState(src, pid, sizeKey, size, upstreamOfSrc).flagged;
-          const srcParked = (srcRej && nowMs - srcRej.ts < effWindowMs(srcDenierHas) && !arrivedAfter(srcDenier, pid, sizeKey, srcRej.ts))
-            || srcStreakFlagged
-            || confirmedOut(pid, sizeKey);
+          // (One definition — hubLegState — shared with the pass-through gate.)
+          const { parked: srcParked, streakFlagged: srcStreakFlagged, denierHas: srcDenierHas } = hubLegState(src, pid, sizeKey, size);
           // "Chain is flowing" additionally requires the source to HAVE a
           // buffer target for this cell — without one the engine will never
           // compute a source deficit, so no upstream leg would EVER create and
@@ -1628,6 +1747,15 @@ function computeRefillPlan(snapshot) {
           const srcCanPull = !!(srcTarget && srcTarget.target > 0);
           if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && srcCanPull && !srcParked)) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });
+          } else if (upstreamOfSrc && srcTarget === null && upstreamAvail > 0 && !srcParked
+              && raisePassThrough({ shop: dest, hub: src, pid, size, sizeKey, want: deficit, kind: "no_target", high: have < t.minQty }) === "raised") {
+            // PASS-THROUGH (no_target): the hub keeps none of this size, so no
+            // leg of its own will ever form — carry the shop's shortfall
+            // through it. `srcTarget === null` is deliberate: an explicit hub
+            // row of 0 (or the policy's dead-size 0) resolves an OBJECT, and a
+            // human's "not at this hub" is respected, not routed around.
+            awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, passThrough: "no_target",
+              note: `pass-through: asked ${upstreamOfSrc} to send ${src} this shop's ${deficit} (${src} keeps none of this size)` });
           } else {
             awaitingSupplier.push({
               loc: dest, pid, size, deficit, source: src,
@@ -1677,6 +1805,22 @@ function computeRefillPlan(snapshot) {
           });
         }
       }
+    }
+  }
+
+  // ── emit the PASS-THROUGH legs (see the block above the deficit loop) ──────
+  // A hub cell that already produced its OWN intent this scan needs no second
+  // leg — its arrival lifts the shop the same way. (Destinations are walked
+  // shops-first, so this only bites if that ordering ever changes.)
+  {
+    const planned = new Set(intents.map((i) => `${i.dest}|${i.productId}|${i.sizeKey}`));
+    for (const pt of passThrough.values()) {
+      if (planned.has(`${pt.hub}|${pt.pid}|${pt.sizeKey}`)) continue;
+      intents.push({
+        dest: pt.hub, source: pt.upstream, productId: pt.pid, size: pt.size, sizeKey: pt.sizeKey,
+        qty: pt.qty, priority: pt.high ? "high" : "normal", mode: config?.mode?.[pt.hub] || "off",
+        passThrough: pt.kind, forDests: [...pt.forDests].sort(),
+      });
     }
   }
 

@@ -276,6 +276,7 @@ function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfi
           <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}><SizeTag size={row.size} /></span>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: BLUE, fontVariantNumeric: "tabular-nums" }}>×{remaining}</span>
           {sent > 0 && <span style={{ fontSize: 11, color: GRAY }}>· {sent} sent</span>}
+          {row.forLabel && <span data-for-shops style={{ fontSize: 11, color: GRAY }}>· for {row.forLabel}</span>}
         </span>
         <span style={{ flex: 1 }} />
         <button disabled={busy} onClick={onToggleFulfil}
@@ -358,6 +359,12 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         size: String(r.size), qty: r.qty || 1, sent: Number(r.sentQty) || 0,
         createdAt: r.createdAt, createdMs: parseMs(r.createdAt),
         earlyRelease: r.earlyRelease, shadow: !!r.shadow, _r: r,
+        // A PASS-THROUGH request (refill engine, 2026-09-23) is raised at a hub
+        // FOR the shops it feeds — the hub itself keeps none of it, or its
+        // count is disputed. Name the shops so the picker knows why a hub ask
+        // exists for a line the hub does not stock.
+        forLabel: Array.isArray(r.forDests) && r.forDests.length
+          ? r.forDests.map((d) => HUB_LABEL[d] || d).join(" + ") : null,
       };
     });
   }, [allRequests, DEST_LOC, lineFilter, byId]);

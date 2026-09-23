@@ -9,7 +9,9 @@
 //   upstream has it        the shop's feeding hub (config.routes) OR that hub's
 //                          own source (Central) counts at least one unit
 //   nothing is on its way  no open lock / open request / manual order / held line
-//                          for the cell, and the plan raises none this scan
+//                          for the cell, no open or held leg for it at its hub,
+//                          and the plan raises none this scan (for the shop, or
+//                          a pass-through leg at its hub on the shop's behalf)
 //
 // and then says WHY, from the bucket the real computeRefillPlan filed the cell
 // in — it replays the engine, it never re-implements it:
@@ -158,6 +160,8 @@ for (const i of plan.intents) {
   for (const d of i.forDests || []) planned.add(`${d}|${i.productId}|${i.sizeKey}`);
 }
 
+const heldAt = (loc, pid, sk) => Object.values(snap.heldLines?.[loc] || {}).some((l) =>
+  l && l.productId === pid && (l.sizeKey != null ? String(l.sizeKey) : encodeSizeKey(l.size)) === sk);
 const rows = [];
 for (const b of X.belowTarget.items) {
   if (!shops.includes(b.loc)) continue;
@@ -167,6 +171,9 @@ for (const b of X.belowTarget.items) {
   if (hubHas + upHas <= 0) continue;
   const k = `${b.loc}|${b.pid}|${sk}`;
   if (b.inbound > 0 || open.has(k) || planned.has(k)) continue;
+  // The hub's own leg for this cell is open or held in transit — the chain is
+  // carrying the shop's need; the shop leg follows the arrival.
+  if (snap.openIndex?.[hub]?.[b.pid]?.[sk] || heldAt(hub, b.pid, sk)) continue;
   const f = fate.get(k) || { cause: "unclassified", note: "" };
   if (f.cause === "pass_through") continue;       // a hub leg is carrying it
   const p = products?.[b.pid] || {};
