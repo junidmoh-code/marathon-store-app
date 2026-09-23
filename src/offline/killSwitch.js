@@ -53,6 +53,10 @@
 // The node, and the one child devices read. Reading the CHILD rather than the
 // node means a future sibling (a note saying who flipped it and why) costs the
 // fleet nothing.
+import {
+  deviceMirrorOff, watchDeviceOffLive, subscribeDeviceOff,
+} from "./deviceOff";
+
 export const MIRROR_SWITCH_NODE = "mirror_switch";
 export const MIRROR_SWITCH_PATH = "mirror_switch/enabled";
 
@@ -123,7 +127,16 @@ export function mirrorSwitchOn() {
 // photo reader and the engine all ask this one function, and a question asked
 // in one place is a question that cannot be answered inconsistently in eight.
 export function offlineMirrorEnabled() {
-  return mirrorSwitchOn();
+  // TWO answers now, and this is still the only place either is asked. The
+  // fleet switch says whether the shop mirrors; deviceOff.js says whether THIS
+  // handset is excused from it, which is how one device that keeps losing its
+  // local copy can be stopped from paying the ~112 MB setup again and again
+  // without taking the other twenty-nine off the mirror.
+  //
+  // Both have to be true for a device to mirror, and the per-device flag is
+  // absent for every healthy device, so this reads exactly as it did before on
+  // all of them.
+  return mirrorSwitchOn() && !deviceMirrorOff();
 }
 
 /** Has this device ever heard an answer? Used by the health record and the gate. */
@@ -237,6 +250,27 @@ export function ensureMirrorSwitch({ timeoutMs = SWITCH_WAIT_MS } = {}) {
 // to be a subscription rather than a poll: the whole promise of the switch is
 // "flip it and the fleet obeys", and a poll makes that "flip it and wait".
 export function watchMirrorSwitchLive() {
+  // The per-device flag is started HERE, and its changes are forwarded to this
+  // module's listeners, because every consumer in the app — MirrorGate,
+  // serving.js, MirrorDot, the hook gate — already subscribes through
+  // subscribeMirrorSwitch and already asks offlineMirrorEnabled(). Forwarding
+  // means a device being switched off takes effect in the same tick, without a
+  // reload, in every one of them, and without a second subscription mechanism
+  // that could answer the same question differently.
+  const stopDeviceOff = watchDeviceOffLive();
+  const unforward = subscribeDeviceOff(() => {
+    const on = offlineMirrorEnabled();
+    for (const l of listeners) { try { l(on); } catch { /* a listener never breaks the switch */ } }
+  });
+  const stopSwitch = watchMirrorSwitchInner();
+  return () => {
+    try { stopSwitch(); } catch { /* ignore */ }
+    try { unforward(); } catch { /* ignore */ }
+    try { stopDeviceOff(); } catch { /* ignore */ }
+  };
+}
+
+function watchMirrorSwitchInner() {
   return watchMirrorSwitch({
     subscribe: (onAnswer, onError) => {
       let unsub = null;

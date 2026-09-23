@@ -28,6 +28,7 @@ import { getDatabase, ref, get, set, onValue } from "firebase/database";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 import { DEVICES_ROOT } from "../../offline/deviceHealth";
 import { MIRROR_SWITCH_PATH, switchVerdict } from "../../offline/killSwitch";
+import { DEVICE_OFF_ROOT, deviceOffPath, deviceOffVerdict } from "../../offline/deviceOff";
 
 const RULE_TEXT = `"mirror_switch": {
   ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
@@ -111,9 +112,14 @@ export function guardWords(guard) {
   return `${what} ${why}`;
 }
 
-export function deviceState(d, now = Date.now()) {
+export function deviceState(d, now = Date.now(), mirrorOff = false) {
   if (!d) return { tone: "#8e8e93", text: "no report" };
   if (now - (d.at ?? 0) > STALE_MS) return { tone: "#8e8e93", text: `silent · last heard ${ago(d.at, now)}` };
+  // Ranked above every mirror-health line below it: a device that has been
+  // told not to mirror is not "incomplete" or "downloading", it is excused,
+  // and showing it in amber as a half-finished copy would send somebody to
+  // fix a device that is doing exactly what it was told.
+  if (mirrorOff) return { tone: "#0a84ff", text: "mirror OFF for this device — reading live by instruction" };
   if (d.guard) return { tone: "#ff453a", text: guardWords(d.guard) };
   if (!d.switchOn) return { tone: "#8e8e93", text: "reading live — switch off" };
   if (d.downloading) return { tone: "#ff9f0a", text: "downloading its copy" };
@@ -125,8 +131,8 @@ export function deviceState(d, now = Date.now()) {
   return { tone: "#30d158", text: "serving from its own copy" };
 }
 
-function DeviceRow({ d, now }) {
-  const s = deviceState(d, now);
+function DeviceRow({ d, now, mirrorOff, onToggleOff, busy }) {
+  const s = deviceState(d, now, mirrorOff);
   return (
     <div style={{ padding: "10px 0", borderBottom: "1px solid #1c1c1e" }}>
       <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "baseline" }}>
@@ -144,11 +150,28 @@ function DeviceRow({ d, now }) {
         )}
         {d.build ? ` · build ${String(d.build).slice(0, 12)}` : " · build unknown"}
       </div>
+      <div style={{ marginTop: 6 }}>
+        <button
+          onClick={() => onToggleOff(d.deviceId, !mirrorOff)}
+          disabled={busy}
+          style={{
+            background: "transparent", border: `1px solid ${mirrorOff ? "#30d158" : "#3a3a3c"}`,
+            color: mirrorOff ? "#30d158" : "#8e8e93", borderRadius: 7,
+            padding: "4px 10px", fontSize: 12, cursor: busy ? "wait" : "pointer",
+          }}
+        >
+          {busy ? "saving…" : mirrorOff ? "Allow this device to mirror again" : "Stop this device mirroring"}
+        </button>
+      </div>
     </div>
   );
 }
 
 export default function MirrorFleetCard({ authUser, onExit }) {
+  // deviceId -> raw flag value, read with the device list.
+  const [offMap, setOffMap] = useState({});
+  const [offBusy, setOffBusy] = useState(null);
+  const [offError, setOffError] = useState(null);
   // ── THE COMPONENT'S OWN GATE ──────────────────────────────────────────────
   // Re-checked here, independently of the route gate that mounted it, on the
   // same strict, case-sensitive email condition the RTDB rule uses. A
@@ -172,6 +195,11 @@ export default function MirrorFleetCard({ authUser, onExit }) {
     if (!isSuperAdmin) return;
     setState((s) => ({ ...s, loading: true, error: null }));
     try {
+      const offSnap = await get(ref(getDatabase(), DEVICE_OFF_ROOT));
+      // One flat map of deviceId -> flag. It is a handful of bytes even when
+      // every device is off, and it is read with the devices rather than
+      // subscribed: this screen is about the cost of reading the database.
+      setOffMap(offSnap.exists() ? (offSnap.val() || {}) : {});
       const snap = await get(ref(getDatabase(), DEVICES_ROOT));
       const val = snap.exists() ? snap.val() : null;
       const devices = Object.values(val || {})
@@ -198,6 +226,29 @@ export default function MirrorFleetCard({ authUser, onExit }) {
     );
     return () => unsub && unsub();
   }, [isSuperAdmin]);
+
+  // ── ONE DEVICE, NOT THE FLEET ─────────────────────────────────────────────
+  // Writes /mirror_switch/off/<deviceId>. Setting it stops that handset
+  // mirroring within a second, live, with no reload and no deploy; clearing it
+  // (a REMOVE, not a `false`) lets it mirror again on the same terms as every
+  // other device. Removing rather than writing false keeps the node to the
+  // devices that are actually excused, so the list stays readable and the
+  // absence of a row means exactly what it says.
+  const toggleOff = useCallback(async (deviceId, to) => {
+    setOffBusy(deviceId);
+    setOffError(null);
+    try {
+      await set(ref(getDatabase(), deviceOffPath(deviceId)), to ? true : null);
+      setOffMap((m) => {
+        const next = { ...m };
+        if (to) next[deviceId] = true; else delete next[deviceId];
+        return next;
+      });
+    } catch (e) {
+      setOffError(`${deviceId}: ${String(e?.message || e)}`);
+    }
+    setOffBusy(null);
+  }, []);
 
   const flip = useCallback(async (to) => {
     setFlipping(true);
@@ -278,6 +329,11 @@ export default function MirrorFleetCard({ authUser, onExit }) {
           </div>
         )}
         {flipError && <div style={{ marginTop: 10, color: "#ff453a", fontSize: 13 }}>Could not change it: {flipError}</div>}
+        {/* A per-device toggle that failed must say so HERE, where the person
+            who pressed it is looking. Without this the button simply springs
+            back and the device carries on mirroring, which looks like the
+            flag not working rather than the write being refused. */}
+        {offError && <div style={{ marginTop: 10, color: "#ff453a", fontSize: 13 }}>Could not change that device: {offError}</div>}
       </div>
 
       {state.error === "denied" && (
@@ -319,7 +375,11 @@ export default function MirrorFleetCard({ authUser, onExit }) {
             </div>
           )}
           <div style={{ marginTop: 18 }}>
-            {devices.map((d) => <DeviceRow key={d.deviceId} d={d} now={now} />)}
+            {devices.map((d) => (
+              <DeviceRow key={d.deviceId} d={d} now={now}
+                mirrorOff={deviceOffVerdict(offMap[d.deviceId])}
+                onToggleOff={toggleOff} busy={offBusy === d.deviceId} />
+            ))}
           </div>
         </>
       )}
@@ -329,7 +389,11 @@ export default function MirrorFleetCard({ authUser, onExit }) {
           <div style={{ fontSize: 12, color: "#8e8e93", textTransform: "uppercase", letterSpacing: 0.6 }}>
             Not heard from in a week ({inactive.length}) — not counted above
           </div>
-          {inactive.map((d) => <DeviceRow key={d.deviceId} d={d} now={now} />)}
+          {inactive.map((d) => (
+            <DeviceRow key={d.deviceId} d={d} now={now}
+              mirrorOff={deviceOffVerdict(offMap[d.deviceId])}
+              onToggleOff={toggleOff} busy={offBusy === d.deviceId} />
+          ))}
         </div>
       )}
     </div>
