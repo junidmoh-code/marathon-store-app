@@ -121,27 +121,35 @@ function judgeDelivery({ policy, channel, alerts, digest, sentAtMs, recipient = 
   if (channel.enabled === false) return { state: "not_sent", why: "the email channel is switched off" };
   const to = channel.labels?.email_address || null;
   if (to !== recipient) return { state: "not_sent", why: `the email channel sends to ${to || "nobody"}, not ${recipient}`, to };
-  const head = String(digest?.summary || "").slice(0, 200);
+  const head = String(digest?.summary || "").trim().slice(0, 200);
   const hit = (alerts || []).find((a) => Date.parse(a?.openTime || "") >= sentAtMs - 60e3
-    && String(a?.log?.extractedLabels?.digest || "").slice(0, 200) === head);
-  if (!hit) return { state: "not_sent", why: "Google raised no alert for this digest, so no email left", to };
-  return { state: "emailed", to, alert: hit.name, emailedAt: hit.openTime };
+    && String(a?.log?.extractedLabels?.digest || "").trim().slice(0, 200) === head);
+  if (hit) return { state: "emailed", to, alert: hit.name, emailedAt: hit.openTime };
+  // An EARLIER alert on this policy still open (autoClose is 30 min): Google
+  // may fold this digest into it rather than raise — and email — a new one.
+  // That is not proof of failure, so it is not reported red. (Sonnet, #644)
+  const stillOpen = (alerts || []).find((a) => a?.state === "OPEN" && Date.parse(a?.openTime || "") < sentAtMs - 60e3);
+  if (stillOpen) return { state: "unchecked", why: `an earlier digest alert (${stillOpen.openTime}) was still open, so Google may have folded this one into it`, to };
+  return { state: "not_sent", why: "Google raised no alert for this digest, so no email left", to };
 }
 
 // The Monitoring REST API with the function's own identity (metadata server
 // token — no library, no key). Injected into confirmDelivery so tests fake it.
-function monitoringApi({ project = "marathon-club", fetchImpl = globalThis.fetch } = {}) {
+function monitoringApi({ project = "marathon-club", fetchImpl = globalThis.fetch, callTimeoutMs = 20e3 } = {}) {
+  // Every call is bounded, so a hung request can never outlive the function
+  // and leave the run unrecorded (Sonnet, #644).
+  const bounded = (url, opts) => fetchImpl(url, { ...opts, signal: AbortSignal.timeout(callTimeoutMs) });
   let token = null;
   const auth = async () => {
     if (token) return token;
-    const r = await fetchImpl("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+    const r = await bounded("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
       { headers: { "Metadata-Flavor": "Google" } });
     if (!r.ok) throw new Error(`metadata token HTTP ${r.status}`);
     token = (await r.json()).access_token;
     return token;
   };
   const get = async (url) => {
-    const r = await fetchImpl(url, { headers: { Authorization: `Bearer ${await auth()}` } });
+    const r = await bounded(url, { headers: { Authorization: `Bearer ${await auth()}` } });
     const body = await r.json().catch(() => ({}));
     if (!r.ok) throw new Error(`${url.split("?")[0].split("/v3/")[1]} HTTP ${r.status}: ${body?.error?.message || ""}`.slice(0, 300));
     return body;
@@ -150,7 +158,9 @@ function monitoringApi({ project = "marathon-club", fetchImpl = globalThis.fetch
   return {
     policies: async () => (await get(`${base}/alertPolicies?pageSize=200`)).alertPolicies || [],
     channel: async (name) => get(`https://monitoring.googleapis.com/v3/${name}`),
-    alerts: async (policyName) => (await get(`${base}/alerts?pageSize=20&filter=${encodeURIComponent(`policy.name="${policyName}"`)}`)).alerts || [],
+    // Newest first, explicitly (the API's default happens to be the same;
+    // verified live 2026-09-23 — it accepts orderBy but no open_time filter).
+    alerts: async (policyName) => (await get(`${base}/alerts?pageSize=20&orderBy=${encodeURIComponent("open_time desc")}&filter=${encodeURIComponent(`policy.name="${policyName}"`)}`)).alerts || [],
   };
 }
 

@@ -43,6 +43,28 @@ test("every way the email fails to leave is NOT sent, with the reason", () => {
   }
 });
 
+test("an EARLIER alert still open: not proof of failure → 'unchecked' (amber), never red, never green", () => {
+  const earlier = { ...ALERT, state: "OPEN", openTime: "2026-09-23T17:20:00Z", log: { extractedLabels: { digest: "earlier digest" } } };
+  const v = judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [earlier], digest: DIGEST, sentAtMs: SENT });
+  assert.equal(v.state, "unchecked");
+  assert.match(v.why, /still open/);
+  // a CLOSED earlier alert changes nothing: no alert for this digest is not_sent
+  assert.equal(judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [{ ...earlier, state: "CLOSED" }], digest: DIGEST, sentAtMs: SENT }).state, "not_sent");
+});
+
+test("label match ignores surrounding whitespace", () => {
+  const padded = { ...ALERT, log: { extractedLabels: { digest: ` ${DIGEST.summary} ` } } };
+  assert.equal(judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [padded], digest: DIGEST, sentAtMs: SENT }).state, "emailed");
+});
+
+test("every Monitoring call carries an abort signal (a hung call cannot outlive the function)", async () => {
+  const signals = [];
+  const fetchImpl = async (url, opts) => { signals.push(opts?.signal); return { ok: true, json: async () => ({ access_token: "t", alerts: [] }) }; };
+  await monitoringApi({ fetchImpl }).alerts(POLICY.name);
+  assert.equal(signals.length, 2);
+  for (const sg of signals) assert.ok(sg && typeof sg.aborted === "boolean");
+});
+
 function fakeApi({ alertsAfter = 0, policy = POLICY, channel = CHANNEL, fail = null } = {}) {
   let calls = 0;
   return {
@@ -94,6 +116,7 @@ test("monitoringApi asks with the function's own token and filters alerts by pol
   assert.equal(seen[0].h["Metadata-Flavor"], "Google");
   assert.equal(seen[1].h.Authorization, "Bearer tok");
   assert.ok(decodeURIComponent(seen[1].url).includes(`filter=policy.name="${POLICY.name}"`));
+  assert.ok(decodeURIComponent(seen[1].url).includes("orderBy=open_time desc"));   // newest first: today's alert is on page one
   await api.policies();
   assert.equal(seen.filter((s) => s.url.includes("metadata")).length, 1);   // token reused
 });
