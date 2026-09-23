@@ -16,7 +16,7 @@
 // /refill_engine/shadow, /stock_confidence. All styling comes from ui.js tokens
 // + healthWidgets.jsx — the existing design language, no new system.
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { ref, update, set } from "firebase/database";
 import { database } from "../../firebase";
 import {
@@ -335,8 +335,17 @@ export default function HealthView({ products = [], onExit }) {
   // opened for anyone else; staff see nothing new on this screen.
   const writeoffState = useRefusalWriteoffs(isSuperAdmin);
   const digestStatus = useRefusalWriteoffDigestStatus(isSuperAdmin);
+  // A minute tick, so a tab left open still turns red when the digest goes
+  // stale or a check never finishes — with no database change to re-render it
+  // (CodeRabbit, #644). Super admin only, like the card.
+  const [digestNowMs, setDigestNowMs] = useState(() => serverNowMs());
+  useEffect(() => {
+    if (!isSuperAdmin) return undefined;
+    const id = setInterval(() => setDigestNowMs(serverNowMs()), 60_000);
+    return () => clearInterval(id);
+  }, [isSuperAdmin]);
   const digestLine = digestStatus.settled
-    ? (digestStatus.error ? { tone: "fail", text: "Could not read how the daily email went." } : digestStatusLine(digestStatus.value, serverNowMs()))
+    ? (digestStatus.error ? { tone: "fail", text: "Could not read how the daily email went." } : digestStatusLine(digestStatus.value, digestNowMs))
     : null;
   const writeoffList = useMemo(() => writeoffRows(writeoffState.value), [writeoffState.value]);
   const canRunSession = ["store", "warehouse", "admin"].includes(actorRole);

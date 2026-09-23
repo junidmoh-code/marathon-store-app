@@ -163,5 +163,8 @@ describe("Written off after refusal — the daily email's status", () => {
     expect(health.slice(cardAt, cardAt + 600)).toContain('digestLine?.tone === "fail" ? RED');
     // a check that cannot run is never silent either: the stat card says so
     expect(health.slice(cardAt, cardAt + 600)).toContain("Daily email unconfirmed");
+    // judged against a ticking clock, so an open tab goes red without a DB change
+    expect(health).toMatch(/setInterval\(\(\) => setDigestNowMs\(serverNowMs\(\)\), 60_000\)/);
+    expect(health).toContain("digestStatusLine(digestStatus.value, digestNowMs)");
   });
 });
