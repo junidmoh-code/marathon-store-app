@@ -3553,6 +3553,24 @@ exports.updateStaffPassword = onCall(
 //   firebase deploy --only functions:refillHealthScan
 exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 
+// ─── "WRITTEN OFF AFTER REFUSAL" — DAILY DIGEST TO JUNID ─────────────────────
+// Once a day, after the last refill scan (19:00), everything the scan wrote
+// off since the previous digest goes to Junid in one message. Channels are the
+// only extension point (lib/writeoff-digest.cjs): email today, through the
+// existing alarm route (log marker → Cloud Monitoring → email; install with
+// scripts/refill/install-writeoff-digest-alarm.mjs). A WhatsApp channel is one
+// more entry in this list — the engine and the scan never change. Deploy scoped:
+//   firebase deploy --only functions:refusalWriteoffDigest
+exports.refusalWriteoffDigest = onSchedule(
+  { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 },
+  async () => {
+    const digest = require("./lib/writeoff-digest.cjs");
+    const channels = [digest.emailViaAlertLog()];
+    const res = await digest.runDigest({ db: admin.database(), nowMs: Date.now(), channels });
+    console.log(`refusalWriteoffDigest: ${res.sent ? `sent ${res.digest.count} write-off(s)` : res.reason}`);
+  }
+);
+
 // ─── STRANDED-TRANSIT SWEEP ──────────────────────────────────────────────────
 // Hourly: every unit parked in stock/in_transit by the central→hub hold lane
 // lands at its destination on its own once its window is past (or holding is

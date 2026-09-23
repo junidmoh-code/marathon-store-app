@@ -5,7 +5,7 @@
 // and does NOT auto-retry on permission errors.
 
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import { ref, onValue } from "firebase/database";
+import { ref, onValue, query, orderByKey, limitToLast } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { useMirroredPath } from "../../offline/useMirroredPath";
@@ -369,6 +369,25 @@ export function useTargetDecisions() {
 // Rejected refill requests the engine will retry automatically every 24h.
 export function useRetryState() {
   return usePath("refill_engine/retryState");
+}
+
+// /refill_engine/refusalWriteoffs — what the scan erased after a location
+// refused a size on four different days (functions/lib/refusal-writeoff.cjs).
+// Super-admin only: callers pass enabled=false for everyone else, so the read
+// is never even opened. Bounded: the newest 200 by key (keys are ordered by
+// the run's last refusal), never the whole node.
+export const REFUSAL_WRITEOFFS_PATH = "refill_engine/refusalWriteoffs";
+export function useRefusalWriteoffs(enabled) {
+  const authReady = useAuthReady();
+  const [state, setState] = useState({ value: null, settled: false, error: false });
+  useEffect(() => {
+    if (!enabled || !authReady) return undefined;
+    const q = query(ref(database, REFUSAL_WRITEOFFS_PATH), orderByKey(), limitToLast(200));
+    return onValue(q,
+      (snap) => setState({ value: snap.val() || {}, settled: true, error: false }),
+      () => setState({ value: null, settled: true, error: true }));
+  }, [enabled, authReady]);
+  return state;
 }
 
 // /settings/missingProductsHidden → { pid: {at,by,reason?} } — the Missing
