@@ -111,6 +111,7 @@ export function deviceRecord({
   switchOn = true, lastSyncAt = null, lastPassAt = null, lastError = null,
   bytes = { date: null, bytes: 0, reads: 0 }, photos = null, pending = 0,
   failing = [],
+  storage = null,
   now = Date.now,
 }) {
   const rows = legs.reduce((n, l) => n + (l.rows ?? 0), 0);
@@ -154,6 +155,16 @@ export function deviceRecord({
         message: typeof f.message === "string" ? f.message.slice(0, 160) : null,
       }))
       : null,
+    // Is the browser keeping this device's copy, or throwing it away?
+    // (storageHealth.js.) An evicting device used to look merely busy.
+    storage: storage ? {
+      persisted: typeof storage.persisted === "boolean" ? storage.persisted : null,
+      wipes: storage.wipes ?? 0,
+      wipesToday: storage.wipesToday ?? 0,
+      lastWipeAt: storage.lastWipeAt ?? null,
+      usageMB: storage.usageMB ?? null,
+      quotaMB: storage.quotaMB ?? null,
+    } : null,
     at: now(),
   };
 }
@@ -172,6 +183,8 @@ export function worthWriting(prev, next, { every = WRITE_EVERY_MS } = {}) {
     r.complete, r.serving, r.downloading, r.switchOn, r.build,
     r.guard ? `${r.guard.leg}:${r.guard.reason}` : "",
     (r.failing ?? []).map((f) => `${f.leg}:${f.attempts}:${f.benched}:${f.reason}`).join(","),
+    // A wipe, or the browser granting or withdrawing persistence, is news.
+    r.storage ? `${r.storage.persisted}:${r.storage.wipes}` : "",
   ].join("|");
   if (key(prev) !== key(next)) return true;
   return (next.at - prev.at) >= every;
