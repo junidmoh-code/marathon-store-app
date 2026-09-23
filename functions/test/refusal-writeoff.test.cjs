@@ -337,6 +337,11 @@ test("Marathon Pine is excluded; a shop is never a refusing location; the kill s
   REFUSED_AT.forEach((at, i) => { rrShop[`s${i}`] = refusal(at, { createdFrom: { engine: true, source: "marathon-pe" } }); });
   assert.equal((await scan(world({ rr: rrShop }))).plan.writeoffs.length, 0);
 
+  // …but a FULFILMENT to Pine in the middle of the run still restarts the count.
+  const rrPineFulfil = RR();
+  rrPineFulfil.toPine = { ...refusal("2026-09-15T10:00:00.000Z", { requestingLocation: "marathon-pine" }), status: "fulfilled" };
+  assert.equal((await scan(world({ rr: rrPineFulfil }))).plan.writeoffs.length, 0);
+
   const off = await scan(world(), { config: { ...CONFIG, refusalWriteoff: { enabled: false } } });
   assert.equal(off.plan.writeoffs.length, 0);
 });

@@ -125,12 +125,15 @@ function planRefusalWriteoffs(snapshot) {
     if (!rr || !rr.productId || rr.size == null) continue;
     const loc = refusingLocation(rr, routes);
     if (!allowed.has(loc)) continue;
-    if (EXCLUDED_LOCATIONS.includes(rr.requestingLocation)) continue;
     const cellKey = stockCellKey(rr.size);
     const key = `${loc}|${rr.productId}|${cellKey}`;
     if (rr.status === "open") { openAt.add(key); continue; }
     const fulfilled = isFulfilment(rr);
     if (!fulfilled && !isRefusal(rr)) continue;   // an engine withdrawal says nothing
+    // Pine's refusals never count toward a write-off. A fulfilment TO Pine
+    // still does — the location found the size — and so does an open Pine
+    // request above (someone may be picking it). Found by the property fuzz.
+    if (!fulfilled && EXCLUDED_LOCATIONS.includes(rr.requestingLocation)) continue;
     const ts = msOf(rr.resolvedAt) || msOf(rr.createdAt);
     if (!ts) continue;
     if (!groups.has(key)) groups.set(key, { loc, pid: rr.productId, cellKey, size: String(rr.size), events: [] });
