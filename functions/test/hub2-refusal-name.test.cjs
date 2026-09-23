@@ -118,3 +118,30 @@ test("end to end: four named Hub 2 refusals → the write-off record names the p
   const names = (Array.isArray(rec.refusals) ? rec.refusals : Object.values(rec.refusals)).map((x) => x.byName || null);
   assert.deepEqual(names, ["Mike", "Mike", "Zee", null]);
 });
+
+// Property fuzz of closeRequestTxn — 20,000 seeded random requests × closes.
+test("closeRequestTxn fuzz: never re-attributes, only human refusals gain a name, resolved rows untouched", () => {
+  let s = 642 >>> 0;
+  const r = () => ((s = (s * 1664525 + 1013904223) >>> 0) / 2 ** 32);
+  const pick = (xs) => xs[Math.floor(r() * xs.length)];
+  for (let i = 0; i < 20000; i++) {
+    const cur = { productId: PID, size: "M", qty: 2, requestingLocation: "marathon-pe" };
+    const st = pick(["open", "fulfilled", "cancelled", undefined]);
+    if (st) cur.status = st;
+    if (r() < 0.3) cur.resolvedBy = "u_prev";
+    const c = {
+      rrStatus: pick(["cancelled", "fulfilled"]),
+      ...(r() < 0.5 ? { humanReject: true, denier: "hub2" } : { cancelReason: "no_longer_needed" }),
+      ...(r() < 0.5 ? { refusedAt: "2026-09-17T14:05:00.000Z" } : {}),
+      refusedByUid: pick(["u_mike", null, undefined]),
+    };
+    const before = JSON.stringify(cur);
+    const next = closeRequestTxn(cur, c, "2026-09-17T15:00:00.000Z");
+    assert.equal(JSON.stringify(cur), before);
+    if (cur.status && cur.status !== "open") { assert.equal(next, undefined); continue; }
+    if (cur.resolvedBy) assert.equal(next.resolvedBy, "u_prev");
+    else if (c.humanReject && c.refusedByUid) assert.equal(next.resolvedBy, c.refusedByUid);
+    else assert.equal("resolvedBy" in next, false);
+    assert.equal(closeRequestTxn(null, c, "x"), null);
+  }
+});
