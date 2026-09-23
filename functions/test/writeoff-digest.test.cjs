@@ -27,7 +27,7 @@ test("one digest of everything new; archived and dequeued once the email is logg
   assert.equal(res.sent, true);
   assert.equal(lines.length, 1);
   assert.ok(lines[0].startsWith(`${MARKER} 2 sizes / 21 units written off`));
-  assert.match(lines[0], /Nike Tech Fleece Tracksuit Brown 2 · M · Hub 2 · 3 units · refused 12 Sep, 14 Sep, 16 Sep, 17 Sep \(no name recorded\)/);
+  assert.match(lines[0], /Nike Tech Fleece Tracksuit Brown 2 · M · Hub 2 · 3 units · refused 12 Sep, 14 Sep, 16 Sep, 17 Sep \(Hub 2 staff, no name recorded\)/);
   assert.match(lines[0], /Diesel Slide · 8 · Central · 18 units · .*\(by Mike\)/);
   assert.equal((await db.ref("refill_engine/refusalWriteoffDigestQueue").once("value")).val(), null);
   const arch = Object.values((await db.ref("refill_engine/refusalWriteoffDigests").once("value")).val());

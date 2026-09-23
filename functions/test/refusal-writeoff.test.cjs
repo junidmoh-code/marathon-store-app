@@ -449,3 +449,76 @@ test("a count that rose with NO arrival in the ledger is still capped at what wa
   assert.equal(res.applied[0].qty, 3);
   assert.equal((await read(db, `stock/hub2/${PID}/M`)).qty, 3);
 });
+
+test("the day is when staff SAID no (refusedAt), not when the scan closed it the next morning", async () => {
+  // Refusals said on 12, 12 (19:30 SAST), 14 and 16 Sep: three days. The 19:30
+  // one was closed by the 07:00 scan on the 13th — dated by resolvedAt it would
+  // be a fourth day and erase the cell.
+  const rr = {
+    a: refusal("2026-09-12T08:00:00.000Z"),
+    b: refusal("2026-09-13T05:00:00.000Z", { refusedAt: "2026-09-12T17:30:00.000Z", refusedByLoc: "hub2" }),
+    c: refusal("2026-09-14T08:00:00.000Z"),
+    d: refusal("2026-09-16T08:00:00.000Z"),
+  };
+  assert.equal((await scan(world({ rr }))).plan.writeoffs.length, 0);
+  rr.e = refusal("2026-09-17T08:00:00.000Z");
+  const { res } = await scan(world({ rr }));
+  assert.deepEqual(res.applied[0].days, ["2026-09-12", "2026-09-14", "2026-09-16", "2026-09-17"]);
+  assert.equal(res.applied[0].refusals.find((x) => x.rrId === "b").at, "2026-09-12T17:30:00.000Z");
+});
+
+test("the engine's close of a refused shop line carries WHEN it was refused and WHO (the hub)", () => {
+  const order = { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: PID, size: "M", qty: 2,
+    createdAt: "2026-09-17T10:15:16.579Z", clothingRefillStatus: "rejected", clothingOutOfStockAt: "2026-09-17T14:05:00.000Z" };
+  const plan = computeRefillPlan({
+    nowMs: NOW, config: CONFIG, targets: TARGETS, products: PRODUCTS, stock: STOCK(), heldLines: {}, movements: [], retryState: {}, rejectStreak: {},
+    orders: { "R001-1": order },
+    refillRequests: { rq: { ...refusal("2026-09-17T10:15:16.579Z"), status: "open", resolvedAt: null } },
+    openIndex: { "marathon-pe": { [PID]: { M: { refillId: "rq", orderId: "R001-1", orderCreatedAt: order.createdAt, qty: 2, createdAt: order.createdAt } } } },
+  });
+  const c = plan.closes.find((x) => x.refillId === "rq");
+  assert.equal(c.humanReject, true);
+  assert.equal(c.denier, "hub2");
+  assert.equal(c.refusedAt, "2026-09-17T14:05:00.000Z");
+});
+
+test("Central declining a first-batch shop leg counts as a Central refusal — and only at Central", async () => {
+  const declined = (at, source) => ({ productId: PID, size: "XL", qty: 1, requestingLocation: "marathon-pe", status: "cancelled",
+    createdAt: at, resolvedAt: at, cancelReason: "first_batch_central_declined", createdFrom: { source } });
+  const days = ["2026-09-01T09:00:00.000Z", "2026-09-03T09:00:00.000Z", "2026-09-05T09:00:00.000Z", "2026-09-08T09:00:00.000Z"];
+  const rrC = Object.fromEntries(days.map((d, i) => [`fb${i}`, declined(d, "central")]));
+  const stock = STOCK();
+  stock.central[PID].XL = cell(16, { updatedAt: "2026-08-17T10:35:03.044Z" });
+  const { res } = await scan(world({ rr: rrC, stock }));
+  assert.equal(res.applied.length, 1);
+  assert.equal(res.applied[0].loc, "central");
+  const rrH = Object.fromEntries(days.map((d, i) => [`fb${i}`, declined(d, "hub2")]));
+  assert.equal((await scan(world({ rr: rrH }))).plan.writeoffs.length, 0);
+});
+
+test("a 'Free Size' product: the one '_' cell is written off, and the engine lifts the shop behind it", async () => {
+  const FS = "p_free";
+  const products = { ...PRODUCTS, [FS]: { name: "Beanie", productType: "clothing", sizes: ["Free Size"] } };
+  const stock = STOCK();
+  stock.hub2[FS] = { _: cell(2) };
+  const rr = Object.fromEntries(REFUSED_AT.map((at, i) => [`f${i}`, { ...refusal(at), productId: FS, size: "Free Size" }]));
+  const db = world({ stock, rr, streak: { "marathon-pe": { [FS]: { Free_Size: { count: 4, by: "hub2", lastTs: REFUSED_AT[3] } } } } });
+  const root = db.state.root;
+  const snapshot = { nowMs: NOW, config: CONFIG, products, stock: structuredClone(root.stock), refillRequests: rr, movements: [], rejectStreak: structuredClone(root.refill_engine.rejectStreak), cursors: {}, windowStartMs: WINDOW_START };
+  const plan = planRefusalWriteoffs(snapshot);
+  const upd = async (p) => { await db.ref().update(sanitizeUpdate(p).safe); return true; };
+  const res = await applyRefusalWriteoffs({ db, writeoffs: plan.writeoffs, snapshot, update: upd, nowMs: NOW });
+  assert.equal(res.applied.length, 1);
+  assert.equal((await read(db, `stock/hub2/${FS}/_`)).qty, 0);
+  assert.equal(await read(db, `refill_engine/rejectStreak/marathon-pe/${FS}/Free_Size`), null, "the engine-keyed streak is cleared");
+  const row = Object.values(db.state.root.stock_movements).find((m) => m.productId === FS);
+  assert.equal(row.size, "Free Size");
+  assert.deepEqual(row.writeoff.refusedBy, ["location:hub2", "location:hub2", "location:hub2", "location:hub2"]);
+});
+
+test("a qualifying run on a deleted product is reported as deferred, never silently dropped", async () => {
+  const rr = Object.fromEntries(REFUSED_AT.map((at, i) => [`g${i}`, { ...refusal(at), productId: "p_gone" }]));
+  const { plan } = await scan(world({ rr }));
+  assert.equal(plan.writeoffs.length, 0);
+  assert.equal(plan.deferred[0].reason, "product_deleted");
+});

@@ -45,12 +45,12 @@ function sastDate(ms) {
 }
 
 // One line per write-off, e.g.
-//   Nike Tech Fleece Tracksuit Brown 2 · M · Hub 2 · 3 units · refused 12, 14, 16, 17 Sep (no name recorded)
+//   Nike Tech Fleece Tracksuit Brown 2 · M · Hub 2 · 3 units · refused 12, 14, 16, 17 Sep (Hub 2 staff, no name recorded)
 function lineFor(r) {
   const names = [...new Set((r.refusals || []).map(refuserOf).filter(Boolean))];
   const days = (r.days || []).map(shortDay).join(", ");
   return `${r.productName || r.pid} · ${r.size || "one size"} · ${L(r.loc)} · ${r.qty} unit${r.qty === 1 ? "" : "s"} · refused ${days}`
-    + ` (${names.length ? `by ${names.join(", ")}` : "no name recorded"})`;
+    + ` (${names.length ? `by ${names.join(", ")}` : `${L(r.loc)} staff, no name recorded`})`;
 }
 
 function buildDigest(records, { nowMs }) {

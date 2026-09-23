@@ -91,15 +91,15 @@ const after = engine.computeRefillPlan({ ...base, stock: snap.stock, refillReque
 const LABEL = { hub1: "Hub 1", hub2: "Hub 2", central: "Central", "marathon-pe": "Marathon PE", trophy: "Trophy" };
 const L = (l) => LABEL[l] || l;
 const name = (pid) => products[pid]?.name || pid;
-const who = (r) => {
+const who = (r, loc) => {
   if (r.byUid) return users[r.byUid] || `account ${r.byUid.slice(0, 6)}…`;
   if (r.byRole) return `${r.byRole} account (no name recorded)`;
-  return "no name recorded";
+  return `${L(r.byLoc || loc)} staff (no name recorded)`;
 };
 const onRecountBefore = new Set(before.exceptions.recountNeeded.items.map((r) => `${r.source}|${r.pid}|${stockCellKey(r.size)}`));
 const rows = plan.writeoffs.map((w) => ({
   product: name(w.pid), size: w.size, location: L(w.loc), units: w.qty, paper: w.paperQty, kept: w.paperQty - w.qty,
-  days: w.days, refusals: w.refusals.map((r) => ({ day: r.day, forShop: L(r.dest), by: who(r) })),
+  days: w.days, refusals: w.refusals.map((r) => ({ day: r.day, forShop: L(r.dest), by: who(r, w.loc) })),
   wasOnRecountNeeded: onRecountBefore.has(`${w.loc}|${w.pid}|${w.cellKey}`),
   footwear: engine.passThroughExcluded(products[w.pid]) || /shoe|sneak|slide|boot/i.test(String(products[w.pid]?.categoryKey || products[w.pid]?.category || "")),
   pid: w.pid, loc: w.loc,

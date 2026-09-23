@@ -15,12 +15,13 @@ export const dayLabel = (d) => {
 };
 
 // Who said no, in words. The Central queue records the account; Hub 2's
-// "out of stock" on a shop order has only ever recorded the hub — say so
-// rather than invent a name.
-export function refuserLabel(r) {
+// "out of stock" on a shop order has only ever recorded the hub — name the
+// hub and say no person was recorded, rather than invent a name.
+export function refuserLabel(r, loc) {
   if (r?.byName) return r.byName;
   if (r?.byRole) return `${r.byRole} account`;
-  return "no name recorded";
+  const where = r?.byLoc || loc;
+  return where ? `${locName(where)} staff (no name recorded)` : "no name recorded";
 }
 
 export function writeoffRows(value) {
@@ -39,7 +40,7 @@ export function writeoffRows(value) {
       left: typeof r.after === "number" ? r.after : null,
       writtenAtMs: Number(r.writtenAtMs) || Date.parse(r.writtenAt || "") || 0,
       refusals: refusals.map((x) => ({
-        when: dayLabel(x.day), who: refuserLabel(x), forShop: x.dest ? locName(x.dest) : null,
+        when: dayLabel(x.day), who: refuserLabel(x, r.loc), forShop: x.dest ? locName(x.dest) : null,
       })),
     };
   });

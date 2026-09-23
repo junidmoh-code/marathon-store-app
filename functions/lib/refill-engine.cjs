@@ -947,7 +947,11 @@ function computeRefillPlan(snapshot) {
             rrStatus: wasFulfilled ? "fulfilled" : "cancelled",
             // Human rejection (vs the engine's own withdrawals, which carry
             // cancelReason) — feeds the reject-streak loop guard below.
-            ...(wasFulfilled ? {} : { humanReject: true, denier: entry.source || routes[dest] }),
+            ...(wasFulfilled ? {} : { humanReject: true, denier: entry.source || routes[dest],
+              // The moment staff pressed "out of stock" (the order line holds
+              // it; the order node recycles daily). The refusal write-off
+              // counts calendar days, so the scan's close time is not enough.
+              refusedAt: order.clothingOutOfStockAt || null }),
           });
         } else if (nowMs - Date.parse(entry.createdAt || 0) > staleMs) {
           stuckRefills.push({ dest, pid, sizeKey, refillId: entry.refillId || null, ageHours: Math.round((nowMs - Date.parse(entry.createdAt || 0)) / 3600e3) });

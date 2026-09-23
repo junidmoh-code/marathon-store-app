@@ -81,7 +81,12 @@ function refusingLocation(rr, routes) {
 }
 
 const isFulfilment = (rr) => rr.status === "fulfilled" || num(Number(rr.sentQty)) > 0;
-const isRefusal = (rr) => rr.status === "cancelled" && !rr.cancelReason && !(num(Number(rr.sentQty)) > 0);
+// Central's "Out of Stock" on a first-batch shop leg is stamped with this
+// reason (RefillQueue.jsx) so it is not a strike at the SHOP's cell — but it is
+// still Central saying the size is not there.
+const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
+const isRefusal = (rr) => rr.status === "cancelled" && !(num(Number(rr.sentQty)) > 0)
+  && (!rr.cancelReason || rr.cancelReason === CENTRAL_DECLINED_REASON);
 
 // RTDB-safe, deterministic, and ordered by the run's last refusal — the id is
 // the movement id, the record key and the idempotency key all at once.
@@ -130,11 +135,14 @@ function planRefusalWriteoffs(snapshot) {
     if (rr.status === "open") { openAt.add(key); continue; }
     const fulfilled = isFulfilment(rr);
     if (!fulfilled && !isRefusal(rr)) continue;   // an engine withdrawal says nothing
+    if (!fulfilled && rr.cancelReason === CENTRAL_DECLINED_REASON && loc !== "central") continue;
     // Pine's refusals never count toward a write-off. A fulfilment TO Pine
     // still does — the location found the size — and so does an open Pine
     // request above (someone may be picking it). Found by the property fuzz.
     if (!fulfilled && EXCLUDED_LOCATIONS.includes(rr.requestingLocation)) continue;
-    const ts = msOf(rr.resolvedAt) || msOf(rr.createdAt);
+    // When the refusal was SAID: a hub's shop-line refusal carries refusedAt
+    // (copied from the order by the scan's close); otherwise resolvedAt.
+    const ts = (!fulfilled && msOf(rr.refusedAt)) || msOf(rr.resolvedAt) || msOf(rr.createdAt);
     if (!ts) continue;
     if (!groups.has(key)) groups.set(key, { loc, pid: rr.productId, cellKey, size: String(rr.size), events: [] });
     groups.get(key).events.push({
@@ -142,6 +150,7 @@ function planRefusalWriteoffs(snapshot) {
       dest: rr.requestingLocation || null,
       byUid: typeof rr.resolvedBy === "string" && rr.resolvedBy ? rr.resolvedBy : null,
       byRole: typeof rr.rejectedBy === "string" && rr.rejectedBy ? rr.rejectedBy : null,
+      byLoc: loc,
     });
   }
 
@@ -167,7 +176,10 @@ function planRefusalWriteoffs(snapshot) {
 
   for (const [key, g] of groups) {
     const { loc, pid, cellKey } = g;
-    if (!products?.[pid]) continue;   // a deleted product has nothing to erase
+    if (!products?.[pid]) {   // a deleted product has nothing to erase — say so
+      if (g.events.length >= MIN_DISTINCT_DAYS) out.deferred.push({ id: null, loc, pid, size: g.size, cellKey, reason: "product_deleted" });
+      continue;
+    }
     const through = num(cursors?.[loc]?.[pid]?.[cellKey]?.throughMs);
     const evs = g.events.filter((e) => e.ts > through).sort((a, b) => a.ts - b.ts || (a.id < b.id ? -1 : 1));
     // The run = refusals after the last fulfilment.
@@ -182,7 +194,7 @@ function planRefusalWriteoffs(snapshot) {
     const id = writeoffId(loc, pid, cellKey, last.ts);
     const base = { id: null, loc, pid, size: g.size, cellKey };
     const refusals = run.map((e) => ({
-      rrId: e.id, atMs: e.ts, day: sastDay(e.ts), dest: e.dest, byUid: e.byUid, byRole: e.byRole,
+      rrId: e.id, atMs: e.ts, day: sastDay(e.ts), dest: e.dest, byUid: e.byUid, byRole: e.byRole, byLoc: e.byLoc,
     }));
 
     // REPAIR: this run's write-off already reached the cell (the cell still
@@ -302,7 +314,12 @@ async function applyRefusalWriteoffs({ db, writeoffs, snapshot, update, nowMs, r
         from: w.loc, to: null, movementId: w.id, actor: ACTOR, actorRole: "system", reason,
         link: { refillId: w.lastRefillId || null },
         ...(w.repair ? {} : { expectQty: w.paperQty }),
-        writeoff: { days: w.days, refusalIds: w.refusals.map((x) => x.rrId), protectedQty: w.protectedQty ?? null },
+        writeoff: {
+          days: w.days, refusalIds: w.refusals.map((x) => x.rrId), protectedQty: w.protectedQty ?? null,
+          // Who said no, per refusal (same order as refusalIds): the account
+          // where the app recorded one, else the refusing location.
+          refusedBy: w.refusals.map((x) => x.byUid || (x.byRole ? `role:${x.byRole}` : `location:${x.byLoc || w.loc}`)),
+        },
       }, { nowIso });
     } catch (e) {
       r = { ok: false, reason: `threw: ${String(e?.message || e)}` };
@@ -319,7 +336,7 @@ async function applyRefusalWriteoffs({ db, writeoffs, snapshot, update, nowMs, r
     for (const x of w.refusals) {
       refusals.push({
         rrId: x.rrId, at: new Date(x.atMs).toISOString(), day: x.day, dest: x.dest || null,
-        byUid: x.byUid || null, byName: await nameOf(x.byUid), byRole: x.byRole || null,
+        byUid: x.byUid || null, byName: await nameOf(x.byUid), byRole: x.byRole || null, byLoc: x.byLoc || w.loc,
         counted: x.counted !== false,
       });
     }

@@ -59,9 +59,9 @@ describe("Written off after refusal — the card", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ productName: "Nike Tech Fleece Tracksuit Brown 2", size: "M", location: "Hub 2", units: 3, left: 0 });
     expect(rows[0].refusals).toEqual([
-      { when: "12 Sep", who: "no name recorded", forShop: "Marathon PE" },
-      { when: "14 Sep", who: "no name recorded", forShop: "Marathon PE" },
-      { when: "16 Sep", who: "no name recorded", forShop: "Marathon PE" },
+      { when: "12 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE" },
+      { when: "14 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE" },
+      { when: "16 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE" },
       { when: "17 Sep", who: "Mike", forShop: "Marathon PE" },
     ]);
     expect(recentCount(rows, NOW)).toBe(1);

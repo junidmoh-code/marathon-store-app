@@ -588,7 +588,14 @@ async function runScan() {
               // re-runs with true data; a genuinely-missing node no-ops.
               if (cur === null) return null;
               if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
-              return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
+              return {
+                ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}),
+                // A hub's "out of stock" on a shop line: keep WHEN it was said
+                // and WHICH location said it (no person is recorded for this
+                // action) — the refusal write-off counts calendar days by it.
+                ...(c.humanReject && c.refusedAt ? { refusedAt: c.refusedAt } : {}),
+                ...(c.humanReject && c.denier ? { refusedByLoc: c.denier } : {}),
+              };
             });
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one
