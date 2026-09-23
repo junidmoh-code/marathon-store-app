@@ -306,9 +306,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   useEffect(() => {
     const live = new Set((cards || []).map((c) => c.pid));
     const typed = Object.keys(edits).some((k) => live.has(k.split("|")[0]) && !done[k.split("|")[0]]);
-    setUpdateBusy("network-transfer", typed || busyPid != null);
+    // A solve, an undo or a bulk hide still writing is a job in hand too.
+    // (CodeRabbit, PR #640.)
+    const undoBusy = (undoables || []).some((u) => u?.busy);
+    setUpdateBusy("network-transfer", typed || busyPid != null || solveBusy != null || undoBusy || !!bulkBusy);
     return () => setUpdateBusy("network-transfer", false);
-  }, [cards, edits, busyPid, done]);
+  }, [cards, edits, busyPid, done, solveBusy, undoables, bulkBusy]);
   // Selection reconciled against the RENDERED list (`cards`, not the allCards
   // prop): a selected card that resolves out mid-select — or that the
   // standalone-fallback path computed locally, where allCards is null — must

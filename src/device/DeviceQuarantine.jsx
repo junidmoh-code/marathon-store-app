@@ -64,6 +64,21 @@ export function QuarantineScreen({ deviceId }) {
 function Quarantine({ auth, subscribe = firebaseSubscribe, busy = isUpdateBusy }) {
   const [deviceId] = useState(() => getDeviceId());
   const [quarantined, setQuarantined] = useState(() => readCachedQuarantine(deviceId));
+  // Is the current answer only the CACHE's? Then it expires on the cache's own
+  // clock even while the app stays open and every live read fails — never a
+  // message held up past CACHE_TRUST_MS by a line that is down. A live answer
+  // ends this. (CodeRabbit, PR #640.)
+  const fromCache = useRef(quarantined);
+  useEffect(() => {
+    if (!quarantined || !fromCache.current) return undefined;
+    const t = setInterval(() => {
+      if (fromCache.current && !readCachedQuarantine(deviceId)) {
+        fromCache.current = false;
+        setQuarantined(false);
+      }
+    }, CHECK_EVERY_MS);
+    return () => clearInterval(t);
+  }, [quarantined, deviceId]);
   const [signedIn, setSignedIn] = useState(false);
   const [shown, setShown] = useState(false);
   const activity = useRef({ at: 0, untouched: true });
@@ -84,7 +99,10 @@ function Quarantine({ auth, subscribe = firebaseSubscribe, busy = isUpdateBusy }
 
   useEffect(() => {
     if (!signedIn) return undefined;
-    return watchQuarantine({ deviceId, subscribe, onChange: setQuarantined });
+    return watchQuarantine({
+      deviceId, subscribe,
+      onChange: (on) => { fromCache.current = false; setQuarantined(on); },
+    });
   }, [signedIn, deviceId, subscribe]);
 
   useEffect(() => {

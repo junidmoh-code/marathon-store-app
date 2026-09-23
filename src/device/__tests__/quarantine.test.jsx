@@ -281,6 +281,17 @@ describe("never over a job in progress", () => {
     expect(showing(tree)).toBe(true);
   });
 
+  it("a cached flag expires on its own clock while the app stays open and reads keep failing", async () => {
+    writeCachedQuarantine(THIS, true);
+    const subscribe = vi.fn((_p, _ok, onError) => { onError(new Error("offline")); return () => {}; });
+    const tree = await mount({ auth: SIGNED_IN, subscribe });
+    expect(showing(tree)).toBe(true);
+    // Jump the clock past the cache's trust window, then let one check run.
+    vi.setSystemTime(Date.now() + CACHE_TRUST_MS + 1_000);
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(showing(tree)).toBe(false);
+  });
+
   it("the app underneath is never unmounted: the message is rendered BESIDE it", async () => {
     // main.jsx renders <DeviceQuarantine/> as a sibling of <MirrorGate><App/>,
     // never as a wrapper — so there are no children to take away.
