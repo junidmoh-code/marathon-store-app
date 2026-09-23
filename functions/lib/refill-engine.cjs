@@ -651,6 +651,11 @@ function computeRefillPlan(snapshot) {
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
     retryState = {},        // /refill_engine/retryState — persisted rejected-request retry state
     heldLines = {},         // /settings/stockHold/held — central→hub credits parked in transit (count-integrity hold lane)
+    // READ-ONLY CENSUS SWITCH. The exceptions snapshot caps every list (300 by
+    // default) because it is written to /stock_exceptions/latest on every run.
+    // A census replaying a saved snapshot needs every cell, so it passes true.
+    // The scan never sets it.
+    uncapped = false,
   } = snapshot;
 
   const errors = [];
@@ -2185,7 +2190,7 @@ function computeRefillPlan(snapshot) {
   unarmedFootwear.sort((a, b) => b.units - a.units);
   unorderableFootwear.sort((a, b) => b.units - a.units);
 
-  const cap = (arr, n = 300) => ({ count: arr.length, items: arr.slice(0, n) });
+  const cap = (arr, n = 300) => ({ count: arr.length, items: uncapped ? arr : arr.slice(0, n) });
   return {
     intents: plannedIntents,
     closes,

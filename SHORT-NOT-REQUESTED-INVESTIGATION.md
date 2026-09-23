@@ -79,3 +79,28 @@ waits for a person to set a Hub 2 target. Nobody does; nothing fires.
 `marathon-pine` is not in `config.routes` and has no `/stock_targets` rows and no rule
 run — no "keep" number exists for any Pine cell, so no Pine cell can be "below keep".
 Zero Pine cells are in the population. (Pine's refills are the manual Hub 3 flow.)
+
+## 5. The population (before the fix)
+
+`scripts/audit/short-not-requested-census.mjs` — read-only, replays the real engine
+over the scan's own reads with every list uncapped. Shop cells below keep (after the
+owner's ask-at gate), with the feeding hub or Central counting the size, and nothing
+on its way:
+
+| Cause | Broad (nothing open now) | Strict (+ no request in 14 days) | Central holds it |
+|---|---:|---:|---:|
+| `hub_no_target` — Hub 2 empty, no Hub 2 target, Central holds units | 40 | 40 | 40 |
+| `recount` — loop guard parked after 4 Hub 2 rejections | 34 | 3 | 3 |
+| `confirmed_out` — denied at Hub 2 AND Central | 15 | 1 | 10 |
+| `upstream_blocked` — Hub 2's own Central leg rejected/parked | 9 | 6 | 9 |
+| `cooldown` — inside the 24h retry after a rejection | 7 | 0 | 1 |
+| `awaiting_upstream` — Hub 2 empty, chain said to be flowing | 3 | 1 | 3 |
+| **Total** | **108** | **51** | |
+
+By shop (broad): Marathon PE 53, Trophy 55. Pine 0 (no keep numbers; not routed).
+PE / M of the Brown 2 tracksuit is in the BROAD count only — its last request was
+raised on 17 Sep, inside the 14-day window, and rejected.
+
+Of the 34 `recount` cells, 31 have **no** units anywhere except Hub 2's disputed count:
+there is nothing any automation can send — a recount is the only honest answer, and
+the card says so.
