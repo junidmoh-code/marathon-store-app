@@ -11,10 +11,24 @@ const NOW = Date.parse("2026-09-17T10:00:00.000Z");
 const paths = {};
 const gets = {};
 const updateMock = vi.fn(() => Promise.resolve());
+// runTransaction, modelled on the real client: the FIRST pass sees the cold
+// local cache (null); a null answer is a probe that fails the server's
+// compare, so the body re-runs against the true node. undefined = abort.
+const txnWrites = [];
+const txnMock = vi.fn(async (r, fn) => {
+  const id = r.path.split("/")[1];
+  const server = paths["refill_requests"]?.[id] ?? null;
+  let next = fn(null);
+  if (next === null && server !== null) next = fn(JSON.parse(JSON.stringify(server)));
+  if (next === undefined) return { committed: false, snapshot: { val: () => server } };
+  txnWrites.push({ path: r.path, value: next });
+  return { committed: true, snapshot: { val: () => next } };
+});
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
+  runTransaction: (...a) => txnMock(...a),
   get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
 }));
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
@@ -55,7 +69,7 @@ const fb = (pid, size, qty, store, over = {}) => ({
 beforeEach(() => {
   for (const k of Object.keys(paths)) delete paths[k];
   for (const k of Object.keys(gets)) delete gets[k];
-  updateMock.mockClear(); applyMovementMock.mockClear();
+  updateMock.mockClear(); txnMock.mockClear(); txnWrites.length = 0; applyMovementMock.mockClear();
   paths["refill_requests"] = {
     tro1: fb("tee1", "M", 2, "trophy"),
     tro2: fb("tee2", "M", 1, "trophy"),
@@ -145,18 +159,21 @@ describe("Fulfil moves Central → the shop through the existing path", () => {
   it("Out of Stock on the SHOP's batch: cancelled WITH first_batch_central_declined, in the same write — the third cue, never a shop-level rejection", async () => {
     const tree = renderQueue("trophy");
     await act(async () => { lineButton(rowLineOf(tree, "req:tro2"), "Out of Stock").props.onClick(); });
-    const patch = updateMock.mock.calls.at(-1)[1];
-    expect(patch["refill_requests/tro2/status"]).toBe("cancelled");
-    expect(patch["refill_requests/tro2/cancelReason"]).toBe("first_batch_central_declined");
+    const w = txnWrites.at(-1);
+    expect(w.path).toBe("refill_requests/tro2");
+    expect(w.value.status).toBe("cancelled");
+    expect(w.value.cancelReason).toBe("first_batch_central_declined");
     expect(applyMovementMock).not.toHaveBeenCalled();
   });
   it("Out of Stock on Hub 2's own leg (also tagged firstBatch) keeps the human shape: NO cancelReason", async () => {
     paths["refill_requests"].hub.createdFrom = { firstBatch: true, solveId: "fb_tee1_x", source: "central", shopRequestId: "tro1" };
     paths["stock/hub2"] = null;
+    paths["refill_requests"].hub.cancelReason = "awaiting_upstream";   // stale, from an earlier lifecycle
     const tree = renderQueue("hub2");
     await act(async () => { lineButton(rowLineOf(tree, "req:hub"), "Out of Stock").props.onClick(); });
-    const patch = updateMock.mock.calls.at(-1)[1];
-    expect(patch["refill_requests/hub/cancelReason"]).toBe(null);
+    const w = txnWrites.at(-1);
+    expect(w.value.status).toBe("cancelled");
+    expect(w.value).not.toHaveProperty("cancelReason");
   });
 });
 
