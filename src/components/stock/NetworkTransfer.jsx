@@ -29,6 +29,7 @@ import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
 import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
+import { setUpdateBusy } from "../../update/updateChecker";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -296,6 +297,21 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const all = allCards || computeMissingProducts({ allStock, products });
     return category && category !== "all" ? all.filter((c) => c.group === category) : all;
   }, [allCards, allStock, products, category]);
+
+  // Typed quantities on a card still in the list, or a move going through,
+  // are a job in hand — see Transfer.jsx's transfer-basket for why this is
+  // registered. Only edits for cards still SHOWN count: a card retired by a
+  // live stock update or a finished move leaves its keys behind, and they
+  // must not hold the device busy for as long as the screen is open.
+  useEffect(() => {
+    const live = new Set((cards || []).map((c) => c.pid));
+    const typed = Object.keys(edits).some((k) => live.has(k.split("|")[0]) && !done[k.split("|")[0]]);
+    // A solve, an undo or a bulk hide still writing is a job in hand too.
+    // (CodeRabbit, PR #640.)
+    const undoBusy = (undoables || []).some((u) => u?.busy);
+    setUpdateBusy("network-transfer", typed || busyPid != null || solveBusy != null || undoBusy || !!bulkBusy || hideBusy != null);
+    return () => setUpdateBusy("network-transfer", false);
+  }, [cards, edits, busyPid, done, solveBusy, undoables, bulkBusy, hideBusy]);
   // Selection reconciled against the RENDERED list (`cards`, not the allCards
   // prop): a selected card that resolves out mid-select — or that the
   // standalone-fallback path computed locally, where allCards is null — must

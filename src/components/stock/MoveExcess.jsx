@@ -13,7 +13,7 @@
 // one ledger batch id per confirm). Live stock retires cards instantly;
 // re-opening recomputes, so double-moves are structurally impossible.
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells, useStockTargets, useRefillRequests, useEngineConfig, useStockHeld } from "./useStock";
@@ -25,6 +25,7 @@ import { openPickList } from "../../print/pickList";
 import { serverNowMs } from "../../utils/serverTime";
 import { isDeactivated } from "../../utils/deactivation";
 import { sizeRank } from "./hubSizeRank";
+import { setUpdateBusy } from "../../update/updateChecker";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const SOURCES = ["hub2", "marathon-pe", "trophy"];
@@ -165,6 +166,17 @@ export default function MoveExcess({ products = [], actorRole }) {
     }
     return out.sort((a, b) => b.totalExcess - a.totalExcess);
   }, [allStock, allTargets, byId, openRequests, heldLines]);
+
+  // Typed quantities on a card still in the list, or a move going through,
+  // are a job in hand — see Transfer.jsx's transfer-basket. Only edits for
+  // cards still SHOWN count, so a card retired by a live stock update cannot
+  // leave the device busy for as long as the screen is open.
+  useEffect(() => {
+    const live = (cards || []).map((c) => `${c.key}|`);
+    const typed = Object.keys(edits).some((k) => live.some((pre) => k.startsWith(pre)));
+    setUpdateBusy("move-excess", typed || busy !== false);
+    return () => setUpdateBusy("move-excess", false);
+  }, [cards, edits, busy]);
 
   const [locFilter, setLocFilter] = useState("all");
   const [search, setSearch] = useState("");

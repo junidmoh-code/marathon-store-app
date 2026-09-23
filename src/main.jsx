@@ -4,6 +4,7 @@ import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
 import { applyPushDeepLink } from "./push/deepLink.js";
 import { MirrorGate } from "./offline/MirrorGate.jsx";
+import DeviceQuarantine from "./device/DeviceQuarantine.jsx";
 import { auth, storage } from "./firebase.js";
 
 // Last-resort crash surface: show ANY uncaught error / promise rejection as a
@@ -59,6 +60,8 @@ createRoot(document.getElementById("root")).render(
     <MirrorGate auth={auth} storage={storage}>
       <App />
     </MirrorGate>
+    {/* Beside the app, never around it: see src/device/DeviceQuarantine.jsx. */}
+    <DeviceQuarantine auth={auth} />
   </StrictMode>
 );
 

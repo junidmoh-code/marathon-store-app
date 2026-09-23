@@ -51,6 +51,7 @@ import {
   addBytes, bytesToday, deviceRecord, reportDeviceHealth, thisDevice,
 } from "./deviceHealth";
 import { pendingCount } from "./pendingWrites";
+import { noteMirrorOpened, requestPersistence, storageSnapshot } from "./storageHealth";
 
 // The FLOOR, not the latency. A live signal on the change log (see below)
 // runs a pass as soon as anything is written; this is the backstop for a
@@ -124,18 +125,23 @@ export async function startOfflineMirror({
   if (!offlineMirrorEnabled()) return null;
 
   const db = await openDb();
+  // Asked BEFORE ensureSchema stamps it: a database that opens without its
+  // schema stamp, on a device that has held one before, was deleted by the
+  // browser (storageHealth.js). A read that fails counts as "had one", so a
+  // flaky IndexedDB is never reported as an eviction.
+  const hadSchema = await Promise.resolve()
+    .then(() => db.getMeta("schemaVersion"))
+    .then((v) => v !== undefined && v !== null, () => true);
   await db.ensureSchema({ buildVersion });
+  noteMirrorOpened({ hadSchema, now });
 
   // Best effort, and deliberately not awaited for its answer: a device that
-  // says no still mirrors, it is merely more likely to lose the copy.
-  try {
-    if (typeof navigator !== "undefined" && navigator.storage?.persist) {
-      navigator.storage.persist().then(
-        (granted) => db.setMeta("storagePersisted", { granted, at: now() }).catch(() => {}),
-        () => {},
-      );
-    }
-  } catch { /* not available */ }
+  // says no still mirrors, it is merely more likely to lose the copy. The
+  // answer is reported to the fleet screen (storageHealth.js).
+  requestPersistence().then(
+    (granted) => { if (granted !== null) db.setMeta("storagePersisted", { granted, at: now() }).catch(() => {}); },
+    () => {},
+  );
 
   // Every read this device does is weighed as it happens — see
   // rtdbAdapter.measureBytes — and the running total is what the fleet screen
@@ -699,6 +705,7 @@ export async function startOfflineMirror({
         photos: await heldPhotoCount(db).catch(() => null),
         pending: pendingCount(),
         failing: engine.legFailures(),
+        storage: await storageSnapshot({ now }).catch(() => null),
       });
       const written = await reportDeviceHealth({
         write: (path, value) => adapter.writePath(path, value),
