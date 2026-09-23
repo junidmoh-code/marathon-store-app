@@ -24,7 +24,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import {
-  mirrorSwitchOn, offlineMirrorEnabled, subscribeMirrorSwitch, watchMirrorSwitchLive,
+  offlineMirrorEnabled, subscribeMirrorSwitch, watchMirrorSwitchLive,
 } from "./killSwitch";
 import { setOfflineMirrorRuntime } from "./mirrorRuntime";
 
@@ -47,7 +47,14 @@ const autoConsent = (rt) => rt.consentAndDownload().catch((err) => {
 });
 
 export function MirrorGate({ auth, storage, children }) {
-  const [switchOn, setSwitchOn] = useState(() => mirrorSwitchOn());
+  // offlineMirrorEnabled(), not mirrorSwitchOn(): the first render has to
+  // account for BOTH the fleet switch and this device's own off flag, from
+  // their caches, before anything starts. Seeding from the fleet switch alone
+  // let a flagged device build the runtime and begin its download on load, and
+  // only stop when the live read landed a moment later — which on the handset
+  // this was written for is the ~112 MB reload it is meant to prevent,
+  // started every time the app opens.
+  const [switchOn, setSwitchOn] = useState(() => offlineMirrorEnabled());
   const [runtime, setRuntime] = useState(null);
   const [signedIn, setSignedIn] = useState(false);
   // The live runtime, for the effects that must reach it without waiting for a
