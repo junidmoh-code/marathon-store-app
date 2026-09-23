@@ -25,9 +25,12 @@ import { createRequire } from "module";
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 
 const PROJECT = "marathon-club";
-export const MARKER = "REFUSAL_WRITEOFF_DIGEST";
-const POLICY_NAME = "Written off after refusal — daily digest";
-const RECIPIENT = "junidmoh@gmail.com";
+// One source for the names the function's delivery check also matches on
+// (functions/lib/writeoff-digest.cjs judgeDelivery) — never two copies to drift.
+const digestLib = require("./lib/writeoff-digest.cjs");
+export const MARKER = digestLib.MARKER;
+const POLICY_NAME = digestLib.POLICY_NAME;
+const RECIPIENT = digestLib.RECIPIENT;
 const SERVICE = "refusalwriteoffdigest";
 
 const args = process.argv.slice(2);

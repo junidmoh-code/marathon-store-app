@@ -3561,13 +3561,17 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 // scripts/refill/install-writeoff-digest-alarm.mjs). A WhatsApp channel is one
 // more entry in this list — the engine and the scan never change. Deploy scoped:
 //   firebase deploy --only functions:refusalWriteoffDigest
+// "Sent" used to mean only "the marker was logged" (23 Sep: logged, never
+// arrived). Every run now asks Google whether the alert — the email — actually
+// left, and records the verdict where the card reads it (lib/writeoff-digest.cjs
+// confirmDelivery). A run that throws is recorded too.
 exports.refusalWriteoffDigest = onSchedule(
-  { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 },
+  { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 540 },
   async () => {
     const digest = require("./lib/writeoff-digest.cjs");
-    const channels = [digest.emailViaAlertLog()];
-    const res = await digest.runDigest({ db: admin.database(), nowMs: Date.now(), channels });
-    console.log(`refusalWriteoffDigest: ${res.sent ? `sent ${res.digest.count} write-off(s)` : res.reason}`);
+    await digest.runDigestAndConfirm({
+      db: admin.database(), nowMs: Date.now(), channels: [digest.emailViaAlertLog()], api: digest.monitoringApi(),
+    });
   }
 );
 

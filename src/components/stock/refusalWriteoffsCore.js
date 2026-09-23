@@ -53,3 +53,47 @@ export function writeoffRows(value) {
 export function recentCount(rows, nowMs, days = 30) {
   return rows.filter((r) => nowMs - r.writtenAtMs <= days * 864e5).length;
 }
+
+// ─── THE DAILY EMAIL'S STATUS (2026-09-23) ────────────────────────────────────
+// The 23 Sep digest was logged as sent and never arrived — and nothing said
+// so. The digest function now asks Google whether the email left and records
+// the answer at /refill_engine/refusalWriteoffDigestStatus; this turns it into
+// the one line the card shows. tone: "ok" | "warn" | "fail" (fail = red on
+// the Health stat card too). Google gives no inbox receipt for these emails —
+// on 23 Sep it raised the alert and the email still never came — so the best
+// "ok" says exactly what is known: Google raised the email alert, and no more.
+const DIGEST_STALE_MS = 26 * 3600e3;   // the digest runs daily at 19:40
+function sastStamp(ms) {
+  const d = new Date(ms + 2 * 3600e3);
+  return `${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+export function digestStatusLine(status, nowMs) {
+  if (!status || typeof status !== "object" || !Number(status.atMs)) {
+    return { tone: "warn", text: "The daily email has not been checked yet — the check runs with the next digest at 19:40." };
+  }
+  const at = sastStamp(Number(status.atMs));
+  // A check that never finished says so, however old — it is not "never ran".
+  if (status.outcome === "sent" && status.delivery?.state === "checking" && nowMs - Number(status.atMs) > 15 * 60e3) {
+    return { tone: "fail", text: `The ${at} email check never finished — the run was cut off, so whether the email left is unknown.` };
+  }
+  if (nowMs - Number(status.atMs) > DIGEST_STALE_MS) {
+    return { tone: "fail", text: `The daily email has not run since ${at} — nothing has been sent since then.` };
+  }
+  if (status.outcome === "error") return { tone: "fail", text: `The daily email failed on ${at}: ${status.why || "unknown error"}. Nothing was sent.` };
+  if (status.outcome === "nothing_new" || status.outcome === "no_records") return { tone: "ok", text: `Nothing new to email on ${at}.` };
+  // Any other non-sent outcome (e.g. no_channel_delivered) is a failure, never
+  // "nothing new" (CodeRabbit, #644).
+  if (status.outcome !== "sent") return { tone: "fail", text: `The daily email on ${at} did NOT go out (${status.outcome || "unknown outcome"}). The full list is below.` };
+  const d = status.delivery || {};
+  const n = Number(status.count) || 0;
+  const what = `${n} write-off${n === 1 ? "" : "s"}`;
+  if (d.state === "alert_raised") {
+    const sentAt = Date.parse(d.alertRaisedAt || "") || Number(status.atMs);
+    return { tone: "ok", text: `Google raised the email with ${what} to ${d.to} at ${sastStamp(sentAt)}. Google does not confirm it reached the inbox — if it is not there, look in spam for “Written off after refusal”.` };
+  }
+  if (d.state === "checking") {
+    return { tone: "warn", text: `Checking whether the ${at} email with ${what} left Google…` };
+  }
+  if (d.state === "not_sent") return { tone: "fail", text: `The ${at} email with ${what} did NOT go out: ${d.why || "unknown"}. The full list is below.` };
+  return { tone: "warn", text: `Could not confirm the ${at} email with ${what} left Google: ${d.why || "no answer"}.` };
+}
