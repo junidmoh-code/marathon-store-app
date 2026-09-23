@@ -87,10 +87,15 @@ describe("the gate", () => {
 describe("it must not be expensive", () => {
   beforeEach(() => { getMock.mockClear(); onValueMock.mockClear(); });
 
-  it("reads the fleet ONCE, by exact path, with get()", async () => {
+  it("reads the fleet and the off-list ONCE each, by exact path, with get()", async () => {
+    // TWO reads now, not one. The second is /mirror_switch/off: a flat map of
+    // the devices that have been excused from mirroring, a handful of bytes
+    // even when every device is on it. It is READ with the list, never
+    // subscribed, for the same reason the list is — this is a screen about the
+    // cost of reading the database.
     await render(ADMIN);
-    const paths = getMock.mock.calls.map((c) => c[0].path);
-    expect(paths).toEqual(["mirror_devices"]);
+    const paths = getMock.mock.calls.map((c) => c[0].path).sort();
+    expect(paths).toEqual(["mirror_devices", "mirror_switch/off"]);
   });
 
   it("subscribes to exactly one node, and it is the five-byte switch", async () => {
