@@ -24,9 +24,9 @@ import {
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
   useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
-  useHiddenMissingProducts, useRefusalWriteoffs,
+  useHiddenMissingProducts, useRefusalWriteoffs, useRefusalWriteoffDigestStatus,
 } from "./useStock";
-import { writeoffRows, recentCount } from "./refusalWriteoffsCore";
+import { writeoffRows, recentCount, digestStatusLine } from "./refusalWriteoffsCore";
 import InTransit from "./InTransit";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
 import IntroduceExisting from "./IntroduceExisting";
@@ -334,6 +334,10 @@ export default function HealthView({ products = [], onExit }) {
   // WRITTEN OFF AFTER REFUSAL (2026-09-23) — Junid only. The read is never
   // opened for anyone else; staff see nothing new on this screen.
   const writeoffState = useRefusalWriteoffs(isSuperAdmin);
+  const digestStatus = useRefusalWriteoffDigestStatus(isSuperAdmin);
+  const digestLine = digestStatus.settled
+    ? (digestStatus.error ? { tone: "fail", text: "Could not read how the daily email went." } : digestStatusLine(digestStatus.value, serverNowMs()))
+    : null;
   const writeoffList = useMemo(() => writeoffRows(writeoffState.value), [writeoffState.value]);
   const canRunSession = ["store", "warehouse", "admin"].includes(actorRole);
 
@@ -695,6 +699,12 @@ export default function HealthView({ products = [], onExit }) {
           <DetailShell title="Written off after refusal"
             sub={`Sizes a location said were not there on four different days, with no fulfilment in between — their count was erased so the size flows again. ${writeoffList.length} write-off${writeoffList.length === 1 ? "" : "s"}, ${units} unit${units === 1 ? "" : "s"} (newest first).`}
             count={writeoffList.length} onBack={back}>
+            {digestLine && (
+              <div data-digest-status={digestLine.tone} style={{ ...GLASS, padding: 14, fontSize: 13, lineHeight: 1.5,
+                color: digestLine.tone === "fail" ? RED : digestLine.tone === "warn" ? AMBER : GREEN }}>
+                {digestLine.text}
+              </div>
+            )}
             {writeoffState.error && (
               <div style={{ ...GLASS, padding: 16, color: RED, fontSize: 13 }}>Could not read the write-offs.</div>
             )}
@@ -969,7 +979,9 @@ export default function HealthView({ products = [], onExit }) {
               {isSuperAdmin && (
                 <StatCard label="Written off after refusal"
                           value={!writeoffState.settled ? "…" : writeoffState.error ? "!" : recentCount(writeoffList, serverNowMs())}
-                          tone={writeoffState.error ? RED : AMBER} sub="Refused on 4 different days · last 30 days" onClick={() => setScreen("refusalWriteoffs")} />
+                          tone={writeoffState.error || digestLine?.tone === "fail" ? RED : AMBER}
+                          sub={digestLine?.tone === "fail" ? "Daily email NOT sent — tap for why" : "Refused on 4 different days · last 30 days"}
+                          onClick={() => setScreen("refusalWriteoffs")} />
               )}
               <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}
                         sub="Store refills · in Warehouse → Clothing" onClick={() => setScreen("autorefills")} />

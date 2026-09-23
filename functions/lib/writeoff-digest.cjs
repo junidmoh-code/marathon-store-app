@@ -94,6 +94,91 @@ function emailViaAlertLog(log = console.error) {
   };
 }
 
+// ─── DID THE EMAIL LEAVE GOOGLE? (2026-09-23) ──────────────────────────────────
+// The 23 Sep digest was logged as "sent" and never reached Junid. "Sent" only
+// ever meant "the marker line was logged" — every hop after that (the log-match
+// policy, the alert, the email) was invisible to us. Google publishes NO inbox
+// receipt for Monitoring email (no delivery, bounce or spam record in any API),
+// so what CAN be proven is checked and recorded instead:
+//   1. the policy exists, is enabled, and its email channel is enabled and
+//      addressed to Junid;
+//   2. Google raised an alert on that policy for THIS digest (Alerts API: an
+//      alert opened after the send whose extracted label is this summary).
+// The verdict is stored on the archived digest and at STATUS, and the
+// "Written off after refusal" card shows it — red when the email did not
+// leave, instead of failing silently.
+const STATUS = "refill_engine/refusalWriteoffDigestStatus";
+const POLICY_NAME = "Written off after refusal — daily digest";
+const RECIPIENT = "junidmoh@gmail.com";
+
+// Pure: the verdict from what the Monitoring API answered.
+//   policy   the alert policy (or null)       channel  its email channel (or null)
+//   alerts   alerts on the policy             digest   { summary }   sentAtMs
+function judgeDelivery({ policy, channel, alerts, digest, sentAtMs, recipient = RECIPIENT }) {
+  if (!policy) return { state: "not_sent", why: "the email alert policy is missing" };
+  if (policy.enabled === false) return { state: "not_sent", why: "the email alert policy is switched off" };
+  if (!channel) return { state: "not_sent", why: "the alert policy has no email channel" };
+  if (channel.enabled === false) return { state: "not_sent", why: "the email channel is switched off" };
+  const to = channel.labels?.email_address || null;
+  if (to !== recipient) return { state: "not_sent", why: `the email channel sends to ${to || "nobody"}, not ${recipient}`, to };
+  const head = String(digest?.summary || "").slice(0, 200);
+  const hit = (alerts || []).find((a) => Date.parse(a?.openTime || "") >= sentAtMs - 60e3
+    && String(a?.log?.extractedLabels?.digest || "").slice(0, 200) === head);
+  if (!hit) return { state: "not_sent", why: "Google raised no alert for this digest, so no email left", to };
+  return { state: "emailed", to, alert: hit.name, emailedAt: hit.openTime };
+}
+
+// The Monitoring REST API with the function's own identity (metadata server
+// token — no library, no key). Injected into confirmDelivery so tests fake it.
+function monitoringApi({ project = "marathon-club", fetchImpl = globalThis.fetch } = {}) {
+  let token = null;
+  const auth = async () => {
+    if (token) return token;
+    const r = await fetchImpl("http://metadata.google.internal/computeMetadata/v1/instance/service-accounts/default/token",
+      { headers: { "Metadata-Flavor": "Google" } });
+    if (!r.ok) throw new Error(`metadata token HTTP ${r.status}`);
+    token = (await r.json()).access_token;
+    return token;
+  };
+  const get = async (url) => {
+    const r = await fetchImpl(url, { headers: { Authorization: `Bearer ${await auth()}` } });
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(`${url.split("?")[0].split("/v3/")[1]} HTTP ${r.status}: ${body?.error?.message || ""}`.slice(0, 300));
+    return body;
+  };
+  const base = `https://monitoring.googleapis.com/v3/projects/${project}`;
+  return {
+    policies: async () => (await get(`${base}/alertPolicies?pageSize=200`)).alertPolicies || [],
+    channel: async (name) => get(`https://monitoring.googleapis.com/v3/${name}`),
+    alerts: async (policyName) => (await get(`${base}/alerts?pageSize=20&filter=${encodeURIComponent(`policy.name="${policyName}"`)}`)).alerts || [],
+  };
+}
+
+// Poll until Google has raised the alert (it took 63 s on 23 Sep) or give up.
+async function confirmDelivery({ api, digest, sentAtMs, waitMs = 240e3, everyMs = 20e3, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), clock = Date.now }) {
+  try {
+    const policy = (await api.policies()).find((p) => p.displayName === POLICY_NAME) || null;
+    const chName = policy?.notificationChannels?.[0] || null;
+    const channel = chName ? await api.channel(chName) : null;
+    const deadline = clock() + waitMs;
+    for (;;) {
+      const alerts = policy ? await api.alerts(policy.name) : [];
+      const v = judgeDelivery({ policy, channel, alerts, digest, sentAtMs });
+      if (v.state === "emailed" || !policy || !channel || v.to !== RECIPIENT || channel.enabled === false || policy.enabled === false || clock() >= deadline) {
+        return { ...v, checkedAtMs: clock() };
+      }
+      await sleep(everyMs);
+    }
+  } catch (e) {
+    return { state: "unchecked", why: `could not ask Google whether the email left: ${String(e?.message || e)}`.slice(0, 300), checkedAtMs: clock() };
+  }
+}
+
+// One small node the card reads: the last run, whatever happened.
+async function recordStatus(db, status) {
+  await db.ref(STATUS).set(status);
+}
+
 async function runDigest({ db, nowMs, channels }) {
   const queue = (await db.ref(QUEUE).once("value")).val() || {};
   const ids = Object.keys(queue);
@@ -124,7 +209,10 @@ async function runDigest({ db, nowMs, channels }) {
     channels: Object.fromEntries(Object.entries(results).map(([k, v]) => [k, { ok: !!v?.ok, detail: v?.detail || null }])),
   };
   await db.ref().update(patch);
-  return { sent: true, digest, results };
+  return { sent: true, digest, results, archiveKey: `${digest.date}_${nowMs}` };
 }
 
-module.exports = { buildDigest, runDigest, emailViaAlertLog, lineFor, MARKER, QUEUE, RECORDS, ARCHIVE, EMAIL_MAX_CHARS };
+module.exports = {
+  buildDigest, runDigest, emailViaAlertLog, lineFor, judgeDelivery, monitoringApi, confirmDelivery, recordStatus,
+  MARKER, QUEUE, RECORDS, ARCHIVE, STATUS, POLICY_NAME, RECIPIENT, EMAIL_MAX_CHARS,
+};

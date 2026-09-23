@@ -26,13 +26,14 @@ vi.mock("firebase/auth", () => ({
 }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } }, storage: {}, app: {}, functions: {}, functionsUS: {}, googleProvider: {} }));
 
-const { useRefusalWriteoffs, REFUSAL_WRITEOFFS_PATH } = await import("./useStock");
-const { writeoffRows, recentCount } = await import("./refusalWriteoffsCore");
+const { useRefusalWriteoffs, REFUSAL_WRITEOFFS_PATH, useRefusalWriteoffDigestStatus, REFUSAL_DIGEST_STATUS_PATH } = await import("./useStock");
+const { writeoffRows, recentCount, digestStatusLine } = await import("./refusalWriteoffsCore");
 
 const req = createRequire(import.meta.url);
 const { planRefusalWriteoffs, applyRefusalWriteoffs } = req("../../../functions/lib/refusal-writeoff.cjs");
 const { sanitizeUpdate } = req("../../../functions/lib/refill-engine.cjs");
 const { makeFakeDb } = req("../../../functions/test/helpers/fake-rtdb.cjs");
+const digestFn = req("../../../functions/lib/writeoff-digest.cjs");
 const health = readFileSync(fileURLToPath(new URL("./HealthView.jsx", import.meta.url)), "utf8");
 
 const NOW = Date.parse("2026-09-23T12:45:00.000Z");
@@ -89,5 +90,64 @@ describe("Written off after refusal — the card", () => {
     // No database write of any kind (a Map.set / Array.push for grouping is not one).
     expect(block).not.toMatch(/\b(update|set|remove|push)\(\s*ref\(/);
     expect(block).not.toMatch(/runTransaction|applyMovement|database\b/);
+  });
+});
+
+// ─── THE DAILY EMAIL'S STATUS ON THE CARD (2026-09-23) ───────────────────────
+// The 23 Sep digest was logged as sent and never arrived, and nothing said so.
+// The status node is written by functions/index.js refusalWriteoffDigest from
+// the REAL judgeDelivery verdict; these pin what the card says for each.
+describe("Written off after refusal — the daily email's status", () => {
+  const SENT = Date.parse("2026-09-23T17:40:03.000Z");
+  const DIGEST = { summary: "133 sizes / 250 units written off after four refused days — Central: 98 (194u)" };
+  const POLICY = { name: "p/1", displayName: digestFn.POLICY_NAME, enabled: true, notificationChannels: ["c/1"] };
+  const CHANNEL = { enabled: true, labels: { email_address: digestFn.RECIPIENT } };
+  const ALERT = { name: "a/1", openTime: "2026-09-23T17:41:06Z", log: { extractedLabels: { digest: DIGEST.summary } } };
+  const status = (over) => ({ atMs: SENT, outcome: "sent", count: 133, units: 250,
+    delivery: digestFn.judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [ALERT], digest: DIGEST, sentAtMs: SENT, ...over }) });
+  const soon = SENT + 3600e3;
+
+  it("emailed: green, says who it went to and when — and that Google gives no inbox receipt", () => {
+    const l = digestStatusLine(status({}), soon);
+    expect(l.tone).toBe("ok");
+    expect(l.text).toContain("Emailed 133 write-offs to junidmoh@gmail.com at 23 Sep 19:41");
+    expect(l.text).toContain("no inbox receipt");
+  });
+  it("Google raised no alert: RED, says it did NOT go out and why", () => {
+    const l = digestStatusLine(status({ alerts: [] }), soon);
+    expect(l.tone).toBe("fail");
+    expect(l.text).toMatch(/did NOT go out: Google raised no alert/);
+  });
+  it("channel switched off / wrong address: RED", () => {
+    expect(digestStatusLine(status({ channel: { ...CHANNEL, enabled: false } }), soon).tone).toBe("fail");
+    expect(digestStatusLine(status({ channel: { enabled: true, labels: { email_address: "x@y.z" } } }), soon).text).toContain("sends to x@y.z");
+  });
+  it("the run threw, or has not run for over a day: RED", () => {
+    expect(digestStatusLine({ atMs: SENT, outcome: "error", why: "boom" }, soon)).toMatchObject({ tone: "fail" });
+    expect(digestStatusLine(status({}), SENT + 27 * 3600e3).text).toContain("has not run since 23 Sep 19:40");
+  });
+  it("could not ask Google: amber, never green", () => {
+    const l = digestStatusLine({ atMs: SENT, outcome: "sent", count: 1, delivery: { state: "unchecked", why: "HTTP 403" } }, soon);
+    expect(l.tone).toBe("warn");
+  });
+  it("nothing new, and never checked yet", () => {
+    expect(digestStatusLine({ atMs: SENT, outcome: "nothing_new" }, soon).tone).toBe("ok");
+    expect(digestStatusLine(null, soon).tone).toBe("warn");
+  });
+  it("the status read is ONE small node, opened only for the super admin", async () => {
+    function Probe({ on }) { useRefusalWriteoffDigestStatus(on); return null; }
+    onValue.mockClear();
+    await act(async () => { TestRenderer.create(<Probe on={false} />); });
+    expect(onValue).not.toHaveBeenCalled();
+    await act(async () => { TestRenderer.create(<Probe on={true} />); });
+    expect(onValue.mock.calls[0][0].path).toBe(REFUSAL_DIGEST_STATUS_PATH);
+    expect(REFUSAL_DIGEST_STATUS_PATH).toBe(digestFn.STATUS);   // the function writes exactly what the card reads
+  });
+  it("HealthView shows the line on the screen and turns the stat card red on a failed email", () => {
+    expect(health).toContain("useRefusalWriteoffDigestStatus(isSuperAdmin)");
+    const block = health.slice(health.indexOf('case "refusalWriteoffs"'), health.indexOf('case "shortNotRequested"'));
+    expect(block).toContain("data-digest-status");
+    const cardAt = health.indexOf('label="Written off after refusal"');
+    expect(health.slice(cardAt, cardAt + 500)).toContain('digestLine?.tone === "fail" ? RED');
   });
 });

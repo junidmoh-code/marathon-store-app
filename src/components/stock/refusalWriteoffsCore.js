@@ -53,3 +53,36 @@ export function writeoffRows(value) {
 export function recentCount(rows, nowMs, days = 30) {
   return rows.filter((r) => nowMs - r.writtenAtMs <= days * 864e5).length;
 }
+
+// ─── THE DAILY EMAIL'S STATUS (2026-09-23) ────────────────────────────────────
+// The 23 Sep digest was logged as sent and never arrived — and nothing said
+// so. The digest function now asks Google whether the email left and records
+// the answer at /refill_engine/refusalWriteoffDigestStatus; this turns it into
+// the one line the card shows. tone: "ok" | "warn" | "fail" (fail = red on
+// the Health stat card too). Google gives no inbox receipt for these emails,
+// so the best "ok" says exactly what is known: Google sent it.
+const DIGEST_STALE_MS = 26 * 3600e3;   // the digest runs daily at 19:40
+function sastStamp(ms) {
+  const d = new Date(ms + 2 * 3600e3);
+  return `${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}`;
+}
+export function digestStatusLine(status, nowMs) {
+  if (!status || typeof status !== "object" || !Number(status.atMs)) {
+    return { tone: "warn", text: "The daily email has not been checked yet — the check runs with the next digest at 19:40." };
+  }
+  const at = sastStamp(Number(status.atMs));
+  if (nowMs - Number(status.atMs) > DIGEST_STALE_MS) {
+    return { tone: "fail", text: `The daily email has not run since ${at} — nothing has been sent since then.` };
+  }
+  if (status.outcome === "error") return { tone: "fail", text: `The daily email failed on ${at}: ${status.why || "unknown error"}. Nothing was sent.` };
+  if (status.outcome !== "sent") return { tone: "ok", text: `Nothing new to email on ${at}.` };
+  const d = status.delivery || {};
+  const n = Number(status.count) || 0;
+  const what = `${n} write-off${n === 1 ? "" : "s"}`;
+  if (d.state === "emailed") {
+    const sentAt = Date.parse(d.emailedAt || "") || Number(status.atMs);
+    return { tone: "ok", text: `Emailed ${what} to ${d.to} at ${sastStamp(sentAt)} — Google sent it but gives no inbox receipt; if it is missing, look in spam for “Written off after refusal”.` };
+  }
+  if (d.state === "not_sent") return { tone: "fail", text: `The ${at} email with ${what} did NOT go out: ${d.why || "unknown"}. The full list is below.` };
+  return { tone: "warn", text: `Could not confirm the ${at} email with ${what} left Google: ${d.why || "no answer"}.` };
+}

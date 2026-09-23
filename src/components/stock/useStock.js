@@ -390,6 +390,22 @@ export function useRefusalWriteoffs(enabled) {
   return state;
 }
 
+// /refill_engine/refusalWriteoffDigestStatus — ONE small node: how the last
+// daily digest email went (functions/lib/writeoff-digest.cjs confirmDelivery).
+// Super-admin only, like the write-offs themselves.
+export const REFUSAL_DIGEST_STATUS_PATH = "refill_engine/refusalWriteoffDigestStatus";
+export function useRefusalWriteoffDigestStatus(enabled) {
+  const authReady = useAuthReady();
+  const [state, setState] = useState({ value: null, settled: false, error: false });
+  useEffect(() => {
+    if (!enabled || !authReady) return undefined;
+    return onValue(ref(database, REFUSAL_DIGEST_STATUS_PATH),
+      (snap) => setState({ value: snap.val(), settled: true, error: false }),
+      () => setState({ value: null, settled: true, error: true }));
+  }, [enabled, authReady]);
+  return state;
+}
+
 // /settings/missingProductsHidden → { pid: {at,by,reason?} } — the Missing
 // Products VIEW filter (who hid what, when; hiddenProductsCore.js). Its own
 // small node, so this subscription costs the node's size (~90 B/entry), never
