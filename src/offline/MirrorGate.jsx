@@ -119,7 +119,16 @@ export function MirrorGate({ auth, storage, children }) {
     return watchMirrorSwitchLive();
   }, [signedIn]);
 
-  useEffect(() => subscribeMirrorSwitch((on) => setSwitchOn(on)), []);
+  // RE-DERIVE, never trust the argument. A listener is notified by two
+  // different writers now — the fleet switch, which passes its own raw
+  // verdict, and the per-device flag, which passes the composed answer — so
+  // the boolean handed in means different things depending on which one moved.
+  // Taking it at face value let a fleet-switch answer set enabled=true on a
+  // device that is excused, which both left the gate's kill effect unarmed and
+  // meant clearing the flag later was a no-op state change that started
+  // nothing until a reload. MirrorDot.jsx and serving.js already re-derive;
+  // this was the one site that did not.
+  useEffect(() => subscribeMirrorSwitch(() => setSwitchOn(offlineMirrorEnabled())), []);
 
   // ── STARTING, AND THE ONE QUESTION ────────────────────────────────────────
   //

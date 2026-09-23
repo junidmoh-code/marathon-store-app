@@ -184,6 +184,26 @@ export function noteMirrorSwitchUnreadable(err) {
   if (resolveFirst) { resolveFirst(mirrorSwitchOn()); resolveFirst = null; }
 }
 
+/**
+ * Listen for a change in whether THIS device mirrors.
+ *
+ * THE ARGUMENT IS ADVISORY. Two writers notify this set: the fleet switch,
+ * which passes its own raw verdict, and the per-device off flag, which passes
+ * the composed answer. A consumer that needs the truth must call
+ * offlineMirrorEnabled() rather than read the boolean handed to it —
+ * MirrorDot, serving.js and MirrorGate all do. The argument is kept because
+ * removing it would be a wider change than the one place it misled.
+ */
+/**
+ * Tell every subscriber to look again. Exported so the forwarder installed by
+ * watchMirrorSwitchLive can be exercised in a test rather than re-implemented
+ * there, which would leave the real one untested.
+ */
+export function notifyMirrorSwitchListeners() {
+  const on = offlineMirrorEnabled();
+  for (const l of listeners) { try { l(on); } catch { /* a listener never breaks the switch */ } }
+}
+
 export function subscribeMirrorSwitch(listener) {
   listeners.add(listener);
   return () => listeners.delete(listener);
@@ -258,10 +278,7 @@ export function watchMirrorSwitchLive() {
   // reload, in every one of them, and without a second subscription mechanism
   // that could answer the same question differently.
   const stopDeviceOff = watchDeviceOffLive();
-  const unforward = subscribeDeviceOff(() => {
-    const on = offlineMirrorEnabled();
-    for (const l of listeners) { try { l(on); } catch { /* a listener never breaks the switch */ } }
-  });
+  const unforward = subscribeDeviceOff(() => notifyMirrorSwitchListeners());
   const stopSwitch = watchMirrorSwitchInner();
   return () => {
     try { stopSwitch(); } catch { /* ignore */ }

@@ -114,12 +114,16 @@ export function guardWords(guard) {
 
 export function deviceState(d, now = Date.now(), mirrorOff = false) {
   if (!d) return { tone: "#8e8e93", text: "no report" };
+  // RANKED ABOVE SILENCE, and that is deliberate. Switching a device off stops
+  // its mirror runtime, and the health beacon is part of that runtime — so the
+  // very device this was made for stops reporting and would otherwise show as
+  // "silent · last heard 11:02", sending somebody to look for a broken handset
+  // that is doing exactly what it was told. The last-heard time is kept in the
+  // line, because a device that is excused AND silent is still worth seeing.
+  if (mirrorOff) {
+    return { tone: "#0a84ff", text: `mirror OFF for this device — reading live by instruction · last heard ${ago(d.at, now)}` };
+  }
   if (now - (d.at ?? 0) > STALE_MS) return { tone: "#8e8e93", text: `silent · last heard ${ago(d.at, now)}` };
-  // Ranked above every mirror-health line below it: a device that has been
-  // told not to mirror is not "incomplete" or "downloading", it is excused,
-  // and showing it in amber as a half-finished copy would send somebody to
-  // fix a device that is doing exactly what it was told.
-  if (mirrorOff) return { tone: "#0a84ff", text: "mirror OFF for this device — reading live by instruction" };
   if (d.guard) return { tone: "#ff453a", text: guardWords(d.guard) };
   if (!d.switchOn) return { tone: "#8e8e93", text: "reading live — switch off" };
   if (d.downloading) return { tone: "#ff9f0a", text: "downloading its copy" };

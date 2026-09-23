@@ -24,7 +24,8 @@ import {
   deviceOffPath, DEVICE_OFF_ROOT, DEVICE_OFF_CACHE_KEY, resetDeviceOffForTests,
 } from "../deviceOff";
 import {
-  offlineMirrorEnabled, setMirrorSwitchValue, _resetMirrorSwitchForTests,
+  offlineMirrorEnabled, setMirrorSwitchValue, subscribeMirrorSwitch,
+  notifyMirrorSwitchListeners, _resetMirrorSwitchForTests,
 } from "../killSwitch";
 
 beforeEach(() => resetDeviceOffForTests());
@@ -162,5 +163,88 @@ describe("the chokepoint obeys both", () => {
     setMirrorSwitchValue(false);
     setDeviceOffValue(null);
     expect(offlineMirrorEnabled()).toBe(false);
+  });
+});
+
+// ─── THE LISTENER PATH, WHICH IS WHERE THIS ACTUALLY WENT WRONG ──────────────
+// Both substitute reviews found the same defect independently: the fleet
+// switch notifies listeners with its OWN raw verdict, so on an excused device
+// a fleet-switch answer handed `true` to a listener at the exact moment
+// offlineMirrorEnabled() was false. MirrorGate trusted that boolean, which
+// left its kill effect unarmed and made clearing the flag a no-op that started
+// nothing until a reload.
+//
+// The rule that came out of it: a consumer must RE-DERIVE. These pin the rule
+// rather than the one call site, because the trap is the argument existing at
+// all.
+describe("what a listener may and may not trust", () => {
+  beforeEach(() => { _resetMirrorSwitchForTests(); resetDeviceOffForTests(); });
+
+  it("the argument can disagree with the truth while a device is excused", () => {
+    setDeviceOffValue(true);
+    const handed = [];
+    subscribeMirrorSwitch((on) => handed.push(on));
+    setMirrorSwitchValue(true);              // a fleet answer, on an excused device
+    expect(handed).toEqual([true]);          // what the argument says...
+    expect(offlineMirrorEnabled()).toBe(false); // ...and what is actually true
+  });
+
+  it("a listener that re-derives is right on every fleet notification", () => {
+    setDeviceOffValue(true);
+    const derived = [];
+    subscribeMirrorSwitch(() => derived.push(offlineMirrorEnabled()));
+    setMirrorSwitchValue(true);
+    setMirrorSwitchValue(true);
+    expect(derived).toEqual([false, false]);
+  });
+
+  // The two listener sets are SEPARATE. setDeviceOffValue notifies deviceOff's
+  // own subscribers; those changes only reach subscribeMirrorSwitch through
+  // the forwarder that watchMirrorSwitchLive installs. Pinned because a reader
+  // could reasonably assume one set, and because it means the forwarder is
+  // load-bearing rather than a convenience: without it a flag change would
+  // move offlineMirrorEnabled() while nothing re-rendered.
+  it("a device-off change reaches its own subscribers directly", () => {
+    setMirrorSwitchValue(true);
+    setDeviceOffValue(true);
+    const derived = [];
+    subscribeDeviceOff(() => derived.push(offlineMirrorEnabled()));
+    setDeviceOffValue(null);                 // the owner removes the node
+    expect(derived).toEqual([true]);
+  });
+
+  it("without the forwarder, the switch's subscribers never hear a flag change", () => {
+    setMirrorSwitchValue(true);
+    setDeviceOffValue(true);
+    const derived = [];
+    subscribeMirrorSwitch(() => derived.push(offlineMirrorEnabled()));
+    setDeviceOffValue(null);
+    expect(derived).toEqual([]);              // nothing re-rendered...
+    expect(offlineMirrorEnabled()).toBe(true); // ...though the truth moved
+  });
+
+  it("with the forwarder wired, they do — this is what watchMirrorSwitchLive installs", () => {
+    setMirrorSwitchValue(true);
+    setDeviceOffValue(true);
+    const derived = [];
+    subscribeMirrorSwitch(() => derived.push(offlineMirrorEnabled()));
+    // The same wiring as watchMirrorSwitchLive, without the firebase half.
+    subscribeDeviceOff(() => notifyMirrorSwitchListeners());
+    setDeviceOffValue(null);
+    expect(derived).toEqual([true]);
+  });
+});
+
+// The gate is the site that got this wrong. Pinned on the source, because the
+// alternative is a full render harness for one line, and the line is the whole
+// defect.
+describe("MirrorGate re-derives rather than trusting the argument", () => {
+  it("does not pass the notified boolean straight into state", async () => {
+    const { readFileSync } = await import("node:fs");
+    const src = readFileSync(new URL("../MirrorGate.jsx", import.meta.url), "utf8");
+    expect(src).toContain("subscribeMirrorSwitch(() => setSwitchOn(offlineMirrorEnabled()))");
+    expect(src).not.toContain("subscribeMirrorSwitch((on) => setSwitchOn(on))");
+    // And the first render seeds from the composed answer too.
+    expect(src).toContain("useState(() => offlineMirrorEnabled())");
   });
 });
