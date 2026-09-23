@@ -220,3 +220,68 @@ test("the scan's lock + request for a pass-through leg carry passThrough/forDest
   assert.deepEqual(ordinary.lock, { qty: 1, source: "hub2", createdAt: iso(0), runId: "run", refillId: "rrO", orderId: "R001-1", orderCreatedAt: iso(0) },
     "an ordinary lock is byte-identical to what the scan wrote before this change");
 });
+
+// ── review round 1 (PR #641) ─────────────────────────────────────────────────
+test("Sonnet #1 (pinned, not a defect): a hub with its OWN residual deficit on the disputed cell raises ONE leg — the pass-through — never a second", () => {
+  const targets = { ...TARGETS, hub2: { [PID]: { ...TARGETS.hub2[PID], M: { target: 10, minQty: 5 } } } };
+  const plan = computeRefillPlan(live({ targets }));
+  const legs = plan.intents.filter((i) => i.dest === "hub2" && i.sizeKey === "M");
+  assert.equal(legs.length, 1, "the planned pass-through is inbound to hub2, so its own deficit waits (one leg per cell)");
+  assert.deepEqual({ passThrough: legs[0].passThrough, qty: legs[0].qty, forDests: legs[0].forDests }, { passThrough: "disputed", qty: 2, forDests: ["marathon-pe"] });
+  const r = plan.exceptions.recountNeeded.items.find((x) => x.pid === PID);
+  assert.equal(r.passThrough, "raised", "and the note that says so is true");
+});
+
+test("sneakers are SALES-ONLY at the hubs: no pass-through for footwear, whatever a shop row says", () => {
+  const products = { sn: { name: "Runner", category: "Footwear", categoryKey: "sneakers", sizes: ["8"] } };
+  const plan = computeRefillPlan(live({
+    products, rejectStreak: {}, refillRequests: {},
+    targets: { "marathon-pe": { sn: { 8: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { sn: { 8: cell(0) } }, hub2: {}, central: { sn: { 8: cell(9) } }, trophy: {}, hub1: {} },
+  }));
+  assert.equal(plan.intents.filter((i) => i.productId === "sn").length, 0);
+});
+
+test("a DISPUTED leg that landed keeps a Recount Needed row for the hub until its count is touched", () => {
+  const stock = STOCK();
+  stock.hub2[PID].M = cell(3);          // PE has since pulled the 2 real units; the 3 phantom remain
+  stock["marathon-pe"][PID].M = cell(2);
+  const landed = { rrPT: { productId: PID, size: "M", qty: 2, requestingLocation: "hub2", status: "fulfilled",
+    createdAt: iso(30), resolvedAt: iso(20), forDests: ["marathon-pe"],
+    createdFrom: { engine: true, source: "central", passThrough: "disputed", forDests: ["marathon-pe"] } } };
+  const base = { stock, rejectStreak: {}, refillRequests: { ...REJECTED_RR, ...landed } };
+  const row = computeRefillPlan(live(base)).exceptions.recountNeeded.items.find((x) => x.pid === PID);
+  assert.ok(row, "the dispute outlives the streak");
+  assert.deepEqual({ loc: row.loc, source: row.source, showing: row.showing, countDisputed: row.countDisputed, rejections: row.rejections },
+    { loc: "marathon-pe", source: "hub2", showing: 3, countDisputed: true, rejections: null });
+  // A count at the hub cell after the leg was raised clears it.
+  const counted = computeRefillPlan(live({ ...base, movements: [{ type: "adjustment", productId: PID, size: "M", from: "hub2", to: null, qty: 3, ts: iso(1) }] }));
+  assert.ok(!counted.exceptions.recountNeeded.items.some((x) => x.pid === PID), "recounted → gone");
+  // And it lapses with the confirmed-out window.
+  const old = { rrPT: { ...landed.rrPT, createdAt: iso(24 * 20), resolvedAt: iso(24 * 15) } };
+  assert.ok(!computeRefillPlan(live({ ...base, refillRequests: old })).exceptions.recountNeeded.items.some((x) => x.pid === PID));
+  // Not listed twice while the live streak row still stands.
+  const both = computeRefillPlan(live({ ...base, rejectStreak: STREAK, stock: STOCK() }));
+  assert.equal(both.exceptions.recountNeeded.items.filter((x) => x.pid === PID).length, 1);
+});
+
+test("units a no_target leg landed at hub2 are in transit to the shop — not a Decision Queue leftover", () => {
+  const products = { p9: { name: "Tee", productType: "clothing", sizes: ["M"] } };
+  // Explicit rows only: under the size rule, hub2 holding a cell would give
+  // it a target of its own and both halves of this test would be vacuous.
+  const config = { ...CONFIG, ruleBasedTargets: false };
+  const plan = computeRefillPlan(live({
+    config, products, rejectStreak: {}, refillRequests: {},
+    targets: { "marathon-pe": { p9: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p9: { M: cell(0) } }, hub2: { p9: { M: cell(2) } }, central: { p9: { M: cell(3) } }, trophy: {}, hub1: {} },
+  }));
+  assert.equal(plan.intents.find((i) => i.dest === "marathon-pe")?.qty, 2, "the shop leg picks them up");
+  assert.ok(!plan.exceptions.noTarget.items.some((n) => n.loc === "hub2" && n.pid === "p9"), "hub2's 2 are spoken for");
+  // With no shop asking, the same 2 units ARE a leftover decision.
+  const idle = computeRefillPlan(live({
+    config, products, rejectStreak: {}, refillRequests: {},
+    targets: { "marathon-pe": { p9: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p9: { M: cell(2) } }, hub2: { p9: { M: cell(2) } }, central: {}, trophy: {}, hub1: {} },
+  }));
+  assert.ok(idle.exceptions.noTarget.items.some((n) => n.loc === "hub2" && n.pid === "p9" && n.units === 2));
+});

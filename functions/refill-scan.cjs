@@ -1000,5 +1000,5 @@ exports._runScan = runScan; // exported for one-off manual invocation in tests/s
 exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/resize-drop-observability.test.cjs
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
-exports._shadowSyncUpdates = shadowSyncUpdates;
-exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
+exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
+exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable

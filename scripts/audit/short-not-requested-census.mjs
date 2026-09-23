@@ -123,6 +123,12 @@ const { config, stock, products } = snap;
 const routes = config.routes || {};
 const plan = computeRefillPlan({ ...snap, nowMs, uncapped: true });
 const X = plan.exceptions;
+// An engine without the `uncapped` switch (anything before this census
+// shipped) truncates belowTarget at 1,500 — the count would silently be a
+// floor. Say so rather than print it as a total.
+if (X.belowTarget.count !== X.belowTarget.items.length) {
+  console.error(`WARNING: this engine capped belowTarget (${X.belowTarget.items.length} of ${X.belowTarget.count}) — every figure below is a FLOOR.`);
+}
 const qty = (loc, pid, sk) => Math.max(Number(stock?.[loc]?.[pid]?.[sk]?.qty) || 0, 0);
 
 // A SHOP is a destination whose source is itself routed — a store fed through
@@ -145,7 +151,9 @@ const file = (list, tag, rename) => {
     if (!fate.has(k)) fate.set(k, { cause: rename ? rename(x) : tag, note: x.note || "" });
   }
 };
-file(X.recountNeeded, "recount", (x) => (x.rejections == null ? "confirmed_out" : "recount"));
+// A countDisputed row is a note about a HUB's count after a pass-through
+// landed — it parks nothing, so it must not label the shop cell.
+file({ items: (X.recountNeeded?.items || []).filter((x) => !x.countDisputed) }, "recount", (x) => (x.rejections == null ? "confirmed_out" : "recount"));
 file(X.waitingForStock, "cooldown");
 file(X.awaitingUpstream, "awaiting_upstream", (x) => (/pass-through/.test(x.note || "") ? "pass_through" : "awaiting_upstream"));
 file(X.awaitingSupplier, "", (x) => (/no buffer target/.test(x.note) ? "hub_no_target"
@@ -175,7 +183,10 @@ for (const b of X.belowTarget.items) {
   // carrying the shop's need; the shop leg follows the arrival.
   if (snap.openIndex?.[hub]?.[b.pid]?.[sk] || heldAt(hub, b.pid, sk)) continue;
   const f = fate.get(k) || { cause: "unclassified", note: "" };
-  if (f.cause === "pass_through") continue;       // a hub leg is carrying it
+  // A pass-through leg the engine computed but the per-run cap deferred: the
+  // shop still has nothing on its way this hour. (A planned one is already in
+  // `planned` above.)
+  if (f.cause === "pass_through") f.cause = "throttled";
   const p = products?.[b.pid] || {};
   rows.push({
     loc: b.loc, pid: b.pid, name: p.name || "", category: p.categoryKey || p.category || "?",

@@ -440,6 +440,12 @@ function subcategoryRun(config, products, pid, dest) {
 // Kept in lockstep with the browser mirror by the seatingCore differential
 // fuzz (which now generates the legacy pair) and pinned equal to the app's
 // effectiveCategoryKey by test/policy-category-key.test.cjs.
+// The footwear group's category keys — the cross-app footwear contract
+// (src/utils/footwearLine.js FOOTWEAR_CATEGORY_KEYS) plus designer-shoes, the
+// same set scripts/lib/sneakerScope.mjs uses. Module level so the coverage
+// buckets and the pass-through carve-out read ONE list.
+const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
+
 function policyCategoryKey(product) {
   const key = typeof product?.categoryKey === "string" ? product.categoryKey.trim() : "";
   if (key) return key;
@@ -1531,6 +1537,11 @@ function computeRefillPlan(snapshot) {
   const raisePassThrough = ({ shop, hub, pid, size, sizeKey, want, kind, high }) => {
     const upstream = routes[hub];
     if (!upstream || !routes[shop] || routes[shop] !== hub) return null;
+    // SNEAKERS ARE SALES-ONLY at the hubs (owner rule): no automatic
+    // Central→hub footwear leg, ever, whatever a shop row says. The shop's
+    // existing labels stand.
+    const fp = products?.[pid];
+    if (isFootwear(fp) || FOOTWEAR_GROUP_KEYS.has(policyCategoryKey(fp))) return null;
     if ((inbound.get(`${hub}|${pid}|${sizeKey}`) || 0) > 0) return "in_flight";
     if (hubLegState(hub, pid, sizeKey, size).parked) return null;
     const k = `${hub}|${pid}|${sizeKey}`;
@@ -1921,6 +1932,43 @@ function computeRefillPlan(snapshot) {
   const plannedClothing = dealFairly(clothingIntents, maxIntents);
   const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
   const plannedIntents = [...plannedClothing, ...plannedFootwear];
+  // ═══ A ROUTED-ROUND COUNT DISPUTE STAYS ON RECOUNT NEEDED (2026-09-23) ═════
+  // A DISPUTED pass-through lands at the hub, and that arrival is — correctly
+  // — what lifts the shop's reject streak so the shop can ask again. But the
+  // streak was also the only record that the hub's count is wrong: once it
+  // lifts, the Recount Needed row goes with it, the phantom units stay on the
+  // books, and the next time the shop runs short the hub refuses four more
+  // times before anything routes round it again (Fable review, PR #641).
+  //
+  // So the dispute outlives the streak: a disputed leg that was FULFILLED
+  // inside the confirmed-out window keeps a Recount Needed row for its hub
+  // cell until someone actually touches that cell's count — any adjustment
+  // movement there after the leg was raised (Count and Adjust both book one)
+  // — or the window lapses. Read-only; it asks nothing and blocks nothing.
+  {
+    const listed = new Set(recountNeeded.map((r) => `${r.loc}|${r.pid}|${encodeSizeKey(r.size)}`));
+    const countedAfter = (loc, pid, sizeKey, sinceIso) => movements.some((m) => m && m.type === "adjustment"
+      && m.productId === pid && encodeSizeKey(m.size) === sizeKey && (m.to === loc || m.from === loc)
+      && String(m.ts || "") > String(sinceIso || ""));
+    for (const r of Object.values(refillRequests || {})) {
+      if (!r || r.status !== "fulfilled" || r.createdFrom?.passThrough !== "disputed" || !r.productId) continue;
+      if (nowMs - (Date.parse(r.resolvedAt || r.createdAt || 0) || 0) > confirmedOutMs) continue;
+      const hub = r.requestingLocation;
+      const sizeKey = encodeSizeKey(r.size);
+      if (countedAfter(hub, r.productId, sizeKey, r.createdAt)) continue;
+      const shops = Array.isArray(r.forDests) && r.forDests.length ? r.forDests
+        : (Array.isArray(r.createdFrom?.forDests) ? r.createdFrom.forDests : []);
+      const shop = shops[0] || hub;
+      if (listed.has(`${shop}|${r.productId}|${sizeKey}`)) continue;   // the live streak row already says it
+      listed.add(`${shop}|${r.productId}|${sizeKey}`);
+      recountNeeded.push({
+        loc: shop, pid: r.productId, size: r.size, deficit: 0, source: hub,
+        rejections: null, showing: avail(cellQty(stock, hub, r.productId, r.size)), countDisputed: true,
+        note: `${hub}'s count was disputed — Central sent ${num(r.qty) || 1} round it for ${shops.join(", ") || hub}; recount ${hub} (a Count or Adjust clears this)`,
+      });
+    }
+  }
+
   // ═══ SHORT BUT NOT REQUESTED — the standing check (2026-09-23) ════════════
   // Every SHOP cell (a destination fed through a hub — Marathon PE, Trophy)
   // that is below its keep after the owner's ask-at gate, whose hub or Central
@@ -2208,6 +2256,10 @@ function computeRefillPlan(snapshot) {
   // product has been out in the network — a sell-through to zero must NOT flip
   // a product back to "NEW" (it already circulated; it belongs to migration).
   const circulates = (pid) => dests.some((d) => stock?.[d]?.[pid] && Object.keys(stock[d][pid]).length > 0);
+  // On-hand at a location less what open and just-planned legs out of it have
+  // already claimed (sourceReserved: seeded from every open lock, threaded
+  // through this scan's resizes and intents).
+  const freeAt = (loc, pid, sk, c) => Math.max(avail(num(c?.qty)) - (sourceReserved.get(`${loc}|${pid}|${sk}`) || 0), 0);
   for (const [pid, bySize] of Object.entries(stock?.central || {})) {
     if (!isClothing(products?.[pid])) continue;
     if (isDeactivated(products?.[pid])) continue;           // finished line — no decision owed
@@ -2246,9 +2298,17 @@ function computeRefillPlan(snapshot) {
         }
         continue;
       }
-      if (units <= 0) continue;
+      // Units already PROMISED to an open or just-planned leg out of this
+      // location are not a leftover — they are on their way somewhere. That
+      // is the whole life of a pass-through landing: a hub that keeps none of
+      // a size holds the shop's units for the hour until the shop leg picks
+      // them, and must not surface them as a decision meanwhile (Fable
+      // review, PR #641). A shop is never a source, so for shops this is the
+      // plain on-hand sum it always was.
+      const free = Object.entries(bySize || {}).reduce((t, [sk, c]) => t + freeAt(loc, pid, sk, c), 0);
+      if (free <= 0) continue;
       if (decisionActive(loc, pid)) continue;
-      noTarget.push({ loc, pid, units });   // assortment leftover — genuine decision
+      noTarget.push({ loc, pid, units: free });   // assortment leftover — genuine decision
     }
   }
   // SIZE-SCOPED blind-spot guard (review 2026-07-13; WIDENED 2026-07-13 after
@@ -2284,7 +2344,7 @@ function computeRefillPlan(snapshot) {
       // Under rule-based targeting the standard sizes resolve automatically;
       // numeric / non-standard sizes still surface here, which is the purpose.
       for (const [sk, c] of Object.entries(stock?.[loc]?.[pid] || {})) {
-        const q = avail(num(c?.qty));
+        const q = freeAt(loc, pid, sk, c);   // promised units are in transit, not a blind spot (see above)
         if (q > 0 && !sizeDecided(loc, pid, sk)) { units += q; seenSk.add(sk); }
       }
       if (loc === "hub2") {
@@ -2348,7 +2408,6 @@ function computeRefillPlan(snapshot) {
   // The group key list is the cross-app footwear contract
   // (src/utils/footwearLine.js FOOTWEAR_CATEGORY_KEYS) plus designer-shoes,
   // the same set scripts/lib/sneakerScope.mjs uses.
-  const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
   // Anything isClothing says is clothing — the explicit productType OR the
   // legacy letter-size heuristic — is the clothing queues' business, whatever
   // its category says: a "Footwear" hoodie is a data error the Decision Queue

@@ -217,11 +217,21 @@ function RecountChip({ row, actorRole }) {
       setState("cleared");   // exception list refreshes on the next scan (≤1 h)
     } catch { setState("failed"); }
   };
+  // PASS-THROUGH (2026-09-23): while the shop's need is being routed round
+  // the disputed count — or after it was — the row says so, so nobody reads
+  // "the shop is stuck" when Central is already sending. The count is still
+  // the thing to fix, which is why the row stays.
+  const routed = row.passThrough === "raised" || row.passThrough === "in_flight"
+    ? `Central is sending ${locLabel(row.source)} this shop's ${row.deficit} — the shop asks again when it lands`
+    : row.countDisputed
+      ? `Stock was routed round this count — recount ${locLabel(row.source)} (a Count or Adjust clears this)`
+      : null;
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 3, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
       <span style={{ fontWeight: 800, color: "#fff" }}>{row.size || "One size"}</span>
       <span style={{ fontWeight: 700, color: RED }}>
-        for {locLabel(row.loc)} · {row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
+        for {locLabel(row.loc)} · {row.countDisputed ? "count disputed" : row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
       </span>
       {/* confirmedOut rows (rejections == null) have no streak node to clear —
           their suppression is the 14-day both-levels window, which a recount
@@ -232,6 +242,8 @@ function RecountChip({ row, actorRole }) {
           {state === "busy" ? "…" : state === "cleared" ? "Cleared ✓" : state === "failed" ? "Retry" : "Recounted — ask again"}
         </button>
       )}
+    </span>
+      {routed && <span data-routed style={{ fontSize: 11, color: "rgba(255,255,255,.7)" }}>{routed}</span>}
     </span>
   );
 }
@@ -667,7 +679,7 @@ export default function HealthView({ products = [], onExit }) {
       case "shortNotRequested": {
         const snr = ex.shortNotRequested || {};
         const REASON = {
-          recount: "Hub said “not there” repeatedly while its count shows stock, and Central has none — only a recount of the hub can settle it",
+          recount: "Hub said “not there” repeatedly while its count shows stock, and Central could not be asked instead (it has none, has refused, or its units are promised) — recount the hub",
           confirmed_out: "Refused at both the hub and Central in the last 14 days — the shelves beat the count",
           upstream_blocked: "Central recently refused the hub's restock — the engine asks again after the cooldown",
           cooldown: "Refused recently — the engine asks again on its own after the retry window",
