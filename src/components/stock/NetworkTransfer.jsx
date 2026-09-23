@@ -309,9 +309,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // A solve, an undo or a bulk hide still writing is a job in hand too.
     // (CodeRabbit, PR #640.)
     const undoBusy = (undoables || []).some((u) => u?.busy);
-    setUpdateBusy("network-transfer", typed || busyPid != null || solveBusy != null || undoBusy || !!bulkBusy);
+    setUpdateBusy("network-transfer", typed || busyPid != null || solveBusy != null || undoBusy || !!bulkBusy || hideBusy != null);
     return () => setUpdateBusy("network-transfer", false);
-  }, [cards, edits, busyPid, done, solveBusy, undoables, bulkBusy]);
+  }, [cards, edits, busyPid, done, solveBusy, undoables, bulkBusy, hideBusy]);
   // Selection reconciled against the RENDERED list (`cards`, not the allCards
   // prop): a selected card that resolves out mid-select — or that the
   // standalone-fallback path computed locally, where allCards is null — must

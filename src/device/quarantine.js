@@ -30,8 +30,11 @@
 //   · only `true` or `{ on: true }` counts; everything else — absent, false,
 //     a string, a number, an object without on:true — is "not quarantined";
 //   · a device with no id (private mode) is never quarantined;
-//   · a read that fails leaves the device NOT quarantined unless it already
-//     heard, recently, that it is;
+//   · a read the database REFUSES (the only error an RTDB listener reports —
+//     being offline is not an error, it is silence) clears the message and
+//     the cache: a device that may not read its flag is not quarantined;
+//   · while offline, a cached "quarantined" is kept, but only for its trust
+//     window;
 //   · a cached "quarantined" older than CACHE_TRUST_MS is ignored, so a
 //     device that has lost the database for days is never stuck behind a
 //     message nobody can clear;
@@ -135,9 +138,9 @@ export function shouldShowNow({ quarantined, busy, msSinceActivity, untouched })
 /**
  * Listen to ONE device's flag. `subscribe(path, onValue, onError)` is
  * injected so this has no firebase import and can be tested with a plain
- * function. Returns a teardown. Never throws: a subscription that cannot be
- * opened, or a read that fails, calls nothing — the device stays as it was,
- * which with no recent cache is NOT quarantined.
+ * function. Returns a teardown. Never throws. A subscription that cannot be
+ * opened calls nothing (the device stays as it was, which with no recent cache
+ * is NOT quarantined); a read the database refuses reports NOT quarantined.
  */
 export function watchQuarantine({ deviceId, subscribe, onChange, now = Date.now }) {
   const path = quarantinePath(deviceId);
@@ -154,6 +157,9 @@ export function watchQuarantine({ deviceId, subscribe, onChange, now = Date.now 
       },
       (err) => {
         console.warn("device quarantine: could not read this device's flag —", err?.message ?? err);
+        // FAIL OPEN: a refused read ends the message. (CodeRabbit, PR #640.)
+        writeCachedQuarantine(deviceId, false, { now });
+        try { onChange(false); } catch { /* a listener never breaks the watch */ }
       },
     ) ?? (() => {});
   } catch (err) {

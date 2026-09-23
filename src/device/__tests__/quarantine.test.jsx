@@ -281,9 +281,20 @@ describe("never over a job in progress", () => {
     expect(showing(tree)).toBe(true);
   });
 
-  it("a cached flag expires on its own clock while the app stays open and reads keep failing", async () => {
+  it("a live flag that then becomes unreadable is dropped — fail open", async () => {
+    let fail;
+    const subscribe = vi.fn((_p, ok, onError) => { ok({ on: true }); fail = onError; return () => {}; });
+    const tree = await mount({ auth: SIGNED_IN, subscribe });
+    expect(showing(tree)).toBe(true);
+    await act(async () => { fail(new Error("permission_denied")); });
+    expect(showing(tree)).toBe(false);
+    expect(readCachedQuarantine(THIS)).toBe(false);
+  });
+
+  it("a cached flag expires on its own clock while the app stays open and offline", async () => {
     writeCachedQuarantine(THIS, true);
-    const subscribe = vi.fn((_p, _ok, onError) => { onError(new Error("offline")); return () => {}; });
+    // Offline: an RTDB listener simply never answers.
+    const subscribe = vi.fn(() => () => {});
     const tree = await mount({ auth: SIGNED_IN, subscribe });
     expect(showing(tree)).toBe(true);
     // Jump the clock past the cache's trust window, then let one check run.
