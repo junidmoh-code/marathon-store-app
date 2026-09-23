@@ -431,3 +431,16 @@ test("#641's 'count disputed' Recount Needed row clears when the hub cell is wri
   const cleared = planWith({ stock, refillRequests: { landed }, movements: [writeoffRow("hub2", "M", "2026-09-23T10:00:00.000Z")] });
   assert.ok(!cleared.exceptions.recountNeeded.items.some((r) => r.countDisputed && r.pid === PID));
 });
+
+test("a count that rose with NO arrival in the ledger is still capped at what was on paper when the refusals began", async () => {
+  // The first movement after the first refusal says the cell held 3; today it
+  // reads 6 with no arrival row to explain it (a direct write, a legacy tool).
+  // Only the 3 that were on paper before the refusals can go.
+  const stock = STOCK();
+  stock.hub2[PID].M = cell(6, { updatedAt: "2026-09-20T10:00:00.000Z" });
+  const movements = { s: { type: "sold", productId: PID, size: "M", qty: 1, from: "hub2", ts: "2026-09-13T10:00:00.000Z", before: { hub2: 3 }, after: { hub2: 2 } } };
+  const db = world({ stock, movements });
+  const { res } = await scan(db);
+  assert.equal(res.applied[0].qty, 3);
+  assert.equal((await read(db, `stock/hub2/${PID}/M`)).qty, 3);
+});
