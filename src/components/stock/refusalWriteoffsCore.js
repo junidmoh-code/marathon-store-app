@@ -72,6 +72,10 @@ export function digestStatusLine(status, nowMs) {
     return { tone: "warn", text: "The daily email has not been checked yet — the check runs with the next digest at 19:40." };
   }
   const at = sastStamp(Number(status.atMs));
+  // A check that never finished says so, however old — it is not "never ran".
+  if (status.outcome === "sent" && status.delivery?.state === "checking" && nowMs - Number(status.atMs) > 15 * 60e3) {
+    return { tone: "fail", text: `The ${at} email check never finished — the run was cut off, so whether the email left is unknown.` };
+  }
   if (nowMs - Number(status.atMs) > DIGEST_STALE_MS) {
     return { tone: "fail", text: `The daily email has not run since ${at} — nothing has been sent since then.` };
   }
@@ -85,9 +89,6 @@ export function digestStatusLine(status, nowMs) {
     return { tone: "ok", text: `Google raised the email with ${what} to ${d.to} at ${sastStamp(sentAt)}. Google does not confirm it reached the inbox — if it is not there, look in spam for “Written off after refusal”.` };
   }
   if (d.state === "checking") {
-    if (nowMs - Number(status.atMs) > 15 * 60e3) {
-      return { tone: "fail", text: `The ${at} email check never finished — the run was cut off, so whether the email left is unknown.` };
-    }
     return { tone: "warn", text: `Checking whether the ${at} email with ${what} left Google…` };
   }
   if (d.state === "not_sent") return { tone: "fail", text: `The ${at} email with ${what} did NOT go out: ${d.why || "unknown"}. The full list is below.` };

@@ -119,6 +119,7 @@ describe("Written off after refusal — the daily email's status", () => {
     expect(digestStatusLine(checking, SENT + 5 * 60e3).tone).toBe("warn");
     expect(digestStatusLine(checking, SENT + 20 * 60e3)).toMatchObject({ tone: "fail" });
     expect(digestStatusLine(checking, SENT + 20 * 60e3).text).toContain("never finished");
+    expect(digestStatusLine(checking, SENT + 27 * 3600e3).text).toContain("never finished");   // not "has not run"
   });
   it("Google raised no alert: RED, says it did NOT go out and why", () => {
     const l = digestStatusLine(status({ alerts: [] }), soon);
