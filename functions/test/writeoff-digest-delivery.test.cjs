@@ -18,9 +18,11 @@ const CHANNEL = { name: POLICY.notificationChannels[0], type: "email", enabled: 
 const ALERT = { name: "projects/marathon-club/alerts/0.ocz05h9j8e1a", state: "CLOSED", openTime: "2026-09-23T17:41:06Z",
   log: { extractedLabels: { digest: DIGEST.summary } }, policy: { name: POLICY.name } };
 
-test("the real 23 Sep run: Google raised the alert → emailed, with when and to whom", () => {
+// NOTE the verdict's name: on 23 Sep Google raised this very alert and the
+// email STILL never arrived. "alert_raised" is the most that can be proven.
+test("the real 23 Sep run: Google raised the alert → alert_raised (never 'delivered'), with when and to whom", () => {
   const v = judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [ALERT], digest: DIGEST, sentAtMs: SENT });
-  assert.deepEqual(v, { state: "emailed", to: RECIPIENT, alert: ALERT.name, emailedAt: "2026-09-23T17:41:06Z" });
+  assert.deepEqual(v, { state: "alert_raised", to: RECIPIENT, alert: ALERT.name, alertRaisedAt: "2026-09-23T17:41:06Z" });
 });
 
 test("every way the email fails to leave is NOT sent, with the reason", () => {
@@ -54,7 +56,7 @@ test("an EARLIER alert still open: not proof of failure → 'unchecked' (amber),
 
 test("label match ignores surrounding whitespace", () => {
   const padded = { ...ALERT, log: { extractedLabels: { digest: ` ${DIGEST.summary} ` } } };
-  assert.equal(judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [padded], digest: DIGEST, sentAtMs: SENT }).state, "emailed");
+  assert.equal(judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [padded], digest: DIGEST, sentAtMs: SENT }).state, "alert_raised");
 });
 
 test("every Monitoring call carries an abort signal (a hung call cannot outlive the function)", async () => {
@@ -79,7 +81,7 @@ const fakeClock = () => { let t = SENT; return { clock: () => t, sleep: async (m
 test("confirmDelivery waits for Google to raise the alert (it took 63 s on 23 Sep)", async () => {
   const api = fakeApi({ alertsAfter: 3 });
   const v = await confirmDelivery({ api, digest: DIGEST, sentAtMs: SENT, ...fakeClock() });
-  assert.equal(v.state, "emailed");
+  assert.equal(v.state, "alert_raised");
   assert.equal(api.calls(), 4);
 });
 
@@ -98,7 +100,7 @@ test("a switched-off channel is reported at once, without waiting out the deadli
   assert.equal(api.calls(), 1);
 });
 
-test("if Google cannot be asked, the verdict is 'unchecked' — never 'emailed'", async () => {
+test("if Google cannot be asked, the verdict is 'unchecked' — never 'alert_raised'", async () => {
   const v = await confirmDelivery({ api: fakeApi({ fail: "alertPolicies HTTP 403" }), digest: DIGEST, sentAtMs: SENT, ...fakeClock() });
   assert.equal(v.state, "unchecked");
   assert.match(v.why, /403/);
@@ -147,13 +149,13 @@ function googleThatSees(logged) {
     alerts: async () => logged.map((line) => ({ ...ALERT, log: { extractedLabels: { digest: line.replace(/^REFUSAL_WRITEOFF_DIGEST /, "") } } })) };
 }
 
-test("entry point: the logged digest is found at Google → 'emailed' on the archive AND the status node", async () => {
+test("entry point: the logged digest is found at Google → 'alert_raised' on the archive AND the status node", async () => {
   const db = world(); const logged = [];
   const res = await runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaAlertLog((l) => logged.push(l))], api: googleThatSees(logged), ...quiet });
-  assert.equal(res.delivery.state, "emailed");
+  assert.equal(res.delivery.state, "alert_raised");
   const st = (await db.ref(STATUS).once("value")).val();
-  assert.equal(st.outcome, "sent"); assert.equal(st.count, 1); assert.equal(st.delivery.state, "emailed");
-  assert.equal((await db.ref(`refill_engine/refusalWriteoffDigests/${res.archiveKey}/delivery/state`).once("value")).val(), "emailed");
+  assert.equal(st.outcome, "sent"); assert.equal(st.count, 1); assert.equal(st.delivery.state, "alert_raised");
+  assert.equal((await db.ref(`refill_engine/refusalWriteoffDigests/${res.archiveKey}/delivery/state`).once("value")).val(), "alert_raised");
 });
 
 test("entry point: Google raised nothing → 'not_sent' recorded (the 23 Sep silence can't recur unseen)", async () => {
@@ -163,6 +165,16 @@ test("entry point: Google raised nothing → 'not_sent' recorded (the 23 Sep sil
     confirm: (a) => confirmDelivery({ ...a, waitMs: 0 }), ...quiet });
   assert.equal(res.delivery.state, "not_sent");
   assert.equal((await db.ref(STATUS).once("value")).val().delivery.state, "not_sent");
+});
+
+test("entry point: 'checking' is recorded BEFORE asking Google — a run cut off mid-check never leaves yesterday's verdict", async () => {
+  const db = world(); const logged = [];
+  let seenDuringCheck = null;
+  const confirm = async () => { seenDuringCheck = (await db.ref(STATUS).once("value")).val(); throw new Error("killed by timeout"); };
+  await assert.rejects(runDigestAndConfirm({ db, nowMs: SENT, channels: [emailViaAlertLog((l) => logged.push(l))], api: googleThatSees(logged), confirm, ...quiet }), /killed/);
+  assert.equal(seenDuringCheck.delivery.state, "checking");
+  assert.equal(seenDuringCheck.atMs, SENT);
+  assert.equal((await db.ref(STATUS).once("value")).val().delivery.state, "checking");   // left as-is → card turns red after 15 min
 });
 
 test("entry point: a run that throws is recorded as an error, then rethrows", async () => {

@@ -980,7 +980,8 @@ export default function HealthView({ products = [], onExit }) {
                 <StatCard label="Written off after refusal"
                           value={!writeoffState.settled ? "…" : writeoffState.error ? "!" : recentCount(writeoffList, serverNowMs())}
                           tone={writeoffState.error || digestLine?.tone === "fail" ? RED : AMBER}
-                          sub={digestLine?.tone === "fail" ? "Daily email NOT sent — tap for why" : "Refused on 4 different days · last 30 days"}
+                          sub={digestLine?.tone === "fail" ? "Daily email NOT sent — tap for why"
+                            : digestLine?.tone === "warn" ? "Daily email unconfirmed — tap for why" : "Refused on 4 different days · last 30 days"}
                           onClick={() => setScreen("refusalWriteoffs")} />
               )}
               <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}

@@ -59,8 +59,9 @@ export function recentCount(rows, nowMs, days = 30) {
 // so. The digest function now asks Google whether the email left and records
 // the answer at /refill_engine/refusalWriteoffDigestStatus; this turns it into
 // the one line the card shows. tone: "ok" | "warn" | "fail" (fail = red on
-// the Health stat card too). Google gives no inbox receipt for these emails,
-// so the best "ok" says exactly what is known: Google sent it.
+// the Health stat card too). Google gives no inbox receipt for these emails —
+// on 23 Sep it raised the alert and the email still never came — so the best
+// "ok" says exactly what is known: Google raised the email alert, and no more.
 const DIGEST_STALE_MS = 26 * 3600e3;   // the digest runs daily at 19:40
 function sastStamp(ms) {
   const d = new Date(ms + 2 * 3600e3);
@@ -79,9 +80,15 @@ export function digestStatusLine(status, nowMs) {
   const d = status.delivery || {};
   const n = Number(status.count) || 0;
   const what = `${n} write-off${n === 1 ? "" : "s"}`;
-  if (d.state === "emailed") {
-    const sentAt = Date.parse(d.emailedAt || "") || Number(status.atMs);
-    return { tone: "ok", text: `Emailed ${what} to ${d.to} at ${sastStamp(sentAt)} — Google sent it but gives no inbox receipt; if it is missing, look in spam for “Written off after refusal”.` };
+  if (d.state === "alert_raised") {
+    const sentAt = Date.parse(d.alertRaisedAt || "") || Number(status.atMs);
+    return { tone: "ok", text: `Google raised the email with ${what} to ${d.to} at ${sastStamp(sentAt)}. Google does not confirm it reached the inbox — if it is not there, look in spam for “Written off after refusal”.` };
+  }
+  if (d.state === "checking") {
+    if (nowMs - Number(status.atMs) > 15 * 60e3) {
+      return { tone: "fail", text: `The ${at} email check never finished — the run was cut off, so whether the email left is unknown.` };
+    }
+    return { tone: "warn", text: `Checking whether the ${at} email with ${what} left Google…` };
   }
   if (d.state === "not_sent") return { tone: "fail", text: `The ${at} email with ${what} did NOT go out: ${d.why || "unknown"}. The full list is below.` };
   return { tone: "warn", text: `Could not confirm the ${at} email with ${what} left Google: ${d.why || "no answer"}.` };

@@ -104,6 +104,9 @@ function emailViaAlertLog(log = console.error) {
 //      addressed to Junid;
 //   2. Google raised an alert on that policy for THIS digest (Alerts API: an
 //      alert opened after the send whose extracted label is this summary).
+// The best verdict is therefore "alert_raised" — NOT "delivered": on 23 Sep
+// the alert WAS raised and the email still never arrived (second review,
+// #644). Everything short of that is named: not_sent (red) or unchecked.
 // The verdict is stored on the archived digest and at STATUS, and the
 // "Written off after refusal" card shows it — red when the email did not
 // leave, instead of failing silently.
@@ -124,7 +127,7 @@ function judgeDelivery({ policy, channel, alerts, digest, sentAtMs, recipient = 
   const head = String(digest?.summary || "").trim().slice(0, 200);
   const hit = (alerts || []).find((a) => Date.parse(a?.openTime || "") >= sentAtMs - 60e3
     && String(a?.log?.extractedLabels?.digest || "").trim().slice(0, 200) === head);
-  if (hit) return { state: "emailed", to, alert: hit.name, emailedAt: hit.openTime };
+  if (hit) return { state: "alert_raised", to, alert: hit.name, alertRaisedAt: hit.openTime };
   // An EARLIER alert on this policy still open (autoClose is 30 min): Google
   // may fold this digest into it rather than raise — and email — a new one.
   // That is not proof of failure, so it is not reported red. (Sonnet, #644)
@@ -174,7 +177,7 @@ async function confirmDelivery({ api, digest, sentAtMs, waitMs = 240e3, everyMs 
     for (;;) {
       const alerts = policy ? await api.alerts(policy.name) : [];
       const v = judgeDelivery({ policy, channel, alerts, digest, sentAtMs });
-      if (v.state === "emailed" || !policy || !channel || v.to !== RECIPIENT || channel.enabled === false || policy.enabled === false || clock() >= deadline) {
+      if (v.state === "alert_raised" || !policy || !channel || v.to !== RECIPIENT || channel.enabled === false || policy.enabled === false || clock() >= deadline) {
         return { ...v, checkedAtMs: clock() };
       }
       await sleep(everyMs);
@@ -239,11 +242,15 @@ async function runDigestAndConfirm({ db, nowMs, channels, api, confirm = confirm
     log(`refusalWriteoffDigest: ${res.reason}`);
     return { ...res };
   }
+  // "checking" first: if the run is cut off mid-check, the card shows a check
+  // that never finished — never yesterday's verdict (second review, #644).
+  const base = { atMs: nowMs, outcome: "sent", count: res.digest.count, units: res.digest.units, archiveKey: res.archiveKey };
+  await recordStatus(db, { ...base, delivery: { state: "checking" } });
   const delivery = await confirm({ api, digest: res.digest, sentAtMs: nowMs });
   await db.ref().update({ [`${ARCHIVE}/${res.archiveKey}/delivery`]: delivery });
-  await recordStatus(db, { atMs: nowMs, outcome: "sent", count: res.digest.count, units: res.digest.units, archiveKey: res.archiveKey, delivery });
+  await recordStatus(db, { ...base, delivery });
   const line = `refusalWriteoffDigest: ${res.digest.count} write-off(s) — email ${delivery.state}${delivery.why ? ` (${delivery.why})` : ""}`;
-  (delivery.state === "emailed" ? log : warn)(line);
+  (delivery.state === "alert_raised" ? log : warn)(line);
   return { ...res, delivery };
 }
 

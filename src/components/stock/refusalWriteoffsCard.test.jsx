@@ -107,11 +107,18 @@ describe("Written off after refusal — the daily email's status", () => {
     delivery: digestFn.judgeDelivery({ policy: POLICY, channel: CHANNEL, alerts: [ALERT], digest: DIGEST, sentAtMs: SENT, ...over }) });
   const soon = SENT + 3600e3;
 
-  it("emailed: green, says who it went to and when — and that Google gives no inbox receipt", () => {
+  it("alert raised: says Google RAISED it (to whom, when) — never that it was delivered", () => {
     const l = digestStatusLine(status({}), soon);
     expect(l.tone).toBe("ok");
-    expect(l.text).toContain("Emailed 133 write-offs to junidmoh@gmail.com at 23 Sep 19:41");
-    expect(l.text).toContain("no inbox receipt");
+    expect(l.text).toContain("Google raised the email with 133 write-offs to junidmoh@gmail.com at 23 Sep 19:41");
+    expect(l.text).toContain("does not confirm it reached the inbox");
+    expect(l.text).not.toMatch(/\bdelivered\b|^Emailed/);
+  });
+  it("a check cut off mid-way: amber while fresh, RED once it plainly never finished", () => {
+    const checking = { atMs: SENT, outcome: "sent", count: 133, delivery: { state: "checking" } };
+    expect(digestStatusLine(checking, SENT + 5 * 60e3).tone).toBe("warn");
+    expect(digestStatusLine(checking, SENT + 20 * 60e3)).toMatchObject({ tone: "fail" });
+    expect(digestStatusLine(checking, SENT + 20 * 60e3).text).toContain("never finished");
   });
   it("Google raised no alert: RED, says it did NOT go out and why", () => {
     const l = digestStatusLine(status({ alerts: [] }), soon);
@@ -148,6 +155,8 @@ describe("Written off after refusal — the daily email's status", () => {
     const block = health.slice(health.indexOf('case "refusalWriteoffs"'), health.indexOf('case "shortNotRequested"'));
     expect(block).toContain("data-digest-status");
     const cardAt = health.indexOf('label="Written off after refusal"');
-    expect(health.slice(cardAt, cardAt + 500)).toContain('digestLine?.tone === "fail" ? RED');
+    expect(health.slice(cardAt, cardAt + 600)).toContain('digestLine?.tone === "fail" ? RED');
+    // a check that cannot run is never silent either: the stat card says so
+    expect(health.slice(cardAt, cardAt + 600)).toContain("Daily email unconfirmed");
   });
 });

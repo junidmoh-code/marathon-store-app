@@ -3566,7 +3566,7 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 // left, and records the verdict where the card reads it (lib/writeoff-digest.cjs
 // confirmDelivery). A run that throws is recorded too.
 exports.refusalWriteoffDigest = onSchedule(
-  { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 300 },
+  { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 540 },
   async () => {
     const digest = require("./lib/writeoff-digest.cjs");
     await digest.runDigestAndConfirm({
