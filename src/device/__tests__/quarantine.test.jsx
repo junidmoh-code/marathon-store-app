@@ -162,10 +162,12 @@ describe("per device, never account-wide or fleet-wide", () => {
 });
 
 describe("FAILS OPEN — every doubt is no message", () => {
-  it("a subscription that throws shows nothing and does not break the app", async () => {
+  it("a subscription that throws shows nothing, even over a cached flag", async () => {
+    writeCachedQuarantine(THIS, true);
     const subscribe = vi.fn(() => { throw new Error("boom"); });
     const tree = await mount({ auth: SIGNED_IN, subscribe });
     expect(showing(tree)).toBe(false);
+    expect(readCachedQuarantine(THIS)).toBe(false);
   });
 
   it("a refused read (PERMISSION_DENIED) shows nothing", async () => {

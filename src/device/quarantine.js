@@ -139,8 +139,8 @@ export function shouldShowNow({ quarantined, busy, msSinceActivity, untouched })
  * Listen to ONE device's flag. `subscribe(path, onValue, onError)` is
  * injected so this has no firebase import and can be tested with a plain
  * function. Returns a teardown. Never throws. A subscription that cannot be
- * opened calls nothing (the device stays as it was, which with no recent cache
- * is NOT quarantined); a read the database refuses reports NOT quarantined.
+ * opened, or a read the database refuses, reports NOT quarantined and clears
+ * the cache. Silence (offline) changes nothing.
  */
 export function watchQuarantine({ deviceId, subscribe, onChange, now = Date.now }) {
   const path = quarantinePath(deviceId);
@@ -164,6 +164,9 @@ export function watchQuarantine({ deviceId, subscribe, onChange, now = Date.now 
     ) ?? (() => {});
   } catch (err) {
     console.warn("device quarantine: could not watch this device's flag —", err?.message ?? err);
+    // Same as a refused read: a flag that cannot be watched is not obeyed.
+    writeCachedQuarantine(deviceId, false, { now });
+    try { onChange(false); } catch { /* ignore */ }
     return () => {};
   }
   return () => { try { stop(); } catch { /* ignore */ } };
