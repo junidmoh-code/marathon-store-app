@@ -325,3 +325,16 @@ test("shadow mode previews a pass-through as one, naming its shops", () => {
   assert.deepEqual(row.forDests, ["marathon-pe"]);
   assert.equal(row.createdFrom.passThrough, "disputed");
 });
+
+test("a corrupt negative lock qty reserves and releases the SAME one unit (CodeRabbit, PR #641)", () => {
+  const products = { p9: { name: "Tee", productType: "clothing", sizes: ["M"] } };
+  const plan = computeRefillPlan(live({
+    products, rejectStreak: {}, config: { ...CONFIG, ruleBasedTargets: false },
+    targets: { "marathon-pe": { p9: { M: { target: 2, minQty: 1 } } } },
+    stock: { "marathon-pe": { p9: { M: cell(0) } }, hub2: { p9: { M: cell(5) } }, central: {}, trophy: {}, hub1: {} },
+    openIndex: { "marathon-pe": { p9: { M: { qty: -5, source: "hub2", createdAt: iso(3), runId: "r", refillId: "rrX" } } } },
+    refillRequests: { rrX: { productId: "p9", size: "M", qty: 1, requestingLocation: "marathon-pe", status: "cancelled", cancelReason: "no_longer_needed", resolvedAt: iso(1), createdAt: iso(3) } },
+  }));
+  assert.ok(plan.closes.some((c) => c.dest === "marathon-pe"), "the dead lock closes");
+  assert.equal(plan.intents.find((i) => i.dest === "marathon-pe")?.qty, 2, "and the shortfall re-asks in the same scan");
+});

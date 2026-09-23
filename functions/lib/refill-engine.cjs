@@ -166,6 +166,11 @@ function stockFingerprint(stock, pid) {
   }
   return parts.join("|") || "empty";
 }
+// A lock's quantity, as EVERY reservation step reads it: absent/garbage → 1,
+// and floored at 1 so a corrupt negative can never subtract on the way in or
+// add on the way out. One helper for seeding AND releasing, or the two drift
+// (CodeRabbit, PR #641).
+const lockQty = (entry) => Math.max(num(entry?.qty) || 1, 1);
 const cellQty = (stock, loc, pid, size) =>
   num(stock?.[loc]?.[pid]?.[encodeSizeKey(size)]?.qty);
 const avail = (q) => Math.max(q, 0);
@@ -697,11 +702,9 @@ function computeRefillPlan(snapshot) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
-        // Floored at 1: a corrupt negative qty must never subtract (it would
-        // inflate what freeAt reports as free at the source).
-        bump(inbound, `${dest}|${pid}|${sizeKey}`, Math.max(num(entry.qty) || 1, 1));
+        bump(inbound, `${dest}|${pid}|${sizeKey}`, lockQty(entry));
         const s = entry.source || routes[dest];
-        if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, Math.max(num(entry.qty) || 1, 1));
+        if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, lockQty(entry));
       }
     }
   }
@@ -887,7 +890,7 @@ function computeRefillPlan(snapshot) {
         // its own ask — order deleted, request cancelled — instead of letting
         // the warehouse deliver a surplus.
         const t = unresolvedOurs ? resolveTarget(ctx, dest, pid, size) : null;
-        const otherInbound = Math.max((inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) - (num(entry.qty) || 1), 0);
+        const otherInbound = Math.max((inbound.get(`${dest}|${pid}|${sizeKey}`) || 0) - lockQty(entry), 0);
         // A pass-through leg answers to the shops it carries, never to the
         // hub's own target (see passThroughNeed).
         const ptNeed = unresolvedOurs && entry.passThrough ? passThroughNeed(dest, pid, sizeKey, size, entry) : null;
@@ -967,7 +970,7 @@ function computeRefillPlan(snapshot) {
         if (unresolvedOurs && !inFlight && !needGone && !unfillable && !sourceEmpty) {
           const srcLoc2 = entry.source || routes[dest];
           const srcHave2 = srcLoc2 ? avail(cellQty(stock, srcLoc2, pid, size)) : 0;
-          const ownQty = num(entry.qty) || 1;
+          const ownQty = lockQty(entry);
           const srcKey2 = `${srcLoc2}|${pid}|${sizeKey}`;
           // SHRINK to real demand is always safe (a reduced claim can never
           // overcommit) — no source math needed. GROW only into units that are
@@ -1091,7 +1094,7 @@ function computeRefillPlan(snapshot) {
         for (const [sizeKey, entry] of Object.entries(bySize || {})) {
           if (!entry?.refillId) continue;
           const k = `${dest}|${pid}|${sizeKey}`;
-          claimed.set(k, (claimed.get(k) || 0) + Math.max(num(entry.qty) || 1, 1));
+          claimed.set(k, (claimed.get(k) || 0) + lockQty(entry));
         }
       }
     }
@@ -1146,14 +1149,14 @@ function computeRefillPlan(snapshot) {
     const entry = openIndex[c.dest]?.[c.pid]?.[c.sizeKey];
     if (!entry) continue;
     const k = `${c.dest}|${c.pid}|${c.sizeKey}`;
-    const left = (inbound.get(k) || 0) - (num(entry.qty) || 1);
+    const left = (inbound.get(k) || 0) - lockQty(entry);
     if (left > 0) inbound.set(k, left); else inbound.delete(k);
     // Release the SOURCE reservation too — a closed lock frees its units for
     // siblings and new intents in this same pass (symmetric with inbound).
     const sLoc = entry.source || routes[c.dest];
     if (sLoc) {
       const sk = `${sLoc}|${c.pid}|${c.sizeKey}`;
-      const sLeft = (sourceReserved.get(sk) || 0) - (num(entry.qty) || 1);
+      const sLeft = (sourceReserved.get(sk) || 0) - lockQty(entry);
       if (sLeft > 0) sourceReserved.set(sk, sLeft); else sourceReserved.delete(sk);
     }
   }
