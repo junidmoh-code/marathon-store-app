@@ -28,8 +28,9 @@ const THIS = "57070bab-8813-4164-9165-2f16fd7f9244";
 const OTHER = "d6bb8389-7f13-481b-9437-2544117c9a9d";
 let deviceIdImpl = () => THIS;
 vi.mock("../deviceId", () => ({ getDeviceId: () => deviceIdImpl() }));
+let authFired = 0;
 vi.mock("firebase/auth", () => ({
-  onAuthStateChanged: (auth, cb) => { cb(auth.user); return () => {}; },
+  onAuthStateChanged: (auth, cb) => { authFired += 1; cb(auth.user); return () => {}; },
 }));
 let busyNow = false;
 vi.mock("../../update/updateChecker", () => ({ isUpdateBusy: () => busyNow }));
@@ -76,8 +77,15 @@ async function mount(props) {
   let tree;
   await act(async () => { tree = TestRenderer.create(<DeviceQuarantine {...props} />); });
   mounted.push(tree);
-  // The auth listener is behind a dynamic import: flush until it has run.
-  for (let i = 0; i < 20; i++) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  // The auth listener is behind a dynamic import: flush until it has FIRED
+  // (not a fixed tick count, which a loaded multi-file run outlasted), then
+  // a few more so the subscription and the show check settle.
+  const before = authFired;
+  for (let i = 0; i < 500 && authFired === before; i++) {
+    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await new Promise((r) => setImmediate(r));
+  }
+  for (let i = 0; i < 5; i++) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   return tree;
 }
 const text = (tree) => JSON.stringify(tree.toJSON() ?? "");
@@ -87,7 +95,9 @@ beforeEach(() => {
   store.clear();
   busyNow = false;
   deviceIdImpl = () => THIS;
-  vi.useFakeTimers();
+  // setImmediate stays REAL: mount() uses it to let the dynamic import of
+  // firebase/auth resolve, and a faked one never fires.
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "setInterval", "clearInterval", "Date"] });
   vi.setSystemTime(new Date("2026-09-23T10:00:00Z"));
 });
 afterEach(() => {
@@ -271,7 +281,7 @@ describe("the clear reaches the device live", () => {
     const tree = await mount({ auth: SIGNED_IN, subscribe: db.subscribe });
     expect(showing(tree)).toBe(false);
     await act(async () => { db.write(flagPath(THIS), { on: true }); });
-    await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
     expect(showing(tree)).toBe(true);
   });
 
