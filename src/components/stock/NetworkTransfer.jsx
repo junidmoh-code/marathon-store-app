@@ -75,12 +75,6 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [edits, setEdits] = useState({});     // `${pid}|${size}` → qty
   const [busyPid, setBusyPid] = useState(null);
   const [done, setDone] = useState({});       // pid → {moved, dest, failed[]}
-  // Typed quantities or a move going through are a job in hand — see
-  // Transfer.jsx's transfer-basket for why this is registered.
-  useEffect(() => {
-    setUpdateBusy("network-transfer", Object.keys(edits).length > 0 || busyPid != null);
-    return () => setUpdateBusy("network-transfer", false);
-  }, [edits, busyPid]);
 
   // ── HIDE — a view filter, never an action on stock ─────────────────────────
   // Writes ONE entry to /settings/missingProductsHidden/{pid} (who, when,
@@ -303,6 +297,18 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const all = allCards || computeMissingProducts({ allStock, products });
     return category && category !== "all" ? all.filter((c) => c.group === category) : all;
   }, [allCards, allStock, products, category]);
+
+  // Typed quantities on a card still in the list, or a move going through,
+  // are a job in hand — see Transfer.jsx's transfer-basket for why this is
+  // registered. Only edits for cards still SHOWN count: a card retired by a
+  // live stock update or a finished move leaves its keys behind, and they
+  // must not hold the device busy for as long as the screen is open.
+  useEffect(() => {
+    const live = new Set((cards || []).map((c) => c.pid));
+    const typed = Object.keys(edits).some((k) => live.has(k.split("|")[0]) && !done[k.split("|")[0]]);
+    setUpdateBusy("network-transfer", typed || busyPid != null);
+    return () => setUpdateBusy("network-transfer", false);
+  }, [cards, edits, busyPid, done]);
   // Selection reconciled against the RENDERED list (`cards`, not the allCards
   // prop): a selected card that resolves out mid-select — or that the
   // standalone-fallback path computed locally, where allCards is null — must

@@ -98,16 +98,18 @@ export default function Transfer({ products, registry, actorRole }) {
   const [basket, setBasket] = useState({});              // { pid__size: { productId, productName, size, qty } }
   const [refillId, setRefillId] = useState(null);
   const [to, setTo] = useState("");                      // destination
+  const [picking, setPicking] = useState(false);         // destination sheet open
+  const [sizePrompt, setSizePrompt] = useState(null);    // { product } awaiting a size after a scan
+  const [busy, setBusy] = useState(false);
   // A basket with lines in it is a job in hand: the auto-updater must not
   // reload over it and a device quarantine must not cover it
   // (src/device/quarantine.js).
   useEffect(() => {
-    setUpdateBusy("transfer-basket", Object.keys(basket).length > 0);
+    // `busy` too: a Clear tapped while the writes are still going must not
+    // let anything reload or cover the screen before they land.
+    setUpdateBusy("transfer-basket", Object.keys(basket).length > 0 || !!busy);
     return () => setUpdateBusy("transfer-basket", false);
-  }, [basket]);
-  const [picking, setPicking] = useState(false);         // destination sheet open
-  const [sizePrompt, setSizePrompt] = useState(null);    // { product } awaiting a size after a scan
-  const [busy, setBusy] = useState(false);
+  }, [basket, busy]);
   const [toast, setToast] = useState(null);
   // Stable transfer id for the CURRENT cart. Minted at the first Confirm and kept
   // across retries so every line's movement id is deterministic (idempotent retry).

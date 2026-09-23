@@ -79,12 +79,6 @@ export default function MoveExcess({ products = [], actorRole }) {
   const [busy, setBusy] = useState(false);   // card key being transferred | false
   const [lastResult, setLastResult] = useState(null);
   const [movedTotal, setMovedTotal] = useState(0);
-  // Typed quantities or a move going through are a job in hand — see
-  // Transfer.jsx's transfer-basket for why this is registered.
-  useEffect(() => {
-    setUpdateBusy("move-excess", Object.keys(edits).length > 0 || busy !== false);
-    return () => setUpdateBusy("move-excess", false);
-  }, [edits, busy]);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 
@@ -172,6 +166,17 @@ export default function MoveExcess({ products = [], actorRole }) {
     }
     return out.sort((a, b) => b.totalExcess - a.totalExcess);
   }, [allStock, allTargets, byId, openRequests, heldLines]);
+
+  // Typed quantities on a card still in the list, or a move going through,
+  // are a job in hand — see Transfer.jsx's transfer-basket. Only edits for
+  // cards still SHOWN count, so a card retired by a live stock update cannot
+  // leave the device busy for as long as the screen is open.
+  useEffect(() => {
+    const live = (cards || []).map((c) => `${c.key}|`);
+    const typed = Object.keys(edits).some((k) => live.some((pre) => k.startsWith(pre)));
+    setUpdateBusy("move-excess", typed || busy !== false);
+    return () => setUpdateBusy("move-excess", false);
+  }, [cards, edits, busy]);
 
   const [locFilter, setLocFilter] = useState("all");
   const [search, setSearch] = useState("");

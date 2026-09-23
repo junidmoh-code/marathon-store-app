@@ -96,8 +96,11 @@ function Quarantine({ auth, subscribe = firebaseSubscribe, busy = isUpdateBusy }
   }, []);
 
   // Cleared: down at once. Flagged: up the first moment nothing is in hand.
+  // Not signed in resets it too: a message latched before sign-in would
+  // otherwise appear the instant sign-in lands, skipping the busy and quiet
+  // checks. (CodeRabbit, PR #640.)
   useEffect(() => {
-    if (!quarantined) { setShown(false); return undefined; }
+    if (!quarantined || !signedIn) { setShown(false); return undefined; }
     if (shown) return undefined;
     const check = () => {
       let isBusy = true;
@@ -110,7 +113,7 @@ function Quarantine({ auth, subscribe = firebaseSubscribe, busy = isUpdateBusy }
     check();
     const t = setInterval(check, CHECK_EVERY_MS);
     return () => clearInterval(t);
-  }, [quarantined, shown, busy]);
+  }, [quarantined, signedIn, shown, busy]);
 
   // Only over a signed-in session: that is the session that can HEAR the
   // clear, so the message can never stand in front of a sign-in screen it

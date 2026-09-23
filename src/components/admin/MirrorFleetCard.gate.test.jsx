@@ -293,6 +293,14 @@ describe("quarantine: one device, one tap, its own path only", () => {
     expect(removeMock.mock.calls[0][0].path).toBe(`mirror_switch/quarantine/${ghost}`);
   });
 
+  it("offers no quarantine button until the flag list has been read", async () => {
+    const tree = await render(ADMIN);
+    expect(rowButtons(tree)).toHaveLength(0);
+    await act(async () => { quarantineListener()[2](new Error("permission_denied")); });
+    expect(rowButtons(tree)).toHaveLength(0);
+    expect(JSON.stringify(tree.toJSON())).toMatch(/Cannot read the quarantine list/);
+  });
+
   it("a staff viewer is never offered the button", async () => {
     const tree = await render(STAFF);
     expect(JSON.stringify(tree.toJSON())).not.toMatch(/Quarantine/);
@@ -301,8 +309,14 @@ describe("quarantine: one device, one tap, its own path only", () => {
   it("an evicting device is named in red, not shown as merely downloading", async () => {
     expect(isEvicting(fleet[EVICTING])).toBe(true);
     expect(isEvicting(fleet[HEALTHY])).toBe(false);
-    expect(deviceState({ ...fleet[EVICTING], storage: { wipesToday: 1, persisted: true } }, T).text)
+    expect(deviceState({ ...fleet[EVICTING], storage: { wipesToday: 1, persisted: true, lastWipeAt: T } }, T).text)
       .toBe("the browser deleted this device's copy once today");
+    // A wipe reported before SAST midnight is not "today" the next morning.
+    const yesterday = { ...fleet[EVICTING], storage: { ...fleet[EVICTING].storage, lastWipeAt: T - 26 * 3600_000 } };
+    expect(isEvicting(yesterday, T)).toBe(false);
+    // A live guard still outranks a wipe: it is the thing to act on now.
+    expect(deviceState({ ...fleet[EVICTING], guard: { leg: "products", reason: "gave-up" } }, T).text)
+      .toMatch(/^the catalogue kept failing/);
     const st = deviceState(fleet[EVICTING], T);
     expect(st.tone).toBe("#ff453a");
     expect(st.text).toBe("the browser keeps deleting this device's copy — wiped 7× today, storage not protected");

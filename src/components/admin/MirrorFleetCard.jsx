@@ -41,7 +41,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { getDatabase, ref, get, set, remove, onValue } from "firebase/database";
 import { ADMIN_EMAIL } from "../PermissionsContext";
-import { DEVICES_ROOT } from "../../offline/deviceHealth";
+import { DEVICES_ROOT, sastDate } from "../../offline/deviceHealth";
 import { MIRROR_SWITCH_PATH, switchVerdict } from "../../offline/killSwitch";
 import { DEVICE_OFF_ROOT, deviceOffPath, deviceOffVerdict } from "../../offline/deviceOff";
 import {
@@ -131,8 +131,13 @@ export function guardWords(guard) {
 }
 
 // "Is this device's browser throwing its copy away?" — wiped at least once
-// today, by the device's own count.
-export const isEvicting = (d) => (d?.storage?.wipesToday ?? 0) > 0;
+// TODAY. The count is the device's own at its last report, so it is only
+// believed while the last wipe itself falls on today's SAST date: a report
+// from before midnight must not paint a device red all the next morning.
+// (CodeRabbit, PR #640.)
+export const isEvicting = (d, now = Date.now()) =>
+  (d?.storage?.wipesToday ?? 0) > 0
+  && d.storage.lastWipeAt != null && sastDate(d.storage.lastWipeAt) === sastDate(now);
 
 export function storageWords(st, now = Date.now()) {
   if (!st) return null;
@@ -158,17 +163,18 @@ export function deviceState(d, now = Date.now(), mirrorOff = false) {
     return { tone: "#0a84ff", text: `mirror OFF for this device — reading live by instruction · last heard ${ago(d.at, now)}` };
   }
   if (now - (d.at ?? 0) > STALE_MS) return { tone: "#8e8e93", text: `silent · last heard ${ago(d.at, now)}` };
-  // Before "downloading": an evicting device IS downloading, again, and that
+  if (d.guard) return { tone: "#ff453a", text: guardWords(d.guard) };
+  if (!d.switchOn) return { tone: "#8e8e93", text: "reading live — switch off" };
+  // Below a live guard and the switch (both say something that needs doing
+  // now), above "downloading": an evicting device IS downloading, again, and that
   // is exactly the lie this line exists to stop telling.
-  if (isEvicting(d)) {
+  if (isEvicting(d, now)) {
     const n = d.storage.wipesToday;
     return {
       tone: "#ff453a",
       text: `${n > 1 ? `the browser keeps deleting this device's copy — wiped ${n}× today` : "the browser deleted this device's copy once today"}${d.storage.persisted === false ? ", storage not protected" : ""}`,
     };
   }
-  if (d.guard) return { tone: "#ff453a", text: guardWords(d.guard) };
-  if (!d.switchOn) return { tone: "#8e8e93", text: "reading live — switch off" };
   if (d.downloading) return { tone: "#ff9f0a", text: "downloading its copy" };
   if (!d.complete) return { tone: "#ff9f0a", text: "copy incomplete — reading live" };
   // A save still being confirmed is not a problem with the copy: it clears in
@@ -193,7 +199,7 @@ function DeviceRow({ d, now, mirrorOff, onToggleOff, busy, quarantined = false, 
         </div>
       )}
       <div style={{ fontSize: 12.5, color: s.tone, marginTop: 3 }}>{s.text}</div>
-      {storage && <div style={{ fontSize: 12, color: isEvicting(d) ? "#ff453a" : "#8e8e93", marginTop: 3 }}>{storage}</div>}
+      {storage && <div style={{ fontSize: 12, color: isEvicting(d, now) ? "#ff453a" : "#8e8e93", marginTop: 3 }}>{storage}</div>}
       <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 3 }}>
         {(d.rows || 0).toLocaleString()} records
         {d.photos != null && ` · ${d.photos.toLocaleString()} pictures`}
@@ -255,6 +261,10 @@ export default function MirrorFleetCard({ authUser, onExit }) {
   const [flipError, setFlipError] = useState(null);
   // Which devices are flagged right now: { [deviceId]: record }.
   const [flags, setFlags] = useState({});
+  // null until the first answer; false if it could not be read. The buttons
+  // wait for a real answer: before it, a flagged device would offer
+  // "Quarantine" with no way to release it. (CodeRabbit, PR #640.)
+  const [flagsReady, setFlagsReady] = useState(null);
   const [flagBusy, setFlagBusy] = useState(null);
   const [flagError, setFlagError] = useState(null);
   const now = Date.now();
@@ -324,8 +334,8 @@ export default function MirrorFleetCard({ authUser, onExit }) {
     if (!isSuperAdmin) return undefined;
     const unsub = onValue(
       ref(getDatabase(), QUARANTINE_NODE),
-      (snap) => setFlags(snap.exists() && snap.val() && typeof snap.val() === "object" ? snap.val() : {}),
-      () => setFlags({}),
+      (snap) => { setFlags(snap.exists() && snap.val() && typeof snap.val() === "object" ? snap.val() : {}); setFlagsReady(true); },
+      () => setFlagsReady(false),
     );
     return () => unsub && unsub();
   }, [isSuperAdmin]);
@@ -373,12 +383,12 @@ export default function MirrorFleetCard({ authUser, onExit }) {
   const serving = devices.filter(reportedServing).length;
   const bytes = devices.reduce((n, d) => n + (d.bytesToday || 0), 0);
   const tripped = devices.filter((d) => d.guard);
-  const evicting = devices.filter(isEvicting);
+  const evicting = devices.filter((d) => isEvicting(d, now));
   const isFlagged = (id) => quarantineVerdict(flags?.[id]);
   const known = new Set(everyDevice.map((d) => d.deviceId));
   const flaggedUnknown = Object.keys(flags || {}).filter((id) => isFlagged(id) && !known.has(id));
   const rowProps = (d) => ({
-    quarantined: isFlagged(d.deviceId), onQuarantine: setQuarantine, qBusy: flagBusy === d.deviceId,
+    quarantined: isFlagged(d.deviceId), onQuarantine: flagsReady === true ? setQuarantine : null, qBusy: flagBusy === d.deviceId,
   });
 
   return (
@@ -439,6 +449,7 @@ export default function MirrorFleetCard({ authUser, onExit }) {
         {offError && <div style={{ marginTop: 10, color: "#ff453a", fontSize: 13 }}>Could not change that device: {offError}</div>}
       </div>
 
+      {flagsReady === false && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Cannot read the quarantine list, so the quarantine buttons are hidden.</div>}
       {flagError && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Could not change the quarantine: {flagError}</div>}
       {flaggedUnknown.length > 0 && (
         <div style={{ marginTop: 16, border: "1px solid #ffd60a", borderRadius: 10, padding: 12, background: "#1c1c1e" }}>
@@ -486,7 +497,7 @@ export default function MirrorFleetCard({ authUser, onExit }) {
           {evicting.length > 0 && (
             <div style={{ marginTop: 12, fontSize: 13, color: "#ff453a" }}>
               {evicting.length} device(s) had their copy deleted by the browser
-              today and are downloading it again: {evicting.map((d) => d.label || d.deviceId).join(", ")}.
+              today: {evicting.map((d) => `${d.label || d.deviceId}${d.downloading ? " (downloading it again now)" : ""}`).join(", ")}.
             </div>
           )}
           {tripped.length > 0 && (

@@ -30,7 +30,12 @@ let deviceIdImpl = () => THIS;
 vi.mock("../deviceId", () => ({ getDeviceId: () => deviceIdImpl() }));
 let authFired = 0;
 vi.mock("firebase/auth", () => ({
-  onAuthStateChanged: (auth, cb) => { authFired += 1; cb(auth.user); return () => {}; },
+  onAuthStateChanged: (auth, cb) => {
+    authFired += 1;
+    // `deferred`: sign-in lands later, when the test calls auth.signIn().
+    if (auth.deferred) { auth.signIn = () => cb(auth.user); cb(null); } else cb(auth.user);
+    return () => {};
+  },
 }));
 let busyNow = false;
 vi.mock("../../update/updateChecker", () => ({ isUpdateBusy: () => busyNow }));
@@ -250,6 +255,26 @@ describe("never over a job in progress", () => {
     busyNow = true;
     await act(async () => { db.write(flagPath(THIS), { on: true }); });
     await act(async () => { await vi.advanceTimersByTimeAsync(5_000); });
+    expect(showing(tree)).toBe(false);
+    busyNow = false;
+    await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
+    expect(showing(tree)).toBe(true);
+  });
+
+  it("a cached flag does not latch before sign-in and then skip the busy check", async () => {
+    writeCachedQuarantine(THIS, true);
+    busyNow = true;
+    const auth = { deferred: true, user: SIGNED_IN.user };
+    const db = fakeDb({ [flagPath(THIS)]: { on: true } });
+    const tree = await mount({ auth, subscribe: db.subscribe });
+    // Not busy yet at open; still signed out: nothing, and nothing latched.
+    busyNow = false;
+    await act(async () => { await vi.advanceTimersByTimeAsync(2_000); });
+    expect(showing(tree)).toBe(false);
+    // A cart is opened, THEN sign-in lands: the message must wait for the cart.
+    busyNow = true;
+    await act(async () => { auth.signIn(); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(3_000); });
     expect(showing(tree)).toBe(false);
     busyNow = false;
     await act(async () => { await vi.advanceTimersByTimeAsync(1_000); });
