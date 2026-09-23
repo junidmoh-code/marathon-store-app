@@ -80,27 +80,46 @@ waits for a person to set a Hub 2 target. Nobody does; nothing fires.
 run — no "keep" number exists for any Pine cell, so no Pine cell can be "below keep".
 Zero Pine cells are in the population. (Pine's refills are the manual Hub 3 flow.)
 
-## 5. The population (before the fix)
+## 5. The population, before and after
 
 `scripts/audit/short-not-requested-census.mjs` — read-only, replays the real engine
 over the scan's own reads with every list uncapped. Shop cells below keep (after the
 owner's ask-at gate), with the feeding hub or Central counting the size, and nothing
-on its way:
+on its way (no open/held request for the cell, no open/held leg at its hub, nothing
+planned this scan). Same snapshot (2026-09-23 12:07 SAST) through both engines:
 
-| Cause | Broad (nothing open now) | Strict (+ no request in 14 days) | Central holds it |
-|---|---:|---:|---:|
-| `hub_no_target` — Hub 2 empty, no Hub 2 target, Central holds units | 40 | 40 | 40 |
-| `recount` — loop guard parked after 4 Hub 2 rejections | 34 | 3 | 3 |
-| `confirmed_out` — denied at Hub 2 AND Central | 15 | 1 | 10 |
-| `upstream_blocked` — Hub 2's own Central leg rejected/parked | 9 | 6 | 9 |
-| `cooldown` — inside the 24h retry after a rejection | 7 | 0 | 1 |
-| `awaiting_upstream` — Hub 2 empty, chain said to be flowing | 3 | 1 | 3 |
-| **Total** | **108** | **51** | |
+| Cause | Before: nothing on its way | Before: + none raised in 14 d | After | After (14 d) |
+|---|---:|---:|---:|---:|
+| `hub_no_target` — Hub 2 empty, keeps none of the size, Central holds units | 40 | 40 | **0** | **0** |
+| `recount` — loop guard parked after 4 Hub 2 refusals | 34 | 3 | 31 | 3 |
+| `confirmed_out` — refused at Hub 2 AND Central | 14 | 1 | 14 | 1 |
+| `upstream_blocked` — Central refused Hub 2's own restock | 9 | 6 | 9 | 6 |
+| `cooldown` — inside the 24h retry after a refusal | 7 | 0 | 7 | 0 |
+| **Total** | **104** | **50** | **61** | **10** |
 
-By shop (broad): Marathon PE 53, Trophy 55. Pine 0 (no keep numbers; not routed).
-PE / M of the Brown 2 tracksuit is in the BROAD count only — its last request was
-raised on 17 Sep, inside the 14-day window, and rejected.
+By shop, before: Marathon PE 52 · Trophy 52 (Pine 0 — no keep numbers, not routed).
+PE / M of the Brown 2 tracksuit is in the 104 (its last request, 17 Sep, was refused)
+and is NOT in the 61: the fixed engine raises Central → Hub 2 × 2 for Marathon PE.
 
-Of the 34 `recount` cells, 31 have **no** units anywhere except Hub 2's disputed count:
-there is nothing any automation can send — a recount is the only honest answer, and
-the card says so.
+What is left is not a dead end the engine can route round:
+* **recount 31** — the size exists nowhere except Hub 2's count, which Hub 2's staff
+  have refused 4 times. Nothing can be sent; the count has to be fixed.
+* **confirmed_out 14 / upstream_blocked 9** — a person at Central has said no.
+* **cooldown 7** — refused inside the last day; the engine asks again on its own.
+
+## 6. The fix (refill-engine.cjs, "PASS-THROUGH")
+
+When a shop's demand is blocked AT its hub — the hub keeps none of the size
+(`no_target`), or its count is disputed by the loop guard (`disputed`) — and Central
+holds the size, the engine raises ONE Central → hub request **for the shop**, sized to
+the shop's own shortfall. No target is written or invented, no seating changes; an
+explicit hub 0, a Central refusal, and a leg already in flight are all respected. The
+lock carries `passThrough` so the next scan reconciles it against the shops' need, not
+the hub's own target. When it lands, the arrival lifts the streak (existing arrival
+lift) and the shop leg fires on the next scan — no human step.
+
+## 7. The standing check
+
+`exceptions.shortNotRequested`, computed by every scan from the snapshot it already
+holds, drawn as Health → **Short but not requested**. Cross-checked cell for cell
+against the census on the live snapshot: 61 = 61, identical sets.

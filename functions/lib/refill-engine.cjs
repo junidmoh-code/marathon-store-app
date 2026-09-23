@@ -1251,6 +1251,14 @@ function computeRefillPlan(snapshot) {
   const awaitingUpstream = [];  // v9: source empty but the chain is flowing — auto-creates when it lands
   const awaitingSupplier = [];  // v9: whole upstream chain empty — supplier reorder / excess return
   const recountNeeded = [];     // loop guard: rejected N× while the denier's count claims stock — recount, don't re-ask
+  // WHY a below-target cell got no request — one reason per cell, recorded at
+  // the exact line that parks it (never re-derived from note text). Read only
+  // by the "Short but not requested" list at the end of the plan.
+  const parkReason = new Map();
+  const parked = (dest, pid, sizeKey, reason) => {
+    const k = `${dest}|${pid}|${sizeKey}`;
+    if (!parkReason.has(k)) parkReason.set(k, reason);
+  };
   let managedCells = 0;   // cells with a resolvable target > 0 (Health-score denominator)
   // Counted SEPARATELY and deliberately kept OUT of managedCells: HealthView uses
   // stats.managedCells as the Health-score denominator, and footwear adds ~6,445
@@ -1614,6 +1622,7 @@ function computeRefillPlan(snapshot) {
             });
           }
           missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "denied at both Hub 2 and Central — confirmed out, reorder candidate" });
+          parked(dest, pid, sizeKey, "confirmed_out");
           continue;
         }
 
@@ -1624,6 +1633,7 @@ function computeRefillPlan(snapshot) {
         // returns to the queue the moment inventory for it appears anywhere.
         if (networkQty(pid, size) - have <= 0) {
           missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "zero stock upstream — reorder candidate" });
+          parked(dest, pid, sizeKey, "nothing_anywhere");
           continue;
         }
 
@@ -1669,6 +1679,7 @@ function computeRefillPlan(snapshot) {
                 : `rejected ${st.count}× at ${st.denier} while its count shows ${st.has} — recount, then "Ask again" in Health`,
             ...(pt ? { passThrough: pt } : {}),
           });
+          parked(dest, pid, sizeKey, "recount");
           continue;
         }
         // Denier no longer claims stock, stock arrived after the last strike,
@@ -1685,6 +1696,7 @@ function computeRefillPlan(snapshot) {
             loc: dest, pid, size, deficit, source: denier, rejectedAt: rt.lastRejectedAt,
             note: `retry ${rt.retryCount || 0} scheduled for ${rt.nextRetryAt} — last rejected at ${rt.lastRejectedAt}`,
           });
+          parked(dest, pid, sizeKey, "cooldown");
           continue;
         }
         // RE-CHECK ON REJECT: denier still counting stock → short recheck
@@ -1697,6 +1709,7 @@ function computeRefillPlan(snapshot) {
               ? `rejected at ${denier} while its count shows ${denierHas} — re-checks in ${Math.round(recheckMs / 60e3)}min`
               : `rejected at ${denier} — reopens when stock arrives at ${denier} (or after the ${Math.round(cooldownMs / 3600e3)}h cooldown)`,
           });
+          parked(dest, pid, sizeKey, "cooldown");
           continue;
         }
 
@@ -1747,6 +1760,7 @@ function computeRefillPlan(snapshot) {
           const srcCanPull = !!(srcTarget && srcTarget.target > 0);
           if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && srcCanPull && !srcParked)) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });
+            parked(dest, pid, sizeKey, "awaiting_upstream");
           } else if (upstreamOfSrc && srcTarget === null && upstreamAvail > 0 && !srcParked
               && raisePassThrough({ shop: dest, hub: src, pid, size, sizeKey, want: deficit, kind: "no_target", high: have < t.minQty }) === "raised") {
             // PASS-THROUGH (no_target): the hub keeps none of this size, so no
@@ -1757,6 +1771,8 @@ function computeRefillPlan(snapshot) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, passThrough: "no_target",
               note: `pass-through: asked ${upstreamOfSrc} to send ${src} this shop's ${deficit} (${src} keeps none of this size)` });
           } else {
+            parked(dest, pid, sizeKey, srcParked ? "upstream_blocked"
+              : (upstreamAvail > 0 && !srcCanPull) ? "hub_no_target" : "chain_empty");
             awaitingSupplier.push({
               loc: dest, pid, size, deficit, source: src,
               note: srcParked ? `upstream leg blocked — ${src} ${srcStreakFlagged ? "awaits a recount (see Recount Needed)" : srcDenierHas > 0 ? "recently rejected — re-checks shortly" : "recently rejected / confirmed out"}`
@@ -1890,6 +1906,69 @@ function computeRefillPlan(snapshot) {
   const plannedClothing = dealFairly(clothingIntents, maxIntents);
   const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
   const plannedIntents = [...plannedClothing, ...plannedFootwear];
+  // ═══ SHORT BUT NOT REQUESTED — the standing check (2026-09-23) ════════════
+  // Every SHOP cell (a destination fed through a hub — Marathon PE, Trophy)
+  // that is below its keep after the owner's ask-at gate, whose hub or Central
+  // counts the size, and for which NOTHING is on its way: no open or held
+  // request for the shop cell, no leg open or held at its hub, and nothing
+  // planned this scan (for the shop, or a pass-through leg on its behalf).
+  //
+  // WHY IT EXISTS. The owner found PE / M of the Brown 2 tracksuit empty for
+  // weeks with 38 mediums at Central, and asked how many more. The census
+  // (scripts/audit/short-not-requested-census.mjs) found 104 — 40 of them a
+  // dead end no screen called a problem. This list is that census, run by
+  // every scan from the snapshot it already holds (no extra read), so the
+  // population can never again grow in silence. It never writes anything and
+  // never creates work: each row names the reason the engine parked it —
+  // recorded at the line that parked it (`parked(...)` above) — so what is
+  // left is either a person's call (a recount, a refusal upstream) or a bug.
+  //
+  //   recount            the hub refused N× while counting stock; Central has
+  //                      none, so only a recount can settle it
+  //   confirmed_out      refused at BOTH the hub and Central inside the window
+  //   upstream_blocked   Central refused the hub's own restock recently
+  //   cooldown           inside the retry window after an ordinary refusal
+  //   awaiting_upstream  hub empty; its own restock not open yet
+  //   hub_no_target      hub keeps none and Central could not be asked
+  //                      (explicit hub 0, or Central's units already promised)
+  //   throttled          computed this scan, deferred by maxIntentsPerRun
+  //   chain_empty / nothing_anywhere / unclassified — should not appear here
+  //                      (upstream holds the size by construction); a row with
+  //                      one of these is a defect worth reading
+  const shortNotRequested = [];
+  {
+    const keysOf = (list) => {
+      const out = new Set();
+      for (const i of list) {
+        out.add(`${i.dest}|${i.productId}|${i.sizeKey}`);
+        for (const d of i.forDests || []) out.add(`${d}|${i.productId}|${i.sizeKey}`);
+      }
+      return out;
+    };
+    const plannedKeys = keysOf(plannedIntents);
+    const computedKeys = keysOf(intents);
+    for (const b of belowTarget) {
+      const hub = routes[b.loc];
+      const up = hub ? routes[hub] : null;
+      if (!up) continue;                                   // a hub, not a shop
+      const sk = encodeSizeKey(b.size);
+      const k = `${b.loc}|${b.pid}|${sk}`;
+      if (b.inbound > 0 || plannedKeys.has(k)) continue;   // on its way / raised now
+      if ((inbound.get(`${hub}|${b.pid}|${sk}`) || 0) > 0) continue;   // the hub's leg carries it
+      const hubHas = avail(cellQty(stock, hub, b.pid, b.size));
+      const upHas = avail(cellQty(stock, up, b.pid, b.size));
+      if (hubHas + upHas <= 0) continue;                   // nothing upstream to ask for
+      shortNotRequested.push({
+        loc: b.loc, pid: b.pid, size: b.size, have: avail(b.have), keep: b.target,
+        hub, hubHas, upstream: up, upHas,
+        reason: computedKeys.has(k) ? "throttled" : (parkReason.get(k) || "unclassified"),
+      });
+    }
+    shortNotRequested.sort((a, b) => a.reason.localeCompare(b.reason) || a.loc.localeCompare(b.loc)
+      || String(a.pid).localeCompare(String(b.pid)) || String(a.size).localeCompare(String(b.size)));
+  }
+  const tallyBy = (list, f) => list.reduce((m, r) => { const k = f(r); m[k] = (m[k] || 0) + 1; return m; }, {});
+
   if (clothingIntents.length > maxIntents) {
     errors.push(`circuit breaker: ${clothingIntents.length} intents computed, capped to ${maxIntents} (fair per destination, high-priority first)`);
   }
@@ -2382,6 +2461,14 @@ function computeRefillPlan(snapshot) {
       shortfalls: cap(shortfalls),
       unarmedFootwear: cap(unarmedFootwear, 900),
       unorderableFootwear: cap(unorderableFootwear, 900),
+      shortNotRequested: {
+        ...cap(shortNotRequested, 900),
+        byReason: tallyBy(shortNotRequested, (r) => r.reason),
+        byShop: tallyBy(shortNotRequested, (r) => r.loc),
+        // Which shops this check covers — every destination fed through a hub.
+        // A shop absent here (Pine today) has no route and no keep numbers.
+        shops: Object.keys(routes).filter((d) => routes[routes[d]] != null).sort(),
+      },
     },
   };
 }
