@@ -80,7 +80,10 @@ export function digestStatusLine(status, nowMs) {
     return { tone: "fail", text: `The daily email has not run since ${at} — nothing has been sent since then.` };
   }
   if (status.outcome === "error") return { tone: "fail", text: `The daily email failed on ${at}: ${status.why || "unknown error"}. Nothing was sent.` };
-  if (status.outcome !== "sent") return { tone: "ok", text: `Nothing new to email on ${at}.` };
+  if (status.outcome === "nothing_new" || status.outcome === "no_records") return { tone: "ok", text: `Nothing new to email on ${at}.` };
+  // Any other non-sent outcome (e.g. no_channel_delivered) is a failure, never
+  // "nothing new" (CodeRabbit, #644).
+  if (status.outcome !== "sent") return { tone: "fail", text: `The daily email on ${at} did NOT go out (${status.outcome || "unknown outcome"}). The full list is below.` };
   const d = status.delivery || {};
   const n = Number(status.count) || 0;
   const what = `${n} write-off${n === 1 ? "" : "s"}`;

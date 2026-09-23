@@ -140,6 +140,10 @@ describe("Written off after refusal — the daily email's status", () => {
   });
   it("nothing new, and never checked yet", () => {
     expect(digestStatusLine({ atMs: SENT, outcome: "nothing_new" }, soon).tone).toBe("ok");
+    expect(digestStatusLine({ atMs: SENT, outcome: "no_records" }, soon).tone).toBe("ok");
+    // every channel failed: the queue was kept and nothing went out — RED, never "nothing new"
+    expect(digestStatusLine({ atMs: SENT, outcome: "no_channel_delivered" }, soon)).toMatchObject({ tone: "fail" });
+    expect(digestStatusLine({ atMs: SENT, outcome: "something_new" }, soon).tone).toBe("fail");
     expect(digestStatusLine(null, soon).tone).toBe("warn");
   });
   it("the status read is ONE small node, opened only for the super admin", async () => {
