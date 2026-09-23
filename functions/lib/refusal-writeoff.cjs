@@ -80,7 +80,16 @@ function refusingLocation(rr, routes) {
   return rr?.createdFrom?.source || rr?.source || routes?.[rr?.requestingLocation] || null;
 }
 
-const isFulfilment = (rr) => rr.status === "fulfilled" || num(Number(rr.sentQty)) > 0;
+// A request the location actually SENT is a fulfilment whatever its status
+// says: an "Out of Stock" tap on a stale list can overwrite a row that was
+// already fulfilled (live: -P28C3fKttMx5YtJGvp2, cancelled with fulfilledBy
+// and a real transfer out of Central — second-brain review, PR #642).
+const isFulfilment = (rr) => rr.status === "fulfilled" || num(Number(rr.sentQty)) > 0
+  || !!(rr.fulfilledBy && typeof rr.fulfilledBy === "object");
+// Stock physically LEAVING the cell by transfer is the location finding the
+// size, whether or not a request row says so (the sale-driven queue's
+// srcful_* sends never appear in /refill_requests at all).
+const SENT_TYPES = new Set(["transfer_out", "transfer_in"]);
 // Central's "Out of Stock" on a first-batch shop leg is stamped with this
 // reason (RefillQueue.jsx) so it is not a strike at the SHOP's cell — but it is
 // still Central saying the size is not there.
@@ -152,6 +161,16 @@ function planRefusalWriteoffs(snapshot) {
       byRole: typeof rr.rejectedBy === "string" && rr.rejectedBy ? rr.rejectedBy : null,
       byLoc: loc,
     });
+  }
+
+  // Every transfer OUT of a candidate cell in the ledger window is a
+  // fulfilment event too (see SENT_TYPES).
+  for (const m of movements || []) {
+    if (!m || !SENT_TYPES.has(m.type) || !m.from || !m.productId || m.size == null) continue;
+    if (!(num(Number(m.qty)) > 0) || m.from === m.to) continue;
+    const g = groups.get(`${m.from}|${m.productId}|${stockCellKey(m.size)}`);
+    const ts = msOf(m.ts);
+    if (g && ts) g.events.push({ id: `ledger:${m.ts}`, ts, fulfilled: true, dest: m.to || null, byUid: null, byRole: null, byLoc: m.from });
   }
 
   // Ledger per cell — only cells that have a candidate run are ever looked up.
@@ -371,10 +390,16 @@ async function applyRefusalWriteoffs({ db, writeoffs, snapshot, update, nowMs, r
     if (!ok) { res.skipped.push({ id: w.id, reason: "record_write_failed" }); }
     // The cell and the ledger changed whether or not the record landed — the
     // snapshot must say so, or the engine plans from the phantom again.
+    // A repair (idempotent answer) may find the cell moved on since the
+    // write-off landed — take the live count, never the old ledger `after`.
+    let liveQty = after;
+    if (r.idempotent) {
+      try { const lc = (await db.ref(`stock/${w.loc}/${w.pid}/${w.cellKey}`).once("value")).val(); liveQty = typeof lc?.qty === "number" ? lc.qty : after; } catch { /* keep after */ }
+    }
     const stockRow = snapshot.stock?.[w.loc]?.[w.pid];
-    if (stockRow && typeof stockRow === "object" && after != null) {
+    if (stockRow && typeof stockRow === "object" && liveQty != null) {
       const c = stockRow[w.cellKey];
-      stockRow[w.cellKey] = { ...(c && typeof c === "object" ? c : {}), qty: after, mv: w.id, lastType: "adjustment" };
+      stockRow[w.cellKey] = { ...(c && typeof c === "object" ? c : {}), qty: liveQty, ...(r.idempotent ? {} : { mv: w.id, lastType: "adjustment" }) };
     }
     if (row && Array.isArray(snapshot.movements)) snapshot.movements.push(row);   // a duplicate of an in-window row is harmless: a from-only debit is no arrival
     if (ok) for (const dest of cleared) { if (streaks[dest]?.[w.pid]) delete streaks[dest][w.pid][sk]; }

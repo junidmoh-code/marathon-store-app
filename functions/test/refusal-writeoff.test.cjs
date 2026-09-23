@@ -522,3 +522,29 @@ test("a qualifying run on a deleted product is reported as deferred, never silen
   assert.equal(plan.writeoffs.length, 0);
   assert.equal(plan.deferred[0].reason, "product_deleted");
 });
+
+test("a request Central actually SENT is a fulfilment even if a stale Out of Stock tap marked it cancelled", async () => {
+  const rr = RR();
+  rr.raced = refusal("2026-09-15T10:00:00.000Z", { rejectedBy: "admin", fulfilledBy: { movementId: "rrf_raced", qty: 1 } });
+  assert.equal((await scan(world({ rr }))).plan.writeoffs.length, 0);
+});
+
+test("a transfer OUT of the cell in the ledger restarts the count, with no request row at all", async () => {
+  const movements = { s: { type: "transfer_out", productId: PID, size: "M", qty: 1, from: "hub2", to: "marathon-pe", ts: "2026-09-15T10:00:00.000Z", before: { hub2: 4 }, after: { hub2: 3 } } };
+  assert.equal((await scan(world({ movements }))).plan.writeoffs.length, 0);
+  // …but a transfer INTO the cell is an arrival, not a fulfilment: protected, run still stands.
+  const stock = STOCK(); stock.hub2[PID].M = cell(4, { updatedAt: "2026-09-15T10:00:00.000Z" });
+  const inbound = { s: { type: "transfer_in", productId: PID, size: "M", qty: 1, from: "central", to: "hub2", ts: "2026-09-15T10:00:00.000Z", before: { hub2: 3 }, after: { hub2: 4 } } };
+  const { res } = await scan(world({ movements: inbound, stock }));
+  assert.equal(res.applied[0].qty, 3);
+});
+
+test("a repair gives the engine the LIVE count, not the old ledger after", async () => {
+  const db = world();
+  const snapshot1 = { nowMs: NOW, config: CONFIG, products: PRODUCTS, stock: structuredClone(db.state.root.stock), refillRequests: RR(), movements: [], rejectStreak: STREAK(), cursors: {}, windowStartMs: WINDOW_START };
+  await applyRefusalWriteoffs({ db, writeoffs: planRefusalWriteoffs(snapshot1).writeoffs, snapshot: snapshot1, update: async () => false, nowMs: NOW });
+  // 2 arrive after the write-off landed but before the repair scan.
+  db.state.root.stock.hub2[PID].M.qty = 2;
+  const { snapshot } = await scan(db, { now: NOW + 3600e3 });
+  assert.equal(snapshot.stock.hub2[PID].M.qty, 2);
+});

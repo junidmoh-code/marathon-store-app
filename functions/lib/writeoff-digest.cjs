@@ -49,7 +49,8 @@ function sastDate(ms) {
 function lineFor(r) {
   const names = [...new Set((r.refusals || []).map(refuserOf).filter(Boolean))];
   const days = (r.days || []).map(shortDay).join(", ");
-  return `${r.productName || r.pid} · ${r.size || "one size"} · ${L(r.loc)} · ${r.qty} unit${r.qty === 1 ? "" : "s"} · refused ${days}`
+  const size = r.size && r.size !== "_" && r.size !== "Free Size" ? r.size : "one size";
+  return `${r.productName || r.pid} · ${size} · ${L(r.loc)} · ${r.qty} unit${r.qty === 1 ? "" : "s"} · refused ${days}`
     + ` (${names.length ? `by ${names.join(", ")}` : `${L(r.loc)} staff, no name recorded`})`;
 }
 

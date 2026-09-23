@@ -34,7 +34,7 @@ export function writeoffRows(value) {
       id: r.id,
       pid: r.pid,
       productName: r.productName || r.pid,
-      size: r.size || "one size",
+      size: r.size && r.size !== "_" && r.size !== "Free Size" ? r.size : "one size",
       location: locName(r.loc),
       units: Number(r.qty) || 0,
       left: typeof r.after === "number" ? r.after : null,
