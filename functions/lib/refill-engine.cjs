@@ -947,7 +947,11 @@ function computeRefillPlan(snapshot) {
             rrStatus: wasFulfilled ? "fulfilled" : "cancelled",
             // Human rejection (vs the engine's own withdrawals, which carry
             // cancelReason) — feeds the reject-streak loop guard below.
-            ...(wasFulfilled ? {} : { humanReject: true, denier: entry.source || routes[dest] }),
+            ...(wasFulfilled ? {} : { humanReject: true, denier: entry.source || routes[dest],
+              // The moment staff pressed "out of stock" (the order line holds
+              // it; the order node recycles daily). The refusal write-off
+              // counts calendar days, so the scan's close time is not enough.
+              refusedAt: order.clothingOutOfStockAt || null }),
           });
         } else if (nowMs - Date.parse(entry.createdAt || 0) > staleMs) {
           stuckRefills.push({ dest, pid, sizeKey, refillId: entry.refillId || null, ageHours: Math.round((nowMs - Date.parse(entry.createdAt || 0)) / 3600e3) });
@@ -1383,6 +1387,23 @@ function computeRefillPlan(snapshot) {
   }
   const arrivedAfter = (loc, pid, sizeKey, ts) =>
     (arrivedAt.get(`${loc}|${pid}|${sizeKey}`) || 0) > ts;
+  // ── A WRITE-OFF ANSWERS THE REFUSALS IT CONSUMED (2026-09-23) ──────────────
+  // After four refused days the scan erases the refusing location's phantom
+  // count (functions/lib/refusal-writeoff.cjs, ledger type refusal_writeoff).
+  // The "no" those refusals said is then SETTLED — the count now agrees with
+  // the shelf — so it must not also keep the requester resting out a cooldown
+  // or a 24h retry behind it: the shop may ask again at once (its hub is empty,
+  // so the ask becomes "waiting for the hub's restock", never a card for the
+  // hub's staff). writtenOffAt: (loc|pid|sizeKey) → latest write-off ts.
+  const writtenOffAt = new Map();
+  for (const m of movements) {
+    if (!m || m.type !== "refusal_writeoff" || !m.from || !m.productId || m.size == null) continue;
+    const ts = Date.parse(m.ts || 0) || 0;
+    const k = `${m.from}|${m.productId}|${encodeSizeKey(m.size)}`;
+    if (ts > (writtenOffAt.get(k) || 0)) writtenOffAt.set(k, ts);
+  }
+  const writtenOffAfter = (loc, pid, sizeKey, ts) =>
+    !!loc && (writtenOffAt.get(`${loc}|${pid}|${sizeKey}`) || 0) >= ts && ts > 0;
   // Both levels denied within the window (default 14 days) → the size is OUT
   // no matter what the cells claim: no requests to ANY destination, straight
   // to the Missing Sizes reorder list. When the window lapses, the normal
@@ -1500,7 +1521,8 @@ function computeRefillPlan(snapshot) {
     const denier = rej?.by || upstream;
     const denierHas = denier ? avail(cellQty(stock, denier, pid, size)) : 0;
     const streakFlagged = streakState(hub, pid, sizeKey, size, upstream).flagged;
-    const parked = !!(rej && nowMs - rej.ts < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rej.ts))
+    const parked = !!(rej && nowMs - rej.ts < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rej.ts)
+        && !writtenOffAfter(denier, pid, sizeKey, rej.ts))
       || streakFlagged
       || confirmedOut(pid, sizeKey);
     return { parked, streakFlagged, denierHas };
@@ -1728,7 +1750,8 @@ function computeRefillPlan(snapshot) {
         // still has inventory. It is the cooldown policy for ORDINARY
         // rejections — the streak guard above still parks pathological ones.
         const rt = retryOf(dest, pid, sizeKey);
-        if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs) {
+        if (rt && rt.nextRetryAt && Date.parse(rt.nextRetryAt) > nowMs
+            && !writtenOffAfter(rt.source || denier, pid, sizeKey, Date.parse(rt.lastRejectedAt || 0) || 0)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: denier, rejectedAt: rt.lastRejectedAt,
             note: `retry ${rt.retryCount || 0} scheduled for ${rt.nextRetryAt} — last rejected at ${rt.lastRejectedAt}`,
@@ -1739,7 +1762,8 @@ function computeRefillPlan(snapshot) {
         // RE-CHECK ON REJECT: denier still counting stock → short recheck
         // window (the mismatch resolves fast either way); denier counted empty
         // → the full cooldown, as before. Arrival lift still beats both.
-        if (nowMs - rejTs < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rejTs)) {
+        if (nowMs - rejTs < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rejTs)
+            && !writtenOffAfter(denier, pid, sizeKey, rejTs)) {
           waitingForStock.push({
             loc: dest, pid, size, deficit, source: denier, rejectedAt: new Date(rejTs).toISOString(),
             note: denierHas > 0
@@ -1959,7 +1983,9 @@ function computeRefillPlan(snapshot) {
   // — or the window lapses. Read-only; it asks nothing and blocks nothing.
   {
     const listed = new Set(recountNeeded.map((r) => `${r.loc}|${r.pid}|${encodeSizeKey(r.size)}`));
-    const countedAfter = (loc, pid, sizeKey, sinceIso) => movements.some((m) => m && m.type === "adjustment"
+    // A refusal write-off of the hub cell settles the dispute exactly as a
+    // Count or Adjust does — the phantom units are off the books.
+    const countedAfter = (loc, pid, sizeKey, sinceIso) => movements.some((m) => m && (m.type === "adjustment" || m.type === "refusal_writeoff")
       && m.productId === pid && encodeSizeKey(m.size) === sizeKey && (m.to === loc || m.from === loc)
       && String(m.ts || "") > String(sinceIso || ""));
     for (const r of Object.values(refillRequests || {})) {

@@ -14,7 +14,12 @@
 //   • write /stock_exceptions/latest (dashboard) and /stock_confidence (hourly
 //     — and now genuinely hourly: every run starts on the hour)
 //
-// SAFETY: the engine NEVER writes /stock. Claim-before-act lock so overlapping
+// SAFETY: the engine NEVER writes /stock — with ONE owner-mandated exception
+// (2026-09-23): the refusal write-off below, which erases a phantom count after
+// the location refused the size on four different days. It writes one cell per
+// write-off, only through applyMovementAdmin (ledger row type refusal_writeoff,
+// guarded by the exact count it planned from), and never touches another size
+// or location (functions/lib/refusal-writeoff.cjs). Claim-before-act lock so overlapping
 // runs can't double-create. Idempotency = one open lock per (dest,product,size)
 // in /refill_engine/open; R-numbers are daily-recycled and never used as
 // identity. Kill switch: /config/refillEngine/enabled = false.
@@ -25,6 +30,7 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
+const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
@@ -488,7 +494,7 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, writeoffCursors, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
@@ -501,11 +507,42 @@ async function runScan() {
       // the owner releases the box. computeRefillPlan counts them as INBOUND —
       // without this read every held cell double-orders (see refill-engine.cjs).
       db.ref("settings/stockHold/held").once("value").then((s) => s.val() || {}),
+      // Refusal write-off cursors: one small entry per cell ever written off
+      // (the run it consumed), so a run is never written off twice.
+      db.ref("refill_engine/refusalWriteoffCursor").once("value").then((s) => s.val() || {}),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
     const stock = Object.fromEntries(stockSnaps);
     const movements = Object.values(movementsSnap.val() || {});
+
+    // ── WRITE-OFF AFTER FOUR REFUSED DAYS (owner rule 2026-09-23) ─────────────
+    // BEFORE the engine plans: a location (Hub 1, Hub 2, Central) that refused
+    // one size on four different days has its pre-refusal paper count for that
+    // one cell erased, through applyMovementAdmin. The snapshot is patched to
+    // match, so THIS scan already plans from the empty cell — the item leaves
+    // Recount Needed and the cell asks upstream as usual. Every input is one
+    // the scan has already read; the only extra reads are a user's name per
+    // refuser and the ledger row per write-off. A failure here is logged and
+    // the scan carries on (the next run re-plans from the same records).
+    try {
+      const woSnap = { nowMs, config, stock, products, refillRequests, movements, rejectStreak, cursors: writeoffCursors, windowStartMs: Date.parse(windowStart) };
+      const wo = refusalWriteoff.planRefusalWriteoffs(woSnap);
+      if (wo.writeoffs.length) {
+        const r = await refusalWriteoff.applyRefusalWriteoffs({
+          db, writeoffs: wo.writeoffs, snapshot: woSnap, nowMs, runId,
+          update: (patch, label) => safeUpdate(db, patch, label),
+          maxPerRun: config.refusalWriteoff?.maxPerRun, deadlineMs: Date.now() + 60e3,
+        });
+        if (r.deferredForTime) counts.refusalWriteoffNextRun = r.deferredForTime;
+        counts.refusalWriteoffs = r.applied.length;
+        counts.refusalWriteoffUnits = r.units;
+        if (r.skipped.length) counts.refusalWriteoffSkipped = r.skipped.slice(0, 25);
+      }
+      if (wo.deferred.length) counts.refusalWriteoffDeferred = wo.deferred.length;
+    } catch (e) {
+      counts.errors.push(`refusal write-off: ${String(e && e.message ? e.message : e)}`);
+    }
 
     const plan = engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines,
@@ -551,7 +588,14 @@ async function runScan() {
               // re-runs with true data; a genuinely-missing node no-ops.
               if (cur === null) return null;
               if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
-              return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
+              return {
+                ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}),
+                // A hub's "out of stock" on a shop line: keep WHEN it was said
+                // and WHICH location said it (no person is recorded for this
+                // action) — the refusal write-off counts calendar days by it.
+                ...(c.humanReject && c.refusedAt ? { refusedAt: c.refusedAt } : {}),
+                ...(c.humanReject && c.denier ? { refusedByLoc: c.denier } : {}),
+              };
             });
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one

@@ -24,8 +24,9 @@ import {
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
   useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
-  useHiddenMissingProducts,
+  useHiddenMissingProducts, useRefusalWriteoffs,
 } from "./useStock";
+import { writeoffRows, recentCount } from "./refusalWriteoffsCore";
 import InTransit from "./InTransit";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
 import IntroduceExisting from "./IntroduceExisting";
@@ -330,6 +331,10 @@ export default function HealthView({ products = [], onExit }) {
   }, [allStock, byId]);
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  // WRITTEN OFF AFTER REFUSAL (2026-09-23) — Junid only. The read is never
+  // opened for anyone else; staff see nothing new on this screen.
+  const writeoffState = useRefusalWriteoffs(isSuperAdmin);
+  const writeoffList = useMemo(() => writeoffRows(writeoffState.value), [writeoffState.value]);
   const canRunSession = ["store", "warehouse", "admin"].includes(actorRole);
 
   const toggleSession = async () => {
@@ -676,6 +681,46 @@ export default function HealthView({ products = [], onExit }) {
       // that started it: PE / M of the Brown 2 tracksuit, empty for weeks with
       // 38 mediums at Central. Computed by refill-engine.cjs on every scan from
       // the snapshot it already holds; this screen only draws it.
+      // ── WRITTEN OFF AFTER REFUSAL (2026-09-23, super admin only) ─────────────
+      // Every size the scan erased because the location said "out of stock" on
+      // four different days with no fulfilment in between
+      // (functions/lib/refusal-writeoff.cjs). Read-only: what, where, how many,
+      // and who said no on which day. The same list is emailed daily.
+      case "refusalWriteoffs": {
+        if (!isSuperAdmin) return null;
+        const groups = new Map();
+        for (const r of writeoffList) { if (!groups.has(r.pid)) groups.set(r.pid, []); groups.get(r.pid).push(r); }
+        const units = writeoffList.reduce((t, r) => t + r.units, 0);
+        return (
+          <DetailShell title="Written off after refusal"
+            sub={`Sizes a location said were not there on four different days, with no fulfilment in between — their count was erased so the size flows again. ${writeoffList.length} write-off${writeoffList.length === 1 ? "" : "s"}, ${units} unit${units === 1 ? "" : "s"} (newest first).`}
+            count={writeoffList.length} onBack={back}>
+            {writeoffState.error && (
+              <div style={{ ...GLASS, padding: 16, color: RED, fontSize: 13 }}>Could not read the write-offs.</div>
+            )}
+            {writeoffState.settled && !writeoffState.error && writeoffList.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Nothing has been written off</div>
+            )}
+            {[...groups.entries()].map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid) !== pid ? nameOf(pid) : rows[0].productName}
+                badges={<Badge tone={AMBER}>WRITTEN OFF</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {rows.map((r) => (
+                    <div key={r.id} data-writeoff-row={r.id} style={{ marginBottom: 8 }}>
+                      <SizeFactChip size={r.size} value={`${r.location} · ${r.units} written off${r.left != null ? ` · ${r.left} left` : ""}`} tone={AMBER} />
+                      <div style={{ marginTop: 3 }}>
+                        {r.refusals.map((x, i) => (
+                          <span key={i}>{i ? " · " : "Refused "}{x.when} by {x.who}{x.forShop ? ` (for ${x.forShop})` : ""}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       case "shortNotRequested": {
         const snr = ex.shortNotRequested || {};
         const REASON = {
@@ -920,6 +965,12 @@ export default function HealthView({ products = [], onExit }) {
                   going to fill on its own. */}
               <StatCard label="Short but not requested" value={count("shortNotRequested")} tone={count("shortNotRequested") ? RED : GREEN}
                         sub="Shop below keep, stock upstream, nothing asked" onClick={() => setScreen("shortNotRequested")} />
+              {/* WRITTEN OFF AFTER REFUSAL (2026-09-23) — super admin only. */}
+              {isSuperAdmin && (
+                <StatCard label="Written off after refusal"
+                          value={!writeoffState.settled ? "…" : writeoffState.error ? "!" : recentCount(writeoffList, serverNowMs())}
+                          tone={writeoffState.error ? RED : AMBER} sub="Refused on 4 different days · last 30 days" onClick={() => setScreen("refusalWriteoffs")} />
+              )}
               <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}
                         sub="Store refills · in Warehouse → Clothing" onClick={() => setScreen("autorefills")} />
               <StatCard label="Waiting for Central" value={centralQueue} tone={centralQueue ? BLUE_L : GREEN}
