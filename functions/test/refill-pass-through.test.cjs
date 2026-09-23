@@ -306,3 +306,22 @@ test("the Engine Policy preview model parks a shop that got no share of a capped
   assert.equal(legs["marathon-pe"].parkedNoSource + legs.trophy.parkedNoSource, 1, "the other is parked, as the engine parks it");
   assert.deepEqual([m.totalRequests, m.totalUnits], [eng.intents.length, eng.intents.reduce((n, i) => n + i.qty, 0)]);
 });
+
+test("a disputed leg that carried TWO shops keeps a recount row for EACH (second-brain review)", () => {
+  const stock = STOCK();
+  stock["marathon-pe"][PID].M = cell(2);
+  const rr = { rrPT: { productId: PID, size: "M", qty: 4, requestingLocation: "hub2", status: "fulfilled",
+    createdAt: iso(30), resolvedAt: iso(20), forDests: ["marathon-pe", "trophy"],
+    createdFrom: { engine: true, source: "central", passThrough: "disputed", forDests: ["marathon-pe", "trophy"] } } };
+  const rows = computeRefillPlan(live({ stock, rejectStreak: {}, refillRequests: rr })).exceptions.recountNeeded.items.filter((x) => x.countDisputed);
+  assert.deepEqual(rows.map((r) => r.loc).sort(), ["marathon-pe", "trophy"]);
+});
+
+test("shadow mode previews a pass-through as one, naming its shops", () => {
+  const { _shadowSyncUpdates } = require("../refill-scan.cjs");
+  const upd = _shadowSyncUpdates({ shadowNode: { hub2: { [PID]: { M: { qty: 2, source: "central", priority: "high", passThrough: "disputed", forDests: ["marathon-pe"] } } } },
+    products: PRODUCTS, orders: {}, refillRequests: {}, runId: "r", startedAt: iso(0) });
+  const row = upd[`refill_requests/SHDWrr-${PID}-M`];
+  assert.deepEqual(row.forDests, ["marathon-pe"]);
+  assert.equal(row.createdFrom.passThrough, "disputed");
+});

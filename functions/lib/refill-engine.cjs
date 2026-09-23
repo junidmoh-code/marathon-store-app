@@ -697,9 +697,11 @@ function computeRefillPlan(snapshot) {
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
-        bump(inbound, `${dest}|${pid}|${sizeKey}`, num(entry.qty) || 1);
+        // Floored at 1: a corrupt negative qty must never subtract (it would
+        // inflate what freeAt reports as free at the source).
+        bump(inbound, `${dest}|${pid}|${sizeKey}`, Math.max(num(entry.qty) || 1, 1));
         const s = entry.source || routes[dest];
-        if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, num(entry.qty) || 1);
+        if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, Math.max(num(entry.qty) || 1, 1));
       }
     }
   }
@@ -1800,6 +1802,7 @@ function computeRefillPlan(snapshot) {
             // through it. `srcTarget === null` is deliberate: an explicit hub
             // row of 0 (or the policy's dead-size 0) resolves an OBJECT, and a
             // human's "not at this hub" is respected, not routed around.
+            parked(dest, pid, sizeKey, "awaiting_upstream");   // normally masked by the emitted intent; kept so no path can read "unclassified"
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, passThrough: "no_target",
               note: `pass-through: asked ${upstreamOfSrc} to send ${src} this shop's ${deficit} (${src} keeps none of this size)` });
           } else {
@@ -1964,14 +1967,17 @@ function computeRefillPlan(snapshot) {
       if (countedAfter(hub, r.productId, sizeKey, r.createdAt)) continue;
       const shops = Array.isArray(r.forDests) && r.forDests.length ? r.forDests
         : (Array.isArray(r.createdFrom?.forDests) ? r.createdFrom.forDests : []);
-      const shop = shops[0] || hub;
-      if (listed.has(`${shop}|${r.productId}|${sizeKey}`)) continue;   // the live streak row already says it
-      listed.add(`${shop}|${r.productId}|${sizeKey}`);
-      recountNeeded.push({
-        loc: shop, pid: r.productId, size: r.size, deficit: 0, source: hub,
-        rejections: null, showing: avail(cellQty(stock, hub, r.productId, r.size)), countDisputed: true,
-        note: `${hub}'s count was disputed — Central sent ${num(r.qty) || 1} round it for ${shops.join(", ") || hub}; recount ${hub} (a Count or Adjust clears this)`,
-      });
+      // One row PER SHOP the leg carried — every one of them had its streak
+      // lifted by the same arrival (second-brain review, PR #641).
+      for (const shop of shops.length ? shops : [hub]) {
+        if (listed.has(`${shop}|${r.productId}|${sizeKey}`)) continue;   // the live streak row already says it
+        listed.add(`${shop}|${r.productId}|${sizeKey}`);
+        recountNeeded.push({
+          loc: shop, pid: r.productId, size: r.size, deficit: 0, source: hub,
+          rejections: null, showing: avail(cellQty(stock, hub, r.productId, r.size)), countDisputed: true,
+          note: `${hub}'s count was disputed — Central sent ${num(r.qty) || 1} round it for ${shops.join(", ") || hub}; recount ${hub} (a Count or Adjust clears this)`,
+        });
+      }
     }
   }
 

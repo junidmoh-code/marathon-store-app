@@ -386,7 +386,9 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
                 // ("5_5"→"5.5") so queue availability lookups and the UI match.
                 productId: pid, size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), qty: s.qty,
                 requestingLocation: dest, status: "open", shadow: true,
-                createdFrom: { engine: true, shadow: true, runId, source: s.source },
+                // A pass-through preview says who it is for, like the live row.
+                ...(s.passThrough ? { forDests: s.forDests || [] } : {}),
+                createdFrom: { engine: true, shadow: true, runId, source: s.source, ...(s.passThrough ? { passThrough: s.passThrough, forDests: s.forDests || [] } : {}) },
                 createdAt: existing?.createdAt || startedAt,
               };
             } else {
@@ -702,6 +704,7 @@ async function runScan() {
       if (mode === "shadow") {
         ((shadowNode[intent.dest] ||= {})[intent.productId] ||= {})[intent.sizeKey] = {
           qty: intent.qty, source: intent.source, priority: intent.priority, runId, computedAt: startedAt,
+          ...(intent.passThrough ? { passThrough: intent.passThrough, forDests: intent.forDests || [] } : {}),
         };
         counts.shadow++;
       } else if (mode === "live") {
