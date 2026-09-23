@@ -38,6 +38,7 @@ import { resolveScan, realSizesOf, forgivingBarcodeCandidates } from "./scanReso
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import FilterPicker from "./FilterPicker";
 import { serverNowIso } from "../../utils/serverTime";
+import { setUpdateBusy } from "../../update/updateChecker";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
 // mis-pathed read. (Mirrors the POS barcodeLookup reader.)
@@ -97,6 +98,13 @@ export default function Transfer({ products, registry, actorRole }) {
   const [basket, setBasket] = useState({});              // { pid__size: { productId, productName, size, qty } }
   const [refillId, setRefillId] = useState(null);
   const [to, setTo] = useState("");                      // destination
+  // A basket with lines in it is a job in hand: the auto-updater must not
+  // reload over it and a device quarantine must not cover it
+  // (src/device/quarantine.js).
+  useEffect(() => {
+    setUpdateBusy("transfer-basket", Object.keys(basket).length > 0);
+    return () => setUpdateBusy("transfer-basket", false);
+  }, [basket]);
   const [picking, setPicking] = useState(false);         // destination sheet open
   const [sizePrompt, setSizePrompt] = useState(null);    // { product } awaiting a size after a scan
   const [busy, setBusy] = useState(false);

@@ -21,11 +21,17 @@
 // is the thing being deleted — so it is kept in localStorage, which the
 // browser does not evict with it (the evicting handset kept one device id
 // through every wipe). The count then goes to /mirror_devices with the rest
-// of the device's report, so it survives even a wipe of localStorage itself.
+// of the device's report. If localStorage IS wiped too, the device mints a new
+// id and starts a new row at zero; the old row keeps its count and goes silent.
 
 import { sastDate } from "./deviceHealth";
 
 export const STORAGE_LEDGER_KEY = "marathon-store.offlineMirror.storageLedger";
+
+// Two tabs on one phone, both opening right after the same eviction, would
+// each find an empty database and each count it. A second "wipe" inside this
+// window is the same wipe seen twice. (Sonnet architect review, PR #640.)
+export const SAME_WIPE_MS = 2 * 60 * 1000;
 
 function readLedger() {
   try {
@@ -56,7 +62,8 @@ function writeLedger(l) {
 export function noteMirrorOpened({ hadSchema, now = Date.now }) {
   const l = readLedger();
   const at = now();
-  if (!hadSchema && l.hadCopy) {
+  const seenJustNow = l.lastWipeAt != null && at - l.lastWipeAt >= 0 && at - l.lastWipeAt < SAME_WIPE_MS;
+  if (!hadSchema && l.hadCopy && !seenJustNow) {
     const today = sastDate(at);
     l.wipes += 1;
     l.lastWipeAt = at;

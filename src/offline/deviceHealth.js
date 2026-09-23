@@ -157,6 +157,9 @@ export function deviceRecord({
       : null,
     // Is the browser keeping this device's copy, or throwing it away?
     // (storageHealth.js.) An evicting device used to look merely busy.
+    // The spec's name for the one field the screen leads with; the detail is
+    // under `storage`.
+    storagePersisted: typeof storage?.persisted === "boolean" ? storage.persisted : null,
     storage: storage ? {
       persisted: typeof storage.persisted === "boolean" ? storage.persisted : null,
       wipes: storage.wipes ?? 0,

@@ -301,6 +301,8 @@ describe("quarantine: one device, one tap, its own path only", () => {
   it("an evicting device is named in red, not shown as merely downloading", async () => {
     expect(isEvicting(fleet[EVICTING])).toBe(true);
     expect(isEvicting(fleet[HEALTHY])).toBe(false);
+    expect(deviceState({ ...fleet[EVICTING], storage: { wipesToday: 1, persisted: true } }, T).text)
+      .toBe("the browser deleted this device's copy once today");
     const st = deviceState(fleet[EVICTING], T);
     expect(st.tone).toBe("#ff453a");
     expect(st.text).toBe("the browser keeps deleting this device's copy — wiped 7× today, storage not protected");

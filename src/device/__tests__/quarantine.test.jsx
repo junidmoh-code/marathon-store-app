@@ -65,11 +65,19 @@ function fakeDb(initial = {}) {
 const SIGNED_IN = { user: { uid: "vWfHqbLEPvRMItXhH0B9NvYW0LG3", isAnonymous: false } };
 const flagPath = (id) => `mirror_switch/quarantine/${id}`;
 
+// Loaded here so the component's own dynamic import resolves at once; a cold
+// import under a busy multi-file run took longer than any fixed tick count.
+await import("firebase/auth");
+
+// Every tree is unmounted after its test: a live instance left behind keeps
+// its interval and subscription running into the next test's fake timers.
+const mounted = [];
 async function mount(props) {
   let tree;
   await act(async () => { tree = TestRenderer.create(<DeviceQuarantine {...props} />); });
-  // The auth listener is behind a dynamic import.
-  for (let i = 0; i < 5; i++) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
+  mounted.push(tree);
+  // The auth listener is behind a dynamic import: flush until it has run.
+  for (let i = 0; i < 20; i++) await act(async () => { await vi.advanceTimersByTimeAsync(0); });
   return tree;
 }
 const text = (tree) => JSON.stringify(tree.toJSON() ?? "");
@@ -82,7 +90,10 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(new Date("2026-09-23T10:00:00Z"));
 });
-afterEach(() => { vi.useRealTimers(); });
+afterEach(() => {
+  for (const t of mounted.splice(0)) { try { act(() => t.unmount()); } catch { /* already gone */ } }
+  vi.useRealTimers();
+});
 
 describe("what the flag means", () => {
   it("only something written on purpose is ON", () => {

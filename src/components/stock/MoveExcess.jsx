@@ -13,7 +13,7 @@
 // one ledger batch id per confirm). Live stock retires cards instantly;
 // re-opening recomputes, so double-moves are structurally impossible.
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { useStockCells, useStockTargets, useRefillRequests, useEngineConfig, useStockHeld } from "./useStock";
@@ -25,6 +25,7 @@ import { openPickList } from "../../print/pickList";
 import { serverNowMs } from "../../utils/serverTime";
 import { isDeactivated } from "../../utils/deactivation";
 import { sizeRank } from "./hubSizeRank";
+import { setUpdateBusy } from "../../update/updateChecker";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 const SOURCES = ["hub2", "marathon-pe", "trophy"];
@@ -78,6 +79,12 @@ export default function MoveExcess({ products = [], actorRole }) {
   const [busy, setBusy] = useState(false);   // card key being transferred | false
   const [lastResult, setLastResult] = useState(null);
   const [movedTotal, setMovedTotal] = useState(0);
+  // Typed quantities or a move going through are a job in hand — see
+  // Transfer.jsx's transfer-basket for why this is registered.
+  useEffect(() => {
+    setUpdateBusy("move-excess", Object.keys(edits).length > 0 || busy !== false);
+    return () => setUpdateBusy("move-excess", false);
+  }, [edits, busy]);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
 

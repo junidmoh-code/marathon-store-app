@@ -164,7 +164,7 @@ export function deviceState(d, now = Date.now(), mirrorOff = false) {
     const n = d.storage.wipesToday;
     return {
       tone: "#ff453a",
-      text: `the browser keeps deleting this device's copy — wiped ${n}× today${d.storage.persisted === false ? ", storage not protected" : ""}`,
+      text: `${n > 1 ? `the browser keeps deleting this device's copy — wiped ${n}× today` : "the browser deleted this device's copy once today"}${d.storage.persisted === false ? ", storage not protected" : ""}`,
     };
   }
   if (d.guard) return { tone: "#ff453a", text: guardWords(d.guard) };

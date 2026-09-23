@@ -29,6 +29,7 @@ import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
 import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
+import { setUpdateBusy } from "../../update/updateChecker";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -74,6 +75,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const [edits, setEdits] = useState({});     // `${pid}|${size}` → qty
   const [busyPid, setBusyPid] = useState(null);
   const [done, setDone] = useState({});       // pid → {moved, dest, failed[]}
+  // Typed quantities or a move going through are a job in hand — see
+  // Transfer.jsx's transfer-basket for why this is registered.
+  useEffect(() => {
+    setUpdateBusy("network-transfer", Object.keys(edits).length > 0 || busyPid != null);
+    return () => setUpdateBusy("network-transfer", false);
+  }, [edits, busyPid]);
 
   // ── HIDE — a view filter, never an action on stock ─────────────────────────
   // Writes ONE entry to /settings/missingProductsHidden/{pid} (who, when,

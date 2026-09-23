@@ -73,13 +73,20 @@ describe("the ledger", () => {
     expect(noteMirrorOpened({ hadSchema: true, now: () => T0 }).wipes).toBe(0);
   });
   test("a copy that vanished IS, counted per SAST day", () => {
+    const M = 10 * 60_000;
     noteMirrorOpened({ hadSchema: false, now: () => T0 });
-    noteMirrorOpened({ hadSchema: false, now: () => T0 + 1 });
-    noteMirrorOpened({ hadSchema: false, now: () => T0 + 2 });
-    expect(wipeLedger({ now: () => T0 + 3 })).toEqual({ wipes: 2, wipesToday: 2, lastWipeAt: T0 + 2 });
+    noteMirrorOpened({ hadSchema: false, now: () => T0 + M });
+    noteMirrorOpened({ hadSchema: false, now: () => T0 + 2 * M });
+    expect(wipeLedger({ now: () => T0 + 3 * M })).toEqual({ wipes: 2, wipesToday: 2, lastWipeAt: T0 + 2 * M });
     expect(wipeLedger({ now: () => T0 + DAY })).toMatchObject({ wipes: 2, wipesToday: 0 });
     noteMirrorOpened({ hadSchema: false, now: () => T0 + DAY });
     expect(wipeLedger({ now: () => T0 + DAY })).toMatchObject({ wipes: 3, wipesToday: 1 });
+  });
+  test("two tabs opening after the SAME eviction count it once", () => {
+    noteMirrorOpened({ hadSchema: false, now: () => T0 });
+    noteMirrorOpened({ hadSchema: false, now: () => T0 + 60_000 });       // tab 1
+    noteMirrorOpened({ hadSchema: false, now: () => T0 + 65_000 });       // tab 2
+    expect(wipeLedger({ now: () => T0 + 70_000 }).wipes).toBe(1);
   });
   test("a corrupt ledger is a fresh one, never a throw", () => {
     store.set(STORAGE_LEDGER_KEY, "{nope");
@@ -101,6 +108,7 @@ describe("through the real start", () => {
 
     await rt.reportHealth();
     const written = w.calls.writePath.find((c) => c.path.startsWith("mirror_devices/"));
+    expect(written?.value?.storagePersisted).toBeNull();          // no navigator in node
     expect(written?.value?.storage).toMatchObject({ wipes: 1, wipesToday: 1, lastWipeAt: T0 + 60_000 });
     rt.stop();
   });

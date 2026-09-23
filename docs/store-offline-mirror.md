@@ -684,3 +684,25 @@ Each of these happened on the POS mirror. Each has a named guard here.
 | `pe` vs `marathon-pe` | one explicit map, strict, returns null rather than guessing |
 | a price change never reached a mirrored till | price is a field like any other, it arrives on the `changes` feed, and the end-to-end test asserts a price edit lands in the local store |
 | a user saw a stale number right after their own action | every local read is `store ⊕ outbox` |
+
+## Device quarantine and storage health (PR #640)
+
+**Quarantine one handset.** Mirror Fleet → a device row → *Quarantine this
+device*. That device (and only it) shows a full-screen "Show this screen to
+Junid" with its device id, on every signed-in open, until *Release*. The flag
+is `/mirror_switch/quarantine/{deviceId}` — the same id as
+`/mirror_devices/{deviceId}` — and needs **no rules change**: `/mirror_switch`
+is already readable by every signed-in non-anonymous user and writable only by
+the owner. **Never write the whole `/mirror_switch` node** (e.g. setting it to
+`{enabled: true}`): that would erase every quarantine flag. Write
+`/mirror_switch/enabled` alone.
+
+It waits for any registered job (cart, counts, transfers, pending mirror
+writes) and 15 s without a touch; it is never drawn over a signed-out session
+(which could not hear the release); a cached flag is trusted for 3 days
+offline; every doubt means no message. Code: `src/device/quarantine.js`.
+
+**Storage health.** Each device reports `storagePersisted` and
+`storage: { persisted, wipes, wipesToday, lastWipeAt, usageMB, quotaMB }`. A
+wipe is the mirror database opening without its schema stamp on a device whose
+localStorage ledger says it held one. Code: `src/offline/storageHealth.js`.
