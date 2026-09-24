@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 
 let TREE = {};
 let NOW = Date.parse("2026-09-24T10:00:00.000Z");
+let AUTO_TICK = 0;                           // ms the clock advances on every read of it
 const tick = () => new Promise((r) => setTimeout(r, 0));
 
 const segs = (p) => String(p || "").split("/").filter(Boolean);
@@ -86,8 +87,8 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "junid", email: "junid@marathon.internal" } } }));
 vi.mock("../../utils/serverTime", () => ({
-  serverNowMs: () => NOW,
-  serverNowIso: () => new Date(NOW).toISOString(),
+  serverNowMs: () => { NOW += AUTO_TICK; return NOW; },
+  serverNowIso: () => { NOW += AUTO_TICK; return new Date(NOW).toISOString(); },
   saTodayKey: () => "2026-09-24",
 }));
 vi.mock("../../offline/pendingWrites", () => ({ notePendingUpdate: () => {} }));
@@ -110,6 +111,7 @@ const openRows = (store = "trophy") => openRowsFor(read("settings/displayRows"),
 beforeEach(() => {
   TREE = { orderCounter: { day: "2026-09-24", counter: 41 } };
   NOW = Date.parse("2026-09-24T10:00:00.000Z");
+  AUTO_TICK = 0;
   locks.clear();
 });
 
@@ -243,7 +245,10 @@ describe("Send registers the display — replaces, never adds", () => {
     expect(open).toHaveLength(1);
     expect(open[0].size).toBe("9");
     expect(read(`settings/displaySlots/trophy/${PID}/size`)).toBe("9");
-    expect(Object.values(read(`settings/displayRows/trophy/${PID}`)).filter((r) => r.closedReason === "replaced")).toHaveLength(2);
+    // Closed BY THE SEND'S OWN ATOMIC UPDATE (closedVia "send"), not tidied up
+    // afterwards by the settle — the one write moves the whole wall.
+    const replaced = Object.values(read(`settings/displayRows/trophy/${PID}`)).filter((r) => r.closedReason === "replaced");
+    expect(replaced.map((r) => r.closedVia)).toEqual(["send", "send"]);
   });
 
   it("a send planned from a STALE snapshot still replaces what is really there", async () => {
@@ -252,13 +257,18 @@ describe("Send registers the display — replaces, never adds", () => {
     expect(openRows().map((r) => r.size)).toEqual(["7"]);
   });
 
-  it("two sends racing each other converge on ONE open row", async () => {
+  it("two sends racing each other converge on ONE open row — the later send's", async () => {
     seedRow("r1", "6", "2026-08-01T10:00:00.000Z");
+    AUTO_TICK = 1000;                        // each send stamps its own instant
     const a = sendDisplayRow({ rows: {}, store: "trophy", productId: PID, size: "8", bookedHub: "hub1", orderId: "060" });
-    NOW += 1000;
     const b = sendDisplayRow({ rows: {}, store: "trophy", productId: PID, size: "9", bookedHub: "hub1", orderId: "061" });
     await Promise.all([a, b]);
-    expect(openRows()).toHaveLength(1);
+    AUTO_TICK = 0;
+    // Both planned from the same read, so both closed r1 and each opened its
+    // own row: two open rows existed for a moment. The settle leaves one.
+    const all = Object.values(read(`settings/displayRows/trophy/${PID}`));
+    expect(all.filter((r) => r.openedVia === "send" && r.requestOrderId)).toHaveLength(2);
+    expect(openRows().map((r) => r.size)).toEqual(["9"]);
   });
 
   it("the full loop: not on the wall → send → one display, the request resolved", async () => {
