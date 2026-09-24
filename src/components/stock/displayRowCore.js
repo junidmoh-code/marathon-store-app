@@ -177,6 +177,22 @@ export function openRowsFor(rows, store, productId) {
     .sort((a, b) => String(a.openedAt || "").localeCompare(String(b.openedAt || "")) || a.rowId.localeCompare(b.rowId));
 }
 
+/**
+ * ONE DISPLAY PER SHOE PER WALL — who stays when more than one row is open.
+ *
+ * The send and the wall walk plan from a fresh read and write in one update,
+ * but RTDB has no cross-path compare-and-set, so two senders racing each other
+ * can both land a row. Every writer therefore re-reads after its write and
+ * closes the losers. The winner is the LAST of openRowsFor's stable order
+ * (newest openedAt, then rowId), so two racing writers pick the SAME survivor
+ * and between them close everything else — never each other's row and never
+ * both. → { keep: row|null, close: [row] }
+ */
+export function rowsToSettle(rows, store, productId) {
+  const open = openRowsFor(rows, store, productId);
+  return { keep: open.length ? open[open.length - 1] : null, close: open.slice(0, -1) };
+}
+
 /** Every open row, keyed `${store}::${productId}`. */
 export function openRowIndex(rows) {
   const m = new Map();
