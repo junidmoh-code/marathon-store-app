@@ -259,3 +259,22 @@ test("write: an armed footwear policy cannot drop one of the eight; disarming it
   const res = await call(db, { action: "setGroup", groupKey: FOOTWEAR_GROUP_KEY, group: { ...g, armed: false } });
   assert.equal(res.ok, true);
 });
+
+// ── 7. THE CARD'S CENSUS CARRIES THE DRIFT ───────────────────────────────────
+test("census: clean footwear has no drift; an own entry badges that category AND the Footwear entry", async () => {
+  invalidateCensusCache();
+  const clean = await call(dbWorld(), { action: "census", refresh: true });
+  assert.deepEqual(clean.footwearDrift, []);
+  const fw = clean.groupEntries.find((g) => g.groupKey === FOOTWEAR_GROUP_KEY);
+  assert.equal(fw.footwearPolicy, true);
+  assert.deepEqual(fw.footwearDrift, []);
+  assert.equal(clean.categories.find((c) => c.key === "boots").footwearMember, true);
+  assert.equal(clean.categories.find((c) => c.key === "perfumes").footwearMember, false);
+
+  invalidateCensusCache();
+  const drifted = await call(dbWorld({ own: { boots: { perSize: true, hub1: W.standingLeg() } } }), { action: "census", refresh: true });
+  assert.deepEqual(drifted.footwearDrift.map((d) => d.kind), ["own_entry"]);
+  assert.equal(drifted.categories.find((c) => c.key === "boots").footwearDrift.length, 1);
+  assert.equal(drifted.categories.find((c) => c.key === "sneakers").footwearDrift.length, 0);
+  assert.equal(drifted.groupEntries.find((g) => g.groupKey === FOOTWEAR_GROUP_KEY).footwearDrift.length, 1);
+});
