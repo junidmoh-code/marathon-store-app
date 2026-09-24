@@ -295,12 +295,15 @@ describe("the admission gate — the complement of the footwear group (2026-09-1
     expect(computeMissingProducts({ allStock: { central: { s: { 8: cell(3) } } }, products: [shoe] })).toEqual([]);
     expect(computeMissingFootwear({ allStock: { central: { s: { 8: cell(3) } } }, products: [shoe] }).map((c) => c.pid)).toEqual(["s"]);
   });
-  it("the group's key list is the engine's own (refill-engine.cjs FOOTWEAR_GROUP_KEYS), so the two Health tabs cannot drift", () => {
+  it("the group's key list is the engine's own (policy-resolve.cjs FOOTWEAR_CATEGORY_KEYS, which refill-engine.cjs reads), so the two Health tabs cannot drift", async () => {
+    // The engine's list moved into the leaf resolver on 2026-09-24 (one
+    // footwear policy) — pinned to the EXPORT now, not to a source regex, and
+    // the engine is checked to still take its set from there.
+    const { createRequire } = await import("node:module");
+    const { FOOTWEAR_CATEGORY_KEYS: engineKeys } = createRequire(import.meta.url)("../../../functions/lib/policy-resolve.cjs");
+    expect([...FOOTWEAR_GROUP_KEYS].sort()).toEqual([...engineKeys].sort());
     const engine = readFileSync(new URL("../../../functions/lib/refill-engine.cjs", import.meta.url), "utf8");
-    const m = /const FOOTWEAR_GROUP_KEYS = new Set\(\[([^\]]+)\]\)/.exec(engine);
-    expect(m).toBeTruthy();
-    const engineKeys = m[1].split(",").map((s) => s.trim().replace(/^"|"$/g, "")).filter(Boolean).sort();
-    expect([...FOOTWEAR_GROUP_KEYS].sort()).toEqual(engineKeys);
+    expect(engine).toContain("const FOOTWEAR_GROUP_KEYS = new Set(FOOTWEAR_CATEGORY_KEYS);");
   });
 });
 

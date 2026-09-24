@@ -29,7 +29,7 @@ import React, { useCallback, useMemo, useState } from "react";
 import { saveProductTargets } from "./seatingStore";
 import {
   overrideDraft, clearDraft, applyToAll, validateOverrideDraft, overridePlan,
-  inheritedAt, whyLabel, numOrNull,
+  inheritedAt, nowLabel, numOrNull,
 } from "./targetOverride";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, bGray, bGhost, input } from "./ui";
 
@@ -224,7 +224,7 @@ export default function ProductTargetEditor({ seat, ctx, label, onDone, onFail, 
                 style={{ ...input, textAlign: "center", padding: "6px 4px", minWidth: 0, width: "100%", fontSize: ".85rem",
                   border: errors[k] ? "1px solid rgba(248,113,113,.6)" : input.border }} />
               <div style={{ fontSize: ".72rem", color: GRAY, textAlign: "center" }}>
-                {numOrNull(row.target) !== null ? "own row" : whyLabel(inh?.source)}
+                {numOrNull(row.target) !== null ? "own row" : nowLabel(ctx, loc, pid, k, inh, row.onHand)}
               </div>
               {errors[k] && <div style={{ gridColumn: "1 / -1", color: RED, fontSize: ".72rem" }}>{errors[k]}</div>}
             </React.Fragment>

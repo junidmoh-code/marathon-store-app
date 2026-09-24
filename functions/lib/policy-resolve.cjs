@@ -150,4 +150,134 @@ function locationPolicyFor(config, categoryKey, dest) {
     sizes: null, carriedOnly: carriedOnlyOf(loc), source: eff.source, groupKey: eff.groupKey };
 }
 
-module.exports = { locationEntryMode, carriedOnlyOf, armedGroupForCategory, effectivePolicyFor, locationPolicyFor };
+// ═══ ONE FOOTWEAR POLICY (2026-09-24) ════════════════════════════════════════
+// Every footwear category at Hub 1 and Hub 2 is governed by ONE policy: the
+// `footwear-all` group. Junid's trigger was Timberland Premium 6-Inch Wheat
+// reading "Not carried" on sizes 12 and 13 at Hub 1: the 3 Sep extension of the
+// run to 12/13 had been typed into three separate places — the (disarmed, so
+// inert) group, the Sneakers Hub 2 leg, and nowhere else — while Sneakers Hub 1
+// and Slides each kept their own older copy. Three copies drift; one cannot.
+//
+// WHY THE GROUP AND NOT THE "FOOTWEAR RULE". The footwear rule
+// (footwearRunByLocation, refill-engine.cjs resolveTarget) is behind its own
+// kill switch (footwearTargets, absent = OFF — and it is absent live), keys on
+// the legacy `category === "Footwear"` field rather than the categoryKey, holds
+// one number per size with a derived minQty and ONE ask-at per location, and is
+// written by hand in the console: no card, no history, no revert. The group is
+// the level that already speaks per size with all three numbers, resolves by
+// categoryKey, carries the carriedOnly seating gate, and is edited through
+// setCategoryPolicy with a history entry and one-tap revert.
+//
+// THE PRECEDENCE IS UNCHANGED: explicit row > own category entry > armed group.
+// A footwear category that grows an own entry again would shadow the group —
+// so the write path refuses one (category-policy-write.cjs), and anything that
+// gets past it (a console edit, a revert) is reported by footwearPolicyDrift
+// below: on the Engine Policy card and in the scan's Health output, every 15
+// minutes, with no one having to look.
+const FOOTWEAR_GROUP_KEY = "footwear-all";
+// The eight footwear categories. Soccer Boots and Designer Shoes are IN
+// (Junid's 28 Aug reversal, confirmed 24 Sep). The cross-app contract in
+// src/utils/footwearLine.js is pinned to this list by test.
+const FOOTWEAR_CATEGORY_KEYS = Object.freeze([
+  "boots", "designer-shoes", "kids-shoes", "loafers", "running-shoes", "slides", "sneakers", "soccer-boots",
+]);
+// The two locations the footwear policy speaks for. Central is the source and
+// carries no target; no shop is armed through it.
+const FOOTWEAR_POLICY_HUBS = Object.freeze(["hub1", "hub2"]);
+
+// Canonical form of one location leg, for "are Hub 1 and Hub 2 the same".
+// Key order in RTDB is not stable across reads, so compare a sorted form.
+function legSignature(leg) {
+  if (!isPlainObject(leg)) return "invalid";
+  const out = { carriedOnly: carriedOnlyOf(leg), mode: locationEntryMode(leg) };
+  if (out.mode === "per-size") {
+    out.sizes = Object.keys(leg.sizes).sort().map((k) => {
+      const r = leg.sizes[k] || {};
+      return [k, r.target ?? null, r.minQty ?? null, typeof r.reorderPoint === "number" ? r.reorderPoint : null];
+    });
+  } else if (out.mode === "uniform") {
+    out.uniform = [leg.target ?? null, leg.minQty ?? null, typeof leg.reorderPoint === "number" ? leg.reorderPoint : null];
+  }
+  return JSON.stringify(out);
+}
+
+// ── footwearPolicyDrift — IS FOOTWEAR STILL ONE POLICY? ──────────────────────
+// Structural checks only. It does NOT compare the numbers against Junid's
+// standing run: the numbers are his to change on the card, and a change he
+// makes there is policy, not drift. Drift is any state in which the eight
+// categories could resolve DIFFERENT numbers, or the one policy is not the one
+// in force:
+//
+//   group_missing      no footwear-all group at all
+//   group_disarmed     the group exists but armed !== true (not in the order)
+//   hub_not_armed      the group's Hub 1 or Hub 2 leg is absent or unusable
+//   hub_legs_differ    Hub 1 and Hub 2 legs are not identical
+//   extra_location     the group arms somewhere other than Hub 1 / Hub 2
+//   member_missing     a footwear category is not in the group
+//   other_group        another ARMED group also claims a footwear category
+//   own_entry          a footwear category carries its own categoryPolicy
+//                      entry — it shadows the group completely (own beats
+//                      group), which is exactly how the drift happened
+//   footwear_rule_on   the old footwear rule is switched on at a hub, where it
+//                      would arm sizes the run deliberately leaves unarmed
+//
+// Returns an array, empty when footwear is one policy. Every item is
+// { kind, key?, loc?, detail } — plain strings, safe to store and render.
+function footwearPolicyDrift(config) {
+  const issues = [];
+  const groups = isPlainObject(config?.policyGroups) ? config.policyGroups : {};
+  const g = groups[FOOTWEAR_GROUP_KEY];
+  if (!isPlainObject(g)) {
+    issues.push({ kind: "group_missing", detail: `no ${FOOTWEAR_GROUP_KEY} group — footwear has no single policy` });
+  } else {
+    if (g.armed !== true) issues.push({ kind: "group_disarmed", detail: "the footwear policy is not armed, so none of its numbers are in force" });
+    const pol = isPlainObject(g.policy) ? g.policy : {};
+    // "Usable" is asked of the SAME resolver the engine runs, against a config
+    // holding nothing but this group (armed) and one member — so a leg the
+    // engine would ignore (wrong shape, no positive row, a size map outside
+    // perSize) is reported here rather than approved by a looser copy.
+    const probe = { policyGroups: { [FOOTWEAR_GROUP_KEY]: { ...g, armed: true, memberCategoryKeys: ["_probe"] } } };
+    for (const loc of FOOTWEAR_POLICY_HUBS) {
+      if (!locationPolicyFor(probe, "_probe", loc)) {
+        issues.push({ kind: "hub_not_armed", loc, detail: `the footwear policy has no usable ${loc} numbers` });
+      }
+    }
+    if (legSignature(pol[FOOTWEAR_POLICY_HUBS[0]]) !== legSignature(pol[FOOTWEAR_POLICY_HUBS[1]])) {
+      issues.push({ kind: "hub_legs_differ", detail: "Hub 1 and Hub 2 do not have the same footwear numbers" });
+    }
+    for (const loc of Object.keys(pol)) {
+      if (loc === "perSize" || FOOTWEAR_POLICY_HUBS.includes(loc)) continue;
+      if (locationEntryMode(pol[loc]) === "invalid") continue;
+      issues.push({ kind: "extra_location", loc, detail: `the footwear policy also arms ${loc}` });
+    }
+    const members = Array.isArray(g.memberCategoryKeys) ? g.memberCategoryKeys : [];
+    for (const key of FOOTWEAR_CATEGORY_KEYS) {
+      if (!members.includes(key)) issues.push({ kind: "member_missing", key, detail: `${key} is not in the footwear policy` });
+    }
+  }
+  for (const key of FOOTWEAR_CATEGORY_KEYS) {
+    const own = config?.categoryPolicy?.[key];
+    if (own !== undefined && own !== null) {
+      issues.push({ kind: "own_entry", key, detail: `${key} has its own numbers, which override the footwear policy` });
+    }
+    for (const gk of Object.keys(groups).sort()) {
+      if (gk === FOOTWEAR_GROUP_KEY) continue;
+      const o = groups[gk];
+      if (isPlainObject(o) && o.armed === true && Array.isArray(o.memberCategoryKeys) && o.memberCategoryKeys.includes(key)) {
+        issues.push({ kind: "other_group", key, detail: `${key} is also claimed by the armed "${gk}" group` });
+      }
+    }
+  }
+  const fw = config?.footwearTargets;
+  for (const loc of FOOTWEAR_POLICY_HUBS) {
+    if (fw === true || (isPlainObject(fw) && fw[loc] === true)) {
+      issues.push({ kind: "footwear_rule_on", loc, detail: `the old footwear rule is switched on at ${loc}` });
+    }
+  }
+  return issues;
+}
+
+module.exports = {
+  locationEntryMode, carriedOnlyOf, armedGroupForCategory, effectivePolicyFor, locationPolicyFor,
+  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_POLICY_HUBS, footwearPolicyDrift,
+};

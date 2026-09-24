@@ -59,7 +59,8 @@ const {
   MAX_TARGET, MAX_REORDER_POINT,
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
-const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf } = require("./policy-resolve.cjs");
+const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
+  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-engine.cjs");
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
@@ -208,6 +209,47 @@ async function readMapPaged(db, path, pageSize = 500) {
 }
 
 const val = (db, path) => db.ref(path).once("value").then((s) => s.val());
+
+// ── ONE FOOTWEAR POLICY — THE WRITE-SIDE HALF (2026-09-24) ───────────────────
+// While the footwear-all group is ARMED, it is the one place footwear numbers
+// live. Two writes would quietly make a second copy, and both are refused:
+//
+//   • an own entry on a footwear category (own beats group, so the category
+//     would leave the one policy and keep whatever numbers were typed — the
+//     exact shape of the 24 Sep drift), and
+//   • a footwear-all write that drops one of the eight categories.
+//
+// Deleting an own entry (policy: null) is always allowed — that is how a stray
+// copy is removed. With the group DISARMED nothing here refuses: the group is
+// then not in the engine's order and an own entry is the only way to arm a
+// category, which is the emergency brake working as designed.
+//
+// A REVERT IS EXEMPT. The history's one-tap revert must always be able to put
+// back what a change replaced; the scan's drift flag then says so out loud.
+// `revertOf` must name a history entry for the same key whose `before` is
+// exactly what is being written — a caller cannot wave the refusal away with an
+// arbitrary id.
+async function isGenuineRevert(db, d, { kind, key, value }) {
+  const id = d.revertOf;
+  if (typeof id !== "string" || !id || !/^[A-Za-z0-9_-]+$/.test(id)) return false;
+  const h = await val(db, `${HISTORY_PATH}/${id}`);
+  if (!isPlainObject(h)) return false;
+  const sameKey = (e) => (kind === "group"
+    ? e?.kind === "group" && e.groupKey === key
+    : e?.kind !== "group" && e?.kind !== "targets" && e?.kind !== "rows" && e?.categoryKey === key);
+  if (!sameKey(h) || h.status !== "applied") return false;
+  // ONLY THE NEWEST CHANGE TO THIS KEY can be reverted past the rule. An older
+  // entry whose `after` happens to equal today's live value (a deletion from
+  // an earlier arm/disarm cycle) would otherwise resurrect numbers from weeks
+  // ago as a "revert". (Sonnet architect review, PR #646.) The recent history
+  // is the same bounded read the card's list comes from, so the only entries
+  // it can offer a Revert on are the ones checked here.
+  const recent = (await readHistory(db, 50)).filter((e) => sameKey(e) && e.status === "applied");
+  if (!recent.length || recent[0].id !== id) return false;
+  return sameValue(h.before ?? null, value ?? null);
+}
+const footwearGroupArmed = (cfg) => isPlainObject(cfg?.policyGroups?.[FOOTWEAR_GROUP_KEY])
+  && cfg.policyGroups[FOOTWEAR_GROUP_KEY].armed === true;
 
 // ── NORMALISE THE INCOMING EDIT ──────────────────────────────────────────────
 // The card sends whole numbers or blanks. Blank "Ask at" means ABSENT, which is
@@ -658,6 +700,12 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     for (const m of (Array.isArray(g?.memberCategoryKeys) ? g.memberCategoryKeys : [])) memberOf[m] = memberOf[m] || gk;
   }
 
+  // ── ONE FOOTWEAR POLICY: THE DRIFT THE CARD SHOWS ─────────────────────────
+  // The same structural check the scan writes to Health, computed from the
+  // same config, attached to the entries it concerns — so a footwear category
+  // with its own numbers, or a footwear policy that has stopped being one,
+  // carries a badge on the card without anybody having to go looking.
+  const footwearDrift = footwearPolicyDrift(config);
   const categories = [];
   for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
@@ -748,6 +796,9 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       // overstated the figure by exactly 188.
       resolvesMapCells: m ? m.legs.reduce((n, l) => n + (l.cells - l.overrides - l.legacyRows), 0) : 0,
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
+      // A footwear category's numbers live on the footwear policy only.
+      footwearMember: FOOTWEAR_CATEGORY_KEYS.includes(key),
+      footwearDrift: FOOTWEAR_CATEGORY_KEYS.includes(key) ? footwearDrift.filter((i) => i.key === key) : [],
     });
   }
   // ── A GROUP AS ONE ENTRY ──────────────────────────────────────────────────
@@ -835,9 +886,11 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       legacyRowCells: sum("legacyRowCells"),
       resolvesMapCells: sum("resolvesMapCells"),
       resolvesMapProducts: sum("resolvesMapProducts"),
+      footwearPolicy: gk === FOOTWEAR_GROUP_KEY,
+      footwearDrift: gk === FOOTWEAR_GROUP_KEY ? footwearDrift : [],
     });
   }
-  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs };
+  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift };
 }
 
 // The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the
@@ -1357,6 +1410,18 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       allowedSizes: groupAllowedSizes,
     });
     if (err) throw httpsError("invalid-argument", err);
+    // ── THE FOOTWEAR POLICY KEEPS ALL EIGHT ─────────────────────────────────
+    // An ARMED footwear-all that names fewer than the eight footwear
+    // categories would leave the missing one on its own numbers or on none.
+    // Disarming or deleting the group stays possible — that is the off switch.
+    if (groupKey === FOOTWEAR_GROUP_KEY && isPlainObject(after) && after.armed === true) {
+      const missing = FOOTWEAR_CATEGORY_KEYS.filter((k) => !(after.memberCategoryKeys || []).includes(k));
+      if (missing.length && !(await isGenuineRevert(db, d, { kind: "group", key: groupKey, value: d.group }))) {
+        throw httpsError("failed-precondition",
+          `The footwear policy covers all eight footwear categories — ${missing.join(", ")} cannot be left out while it is armed.`,
+          { footwearOnePolicy: true, missing });
+      }
+    }
     for (const m of (after?.memberCategoryKeys || [])) {
       if (REFUSED_CATEGORY_KEYS.has(m)) {
         throw httpsError("invalid-argument", `"${m}" carries no policy by owner decision and cannot be put in a group`);
@@ -1456,6 +1521,15 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   // validation, the size-run derivation, the diff, the preview, the history
   // entry, the post-verify — then works on the GATED policy, so what is modelled
   // is what is written and the audit trail records the leg as it landed.
+  // ── A FOOTWEAR CATEGORY HAS NO NUMBERS OF ITS OWN ─────────────────────────
+  // See the ONE FOOTWEAR POLICY note above isGenuineRevert. Refused on a dry
+  // run too: previewing a copy that cannot be saved is offering a refusal.
+  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey) && d.policy !== null && footwearGroupArmed(cfg)
+    && !(await isGenuineRevert(db, d, { kind: "category", key: categoryKey, value: d.policy }))) {
+    throw httpsError("failed-precondition",
+      `Footwear is set once, on the Footwear policy — "${categoryKey}" cannot have numbers of its own while that policy is armed. Open Footwear to change it.`,
+      { footwearOnePolicy: true, groupKey: FOOTWEAR_GROUP_KEY });
+  }
   const before = cfg.categoryPolicy?.[categoryKey] ?? null;
   const gate = gateNewLegsToSeated(before, normalizePolicy(d.policy));
   const policyAfter = gate.policy;
