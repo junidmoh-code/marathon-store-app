@@ -143,6 +143,50 @@ describe("the two answers the walk needs", () => {
     expect(raiseDisplayRequest.mock.calls[0][0].store).toBe("marathon-pe");
   });
 
+  it("NOT ON THE WALL hands the store's hub stock over, so the SOURCE hub is chosen by stock", () => {
+    const t = render();
+    act(() => { btn(t, "Not on the wall").props.onClick(); });
+    const arg = raiseDisplayRequest.mock.calls[0][0];
+    expect(arg.hubData.hub1.ready).toBe(true);
+    expect(arg.hubData.hub1.cells).toBe(CELLS1);
+    expect(arg.product.id).toBe("p1");
+  });
+
+  it("after the tap the row leaves the to-do list and reads 'Display requested'", async () => {
+    raiseDisplayRequest.mockImplementationOnce(async () => ({
+      ok: true, orderId: "042", hub: "hub1", order: { createdAt: "2026-09-24T09:42:00.000Z" } }));
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    const s = text(t);
+    expect(s).toMatch(/Display requested · 11:42 · Hub 1/);
+    expect(btn(t, "Not on the wall")).toBeUndefined();         // out of the to-do list
+  });
+
+  it("an open request already in /orders keeps the shoe out of the to-do list", () => {
+    const orders = [{ id: "017", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true,
+      status: "collected", displayRefillScheduledAt: "2026-09-24T09:00:00.000Z", displayRefillHub: "hub1",
+      displayRefillStatus: null, createdAt: "2026-09-24T08:50:00.000Z" }];
+    const t = render({ orders });
+    expect(btn(t, "Not on the wall")).toBeUndefined();
+    expect(text(t)).toMatch(/Display requested/);
+  });
+
+  it("a sent request shows its size and time", () => {
+    const orders = [{ id: "017", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true,
+      status: "display_request", displayRefillScheduledAt: "2026-09-24T09:00:00.000Z", displayRefillHub: "hub2",
+      displayRefillStatus: "refilled", displayRefillSize: "8", displayRefilledAt: new Date().toISOString(),
+      createdAt: "2026-09-24T08:50:00.000Z" }];
+    expect(text(render({ orders }))).toMatch(/Sent · size 8 · \d\d:\d\d · Hub 2 — on the wall/);
+  });
+
+  it("with no stock anywhere the row says so and nothing more can be asked", async () => {
+    raiseDisplayRequest.mockImplementationOnce(async () => ({ ok: false, noStock: true, message: "None in any warehouse" }));
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    expect(text(t)).toMatch(/none in any warehouse/);
+    expect(btn(t, "Not on the wall").props.disabled).toBe(true);
+  });
+
   it("a store-scoped device cannot request for the OTHER wall", () => {
     const t = render({ ordersScope: "trophy" });
     act(() => { btn(t, "Marathon PE").props.onClick(); });
