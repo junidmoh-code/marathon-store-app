@@ -34,7 +34,7 @@ import { database, auth } from "../../firebase";
 import { serverNowIso } from "../../utils/serverTime";
 import {
   DISPLAY_ROWS_ROOT, storeRowsPath, sendPlan, openRowPlan, closeRowPlan, openRowsFor, rowSegment, rowSizeText,
-  rowPath, rowIsOpen, CLOSE_REASON_TEXT, evId,
+  rowPath, rowIsOpen, CLOSE_REASON_TEXT, evId, rowsToSettle,
 } from "./displayRowCore";
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot } from "./displaySlots";
@@ -119,6 +119,34 @@ async function rowsNowOrRefuse(store, productId) {
   }
 }
 
+/** The same keyed, refuse-on-failure read, for a caller outside this module
+ *  that must decide from the ledger AS IT IS NOW — the wall walk's "Not on the
+ *  wall", which closes whatever the record says before it raises a request. */
+export const readRowsNow = rowsNowOrRefuse;
+
+/**
+ * AFTER A REPLACING WRITE: leave exactly ONE open row for this shoe at this
+ * wall. See rowsToSettle for why every racing writer converges on the same
+ * survivor. Each loser is closed `replaced` through closeDisplayRow, which is a
+ * transaction per row and re-points the slot at the survivor.
+ * → { ok, keptRowId, closed: [rowId], warning? }
+ */
+async function settleToOne(store, productId) {
+  const fresh = await rowsNowOrRefuse(store, productId);
+  if (!fresh.ok) return { ok: false, warning: `The display record is saved, but it could not be re-checked for a second open record (${fresh.message}).` };
+  const { keep, close } = rowsToSettle(fresh.rows, store, productId);
+  const closed = [];
+  for (const row of close) {
+    // eslint-disable-next-line no-await-in-loop
+    const res = await closeDisplayRow({ rows: fresh.rows, row, reason: "replaced", via: "settle",
+                                        detail: { reason: "replaced", replacedBy: keep?.rowId || null } });
+    if (!res.ok) return { ok: false, keptRowId: keep?.rowId || null, closed,
+      warning: `A second open display record for this shoe could not be closed (${res.message}).` };
+    closed.push(row.rowId);
+  }
+  return { ok: true, keptRowId: keep?.rowId || null, closed };
+}
+
 /**
  * CLAUSE 2 — the operator tapped Send and PICKED A SIZE.
  *
@@ -154,16 +182,18 @@ export async function sendDisplayRow({ rows, store, productId, productName, size
     });
     if (!plan.ok) return { ok: false, message: plan.message };
     await apply(plan.updates);
+    // Replace, never add — even against a sender racing this one.
+    const settled = await settleToOne(store, productId);
 
     // The mirror, fenced, best-effort — and REPORTED when it does not land.
-    let warning = null;
+    let warning = settled.warning || null;
     const res = await setDisplaySlot({
       store, productId, productName: productName || "", size: String(size),
       bookedHub: bookedHub || null, source: "display_refill", orderId, at: when,
     });
     if (res && res.ok === false) warning = `The display record is saved, but the count's display slot could not be updated (${res.message || "write failed"}) — retry once.`;
     else if (res && res.superseded) warning = "The display record is saved, but a newer slot write won the race — check the wall record.";
-    return { ok: true, rowId: plan.rowId, closed: plan.closed, warning };
+    return { ok: true, rowId: plan.rowId, closed: [...plan.closed, ...(settled.closed || [])], warning };
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }
@@ -193,13 +223,15 @@ export async function registerDisplayRow({ rows, store, productId, productName, 
     });
     if (!plan.ok) return { ok: false, message: plan.message };
     await apply(plan.updates);
-    let warning = null;
+    // keepOpen is the one path that deliberately leaves several rows open.
+    const settled = keepOpen ? { closed: [] } : await settleToOne(store, productId);
+    let warning = settled.warning || null;
     const res = await setDisplaySlot({
       store, productId, productName: productName || "", size: String(size),
       bookedHub: bookedHub || null, source: "registration", at: when,
     });
     if (res && res.ok === false) warning = `The display record is saved, but the count's display slot could not be updated (${res.message || "write failed"}) — retry once.`;
-    return { ok: true, rowId: plan.rowId, closed: plan.closed, warning };
+    return { ok: true, rowId: plan.rowId, closed: [...plan.closed, ...(settled.closed || [])], warning };
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }

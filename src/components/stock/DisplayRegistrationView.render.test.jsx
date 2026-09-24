@@ -143,10 +143,114 @@ describe("the two answers the walk needs", () => {
     expect(raiseDisplayRequest.mock.calls[0][0].store).toBe("marathon-pe");
   });
 
+  it("NOT ON THE WALL hands the store's hub stock over, so the SOURCE hub is chosen by stock", () => {
+    const t = render();
+    act(() => { btn(t, "Not on the wall").props.onClick(); });
+    const arg = raiseDisplayRequest.mock.calls[0][0];
+    expect(arg.hubData.hub1.ready).toBe(true);
+    expect(arg.hubData.hub1.cells).toBe(CELLS1);
+    expect(arg.product.id).toBe("p1");
+  });
+
+  it("after the tap the row leaves the to-do list and reads 'Display requested'", async () => {
+    raiseDisplayRequest.mockImplementationOnce(async () => ({
+      ok: true, orderId: "042", hub: "hub1", order: { createdAt: "2026-09-24T09:42:00.000Z" } }));
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    const s = text(t);
+    expect(s).toMatch(/Display requested · 11:42 · Hub 1/);
+    expect(btn(t, "Not on the wall")).toBeUndefined();         // out of the to-do list
+  });
+
+  it("an open request already in /orders keeps the shoe out of the to-do list", () => {
+    const orders = [{ id: "017", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true,
+      status: "collected", displayRefillScheduledAt: "2026-09-24T09:00:00.000Z", displayRefillHub: "hub1",
+      displayRefillStatus: null, createdAt: "2026-09-24T08:50:00.000Z" }];
+    const t = render({ orders });
+    expect(btn(t, "Not on the wall")).toBeUndefined();
+    expect(text(t)).toMatch(/Display requested/);
+  });
+
+  it("a sent request shows its size and time", () => {
+    const orders = [{ id: "017", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true,
+      status: "display_request", displayRefillScheduledAt: "2026-09-24T09:00:00.000Z", displayRefillHub: "hub2",
+      displayRefillStatus: "refilled", displayRefillSize: "8", displayRefilledAt: new Date().toISOString(),
+      createdAt: "2026-09-24T08:50:00.000Z" }];
+    expect(text(render({ orders }))).toMatch(/Sent · size 8 · \d\d:\d\d · Hub 2 — on the wall/);
+  });
+
+  it("two open requests for one wall are BOTH named, not hidden by the newer", () => {
+    const base = { productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true, displayRefillHub: "hub1",
+      displayRefillStatus: null, displayRefillScheduledAt: "2026-09-24T09:00:00.000Z" };
+    const orders = [{ ...base, id: "017", status: "collected", createdAt: "2026-09-24T08:50:00.000Z" },
+                    { ...base, id: "042", status: "display_request", createdAt: "2026-09-24T08:51:00.000Z" }];
+    expect(text(render({ orders }))).toMatch(/2 open requests for this wall \(#017, #042\)/);
+  });
+
+  it("a tapped request that the stream then shows as Stock Depleted returns to the to-do list", async () => {
+    raiseDisplayRequest.mockImplementationOnce(async () => ({
+      ok: true, orderId: "042", hub: "hub1", order: { createdAt: "2026-09-24T09:42:00.000Z" } }));
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    expect(btn(t, "Not on the wall")).toBeUndefined();
+    const orders = [{ id: "042", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true, status: "display_request",
+      displayRefillScheduledAt: "2026-09-24T09:42:00.000Z", displayRefillHub: "hub1", displayRefillStatus: "stockDepleted",
+      displayRefillStockDepletedAt: new Date().toISOString(), createdAt: "2026-09-24T09:42:00.000Z" }];
+    act(() => { t.update(<View products={PRODUCTS} onExit={() => {}} orders={orders} />); });
+    expect(btn(t, "Not on the wall")).toBeTruthy();
+  });
+
+  it("with no stock anywhere the row says so — until stock comes back", async () => {
+    // Both of Hub 1's pairs are promised to ready customer orders, so no hub
+    // can give one out, though the shelf still books 2.
+    const ready = (id) => ({ id, productId: "p1", destShop: "marathon-pe", hub: "hub1", status: "ready", size: "6",
+      readyAt: new Date().toISOString(), createdAt: new Date().toISOString() });
+    const orders = [ready("050"), ready("051")];
+    raiseDisplayRequest.mockImplementationOnce(async () => ({ ok: false, noStock: true, message: "None in any warehouse" }));
+    const t = render({ orders });
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    expect(text(t)).toMatch(/none in any warehouse — nothing to send/);
+    expect(btn(t, "Not on the wall").props.disabled).toBe(true);
+    // A promise is collected — a pair is free again, and the row comes back.
+    act(() => { t.update(<View products={PRODUCTS} onExit={() => {}} orders={[ready("050")]} />); });
+    expect(text(t)).not.toMatch(/none in any warehouse — nothing to send/);
+    expect(text(t)).toMatch(/in the warehouse · no display record here/);
+    expect(btn(t, "Not on the wall").props.disabled).toBe(false);
+  });
+
+  it("a fresh tap is not replaced by an OLDER resolved request for the same shoe", async () => {
+    const old = [{ id: "017", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true, status: "display_request",
+      displayRefillScheduledAt: "2026-09-24T07:00:00.000Z", displayRefillHub: "hub1", displayRefillStatus: "stockDepleted",
+      displayRefillStockDepletedAt: new Date().toISOString(), createdAt: "2026-09-24T07:00:00.000Z" }];
+    raiseDisplayRequest.mockImplementationOnce(async () => ({
+      ok: true, orderId: "042", hub: "hub1", order: { createdAt: "2026-09-24T09:42:00.000Z" } }));
+    const t = render({ orders: old });
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    expect(btn(t, "Not on the wall")).toBeUndefined();         // still requested
+    expect(text(t)).toMatch(/Display requested · 11:42/);
+    expect(text(t)).not.toMatch(/Stock depleted/);             // one row per shoe
+  });
+
   it("a store-scoped device cannot request for the OTHER wall", () => {
     const t = render({ ordersScope: "trophy" });
     act(() => { btn(t, "Marathon PE").props.onClick(); });
     expect(btn(t, "Not on the wall").props.disabled).toBe(true);
+  });
+});
+
+describe("more than one record for one shoe (the 2026-09-24 census found one)", () => {
+  it("is listed WITHOUT a search, with one close per record", () => {
+    ROWS = { "marathon-pe": { p1: { r1: row({ size: "9", sizeKey: "9" }),
+                                    r2: row({ rowId: "r2", size: "9", sizeKey: "9", openedAt: "2026-09-02T00:00:00.000Z" }) } } };
+    const t = render();
+    expect(text(t)).toMatch(/1 shoe has more than one display record on Marathon PE/);
+    const closes = t.root.findAll((n) => n.type === "button").filter((b) => instText(b).includes("Not there"));
+    expect(closes).toHaveLength(2);
+  });
+
+  it("shows nothing at all when every shoe has at most one record", () => {
+    ROWS = { "marathon-pe": { p1: { r1: row() } } };
+    expect(text(render())).not.toMatch(/more than one display record/);
   });
 });
 

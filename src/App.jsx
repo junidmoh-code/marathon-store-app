@@ -3229,9 +3229,10 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // (owner spec 2026-08-08), not a separate class of Source work.
   const restockToday = useRestockLogRaw(today);
   const sourceBadge = (restockToday || []).length;
-  // assistant badge = today's placed orders
+  // assistant badge = today's placed orders. A wall-walk display request
+  // (displayRequestCore.js) is a warehouse task, not a placed order.
   const assistantBadge = orders ? orders.filter(o =>
-    o.createdAt && o.createdAt.slice(0,10) === today
+    o.createdAt && o.createdAt.slice(0,10) === today && o.wallWalk !== true
   ).length : 0;
 
   // Display Checks card — behind the master flag + the module's own access gate
@@ -13944,6 +13945,13 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                     <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1.1rem", color:BLUE_L, lineHeight:1 }}>#{order.id}</span>
                     <span style={{ background:"rgba(245,158,11,.15)", color:"#F59E0B", border:"1px solid rgba(245,158,11,.35)", borderRadius:999, padding:"1px 8px", fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:".5px" }}>Partner</span>
+                    {/* A wall-walk "Not on the wall" request has no customer behind
+                        it — say whose wall it is for, since that is the whole job. */}
+                    {order.wallWalk === true && (
+                      <span style={{ background:"rgba(74,127,255,.12)", color:"#4A7FFF", border:"1px solid rgba(74,127,255,.3)", borderRadius:999, padding:"1px 8px", fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:".5px" }}>
+                        Wall · {labelFor(displaySlotStoreFor(order) || order.destShop)}
+                      </span>
+                    )}
                     <span style={{ marginLeft:"auto", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.55)", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, padding:"1px 8px", fontSize:10, fontWeight:600 }}>
                       waiting {fmtWaiting(order.displayRefillScheduledAt)}
                     </span>
@@ -18641,7 +18649,9 @@ function InsightsView({ onExit }) {
   // so the audit reflects the same slice the user is viewing.
   const audit = useMemo(() => {
     const today = getSADateString();
-    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
+    // "display_request" = a wall-walk display refill task (displayRequestCore.js):
+    // a known state with no customer half, not a corrupt status.
+    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow","display_request"]);
     const onTodayCreated = filteredOrders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
 
     // Status distributions
@@ -18689,7 +18699,7 @@ function InsightsView({ onExit }) {
     const incoming  = onTodayCreated.filter(o => o.status === STATUS.INCOMING).length;
     const sumByStatus = ready + collected + oos + tomorrow + incoming;
 
-    const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
+    const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING, "display_request"]);
     const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
 
     const returnsToday = filteredReturnsLog.filter(r => (r.timestamp||"").slice(0,10) === today).length;
@@ -19972,7 +19982,9 @@ function AppInner() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const today = getSADateString();
-    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
+    // "display_request" = a wall-walk display refill task (displayRequestCore.js):
+    // a known state with no customer half, not a corrupt status.
+    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow","display_request"]);
 
     const onTodayCreated  = orders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
     const onTodayTouched  = orders.filter(o => {
@@ -20067,7 +20079,7 @@ function AppInner() {
       console.log("══════════════════════════════════════════════════════════════════");
 
       // Show every unaccounted-for order
-      const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
+      const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING, "display_request"]);
       const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
       if (unaccounted.length) {
         console.log("UNACCOUNTED-FOR ORDERS:", unaccounted.length);

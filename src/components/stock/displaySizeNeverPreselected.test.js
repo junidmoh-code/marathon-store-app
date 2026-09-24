@@ -40,7 +40,9 @@ const PICKER = code(read("./displayRowUi.jsx"));
 // folded into the Display Registration view (owner, 2026-09-08), so the surface
 // that can put a size on the record is this one file plus the shared picker.
 const VIEW = code(read("./DisplayRegistrationView.jsx"));
-const REQUEST = code(read("./displayRequestStore.js"));
+// The order literal moved to displayRequestCore.js on 2026-09-24 (wallWalkOrder);
+// the store only writes it. Both are read so the pin follows the literal.
+const REQUEST = code(read("./displayRequestStore.js")) + "\n" + code(read("./displayRequestCore.js"));
 
 describe("the warehouse size sheet opens with NOTHING chosen", () => {
   it("the sheet is opened with picked: null, always", () => {
