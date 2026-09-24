@@ -551,7 +551,9 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // A footwear category's numbers live on the footwear policy. The server
     // refuses an own entry while that policy is armed; saying so here, before
     // a round trip, is the honest version of the same answer.
-    if (open && !open.isGroup && open.footwearMember && census?.groups?.["footwear-all"]?.armed === true) {
+    // A null `proposed` (every location dropped) DELETES a stray own entry —
+    // always allowed, it is how a copy is removed. (CodeRabbit, PR #646.)
+    if (open && !open.isGroup && open.footwearMember && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
       flash("bad", `Footwear is set once, on ${parent?.label || open.groupLabel || "Footwear"} — change the numbers there.`);
       return;
     }
