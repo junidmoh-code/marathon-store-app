@@ -56,6 +56,35 @@ describe("the automatic display refill, byte for byte", () => {
     expect(sha(TIMING)).toBe("7b55ebceac1f19b947a6ade7dbd9669cd787573c8cf186f191da274ac50e5361");
   });
 
+  it("SEND — the refill resolution (setDisplayRefillStatus) is exactly main@95a5284b's", () => {
+    const i = APP.indexOf("  const setDisplayRefillStatus = async");
+    const S = APP.slice(i, APP.indexOf("  const undoDisplayRefill = async", i));
+    expect(i).toBeGreaterThan(0);
+    expect(sha(S)).toBe("31fe08f2d7cee10310efc142fd4e1d7a31f6c5509d66943e9a646348789367ad");
+  });
+
+  it("CHECKOUT — the partner order's creation literal is exactly main@95a5284b's", () => {
+    const i = APP.indexOf("          requestDisplayPartner: item.requestDisplayPartner || false,");
+    const C = APP.slice(i, APP.indexOf("          displayRefilledBy:           null,", i));
+    expect(i).toBeGreaterThan(0);
+    expect(sha(C)).toBe("0089549ef1e3ca01347277bd41ff9da6e35e28d66fde59c191aabbe1cadf1390");
+  });
+
+  it("CARD — the due-card render is main@95a5284b's plus ONE block, gated on wallWalk", () => {
+    const i = APP.indexOf("      {/* Due cards — grouped by day");
+    let R = APP.slice(i, APP.indexOf("      {/* Completed cards", i));
+    const a = R.indexOf("                    {/* A wall-walk");
+    expect(a).toBeGreaterThan(0);
+    const end = "                    )}\n";
+    const b = R.indexOf(end, a);
+    const added = R.slice(a, b + end.length);
+    // The addition renders ONLY for a wall-walk order, which the auto path never mints.
+    expect(added).toMatch(/\{order\.wallWalk === true && \(/);
+    expect((added.match(/&& \(/g) || []).length).toBe(1);
+    R = R.slice(0, a) + R.slice(b + end.length);
+    expect(sha(R)).toBe("602b6e7ad0ae8c9fd7c3a4e3780f70be0b12086bd720c784d8dbce1a689be431");
+  });
+
   it("an auto-scheduled order still reads as an OPEN request until the picker resolves it", () => {
     const auto = { requestDisplayPartner: true, status: "collected", destShop: "trophy", productId: "p1",
                    displayRefillScheduledAt: "2026-09-24T09:00:00.000Z", displayRefillStatus: null };

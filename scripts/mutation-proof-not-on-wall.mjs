@@ -63,6 +63,10 @@ const MUTATIONS = [
   // ── the 15-minute path is pinned ──
   { id: "M-AUTO-DELAY", guard: "the 15-minute delay is byte-pinned", file: APP,
     from: "  const DISPLAY_REFILL_DELAY_MS = 15 * 60 * 1000;", to: "  const DISPLAY_REFILL_DELAY_MS = 14 * 60 * 1000;", tests: PIN },
+  { id: "M-AUTO-SEND", guard: "the refill send (setDisplayRefillStatus) is byte-pinned", file: APP,
+    from: "      displayRefilledBy:   selectedHub,\n      updatedAt:           now,\n    };", to: "      displayRefilledBy:   selectedHub,\n      updatedAt:           now,\n      x: 1,\n    };", tests: PIN },
+  { id: "M-AUTO-CARD", guard: "the card's only change is gated on wallWalk", file: APP,
+    from: "                    {order.wallWalk === true && (", to: "                    {true && (", tests: PIN },
   { id: "M-AUTO-TRIGGER", guard: "the READY trigger is byte-pinned", file: APP,
     from: "          patch.displayRefillScheduledAt     = now;", to: "          patch.displayRefillScheduledAt     = now ;", tests: PIN },
 ];
@@ -77,24 +81,9 @@ function runVitest(files) {
     return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 140)})`;
   }
 }
-function runNodeTests() { return "PASS"; }
-function _unusedNodeTests(files) {
-  try {
-    execFileSync("node", ["--test", "--test-reporter=tap", ...files], { stdio: "pipe", cwd: "functions", maxBuffer: 64 * 1024 * 1024 });
-    return "PASS";
-  } catch (err) {
-    const out = `${err.stdout || ""}${err.stderr || ""}`;
-    if (/SyntaxError|ERR_MODULE_NOT_FOUND|Cannot find module/.test(out)) {
-      return `ERROR(${(out.trim().split("\n").find((l) => /Error/.test(l)) || "load crash").slice(0, 140)})`;
-    }
-    if (/^# fail [1-9]/m.test(out)) return "FAIL";
-    return `ERROR(${(out.trim().split("\n").pop() || "no output").slice(0, 140)})`;
-  }
-}
 function runAll(m) {
   const verdicts = [];
   if (m.tests?.length) verdicts.push(runVitest(m.tests));
-  if (m.nodeTests?.length) verdicts.push(runNodeTests(m.nodeTests));
   const errored = verdicts.find((v) => String(v).startsWith("ERROR"));
   if (errored) return errored;
   return verdicts.includes("FAIL") ? "FAIL" : "PASS";

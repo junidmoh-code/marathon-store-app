@@ -18698,7 +18698,7 @@ function InsightsView({ onExit }) {
     const incoming  = onTodayCreated.filter(o => o.status === STATUS.INCOMING).length;
     const sumByStatus = ready + collected + oos + tomorrow + incoming;
 
-    const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
+    const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING, "display_request"]);
     const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
 
     const returnsToday = filteredReturnsLog.filter(r => (r.timestamp||"").slice(0,10) === today).length;
@@ -20078,7 +20078,7 @@ function AppInner() {
       console.log("══════════════════════════════════════════════════════════════════");
 
       // Show every unaccounted-for order
-      const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
+      const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING, "display_request"]);
       const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
       if (unaccounted.length) {
         console.log("UNACCOUNTED-FOR ORDERS:", unaccounted.length);
