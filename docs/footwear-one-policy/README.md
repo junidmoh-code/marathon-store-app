@@ -17,6 +17,12 @@ Junid's report was that Hub 1 showed "Category policy" with 6 keep 0, 7/8 keep 3
   **disarmed**, so the edit did nothing) and the Sneakers **Hub 2** entry.
 - **6 keep 0** is not a product row. It is the dead-size rule: size 6 has zero
   units anywhere in the network, so the policy resolves 0 until a unit exists.
+  Evidence (live 16:09 UTC, `policy-coverage-census.mjs --trace p1777990658712`):
+  size 6 cells exist only at marathon-pe (0 units); Central holds 7–13, Hub 1
+  7–13, Pine 7–11, Hub 3 and in_transit all 0 — no size 6 anywhere.
+- The census was read at 16:17 UTC, after Junid's 13:57 rows, so the pre-row
+  Hub 1 state is reconstructed from the Sneakers Hub 1 entry (3–11) and the
+  history (`-P-tEpJWGDoYxYslXk9Z`, 25 Aug), not captured directly.
 - **3/4/5/5.5 absent**: the product record declares only 6–13. The engine never
   arms a size the product does not come in.
 - At 13:57 UTC today Junid wrote product rows on Hub 1 (6→2, 12→2, 13→2) from the
@@ -31,7 +37,7 @@ Footwear numbers lived in **four** places, each its own copy:
 | Sneakers own entry | 3–11 (6/7/8 keep 3) — **no 12/13** | 3–13 but **7/8 keep 2** |
 | Slides own entry | 3–11, **all keep 3**, no 12/13 | same |
 | `footwear-all` group | 3–13, 7/8 keep 2 — **disarmed, inert** | same |
-| Footwear rule (`footwearRunByLocation`) | 3–11, 11 keep 1 — **switched off** | same |
+| Footwear rule (`footwearRunByLocation`) | 3–11, 11 keep 1 — **switched off** (`footwearTargets` absent from `/config/refillEngine`, read 16:05 UTC) | same |
 
 Designer Shoes and Soccer Boots had no policy at all; Soccer Boots and Slides were
 not even members of the group. Boots, Loafers, Running Shoes and Kids Shoes hold

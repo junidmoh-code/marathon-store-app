@@ -278,3 +278,23 @@ test("census: clean footwear has no drift; an own entry badges that category AND
   assert.equal(drifted.categories.find((c) => c.key === "sneakers").footwearDrift.length, 0);
   assert.equal(drifted.groupEntries.find((g) => g.groupKey === FOOTWEAR_GROUP_KEY).footwearDrift.length, 1);
 });
+
+test("write: a STALE history entry for the same key is not a revert — only the newest change is", async () => {
+  invalidateCensusCache();
+  // Each write one minute apart: history order is by `at`, as it is live.
+  let t = NOW;
+  const call = (db, data) => applyCategoryPolicy({ db, callerEmail: OWNER, adminEmail: OWNER, callerUid: "u", data, nowMs: (t += 60000) });
+  const legA = { perSize: true, hub1: { sizes: { 6: { target: 3, minQty: 2, reorderPoint: 1 } }, carriedOnly: true } };
+  const legB = { perSize: true, hub1: { sizes: { 6: { target: 7, minQty: 2, reorderPoint: 1 } }, carriedOnly: true } };
+  // Disarmed: own entries may be written, building an old deletion E0 of legB.
+  const db = dbWorld({ armed: false, own: { slides: legB } });
+  const e0 = await call(db, { categoryKey: "slides", policy: null });
+  await call(db, { categoryKey: "slides", policy: legA, expectedBefore: null });
+  // Re-arm the footwear policy, then delete legA (E1).
+  const g = readAt(db.state.root, `config/refillEngine/policyGroups/${FOOTWEAR_GROUP_KEY}`);
+  await call(db, { action: "setGroup", groupKey: FOOTWEAR_GROUP_KEY, group: { ...g, armed: true }, expectedBefore: g });
+  const e1 = await call(db, { categoryKey: "slides", policy: null });
+  await rejects(() => call(db, { categoryKey: "slides", policy: legB, expectedBefore: null, revertOf: e0.historyId }), /Footwear is set once/);
+  const ok = await call(db, { categoryKey: "slides", policy: legA, expectedBefore: null, revertOf: e1.historyId });
+  assert.equal(ok.ok, true);
+});

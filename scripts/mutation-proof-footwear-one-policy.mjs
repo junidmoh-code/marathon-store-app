@@ -15,6 +15,7 @@
 //   M-DRIFT-OWN       the drift check stops reporting an own entry
 //   M-WRITE-OWN       the write path stops refusing a footwear own entry
 //   M-WRITE-REVERT    the revert exemption accepts any id
+//   M-WRITE-STALE     an old history entry for the same key counts as a revert
 //
 // ERROR is not FAIL, anchors must be unique, restore is signal-safe, and the
 // tree must be clean for the mutated files (commit first).
@@ -50,6 +51,8 @@ const MUTATIONS = [
     to: `  if (false && FOOTWEAR_CATEGORY_KEYS.includes(categoryKey) && d.policy !== null && footwearGroupArmed(cfg)`, node: NODE },
   { id: "M-WRITE-REVERT", guard: "a revert must match its history entry", file: WRITE,
     from: `  return sameValue(h.before ?? null, value ?? null);`, to: `  return true;`, node: NODE },
+  { id: "M-WRITE-STALE", guard: "only the newest change to a key can be reverted past the rule", file: WRITE,
+    from: `  if (!recent.length || recent[0].id !== id) return false;`, to: ``, node: NODE },
 ];
 
 function runVitest(files) {

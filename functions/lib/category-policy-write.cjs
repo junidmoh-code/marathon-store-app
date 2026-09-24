@@ -234,7 +234,18 @@ async function isGenuineRevert(db, d, { kind, key, value }) {
   if (typeof id !== "string" || !id || !/^[A-Za-z0-9_-]+$/.test(id)) return false;
   const h = await val(db, `${HISTORY_PATH}/${id}`);
   if (!isPlainObject(h)) return false;
-  if (kind === "group" ? (h.kind !== "group" || h.groupKey !== key) : (h.kind === "group" || h.kind === "targets" || h.kind === "rows" || h.categoryKey !== key)) return false;
+  const sameKey = (e) => (kind === "group"
+    ? e?.kind === "group" && e.groupKey === key
+    : e?.kind !== "group" && e?.kind !== "targets" && e?.kind !== "rows" && e?.categoryKey === key);
+  if (!sameKey(h) || h.status !== "applied") return false;
+  // ONLY THE NEWEST CHANGE TO THIS KEY can be reverted past the rule. An older
+  // entry whose `after` happens to equal today's live value (a deletion from
+  // an earlier arm/disarm cycle) would otherwise resurrect numbers from weeks
+  // ago as a "revert". (Sonnet architect review, PR #646.) The recent history
+  // is the same bounded read the card's list comes from, so the only entries
+  // it can offer a Revert on are the ones checked here.
+  const recent = (await readHistory(db, 50)).filter((e) => sameKey(e) && e.status === "applied");
+  if (!recent.length || recent[0].id !== id) return false;
   return sameValue(h.before ?? null, value ?? null);
 }
 const footwearGroupArmed = (cfg) => isPlainObject(cfg?.policyGroups?.[FOOTWEAR_GROUP_KEY])
