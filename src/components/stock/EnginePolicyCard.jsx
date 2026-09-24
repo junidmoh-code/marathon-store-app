@@ -687,9 +687,13 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
         // expectation — same drift discipline as a category revert. A revert
         // that would re-ARM a group goes through the same cap gate as any
         // other arming write; the server refuses it over the cap.
-        await setCategoryPolicyFn()({ action: "setGroup", groupKey: h.groupKey, group: h.before ?? null, expectedBefore: h.after ?? null });
+        // `revertOf` names the entry being undone: the server lets a genuine
+        // revert put back a state its footwear rule would otherwise refuse
+        // (a footwear category's own numbers), and the scan then flags it as
+        // drift. It checks the entry itself — the id is not a password.
+        await setCategoryPolicyFn()({ action: "setGroup", groupKey: h.groupKey, group: h.before ?? null, expectedBefore: h.after ?? null, revertOf: h.id });
       } else {
-        await setCategoryPolicyFn()({ categoryKey: h.categoryKey, policy: h.before ?? null, expectedBefore: h.after ?? null });
+        await setCategoryPolicyFn()({ categoryKey: h.categoryKey, policy: h.before ?? null, expectedBefore: h.after ?? null, revertOf: h.id });
       }
       flash("ok", `${what} put back to how it was on ${fmtWhen(h.at)}.`);
       closeAll();

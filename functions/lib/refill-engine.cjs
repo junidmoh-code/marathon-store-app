@@ -25,7 +25,7 @@
 // Group and per-size resolution lives in a LEAF module (it requires nothing),
 // so this file can consume it without the module that reasons about this file
 // having to reach back in. See policy-resolve.cjs for the precedence order.
-const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor } = require("./policy-resolve.cjs");
+const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -445,11 +445,11 @@ function subcategoryRun(config, products, pid, dest) {
 // Kept in lockstep with the browser mirror by the seatingCore differential
 // fuzz (which now generates the legacy pair) and pinned equal to the app's
 // effectiveCategoryKey by test/policy-category-key.test.cjs.
-// The footwear group's category keys — the cross-app footwear contract
-// (src/utils/footwearLine.js FOOTWEAR_CATEGORY_KEYS) plus designer-shoes, the
-// same set scripts/lib/sneakerScope.mjs uses. Module level so the coverage
-// buckets and the pass-through carve-out read ONE list.
-const FOOTWEAR_GROUP_KEYS = new Set(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes"]);
+// The footwear group's category keys — ONE list, owned by policy-resolve.cjs
+// (the same eight the footwear-all group must name; the cross-app contract in
+// src/utils/footwearLine.js plus designer-shoes). Module level so the coverage
+// buckets, the drift check and the pass-through carve-out read ONE list.
+const FOOTWEAR_GROUP_KEYS = new Set(FOOTWEAR_CATEGORY_KEYS);
 
 // SNEAKERS ARE SALES-ONLY at the hubs (owner rule): a pass-through leg is
 // never raised for a footwear product. One predicate, exported, so the
@@ -2531,6 +2531,13 @@ function computeRefillPlan(snapshot) {
   }
   unarmedFootwear.sort((a, b) => b.units - a.units);
   unorderableFootwear.sort((a, b) => b.units - a.units);
+  // ═══ FOOTWEAR POLICY DRIFT (2026-09-24) ═══════════════════════════════════
+  // Is footwear still ONE policy? Structural only — see footwearPolicyDrift in
+  // policy-resolve.cjs. Read from the config this scan already holds, so it
+  // costs nothing, and it is in the Health snapshot every 15 minutes: a
+  // footwear category that grows its own numbers again (a console edit, a
+  // revert) is flagged on the next scan without anyone going to look.
+  const footwearDrift = footwearPolicyDrift(config);
 
   const cap = (arr, n = 300) => ({ count: arr.length, items: uncapped ? arr : arr.slice(0, n) });
   return {
@@ -2580,6 +2587,7 @@ function computeRefillPlan(snapshot) {
       shortfalls: cap(shortfalls),
       unarmedFootwear: cap(unarmedFootwear, 900),
       unorderableFootwear: cap(unorderableFootwear, 900),
+      footwearPolicyDrift: cap(footwearDrift),
       shortNotRequested: {
         ...cap(shortNotRequested, 900),
         byReason: tallyBy(shortNotRequested, (r) => r.reason),
