@@ -58,6 +58,9 @@ import {
 } from "./displayRowCore";
 import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
 import { raiseDisplayRequest } from "./displayRequestStore";
+import { wallRequestsFor } from "./displayRequestCore";
+import { readyPromisedByCell } from "./availabilityCore";
+import { serverNowMs } from "../../utils/serverTime";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
 import { GATED_SNEAKER_HUBS, isFootwearProduct } from "./availabilityCore";
@@ -72,6 +75,32 @@ import { MirroredImg } from "../../offline/MirroredImg.jsx";
 // GATED_SNEAKER_HUBS, so Pine is deliberately not offered.
 const STORES = ["marathon-pe", "trophy"];
 const PAGE = 30;
+
+// "11:42", in the shops' own clock whatever the device's timezone says.
+const hhmm = (v) => {
+  const t = typeof v === "number" ? v : Date.parse(v || "");
+  return Number.isFinite(t)
+    ? new Date(t).toLocaleTimeString("en-ZA", { hour: "2-digit", minute: "2-digit", hour12: false, timeZone: "Africa/Johannesburg" })
+    : "";
+};
+
+/** The one line a request prints, from requested → sent → on the wall. */
+export function requestLine(r) {
+  const hub = r.order?.displayRefillHub || r.hub || null;
+  const from = hub ? ` · ${labelFor(hub)}` : "";
+  if (r.state === "sent") {
+    return `Sent · size ${formatSize(String(r.size ?? "?"))} · ${hhmm(r.at)}${from} — on the wall`;
+  }
+  if (r.state === "depleted") return `Stock depleted${from} · ${hhmm(r.at)} — nothing was sent`;
+  const at = hhmm(r.order?.raisedAt || r.order?.createdAt || r.at);
+  // A request from before 2026-09-24 was an `incoming` order with no refill
+  // schedule: it is in the order queue, NOT on the Display Refill card yet.
+  if (r.order && r.order.status === "incoming" && !r.order.displayRefillScheduledAt && r.order.createdAt) {
+    return `Display requested${at ? ` · ${at}` : ""}${from} — waiting in the order queue`;
+  }
+  const due = r.dueAtMs && r.dueAtMs > serverNowMs() ? ` — on its Display Refill card from ${hhmm(r.dueAtMs)}` : " — on its Display Refill card";
+  return `Display requested${at ? ` · ${at}` : ""}${from}${due}`;
+}
 
 // ── PALETTE ─────────────────────────────────────────────────────────────────
 // No amber anywhere (owner: "no orange colour should be used"). One ink, one
@@ -136,6 +165,10 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const [acting, setActing] = useState(null);      // productId whose picker is open
   const [busy, setBusy] = useState(null);
   const [note, setNote] = useState(null);
+  // What a tap has just done, per `${store}::${productId}`, so the row changes
+  // AT ONCE rather than when /orders comes round: { orderId, hub, at } for a
+  // request raised, or { noStock: true } for a shoe no hub can give out.
+  const [tapped, setTapped] = useState({});
 
   const { value: rows, settled: rowsLoaded } = useDisplayRowsState(true);
   const hub1 = useStockCellsState(GATED_SNEAKER_HUBS[0]);
@@ -146,6 +179,31 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
     for (const p of products || []) if (p && p.id) m.set(p.id, p);
     return m;
   }, [products]);
+  const productsByIdObj = useMemo(() => Object.fromEntries(productsById), [productsById]);
+
+  // ── THE WALL'S REQUESTS, AND WHAT A HUB CAN GIVE OUT ─────────────────────
+  // Both read off what the screen already streams: /orders (the display
+  // requests, from either path) and the two hubs' cells. The ready promises
+  // are netted off exactly as the order screen nets them, so "holds stock"
+  // means a pair the picker can actually send.
+  const requests = useMemo(
+    () => wallRequestsFor(orders, store, serverNowMs()),
+    [orders, store]
+  );
+  const requestedIds = useMemo(() => {
+    const ids = new Set(requests.filter((r) => r.state === "requested").map((r) => r.productId));
+    for (const [k, v] of Object.entries(tapped)) {
+      const i = k.indexOf("::");
+      if (k.slice(0, i) === store && v.orderId) ids.add(k.slice(i + 2));
+    }
+    return ids;
+  }, [requests, tapped, store]);
+  const hubData = useMemo(() => Object.fromEntries(
+    [[GATED_SNEAKER_HUBS[0], hub1], [GATED_SNEAKER_HUBS[1], hub2]].map(([h, st]) => [h, {
+      cells: st.cells, ready: !!st.settled,
+      promised: readyPromisedByCell(orders, h, productsByIdObj),
+    }])
+  ), [hub1, hub2, orders, productsByIdObj]);
 
   // BOTH LEDGER AND CELLS MUST HAVE ANSWERED. With the ledger unanswered every
   // shoe reads as "no display record", and a tap would open a SECOND row beside
@@ -171,12 +229,36 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   // Typing searches BOTH sides at once: shoes with no record, and shoes that
   // have one. One box, because "is this on the wall?" is one question and the
   // operator does not know the answer before they ask.
-  const found = useMemo(() => filterCandidates(candidates, { q }), [candidates, q]);
+  // A shoe with a display request in flight is OUT of the to-do list until the
+  // request is sent or cancelled; it is listed under "Requested" instead.
+  const found = useMemo(
+    () => filterCandidates(candidates, { q }).filter((c) => !requestedIds.has(c.productId)),
+    [candidates, q, requestedIds]
+  );
   const onRecord = useMemo(
     () => (ready ? registeredDisplays({ rows, store, productsById, q }) : []),
     [ready, rows, store, productsById, q]
   );
   const shown = found.slice(0, (page + 1) * PAGE);
+
+  // The Requested list: the stream's answer, plus a tap the stream has not
+  // delivered yet (so the row moves the instant the request is written).
+  const requestList = useMemo(() => {
+    const have = new Set(requests.map((r) => r.productId));
+    const extra = [];
+    for (const [k, v] of Object.entries(tapped)) {
+      const i = k.indexOf("::");
+      const pid = k.slice(i + 2);
+      if (k.slice(0, i) !== store || !v.orderId || have.has(pid)) continue;
+      extra.push({ productId: pid, state: "requested", order: { id: v.orderId, displayRefillHub: v.hub, createdAt: v.at },
+                   dueAtMs: v.at ? Date.parse(v.at) + 15 * 60 * 1000 : null });
+    }
+    const all = [...extra, ...requests];
+    const needle = q.trim().toLowerCase();
+    return needle
+      ? all.filter((r) => String(productsById.get(r.productId)?.name || r.order?.productName || "").toLowerCase().includes(needle))
+      : all;
+  }, [requests, tapped, store, q, productsById]);
 
   const sizesOf = (product) =>
     (Array.isArray(product?.sizes) ? product.sizes : []).map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
@@ -203,17 +285,25 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
 
   const notOnWall = async (candidate) => {
     setBusy(candidate.productId); setNote(null);
+    const key = `${store}::${candidate.productId}`;
     const res = await raiseDisplayRequest({
-      orders, store, // The hub that holds ANY of this shoe's stock. It carries no size — a
-      // display request never names one — so the first size's hub is simply the
-      // shelf the warehouse will pick from.
-      hub: candidate.sizes?.[0]?.hub || GATED_SNEAKER_HUBS[0],
+      orders, store, hubData,
       product: candidate.product || { id: candidate.productId, name: candidate.productName },
     });
     setBusy(null);
-    setNote(res.ok
-      ? { tone: "ok", text: `Display partner requested — order #${res.orderId}. The warehouse picks the size when it sends it.` }
-      : { tone: res.already ? "err" : "err", text: res.message });
+    if (res.ok) {
+      setTapped((t) => ({ ...t, [key]: { orderId: res.orderId, hub: res.hub, at: res.order?.createdAt || null } }));
+      setNote({ tone: res.warning ? "err" : "ok",
+        text: res.warning || `${candidate.productName}: display requested from ${labelFor(res.hub)} — order #${res.orderId}. The picker chooses the size when they send it.` });
+    } else if (res.noStock) {
+      setTapped((t) => ({ ...t, [key]: { noStock: true } }));
+      setNote({ tone: "err", text: `${candidate.productName}: none in any warehouse. Nothing was requested.` });
+    } else if (res.already) {
+      if (res.orderId) setTapped((t) => ({ ...t, [key]: { orderId: res.orderId, hub: null, at: null } }));
+      setNote({ tone: "ok", text: `${res.message} It stays on the list under Requested.` });
+    } else {
+      setNote({ tone: "err", text: res.message });
+    }
   };
 
   const closeRow = async (row, reason) => {
@@ -253,6 +343,25 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
 
       {!ready && <div style={sheet.empty}>Loading…</div>}
 
+      {/* ── REQUESTED — in flight to this wall, and sent in the last day ───── */}
+      {ready && requestList.length > 0 && (
+        <div style={{ ...sheet.meta, marginTop: 18, fontWeight: 600, color: DIM }}>Requested for {labelFor(store)}</div>
+      )}
+      {ready && requestList.map((r) => {
+        const p = productsById.get(r.productId);
+        return (
+          <div key={`q-${r.productId}`} style={sheet.card}>
+            <Thumb p={p} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={sheet.name}>{p?.name || r.order?.productName || r.productId}</div>
+              <div style={{ ...sheet.meta, color: r.state === "sent" ? GOOD : r.state === "depleted" ? BAD : DIM }}>
+                {requestLine(r)}{r.order?.id ? ` · #${r.order.id}` : ""}
+              </div>
+            </div>
+          </div>
+        );
+      })}
+
       {/* ── ALREADY ON THE RECORD ─────────────────────────────────────────── */}
       {ready && onRecord.map((g) => (
         <div key={`r-${g.productId}`} style={sheet.card}>
@@ -261,7 +370,11 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
             <div style={sheet.name}>{g.productName}</div>
             <div style={sheet.meta}>
               {g.rows.map((r) => <span key={r.rowId} style={sheet.pill}>Size {formatSize(rowSizeText(r))}</span>)}
-              {g.rows.length > 1 ? "more than one record — close the ones that are not there" : "on the record"}
+              {g.rows.length > 1
+                ? "more than one record — close the ones that are not there"
+                : g.rows[0].openedVia === "send"
+                  ? `on the record · sent${g.rows[0].bookedHub ? ` from ${labelFor(g.rows[0].bookedHub)}` : ""} at ${hhmm(g.rows[0].openedAt)}`
+                  : "on the record"}
             </div>
             {acting === `fix-${g.productId}` ? (
               <SizePicker sizes={sizesOf(g.product)} busy={busy === g.productId}
@@ -292,7 +405,11 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
           <Thumb p={c.product} />
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={sheet.name}>{c.productName}</div>
-            <div style={sheet.meta}>{c.hubUnits} in the warehouse · no display record here</div>
+            <div style={sheet.meta}>
+              {tapped[`${store}::${c.productId}`]?.noStock
+                ? "none in any warehouse — nothing to send"
+                : `${c.hubUnits} in the warehouse · no display record here`}
+            </div>
             {acting === c.productId ? (
               <SizePicker sizes={sizesOf(c.product)} busy={busy === c.productId}
                           title="Which size is on the wall?"
@@ -303,7 +420,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
             ) : (
               <div style={sheet.row}>
                 <button style={sheet.btn("primary")} disabled={!!busy} onClick={() => setActing(c.productId)}>On the wall</button>
-                <button style={sheet.btn()} disabled={!!busy || !canRequest}
+                <button style={sheet.btn()} disabled={!!busy || !canRequest || !!tapped[`${store}::${c.productId}`]?.noStock}
                         title={canRequest ? "" : `Switch to ${labelFor(store)} on that device to request for this wall.`}
                         onClick={() => notOnWall(c)}>Not on the wall</button>
               </div>

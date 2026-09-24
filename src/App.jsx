@@ -13944,6 +13944,13 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                     <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1.1rem", color:BLUE_L, lineHeight:1 }}>#{order.id}</span>
                     <span style={{ background:"rgba(245,158,11,.15)", color:"#F59E0B", border:"1px solid rgba(245,158,11,.35)", borderRadius:999, padding:"1px 8px", fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:".5px" }}>Partner</span>
+                    {/* A wall-walk "Not on the wall" request has no customer behind
+                        it — say whose wall it is for, since that is the whole job. */}
+                    {order.wallWalk === true && (
+                      <span style={{ background:"rgba(74,127,255,.12)", color:"#4A7FFF", border:"1px solid rgba(74,127,255,.3)", borderRadius:999, padding:"1px 8px", fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:".5px" }}>
+                        Wall · {labelFor(displaySlotStoreFor(order) || order.destShop)}
+                      </span>
+                    )}
                     <span style={{ marginLeft:"auto", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.55)", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, padding:"1px 8px", fontSize:10, fontWeight:600 }}>
                       waiting {fmtWaiting(order.displayRefillScheduledAt)}
                     </span>
@@ -18641,7 +18648,9 @@ function InsightsView({ onExit }) {
   // so the audit reflects the same slice the user is viewing.
   const audit = useMemo(() => {
     const today = getSADateString();
-    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
+    // "display_request" = a wall-walk display refill task (displayRequestCore.js):
+    // a known state with no customer half, not a corrupt status.
+    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow","display_request"]);
     const onTodayCreated = filteredOrders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
 
     // Status distributions
@@ -19972,7 +19981,9 @@ function AppInner() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const today = getSADateString();
-    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
+    // "display_request" = a wall-walk display refill task (displayRequestCore.js):
+    // a known state with no customer half, not a corrupt status.
+    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow","display_request"]);
 
     const onTodayCreated  = orders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
     const onTodayTouched  = orders.filter(o => {

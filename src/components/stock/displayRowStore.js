@@ -119,6 +119,11 @@ async function rowsNowOrRefuse(store, productId) {
   }
 }
 
+/** The same keyed, refuse-on-failure read, for a caller outside this module
+ *  that must decide from the ledger AS IT IS NOW — the wall walk's "Not on the
+ *  wall", which closes whatever the record says before it raises a request. */
+export const readRowsNow = rowsNowOrRefuse;
+
 /**
  * CLAUSE 2 — the operator tapped Send and PICKED A SIZE.
  *
