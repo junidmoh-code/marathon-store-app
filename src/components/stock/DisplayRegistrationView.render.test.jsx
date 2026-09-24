@@ -194,6 +194,22 @@ describe("the two answers the walk needs", () => {
   });
 });
 
+describe("more than one record for one shoe (the 2026-09-24 census found one)", () => {
+  it("is listed WITHOUT a search, with one close per record", () => {
+    ROWS = { "marathon-pe": { p1: { r1: row({ size: "9", sizeKey: "9" }),
+                                    r2: row({ rowId: "r2", size: "9", sizeKey: "9", openedAt: "2026-09-02T00:00:00.000Z" }) } } };
+    const t = render();
+    expect(text(t)).toMatch(/1 shoe has more than one display record on Marathon PE/);
+    const closes = t.root.findAll((n) => n.type === "button").filter((b) => instText(b).includes("Not there"));
+    expect(closes).toHaveLength(2);
+  });
+
+  it("shows nothing at all when every shoe has at most one record", () => {
+    ROWS = { "marathon-pe": { p1: { r1: row() } } };
+    expect(text(render())).not.toMatch(/more than one display record/);
+  });
+});
+
 describe("a shoe already on the record", () => {
   it("shows its size and offers a correction and a close", () => {
     ROWS = { "marathon-pe": { p1: { r1: row() } } };

@@ -54,7 +54,7 @@
 
 import React, { useMemo, useState } from "react";
 import {
-  unregisteredAcrossHubs, hubForSize, filterCandidates, registeredDisplays, rowSizeText,
+  unregisteredAcrossHubs, hubForSize, filterCandidates, registeredDisplays, rowSizeText, openRowIndex,
 } from "./displayRowCore";
 import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
 import { raiseDisplayRequest } from "./displayRequestStore";
@@ -235,10 +235,35 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
     () => filterCandidates(candidates, { q }).filter((c) => !requestedIds.has(c.productId)),
     [candidates, q, requestedIds]
   );
-  const onRecord = useMemo(
+  const searched = useMemo(
     () => (ready ? registeredDisplays({ rows, store, productsById, q }) : []),
     [ready, rows, store, productsById, q]
   );
+
+  // ── MORE THAN ONE RECORD FOR ONE SHOE ON THIS WALL (owner, 2026-09-24) ───
+  // The Duplicate Displays tab went on 2026-09-08 when the live count was zero;
+  // its job moved into the search results, which means a duplicate is only
+  // seen by someone who happens to search for that shoe. The 2026-09-24 census
+  // found one (Marathon PE, two open size-9 records for one Air Force 1). So a
+  // wall holding any shoe with more than one open record lists those shoes at
+  // the top without a search, on the same card, with the same "Not there —
+  // size X" closes. Nothing is listed, and no heading shows, when there are none.
+  const duplicates = useMemo(() => {
+    if (!ready) return [];
+    const out = [];
+    for (const [key, list] of openRowIndex(rows)) {
+      const i = key.indexOf("::");
+      if (key.slice(0, i) !== store || list.length < 2) continue;
+      const productId = key.slice(i + 2);
+      const product = productsById.get(productId) || null;
+      out.push({ productId, product, productName: product?.name || list[0].productName || "(name not on file)", rows: list });
+    }
+    return out.sort((a, b) => String(a.productName).localeCompare(String(b.productName)));
+  }, [ready, rows, store, productsById]);
+  const onRecord = useMemo(() => {
+    const seen = new Set(duplicates.map((d) => d.productId));
+    return [...duplicates, ...searched.filter((g) => !seen.has(g.productId))];
+  }, [duplicates, searched]);
   const shown = found.slice(0, (page + 1) * PAGE);
 
   // The Requested list: the stream's answer, plus a tap the stream has not
@@ -363,6 +388,11 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
       })}
 
       {/* ── ALREADY ON THE RECORD ─────────────────────────────────────────── */}
+      {ready && duplicates.length > 0 && (
+        <div style={{ ...sheet.meta, marginTop: 18, fontWeight: 600, color: BAD }}>
+          {`${duplicates.length === 1 ? "1 shoe has" : `${duplicates.length} shoes have`} more than one display record on ${labelFor(store)} — keep the true size, close the rest`}
+        </div>
+      )}
       {ready && onRecord.map((g) => (
         <div key={`r-${g.productId}`} style={sheet.card}>
           <Thumb p={g.product} />
