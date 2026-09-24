@@ -808,6 +808,20 @@ export default function HealthView({ products = [], onExit }) {
           </DetailShell>
         );
       }
+      case "footwearPolicyDrift":
+        return (
+          <DetailShell title="Footwear Policy Drift" sub="Every footwear category at Hub 1 and Hub 2 follows ONE footwear policy (Engine Policy → Footwear). Each line is a way that is no longer true — a category with its own numbers, a category left out, Hub 1 and Hub 2 not matching. Fix it on the Engine Policy card; the next scan clears the line." count={count("footwearPolicyDrift")} onBack={back}>
+            {count("footwearPolicyDrift") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Footwear is one policy 🎉</div>
+            )}
+            {items("footwearPolicyDrift").map((d, i) => (
+              <div key={i} style={{ ...GLASS, padding: "12px 14px", marginBottom: 8, fontSize: 13, color: "rgba(255,255,255,.85)" }}>
+                <Badge tone={RED}>{String(d.kind || "").replace(/_/g, " ").toUpperCase()}</Badge>
+                <div style={{ marginTop: 6 }}>{d.detail}</div>
+              </div>
+            ))}
+          </DetailShell>
+        );
       case "unorderableFootwear":
         return (
           <DetailShell title="Unorderable Footwear" sub={`Shoes with units somewhere in the network but no stock cell at Hub 1 or Hub 2. The order sheet reads only the two hubs, so every size shows dashed, and a hub policy cannot arm a product the hub does not hold. Seat it (Engine Policy → Seating → Move) or transfer it.${count("unorderableFootwear") > items("unorderableFootwear").length ? ` Showing the largest ${items("unorderableFootwear").length} of ${count("unorderableFootwear")}.` : ""}`} count={count("unorderableFootwear")} onBack={back}>
@@ -1043,6 +1057,11 @@ export default function HealthView({ products = [], onExit }) {
                   exceptions snapshot like Missing Sizes; neither writes. */}
               <StatCard label="Unarmed Footwear" value={count("unarmedFootwear")} tone={count("unarmedFootwear") ? AMBER : GREEN}
                         sub="Stocked sizes at a hub that no policy, rule or row arms" onClick={() => setScreen("unarmedFootwear")} />
+              {/* ONE FOOTWEAR POLICY (2026-09-24) — structural drift, from the
+                  same check the Engine Policy card badges. Zero is the only
+                  healthy number. */}
+              <StatCard label="Footwear Policy Drift" value={count("footwearPolicyDrift")} tone={count("footwearPolicyDrift") ? RED : GREEN}
+                        sub="Footwear categories not following the one footwear policy" onClick={() => setScreen("footwearPolicyDrift")} />
               <StatCard label="Unorderable Footwear" value={count("unorderableFootwear")} tone={count("unorderableFootwear") ? AMBER : GREEN}
                         sub="Units in the network, no cell at either hub — the order sheet can't offer it" onClick={() => setScreen("unorderableFootwear")} />
               <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}

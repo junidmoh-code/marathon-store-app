@@ -548,6 +548,13 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
 
   const save = async () => {
     if (!saveable) return;
+    // A footwear category's numbers live on the footwear policy. The server
+    // refuses an own entry while that policy is armed; saying so here, before
+    // a round trip, is the honest version of the same answer.
+    if (open && !open.isGroup && open.footwearMember && census?.groups?.["footwear-all"]?.armed === true) {
+      flash("bad", `Footwear is set once, on ${parent?.label || open.groupLabel || "Footwear"} — change the numbers there.`);
+      return;
+    }
     // A MEMBER that has no entry of its own gets one here — and leaves its
     // group's governance for good, even if the numbers typed are the group's
     // own. That is a bigger change than the numbers look, so it is confirmed.
@@ -972,6 +979,10 @@ function categoryChips(c) {
   // "N old rows" — the explicit /stock_targets rows the engine reads first. A
   // LINK that opens them for editing; never a count of something to clear.
   if (c.ownRowCells > 0) out.push({ tone: "amber", text: `${c.ownRowCells} old ${c.ownRowCells === 1 ? "row" : "rows"}`, rows: true });
+  // ONE FOOTWEAR POLICY: any way footwear has stopped being one policy — a
+  // category with its own numbers, a missing member, Hub 1 ≠ Hub 2. Computed
+  // server-side by the same check the scan writes to Health.
+  if ((c.footwearDrift || []).length) out.push({ tone: "red", text: "drift" });
   if (c.refused) out.push({ tone: "red", text: "no policy by decision" });
   if (c.rowOnly) out.push({ tone: "gray", text: "not in the taxonomy" });
   return out;
@@ -1035,9 +1046,23 @@ function CategoryDetail({
 
       {/* A MEMBER opened from inside its group: one line, because it is the
           one thing about this screen that is not obvious from the numbers. */}
-      {!c.isGroup && c.memberOfGroup && (
+      {!c.isGroup && c.footwearMember ? (
+        <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
+          Footwear is set once, on {parent?.label || c.groupLabel || "Footwear"} — change the numbers there.
+        </div>
+      ) : !c.isGroup && c.memberOfGroup && (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Saving here gives {c.label} its own numbers — they beat {parent?.label || c.groupLabel || "the group"}'s.
+        </div>
+      )}
+
+      {(c.footwearDrift || []).length > 0 && (
+        <div role="alert" style={{ marginBottom: ".9rem", padding: ".7rem .9rem", borderRadius: RADIUS,
+          background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.35)" }}>
+          <div style={{ color: RED, fontWeight: 700, fontSize: ".85rem", marginBottom: 4 }}>Footwear is not one policy</div>
+          {c.footwearDrift.map((d, i) => (
+            <div key={i} style={{ color: "#fecaca", fontSize: ".8rem", lineHeight: 1.5 }}>{d.detail}</div>
+          ))}
         </div>
       )}
 

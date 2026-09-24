@@ -689,6 +689,12 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     for (const m of (Array.isArray(g?.memberCategoryKeys) ? g.memberCategoryKeys : [])) memberOf[m] = memberOf[m] || gk;
   }
 
+  // ── ONE FOOTWEAR POLICY: THE DRIFT THE CARD SHOWS ─────────────────────────
+  // The same structural check the scan writes to Health, computed from the
+  // same config, attached to the entries it concerns — so a footwear category
+  // with its own numbers, or a footwear policy that has stopped being one,
+  // carries a badge on the card without anybody having to go looking.
+  const footwearDrift = footwearPolicyDrift(config);
   const categories = [];
   for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
@@ -779,6 +785,9 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       // overstated the figure by exactly 188.
       resolvesMapCells: m ? m.legs.reduce((n, l) => n + (l.cells - l.overrides - l.legacyRows), 0) : 0,
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
+      // A footwear category's numbers live on the footwear policy only.
+      footwearMember: FOOTWEAR_CATEGORY_KEYS.includes(key),
+      footwearDrift: FOOTWEAR_CATEGORY_KEYS.includes(key) ? footwearDrift.filter((i) => i.key === key) : [],
     });
   }
   // ── A GROUP AS ONE ENTRY ──────────────────────────────────────────────────
@@ -866,9 +875,11 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       legacyRowCells: sum("legacyRowCells"),
       resolvesMapCells: sum("resolvesMapCells"),
       resolvesMapProducts: sum("resolvesMapProducts"),
+      footwearPolicy: gk === FOOTWEAR_GROUP_KEY,
+      footwearDrift: gk === FOOTWEAR_GROUP_KEY ? footwearDrift : [],
     });
   }
-  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs };
+  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift };
 }
 
 // The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the

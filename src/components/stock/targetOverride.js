@@ -42,7 +42,7 @@
 // so deriving it changes nothing about behaviour and removes a field from a
 // grid that already has one per size.
 
-import { resolveTarget, seatingSizes, rawSizeOf, engineSizeKey, SEATING_OFF_SOURCE } from "./seatingCore";
+import { resolveTarget, seatingSizes, rawSizeOf, engineSizeKey, SEATING_OFF_SOURCE, categoryPolicyEntry } from "./seatingCore";
 import { bySizeRank, sizeLabel } from "./enginePolicyCore";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
@@ -107,13 +107,38 @@ export const WHY = {
 };
 export const whyLabel = (source) => WHY[source] || "Not carried";
 
+// ── THE "NOW" COLUMN FOR ONE SIZE — NEVER "NOT CARRIED" ON A STOCKED CELL ────
+// whyLabel(null) says "Not carried", which is the honest answer for a size
+// this location holds nothing of. It was ALSO what a size holding units got
+// whenever nothing armed it — Junid's Timberland 13 at Hub 1 read "Not
+// carried" with 2 units on the shelf (24 Sep 2026). A cell with units IS
+// carried; what is missing is a target, and the reason decides what fixes it:
+//
+//   "Held · not on record"  the product record does not declare this size, so
+//                           no policy can arm it — declare the size
+//   "Held · not in run"     a per-size policy speaks here but not for this size
+//   "Held · no policy"      nothing speaks for this product here at all
+//
+// Resolved sizes keep their source label, exactly as before.
+export function nowLabel(ctx, loc, pid, sizeKey, inherited, onHand) {
+  if (inherited) return whyLabel(inherited.source);
+  if (!(typeof onHand === "number" && onHand > 0)) return "Not carried";
+  const declared = (ctx?.products?.[pid]?.sizes || []).some((s) => engineSizeKey(s) === sizeKey);
+  if (!declared) return "Held · not on record";
+  const entry = categoryPolicyEntry(ctx?.config, ctx?.products, ctx?.stock, pid, loc);
+  if (entry?.sizes && !entry.sizes[sizeKey]) return "Held · not in run";
+  return "Held · no policy";
+}
+
 // One line under a location: what decides this product's numbers there, now.
 // Reads the seat's own resolved sources rather than re-deciding, so the line
 // and the badge can never disagree.
 export function whyLine(seat) {
   if (!seat) return "Not carried";
   const sources = new Set(seat.sizes.filter((s) => s.source).map((s) => s.source));
-  if (!sources.size) return "Not carried";
+  // Units on the shelf and nothing arming them is "held", never "not carried"
+  // — see nowLabel.
+  if (!sources.size) return seat.units > 0 ? "Held · no target" : "Not carried";
   if (sources.size === 1) return whyLabel([...sources][0]);
   // A mixed location is the normal state once one size is overridden. Naming
   // the strongest source alone would hide the others; naming all of them in
