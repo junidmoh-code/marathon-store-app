@@ -252,13 +252,12 @@ describe("a write that reports failure", () => {
 
 describe("CodeRabbit regressions", () => {
   it("a claim a moment in the FUTURE (another device's clock) is still held", async () => {
-    const args = { orders: [], store: "trophy", product, hubData: hubData({ 8: { qty: 3 } }, null) };
-    NOW += 5000;
-    expect((await raiseDisplayRequest(args)).ok).toBe(true);
-    NOW -= 5000;                                             // the second device runs 5 s behind
-    const second = await raiseDisplayRequest(args);
-    expect(second.already).toBe(true);
-    expect(wallRequests()).toHaveLength(1);
+    // Another device, its clock 5 s ahead, has claimed and not yet written its order.
+    write(`settings/displayRows_meta/requestLocks/trophy/${PID}`, { claimAt: NOW + 5000, by: "other" });
+    const res = await raiseDisplayRequest({ orders: [], store: "trophy", product, hubData: hubData({ 8: { qty: 3 } }, null) });
+    expect(res.already).toBe(true);
+    expect(wallRequests()).toHaveLength(0);
+    expect(read(`settings/displayRows_meta/requestLocks/trophy/${PID}/by`)).toBe("other");
   });
 
   it("an unread TAGGED hub gives no answer — it never falls through to the other hub", async () => {
