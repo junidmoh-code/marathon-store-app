@@ -113,19 +113,23 @@ export async function raiseDisplayRequest({ orders, store, product, hubData }) {
 
     const cleared = await clearWallRecord({ store, productId });
     if (!cleared.ok) return { ok: false, message: `The display record could not be cleared (${cleared.message}). Nothing was requested.` };
+    // A partial clear (a slot that would not clear) is reported on EVERY
+    // answer below, not only on success — the operator must see it whatever
+    // happened to the request. (Architect review.)
+    const note = (r) => (cleared.warning ? { ...r, message: `${r.message || ""} ${cleared.warning}`.trim(), warning: cleared.warning } : r);
 
     // ── THE ORDINARY GUARD: an open request from EITHER path blocks. ──────
     const blocker = otherOpenDisplayRequests(orders, { store, productId })[0];
     if (blocker) {
-      return { ok: false, already: true, orderId: blocker.id,
-        message: `Order #${blocker.id} already asks for a display of ${product.name} at ${labelFor(store)}.` };
+      return note({ ok: false, already: true, orderId: blocker.id,
+        message: `Order #${blocker.id} already asks for a display of ${product.name} at ${labelFor(store)}.` });
     }
 
     const pick = pickDisplaySourceHub({ product, hubData });
     if (!pick.hub) {
-      return pick.unread
+      return note(pick.unread
         ? { ok: false, message: "The warehouse stock has not loaded yet — try again in a moment. Nothing was requested." }
-        : { ok: false, noStock: true, message: "None in any warehouse — nothing was requested." };
+        : { ok: false, noStock: true, message: "None in any warehouse — nothing was requested." });
     }
 
     // ── THE DOUBLE-TAP FENCE ──────────────────────────────────────────────
@@ -140,8 +144,8 @@ export async function raiseDisplayRequest({ orders, store, product, hubData }) {
       const o = (await get(ref(database, `orders/${prior.orderId}`))).val();
       if (o && o.createdAt === prior.orderCreatedAt && o.productId === productId
           && requestStoreFor(o) === store && isOpenDisplayRequest(o)) {
-        return { ok: false, already: true, orderId: prior.orderId,
-          message: `Order #${prior.orderId} already asks for a display of ${product.name} at ${labelFor(store)}.` };
+        return note({ ok: false, already: true, orderId: prior.orderId,
+          message: `Order #${prior.orderId} already asks for a display of ${product.name} at ${labelFor(store)}.` });
       }
     }
     const by = auth.currentUser?.uid || null;
@@ -149,23 +153,33 @@ export async function raiseDisplayRequest({ orders, store, product, hubData }) {
     const claim = await runTransaction(lockRef, (cur) =>
       (lockHeld(cur, claimAt) ? undefined : { claimAt, by, orderId: null, orderCreatedAt: null }));
     if (!claim.committed) {
-      return { ok: false, already: true,
-        message: `A display of ${product.name} for ${labelFor(store)} was requested a moment ago.` };
+      return note({ ok: false, already: true,
+        message: `A display of ${product.name} for ${labelFor(store)} was requested a moment ago.` });
     }
 
+    const nowIso = serverNowIso();
+    let orderId = null;
+    let order = null;
     try {
-      const nowIso = serverNowIso();
-      const orderId = await getNextOrderNumber();
-      const order = wallWalkOrder({ orderId, store, hub: pick.hub, product, nowIso, by });
+      orderId = await getNextOrderNumber();
+      order = wallWalkOrder({ orderId, store, hub: pick.hub, product, nowIso, by });
       order.raisedByEmail = auth.currentUser?.email || null;
       await set(ref(database, `orders/${orderId}`), order);
-      await update(lockRef, { orderId, orderCreatedAt: nowIso }).catch(() => {});
-      return { ok: true, orderId, hub: pick.hub, order, cleared: cleared.closed, warning: cleared.warning };
     } catch (err) {
-      // Nothing was written, so the fence must not hold the wall for two minutes.
-      await set(lockRef, null).catch(() => {});
-      throw err;
+      // A write that REPORTS failure may still have landed (a client timeout
+      // after the server applied it). Ask the one key before deciding: if our
+      // order is there, it is a success and the fence must name it; only if it
+      // is not do we release the wall. (Architect review.)
+      const landed = orderId
+        ? await get(ref(database, `orders/${orderId}`)).then((sn) => sn.val()).catch(() => null)
+        : null;
+      if (!(landed && landed.createdAt === nowIso && landed.productId === productId)) {
+        await set(lockRef, null).catch(() => {});
+        throw err;
+      }
     }
+    await update(lockRef, { orderId, orderCreatedAt: nowIso }).catch(() => {});
+    return { ok: true, orderId, hub: pick.hub, order, cleared: cleared.closed, warning: cleared.warning };
   } catch (err) {
     return { ok: false, message: String(err?.message || err) };
   }

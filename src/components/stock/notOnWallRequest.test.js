@@ -228,6 +228,28 @@ describe("Not on the wall — one request, on the Display Refill card", () => {
   });
 });
 
+describe("a write that reports failure", () => {
+  it("but landed is a success, and the fence names the order", async () => {
+    const { set: realSet } = await import("firebase/database");
+    const mod = await import("firebase/database");
+    const spy = vi.spyOn(mod, "set").mockImplementationOnce(async (path, value) => { await realSet(path, value); throw new Error("timeout"); });
+    const res = await raiseDisplayRequest({ orders: [], store: "trophy", product, hubData: hubData({ 8: { qty: 3 } }, null) });
+    spy.mockRestore();
+    expect(res.ok).toBe(true);
+    expect(read(`settings/displayRows_meta/requestLocks/trophy/${PID}/orderId`)).toBe("042");
+  });
+
+  it("and did NOT land releases the fence", async () => {
+    const mod = await import("firebase/database");
+    const spy = vi.spyOn(mod, "set").mockImplementationOnce(async () => { throw new Error("denied"); });
+    const res = await raiseDisplayRequest({ orders: [], store: "trophy", product, hubData: hubData({ 8: { qty: 3 } }, null) });
+    spy.mockRestore();
+    expect(res.ok).toBe(false);
+    expect(read(`settings/displayRows_meta/requestLocks/trophy/${PID}`)).toBeNull();
+    expect(wallRequests()).toHaveLength(0);
+  });
+});
+
 describe("Send registers the display — replaces, never adds", () => {
   const seedRow = (rowId, size, openedAt) => write(`settings/displayRows/trophy/${PID}/${rowId}`, {
     rowId, store: "trophy", productId: PID, productName: product.name, size, sizeKey: size,

@@ -179,6 +179,27 @@ describe("the two answers the walk needs", () => {
     expect(text(render({ orders }))).toMatch(/Sent · size 8 · \d\d:\d\d · Hub 2 — on the wall/);
   });
 
+  it("two open requests for one wall are BOTH named, not hidden by the newer", () => {
+    const base = { productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true, displayRefillHub: "hub1",
+      displayRefillStatus: null, displayRefillScheduledAt: "2026-09-24T09:00:00.000Z" };
+    const orders = [{ ...base, id: "017", status: "collected", createdAt: "2026-09-24T08:50:00.000Z" },
+                    { ...base, id: "042", status: "display_request", createdAt: "2026-09-24T08:51:00.000Z" }];
+    expect(text(render({ orders }))).toMatch(/2 open requests for this wall \(#017, #042\)/);
+  });
+
+  it("a tapped request that the stream then shows as Stock Depleted returns to the to-do list", async () => {
+    raiseDisplayRequest.mockImplementationOnce(async () => ({
+      ok: true, orderId: "042", hub: "hub1", order: { createdAt: "2026-09-24T09:42:00.000Z" } }));
+    const t = render();
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    expect(btn(t, "Not on the wall")).toBeUndefined();
+    const orders = [{ id: "042", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true, status: "display_request",
+      displayRefillScheduledAt: "2026-09-24T09:42:00.000Z", displayRefillHub: "hub1", displayRefillStatus: "stockDepleted",
+      displayRefillStockDepletedAt: new Date().toISOString(), createdAt: "2026-09-24T09:42:00.000Z" }];
+    act(() => { t.update(<View products={PRODUCTS} onExit={() => {}} orders={orders} />); });
+    expect(btn(t, "Not on the wall")).toBeTruthy();
+  });
+
   it("with no stock anywhere the row says so and nothing more can be asked", async () => {
     raiseDisplayRequest.mockImplementationOnce(async () => ({ ok: false, noStock: true, message: "None in any warehouse" }));
     const t = render();

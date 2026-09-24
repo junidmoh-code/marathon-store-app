@@ -30,6 +30,12 @@ const MUTATIONS = [
     from: "  return Number.isFinite(at) && nowMs - at >= 0 && nowMs - at < REQUEST_LOCK_MS;", to: "  return false;", tests: T },
   { id: "M-LOCK-ORDER", guard: "an expired claim whose order is still open still blocks", file: STORE,
     from: "    if (prior?.orderId) {", to: "    if (false) {", tests: T },
+  { id: "M-LANDED", guard: "a write that reports failure but landed keeps the fence", file: STORE,
+    from: "      if (!(landed && landed.createdAt === nowIso && landed.productId === productId)) {", to: "      if (true) {", tests: T },
+  { id: "M-TAP-HANDOVER", guard: "the stream, not a stale tap, decides once it knows the shoe", file: VIEW,
+    from: "      if (k.slice(0, i) === store && v.orderId && !known.has(pid)) ids.add(pid);", to: "      if (k.slice(0, i) === store && v.orderId) ids.add(pid);", tests: R },
+  { id: "M-OPEN-IDS", guard: "every open request for the wall is named", file: CORE,
+    from: "    if (isOpenDisplayRequest(o)) openIds.push(String(o.id));", to: "", tests: R },
   // ── stock / source hub ──
   { id: "M-NO-STOCK", guard: "no stock anywhere raises nothing", file: CORE,
     from: "    if (units > 0) return { hub, units, tagged: hub === tag };", to: "    return { hub, units, tagged: hub === tag };", tests: T },

@@ -192,9 +192,15 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   );
   const requestedIds = useMemo(() => {
     const ids = new Set(requests.filter((r) => r.state === "requested").map((r) => r.productId));
+    // A tap only stands in until the stream has an answer for that shoe. Once
+    // /orders knows about it, the stream decides — so a request that ends in
+    // Stock Depleted puts the shoe back on the list without a reload.
+    // (Architect review.)
+    const known = new Set(requests.map((r) => r.productId));
     for (const [k, v] of Object.entries(tapped)) {
       const i = k.indexOf("::");
-      if (k.slice(0, i) === store && v.orderId) ids.add(k.slice(i + 2));
+      const pid = k.slice(i + 2);
+      if (k.slice(0, i) === store && v.orderId && !known.has(pid)) ids.add(pid);
     }
     return ids;
   }, [requests, tapped, store]);
@@ -382,6 +388,11 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
               <div style={{ ...sheet.meta, color: r.state === "sent" ? GOOD : r.state === "depleted" ? BAD : DIM }}>
                 {requestLine(r)}{r.order?.id ? ` · #${r.order.id}` : ""}
               </div>
+              {r.openIds?.length > 1 && (
+                <div style={{ ...sheet.meta, color: BAD }}>
+                  {`${r.openIds.length} open requests for this wall (${r.openIds.map((id) => `#${id}`).join(", ")}) — send one; mark the others Stock Depleted.`}
+                </div>
+              )}
             </div>
           </div>
         );

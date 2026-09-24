@@ -177,9 +177,17 @@ export function wallWalkOrder({ orderId, store, hub, product, nowIso, by }) {
  */
 export function wallRequestState(orders, { store, productId }, delayMs = 15 * 60 * 1000) {
   let best = null;
+  // EVERY open request for this wall, not only the newest. Two can exist: the
+  // wall walk and the fifteen-minute path each refuse to open a second one, but
+  // only against the /orders their own device has already received, so two
+  // taps on two devices within the same few seconds can both land. Newest-wins
+  // would then HIDE one while the picker still sees both on the card — and
+  // sends two pairs. The screen names them all instead. (Architect review.)
+  const openIds = [];
   for (const o of orders || []) {
     if (!o || o.requestDisplayPartner !== true || o.productId !== productId) continue;
     if (requestStoreFor(o) !== store) continue;
+    if (isOpenDisplayRequest(o)) openIds.push(String(o.id));
     const t = Date.parse(o.createdAt || "") || 0;
     if (best && t <= best.t) continue;
     if (isOpenDisplayRequest(o)) {
@@ -193,7 +201,7 @@ export function wallRequestState(orders, { store, productId }, delayMs = 15 * 60
   }
   if (!best) return null;
   const { t: _t, ...rest } = best;
-  return rest;
+  return { ...rest, openIds: openIds.sort() };
 }
 
 /**
