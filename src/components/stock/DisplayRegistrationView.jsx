@@ -58,7 +58,7 @@ import {
 } from "./displayRowCore";
 import { registerDisplayRow, closeDisplayRow } from "./displayRowStore";
 import { raiseDisplayRequest } from "./displayRequestStore";
-import { wallRequestsFor } from "./displayRequestCore";
+import { wallRequestsFor, pickDisplaySourceHub } from "./displayRequestCore";
 import { readyPromisedByCell } from "./availabilityCore";
 import { serverNowMs } from "../../utils/serverTime";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
@@ -196,11 +196,17 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
     // /orders knows about it, the stream decides — so a request that ends in
     // Stock Depleted puts the shoe back on the list without a reload.
     // (Architect review.)
-    const known = new Set(requests.map((r) => r.productId));
+    // Handed over by ORDER id, not by product: an older, resolved request for
+    // the same shoe must not stand in for the one just raised. (CodeRabbit.)
+    const streamed = new Set();
+    for (const r of requests) {
+      if (r.order?.id != null) streamed.add(String(r.order.id));
+      for (const id of r.openIds || []) streamed.add(id);
+    }
     for (const [k, v] of Object.entries(tapped)) {
       const i = k.indexOf("::");
       const pid = k.slice(i + 2);
-      if (k.slice(0, i) === store && v.orderId && !known.has(pid)) ids.add(pid);
+      if (k.slice(0, i) === store && v.orderId && !streamed.has(String(v.orderId))) ids.add(pid);
     }
     return ids;
   }, [requests, tapped, store]);
@@ -272,19 +278,32 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   }, [duplicates, searched]);
   const shown = found.slice(0, (page + 1) * PAGE);
 
+  // "None in any warehouse" is an answer about the stock AT THE TAP. It stands
+  // only while the live cells still say so; the moment either hub can give a
+  // pair out, the row and the button come back. (CodeRabbit.)
+  const noneAnywhere = (c) => !!tapped[`${store}::${c.productId}`]?.noStock
+    && !pickDisplaySourceHub({ product: c.product || { id: c.productId }, hubData }).hub;
+
   // The Requested list: the stream's answer, plus a tap the stream has not
   // delivered yet (so the row moves the instant the request is written).
   const requestList = useMemo(() => {
-    const have = new Set(requests.map((r) => r.productId));
+    const have = new Set();
+    for (const r of requests) {
+      if (r.order?.id != null) have.add(String(r.order.id));
+      for (const id of r.openIds || []) have.add(id);
+    }
     const extra = [];
     for (const [k, v] of Object.entries(tapped)) {
       const i = k.indexOf("::");
       const pid = k.slice(i + 2);
-      if (k.slice(0, i) !== store || !v.orderId || have.has(pid)) continue;
+      if (k.slice(0, i) !== store || !v.orderId || have.has(String(v.orderId))) continue;
       extra.push({ productId: pid, state: "requested", order: { id: v.orderId, displayRefillHub: v.hub, createdAt: v.at },
                    dueAtMs: v.at ? Date.parse(v.at) + 15 * 60 * 1000 : null });
     }
-    const all = [...extra, ...requests];
+    // A tap the stream has not delivered yet replaces any older entry for the
+    // same shoe (one row per shoe).
+    const tappedPids = new Set(extra.map((e) => e.productId));
+    const all = [...extra, ...requests.filter((r) => !tappedPids.has(r.productId))];
     const needle = q.trim().toLowerCase();
     return needle
       ? all.filter((r) => String(productsById.get(r.productId)?.name || r.order?.productName || "").toLowerCase().includes(needle))
@@ -447,7 +466,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={sheet.name}>{c.productName}</div>
             <div style={sheet.meta}>
-              {tapped[`${store}::${c.productId}`]?.noStock
+              {noneAnywhere(c)
                 ? "none in any warehouse — nothing to send"
                 : `${c.hubUnits} in the warehouse · no display record here`}
             </div>
@@ -461,7 +480,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
             ) : (
               <div style={sheet.row}>
                 <button style={sheet.btn("primary")} disabled={!!busy} onClick={() => setActing(c.productId)}>On the wall</button>
-                <button style={sheet.btn()} disabled={!!busy || !canRequest || !!tapped[`${store}::${c.productId}`]?.noStock}
+                <button style={sheet.btn()} disabled={!!busy || !canRequest || noneAnywhere(c)}
                         title={canRequest ? "" : `Switch to ${labelFor(store)} on that device to request for this wall.`}
                         onClick={() => notOnWall(c)}>Not on the wall</button>
               </div>

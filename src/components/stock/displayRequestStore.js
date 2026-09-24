@@ -90,7 +90,10 @@ export async function clearWallRecord({ store, productId }) {
     if (res.warning) warnings.push(res.warning);
   }
   const slot = await clearDisplaySlot({ store, productId, source: "manual" });
-  if (slot && slot.ok === false) warnings.push(`The display slot could not be cleared (${slot.message}).`);
+  // The size-grid marker reads the slot, so a slot left standing is a display
+  // record left standing: a refusal, not a footnote. A retry closes nothing new
+  // and tries the slot again. (CodeRabbit.)
+  if (slot && slot.ok === false) return { ok: false, message: `the display slot could not be cleared (${slot.message})` };
   return { ok: true, closed: open.length, warning: warnings.join(" ") || null };
 }
 
@@ -168,13 +171,20 @@ export async function raiseDisplayRequest({ orders, store, product, hubData }) {
     } catch (err) {
       // A write that REPORTS failure may still have landed (a client timeout
       // after the server applied it). Ask the one key before deciding: if our
-      // order is there, it is a success and the fence must name it; only if it
-      // is not do we release the wall. (Architect review.)
-      const landed = orderId
-        ? await get(ref(database, `orders/${orderId}`)).then((sn) => sn.val()).catch(() => null)
-        : null;
+      // order is there, it is a success and the fence must name it. Only a read
+      // that SUCCEEDS and shows it absent releases the wall; a failed read
+      // leaves the outcome unknown, so the fence is kept and simply expires.
+      // (Architect review; CodeRabbit.)
+      let landed;
+      try {
+        landed = orderId ? (await get(ref(database, `orders/${orderId}`))).val() : null;
+      } catch {
+        return note({ ok: false, message: `The request may or may not have been saved (${err?.message || err}). Check the Requested list in two minutes before tapping again.` });
+      }
       if (!(landed && landed.createdAt === nowIso && landed.productId === productId)) {
-        await set(lockRef, null).catch(() => {});
+        // Release ONLY our own claim — never one another device has since made.
+        await runTransaction(lockRef, (cur) =>
+          (cur && cur.claimAt === claimAt && cur.by === by && !cur.orderId ? null : undefined)).catch(() => {});
         throw err;
       }
     }

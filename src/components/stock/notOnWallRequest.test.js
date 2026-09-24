@@ -250,6 +250,69 @@ describe("a write that reports failure", () => {
   });
 });
 
+describe("CodeRabbit regressions", () => {
+  it("a claim a moment in the FUTURE (another device's clock) is still held", async () => {
+    const args = { orders: [], store: "trophy", product, hubData: hubData({ 8: { qty: 3 } }, null) };
+    NOW += 5000;
+    expect((await raiseDisplayRequest(args)).ok).toBe(true);
+    NOW -= 5000;                                             // the second device runs 5 s behind
+    const second = await raiseDisplayRequest(args);
+    expect(second.already).toBe(true);
+    expect(wallRequests()).toHaveLength(1);
+  });
+
+  it("an unread TAGGED hub gives no answer — it never falls through to the other hub", async () => {
+    const d = hubData(null, { 9: { qty: 4 } });
+    d.hub1.ready = false;
+    const res = await raiseDisplayRequest({ orders: [], store: "trophy", product, hubData: d });
+    expect(res.ok).toBe(false);
+    expect(res.noStock).toBeUndefined();
+    expect(wallRequests()).toHaveLength(0);
+  });
+
+  it("a slot that will not clear is a refusal, and nothing is requested", async () => {
+    write(`settings/displaySlots/trophy/${PID}`, { store: "trophy", productId: PID, size: "8", sizeKey: "8", at: "2026-09-20T10:00:00.000Z" });
+    const mod = await import("firebase/database");
+    const real = mod.runTransaction;
+    const spy = vi.spyOn(mod, "runTransaction").mockImplementation(async (path, fn) => {
+      if (String(path).startsWith("settings/displaySlots")) throw new Error("denied");
+      return real(path, fn);
+    });
+    const res = await raiseDisplayRequest({ orders: [], store: "trophy", product, hubData: hubData({ 8: { qty: 3 } }, null) });
+    spy.mockRestore();
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/slot could not be cleared/);
+    expect(wallRequests()).toHaveLength(0);
+  });
+
+  it("an open request outranks a NEWER resolved one for the same wall", async () => {
+    const { wallRequestState } = await import("./displayRequestCore");
+    const base = { productId: PID, destShop: "trophy", requestDisplayPartner: true, displayRefillHub: "hub1" };
+    const st = wallRequestState([
+      { ...base, id: "010", createdAt: "2026-09-24T08:00:00.000Z", displayRefillScheduledAt: "2026-09-24T08:00:00.000Z", displayRefillStatus: null, status: "collected" },
+      { ...base, id: "020", createdAt: "2026-09-24T09:00:00.000Z", displayRefillScheduledAt: "2026-09-24T09:00:00.000Z", displayRefillStatus: "stockDepleted" },
+    ], { store: "trophy", productId: PID });
+    expect(st.state).toBe("requested");
+    expect(st.order.id).toBe("010");
+  });
+
+  it("a failed confirmation READ keeps the fence (outcome unknown)", async () => {
+    const mod = await import("firebase/database");
+    const realGet = mod.get;
+    let failNextOrderRead = false;
+    const setSpy = vi.spyOn(mod, "set").mockImplementationOnce(async () => { failNextOrderRead = true; throw new Error("timeout"); });
+    const getSpy = vi.spyOn(mod, "get").mockImplementation(async (path) => {
+      if (failNextOrderRead && String(path).startsWith("orders/")) throw new Error("offline");
+      return realGet(path);
+    });
+    const res = await raiseDisplayRequest({ orders: [], store: "trophy", product, hubData: hubData({ 8: { qty: 3 } }, null) });
+    setSpy.mockRestore(); getSpy.mockRestore();
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/may or may not have been saved/);
+    expect(read(`settings/displayRows_meta/requestLocks/trophy/${PID}/claimAt`)).not.toBeNull();
+  });
+});
+
 describe("Send registers the display — replaces, never adds", () => {
   const seedRow = (rowId, size, openedAt) => write(`settings/displayRows/trophy/${PID}/${rowId}`, {
     rowId, store: "trophy", productId: PID, productName: product.name, size, sizeKey: size,

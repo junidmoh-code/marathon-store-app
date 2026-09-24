@@ -3229,9 +3229,10 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // (owner spec 2026-08-08), not a separate class of Source work.
   const restockToday = useRestockLogRaw(today);
   const sourceBadge = (restockToday || []).length;
-  // assistant badge = today's placed orders
+  // assistant badge = today's placed orders. A wall-walk display request
+  // (displayRequestCore.js) is a warehouse task, not a placed order.
   const assistantBadge = orders ? orders.filter(o =>
-    o.createdAt && o.createdAt.slice(0,10) === today
+    o.createdAt && o.createdAt.slice(0,10) === today && o.wallWalk !== true
   ).length : 0;
 
   // Display Checks card — behind the master flag + the module's own access gate

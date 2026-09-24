@@ -95,6 +95,10 @@ export function pickDisplaySourceHub({ product, hubData, hubs = GATED_SNEAKER_HU
   let unread = false;
   for (const hub of order) {
     const d = hubData?.[hub];
+    // The product's own hub unread means we cannot know whether it should be
+    // the one — so no answer yet, rather than a fall-through to the other hub.
+    // (CodeRabbit.)
+    if (!d?.ready && hub === tag) return { hub: null, unread: true };
     if (!d?.ready) { unread = true; continue; }
     const units = hubUnitsFor({ cells: d.cells, promised: d.promised, productId });
     if (units > 0) return { hub, units, tagged: hub === tag };
@@ -110,7 +114,10 @@ export function pickDisplaySourceHub({ product, hubData, hubs = GATED_SNEAKER_HU
  */
 export function lockHeld(lock, nowMs) {
   const at = Number(lock?.claimAt);
-  return Number.isFinite(at) && nowMs - at >= 0 && nowMs - at < REQUEST_LOCK_MS;
+  // Held within the window on EITHER side of now: two devices' server-anchored
+  // clocks still differ by a little, and a claim that looks a second in the
+  // future to this device is a live claim, not a stale one. (CodeRabbit.)
+  return Number.isFinite(at) && Math.abs(nowMs - at) < REQUEST_LOCK_MS;
 }
 
 /**
@@ -187,10 +194,14 @@ export function wallRequestState(orders, { store, productId }, delayMs = 15 * 60
   for (const o of orders || []) {
     if (!o || o.requestDisplayPartner !== true || o.productId !== productId) continue;
     if (requestStoreFor(o) !== store) continue;
-    if (isOpenDisplayRequest(o)) openIds.push(String(o.id));
+    const open = isOpenDisplayRequest(o);
+    if (open) openIds.push(String(o.id));
     const t = Date.parse(o.createdAt || "") || 0;
-    if (best && t <= best.t) continue;
-    if (isOpenDisplayRequest(o)) {
+    // An OPEN request outranks any resolved one, however new: while a pair is
+    // still owed to this wall the shoe is "requested". (CodeRabbit.)
+    if (best && best.state === "requested" && !open) continue;
+    if (best && t <= best.t && !(open && best.state !== "requested")) continue;
+    if (open) {
       const sched = Date.parse(o.displayRefillScheduledAt || "");
       best = { t, state: "requested", order: o, dueAtMs: Number.isFinite(sched) ? sched + delayMs : null };
     } else if (o.displayRefillStatus === "refilled") {

@@ -200,12 +200,35 @@ describe("the two answers the walk needs", () => {
     expect(btn(t, "Not on the wall")).toBeTruthy();
   });
 
-  it("with no stock anywhere the row says so and nothing more can be asked", async () => {
+  it("with no stock anywhere the row says so — until stock comes back", async () => {
+    // Both of Hub 1's pairs are promised to ready customer orders, so no hub
+    // can give one out, though the shelf still books 2.
+    const ready = (id) => ({ id, productId: "p1", destShop: "marathon-pe", hub: "hub1", status: "ready", size: "6",
+      readyAt: new Date().toISOString(), createdAt: new Date().toISOString() });
+    const orders = [ready("050"), ready("051")];
     raiseDisplayRequest.mockImplementationOnce(async () => ({ ok: false, noStock: true, message: "None in any warehouse" }));
-    const t = render();
+    const t = render({ orders });
     await act(async () => { btn(t, "Not on the wall").props.onClick(); });
-    expect(text(t)).toMatch(/none in any warehouse/);
+    expect(text(t)).toMatch(/none in any warehouse — nothing to send/);
     expect(btn(t, "Not on the wall").props.disabled).toBe(true);
+    // A promise is collected — a pair is free again, and the row comes back.
+    act(() => { t.update(<View products={PRODUCTS} onExit={() => {}} orders={[ready("050")]} />); });
+    expect(text(t)).not.toMatch(/none in any warehouse — nothing to send/);
+    expect(text(t)).toMatch(/in the warehouse · no display record here/);
+    expect(btn(t, "Not on the wall").props.disabled).toBe(false);
+  });
+
+  it("a fresh tap is not replaced by an OLDER resolved request for the same shoe", async () => {
+    const old = [{ id: "017", productId: "p1", destShop: "marathon-pe", requestDisplayPartner: true, status: "display_request",
+      displayRefillScheduledAt: "2026-09-24T07:00:00.000Z", displayRefillHub: "hub1", displayRefillStatus: "stockDepleted",
+      displayRefillStockDepletedAt: new Date().toISOString(), createdAt: "2026-09-24T07:00:00.000Z" }];
+    raiseDisplayRequest.mockImplementationOnce(async () => ({
+      ok: true, orderId: "042", hub: "hub1", order: { createdAt: "2026-09-24T09:42:00.000Z" } }));
+    const t = render({ orders: old });
+    await act(async () => { btn(t, "Not on the wall").props.onClick(); });
+    expect(btn(t, "Not on the wall")).toBeUndefined();         // still requested
+    expect(text(t)).toMatch(/Display requested · 11:42/);
+    expect(text(t)).not.toMatch(/Stock depleted/);             // one row per shoe
   });
 
   it("a store-scoped device cannot request for the OTHER wall", () => {
