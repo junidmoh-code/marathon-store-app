@@ -955,7 +955,11 @@ function computeRefillPlan(snapshot) {
               // …and WHO pressed it (the app records the account since
               // 2026-09-23; older lines carry none and stay unnamed).
               refusedByUid: typeof order.clothingOutOfStockByUid === "string" && order.clothingOutOfStockByUid
-                ? order.clothingOutOfStockByUid : null }),
+                ? order.clothingOutOfStockByUid : null,
+              // …and on WHICH PHONE (2026-09-25; accounts are shared, the
+              // device id names the handset — src/device/deviceRejects.js).
+              refusedByDeviceId: typeof order.clothingOutOfStockDeviceId === "string" && order.clothingOutOfStockDeviceId
+                ? order.clothingOutOfStockDeviceId : null }),
           });
         } else if (nowMs - Date.parse(entry.createdAt || 0) > staleMs) {
           stuckRefills.push({ dest, pid, sizeKey, refillId: entry.refillId || null, ageHours: Math.round((nowMs - Date.parse(entry.createdAt || 0)) / 3600e3) });

@@ -39,11 +39,11 @@ const health = readFileSync(fileURLToPath(new URL("./HealthView.jsx", import.met
 const NOW = Date.parse("2026-09-23T12:45:00.000Z");
 const PID = "p1780382141061";
 
-async function realRecords() {
+async function realRecords({ lastExtra = {} } = {}) {
   const refusal = (at, extra = {}) => ({ productId: PID, size: "M", qty: 2, requestingLocation: "marathon-pe", status: "cancelled", createdAt: at, resolvedAt: at, createdFrom: { engine: true, source: "hub2" }, ...extra });
   const rr = {
     a: refusal("2026-09-12T11:30:40.428Z"), b: refusal("2026-09-14T08:45:31.184Z"),
-    c: refusal("2026-09-16T10:15:04.806Z"), d: refusal("2026-09-17T14:15:22.516Z", { resolvedBy: "u_mike", rejectedBy: "admin" }),
+    c: refusal("2026-09-16T10:15:04.806Z"), d: refusal("2026-09-17T14:15:22.516Z", { resolvedBy: "u_mike", rejectedBy: "admin", ...lastExtra }),
   };
   const stock = { hub2: { [PID]: { M: { qty: 3, v: 1, mv: "s", lastType: "transfer_out", updatedAt: "2026-09-09T13:18:11.169Z" } } } };
   const db = makeFakeDb({ stock, refill_requests: rr, users: { u_mike: { displayName: "Mike" } } });
@@ -60,13 +60,28 @@ describe("Written off after refusal — the card", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({ productName: "Nike Tech Fleece Tracksuit Brown 2", size: "M", location: "Hub 2", units: 3, left: 0 });
     expect(rows[0].refusals).toEqual([
-      { when: "12 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE" },
-      { when: "14 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE" },
-      { when: "16 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE" },
-      { when: "17 Sep", who: "Mike", forShop: "Marathon PE" },
+      { when: "12 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE", device: null },
+      { when: "14 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE", device: null },
+      { when: "16 Sep", who: "Hub 2 staff (no name recorded)", forShop: "Marathon PE", device: null },
+      { when: "17 Sep", who: "Mike", forShop: "Marathon PE", device: null },
     ]);
     expect(recentCount(rows, NOW)).toBe(1);
     expect(recentCount(rows, NOW + 31 * 864e5)).toBe(0);
+  });
+
+  // 2026-09-25: a refusal that recorded WHICH PHONE (resolvedDeviceId, written
+  // by the queue's Out of Stock or copied by the scan from the order line)
+  // reaches the card as the phone's short id — the same 4 characters the
+  // Mirror Fleet screen labels it with — through the REAL engine record.
+  it("names the phone a refusal was pressed on, when the request recorded it", async () => {
+    const value = await realRecords({ lastExtra: { resolvedDeviceId: "2964c145-ecad-4f61-9f7a-304231af0e01" } });
+    const rec = Object.values(value)[0];
+    // RTDB stores no nulls: an unrecorded phone is ABSENT on the record.
+    expect(rec.refusals.map((x) => x.byDeviceId ?? null)).toEqual([null, null, null, "2964c145-ecad-4f61-9f7a-304231af0e01"]);
+    expect("byDeviceId" in rec.refusals[0]).toBe(false);
+    const rows = writeoffRows(value);
+    expect(rows[0].refusals[3]).toEqual({ when: "17 Sep", who: "Mike", forShop: "Marathon PE", device: "2964" });
+    expect(health).toContain("{x.device ? ` on phone ${x.device}` : \"\"}");
   });
 
   it("the read is opened ONLY for the super admin, and always bounded (newest 200 by key)", async () => {

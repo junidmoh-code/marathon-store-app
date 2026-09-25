@@ -102,7 +102,8 @@ import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
-import { countReject } from "./device/rejectCount";
+import { countReject, thisDevicePaused } from "./device/rejectCount";
+import { PAUSED_MESSAGE } from "./device/deviceRejects";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -11895,6 +11896,10 @@ function WarehouseView({ products = [], orders, onExit }) {
   const focusOrderKey = useFocusOrder(!!selectedHub);
   // Dispatch-label print toast (non-blocking — Send never waits on the printer).
   const [printToast, setPrintToast] = useState(null);
+  const showPausedToast = () => {
+    setPrintToast({ kind: "err", text: PAUSED_MESSAGE });
+    setTimeout(() => setPrintToast(null), 6000);
+  };
   const [nowTick, setNowTick] = useState(() => serverNowMs());
   useEffect(() => {
     const id = setInterval(() => setNowTick(serverNowMs()), 30 * 1000);
@@ -12231,7 +12236,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // the warehouse picks a substitute size. Insights/restock logs continue to
   // log order.size (the customer-requested value); only Source view surfaces
   // sentSize, by design.
-  const updateStatus = async (order, status, extraPatch = {}) => {
+  const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {
+    // A phone Junid has quarantined changes nothing (src/device/deviceRejects.js).
+    // gateChecked: the caller already asked, and stock may have moved since —
+    // asking again could strand a transfer with its order never marked.
+    if (!gateChecked && await thisDevicePaused()) { showPausedToast(); return false; }
     const now = serverNowIso();
     // ── THE POS IS THE ONLY RESTOCK TRIGGER (2026-07-30, owner) ──────────────
     // This used to write a restock_log entry on COLLECTED. Source is now fed by
@@ -12249,6 +12258,17 @@ function WarehouseView({ products = [], orders, onExit }) {
     const patch = { status, updatedAt: now, ...extraPatch };
     if (status === STATUS.READY)           patch.readyAt = now;
     if (status === STATUS.OUT_OF_STOCK)    patch.outOfStockAt = now;
+    // Out of Stock is a reject: one more on this device's count for Junid's
+    // device lists (src/device/rejectCount.js) — and, on the order itself,
+    // WHO and WHICH PHONE (2026-09-25). Before this a sneaker Out of Stock
+    // recorded neither, and four false ones at Hub 2 could only be traced
+    // through the profiler captures. The stamps/ history names the phone too,
+    // but these two fields are what a person or the engine reads.
+    if (status === STATUS.OUT_OF_STOCK) {
+      const rej = countReject({ kind: "order", ref: order.id, hub: order.placedAtHub || order.hub || "hub1", productId: order.productId, size: order.size });
+      patch.outOfStockByUid = rej.uid;
+      patch.outOfStockDeviceId = rej.deviceId;
+    }
     // A FAILED display-pair pull reinstates the slot it tombstoned at order
     // creation: the pair never left the floor, and without this the marker
     // disappears while the cell still reads 1 — the next order for that size
@@ -12399,9 +12419,6 @@ function WarehouseView({ products = [], orders, onExit }) {
     }
 
     updateOrder(order.id, patch);
-    // Out of Stock is a reject: one more on this device's count for Junid's
-    // device list (src/device/rejectCount.js).
-    if (status === STATUS.OUT_OF_STOCK) countReject();
     const insightAction = { [STATUS.READY]:"ready", [STATUS.OUT_OF_STOCK]:"out_of_stock", [STATUS.COMING_TOMORROW]:"tomorrow", [STATUS.COLLECTED]:"collected" }[status];
     if (insightAction) logInsight({
       timestamp: now,
@@ -12426,6 +12443,8 @@ function WarehouseView({ products = [], orders, onExit }) {
       // reset clobbers the live order row.
       ...(status === STATUS.COMING_TOMORROW && patch.onHoldRefillRequestId
         ? { refillRequestId: patch.onHoldRefillRequestId } : {}),
+      // Who + which phone said out of stock, on the permanent log.
+      ...(status === STATUS.OUT_OF_STOCK ? { byUid: patch.outOfStockByUid, deviceId: patch.outOfStockDeviceId } : {}),
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -12486,6 +12505,10 @@ function WarehouseView({ products = [], orders, onExit }) {
   // reason) — an auditable flag a sweep can query, not a toast that fades.
   // Returns the transfer result so callers can gate their own follow-ups.
   const markSentWithTransfer = async (order, extraPatch = {}) => {
+    // Asked BEFORE the transfer: a paused phone must not move stock either.
+    // Asked ONCE — updateStatus below is told it was, so a flag landing
+    // between the transfer and the status can't leave the order unmarked.
+    if (await thisDevicePaused()) { showPausedToast(); return { moved: false, skipped: false, blockSend: true, reason: "device_paused" }; }
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
     const transfer = await recordDispatchTransfer(order, sentSize);
     // Clothing negative guard: a clothing order whose size the hub no longer
@@ -12503,7 +12526,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       ...(transfer.moved || transfer.skipped
         ? { transferFailed: null }
         : { transferFailed: transfer.reason || "unknown" }),
-    });
+    }, { gateChecked: true });
     return transfer;
   };
 
@@ -12969,6 +12992,8 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Shadow previews are never fulfillable — hard guard in case any UI path
     // slips one through (the card itself renders read-only).
     if (batch?.shadow) return { ok: 0, fail: 0, errors: ["Shadow preview — enable Live Mode to fulfil"] };
+    // A phone Junid has quarantined sends and rejects nothing (src/device/deviceRejects.js).
+    if (await thisDevicePaused()) return { ok: 0, fail: batch.items.filter(it => !it.status).length, errors: [PAUSED_MESSAGE] };
     const now = serverNowIso();
     const store = batch.destShop;
     let ok = 0, fail = 0; const errors = [];
@@ -13035,7 +13060,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           // function returns — the engine's scan treats an unresolved order
           // whose source just emptied as withdrawable, and a fire-and-forget
           // write here widens that race for no benefit.
-          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
+          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
@@ -13050,10 +13075,13 @@ function WarehouseView({ products = [], orders, onExit }) {
         // clothingOutOfStockByUid: WHO pressed it (2026-09-23), the same account
         // Central's queue records as resolvedBy. The hourly scan copies it onto
         // the request it closes, so the refusal write-off can name the person.
+        // clothingOutOfStockDeviceId (2026-09-25): WHICH PHONE. The account
+        // alone cannot say — accounts are shared. The scan copies it onto the
+        // request it closes, so the write-off names the phone as well.
         ok++;
-        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
-        countReject();
-        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
+        const rej = countReject({ kind: "clothing", ref: it.orderId, hub: it.placedAtHub || "hub2", productId: batch.productId, size: it.size });
+        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingOutOfStockDeviceId: rej.deviceId, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
+        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null, byUid: rej.uid, deviceId: rej.deviceId });
       }
       // qty 0 & not rejected → left pending for a later pass.
     }
@@ -13099,7 +13127,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
       }
       ok++;
-      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
     }
     return { ok, fail, errors };
   };
@@ -13368,10 +13396,13 @@ function WarehouseView({ products = [], orders, onExit }) {
                     const flow = sendFlows[sendFlowKey(order)] || sendFlowInit();
                     const d = (action) => sendFlowDispatch(order, action);
                     const hubLabel = ({ hub1:"Hub 1", hub2:"Hub 2", hub3:"Hub 3" })[order.placedAtHub || order.hub] || selectedHub || "the hub";
-                    const commitFlow = () => {
+                    const commitFlow = async () => {
                       const done = sendFlowReduce(flow, { type: "CONFIRM" });
                       d({ type: "CONFIRM" });
                       if (!done.commit) return;
+                      // A paused phone gets the paused message, never a
+                      // "sent" banner beside it (src/device/deviceRejects.js).
+                      if (await thisDevicePaused()) { showPausedToast(); return; }
                       if (done.commit.kind === "send") {
                         markSentAndPrint(order, { sentSize: done.commit.size });
                       } else {

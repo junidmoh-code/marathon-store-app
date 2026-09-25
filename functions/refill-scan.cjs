@@ -454,6 +454,8 @@ function closeRequestTxn(cur, c, startedAt) {
     ...(c.humanReject && c.refusedAt ? { refusedAt: c.refusedAt } : {}),
     ...(c.humanReject && c.denier ? { refusedByLoc: c.denier } : {}),
     ...(c.humanReject && c.refusedByUid && !cur.resolvedBy ? { resolvedBy: c.refusedByUid } : {}),
+    // …and since 2026-09-25 WHICH PHONE, in the field Central's queue writes.
+    ...(c.humanReject && c.refusedByDeviceId && !cur.resolvedDeviceId ? { resolvedDeviceId: c.refusedByDeviceId } : {}),
   };
 }
 

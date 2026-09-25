@@ -42,6 +42,10 @@ export function writeoffRows(value) {
       writtenAtMs: Number(r.writtenAtMs) || Date.parse(r.writtenAt || "") || 0,
       refusals: refusals.map((x) => ({
         when: dayLabel(x.day), who: refuserLabel(x, r.loc), forShop: x.dest ? locName(x.dest) : null,
+        // The phone's FIRST 4 characters — the same 4 its Mirror Fleet label
+        // ends with ("Android Chrome · browser · 2964"; the full id is on that
+        // row too). Recorded since 2026-09-25; null before.
+        device: typeof x.byDeviceId === "string" && x.byDeviceId ? x.byDeviceId.slice(0, 4) : null,
       })),
     };
   });
