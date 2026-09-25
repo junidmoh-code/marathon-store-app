@@ -64,7 +64,7 @@ const {
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
 const { pdfToLines } = require("./pdfText.js");
-const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
+const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto } = require("../lib/card-terminals.cjs");
@@ -134,6 +134,12 @@ const WINDOW_EDGE_MS = 2 * 60 * 1000;
 // transactions; only the second kind has an edge worth reporting.
 const edgeMsFor = (extraction) => (
   extraction.windowSource && extraction.windowSource !== "printed" ? WINDOW_EDGE_MS : 0);
+// …and the SLACK a derived window's own transactions may claim legs from — see
+// DERIVED_WINDOW_SLACK_MS in lib/card-expected.cjs. Printed windows get none.
+const slackFor = (extraction) => (
+  extraction.windowSource && extraction.windowSource !== "printed"
+    ? { slackMs: DERIVED_WINDOW_SLACK_MS, lines: extraction.lines || [] }
+    : {});
 
 const EXTRACTION_PROMPT = [
   "These photographs show ONE printed card-terminal Batch Report from an FNB",
@@ -796,6 +802,7 @@ async function handleExtract(db, request) {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
     tailFromMs: extraction.windowSource === "transactions-to-print"
@@ -1067,6 +1074,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
     tailFromMs: extraction.windowSource === "transactions-to-print"
@@ -1300,6 +1308,7 @@ async function handleSubmit(db, request) {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
     tailFromMs: extraction.windowSource === "transactions-to-print"

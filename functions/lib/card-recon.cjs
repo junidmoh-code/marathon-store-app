@@ -750,6 +750,11 @@ function buildBatchRecord({
       // honestly — see the tail note in lib/card-expected.cjs.
       tailLegs: expected.tailLegs ?? 0,
       tailCents: expected.tailCents ?? 0,
+      // Legs just OUTSIDE a derived window that answered one of this report's
+      // own transactions, and so ARE in cardCents — see DERIVED_WINDOW_SLACK_MS
+      // in lib/card-expected.cjs.
+      slackLegs: expected.slackLegs ?? 0,
+      slackCents: expected.slackCents ?? 0,
     },
     // ── WHAT COULD BE ACCOUNTED FOR, WHEREVER IT WAS RUNG ──────────────────
     // The subtraction above is scoped to the till this terminal is MAPPED to.

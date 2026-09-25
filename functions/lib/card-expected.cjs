@@ -25,6 +25,30 @@
 "use strict";
 
 const PAYMENT_EVENTS_PATH = "pos/paymentEvents";
+
+// ── THE SLACK ON A DERIVED WINDOW ────────────────────────────────────────────
+// A banking report prints no Opened/Closed, so its window is the span of its
+// own transactions — zero slack at either end. But the terminal stamps a sale
+// at APPROVAL and the till writes its leg at COMPLETION, minutes later, so the
+// last sales' legs land after the window closes. On 25 Sept 2026 that put
+// Pine Till 1's R800 (17:33 → leg 17:37) and R250 (17:34 → leg 17:39) outside a
+// window ending 17:36, and showed both as money with no sale.
+//
+// TEN MINUTES, from the live ledger (measured 2026-09-25 across every derived-
+// window batch on file — Pine Till 1, Marathon Till 1 and 3, Trophy Till 1:
+// 1,491 paired transactions): the leg is never earlier than the terminal line
+// (2 of 1,491, both amount coincidences hours apart), the lag runs p50 147 s,
+// p95 312 s, and 97% of pairs land within 600 s. Thirteen legs fell past a
+// derived close, the furthest by 204 s; none fell before an open. Ten minutes
+// covers the worst of those three times over and is nowhere near a neighbouring
+// batch (the next one opens the following morning on every terminal).
+//
+// A LEG IN THE SLACK COUNTS ONLY IF IT ANSWERS ONE OF THIS BATCH'S OWN
+// TRANSACTIONS — an amount the report carries that no in-window leg already
+// covers. A slack leg nothing claims is not counted (it may be the next
+// batch's), so the slack can close a false gap but can never invent a sale,
+// and money on the terminal with no leg at any time still shows as a gap.
+const DERIVED_WINDOW_SLACK_MS = 10 * 60 * 1000;
 const { MAX_WINDOW_MS } = require("./card-recon.cjs");
 
 /**
@@ -36,10 +60,28 @@ const { MAX_WINDOW_MS } = require("./card-recon.cjs");
  * @param {Object<string,object>|object[]} events
  * @returns {{cardCents:number, legs:number, byKind:Object<string,{cents:number,legs:number}>}}
  */
-function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs = 0, tailFromMs = null }) {
+function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs = 0, tailFromMs = null, slackMs = 0, lines = null }) {
   const rows = Array.isArray(events) ? events : Object.values(events || {});
   let cardCents = 0, legs = 0;
   const byKind = {};
+  const addToKind = (e, amount) => {
+    const kind = typeof e.kind === "string" && e.kind ? e.kind : "unknown";
+    const bucket = byKind[kind] || (byKind[kind] = { cents: 0, legs: 0 });
+    bucket.cents += amount;
+    bucket.legs += 1;
+  };
+  // Legs in the derived-window slack, and the ones a transaction claimed.
+  const slackCandidates = [];
+  let slackLegs = 0, slackCents = 0;
+  // Per amount: how many of this report's transactions the in-window legs have
+  // not yet answered. Only these can claim a slack leg.
+  const unmet = new Map();
+  const canClaim = slackMs > 0 && Array.isArray(lines) && lines.length > 0;
+  if (canClaim) {
+    for (const l of lines) {
+      if (l && Number.isInteger(l.amountCents)) unmet.set(l.amountCents, (unmet.get(l.amountCents) || 0) + 1);
+    }
+  }
   // Legs that sit JUST OUTSIDE the window — see the nearEdge note below.
   let nearEdgeLegs = 0, nearEdgeCents = 0;
   // Legs INSIDE the window but after the last transaction on the report — see
@@ -51,6 +93,10 @@ function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeM
     const at = Number(e.at);
     if (!Number.isFinite(at)) continue;
     if (at < startMs || at >= endMs) {
+      if (canClaim && Number.isInteger(e.amount) && at >= startMs - slackMs && at < endMs + slackMs) {
+        slackCandidates.push(e);   // decided below, once every in-window leg is known
+        continue;
+      }
       // ── THE WINDOW EDGE ──────────────────────────────────────────────────
       // A printed slip's window has natural slack: the terminal opens the batch
       // before the first sale and closes it after the last, so the legs that
@@ -90,12 +136,26 @@ function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeM
     // so the tail is measured and reported rather than hidden inside the
     // expected figure it contributes to.
     if (tailFromMs !== null && at > tailFromMs) { tailLegs += 1; tailCents += amount; }
-    const kind = typeof e.kind === "string" && e.kind ? e.kind : "unknown";
-    const bucket = byKind[kind] || (byKind[kind] = { cents: 0, legs: 0 });
-    bucket.cents += amount;
-    bucket.legs += 1;
+    addToKind(e, amount);
+    if (unmet.has(amount)) unmet.set(amount, unmet.get(amount) - 1);
   }
-  return { cardCents, legs, byKind, nearEdgeLegs, nearEdgeCents, tailLegs, tailCents };
+  // ── THE SLACK, CLAIMED — nearest the window first ───────────────────────────
+  const distance = (at) => (at < startMs ? startMs - at : at - endMs);
+  slackCandidates.sort((a, b) => distance(Number(a.at)) - distance(Number(b.at)));
+  for (const e of slackCandidates) {
+    const at = Number(e.at);
+    if ((unmet.get(e.amount) || 0) > 0) {
+      unmet.set(e.amount, unmet.get(e.amount) - 1);
+      cardCents += e.amount; legs += 1;
+      slackLegs += 1; slackCents += e.amount;
+      addToKind(e, e.amount);
+    } else if (edgeMs > 0 && at >= startMs - edgeMs && at < endMs + edgeMs) {
+      // Unclaimed: reported exactly as an unclaimed near-edge leg always was.
+      nearEdgeLegs += 1;
+      nearEdgeCents += e.amount;
+    }
+  }
+  return { cardCents, legs, byKind, nearEdgeLegs, nearEdgeCents, tailLegs, tailCents, slackLegs, slackCents };
 }
 
 /**
@@ -134,7 +194,7 @@ function cashiersFromEvents(events, { storeId, tillId, startMs, endMs }) {
  *
  * @param {import("firebase-admin").database.Database} db
  */
-async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs = 0, tailFromMs = null }) {
+async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs = 0, tailFromMs = null, slackMs = 0, lines = null }) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     throw new Error("computeExpectedCard: bad window");
   }
@@ -146,12 +206,13 @@ async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs
   // The query is widened by edgeMs ONLY so the near-edge legs can be counted;
   // the window itself is unchanged, and the pure filter below still admits
   // nothing outside [startMs, endMs) to the expected figure.
+  const reach = Math.max(edgeMs, slackMs);
   const snap = await db.ref(PAYMENT_EVENTS_PATH)
-    .orderByChild("at").startAt(startMs - edgeMs).endAt(endMs + edgeMs)
+    .orderByChild("at").startAt(startMs - reach).endAt(endMs + reach)
     .once("value");
   const events = snap.val() || {};
   return {
-    ...expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs, tailFromMs }),
+    ...expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeMs, tailFromMs, slackMs, lines }),
     cashiers: cashiersFromEvents(events, { storeId, tillId, startMs, endMs }),
   };
 }
@@ -180,7 +241,7 @@ async function cardLegsInWindow(db, { startMs, endMs, edgeMs = 0 }) {
 }
 
 module.exports = {
-  PAYMENT_EVENTS_PATH, cardLegsInWindow,
+  PAYMENT_EVENTS_PATH, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS,
   expectedCardFromEvents,
   cashiersFromEvents,
   computeExpectedCard,
