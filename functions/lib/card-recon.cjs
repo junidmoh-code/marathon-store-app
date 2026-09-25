@@ -410,6 +410,11 @@ const MIN_KEY_FIELD_CONFIDENCE = 0.75;
 // strict parse (a garbled figure stays null and is refused below) plus the
 // slip arithmetic.
 const KEY_FIELDS = ["tid", "batchNo", "totalCents", "openedAt", "closedAt", "purchasesCents", "txnCount"];
+// What a total declared by hand excuses from the confidence gate: the TOTAL it
+// replaces, the purchases figure printed beside it, and the Transactions count
+// — which only feeds the line checks a summary-only record never runs. TID,
+// batch number and the Opened/Closed window are still gated as normal.
+const DECLARED_EXEMPT_FIELDS = ["totalCents", "purchasesCents", "txnCount"];
 // No FNB batch runs a week: a window wider than this is a misread date (or a
 // forged draft) and must never become the bounds of a ledger query.
 const MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -425,7 +430,7 @@ const MAX_REVISIONS = 20;
  *
  * @returns {{ok:true, warnings:string[]} | {ok:false, reason:string}}
  */
-function validateExtraction(ex, { summaryOnly = false, source = "photo", format = null } = {}) {
+function validateExtraction(ex, { summaryOnly = false, source = "photo", format = null, declaredTotal = false } = {}) {
   // The extraction names its own format; the caller may override for a test.
   const reportFormat = format || ex.format || "printed";
   // THE CONFIDENCE GATE IS ABOUT OCR, AND ONLY OCR. A PDF carries the slip's
@@ -437,9 +442,14 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // EVERY OTHER CHECK BELOW APPLIES UNCHANGED to both sources — the shape of
   // each figure, the slip's own arithmetic, the 7-day window cap, the line
   // count against the printed Transactions figure, and TSN contiguity.
+  // A TOTAL DECLARED BY HAND (see readDeclaredTotal) was not read by OCR, so
+  // OCR's confidence in it — and in the purchases figure printed beside it,
+  // which on a half-printed slip is usually not on the paper either — says
+  // nothing. Every other key field is still gated exactly as before.
+  const gated = declaredTotal ? KEY_FIELDS.filter((f) => !DECLARED_EXEMPT_FIELDS.includes(f)) : KEY_FIELDS;
   if (source !== "pdf") {
     const conf = ex.confidence || {};
-    for (const f of KEY_FIELDS) {
+    for (const f of gated) {
       const c = Number(conf[f]);
       if (!Number.isFinite(c) || c < MIN_KEY_FIELD_CONFIDENCE) {
         return { ok: false, reason: `Could not read the slip's ${describeField(f)} confidently — retake that photo in better light.` };
@@ -448,7 +458,7 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   }
   if (!normaliseTid(ex.tid)) return { ok: false, reason: `"${ex.tid}" does not look like a terminal ID — retake the header photo.` };
   if (normaliseBatchNo(ex.batchNo) === null) return { ok: false, reason: `"${ex.batchNo}" does not look like a batch number — retake the header photo.` };
-  for (const f of ["totalCents", "purchasesCents", "refundsCents", "cashCents"]) {
+  for (const f of declaredTotal ? ["totalCents"] : ["totalCents", "purchasesCents", "refundsCents", "cashCents"]) {
     if (!Number.isInteger(ex[f])) return { ok: false, reason: `The slip's ${describeField(f)} did not read as an amount — retake the totals photo.` };
   }
   // ── THE RECONCILIATION WINDOW ─────────────────────────────────────────────
@@ -486,18 +496,33 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // printed figure would not parse — and null was refused by the loop above,
   // so a garbled figure can never be silently treated as zero.
   const cash = ex.cashCents;
-  if (ex.purchasesCents + cash - ex.refundsCents !== ex.totalCents) {
+  // With a hand-declared total the printed block is usually missing, so its
+  // arithmetic cannot be demanded. Where OCR DID read all three figures
+  // confidently and they disagree with the typed total, that is said on the
+  // record (a typo is the likeliest cause) — never a refusal, because the
+  // paper that would settle it is exactly what did not print.
+  const declaredWarnings = [];
+  if (declaredTotal) {
+    const block = [ex.purchasesCents, cash, ex.refundsCents];
+    const confident = Number(ex.confidence?.purchasesCents) >= MIN_KEY_FIELD_CONFIDENCE;
+    if (confident && block.every(Number.isInteger) && ex.purchasesCents + cash - ex.refundsCents !== ex.totalCents) {
+      declaredWarnings.push(`The purchases, cash and refunds read off the slip come to ${formatCents(ex.purchasesCents + cash - ex.refundsCents)}, but the total declared by hand is ${formatCents(ex.totalCents)}. Check the typed figure against the slip photo.`);
+    }
+  } else if (ex.purchasesCents + cash - ex.refundsCents !== ex.totalCents) {
     return {
       ok: false,
       reason: `The slip's figures don't add up as read (${formatCents(ex.purchasesCents)} purchases + ${formatCents(cash)} cash − ${formatCents(ex.refundsCents)} refunds ≠ ${formatCents(ex.totalCents)} total) — retake the totals photo.`,
     };
   }
-  if (!Number.isInteger(ex.txnCount) || ex.txnCount < 0) {
+  if (!declaredTotal && (!Number.isInteger(ex.txnCount) || ex.txnCount < 0)) {
     return { ok: false, reason: "The printed Transactions count did not read cleanly — retake the header photo." };
   }
 
   const warnings = [];
-  if (summaryOnly) return { ok: true, warnings: ["Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
+  if (summaryOnly) return { ok: true, warnings: [...declaredWarnings, "Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
+  // A declared total is only ever accepted summary-only (the callable forces
+  // it): a slip that did not print its total did not print a whole roll either.
+  if (declaredTotal) return { ok: false, reason: "A total declared by hand can only be recorded summary-only." };
 
   const lines = Array.isArray(ex.lines) ? ex.lines : [];
   // AN EMPTY BATCH (lib/card-recon-pdf.cjs → emptyBatchExtraction): the
@@ -624,6 +649,11 @@ function buildBatchRecord({
   // callable — so a figure recorded with no human in the loop still names what
   // put it there. See lib/card-recon-email.cjs.
   intake = null,
+  // A TOTAL DECLARED BY HAND — { cents, ocrReadCents, byUid, byEmail, at } —
+  // or null. When present, slip.totalCents IS the typed figure and this block
+  // says so, with who and when. Absent from every other record, so an ordinary
+  // batch is byte-for-byte what it was. See readDeclaredTotal.
+  declaredTotal = null,
 }) {
   const lines = summaryOnly ? null : Object.fromEntries(
     (extraction.lines || []).map((l) => [String(l.tsn), {
@@ -673,9 +703,11 @@ function buildBatchRecord({
       openedAt: extraction.openedAt, closedAt: extraction.closedAt,
       printedAt: extraction.printedAt ?? null,
       openedText: extraction.openedText ?? null, closedText: extraction.closedText ?? null,
-      txnCount: extraction.txnCount,
+      // An unread count (possible only on a hand-declared batch) is null, not NaN.
+      txnCount: Number.isInteger(extraction.txnCount) ? extraction.txnCount : null,
       purchasesCents: extraction.purchasesCents,
-      cashCents: Number.isInteger(extraction.cashCents) ? extraction.cashCents : 0,
+      // A hand-declared batch keeps an unread cash figure as unread, not zero.
+      cashCents: Number.isInteger(extraction.cashCents) ? extraction.cashCents : (declaredTotal ? null : 0),
       refundsCents: extraction.refundsCents,
       totalCents: extraction.totalCents,
       reconLine: extraction.reconLine ?? null,
@@ -766,7 +798,52 @@ function buildBatchRecord({
     capturedVia,
     pdfPath: pdfPath ?? null,
     intake: intake ?? null,
+    ...(declaredTotal ? { declaredTotal } : {}),
   };
+}
+
+// ─── A TOTAL DECLARED BY HAND ────────────────────────────────────────────────
+// THE ONE PLACE IN THE SYSTEM WHERE A HUMAN NUMBER IS ACCEPTED, and it is
+// Junid's alone. Some terminals' printers print half the slip (Trophy Till 2,
+// Marathon Till 2), so the TOTAL is not on the paper and no reader can find it.
+// For those, the owner may type the total beside the photo:
+//
+//   • the PHOTO IS STILL REQUIRED and still stored — the paper is the evidence;
+//     the typed figure only replaces the one thing OCR could not read;
+//   • everything else is still read off the slip and checked as normal — TID
+//     (which must still be the picked till), batch number, timestamps;
+//   • the record carries `declaredTotal` with who and when, and the owner's
+//     report never shows such a batch as clean.
+//
+// The parse is the slip's own strict parser: a mangled figure is refused,
+// never coerced. A STRING only — a JSON number would skip the shape check.
+const DECLARED_TOTAL_EMAIL = "gunidmoh@gmail.com";
+// A day's takings on one terminal; anything larger is a slipped finger.
+const MAX_DECLARED_TOTAL_CENTS = 100000000; // R1,000,000
+
+/** Was a total declared at all? Absent, null and "" all mean no. */
+function hasDeclaredTotal(raw) {
+  return raw !== undefined && raw !== null && !(typeof raw === "string" && raw.trim() === "");
+}
+
+/** @returns {{cents:number} | {err:string}} */
+function readDeclaredTotal(raw) {
+  if (typeof raw !== "string") return { err: "The typed total did not arrive as text — type it again." };
+  const cents = parseRandsToCents(raw.trim());
+  if (!Number.isInteger(cents)) {
+    return { err: `"${raw.trim().slice(0, 30)}" is not an amount — type the total as it would print, e.g. 12,345.67.` };
+  }
+  if (cents < 0) return { err: "A typed total cannot be negative. Nothing was recorded." };
+  if (cents > MAX_DECLARED_TOTAL_CENTS) {
+    return { err: `${formatCents(cents)} is more than any terminal takes in a batch — check the figure.` };
+  }
+  return { cents };
+}
+
+/** Only the owner's own token may declare a total — the same identity test
+ *  assertCardRecon's owner bypass uses, and nothing a permission flag grants. */
+function mayDeclareTotal(token) {
+  return !!token && token.email === DECLARED_TOTAL_EMAIL;
 }
 
 // ─── WHICH SOURCE IS THIS SUBMISSION? ────────────────────────────────────────
@@ -819,4 +896,5 @@ module.exports = {
   normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
+  DECLARED_TOTAL_EMAIL, MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
 };

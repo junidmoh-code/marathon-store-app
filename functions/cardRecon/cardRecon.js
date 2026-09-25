@@ -3,8 +3,10 @@
 // this callable OCRs it, refuses anything it could not read soundly, computes
 // what the POS tender ledger says the card takings for that till over the
 // slip's Opened→Closed window should have been, and records slip + expectation
-// + variance append-only at /card_batches. NOBODY TYPES THE CARD TOTAL —
-// there is no input for one, here or in the UI.
+// + variance append-only at /card_batches. NOBODY TYPES THE CARD TOTAL — with
+// ONE exception, Junid's alone: on a terminal whose printer prints half the
+// slip he may type the total BESIDE the photo (`declaredTotal`), and the record
+// says so, with who and when. See readDeclaredTotal in lib/card-recon.cjs.
 //
 // TWO PHASES, one callable:
 //   action:"extract" — photos in, OCR (Gemini 3.6 Flash, structured JSON — the
@@ -57,6 +59,7 @@ const {
   normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
+  hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
@@ -603,7 +606,29 @@ async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
 }
 
 async function handleExtract(db, request) {
-  const { photos, pdf, pickedTid, summaryOnly, channel } = request.data || {};
+  const { photos, pdf, pickedTid, channel } = request.data || {};
+
+  // ── A TOTAL DECLARED BY HAND — Junid's alone, and never without the paper ──
+  // Checked FIRST, before a byte of OCR is paid for. See readDeclaredTotal in
+  // lib/card-recon.cjs for the whole contract.
+  const declaring = hasDeclaredTotal(request.data?.declaredTotal);
+  let declared = null;
+  if (declaring) {
+    if (!mayDeclareTotal(request.auth?.token)) {
+      throw new HttpsError("permission-denied", "Only Junid can type a batch total. Photograph the slip instead.");
+    }
+    if (channel === "email" || pdf) {
+      throw new HttpsError("invalid-argument", "A typed total goes with a photo of the slip, never with a file.");
+    }
+    if (!Array.isArray(photos) || photos.length === 0) {
+      return reject("A typed total is refused without a photo of the slip — the paper is the evidence. Nothing was recorded.");
+    }
+    declared = readDeclaredTotal(request.data.declaredTotal);
+    if (declared.err) return reject(declared.err);
+  }
+  // A declared total is always summary-only: a slip that did not print its
+  // total did not print a whole roll either.
+  const summaryOnly = !!request.data?.summaryOnly || declaring;
 
   // ONE PATH PER SUBMISSION — decided once, in chooseCaptureSource, because the
   // same answer stamps `capturedVia` on the record further down.
@@ -715,6 +740,10 @@ async function handleExtract(db, request) {
   if (!ocr.parsed) return reject("The photos could not be read as a batch report — retake them, filling the frame with the slip.");
   const extraction = toExtraction(ocr.parsed);
   console.log(photoReadLogLine(picked, ocr));
+  // What the reader made of the total, kept beside the typed one — on a
+  // half-printed slip this is normally null, and when it is not, the owner can
+  // see both.
+  const ocrReadCents = Number.isInteger(extraction.totalCents) ? extraction.totalCents : null;
 
   // ── THE TID DECIDES, NOT THE PICKER — a wrong slip rejects itself ──
   // The model's RAW answer is logged on a TID refusal. On 20 Sept Marathon
@@ -737,6 +766,9 @@ async function handleExtract(db, request) {
     return reject(`This slip prints TID ${extraction.tid}, not the till you picked${where}. Capture the slip on its own till.`);
   }
 
+  // THE TOTAL ONLY, and only now that the slip has proved which till it is.
+  if (declared) extraction.totalCents = declared.cents;
+
   // Overlapping photos collapse; conflicting readings refuse.
   if (!summaryOnly) {
     const dedup = dedupeLines(extraction.lines);
@@ -746,7 +778,7 @@ async function handleExtract(db, request) {
     extraction.lines = [];
   }
 
-  const verdict = validateExtraction(extraction, { summaryOnly: !!summaryOnly });
+  const verdict = validateExtraction(extraction, { summaryOnly: !!summaryOnly, declaredTotal: declaring });
   if (!verdict.ok) return reject(verdict.reason);
 
   // Duplicate check at extract time so the operator hears it BEFORE reviewing.
@@ -787,6 +819,9 @@ async function handleExtract(db, request) {
   // variance on the one batch most likely to be looked at.
   const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
   if (straddle) warnings.push(straddle);
+  if (declared) {
+    warnings.unshift(`The total (${formatCents(declared.cents)}) was typed by ${request.auth.token?.email || request.auth.uid}, not read off the slip — the slip did not print it. Nobody has verified it against paper.`);
+  }
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
   // drafts is bounded by construction — one person holds at most a handful.
@@ -829,6 +864,12 @@ async function handleExtract(db, request) {
     // ledger moved between review and record (architect review, 2026-08-28).
     reviewedExpectedCents: expected.cardCents,
     ocr: { model: ocr.model, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD },
+    // Who typed the total, when, and what the reader made of it. Server-written
+    // (the drafts node is owner-only by rule) and re-checked at submit.
+    declaredTotal: declared ? {
+      cents: declared.cents, ocrReadCents,
+      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, at: Date.now(),
+    } : null,
   };
   await draftRef.set(draft);
 
@@ -849,6 +890,7 @@ async function handleExtract(db, request) {
       confidence: extraction.confidence,
       lineCount: extraction.lines.length,
       summaryOnly: !!summaryOnly,
+      totalDeclaredByHand: !!declared,
       warnings,
       // CAPTURE ONLY. The manager confirms the OCR read the SLIP IN THEIR HAND
       // correctly and that is the end of their involvement. Deliberately NOT
@@ -1156,6 +1198,20 @@ async function handleSubmit(db, request) {
   const terminal = draft.terminal;
   const batchNo = normaliseBatchNo(extraction.batchNo);
 
+  // A TOTAL DECLARED BY HAND is re-checked like everything else: still the
+  // owner at the moment of record, still the figure on the draft, still
+  // summary-only, still a photograph.
+  const declaredTotal = draft.declaredTotal || null;
+  if (declaredTotal) {
+    const intact = Number.isInteger(declaredTotal.cents) && declaredTotal.cents === extraction.totalCents
+      && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
+      && Array.isArray(draft.photoPaths) && draft.photoPaths.length > 0;
+    if (!mayDeclareTotal(request.auth?.token) || !intact) {
+      await draftRef.remove().catch(() => {});
+      return reject("This capture's typed total could not be verified — nothing was recorded. Photograph the slip and type the total again.");
+    }
+  }
+
   // ── RE-VALIDATE THE DRAFT, IN FULL ──────────────────────────────────────
   // DEFENCE IN DEPTH, not compensation for an open rule. This used to note that
   // the drafts sat under /pos, whose `$other` write grant would have let a
@@ -1181,6 +1237,7 @@ async function handleSubmit(db, request) {
     : validateExtraction(extraction, {
         summaryOnly: !!draft.summaryOnly,
         source: draft.capturedVia === "pdf" ? "pdf" : "photo",
+        declaredTotal: !!declaredTotal,
       });
   if (!revalid.ok) {
     await draftRef.remove().catch(() => {});
@@ -1291,6 +1348,13 @@ async function handleSubmit(db, request) {
     capturedVia: draft.capturedVia === "pdf" ? "pdf" : "photo",
     pdfPath: draft.pdfPath || null,
     intake: draftIntake,
+    declaredTotal: declaredTotal ? {
+      cents: declaredTotal.cents,
+      ocrReadCents: Number.isInteger(declaredTotal.ocrReadCents) ? declaredTotal.ocrReadCents : null,
+      byUid: declaredTotal.byUid ?? request.auth.uid,
+      byEmail: declaredTotal.byEmail ?? null,
+      at: Number.isInteger(declaredTotal.at) ? declaredTotal.at : Date.now(),
+    } : null,
   });
 
   const txn = await tidRef.child(write.key).transaction((cur) => {

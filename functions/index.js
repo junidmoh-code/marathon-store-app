@@ -3911,7 +3911,7 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // from /pos/paymentEvents tender legs (Admin SDK — the browser never reads POS
 // money), and writes slip + expected + variance APPEND-ONLY at
 // /card_batches (top-level, owner-only read). Nobody types the card total
-// anywhere. Gated by the
+// anywhere, bar Junid on a half-printed slip (readDeclaredTotal). Gated by the
 // dedicated card_recon permission flag, not stockRole. Cost logged to
 // /aiAssistant/usage. Model + docs: functions/lib/card-recon.cjs,
 // lib/card-expected.cjs, docs/CARD-RECON.md.

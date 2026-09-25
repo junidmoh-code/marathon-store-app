@@ -46,8 +46,15 @@
 // the wrong slip on the wrong till refuses itself. Who worked the till is
 // derived server-side and nobody selects a person anywhere in this feature.
 //
-// NOBODY TYPES A FIGURE, and there is no editable field to type one into. A bad
-// read is a retake.
+// NOBODY TYPES A FIGURE — except Junid, in one place. A bad read is a retake.
+// The exception: some printers print half the slip (Trophy Till 2, Marathon
+// Till 2), so the total is not on the paper and a retake cannot help. For
+// those, and ONLY on the owner's account, a camera card offers "Type the
+// total": the figure goes up WITH a photo (still required, still stored), the
+// server still reads the TID, batch and window off the slip, and the record
+// says the total was declared by hand. The server enforces all of that — this
+// file only hides the field from everyone else. It renders no money figure: the
+// typed text is sent as typed and never echoed back.
 //
 // NO CARD NUMBERS. The masked PAN is parsed server-side for line identity and
 // is never sent to this client.
@@ -159,6 +166,21 @@ const T = {
   // its label can always open; display:none inputs are the thing phone browsers
   // and webviews quietly refuse to activate.
   input: { position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" },
+  // Junid's typed-total row: quiet until opened, and plainly a different act.
+  typeToggle: { appearance: "none", border: 0, background: "transparent", cursor: "pointer", fontFamily: FONT,
+                fontSize: 13, fontWeight: 600, color: "rgba(180,160,255,.75)", textAlign: "left",
+                padding: "2px 4px 6px", marginTop: -6, minHeight: 32 },
+  typeBox: { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, marginTop: -4, padding: 12, borderRadius: 14,
+             background: "rgba(150,120,255,.06)", border: "1px solid rgba(150,120,255,.28)" },
+  typeInput: { minWidth: 0, minHeight: 46, borderRadius: 12, padding: "0 12px", fontFamily: FONT, fontSize: 17,
+               color: "#E9EEFF", background: "rgba(0,0,0,.25)", border: "1px solid rgba(255,255,255,.14)" },
+  typeGo: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 46,
+            padding: "0 14px", borderRadius: 12, cursor: "pointer", fontFamily: FONT, fontSize: 14, fontWeight: 700,
+            color: "#E9EEFF", background: "rgba(150,120,255,.28)", border: "1px solid rgba(150,120,255,.5)" },
+  typeGoOff: { opacity: 0.4, cursor: "default" },
+  typeCancel: { appearance: "none", gridColumn: "1 / -1", justifySelf: "start", border: 0, background: "transparent",
+                cursor: "pointer", fontFamily: FONT, fontSize: 13, color: "rgba(233,238,255,.5)", padding: "4px 2px" },
+  typeNote: { gridColumn: "1 / -1", fontSize: 12.5, lineHeight: 1.5, color: "rgba(233,238,255,.5)" },
 };
 
 /**
@@ -244,6 +266,16 @@ export default function CardReconScreen({ onExit }) {
   // The photo of the last attempt, kept only so "replace the earlier capture"
   // does not ask for it to be taken again.
   const lastPhoto = useRef({});
+  // …and the typed total that went with it, so the replace carries it too.
+  const lastTyped = useRef({});
+
+  // ── JUNID'S TYPED TOTAL — which card has the field open, and what is in it ──
+  const [typing, setTyping] = useState({});   // tid → the text as typed
+  const closeTyping = (tid) => setTyping((prev) => {
+    const next = { ...prev };
+    delete next[tid];
+    return next;
+  });
 
   // A RETIRED MACHINE HAS NO CARD. Which ones those are, and the order the rest
   // are drawn in, is the registry module's decision — see terminalRegistry.js.
@@ -276,11 +308,13 @@ export default function CardReconScreen({ onExit }) {
   // manager to confirm the figures it had read; the figures are no longer shown,
   // so there is nothing to confirm. The callable is untouched: the same two
   // actions, the same payload one photo makes, the same refusals.
-  const send = async (tid, base64, correction) => {
+  const send = async (tid, base64, correction, declaredTotal) => {
     setPhase(tid, { phase: "busy" });
     try {
       const { data } = await cardBatchCaptureFn({
         action: "extract", pickedTid: tid, photos: [{ base64 }],
+        // Junid's typed total, as typed; the server parses, gates and records it.
+        ...(declaredTotal ? { declaredTotal } : {}),
         // ONE PHOTO IS A SUMMARY. It always was: the screen this replaced sent
         // `summaryOnly || detailPhotos.length === 0`, so a single-photo capture
         // was flagged summary-only whether or not the checkbox was ticked. The
@@ -306,6 +340,8 @@ export default function CardReconScreen({ onExit }) {
       setMine((prev) => new Set(prev).add(tid));
       setPhase(tid, null);
       delete lastPhoto.current[tid];
+      delete lastTyped.current[tid];
+      if (declaredTotal) closeTyping(tid);
     } catch (err) {
       // ── THE FAILURE NAMES ITSELF ─────────────────────────────────────────
       // This used to answer EVERY thrown error with "That did not go through.
@@ -325,10 +361,15 @@ export default function CardReconScreen({ onExit }) {
     }
   };
 
-  const onPick = (tid) => async (e) => {
+  const onPick = (tid, declaredTotal) => async (e) => {
     const files = [...(e.target.files || [])];
     e.target.value = "";
     if (!files.length) return;
+    // The typed path never sends without a figure — nor, below, without a photo.
+    if (declaredTotal !== undefined && !String(declaredTotal).trim()) {
+      setPhase(tid, { phase: "failed", reason: "Type the total first, then photograph the slip." });
+      return;
+    }
 
     // The decision about what is usable stays in the tested pure module, cap 1:
     // a non-photo is refused BY NAME rather than as "that doesn't look like a
@@ -356,7 +397,9 @@ export default function CardReconScreen({ onExit }) {
     const tooBig = payloadRefusal([photo]);
     if (tooBig) { setPhase(tid, { phase: "failed", reason: tooBig }); return; }
     lastPhoto.current[tid] = photo.base64;
-    await send(tid, photo.base64, false);
+    const typed = declaredTotal !== undefined ? String(declaredTotal).trim() : undefined;
+    if (typed) lastTyped.current[tid] = typed; else delete lastTyped.current[tid];
+    await send(tid, photo.base64, false, typed);
   };
 
   return (
@@ -425,10 +468,35 @@ export default function CardReconScreen({ onExit }) {
               )}
               {state.phase === "failed" && state.canReplace && lastPhoto.current[t.tid] && (
                 <button style={T.again}
-                        onClick={() => send(t.tid, lastPhoto.current[t.tid], true)}>
+                        onClick={() => send(t.tid, lastPhoto.current[t.tid], true, lastTyped.current[t.tid])}>
                   Replace the earlier capture
                 </button>
               )}
+              {/* JUNID ONLY: a total typed beside the photo, for a slip whose
+                  printer did not print one. Never offered to anyone else, and
+                  refused by the server for anyone else regardless. */}
+              {isOwner && camera && !busy && (typing[t.tid] === undefined ? (
+                <button style={T.typeToggle} onClick={() => setTyping((prev) => ({ ...prev, [t.tid]: "" }))}>
+                  Slip didn&rsquo;t print its total? Type it
+                </button>
+              ) : (
+                <div style={T.typeBox}>
+                  <input style={T.typeInput} inputMode="decimal" autoComplete="off" enterKeyHint="done"
+                         aria-label={`Total for ${t.label || t.tid}, typed by hand`}
+                         placeholder="Total, e.g. 12,345.67" value={typing[t.tid]}
+                         onChange={(e) => { const v = e.target.value; setTyping((prev) => ({ ...prev, [t.tid]: v })); }} />
+                  <label style={{ ...T.typeGo, ...(typing[t.tid].trim() ? null : T.typeGoOff) }}>
+                    <input type="file" accept="image/*" style={T.input}
+                           disabled={!typing[t.tid].trim()} onChange={onPick(t.tid, typing[t.tid])} />
+                    Photograph the slip
+                  </label>
+                  <button style={T.typeCancel} onClick={() => closeTyping(t.tid)}>Cancel</button>
+                  <div style={T.typeNote}>
+                    The photo is still required. The total is recorded as typed by you, and the
+                    report marks this batch as declared by hand.
+                  </div>
+                </div>
+              ))}
             </React.Fragment>
           );
         })}
