@@ -55,7 +55,10 @@ test("absent, null and blank all mean no total was declared", () => {
 // ── the gate ─────────────────────────────────────────────────────────────────
 test("only Junid's own token may declare a total", () => {
   assert.equal(DECLARED_TOTAL_EMAIL, "gunidmoh@gmail.com");
-  assert.equal(mayDeclareTotal({ email: "gunidmoh@gmail.com" }), true);
+  assert.equal(mayDeclareTotal({ email: "gunidmoh@gmail.com", email_verified: true }), true);
+  // The address alone is not enough: an unverified credential claiming it is refused.
+  assert.equal(mayDeclareTotal({ email: "gunidmoh@gmail.com" }), false);
+  assert.equal(mayDeclareTotal({ email: "gunidmoh@gmail.com", email_verified: false }), false);
   // His git address is NOT his Firebase admin identity.
   assert.equal(mayDeclareTotal({ email: "junidmoh@gmail.com" }), false);
   assert.equal(mayDeclareTotal({ email: "manager@marathon.co.za", card_recon: true }), false);

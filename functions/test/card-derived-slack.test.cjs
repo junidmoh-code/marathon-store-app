@@ -92,3 +92,30 @@ test("the callable gives the slack to derived windows only", () => {
   assert.match(src, /windowSource !== "printed"\s*\n?\s*\? \{ slackMs: DERIVED_WINDOW_SLACK_MS/);
   assert.equal((src.match(/\.\.\.slackFor\(extraction\)/g) || []).length, 3, "extract (photo + pdf) and submit");
 });
+
+test("AMOUNT ALONE NEVER CLAIMS: a noon line with no leg is not answered by the next batch's same-amount sale at close", () => {
+  // CodeRabbit, PR #649. The R250 at noon was never rung up — a real gap. A
+  // R250 sale for the NEXT batch lands 4 minutes after this report's close.
+  const lines = [line(T("12:00:00"), 25000), line(T("17:33:20"), 80000)];
+  const legs = [leg(T("17:37:51"), 80000), leg(T("17:40:00"), 25000)];
+  const r = expectedCardFromEvents(legs, scope({ slackMs: DERIVED_WINDOW_SLACK_MS, lines }));
+  assert.equal(r.cardCents, 80000, "the R250 gap stays a gap");
+  assert.equal(r.slackLegs, 1);
+});
+
+test("an in-window leg answers its OWN line, leaving the edge line for the slack", () => {
+  // Two R250 sales: noon (leg in the window) and 17:34 (leg in the slack).
+  const lines = [line(T("12:00:00"), 25000), line(T("17:34:50"), 25000)];
+  const legs = [leg(T("12:03:00"), 25000), leg(T("17:39:20"), 25000)];
+  const r = expectedCardFromEvents(legs, scope({ slackMs: DERIVED_WINDOW_SLACK_MS, lines }));
+  assert.equal(r.cardCents, 50000);
+});
+
+test("…but if the NOON leg is the missing one, the edge sale's late leg still cannot cover for it", () => {
+  // Noon R250 has no leg; the 17:34 R250 has an in-window leg at 17:35 AND a
+  // stray next-batch R250 turns up at 17:41. Only one R250 is really in POS.
+  const lines = [line(T("12:00:00"), 25000), line(T("17:34:50"), 25000)];
+  const legs = [leg(T("17:35:30"), 25000), leg(T("17:41:00"), 25000)];
+  const r = expectedCardFromEvents(legs, scope({ slackMs: DERIVED_WINDOW_SLACK_MS, lines }));
+  assert.equal(r.cardCents, 25000, "the noon R250 is still missing");
+});

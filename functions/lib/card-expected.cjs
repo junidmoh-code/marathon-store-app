@@ -44,10 +44,14 @@ const PAYMENT_EVENTS_PATH = "pos/paymentEvents";
 // batch (the next one opens the following morning on every terminal).
 //
 // A LEG IN THE SLACK COUNTS ONLY IF IT ANSWERS ONE OF THIS BATCH'S OWN
-// TRANSACTIONS — an amount the report carries that no in-window leg already
-// covers. A slack leg nothing claims is not counted (it may be the next
-// batch's), so the slack can close a false gap but can never invent a sale,
-// and money on the terminal with no leg at any time still shows as a gap.
+// TRANSACTIONS: a line of the same amount that no in-window leg answered, AND
+// stamped within the slack of the leg. Amount alone is not enough — a line
+// from noon with no leg at all must not be "answered" by the next batch's sale
+// of the same amount at 17:40, or the slack would hide the very gap it must
+// leave alone. (CodeRabbit, PR #649.) A slack leg nothing claims is not counted
+// (it may be the next batch's), so the slack can close a false gap but can
+// never invent a sale, and money on the terminal with no leg at any time still
+// shows as a gap.
 const DERIVED_WINDOW_SLACK_MS = 10 * 60 * 1000;
 const { MAX_WINDOW_MS } = require("./card-recon.cjs");
 
@@ -73,15 +77,25 @@ function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeM
   // Legs in the derived-window slack, and the ones a transaction claimed.
   const slackCandidates = [];
   let slackLegs = 0, slackCents = 0;
-  // Per amount: how many of this report's transactions the in-window legs have
-  // not yet answered. Only these can claim a slack leg.
-  const unmet = new Map();
+  // This report's transactions, each answered at most once — first by an
+  // in-window leg, then (only if still unanswered) by a slack leg near it.
   const canClaim = slackMs > 0 && Array.isArray(lines) && lines.length > 0;
-  if (canClaim) {
-    for (const l of lines) {
-      if (l && Number.isInteger(l.amountCents)) unmet.set(l.amountCents, (unmet.get(l.amountCents) || 0) + 1);
+  const open = canClaim
+    ? lines.filter((l) => l && Number.isInteger(l.amountCents) && Number.isFinite(Number(l.at)))
+      .map((l) => ({ amount: l.amountCents, at: Number(l.at), answered: false }))
+    : [];
+  const windowLegsSeen = [];
+  // The unanswered line of this amount nearest `at`, within `reach` (or any
+  // distance when reach is Infinity).
+  const nearestOpen = (amount, at, reach) => {
+    let best = null;
+    for (const l of open) {
+      if (l.answered || l.amount !== amount) continue;
+      const d = Math.abs(l.at - at);
+      if (d <= reach && (best === null || d < Math.abs(best.at - at))) best = l;
     }
-  }
+    return best;
+  };
   // Legs that sit JUST OUTSIDE the window — see the nearEdge note below.
   let nearEdgeLegs = 0, nearEdgeCents = 0;
   // Legs INSIDE the window but after the last transaction on the report — see
@@ -137,15 +151,23 @@ function expectedCardFromEvents(events, { storeId, tillId, startMs, endMs, edgeM
     // expected figure it contributes to.
     if (tailFromMs !== null && at > tailFromMs) { tailLegs += 1; tailCents += amount; }
     addToKind(e, amount);
-    if (unmet.has(amount)) unmet.set(amount, unmet.get(amount) - 1);
+    if (canClaim) windowLegsSeen.push({ amount, at });
+  }
+  // In-window legs answer lines first, earliest leg first, each taking the
+  // nearest line of its amount — so the lines left open are specific ones.
+  windowLegsSeen.sort((a, b) => a.at - b.at);
+  for (const w of windowLegsSeen) {
+    const hit = nearestOpen(w.amount, w.at, Infinity);
+    if (hit) hit.answered = true;
   }
   // ── THE SLACK, CLAIMED — nearest the window first ───────────────────────────
   const distance = (at) => (at < startMs ? startMs - at : at - endMs);
   slackCandidates.sort((a, b) => distance(Number(a.at)) - distance(Number(b.at)));
   for (const e of slackCandidates) {
     const at = Number(e.at);
-    if ((unmet.get(e.amount) || 0) > 0) {
-      unmet.set(e.amount, unmet.get(e.amount) - 1);
+    const line = nearestOpen(e.amount, at, slackMs);
+    if (line) {
+      line.answered = true;
       cardCents += e.amount; legs += 1;
       slackLegs += 1; slackCents += e.amount;
       addToKind(e, e.amount);

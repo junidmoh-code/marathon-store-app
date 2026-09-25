@@ -845,10 +845,12 @@ function readDeclaredTotal(raw) {
   return { cents };
 }
 
-/** Only the owner's own token may declare a total — the same identity test
- *  assertCardRecon's owner bypass uses, and nothing a permission flag grants. */
+/** Only the owner's own VERIFIED token may declare a total — the eftPool
+ *  isOwner test (Junid signs in with Google, always verified), and nothing a
+ *  permission flag grants. An unverified credential claiming the address must
+ *  not inherit the one human number in card recon. (CodeRabbit, PR #649.) */
 function mayDeclareTotal(token) {
-  return !!token && token.email === DECLARED_TOTAL_EMAIL;
+  return !!token && token.email === DECLARED_TOTAL_EMAIL && token.email_verified === true;
 }
 
 // ─── WHICH SOURCE IS THIS SUBMISSION? ────────────────────────────────────────
