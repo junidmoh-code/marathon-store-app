@@ -1357,12 +1357,16 @@ async function handleSubmit(db, request) {
     capturedVia: draft.capturedVia === "pdf" ? "pdf" : "photo",
     pdfPath: draft.pdfPath || null,
     intake: draftIntake,
+    // WHO and WHEN come from the verified caller at the moment of record, never
+    // from the draft: the drafts node is owner-writable, so a draft cannot be
+    // trusted to say who typed the figure. mayDeclareTotal has just proved this
+    // caller is the owner. (CodeRabbit, PR #649.)
     declaredTotal: declaredTotal ? {
       cents: declaredTotal.cents,
       ocrReadCents: Number.isInteger(declaredTotal.ocrReadCents) ? declaredTotal.ocrReadCents : null,
-      byUid: declaredTotal.byUid ?? request.auth.uid,
-      byEmail: declaredTotal.byEmail ?? null,
-      at: Number.isInteger(declaredTotal.at) ? declaredTotal.at : Date.now(),
+      byUid: request.auth.uid,
+      byEmail: request.auth.token?.email || null,
+      at: Date.now(),
     } : null,
   });
 

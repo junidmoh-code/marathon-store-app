@@ -182,4 +182,8 @@ test("submit re-checks the owner and the draft's figure at the moment of record"
   assert.match(submitBody, /declaredTotal\.cents === extraction\.totalCents/);
   assert.match(submitBody, /draft\.photoPaths\.length > 0/);
   assert.match(submitBody, /declaredTotal: !!declaredTotal/);
+  // Provenance is the caller's, not the draft's.
+  assert.match(submitBody, /byUid: request\.auth\.uid,/);
+  assert.match(submitBody, /byEmail: request\.auth\.token\?\.email \|\| null,/);
+  assert.doesNotMatch(submitBody, /declaredTotal\.byUid|declaredTotal\.byEmail/);
 });
