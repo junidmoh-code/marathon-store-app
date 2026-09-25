@@ -257,6 +257,79 @@ function nameTaken(people, name) {
   return Object.values(people || {}).some((p) => p && p.status === "active" && nameKey(p.name) === k);
 }
 
+// ── THE EMAIL ────────────────────────────────────────────────────────────────
+// The project's one email route (the card-recon, social and write-off alarms):
+// a function prints ONE log line starting with MARKER, and a Cloud Monitoring
+// log-match policy (scripts/device-enrolment/install-enrolment-alarm.mjs)
+// emails the rest of the line to Junid. Google folds a match into an alert that
+// is still open (autoClose 30 min), so events are QUEUED and sent as one line
+// at most every EMAIL_GAP_MS — every event reaches an email, none is dropped.
+const MARKER = "DEVICE_ENROLMENT_ALERT";
+const POLICY_NAME = "Device enrolment — new devices and code limits (store app)";
+const RECIPIENT = "junidmoh@gmail.com";
+const EMAIL_GAP_MS = 31 * 60e3;
+// A log-match label value is bounded; keep the line inside it.
+const EMAIL_MAX_CHARS = 1000;
+
+function sastStamp(ms) {
+  const d = new Date(Number(ms) + 2 * 3600e3);
+  const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const hh = String(d.getUTCHours()).padStart(2, "0");
+  const mm = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${d.getUTCDate()} ${MON[d.getUTCMonth()]} ${hh}:${mm}`;
+}
+
+function who(e) {
+  const n = e.personName || "someone";
+  return e.kind === "shared" ? `${n} (shop device)` : n;
+}
+
+function eventLine(e) {
+  const at = sastStamp(e.atMs);
+  switch (e.type) {
+    case "enrolled":
+      return `NEW DEVICE: ${who(e)} · code ${e.code} · ${e.deviceType || "unknown device"} · ${at}`
+        + (e.again ? " (same device entering its code again)" : ` · ${e.count} of ${e.max}`);
+    case "limit":
+      return `CODE FULL: ${e.code} (${who(e)}) is now on ${e.max} of ${e.max} device${e.max === 1 ? "" : "s"} and will enrol no more · ${at}`;
+    case "full":
+      return `REFUSED: code ${e.code} (${who(e)}) was typed on another device (${e.deviceType || "unknown device"}) but is already on ${e.max} · ${at}`;
+    case "lockout":
+      return e.scope && e.scope.includes("account")
+        ? `LOCKED: too many wrong codes on MC's login — code entry paused on every device for ${e.minutes} min · ${at}`
+        : `LOCKED: 5 wrong codes on a ${e.deviceType || "device"} — code entry paused ${e.minutes} min · ${at}`;
+    default:
+      return null;
+  }
+}
+
+/**
+ * One email line from the queued events (oldest first).
+ * @returns {{ line, sent: string[] }} the line and the queue keys it covers.
+ * Keys whose event cannot be described are included in `sent` so a bad row
+ * never blocks the queue.
+ */
+function buildEmailLine(queue) {
+  const rows = Object.entries(queue || {})
+    .filter(([, e]) => e && typeof e === "object")
+    .sort((a, b) => (Number(a[1].atMs) || 0) - (Number(b[1].atMs) || 0) || (a[0] < b[0] ? -1 : 1));
+  const parts = [];
+  const sent = [];
+  let len = 0;
+  for (const [k, e] of rows) {
+    const text = eventLine(e);
+    if (!text) { sent.push(k); continue; }
+    const add = (parts.length ? 3 : 0) + text.length;
+    if (len + add > EMAIL_MAX_CHARS - 60 && parts.length) break;
+    parts.push(text.slice(0, EMAIL_MAX_CHARS - 60));
+    sent.push(k);
+    len += add;
+  }
+  const left = rows.length - sent.length;
+  const line = parts.join(" | ") + (left > 0 ? ` | +${left} more in the next email` : "");
+  return { line, sent };
+}
+
 // A short, human description of the device from what the browser says about
 // itself. Only for Junid's list and emails — never a security decision.
 function describeDevice(typeHint, userAgent) {
@@ -286,4 +359,5 @@ module.exports = {
   lockVerdict, afterFailure, attemptsLeft,
   activeDeviceIds, maxDevicesFor, planEnrol, buildClaims, describeDevice, ipKey,
   publicPerson, publicDevice, listView, nameTaken,
+  MARKER, POLICY_NAME, RECIPIENT, EMAIL_GAP_MS, EMAIL_MAX_CHARS, eventLine, buildEmailLine, sastStamp,
 };

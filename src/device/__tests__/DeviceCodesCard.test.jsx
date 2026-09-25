@@ -18,7 +18,7 @@ function fakeServer() {
   const calls = [];
   const call = vi.fn(async (data) => {
     calls.push(data);
-    if (data.action === "list") return { ok: true, people: state.people, devices: state.devices };
+    if (data.action === "list") return { ok: true, people: state.people, devices: state.devices, email: { lastSentAtMs: NOW - 10 * 60e3, queued: 2 } };
     if (data.action === "createCode") {
       state.people = [...state.people, { personId: "p2", name: data.name.trim(), kind: data.kind, status: "active", devices: 0, maxDevices: data.kind === "shared" ? 1 : 2 }];
       return { ok: true, code: "4821", person: { name: data.name.trim() } };
@@ -40,6 +40,9 @@ describe("DeviceCodesCard", () => {
     await flush();
     const t = textOf(r);
     for (const s of ["Sipho", "Android phone · Chrome", "Last seen ", "2 min ago", "2", " reject"]) expect(t).toContain(s);
+    expect(t).toContain("Emails to Junid: last sent ");
+    expect(t).toContain("10 min ago");
+    expect(t).toContain("2 waiting");
   });
 
   it("makes a code, shows it once, and the list afterwards does not carry it", async () => {

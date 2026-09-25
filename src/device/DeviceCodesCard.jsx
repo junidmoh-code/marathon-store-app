@@ -55,7 +55,7 @@ const box = { border: "1px solid #2c2c2e", borderRadius: 10, padding: 14, backgr
 const label = { fontSize: 12, color: "#8e8e93", textTransform: "uppercase", letterSpacing: 0.6 };
 
 export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall }) {
-  const [list, setList] = useState({ loading: true, people: [], devices: [], error: null });
+  const [list, setList] = useState({ loading: true, people: [], devices: [], email: null, error: null });
   const [name, setName] = useState("");
   const [kind, setKind] = useState("person");
   const [maker, setMaker] = useState(false);
@@ -67,9 +67,9 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
     setList((l) => ({ ...l, loading: true, error: null }));
     try {
       const r = await call({ action: "list" });
-      setList({ loading: false, people: r.people || [], devices: r.devices || [], error: null });
+      setList({ loading: false, people: r.people || [], devices: r.devices || [], email: r.email || null, error: null });
     } catch (e) {
-      setList({ loading: false, people: [], devices: [], error: errText(e) });
+      setList({ loading: false, people: [], devices: [], email: null, error: errText(e) });
     }
   }, [call]);
   useEffect(() => { load(); }, [load]);
@@ -120,6 +120,12 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
         Every phone on MC's login needs its own code. A person's code works on up to 2 devices;
         a shop device's code on 1.
       </div>
+      {list.email && (
+        <div data-email-status="" style={{ fontSize: 12.5, color: "#8e8e93", marginTop: 6 }}>
+          Emails to Junid: last sent {when(list.email.lastSentAtMs, now)}
+          {list.email.queued ? ` · ${list.email.queued} waiting (they go out together, at most every 31 minutes)` : ""}
+        </div>
+      )}
 
       {/* ── MAKE A CODE ───────────────────────────────────────────────────── */}
       <form onSubmit={create} style={box}>

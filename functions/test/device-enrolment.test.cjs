@@ -407,4 +407,67 @@ test("admin: list is sorted active-first and carries last seen and reject count"
       enrolledAtMs: undefined, lastSeenAtMs: NOW + 5000, rejectCount: 3, revokedAtMs: null, revokedBy: null },
   );
   assert.equal(list.people.find((p) => p.personId === "p-sipho").devices, 1);
+  assert.deepEqual(list.email, { lastSentAtMs: null, queued: 1 });
+});
+
+// ── the email ────────────────────────────────────────────────────────────────
+const { _handleEmail } = require("../deviceEnrolment/deviceEnrolment.js");
+
+test("email: a new enrolment and the code filling up go out in ONE marker line with who, code, device and time", async () => {
+  const db = world();
+  await _handleEnrol(req({ code: "4821", deviceType: "Android phone · Chrome" }), deps(db));
+  await _handleEnrol(req({ code: "4821", deviceId: DEV_B, deviceType: "iPhone · Safari" }), deps(db));
+  const lines = [];
+  const out = await _handleEmail({ db, now: () => NOW + 60e3, log: (l) => lines.push(l) });
+  assert.equal(out.sent, 3);
+  assert.equal(lines.length, 1);
+  const l = lines[0];
+  assert.ok(l.startsWith(`${E.MARKER} `));
+  assert.match(l, /NEW DEVICE: Sipho · code 4821 · Android phone · Chrome · 25 Sep 12:00 · 1 of 2/);
+  assert.match(l, /NEW DEVICE: Sipho · code 4821 · iPhone · Safari · 25 Sep 12:00 · 2 of 2/);
+  assert.match(l, /CODE FULL: 4821 \(Sipho\) is now on 2 of 2 devices/);
+  assert.ok(l.length <= E.MARKER.length + 1 + E.EMAIL_MAX_CHARS);
+  assert.equal(readAt(db.state.root, "device_enrolment/emailQueue"), null, "what was sent is cleared");
+  assert.equal(readAt(db.state.root, "device_enrolment/emailStatus/lastSentAtMs"), NOW + 60e3);
+});
+
+test("email: within 31 minutes of the last one it WAITS (Google folds a match into an open alert) — then sends everything queued", async () => {
+  const db = world();
+  await _handleEnrol(req({ code: "4821" }), deps(db));
+  const lines = [];
+  await _handleEmail({ db, now: () => NOW, log: (l) => lines.push(l) });
+  await _handleEnrol(req({ code: "7305", deviceId: DEV_B }), deps(db));
+  const wait = await _handleEmail({ db, now: () => NOW + 30 * 60e3, log: (l) => lines.push(l) });
+  assert.deepEqual(wait, { sent: 0, waiting: true });
+  assert.equal(lines.length, 1);
+  await _handleEmail({ db, now: () => NOW + 31 * 60e3, log: (l) => lines.push(l) });
+  assert.equal(lines.length, 2);
+  assert.match(lines[1], /NEW DEVICE: Hub 2 tablet \(shop device\) · code 7305/);
+  assert.match(lines[1], /CODE FULL: 7305 \(Hub 2 tablet \(shop device\)\) is now on 1 of 1 device /);
+});
+
+test("email: a full code typed again and a lockout are reported; an empty queue sends nothing", async () => {
+  const db = world();
+  const lines = [];
+  assert.deepEqual(await _handleEmail({ db, now: () => NOW, log: (l) => lines.push(l) }), { sent: 0 });
+  await _handleEnrol(req({ code: "7305" }), deps(db));
+  await _handleEnrol(req({ code: "7305", deviceId: DEV_B, deviceType: "iPad · Safari" }), deps(db));
+  for (let n = 0; n < 5; n++) await _handleEnrol(req({ code: "1111", deviceId: DEV_C, deviceType: "Android tablet · Chrome" }, { ip: "9.9.9.9" }), deps(db));
+  await _handleEmail({ db, now: () => NOW, log: (l) => lines.push(l) });
+  assert.match(lines[0], /REFUSED: code 7305 \(Hub 2 tablet \(shop device\)\) was typed on another device \(iPad · Safari\) but is already on 1/);
+  assert.match(lines[0], /LOCKED: 5 wrong codes on a Android tablet · Chrome — code entry paused 15 min/);
+});
+
+test("email: an over-long queue is cut to the label limit and the rest goes next time — nothing is lost", () => {
+  const q = {};
+  for (let i = 0; i < 40; i++) q[`k${String(i).padStart(3, "0")}`] = { type: "enrolled", atMs: NOW + i, personName: `Person number ${i}`, code: "4821", deviceType: "Android phone · Chrome", count: 1, max: 2 };
+  q.bad = { type: "mystery", atMs: NOW };
+  const { line, sent } = E.buildEmailLine(q);
+  assert.ok(line.length <= E.EMAIL_MAX_CHARS, `${line.length}`);
+  assert.ok(sent.length < 41 && sent.length > 3);
+  assert.ok(sent.includes("bad"), "an unreadable row never blocks the queue");
+  assert.match(line, /\+\d+ more in the next email$/);
+  const left = Object.fromEntries(Object.entries(q).filter(([k]) => !sent.includes(k)));
+  const second = E.buildEmailLine(left);
+  assert.ok(second.sent.length > 0);
 });

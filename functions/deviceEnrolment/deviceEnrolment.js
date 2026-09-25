@@ -15,10 +15,11 @@
 // aborts.
 //
 // Deploy by name, never bare:
-//   firebase deploy --only functions:enrolDevice,functions:deviceEnrolmentAdmin
+//   firebase deploy --only functions:enrolDevice,functions:deviceEnrolmentAdmin,functions:deviceEnrolmentEmail
 "use strict";
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { createHash, randomInt, randomUUID } = require("node:crypto");
 const admin = require("firebase-admin");
 const E = require("../lib/device-enrolment.cjs");
@@ -250,8 +251,15 @@ async function handleAdmin(request, deps) {
   const action = request.data?.action;
 
   if (action === "list") {
-    const [people, devices] = await Promise.all([readBounded(db, E.PATHS.people), readBounded(db, E.PATHS.devices)]);
-    return { ok: true, ...E.listView(people, devices), you: { owner: who.owner, name: who.by } };
+    const [people, devices, emailStatus, queued] = await Promise.all([
+      readBounded(db, E.PATHS.people), readBounded(db, E.PATHS.devices),
+      db.ref(E.PATHS.emailStatus).once("value").then((x) => x.val() || {}),
+      db.ref(E.PATHS.emailQueue).orderByKey().limitToFirst(50).once("value").then((x) => Object.keys(x.val() || {}).length),
+    ]);
+    return {
+      ok: true, ...E.listView(people, devices), you: { owner: who.owner, name: who.by },
+      email: { lastSentAtMs: Number(emailStatus.lastSentAtMs) || null, queued },
+    };
   }
 
   if (action === "createCode") {
@@ -341,6 +349,40 @@ exports.deviceEnrolmentAdmin = onCall(
   }),
 );
 
+// ─── deviceEnrolmentEmail — THE EMAIL TO JUNID ───────────────────────────────
+// Every 5 minutes: if anything is queued (a new enrolment, a code reaching its
+// limit, a full code typed again, a lockout) and the last email went out more
+// than EMAIL_GAP_MS ago, print ONE marker line covering the queue and clear
+// what it covered. The line becomes an email through the Cloud Monitoring
+// policy installed by scripts/device-enrolment/install-enrolment-alarm.mjs.
+// THE MARKER IS LOAD-BEARING: renaming it without re-running the installer
+// disconnects the email; the installer's --verify pins the two together.
+async function handleEmail(deps) {
+  const { db, log } = deps;
+  const now = deps.now();
+  const status = (await db.ref(E.PATHS.emailStatus).once("value")).val() || {};
+  if (Number(status.lastSentAtMs) > 0 && now - Number(status.lastSentAtMs) < E.EMAIL_GAP_MS) {
+    return { sent: 0, waiting: true };
+  }
+  const queue = (await db.ref(E.PATHS.emailQueue).orderByKey().limitToFirst(50).once("value")).val();
+  if (!queue) return { sent: 0 };
+  const { line, sent } = E.buildEmailLine(queue);
+  if (line) log(`${E.MARKER} ${line}`);
+  const patch = {
+    [`${E.PATHS.emailStatus}/lastSentAtMs`]: line ? now : Number(status.lastSentAtMs) || null,
+    [`${E.PATHS.emailStatus}/lastLine`]: line || status.lastLine || null,
+    [`${E.PATHS.emailStatus}/lastCount`]: sent.length,
+  };
+  for (const k of sent) patch[`${E.PATHS.emailQueue}/${k}`] = null;
+  await db.ref().update(patch);
+  return { sent: sent.length, line };
+}
+
+exports.deviceEnrolmentEmail = onSchedule(
+  { schedule: "*/5 * * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 60 },
+  () => handleEmail({ db: admin.database(), now: () => Date.now(), log: (l) => console.error(l) }),
+);
+
 exports.enrolDevice = onCall(
   { region: "europe-west1", memory: "256MiB", timeoutSeconds: 30, maxInstances: 5 },
   (request) => handleEnrol(request, {
@@ -353,3 +395,4 @@ exports.enrolDevice = onCall(
 
 exports._handleEnrol = handleEnrol;
 exports._handleAdmin = handleAdmin;
+exports._handleEmail = handleEmail;

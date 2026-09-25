@@ -3940,6 +3940,13 @@ exports.enrolDevice = require("./deviceEnrolment/deviceEnrolment.js").enrolDevic
 //   firebase deploy --only functions:deviceEnrolmentAdmin
 exports.deviceEnrolmentAdmin = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentAdmin;
 
+// ─── DEVICE ENROLMENT — deviceEnrolmentEmail (Junid's email) ─────────────────
+// Every 5 min: new enrolments, codes reaching their limit, a full code typed
+// again and lockouts, as ONE DEVICE_ENROLMENT_ALERT line → Cloud Monitoring
+// log-match policy → email (scripts/device-enrolment/install-enrolment-alarm.mjs).
+//   firebase deploy --only functions:deviceEnrolmentEmail
+exports.deviceEnrolmentEmail = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentEmail;
+
 // ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
 // Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
 // for every transaction in a batch. Storage rules cannot read RTDB, so the
