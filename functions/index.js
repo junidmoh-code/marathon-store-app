@@ -3925,6 +3925,28 @@ exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
 //   firebase deploy --only functions:cardTerminalAdmin
 exports.cardTerminalAdmin = require("./cardRecon/cardTerminalAdmin.js").cardTerminalAdmin;
 
+// ─── DEVICE ENROLMENT — enrolDevice (a phone types its 4-digit code) ─────────
+// A login marked /users/{uid}/deviceCodeRequired needs a code per device. This
+// checks the code (rate-limited per device, per network and per login), records
+// the device against the person, and returns a custom token for the SAME uid
+// that carries the device's own identity for the database rules to check.
+// Decisions in lib/device-enrolment.cjs.
+//   firebase deploy --only functions:enrolDevice
+exports.enrolDevice = require("./deviceEnrolment/deviceEnrolment.js").enrolDevice;
+
+// ─── DEVICE ENROLMENT — deviceEnrolmentAdmin (the Device codes screen) ───────
+// Junid, or an enrolled device whose person may make codes (MC): list people
+// and devices, make a code (shown once), revoke a device, revoke a person.
+//   firebase deploy --only functions:deviceEnrolmentAdmin
+exports.deviceEnrolmentAdmin = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentAdmin;
+
+// ─── DEVICE ENROLMENT — deviceEnrolmentEmail (Junid's email) ─────────────────
+// Every 5 min: new enrolments, codes reaching their limit, a full code typed
+// again and lockouts, as ONE DEVICE_ENROLMENT_ALERT line → Cloud Monitoring
+// log-match policy → email (scripts/device-enrolment/install-enrolment-alarm.mjs).
+//   firebase deploy --only functions:deviceEnrolmentEmail
+exports.deviceEnrolmentEmail = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentEmail;
+
 // ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
 // Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
 // for every transaction in a batch. Storage rules cannot read RTDB, so the

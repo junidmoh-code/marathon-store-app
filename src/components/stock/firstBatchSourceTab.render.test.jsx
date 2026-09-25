@@ -154,7 +154,11 @@ describe("Fulfil moves Central → the shop through the existing path", () => {
     await act(async () => { await confirmOf(tree).props.onClick(); });
     expect(applyMovementMock.mock.calls[0][0]).toMatchObject({ qty: 1, to: "trophy", movementId: "rrf_tro1" });
     const patch = updateMock.mock.calls.at(-1)[1];
-    expect(patch).toEqual({ "refill_requests/tro1/qty": 1, "refill_requests/tro1/sentQty": 1 });
+    const stampKeys = Object.keys(patch).filter((k) => k.startsWith("refill_requests/tro1/stamps/"));
+    expect(stampKeys).toHaveLength(1);                 // who sent it (src/device/deviceStamp.js)
+    expect(patch[stampKeys[0]]).toMatchObject({ action: "send-part" });
+    const { [stampKeys[0]]: _stamp, ...rest } = patch;
+    expect(rest).toEqual({ "refill_requests/tro1/qty": 1, "refill_requests/tro1/sentQty": 1 });
   });
   it("Out of Stock on the SHOP's batch: cancelled WITH first_batch_central_declined, in the same write — the third cue, never a shop-level rejection", async () => {
     const tree = renderQueue("trophy");

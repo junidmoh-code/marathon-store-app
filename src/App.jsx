@@ -100,6 +100,9 @@ import { usePushMute } from "./push/useMute";
 import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
+import DeviceCodesCard from "./device/DeviceCodesCard";
+import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
+import { countReject } from "./device/rejectCount";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -1113,6 +1116,8 @@ function writeOrder(order) {
     console.error("writeOrder rejected:", err.message, { orderId: order.id ?? null, undefinedFields });
     throw err;
   }
+  // Who placed it, on which device (src/device/deviceStamp.js).
+  order = stampRecord(order, "placed");
   return set(ref(database, `orders/${order.id}`), order).then((ok) => {
     // THE OFFLINE MIRROR. A person who has just placed an order must see it,
     // not the shelf as it was a moment ago. Echoed AFTER the write resolves,
@@ -1134,8 +1139,10 @@ function writeOrder(order) {
 // Patch a single order. Used by WarehouseView and DisplayView.
 // Writes only the changed fields directly to /orders/{id} — no array
 // replacement, no race with concurrent writes to other orders.
+// Every action carries the device stamp — who, on which device, when — under
+// orders/{id}/stamps, one key per action (src/device/deviceStamp.js).
 function updateOrder(id, patch) {
-  return update(ref(database, `orders/${id}`), patch).catch((err) => {
+  return update(ref(database, `orders/${id}`), stampPatch(patch, orderActionName(patch))).catch((err) => {
     console.warn(`Firebase updateOrder(${id}) failed:`, err);
   });
 }
@@ -1525,7 +1532,7 @@ function useAllSourceResponses() {
 // leaves are raw whole/letter sizes, which encode to themselves — no migration.
 function saveSourceResponse(date, productKey, size, response, extra) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}), by: deviceStamp(`source-${response}`) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
 }
 
@@ -1534,7 +1541,7 @@ function saveSourceResponse(date, productKey, size, response, extra) {
 // "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
 function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}), by: deviceStamp("source-fulfil-part") }
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
@@ -1626,7 +1633,7 @@ function saveClothingOut(store, productId, size, hub) {
     // Encoded key (same half-size fix as saveSourceResponse): a "." size here
     // threw synchronously; a "." in clearClothingOut's path silently addressed
     // a child node instead. Reader (useClothingOos) decodes back to raw.
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid, device: deviceStamp("clothing-out") }
   }).catch(err => console.warn("saveClothingOut failed:", err));
 }
 function clearClothingOut(store, productId, size) {
@@ -2941,6 +2948,18 @@ const RoleIcons = {
       <path d="M10 18.5h4"/>
     </svg>
   ),
+  device_codes: (
+    // lucide-style "key + phone": a phone with a key beside it — a code that
+    // lets one device in. Not a padlock (that reads as "locked out").
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="11" height="18" rx="2"/>
+      <path d="M6.5 17.5h2"/>
+      <circle cx="17.5" cy="9" r="2.5"/>
+      <path d="M17.5 11.5V19"/>
+      <path d="M17.5 15.5h2"/>
+      <path d="M17.5 18h1.5"/>
+    </svg>
+  ),
   push_alerts: (
     // lucide-style "bell + check": the alert bell with a small tick, so it
     // reads as "who is signed up for alerts" rather than as an alert itself.
@@ -3209,7 +3228,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
 
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
   const isDesktop = !useIsNarrow(1024);
-  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
+  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut, deviceIdentity: homeDevice } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
   // MIRROR — not hasPermission, not the permissions array, not stockRole. The
   // flag is the same scalar the server callable checks, so the two can never
@@ -3386,6 +3405,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // the card's own check are the others, and the RTDB rules on
       // /mirror_devices and /mirror_switch are what actually enforce it.
       isSuperAdmin && { key:"mirror_fleet", icon:RoleIcons.mirror_fleet, name:"Mirror Fleet", desc:"Every device's offline copy, and the kill switch", onClick:()=>(window.location.hash = "#admin/mirror") },
+      // Device codes — the 4-digit code every phone on MC's login needs
+      // (src/device/enrolment.js). Junid, or an enrolled device whose person may
+      // make codes (MC). GATE 1 of 3; the route below and the deviceEnrolmentAdmin
+      // callable (which re-checks the person on every call) are the others.
+      (isSuperAdmin || homeDevice?.canManageCodes === true) && { key:"device_codes", icon:RoleIcons.device_codes, name:"Device Codes", desc:"A code for each staff phone · who is on which device", onClick:()=>(window.location.hash = "#admin/devices") },
       // Card Recon — capture the card machine's batch slip, see the variance
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
@@ -12276,7 +12300,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (plan.ok) {
         try {
           const existing = (await get(ref(database, `refill_requests/${plan.requestId}`))).val();
-          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), plan.record);
+          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), stampRecord(plan.record, "hold"));
           // Stamp the order either way — the held-card list hides items that
           // are represented in a refill queue, new or re-tapped.
           patch.onHoldRefillRequestId = plan.requestId;
@@ -12298,7 +12322,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         try {
           const reqRef = ref(database, `refill_requests/${rel.requestId}`);
           const live = (await get(reqRef)).val();
-          if (live && live.status === "open") await update(reqRef, rel.patch);
+          if (live && live.status === "open") await update(reqRef, stampPatch(rel.patch, "hold-released"));
         } catch (err) {
           console.warn(`On-hold refill request ${rel.requestId} not withdrawn (${err?.message || err}) — the engine's satisfied-sweep will retire it.`);
         }
@@ -12375,6 +12399,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     }
 
     updateOrder(order.id, patch);
+    // Out of Stock is a reject: one more on this device's count for Junid's
+    // device list (src/device/rejectCount.js).
+    if (status === STATUS.OUT_OF_STOCK) countReject();
     const insightAction = { [STATUS.READY]:"ready", [STATUS.OUT_OF_STOCK]:"out_of_stock", [STATUS.COMING_TOMORROW]:"tomorrow", [STATUS.COLLECTED]:"collected" }[status];
     if (insightAction) logInsight({
       timestamp: now,
@@ -13025,6 +13052,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         // the request it closes, so the refusal write-off can name the person.
         ok++;
         updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
+        countReject();
         logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
       }
       // qty 0 & not rejected → left pending for a later pass.
@@ -19814,7 +19842,7 @@ function AdminSignInScreen({ onCancel }) {
 // (which means this branch only ever fires when isSuperAdmin === false from
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
-  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut, deviceIdentity } = usePermissions();
   // ── WEB PUSH ───────────────────────────────────────────────────────────────
   // Hoisted to the app root rather than to the home screen, because a staff
   // member with a persisted role opens straight into their workspace and may go
@@ -19910,6 +19938,9 @@ function AppInner() {
   // nothing; authorization happens at the mount below, and the RTDB rules on
   // /mirror_devices and /mirror_switch are what actually refuse.
   const wantMirrorFleet = hash === "#admin/mirror" || hash === "#admin/mirror/";
+  // /#admin/devices — DEVICE CODES. Recognises the HASH only and grants
+  // nothing; the deviceEnrolmentAdmin callable is what actually refuses.
+  const wantDeviceCodes = hash === "#admin/devices" || hash === "#admin/devices/";
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -20164,7 +20195,14 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantMirrorFleet) {
+  if (wantDeviceCodes) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // Junid, or MC's enrolled code-making device. Anyone else signed in as a
+    // real account gets the admin sign-in (which only Junid can pass).
+    view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
+      ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantMirrorFleet) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
     // A non-super-admin never gets the card mounted, so none of its reads
     // happen and the kill switch is never rendered. Layer 1 is the tile,

@@ -66,6 +66,8 @@ import { SizeTag } from "../SizeTag";
 import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, sourceQueueLists } from "./firstBatchCore";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { refusalTxn, trancheMovementId, sendInFlight } from "./refusalGuard";
+import { deviceStamp, stampAt, stampPatch, stampTxn } from "../../device/deviceStamp";
+import { countReject } from "../../device/rejectCount";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -504,6 +506,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         const partial = {
           [`refill_requests/${r.id}/qty`]: remaining,
           [`refill_requests/${r.id}/sentQty`]: already + appliedQty,
+          ...stampAt(`refill_requests/${r.id}`, "send-part"),
         };
         await update(ref(database), partial);
         // THE OFFLINE MIRROR — see applyMovement. The person who just pressed
@@ -523,6 +526,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         // leave its stale reason on a row now marked fulfilled (Kimi, #332).
         [`refill_requests/${r.id}/cancelReason`]: null,
         ...(auth.currentUser?.uid ? { [`refill_requests/${r.id}/resolvedBy`]: auth.currentUser.uid } : {}),
+        ...stampAt(`refill_requests/${r.id}`, "fulfil"),
     };
     try {
       await update(ref(database), fulfilled);
@@ -574,10 +578,13 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // replaced: the row leaves the list the instant it is tapped, whatever
       // the connection. The server still decides — a local guess that the
       // server's copy contradicts is rolled back and the body re-runs on truth.
+      // The device stamp rides on the record the transaction commits — never
+      // on a refusal that was blocked (refusalTxn returned undefined).
       const res = await runTransaction(ref(database, `refill_requests/${row.id}`),
-        (cur) => refusalTxn(cur, fields, { sendingAt }));
+        stampTxn((cur) => refusalTxn(cur, fields, { sendingAt }), "reject"));
       const live = res?.snapshot?.val?.() ?? null;
       if (res?.committed && live) {
+        countReject();
         // see the fulfil echo above — the same paths the old update wrote
         notePendingUpdate(Object.fromEntries(Object.entries(fields).map(([k, v]) => [`refill_requests/${row.id}/${k}`, v])));
       } else if (!res?.committed && live) {
@@ -586,8 +593,9 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         // change nothing else.
         const atMs = serverNowMs();
         console.warn(`Out of Stock on ${row.id} blocked — ${sendingAt !== null ? "mid-send" : `already ${live.status || "sent"}`}`);
+        const { deviceId, personName } = deviceStamp();
         update(ref(database, `refill_requests/${row.id}/blockedRefusals/${atMs}`), {
-          atMs, byUid: auth.currentUser?.uid || null, byRole: actorRole || null,
+          atMs, byUid: auth.currentUser?.uid || null, byRole: actorRole || null, deviceId, personName,
           sawStatus: live.status || null, ...(sendingAt !== null ? { midSend: true } : {}),
         }).catch((e) => console.warn(`blocked-refusal log for ${row.id} failed`, e));
       }
@@ -666,7 +674,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     const patch = releaseEarlyPatch({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null, reason });
     if (!patch) { setReleaseErr("A reason is required — nothing was released."); return; }
     setReleasingId(row.id); setReleaseErr(null);
-    try { await update(ref(database, `refill_requests/${row.id}`), patch); }
+    try { await update(ref(database, `refill_requests/${row.id}`), stampPatch(patch, "early-release")); }
     catch (e) { setReleaseErr(`Early release failed — ${String(e?.message || e)}`); }
     setReleasingId(null);
   };

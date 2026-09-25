@@ -13,18 +13,48 @@
 //   3. otherwise + no user (or anonymous from a prior TV visit) → Login.
 //   4. otherwise + signed-in real user → fetches /users/{uid} permissions,
 //                           provides PermissionsContext to children.
+//   5. …UNLESS that login needs a device code (/users/{uid}/deviceCodeRequired)
+//                           and this device is not enrolled, or its enrolment
+//                           was revoked → the code screen INSTEAD of the app
+//                           (src/device/EnrolmentGate.jsx, src/device/enrolment.js).
 //
 // hasPermission(name) returns true for the super-admin email regardless of
 // /users/{uid} contents, so Junid's existing Google sign-in path keeps working.
 
 import { useEffect, useState } from "react";
-import { onAuthStateChanged, signInAnonymously, signOut } from "firebase/auth";
-import { onValue, ref } from "firebase/database";
-import { auth, database } from "../firebase";
+import { onAuthStateChanged, onIdTokenChanged, signInAnonymously, signInWithCustomToken, signOut } from "firebase/auth";
+import { onValue, ref, set } from "firebase/database";
+import { httpsCallable } from "firebase/functions";
+import { auth, database, functions } from "../firebase";
 import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
 import { revokeBeforeSignOut } from "../push/registerPush";
 import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
+import EnrolmentGate from "../device/EnrolmentGate";
+import {
+  deviceGateVerdict, deviceTypeHint, identityFrom, isLiveEnrolment, knownRequired, readSessionClaims,
+  rememberRequired, setDeviceIdentity, writeLastSeen, LAST_SEEN_EVERY_MS,
+} from "../device/enrolment";
+import { serverNowMs } from "../utils/serverTime";
+import { adoptDeviceId, getDeviceId } from "../device/deviceId";
+
+// The two calls the code screen makes. Module-level so the screen's props are
+// stable across renders.
+const enrolDeviceCall = httpsCallable(functions, "enrolDevice");
+const enrolWithCode = async (code) => (await enrolDeviceCall({
+  code,
+  deviceId: getDeviceId(),
+  deviceType: deviceTypeHint(),
+  userAgent: typeof navigator === "undefined" ? null : String(navigator.userAgent || "").slice(0, 200),
+})).data;
+// One reload after enrolling: while this device was unenrolled the rules
+// refused its reads, and a refused listener (the offline mirror's, for one)
+// never retries. enrolDevice has already written the gate entry, so the
+// reloaded app opens straight in.
+const signInWithDeviceToken = async (token) => {
+  await signInWithCustomToken(auth, token);
+  try { window.location.reload(); } catch { /* no reload (tests) — AuthGate still opens the app */ }
+};
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 
@@ -67,6 +97,46 @@ export default function AuthGate({ children, renderTv }) {
     return () => off();
   }, []);
 
+  // The device claims on this session's token. onIdTokenChanged, NOT
+  // onAuthStateChanged: signing in with the enrolment token keeps the same
+  // uid, and onAuthStateChanged only fires when the uid changes.
+  // undefined = still reading (the gate waits rather than flash the code
+  // screen at an enrolled device).
+  const [claims, setClaims] = useState(undefined);
+  useEffect(() => {
+    let seq = 0;
+    const off = onIdTokenChanged(auth, (u) => {
+      const mine = ++seq;
+      if (!u || u.isAnonymous) { setClaims(null); return; }
+      readSessionClaims(u).then((c) => { if (mine === seq) setClaims(c); });
+    });
+    return () => off();
+  }, []);
+
+  // Who is holding this device, for the stamps every order and stock write
+  // carries (src/device/deviceStamp.js). An enrolled device's id is the one
+  // its token names; the browser's own id is brought into line with it so the
+  // quarantine, the mirror telemetry and the stamps all name one device.
+  useEffect(() => {
+    if (claims?.deviceId) adoptDeviceId(claims.deviceId);
+    setDeviceIdentity({ claims, permRecord, user });
+  }, [claims, permRecord, user]);
+
+  // Last seen, for Junid's device list (src/device/enrolment.js explains why
+  // serverNowMs and why a failure is ignored).
+  const liveDeviceId = isLiveEnrolment(permRecord, claims) ? claims.deviceId : null;
+  useEffect(() => {
+    if (!liveDeviceId) return undefined;
+    const write = (path, v) => set(ref(database, path), v);
+    const beat = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      writeLastSeen({ deviceId: liveDeviceId, write, nowMs: serverNowMs() });
+    };
+    beat();
+    const t = setInterval(beat, LAST_SEEN_EVERY_MS);
+    return () => clearInterval(t);
+  }, [liveDeviceId]);
+
   // On #tv, ensure we have a signed-in user (anon is fine) BEFORE rendering
   // the TV display — otherwise useOrders subscribes with a null auth and the
   // first read fails. If auth.currentUser already exists (warm start), flip
@@ -99,7 +169,12 @@ export default function AuthGate({ children, renderTv }) {
     const r = ref(database, `users/${user.uid}`);
     const off = onValue(
       r,
-      (snap) => { setPermReadError(false); setPermRecord(snap.val() || null); setPermLoaded(true); },
+      (snap) => {
+        setPermReadError(false);
+        setPermRecord(snap.val() || null);
+        rememberRequired(user.uid, snap.val()?.deviceCodeRequired === true);
+        setPermLoaded(true);
+      },
       (err)  => { console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true); }
     );
     return () => off();
@@ -140,6 +215,14 @@ export default function AuthGate({ children, renderTv }) {
   if (!permLoaded) return <LoadingScreen />;
 
   const isSuperAdmin  = user.email === ADMIN_EMAIL;
+  // A login that needs a device code: the code screen and nothing else until
+  // this device is enrolled — and again the moment it is revoked, because the
+  // gate entry lives on the /users record subscribed just above.
+  const gate = deviceGateVerdict({
+    permRecord, claims, isSuperAdmin, readError: permReadError, knownRequired: knownRequired(user.uid),
+  });
+  if (gate === "loading") return <LoadingScreen />;
+  if (gate === "code") return <EnrolmentGate enrol={enrolWithCode} signIn={signInWithDeviceToken} />;
   const permissions   = Array.isArray(permRecord?.permissions) ? permRecord.permissions : [];
   // Fail closed for scoped users on a read error (super-admin still bypasses).
   const storeIds      = permReadError ? effectiveStoreIds({ storeIds: [] }, isSuperAdmin)
@@ -161,7 +244,8 @@ export default function AuthGate({ children, renderTv }) {
 
   return (
     <PermissionsContext.Provider
-      value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut }}>
+      value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut,
+               deviceIdentity: identityFrom({ claims, permRecord, user }) }}>
       {children}
     </PermissionsContext.Provider>
   );

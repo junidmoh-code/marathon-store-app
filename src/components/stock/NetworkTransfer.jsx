@@ -30,6 +30,7 @@ import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 import { FIRST_BATCH_HUB, firstBatchEligible, firstBatchSplit, buildFirstBatchSolveUpdate, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 import { setUpdateBusy } from "../../update/updateChecker";
+import { stampRecord, stampTxn } from "../../device/deviceStamp";
 
 const STORES = ["marathon-pe", "trophy"];
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
@@ -194,7 +195,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       // undoCellTxn below, so the two halves can never disagree.
       let stood = [];
       if (liveFb) {
-        const txn = firstBatchUndoCancelTxn({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null });
+        const txn = stampTxn(firstBatchUndoCancelTxn({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null }), "solve-undo");
         // Only rows still OPEN: a retry after a partial undo must not re-run
         // the CAS on its own already-cancelled rows (they would abort and be
         // reported as "standing"). (CodeRabbit, PR #607.)
@@ -610,6 +611,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         });
         // ONE atomic update: shop seeds, the normal-path seeds, and the shop's
         // requests land together or not at all (the old Solve's contract).
+        for (const id of requestIds) {
+          const k = `refill_requests/${id}`;
+          if (updates[k] && typeof updates[k] === "object") updates[k] = stampRecord(updates[k], "raise");
+        }
         await update(ref(database), updates);
         setUndoables((l) => [{ key: `${card.pid}_${now}`, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch: { solveId, requestIds, store, units } }, ...l]);
         setSolved((d) => ({ ...d, [card.pid]: { ok: true, store, sizes, msg: okMsg } }));

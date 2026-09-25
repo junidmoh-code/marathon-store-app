@@ -39,6 +39,7 @@ import {
 import { stockSizeKey } from "../../utils/sizeKey";
 import { setDisplaySlot, clearDisplaySlot } from "./displaySlots";
 import { notePendingUpdate } from "../../offline/pendingWrites";
+import { stampAt } from "../../device/deviceStamp";
 
 /** One row id per transition instant. A retried tap in the same millisecond
  *  rewrites the same row instead of minting a second one; a genuine second
@@ -178,7 +179,10 @@ export async function sendDisplayRow({ rows, store, productId, productName, size
       // said otherwise. The source test that "pinned" it read App.jsx only and
       // was therefore vacuous; the pin now lives on the plan builder, where the
       // value actually lands. (Independent second-brain review.)
-      rowId: rowIdFor(when), at: when, by: uid(), orderId, requestedAt, orderPatch, via: "send",
+      rowId: rowIdFor(when), at: when, by: uid(), orderId, requestedAt, via: "send",
+      // The order's device stamp rides in the same atomic write as the rest of
+      // its patch (src/device/deviceStamp.js).
+      orderPatch: orderPatch && orderId ? { ...orderPatch, ...stampAt(`orders/${orderId}`, "display-sent") } : orderPatch,
     });
     if (!plan.ok) return { ok: false, message: plan.message };
     await apply(plan.updates);

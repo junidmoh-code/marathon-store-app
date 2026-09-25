@@ -44,6 +44,7 @@ import { stockCellPath } from "../../utils/sizeKey";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { reactivateUpdates, REACTIVATED_EVENT } from "../../utils/deactivation";
 import { notePendingUpdate } from "../../offline/pendingWrites";
+import { deviceStamp } from "../../device/deviceStamp";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -254,6 +255,13 @@ export async function applyMovement(movement, opts = {}) {
     });
 
     const now = serverNowIso();
+    // Who, on which device, when (src/device/deviceStamp.js). No `action`:
+    // the movement's own type says that, and this ledger is read in bulk. The
+    // link keeps its deviceId for the callers that already set one; everyone
+    // else gets this device's.
+    const by = deviceStamp();
+    const link = emptyLink(movement.link);
+    if (!link.deviceId) link.deviceId = by.deviceId;
     const mv = {
       type: movement.type,
       productId: movement.productId,
@@ -268,7 +276,8 @@ export async function applyMovement(movement, opts = {}) {
       ts: movement.ts || now,            // REAL event time (offline sale time, not sync time)
       appliedAt: now,                    // when it actually hit RTDB
       reason: movement.reason ?? null,
-      link: emptyLink(movement.link),
+      link,
+      by,
       // Present ONLY when a negative base was cleared — RTDB stores no empty
       // object, and an absent key is the honest "nothing was cleared".
       ...(Object.keys(negativeCleared).length ? { negativeCleared } : {}),
