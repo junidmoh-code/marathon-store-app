@@ -13,18 +13,37 @@
 //   3. otherwise + no user (or anonymous from a prior TV visit) → Login.
 //   4. otherwise + signed-in real user → fetches /users/{uid} permissions,
 //                           provides PermissionsContext to children.
+//   5. …UNLESS that login needs a device code (/users/{uid}/deviceCodeRequired)
+//                           and this device is not enrolled, or its enrolment
+//                           was revoked → the code screen INSTEAD of the app
+//                           (src/device/EnrolmentGate.jsx, src/device/enrolment.js).
 //
 // hasPermission(name) returns true for the super-admin email regardless of
 // /users/{uid} contents, so Junid's existing Google sign-in path keeps working.
 
 import { useEffect, useState } from "react";
-import { onAuthStateChanged, signInAnonymously, signOut } from "firebase/auth";
+import { onAuthStateChanged, onIdTokenChanged, signInAnonymously, signInWithCustomToken, signOut } from "firebase/auth";
 import { onValue, ref } from "firebase/database";
-import { auth, database } from "../firebase";
+import { httpsCallable } from "firebase/functions";
+import { auth, database, functions } from "../firebase";
 import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
 import { revokeBeforeSignOut } from "../push/registerPush";
 import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
+import EnrolmentGate from "../device/EnrolmentGate";
+import { deviceGateVerdict, deviceTypeHint, readSessionClaims, setDeviceIdentity } from "../device/enrolment";
+import { adoptDeviceId, getDeviceId } from "../device/deviceId";
+
+// The two calls the code screen makes. Module-level so the screen's props are
+// stable across renders.
+const enrolDeviceCall = httpsCallable(functions, "enrolDevice");
+const enrolWithCode = async (code) => (await enrolDeviceCall({
+  code,
+  deviceId: getDeviceId(),
+  deviceType: deviceTypeHint(),
+  userAgent: typeof navigator === "undefined" ? null : String(navigator.userAgent || "").slice(0, 200),
+})).data;
+const signInWithDeviceToken = (token) => signInWithCustomToken(auth, token);
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 
@@ -66,6 +85,31 @@ export default function AuthGate({ children, renderTv }) {
     });
     return () => off();
   }, []);
+
+  // The device claims on this session's token. onIdTokenChanged, NOT
+  // onAuthStateChanged: signing in with the enrolment token keeps the same
+  // uid, and onAuthStateChanged only fires when the uid changes.
+  // undefined = still reading (the gate waits rather than flash the code
+  // screen at an enrolled device).
+  const [claims, setClaims] = useState(undefined);
+  useEffect(() => {
+    let seq = 0;
+    const off = onIdTokenChanged(auth, (u) => {
+      const mine = ++seq;
+      if (!u || u.isAnonymous) { setClaims(null); return; }
+      readSessionClaims(u).then((c) => { if (mine === seq) setClaims(c); });
+    });
+    return () => off();
+  }, []);
+
+  // Who is holding this device, for the stamps every order and stock write
+  // carries (src/device/deviceStamp.js). An enrolled device's id is the one
+  // its token names; the browser's own id is brought into line with it so the
+  // quarantine, the mirror telemetry and the stamps all name one device.
+  useEffect(() => {
+    if (claims?.deviceId) adoptDeviceId(claims.deviceId);
+    setDeviceIdentity({ claims, permRecord, user });
+  }, [claims, permRecord, user]);
 
   // On #tv, ensure we have a signed-in user (anon is fine) BEFORE rendering
   // the TV display — otherwise useOrders subscribes with a null auth and the
@@ -140,6 +184,12 @@ export default function AuthGate({ children, renderTv }) {
   if (!permLoaded) return <LoadingScreen />;
 
   const isSuperAdmin  = user.email === ADMIN_EMAIL;
+  // A login that needs a device code: the code screen and nothing else until
+  // this device is enrolled — and again the moment it is revoked, because the
+  // gate entry lives on the /users record subscribed just above.
+  const gate = deviceGateVerdict({ permRecord, claims, isSuperAdmin });
+  if (gate === "loading") return <LoadingScreen />;
+  if (gate === "code") return <EnrolmentGate enrol={enrolWithCode} signIn={signInWithDeviceToken} />;
   const permissions   = Array.isArray(permRecord?.permissions) ? permRecord.permissions : [];
   // Fail closed for scoped users on a read error (super-admin still bypasses).
   const storeIds      = permReadError ? effectiveStoreIds({ storeIds: [] }, isSuperAdmin)

@@ -24,3 +24,14 @@ export function getDeviceId() {
     return null;
   }
 }
+
+// An enrolled device's id is the one its enrolment token names (the server
+// recorded it). If this browser's storage was cleared but its sign-in was not,
+// the two differ; the token wins, so every record names the device the server
+// knows. Never throws.
+export function adoptDeviceId(id) {
+  if (typeof id !== "string" || !id) return;
+  try {
+    if (localStorage.getItem(DEVICE_ID_KEY) !== id) localStorage.setItem(DEVICE_ID_KEY, id);
+  } catch { /* storage disabled — the token still names the device */ }
+}
