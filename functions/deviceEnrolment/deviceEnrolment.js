@@ -15,11 +15,11 @@
 // aborts.
 //
 // Deploy by name, never bare:
-//   firebase deploy --only functions:enrolDevice
+//   firebase deploy --only functions:enrolDevice,functions:deviceEnrolmentAdmin
 "use strict";
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
-const { createHash, randomUUID } = require("node:crypto");
+const { createHash, randomInt, randomUUID } = require("node:crypto");
 const admin = require("firebase-admin");
 const E = require("../lib/device-enrolment.cjs");
 
@@ -131,7 +131,10 @@ async function handleEnrol(request, deps) {
 
   // The token BEFORE the device record, so a signing failure (the service
   // account missing its Token Creator role) leaves nothing half-enrolled.
-  const claims = E.buildClaims({ deviceId, eid, personId, personName: person.name, kind: person.kind });
+  const claims = E.buildClaims({
+    deviceId, eid, personId, personName: person.name, kind: person.kind,
+    canManageCodes: person.kind !== "shared" && person.canManageCodes === true,
+  });
   let token;
   try {
     token = await deps.createCustomToken(uid, claims);
@@ -183,6 +186,161 @@ async function handleEnrol(request, deps) {
   return { ok: true, token, personName: person.name || null, kind: person.kind || "person" };
 }
 
+// ─── deviceEnrolmentAdmin — THE ADMIN SCREEN'S ONLY READER AND WRITER ────────
+// Junid (verified Google email), or an enrolled device whose PERSON may make
+// codes (MC) — re-checked on the person record on every call, never trusted
+// from the token alone. Actions:
+//   list                       people + devices (never a code)
+//   createCode {name, kind, canManageCodes}   a unique random code, returned ONCE
+//   revokeDevice {deviceId}    that device only; frees its slot on the code
+//   revokePerson {personId}    every device of theirs, and the code is dead
+// A revoke deletes /users/{uid}/deviceGate/{deviceId}: the device's next write
+// is refused by the rules and its screen drops to the code entry, live.
+
+// Small admin nodes (tens of rows), read with a bound all the same.
+const LIST_LIMIT = 1000;
+async function readBounded(db, path) {
+  return (await db.ref(path).orderByKey().limitToFirst(LIST_LIMIT).once("value")).val() || {};
+}
+
+async function whoIsAdmin(db, auth) {
+  if (!auth || !auth.uid) throw new HttpsError("unauthenticated", "Sign in first.");
+  const t = auth.token || {};
+  if (t.email === E.OWNER_EMAIL && t.email_verified === true) return { owner: true, by: "Junid", personId: null };
+  if (typeof t.deviceId === "string" && typeof t.eid === "string" && typeof t.personId === "string") {
+    const [gate, person] = await Promise.all([
+      db.ref(`users/${auth.uid}/deviceGate/${t.deviceId}`).once("value"),
+      db.ref(`${E.PATHS.people}/${t.personId}`).once("value"),
+    ]);
+    const p = person.val();
+    if (gate.val() === t.eid && p && p.status === "active" && p.canManageCodes === true) {
+      return { owner: false, by: p.name || "MC", personId: t.personId };
+    }
+  }
+  throw new HttpsError("permission-denied", "Only Junid or MC can manage device codes.");
+}
+
+function audit(db, now, who, action, detail) {
+  return db.ref(E.PATHS.audit).push().set({ atMs: now, by: who.by, owner: who.owner, action, ...detail });
+}
+
+async function revokeOne(db, deviceId, now, who) {
+  const d = (await db.ref(`${E.PATHS.devices}/${deviceId}`).once("value")).val();
+  if (!d) return false;
+  const patch = {
+    [`${E.PATHS.devices}/${deviceId}/status`]: "revoked",
+    [`${E.PATHS.devices}/${deviceId}/revokedAtMs`]: now,
+    [`${E.PATHS.devices}/${deviceId}/revokedBy`]: who.by,
+  };
+  if (d.uid) patch[`users/${d.uid}/deviceGate/${deviceId}`] = null;
+  await db.ref().update(patch);
+  // Free the slot only if it is still THIS enrolment's (the device may have
+  // been re-enrolled under someone else since).
+  if (d.personId) {
+    await db.ref(`${E.PATHS.people}/${d.personId}/devices/${deviceId}`).transaction((cur) =>
+      (cur === null ? null : cur.eid === d.eid ? null : undefined));
+  }
+  return true;
+}
+
+async function handleAdmin(request, deps) {
+  const { db } = deps;
+  const now = deps.now();
+  const who = await whoIsAdmin(db, request.auth);
+  const action = request.data?.action;
+
+  if (action === "list") {
+    const [people, devices] = await Promise.all([readBounded(db, E.PATHS.people), readBounded(db, E.PATHS.devices)]);
+    return { ok: true, ...E.listView(people, devices), you: { owner: who.owner, name: who.by } };
+  }
+
+  if (action === "createCode") {
+    const name = E.cleanText(request.data?.name, 40);
+    if (!name) throw new HttpsError("invalid-argument", "Type the person's name (or the shop device's name).");
+    const kind = request.data?.kind === "shared" ? "shared" : "person";
+    // Only Junid may make another code-maker.
+    const canManageCodes = who.owner && kind === "person" && request.data?.canManageCodes === true;
+    const people = await readBounded(db, E.PATHS.people);
+    if (E.nameTaken(people, name)) {
+      throw new HttpsError("already-exists", `${name} already has a live code. Revoke it first, or use a different name.`);
+    }
+    const taken = new Set(Object.values(people).map((p) => p && p.status === "active" && p.code).filter(Boolean));
+    const personId = db.ref(E.PATHS.people).push().key;
+    // Pick, then CLAIM in a transaction: two admins making codes in the same
+    // second can never be handed the same one.
+    let code = null;
+    for (let i = 0; i < 20 && !code; i++) {
+      const candidate = E.pickCode(deps.randomInt, (c) => taken.has(c));
+      if (!candidate) break;
+      const r = await db.ref(`${E.PATHS.codes}/${candidate}`).transaction((cur) => (cur === null ? personId : undefined));
+      if (r.committed && r.snapshot.val() === personId) code = candidate;
+      else taken.add(candidate);
+    }
+    if (!code) throw new HttpsError("resource-exhausted", "Could not find a free code. Try again.");
+    const person = {
+      name, kind, status: "active", code, canManageCodes,
+      maxDevices: kind === "shared" ? E.SHARED_MAX_DEVICES : E.PERSON_MAX_DEVICES,
+      createdAtMs: now, createdBy: who.by,
+    };
+    await db.ref(`${E.PATHS.people}/${personId}`).set(person);
+    await audit(db, now, who, "createCode", { personId, name, kind, canManageCodes });
+    return { ok: true, code, person: E.publicPerson(personId, person) };
+  }
+
+  if (action === "revokeDevice") {
+    const deviceId = E.readDeviceId(request.data?.deviceId);
+    if (!deviceId) throw new HttpsError("invalid-argument", "Which device?");
+    const d = (await db.ref(`${E.PATHS.devices}/${deviceId}`).once("value")).val();
+    if (!d) throw new HttpsError("not-found", "That device is not on the list.");
+    if (!who.owner && d.personId) {
+      const p = (await db.ref(`${E.PATHS.people}/${d.personId}`).once("value")).val();
+      if (p && p.canManageCodes === true && d.personId !== who.personId) {
+        throw new HttpsError("permission-denied", "Only Junid can revoke another code-maker's device.");
+      }
+    }
+    await revokeOne(db, deviceId, now, who);
+    await audit(db, now, who, "revokeDevice", { deviceId, personName: d.personName || null });
+    return { ok: true };
+  }
+
+  if (action === "revokePerson") {
+    const personId = typeof request.data?.personId === "string" && /^[A-Za-z0-9_-]{1,40}$/.test(request.data.personId)
+      ? request.data.personId : null;
+    if (!personId) throw new HttpsError("invalid-argument", "Which person?");
+    const p = (await db.ref(`${E.PATHS.people}/${personId}`).once("value")).val();
+    if (!p) throw new HttpsError("not-found", "That person is not on the list.");
+    if (!who.owner && p.canManageCodes === true && personId !== who.personId) {
+      throw new HttpsError("permission-denied", "Only Junid can revoke another code-maker.");
+    }
+    // The code first: from this moment it enrols nothing.
+    if (p.code) {
+      await db.ref(`${E.PATHS.codes}/${p.code}`).transaction((cur) =>
+        (cur === null ? null : cur === personId ? null : undefined));
+    }
+    await db.ref(`${E.PATHS.people}/${personId}`).update({ status: "revoked", revokedAtMs: now, revokedBy: who.by, code: null });
+    // Every device that names this person — by the person's own list AND by
+    // the device records, so a device the list lost track of is caught too.
+    const byList = E.activeDeviceIds(p);
+    const byRecord = Object.entries(await readBounded(db, E.PATHS.devices))
+      .filter(([, d]) => d && d.personId === personId && d.status === "active").map(([id]) => id);
+    const ids = [...new Set([...byList, ...byRecord])];
+    for (const id of ids) await revokeOne(db, id, now, who);
+    await audit(db, now, who, "revokePerson", { personId, name: p.name || null, devices: ids.length });
+    return { ok: true, devices: ids.length };
+  }
+
+  throw new HttpsError("invalid-argument", "Unknown action.");
+}
+
+exports.deviceEnrolmentAdmin = onCall(
+  { region: "europe-west1", memory: "256MiB", timeoutSeconds: 60, maxInstances: 3 },
+  (request) => handleAdmin(request, {
+    db: admin.database(),
+    now: () => Date.now(),
+    randomInt: (n) => randomInt(n),
+  }),
+);
+
 exports.enrolDevice = onCall(
   { region: "europe-west1", memory: "256MiB", timeoutSeconds: 30, maxInstances: 5 },
   (request) => handleEnrol(request, {
@@ -194,3 +352,4 @@ exports.enrolDevice = onCall(
 );
 
 exports._handleEnrol = handleEnrol;
+exports._handleAdmin = handleAdmin;

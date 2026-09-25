@@ -47,6 +47,9 @@ export function pickDeviceClaims(claims) {
     personId: s(claims?.personId),
     personName: s(claims?.personName),
     kind: claims?.dkind === "shared" ? "shared" : "person",
+    // Only decides whether the Device codes tile is SHOWN; the server re-checks
+    // the person on every admin call.
+    canManageCodes: claims?.dmgr === true,
   };
 }
 
@@ -84,19 +87,25 @@ export function isLiveEnrolment(permRecord, claims) {
 // ── who is holding this device (for the stamps on every write) ──────────────
 // Set by AuthGate from the claims and the /users record; read by deviceStamp.
 // For a login without codes (Mike's own account) the person is the account.
-let identity = { deviceId: null, personName: null, personId: null, enrolled: false };
+let identity = { deviceId: null, personName: null, personId: null, enrolled: false, canManageCodes: false };
 
-export function setDeviceIdentity({ claims, permRecord, user }) {
+// Pure: the identity for these claims and this /users record.
+export function identityFrom({ claims, permRecord, user }) {
   const c = claims || {};
   const enrolled = !!(c.deviceId && c.eid);
-  identity = {
+  return {
     deviceId: (enrolled && c.deviceId) || getDeviceId(),
     personName: (enrolled && c.personName)
       || permRecord?.displayName || permRecord?.username
       || (user?.email ? String(user.email).split("@")[0] : null),
     personId: enrolled ? c.personId : null,
     enrolled,
+    canManageCodes: enrolled && c.canManageCodes === true && isLiveEnrolment(permRecord, c),
   };
+}
+
+export function setDeviceIdentity(args) {
+  identity = identityFrom(args);
   return identity;
 }
 
@@ -122,4 +131,34 @@ export function deviceTypeHint(nav = typeof navigator === "undefined" ? undefine
   else if (/Chrome|CriOS/.test(ua)) browser = "Chrome";
   else if (/Safari/.test(ua)) browser = "Safari";
   return browser ? `${os} · ${browser}` : os;
+}
+
+// ── last seen ────────────────────────────────────────────────────────────────
+// An enrolled device writes /device_enrolment/devices/{id}/lastSeenAtMs when
+// the app opens and every ten minutes while it is on screen. The rule accepts
+// only the device's OWN leaf, only while its enrolment is live, and only a time
+// within five minutes of the server's — hence serverNowMs(), not Date.now().
+// A refused or failed write is swallowed: last seen is a courtesy for Junid's
+// list, never a reason for the app to stop.
+export const LAST_SEEN_EVERY_MS = 10 * 60e3;
+const LAST_SEEN_KEY = "marathon.enrolLastSeenAt";
+
+export function lastSeenDue(nowMs, storage = typeof localStorage === "undefined" ? null : localStorage) {
+  try {
+    const prev = Number(storage?.getItem(LAST_SEEN_KEY)) || 0;
+    return nowMs - prev >= LAST_SEEN_EVERY_MS || nowMs < prev;
+  } catch {
+    return true;
+  }
+}
+
+export async function writeLastSeen({ deviceId, write, nowMs, storage = typeof localStorage === "undefined" ? null : localStorage }) {
+  if (!deviceId || !lastSeenDue(nowMs, storage)) return false;
+  try {
+    await write(`device_enrolment/devices/${deviceId}/lastSeenAtMs`, nowMs);
+    try { storage?.setItem(LAST_SEEN_KEY, String(nowMs)); } catch { /* storage off */ }
+    return true;
+  } catch {
+    return false;
+  }
 }

@@ -100,6 +100,7 @@ import { usePushMute } from "./push/useMute";
 import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
+import DeviceCodesCard from "./device/DeviceCodesCard";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -2941,6 +2942,18 @@ const RoleIcons = {
       <path d="M10 18.5h4"/>
     </svg>
   ),
+  device_codes: (
+    // lucide-style "key + phone": a phone with a key beside it — a code that
+    // lets one device in. Not a padlock (that reads as "locked out").
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="11" height="18" rx="2"/>
+      <path d="M6.5 17.5h2"/>
+      <circle cx="17.5" cy="9" r="2.5"/>
+      <path d="M17.5 11.5V19"/>
+      <path d="M17.5 15.5h2"/>
+      <path d="M17.5 18h1.5"/>
+    </svg>
+  ),
   push_alerts: (
     // lucide-style "bell + check": the alert bell with a small tick, so it
     // reads as "who is signed up for alerts" rather than as an alert itself.
@@ -3209,7 +3222,7 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
 
 function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
   const isDesktop = !useIsNarrow(1024);
-  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
+  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut, deviceIdentity: homeDevice } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
   // MIRROR — not hasPermission, not the permissions array, not stockRole. The
   // flag is the same scalar the server callable checks, so the two can never
@@ -3386,6 +3399,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // the card's own check are the others, and the RTDB rules on
       // /mirror_devices and /mirror_switch are what actually enforce it.
       isSuperAdmin && { key:"mirror_fleet", icon:RoleIcons.mirror_fleet, name:"Mirror Fleet", desc:"Every device's offline copy, and the kill switch", onClick:()=>(window.location.hash = "#admin/mirror") },
+      // Device codes — the 4-digit code every phone on MC's login needs
+      // (src/device/enrolment.js). Junid, or an enrolled device whose person may
+      // make codes (MC). GATE 1 of 3; the route below and the deviceEnrolmentAdmin
+      // callable (which re-checks the person on every call) are the others.
+      (isSuperAdmin || homeDevice?.canManageCodes === true) && { key:"device_codes", icon:RoleIcons.device_codes, name:"Device Codes", desc:"A code for each staff phone · who is on which device", onClick:()=>(window.location.hash = "#admin/devices") },
       // Card Recon — capture the card machine's batch slip, see the variance
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
@@ -19814,7 +19832,7 @@ function AdminSignInScreen({ onCancel }) {
 // (which means this branch only ever fires when isSuperAdmin === false from
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
-  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut, deviceIdentity } = usePermissions();
   // ── WEB PUSH ───────────────────────────────────────────────────────────────
   // Hoisted to the app root rather than to the home screen, because a staff
   // member with a persisted role opens straight into their workspace and may go
@@ -19910,6 +19928,9 @@ function AppInner() {
   // nothing; authorization happens at the mount below, and the RTDB rules on
   // /mirror_devices and /mirror_switch are what actually refuse.
   const wantMirrorFleet = hash === "#admin/mirror" || hash === "#admin/mirror/";
+  // /#admin/devices — DEVICE CODES. Recognises the HASH only and grants
+  // nothing; the deviceEnrolmentAdmin callable is what actually refuses.
+  const wantDeviceCodes = hash === "#admin/devices" || hash === "#admin/devices/";
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -20164,7 +20185,14 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantMirrorFleet) {
+  if (wantDeviceCodes) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // Junid, or MC's enrolled code-making device. Anyone else signed in as a
+    // real account gets the admin sign-in (which only Junid can pass).
+    view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
+      ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantMirrorFleet) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
     // A non-super-admin never gets the card mounted, so none of its reads
     // happen and the kill switch is never rendered. Layer 1 is the tile,

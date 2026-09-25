@@ -280,3 +280,131 @@ test("a success clears this device's wrong-code count", async () => {
   await _handleEnrol(req({ code: "4821" }), deps(db));
   assert.equal(readAt(db.state.root, `device_enrolment/attempts/dev_${DEV_A}`), null);
 });
+
+// ── the admin callable ───────────────────────────────────────────────────────
+const { _handleAdmin } = require("../deviceEnrolment/deviceEnrolment.js");
+const OWNER = { uid: "owner", token: { email: E.OWNER_EMAIL, email_verified: true } };
+const adminDeps = (db, seq = [4821, 7305, 3916, 5082]) => {
+  let i = 0;
+  return { db, now: () => NOW, randomInt: () => seq[i++ % seq.length] };
+};
+const call = (auth, data, db, d) => _handleAdmin({ auth, data }, d || adminDeps(db));
+
+test("admin: Junid makes a code — unique, not weak, shown once, never in the list", async () => {
+  const db = makeFakeDb({ users: { [MC]: { deviceCodeRequired: true } } });
+  const made = await call(OWNER, { action: "createCode", name: "  Thandi  Ngcobo " }, db, adminDeps(db, [1234, 4821]));
+  assert.equal(made.code, "4821", "1234 is weak and skipped");
+  assert.equal(made.person.name, "Thandi Ngcobo");
+  assert.equal(made.person.maxDevices, 2);
+  assert.equal(readAt(db.state.root, "device_enrolment/codes/4821"), made.person.personId);
+  const list = await call(OWNER, { action: "list" }, db);
+  assert.equal(list.people.length, 1);
+  assert.equal(JSON.stringify(list).includes("4821"), false, "the code never appears in the list");
+  // The code works.
+  const out = await _handleEnrol(req({ code: "4821" }), deps(db));
+  assert.equal(out.ok, true);
+  assert.equal(out.personName, "Thandi Ngcobo");
+});
+
+test("admin: a second person never gets a code already live, even when the dice say so", async () => {
+  const db = makeFakeDb({});
+  const a = await call(OWNER, { action: "createCode", name: "A" }, db, adminDeps(db, [4821]));
+  const b = await call(OWNER, { action: "createCode", name: "B" }, db, adminDeps(db, [4821, 4821, 7305]));
+  assert.equal(a.code, "4821");
+  assert.equal(b.code, "7305");
+});
+
+test("admin: a code already claimed in the index (a concurrent admin) is skipped by the transaction", async () => {
+  const db = makeFakeDb({ device_enrolment: { codes: { 4821: "someone-else" } } });
+  const b = await call(OWNER, { action: "createCode", name: "B" }, db, adminDeps(db, [4821, 7305]));
+  assert.equal(b.code, "7305");
+  assert.equal(readAt(db.state.root, "device_enrolment/codes/4821"), "someone-else");
+});
+
+test("admin: a live name cannot be issued twice; a shared shop device holds one device", async () => {
+  const db = makeFakeDb({});
+  await call(OWNER, { action: "createCode", name: "Sipho" }, db);
+  await assert.rejects(call(OWNER, { action: "createCode", name: "sipho " }, db), /already has a live code/);
+  const hub = await call(OWNER, { action: "createCode", name: "Hub 2 tablet", kind: "shared" }, db, adminDeps(db, [7305]));
+  assert.equal(hub.person.kind, "shared");
+  assert.equal(hub.person.maxDevices, 1);
+});
+
+test("admin: revoke a device — gate entry gone, slot freed, code still works for a new phone", async () => {
+  const db = world();
+  await _handleEnrol(req({ code: "4821" }), deps(db));
+  await _handleEnrol(req({ code: "4821", deviceId: DEV_B }), deps(db));
+  await call(OWNER, { action: "revokeDevice", deviceId: DEV_A }, db);
+  assert.equal(readAt(db.state.root, `users/${MC}/deviceGate/${DEV_A}`), null);
+  assert.ok(readAt(db.state.root, `users/${MC}/deviceGate/${DEV_B}`), "the other phone is untouched");
+  assert.equal(readAt(db.state.root, `device_enrolment/devices/${DEV_A}/status`), "revoked");
+  assert.equal(readAt(db.state.root, `device_enrolment/devices/${DEV_A}/revokedBy`), "Junid");
+  const c = await _handleEnrol(req({ code: "4821", deviceId: DEV_C }), deps(db));
+  assert.equal(c.ok, true, "the freed slot takes a new phone");
+});
+
+test("admin: revoke a person — every device off, the code dead", async () => {
+  const db = world();
+  await _handleEnrol(req({ code: "4821" }), deps(db));
+  await _handleEnrol(req({ code: "4821", deviceId: DEV_B }), deps(db));
+  const out = await call(OWNER, { action: "revokePerson", personId: "p-sipho" }, db);
+  assert.equal(out.devices, 2);
+  assert.equal(readAt(db.state.root, `users/${MC}/deviceGate`), null);
+  assert.equal(readAt(db.state.root, "device_enrolment/codes/4821"), null);
+  assert.equal(readAt(db.state.root, "device_enrolment/people/p-sipho/status"), "revoked");
+  assert.equal(readAt(db.state.root, "device_enrolment/people/p-sipho/code"), null);
+  const again = await _handleEnrol(req({ code: "4821", deviceId: DEV_C }), deps(db));
+  assert.equal(again.reason, "wrong");
+  const list = await call(OWNER, { action: "list" }, db);
+  assert.deepEqual(list.devices.map((d) => d.status), ["revoked", "revoked"]);
+});
+
+test("admin: MC (an enrolled code-maker) can make codes and revoke staff, but not make code-makers or revoke Junid's other code-makers", async () => {
+  const db = world();
+  db.state.root.device_enrolment.people["p-mc"] = { name: "MC", kind: "person", status: "active", code: "3916", canManageCodes: true };
+  db.state.root.device_enrolment.codes["3916"] = "p-mc";
+  db.state.root.device_enrolment.people["p-boss2"] = { name: "Other boss", kind: "person", status: "active", canManageCodes: true };
+  const d = deps(db);
+  await _handleEnrol(req({ code: "3916", deviceId: DEV_C }), d);
+  assert.equal(d.tokens[0].claims.dmgr, true, "the token tells the app to show the tile");
+  const mcAuth = { uid: MC, token: { ...d.tokens[0].claims, email: "mc@marathon.internal" } };
+  const made = await call(mcAuth, { action: "createCode", name: "New Staff", canManageCodes: true }, db, adminDeps(db, [5082]));
+  assert.equal(made.person.canManageCodes, false, "only Junid makes code-makers");
+  await _handleEnrol(req({ code: "4821" }), deps(db));
+  await call(mcAuth, { action: "revokeDevice", deviceId: DEV_A }, db);
+  assert.equal(readAt(db.state.root, `users/${MC}/deviceGate/${DEV_A}`), null);
+  await assert.rejects(call(mcAuth, { action: "revokePerson", personId: "p-boss2" }, db), /Only Junid/);
+});
+
+test("admin: everyone else is refused — a staff phone, a revoked code-maker, a stale enrolment, an unverified email", async () => {
+  const db = world();
+  db.state.root.device_enrolment.people["p-mc"] = { name: "MC", kind: "person", status: "active", code: "3916", canManageCodes: true };
+  db.state.root.device_enrolment.codes["3916"] = "p-mc";
+  const staff = deps(db);
+  await _handleEnrol(req({ code: "4821" }), staff);
+  const staffAuth = { uid: MC, token: staff.tokens[0].claims };
+  await assert.rejects(call(staffAuth, { action: "list" }, db), /Only Junid or MC/);
+  const mc = deps(db);
+  await _handleEnrol(req({ code: "3916", deviceId: DEV_C }), mc);
+  const mcAuth = { uid: MC, token: mc.tokens[0].claims };
+  await call(mcAuth, { action: "list" }, db);
+  await call(OWNER, { action: "revokeDevice", deviceId: DEV_C }, db);
+  await assert.rejects(call(mcAuth, { action: "list" }, db), /Only Junid or MC/, "a revoked device's token no longer works");
+  await assert.rejects(call({ uid: MC, token: { email: "mc@marathon.internal" } }, { action: "list" }, db), /Only Junid or MC/);
+  await assert.rejects(call({ uid: "x", token: { email: E.OWNER_EMAIL, email_verified: false } }, { action: "list" }, db), /Only Junid or MC/);
+  await assert.rejects(call(null, { action: "list" }, db), /Sign in first/);
+});
+
+test("admin: list is sorted active-first and carries last seen and reject count", async () => {
+  const db = world();
+  await _handleEnrol(req({ code: "4821" }), deps(db));
+  db.state.root.device_enrolment.devices[DEV_A].lastSeenAtMs = NOW + 5000;
+  db.state.root.device_enrolment.devices[DEV_A].rejectCount = 3;
+  const list = await call(OWNER, { action: "list" }, db);
+  assert.deepEqual(
+    { ...list.devices[0], enrolledAtMs: undefined },
+    { deviceId: DEV_A, personId: "p-sipho", personName: "Sipho", kind: "person", status: "active", deviceType: "Android phone",
+      enrolledAtMs: undefined, lastSeenAtMs: NOW + 5000, rejectCount: 3, revokedAtMs: null, revokedBy: null },
+  );
+  assert.equal(list.people.find((p) => p.personId === "p-sipho").devices, 1);
+});

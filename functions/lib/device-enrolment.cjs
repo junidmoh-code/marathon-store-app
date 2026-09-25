@@ -189,12 +189,72 @@ function planEnrol(person, { deviceId, eid, now }) {
 
 // The claims the custom token carries. Firebase refuses reserved names
 // (firebase, sub, iat, …) and anything over 1000 bytes; these are neither.
-function buildClaims({ deviceId, eid, personId, personName, kind }) {
+// dmgr only decides whether the app SHOWS the Device codes tile; every admin
+// call re-checks the person record, so a flag removed later takes effect at
+// once even though the token still says true.
+function buildClaims({ deviceId, eid, personId, personName, kind, canManageCodes }) {
   return {
     deviceId, eid, personId,
     personName: String(personName || "").slice(0, 80),
     dkind: kind === "shared" ? "shared" : "person",
+    ...(canManageCodes === true ? { dmgr: true } : {}),
   };
+}
+
+// ── THE ADMIN LIST ───────────────────────────────────────────────────────────
+// What the admin screen is sent. The code is NEVER in it: a code is shown once,
+// when it is made, and after that only the person who was handed it knows it.
+function publicPerson(id, p) {
+  const active = activeDeviceIds(p);
+  return {
+    personId: id,
+    name: p?.name || null,
+    kind: p?.kind === "shared" ? "shared" : "person",
+    status: p?.status === "active" ? "active" : "revoked",
+    canManageCodes: p?.canManageCodes === true,
+    devices: active.length,
+    maxDevices: maxDevicesFor(p),
+    createdAtMs: Number(p?.createdAtMs) || null,
+    createdBy: p?.createdBy || null,
+    revokedAtMs: Number(p?.revokedAtMs) || null,
+  };
+}
+
+function publicDevice(id, d) {
+  return {
+    deviceId: id,
+    personId: d?.personId || null,
+    personName: d?.personName || null,
+    kind: d?.kind === "shared" ? "shared" : "person",
+    status: d?.status === "active" ? "active" : "revoked",
+    deviceType: d?.deviceType || null,
+    enrolledAtMs: Number(d?.enrolledAtMs) || null,
+    lastSeenAtMs: Number(d?.lastSeenAtMs) || null,
+    rejectCount: Number(d?.rejectCount) || 0,
+    revokedAtMs: Number(d?.revokedAtMs) || null,
+    revokedBy: d?.revokedBy || null,
+  };
+}
+
+// Active first, then newest.
+function listView(people, devices) {
+  const byStatusThenNewest = (tA, tB) => (a, b) =>
+    (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1) || (b[tB] || 0) - (a[tA] || 0);
+  return {
+    people: Object.entries(people || {}).filter(([, p]) => p && typeof p === "object")
+      .map(([id, p]) => publicPerson(id, p)).sort(byStatusThenNewest("createdAtMs", "createdAtMs")),
+    devices: Object.entries(devices || {}).filter(([, d]) => d && typeof d === "object")
+      .map(([id, d]) => publicDevice(id, d))
+      .sort((a, b) => (a.status === "active" ? 0 : 1) - (b.status === "active" ? 0 : 1)
+        || (b.lastSeenAtMs || b.enrolledAtMs || 0) - (a.lastSeenAtMs || a.enrolledAtMs || 0)),
+  };
+}
+
+// Is there already an ACTIVE person or shared device by this name? Two
+// "Sipho"s with live codes would make the device list unreadable.
+function nameTaken(people, name) {
+  const k = nameKey(name);
+  return Object.values(people || {}).some((p) => p && p.status === "active" && nameKey(p.name) === k);
 }
 
 // A short, human description of the device from what the browser says about
@@ -225,4 +285,5 @@ module.exports = {
   readCode, readDeviceId, cleanText, nameKey, isWeakCode, pickCode,
   lockVerdict, afterFailure, attemptsLeft,
   activeDeviceIds, maxDevicesFor, planEnrol, buildClaims, describeDevice, ipKey,
+  publicPerson, publicDevice, listView, nameTaken,
 };

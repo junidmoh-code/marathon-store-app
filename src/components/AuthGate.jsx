@@ -23,7 +23,7 @@
 
 import { useEffect, useState } from "react";
 import { onAuthStateChanged, onIdTokenChanged, signInAnonymously, signInWithCustomToken, signOut } from "firebase/auth";
-import { onValue, ref } from "firebase/database";
+import { onValue, ref, set } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { auth, database, functions } from "../firebase";
 import { PermissionsContext, ADMIN_EMAIL } from "./PermissionsContext";
@@ -31,7 +31,11 @@ import { revokeBeforeSignOut } from "../push/registerPush";
 import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
 import EnrolmentGate from "../device/EnrolmentGate";
-import { deviceGateVerdict, deviceTypeHint, readSessionClaims, setDeviceIdentity } from "../device/enrolment";
+import {
+  deviceGateVerdict, deviceTypeHint, identityFrom, isLiveEnrolment, readSessionClaims, setDeviceIdentity,
+  writeLastSeen, LAST_SEEN_EVERY_MS,
+} from "../device/enrolment";
+import { serverNowMs } from "../utils/serverTime";
 import { adoptDeviceId, getDeviceId } from "../device/deviceId";
 
 // The two calls the code screen makes. Module-level so the screen's props are
@@ -110,6 +114,21 @@ export default function AuthGate({ children, renderTv }) {
     if (claims?.deviceId) adoptDeviceId(claims.deviceId);
     setDeviceIdentity({ claims, permRecord, user });
   }, [claims, permRecord, user]);
+
+  // Last seen, for Junid's device list (src/device/enrolment.js explains why
+  // serverNowMs and why a failure is ignored).
+  const liveDeviceId = isLiveEnrolment(permRecord, claims) ? claims.deviceId : null;
+  useEffect(() => {
+    if (!liveDeviceId) return undefined;
+    const write = (path, v) => set(ref(database, path), v);
+    const beat = () => {
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      writeLastSeen({ deviceId: liveDeviceId, write, nowMs: serverNowMs() });
+    };
+    beat();
+    const t = setInterval(beat, LAST_SEEN_EVERY_MS);
+    return () => clearInterval(t);
+  }, [liveDeviceId]);
 
   // On #tv, ensure we have a signed-in user (anon is fine) BEFORE rendering
   // the TV display — otherwise useOrders subscribes with a null auth and the
@@ -211,7 +230,8 @@ export default function AuthGate({ children, renderTv }) {
 
   return (
     <PermissionsContext.Provider
-      value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut }}>
+      value={{ user, permRecord, isSuperAdmin, permissions, storeIds, hasPermission, signOut: doSignOut,
+               deviceIdentity: identityFrom({ claims, permRecord, user }) }}>
       {children}
     </PermissionsContext.Provider>
   );

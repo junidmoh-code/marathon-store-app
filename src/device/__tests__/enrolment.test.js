@@ -61,7 +61,7 @@ describe("the claims", () => {
   });
   it("reads the cached token, and falls back to decoding it when that throws (offline, expired)", async () => {
     const ok = { getIdTokenResult: async () => ({ claims: { deviceId: DEV, eid: "e1", personName: "Sipho", dkind: "shared" } }) };
-    expect(await readSessionClaims(ok)).toEqual({ deviceId: DEV, eid: "e1", personId: null, personName: "Sipho", kind: "shared" });
+    expect(await readSessionClaims(ok)).toEqual({ deviceId: DEV, eid: "e1", personId: null, personName: "Sipho", kind: "shared", canManageCodes: false });
     const offline = { getIdTokenResult: async () => { throw new Error("auth/network-request-failed"); }, accessToken: token({ deviceId: DEV, eid: "e9" }) };
     expect(await readSessionClaims(offline)).toMatchObject({ deviceId: DEV, eid: "e9" });
     expect(await readSessionClaims(null)).toMatchObject({ deviceId: null, eid: null });
@@ -72,8 +72,14 @@ describe("who is holding the device", () => {
   beforeEach(() => store.clear());
   it("an enrolled device is its person, under the id its token names", () => {
     const id = setDeviceIdentity({ claims: claims(), permRecord: flagged(), user: { email: "mc@marathon.internal" } });
-    expect(id).toEqual({ deviceId: DEV, personName: "Sipho", personId: "p1", enrolled: true });
+    expect(id).toEqual({ deviceId: DEV, personName: "Sipho", personId: "p1", enrolled: true, canManageCodes: false });
     expect(getDeviceIdentity()).toBe(id);
+  });
+  it("the Device codes tile shows only for a LIVE enrolment whose token says code-maker", () => {
+    const mgr = pickDeviceClaims({ deviceId: DEV, eid: "e1", personName: "MC", dmgr: true });
+    expect(setDeviceIdentity({ claims: mgr, permRecord: flagged({ [DEV]: "e1" }) }).canManageCodes).toBe(true);
+    expect(setDeviceIdentity({ claims: mgr, permRecord: flagged(null) }).canManageCodes).toBe(false);
+    expect(setDeviceIdentity({ claims: pickDeviceClaims({ deviceId: DEV, eid: "e1", dmgr: "true" }), permRecord: flagged({ [DEV]: "e1" }) }).canManageCodes).toBe(false);
   });
   it("a login without codes is the account's own name, on the browser's own id", () => {
     const id = setDeviceIdentity({ claims: pickDeviceClaims({}), permRecord: { displayName: "Mike" }, user: { email: "mike@marathon.internal" } });
@@ -100,5 +106,23 @@ describe("deviceTypeHint", () => {
     expect(deviceTypeHint({ userAgent: "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) Version/17 Safari/605", maxTouchPoints: 5 })).toBe("iPad · Safari");
     expect(deviceTypeHint({ userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/140 Safari/537.36 Edg/140" })).toBe("Windows PC · Edge");
     expect(deviceTypeHint(undefined)).toBe("Unknown device");
+  });
+});
+
+describe("last seen", () => {
+  it("writes the device's own leaf with the given (server) time, at most every ten minutes, and never throws", async () => {
+    const { writeLastSeen, LAST_SEEN_EVERY_MS } = await import("../enrolment.js");
+    const mem = new Map();
+    const storage = { getItem: (k) => mem.get(k) ?? null, setItem: (k, v) => mem.set(k, v) };
+    const writes = [];
+    const write = async (p, v) => { writes.push([p, v]); };
+    const T = 1790000000000;
+    expect(await writeLastSeen({ deviceId: DEV, write, nowMs: T, storage })).toBe(true);
+    expect(await writeLastSeen({ deviceId: DEV, write, nowMs: T + 60e3, storage })).toBe(false);
+    expect(await writeLastSeen({ deviceId: DEV, write, nowMs: T + LAST_SEEN_EVERY_MS, storage })).toBe(true);
+    expect(writes).toEqual([[`device_enrolment/devices/${DEV}/lastSeenAtMs`, T], [`device_enrolment/devices/${DEV}/lastSeenAtMs`, T + LAST_SEEN_EVERY_MS]]);
+    const refused = async () => { throw new Error("PERMISSION_DENIED"); };
+    expect(await writeLastSeen({ deviceId: DEV, write: refused, nowMs: T + 99 * LAST_SEEN_EVERY_MS, storage })).toBe(false);
+    expect(await writeLastSeen({ deviceId: null, write, nowMs: T, storage })).toBe(false);
   });
 });

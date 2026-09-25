@@ -23,7 +23,7 @@ window.removeEventListener = (t, fn) => winListeners.get(t)?.delete(fn);
 const DEV = "aaaaaaaa-1111-4111-8111-111111111111";
 
 // ── firebase, faked at the module boundary ───────────────────────────────────
-const fb = { user: null, authCbs: new Set(), tokenCbs: new Set(), userCbs: new Set(), permRecord: null, enrolCalls: [], enrolResult: null, customTokens: [] };
+const fb = { writes: [], user: null, authCbs: new Set(), tokenCbs: new Set(), userCbs: new Set(), permRecord: null, enrolCalls: [], enrolResult: null, customTokens: [] };
 function signInAs(user) {
   fb.user = user;
   for (const cb of fb.authCbs) cb(user);
@@ -44,6 +44,7 @@ vi.mock("firebase/auth", () => ({
 }));
 vi.mock("firebase/database", () => ({
   ref: (_d, path) => ({ path }),
+  set: vi.fn(async (r, v) => { fb.writes.push([r.path, v]); }),
   onValue: (_r, cb) => { const snap = () => ({ val: () => fb.permRecord }); const l = () => cb(snap()); fb.userCbs.add(l); l(); return () => fb.userCbs.delete(l); },
 }));
 vi.mock("firebase/functions", () => ({
@@ -81,7 +82,7 @@ async function type(r, digits) {
 
 beforeEach(() => {
   store.clear();
-  Object.assign(fb, { user: null, permRecord: null, enrolCalls: [], enrolResult: null, customTokens: [] });
+  Object.assign(fb, { user: null, permRecord: null, enrolCalls: [], enrolResult: null, customTokens: [], writes: [] });
   fb.authCbs.clear(); fb.tokenCbs.clear(); fb.userCbs.clear();
 });
 

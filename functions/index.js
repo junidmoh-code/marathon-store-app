@@ -3934,6 +3934,12 @@ exports.cardTerminalAdmin = require("./cardRecon/cardTerminalAdmin.js").cardTerm
 //   firebase deploy --only functions:enrolDevice
 exports.enrolDevice = require("./deviceEnrolment/deviceEnrolment.js").enrolDevice;
 
+// ─── DEVICE ENROLMENT — deviceEnrolmentAdmin (the Device codes screen) ───────
+// Junid, or an enrolled device whose person may make codes (MC): list people
+// and devices, make a code (shown once), revoke a device, revoke a person.
+//   firebase deploy --only functions:deviceEnrolmentAdmin
+exports.deviceEnrolmentAdmin = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentAdmin;
+
 // ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
 // Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
 // for every transaction in a batch. Storage rules cannot read RTDB, so the
