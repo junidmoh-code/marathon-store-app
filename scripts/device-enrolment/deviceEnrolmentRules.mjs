@@ -22,6 +22,10 @@
 //    moving stock. ANDing a condition can only ever REFUSE more, never grant.
 //    ".write": "false" is left as it is (it refuses everything already).
 //
+//    The same condition is ANDed onto every ".read" too, except /users and
+//    /mirror_switch (READ_EXEMPT_TOP below): an unenrolled phone can see the
+//    code screen and nothing else, not even through the REST API.
+//
 // 2. A new /device_enrolment node. It has no ".read" (so only the Admin SDK,
 //    i.e. the admin callable, can list it). An enrolled device may write two
 //    leaves of its OWN record: lastSeenAtMs (the server clock, give or take
@@ -62,22 +66,34 @@ function wrap(expr) {
   if (expr === false || expr === "false") return expr;
   if (typeof expr === "string" && expr.includes(DEVICE_OK)) return expr;
   if (expr === true || expr === "true") return DEVICE_OK;
-  if (typeof expr !== "string") throw new Error(`unexpected .write value: ${JSON.stringify(expr)}`);
+  if (typeof expr !== "string") throw new Error(`unexpected rule value: ${JSON.stringify(expr)}`);
   return `(${expr}) && ${DEVICE_OK}`;
 }
 
-function walk(node, path, out) {
+// Reads an UNENROLLED device must still make: its own /users record (that is
+// where the code screen learns it needs a code, and hears a revoke) and
+// /mirror_switch (the quarantine and the mirror switch). Everything else it
+// reads only once enrolled. (Fable spec review, PR #647: an ex-employee with
+// the PIN must not be able to read orders and customers either.)
+export const READ_EXEMPT_TOP = new Set(["users", "mirror_switch"]);
+
+function walk(node, path, out, reads) {
   if (!node || typeof node !== "object" || Array.isArray(node)) return node;
+  const top = path.split("/")[1];
   const next = {};
   for (const [k, v] of Object.entries(node)) {
     if (k === ".write") {
       const w = wrap(v);
       if (w !== v) out.push(path || "/");
       next[k] = w;
+    } else if (k === ".read" && !READ_EXEMPT_TOP.has(top)) {
+      const r = wrap(v);
+      if (r !== v) reads.push(path || "/");
+      next[k] = r;
     } else if (k.startsWith(".")) {
       next[k] = v;
     } else {
-      next[k] = walk(v, `${path}/${k}`, out);
+      next[k] = walk(v, `${path}/${k}`, out, reads);
     }
   }
   return next;
@@ -96,8 +112,9 @@ export function patchDeviceEnrolmentRules(live) {
     throw new Error("the live rules already hold a different /device_enrolment node — refusing to guess");
   }
   const wrapped = [];
+  const readsWrapped = [];
   const { device_enrolment: _skip, ...rest } = live.rules;
-  const rules = walk(rest, "", wrapped);
+  const rules = walk(rest, "", wrapped, readsWrapped);
   rules.device_enrolment = DEVICE_ENROLMENT_NODE;
-  return { doc: { ...live, rules }, wrapped };
+  return { doc: { ...live, rules }, wrapped, readsWrapped };
 }

@@ -32,6 +32,8 @@ export function messageFor(result) {
       const mins = Math.max(1, Math.ceil((Number(result.retryAfterMs) || 0) / 60e3));
       return `Too many wrong codes. Try again in ${mins} minute${mins === 1 ? "" : "s"}.`;
     }
+    case "taken":
+      return `This device is already enrolled${result.personName ? ` to ${result.personName}` : ""}. Ask MC to revoke it first.`;
     case "full":
       return `That code is already in use on ${result.max || 2} device${result.max === 1 ? "" : "s"}. Ask MC.`;
     default:

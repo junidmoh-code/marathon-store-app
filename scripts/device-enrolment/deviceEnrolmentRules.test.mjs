@@ -26,10 +26,21 @@ describe("patchDeviceEnrolmentRules", () => {
     expect(wrapped.sort()).toEqual(["/open", "/orders/$id", "/stock/$loc/$pid/$size", "/users"]);
   });
 
-  it("leaves reads, validates, indexes and write-false exactly as they were", () => {
+  it("ANDs it onto every .read too — except /users and /mirror_switch, which the code screen needs", () => {
+    const l = liveish();
+    l.rules.mirror_switch = { ".read": "auth != null", ".write": "auth.token.email === 'x'" };
+    const { doc, readsWrapped } = patchDeviceEnrolmentRules(l);
+    expect(doc.rules.orders[".read"]).toBe(`(auth != null) && ${DEVICE_OK}`);
+    expect(doc.rules.mirror_changes[".read"]).toBe(`(auth != null) && ${DEVICE_OK}`);
+    expect(doc.rules.users[".read"]).toBe("auth != null");
+    expect(doc.rules.mirror_switch[".read"]).toBe("auth != null");
+    expect(doc.rules.shopify_sync[".read"]).toBe(false);
+    expect(readsWrapped.sort()).toEqual(["/mirror_changes", "/orders"]);
+  });
+
+  it("leaves validates, indexes and write-false exactly as they were", () => {
     const before = liveish();
     const { doc } = patchDeviceEnrolmentRules(before);
-    expect(doc.rules.orders[".read"]).toBe(before.rules.orders[".read"]);
     expect(doc.rules.orders[".indexOn"]).toEqual(["destShop"]);
     expect(doc.rules.stock.$loc.$pid.$size[".validate"]).toBe(before.rules.stock.$loc.$pid.$size[".validate"]);
     expect(doc.rules.stock.$loc.$pid.$size.qty).toEqual({ ".validate": "newData.isNumber()" });
@@ -41,6 +52,7 @@ describe("patchDeviceEnrolmentRules", () => {
     const { device_enrolment, ...rest } = doc.rules;
     expect(device_enrolment).toEqual(DEVICE_ENROLMENT_NODE);
     expect(strip(rest).orders).toEqual(before.rules.orders);
+    expect(strip(rest).stock).toEqual(before.rules.stock);
   });
 
   it("does not mutate its input", () => {
@@ -55,6 +67,7 @@ describe("patchDeviceEnrolmentRules", () => {
     const twice = patchDeviceEnrolmentRules(once);
     expect(twice.doc).toEqual(once);
     expect(twice.wrapped).toEqual([]);
+    expect(twice.readsWrapped).toEqual([]);
   });
 
   it("refuses a live /device_enrolment node it did not write", () => {

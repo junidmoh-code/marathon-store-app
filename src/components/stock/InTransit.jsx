@@ -145,7 +145,10 @@ export default function InTransit({ products = [], registry: registryProp, actor
         // movement) repairs it. The rules make each receipt write-once, so two
         // devices racing the same row can't record different quantities.
         try {
-          await update(ref(database), { [`transfers/${t.id}/received/${r.pid}/${r.sizeKey}`]: landedQty });
+          await update(ref(database), {
+            [`transfers/${t.id}/received/${r.pid}/${r.sizeKey}`]: landedQty,
+            ...stampAt(`transfers/${t.id}`, "receive-line"),
+          });
           settled[r.rowId] = landedQty;
           if (landedQty < r.qty) short = true;
         } catch { failed++; }

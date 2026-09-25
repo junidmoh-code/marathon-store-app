@@ -60,7 +60,7 @@ async function denied(label, p) {
 const inFile = process.argv[2];
 if (!inFile) { console.error("usage: prove-device-enrolment-rules.mjs <live-rules.json>"); process.exit(2); }
 const live = JSON.parse(readFileSync(inFile, "utf8"));
-const { doc: candidate, wrapped } = patchDeviceEnrolmentRules(live);
+const { doc: candidate, wrapped, readsWrapped } = patchDeviceEnrolmentRules(live);
 
 const emu = spawn(JAVA, ["-jar", JAR, "--port", String(PORT), "--host", "127.0.0.1"], { stdio: ["ignore", "pipe", "pipe"] });
 let emuLog = "";
@@ -102,7 +102,7 @@ await loadRules(candidate);
   if (c.status !== 401 && c.status !== 403) { console.error(`CONTROL FAILED: /shopify_sync answered ${c.status}; rules not enforced`); stop(); process.exit(2); }
 }
 await seed();
-console.log(`\ncandidate loaded (${wrapped.length} write rules carry the device condition)\n`);
+console.log(`\ncandidate loaded (${wrapped.length} write and ${readsWrapped.length} read rules carry the device condition)\n`);
 
 console.log("── an UNENROLLED phone on MC's login is refused everywhere ──");
 await denied("password session: order write", as(MC_PW, "PUT", "orders/o1", { status: "ready", destShop: "trophy" }));
@@ -114,7 +114,18 @@ await denied("password session: transfer", as(MC_PW, "PUT", "transfers/t1", { st
 await denied("password session: multi-path root update", as(MC_PW, "PATCH", "", { "orders/o2/status": "ready", "refill_requests/r1/status": "open" }));
 await denied("password session: device telemetry", as(MC_PW, "PUT", `mirror_devices/${DEV_B}`, { deviceId: DEV_B }));
 
+console.log("\n── …and cannot READ anything but the code screen needs ──");
+await put("mirror_switch/enabled", true);
+await denied("password session: read orders", as(MC_PW, "GET", "orders/o0"));
+await denied("password session: read a product", as(MC_PW, "GET", "products/p1"));
+await denied("password session: read stock", as(MC_PW, "GET", "stock/hub2"));
+await denied("password session: read refill requests", as(MC_PW, "GET", "refill_requests/r1"));
+await allowed("password session: read its own /users record (the code screen needs it)", as(MC_PW, "GET", "users/mc"));
+await allowed("password session: read /mirror_switch (quarantine, mirror switch)", as(MC_PW, "GET", "mirror_switch/enabled"));
+
 console.log("\n── an ENROLLED phone on MC's login works as before ──");
+await allowed("enrolled: read orders", as(MC_DEV, "GET", "orders/o0"));
+await allowed("enrolled: read a product", as(MC_DEV, "GET", "products/p1"));
 await allowed("enrolled: order write", as(MC_DEV, "PUT", "orders/o3", { status: "ready", destShop: "trophy" }));
 await allowed("enrolled: stock movement", as(MC_DEV, "PUT", ...mv("mc", "mv3")));
 await allowed("enrolled: stock cell", as(MC_DEV, "PUT", "stock/hub2/p1/M", cell));
@@ -144,12 +155,15 @@ await denied("an old enrolment id on a re-enrolled device", as(MC_OLD_EID, "PUT"
 await put(`users/mc/deviceGate/${DEV_A}`, null);                  // Junid revokes Sipho's phone
 await denied("the SAME session, the moment it is revoked (no reload)", as(MC_DEV, "PUT", "orders/o5", { status: "ready", destShop: "trophy" }));
 await denied("…and its last-seen write", as(MC_DEV, "PUT", `device_enrolment/devices/${DEV_A}/lastSeenAtMs`, Date.now()));
+await denied("…and its reads", as(MC_DEV, "GET", "orders/o0"));
 await put(`users/mc/deviceGate/${DEV_A}`, "e1");
 
 console.log("\n── every other login is untouched ──");
 await allowed("Mike (own login) writes an order", as(MIKE, "PUT", "orders/o6", { status: "ready", destShop: "trophy" }));
 await allowed("Mike writes a stock movement", as(MIKE, "PUT", ...mv("mike", "mv6")));
 await allowed("a POS till writes an order", as(TILL, "PUT", "orders/o7", { status: "ready", destShop: "pe" }));
+await allowed("Mike reads orders", as(MIKE, "GET", "orders/o6"));
+await allowed("a POS till reads a product", as(TILL, "GET", "products/p1"));
 await allowed("the owner writes /users", as(OWNER, "PUT", "users/mc/deviceCodeRequired", true));
 await allowed("the owner writes an order", as(OWNER, "PUT", "orders/o8", { status: "ready", destShop: "pe" }));
 await denied("anonymous is still refused an order write", as(ANON, "PUT", "orders/o9", { status: "ready" }));
@@ -157,6 +171,7 @@ await denied("anonymous is still refused an order write", as(ANON, "PUT", "order
 console.log("\n── switched off, MC's login behaves exactly as today ──");
 await put("users/mc/deviceCodeRequired", null);
 await allowed("password session writes again once the flag is removed", as(MC_PW, "PUT", "orders/o10", { status: "ready", destShop: "trophy" }));
+await allowed("…and reads again", as(MC_PW, "GET", "orders/o10"));
 
 stop();
 console.log(`\n${passed} passed, ${failures.length} failed`);

@@ -51,6 +51,14 @@ async function countFailure(db, key, now, limit) {
   return out;
 }
 
+// Behind Google's front end, req.ip can be the proxy's address — every shop
+// would then share one bucket. The LAST X-Forwarded-For entry is the address
+// Google's front end itself saw (anything before it is client-supplied).
+function clientIp(raw) {
+  const xff = String(raw?.headers?.["x-forwarded-for"] || "").split(",").map((x) => x.trim()).filter(Boolean);
+  return xff.length ? xff[xff.length - 1] : raw?.ip || null;
+}
+
 function queueEvent(db, event) {
   return db.ref(E.PATHS.emailQueue).push().set(event);
 }
@@ -85,7 +93,7 @@ async function handleEnrol(request, deps) {
   // ── the locks, before the code is even looked at ──────────────────────────
   const keys = {
     device: `dev_${deviceId}`,
-    ip: E.ipKey(request.rawRequest?.ip, sha256Hex),
+    ip: E.ipKey(clientIp(request.rawRequest), sha256Hex),
     account: `acct_${uid}`,
   };
   const locks = await Promise.all(Object.entries(keys).map(async ([k, key]) => [k, await readLock(db, key, now)]));
@@ -110,6 +118,15 @@ async function handleEnrol(request, deps) {
   if (!code) return wrong();
   const personId = (await db.ref(`${E.PATHS.codes}/${code}`).once("value")).val();
   if (typeof personId !== "string" || !personId) return wrong();
+
+  // A device id is only what the browser says it is. A device that is LIVE
+  // under someone else is never moved by a code — otherwise anyone holding a
+  // valid code and another phone's id could knock that phone off. Junid or MC
+  // revokes it first. (Sonnet architect review, PR #647.)
+  const prev = (await db.ref(`${E.PATHS.devices}/${deviceId}`).once("value")).val();
+  if (prev && prev.status === "active" && prev.personId && prev.personId !== personId) {
+    return { ok: false, reason: "taken", personName: prev.personName || null };
+  }
 
   // ── the slot ───────────────────────────────────────────────────────────────
   const eid = deps.newId();
@@ -145,14 +162,6 @@ async function handleEnrol(request, deps) {
     await db.ref(`${E.PATHS.people}/${personId}/devices/${deviceId}`).transaction((cur) =>
       (cur && cur.eid === eid ? null : cur === null ? null : undefined));
     throw new HttpsError("internal", "The code was right but the device could not be signed in. Try again in a minute.");
-  }
-
-  // A device that was enrolled under SOMEONE ELSE before is moved, not doubled:
-  // the old person's slot is freed.
-  const prev = (await db.ref(`${E.PATHS.devices}/${deviceId}`).once("value")).val();
-  if (prev && prev.personId && prev.personId !== personId && prev.status === "active") {
-    await db.ref(`${E.PATHS.people}/${prev.personId}/devices/${deviceId}`).transaction((cur) =>
-      (cur === null ? null : cur.eid === prev.eid ? null : undefined));
   }
 
   const dev = `${E.PATHS.devices}/${deviceId}`;

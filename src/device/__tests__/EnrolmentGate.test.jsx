@@ -183,5 +183,6 @@ describe("the code screen on its own", () => {
     expect(messageFor({ ok: false, reason: "full", max: 2 })).toBe("That code is already in use on 2 devices. Ask MC.");
     expect(messageFor({ ok: false, reason: "wrong", attemptsLeft: 1 })).toBe("That code is not right. 1 try left.");
     expect(messageFor({ ok: false, reason: "wrong", attemptsLeft: 0 })).toBe("That code is not right.");
+    expect(messageFor({ ok: false, reason: "taken", personName: "Sipho" })).toBe("This device is already enrolled to Sipho. Ask MC to revoke it first.");
   });
 });

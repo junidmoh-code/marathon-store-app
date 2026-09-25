@@ -192,12 +192,30 @@ test("the same device entering its code again takes its own slot back, with a NE
   assert.equal(q[1].again, true);
 });
 
-test("a device moved to another person frees its old slot", async () => {
+test("a device LIVE under someone else is never taken over by another code — only after a revoke", async () => {
   const db = world();
-  await _handleEnrol(req({ code: "4821" }), deps(db));
-  await _handleEnrol(req({ code: "7305" }), deps(db));
-  assert.equal(readAt(db.state.root, "device_enrolment/people/p-sipho/devices"), null);
+  const first = deps(db);
+  await _handleEnrol(req({ code: "4821" }), first);
+  const d = deps(db);
+  const out = await _handleEnrol(req({ code: "7305" }), d);
+  assert.deepEqual(out, { ok: false, reason: "taken", personName: "Sipho" });
+  assert.equal(d.tokens.length, 0);
+  assert.equal(readAt(db.state.root, `users/${MC}/deviceGate/${DEV_A}`), first.tokens[0].claims.eid, "Sipho's phone keeps working");
+  assert.equal(readAt(db.state.root, "device_enrolment/people/p-hub2/devices"), null, "no slot taken");
+  await _handleAdmin({ auth: { uid: "owner", token: { email: E.OWNER_EMAIL, email_verified: true } }, data: { action: "revokeDevice", deviceId: DEV_A } },
+    { db, now: () => NOW, randomInt: () => 4821 });
+  const after = await _handleEnrol(req({ code: "7305" }), deps(db));
+  assert.equal(after.ok, true);
   assert.equal(readAt(db.state.root, `device_enrolment/devices/${DEV_A}/personName`), "Hub 2 tablet");
+});
+
+test("the network limit keys on the address Google's front end saw, not a spoofable first X-Forwarded-For", async () => {
+  const db = world();
+  const withXff = (xff) => ({ ...req({ code: "1111", deviceId: `x-${xff.replace(/\W/g, "")}-0000` }), rawRequest: { ip: "169.254.1.1", headers: { "x-forwarded-for": xff } } });
+  for (let n = 0; n < 10; n++) await _handleEnrol(withXff(`${n}.${n}.${n}.${n}, 41.1.2.3`), deps(db));
+  const keys = Object.keys(readAt(db.state.root, "device_enrolment/attempts")).filter((k) => k.startsWith("ip_"));
+  assert.equal(keys.length, 1, "ten different spoofed first entries, one real address, one bucket");
+  assert.ok(readAt(db.state.root, `device_enrolment/attempts/${keys[0]}/lockedUntilMs`) > NOW);
 });
 
 test("five wrong codes lock this device; a right code is then refused until the lock runs out", async () => {

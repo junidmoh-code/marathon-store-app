@@ -47,7 +47,14 @@ const enrolWithCode = async (code) => (await enrolDeviceCall({
   deviceType: deviceTypeHint(),
   userAgent: typeof navigator === "undefined" ? null : String(navigator.userAgent || "").slice(0, 200),
 })).data;
-const signInWithDeviceToken = (token) => signInWithCustomToken(auth, token);
+// One reload after enrolling: while this device was unenrolled the rules
+// refused its reads, and a refused listener (the offline mirror's, for one)
+// never retries. enrolDevice has already written the gate entry, so the
+// reloaded app opens straight in.
+const signInWithDeviceToken = async (token) => {
+  await signInWithCustomToken(auth, token);
+  try { window.location.reload(); } catch { /* no reload (tests) — AuthGate still opens the app */ }
+};
 
 const FONT = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 

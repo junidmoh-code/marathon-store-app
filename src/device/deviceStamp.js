@@ -1,7 +1,10 @@
 // ─── THE DEVICE STAMP — WHO, ON WHICH DEVICE, WHEN ───────────────────────────
 //
-// Every order action (fulfil, reject, transfer, …) and every stock-changing
-// write carries one of these:
+// Every order action (fulfil, reject, transfer, …) and every write that
+// changes a stock QUANTITY carries one of these (all quantity changes go
+// through applyMovement). Not stamped, deliberately: Solve's qty-0 seed
+// cells and their undo (no quantity changes), and a transfer record's own
+// clean-up of lines that never left.
 //
 //   { deviceId, personName, atMs, action? }
 //

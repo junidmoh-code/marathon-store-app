@@ -23,13 +23,13 @@ if (!inFile || !outFile) {
   process.exit(2);
 }
 const live = JSON.parse(readFileSync(inFile, "utf8"));
-const { doc, wrapped } = patchDeviceEnrolmentRules(live);
+const { doc, wrapped, readsWrapped } = patchDeviceEnrolmentRules(live);
 const text = JSON.stringify(doc, null, 2);
 writeFileSync(outFile, text + "\n");
 
 console.log("════════ DEVICE ENROLMENT — RULES TO PASTE (whole document) ════════");
 console.log(`written to ${outFile} (${text.length.toLocaleString()} characters; the console limit is 256 KB)`);
-console.log(`\n1. ${wrapped.length} ".write" rules gain this condition (ANDed on; nothing else in them changes):\n`);
+console.log(`\n1. ${wrapped.length} ".write" rules and ${readsWrapped.length} ".read" rules (all but /users and /mirror_switch) gain this condition (ANDed on; nothing else in them changes):\n`);
 console.log(`   ${DEVICE_OK}\n`);
 console.log("2. One new node:\n");
 console.log(`"device_enrolment": ${JSON.stringify(DEVICE_ENROLMENT_NODE, null, 2)}`);
