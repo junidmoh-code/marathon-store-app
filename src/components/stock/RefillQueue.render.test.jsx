@@ -388,7 +388,10 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     expect(updateMock).toHaveBeenCalledTimes(1);        // …only the blocked-tap log
     const [logRef, log] = updateMock.mock.calls[0];
     expect(logRef.path).toBe(`refill_requests/bootreq/blockedRefusals/${NOW}`);
-    expect(log).toEqual({ atMs: NOW, byUid: "u1", byRole: "warehouse", sawStatus: sent.status || "open",
+    // The device that pressed it rides along (src/device/deviceStamp.js).
+    const { deviceId, personName, ...rest } = log;
+    expect("deviceId" in log && "personName" in log).toBe(true);
+    expect(rest).toEqual({ atMs: NOW, byUid: "u1", byRole: "warehouse", sawStatus: sent.status || "open",
       ...(Object.keys(moved).length ? { midSend: true } : {}) });
     expect(out).not.toContain("failed — retry");        // staff see nothing new
   });
@@ -487,6 +490,10 @@ describe("3 · release windows gate EVERYTHING — no category, no origin exempt
     tree.unmount();
     const [refArg, patch] = updateMock.mock.calls[0];
     expect(refArg.path).toBe("refill_requests/capreq");
+    const stampKeys = Object.keys(patch).filter((k) => k.startsWith("stamps/"));
+    expect(stampKeys).toHaveLength(1);
+    expect(patch[stampKeys[0]]).toMatchObject({ action: "early-release" });
+    delete patch[stampKeys[0]];
     expect(patch).toEqual({ earlyRelease: { at: new Date(NOW).toISOString(), by: "u1", reason: "customer at the counter" } });
   });
 

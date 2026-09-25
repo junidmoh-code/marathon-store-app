@@ -34,6 +34,7 @@ import { usePermissions } from "../PermissionsContext";
 import { GLASS, GRAY, GREEN, AMBER, RED, BLUE_L, FONT, input, bGreen } from "./ui";
 import { Toast, Empty } from "./widgets";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
+import { stampAt } from "../../device/deviceStamp";
 
 const ONE_SIZE = "_";
 const sizeText = (sizeKey) => {
@@ -162,7 +163,7 @@ export default function InTransit({ products = [], registry: registryProp, actor
     // button (rendered whenever settled lines outrun the status) re-runs this
     // function, which skips the settled lines and just re-stamps.
     let stampOk = true;
-    const stamp = { [`transfers/${t.id}/status`]: status };
+    const stamp = { [`transfers/${t.id}/status`]: status, ...stampAt(`transfers/${t.id}`, `receive-${status}`) };
     if (allSettled) {
       stamp[`transfers/${t.id}/receivedAt`] = serverNowIso();
       stamp[`transfers/${t.id}/receivedBy`] = auth.currentUser?.uid || null;
@@ -305,6 +306,7 @@ export default function InTransit({ products = [], registry: registryProp, actor
                         [`transfers/${t.id}/resolvedShort`]: true,
                         [`transfers/${t.id}/receivedAt`]: serverNowIso(),
                         [`transfers/${t.id}/receivedBy`]: auth.currentUser?.uid || null,
+                        ...stampAt(`transfers/${t.id}`, "close-short"),
                       }).catch(() => flash("err", "Couldn't close the record — retry."));
                     }}
                     style={{ ...bGreen, display: "block", width: "100%", marginTop: 8, padding: "8px 12px" }}

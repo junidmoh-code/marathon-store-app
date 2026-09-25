@@ -39,6 +39,7 @@ import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import FilterPicker from "./FilterPicker";
 import { serverNowIso } from "../../utils/serverTime";
 import { setUpdateBusy } from "../../update/updateChecker";
+import { stampAt } from "../../device/deviceStamp";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
 // mis-pathed read. (Mirrors the POS barcodeLookup reader.)
@@ -401,6 +402,7 @@ export default function Transfer({ products, registry, actorRole }) {
               createdAt: serverNowIso(), createdBy: auth.currentUser?.uid || null,
               lines: linesObj,
             },
+            ...stampAt(`transfers/${tId}`, "dispatch"),
           });
         } else {
           // Retry with an existing doc: merge THIS attempt's lines in (per-path
@@ -408,7 +410,7 @@ export default function Transfer({ products, registry, actorRole }) {
           // must survive).
           const mergeLines = {};
           for (const ln of lines) mergeLines[`transfers/${tId}/lines/${ln.productId}/${stockSizeKey(ln.size)}`] = ln.qty;
-          await update(ref(database), mergeLines);
+          await update(ref(database), { ...mergeLines, ...stampAt(`transfers/${tId}`, "dispatch-retry") });
         }
       } catch {
         setBusy(false);
@@ -482,6 +484,7 @@ export default function Transfer({ products, registry, actorRole }) {
         [`refill_requests/${refillId}/status`]: "fulfilled",
         [`refill_requests/${refillId}/fulfilledBy`]: { transferId: tId },
         [`refill_requests/${refillId}/resolvedAt`]: serverNowIso(),
+        ...stampAt(`refill_requests/${refillId}`, "fulfil-transfer"),
       }).catch(() => {});
     }
 

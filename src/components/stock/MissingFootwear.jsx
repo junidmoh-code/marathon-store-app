@@ -52,6 +52,7 @@ import { computeMissingFootwear, footwearSolvePlan, footwearPickPlan, sizeKeyOf 
 import { isDeactivated } from "../../utils/deactivation";
 import { useRefillRequests } from "./useStock";
 import { readPathOnce } from "../../offline/localReads";
+import { stampRecord } from "../../device/deviceStamp";
 
 const HUBS = ["hub1", "hub2"];   // DETECTION scope: "missing" = zero units at BOTH hubs
 // Where a human may RAISE a line. HUB 1 IS BACK (owner order 2026-08-26,
@@ -168,6 +169,7 @@ export default function MissingFootwear({ products = [] }) {
             createdAt: now,
             createdFrom: { manual: true, source: "central", via: "missing_sneakers_pick" },
           };
+          updates[`refill_requests/${id}`] = stampRecord(updates[`refill_requests/${id}`], "raise");
         }
         await update(ref(database), updates);
         const short = fresh.filter((l) => l.qty < l.asked);
@@ -270,6 +272,7 @@ export default function MissingFootwear({ products = [] }) {
             createdAt: now,
             createdFrom: { manual: true, source: "central", via: "missing_sneakers" },
           };
+          updates[`refill_requests/${id}`] = stampRecord(updates[`refill_requests/${id}`], "raise");
         }
         await update(ref(database), updates);
         const short = fresh.filter((l) => l.qty < l.want);

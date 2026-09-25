@@ -69,6 +69,7 @@ import { closeDisplayRow, readRowsNow } from "./displayRowStore";
 import { clearDisplaySlot } from "./displaySlots";
 import { pickDisplaySourceHub, wallWalkOrder, requestLockPath, lockHeld } from "./displayRequestCore";
 import { labelFor } from "./locations";
+import { stampRecord } from "../../device/deviceStamp";
 
 /**
  * CLEAR THIS WALL'S RECORD FOR ONE SHOE. Every open ledger row is closed
@@ -167,6 +168,7 @@ export async function raiseDisplayRequest({ orders, store, product, hubData }) {
       orderId = await getNextOrderNumber();
       order = wallWalkOrder({ orderId, store, hub: pick.hub, product, nowIso, by });
       order.raisedByEmail = auth.currentUser?.email || null;
+      order = stampRecord(order, "display-request");
       await set(ref(database, `orders/${orderId}`), order);
     } catch (err) {
       // A write that REPORTS failure may still have landed (a client timeout

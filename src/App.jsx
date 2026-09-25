@@ -101,6 +101,8 @@ import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
+import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
+import { countReject } from "./device/rejectCount";
 import { useForegroundPush } from "./push/useForegroundPush";
 import { useFocusOrder } from "./push/useFocusOrder";
 import { orderCardKey } from "./push/deepLink";
@@ -1114,6 +1116,8 @@ function writeOrder(order) {
     console.error("writeOrder rejected:", err.message, { orderId: order.id ?? null, undefinedFields });
     throw err;
   }
+  // Who placed it, on which device (src/device/deviceStamp.js).
+  order = stampRecord(order, "placed");
   return set(ref(database, `orders/${order.id}`), order).then((ok) => {
     // THE OFFLINE MIRROR. A person who has just placed an order must see it,
     // not the shelf as it was a moment ago. Echoed AFTER the write resolves,
@@ -1135,8 +1139,10 @@ function writeOrder(order) {
 // Patch a single order. Used by WarehouseView and DisplayView.
 // Writes only the changed fields directly to /orders/{id} — no array
 // replacement, no race with concurrent writes to other orders.
+// Every action carries the device stamp — who, on which device, when — under
+// orders/{id}/stamps, one key per action (src/device/deviceStamp.js).
 function updateOrder(id, patch) {
-  return update(ref(database, `orders/${id}`), patch).catch((err) => {
+  return update(ref(database, `orders/${id}`), stampPatch(patch, orderActionName(patch))).catch((err) => {
     console.warn(`Firebase updateOrder(${id}) failed:`, err);
   });
 }
@@ -1526,7 +1532,7 @@ function useAllSourceResponses() {
 // leaves are raw whole/letter sizes, which encode to themselves — no migration.
 function saveSourceResponse(date, productKey, size, response, extra) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}), by: deviceStamp(`source-${response}`) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
 }
 
@@ -1535,7 +1541,7 @@ function saveSourceResponse(date, productKey, size, response, extra) {
 // "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
 function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}), by: deviceStamp("source-fulfil-part") }
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
@@ -1627,7 +1633,7 @@ function saveClothingOut(store, productId, size, hub) {
     // Encoded key (same half-size fix as saveSourceResponse): a "." size here
     // threw synchronously; a "." in clearClothingOut's path silently addressed
     // a child node instead. Reader (useClothingOos) decodes back to raw.
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid, device: deviceStamp("clothing-out") }
   }).catch(err => console.warn("saveClothingOut failed:", err));
 }
 function clearClothingOut(store, productId, size) {
@@ -12294,7 +12300,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (plan.ok) {
         try {
           const existing = (await get(ref(database, `refill_requests/${plan.requestId}`))).val();
-          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), plan.record);
+          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), stampRecord(plan.record, "hold"));
           // Stamp the order either way — the held-card list hides items that
           // are represented in a refill queue, new or re-tapped.
           patch.onHoldRefillRequestId = plan.requestId;
@@ -12316,7 +12322,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         try {
           const reqRef = ref(database, `refill_requests/${rel.requestId}`);
           const live = (await get(reqRef)).val();
-          if (live && live.status === "open") await update(reqRef, rel.patch);
+          if (live && live.status === "open") await update(reqRef, stampPatch(rel.patch, "hold-released"));
         } catch (err) {
           console.warn(`On-hold refill request ${rel.requestId} not withdrawn (${err?.message || err}) — the engine's satisfied-sweep will retire it.`);
         }
@@ -12393,6 +12399,9 @@ function WarehouseView({ products = [], orders, onExit }) {
     }
 
     updateOrder(order.id, patch);
+    // Out of Stock is a reject: one more on this device's count for Junid's
+    // device list (src/device/rejectCount.js).
+    if (status === STATUS.OUT_OF_STOCK) countReject();
     const insightAction = { [STATUS.READY]:"ready", [STATUS.OUT_OF_STOCK]:"out_of_stock", [STATUS.COMING_TOMORROW]:"tomorrow", [STATUS.COLLECTED]:"collected" }[status];
     if (insightAction) logInsight({
       timestamp: now,
@@ -13043,6 +13052,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         // the request it closes, so the refusal write-off can name the person.
         ok++;
         updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
+        countReject();
         logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
       }
       // qty 0 & not rejected → left pending for a later pass.
