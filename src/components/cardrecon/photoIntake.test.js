@@ -52,8 +52,10 @@ describe("the picker, and how a tap opens it", () => {
     // If comment-stripping ever mangles the source again, every other assertion
     // here goes quietly green.
     expect(code).toContain('type="file"');
-    expect(fileInputs(), "one upload per till card, and it must survive stripping")
-      .toHaveLength(1);
+    // TWO: the till card's own upload, and Junid's typed-total path, which is
+    // still a photo — the typed figure never travels without one.
+    expect(fileInputs(), "one upload per till card plus the owner's typed-total photo, and both must survive stripping")
+      .toHaveLength(2);
     expect(code, "a real comment must still be gone").not.toContain("the label IS the control");
   });
 
@@ -65,10 +67,11 @@ describe("the picker, and how a tap opens it", () => {
   });
 
   it("takes images only, one of them", () => {
-    const [input] = fileInputs();
-    expect(input).toMatch(/accept="image\/\*"/);
-    expect(input, "one slip, one frame — `multiple` invites a pick the cap then drops")
-      .not.toMatch(/\bmultiple\b/);
+    for (const input of fileInputs()) {
+      expect(input).toMatch(/accept="image\/\*"/);
+      expect(input, "one slip, one frame — `multiple` invites a pick the cap then drops")
+        .not.toMatch(/\bmultiple\b/);
+    }
   });
 
   // ── THE BUG THIS SCREEN WAS REBUILT AROUND ────────────────────────────────
@@ -102,7 +105,7 @@ describe("the picker, and how a tap opens it", () => {
     const from = code.indexOf("const onPick =");
     expect(from, "onPick has been renamed — this scan must follow it").toBeGreaterThan(-1);
     const body = code.slice(from, code.indexOf("\n  };", from));
-    expect(body, "the pick itself must reach the callable").toMatch(/await send\(tid, photo\.base64, false\)/);
+    expect(body, "the pick itself must reach the callable").toMatch(/await send\(tid, photo\.base64, false, typed\)/);
     expect(code, "no checkbox may gate a capture again").not.toMatch(/type="checkbox"/);
   });
 });
@@ -120,7 +123,7 @@ describe("the ~2000px downscale reaches library photos too", () => {
     // No branch may reach the callable with an undownscaled file: the only
     // base64 that leaves this screen is the one downscalePhoto produced.
     expect(code).toMatch(/photo = await downscalePhoto\(take\[0\]\)/);
-    expect(code, "and that is what is sent").toMatch(/await send\(tid, photo\.base64, false\)/);
+    expect(code, "and that is what is sent").toMatch(/await send\(tid, photo\.base64, false, typed\)/);
   });
 
   it("decoding goes through the shared decoder, so a library HEIC opens at all", () => {
