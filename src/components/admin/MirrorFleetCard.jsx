@@ -502,6 +502,31 @@ export default function MirrorFleetCard({ authUser, onExit }) {
 
       {flagsReady === false && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Cannot read the quarantine list, so the quarantine buttons are hidden.</div>}
       {flagError && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Could not change the quarantine: {flagError}</div>}
+      {rejects.ready === true && (() => {
+        // Rejects from phones that have never reported to /mirror_devices
+        // (mirror off, private mode): they have no row below, so they are
+        // listed here — or they would be invisible. Full id: the same id the
+        // Quarantine button works on.
+        const listed = new Set(everyDevice.map((d) => d.deviceId));
+        const unlisted = Object.entries(rejects.byDevice).filter(([id]) => !listed.has(id));
+        if (!unlisted.length) return null;
+        return (
+          <div data-testid="unlisted-rejects" style={{ marginTop: 16, border: "1px solid #ff9f0a", borderRadius: 10, padding: 12, background: "#1c1c1e" }}>
+            <div style={{ fontSize: 13, color: "#ff9f0a", fontWeight: 600 }}>Rejects from phones not in the list below</div>
+            {unlisted.map(([id, r]) => (
+              <div key={id} style={{ fontSize: 12.5, color: "#f2f2f7", marginTop: 6 }}>
+                {`id ${id} · ${rejectWords(r, now).text}`}
+                {flagsReady === true && (
+                  <button onClick={() => setQuarantine(id, !isFlagged(id))} disabled={flagBusy === id}
+                    style={{ ...btn, marginLeft: 8, padding: "3px 10px", fontSize: 12 }}>
+                    {flagBusy === id ? "…" : (isFlagged(id) ? "Release" : "Quarantine")}
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        );
+      })()}
       {rejects.ready === false && (
         <div style={{ marginTop: 12, color: "#8e8e93", fontSize: 13 }}>
           Reject counts per device appear once the device-reject rule is pasted

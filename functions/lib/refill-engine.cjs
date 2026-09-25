@@ -957,7 +957,7 @@ function computeRefillPlan(snapshot) {
               refusedByUid: typeof order.clothingOutOfStockByUid === "string" && order.clothingOutOfStockByUid
                 ? order.clothingOutOfStockByUid : null,
               // …and on WHICH PHONE (2026-09-25; accounts are shared, the
-              // device id names the handset — src/device/actorStamp.js).
+              // device id names the handset — src/device/deviceRejects.js).
               refusedByDeviceId: typeof order.clothingOutOfStockDeviceId === "string" && order.clothingOutOfStockDeviceId
                 ? order.clothingOutOfStockDeviceId : null }),
           });

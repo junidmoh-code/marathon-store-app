@@ -12236,9 +12236,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // the warehouse picks a substitute size. Insights/restock logs continue to
   // log order.size (the customer-requested value); only Source view surfaces
   // sentSize, by design.
-  const updateStatus = async (order, status, extraPatch = {}) => {
+  const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {
     // A phone Junid has quarantined changes nothing (src/device/deviceRejects.js).
-    if (await thisDevicePaused()) { showPausedToast(); return; }
+    // gateChecked: the caller already asked, and stock may have moved since —
+    // asking again could strand a transfer with its order never marked.
+    if (!gateChecked && await thisDevicePaused()) { showPausedToast(); return false; }
     const now = serverNowIso();
     // ── THE POS IS THE ONLY RESTOCK TRIGGER (2026-07-30, owner) ──────────────
     // This used to write a restock_log entry on COLLECTED. Source is now fed by
@@ -12504,6 +12506,8 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Returns the transfer result so callers can gate their own follow-ups.
   const markSentWithTransfer = async (order, extraPatch = {}) => {
     // Asked BEFORE the transfer: a paused phone must not move stock either.
+    // Asked ONCE — updateStatus below is told it was, so a flag landing
+    // between the transfer and the status can't leave the order unmarked.
     if (await thisDevicePaused()) { showPausedToast(); return { moved: false, skipped: false, blockSend: true, reason: "device_paused" }; }
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
     const transfer = await recordDispatchTransfer(order, sentSize);
@@ -12522,7 +12526,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       ...(transfer.moved || transfer.skipped
         ? { transferFailed: null }
         : { transferFailed: transfer.reason || "unknown" }),
-    });
+    }, { gateChecked: true });
     return transfer;
   };
 
@@ -13392,10 +13396,13 @@ function WarehouseView({ products = [], orders, onExit }) {
                     const flow = sendFlows[sendFlowKey(order)] || sendFlowInit();
                     const d = (action) => sendFlowDispatch(order, action);
                     const hubLabel = ({ hub1:"Hub 1", hub2:"Hub 2", hub3:"Hub 3" })[order.placedAtHub || order.hub] || selectedHub || "the hub";
-                    const commitFlow = () => {
+                    const commitFlow = async () => {
                       const done = sendFlowReduce(flow, { type: "CONFIRM" });
                       d({ type: "CONFIRM" });
                       if (!done.commit) return;
+                      // A paused phone gets the paused message, never a
+                      // "sent" banner beside it (src/device/deviceRejects.js).
+                      if (await thisDevicePaused()) { showPausedToast(); return; }
                       if (done.commit.kind === "send") {
                         markSentAndPrint(order, { sentSize: done.commit.size });
                       } else {

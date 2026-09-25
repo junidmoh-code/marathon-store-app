@@ -623,5 +623,23 @@ describe("device quarantine and the phone on the refusal", () => {
     expect(logRef.path).toBe(`device_rejects/2026-08-07/${PHONE}`);
     expect(rec).toEqual({ at: NOW, uid: "u1", kind: "request", ref: "bootreq", hub: "central", pid: "boot", size: "7" });
   });
+
+  it("a SALE row's Out of Stock is gated too, and counted against the phone when it goes through", async () => {
+    const onSaleResponse = vi.fn();
+    gets[`mirror_switch/quarantine/${PHONE}`] = { on: true };
+    let tree = renderQueue({ onSaleResponse });
+    await act(async () => { await lineButton(sizeLineOf(tree, "5", "sale"), "Out of Stock").props.onClick(); });
+    tree.unmount();
+    expect(onSaleResponse).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+    delete gets[`mirror_switch/quarantine/${PHONE}`];
+    tree = renderQueue({ onSaleResponse });
+    await act(async () => { await lineButton(sizeLineOf(tree, "5", "sale"), "Out of Stock").props.onClick(); });
+    tree.unmount();
+    expect(onSaleResponse).toHaveBeenCalledTimes(1);
+    expect(onSaleResponse.mock.calls[0][1]).toBe("out_of_stock");
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    expect(pushMock.mock.calls[0][1]).toMatchObject({ kind: "sale", pid: "adi", size: "5" });
+  });
 });
 

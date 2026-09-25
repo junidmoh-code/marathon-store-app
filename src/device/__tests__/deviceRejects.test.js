@@ -19,7 +19,7 @@ describe("where a reject is logged", () => {
     }
     expect(deviceRejectsPath(PHONE, NaN)).toBeNull();
   });
-  it("saDayOf is the same formula as the rule's day key", () => {
+  it("saDayOf rolls over at SA midnight (22:00 UTC), in the shape the rule's $day regex accepts", () => {
     expect(saDayOf(Date.parse("2026-09-25T21:59:59.999Z"))).toBe("2026-09-25");
     expect(saDayOf(Date.parse("2026-09-25T22:00:00.000Z"))).toBe("2026-09-26");
   });

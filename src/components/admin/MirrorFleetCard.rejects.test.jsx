@@ -26,8 +26,9 @@ const DEVICES = {
   [BAD]: { deviceId: BAD, label: "Android Chrome · browser · 2964", email: "ayob@marathon.internal", at: NOW - 60e3, rows: 1, complete: true, switchOn: true },
   [OTHER]: { deviceId: OTHER, label: "Android Chrome · browser · 015a", email: "ayob@marathon.internal", at: NOW - 120e3, rows: 1, complete: true, switchOn: true },
 };
+const GHOST = "9h0s7000-0000-4000-8000-00000000abcd";   // never reported to /mirror_devices
 const REJECTS = {
-  [DAY(NOW - 2 * 864e5)]: { [BAD]: { a: { at: NOW - 2 * 864e5, uid: "ayob", kind: "order" } } },
+  [DAY(NOW - 2 * 864e5)]: { [BAD]: { a: { at: NOW - 2 * 864e5, uid: "ayob", kind: "order" } }, [GHOST]: { g: { at: NOW - 2 * 864e5, uid: "x", kind: "order" } } },
   [DAY(NOW)]: {
     [BAD]: {
       b: { at: NOW - 5 * 60e3, uid: "ayob", kind: "order" }, c: { at: NOW - 4 * 60e3, uid: "ayob", kind: "order" },
@@ -99,5 +100,14 @@ describe("rejects per phone on the Mirror Fleet screen", () => {
     const all = text(tree.root);
     expect(all).toContain("Android Chrome · browser · 2964");
     expect(all).toContain("Reject counts per device appear once the device-reject rule is pasted");
+  });
+
+  it("a phone with rejects but no /mirror_devices record is listed, with its full id, not dropped", async () => {
+    const tree = await render();
+    const box = tree.root.findAll((n) => n.props?.["data-testid"] === "unlisted-rejects");
+    expect(box).toHaveLength(1);
+    const t = text(box[0]);
+    expect(t).toContain(`id ${GHOST} · Rejects: 0 today · 1 in 7 days`);
+    expect(t).not.toContain(BAD);
   });
 });

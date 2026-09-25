@@ -41,8 +41,13 @@
 // 2. A new /device_rejects node: the per-device reject log the app writes
 //    (src/device/deviceRejects.js) and the Mirror Fleet screen counts. Read by
 //    the owner only. Written once per entry by any signed-in staff session, as
-//    ITSELF (uid === auth.uid), at the server's time (±10 min), under a day and
-//    device key of the right shape. An entry can never be edited or deleted
+//    ITSELF (uid === auth.uid), under a day and device key of the right shape.
+//    `at` may be up to 24 h old (a phone that rejected offline flushes its
+//    queued write when it reconnects) and at most 10 min ahead. An enrolled
+//    session (#647) may log only under its OWN signed device id. On any other
+//    login the device id is minted by the browser itself, so nothing can tie
+//    the key to the handset — the order's own stamps/ and the profiler
+//    captures remain the cross-check. An entry can never be edited or deleted
 //    from a client.
 //
 // Compose with the device enrolment patch AFTER this one:
@@ -75,7 +80,8 @@ export const DEVICE_REJECTS_NODE = {
         ".validate":
           "newData.hasChildren(['at', 'uid', 'kind'])" +
           " && newData.child('uid').val() === auth.uid" +
-          " && newData.child('at').isNumber() && newData.child('at').val() >= now - 600000 && newData.child('at').val() <= now + 600000" +
+          " && newData.child('at').isNumber() && newData.child('at').val() >= now - 86400000 && newData.child('at').val() <= now + 600000" +
+          " && (auth.token.deviceId == null || $deviceId === auth.token.deviceId)" +
           " && newData.child('kind').isString() && newData.child('kind').val().length <= 20" +
           " && $day.matches(/^20[0-9][0-9]-[01][0-9]-[0-3][0-9]$/)" +
           " && $deviceId.matches(/^[A-Za-z0-9_-]{8,64}$/)",

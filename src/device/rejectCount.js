@@ -16,6 +16,7 @@ import { database, auth } from "../firebase";
 import { getDeviceIdentity } from "./enrolment";
 import { deviceStamp } from "./deviceStamp";
 import { deviceRejectsPath, deviceRejectRecord, isThisDeviceQuarantined } from "./deviceRejects";
+import { readCachedQuarantine } from "./quarantine";
 
 /**
  * @param {{kind?: string, ref?: string, hub?: string, productId?: string, size?: string}} [what]
@@ -44,9 +45,17 @@ export function countReject(what = {}) {
  * anything. Fails open (see deviceRejects.js); the console rule is the
  * server-side half.
  */
-export function thisDevicePaused() {
+//
+// COST: normally nothing. src/device/DeviceQuarantine.jsx keeps a listener on
+// this exact path on every signed-in phone, and the SDK answers get() from an
+// active listener's data without a round trip (repoGetValue). A flag already
+// heard is also cached in localStorage and answers first. Only a phone with no
+// live listener waits, and never longer than 1.5 s before going ahead.
+export async function thisDevicePaused() {
+  const deviceId = deviceStamp().deviceId;
+  if (readCachedQuarantine(deviceId)) return true;
   return isThisDeviceQuarantined({
-    deviceId: deviceStamp().deviceId,
+    deviceId, timeoutMs: 1500,
     read: async (path) => (await get(ref(database, path))).val(),
   });
 }

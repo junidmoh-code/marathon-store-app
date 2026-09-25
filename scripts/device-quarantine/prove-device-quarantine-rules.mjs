@@ -170,7 +170,11 @@ const entry = (uid, extra = {}) => ({ at: Date.now(), uid, kind: "order", ref: "
 await allowed("staff logs its own reject", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, entry("ayob")));
 await allowed("server-time stamp", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, entry("ayob", { at: { ".sv": "timestamp" } })));
 await denied("logged as SOMEONE ELSE's account", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, entry("mike")));
-await denied("a time an hour off", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, entry("ayob", { at: Date.now() - 3600e3 })));
+await allowed("a reject pressed offline, flushed 3 hours later", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, entry("ayob", { at: Date.now() - 3 * 3600e3 })));
+await denied("a time two days old", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, entry("ayob", { at: Date.now() - 2 * 864e5 })));
+await denied("a time an hour in the future", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, entry("ayob", { at: Date.now() + 3600e3 })));
+await allowed("an enrolled phone logs under its OWN signed device id", as(MC_ENROLLED_OK, "POST", `device_rejects/${day}/${MC_DEV}`, entry("mc")));
+await denied("an enrolled phone logs under ANOTHER phone's id", as(MC_ENROLLED_OK, "POST", `device_rejects/${day}/${GOOD}`, entry("mc")));
 await denied("a malformed day key", as(AYOB, "POST", `device_rejects/yesterday/${GOOD}`, entry("ayob")));
 await denied("a malformed device key", as(AYOB, "POST", `device_rejects/${day}/short`, entry("ayob")));
 await denied("an entry without a kind", as(AYOB, "POST", `device_rejects/${day}/${GOOD}`, { at: Date.now(), uid: "ayob" }));

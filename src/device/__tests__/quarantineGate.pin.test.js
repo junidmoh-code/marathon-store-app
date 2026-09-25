@@ -23,12 +23,19 @@ const before = (text, a, b) => {
 
 describe("the quarantine is asked first, on every hub press", () => {
   it("updateStatus (Out of stock / Ready / Tomorrow) — before any write", () => {
-    const b = body(APP, "const updateStatus = async (order, status, extraPatch = {}) => {");
-    expect(before(b, "await thisDevicePaused()", "const patch =")).toBe(true);
+    const b = body(APP, "const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {");
+    expect(before(b, "!gateChecked && await thisDevicePaused()", "const patch =")).toBe(true);
   });
   it("markSentWithTransfer — before the stock transfer", () => {
     const b = body(APP, "const markSentWithTransfer = async (order, extraPatch = {}) => {");
     expect(before(b, "await thisDevicePaused()", "recordDispatchTransfer(")).toBe(true);
+    // asked ONCE: the status write after the transfer is told it was asked,
+    // so a flag landing mid-send cannot strand moved stock on an unmarked order
+    expect(body(APP, "const markSentWithTransfer = async (order, extraPatch = {}) => {", 2600)).toContain("}, { gateChecked: true });");
+  });
+  it("the display-pair Send / Out of Stock flow — before its success banner", () => {
+    const b = body(APP, "const commitFlow = async () => {", 900);
+    expect(before(b, "await thisDevicePaused()", "setSentBanner(")).toBe(true);
   });
   it("fulfillCRBatch (clothing Send / Reject) — before the loop", () => {
     const b = body(APP, "const fulfillCRBatch = async (batch, plan) => {");
@@ -38,12 +45,14 @@ describe("the quarantine is asked first, on every hub press", () => {
     expect(before(body(QUEUE, "const fulfilRequest = async (row, qty, avail) => {", 5000), "await thisDevicePaused()", "applyMovement")).toBe(true);
     expect(before(body(QUEUE, "const rejectRequest = async (row) => {", 5000), "await thisDevicePaused()", "runTransaction(")).toBe(true);
     expect(before(body(QUEUE, "const fulfilSale = async (row, pickLoc, qty, avail) => {", 5000), "await thisDevicePaused()", "applyMovement")).toBe(true);
+    expect(before(body(QUEUE, "const saleResponse = async (row, response) => {", 600), "await thisDevicePaused()", "onSaleResponse?.(row, response)")).toBe(true);
+    expect(QUEUE).not.toMatch(/onOutOfStock=\{[^}]*onSaleResponse/);
   });
 });
 
 describe("the reject records the phone", () => {
   it("a sneaker Out of stock stamps outOfStockByUid + outOfStockDeviceId in the same patch", () => {
-    const b = body(APP, "const updateStatus = async (order, status, extraPatch = {}) => {", 4000);
+    const b = body(APP, "const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {", 4000);
     expect(b).toContain("patch.outOfStockByUid = rej.uid;");
     expect(b).toContain("patch.outOfStockDeviceId = rej.deviceId;");
   });

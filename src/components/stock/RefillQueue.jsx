@@ -617,6 +617,15 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   };
 
   // ── SALE-ROW ACTIONS — the Source Transfer & Fulfil contract, unchanged ────
+  // A sale row's answer (Available without transfer / Out of Stock) is the
+  // parent's write — asked the same quarantine question first, and an Out of
+  // Stock is counted against this phone like every other reject.
+  const saleResponse = async (row, response) => {
+    if (await thisDevicePaused()) { setMsg((m) => ({ ...m, [row.rowKey]: PAUSED_MESSAGE })); return; }
+    if (response === "out_of_stock") countReject({ kind: "sale", ref: row.rowKey, hub: SOURCE_LOC, productId: row.productId, size: row.size });
+    onSaleResponse?.(row, response);
+  };
+
   const fulfilSale = async (row, pickLoc, qty, avail) => {
     if (await thisDevicePaused()) return { ok: false, reason: PAUSED_MESSAGE };
     const counted = typeof avail === "number";
@@ -810,7 +819,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
           }
         }}
         onCancel={() => setOpenRow(null)}
-        onWithoutTransfer={isReq ? null : () => { setOpenRow(null); onSaleResponse?.(row, "available"); }}
+        onWithoutTransfer={isReq ? null : () => { setOpenRow(null); saleResponse(row, "available"); }}
       />
     );
     return (
@@ -821,10 +830,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         msg={msg[row.rowKey]}
         fulfilOpen={openRow === row.rowKey && canAct}
         onToggleFulfil={() => {
-          if (!canAct) { if (!isReq) onSaleResponse?.(row, "available"); return; }
+          if (!canAct) { if (!isReq) saleResponse(row, "available"); return; }
           setOpenRow(openRow === row.rowKey ? null : row.rowKey);
         }}
-        onOutOfStock={() => { isReq ? rejectRequest(row) : onSaleResponse?.(row, "out_of_stock"); }}
+        onOutOfStock={() => { isReq ? rejectRequest(row) : saleResponse(row, "out_of_stock"); }}
         panel={panel}
       />
     );
