@@ -18,8 +18,17 @@
 //    same update as the action itself (src/device/deviceStamp.js). The rule
 //    refuses the whole write when that new stamp's deviceId — or the signed
 //    deviceId claim of an enrolled session — is quarantined. So a quarantined
-//    phone cannot reject, send, or otherwise change an order or a request,
-//    whatever its app does.
+//    phone running this app (every build since #647 stamps every order and
+//    request write) cannot reject, send, or otherwise change an order or a
+//    request, even if its own quarantine check failed open.
+//
+//    WHAT IT DOES NOT COVER, honestly: a write with NO stamp (a build from
+//    before #647 still cached on a phone, or a hand-made REST call) is judged
+//    as before, and a browser whose storage was cleared mints a NEW device id
+//    that is not on the list. Stock cells and movements carry no such rule:
+//    "moves no stock" is the app-side check (src/device/deviceRejects.js),
+//    which asks BEFORE any transfer — if that read fails open, the order
+//    write is still refused here but the transfer before it has happened.
 //
 //    `data.exists() ||` first: a stamp that is ALREADY on the record passes
 //    untouched. A transaction or set() rewrites the whole record, old stamps

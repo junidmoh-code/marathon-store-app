@@ -26,11 +26,14 @@
 //    Mirror Fleet screen (#640, /mirror_switch/quarantine/{deviceId}) gets the
 //    full-screen "Show this screen to Junid" — but that screen waits for the
 //    phone to be idle, and a press can land first. So every reject and every
-//    send asks, BEFORE any stock moves, whether this phone is paused. The
-//    console rule is the server-side half: it refuses any order or request
-//    write whose NEW device stamp names a quarantined phone.
+//    send asks, BEFORE any stock moves, whether this phone is paused. It
+//    fails open (no answer in 3 s = go ahead). The console rule, once pasted,
+//    is the server-side half: it refuses any order or request write whose NEW
+//    device stamp names a quarantined phone (what it does not cover is listed
+//    in scripts/device-quarantine/deviceQuarantineRules.mjs).
 //
-// Pure except `isThisDeviceQuarantined`, whose read is injected. Never throws.
+// Pure except `isThisDeviceQuarantined`, whose read is injected. Every export
+// answers null / {} / false on bad input rather than throwing.
 
 import { validDeviceId, quarantineVerdict, quarantinePath } from "./quarantine";
 

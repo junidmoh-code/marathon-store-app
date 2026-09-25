@@ -37,7 +37,7 @@ vi.mock("firebase/database", () => ({
   remove: (...args) => removeMock(...args),
   onValue: (...args) => onValueMock(...args),
   // The reject-log range read (MirrorFleetCard.rejects.test.jsx pins it).
-  query: (r) => r, orderByKey: () => ({}), startAt: () => ({}),
+  query: (r, ...parts) => ({ ...r, constraints: parts }), orderByKey: () => ({ orderByKey: true }), startAt: (v) => ({ startAt: v }),
 }));
 vi.mock("../PermissionsContext", () => ({ ADMIN_EMAIL: "gunidmoh@gmail.com" }));
 
@@ -98,9 +98,17 @@ describe("it must not be expensive", () => {
     // even when every device is on it. It is READ with the list, never
     // subscribed, for the same reason the list is — this is a screen about the
     // cost of reading the database.
+    //
+    // THREE since 2026-09-25: the per-device reject log. Unlike the other two
+    // it grows every day, so it is read as a KEY RANGE (orderByKey + startAt,
+    // the last REJECT_DAYS SA days) and never as the bare node —
+    // MirrorFleetCard.rejects.test.jsx pins the exact range.
     await render(ADMIN);
     const paths = getMock.mock.calls.map((c) => c[0].path).sort();
-    expect(paths).toEqual(["mirror_devices", "mirror_switch/off"]);
+    expect(paths).toEqual(["device_rejects", "mirror_devices", "mirror_switch/off"]);
+    const rejectsRead = getMock.mock.calls.map((c) => c[0]).find((q) => q.path === "device_rejects");
+    expect(rejectsRead.constraints).toContainEqual({ orderByKey: true });
+    expect(rejectsRead.constraints.some((c) => typeof c?.startAt === "string")).toBe(true);
   });
 
   it("subscribes to exactly two small nodes: the switch, and the quarantine flags", async () => {
