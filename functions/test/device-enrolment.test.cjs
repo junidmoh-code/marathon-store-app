@@ -489,3 +489,24 @@ test("email: an over-long queue is cut to the label limit and the rest goes next
   const second = E.buildEmailLine(left);
   assert.ok(second.sent.length > 0);
 });
+
+test("a BURST of parallel guesses from one device checks at most 5 codes (the attempt is taken before the code is read)", async () => {
+  let codeReads = 0;
+  const db = makeFakeDb({
+    users: { [MC]: { deviceCodeRequired: true } },
+    device_enrolment: { codes: { 4821: "p-sipho" }, people: { "p-sipho": { name: "Sipho", kind: "person", status: "active", code: "4821" } } },
+  }, { beforeRead: async (path) => { if (path.startsWith("device_enrolment/codes/")) codeReads++; await new Promise((r) => setImmediate(r)); } });
+  const guesses = Array.from({ length: 20 }, (_, i) => String(3000 + i));
+  const out = await Promise.all(guesses.map((c) => _handleEnrol(req({ code: c }), deps(db))));
+  assert.ok(codeReads <= 5, `checked ${codeReads} codes`);
+  assert.ok(out.filter((o) => o.reason === "locked").length >= 15);
+});
+
+test("a right code gives its attempt back on the network and login counters", async () => {
+  const db = world();
+  await _handleEnrol(req({ code: "1111" }), deps(db));
+  await _handleEnrol(req({ code: "4821", deviceId: DEV_B }), deps(db));
+  const ipKey = Object.keys(readAt(db.state.root, "device_enrolment/attempts")).find((k) => k.startsWith("ip_"));
+  assert.equal(readAt(db.state.root, `device_enrolment/attempts/${ipKey}/fails`), 1, "only the wrong code counts");
+  assert.equal(readAt(db.state.root, `device_enrolment/attempts/acct_${MC}/fails`), 1);
+});

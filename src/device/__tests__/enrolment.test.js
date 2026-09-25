@@ -44,6 +44,14 @@ describe("deviceGateVerdict", () => {
     expect(deviceGateVerdict({ permRecord: null, claims: undefined, isSuperAdmin: false })).toBe("app");
     expect(deviceGateVerdict({ permRecord: flagged(null), claims: pickDeviceClaims({}), isSuperAdmin: true })).toBe("app");
   });
+  it("a failed /users read never opens the app for a login this device has seen flagged", async () => {
+    const { rememberRequired, knownRequired } = await import("../enrolment.js");
+    rememberRequired("mc", true);
+    expect(deviceGateVerdict({ permRecord: null, claims: claims(), isSuperAdmin: false, readError: true, knownRequired: knownRequired("mc") })).toBe("code");
+    rememberRequired("mc", false);
+    expect(deviceGateVerdict({ permRecord: null, claims: pickDeviceClaims({}), isSuperAdmin: false, readError: true, knownRequired: knownRequired("mc") })).toBe("app");
+    expect(deviceGateVerdict({ permRecord: null, claims: undefined, isSuperAdmin: true, readError: true, knownRequired: true })).toBe("app");
+  });
   it("isLiveEnrolment never matches on a missing id", () => {
     expect(isLiveEnrolment({ deviceGate: { undefined: undefined } }, {})).toBe(false);
     expect(isLiveEnrolment({ deviceGate: { null: "null" } }, { deviceId: "null", eid: null })).toBe(false);

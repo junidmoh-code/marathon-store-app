@@ -32,8 +32,8 @@ import { effectiveStoreIds } from "../utils/stores";
 import Login from "./Login";
 import EnrolmentGate from "../device/EnrolmentGate";
 import {
-  deviceGateVerdict, deviceTypeHint, identityFrom, isLiveEnrolment, readSessionClaims, setDeviceIdentity,
-  writeLastSeen, LAST_SEEN_EVERY_MS,
+  deviceGateVerdict, deviceTypeHint, identityFrom, isLiveEnrolment, knownRequired, readSessionClaims,
+  rememberRequired, setDeviceIdentity, writeLastSeen, LAST_SEEN_EVERY_MS,
 } from "../device/enrolment";
 import { serverNowMs } from "../utils/serverTime";
 import { adoptDeviceId, getDeviceId } from "../device/deviceId";
@@ -169,7 +169,12 @@ export default function AuthGate({ children, renderTv }) {
     const r = ref(database, `users/${user.uid}`);
     const off = onValue(
       r,
-      (snap) => { setPermReadError(false); setPermRecord(snap.val() || null); setPermLoaded(true); },
+      (snap) => {
+        setPermReadError(false);
+        setPermRecord(snap.val() || null);
+        rememberRequired(user.uid, snap.val()?.deviceCodeRequired === true);
+        setPermLoaded(true);
+      },
       (err)  => { console.warn("permissions read failed:", err); setPermReadError(true); setPermRecord(null); setPermLoaded(true); }
     );
     return () => off();
@@ -213,7 +218,9 @@ export default function AuthGate({ children, renderTv }) {
   // A login that needs a device code: the code screen and nothing else until
   // this device is enrolled — and again the moment it is revoked, because the
   // gate entry lives on the /users record subscribed just above.
-  const gate = deviceGateVerdict({ permRecord, claims, isSuperAdmin });
+  const gate = deviceGateVerdict({
+    permRecord, claims, isSuperAdmin, readError: permReadError, knownRequired: knownRequired(user.uid),
+  });
   if (gate === "loading") return <LoadingScreen />;
   if (gate === "code") return <EnrolmentGate enrol={enrolWithCode} signIn={signInWithDeviceToken} />;
   const permissions   = Array.isArray(permRecord?.permissions) ? permRecord.permissions : [];

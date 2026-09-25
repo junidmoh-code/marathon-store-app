@@ -40,15 +40,38 @@ async function readLock(db, key, now) {
   return v.locked ? v : null;
 }
 
-// One more wrong code on one counter. Returns the counter as committed.
-async function countFailure(db, key, now, limit) {
-  let out = null;
-  await db.ref(`${E.PATHS.attempts}/${key}`).transaction((cur) => {
-    out = E.afterFailure(cur, now, limit);
-    const { justLocked, ...rec } = out;
+// TAKE one attempt on one counter BEFORE the code is looked at, in a
+// transaction: parallel requests each take their own attempt, and once the
+// limit is reached every later one is refused — a burst can never test more
+// codes than the limit. (CodeRabbit, PR #647.) The attempt is given back only
+// if the code turns out right. Returns { locked, retryAfterMs } when refused,
+// else { rec } — the counter as committed, with justLocked when THIS attempt
+// was the one that reached the limit (it is still checked).
+async function takeAttempt(db, key, now, limit) {
+  let taken = null;
+  let refusal = null;
+  const res = await db.ref(`${E.PATHS.attempts}/${key}`).transaction((cur) => {
+    const v = E.lockVerdict(cur, now);
+    if (cur !== null && v.locked) { refusal = v; taken = null; return undefined; }
+    refusal = null;
+    taken = E.afterFailure(cur, now, limit);
+    const { justLocked, ...rec } = taken;
     return { ...rec, lastAtMs: now };
   });
-  return out;
+  if (!res.committed || refusal) return { locked: true, retryAfterMs: (refusal || E.lockVerdict(res.snapshot.val(), now)).retryAfterMs };
+  return { rec: taken };
+}
+
+// A right code gives its attempt back. If it was the attempt that set a lock,
+// the lock goes too.
+async function giveBack(db, key, now, rec) {
+  await db.ref(`${E.PATHS.attempts}/${key}`).transaction((cur) => {
+    if (cur === null) return null;
+    if (rec.justLocked && Number(cur.lockedUntilMs) === Number(rec.lockedUntilMs)) {
+      return { ...cur, fails: 0, lockedUntilMs: 0 };
+    }
+    return Number(cur.fails) > 0 ? { ...cur, fails: Number(cur.fails) - 1 } : undefined;
+  });
 }
 
 // Behind Google's front end, req.ip can be the proxy's address — every shop
@@ -100,18 +123,24 @@ async function handleEnrol(request, deps) {
   const lock = locks.filter(([, v]) => v).sort((a, b) => b[1].retryAfterMs - a[1].retryAfterMs)[0];
   if (lock) return { ok: false, reason: "locked", scope: lock[0], retryAfterMs: lock[1].retryAfterMs };
 
+  // Take this attempt on every counter first (see takeAttempt).
+  const taken = {};
+  for (const [k, key] of Object.entries(keys)) {
+    const t = await takeAttempt(db, key, now, E.LIMITS[k]);
+    if (t.locked) return { ok: false, reason: "locked", scope: k, retryAfterMs: t.retryAfterMs };
+    taken[k] = t.rec;
+  }
+  const justLocked = Object.entries(taken).filter(([, v]) => v.justLocked).map(([k]) => k);
+
   const wrong = async () => {
-    const after = {};
-    for (const [k, key] of Object.entries(keys)) after[k] = await countFailure(db, key, now, E.LIMITS[k]);
-    const locked = Object.entries(after).filter(([, v]) => v.justLocked).map(([k]) => k);
-    if (locked.length) {
+    if (justLocked.length) {
       await queueEvent(db, {
-        type: "lockout", atMs: now, scope: locked.join("+"), deviceId, deviceType,
-        minutes: Math.round(Math.max(...locked.map((k) => E.LIMITS[k].lockMs)) / 60e3),
+        type: "lockout", atMs: now, scope: justLocked.join("+"), deviceId, deviceType,
+        minutes: Math.round(Math.max(...justLocked.map((k) => E.LIMITS[k].lockMs)) / 60e3),
       });
-      return { ok: false, reason: "locked", scope: locked[0], retryAfterMs: Math.max(...locked.map((k) => E.LIMITS[k].lockMs)) };
+      return { ok: false, reason: "locked", scope: justLocked[0], retryAfterMs: Math.max(...justLocked.map((k) => E.LIMITS[k].lockMs)) };
     }
-    const left = Math.min(...Object.entries(after).map(([k, v]) => E.LIMITS[k].max - v.fails));
+    const left = Math.min(...Object.entries(taken).map(([k, v]) => E.LIMITS[k].max - v.fails));
     return { ok: false, reason: "wrong", attemptsLeft: Math.max(0, left) };
   };
 
@@ -181,6 +210,9 @@ async function handleEnrol(request, deps) {
     [`users/${uid}/deviceGate/${deviceId}`]: eid,
     [`${E.PATHS.attempts}/${keys.device}`]: null,
   });
+
+  await giveBack(db, keys.ip, now, taken.ip);
+  await giveBack(db, keys.account, now, taken.account);
 
   await queueEvent(db, {
     type: "enrolled", atMs: now, personId, personName: person.name || null, kind: person.kind || "person",

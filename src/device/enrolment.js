@@ -70,8 +70,14 @@ export async function readSessionClaims(user) {
  * "loading" — the claims are still being read; show nothing yet
  * Junid never needs a code; nor does an account whose flag is absent.
  */
-export function deviceGateVerdict({ permRecord, claims, isSuperAdmin }) {
+export function deviceGateVerdict({ permRecord, claims, isSuperAdmin, readError = false, knownRequired = false }) {
   if (isSuperAdmin) return "app";
+  // The /users record could not be read, so whether this login needs a code
+  // is unknown. A login THIS device has seen flagged stays shut — never opened
+  // by an error. (CodeRabbit, PR #647.) The rules exempt /users from the gate,
+  // so this is a refused read that should not happen; a login never seen
+  // flagged keeps today's behaviour, and the server rules still refuse it.
+  if (readError) return knownRequired ? "code" : "app";
   if (permRecord?.deviceCodeRequired !== true) return "app";
   if (claims === undefined) return "loading";
   return isLiveEnrolment(permRecord, claims) ? "app" : "code";
@@ -161,4 +167,18 @@ export async function writeLastSeen({ deviceId, write, nowMs, storage = typeof l
   } catch {
     return false;
   }
+}
+
+// Remembers, per login, that this device has seen the login flagged — so a
+// later failed read of /users cannot open the app (see deviceGateVerdict).
+const KNOWN_KEY = (uid) => `marathon.deviceCodeRequired.${uid}`;
+export function rememberRequired(uid, required, storage = typeof localStorage === "undefined" ? null : localStorage) {
+  if (!uid) return;
+  try {
+    if (required === true) storage?.setItem(KNOWN_KEY(uid), "1");
+    else storage?.removeItem(KNOWN_KEY(uid));
+  } catch { /* storage off */ }
+}
+export function knownRequired(uid, storage = typeof localStorage === "undefined" ? null : localStorage) {
+  try { return !!uid && storage?.getItem(KNOWN_KEY(uid)) === "1"; } catch { return false; }
 }

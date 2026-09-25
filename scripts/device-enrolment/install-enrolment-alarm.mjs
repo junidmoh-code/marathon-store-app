@@ -97,20 +97,38 @@ function policyBody(channelName) {
   };
 }
 
+// Every page of a Monitoring list — a resource on page 2 is not "absent".
+// (CodeRabbit, PR #647.)
+async function listAll(url, field) {
+  const out = [];
+  let token = "";
+  for (let i = 0; i < 50; i++) {
+    const page = await api(`${url}${token ? `${url.includes("?") ? "&" : "?"}pageToken=${encodeURIComponent(token)}` : ""}`);
+    if (!page.ok) return { ok: false, status: page.status, data: page.data };
+    out.push(...(page.data[field] || []));
+    token = page.data.nextPageToken || "";
+    if (!token) return { ok: true, items: out };
+  }
+  return { ok: false, status: 0, data: { error: "more than 50 pages" } };
+}
+
 async function findChannel() {
-  const list = await api(`https://monitoring.googleapis.com/v3/projects/${PROJECT}/notificationChannels`);
+  const list = await listAll(`https://monitoring.googleapis.com/v3/projects/${PROJECT}/notificationChannels`, "notificationChannels");
   if (!list.ok) return fail(`could not list notification channels (HTTP ${list.status}): ${JSON.stringify(list.data).slice(0, 300)}`);
-  const found = (list.data.notificationChannels || []).find((c) => c.type === "email" && c.labels?.email_address === RECIPIENT);
+  const found = list.items.find((c) => c.type === "email" && c.labels?.email_address === RECIPIENT);
   if (!found) return fail(`no email channel for ${RECIPIENT} — run scripts/social/install-social-alarm.mjs first (it owns the shared channel)`);
+  // An unverified or disabled channel sends nothing — never report it as wired.
+  if (found.enabled === false) return fail(`the email channel for ${RECIPIENT} is DISABLED — enable it in Cloud Monitoring`);
+  if (found.verificationStatus === "UNVERIFIED") return fail(`the email channel for ${RECIPIENT} is UNVERIFIED — it sends nothing until verified`);
   log(`✓ email channel → ${RECIPIENT}${found.verificationStatus ? ` (${found.verificationStatus})` : ""}`);
   return found;
 }
 
 async function ensurePolicy(channelName) {
   const base = `https://monitoring.googleapis.com/v3/projects/${PROJECT}/alertPolicies`;
-  const list = await api(base);
+  const list = await listAll(base, "alertPolicies");
   if (!list.ok) return fail(`could not list alert policies: ${JSON.stringify(list.data).slice(0, 300)}`);
-  const found = (list.data.alertPolicies || []).find((p) => p.displayName === POLICY_NAME);
+  const found = list.items.find((p) => p.displayName === POLICY_NAME);
   const want = policyBody(channelName);
   if (found) {
     const live = found.conditions?.[0]?.conditionMatchedLog;
@@ -119,6 +137,9 @@ async function ensurePolicy(channelName) {
     if (live?.labelExtractors?.events !== want.conditions[0].conditionMatchedLog.labelExtractors.events) drift.push("label extractor");
     if (!(found.notificationChannels || []).includes(channelName)) drift.push("notification channel");
     if (found.enabled === false) drift.push("disabled");
+    // The email text carries the enrolment line itself; a changed or missing
+    // one would still "fire" with nothing useful in it.
+    if (found.documentation?.content !== want.documentation.content) drift.push("email text");
     if (VERIFY) {
       if (drift.length) return fail(`policy "${POLICY_NAME}" has drifted: ${drift.join("; ")}`);
       log(`✓ alert policy "${POLICY_NAME}"`);
