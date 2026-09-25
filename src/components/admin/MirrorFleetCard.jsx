@@ -39,7 +39,7 @@
 // is protected (src/offline/storageHealth.js).
 
 import { useCallback, useEffect, useState } from "react";
-import { getDatabase, ref, get, set, remove, onValue } from "firebase/database";
+import { getDatabase, ref, get, set, remove, onValue, query, orderByKey, startAt } from "firebase/database";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 import { DEVICES_ROOT, SAST_OFFSET_MS, sastDate } from "../../offline/deviceHealth";
 import { MIRROR_SWITCH_PATH, switchVerdict } from "../../offline/killSwitch";
@@ -47,6 +47,14 @@ import { DEVICE_OFF_ROOT, deviceOffPath, deviceOffVerdict } from "../../offline/
 import {
   QUARANTINE_NODE, quarantinePath, quarantineRecord, quarantineVerdict,
 } from "../../device/quarantine";
+import { DEVICE_REJECTS_NODE, tallyDeviceRejects } from "../../device/deviceRejects";
+
+// ── REJECTS PER DEVICE (2026-09-25) ──────────────────────────────────────────
+// How many times each phone pressed Out of Stock / Reject, from the per-device
+// log (src/device/deviceRejects.js). Read ONCE with the device list, as a
+// bounded key range — the last REJECT_DAYS SA days, never the whole log: at
+// ~130 rejects a day of ~110 bytes each, a week is about 100 KB.
+export const REJECT_DAYS = 7;
 
 const RULE_TEXT = `"mirror_switch": {
   ".read": "auth != null && auth.token.firebase.sign_in_provider != 'anonymous'",
@@ -187,7 +195,15 @@ export function deviceState(d, now = Date.now(), mirrorOff = false) {
   return { tone: "#30d158", text: "serving from its own copy" };
 }
 
-function DeviceRow({ d, now, mirrorOff, onToggleOff, busy, quarantined = false, onQuarantine = null, qBusy = false }) {
+function rejectWords(r, now) {
+  if (!r || !r.total) return { tone: "#8e8e93", text: `No rejects in ${REJECT_DAYS} days` };
+  return {
+    tone: r.today > 0 ? "#ff453a" : "#ff9f0a",
+    text: `Rejects: ${r.today} today · ${r.total} in ${REJECT_DAYS} days · last ${ago(r.lastAt, now)}`,
+  };
+}
+
+function DeviceRow({ d, now, mirrorOff, onToggleOff, busy, quarantined = false, onQuarantine = null, qBusy = false, rejects = null, rejectsReady = null }) {
   const s = deviceState(d, now, mirrorOff);
   const storage = storageWords(d.storage, now);
   return (
@@ -201,6 +217,10 @@ function DeviceRow({ d, now, mirrorOff, onToggleOff, busy, quarantined = false, 
           QUARANTINED — this device shows "Show this screen to Junid" until released
         </div>
       )}
+      {rejectsReady === true && (() => {
+        const w = rejectWords(rejects, now);
+        return <div data-testid="device-rejects" style={{ fontSize: 13, color: w.tone, marginTop: 3, fontWeight: 600 }}>{w.text}</div>;
+      })()}
       <div style={{ fontSize: 12.5, color: s.tone, marginTop: 3 }}>{s.text}</div>
       {storage && <div style={{ fontSize: 12, color: isEvicting(d, now) ? "#ff453a" : "#8e8e93", marginTop: 3 }}>{storage}</div>}
       <div style={{ fontSize: 12, color: "#8e8e93", marginTop: 3 }}>
@@ -243,6 +263,8 @@ function DeviceRow({ d, now, mirrorOff, onToggleOff, busy, quarantined = false, 
 export default function MirrorFleetCard({ authUser, onExit }) {
   // deviceId -> raw flag value, read with the device list.
   const [offMap, setOffMap] = useState({});
+  // deviceId -> { today, total, lastAt, lastUid } over the last REJECT_DAYS.
+  const [rejects, setRejects] = useState({ ready: null, byDevice: {} });
   const [offBusy, setOffBusy] = useState(null);
   const [offError, setOffError] = useState(null);
   // ── THE COMPONENT'S OWN GATE ──────────────────────────────────────────────
@@ -298,6 +320,16 @@ export default function MirrorFleetCard({ authUser, onExit }) {
         .filter((d) => d && typeof d === "object")
         .sort((a, b) => (b.at ?? 0) - (a.at ?? 0));
       setState({ loading: false, devices });
+      // Rejects per device — its own try: a log the rules do not let us read
+      // yet (the console paste) must not blank the device list.
+      try {
+        const from = sastDate(Date.now() - (REJECT_DAYS - 1) * 86400000);
+        const rs = await get(query(ref(getDatabase(), DEVICE_REJECTS_NODE), orderByKey(), startAt(from)));
+        setRejects({ ready: true, byDevice: tallyDeviceRejects(rs.exists() ? rs.val() : null, { today: sastDate() }) });
+      } catch (e) {
+        console.warn("Mirror Fleet: reject log not readable —", e?.message || e);
+        setRejects({ ready: false, byDevice: {} });
+      }
     } catch (e) {
       const denied = /permission_denied/i.test(String(e?.message || e));
       setState({ loading: false, devices: [], error: denied ? "denied" : String(e?.message || e) });
@@ -407,6 +439,7 @@ export default function MirrorFleetCard({ authUser, onExit }) {
     : [];
   const rowProps = (d) => ({
     quarantined: isFlagged(d.deviceId), onQuarantine: flagsReady === true ? setQuarantine : null, qBusy: flagBusy === d.deviceId,
+    rejects: rejects.byDevice[d.deviceId] || null, rejectsReady: rejects.ready,
   });
 
   return (
@@ -469,6 +502,12 @@ export default function MirrorFleetCard({ authUser, onExit }) {
 
       {flagsReady === false && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Cannot read the quarantine list, so the quarantine buttons are hidden.</div>}
       {flagError && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Could not change the quarantine: {flagError}</div>}
+      {rejects.ready === false && (
+        <div style={{ marginTop: 12, color: "#8e8e93", fontSize: 13 }}>
+          Reject counts per device appear once the device-reject rule is pasted
+          in the Firebase console (scripts/device-quarantine/print-device-quarantine-rules.mjs).
+        </div>
+      )}
       {flaggedUnknown.length > 0 && (
         <div style={{ marginTop: 16, border: "1px solid #ffd60a", borderRadius: 10, padding: 12, background: "#1c1c1e" }}>
           <div style={{ fontSize: 13, color: "#ffd60a", fontWeight: 600 }}>Quarantined, but not in the list below</div>

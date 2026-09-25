@@ -729,7 +729,7 @@ export default function HealthView({ products = [], onExit }) {
                       <SizeFactChip size={r.size} value={`${r.location} · ${r.units} written off${r.left != null ? ` · ${r.left} left` : ""}`} tone={AMBER} />
                       <div style={{ marginTop: 3 }}>
                         {r.refusals.map((x, i) => (
-                          <span key={i}>{i ? " · " : "Refused "}{x.when} by {x.who}{x.forShop ? ` (for ${x.forShop})` : ""}</span>
+                          <span key={i}>{i ? " · " : "Refused "}{x.when} by {x.who}{x.device ? ` on phone ${x.device}` : ""}{x.forShop ? ` (for ${x.forShop})` : ""}</span>
                         ))}
                       </div>
                     </div>

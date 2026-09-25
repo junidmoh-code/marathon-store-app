@@ -67,7 +67,8 @@ import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, sourceQueueLists } from "
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { refusalTxn, trancheMovementId, sendInFlight } from "./refusalGuard";
 import { deviceStamp, stampAt, stampPatch, stampTxn } from "../../device/deviceStamp";
-import { countReject } from "../../device/rejectCount";
+import { countReject, thisDevicePaused } from "../../device/rejectCount";
+import { PAUSED_MESSAGE } from "../../device/deviceRejects";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -402,6 +403,8 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   // History accumulates them per link.refillId (mergeRows), so the fulfilled
   // row reports the true total.
   const fulfilRequest = async (row, qty, avail) => {
+    // A phone Junid has quarantined sends nothing (src/device/deviceRejects.js).
+    if (await thisDevicePaused()) return { ok: false, reason: PAUSED_MESSAGE };
     const r = row._r;
     let q = qty, liveQty = r.qty || 1, already = 0;
     // The live read is LOAD-BEARING for tranches and must not be skipped on
@@ -545,7 +548,17 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   const rejectRequest = async (row) => {
     if (busyRow || !canTransfer) return;
     setBusyRow(row.rowKey);
+    if (await thisDevicePaused()) {
+      setMsg((m) => ({ ...m, [row.rowKey]: PAUSED_MESSAGE }));
+      setBusyRow(null);
+      return;
+    }
+    // WHICH PHONE said no (2026-09-25), beside resolvedBy's account: the
+    // refusal write-off copies both into its record. Same id the stamp and the
+    // Mirror Fleet screen use.
+    const refusingDeviceId = deviceStamp().deviceId || null;
     const fields = {
+      ...(refusingDeviceId ? { resolvedDeviceId: refusingDeviceId } : {}),
       status: "cancelled",
       resolvedAt: serverNowIso(),
       rejectedBy: actorRole || "unknown",
@@ -584,7 +597,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         stampTxn((cur) => refusalTxn(cur, fields, { sendingAt }), "reject"));
       const live = res?.snapshot?.val?.() ?? null;
       if (res?.committed && live) {
-        countReject();
+        countReject({ kind: "request", ref: row.id, hub: live.createdFrom?.source || live.source || null, productId: live.productId, size: live.size });
         // see the fulfil echo above — the same paths the old update wrote
         notePendingUpdate(Object.fromEntries(Object.entries(fields).map(([k, v]) => [`refill_requests/${row.id}/${k}`, v])));
       } else if (!res?.committed && live) {
@@ -605,6 +618,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
 
   // ── SALE-ROW ACTIONS — the Source Transfer & Fulfil contract, unchanged ────
   const fulfilSale = async (row, pickLoc, qty, avail) => {
+    if (await thisDevicePaused()) return { ok: false, reason: PAUSED_MESSAGE };
     const counted = typeof avail === "number";
     const mvId = `${row.movementIdSeed}_${row.sent}`;
     // HOLD LANE (same contract as fulfilRequest): a cross-building pick parks

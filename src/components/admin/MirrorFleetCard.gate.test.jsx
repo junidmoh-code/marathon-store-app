@@ -36,6 +36,8 @@ vi.mock("firebase/database", () => ({
   set: (...args) => setMock(...args),
   remove: (...args) => removeMock(...args),
   onValue: (...args) => onValueMock(...args),
+  // The reject-log range read (MirrorFleetCard.rejects.test.jsx pins it).
+  query: (r) => r, orderByKey: () => ({}), startAt: () => ({}),
 }));
 vi.mock("../PermissionsContext", () => ({ ADMIN_EMAIL: "gunidmoh@gmail.com" }));
 

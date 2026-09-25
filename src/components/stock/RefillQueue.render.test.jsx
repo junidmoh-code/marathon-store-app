@@ -45,7 +45,12 @@ vi.mock("firebase/database", () => ({
   update: (...a) => updateMock(...a),
   runTransaction: (...a) => txnMock(...a),
   get: (r) => rejects.has(r.path) ? Promise.reject(new Error("offline")) : Promise.resolve({ val: () => gets[r.path] ?? null }),
+  // The per-device reject log (src/device/rejectCount.js).
+  push: (...a) => pushMock(...a),
+  set: () => Promise.resolve(),
+  increment: (n) => ({ increment: n }),
 }));
+const pushMock = vi.fn(() => Promise.resolve());
 vi.mock("firebase/auth", () => ({ onAuthStateChanged: (_a, cb) => { cb({ uid: "u1" }); return () => {}; } }));
 vi.mock("../../firebase", () => ({ database: {}, auth: { currentUser: { uid: "u1" } } }));
 const perm = { permRecord: { stockRole: "warehouse" }, isSuperAdmin: false };
@@ -546,3 +551,77 @@ describe("pass-through request rows", () => {
     tree.unmount();
   });
 });
+
+// ─── A QUARANTINED PHONE SENDS AND REJECTS NOTHING (2026-09-25) ──────────────
+// On 25 Sep 2026 one phone falsely refused four Hub 2 orders. Junid can
+// quarantine a phone on the Mirror Fleet screen; the queue now asks, BEFORE
+// anything moves, whether THIS phone is quarantined (its own flag, one read).
+// A quarantined phone: no transaction, no movement, no log — and a message.
+// A healthy phone's Out of Stock names the phone on the request and logs the
+// reject to /device_rejects under that phone.
+describe("device quarantine and the phone on the refusal", () => {
+  const PHONE = "2964c145-ecad-4f61-9f7a-304231af0e01";
+  const store = new Map();
+  beforeEach(() => {
+    store.clear();
+    store.set("marathon.deviceId", PHONE);
+    globalThis.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+    pushMock.mockClear();
+  });
+
+  it("a quarantined phone's Out of Stock writes nothing and says why", async () => {
+    gets[`mirror_switch/quarantine/${PHONE}`] = { on: true, at: 1, by: "gunidmoh@gmail.com" };
+    const tree = renderQueue();
+    await act(async () => { await lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock").props.onClick(); });
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(txnMock).not.toHaveBeenCalled();
+    expect(txnWrites).toHaveLength(0);
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(pushMock).not.toHaveBeenCalled();
+    expect(out).toContain("paused by Junid");
+  });
+
+  it("a quarantined phone's Fulfil moves no stock", async () => {
+    gets[`mirror_switch/quarantine/${PHONE}`] = true;
+    const tree = renderQueue();
+    await act(async () => { lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil").props.onClick(); });
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    const out = textOf(tree.toJSON());
+    tree.unmount();
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    expect(updateMock).not.toHaveBeenCalled();
+    expect(out).toContain("paused by Junid");
+  });
+
+  it("a RELEASED phone ({ on: false }) works exactly as before", async () => {
+    gets[`mirror_switch/quarantine/${PHONE}`] = { on: false };
+    const tree = renderQueue();
+    await act(async () => { await lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock").props.onClick(); });
+    tree.unmount();
+    expect(txnWrites).toHaveLength(1);
+  });
+
+  it("the flag cannot be read (offline) → the press goes ahead; the database rule is the backstop", async () => {
+    rejects.add(`mirror_switch/quarantine/${PHONE}`);
+    const tree = renderQueue();
+    await act(async () => { await lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock").props.onClick(); });
+    tree.unmount();
+    expect(txnWrites).toHaveLength(1);
+  });
+
+  it("a healthy phone's Out of Stock names the phone on the request and logs it under that phone", async () => {
+    const tree = renderQueue();
+    await act(async () => { await lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock").props.onClick(); });
+    tree.unmount();
+    expect(txnWrites).toHaveLength(1);
+    expect(txnWrites[0].value.resolvedDeviceId).toBe(PHONE);
+    expect(txnWrites[0].value.resolvedBy).toBe("u1");
+    expect(pushMock).toHaveBeenCalledTimes(1);
+    const [logRef, rec] = pushMock.mock.calls[0];
+    expect(logRef.path).toBe(`device_rejects/2026-08-07/${PHONE}`);
+    expect(rec).toEqual({ at: NOW, uid: "u1", kind: "request", ref: "bootreq", hub: "central", pid: "boot", size: "7" });
+  });
+});
+

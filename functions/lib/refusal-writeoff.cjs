@@ -163,6 +163,8 @@ function planRefusalWriteoffs(snapshot) {
       id, ts, fulfilled,
       dest: rr.requestingLocation || null,
       byUid: typeof rr.resolvedBy === "string" && rr.resolvedBy ? rr.resolvedBy : null,
+      // WHICH PHONE said it (2026-09-25; absent on older requests).
+      byDeviceId: typeof rr.resolvedDeviceId === "string" && rr.resolvedDeviceId ? rr.resolvedDeviceId : null,
       byRole: typeof rr.rejectedBy === "string" && rr.rejectedBy ? rr.rejectedBy : null,
       byLoc: loc,
     });
@@ -175,7 +177,7 @@ function planRefusalWriteoffs(snapshot) {
     if (!(num(Number(m.qty)) > 0) || m.from === m.to) continue;
     const g = groups.get(`${m.from}|${m.productId}|${stockCellKey(m.size)}`);
     const ts = msOf(m.ts);
-    if (g && ts) g.events.push({ id: `ledger:${m.ts}`, ts, fulfilled: true, dest: m.to || null, byUid: null, byRole: null, byLoc: m.from });
+    if (g && ts) g.events.push({ id: `ledger:${m.ts}`, ts, fulfilled: true, dest: m.to || null, byUid: null, byDeviceId: null, byRole: null, byLoc: m.from });
   }
 
   // Ledger per cell — only cells that have a candidate run are ever looked up.
@@ -218,7 +220,7 @@ function planRefusalWriteoffs(snapshot) {
     const id = writeoffId(loc, pid, cellKey, last.ts);
     const base = { id: null, loc, pid, size: g.size, cellKey };
     const refusals = run.map((e) => ({
-      rrId: e.id, atMs: e.ts, day: sastDay(e.ts), dest: e.dest, byUid: e.byUid, byRole: e.byRole, byLoc: e.byLoc,
+      rrId: e.id, atMs: e.ts, day: sastDay(e.ts), dest: e.dest, byUid: e.byUid, byDeviceId: e.byDeviceId || null, byRole: e.byRole, byLoc: e.byLoc,
     }));
 
     // REPAIR: this run's write-off already reached the cell (the cell still
@@ -360,7 +362,7 @@ async function applyRefusalWriteoffs({ db, writeoffs, snapshot, update, nowMs, r
     for (const x of w.refusals) {
       refusals.push({
         rrId: x.rrId, at: new Date(x.atMs).toISOString(), day: x.day, dest: x.dest || null,
-        byUid: x.byUid || null, byName: await nameOf(x.byUid), byRole: x.byRole || null, byLoc: x.byLoc || w.loc,
+        byUid: x.byUid || null, byName: await nameOf(x.byUid), byDeviceId: x.byDeviceId || null, byRole: x.byRole || null, byLoc: x.byLoc || w.loc,
         counted: x.counted !== false,
       });
     }
