@@ -59,7 +59,7 @@ const {
   normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
-  hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
+  hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
@@ -760,6 +760,27 @@ async function handleExtract(db, request) {
       + ` conf=${JSON.stringify((ocr.parsed.confidence || {}).tid)} batch=${JSON.stringify(ocr.parsed.batchNo)}`
       + ` model=${ocr.model} tokensOut=${ocr.tokensOut}`);
   }
+  // ── A HAND-DECLARED SLIP MAY PRINT NO TID, AND TIMES WITHOUT DATES ─────────
+  // The typed-total path exists for the slip that did not print everything
+  // (Trophy Till 2, 26 Sept 2026: no TID, "19:00:05" → "16:17:36"). A slip
+  // that prints NO TID is filed under the till Junid tapped; one that prints a
+  // DIFFERENT TID is still refused below — that is the wrong slip. Every
+  // substitution is said on the record.
+  const declaredNotes = [];
+  if (declared && !extraction.tid) {
+    extraction.tid = picked;
+    declaredNotes.push("The slip printed no terminal ID, so this batch is filed under the till that was tapped.");
+  }
+  if (declared && (!Number.isInteger(extraction.openedAt) || !Number.isInteger(extraction.closedAt)
+      || extraction.closedAt <= extraction.openedAt)) {
+    const w = anchorDeclaredWindow({ openedText: extraction.openedText, closedText: extraction.closedText, nowMs: Date.now() });
+    extraction.openedAt = w.openedAt;
+    extraction.closedAt = w.closedAt;
+    extraction.windowSource = w.windowSource;
+    declaredNotes.push(w.windowSource === "declared-time-only"
+      ? "The slip printed its Opened/Closed times without dates; the close was placed on the capture day and the open on the day before it where needed."
+      : "The slip's Opened/Closed times could not be read, so the window is the 24 hours before this capture.");
+  }
   if (!extraction.tid) return reject("No terminal ID could be read off the slip — retake the header photo.");
   // An O read for a 0 (or I for 1) on the PICKED till's own TID is that TID.
   // From here on the record carries the registry's spelling, never the misread.
@@ -827,6 +848,7 @@ async function handleExtract(db, request) {
   const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
   if (straddle) warnings.push(straddle);
   if (declared) {
+    warnings.unshift(...declaredNotes);
     warnings.unshift(`The total (${formatCents(declared.cents)}) was typed by ${request.auth.token?.email || request.auth.uid}, not read off the slip — the slip did not print it. Nobody has verified it against paper.`);
   }
 

@@ -94,14 +94,23 @@ test("the SAME half slip without a declared total is still refused", () => {
   assert.equal(v.ok, false);
 });
 
-test("TID, batch number and the window are still gated on a declared-total capture", () => {
-  for (const [f, conf] of [["tid", 0.3], ["batchNo", 0.3], ["openedAt", 0.3], ["closedAt", 0.3]]) {
-    const v = validateExtraction(halfSlip({ confidence: { ...halfSlip().confidence, [f]: conf } }),
+test("on a declared-total capture the batch number is still gated; TID and times are excused (26 Sept)", () => {
+  // Junid, 26 Sept 2026: the typed total exists for the slip that did not print
+  // its TID. The callable fills a missing TID from the tapped till and anchors
+  // dateless times itself; a DIFFERENT printed TID is still refused before this.
+  for (const f of ["tid", "openedAt", "closedAt"]) {
+    const v = validateExtraction(halfSlip({ confidence: { ...halfSlip().confidence, [f]: 0.3 } }),
       { summaryOnly: true, declaredTotal: true });
-    assert.equal(v.ok, false, `${f} at low confidence must still refuse`);
+    assert.equal(v.ok, true, `${f} at low confidence is excused on a typed total`);
   }
+  const lowBatch = validateExtraction(halfSlip({ confidence: { ...halfSlip().confidence, batchNo: 0.3 } }),
+    { summaryOnly: true, declaredTotal: true });
+  assert.equal(lowBatch.ok, false, "the batch number is the record's key");
+  // The window must still EXIST — the callable anchors one before validating.
   assert.equal(validateExtraction(halfSlip({ openedAt: null }), { summaryOnly: true, declaredTotal: true }).ok, false);
   assert.equal(validateExtraction(halfSlip({ batchNo: "x" }), { summaryOnly: true, declaredTotal: true }).ok, false);
+  // Without a typed total nothing is excused.
+  assert.equal(validateExtraction(halfSlip({ confidence: { ...CONF, tid: 0.3 } }), { summaryOnly: true }).ok, false);
 });
 
 test("a declared total must itself be an amount", () => {
@@ -186,4 +195,62 @@ test("submit re-checks the owner and the draft's figure at the moment of record"
   assert.match(submitBody, /byUid: request\.auth\.uid,/);
   assert.match(submitBody, /byEmail: request\.auth\.token\?\.email \|\| null,/);
   assert.doesNotMatch(submitBody, /declaredTotal\.byUid|declaredTotal\.byEmail/);
+});
+
+// ── 26 Sept 2026: Trophy Till 2 prints no TID and times without dates ────────
+const { anchorDeclaredWindow } = require("../lib/card-recon.cjs");
+const sast = (iso) => Date.parse(`${iso}+02:00`);
+
+test("Trophy Till 2's real slip: '19:00:05' → '16:17:36', captured 17:26 → yesterday 19:00 to today 16:17", () => {
+  const w = anchorDeclaredWindow({ openedText: "19:00:05", closedText: "16:17:36", nowMs: sast("2026-09-26T17:26:00") });
+  assert.equal(w.openedAt, sast("2026-09-25T19:00:05"));
+  assert.equal(w.closedAt, sast("2026-09-26T16:17:36"));
+  assert.equal(w.windowSource, "declared-time-only");
+});
+
+test("a close time later than 'now' is yesterday's", () => {
+  const w = anchorDeclaredWindow({ openedText: "09:00", closedText: "18:50:00", nowMs: sast("2026-09-26T08:30:00") });
+  assert.equal(w.closedAt, sast("2026-09-25T18:50:00"));
+  assert.equal(w.openedAt, sast("2026-09-25T09:00:00"));
+});
+
+test("no usable times → the 24 hours before capture, said as such", () => {
+  const now = sast("2026-09-26T17:26:00");
+  for (const [o, c] of [["", ""], [null, "16:17"], ["25:00", "16:17"], ["abc", "def"]]) {
+    const w = anchorDeclaredWindow({ openedText: o, closedText: c, nowMs: now });
+    assert.deepEqual(w, { openedAt: now - 86400000, closedAt: now, windowSource: "declared-fallback" });
+  }
+});
+
+test("a half slip's reading now passes validation once the callable has filled it in", () => {
+  // Exactly what the reader returned for Trophy Till 2 at 17:26: TID blank,
+  // times at 0.7 confidence, no Transactions count.
+  const w = anchorDeclaredWindow({ openedText: "19:00:05", closedText: "16:17:36", nowMs: sast("2026-09-26T17:26:00") });
+  const ex = {
+    tid: "0000Z4M6", batchNo: "485", mid: null,
+    openedAt: w.openedAt, closedAt: w.closedAt, windowSource: w.windowSource,
+    txnCount: NaN, purchasesCents: 135500, cashCents: 0, refundsCents: 0, totalCents: 135500,
+    confidence: { tid: 0, batchNo: 0.95, totalCents: 0.95, openedAt: 0.7, closedAt: 0.7, purchasesCents: 0.95, txnCount: 0 },
+    lines: [],
+  };
+  assert.equal(validateExtraction(ex, { summaryOnly: true, declaredTotal: true }).ok, true);
+  // …and the SAME reading without a typed total is still refused.
+  assert.equal(validateExtraction(ex, { summaryOnly: true }).ok, false);
+});
+
+test("the batch number is still gated on a declared capture — it is the record's key", () => {
+  const w = anchorDeclaredWindow({ openedText: "19:00:05", closedText: "16:17:36", nowMs: sast("2026-09-26T17:26:00") });
+  const ex = { tid: "0000Z4M6", batchNo: "485", openedAt: w.openedAt, closedAt: w.closedAt, windowSource: w.windowSource,
+    txnCount: NaN, purchasesCents: 1, cashCents: 0, refundsCents: 0, totalCents: 1,
+    confidence: { batchNo: 0.3 }, lines: [] };
+  assert.equal(validateExtraction(ex, { summaryOnly: true, declaredTotal: true }).ok, false);
+});
+
+test("callable: a missing TID is filled from the tapped till ONLY on a declared capture, and before the refusal", () => {
+  const fill = extractBody.indexOf("if (declared && !extraction.tid)");
+  const refuse = extractBody.indexOf('if (!extraction.tid) return reject("No terminal ID');
+  const mismatch = extractBody.indexOf("not the till you picked");
+  assert.ok(fill > -1 && fill < refuse, "filled before the no-TID refusal");
+  assert.ok(mismatch > fill, "a DIFFERENT printed TID still reaches the wrong-slip refusal");
+  assert.match(extractBody, /warnings\.unshift\(\.\.\.declaredNotes\)/);
 });
