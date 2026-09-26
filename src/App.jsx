@@ -101,6 +101,7 @@ import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
+import { saveProductPatch, useLiveProduct } from "./components/admin/productSave";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
 import { countReject, thisDevicePaused } from "./device/rejectCount";
 import { PAUSED_MESSAGE } from "./device/deviceRejects";
@@ -7188,7 +7189,16 @@ function AdminProductRow({ product }) {
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
-function AdminProductDetail({ product, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
+function AdminProductDetail({ product: listProduct, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
+  // What the SERVER holds, not the device's offline copy (productSave.js).
+  const product = useLiveProduct(listProduct);
+  // Every field saves through here: awaited, echoed, and a failure SHOWN.
+  const [saveError, setSaveError] = useState(null);
+  const save = async (patch, label) => {
+    const res = await saveProductPatch({ id: product.id, patch, label });
+    setSaveError(res.ok ? null : res.message);
+    return res.ok;
+  };
   const isClothing = (product.productType || "sneaker") === "clothing";
   const productSizes = Array.isArray(product.sizes) && product.sizes.length
     ? product.sizes
@@ -7239,7 +7249,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   useEffect(() => { setNameDraft(product.name); }, [product.name]);
   const saveName = () => {
     const next = nameDraft.trim();
-    if (next && next !== product.name) updateProductName(product.id, next, product);
+    if (next && next !== product.name) {
+      // Seed FIRST, then rename (see updateProductName).
+      seedSearchIdentityFrom(product)
+        .then(() => save({ name: next }, "the name"))
+        .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
+    }
     else if (!next) setNameDraft(product.name);
   };
 
@@ -7300,7 +7315,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   const removePhoto = async () => {
     if (!product.photoUrl) return;
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
-    await update(ref(database, `products/${product.id}`), { photoUrl: null });
+    await save({ photoUrl: null }, "the photo removal");
   };
 
   // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
@@ -7447,7 +7462,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   const removeBoxPhoto = async () => {
     if (!product.photoBoxUrl) return;
     if (!window.confirm(`Remove the box photo for "${product.name}"?`)) return;
-    await update(ref(database, `products/${product.id}`), { photoBoxUrl: null });
+    await save({ photoBoxUrl: null }, "the box photo removal");
   };
 
   // Type — switching to Clothing strips Hub 1 (mirrors the Add Product
@@ -7463,14 +7478,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
       // Clothing never has a shoebox — clear the flag when converting.
       patch.hasShoeBoxOption = false;
     }
-    update(ref(database, `products/${product.id}`), patch);
+    save(patch, `the type (${nextType})`);
   };
 
   const toggleSize = (s) => {
     const next = productSizes.includes(s)
       ? productSizes.filter(x => x !== s)
       : [...productSizes, s];
-    updateProductSizes(product.id, next);
+    save({ sizes: next }, `size ${s}`);
     // GUARANTEE ON EDIT: mint barcodes for the (possibly new) size set so editing
     // a product never leaves a size without a code. Best-effort; idempotent
     // (ensureBarcode reuses any existing slot, only newly-added sizes get a code).
@@ -7483,7 +7498,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
       ? productHubs.filter(x => x !== h)
       : [...productHubs, h];
     if (next.length === 0) return; // require ≥1 hub
-    updateProductHubs(product.id, next);
+    save({ hubs: next }, "the hubs");
   };
 
   // POS Phase 2: local drafts for the two price fields so the input still
@@ -7524,15 +7539,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
       if (!res.ok) {
         revertPriceDraft(field);
         if (res.code === "on_special") alert(res.message);
-        else console.warn(`update ${field} failed:`, res.message);
+        else setSaveError(`Could not save the ${field === "stockPrice" ? "stock price" : "retail price"}: ${res.message}`);
       }
     }).finally(() => setPriceSaving(false));
   };
   const toggleShoebox = () => {
     if (isClothing) return; // clothing never has a shoebox
     const next = !(product.hasShoeBoxOption === true);
-    update(ref(database, `products/${product.id}`), { hasShoeBoxOption: next })
-      .catch(err => console.warn("update hasShoeBoxOption failed:", err));
+    save({ hasShoeBoxOption: next }, "the shoebox option");
   };
 
   // POS Phase 2 (scanner workflow): sku + barcode are auto-assigned at
@@ -8019,9 +8033,22 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   // Two-column CSS multi-column on desktop (each section kept intact via
   // break-inside), single column on mobile.
   const detailColumns = (
-    <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
-      {detailSections}
-    </div>
+    <>
+      {/* A save that did not land says so, in red, until the next one does. */}
+      {saveError && (
+        <div role="alert" data-product-save-error=""
+             style={{ margin:"0 16px 12px", padding:"10px 12px", borderRadius:10, background:"rgba(248,113,113,.1)",
+                      border:"1px solid rgba(248,113,113,.45)", color:"#F87171", fontSize:13.5, lineHeight:1.4,
+                      display:"flex", gap:10, alignItems:"flex-start" }}>
+          <span style={{ flex:1 }}>{saveError}</span>
+          <button onClick={() => setSaveError(null)} aria-label="Dismiss"
+                  style={{ background:"transparent", border:"none", color:"#F87171", fontSize:16, cursor:"pointer", padding:0 }}>✕</button>
+        </div>
+      )}
+      <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
+        {detailSections}
+      </div>
+    </>
   );
 
   // ── DESKTOP WORKSPACE (>=1024px) — rail with product summary + main pane. ──

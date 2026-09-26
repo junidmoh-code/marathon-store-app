@@ -415,6 +415,22 @@ export async function startOfflineMirror({
   // download interrupted by a closed tab, a flat battery or a dropped line
   // picks up where it stopped rather than starting again. A failure retries on
   // its own every SETUP_RETRY_MS for as long as the app is open.
+  // Is this device serving any leg right now (from this session or, via the
+  // synchronous hint, the last one)?
+  const servingAnything = () => MIRROR_LEGS.some((l) => isLegServing(l.name));
+
+  // The legs that DID land are worth keeping current: the same forced census
+  // the success path runs, then serving from what is verified, then the pass
+  // loop — which keeps them current and repairs whatever is missing.
+  async function handOverToPassLoop() {
+    state.downloading = false;
+    try { state.setupCensus = await engine.checkCensus({ force: true }); }
+    catch (e) { state.setupCensus = { error: e.message }; }
+    await refreshServing();
+    await reportHealth();
+    runtime.start();
+  }
+
   let setupLoop = null;
   function downloadInBackground() {
     if (setupLoop) return setupLoop;
@@ -489,20 +505,23 @@ export async function startOfflineMirror({
           catch { /* treat as "unknown": keep the backoff, never a tight loop */ }
           const benched = new Set(engine.legFailures().filter((f) => f.benched).map((f) => f.leg));
           if (missing.length > 0 && missing.every((l) => benched.has(l))) {
-            state.downloading = false;
             state.setupError = { ...state.setupError, gaveUp: [...benched] };
             console.warn("offline mirror: the download gave up on", [...benched].join(", "),
               "for this session — it will try again the next time the app is opened.");
-            // The legs that DID land are still worth keeping current, and a
-            // device that served them before must not leave them frozen. So:
-            // the same forced census the success path runs, then serving from
-            // what is verified, then the pass loop. The benched leg is not
-            // served (it has no setup marker) and the loop never retries it.
-            try { state.setupCensus = await engine.checkCensus({ force: true }); }
-            catch (e) { state.setupCensus = { error: e.message }; }
-            await refreshServing();
-            await reportHealth();
-            runtime.start();
+            await handOverToPassLoop();
+            return null;
+          }
+          // ── A DEVICE ALREADY SERVING MUST NOT WAIT FROZEN ────────────────
+          // Its screens are reading the legs it served last session, and only
+          // the pass loop's change feed keeps them current. Waiting out a
+          // retry here left them frozen for up to an hour at a time: on
+          // 26 Sep 2026 Junid's iPhone kept showing the Air Force 1 White as
+          // Clothing while every edit he made landed on the server, because
+          // its stock leg kept failing to assemble. The pass loop repairs the
+          // missing leg itself (one per pass, with the same per-leg backoff),
+          // so the download is handed to it rather than retried beside it.
+          if (servingAnything()) {
+            await handOverToPassLoop();
             return null;
           }
           const wait = Math.min(SETUP_RETRY_MAX_MS, SETUP_RETRY_MS * 2 ** (failedAttempts - 1));
@@ -560,6 +579,11 @@ export async function startOfflineMirror({
       if (!offlineMirrorEnabled()) return "off";
       if (!consented) return "needs-consent";
       if ((await engine.setupState()).done) { runtime.start(); return "running"; }
+      // Incomplete, but already serving legs from an earlier session: the pass
+      // loop keeps those current AND repairs what is missing. A download run
+      // instead would leave them frozen until it finished (see
+      // handOverToPassLoop's caller in downloadInBackground).
+      if (servingAnything()) { runtime.start(); return "running"; }
       downloadInBackground();
       return "downloading";
     },
