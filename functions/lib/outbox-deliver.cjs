@@ -49,6 +49,8 @@
 // discovery, but never re-sent (nothing claims a non-pending doc).
 "use strict";
 
+const { alarmLine, explainSendFailure } = require("./whatsapp-send-alarm.cjs");
+
 // Deliver one outbox doc: claim it (transactional mutex against every other
 // claimer), send via `sendTemplate`, then record the outcome. All effects are
 // injected so tests can fake them:
@@ -172,6 +174,20 @@ async function deliverOutboxDoc({
   const infraAttempts = (claimed.infraAttempts || 0) + (result.preflight ? 1 : 0);
   const metaExhausted  = !result.preflight && claimed.attempts >= maxAttempts;
   const infraExhausted = result.preflight && infraAttempts >= maxInfraAttempts;
+
+  // LOUD FAILURE (26 Sep 2026): every failure writes WHY onto the doc — the
+  // Meta code and a sentence saying what it means — and prints the
+  // WHATSAPP_SEND_ALARM line that Cloud Monitoring emails to Junid (see
+  // lib/whatsapp-send-alarm.cjs). The status ladder itself is unchanged.
+  // Infra retries alarm only on the FIRST one: a missing secret recycles the
+  // doc every minute for hours, and one email says it all. The alarm prints
+  // AFTER the lane's own log line, which saved queries depend on.
+  const why = {
+    lastMetaCode:      result.metaCode ?? null,
+    lastFailureReason: explainSendFailure(result),
+    lastFailedAt:      serverTimestamp(),
+  };
+  const outcome = (metaExhausted || infraExhausted) ? "failed" : result.preflight ? "retry-infra" : "retry";
   if (metaExhausted || infraExhausted) {
     // "(cumulative)" because the infra budget is lifetime-cumulative, never
     // reset: a doc that survived a long outage can exhaust it on a later,
@@ -179,6 +195,7 @@ async function deliverOutboxDoc({
     await recordOutcome({
       status:    "failed",
       infraAttempts,
+      ...why,
       lastError: (infraExhausted ? "infra budget exhausted (cumulative): " : "") + (result.error || "Meta send failed"),
     }, "record-failed");
     log.error(`${logPrefix} meta-send:`, JSON.stringify({
@@ -194,6 +211,7 @@ async function deliverOutboxDoc({
       attempts:      claimed.attempts - 1,
       infraAttempts,
       lastError:     result.error || "Meta send failed",
+      ...why,
     }, "record-infra-retry");
     log.error(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "retry-infra",
@@ -206,10 +224,18 @@ async function deliverOutboxDoc({
       status:    "pending",
       provider:  null,
       lastError: result.error || "Meta send failed",
+      ...why,
     }, "record-retry");
     log.warn(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "retry",
       attempts: claimed.attempts, error: result.error,
+    }));
+  }
+  if (outcome !== "retry-infra" || infraAttempts === 1) {
+    log.error(alarmLine({
+      docId, templateName, recipient: maskPhone(to), outcome,
+      attempts: result.preflight ? infraAttempts : claimed.attempts, maxAttempts,
+      metaCode: result.metaCode, preflight: !!result.preflight, error: result.error,
     }));
   }
 }
