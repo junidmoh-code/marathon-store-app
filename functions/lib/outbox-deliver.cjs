@@ -145,6 +145,11 @@ async function deliverOutboxDoc({
       provider:  "meta",
       sentAt:    serverTimestamp(),
       messageId: result.messageId,
+      // A retry that succeeds must not keep the earlier refusal's code and
+      // reason on a "sent" doc (Fable review, PR #655). lastError is left as
+      // it always was.
+      lastMetaCode:      null,
+      lastFailureReason: null,
     }, "record-sent");
     log.log(`${logPrefix} meta-send:`, JSON.stringify({
       docId, recipient: maskPhone(to), templateName, outcome: "sent", messageId: result.messageId,

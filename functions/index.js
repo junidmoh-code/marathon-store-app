@@ -199,7 +199,7 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
     const metaMessage = (json?.error?.message || `WhatsApp API call failed (HTTP ${waRes.status})`)
       + (metaDetails ? ` — ${metaDetails}` : "");
     if (metaCode === 190) {
-      console.error("TOKEN EXPIRED — rotate Meta token in Business Manager, then: gcloud secrets versions add meta-whatsapp-token --data-file=<file> --project=marathon-club && firebase deploy --only functions");
+      console.error("TOKEN EXPIRED — rotate Meta token in Business Manager, then: gcloud secrets versions add meta-whatsapp-token --data-file=<file> --project=marathon-club && firebase deploy --only functions:outboxInstantSend,functions:metaFallbackSweep (NEVER bare --only functions — shared with marathon-pos-app)");
     }
     return { ok: false, error: metaMessage, metaCode };
   }

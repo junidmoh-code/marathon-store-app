@@ -20,7 +20,14 @@
 "use strict";
 
 const MARKER = "WHATSAPP_SEND_ALARM";
-const POLICY_NAME = "WhatsApp order message failed";
+// TWO policies, because a log-match policy sends at most one email per 5
+// minutes: Meta refuses attempt 1 ("will retry"), the sweep retries a minute
+// later and gives up — and on ONE policy that terminal email is swallowed, so
+// Junid's only word would be "will retry" (Fable review, PR #655). The
+// terminal line carries GAVE_UP and gets a policy of its own.
+const POLICY_NAME = "WhatsApp order message refused";
+const GAVE_UP_POLICY_NAME = "WhatsApp order message NOT sent (gave up)";
+const GAVE_UP = "FAILED, gave up";   // plain ASCII: it is a Cloud Logging filter substring
 const RECIPIENT = "junidmoh@gmail.com";
 
 // What each Meta error code means for Junid, in words that say what to do.
@@ -65,7 +72,7 @@ function alarmLine(args) {
   try {
     const { docId, templateName, recipient, outcome, attempts, maxAttempts, metaCode, preflight, error } = args || {};
     const what = outcome === "failed"
-      ? `FAILED — gave up after ${attempts ?? "?"} attempt(s); the customer was NOT messaged`
+      ? `${GAVE_UP} after ${attempts ?? "?"} attempt(s); the customer was NOT messaged`
       : outcome === "retry-infra"
         ? "was NOT sent (will retry)"
         : `was REFUSED (attempt ${attempts ?? "?"} of ${maxAttempts ?? "?"}, will retry)`;
@@ -80,4 +87,4 @@ function alarmLine(args) {
   }
 }
 
-module.exports = { MARKER, POLICY_NAME, RECIPIENT, META_CODE_HINTS, explainSendFailure, alarmLine };
+module.exports = { MARKER, POLICY_NAME, GAVE_UP_POLICY_NAME, GAVE_UP, RECIPIENT, META_CODE_HINTS, explainSendFailure, alarmLine };

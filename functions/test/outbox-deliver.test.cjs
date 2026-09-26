@@ -337,7 +337,7 @@ test("terminal failure says the customer was NOT messaged", async () => {
   assert.equal(fake.state.data.status, "failed");
   assert.equal(fake.state.data.lastMetaCode, 190);
   const [line] = cap.alarms();
-  assert.match(line, /FAILED — gave up after 2 attempt\(s\); the customer was NOT messaged/);
+  assert.match(line, /FAILED, gave up after 2 attempt\(s\); the customer was NOT messaged/);
   assert.match(line, /token expired or revoked/);
 });
 
@@ -367,14 +367,24 @@ test("infra budget exhaustion alarms again, as terminal", async () => {
   await deliver(fake, async () => ({ ok: false, preflight: true, error: "secret not available" }), { log: cap });
   assert.equal(fake.state.data.status, "failed");
   assert.equal(cap.alarms().length, 1);
-  assert.match(cap.alarms()[0], /FAILED — gave up after 240 attempt\(s\)/);
+  assert.match(cap.alarms()[0], /FAILED, gave up after 240 attempt\(s\)/);
 });
 
-test("a successful send raises no alarm and writes no failure fields", async () => {
+test("a first-try success raises no alarm and leaves no failure reason", async () => {
   const cap = captureLog();
   const fake = fakeDoc(pendingDoc());
   await deliver(fake, async () => ({ ok: true, messageId: "wamid.1" }), { log: cap });
   assert.equal(cap.alarms().length, 0);
-  assert.equal(fake.state.data.lastMetaCode, undefined);
-  assert.equal(fake.state.data.lastFailureReason, undefined);
+  assert.equal(fake.state.data.lastMetaCode, null);
+  assert.equal(fake.state.data.lastFailureReason, null);
+});
+
+test("a retry that succeeds clears the earlier refusal's code and reason", async () => {
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => ({ ok: false, error: "(#131000) x", metaCode: 131000 }));
+  assert.equal(fake.state.data.lastMetaCode, 131000);
+  await deliver(fake, async () => ({ ok: true, messageId: "wamid.2" }));
+  assert.equal(fake.state.data.status, "sent");
+  assert.equal(fake.state.data.lastMetaCode, null);
+  assert.equal(fake.state.data.lastFailureReason, null);
 });

@@ -37,7 +37,7 @@ const PROJECT = "marathon-club";
 // One source for the names — the function's own lib, never a second copy.
 const lib = require("./lib/whatsapp-send-alarm.cjs");
 export const MARKER = lib.MARKER;
-const POLICY_NAME = lib.POLICY_NAME;
+const GAVE_UP = lib.GAVE_UP;
 const RECIPIENT = lib.RECIPIENT;
 // Both lanes run deliverOutboxDoc; either can print the line.
 const SERVICES = ["outboxinstantsend", "metafallbacksweep"];
@@ -78,27 +78,43 @@ async function api(url, { method = "GET", body } = {}) {
   return { ok: false, status: 0, data: { error: "retries exhausted" } };
 }
 
-const FILTER =
+const BASE_FILTER =
   `resource.type="cloud_run_revision" ` +
   `AND resource.labels.service_name=(${SERVICES.map((s) => `"${s}"`).join(" OR ")}) ` +
   `AND textPayload:"${MARKER}"`;
 
-function policyBody(channelName) {
+// Two policies over the same line, split on GAVE_UP so each has its own
+// 5-minute rate limit — see lib/whatsapp-send-alarm.cjs for why.
+const POLICIES = [
+  {
+    name: lib.POLICY_NAME,
+    filter: `${BASE_FILTER} AND NOT textPayload:"${GAVE_UP}"`,
+    headline: "**A customer WhatsApp order message was refused — it will be retried once.**",
+    condition: "an outbox lane printed a retryable WHATSAPP_SEND_ALARM",
+  },
+  {
+    name: lib.GAVE_UP_POLICY_NAME,
+    filter: `${BASE_FILTER} AND textPayload:"${GAVE_UP}"`,
+    headline: "**A customer WhatsApp order message was NOT sent — the outbox gave up.**",
+    condition: "an outbox lane printed a terminal WHATSAPP_SEND_ALARM",
+  },
+];
+
+function policyBody(channelName, spec) {
   return {
-    displayName: POLICY_NAME,
+    displayName: spec.name,
     documentation: {
       mimeType: "text/markdown",
       content:
-        "**A customer WhatsApp order message failed.** ${log.extracted_label.line}\n\n" +
-        "\"will retry\" means the every-minute sweep tries once more; FAILED means the customer was not messaged. " +
+        `${spec.headline} \${log.extracted_label.line}\n\n` +
         "Health of the number, the payment method and the templates: WhatsApp Manager → " +
         "https://business.facebook.com/latest/whatsapp_manager/ . " +
         "Do NOT bulk re-send missed messages — a mass re-send is what got a number banned before.",
     },
     conditions: [{
-      displayName: "an outbox lane printed WHATSAPP_SEND_ALARM",
+      displayName: spec.condition,
       conditionMatchedLog: {
-        filter: FILTER,
+        filter: spec.filter,
         labelExtractors: { line: `REGEXP_EXTRACT(textPayload, "${MARKER} (.*)")` },
       },
     }],
@@ -136,16 +152,17 @@ async function findChannel() {
   return found;
 }
 
-async function ensurePolicy(channelName) {
+async function ensurePolicy(channelName, spec) {
+  const POLICY_NAME = spec.name;
   const base = `https://monitoring.googleapis.com/v3/projects/${PROJECT}/alertPolicies`;
   const list = await listAll(base, "alertPolicies");
   if (!list.ok) return fail(`could not list alert policies: ${JSON.stringify(list.data).slice(0, 300)}`);
   const found = list.items.find((p) => p.displayName === POLICY_NAME);
-  const want = policyBody(channelName);
+  const want = policyBody(channelName, spec);
   if (found) {
     const live = found.conditions?.[0]?.conditionMatchedLog;
     const drift = [];
-    if (live?.filter !== FILTER) drift.push(`filter: ${live?.filter}`);
+    if (live?.filter !== spec.filter) drift.push(`filter: ${live?.filter}`);
     if (live?.labelExtractors?.line !== want.conditions[0].conditionMatchedLog.labelExtractors.line) drift.push("label extractor");
     if (!(found.notificationChannels || []).includes(channelName)) drift.push("notification channel");
     if (found.enabled === false) drift.push("disabled");
@@ -181,7 +198,8 @@ async function verifyMarkerInSource() {
 
 // One line PER SERVICE, so both branches of the OR filter are proven — a
 // filter that matched only the first lane would otherwise pass --test
-// (Sonnet architect review, PR #655).
+// (Sonnet architect review, PR #655). The second line also carries GAVE_UP,
+// so both policies are proven too.
 async function emitTest() {
   for (const service of SERVICES) {
     const res = await api("https://logging.googleapis.com/v2/entries:write", {
@@ -189,7 +207,7 @@ async function emitTest() {
       body: {
         logName: `projects/${PROJECT}/logs/run.googleapis.com%2Fstderr`,
         resource: { type: "cloud_run_revision", labels: { service_name: service, project_id: PROJECT, location: "europe-west1" } },
-        entries: [{ severity: "ERROR", textPayload: `${MARKER} TEST from ${service} — install-send-alarm.mjs --test proving WhatsApp failure emails reach your inbox. No customer message failed.` }],
+        entries: [{ severity: "ERROR", textPayload: `${MARKER} TEST from ${service}${service === SERVICES[1] ? ` (${GAVE_UP} — the terminal policy)` : ""} — install-send-alarm.mjs --test proving WhatsApp failure emails reach your inbox. No customer message failed.` }],
       },
     });
     if (!res.ok) return fail(`could not write the test entry for ${service}: ${JSON.stringify(res.data).slice(0, 300)}`);
@@ -198,7 +216,7 @@ async function emitTest() {
 }
 
 const channel = await findChannel();
-if (channel) await ensurePolicy(channel.name);
+if (channel) for (const spec of POLICIES) await ensurePolicy(channel.name, spec);
 await verifyMarkerInSource();
 if (TEST) await emitTest();
 if (process.exitCode) console.error("\n✗✗ the WhatsApp send alarm is NOT fully installed — see above");

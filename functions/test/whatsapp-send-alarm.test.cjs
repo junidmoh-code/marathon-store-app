@@ -37,3 +37,11 @@ test("never throws, whatever it is handed", () => {
     assert.ok(line.startsWith(MARKER), String(line));
   }
 });
+
+test("only the terminal line carries GAVE_UP — it routes to its own policy", () => {
+  const { GAVE_UP } = require("../lib/whatsapp-send-alarm.cjs");
+  assert.ok(/^[\x20-\x7e]+$/.test(GAVE_UP), "a filter substring stays plain ASCII");
+  assert.ok(alarmLine({ outcome: "failed", attempts: 2 }).includes(GAVE_UP));
+  assert.ok(!alarmLine({ outcome: "retry", attempts: 1, maxAttempts: 2 }).includes(GAVE_UP));
+  assert.ok(!alarmLine({ outcome: "retry-infra" }).includes(GAVE_UP));
+});
