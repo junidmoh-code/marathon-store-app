@@ -295,3 +295,96 @@ test("legacy templateParams field still honoured when variables is absent", asyn
   await deliver(fake, async (to, name, params) => { sends.push(params); return { ok: true, messageId: "x" }; });
   assert.deepEqual(sends, [["Sipho", "021"]]);
 });
+
+// ── LOUD FAILURE (26 Sep 2026) ───────────────────────────────────────────────
+// Every failed send writes WHY onto the doc and prints the WHATSAPP_SEND_ALARM
+// line Cloud Monitoring emails to Junid. These pin both, plus the silence on a
+// success and on repeat infra retries.
+const { MARKER } = require("../lib/whatsapp-send-alarm.cjs");
+const captureLog = () => {
+  const lines = [];
+  return {
+    lines,
+    alarms: () => lines.filter((l) => typeof l[1] === "string" && l[1].startsWith(`${MARKER} `)).map((l) => l[1]),
+    log:   (...a) => lines.push(["log", ...a]),
+    warn:  (...a) => lines.push(["warn", ...a]),
+    error: (...a) => lines.push(["error", ...a]),
+  };
+};
+
+test("a Meta refusal writes the code and a reason onto the doc and raises ONE alarm line", async () => {
+  const cap = captureLog();
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => ({ ok: false, error: "(#131042) Business eligibility payment issue", metaCode: 131042 }), { log: cap });
+  assert.equal(fake.state.data.status, "pending", "the ladder is unchanged: attempt 1 of 2 still retries");
+  assert.equal(fake.state.data.lastMetaCode, 131042);
+  assert.match(fake.state.data.lastFailureReason, /PAYMENT/);
+  assert.deepEqual(fake.state.data.lastFailedAt, SERVER_TS);
+  const alarms = cap.alarms();
+  assert.equal(alarms.length, 1);
+  assert.match(alarms[0], /order_ready to \*\*\*4567 was REFUSED \(attempt 1 of 2, will retry\)/);
+  assert.match(alarms[0], /\[Meta code 131042\]/);
+  assert.match(alarms[0], /Outbox doc doc1\./);
+  assert.ok(!alarms[0].includes("+27821234567"), "the alarm never carries the full phone number");
+  // The lane's own line still comes FIRST (saved queries key on its position).
+  assert.deepEqual(cap.lines[0].slice(0, 2), ["warn", "testLane meta-send:"]);
+});
+
+test("terminal failure says the customer was NOT messaged", async () => {
+  const cap = captureLog();
+  const fake = fakeDoc({ ...pendingDoc(), attempts: 1 });
+  await deliver(fake, async () => ({ ok: false, error: "(#190) token expired", metaCode: 190 }), { log: cap });
+  assert.equal(fake.state.data.status, "failed");
+  assert.equal(fake.state.data.lastMetaCode, 190);
+  const [line] = cap.alarms();
+  assert.match(line, /FAILED, gave up after 2 attempt\(s\); the customer was NOT messaged/);
+  assert.match(line, /token expired or revoked/);
+});
+
+test("a network failure with no Meta code still alarms, with lastMetaCode null", async () => {
+  const cap = captureLog();
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => ({ ok: false, error: "Could not reach WhatsApp API: ETIMEDOUT" }), { log: cap });
+  assert.equal(fake.state.data.lastMetaCode, null);
+  assert.equal(cap.alarms().length, 1);
+  assert.match(cap.alarms()[0], /could not be reached/);
+});
+
+test("infra retries alarm on the FIRST only — a stuck secret must not email every minute", async () => {
+  const cap = captureLog();
+  const fake = fakeDoc(pendingDoc());
+  const preflight = async () => ({ ok: false, preflight: true, error: "secret not available" });
+  for (let i = 0; i < 5; i++) await deliver(fake, preflight, { log: cap });
+  assert.equal(fake.state.data.infraAttempts, 5);
+  assert.equal(cap.alarms().length, 1);
+  assert.match(cap.alarms()[0], /was NOT sent \(will retry\)/);
+  assert.match(fake.state.data.lastFailureReason, /never left Google/);
+});
+
+test("infra budget exhaustion alarms again, as terminal", async () => {
+  const cap = captureLog();
+  const fake = fakeDoc({ ...pendingDoc(), infraAttempts: 239 });
+  await deliver(fake, async () => ({ ok: false, preflight: true, error: "secret not available" }), { log: cap });
+  assert.equal(fake.state.data.status, "failed");
+  assert.equal(cap.alarms().length, 1);
+  assert.match(cap.alarms()[0], /FAILED, gave up after 240 attempt\(s\)/);
+});
+
+test("a first-try success raises no alarm and leaves no failure reason", async () => {
+  const cap = captureLog();
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => ({ ok: true, messageId: "wamid.1" }), { log: cap });
+  assert.equal(cap.alarms().length, 0);
+  assert.equal(fake.state.data.lastMetaCode, null);
+  assert.equal(fake.state.data.lastFailureReason, null);
+});
+
+test("a retry that succeeds clears the earlier refusal's code and reason", async () => {
+  const fake = fakeDoc(pendingDoc());
+  await deliver(fake, async () => ({ ok: false, error: "(#131000) x", metaCode: 131000 }));
+  assert.equal(fake.state.data.lastMetaCode, 131000);
+  await deliver(fake, async () => ({ ok: true, messageId: "wamid.2" }));
+  assert.equal(fake.state.data.status, "sent");
+  assert.equal(fake.state.data.lastMetaCode, null);
+  assert.equal(fake.state.data.lastFailureReason, null);
+});

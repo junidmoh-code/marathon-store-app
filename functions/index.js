@@ -193,9 +193,13 @@ async function sendViaMetaTemplate(to, templateName, templateParams = []) {
 
   if (!waRes.ok) {
     const metaCode    = json?.error?.code;
-    const metaMessage = json?.error?.message || "WhatsApp API call failed";
+    // error_data.details is where Meta says what is actually wrong (e.g. which
+    // payment problem behind 131042); it rides into the doc and the alarm email.
+    const metaDetails = json?.error?.error_data?.details;
+    const metaMessage = (json?.error?.message || `WhatsApp API call failed (HTTP ${waRes.status})`)
+      + (metaDetails ? ` — ${metaDetails}` : "");
     if (metaCode === 190) {
-      console.error("TOKEN EXPIRED — rotate Meta token in Business Manager, then: gcloud secrets versions add meta-whatsapp-token --data-file=<file> --project=marathon-club && firebase deploy --only functions");
+      console.error("TOKEN EXPIRED — rotate Meta token in Business Manager, then: gcloud secrets versions add meta-whatsapp-token --data-file=<file> --project=marathon-club && firebase deploy --only functions:outboxInstantSend,functions:metaFallbackSweep (NEVER bare --only functions — shared with marathon-pos-app)");
     }
     return { ok: false, error: metaMessage, metaCode };
   }
