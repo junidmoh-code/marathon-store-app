@@ -411,10 +411,14 @@ const MIN_KEY_FIELD_CONFIDENCE = 0.75;
 // slip arithmetic.
 const KEY_FIELDS = ["tid", "batchNo", "totalCents", "openedAt", "closedAt", "purchasesCents", "txnCount"];
 // What a total declared by hand excuses from the confidence gate: the TOTAL it
-// replaces, the purchases figure printed beside it, and the Transactions count
-// — which only feeds the line checks a summary-only record never runs. TID,
-// batch number and the Opened/Closed window are still gated as normal.
-const DECLARED_EXEMPT_FIELDS = ["totalCents", "purchasesCents", "txnCount"];
+// replaces, the purchases figure printed beside it, the Transactions count, and
+// — since 26 Sept 2026 — the TID and the Opened/Closed times too. Trophy Till
+// 2's printer prints no TID and prints its times without dates, at 70%
+// confidence; the typed-total path exists for exactly that slip, so the
+// callable fills the TID from the till that was tapped and anchors the times
+// itself (anchorDeclaredWindow), and says so on the record. The batch number
+// is still gated: it is the record's key.
+const DECLARED_EXEMPT_FIELDS = ["totalCents", "purchasesCents", "txnCount", "tid", "openedAt", "closedAt"];
 // No FNB batch runs a week: a window wider than this is a misread date (or a
 // forged draft) and must never become the bounds of a ledger query.
 const MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -845,6 +849,37 @@ function readDeclaredTotal(raw) {
   return { cents };
 }
 
+/**
+ * THE WINDOW FOR A HAND-DECLARED BATCH whose slip did not print full dates.
+ *
+ * Trophy Till 2 prints "19:00:05" and "16:17:36" — times with no dates. The
+ * close is placed on the capture day (the day before, if that time has not yet
+ * come), and the open on the latest day that puts it before the close. With no
+ * usable time at all, the window is the 24 hours before capture. Either way the
+ * record says so in `windowSource`, and the batch is already declared by hand.
+ *
+ * @returns {{openedAt:number, closedAt:number, windowSource:string}}
+ */
+function anchorDeclaredWindow({ openedText, closedText, nowMs }) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const clock = (t) => {
+    const m = typeof t === "string" && t.trim().match(/(?:^|\s)(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (!m) return null;
+    const [h, mi, se] = [Number(m[1]), Number(m[2]), Number(m[3] || 0)];
+    return h < 24 && mi < 60 && se < 60 ? ((h * 60 + mi) * 60 + se) * 1000 : null;
+  };
+  const sastMidnight = (ms) => Math.floor((ms + SAST_OFFSET_MS) / DAY) * DAY - SAST_OFFSET_MS;
+  const o = clock(openedText), c = clock(closedText);
+  if (o === null || c === null) {
+    return { openedAt: nowMs - DAY, closedAt: nowMs, windowSource: "declared-fallback" };
+  }
+  let closedAt = sastMidnight(nowMs) + c;
+  if (closedAt > nowMs) closedAt -= DAY;
+  let openedAt = sastMidnight(closedAt) + o;
+  while (openedAt >= closedAt) openedAt -= DAY;
+  return { openedAt, closedAt, windowSource: "declared-time-only" };
+}
+
 /** Only the owner's own VERIFIED token may declare a total — the eftPool
  *  isOwner test (Junid signs in with Google, always verified), and nothing a
  *  permission flag grants. An unverified credential claiming the address must
@@ -904,4 +939,5 @@ module.exports = {
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
   DECLARED_TOTAL_EMAIL, MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
+  anchorDeclaredWindow,
 };
