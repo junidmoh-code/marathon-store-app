@@ -405,7 +405,13 @@ function toExtraction(parsed) {
     closedAt: parseSlipTimestamp(parsed.closed),
     printedAt: parseSlipTimestamp(parsed.printed),
     openedText: parsed.opened || null, closedText: parsed.closed || null,
-    txnCount: Number(parsed.txnCount),
+    // A slip that prints no Transactions count comes back with the field
+    // ABSENT, and Number(undefined) is NaN — which the callable cannot encode,
+    // so Trophy Till 2's typed-total capture died as INTERNAL on 26 Sept 2026.
+    // Unread is null: validateExtraction still refuses it on any capture
+    // without a typed total.
+    txnCount: Number.isFinite(Number(parsed.txnCount)) && parsed.txnCount !== null && parsed.txnCount !== ""
+      ? Number(parsed.txnCount) : null,
     purchasesCents: parseRandsToCents(parsed.purchases),
     // ABSENCE is zero (many slips print no cash/refunds line); a GARBLED
     // printed figure stays null and validateExtraction refuses it — the
