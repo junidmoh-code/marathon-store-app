@@ -181,20 +181,23 @@ const T = {
   option: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 48,
             padding: "0 14px", borderRadius: 12, cursor: "pointer", appearance: "none", fontFamily: FONT,
             fontSize: 15, fontWeight: 600, color: "#E9EEFF", background: "rgba(255,255,255,.06)",
-            border: "1px solid rgba(255,255,255,.14)", width: "100%" },
+            border: "1px solid rgba(255,255,255,.14)", width: "100%", boxSizing: "border-box", minWidth: 0,
+            textAlign: "center" },
   sheetCancel: { appearance: "none", border: 0, background: "transparent", cursor: "pointer", fontFamily: FONT,
                  fontSize: 14, color: "rgba(233,238,255,.55)", minHeight: 40 },
   step: { fontSize: 12.5, fontWeight: 700, letterSpacing: "0.02em", color: "rgba(233,238,255,.5)", marginTop: 2 },
-  pair: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
+  pair: { display: "grid", gridTemplateColumns: "minmax(0, 1fr) minmax(0, 1fr)", gap: 8 },
   attached: { display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 44,
               fontSize: 14.5, fontWeight: 600, color: "#54D97F" },
   replace: { position: "relative", cursor: "pointer", fontSize: 13.5, fontWeight: 600, color: "rgba(233,238,255,.7)",
              padding: "8px 4px" },
-  typeInput: { minWidth: 0, minHeight: 48, borderRadius: 12, padding: "0 12px", fontFamily: FONT, fontSize: 17,
+  typeInput: { boxSizing: "border-box", width: "100%", minWidth: 0, minHeight: 48, borderRadius: 12, padding: "0 12px", fontFamily: FONT, fontSize: 17,
                color: "#E9EEFF", background: "rgba(0,0,0,.25)", border: "1px solid rgba(255,255,255,.14)" },
-  submit: { appearance: "none", minHeight: 50, borderRadius: 12, cursor: "pointer", fontFamily: FONT, fontSize: 16,
+  submit: { appearance: "none", boxSizing: "border-box", width: "100%", minHeight: 50, borderRadius: 12, cursor: "pointer", fontFamily: FONT, fontSize: 16,
             fontWeight: 700, color: "#05070D", background: "#54D97F", border: 0, marginTop: 4 },
   submitOff: { opacity: 0.35, cursor: "default" },
+  // What Submit is waiting for, said in words — a grey button alone did not.
+  waiting: { fontSize: 13, fontWeight: 600, color: "#FFD479", textAlign: "center" },
   typeNote: { fontSize: 12.5, lineHeight: 1.5, color: "rgba(233,238,255,.5)" },
 };
 
@@ -434,7 +437,7 @@ export default function CardReconScreen({ onExit }) {
     const seq = ++attachSeq.current;
     setAttaching(true);
     const { photo, refusal } = await preparePhoto(files);
-    if (seq !== attachSeq.current) return;   // a newer pick owns the panel now
+    if (seq !== attachSeq.current) return;   // a newer pick owns the panel (and its spinner)
     setAttaching(false);
     if (refusal) { setPhase(tid, { phase: "failed", reason: refusal }); return; }
     setTyped((prev) => (prev && prev.tid === tid ? { ...prev, photo } : prev));
@@ -583,6 +586,13 @@ export default function CardReconScreen({ onExit }) {
                           onClick={submitTyped}>
                     {busy ? "Sending…" : "Submit"}
                   </button>
+                  {!busy && !attaching && (!typed.photo || !typed.text.trim()) && (
+                    <div style={T.waiting} role="status">
+                      {!typed.photo && !typed.text.trim() ? "Add the slip photo and type the total to submit."
+                        : !typed.photo ? "Add the slip photo (step 1) to submit."
+                        : "Type the total (step 2) to submit."}
+                    </div>
+                  )}
                   <button type="button" style={T.sheetCancel} disabled={busy} onClick={() => setTyped(null)}>Cancel</button>
                   <div style={T.typeNote}>
                     Recorded as typed by you. The report marks this batch as declared by hand.

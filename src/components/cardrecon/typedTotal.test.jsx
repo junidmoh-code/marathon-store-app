@@ -235,3 +235,24 @@ describe("Type the total — the races (CodeRabbit, PR #650)", () => {
     delete calls.hold;
   });
 });
+
+describe("Type the total — Submit says what it is waiting for (26 Sept screenshot)", () => {
+  it("a figure with no photo names the missing photo; attaching clears it", async () => {
+    auth.currentUser = { email: "gunidmoh@gmail.com" };
+    const tree = render();
+    tap(cards(tree)[1]);
+    tap(buttonNamed(tree, "Type the total")[0]);
+    act(() => { typedInputs(tree)[0].props.onChange({ target: { value: "1900" } }); });
+    const status = () => tree.root.findAll((n) => n.props.role === "status").map(textOf).join("");
+    expect(status()).toBe("Add the slip photo (step 1) to submit.");
+    await pick(labelNamed(tree, "Choose file")[0]);
+    expect(status()).toBe("");
+    expect(buttonNamed(tree, "Submit")[0].props.disabled).toBe(false);
+  });
+
+  it("the photo buttons fit their panel: border-box, and the columns may shrink", () => {
+    const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "CardReconScreen.jsx"), "utf8");
+    expect(src).toMatch(/option: \{[^}]*boxSizing: "border-box"/);
+    expect(src).toMatch(/pair: \{[^}]*minmax\(0, 1fr\) minmax\(0, 1fr\)/);
+  });
+});
