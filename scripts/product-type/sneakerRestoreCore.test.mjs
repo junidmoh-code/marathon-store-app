@@ -58,6 +58,11 @@ describe("planSneakerRestore — the Air Force 1 White", () => {
     expect(p.after.hubs).toEqual(["hub3"]);
   });
 
+  it("keepSizes only ever adds: a size with no history stays (the catalogue audit)", () => {
+    const p = planSneakerRestore({ ...AF1, sizes: ["6", "7", "8"] }, { hub1: { 6: cell(1) } }, { sizes: { 7: 2, 9: 1 } }, { keepSizes: true });
+    expect(p.after.sizes).toEqual(["6", "7", "8", "9"]);
+  });
+
   it("refuses to restore blind — no shoe-size evidence at all", () => {
     expect(planSneakerRestore({ ...AF1, sizes: ["S", "M"] }, {}, {})).toEqual({ ok: false, reason: "no shoe-size evidence — not restoring blind" });
   });

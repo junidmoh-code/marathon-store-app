@@ -37,7 +37,7 @@ export function sortShoeSizes(sizes) {
  * @param {object} p           the product record
  * @param {object} cellsByLoc  { loc: { sizeKey: cell } } — every /stock cell of this product
  * @param {object} history     { sizes: {size: count}, hubs: {hub: count} } from the order log
- * @param {object} opts        { seatHub2: boolean, nowMs, by }
+ * @param {object} opts        { seatHub2: boolean, keepSizes: boolean, nowMs, by }
  * @returns {{ ok:true, patch, seeds, before, after, notes } | { ok:false, reason }}
  */
 export function planSneakerRestore(p, cellsByLoc = {}, history = {}, opts = {}) {
@@ -54,8 +54,11 @@ export function planSneakerRestore(p, cellsByLoc = {}, history = {}, opts = {}) 
   }
   for (const [s, n] of Object.entries(history.sizes || {})) if (n > 0 && isShoeSize(s)) evidence.add(String(s));
   const current = Array.isArray(p.sizes) ? p.sizes.map(String) : [];
-  const sizes = sortShoeSizes([...evidence]);
-  const dropped = current.filter((s) => !evidence.has(s));
+  // keepSizes: only ever ADD sizes (the catalogue audit). Dropping a size with
+  // no history is right for a product somebody just toggled sizes on (the AF1's
+  // 12), and a guess anywhere else.
+  const sizes = sortShoeSizes(opts.keepSizes ? [...current.filter(isShoeSize), ...evidence] : [...evidence]);
+  const dropped = current.filter((s) => !sizes.includes(s));
   if (dropped.length) notes.push(`sizes ${dropped.join(", ")} dropped — never stocked, sold or ordered`);
   const added = sizes.filter((s) => !current.includes(s));
   if (added.length) notes.push(`sizes ${added.join(", ")} restored from stock/order history`);
