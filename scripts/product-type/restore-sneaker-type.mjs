@@ -14,7 +14,7 @@
 // OAuth token in ACCESS_TOKEN.
 import { planSneakerRestore, typeLogEntry } from "./sneakerRestoreCore.mjs";
 import { execFileSync } from "node:child_process";
-import { cellsOf, orderHistory, rest } from "./productTypeData.mjs";
+import { cellsOf, createIfAbsent, orderHistory, rest } from "./productTypeData.mjs";
 
 const argv = process.argv.slice(2);
 const APPLY = argv.includes("--apply");
@@ -52,13 +52,19 @@ if (!pids.length) { console.error("usage: restore-sneaker-type.mjs <pid>… [--s
     const key = `${nowMs}_restore`;
     const update = {
       ...Object.fromEntries(Object.entries(plan.patch).map(([k, v]) => [`products/${pid}/${k}`, v])),
-      ...plan.seeds,
       // The server's clock, not this machine's. (CodeRabbit, PR #651.)
       [`products/${pid}/typeChangedAt`]: { ".sv": "timestamp" },
       // The same server-only log setProductType writes (no client rule).
       [`product_type_log/${pid}/${key}`]: typeLogEntry({ from: p.productType ?? null, to: "sneaker", atMs: { ".sv": "timestamp" }, by, reason: REASON, before: plan.before, after: plan.after }),
     };
     rest("", { method: "PATCH", body: update });
+    // Seats one cell at a time, create-if-absent: a real Hub 2 cell created
+    // since cellsOf read them is kept, never overwritten by a qty-0 seed.
+    // (CodeRabbit, PR #651.)
+    for (const [path, seed] of Object.entries(plan.seeds)) {
+      const r = createIfAbsent(path, seed);
+      if (r === "exists") console.log(`  · ${path} already exists — left alone`);
+    }
     const back = rest(`products/${pid}`);
     console.log(`  APPLIED → type ${back.productType}, hubs ${JSON.stringify(back.hubs)}, sizes ${JSON.stringify(back.sizes)}`);
   }

@@ -53,3 +53,20 @@ export function cellsOf(pid, locs) {
   return out;
 }
 
+
+// CREATE-IF-ABSENT for one path (Firebase REST conditional request): read the
+// ETag, write only if it is still the ETag of nothing. A cell somebody else
+// created in between is kept, never overwritten. Returns "created" | "exists".
+export function createIfAbsent(path, value) {
+  const head = execFileSync("curl", ["-s", "-i", `${DB}/${path}.json`, "-H", `Authorization: Bearer ${TOKEN()}`, "-H", "X-Firebase-ETag: true"]).toString();
+  const etag = (head.match(/^etag:\s*(.+)$/im) || [])[1]?.trim();
+  const body = head.split(/\r?\n\r?\n/).slice(1).join("\n\n").trim();
+  if (body !== "null") return "exists";
+  if (!etag) throw new Error(`no ETag for ${path}`);
+  const code = execFileSync("curl", ["-s", "-o", "/dev/null", "-w", "%{http_code}", "-X", "PUT", `${DB}/${path}.json`,
+    "-H", `Authorization: Bearer ${TOKEN()}`, "-H", `if-match: ${etag}`, "-H", "Content-Type: application/json",
+    "--data-binary", JSON.stringify(value)]).toString();
+  if (code === "412") return "exists";
+  if (code !== "200") throw new Error(`PUT ${path} → HTTP ${code}`);
+  return "created";
+}
