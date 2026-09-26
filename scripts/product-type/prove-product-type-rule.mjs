@@ -30,7 +30,7 @@ const emu = spawn(JAVA, ["-jar", JAR, "--port", String(PORT), "--host", "127.0.0
 process.on("exit", () => { try { emu.kill("SIGKILL"); } catch {} });
 for (let i = 0; ; i++) { try { if ((await fetch(`${HOST}/.settings/rules.json?ns=${NS}`, { headers: H })).ok) break; } catch {} if (i > 150) process.exit(2); await new Promise((r) => setTimeout(r, 200)); }
 const load = async (d) => { const r = await fetch(`${HOST}/.settings/rules.json?ns=${NS}`, { method: "PUT", headers: H, body: JSON.stringify(d) }); if (!r.ok) { console.error(await r.text()); process.exit(2); } };
-const seed = () => put("products/p1", { id: "p1", name: "Nike Air Force 1 White", productType: "sneaker", hubs: ["hub1"], typeLog: { k1: { from: "clothing", to: "sneaker" } } });
+const seed = () => put("products/p1", { id: "p1", name: "Nike Air Force 1 White", productType: "sneaker", hubs: ["hub1"] });
 
 await load(live); await seed();
 console.log("── TODAY (live rules): any signed-in staff account can retype a product ──");
@@ -39,11 +39,16 @@ await load(doc); await seed();
 console.log("\n── with the rule ──");
 await no("staff flips an existing product's Type", as(STAFF, "PATCH", "products/p1", { productType: "clothing" }));
 await no("…or writes the leaf directly", as(STAFF, "PUT", "products/p1/productType", "clothing"));
-await no("staff adds a typeLog entry", as(STAFF, "PUT", "products/p1/typeLog/k2", { from: "a", to: "b" }));
+await no("staff DELETES an existing product's Type (the leaf)", as(STAFF, "DELETE", "products/p1/productType"));
+await no("staff nulls the Type inside a patch", as(STAFF, "PATCH", "products/p1", { productType: null }));
+await put("products/legacy", { id: "legacy", name: "Untyped legacy shoe" });
+await no("staff TYPES an untyped legacy product Clothing", as(STAFF, "PATCH", "products/legacy", { productType: "clothing" }));
+await ok("staff edits an untyped legacy product's other fields", as(STAFF, "PATCH", "products/legacy", { name: "Legacy shoe" }));
 await ok("staff creates a NEW product with a Type", as(STAFF, "PUT", "products/p2", { id: "p2", name: "New", productType: "clothing" }));
 await ok("staff edits other fields (sizes, hubs, name)", as(STAFF, "PATCH", "products/p1", { sizes: ["6", "7"], hubs: ["hub1", "hub2"], name: "AF1 White" }));
 await ok("staff re-writes the Type to the SAME value", as(STAFF, "PATCH", "products/p1", { productType: "sneaker" }));
-await ok("a whole-product write carrying the existing log unchanged", as(STAFF, "PUT", "products/p1", { id: "p1", name: "AF1", productType: "sneaker", typeLog: { k1: { from: "clothing", to: "sneaker" } } }));
+await ok("a whole-product write that keeps the Type", as(STAFF, "PUT", "products/p1", { id: "p1", name: "AF1", productType: "sneaker" }));
 await ok("Junid's own account may change the Type", as(OWNER, "PATCH", "products/p1", { productType: "clothing" }));
+await ok("…and delete it", as(OWNER, "DELETE", "products/p1/productType"));
 console.log(`\n${pass} passed, ${fails.length} failed`);
 process.exit(fails.length ? 1 : 0);

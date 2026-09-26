@@ -20,6 +20,8 @@
 // Nothing here deletes a stock cell or changes a quantity, so a restore can
 // never lose stock.
 
+export const FOOTWEAR_KEYS = new Set(["sneakers", "slides", "soccer-boots", "running-shoes", "boots", "loafers", "designer-shoes", "kids-shoes"]);
+
 export const SIZE_ORDER_NOTE = "numeric ascending, halves in place (5, 5.5, 6)";
 
 const decodeSize = (k) => String(k).replace(/_/g, ".");
@@ -48,6 +50,14 @@ export function sortShoeSizes(sizes) {
  */
 export function planSneakerRestore(p, cellsByLoc = {}, history = {}, opts = {}) {
   if (!p || typeof p !== "object") return { ok: false, reason: "no such product" };
+  // A restore is a Clothing → Sneaker change. Re-running --apply on a product
+  // already put back must not re-plan its sizes or log a sneaker→sneaker
+  // change. (CodeRabbit, PR #651.)
+  if (p.productType !== "clothing") return { ok: false, reason: `already ${p.productType || "untyped"} — nothing to restore` };
+  // Independent shoe evidence, never sizes alone: a waist run or a stray
+  // number must not turn a garment into a sneaker.
+  const shoeEvidence = p.category === "Footwear" || FOOTWEAR_KEYS.has(p.categoryKey) || (history.types?.sneaker?.n || 0) > 0;
+  if (!shoeEvidence) return { ok: false, reason: "no footwear category and no sneaker order history — not a shoe" };
   const notes = [];
 
   // ── sizes from evidence ─────────────────────────────────────────────────
@@ -109,7 +119,7 @@ export function planSneakerRestore(p, cellsByLoc = {}, history = {}, opts = {}) 
   };
 }
 
-/** The audit entry written on the product itself, under typeLog. */
+/** The audit entry written under product_type_log/{pid} (server-only node). */
 export function typeLogEntry({ from, to, atMs, by, reason, before, after }) {
   return {
     from: from ?? null, to, atMs,

@@ -34,11 +34,11 @@ test("plan: Clothing is refused while Hub 1 holds units — even for a manager",
 });
 
 test("plan: back to Sneaker restores the hubs it had before the last switch to Clothing", () => {
-  const clothed = { ...AF1, productType: "clothing", hubs: ["hub2"], hub: "hub2",
-    typeLog: { a: { to: "clothing", atMs: 1, hubsBefore: ["hub1", "hub3"] }, b: { to: "sneaker", atMs: 2 } } };
-  const p = planTypeChange(clothed, "sneaker", { cellsByLoc: {}, isManager: true });
+  const clothed = { ...AF1, productType: "clothing", hubs: ["hub2"], hub: "hub2" };
+  const typeLog = { a: { to: "clothing", atMs: 1, hubsBefore: ["hub1", "hub3"] }, b: { to: "sneaker", atMs: 2 } };
+  const p = planTypeChange(clothed, "sneaker", { cellsByLoc: {}, isManager: true, typeLog });
   assert.deepEqual(p.patch, { productType: "sneaker", hubs: ["hub1", "hub2", "hub3"], hub: "hub1" });
-  const noLog = planTypeChange({ ...clothed, typeLog: null }, "sneaker", { cellsByLoc: { hub1: { 6: cell(0) } }, isManager: true });
+  const noLog = planTypeChange(clothed, "sneaker", { cellsByLoc: { hub1: { 6: cell(0) } }, isManager: true });
   assert.deepEqual(noLog.after.hubs, ["hub1", "hub2"], "Hub 1 cells bring Hub 1 back");
 });
 
@@ -65,7 +65,7 @@ test("callable: Mike (not a manager) cannot retype a product with stock; the pro
   const db = world({ central: { p1: { 6: cell(16) } } });
   await assert.rejects(_handleSetProductType(req({ productType: "clothing", deviceId: "aa85821b-5a2d-4a0b" }), deps(db)), /only Junid or MC/);
   assert.equal(readAt(db.state.root, "products/p1/productType"), "sneaker");
-  assert.equal(readAt(db.state.root, "products/p1/typeLog"), null);
+  assert.equal(readAt(db.state.root, "product_type_log/p1"), null);
 });
 
 test("callable: a manager's change is applied and logged with person, device and server time", async () => {
@@ -75,7 +75,7 @@ test("callable: a manager's change is applied and logged with person, device and
   assert.equal(readAt(db.state.root, "products/p1/productType"), "clothing");
   assert.deepEqual(readAt(db.state.root, "products/p1/hubs"), ["hub2"]);
   assert.equal(readAt(db.state.root, "products/p1/typeChangedAt"), NOW);
-  const log = Object.values(readAt(db.state.root, "products/p1/typeLog"));
+  const log = Object.values(readAt(db.state.root, "product_type_log/p1"));
   assert.equal(log.length, 1);
   assert.deepEqual(log[0], {
     from: "sneaker", to: "clothing", atMs: NOW, personName: "MC", deviceId: "38c0b89c-f1cb-4a09", deviceVerified: true,
@@ -86,7 +86,7 @@ test("callable: a manager's change is applied and logged with person, device and
 test("callable: a brand-new product may be retyped by anyone who can edit — and it is still logged", async () => {
   const db = world({});
   await _handleSetProductType(req({ productType: "clothing", deviceId: "aa85821b-5a2d-4a0b" }), deps(db));
-  const log = Object.values(readAt(db.state.root, "products/p1/typeLog"));
+  const log = Object.values(readAt(db.state.root, "product_type_log/p1"));
   assert.equal(log[0].personName, "Mike");
   assert.equal(log[0].deviceId, "aa85821b-5a2d-4a0b");
   assert.equal(log[0].deviceVerified, false, "a device id the browser sent is recorded as unverified");
@@ -100,5 +100,36 @@ test("callable: unauthenticated, anonymous and bad ids are refused; a no-op writ
   await assert.rejects(_handleSetProductType(req({ productId: "../x", productType: "clothing" }), deps(db)), /Which product/);
   const same = await _handleSetProductType(req({ productType: "sneaker" }), deps(db));
   assert.equal(same.noop, true);
+  assert.equal(readAt(db.state.root, "product_type_log/p1"), null);
+});
+
+test("callable: the log lives at product_type_log (no client rule), never on the client-writable product", async () => {
+  const db = world({});
+  await _handleSetProductType(req({ productType: "clothing" }), deps(db, { owner: true, by: "Junid" }));
   assert.equal(readAt(db.state.root, "products/p1/typeLog"), null);
+  assert.equal(Object.keys(readAt(db.state.root, "product_type_log/p1")).length, 1);
+});
+
+test("callable: someone else's Type change a moment earlier makes this one refuse, not overwrite", async () => {
+  const db = makeFakeDb({
+    locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {},
+  }, { beforeRead: async (path, state) => {
+    if (path === "products/p1/productType" && state.root.products.p1.productType === "sneaker") state.root.products.p1.productType = "clothing";
+  } });
+  await assert.rejects(_handleSetProductType(req({ productType: "clothing" }), deps(db, { owner: true, by: "Junid" })), /Someone else changed/);
+  assert.equal(readAt(db.state.root, "product_type_log"), null);
+});
+
+test("callable: Hub 1 units that land while it decides are not stranded — the switch is undone", async () => {
+  let landed = false;
+  const db = makeFakeDb({ locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {} }, { beforeRead: async (path, state) => {
+    if (path === "stock/hub1/p1" && !landed) {
+      // first read (the planner's) sees nothing; the post-write check sees the receive
+      landed = true; return;
+    }
+    if (path === "stock/hub1/p1" && landed) state.root.stock = { hub1: { p1: { 6: cell(2) } } };
+  } });
+  await assert.rejects(_handleSetProductType(req({ productType: "clothing" }), deps(db, { owner: true, by: "Junid" })), /arrived at Hub 1 just now/);
+  assert.equal(readAt(db.state.root, "products/p1/productType"), "sneaker", "rolled back");
+  assert.equal(readAt(db.state.root, "product_type_log"), null);
 });

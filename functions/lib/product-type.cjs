@@ -18,8 +18,11 @@
 //   · NEVER LOSE STOCK: switching to Clothing is refused while Hub 1 holds
 //     units — Clothing cannot be stocked at Hub 1, so those units would sit on
 //     a shelf nothing can see. Nothing here moves or deletes a cell.
-//   · LOGGED: products/{pid}/typeLog/{key} with from, to, when (server
+//   · LOGGED: product_type_log/{pid}/{key} with from, to, when (server
 //     clock), the person, the device, the uid, and hubs/sizes before and after.
+//     Its own top-level node with NO client rule, so no device can add, alter
+//     or delete an entry — only the Admin SDK writes it. (CodeRabbit, PR #651:
+//     a log inside the client-writable product could be rewritten.)
 "use strict";
 
 const TYPES = new Set(["sneaker", "clothing"]);
@@ -51,7 +54,9 @@ const orderHubs = (hubs) => [...new Set(hubs)].sort((a, b) =>
  * @returns {{ ok:false, code, message }
  *          | { ok:true, noop?:true, patch, before, after }}
  */
-function planTypeChange(product, to, { cellsByLoc = {}, isManager = false } = {}) {
+const TYPE_LOG_ROOT = "product_type_log";
+
+function planTypeChange(product, to, { cellsByLoc = {}, isManager = false, typeLog = null } = {}) {
   const next = readType(to);
   if (!next) return { ok: false, code: "invalid-argument", message: "Type must be Sneaker or Clothing." };
   if (!product || typeof product !== "object") return { ok: false, code: "not-found", message: "That product no longer exists." };
@@ -83,7 +88,7 @@ function planTypeChange(product, to, { cellsByLoc = {}, isManager = false } = {}
     hubs = stripped.length ? stripped : ["hub2"];
     patch.hasShoeBoxOption = false;
   } else {
-    const remembered = hubsBeforeLastClothing(product.typeLog);
+    const remembered = hubsBeforeLastClothing(typeLog);
     const hub1Cells = !!(cellsByLoc.hub1 && Object.keys(cellsByLoc.hub1).length);
     hubs = orderHubs([...hubsNow, ...(remembered || []), ...(hub1Cells ? ["hub1"] : [])]);
   }
@@ -92,4 +97,4 @@ function planTypeChange(product, to, { cellsByLoc = {}, isManager = false } = {}
   return { ok: true, patch, before, after: { productType: next, hubs, sizes: before.sizes } };
 }
 
-module.exports = { planTypeChange, readType, cellsExist, unitsAt, hubsBeforeLastClothing };
+module.exports = { planTypeChange, readType, cellsExist, unitsAt, hubsBeforeLastClothing, TYPE_LOG_ROOT };

@@ -10,9 +10,9 @@
 // hold Hub 1 cells — it would have flipped suits to sneakers.
 // A product with ≥4 (two signals) is a real sneaker typed Clothing by mistake
 // and is restored; 2 is listed for a person to look at, never flipped.
-import { isShoeSize } from "./sneakerRestoreCore.mjs";
+import { isShoeSize, FOOTWEAR_KEYS } from "./sneakerRestoreCore.mjs";
 
-export const FOOTWEAR_KEYS = new Set(["sneakers", "slides", "soccer-boots", "running-shoes", "boots", "loafers", "designer-shoes", "kids-shoes"]);
+export { FOOTWEAR_KEYS };
 
 // A bottoms waist run (28, 30, 32 …) is not a kids shoe run.
 const isWaistSet = (sizes) => sizes.every((s) => /^\d{2}$/.test(s) && Number(s) >= 28 && Number(s) % 2 === 0);

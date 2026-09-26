@@ -243,6 +243,14 @@ function makeFakeDb(initial = {}, hooks = {}) {
           return makeSnapshot(self.key, Object.fromEntries(from.slice(0, n).map((k) => [k, v[k]])));
         }, startAt(k) { self._startAt = k; return this; } }; },
         startAt(k) { self._startAt = k; return self; },
+        // orderByKey().limitToLast(n): the last n children in RTDB key order.
+        limitToLast(n) { return { async once() {
+          if (hooks.beforeRead) await hooks.beforeRead(path, state);
+          const v = readAt(state.root, path);
+          if (!v || typeof v !== "object") return makeSnapshot(self.key, null);
+          const keys = rtdbKeyOrder(v).slice(-n);
+          return makeSnapshot(self.key, keys.length ? Object.fromEntries(keys.map((k) => [k, v[k]])) : null);
+        } }; },
       };
       return self;
     },

@@ -578,12 +578,17 @@ export async function startOfflineMirror({
     async resume() {
       if (!offlineMirrorEnabled()) return "off";
       if (!consented) return "needs-consent";
-      if ((await engine.setupState()).done) { runtime.start(); return "running"; }
-      // Incomplete, but already serving legs from an earlier session: the pass
-      // loop keeps those current AND repairs what is missing. A download run
-      // instead would leave them frozen until it finished (see
-      // handOverToPassLoop's caller in downloadInBackground).
-      if (servingAnything()) { runtime.start(); return "running"; }
+      const setup = await engine.setupState();
+      if (setup.done) { runtime.start(); return "running"; }
+      // Incomplete, but already serving legs from an earlier session, and a
+      // leg really is missing: the pass loop keeps the served legs current AND
+      // repairs what is missing. A download run instead would leave them
+      // frozen until it finished (see handOverToPassLoop's caller in
+      // downloadInBackground). Every leg ready but the device marker missing
+      // (closed between the last leg and the stamp) takes the download path,
+      // which finds nothing to fetch and runs the forced census + stamp.
+      // (CodeRabbit, PR #651.)
+      if (!setup.ready && servingAnything()) { runtime.start(); return "running"; }
       downloadInBackground();
       return "downloading";
     },

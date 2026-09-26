@@ -3,7 +3,7 @@ import { describe, it, expect } from "vitest";
 import { planSneakerRestore, typeLogEntry, sortShoeSizes, isShoeSize } from "./sneakerRestoreCore.mjs";
 
 const AF1 = {
-  id: "p1777979694047", name: "Nike Air Force 1 White", productType: "clothing", category: "Footwear",
+  id: "p1777979694047", name: "Nike Air Force 1 White", productType: "clothing", category: "Footwear", categoryKey: "sneakers",
   hubs: ["hub2"], hub: "hub3", hasShoeBoxOption: false,
   sizes: ["3", "4", "5", "5.5", "7", "8", "9", "10", "11", "6", "12"],
 };
@@ -61,6 +61,16 @@ describe("planSneakerRestore — the Air Force 1 White", () => {
   it("keepSizes only ever adds: a size with no history stays (the catalogue audit)", () => {
     const p = planSneakerRestore({ ...AF1, sizes: ["6", "7", "8"] }, { hub1: { 6: cell(1) } }, { sizes: { 7: 2, 9: 1 } }, { keepSizes: true });
     expect(p.after.sizes).toEqual(["6", "7", "8", "9"]);
+  });
+
+  it("refuses a product that is not Clothing (a repeated --apply is a no-op)", () => {
+    expect(planSneakerRestore({ ...AF1, productType: "sneaker" }, CELLS, HISTORY).reason).toMatch(/already sneaker/);
+  });
+
+  it("refuses a garment that only LOOKS like shoe sizes — no footwear category, no sneaker history", () => {
+    const trousers = { id: "t1", productType: "clothing", category: "Clothing", categoryKey: "pants", sizes: ["28", "30"] };
+    expect(planSneakerRestore(trousers, { hub2: { 28: cell(3) } }, {}, { keepSizes: true }).reason).toMatch(/not a shoe/);
+    expect(planSneakerRestore({ ...trousers, category: "Clothing" }, {}, { types: { sneaker: { n: 3 } }, sizes: { 8: 3 } }).ok).toBe(true);
   });
 
   it("refuses to restore blind — no shoe-size evidence at all", () => {
