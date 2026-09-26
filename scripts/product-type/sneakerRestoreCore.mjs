@@ -24,9 +24,15 @@ export const SIZE_ORDER_NOTE = "numeric ascending, halves in place (5, 5.5, 6)";
 
 const decodeSize = (k) => String(k).replace(/_/g, ".");
 
+// Adult 1–16 (halves allowed) or kids 26–35 (whole). Waist sizes (28–40,
+// even) overlap the kids run; auditCore only counts a run as shoes when it is
+// not a pure even 28–40 waist set.
 export function isShoeSize(s) {
-  const n = Number(s);
-  return Number.isFinite(n) && ((n >= 1 && n <= 16) || (n >= 16 && n <= 40)) && /^\d{1,2}(\.5)?$/.test(String(s));
+  const str = String(s);
+  const n = Number(str);
+  if (!Number.isFinite(n)) return false;
+  if (/^\d{1,2}(\.5)?$/.test(str) && n >= 1 && n <= 16) return true;
+  return /^\d{2}$/.test(str) && n >= 26 && n <= 35;
 }
 
 export function sortShoeSizes(sizes) {
@@ -109,6 +115,9 @@ export function typeLogEntry({ from, to, atMs, by, reason, before, after }) {
     from: from ?? null, to, atMs,
     personName: by?.personName ?? null, deviceId: by?.deviceId ?? null, uid: by?.uid ?? null,
     reason: reason ?? null,
+    // Same shape as setProductType's entries: a script run by the owner is a
+    // manager, and has no device.
+    deviceVerified: false, manager: true,
     hubsBefore: before?.hubs ?? null, hubsAfter: after?.hubs ?? null,
     sizesBefore: before?.sizes ?? null, sizesAfter: after?.sizes ?? null,
   };

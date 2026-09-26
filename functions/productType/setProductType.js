@@ -1,13 +1,16 @@
-// ─── setProductType — THE ONE WAY A PRODUCT'S TYPE CHANGES ───────────────────
+// ─── setProductType — HOW THE APP CHANGES A PRODUCT'S TYPE ───────────────────
 // The edit page's Sneaker / Clothing toggle calls this instead of writing
-// productType itself. Decisions are in lib/product-type.cjs: manager-only once
+// productType itself. NOTE: the database itself still accepts a direct
+// productType write from any signed-in device (the /products rule); closing
+// that needs the console rule printed by
+// scripts/product-type/print-product-type-rule.mjs. Decisions are in lib/product-type.cjs: manager-only once
 // a product has stock or sales, never strands Hub 1 stock, and every change is
 // logged on the product under typeLog with the person, the device and the
 // server's time. "Manager" is managerIdentity from device enrolment: Junid, or
 // MC's enrolled code-making device.
 //
 // Reads are per path: the product, and its cell at each location (the location
-// list is a shallow key read of /locations).
+// list is a bounded read of /locations — a registry of ~10 records).
 //
 // Deploy by name, never bare:
 //   firebase deploy --only functions:setProductType

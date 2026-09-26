@@ -66,7 +66,7 @@ export function useLiveProduct(listProduct, { subscribe } = {}) {
   return live && live.id === id ? live : listProduct;
 }
 
-// ── TYPE: THROUGH THE SERVER, NEVER A DIRECT WRITE ──────────────────────────
+// ── TYPE: THROUGH THE SERVER, NEVER A DIRECT WRITE FROM THIS PAGE ────────────
 // Sneaker ↔ Clothing goes through the setProductType callable: manager-only
 // once the product has stock or sales, refused if it would strand Hub 1 units,
 // and logged on the product with the person, the device and the time

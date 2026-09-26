@@ -11,6 +11,9 @@ describe("classifyClothingProduct", () => {
     const bag = { productType: "clothing", category: "Accessories", categoryKey: "packaging", sizes: ["3"] };
     expect(classifyClothingProduct(bag, { clothing: { n: 74 } })).toMatchObject({ score: 2, verdict: "look" });
   });
+  it("a bottoms waist run is not a shoe-size run", () => {
+    expect(classifyClothingProduct({ productType: "clothing", category: "Clothing", sizes: ["28", "30", "32", "34"] })).toBe(null);
+  });
   it("sharing a style code with a Footwear product is a signal; a Hub 1 cell is not one", () => {
     const tee = { productType: "clothing", category: "Clothing", sizes: ["S"], styleCodeNormalised: "315122111" };
     expect(classifyClothingProduct(tee, {}, { footwearStyleCodes: new Set(["315122111"]) })).toMatchObject({ score: 2, verdict: "look" });

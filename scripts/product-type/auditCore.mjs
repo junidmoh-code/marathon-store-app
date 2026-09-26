@@ -14,12 +14,15 @@ import { isShoeSize } from "./sneakerRestoreCore.mjs";
 
 export const FOOTWEAR_KEYS = new Set(["sneakers", "slides", "soccer-boots", "running-shoes", "boots", "loafers", "designer-shoes", "kids-shoes"]);
 
+// A bottoms waist run (28, 30, 32 …) is not a kids shoe run.
+const isWaistSet = (sizes) => sizes.every((s) => /^\d{2}$/.test(s) && Number(s) >= 28 && Number(s) % 2 === 0);
+
 export function classifyClothingProduct(p, typeHistory = {}, { footwearStyleCodes = new Set() } = {}) {
   if (!p || p.mergedInto || p.productType !== "clothing") return null;
   const sizes = (p.sizes || []).map(String);
   const signals = {
     footwear: p.category === "Footwear" || FOOTWEAR_KEYS.has(p.categoryKey),
-    sizes: sizes.length > 0 && sizes.every(isShoeSize),
+    sizes: sizes.length > 0 && sizes.every(isShoeSize) && !isWaistSet(sizes),
     history: (typeHistory.sneaker?.n || 0) > 0,
     styleCode: !!p.styleCodeNormalised && footwearStyleCodes.has(p.styleCodeNormalised),
   };

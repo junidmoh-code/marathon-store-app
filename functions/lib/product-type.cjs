@@ -7,7 +7,8 @@
 // setProductType (functions/productType/), which uses this:
 //
 //   · WHO: a product with stock or sales — any /stock cell at any location,
-//     which every receive, count and sale leaves behind — may only be retyped
+//     which every receive, count and sale leaves behind (cells are never
+//     deleted; a sale needs a cell to sell from) — may only be retyped
 //     by a manager (Junid, or MC's enrolled code-making device). A brand-new
 //     product with no cells may be retyped by anyone who can edit it.
 //   · WHAT: the same patch the edit page always wrote (Clothing strips Hub 1

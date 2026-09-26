@@ -7493,7 +7493,8 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
     // GUARANTEE ON EDIT: mint barcodes for the (possibly new) size set so editing
     // a product never leaves a size without a code. Best-effort; idempotent
     // (ensureBarcode reuses any existing slot, only newly-added sizes get a code).
-    ensureBarcodes(product.id, next.length ? next : [null]).catch(() => {});
+    ensureBarcodes(product.id, next.length ? next : [null])
+      .catch((err) => setSaveError(`Size ${s} saved, but its barcode could not be made (${err?.message || err}). Toggle it again to retry.`));
   };
 
   const toggleHub = (h) => {

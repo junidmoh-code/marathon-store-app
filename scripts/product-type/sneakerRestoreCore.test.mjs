@@ -75,6 +75,6 @@ describe("planSneakerRestore — the Air Force 1 White", () => {
   it("size helpers", () => {
     expect(sortShoeSizes(["10", "5.5", "3", "11", "6", "5"])).toEqual(["3", "5", "5.5", "6", "10", "11"]);
     for (const s of ["3", "5.5", "13", "28"]) expect(isShoeSize(s)).toBe(true);
-    for (const s of ["S", "XL", "_", "5.25", "", "99"]) expect(isShoeSize(s)).toBe(false);
+    for (const s of ["S", "XL", "_", "5.25", "", "99", "38", "40", "17"]) expect(isShoeSize(s)).toBe(false);
   });
 });
