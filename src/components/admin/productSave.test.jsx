@@ -8,7 +8,7 @@ import TestRenderer, { act } from "react-test-renderer";
 vi.mock("firebase/database", () => ({ ref: (_d, p) => ({ p }), update: vi.fn(), onValue: vi.fn() }));
 vi.mock("../../firebase", () => ({ database: {} }));
 vi.mock("../../offline/pendingWrites", () => ({ notePendingUpdate: vi.fn() }));
-const { saveProductPatch, productPatchPaths, useLiveProduct } = await import("./productSave.js");
+const { saveProductPatch, productPatchPaths, useLiveProduct, changeProductType } = await import("./productSave.js");
 
 describe("saveProductPatch", () => {
   it("a success is echoed into the offline copy, path by path", async () => {
@@ -67,5 +67,21 @@ describe("useLiveProduct", () => {
     expect(h.get().productType).toBe("sneaker");
     act(() => fail(new Error("denied")));
     expect(h.get().productType).toBe("clothing");
+  });
+});
+
+describe("changeProductType", () => {
+  it("sends the product, the type and the device; echoes the server's patch", async () => {
+    const echo = vi.fn();
+    const call = vi.fn(async () => ({ data: { ok: true, productType: "sneaker", patch: { productType: "sneaker", hubs: ["hub1", "hub2"] } } }));
+    const res = await changeProductType({ id: "p1", productType: "sneaker", deviceId: "dev-12345678", call, echo });
+    expect(call).toHaveBeenCalledWith({ productId: "p1", productType: "sneaker", deviceId: "dev-12345678" });
+    expect(res.ok).toBe(true);
+    expect(echo).toHaveBeenCalledWith({ "products/p1/productType": "sneaker", "products/p1/hubs": ["hub1", "hub2"] });
+  });
+  it("the server's refusal is shown in its own words", async () => {
+    const call = async () => { throw Object.assign(new Error("This product has stock or sales, so only Junid or MC can change its Type. Ask one of them."), { code: "functions/permission-denied" }); };
+    const res = await changeProductType({ id: "p1", productType: "clothing", call, echo: vi.fn() });
+    expect(res).toEqual({ ok: false, message: "Could not change the Type: This product has stock or sales, so only Junid or MC can change its Type. Ask one of them." });
   });
 });

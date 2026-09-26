@@ -17,7 +17,7 @@ describe("the product edit page", () => {
     expect(body).toMatch(/const product = useLiveProduct\(listProduct\);/);
   });
   it("saves type, sizes, hubs, shoebox and name through the one save path", () => {
-    for (const re of [/save\(patch, `the type/, /save\(\{ sizes: next \}/, /save\(\{ hubs: next \}/,
+    for (const re of [/changeProductType\(\{\s*id: product\.id, productType: nextType, deviceId: getDeviceId\(\), call: setProductTypeCall,/, /save\(\{ sizes: next \}/, /save\(\{ hubs: next \}/,
       /save\(\{ hasShoeBoxOption: next \}/, /save\(\{ name: next \}/]) expect(body).toMatch(re);
   });
   it("has no write on /products/{id} left that could fail silently", () => {
@@ -26,6 +26,11 @@ describe("the product edit page", () => {
     expect(direct).toHaveLength(1);
     expect(direct[0]).toMatch(/photoUrl: url/);
     expect(body).not.toMatch(/updateProductSizes\(|updateProductHubs\(|console\.warn\("update hasShoeBoxOption/);
+  });
+  it("never writes productType itself — the Type goes through setProductType", () => {
+    expect(body).not.toMatch(/const patch = \{ productType/);
+    expect(body).not.toMatch(/save\(\{[^}]*productType/);
+    expect(app).toMatch(/const setProductTypeCall = httpsCallable\(functions, "setProductType"\);/);
   });
   it("shows a failed save", () => {
     expect(body).toMatch(/\{saveError && \(/);

@@ -65,3 +65,22 @@ export function useLiveProduct(listProduct, { subscribe } = {}) {
   }, [id, subscribe]);
   return live && live.id === id ? live : listProduct;
 }
+
+// ── TYPE: THROUGH THE SERVER, NEVER A DIRECT WRITE ──────────────────────────
+// Sneaker ↔ Clothing goes through the setProductType callable: manager-only
+// once the product has stock or sales, refused if it would strand Hub 1 units,
+// and logged on the product with the person, the device and the time
+// (functions/lib/product-type.cjs). Its refusal message is shown as it is.
+export async function changeProductType({ id, productType, deviceId = null, call, echo = notePendingUpdate }) {
+  try {
+    const res = await call({ productId: id, productType, deviceId });
+    const data = res?.data ?? res;
+    if (data?.patch && Object.keys(data.patch).length) {
+      try { echo(productPatchPaths(id, data.patch)); } catch { /* courtesy */ }
+    }
+    return { ok: true, data };
+  } catch (err) {
+    const m = String(err?.message || err || "unknown error").replace(/^.*?:\s*(?=[A-Z])/, "");
+    return { ok: false, message: `Could not change the Type: ${m}` };
+  }
+}

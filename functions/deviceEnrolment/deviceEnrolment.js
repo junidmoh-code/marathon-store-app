@@ -245,10 +245,15 @@ async function readBounded(db, path) {
   return (await db.ref(path).orderByKey().limitToFirst(LIST_LIMIT).once("value")).val() || {};
 }
 
-async function whoIsAdmin(db, auth) {
-  if (!auth || !auth.uid) throw new HttpsError("unauthenticated", "Sign in first.");
+// A MANAGER: Junid (verified Google email), or an enrolled device whose
+// person may make codes (MC) — re-checked on the person record every call,
+// never trusted from the token alone. null for anyone else. Also used by
+// setProductType (functions/productType/), which is manager-only for a product
+// with stock or sales.
+async function managerIdentity(db, auth) {
+  if (!auth || !auth.uid) return null;
   const t = auth.token || {};
-  if (t.email === E.OWNER_EMAIL && t.email_verified === true) return { owner: true, by: "Junid", personId: null };
+  if (t.email === E.OWNER_EMAIL && t.email_verified === true) return { owner: true, by: "Junid", personId: null, deviceId: null };
   if (typeof t.deviceId === "string" && typeof t.eid === "string" && typeof t.personId === "string") {
     const [gate, person] = await Promise.all([
       db.ref(`users/${auth.uid}/deviceGate/${t.deviceId}`).once("value"),
@@ -256,9 +261,16 @@ async function whoIsAdmin(db, auth) {
     ]);
     const p = person.val();
     if (gate.val() === t.eid && p && p.status === "active" && p.canManageCodes === true) {
-      return { owner: false, by: p.name || "MC", personId: t.personId };
+      return { owner: false, by: p.name || "MC", personId: t.personId, deviceId: t.deviceId };
     }
   }
+  return null;
+}
+
+async function whoIsAdmin(db, auth) {
+  if (!auth || !auth.uid) throw new HttpsError("unauthenticated", "Sign in first.");
+  const who = await managerIdentity(db, auth);
+  if (who) return who;
   throw new HttpsError("permission-denied", "Only Junid or MC can manage device codes.");
 }
 
@@ -437,3 +449,4 @@ exports.enrolDevice = onCall(
 exports._handleEnrol = handleEnrol;
 exports._handleAdmin = handleAdmin;
 exports._handleEmail = handleEmail;
+exports.managerIdentity = managerIdentity;

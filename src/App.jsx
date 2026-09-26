@@ -101,7 +101,7 @@ import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
-import { saveProductPatch, useLiveProduct } from "./components/admin/productSave";
+import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
 import { countReject, thisDevicePaused } from "./device/rejectCount";
 import { PAUSED_MESSAGE } from "./device/deviceRejects";
@@ -7189,6 +7189,8 @@ function AdminProductRow({ product }) {
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
+const setProductTypeCall = httpsCallable(functions, "setProductType");
+
 function AdminProductDetail({ product: listProduct, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
   // What the SERVER holds, not the device's offline copy (productSave.js).
   const product = useLiveProduct(listProduct);
@@ -7468,17 +7470,19 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   // Type — switching to Clothing strips Hub 1 (mirrors the Add Product
   // form's setProductType helper). Double-writes `hub` for back-compat per
   // the project-broadcast-api-async/14A double-write pattern.
-  const setType = (nextType) => {
-    if (nextType === (product.productType || "sneaker")) return;
-    const patch = { productType: nextType };
-    if (nextType === "clothing") {
-      const stripped = productHubs.filter(h => h !== "hub1");
-      patch.hubs = stripped.length ? stripped : ["hub2"];
-      patch.hub  = patch.hubs[0];
-      // Clothing never has a shoebox — clear the flag when converting.
-      patch.hasShoeBoxOption = false;
-    }
-    save(patch, `the type (${nextType})`);
+  // Through the setProductType callable (productSave.changeProductType): the
+  // server decides the patch (Clothing still strips Hub 1 and the shoebox;
+  // back to Sneaker restores the hubs it had), refuses a product with stock or
+  // sales unless Junid or MC is asking, and logs who, which device and when.
+  const [typeBusy, setTypeBusy] = useState(false);
+  const setType = async (nextType) => {
+    if (typeBusy || nextType === (product.productType || "sneaker")) return;
+    setTypeBusy(true);
+    const res = await changeProductType({
+      id: product.id, productType: nextType, deviceId: getDeviceId(), call: setProductTypeCall,
+    });
+    setSaveError(res.ok ? null : res.message);
+    setTypeBusy(false);
   };
 
   const toggleSize = (s) => {
@@ -7779,14 +7783,17 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => {
             const on = (product.productType || "sneaker") === val;
             return (
-              <button key={val} onClick={() => setType(val)}
-                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor:"pointer", fontSize:14, fontWeight:600,
+              <button key={val} onClick={() => setType(val)} disabled={typeBusy}
+                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor: typeBusy ? "default" : "pointer", fontSize:14, fontWeight:600, opacity: typeBusy ? 0.6 : 1,
                                background: on ? "rgba(60,110,255,.18)" : "transparent",
                                color: on ? "#4A7FFF" : "rgba(255,255,255,.55)" }}>
                 {label}
               </button>
             );
           })}
+        </div>
+        <div style={{ padding:"0 12px 10px", fontSize:11.5, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
+          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid or MC. Every change is logged."}
         </div>
       </div>
 
