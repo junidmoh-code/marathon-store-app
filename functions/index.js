@@ -3947,6 +3947,13 @@ exports.deviceEnrolmentAdmin = require("./deviceEnrolment/deviceEnrolment.js").d
 //   firebase deploy --only functions:deviceEnrolmentEmail
 exports.deviceEnrolmentEmail = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentEmail;
 
+// ─── PRODUCT TYPE — setProductType (the edit page's Sneaker / Clothing toggle)
+// Manager-only (Junid, or MC's enrolled code-making device) once a product has
+// stock or sales; refuses a switch to Clothing that would strand Hub 1 units;
+// logs every change on the product under typeLog. lib/product-type.cjs.
+//   firebase deploy --only functions:setProductType
+exports.setProductType = require("./productType/setProductType.js").setProductType;
+
 // ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
 // Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
 // for every transaction in a batch. Storage rules cannot read RTDB, so the

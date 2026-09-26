@@ -101,6 +101,7 @@ import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
+import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
 import { countReject, thisDevicePaused } from "./device/rejectCount";
 import { PAUSED_MESSAGE } from "./device/deviceRejects";
@@ -7188,7 +7189,18 @@ function AdminProductRow({ product }) {
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
-function AdminProductDetail({ product, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
+const setProductTypeCall = httpsCallable(functions, "setProductType");
+
+function AdminProductDetail({ product: listProduct, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
+  // What the SERVER holds, not the device's offline copy (productSave.js).
+  const product = useLiveProduct(listProduct);
+  // Every field saves through here: awaited, echoed, and a failure SHOWN.
+  const [saveError, setSaveError] = useState(null);
+  const save = async (patch, label) => {
+    const res = await saveProductPatch({ id: product.id, patch, label });
+    setSaveError(res.ok ? null : res.message);
+    return res.ok;
+  };
   const isClothing = (product.productType || "sneaker") === "clothing";
   const productSizes = Array.isArray(product.sizes) && product.sizes.length
     ? product.sizes
@@ -7239,7 +7251,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   useEffect(() => { setNameDraft(product.name); }, [product.name]);
   const saveName = () => {
     const next = nameDraft.trim();
-    if (next && next !== product.name) updateProductName(product.id, next, product);
+    if (next && next !== product.name) {
+      // Seed FIRST, then rename (see updateProductName).
+      seedSearchIdentityFrom(product)
+        .then(() => save({ name: next }, "the name"))
+        .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
+    }
     else if (!next) setNameDraft(product.name);
   };
 
@@ -7300,7 +7317,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   const removePhoto = async () => {
     if (!product.photoUrl) return;
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
-    await update(ref(database, `products/${product.id}`), { photoUrl: null });
+    await save({ photoUrl: null }, "the photo removal");
   };
 
   // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
@@ -7447,34 +7464,37 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   const removeBoxPhoto = async () => {
     if (!product.photoBoxUrl) return;
     if (!window.confirm(`Remove the box photo for "${product.name}"?`)) return;
-    await update(ref(database, `products/${product.id}`), { photoBoxUrl: null });
+    await save({ photoBoxUrl: null }, "the box photo removal");
   };
 
   // Type — switching to Clothing strips Hub 1 (mirrors the Add Product
   // form's setProductType helper). Double-writes `hub` for back-compat per
   // the project-broadcast-api-async/14A double-write pattern.
-  const setType = (nextType) => {
-    if (nextType === (product.productType || "sneaker")) return;
-    const patch = { productType: nextType };
-    if (nextType === "clothing") {
-      const stripped = productHubs.filter(h => h !== "hub1");
-      patch.hubs = stripped.length ? stripped : ["hub2"];
-      patch.hub  = patch.hubs[0];
-      // Clothing never has a shoebox — clear the flag when converting.
-      patch.hasShoeBoxOption = false;
-    }
-    update(ref(database, `products/${product.id}`), patch);
+  // Through the setProductType callable (productSave.changeProductType): the
+  // server decides the patch (Clothing still strips Hub 1 and the shoebox;
+  // back to Sneaker restores the hubs it had), refuses a product with stock or
+  // sales unless Junid or MC is asking, and logs who, which device and when.
+  const [typeBusy, setTypeBusy] = useState(false);
+  const setType = async (nextType) => {
+    if (typeBusy || nextType === (product.productType || "sneaker")) return;
+    setTypeBusy(true);
+    const res = await changeProductType({
+      id: product.id, productType: nextType, deviceId: getDeviceId(), call: setProductTypeCall,
+    });
+    setSaveError(res.ok ? null : res.message);
+    setTypeBusy(false);
   };
 
   const toggleSize = (s) => {
     const next = productSizes.includes(s)
       ? productSizes.filter(x => x !== s)
       : [...productSizes, s];
-    updateProductSizes(product.id, next);
+    save({ sizes: next }, `size ${s}`);
     // GUARANTEE ON EDIT: mint barcodes for the (possibly new) size set so editing
     // a product never leaves a size without a code. Best-effort; idempotent
     // (ensureBarcode reuses any existing slot, only newly-added sizes get a code).
-    ensureBarcodes(product.id, next.length ? next : [null]).catch(() => {});
+    ensureBarcodes(product.id, next.length ? next : [null])
+      .catch((err) => setSaveError(`Size ${s} saved, but its barcode could not be made (${err?.message || err}). Toggle it again to retry.`));
   };
 
   const toggleHub = (h) => {
@@ -7483,7 +7503,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
       ? productHubs.filter(x => x !== h)
       : [...productHubs, h];
     if (next.length === 0) return; // require ≥1 hub
-    updateProductHubs(product.id, next);
+    save({ hubs: next }, "the hubs");
   };
 
   // POS Phase 2: local drafts for the two price fields so the input still
@@ -7524,15 +7544,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
       if (!res.ok) {
         revertPriceDraft(field);
         if (res.code === "on_special") alert(res.message);
-        else console.warn(`update ${field} failed:`, res.message);
+        else setSaveError(`Could not save the ${field === "stockPrice" ? "stock price" : "retail price"}: ${res.message}`);
       }
     }).finally(() => setPriceSaving(false));
   };
   const toggleShoebox = () => {
     if (isClothing) return; // clothing never has a shoebox
     const next = !(product.hasShoeBoxOption === true);
-    update(ref(database, `products/${product.id}`), { hasShoeBoxOption: next })
-      .catch(err => console.warn("update hasShoeBoxOption failed:", err));
+    save({ hasShoeBoxOption: next }, "the shoebox option");
   };
 
   // POS Phase 2 (scanner workflow): sku + barcode are auto-assigned at
@@ -7765,14 +7784,17 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
           {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => {
             const on = (product.productType || "sneaker") === val;
             return (
-              <button key={val} onClick={() => setType(val)}
-                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor:"pointer", fontSize:14, fontWeight:600,
+              <button key={val} onClick={() => setType(val)} disabled={typeBusy}
+                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor: typeBusy ? "default" : "pointer", fontSize:14, fontWeight:600, opacity: typeBusy ? 0.6 : 1,
                                background: on ? "rgba(60,110,255,.18)" : "transparent",
                                color: on ? "#4A7FFF" : "rgba(255,255,255,.55)" }}>
                 {label}
               </button>
             );
           })}
+        </div>
+        <div style={{ padding:"0 12px 10px", fontSize:11.5, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
+          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid or MC. Every change is logged."}
         </div>
       </div>
 
@@ -8019,9 +8041,22 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, receivePre
   // Two-column CSS multi-column on desktop (each section kept intact via
   // break-inside), single column on mobile.
   const detailColumns = (
-    <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
-      {detailSections}
-    </div>
+    <>
+      {/* A save that did not land says so, in red, until the next one does. */}
+      {saveError && (
+        <div role="alert" data-product-save-error=""
+             style={{ margin:"0 16px 12px", padding:"10px 12px", borderRadius:10, background:"rgba(248,113,113,.1)",
+                      border:"1px solid rgba(248,113,113,.45)", color:"#F87171", fontSize:13.5, lineHeight:1.4,
+                      display:"flex", gap:10, alignItems:"flex-start" }}>
+          <span style={{ flex:1 }}>{saveError}</span>
+          <button onClick={() => setSaveError(null)} aria-label="Dismiss"
+                  style={{ background:"transparent", border:"none", color:"#F87171", fontSize:16, cursor:"pointer", padding:0 }}>✕</button>
+        </div>
+      )}
+      <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
+        {detailSections}
+      </div>
+    </>
   );
 
   // ── DESKTOP WORKSPACE (>=1024px) — rail with product summary + main pane. ──

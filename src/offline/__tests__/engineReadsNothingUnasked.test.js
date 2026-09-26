@@ -18,7 +18,7 @@
 // and not a belief.
 import { describe, test, expect, beforeEach, vi } from "vitest";
 import { freshMirrorDb } from "./helpers";
-import { createFakeRtdb } from "./fakeAdapter";
+import { createFakeRtdb, pushKeyForMs } from "./fakeAdapter";
 
 const store = new Map();
 globalThis.localStorage = {
@@ -232,6 +232,63 @@ describe("the fleet switch, against the real engine", () => {
     // Nothing is served from a copy that was abandoned half-made.
     expect(isLegServing("products")).toBe(false);
     expect(rt.state.downloading).toBe(false);
+    rt.stop();
+  });
+});
+
+// ─── A SERVING DEVICE WHOSE DOWNLOAD CANNOT FINISH MUST NOT FREEZE ──────────
+// 26 Sep 2026: Junid's iPhone served products from its copy while its stock
+// leg kept failing to assemble. resume() started a download instead of the
+// pass loop, the download waited out its retries, and nothing kept the served
+// legs current — every edit he made on the Air Force 1 White landed on the
+// server and his screen went on showing the old product.
+describe("a device already serving whose download cannot finish", () => {
+  async function servingDeviceWithBrokenStock() {
+    const db = await freshMirrorDb();
+    const w = world({ [COUNTS_ROOT]: { products: { rows: 1, at: T0 } } });
+    const { rt } = await startOn(w, db);
+    await rt.consentAndDownload();
+    for (let i = 0; i < 60 && !(await rt.setupState()).done; i += 1) await new Promise((r) => setImmediate(r));
+    expect(isLegServing("products")).toBe(true);
+    // A RELOAD, not a stop: the page goes away without stop() running, so the
+    // synchronous serving hint in localStorage survives into the next session.
+    const hint = new Map(store);
+    rt.stop();
+    _resetServingForTests();
+    for (const [k, v] of hint) store.set(k, v);
+    expect(isLegServing("products")).toBe(true);
+    // The stock leg loses its setup marker (a census drift), and every read of
+    // /stock now fails — the "chunk 0 is missing" device.
+    await db.setMeta("setup.stock", null);
+    await db.setMeta(SETUP_DONE_META, null);
+    const realPage = w.adapter.readChildPage, realKeys = w.adapter.readKeyPage, realPath = w.adapter.readPath;
+    const brokenStock = (p) => String(p).startsWith("stock");
+    w.adapter.readChildPage = async (p, ...a) => { if (brokenStock(p)) throw new Error("staging incomplete"); return realPage.call(w.adapter, p, ...a); };
+    w.adapter.readKeyPage = async (p, ...a) => { if (brokenStock(p)) throw new Error("staging incomplete"); return realKeys.call(w.adapter, p, ...a); };
+    w.adapter.readPath = async (p, ...a) => { if (brokenStock(p)) throw new Error("staging incomplete"); return realPath.call(w.adapter, p, ...a); };
+    // Someone edits the product on the server; the change log says so.
+    w.write("products/p1", { id: "p1", name: "Nike Air", productType: "sneaker", price: 1200 });
+    w.write(`mirror_changes/${pushKeyForMs(T0 + 5000)}`, { n: "products", k: "p1", t: T0 + 5000 });
+    return { db, w };
+  }
+
+  test("resume() runs the pass loop, and the served product copy catches up", async () => {
+    const { db, w } = await servingDeviceWithBrokenStock();
+    const { rt, timers } = await startOn(w, db);
+    expect((await rt.setupState()).done).toBe(false);
+    expect(await rt.resume()).toBe("running");
+    await timers.runDue(3);
+    expect((await db.get("products", "p1"))?.productType).toBe("sneaker");
+    rt.stop();
+  });
+
+  test("a download that fails on a serving device hands over to the pass loop instead of waiting frozen", async () => {
+    const { db, w } = await servingDeviceWithBrokenStock();
+    const { rt, timers } = await startOn(w, db);
+    await rt.downloadInBackground();
+    expect(rt.state.downloading).toBe(false);
+    await timers.runDue(3);
+    expect((await db.get("products", "p1"))?.productType).toBe("sneaker");
     rt.stop();
   });
 });
