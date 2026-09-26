@@ -133,3 +133,12 @@ test("callable: Hub 1 units that land while it decides are not stranded — the 
   assert.equal(readAt(db.state.root, "products/p1/productType"), "sneaker", "rolled back");
   assert.equal(readAt(db.state.root, "product_type_log"), null);
 });
+
+test("callable: a Type deleted by someone else meanwhile is a clash — never logged as a success", async () => {
+  const db = makeFakeDb({ locations: { hub1: { id: "hub1" } }, products: { p1: AF1 }, stock: {} }, { beforeRead: async (path, state) => {
+    if (path === "products/p1/productType") delete state.root.products.p1.productType;
+  } });
+  await assert.rejects(_handleSetProductType(req({ productType: "clothing" }), deps(db, { owner: true, by: "Junid" })), /Someone else changed/);
+  assert.equal(readAt(db.state.root, "product_type_log"), null);
+  assert.equal(readAt(db.state.root, "products/p1/typeChangedAt"), null);
+});

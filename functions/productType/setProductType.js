@@ -84,7 +84,10 @@ async function handleSetProductType(request, deps) {
     clash = false;
     return plan.after.productType;
   });
-  if (!txn.committed || clash) {
+  // Trust only what landed. A probe (null) that commits against a Type someone
+  // DELETED meanwhile is a clash too — never logged as a success.
+  // (Substitute review for rate-limited CodeRabbit, PR #651.)
+  if (!txn.committed || clash || txn.snapshot.val() !== plan.after.productType) {
     throw new HttpsError("aborted", "Someone else changed this product's Type a moment ago. Look again, then try again.");
   }
 
@@ -96,7 +99,9 @@ async function handleSetProductType(request, deps) {
     const hub1 = { hub1: (await db.ref(`stock/hub1/${pid}`).once("value")).val() || {} };
     const units = unitsAt(hub1, "hub1");
     if (units > 0) {
-      // Null-first: a cold first call returns null (a probe), never an abort.
+      // Null-first: a cold first call returns null (a probe), never an abort —
+      // and a null proposed over a real null writes nothing, so it cannot
+      // clobber a later change.
       await db.ref(`products/${pid}/productType`).transaction((cur) =>
         (cur === null ? null : cur === "clothing" ? expected : undefined));
       throw new HttpsError("failed-precondition",
