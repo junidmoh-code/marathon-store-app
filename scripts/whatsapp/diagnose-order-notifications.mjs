@@ -153,6 +153,10 @@ if (m.connected === false) console.log("   • The Meta number is not CONNECTED 
 if (m.notApproved?.length) console.log(`   • Templates not approved: ${m.notApproved.map((t) => t.name).join(", ")}`);
 if (metaFailures.length) console.log(`   • ${metaFailures.length} of the newest ${docs.length} outbox docs are not sent — see codes above.`);
 if (refused.length) console.log("   • GCP refused functions in the window (above) — sends in that window never ran; check which orders changed then.");
-if (!m.tokenBad && !m.blocks?.length && m.connected !== false && !metaFailures.length && !refused.length) {
+if (m.numberBad && !m.tokenBad) console.log("   • Meta refused the phone-number lookup (above) — the number's state is UNKNOWN.");
+// "Healthy" needs POSITIVE evidence: a refused lookup leaves connected
+// undefined, which must never read as fine (CodeRabbit, PR #655).
+if (!m.tokenBad && !m.numberBad && m.connected === true && !m.blocks?.length && !m.notApproved?.length
+    && !metaFailures.length && !refused.length) {
   console.log("   • No failure found: Meta is healthy and every recent outbox doc was sent.");
 }
