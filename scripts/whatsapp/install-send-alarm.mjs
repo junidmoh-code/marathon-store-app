@@ -179,17 +179,22 @@ async function verifyMarkerInSource() {
   log("✓ deliverOutboxDoc still emits the marker");
 }
 
+// One line PER SERVICE, so both branches of the OR filter are proven — a
+// filter that matched only the first lane would otherwise pass --test
+// (Sonnet architect review, PR #655).
 async function emitTest() {
-  const res = await api("https://logging.googleapis.com/v2/entries:write", {
-    method: "POST",
-    body: {
-      logName: `projects/${PROJECT}/logs/run.googleapis.com%2Fstderr`,
-      resource: { type: "cloud_run_revision", labels: { service_name: SERVICES[0], project_id: PROJECT, location: "europe-west1" } },
-      entries: [{ severity: "ERROR", textPayload: `${MARKER} TEST — install-send-alarm.mjs --test proving WhatsApp failure emails reach your inbox. No customer message failed.` }],
-    },
-  });
-  if (!res.ok) return fail(`could not write the test entry: ${JSON.stringify(res.data).slice(0, 300)}`);
-  log("✓ test line written to Cloud Logging — the email follows within a few minutes");
+  for (const service of SERVICES) {
+    const res = await api("https://logging.googleapis.com/v2/entries:write", {
+      method: "POST",
+      body: {
+        logName: `projects/${PROJECT}/logs/run.googleapis.com%2Fstderr`,
+        resource: { type: "cloud_run_revision", labels: { service_name: service, project_id: PROJECT, location: "europe-west1" } },
+        entries: [{ severity: "ERROR", textPayload: `${MARKER} TEST from ${service} — install-send-alarm.mjs --test proving WhatsApp failure emails reach your inbox. No customer message failed.` }],
+      },
+    });
+    if (!res.ok) return fail(`could not write the test entry for ${service}: ${JSON.stringify(res.data).slice(0, 300)}`);
+    log(`✓ test line written as ${service} — expect an email per line (5 min apart at most), within a few minutes`);
+  }
 }
 
 const channel = await findChannel();
