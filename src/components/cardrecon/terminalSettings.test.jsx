@@ -68,11 +68,15 @@ describe("the gear", () => {
 });
 
 describe("capture mode on the cards", () => {
-  it("an Email-only till has no camera input; Photo/Both tills do", async () => {
+  it("an Email-only till has nothing to tap; a Photo/Both till opens the chooser", async () => {
     const tree = await mount();
-    const inputs = tree.root.findAll((n) => n.type === "input" && n.props.type === "file");
-    expect(inputs.length, "Till 2 (both) has one; Till 3 (email) none; Trophy 1 is retired").toBe(1);
+    // No upload is drawn until a card is tapped.
+    expect(tree.root.findAll((n) => n.type === "input" && n.props.type === "file")).toHaveLength(0);
+    const cards = tree.root.findAll((n) => n.type === "button" && n.props["aria-expanded"] !== undefined);
+    expect(cards.length, "Till 2 (both) is tappable; Till 3 (email) is not; Trophy 1 is retired").toBe(1);
     expect(allText(tree.root)).toContain("Marathon Till 3");
+    await act(async () => { cards[0].props.onClick(); });
+    expect(tree.root.findAll((n) => n.type === "input" && n.props.type === "file")).toHaveLength(2);
   });
 });
 

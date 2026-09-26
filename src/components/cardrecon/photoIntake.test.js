@@ -52,18 +52,24 @@ describe("the picker, and how a tap opens it", () => {
     // If comment-stripping ever mangles the source again, every other assertion
     // here goes quietly green.
     expect(code).toContain('type="file"');
-    // TWO: the till card's own upload, and Junid's typed-total path, which is
-    // still a photo — the typed figure never travels without one.
-    expect(fileInputs(), "one upload per till card plus the owner's typed-total photo, and both must survive stripping")
-      .toHaveLength(2);
+    // FIVE, all inside the chooser or the typed-total panel (neither is drawn
+    // until a card is tapped): the chooser's camera and gallery options, and
+    // the typed-total panel's take / choose / replace — the typed figure never
+    // travels without a photo.
+    expect(fileInputs(), "every upload must survive stripping").toHaveLength(5);
     expect(code, "a real comment must still be gone").not.toContain("the label IS the control");
   });
 
-  it("does not restrict the picker to the camera", () => {
-    // `capture="environment"` makes the OS open the camera and NOTHING else.
-    // Without it the manager can shoot the slip in the Photos app first and pick
-    // the frame afterwards.
-    expect(code).not.toMatch(/capture=/);
+  it("the camera is never the ONLY way in: every camera option has a gallery twin", () => {
+    // `capture="environment"` makes the OS open the camera and NOTHING else. It
+    // is allowed now only because the chooser offers "Choose from gallery /
+    // file" beside it — a manager can still shoot the slip in the Photos app
+    // first and pick the frame afterwards.
+    const inputs = fileInputs();
+    const camera = inputs.filter((t) => /capture="environment"/.test(t)).length;
+    expect(camera, "the chooser and the typed panel each offer the camera").toBe(2);
+    expect(inputs.length - camera, "…and never without a gallery option").toBeGreaterThanOrEqual(camera);
+    expect(code).toContain("Choose from gallery / file");
   });
 
   it("takes images only, one of them", () => {
@@ -80,8 +86,15 @@ describe("the picker, and how a tap opens it", () => {
   // rather than display:none, because a file input the browser has not laid out
   // is one phone browsers and webviews quietly refuse to activate. Both halves
   // are pinned: either one alone brings the dead button back.
-  it("the card is a <label> around the input — nothing calls .click()", () => {
-    expect(code, "the tappable card must be a label").toMatch(/<label\b/);
+  it("every file input sits inside a <label> — nothing calls .click()", () => {
+    // The card itself now opens the chooser; the chooser's options are the
+    // labels, each wrapping its own laid-out input.
+    for (const m of code.matchAll(/<input\b[\s\S]*?\/>/g)) {
+      if (!/type="file"/.test(m[0])) continue;
+      const before = code.slice(Math.max(0, m.index - 200), m.index);
+      expect(before.lastIndexOf("<label"), `a file input outside a label:\n${m[0]}`)
+        .toBeGreaterThan(before.lastIndexOf("</label>"));
+    }
     expect(code, "a programmatic click is the failure mode this replaced")
       .not.toMatch(/\.click\(\)/);
     expect(code, "…and no ref stands in for one").not.toMatch(/useRef\(null\)/);
@@ -105,7 +118,7 @@ describe("the picker, and how a tap opens it", () => {
     const from = code.indexOf("const onPick =");
     expect(from, "onPick has been renamed — this scan must follow it").toBeGreaterThan(-1);
     const body = code.slice(from, code.indexOf("\n  };", from));
-    expect(body, "the pick itself must reach the callable").toMatch(/await send\(tid, photo\.base64, false, typed\)/);
+    expect(body, "the pick itself must reach the callable").toMatch(/await send\(tid, photo\.base64, false\)/);
     expect(code, "no checkbox may gate a capture again").not.toMatch(/type="checkbox"/);
   });
 });
@@ -123,7 +136,9 @@ describe("the ~2000px downscale reaches library photos too", () => {
     // No branch may reach the callable with an undownscaled file: the only
     // base64 that leaves this screen is the one downscalePhoto produced.
     expect(code).toMatch(/photo = await downscalePhoto\(take\[0\]\)/);
-    expect(code, "and that is what is sent").toMatch(/await send\(tid, photo\.base64, false, typed\)/);
+    expect(code, "and that is what is sent").toMatch(/await send\(tid, photo\.base64, false\)/);
+    // The typed-total path attaches the SAME prepared photo, never a raw file.
+    expect(code).toMatch(/const \{ photo, refusal \} = await preparePhoto\(files\);[\s\S]*setTyped\(\(prev\) => \(prev && prev\.tid === tid \? \{ \.\.\.prev, photo \}/);
   });
 
   it("decoding goes through the shared decoder, so a library HEIC opens at all", () => {
@@ -292,8 +307,14 @@ describe("the screen says only what it must", () => {
     // the detail roll and a fallback checkbox — every one of them something to
     // read before anything could be done, and one of them the reason nothing
     // could be.
+    // ONE EXCEPTION, by name: Junid's typed-total panel numbers its two steps,
+    // because there the order IS the instruction — photo first, then the
+    // figure, then Submit (owner, 26 Sept 2026). Nothing a manager sees does.
+    const from = code.indexOf('data-testid="typed-total"');
+    expect(from, "the typed-total panel has moved — this exemption must follow it").toBeGreaterThan(-1);
+    const managerCode = code.slice(0, from) + code.slice(code.indexOf("</div>\n              )}", from));
     for (const gone of [/\d · /, /detail roll/i, /summary only/i, /Read the slip/i, /Shoot/]) {
-      expect(code, `${gone} belongs to the screen this replaced`).not.toMatch(gone);
+      expect(managerCode, `${gone} belongs to the screen this replaced`).not.toMatch(gone);
     }
   });
 
@@ -328,7 +349,7 @@ describe("the payload pre-flight", () => {
     // After the downscale, not before it: refusing the file a phone camera
     // produced would refuse every capture, since that file is the reason the
     // downscale exists.
-    const from = code.indexOf("const onPick =");
+    const from = code.indexOf("const preparePhoto =");
     const body = code.slice(from, code.indexOf("\n  };", from));
     expect(body).toMatch(/payloadRefusal\(\[photo\]\)/);
     expect(body.indexOf("downscalePhoto"), "…and after it")

@@ -46,15 +46,21 @@
 // the wrong slip on the wrong till refuses itself. Who worked the till is
 // derived server-side and nobody selects a person anywhere in this feature.
 //
-// NOBODY TYPES A FIGURE — except Junid, in one place. A bad read is a retake.
-// The exception: some printers print half the slip (Trophy Till 2, Marathon
-// Till 2), so the total is not on the paper and a retake cannot help. For
-// those, and ONLY on the owner's account, a camera card offers "Type the
-// total": the figure goes up WITH a photo (still required, still stored), the
+// TAPPING A CARD OPENS A SMALL CHOOSER, under that card only, and nothing sits
+// under a card otherwise: the list is one card per till, name plus tick or
+// camera glyph. The chooser offers "Photograph the slip" (the camera) and
+// "Choose from gallery / file" — each is a <label> around its own file input,
+// for the reason above — and, for Junid alone, "Type the total".
+//
+// NOBODY TYPES A FIGURE — except Junid, in that one place. A bad read is a
+// retake. Some printers print half the slip (Trophy Till 2, Marathon Till 2),
+// so the total is not on the paper and a retake cannot help. "Type the total"
+// runs in a fixed order: 1, attach the photo (still required, still stored);
+// 2, type the total; 3, one Submit, enabled only once both are there. The
 // server still reads the TID, batch and window off the slip, and the record
 // says the total was declared by hand. The server enforces all of that — this
-// file only hides the field from everyone else. It renders no money figure: the
-// typed text is sent as typed and never echoed back.
+// file only hides the option from everyone else. It renders no money figure:
+// the typed text is sent as typed and never echoed back.
 //
 // NO CARD NUMBERS. The masked PAN is parsed server-side for line identity and
 // is never sent to this client.
@@ -166,21 +172,30 @@ const T = {
   // its label can always open; display:none inputs are the thing phone browsers
   // and webviews quietly refuse to activate.
   input: { position: "absolute", width: 1, height: 1, opacity: 0, pointerEvents: "none" },
-  // Junid's typed-total row: quiet until opened, and plainly a different act.
-  typeToggle: { appearance: "none", border: 0, background: "transparent", cursor: "pointer", fontFamily: FONT,
-                fontSize: 13, fontWeight: 600, color: "rgba(180,160,255,.75)", textAlign: "left",
-                padding: "2px 4px 6px", marginTop: -6, minHeight: 32 },
-  typeBox: { display: "grid", gridTemplateColumns: "1fr auto", gap: 8, marginTop: -4, padding: 12, borderRadius: 14,
-             background: "rgba(150,120,255,.06)", border: "1px solid rgba(150,120,255,.28)" },
-  typeInput: { minWidth: 0, minHeight: 46, borderRadius: 12, padding: "0 12px", fontFamily: FONT, fontSize: 17,
+  // The card as a tap target: a <button> that looks exactly like the card did.
+  cardButton: { appearance: "none", width: "100%", textAlign: "left", fontFamily: FONT, color: "inherit",
+                font: "inherit" },
+  // The chooser and the typed-total panel: under the tapped card only.
+  sheet: { display: "grid", gap: 8, marginTop: -4, padding: 12, borderRadius: 16,
+           background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.1)" },
+  option: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 48,
+            padding: "0 14px", borderRadius: 12, cursor: "pointer", appearance: "none", fontFamily: FONT,
+            fontSize: 15, fontWeight: 600, color: "#E9EEFF", background: "rgba(255,255,255,.06)",
+            border: "1px solid rgba(255,255,255,.14)", width: "100%" },
+  sheetCancel: { appearance: "none", border: 0, background: "transparent", cursor: "pointer", fontFamily: FONT,
+                 fontSize: 14, color: "rgba(233,238,255,.55)", minHeight: 40 },
+  step: { fontSize: 12.5, fontWeight: 700, letterSpacing: "0.02em", color: "rgba(233,238,255,.5)", marginTop: 2 },
+  pair: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 },
+  attached: { display: "flex", alignItems: "center", justifyContent: "space-between", minHeight: 44,
+              fontSize: 14.5, fontWeight: 600, color: "#54D97F" },
+  replace: { position: "relative", cursor: "pointer", fontSize: 13.5, fontWeight: 600, color: "rgba(233,238,255,.7)",
+             padding: "8px 4px" },
+  typeInput: { minWidth: 0, minHeight: 48, borderRadius: 12, padding: "0 12px", fontFamily: FONT, fontSize: 17,
                color: "#E9EEFF", background: "rgba(0,0,0,.25)", border: "1px solid rgba(255,255,255,.14)" },
-  typeGo: { position: "relative", display: "flex", alignItems: "center", justifyContent: "center", minHeight: 46,
-            padding: "0 14px", borderRadius: 12, cursor: "pointer", fontFamily: FONT, fontSize: 14, fontWeight: 700,
-            color: "#E9EEFF", background: "rgba(150,120,255,.28)", border: "1px solid rgba(150,120,255,.5)" },
-  typeGoOff: { opacity: 0.4, cursor: "default" },
-  typeCancel: { appearance: "none", gridColumn: "1 / -1", justifySelf: "start", border: 0, background: "transparent",
-                cursor: "pointer", fontFamily: FONT, fontSize: 13, color: "rgba(233,238,255,.5)", padding: "4px 2px" },
-  typeNote: { gridColumn: "1 / -1", fontSize: 12.5, lineHeight: 1.5, color: "rgba(233,238,255,.5)" },
+  submit: { appearance: "none", minHeight: 50, borderRadius: 12, cursor: "pointer", fontFamily: FONT, fontSize: 16,
+            fontWeight: 700, color: "#05070D", background: "#54D97F", border: 0, marginTop: 4 },
+  submitOff: { opacity: 0.35, cursor: "default" },
+  typeNote: { fontSize: 12.5, lineHeight: 1.5, color: "rgba(233,238,255,.5)" },
 };
 
 /**
@@ -269,13 +284,16 @@ export default function CardReconScreen({ onExit }) {
   // …and the typed total that went with it, so the replace carries it too.
   const lastTyped = useRef({});
 
-  // ── JUNID'S TYPED TOTAL — which card has the field open, and what is in it ──
-  const [typing, setTyping] = useState({});   // tid → the text as typed
-  const closeTyping = (tid) => setTyping((prev) => {
-    const next = { ...prev };
-    delete next[tid];
-    return next;
-  });
+  // ── THE CHOOSER — open under ONE card at a time, or none ──────────────────
+  const [chooserFor, setChooserFor] = useState(null);   // tid | null
+
+  // ── JUNID'S TYPED TOTAL — one flow at a time: its till, photo and text ──────
+  // photo: null | { base64 } once attached (already decoded and downscaled).
+  const [typed, setTyped] = useState(null);             // { tid, photo, text } | null
+  const [attaching, setAttaching] = useState(false);
+  // Every attach gets a number; only the LATEST may land. A slow decode of an
+  // earlier pick must never replace the photo picked after it. (CodeRabbit, PR #650.)
+  const attachSeq = useRef(0);
 
   // A RETIRED MACHINE HAS NO CARD. Which ones those are, and the order the rest
   // are drawn in, is the registry module's decision — see terminalRegistry.js.
@@ -341,7 +359,9 @@ export default function CardReconScreen({ onExit }) {
       setPhase(tid, null);
       delete lastPhoto.current[tid];
       delete lastTyped.current[tid];
-      if (declaredTotal) closeTyping(tid);
+      // Only THIS till's panel closes — the send is async, and Junid may have
+      // opened another card's by now. (CodeRabbit, PR #650.)
+      if (declaredTotal) setTyped((prev) => (prev && prev.tid === tid ? null : prev));
     } catch (err) {
       // ── THE FAILURE NAMES ITSELF ─────────────────────────────────────────
       // This used to answer EVERY thrown error with "That did not go through.
@@ -361,16 +381,12 @@ export default function CardReconScreen({ onExit }) {
     }
   };
 
-  const onPick = (tid, declaredTotal) => async (e) => {
-    const files = [...(e.target.files || [])];
-    e.target.value = "";
-    if (!files.length) return;
-    // The typed path never sends without a figure — nor, below, without a photo.
-    if (declaredTotal !== undefined && !String(declaredTotal).trim()) {
-      setPhase(tid, { phase: "failed", reason: "Type the total first, then photograph the slip." });
-      return;
-    }
-
+  /**
+   * A picked file → a sendable photo, or a sentence saying why not. Shared by
+   * both paths, so a typed-total photo is decoded, downscaled and size-checked
+   * exactly like any other.
+   */
+  const preparePhoto = async (files) => {
     // The decision about what is usable stays in the tested pure module, cap 1:
     // a non-photo is refused BY NAME rather than as "that doesn't look like a
     // photo" about a photo.
@@ -378,9 +394,7 @@ export default function CardReconScreen({ onExit }) {
       current: [], files, cap: 1, replace: true,
       isImage: isAcceptedImageFile, describe: describePickedFile,
     });
-    if (refusal) { setPhase(tid, { phase: "failed", reason: refusal }); return; }
-
-    setPhase(tid, { phase: "busy" });
+    if (refusal) return { refusal };
     let photo;
     try {
       photo = await downscalePhoto(take[0]);
@@ -390,16 +404,50 @@ export default function CardReconScreen({ onExit }) {
       // raw message. See captureFailure.js.
       const failure = describeDecodeError(err);
       console.error(failure.logLine, err);
-      setPhase(tid, { phase: "failed", reason: failure.message });
-      return;
+      return { refusal: failure.message };
     }
     // Refused HERE rather than as a transport error nobody can read.
     const tooBig = payloadRefusal([photo]);
-    if (tooBig) { setPhase(tid, { phase: "failed", reason: tooBig }); return; }
+    return tooBig ? { refusal: tooBig } : { photo };
+  };
+
+  // The ordinary capture: the pick IS the send — nothing stands in between.
+  const onPick = (tid) => async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = "";
+    if (!files.length) return;
+    setChooserFor(null);
+    setPhase(tid, { phase: "busy" });
+    const { photo, refusal } = await preparePhoto(files);
+    if (refusal) { setPhase(tid, { phase: "failed", reason: refusal }); return; }
     lastPhoto.current[tid] = photo.base64;
-    const typed = declaredTotal !== undefined ? String(declaredTotal).trim() : undefined;
-    if (typed) lastTyped.current[tid] = typed; else delete lastTyped.current[tid];
-    await send(tid, photo.base64, false, typed);
+    delete lastTyped.current[tid];
+    await send(tid, photo.base64, false);
+  };
+
+  // The typed-total path, step 1: the photo is ATTACHED, not sent.
+  const onTypedPhoto = (tid) => async (e) => {
+    const files = [...(e.target.files || [])];
+    e.target.value = "";
+    if (!files.length) return;
+    setPhase(tid, null);
+    const seq = ++attachSeq.current;
+    setAttaching(true);
+    const { photo, refusal } = await preparePhoto(files);
+    if (seq !== attachSeq.current) return;   // a newer pick owns the panel now
+    setAttaching(false);
+    if (refusal) { setPhase(tid, { phase: "failed", reason: refusal }); return; }
+    setTyped((prev) => (prev && prev.tid === tid ? { ...prev, photo } : prev));
+  };
+
+  // Step 3: one Submit, with both the photo and the figure — or not at all.
+  const submitTyped = async () => {
+    if (!typed || !typed.photo || !typed.text.trim()) return;
+    const { tid, photo } = typed;
+    const text = typed.text.trim();
+    lastPhoto.current[tid] = photo.base64;
+    lastTyped.current[tid] = text;
+    await send(tid, photo.base64, false, text);
   };
 
   return (
@@ -450,11 +498,11 @@ export default function CardReconScreen({ onExit }) {
           return (
             <React.Fragment key={t.tid}>
               {camera ? (
-                <label style={cardStyle}>
-                  <input type="file" accept="image/*" style={T.input}
-                         disabled={busy} onChange={onPick(t.tid)} />
+                <button type="button" style={{ ...cardStyle, ...T.cardButton }} disabled={busy}
+                        aria-expanded={chooserFor === t.tid}
+                        onClick={() => { setTyped(null); setChooserFor(chooserFor === t.tid ? null : t.tid); }}>
                   {face}
-                </label>
+                </button>
               ) : (
                 <div style={{ ...cardStyle, ...T.cardStatic }}>{face}</div>
               )}
@@ -472,31 +520,75 @@ export default function CardReconScreen({ onExit }) {
                   Replace the earlier capture
                 </button>
               )}
-              {/* JUNID ONLY: a total typed beside the photo, for a slip whose
-                  printer did not print one. Never offered to anyone else, and
-                  refused by the server for anyone else regardless. */}
-              {isOwner && camera && !busy && (typing[t.tid] === undefined ? (
-                <button style={T.typeToggle} onClick={() => setTyping((prev) => ({ ...prev, [t.tid]: "" }))}>
-                  Slip didn&rsquo;t print its total? Type it
-                </button>
-              ) : (
-                <div style={T.typeBox}>
-                  <input style={T.typeInput} inputMode="decimal" autoComplete="off" enterKeyHint="done"
-                         aria-label={`Total for ${t.label || t.tid}, typed by hand`}
-                         placeholder="Total, e.g. 12,345.67" value={typing[t.tid]}
-                         onChange={(e) => { const v = e.target.value; setTyping((prev) => ({ ...prev, [t.tid]: v })); }} />
-                  <label style={{ ...T.typeGo, ...(typing[t.tid].trim() ? null : T.typeGoOff) }}>
-                    <input type="file" accept="image/*" style={T.input}
-                           disabled={!typing[t.tid].trim()} onChange={onPick(t.tid, typing[t.tid])} />
+              {/* THE CHOOSER — only under the card that was tapped. Each photo
+                  option is a <label> around its own input: see the header on
+                  why the picker is never opened by ref.click(). */}
+              {camera && !busy && chooserFor === t.tid && (
+                <div style={T.sheet} data-testid="capture-chooser">
+                  <label style={T.option}>
+                    <input type="file" accept="image/*" capture="environment" style={T.input}
+                           onChange={onPick(t.tid)} />
                     Photograph the slip
                   </label>
-                  <button style={T.typeCancel} onClick={() => closeTyping(t.tid)}>Cancel</button>
+                  <label style={T.option}>
+                    <input type="file" accept="image/*" style={T.input} onChange={onPick(t.tid)} />
+                    Choose from gallery / file
+                  </label>
+                  {/* JUNID ONLY. Never offered to anyone else, and refused by
+                      the server for anyone else regardless. */}
+                  {isOwner && (
+                    <button type="button" style={T.option}
+                            onClick={() => { setChooserFor(null); setTyped({ tid: t.tid, photo: null, text: "" }); }}>
+                      Type the total
+                    </button>
+                  )}
+                  <button type="button" style={T.sheetCancel} onClick={() => setChooserFor(null)}>Cancel</button>
+                </div>
+              )}
+              {/* THE TYPED TOTAL — photo first, then the figure, then Submit. */}
+              {isOwner && camera && typed && typed.tid === t.tid && (
+                <div style={T.sheet} data-testid="typed-total">
+                  <div style={T.step}>1 · Photo of the slip</div>
+                  {typed.photo ? (
+                    <div style={T.attached}>
+                      <span>✓ Photo attached</span>
+                      <label style={T.replace}>
+                        <input type="file" accept="image/*" style={T.input} disabled={busy}
+                               onChange={onTypedPhoto(t.tid)} />
+                        Replace
+                      </label>
+                    </div>
+                  ) : attaching ? (
+                    <div style={T.attached}>Attaching…</div>
+                  ) : (
+                    <div style={T.pair}>
+                      <label style={T.option}>
+                        <input type="file" accept="image/*" capture="environment" style={T.input}
+                               onChange={onTypedPhoto(t.tid)} />
+                        Take photo
+                      </label>
+                      <label style={T.option}>
+                        <input type="file" accept="image/*" style={T.input} onChange={onTypedPhoto(t.tid)} />
+                        Choose file
+                      </label>
+                    </div>
+                  )}
+                  <div style={T.step}>2 · Total</div>
+                  <input style={T.typeInput} inputMode="decimal" autoComplete="off" enterKeyHint="done"
+                         aria-label={`Total for ${t.label || t.tid}, typed by hand`}
+                         placeholder="e.g. 12,345.67" value={typed.text} disabled={busy}
+                         onChange={(e) => { const v = e.target.value; setTyped((prev) => (prev ? { ...prev, text: v } : prev)); }} />
+                  <button type="button" style={{ ...T.submit, ...(typed.photo && typed.text.trim() && !busy ? null : T.submitOff) }}
+                          disabled={!typed.photo || !typed.text.trim() || busy || attaching}
+                          onClick={submitTyped}>
+                    {busy ? "Sending…" : "Submit"}
+                  </button>
+                  <button type="button" style={T.sheetCancel} disabled={busy} onClick={() => setTyped(null)}>Cancel</button>
                   <div style={T.typeNote}>
-                    The photo is still required. The total is recorded as typed by you, and the
-                    report marks this batch as declared by hand.
+                    Recorded as typed by you. The report marks this batch as declared by hand.
                   </div>
                 </div>
-              ))}
+              )}
             </React.Fragment>
           );
         })}
