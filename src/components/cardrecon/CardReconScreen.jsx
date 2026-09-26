@@ -291,6 +291,9 @@ export default function CardReconScreen({ onExit }) {
   // photo: null | { base64 } once attached (already decoded and downscaled).
   const [typed, setTyped] = useState(null);             // { tid, photo, text } | null
   const [attaching, setAttaching] = useState(false);
+  // Every attach gets a number; only the LATEST may land. A slow decode of an
+  // earlier pick must never replace the photo picked after it. (CodeRabbit, PR #650.)
+  const attachSeq = useRef(0);
 
   // A RETIRED MACHINE HAS NO CARD. Which ones those are, and the order the rest
   // are drawn in, is the registry module's decision — see terminalRegistry.js.
@@ -356,7 +359,9 @@ export default function CardReconScreen({ onExit }) {
       setPhase(tid, null);
       delete lastPhoto.current[tid];
       delete lastTyped.current[tid];
-      if (declaredTotal) setTyped(null);
+      // Only THIS till's panel closes — the send is async, and Junid may have
+      // opened another card's by now. (CodeRabbit, PR #650.)
+      if (declaredTotal) setTyped((prev) => (prev && prev.tid === tid ? null : prev));
     } catch (err) {
       // ── THE FAILURE NAMES ITSELF ─────────────────────────────────────────
       // This used to answer EVERY thrown error with "That did not go through.
@@ -426,8 +431,10 @@ export default function CardReconScreen({ onExit }) {
     e.target.value = "";
     if (!files.length) return;
     setPhase(tid, null);
+    const seq = ++attachSeq.current;
     setAttaching(true);
     const { photo, refusal } = await preparePhoto(files);
+    if (seq !== attachSeq.current) return;   // a newer pick owns the panel now
     setAttaching(false);
     if (refusal) { setPhase(tid, { phase: "failed", reason: refusal }); return; }
     setTyped((prev) => (prev && prev.tid === tid ? { ...prev, photo } : prev));
