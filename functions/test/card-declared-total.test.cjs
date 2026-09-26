@@ -254,3 +254,25 @@ test("callable: a missing TID is filled from the tapped till ONLY on a declared 
   assert.ok(mismatch > fill, "a DIFFERENT printed TID still reaches the wrong-slip refusal");
   assert.match(extractBody, /warnings\.unshift\(\.\.\.declaredNotes\)/);
 });
+
+// ── 26 Sept 19:58: the reply carried NaN and the capture died as INTERNAL ────
+test("toExtraction never yields NaN: a slip with no Transactions count reads as null", () => {
+  const { toExtraction } = require("../cardRecon/cardRecon.js");
+  // Exactly Trophy Till 2's reading at 19:58 — txnCount ABSENT, not null.
+  const parsed = { tid: "", batchNo: "485", total: "R1,350.00", purchases: "R1,350.00", refunds: "R0.00", cash: "R0.00",
+    opened: "19:00:05", closed: "16:17:36",
+    confidence: { batchNo: 0.9, closed: 0.8, opened: 0.8, purchases: 0.95, refunds: 0.95, tid: 0, total: 0.95, txnCount: 0 } };
+  for (const txnCount of [undefined, null, "", "abc"]) {
+    const ex = toExtraction({ ...parsed, ...(txnCount === undefined ? {} : { txnCount }) });
+    assert.equal(ex.txnCount, null, `txnCount ${JSON.stringify(txnCount)}`);
+    // Nothing in the extraction may be NaN — the callable cannot encode it.
+    assert.doesNotThrow(() => JSON.stringify(ex, (k, v) => { if (typeof v === "number" && Number.isNaN(v)) throw new Error(`NaN at ${k}`); return v; }));
+  }
+  assert.equal(toExtraction({ ...parsed, txnCount: 12 }).txnCount, 12);
+  assert.equal(toExtraction({ ...parsed, txnCount: 0 }).txnCount, 0);
+});
+
+test("a capture WITHOUT a typed total still refuses an unread Transactions count", () => {
+  const ex = halfSlip({ txnCount: null, purchasesCents: 4353000, confidence: { ...CONF } });
+  assert.equal(validateExtraction(ex, { summaryOnly: true }).ok, false);
+});
