@@ -1,21 +1,27 @@
 // ─── WHICH "CLOTHING" PRODUCTS ARE REALLY SHOES — THE CLASSIFIER, PURE ───────
-// Three independent signals, each worth 2:
-//   footwear — category "Footwear" or a footwear categoryKey
-//   sizes    — every declared size is a shoe size (3–13, halves, kids 26–35)
-//   history  — the order log recorded this product as "sneaker"
+// Four independent signals, each worth 2:
+//   footwear  — category "Footwear" or a footwear categoryKey
+//   sizes     — every declared size is a shoe size (3–13, halves, kids 26–35)
+//   history   — the order log recorded this product as "sneaker"
+//   styleCode — it shares a style code with a Footwear product (one code,
+//               several colourways — a clothing item never shares a shoe's)
+// Considered and REJECTED as a signal (26 Sep 2026): a Hub 1 cell. Clothing
+// "cannot be stocked at Hub 1", yet 19 real garments (suits, T-shirts, bags)
+// hold Hub 1 cells — it would have flipped suits to sneakers.
 // A product with ≥4 (two signals) is a real sneaker typed Clothing by mistake
 // and is restored; 2 is listed for a person to look at, never flipped.
 import { isShoeSize } from "./sneakerRestoreCore.mjs";
 
 export const FOOTWEAR_KEYS = new Set(["sneakers", "slides", "soccer-boots", "running-shoes", "boots", "loafers", "designer-shoes", "kids-shoes"]);
 
-export function classifyClothingProduct(p, typeHistory = {}) {
+export function classifyClothingProduct(p, typeHistory = {}, { footwearStyleCodes = new Set() } = {}) {
   if (!p || p.mergedInto || p.productType !== "clothing") return null;
   const sizes = (p.sizes || []).map(String);
   const signals = {
     footwear: p.category === "Footwear" || FOOTWEAR_KEYS.has(p.categoryKey),
     sizes: sizes.length > 0 && sizes.every(isShoeSize),
     history: (typeHistory.sneaker?.n || 0) > 0,
+    styleCode: !!p.styleCodeNormalised && footwearStyleCodes.has(p.styleCodeNormalised),
   };
   const score = Object.values(signals).filter(Boolean).length * 2;
   if (!score) return null;

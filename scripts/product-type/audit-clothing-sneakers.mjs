@@ -36,9 +36,12 @@ const products = productsPaged();
 const clothing = Object.entries(products).filter(([, p]) => p && p.productType === "clothing" && !p.mergedInto);
 const history = orderHistory(new Set(clothing.map(([id]) => id)), CACHE);
 console.log(`${Object.keys(products).length} products, ${clothing.length} typed Clothing`);
+const footwearStyleCodes = new Set(Object.values(products)
+  .filter((p) => p && !p.mergedInto && p.productType !== "clothing" && p.category === "Footwear" && p.styleCodeNormalised)
+  .map((p) => p.styleCodeNormalised));
 for (const [id, p] of clothing) {
   const typeHist = history[id]?.types || {};
-  const c = classifyClothingProduct(p, typeHist);
+  const c = classifyClothingProduct(p, typeHist, { footwearStyleCodes });
   if (!c) continue;
   console.log(`${c.verdict.toUpperCase().padEnd(7)} ${id} | ${p.name} | ${p.category}/${p.categoryKey} | sizes ${(p.sizes || []).join(",")} | signals ${Object.entries(c.signals).filter(([, v]) => v).map(([k]) => k).join("+")}${p.deactivated ? " | DEACTIVATED" : ""}`);
 }

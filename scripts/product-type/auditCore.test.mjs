@@ -11,6 +11,11 @@ describe("classifyClothingProduct", () => {
     const bag = { productType: "clothing", category: "Accessories", categoryKey: "packaging", sizes: ["3"] };
     expect(classifyClothingProduct(bag, { clothing: { n: 74 } })).toMatchObject({ score: 2, verdict: "look" });
   });
+  it("sharing a style code with a Footwear product is a signal; a Hub 1 cell is not one", () => {
+    const tee = { productType: "clothing", category: "Clothing", sizes: ["S"], styleCodeNormalised: "315122111" };
+    expect(classifyClothingProduct(tee, {}, { footwearStyleCodes: new Set(["315122111"]) })).toMatchObject({ score: 2, verdict: "look" });
+    expect(classifyClothingProduct({ ...tee, category: "Footwear" }, {}, { footwearStyleCodes: new Set(["315122111"]) }).verdict).toBe("restore");
+  });
   it("real clothing, sneakers already typed as sneakers, and merged-away records are ignored", () => {
     expect(classifyClothingProduct({ productType: "clothing", category: "Clothing", sizes: ["S", "M", "L"] })).toBe(null);
     expect(classifyClothingProduct({ ...bape, productType: "sneaker" })).toBe(null);
