@@ -58,6 +58,24 @@ describe("liveness", () => {
     expect(preflightDecision({ ...clean, behindLive: 4, ackNoLive: true }).refusal).toBe(REFUSAL.ROLLBACK);
   });
 
+  it("a live build AHEAD by sha but whose exact tree is already on HEAD passes — a squash-merged PR branch", () => {
+    // 2026-09-27: #652 was deployed from its PR branch (4516f758), then
+    // squash-merged as 7b59ec0b with the identical tree. Every later deploy
+    // from main was refused as a "rollback" that would have lost nothing.
+    const d = preflightDecision({ ...clean, behindLive: 1, liveTreeOnHead: "7b59ec0b" });
+    expect(d.ok).toBe(true);
+    expect(d.liveSquashedAs).toBe("7b59ec0b");
+  });
+
+  it("...but only an IDENTICAL tree: no match still refuses, ack or not", () => {
+    expect(preflightDecision({ ...clean, behindLive: 1, liveTreeOnHead: null }).refusal).toBe(REFUSAL.ROLLBACK);
+    expect(preflightDecision({ ...clean, behindLive: 1, liveTreeOnHead: "", ackNoLive: true }).refusal).toBe(REFUSAL.ROLLBACK);
+  });
+
+  it("the squash match never rescues an UNKNOWN live commit", () => {
+    expect(preflightDecision({ ...clean, liveKnown: false, behindLive: 1, liveTreeOnHead: "7b59ec0b" }).refusal).toBe(REFUSAL.LIVE_UNKNOWN);
+  });
+
   it("a functions deploy skips liveness entirely, unreadable or not", () => {
     expect(preflightDecision({ ...clean, gitOnly: true, liveSha: null }).ok).toBe(true);
     expect(preflightDecision({ ...clean, gitOnly: true, liveKnown: false }).ok).toBe(true);

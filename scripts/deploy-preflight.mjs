@@ -194,26 +194,42 @@ if (preflightDecision({ liveSha, liveKnown: known }).refusal === REFUSAL.LIVE_UN
   ]);
 }
 
-const carry = sh(`git log --oneline ${liveSha}..HEAD --format='  %h  %s'`);
-console.log("");
-if (!carry) {
-  console.log(bold("  This deploy carries NOTHING beyond the live build — it is a rebuild."));
-} else {
-  const n = carry.split("\n").length;
-  console.log(bold(`  This deploy carries ${n} commit(s) beyond the live build (${liveSha}):`));
-  console.log(carry);
+// Behind-live is its own alarm: the live site is AHEAD of this checkout, which
+// means somebody deployed something this tree has never seen — UNLESS the live
+// commit's exact tree is already in HEAD's history (a PR branch deployed, then
+// squash-merged). Then its code is here under another sha and nothing is lost.
+const behindLive = Number(sh(`git rev-list --count HEAD..${liveSha}`));
+let liveTreeOnHead = null;
+if (behindLive > 0) {
+  const liveTree = sh(`git rev-parse ${liveSha}^{tree}`);
+  const hit = sh("git log -n 2000 --format='%H %T' HEAD").split("\n")
+    .map((l) => l.split(" ")).find(([, tree]) => tree === liveTree);
+  if (hit) liveTreeOnHead = hit[0].slice(0, 8);
 }
 
-// Behind-live is its own alarm: the live site is AHEAD of this checkout, which
-// means somebody deployed something this tree has never seen.
-const behindLive = sh(`git rev-list --count HEAD..${liveSha}`);
-if (preflightDecision({ liveSha, behindLive: Number(behindLive) }).refusal === REFUSAL.ROLLBACK) {
+const decision = preflightDecision({ liveSha, behindLive, liveTreeOnHead });
+if (decision.refusal === REFUSAL.ROLLBACK) {
   const lost = sh(`git log --oneline HEAD..${liveSha} --format='  %h  %s'`);
   die(`the LIVE build is ${behindLive} commit(s) ahead of this checkout`, [
     "Deploying would roll production BACKWARDS. These are live and would go:",
     "",
     lost,
   ]);
+}
+
+// With a squash match, diff from the matching commit — that IS what is live.
+const base = decision.liveSquashedAs || liveSha;
+if (decision.liveSquashedAs) {
+  console.log(`  live   ${liveSha} is ${decision.liveSquashedAs} on this history (identical tree — squash-merged)`);
+}
+const carry = sh(`git log --oneline ${base}..HEAD --format='  %h  %s'`);
+console.log("");
+if (!carry) {
+  console.log(bold("  This deploy carries NOTHING beyond the live build — it is a rebuild."));
+} else {
+  const n = carry.split("\n").length;
+  console.log(bold(`  This deploy carries ${n} commit(s) beyond the live build (${base}):`));
+  console.log(carry);
 }
 
 console.log("");
