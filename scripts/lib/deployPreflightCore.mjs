@@ -45,6 +45,11 @@ export const REFUSAL = Object.freeze({
  * @param facts.liveSha      the sha from /version.json, or null when unreadable
  * @param facts.liveKnown    whether this checkout contains that commit
  * @param facts.behindLive   how many commits the LIVE build has that HEAD lacks
+ * @param facts.liveTreeOnHead  a commit in HEAD's history whose tree is
+ *                           byte-identical to the live commit's tree, or null.
+ *                           Set when the live build came from a PR branch that
+ *                           was later SQUASH-merged: its sha is not an ancestor,
+ *                           but its code is, so nothing live would be lost.
  * @param facts.ackNoLive    the DEPLOY_PREFLIGHT_ACK_NO_LIVE escape hatch
  * @param facts.gitOnly      functions / database rules / storage rules: the git
  *                           invariants apply, hosting liveness is not their subject
@@ -53,7 +58,8 @@ export const REFUSAL = Object.freeze({
 export function preflightDecision(facts = {}) {
   const {
     dirty = "", behindMain = 0, liveSha = null, liveKnown = true,
-    behindLive = 0, ackNoLive = false, gitOnly = false, functionsOnly = false,
+    behindLive = 0, liveTreeOnHead = null, ackNoLive = false, gitOnly = false,
+    functionsOnly = false,
   } = facts;
   // `gitOnly` is the accurate name — functions, database rules and storage rules
   // all reach here, and /version.json describes none of them. `functionsOnly` is
@@ -91,7 +97,17 @@ export function preflightDecision(facts = {}) {
   // 5. The live build is AHEAD of this checkout: deploying rolls production
   //    backwards. Distinct from behind-main — main can be current while somebody
   //    deployed from a commit that never merged.
-  if (Number(behindLive) > 0) return { ok: false, refusal: REFUSAL.ROLLBACK };
+  //    EXCEPT when the live commit's exact tree is already in HEAD's history:
+  //    that is a PR branch deployed before it was squash-merged (2026-09-27,
+  //    #652's 4516f758 == main's 7b59ec0b, tree for tree). Its sha is "ahead"
+  //    but its code is not, so deploying loses nothing. Anything short of an
+  //    identical tree — one byte different — still refuses. The ack does not
+  //    reach this either.
+  if (Number(behindLive) > 0) {
+    return liveTreeOnHead
+      ? { ok: true, liveSquashedAs: liveTreeOnHead }
+      : { ok: false, refusal: REFUSAL.ROLLBACK };
+  }
 
   return { ok: true };
 }
