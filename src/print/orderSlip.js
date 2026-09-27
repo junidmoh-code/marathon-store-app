@@ -53,7 +53,6 @@ const SLIP_CSS = `
     font-family: "Segoe UI", "SF Pro Text", -apple-system, system-ui, Roboto, Arial, sans-serif;
     font-weight: 600;
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
-    -webkit-font-smoothing: none; text-rendering: geometricPrecision;
   }
   * { color: #000; opacity: 1; text-shadow: none; box-shadow: none; filter: none; background-image: none; }
   svg, svg * { stroke: #000; }

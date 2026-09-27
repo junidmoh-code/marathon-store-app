@@ -59,6 +59,8 @@ describe("buildOrderSlipsHtml", () => {
   it("shrinks long numbers so they never overflow the 72mm slip", () => {
     expect(buildOrderSlipsHtml([order({ id: "342" })])).toContain('class="number"');
     expect(buildOrderSlipsHtml([order({ id: "1042" })])).toContain('class="number long"');
+    expect(buildOrderSlipsHtml([order({ id: "10420" })])).toContain('class="number long"');
+    expect(buildOrderSlipsHtml([order({ id: "104200" })])).toContain('class="number xlong"');
   });
 
   it("maps a one-size / '_' sentinel to 'One size'", () => {
