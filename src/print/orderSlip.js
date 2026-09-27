@@ -5,8 +5,9 @@
 // by a tear line — the thermal driver auto-cuts only at the end, so staff tear
 // the intermediate ones.
 //
-// Compact layout: order number leads; the wait time is folded quietly into the
-// thank-you line (not shown as a prominent badge up top).
+// Layout: MARATHON wordmark → ORDER NUMBER pill → huge number → item → playful
+// "we're preparing your order" block; the wait time sits in the thank-you line
+// (not shown as a prominent badge up top).
 
 import { printHtmlInIframe } from "./printSlipService";
 
@@ -39,55 +40,118 @@ function formatWhen(ms) {
   return `${DOW[d.getDay()]} ${d.getDate()} ${MON[d.getMonth()]} ${d.getFullYear()} · ${hh}:${mm}`;
 }
 
+// Thermal print density: a thermal head is 1-bit, so the driver DITHERS any grey
+// into sparse dots and a regular-weight 6pt glyph is ~1 dot wide — that is why
+// the old slip's small text came out faint while the 800-weight #000 number was
+// solid. Everything here is pure #000, weight >= 600, rules >= 0.5mm, icon
+// strokes >= 0.8mm effective. No greys, opacity, shadows or gradients.
 const SLIP_CSS = `
   @page { size: 80mm auto; margin: 0; }
   html, body { margin: 0; padding: 0; background: #fff; }
   body {
     width: 80mm; color: #000;
-    font-family: "SF Pro Text", -apple-system, "Segoe UI", system-ui, Roboto, sans-serif;
+    font-family: "Segoe UI", "SF Pro Text", -apple-system, system-ui, Roboto, Arial, sans-serif;
+    font-weight: 600;
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    -webkit-font-smoothing: none; text-rendering: geometricPrecision;
   }
-  .slip { width: 72mm; margin: 0 auto; padding: 3mm 0 2.5mm; }
-  .brand { display: flex; align-items: center; justify-content: center; gap: 1.6mm; margin-bottom: 0.4mm; }
-  .brand .name { font-weight: 800; letter-spacing: 0.18em; font-size: 11pt; }
-  .tag { text-align: center; font-size: 5.5pt; letter-spacing: 0.16em; text-transform: uppercase; color: #444; }
-  .rule { border: 0; border-top: 0.35mm dashed #000; margin: 2mm 0; }
-  .rule.solid { border-top: 0.45mm solid #000; }
-  .number { text-align: center; font-weight: 800; font-size: 34pt; line-height: 0.95; margin: 0.6mm 0 0.3mm; font-variant-numeric: tabular-nums; }
-  .numcap { text-align: center; font-size: 6pt; letter-spacing: 0.22em; text-transform: uppercase; color: #666; }
-  .item { text-align: center; }
-  .item .pname { font-size: 10pt; font-weight: 700; line-height: 1.25; }
-  .item .meta { font-size: 8pt; color: #222; margin-top: 0.8mm; }
-  .item .cust { font-size: 7.5pt; color: #333; margin-top: 1.2mm; }
-  .item .cust b { color: #000; font-weight: 700; }
-  .thanks { text-align: center; font-size: 7.5pt; line-height: 1.4; color: #444; }
-  .foot { text-align: center; }
-  .foot .store { font-size: 7pt; font-weight: 700; color: #111; }
-  .foot .when { font-size: 6pt; color: #777; margin-top: 0.3mm; }
-  .tear { text-align: center; color: #000; font-size: 6.5pt; letter-spacing: 0.3em; border-top: 0.35mm dashed #000; margin: 3mm 0 2.5mm; padding-top: 0.8mm; }
+  * { color: #000; opacity: 1; text-shadow: none; box-shadow: none; filter: none; background-image: none; }
+  svg, svg * { stroke: #000; }
+  .slip { width: 72mm; margin: 0 auto; padding: 3mm 0 2.5mm; text-align: center; }
+
+  .brand {
+    font-family: Impact, Haettenschweiler, "Arial Narrow Bold", "Arial Black", sans-serif;
+    font-weight: 900; font-size: 40pt; line-height: 0.92; letter-spacing: 0.01em;
+    text-transform: uppercase; margin: 0;
+  }
+  .tagrow { display: flex; align-items: center; justify-content: center; gap: 2mm; margin-top: 1.2mm; }
+  .tagrow svg { flex: none; }
+  .tag { font-size: 7pt; font-weight: 700; letter-spacing: 0.28em; text-transform: uppercase; white-space: nowrap; }
+
+  .pill {
+    display: inline-block; margin: 4mm auto 1.5mm; padding: 1.2mm 6mm;
+    border: 0.55mm solid #000; border-radius: 99px;
+    font-size: 8.5pt; font-weight: 800; letter-spacing: 0.24em; text-transform: uppercase;
+  }
+  .number {
+    font-family: "Arial Black", "Segoe UI Black", "SF Pro Display", -apple-system, sans-serif;
+    font-weight: 900; font-size: 60pt; line-height: 1; margin: 0.5mm 0 1mm;
+    font-variant-numeric: tabular-nums; letter-spacing: -0.01em; white-space: nowrap;
+  }
+  .number.long { font-size: 44pt; }
+  .number.xlong { font-size: 32pt; }
+
+  .item { border-top: 0.55mm solid #000; border-bottom: 0.55mm solid #000; padding: 1.8mm 0; margin: 1mm 0 3mm; }
+  .item .pname { font-size: 10pt; font-weight: 800; line-height: 1.2; }
+  .item .meta { font-size: 8.5pt; font-weight: 700; margin-top: 0.6mm; }
+
+  .prep { margin-top: 1mm; }
+  .hand {
+    font-family: "Segoe Print", "Bradley Hand", "Marker Felt", "Comic Sans MS", cursive;
+    font-weight: 700; font-size: 19pt; line-height: 1.05; margin: 0.5mm 0 0;
+    -webkit-text-stroke: 0.35pt #000; paint-order: stroke fill;
+    transform: rotate(-4deg);
+  }
+  .underline { display: block; margin: 1.6mm auto 0; }
+
+  .thanksrow { display: flex; align-items: center; gap: 2.5mm; margin-top: 4mm; text-align: left; }
+  .thanksrow svg { flex: none; }
+  .thanks { font-size: 8.5pt; font-weight: 600; line-height: 1.35; }
+  .thanks b { font-weight: 800; }
+
+  .foot { border-top: 0.55mm dashed #000; margin-top: 3.5mm; padding-top: 1.5mm; }
+  .foot .store { font-size: 8pt; font-weight: 800; }
+  .foot .when { font-size: 7pt; font-weight: 600; margin-top: 0.3mm; }
+  .tear { font-size: 7pt; font-weight: 700; letter-spacing: 0.3em; border-top: 0.55mm dashed #000; margin: 3mm 0 2.5mm; padding-top: 0.8mm; text-align: center; }
+
+  @media print {
+    * { color: #000 !important; opacity: 1 !important; text-shadow: none !important; box-shadow: none !important; }
+  }
 `;
 
-const MOUNTAIN = `<svg width="4.4mm" height="4.4mm" viewBox="0 0 24 24" fill="none" stroke="#000" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"><path d="M3 18 L9 8 L13 14 L17 6 L21 18 Z"/></svg>`;
+// Hand-drawn marks — thick round strokes so the thermal head reproduces them.
+const SWISH_L = `<svg width="9mm" height="3.2mm" viewBox="0 0 36 12" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round"><path d="M2 9 Q10 5 18 4 L9 9 Q20 7 30 5"/></svg>`;
+const SWISH_R = `<svg width="9mm" height="3.2mm" viewBox="0 0 36 12" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"><path d="M4 5 Q18 2 34 3"/><path d="M7 10 Q20 7 32 8"/></svg>`;
+const CHEF = `<svg width="30mm" height="15mm" viewBox="0 0 80 40" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M8 6 L14 16"/><path d="M4 18 L12 22"/><path d="M72 6 L66 16"/><path d="M76 18 L68 22"/>
+  <path d="M31 38 L31 27 C24 28 20 22 23 17 C25 12 31 11 34 13 C35 7 45 6 47 12 C51 9 58 12 57 18 C60 22 56 28 50 27 L50 38 Z"/>
+  <path d="M31 33 L50 33"/><path d="M37 25 L38 29"/><path d="M44 24 L43 29"/>
+</svg>`;
+const UNDERLINE = `<svg class="underline" width="26mm" height="2.4mm" viewBox="0 0 100 8" fill="none" stroke="#000" stroke-width="4" stroke-linecap="round"><path d="M4 5 Q50 1 96 3"/></svg>`;
+const CLOCK = `<svg width="15mm" height="13mm" viewBox="0 0 60 52" fill="none" stroke="#000" stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
+  <path d="M3 14 L9 15"/><path d="M2 26 L9 25"/><path d="M5 40 L11 35"/>
+  <circle cx="37" cy="26" r="19"/><path d="M37 14 L37 27 L45 33"/>
+</svg>`;
+
+function numberClass(num) {
+  const len = String(num).length;
+  return len >= 6 ? "number xlong" : len >= 4 ? "number long" : "number";
+}
 
 // One slip's inner markup.
 function slipMarkup(order, { etaMinutes = DEFAULT_ETA_MIN } = {}) {
   const num = escapeHtml(order?.id ?? "—");
+  const meta = [sizeText(order?.size), order?.customerName ? `For ${escapeHtml(order.customerName)}` : ""]
+    .filter(Boolean).join(" &nbsp;·&nbsp; ");
   return `
     <div class="slip">
-      <div class="brand">${MOUNTAIN}<span class="name">MARATHON</span></div>
-      <div class="tag">Order Slip</div>
-      <hr class="rule solid" />
-      <div class="number">${num}</div>
-      <div class="numcap">Order Number</div>
-      <hr class="rule" />
+      <div class="brand">Marathon</div>
+      <div class="tagrow">${SWISH_L}<span class="tag">Your Favorite Store</span>${SWISH_R}</div>
+      <div class="pill">Order Number</div>
+      <div class="${numberClass(order?.id ?? "—")}">${num}</div>
       <div class="item">
         <div class="pname">${escapeHtml(order?.productName || "Item")}</div>
-        <div class="meta">${sizeText(order?.size)}</div>
-        ${order?.customerName ? `<div class="cust">For <b>${escapeHtml(order.customerName)}</b></div>` : ""}
+        <div class="meta">${meta}</div>
       </div>
-      <hr class="rule" />
-      <div class="thanks">Thanks for your patience — we're picking &amp; packing your order right now. Grab a seat, we'll have you sorted in about ${escapeHtml(etaMinutes)} minutes.</div>
-      <hr class="rule" />
+      <div class="prep">
+        ${CHEF}
+        <div class="hand">We're preparing<br/>your order!</div>
+        ${UNDERLINE}
+      </div>
+      <div class="thanksrow">
+        ${CLOCK}
+        <div class="thanks">Thanks for allowing us to prepare your favorite pair. Please give us up to <b>${escapeHtml(etaMinutes)} minutes</b> and we'll call your number.</div>
+      </div>
       <div class="foot">
         <div class="store">${escapeHtml(storeLabel(order))}</div>
         <div class="when">${escapeHtml(formatWhen(order?.createdAt))}</div>
