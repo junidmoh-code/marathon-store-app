@@ -67,7 +67,7 @@ import {
 // live in eftCore.mjs; here is only the wiring. See handleEftMessage.
 import {
   EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
-  eftMessageKey, poolWriteDecision, eftPoolRecord,
+  eftMessageKey, createOnlyStep, eftPoolRecord,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, accountVerdict,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
@@ -786,7 +786,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
 // THE SAME NOTIFICATION NEVER CREATES TWO POOL RECORDS. Three layers:
 //   1. The record's node name IS the message's key (eftMessageKey) — a replay
 //      lands on the same node.
-//   2. The write is a CREATE-ONLY transaction (poolWriteDecision): an existing
+//   2. The write is a CREATE-ONLY transaction (createOnlyStep): an existing
 //      record — whatever status a later session has moved it to — is never
 //      overwritten.
 //   3. The shared claim at /card_batch_intake_seen/{key}, same discipline and
@@ -862,10 +862,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     if (!cfg.dryRun) {
       const forgery = eftPoolRecord({ message, verdict, parsed: null, account: null, reader: null, rawText: bodyText, at: serverNowMs() });
       let d = null;
-      await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => {
-        d = poolWriteDecision(cur, forgery);
-        return d.write ? d.value : undefined;
-      });
+      await db.ref(`${EFT_POOL_PATH}/${key}`).transaction(createOnlyStep(forgery, (x) => { d = x; }));
       if (d?.write) console.log(`  · EFT: refused-auth recorded (message also carries attachments — handed to the slip path)`);
     }
     return null;
@@ -1055,10 +1052,8 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   const written = [];
   for (const { poolKey, record } of outcomes) {
     let decision = null;
-    await db.ref(`${EFT_POOL_PATH}/${poolKey}`).transaction((cur) => {
-      decision = poolWriteDecision(cur, record);
-      return decision.write ? decision.value : undefined; // undefined = abort, keep what is there
-    });
+    // createOnlyStep: undefined = abort, keep what is there.
+    await db.ref(`${EFT_POOL_PATH}/${poolKey}`).transaction(createOnlyStep(record, (d) => { decision = d; }));
     if (decision?.write) written.push(record);
   }
   // The claim flips to done AFTER the pool writes. A crash between costs a
@@ -1155,8 +1150,12 @@ async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity,
     unknownBankThisRun += 1;
     return;
   }
-  const written = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((existing) => poolWriteDecision(existing, record));
-  if (!written.committed || !written.snapshot.exists()) return;   // an earlier tick already noted it
+  // createOnlyStep, never poolWriteDecision itself: the wrapper used to be
+  // RETURNED to the transaction, storing {write,value} as the row and
+  // overwriting an existing record (a refusal — evidence) with {write:false}.
+  let decision = null;
+  await db.ref(`${EFT_POOL_PATH}/${key}`).transaction(createOnlyStep(record, (d) => { decision = d; }));
+  if (!decision?.write) return;   // an earlier tick already noted it — and that row is untouched
   unknownBankThisRun += 1;
   console.log(`  · EFT: unknown-bank — payment-shaped mail from ${fromDomain}, which is not a bank this pool knows. Nothing was read from it.`);
 }

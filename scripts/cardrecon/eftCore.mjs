@@ -589,6 +589,29 @@ export function poolWriteDecision(existing, record) {
   return { write: true, value: record };
 }
 
+/**
+ * THE TRANSACTION BODY for every create-only pool write — hand THIS to
+ * ref.transaction(), never poolWriteDecision itself. The decision is a
+ * {write, value|why} wrapper; a transaction stores whatever its update function
+ * returns, so returning the wrapper stored {write:true, value:{…}} as a new row
+ * and, worse, OVERWROTE an existing row with {write:false, why:…} — a refusal
+ * record, the only evidence of an attack, destroyed by the next sighting of the
+ * same message (EFT interrogation J, email-poller.mjs's unknown-bank path).
+ *
+ * Returns the record for an empty node and `undefined` (abort, keep what is
+ * there) for an occupied one. A cold-cache null first call writing the record
+ * is correct: the server's compare-and-swap fails against a real existing
+ * value and the function re-runs with it, which then aborts.
+ * `capture` receives every run's decision; the last one is authoritative.
+ */
+export function createOnlyStep(record, capture = () => {}) {
+  return (existing) => {
+    const d = poolWriteDecision(existing, record);
+    capture(d);
+    return d.write ? d.value : undefined;
+  };
+}
+
 // ─── THE RECORD ──────────────────────────────────────────────────────────────
 /**
  * One pool record, exactly as stored at /eft_pool/{eftKey}.

@@ -17,6 +17,7 @@ import {
   maskAccountValue, looksPaymentShaped,
   eftMessageKey, poolWriteDecision, eftPoolRecord, eftRetryPlan, applyEvictions, mergeEvictions,
   eftMessageRoute, looksLikeStrangerPayment, unknownBankRecord, UNKNOWN_BANK_RAW_LIMIT,
+  createOnlyStep,
 } from "./eftCore.mjs";
 
 // Verbatim from the real message (uid 6, "Banking Report for Batch 16 of
@@ -384,6 +385,60 @@ describe("identity — the same notification never lands twice", () => {
   });
 });
 
+// ─── FIX 6: AN EVIDENCE ROW IS NEVER OVERWRITTEN ─────────────────────────────
+// The stranger path's transaction returned poolWriteDecision's WRAPPER, not its
+// value: a new unknown-bank row landed as {write:true, value:{…}}, and an
+// existing record at that key — a refusal, the only evidence of an attack —
+// was replaced by {write:false, why:…}. Every create-only pool write now goes
+// through createOnlyStep, the transaction update function itself, so the
+// shape the database receives is what this test asserts.
+describe("createOnlyStep — the create-only transaction body (fix 6)", () => {
+  // A miniature RTDB transaction: undefined aborts, anything else is stored.
+  const runTxn = (store, key, update) => {
+    const out = update(store[key] ?? null);
+    if (out !== undefined) store[key] = out;
+    return out;
+  };
+  const record = { outcome: "unknown-bank", fromDomain: "discoverybank.co.za", at: 5 };
+  const refusal = { outcome: "refused-auth", reason: "Failed authentication: forgery", at: 1 };
+
+  it("BEFORE: returning poolWriteDecision itself stored the wrapper and destroyed a refusal", () => {
+    const store = { k: { ...refusal } };
+    runTxn(store, "k", (existing) => poolWriteDecision(existing, record)); // the old line 1158
+    expect(store.k).toEqual({ write: false, why: "a record for this message already exists" });
+    const fresh = {};
+    runTxn(fresh, "n", (existing) => poolWriteDecision(existing, record));
+    expect(fresh.n.write).toBe(true); // the wrapper, not the row
+  });
+
+  it("AFTER: a new key stores the record itself", () => {
+    const store = {};
+    runTxn(store, "n", createOnlyStep(record));
+    expect(store.n).toEqual(record);
+  });
+
+  it("AFTER: an existing refusal row is left byte-for-byte as it was", () => {
+    const store = { k: { ...refusal } };
+    const out = runTxn(store, "k", createOnlyStep(record));
+    expect(out).toBeUndefined();
+    expect(store.k).toEqual(refusal);
+  });
+
+  it("reports the decision it took, so the caller can count what it wrote", () => {
+    const seen = [];
+    createOnlyStep(record, (d) => seen.push(d.write))(null);
+    createOnlyStep(record, (d) => seen.push(d.write))({ outcome: "recorded" });
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("no pool write anywhere in the poller hands the wrapper to a transaction", () => {
+    const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
+    expect(src).not.toMatch(/\.transaction\(\s*\(\w*\)\s*=>\s*poolWriteDecision\(/);
+    expect(src).not.toMatch(/poolWriteDecision\(/);
+    expect((src.match(/\.transaction\(createOnlyStep\(/g) ?? []).length).toBe(3);
+  });
+});
+
 describe("the pool record", () => {
   const message = { messageId: "<m@x>", from: `<${REAL_FROM}>`, subject: "Payment notification", receivedAt: 1788093716654 };
   const passVerdict = { pass: true, fromDomain: "fnb.co.za", dkimDomain: "fnb.co.za", detail: "dkim=pass, signed by fnb.co.za, aligned with fnb.co.za" };
@@ -734,7 +789,11 @@ describe("the stranger path stays a bystander", () => {
   });
 
   it("writes create-only — a replay lands on the same node and finds it there", () => {
-    expect(body).toMatch(/poolWriteDecision\(existing, record\)/);
+    // Through createOnlyStep, which unwraps the decision. The transaction used
+    // to RETURN poolWriteDecision(...) itself — the {write, value} wrapper — so
+    // a new row was stored as the wrapper and an EXISTING row (a refusal, the
+    // evidence) was overwritten with {write:false, why}. (EFT interrogation J.)
+    expect(body).toMatch(/\.transaction\(createOnlyStep\(record/);
     expect(body).toMatch(/eftMessageKey\(/);
   });
 
