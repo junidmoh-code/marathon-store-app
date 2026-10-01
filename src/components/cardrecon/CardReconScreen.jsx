@@ -553,7 +553,7 @@ export default function CardReconScreen({ onExit }) {
                 /* A typed-total till says what it wants, because a camera
                    glyph would be a lie and a blank card reads as "nothing to
                    do here" — the one thing it must not say. */
-                : typedOnly ? <span style={T.typedHint}>{isOwner ? "Type total" : "Junid types this"}</span> : null}
+                : typedOnly ? <span style={T.typedHint}>Type total</span> : null}
             </>
           );
           return (
@@ -564,7 +564,7 @@ export default function CardReconScreen({ onExit }) {
                         onClick={() => { setTyped(null); setChooserFor(chooserFor === t.tid ? null : t.tid); }}>
                   {face}
                 </button>
-              ) : typedOnly && isOwner ? (
+              ) : typedOnly ? (
                 <button type="button" style={{ ...cardStyle, ...T.cardButton }} disabled={busy}
                         aria-expanded={!!typed && typed.tid === t.tid}
                         onClick={() => { setChooserFor(null);
@@ -623,11 +623,11 @@ export default function CardReconScreen({ onExit }) {
                 </div>
               )}
               {/* A TYPED-TOTAL MACHINE — one box, one button, no photo step.
-                  OWNER ONLY: staff get no manual-typing capture route
-                  (standing rule, 1 Oct 2026). Everyone else sees the card and
-                  who captures it, and nothing to tap. The server holds the
-                  same line. */}
-              {typedOnly && isOwner && typed && typed.tid === t.tid && (
+                  Open to anyone who can reach this screen: it is the machine's
+                  ONLY capture route, so gating it on the owner would mean the
+                  till simply does not reconcile on an evening he is not here
+                  (Junid, 1 Oct 2026). The server holds the same line. */}
+              {typedOnly && typed && typed.tid === t.tid && (
                 <div style={T.sheet} data-testid="typed-only">
                   <div style={T.step}>Total on the machine</div>
                   <input style={T.typeInput} inputMode="decimal" autoComplete="off" enterKeyHint="done"
