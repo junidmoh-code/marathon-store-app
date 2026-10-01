@@ -128,6 +128,7 @@ import { alternativesForSize, alternativeSelection, MAX_ALTERNATIVES_SHOWN } fro
 import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
 import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
+import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./components/stock/alternativesTelemetry";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -8553,7 +8554,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
-                            alternativesFor,
+                            alternativesFor, onAlternativesShown, onAlternativePicked,
                             deadForOrder = isDeactivated }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
@@ -9139,7 +9140,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               return (
                                 <AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}
                                                    requestedSize={qvNa.size}
-                                                   onPick={(row) => pickQvAlternative(row, qvNa.size)} />
+                                                   onShown={() => onAlternativesShown?.("quickview", qv, qvNa.size, alt)}
+                                                   onPick={(row) => { onAlternativePicked?.("quickview", qv, qvNa.size, row); pickQvAlternative(row, qvNa.size); }} />
                               );
                             })()}
                           </>
@@ -10278,6 +10280,20 @@ function AssistantView({ products, onExit, orders = [] }) {
     };
   };
 
+  // ── TELEMETRY, LOG ONLY (alternativesTelemetry.js) ─────────────────────────
+  // One row per sheet open and one per alternative taken, to /alternatives_log
+  // for Junid's monthly review. NOTHING READS IT BACK INTO THE RANKING.
+  // `ts` is serverNowMs(), never Date.now(): the rule validates it against
+  // `now`. Fire-and-forget: a refused write costs a console line, never a sale.
+  const logAlternatives = (entry) => {
+    if (!entry) return;
+    push(ref(database, ALTERNATIVES_LOG_PATH), entry)
+      .catch((err) => console.warn("alternatives_log write failed:", err?.message || err));
+  };
+  const logAlternativesShown = (surface, product, size, result) =>
+    logAlternatives(shownEntry({ ts: serverNowMs(), shop: effectiveShop, surface, product, size, result }));
+  const logAlternativePicked = (surface, product, size, row) =>
+    logAlternatives(pickedEntry({ ts: serverNowMs(), shop: effectiveShop, surface, product, size, row }));
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -11021,7 +11037,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
           hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayInfo={sneakerDisplayInfo}
-          alternativesFor={alternativesFor} />
+          alternativesFor={alternativesFor}
+          onAlternativesShown={logAlternativesShown} onAlternativePicked={logAlternativePicked} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -11433,7 +11450,8 @@ function AssistantView({ products, onExit, orders = [] }) {
                       return (
                         <AlternativesStrip key={`${selected.id}|${naNote.size}`} rows={alt ? alt.rows : null}
                                            requestedSize={naNote.size}
-                                           onPick={pickAlternative} />
+                                           onShown={() => logAlternativesShown("sheet", selected, naNote.size, alt)}
+                                           onPick={(row) => { logAlternativePicked("sheet", selected, naNote.size, row); pickAlternative(row); }} />
                       );
                     })()}
                   </>

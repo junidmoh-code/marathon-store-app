@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { formatSize } from "../../utils/sizeLabel";
 import { MirroredImg } from "../../offline/MirroredImg.jsx";
 
@@ -26,8 +27,18 @@ import { MirroredImg } from "../../offline/MirroredImg.jsx";
 // customer's original size comes with them when the shoe has it; when it does
 // not, the shoe opens on its own size grid with nothing chosen, because
 // pre-choosing a size nobody asked for is how a wrong pair gets ordered.
-export function AlternativesStrip({ rows, requestedSize, onPick, compact = false }) {
+export function AlternativesStrip({ rows, requestedSize, onPick, onShown, compact = false }) {
+  // Telemetry hook, log only: fired once per (shoe, size) the strip is shown
+  // for, after availability has answered. Never feeds back into the rows.
+  const shownFor = useRef("");
   const answered = Array.isArray(rows);
+  useEffect(() => {
+    if (!answered || !onShown) return;
+    const k = String(requestedSize ?? "");
+    if (shownFor.current === k) return;
+    shownFor.current = k;
+    onShown();
+  });
   if (!answered) return null;
   if (!rows.length) {
     if (!requestedSize) return null;

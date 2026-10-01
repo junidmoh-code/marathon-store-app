@@ -65,6 +65,16 @@ test("…and still renders nothing when no size was asked for", () => {
   expect(render({ rows: [], requestedSize: "" }).toJSON()).toBe(null);
 });
 
+test("onShown fires once per open, only after the answer arrives", () => {
+  const onShown = vi.fn();
+  let tree;
+  act(() => { tree = create(<AlternativesStrip rows={null} requestedSize="8" onPick={() => {}} onShown={onShown} />); });
+  expect(onShown).not.toHaveBeenCalled();
+  act(() => { tree.update(<AlternativesStrip rows={[ROW()]} requestedSize="8" onPick={() => {}} onShown={onShown} />); });
+  act(() => { tree.update(<AlternativesStrip rows={[]} requestedSize="8" onPick={() => {}} onShown={onShown} />); });
+  expect(onShown).toHaveBeenCalledTimes(1);
+});
+
 test("the size badge shows the chosen shoe's own label for the size", () => {
   expect(textOf(render({ rows: [ROW({ matchedSize: "8.5" })], requestedSize: "8_5" }))).toContain("Size 8.5");
 });

@@ -188,3 +188,20 @@ describe("taking an alternative never returns to the catalogue", () => {
     expect(body).toContain("if (pick.size) setQvSize(pick.size);");
   });
 });
+
+describe("telemetry is wired on both sheets, and is log only", () => {
+  it("both surfaces log the open and the pick", () => {
+    expect(APP).toContain('onShown={() => logAlternativesShown("sheet", selected, naNote.size, alt)}');
+    expect(APP).toContain('onShown={() => onAlternativesShown?.("quickview", qv, qvNa.size, alt)}');
+    expect(APP).toContain('logAlternativePicked("sheet", selected, naNote.size, row); pickAlternative(row);');
+    expect(APP).toContain('onAlternativePicked?.("quickview", qv, qvNa.size, row); pickQvAlternative(row, qvNa.size);');
+  });
+  it("the log is written, never read", () => {
+    const reads = APP.split("\n").filter((l) => /ALTERNATIVES_LOG_PATH|alternatives_log/.test(l) && /\b(get|onValue|query|onChild\w*)\(/.test(l));
+    expect(reads).toEqual([]);
+  });
+  it("its timestamp is server time", () => {
+    expect(APP).toContain("shownEntry({ ts: serverNowMs(),");
+    expect(APP).toContain("pickedEntry({ ts: serverNowMs(),");
+  });
+});
