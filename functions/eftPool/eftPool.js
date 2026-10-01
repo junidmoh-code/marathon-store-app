@@ -90,6 +90,7 @@ const {
 } = require("../lib/eft-settle.cjs");
 const {
   EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck, paymentFingerprint,
+  EFT_FP_BACKFILL_PATH, EFT_FP_BACKFILL_PAGE, backfillSpentStep,
 } = require("../lib/eft-fingerprint.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
@@ -242,7 +243,7 @@ async function checkPaymentFingerprint(key, now) {
   let claim = null;
   await db.ref(`${EFT_FINGERPRINT_PATH}/${check.fingerprint}`)
     .transaction(fingerprintClaimStep(key, now, (d) => { claim = d; }));
-  const holder = claimHolderCheck({ poolKey: key, holder: claim?.holder ?? null });
+  const holder = claimHolderCheck({ poolKey: key, holder: claim?.holder ?? null, spentBy: claim?.spentBy ?? null });
   if (!holder.ok) {
     console.warn(`eftPoolSettle: ${holder.code} on ${key} — fingerprint held by ${claim?.holder ?? "nothing usable"}`);
     throw refusalToError(holder);
@@ -720,6 +721,33 @@ exports.eftRemainderScan = onSchedule(
         console.error(`EFT_REMAINDER_STUCK: ${key} could not be finished —`, err?.message || err);
       }
     }
+    // FIX 1, ONE-TIME BACKFILL: spent pre-fix payments stamp their claims.
+    // One bounded page per run (orderByKey + startAfter cursor), never the
+    // node; a sentinel says when it is done and it never runs again.
+    let backfilled = 0;
+    try {
+      const state = (await db.ref(EFT_FP_BACKFILL_PATH).once("value")).val() || {};
+      if (state.done !== true) {
+        let q = db.ref(EFT_POOL_PATH).orderByKey();
+        if (typeof state.cursor === "string") q = q.startAfter(state.cursor);
+        const page = (await q.limitToFirst(EFT_FP_BACKFILL_PAGE).once("value")).val() || {};
+        const keys = Object.keys(page).sort();
+        for (const k of keys) {
+          const rec = page[k];
+          if (rec?.outcome !== "recorded" || rec.status !== "used") continue;
+          const fp = paymentFingerprint(rec);
+          if (!fp) continue;
+          await db.ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(backfillSpentStep(k, now));
+          backfilled++;
+        }
+        await db.ref(EFT_FP_BACKFILL_PATH).set(keys.length < EFT_FP_BACKFILL_PAGE
+          ? { done: true, at: now, cursor: keys[keys.length - 1] ?? state.cursor ?? null }
+          : { done: false, at: now, cursor: keys[keys.length - 1] });
+      }
+    } catch (err) {
+      console.error("EFT_FP_BACKFILL_STUCK:", err?.message || err);
+    }
+
     // FIX 5, LATER HALF: attaches made before their sale reached the server.
     const checks = (await db.ref(SALE_CHECK_PATH).once("value")).val() || {};
     let verified = 0, flagged = 0;
@@ -753,6 +781,6 @@ exports.eftRemainderScan = onSchedule(
         console.error(`EFT_SALE_CHECK_STUCK: ${key} could not be checked —`, err?.message || err);
       }
     }
-    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged }));
+    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, backfilled }));
   },
 );

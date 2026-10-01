@@ -12,7 +12,7 @@ const assert = require("node:assert/strict");
 
 const {
   paymentFingerprint, normaliseBankRef, fingerprintClaimStep,
-  consumeFingerprintCheck, claimHolderCheck,
+  consumeFingerprintCheck, claimHolderCheck, backfillSpentStep,
 } = require("../lib/eft-fingerprint.cjs");
 const { settleDecision, releaseHoldDecision, markUsedOutsidePosDecision } = require("../lib/eft-settle.cjs");
 
@@ -172,4 +172,25 @@ test("a payment RECORDED before fix 1 with no bank id is releasable too — neve
   assert.equal(r.value.releasedFromHold.from, "recorded-before-fix");
   assert.equal(releaseHoldDecision(r.value, { at: 10, by: "o", reason: "again" }).code, "not-held", "once released, not again");
   assert.equal(releaseHoldDecision(original, { at: 9, by: "o", reason: "has an id" }).code, "not-held");
+});
+
+// CodeRabbit (this PR): a payment USED before fix 1 has no claim; once it
+// scrolls out of the settle's sibling window a resend could claim and spend.
+test("BACKFILL: a spent pre-fix payment stamps spentBy, and every other copy then refuses", () => {
+  const db = makeDb();
+  const fp = paymentFingerprint(original);
+  // The resend arrived and claimed first (the original is outside the window).
+  db.transaction(`fp/${fp}`, fingerprintClaimStep(KEY_B, 2000));
+  db.transaction(`fp/${fp}`, backfillSpentStep(KEY_A, 3000));
+  assert.deepEqual(db.data[`fp/${fp}`], { poolKey: KEY_B, at: 2000, spentBy: KEY_A, backfilledAt: 3000 }, "holder never moved; spentBy added");
+  let claim = null;
+  db.transaction(`fp/${fp}`, fingerprintClaimStep(KEY_B, 4000, (d) => { claim = d; }));
+  assert.equal(claimHolderCheck({ poolKey: KEY_B, holder: claim.holder, spentBy: claim.spentBy }).code, "duplicate-used");
+  // A fresh fingerprint is created already spent.
+  const db2 = makeDb();
+  db2.transaction("fp/x", backfillSpentStep(KEY_A, 5));
+  assert.deepEqual(db2.data["fp/x"], { poolKey: KEY_A, at: 5, spentBy: KEY_A, backfilledAt: 5 });
+  // The spender itself is not refused, and a second backfill pass changes nothing.
+  assert.equal(claimHolderCheck({ poolKey: KEY_A, holder: KEY_A, spentBy: KEY_A }).ok, true);
+  assert.equal(backfillSpentStep(KEY_B, 9)({ poolKey: KEY_A, spentBy: KEY_A }), undefined);
 });

@@ -233,3 +233,13 @@ test("a payment with no bank id that the owner never released says so (needsOwne
   assert.equal(publicEftView("k", recorded()).needsOwner, false);
   assert.equal(publicEftView("k", recorded({ bankRef: null, releasedFromHold: { at: 1 } })).needsOwner, false);
 });
+
+test("a used copy with a DIFFERENT reference still decides the group (CodeRabbit)", () => {
+  const pool = {
+    spent: recorded({ at: 1, reference: "ORIGINALREF", bankRef: "5TG59DVQ", reader: "fnb", status: "used", used: { at: 2, sale: { receiptNumber: "7" } } }),
+    resend: recorded({ at: 3, reference: "JUNID1234", bankRef: "5TG59DVQ", reader: "fnb" }),
+  };
+  const out = searchEftPool(pool, "junid1234");
+  assert.deepEqual(out.results.map((r) => r.key), ["spent"]);
+  assert.equal(out.results[0].status, "used");
+});

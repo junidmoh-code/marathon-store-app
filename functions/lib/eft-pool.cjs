@@ -166,10 +166,18 @@ function matchOf(record, plan) {
  * the OLDEST copy does — the one the settle's fingerprint claim will favour.
  * Payments with no fingerprint stay as they are.
  */
-function collapseCopies(hits) {
+function collapseCopies(hits, allPayments = []) {
+  // A copy that did NOT match the query still decides the group's state: a
+  // pre-fix resend can carry a different reference from the spent original
+  // (CodeRabbit, this PR). Every payment sharing a matched fingerprint joins
+  // its group before the representative is chosen.
+  const matchedFps = new Set(hits.map((h) => paymentFingerprint(h.record)).filter(Boolean));
+  const extra = allPayments
+    .filter(([key, record]) => matchedFps.has(paymentFingerprint(record)) && !hits.some((h) => h.key === key))
+    .map(([key, record]) => ({ key, record, on: hits.find((h) => paymentFingerprint(h.record) === paymentFingerprint(record)).on }));
   const byFp = new Map();
   const out = [];
-  for (const h of hits) {
+  for (const h of [...hits, ...extra]) {
     const fp = paymentFingerprint(h.record);
     if (!fp) { out.push(h); continue; }
     const cur = byFp.get(fp);
@@ -203,7 +211,7 @@ function searchEftPool(poolTail, query) {
   if (plan.tooShort) return { results: [], searched, needQuery: true };
   const hits = payments.map(([key, record]) => ({ key, record, on: matchOf(record, plan) })).filter((h) => h.on);
   const exact = hits.filter((h) => h.on !== "near");
-  const candidates = collapseCopies(exact.length ? exact : hits);
+  const candidates = collapseCopies(exact.length ? exact : hits, payments);
   if (!candidates.length) return { results: [], searched };
   const unmatched = candidates.filter((h) => h.record.status === "unmatched");
   const pick = unmatched.length === 1 ? unmatched[0]

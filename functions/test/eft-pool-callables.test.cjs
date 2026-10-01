@@ -30,6 +30,12 @@ const fakeAdmin = {
     ref: (path) => ({
       once: async () => ({ val: () => (path.startsWith("eft_pool") ? (dbState.poolReads++, dbState.pool[path] ?? {}) : (dbState.reads[path] ?? null)) }),
       orderByChild: () => ({ limitToLast: () => ({ once: async () => { dbState.poolReads++; return { val: () => dbState.tail }; } }) }),
+      // The one-time fingerprint backfill pages /eft_pool by key.
+      orderByKey: () => {
+        const q = { startAfter: (c) => { dbState.backfillCursor = c; return q; }, limitToFirst: (n) => { dbState.backfillLimit = n; return q; },
+          once: async () => ({ val: () => dbState.backfillPage ?? null }) };
+        return q;
+      },
       // The update function is RUN, against whatever record the test stands up
       // at dbState.txCurrent (null by default — the Admin SDK's cold-cache
       // first call), so a test can assert what would actually be written.
@@ -46,7 +52,7 @@ const fakeAdmin = {
         dbState.txNext = typeof fn === "function" ? fn(dbState.txCurrent ?? null) : undefined;
         return { committed: false };
       },
-      set: async () => {}, remove: async () => {}, update: async () => {},
+      set: async (v) => { (dbState.sets ??= {})[path] = v; }, remove: async () => {}, update: async () => {},
     }),
     getRules: async () => "{}",
   }), { ServerValue: { TIMESTAMP: { ".sv": "timestamp" } } }),
@@ -363,5 +369,25 @@ test("the scan verifies an attach made before its sale reached the server — an
   assert.equal(dbState.txNext?.used?.sale?.verified, true);
   delete dbState.reads["eft_pending_sale_checks"];
   delete dbState.reads["pos/sales/S-late"];
+  resetPool();
+});
+
+test("the scan backfills spent pre-fix payments one bounded page at a time, then stops", async () => {
+  resetPool();
+  delete dbState.reads["_migrations/eftFingerprintBackfill"];
+  dbState.backfillPage = { [K1]: { ...PAY, status: "used", used: {} }, [K2]: { ...PAY, bankRef: "OTHER999" }, z: { outcome: "refused-auth" } };
+  dbState.sets = {};
+  await eftRemainderScan();
+  const fp = paymentFingerprint(PAY);
+  assert.deepEqual(dbState.fingerprints[`eft_pool_fingerprints/${fp}`].spentBy, K1, "the used one is stamped");
+  assert.equal(Object.keys(dbState.fingerprints).length, 1, "unused and refused records are not");
+  assert.equal(dbState.backfillLimit, 100);
+  assert.equal(dbState.sets["_migrations/eftFingerprintBackfill"].done, true, "a short page ends it");
+  dbState.reads["_migrations/eftFingerprintBackfill"] = { done: true };
+  dbState.backfillLimit = null;
+  await eftRemainderScan();
+  assert.equal(dbState.backfillLimit, null, "never runs again");
+  delete dbState.reads["_migrations/eftFingerprintBackfill"];
+  dbState.backfillPage = null;
   resetPool();
 });

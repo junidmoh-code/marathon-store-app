@@ -70,7 +70,7 @@ function paymentFingerprint({ reader, bankRef } = {}) {
 function fingerprintClaimStep(poolKey, at, capture = () => {}) {
   return (existing) => {
     if (existing && typeof existing === "object" && typeof existing.poolKey === "string") {
-      capture({ holder: existing.poolKey });
+      capture({ holder: existing.poolKey, spentBy: typeof existing.spentBy === "string" ? existing.spentBy : null });
       return undefined;
     }
     if (existing !== null && existing !== undefined) {
@@ -117,8 +117,16 @@ function consumeFingerprintCheck({ poolKey, record, siblings }) {
   return { ok: true, fingerprint: fp };
 }
 
-/** The claim says who may spend this transaction; it must be this record. */
-function claimHolderCheck({ poolKey, holder }) {
+/** The claim says who may spend this transaction; it must be this record —
+ *  and no OTHER record may already have spent it (`spentBy`, stamped by the
+ *  backfill for payments used before fix 1, which had no claim). */
+function claimHolderCheck({ poolKey, holder, spentBy = null }) {
+  if (spentBy && spentBy !== poolKey) {
+    return {
+      ok: false, code: "duplicate-used",
+      message: "This is a second copy of a payment that has ALREADY been used (the bank's transaction id matches). It cannot settle a sale.",
+    };
+  }
   if (holder === poolKey) return { ok: true };
   return {
     ok: false, code: "duplicate",
@@ -126,7 +134,29 @@ function claimHolderCheck({ poolKey, holder }) {
   };
 }
 
+// ─── THE ONE-TIME BACKFILL: payments USED before fix 1 ──────────────────────
+// Records written before the fix carry no claim, and the settle's sibling
+// check sees only the pool's latest window — so once a spent pre-fix payment
+// scrolled out of it, a resend could claim the fingerprint and be spent again
+// (CodeRabbit, this PR). eftRemainderScan walks /eft_pool once, a bounded page
+// per run, and for every USED payment stamps `spentBy` on its fingerprint's
+// claim (creating the claim for it when none exists). The claim's holder is
+// never moved; spentBy alone makes every other copy refuse.
+const EFT_FP_BACKFILL_PATH = "_migrations/eftFingerprintBackfill";
+const EFT_FP_BACKFILL_PAGE = 100;
+
+function backfillSpentStep(poolKey, at) {
+  return (existing) => {
+    if (existing === null || existing === undefined) return { poolKey, at, spentBy: poolKey, backfilledAt: at };
+    if (typeof existing !== "object" || typeof existing.spentBy === "string") return undefined;
+    return { ...existing, spentBy: poolKey, backfilledAt: at };
+  };
+}
+
 module.exports = {
+  EFT_FP_BACKFILL_PATH,
+  EFT_FP_BACKFILL_PAGE,
+  backfillSpentStep,
   EFT_FINGERPRINT_PATH,
   MIN_BANK_REF_CHARS,
   normaliseBankRef,
