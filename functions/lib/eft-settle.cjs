@@ -74,6 +74,21 @@ function settleDecision(current, settlement) {
     || !Number.isInteger(current.amountCents) || s.appliedCents > current.amountCents) {
     return refuse("bad-amount", "The amount applied to the sale must be within what the customer actually paid.");
   }
+  // WHOSE PAYMENT IS THIS? (fix 3). A till settle consumes a payment only for
+  // a customer the cashier EXPLICITLY confirmed as the payer — attached to the
+  // sale, resolved server-side against /customers (the callable stamps
+  // customerResolved; the till's own name for them is never used), and
+  // confirmed by id. A payment is never applied on its amount alone, and never
+  // to a sale nobody is named on. The owner's mark-as-used has no customer and
+  // pays nothing out, so it is exempt.
+  if (s.outsidePos !== true) {
+    if (typeof s.customerId !== "string" || !s.customerId || s.customerResolved !== true) {
+      return refuse("no-customer", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.");
+    }
+    if (s.confirmedCustomerId !== s.customerId) {
+      return refuse("not-confirmed", "Confirm that this payment belongs to the customer on the sale before using it.");
+    }
+  }
   // THE BANK'S TRANSACTION ID, RE-CHECKED INSIDE THE TRANSACTION (fix 1). The
   // callable verified the fingerprint claim and the siblings against the value
   // it read; this re-derives the fingerprint from the value being COMMITTED
@@ -112,6 +127,9 @@ function settleDecision(current, settlement) {
         tillId: s.tillId ?? null,
         customerId: s.customerId ?? null,
         customerName: s.customerName ?? null,
+        // The customer was resolved against /customers AND confirmed at the
+        // till (fix 3) — only such a settlement may mint remainder credit.
+        ...(s.outsidePos === true ? {} : { customerConfirmed: true }),
         appliedCents: s.appliedCents,
         sale: null, // the sale attaches only after it has committed
       },
@@ -168,8 +186,10 @@ function markUsedOutsidePosDecision(current, mark) {
     customerName: null,
     appliedCents: current?.amountCents,
     // Marking a payment used pays nothing out — no sale, no remainder — so a
-    // payment without a bank transaction id may still be closed off this way.
+    // payment without a bank transaction id may still be closed off this way,
+    // and there is no customer to confirm.
     fingerprintExempt: true,
+    outsidePos: true,
   });
   if (!base.ok || base.already) return base;
   return {

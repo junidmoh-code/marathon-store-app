@@ -49,7 +49,8 @@ const KEY_B = "b".repeat(40);
 
 const settlement = (fp, over = {}) => ({
   attemptId: "P-1", at: 5000, cashierUid: "u1", cashierName: "Ahmed",
-  customerId: "c1", customerName: "Mr Dlamini", appliedCents: 50000, fingerprint: fp, ...over,
+  customerId: "c1", customerName: "Mr Dlamini", customerResolved: true, confirmedCustomerId: "c1",
+  appliedCents: 50000, fingerprint: fp, ...over,
 });
 
 test("the fingerprint is the bank's id, namespaced by bank, blind to case and spacing", () => {

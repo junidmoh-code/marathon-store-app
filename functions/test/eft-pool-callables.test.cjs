@@ -214,7 +214,8 @@ const { paymentFingerprint } = require("../lib/eft-fingerprint.cjs");
 const PAY = { outcome: "recorded", status: "unmatched", amountCents: 50000, at: 1, reader: "fnb", bankRef: "5TG59DVQ", reference: "JUNID1234", payer: "J SOAP" };
 const K1 = "1".repeat(40);
 const K2 = "2".repeat(40);
-const settleReq = (key, over = {}) => ({ ...CASHIER, data: { action: "settle", poolKey: key, attemptId: "P-1", appliedCents: 50000, ...over } });
+const settleReq = (key, over = {}) => ({ ...CASHIER, data: { action: "settle", poolKey: key, attemptId: "P-1", appliedCents: 50000, customerId: "0821234567", confirmedCustomerId: "0821234567", ...over } });
+dbState.reads["customers/0821234567"] = { name: "Mr Dlamini" };
 function resetPool() {
   dbState.pool = {}; dbState.tail = {}; dbState.fingerprints = {}; dbState.txPaths = []; dbState.transactions = 0; dbState.txCurrent = null;
 }
@@ -268,5 +269,42 @@ test("releaseHold is the OWNER alone", async () => {
   await eftPoolSettle({ ...OWNER, data: { action: "releaseHold", poolKey: K1, reason: "on FNB statement" } }).catch(() => {});
   assert.equal(dbState.txNext?.outcome, "recorded");
   assert.equal(dbState.txNext?.releasedFromHold?.reason, "on FNB statement");
+  resetPool();
+});
+
+// ─── FIX 3: A PAYMENT IS APPLIED ONLY TO A CONFIRMED, RESOLVED CUSTOMER ──────
+test("settle with no customer on the sale is refused before anything is read or claimed", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  const e = await rejects(eftPoolSettle(settleReq(K1, { customerId: null, confirmedCustomerId: null })), "failed-precondition");
+  assert.equal(e.details.code, "no-customer");
+  assert.deepEqual(dbState.txPaths, []);
+});
+
+test("settle without the cashier's explicit confirmation of THAT customer is refused", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  for (const confirmedCustomerId of [undefined, null, "", "0829999999"]) {
+    const e = await rejects(eftPoolSettle(settleReq(K1, { confirmedCustomerId })), "failed-precondition");
+    assert.equal(e.details.code, "not-confirmed");
+  }
+  assert.deepEqual(dbState.txPaths, []);
+});
+
+test("settle refuses a customer id that is not a real customer record", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  await rejects(eftPoolSettle(settleReq(K1, { customerId: "0820000000", confirmedCustomerId: "0820000000" })), "not-found");
+  assert.deepEqual(dbState.txPaths, []);
+});
+
+test("the settlement names the customer from /customers, never the till's text", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.txCurrent = PAY;
+  await eftPoolSettle(settleReq(K1, { customerName: "Somebody Else" })).catch(() => {});
+  assert.equal(dbState.txNext?.used?.customerName, "Mr Dlamini");
+  assert.equal(dbState.txNext?.used?.customerId, "0821234567");
+  assert.equal(dbState.txNext?.used?.customerConfirmed, true);
   resetPool();
 });

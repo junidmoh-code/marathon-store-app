@@ -70,12 +70,14 @@ const tillA = {
   fingerprint: FP,
   attemptId: "P-a1", at: 5000, cashierUid: "uA", cashierName: "Ahmed",
   storeId: "pe", tillId: "till1", customerId: "c1", customerName: "Mr Dlamini",
+  customerResolved: true, confirmedCustomerId: "c1",
   appliedCents: 55000,
 };
 const tillB = {
   fingerprint: FP,
   attemptId: "P-b1", at: 5001, cashierUid: "uB", cashierName: "Sipho",
-  storeId: "cr", tillId: "till2", customerId: null, customerName: null,
+  storeId: "cr", tillId: "till2", customerId: "c2", customerName: "Mrs Mokoena",
+  customerResolved: true, confirmedCustomerId: "c2",
   appliedCents: 55000,
 };
 
@@ -309,6 +311,36 @@ function settleAndAttach(node, settlement, saleId = "S-1") {
   return out;
 }
 
+// A settlement made BEFORE fix 3: no customer on it, no confirmation. A till
+// can no longer produce one (settle refuses "no-customer"), but such records
+// exist in the pool and must still attach safely.
+function legacyNoCustomerSettled(amountCents, appliedCents) {
+  return recorded({
+    amountCents, status: "used",
+    used: { attemptId: "P-old", at: 5001, cashierUid: "uB", cashierName: "Sipho", storeId: "cr", tillId: "till2",
+      customerId: null, customerName: null, appliedCents, sale: null },
+  });
+}
+function attachLegacy(node) {
+  let out = null;
+  node.transaction((cur) => {
+    out = attachSaleDecision(cur, { attemptId: "P-old", saleId: "S-1", receiptNumber: "00042", at: 6000, poolKey: KEY });
+    return out.ok && !out.already ? out.value : undefined;
+  });
+  return out;
+}
+
+test("a till can no longer settle with no customer, or an unconfirmed one", () => {
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  assert.equal(runSettle(node, { ...tillA, customerId: null, appliedCents: 3000 }).code, "no-customer");
+  assert.equal(runSettle(node, { ...tillA, customerResolved: false, appliedCents: 3000 }).code, "no-customer");
+  assert.equal(runSettle(node, { ...tillA, confirmedCustomerId: "c9", appliedCents: 3000 }).code, "not-confirmed");
+  assert.equal(runSettle(node, { ...tillA, confirmedCustomerId: undefined, appliedCents: 3000 }).code, "not-confirmed");
+  assert.equal(node.get().status, "unmatched");
+  assert.equal(runSettle(node, { ...tillA, appliedCents: 3000 }).ok, true);
+  assert.equal(node.get().used.customerConfirmed, true);
+});
+
 test("attach on a partial application stamps a store-credit remainder for the customer", () => {
   // R100 payment, R30 applied — tillA carries a customer.
   const node = makeNode(recorded({ amountCents: 10000 }));
@@ -323,8 +355,8 @@ test("attach on a partial application stamps a store-credit remainder for the cu
 });
 
 test("attach with no customer stamps an UNALLOCATED remainder — held, never swallowed", () => {
-  const node = makeNode(recorded({ amountCents: 10000 }));
-  settleAndAttach(node, { ...tillB, appliedCents: 3000 }); // tillB has no customer
+  const node = makeNode(legacyNoCustomerSettled(10000, 3000));
+  attachLegacy(node);
   const r = node.get().used.remainder;
   assert.equal(r.cents, 7000);
   assert.equal(r.disposition, "unallocated");
@@ -353,8 +385,8 @@ test("a released payment carries no remainder — nothing was owed on a sale tha
 });
 
 test("the owner allocates a held remainder to a customer; already-credited refuses", () => {
-  const node = makeNode(recorded({ amountCents: 10000 }));
-  settleAndAttach(node, { ...tillB, appliedCents: 3000 });
+  const node = makeNode(legacyNoCustomerSettled(10000, 3000));
+  attachLegacy(node);
   const allocate = (args) => {
     let out = null;
     node.transaction((cur) => {
@@ -523,7 +555,7 @@ test("a path-hostile customer id downgrades the remainder to UNALLOCATED, never 
   // able to break the mint (which would retry for ever); the money goes to
   // the visible hold instead.
   const node = makeNode(recorded({ amountCents: 10000 }));
-  settleAndAttach(node, { ...tillA, customerId: "c1/evil#path", appliedCents: 3000 });
+  settleAndAttach(node, { ...tillA, customerId: "c1/evil#path", confirmedCustomerId: "c1/evil#path", appliedCents: 3000 });
   const r = node.get().used.remainder;
   assert.equal(r.disposition, "unallocated");
   assert.equal(r.customerId, null);

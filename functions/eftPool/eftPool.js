@@ -417,17 +417,32 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   if (action === "settle") {
     const appliedCents = data.appliedCents;
     const cashierName = await cashierNameOf(request);
+    // FIX 3 — THE CUSTOMER IS RESOLVED HERE, NOT TAKEN FROM THE TILL. The
+    // sale's attached customer must exist in /customers (a merge followed to
+    // its survivor), and the till must send the SAME id back as the one the
+    // cashier explicitly confirmed as the payer. The name on the settlement is
+    // the record's, never the till's.
+    const sentId = typeof data.customerId === "string" ? data.customerId.trim() : "";
+    if (!sentId) {
+      throw new HttpsError("failed-precondition", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.", { code: "no-customer" });
+    }
+    if (data.confirmedCustomerId !== sentId) {
+      throw new HttpsError("failed-precondition", "Confirm that this payment belongs to the customer on the sale before using it.", { code: "not-confirmed" });
+    }
+    const customer = await resolveCustomer({ customerId: sentId });
     const fingerprint = await checkPaymentFingerprint(key, now);
     decision = await runPoolTransaction(key, (current) => settleDecision(current, {
       fingerprint,
+      customerResolved: true,
+      confirmedCustomerId: customer.id,
       attemptId,
       at: now,
       cashierUid: uid,
       cashierName,
       storeId: typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null,
       tillId: typeof data.tillId === "string" ? data.tillId.slice(0, 40) : null,
-      customerId: typeof data.customerId === "string" ? data.customerId.slice(0, 60) : null,
-      customerName: typeof data.customerName === "string" ? data.customerName.slice(0, 80) : null,
+      customerId: customer.id,
+      customerName: customer.name,
       appliedCents,
     }));
   } else if (action === "attach") {
