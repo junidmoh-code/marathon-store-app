@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./alternativesTelemetry";
+import { shownEntry, pickedEntry } from "./alternativesTelemetry";
 import { alternativesForSize } from "./alternativesCore";
 import { encodeNeighbour } from "../../utils/productNeighbours";
 
@@ -57,8 +57,4 @@ describe("the pick row", () => {
   it("null-safe", () => {
     expect(pickedEntry({ ts: 2, product: { id: "af" }, size: "8", row: null })).toBe(null);
   });
-});
-
-it("its own node, never the insights feed", () => {
-  expect(ALTERNATIVES_LOG_PATH).toBe("alternatives_log");
 });

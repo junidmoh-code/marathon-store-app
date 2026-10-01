@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ─── SOURCE PINS FOR THE ✕ SHEET'S WIRING ────────────────────────────────────
 // These read App.jsx as text. That is CIRCULAR and it is admitted: a pin proves
@@ -196,9 +197,16 @@ describe("telemetry is wired on both sheets, and is log only", () => {
     expect(APP).toContain('logAlternativePicked("sheet", selected, naNote.size, row); pickAlternative(row);');
     expect(APP).toContain('onAlternativePicked?.("quickview", qv, qvNa.size, row); pickQvAlternative(row, qvNa.size);');
   });
-  it("the log is written, never read", () => {
-    const reads = APP.split("\n").filter((l) => /ALTERNATIVES_LOG_PATH|alternatives_log/.test(l) && /\b(get|onValue|query|onChild\w*)\(/.test(l));
-    expect(reads).toEqual([]);
+  it("the log is written, never read — its path appears ONLY in the one push", () => {
+    const uses = APP.split("\n").filter((l) => /ALTERNATIVES_LOG_PATH|["'`]alternatives_log/.test(l));
+    expect(uses.map((l) => l.trim())).toEqual([
+      'import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./components/stock/alternativesTelemetry";',
+      "push(ref(database, ALTERNATIVES_LOG_PATH), entry)",
+    ]);
+  });
+  it("…and the neighbour build never opens it: ranking takes no feedback", () => {
+    const build = readFileSync(resolve(process.cwd(), "scripts/shopify/build-neighbours.mjs"), "utf8");
+    expect(build).not.toMatch(/alternatives_log|alternativesTelemetry/);
   });
   it("its timestamp is server time", () => {
     expect(APP).toContain("shownEntry({ ts: serverNowMs(),");

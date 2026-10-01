@@ -48,8 +48,10 @@ export const MAX_ALTERNATIVES_SHOWN = 8;
  *                         hub whose cells have not settled. A candidate we
  *                         cannot answer for is dropped, never assumed available.
  * @param sizeAvailable    (product, size) -> is a unit sellable right now. The
- *                         SAME predicate that drew the size chip, so the chip
- *                         and this sheet cannot disagree about a size.
+ *                         SAME sneakerOut test that greys the chip, PLUS
+ *                         fail-closed readiness (hub settled, /orders settled).
+ *                         So the sheet only ever offers a size the chip would
+ *                         also show as available — a strict subset, never more.
  * @param isSellable       product -> not deactivated, has a photo, has a price
  * @param limit            default MAX_ALTERNATIVES_SHOWN
  *

@@ -10296,7 +10296,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const logAlternatives = (entry) => {
     if (!entry) return;
     push(ref(database, ALTERNATIVES_LOG_PATH), entry)
-      .catch((err) => console.warn("alternatives_log write failed:", err?.message || err));
+      .catch((err) => console.warn("alternatives telemetry write failed:", err?.message || err));
   };
   const logAlternativesShown = (surface, product, size, result) =>
     logAlternatives(shownEntry({ ts: serverNowMs(), shop: effectiveShop, surface, product, size, result }));

@@ -13,6 +13,7 @@ import {
   encodeNeighbour, parseNeighbours, MAX_NEIGHBOURS, SIMILARITY_WEIGHTS,
 } from "../../utils/productNeighbours";
 import { sellableAlternatives, MAX_ALTERNATIVES_SHOWN } from "./alternativesCore";
+import { shoeSizeKey } from "../../utils/shoeSize";
 
 // ─── A PROPERTY FUZZ OVER THE WHOLE CHAIN ────────────────────────────────────
 //
@@ -316,7 +317,7 @@ describe("fuzz: nothing unsellable ever reaches the sheet", () => {
         products[pid] = {
           id: pid, name: `shoe ${i}`, retailPrice: pick(r, [750, 0, null]),
           photoUrl: pick(r, ["u", "", null]),
-          sizes: Array.from({ length: Math.floor(r() * 5) }, () => pick(r, ["7", "8", "9", "10"])),
+          sizes: Array.from({ length: Math.floor(r() * 5) }, () => pick(r, ["7", "8", "8_5", "8.5", "UK 8", "9", "10", "8Y", "S"])),
           deactivated: r() < 0.15 ? true : undefined,
         };
         // Malformed stored entries land in the list too — RTDB has produced
@@ -326,7 +327,7 @@ describe("fuzz: nothing unsellable ever reaches the sheet", () => {
       const known = new Set(Object.keys(products).filter(() => r() < 0.7));
       const avail = new Map();
       for (const pid of Object.keys(products)) for (const s of products[pid].sizes) avail.set(`${pid}|${s}`, r() < 0.5);
-      const requested = pick(r, ["8", "9", ""]);
+      const requested = pick(r, ["8", "8.5", "9", "S", ""]);
 
       const rows = sellableAlternatives({
         neighbours: r() < 0.1 ? pick(r, [null, undefined, {}, []]) : list,
@@ -353,8 +354,11 @@ describe("fuzz: nothing unsellable ever reaches the sheet", () => {
         for (const s of row.sizes) expect(avail.get(`${row.product.id}|${s}`), `unavailable size ${s} · ${why}`).toBe(true);
         // THE SIZE GATE (2026-10-01): every row can sell the requested size.
         expect(row.hasRequestedSize, `no requested size · ${why}`).toBe(true);
-        expect(row.matchedSize, `matched size · ${why}`).toBe(requested);
-        expect(avail.get(`${row.product.id}|${requested}`), `requested size not sellable · ${why}`).toBe(true);
+        // Same physical size by the normaliser — not byte-equal: "8_5" serves "8.5".
+        expect(shoeSizeKey(row.matchedSize), `matched size · ${why}`).toBe(shoeSizeKey(requested));
+        expect(shoeSizeKey(requested), `unclassifiable request matched · ${why}`).not.toBe(null);
+        expect(row.sizes.includes(row.matchedSize), `matched size not listed · ${why}`).toBe(true);
+        expect(avail.get(`${row.product.id}|${row.matchedSize}`), `requested size not sellable · ${why}`).toBe(true);
         expect(typeof row.why).toBe("string");
         expect(row.why.length).toBeGreaterThan(0);
       }
