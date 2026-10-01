@@ -194,3 +194,8 @@ test("BACKFILL: a spent pre-fix payment stamps spentBy, and every other copy the
   assert.equal(claimHolderCheck({ poolKey: KEY_A, holder: KEY_A, spentBy: KEY_A }).ok, true);
   assert.equal(backfillSpentStep(KEY_B, 9)({ poolKey: KEY_A, spentBy: KEY_A }), undefined);
 });
+
+test("an original the owner reversed may settle again even though a resend claimed first", () => {
+  assert.equal(claimHolderCheck({ poolKey: KEY_A, holder: KEY_B, spentBy: KEY_A }).ok, true);
+  assert.equal(claimHolderCheck({ poolKey: KEY_B, holder: KEY_B, spentBy: KEY_A }).code, "duplicate-used");
+});

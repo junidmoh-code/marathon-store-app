@@ -171,20 +171,32 @@ function collapseCopies(hits, allPayments = []) {
   // pre-fix resend can carry a different reference from the spent original
   // (CodeRabbit, this PR). Every payment sharing a matched fingerprint joins
   // its group before the representative is chosen.
-  const matchedFps = new Set(hits.map((h) => paymentFingerprint(h.record)).filter(Boolean));
-  const extra = allPayments
-    .filter(([key, record]) => matchedFps.has(paymentFingerprint(record)) && !hits.some((h) => h.key === key))
-    .map(([key, record]) => ({ key, record, on: hits.find((h) => paymentFingerprint(h.record) === paymentFingerprint(record)).on }));
+  // Each fingerprint computed ONCE (sha256 per record, 400-record tail).
+  const fpOf = new Map();
+  const fp = (key, record) => { if (!fpOf.has(key)) fpOf.set(key, paymentFingerprint(record)); return fpOf.get(key); };
+  const onByFp = new Map();
+  const hitKeys = new Set();
+  for (const h of hits) {
+    hitKeys.add(h.key);
+    const f = fp(h.key, h.record);
+    if (f && !onByFp.has(f)) onByFp.set(f, h.on);
+  }
+  const extra = [];
+  for (const [key, record] of allPayments) {
+    if (hitKeys.has(key)) continue;
+    const f = fp(key, record);
+    if (f && onByFp.has(f)) extra.push({ key, record, on: onByFp.get(f) });
+  }
   const byFp = new Map();
   const out = [];
   for (const h of [...hits, ...extra]) {
-    const fp = paymentFingerprint(h.record);
-    if (!fp) { out.push(h); continue; }
-    const cur = byFp.get(fp);
-    if (!cur) { byFp.set(fp, h); continue; }
+    const fp_ = fp(h.key, h.record);
+    if (!fp_) { out.push(h); continue; }
+    const cur = byFp.get(fp_);
+    if (!cur) { byFp.set(fp_, h); continue; }
     const rank = (x) => [x.record.status === "used" ? 0 : 1, Number.isInteger(x.record.at) ? x.record.at : Infinity];
     const [a, b] = [rank(h), rank(cur)];
-    if (a[0] < b[0] || (a[0] === b[0] && a[1] < b[1])) byFp.set(fp, h);
+    if (a[0] < b[0] || (a[0] === b[0] && a[1] < b[1])) byFp.set(fp_, h);
   }
   return [...out, ...byFp.values()];
 }

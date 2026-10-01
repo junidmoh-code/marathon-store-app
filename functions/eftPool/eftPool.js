@@ -730,15 +730,25 @@ exports.eftRemainderScan = onSchedule(
       if (state.done !== true) {
         let q = db.ref(EFT_POOL_PATH).orderByKey();
         if (typeof state.cursor === "string") q = q.startAfter(state.cursor);
-        const page = (await q.limitToFirst(EFT_FP_BACKFILL_PAGE).once("value")).val() || {};
-        const keys = Object.keys(page).sort();
+        const snap = await q.limitToFirst(EFT_FP_BACKFILL_PAGE).once("value");
+        // The cursor follows the DATABASE's key order (forEach), never a JS
+        // sort, so startAfter can neither skip nor repeat a record.
+        const keys = [];
+        snap.forEach((child) => { keys.push(child.key); });
+        const page = snap.val() || {};
         for (const k of keys) {
           const rec = page[k];
           if (rec?.outcome !== "recorded" || rec.status !== "used") continue;
           const fp = paymentFingerprint(rec);
           if (!fp) continue;
-          await db.ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(backfillSpentStep(k, now));
-          backfilled++;
+          // One bad record must not stall every page after it: logged, then
+          // the walk moves on.
+          try {
+            await db.ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(backfillSpentStep(k, now));
+            backfilled++;
+          } catch (err) {
+            console.error(`EFT_FP_BACKFILL_RECORD_FAILED: ${k} —`, err?.message || err);
+          }
         }
         await db.ref(EFT_FP_BACKFILL_PATH).set(keys.length < EFT_FP_BACKFILL_PAGE
           ? { done: true, at: now, cursor: keys[keys.length - 1] ?? state.cursor ?? null }

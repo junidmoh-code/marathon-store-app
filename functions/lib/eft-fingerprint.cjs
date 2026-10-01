@@ -127,6 +127,9 @@ function claimHolderCheck({ poolKey, holder, spentBy = null }) {
       message: "This is a second copy of a payment that has ALREADY been used (the bank's transaction id matches). It cannot settle a sale.",
     };
   }
+  // The spender itself — an original the owner reversed — may settle again,
+  // whoever happened to claim first.
+  if (spentBy && spentBy === poolKey) return { ok: true };
   if (holder === poolKey) return { ok: true };
   return {
     ok: false, code: "duplicate",

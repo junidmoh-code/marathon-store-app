@@ -33,7 +33,10 @@ const fakeAdmin = {
       // The one-time fingerprint backfill pages /eft_pool by key.
       orderByKey: () => {
         const q = { startAfter: (c) => { dbState.backfillCursor = c; return q; }, limitToFirst: (n) => { dbState.backfillLimit = n; return q; },
-          once: async () => ({ val: () => dbState.backfillPage ?? null }) };
+          once: async () => ({
+            val: () => dbState.backfillPage ?? null,
+            forEach: (fn) => { for (const key of Object.keys(dbState.backfillPage ?? {})) fn({ key }); },
+          }) };
         return q;
       },
       // The update function is RUN, against whatever record the test stands up
