@@ -381,6 +381,8 @@ describe("what must NOT have changed behind the upload", () => {
 
   it("extract then submit, with the draft the server parked", () => {
     expect(code).toMatch(/action: "extract"/);
+    // The typed path is the same two steps with a figure in place of a photo.
+    expect(code).toMatch(/action: "typed"/);
     expect(code).toMatch(/action: "submit", draftId: data\.draftId/);
     expect(code, "the client never invents a draft id").not.toMatch(/draftId: [^d]/);
   });
@@ -391,10 +393,16 @@ describe("what must NOT have changed behind the upload", () => {
     // that says nothing about a slip that was in fact recorded. Caught by
     // driving the real screen; pinned here because the two calls are written
     // differently and only one of them was wrong.
-    expect([...code.matchAll(/await cardBatchCaptureFn\(/g)],
-      "extract and submit, and nothing else calls it").toHaveLength(2);
-    expect([...code.matchAll(/\{ data[^}]*\} = await cardBatchCaptureFn/g)],
-      "both results must be destructured").toHaveLength(2);
+    // FOUR calls since 1 Oct 2026: the photo path's extract + submit, and the
+    // typed-total path's typed + submit. The count is the lesser half of this
+    // check — what actually matters is that EVERY call is destructured, so the
+    // two numbers are compared to each other as well as to the expected total.
+    // A new call written the wrong way moves one and not the other.
+    const calls = [...code.matchAll(/await cardBatchCaptureFn\(/g)];
+    const unwrapped = [...code.matchAll(/\{ data[^}]*\} = await cardBatchCaptureFn/g)];
+    expect(calls, "photo extract + submit, typed + submit, and nothing else").toHaveLength(4);
+    expect(unwrapped.length, "every call to the callable is destructured from its envelope")
+      .toBe(calls.length);
   });
 
   it("a capture that succeeded ticks the card, and is remembered for the day", () => {

@@ -34,7 +34,7 @@ import { captureMode, isRetiredTerminal } from "./terminalRegistry";
 const adminFn = httpsCallable(functions, "cardTerminalAdmin", { timeout: 60000 });
 
 export const TID_PATTERN = /^[A-Z0-9]{4,16}$/;
-const CAPTURE_LABEL = { email: "Email", photo: "Photo", both: "Both" };
+const CAPTURE_LABEL = { email: "Email", photo: "Photo", typed: "Typed", both: "Both" };
 
 const U = {
   wrap: { marginTop: 22 },
@@ -168,7 +168,7 @@ function TerminalForm({ mode, base, stores, busy, onSubmit, onCancel }) {
 
       <div style={U.label}>Capture</div>
       <div style={U.seg} role="radiogroup" aria-label="Capture">
-        {["email", "photo", "both"].map((m) => (
+        {["email", "photo", "typed", "both"].map((m) => (
           <button type="button" key={m} role="radio" aria-checked={capture === m}
                   style={{ ...U.segBtn, ...(capture === m ? U.segOn : null) }} onClick={() => setCapture(m)}>
             {CAPTURE_LABEL[m]}
@@ -178,6 +178,7 @@ function TerminalForm({ mode, base, stores, busy, onSubmit, onCancel }) {
       <div style={U.note}>
         {capture === "email" ? "The card shows its tick when the report arrives by email — no camera."
           : capture === "photo" ? "The card opens the camera; this machine does not email."
+          : capture === "typed" ? "The card opens one box for the total — no camera and no email. For a machine that cannot send its report and does not print its total, where there is nothing to photograph. The figure is the whole record, so nothing can be checked against paper afterwards: set this only where a readable slip genuinely does not exist."
           : "Ticks by email, and the camera is there when the email does not come."}
       </div>
 

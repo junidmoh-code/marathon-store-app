@@ -66,7 +66,7 @@ test("add: refuses a TID already active, and a retired one points at reinstate",
 test("add: the store and till must be the POS's — never free text", () => {
   assert.match(planAdd({ ...addInput, storeId: "marathon-pe" }, null, { stores, now: NOW }).reason, /not a POS store/);
   assert.match(planAdd({ ...addInput, storeId: "pine", tillId: "till-2" }, null, { stores, now: NOW }).reason, /no till "till-2"/);
-  assert.match(planAdd({ ...addInput, capture: "fax" }, null, { stores, now: NOW }).reason, /Email, Photo or Both/);
+  assert.match(planAdd({ ...addInput, capture: "fax" }, null, { stores, now: NOW }).reason, /Email, Photo, Typed or Both/);
   assert.match(planAdd({ ...addInput, label: "  " }, null, { stores, now: NOW }).reason, /label/);
 });
 

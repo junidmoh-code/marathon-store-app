@@ -273,7 +273,13 @@ test("the HAND capture path refuses a retired terminal at extract AND at submit"
   const code = readFileSync(resolve(__dirname, "../cardRecon/cardRecon.js"), "utf8")
     .replace(/^\s*\/\/.*$/gm, "");
   const guards = code.match(/isRetiredTerminal\(/g) || [];
-  assert.equal(guards.length, 3, "photo extract, picked-PDF extract AND submit each refuse a retired terminal");
+  // FIVE call sites since 1 Oct 2026: photo extract, picked-PDF extract and
+  // submit, plus the typed-total path's own two — it refuses at the dispatch
+  // (before any figure is read) and again where submit re-reads the registry
+  // row for a typed-only draft. A typed capture is the one route with no
+  // document behind it, so it gets the same two-ended treatment for the same
+  // reason: the gap between the two calls is where a retirement lands.
+  assert.equal(guards.length, 5, "photo extract, picked-PDF extract, submit and the typed path's two each refuse a retired terminal");
   assert.match(code, /retiredCaptureRefusal\(/, "and the refusal is the shared sentence, not a second wording");
   // The submit guard must sit against the registry as it stands NOW, not
   // against the terminal the draft remembers — the draft's copy was taken
@@ -327,7 +333,11 @@ test("both capture paths and the submit attach the till-move warning", () => {
   const code = readFileSync(resolve(__dirname, "../cardRecon/cardRecon.js"), "utf8")
     .replace(/^\s*\/\/.*$/gm, "");
   const calls = code.match(/tillMoveWarning\(/g) || [];
-  assert.equal(calls.length, 3, "photo extract, PDF extract and submit each compute it");
+  // FOUR since 1 Oct 2026 — the typed-total capture computes it too. A typed
+  // window runs from the previous settlement to now, which is exactly the shape
+  // most likely to span a till reassignment, so it is the last path that could
+  // afford to leave the warning off.
+  assert.equal(calls.length, 4, "photo extract, PDF extract, the typed capture and submit each compute it");
   // And the record is written from the SUBMIT side, so the warning has to reach
   // the record's own warnings array rather than only the extract's response.
   assert.match(code, /warnings: \[\.\.\.new Set\(\[\.\.\.\(draft\.warnings \|\| \[\]\), \.\.\.\(straddleNow/,

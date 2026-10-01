@@ -273,3 +273,110 @@ test("a correction never reads the lines node either", async () => {
   assert.equal(write.autoSuperseded, false);
   assert.equal(asked.some((p) => p.endsWith("/lines")), false);
 });
+
+// ─── AN EMPTY BATCH THAT LATER CARRIED MONEY ─────────────────────────────────
+// Marathon Till 3 (TID 67365901) settled batch #84 with no card in it on
+// 29 Sept 2026 — recorded as R0.00 with no `lines` key at all. The batch went
+// on taking card and reported again under the same number, and the dedup
+// refused it as "already captured": an empty recorded side has no lines, and
+// "no lines" was read as "containment cannot be shown".
+//
+// That is the batch-58 incident through the one door left open, and it is
+// invisible in exactly the same way — the terminal reports, the money never
+// reaches /card_batches, and the screen says the report was simply a duplicate.
+
+/** What an empty batch leaves on the record (lib/card-recon-pdf.cjs). */
+const EMPTY_SLIP = { windowSource: "empty-batch", totalCents: 0, txnCount: 0 };
+
+/** The transactions the same batch went on to take. */
+const AFTER_EMPTY = [
+  { tsn: 1, amountCents: 45000, rrn: "04YUTM084001" },
+  { tsn: 2, amountCents: 112500, rrn: "04YUTM084002" },
+  { tsn: 3, amountCents: 67500, rrn: "04YUTM084003" },
+];
+
+test("a report with lines EXTENDS a recorded empty batch", () => {
+  const cmp = comparePriorCapture([], AFTER_EMPTY, { recordedEmptyBatch: true });
+  assert.equal(cmp.relation, "extends");
+  assert.deepEqual(cmp.added, [1, 2, 3]);
+  assert.equal(cmp.reason, null);
+});
+
+test("a SUMMARY-ONLY capture is still never extended, flag absent", () => {
+  // The guard the empty-batch case must not widen: a summary-only photo
+  // capture records a total and no lines, and any report could displace it.
+  assert.equal(comparePriorCapture([], AFTER_EMPTY).relation, "unknown");
+  assert.equal(comparePriorCapture([], AFTER_EMPTY, {}).relation, "unknown");
+  assert.equal(comparePriorCapture([], AFTER_EMPTY, { recordedEmptyBatch: false }).relation, "unknown");
+  // Nothing but the literal true opens it — a truthy string must not.
+  assert.equal(comparePriorCapture([], AFTER_EMPTY, { recordedEmptyBatch: "yes" }).relation, "unknown");
+});
+
+test("an EMPTY report arriving twice is still a re-send, not an extension", () => {
+  // The terminal re-sending the same empty report must keep refusing: there is
+  // nothing added, so there is nothing the record is missing.
+  assert.equal(comparePriorCapture([], [], { recordedEmptyBatch: true }).relation, "unknown");
+});
+
+test("batch #84's later report is accepted against a live-shaped empty record", async () => {
+  const db = fakeDb({
+    // An empty batch writes a record and NO lines key at all — see the
+    // reconHarness note in marathon-pos-app: RTDB deletes an empty child.
+    "card_batches/pe/67365901/84/batchKey": "84",
+    "card_batches/pe/67365901/84/slip": EMPTY_SLIP,
+  });
+  const { write, comparison } = await resolveWriteFor(db, {
+    storeId: "pe", tid: "67365901", batchNo: 84, correction: false, lines: AFTER_EMPTY,
+  });
+  assert.equal(comparison.relation, "extends");
+  assert.equal(write.ok, true);
+  assert.equal(write.key, "84-r2");
+  assert.equal(write.autoSuperseded, true);
+});
+
+test("a summary-only record is still refused against a live-shaped record", async () => {
+  // Same shape — a record with no lines — but the slip does not say empty, so
+  // the automatic route stays shut and a person decides.
+  const db = fakeDb({
+    "card_batches/trophy/0000Z4M6/486/batchKey": "486",
+    "card_batches/trophy/0000Z4M6/486/slip": { windowSource: "declared-fallback", totalCents: 225000 },
+  });
+  const { write } = await resolveWriteFor(db, {
+    storeId: "trophy", tid: "0000Z4M6", batchNo: 486, correction: false, lines: AFTER_EMPTY,
+  });
+  assert.equal(write.ok, false);
+  assert.match(write.reason, /already captured/);
+});
+
+test("an empty-batch slip whose total is NOT zero does not open the gate", async () => {
+  // Belt and braces: the flag alone never decides. A record wearing
+  // windowSource "empty-batch" beside a non-zero total is a mangled record,
+  // and a mangled record must not be overwritable without a person.
+  const db = fakeDb({
+    "card_batches/pe/67365901/84/batchKey": "84",
+    "card_batches/pe/67365901/84/slip": { windowSource: "empty-batch", totalCents: 225000 },
+  });
+  const { write } = await resolveWriteFor(db, {
+    storeId: "pe", tid: "67365901", batchNo: 84, correction: false, lines: AFTER_EMPTY,
+  });
+  assert.equal(write.ok, false);
+  assert.match(write.reason, /already captured/);
+});
+
+test("a record with real lines never reads the slip node at all", async () => {
+  // The empty-batch question costs a read, so it is only asked when the line
+  // list came back empty — the one case where the answer can change anything.
+  const reads = [];
+  const db = {
+    ref: (path) => {
+      reads.push(path);
+      const paths = {
+        "card_batches/pe/67325636/58/batchKey": "58",
+        "card_batches/pe/67325636/58/lines": linesByTsn(INTERIM),
+      };
+      return { once: async () => ({ exists: () => paths[path] !== undefined, val: () => paths[path] ?? null }) };
+    },
+  };
+  await resolveWriteFor(db, { storeId: "pe", tid: "67325636", batchNo: 58, correction: false, lines: FINAL });
+  assert.equal(reads.some((p) => p.endsWith("/slip")), false);
+});

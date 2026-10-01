@@ -28,18 +28,31 @@ export function isRetiredTerminal(row) {
 }
 
 /**
- * "email" | "photo" | "both" — the server half is captureMode in
+ * "email" | "photo" | "typed" | "both" — the server half is captureMode in
  * functions/lib/card-terminals.cjs. Absent or mangled is "both": a card only
  * loses its camera when the settings sheet says so.
+ *
+ * "typed" is a machine whose total is typed in and never photographed — Trophy
+ * Till 2, which cannot email and whose printer leaves the total off the paper.
+ * The server half carries the whole reasoning.
  */
 export function captureMode(row) {
   const m = row?.capture;
-  return m === "email" || m === "photo" ? m : "both";
+  return m === "email" || m === "photo" || m === "typed" ? m : "both";
 }
 
-/** Does this card open the camera? An email-only till shows its tick and nothing else. */
+/**
+ * Does this card open the camera? An email-only till shows its tick and nothing
+ * else; a typed-total till shows one box for the figure and no camera at all.
+ */
 export function takesPhoto(row) {
-  return captureMode(row) !== "email";
+  const m = captureMode(row);
+  return m !== "email" && m !== "typed";
+}
+
+/** Is this card captured by typing its total, with no photograph at all? */
+export function typesTotal(row) {
+  return captureMode(row) === "typed";
 }
 
 /**

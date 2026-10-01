@@ -123,6 +123,25 @@ test("a correction of a batch this terminal has never filed is refused, not inve
   assert.match(w.reason, /has not been captured yet/);
 });
 
+// ── THE SCAN, AND THE ONE REGION IT DOES NOT READ ────────────────────────────
+// The rule this file protects is about a batch number that was READ OFF A
+// REPORT: it is the machine's own number, it is whatever the machine says, and
+// nothing may judge it by its size or its distance from the last one. Two of
+// the six live machines joined the estate mid-life, on batches 57 and 480.
+//
+// A TYPED-TOTAL MACHINE HAS NO REPORT AND SO NO NUMBER TO READ (Trophy Till 2,
+// 1 Oct 2026). Its record still has to be filed somewhere, so planTypedCapture
+// MINTS a key — the next after that terminal's highest. That is a different act
+// from judging a number, and the scan cannot tell the two apart by shape, so
+// the typed region is marked in the source and held out here.
+//
+// The carve-out is kept honest three ways: the markers must be present (a
+// rename cannot silently empty the exclusion), the region must be a real
+// region rather than the whole file, and the region itself is scanned for the
+// thing that actually matters — a refusal or a warning keyed on sequence,
+// which is the failure mode, not the arithmetic.
+const TYPED_REGION = /\/\/ \[typed-capture:start\][\s\S]*?\/\/ \[typed-capture:end\]/;
+
 test("nothing in the capture path reasons about a batch number's size or sequence", () => {
   // A scan, because the failure this guards against is a FUTURE one: somebody
   // adds "warn if this batch is not the previous one plus one" and every
@@ -132,10 +151,45 @@ test("nothing in the capture path reasons about a batch number's size or sequenc
   const { readFileSync } = require("node:fs");
   const { resolve } = require("node:path");
   for (const rel of ["../lib/card-recon.cjs", "../cardRecon/cardRecon.js"]) {
-    const code = readFileSync(resolve(__dirname, rel), "utf8")
+    const raw = readFileSync(resolve(__dirname, rel), "utf8");
+    const region = raw.match(TYPED_REGION);
+    assert.ok(region, `${rel} has lost its [typed-capture] markers — the exclusion below would be silently empty`);
+    assert.ok(region[0].length < raw.length / 2, `${rel}'s typed region has grown to most of the file`);
+    const code = raw.replace(TYPED_REGION, "")
       .replace(/^\s*\/\/.*$/gm, "");
     for (const shape of [/batchNo\s*[<>]/, /batchNo\s*[-+]\s*1/, /previousBatch/i, /lastBatchNo/i, /expectedBatch/i]) {
       assert.ok(!shape.test(code), `${rel} reasons about batch-number sequence (${shape})`);
     }
   }
+});
+
+test("the typed path mints a number and never judges one", () => {
+  // The carve-out above is only safe while this holds: the typed region may do
+  // arithmetic on a batch number, but it must never turn one into a refusal or
+  // a warning. That is the behaviour the whole file exists to prevent, and it
+  // is prevented here by reading the region rather than by exempting it.
+  const { readFileSync } = require("node:fs");
+  const { resolve } = require("node:path");
+  for (const rel of ["../lib/card-recon.cjs", "../cardRecon/cardRecon.js"]) {
+    const raw = readFileSync(resolve(__dirname, rel), "utf8");
+    const region = raw.match(TYPED_REGION)[0].replace(/^\s*\/\/.*$/gm, "");
+    // No comparison of one batch number against another, in either direction.
+    assert.ok(!/batchNo\s*(===|!==|==|!=|[<>]=?)\s*\w*[Bb]atch/.test(region),
+      `${rel}'s typed region compares two batch numbers`);
+    // …and nothing in it refuses or warns with a batch number as the reason.
+    for (const line of region.split("\n")) {
+      if (!/\b(ok:\s*false|warnings\.push|reason:)/.test(line)) continue;
+      assert.ok(!/\bnot the previous|out of sequence|skipped a batch|should be #/i.test(line),
+        `${rel}'s typed region refuses or warns on batch sequence: ${line.trim()}`);
+    }
+  }
+});
+
+test("the exclusion is scoped to the typed region, not to the words it uses", () => {
+  // Proof the scan still bites OUTSIDE the markers: the same shape it exempts
+  // inside them must still fail when it appears anywhere else.
+  const sample = "// [typed-capture:start]\nconst a = lastBatchNo + 1;\n// [typed-capture:end]\nconst b = lastBatchNo + 1;";
+  const stripped = sample.replace(TYPED_REGION, "").replace(/^\s*\/\/.*$/gm, "");
+  assert.ok(/lastBatchNo/i.test(stripped), "the scan must still see a sequence reference outside the markers");
+  assert.equal((stripped.match(/lastBatchNo/g) || []).length, 1, "exactly the one outside the markers");
 });

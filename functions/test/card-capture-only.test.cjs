@@ -57,11 +57,12 @@ const FORBIDDEN = [
 ];
 
 test("every client response the callable makes is scanned (else these tests prove nothing)", () => {
-  // THREE now: the photo extract, the PDF extract, and submit. This count is
-  // the thing that makes the checks below meaningful — a new response path
-  // that nobody added here would return whatever it liked, unscanned. It
-  // caught exactly that when the PDF path was added.
-  assert.equal(responsePayloads().length, 3,
+  // FOUR now: the photo extract, the PDF extract, the typed capture, and
+  // submit. This count is the thing that makes the checks below meaningful — a
+  // new response path that nobody added here would return whatever it liked,
+  // unscanned. It caught exactly that when the PDF path was added, and again
+  // when the typed-total path was (1 Oct 2026).
+  assert.equal(responsePayloads().length, 4,
     "a response path was added or removed — scan it, then update this count");
 });
 
