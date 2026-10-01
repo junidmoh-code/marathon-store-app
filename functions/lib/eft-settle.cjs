@@ -36,6 +36,8 @@
 // eftCore.mjs's; this module redefines none of it.
 "use strict";
 
+const { paymentFingerprint } = require("./eft-fingerprint.cjs");
+
 /** A refusal the callable turns into an HttpsError; `message` is written to be
  *  read out at the counter. */
 function refuse(code, message) {
@@ -71,6 +73,21 @@ function settleDecision(current, settlement) {
   if (!Number.isInteger(s.appliedCents) || s.appliedCents <= 0
     || !Number.isInteger(current.amountCents) || s.appliedCents > current.amountCents) {
     return refuse("bad-amount", "The amount applied to the sale must be within what the customer actually paid.");
+  }
+  // THE BANK'S TRANSACTION ID, RE-CHECKED INSIDE THE TRANSACTION (fix 1). The
+  // callable verified the fingerprint claim and the siblings against the value
+  // it read; this re-derives the fingerprint from the value being COMMITTED
+  // and requires it to be the one that was checked. A payment with no bank
+  // transaction id cannot settle at all unless the owner released it from the
+  // hold by hand. The owner's mark-as-used pays nothing out and is exempt.
+  if (s.fingerprintExempt !== true) {
+    const fp = paymentFingerprint(current);
+    if (!fp && !(current.releasedFromHold && typeof current.releasedFromHold === "object")) {
+      return refuse("no-bank-id", "This payment carries no bank transaction id, so it cannot be told apart from a resent copy — it cannot settle a sale. The owner can check it against the bank statement.");
+    }
+    if ((fp ?? null) !== (s.fingerprint ?? null)) {
+      return refuse("fingerprint-unchecked", "This payment's bank transaction id was not checked against the pool — refused. Search again and retry.");
+    }
   }
   if (current.status === "used") {
     // The same attempt retrying (a timeout, a resumed request) already holds
@@ -150,6 +167,9 @@ function markUsedOutsidePosDecision(current, mark) {
     customerId: null,
     customerName: null,
     appliedCents: current?.amountCents,
+    // Marking a payment used pays nothing out — no sale, no remainder — so a
+    // payment without a bank transaction id may still be closed off this way.
+    fingerprintExempt: true,
   });
   if (!base.ok || base.already) return base;
   return {
@@ -378,6 +398,39 @@ function reverseDecision(current, { at, by, reason }) {
   };
 }
 
+// ─── THE OWNER'S RELEASE FROM QUARANTINE (fix 1) ────────────────────────────
+// A payment the poller HELD because its notification carries no bank
+// transaction id can never become spendable on its own. The owner — and only
+// the owner, checked by the callable — can release it after checking it on the
+// bank statement: it becomes an ordinary unmatched payment, with the release
+// (who, when, why) on the record for ever. A HELD DUPLICATE is never released:
+// the original record already holds that money, and releasing a copy is
+// exactly the double-spend the hold exists to stop.
+const RELEASE_REASON_MIN = 3;
+const RELEASE_REASON_MAX = 300;
+
+function releaseHoldDecision(current, { at, by, reason }) {
+  if (!current || typeof current !== "object") return refuse("not-found", "That record is no longer in the pool.");
+  if (current.outcome === "held-duplicate") {
+    return refuse("duplicate-never-released", "This is a second copy of a payment the pool already holds under another record. A copy is never released — use the original.");
+  }
+  if (current.outcome !== "held-no-bankref") {
+    return refuse("not-held", "Only a payment held for having no bank transaction id can be released.");
+  }
+  const why = String(reason ?? "").trim();
+  if (why.length < RELEASE_REASON_MIN) return refuse("bad-reason", "Say how you checked it — the reason stays on the record.");
+  if (!Number.isInteger(at)) return refuse("bad-time", "The release carries no server time — refused.");
+  return {
+    ok: true,
+    value: {
+      ...current,
+      outcome: "recorded",
+      status: "unmatched",
+      releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from: "held-no-bankref" },
+    },
+  };
+}
+
 /**
  * What eftRemainderScan does with one /eft_pending_remainders breadcrumb.
  * Breadcrumbs are written BEFORE the attach/allocate transaction, so their
@@ -429,4 +482,5 @@ module.exports = {
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
+  releaseHoldDecision, RELEASE_REASON_MIN,
 };

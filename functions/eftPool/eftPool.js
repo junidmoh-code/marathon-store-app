@@ -46,6 +46,18 @@
 //                   it cannot race a till into a double-settle; undone only by
 //                   eftPoolReverse, which stays the OWNER ALONE and keeps both
 //                   records.
+//                   A sixth, "releaseHold", is the OWNER releasing a payment
+//                   the poller HELD for carrying no bank transaction id (fix 1)
+//                   — checked on the statement, reason on the record. A held
+//                   DUPLICATE is never released.
+//   FIX 1 — ONE BANK TRANSACTION, ONE SPENDABLE RECORD. Before a settle, the
+//                   payment's fingerprint (lib/eft-fingerprint.cjs: the bank's
+//                   own transaction id) is checked against the pool tail and
+//                   CLAIMED at /eft_pool_fingerprints — a resent copy, or one
+//                   of two copies raced at two tills, is refused; a payment
+//                   with no bank id is refused unless the owner released it.
+//                   The settle transaction re-derives the fingerprint from the
+//                   value it commits.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -75,8 +87,11 @@ const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEf
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, releaseHoldDecision,
 } = require("../lib/eft-settle.cjs");
+const {
+  EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck,
+} = require("../lib/eft-fingerprint.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
   ledgerApplyDecision, buildUnallocatedRecord,
@@ -183,6 +198,47 @@ async function runPoolTransaction(key, decide) {
   let decision = null;
   await ref.transaction(poolTransactionStep(decide, (d) => { decision = d; }));
   return decision;
+}
+
+/** The pool's TAIL, never the node — the same bounded read the search makes. */
+async function readPoolTail() {
+  const snap = await admin.database()
+    .ref(EFT_POOL_PATH)
+    .orderByChild("at")
+    .limitToLast(EFT_SEARCH_WINDOW)
+    .once("value");
+  return snap.val() || {};
+}
+
+/**
+ * FIX 1 — the bank's transaction id, checked before a payment is spent.
+ * Read the record and the pool tail; refuse a payment with no bank id (unless
+ * the owner released it), and a copy of one already used; then CLAIM the
+ * fingerprint for this record — create-only, so of two copies racing at two
+ * tills exactly one holds it — and refuse unless the claim names this record.
+ * Returns the fingerprint the settle transaction must see again. A record
+ * that is missing or not a payment is left to settleDecision's own refusal.
+ */
+async function checkPaymentFingerprint(key, now) {
+  const db = admin.database();
+  const record = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+  if (!record || record.outcome !== "recorded") return null;
+  const tail = await readPoolTail();
+  const check = consumeFingerprintCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (!check.ok) {
+    console.warn(`eftPoolSettle: ${check.code} on ${key} — refused before settle`);
+    throw refusalToError(check);
+  }
+  if (!check.fingerprint) return null; // owner-released no-bank-id payment
+  let claim = null;
+  await db.ref(`${EFT_FINGERPRINT_PATH}/${check.fingerprint}`)
+    .transaction(fingerprintClaimStep(key, now, (d) => { claim = d; }));
+  const holder = claimHolderCheck({ poolKey: key, holder: claim?.holder ?? null });
+  if (!holder.ok) {
+    console.warn(`eftPoolSettle: ${holder.code} on ${key} — fingerprint held by ${claim?.holder ?? "nothing usable"}`);
+    throw refusalToError(holder);
+  }
+  return check.fingerprint;
 }
 
 function refusalToError(decision) {
@@ -353,7 +409,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   // The lifecycle actions are holder-scoped and need the attempt id; the
   // owner's allocate acts on a finished settlement and has none, and the
   // owner's markUsed mints its own (the mark's moment) inside the decision.
-  if (!attemptId && action !== "allocate" && action !== "markUsed") {
+  if (!attemptId && action !== "allocate" && action !== "markUsed" && action !== "releaseHold") {
     throw new HttpsError("invalid-argument", "The request carries no attempt id.");
   }
   const uid = request.auth.uid;
@@ -363,7 +419,9 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   if (action === "settle") {
     const appliedCents = data.appliedCents;
     const cashierName = await cashierNameOf(request);
+    const fingerprint = await checkPaymentFingerprint(key, now);
     decision = await runPoolTransaction(key, (current) => settleDecision(current, {
+      fingerprint,
       attemptId,
       at: now,
       cashierUid: uid,
@@ -468,6 +526,18 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     // phone screen had to invent a name and a moment, and they could differ
     // from the ones on the record until the next full reload.
     return { ok: true, already: decision.already === true, remainder: null, actorName, at: now, reason };
+  } else if (action === "releaseHold") {
+    // FIX 1 — THE OWNER ALONE releases a payment held for having no bank
+    // transaction id, after checking it on the statement. A held duplicate is
+    // never released (releaseHoldDecision refuses it).
+    if (!isOwner(request)) {
+      throw new HttpsError("permission-denied", "Only the owner can release a held payment.");
+    }
+    const reason = String(data.reason ?? "").trim().slice(0, 300);
+    decision = await runPoolTransaction(key, (current) => releaseHoldDecision(current, { at: now, by: ADMIN_EMAIL, reason }));
+    if (!decision.ok) throw refusalToError(decision);
+    console.log(`eftPoolSettle: releaseHold ${key} by owner — ${reason}`);
+    return { ok: true };
   } else if (action === "release") {
     decision = await runPoolTransaction(key, (current) => {
       if (current?.used && current.used.cashierUid !== uid && !isOwner(request)) {

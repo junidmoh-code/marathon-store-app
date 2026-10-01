@@ -22,18 +22,26 @@ const Module = require("node:module");
 class HttpsError extends Error {
   constructor(code, message, details) { super(message); this.code = code; this.details = details; }
 }
-const dbState = { reads: {}, transactions: 0, poolReads: 0 };
+const dbState = { reads: {}, transactions: 0, poolReads: 0, pool: {}, tail: {}, fingerprints: {}, txPaths: [] };
 const fakeAdmin = {
   apps: [1],
   initializeApp() {},
   database: Object.assign(() => ({
     ref: (path) => ({
-      once: async () => ({ val: () => (path.startsWith("eft_pool") ? (dbState.poolReads++, {}) : (dbState.reads[path] ?? null)) }),
-      orderByChild: () => ({ limitToLast: () => ({ once: async () => { dbState.poolReads++; return { val: () => ({}) }; } }) }),
+      once: async () => ({ val: () => (path.startsWith("eft_pool") ? (dbState.poolReads++, dbState.pool[path] ?? {}) : (dbState.reads[path] ?? null)) }),
+      orderByChild: () => ({ limitToLast: () => ({ once: async () => { dbState.poolReads++; return { val: () => dbState.tail }; } }) }),
       // The update function is RUN, against whatever record the test stands up
       // at dbState.txCurrent (null by default — the Admin SDK's cold-cache
       // first call), so a test can assert what would actually be written.
       transaction: async (fn) => {
+        dbState.txPaths.push(path);
+        // The fingerprint claim (fix 1) is its own node: run it against the
+        // claim the test stood up, and keep what it would write.
+        if (path.startsWith("eft_pool_fingerprints/")) {
+          const out = fn(dbState.fingerprints[path] ?? null);
+          if (out !== undefined && dbState.fingerprints[path] == null) dbState.fingerprints[path] = out;
+          return { committed: out !== undefined };
+        }
         dbState.transactions++;
         dbState.txNext = typeof fn === "function" ? fn(dbState.txCurrent ?? null) : undefined;
         return { committed: false };
@@ -200,3 +208,65 @@ test("markUsed refuses a malformed pool key before anything else", async () => {
 });
 
 test.after(() => { Module._cache = require.cache; });
+
+// ─── FIX 1: THE SETTLE WALL CHECKS THE BANK'S TRANSACTION ID ─────────────────
+const { paymentFingerprint } = require("../lib/eft-fingerprint.cjs");
+const PAY = { outcome: "recorded", status: "unmatched", amountCents: 50000, at: 1, reader: "fnb", bankRef: "5TG59DVQ", reference: "JUNID1234", payer: "J SOAP" };
+const K1 = "1".repeat(40);
+const K2 = "2".repeat(40);
+const settleReq = (key, over = {}) => ({ ...CASHIER, data: { action: "settle", poolKey: key, attemptId: "P-1", appliedCents: 50000, ...over } });
+function resetPool() {
+  dbState.pool = {}; dbState.tail = {}; dbState.fingerprints = {}; dbState.txPaths = []; dbState.transactions = 0; dbState.txCurrent = null;
+}
+
+test("settle refuses a payment with NO bank transaction id — before the settle transaction", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K1}`] = { ...PAY, bankRef: null };
+  const e = await rejects(eftPoolSettle(settleReq(K1)), "failed-precondition");
+  assert.equal(e.details.code, "no-bank-id");
+  assert.equal(dbState.transactions, 0, "no settle transaction ran");
+});
+
+test("settle refuses the RESENT copy whose fingerprint the original holds", async () => {
+  resetPool();
+  const fp = paymentFingerprint(PAY);
+  dbState.pool[`eft_pool/${K2}`] = { ...PAY, at: 2 };
+  dbState.fingerprints[`eft_pool_fingerprints/${fp}`] = { poolKey: K1, at: 1 };
+  const e = await rejects(eftPoolSettle(settleReq(K2)), "failed-precondition");
+  assert.equal(e.details.code, "duplicate");
+  assert.equal(dbState.transactions, 0);
+  assert.deepEqual(dbState.fingerprints[`eft_pool_fingerprints/${fp}`], { poolKey: K1, at: 1 }, "the claim is untouched");
+});
+
+test("settle refuses a pre-fix copy of a payment that is already USED (no claim exists yet)", async () => {
+  resetPool();
+  dbState.pool[`eft_pool/${K2}`] = { ...PAY, at: 2 };
+  dbState.tail = { [K1]: { ...PAY, status: "used" }, [K2]: { ...PAY, at: 2 } };
+  const e = await rejects(eftPoolSettle(settleReq(K2)), "failed-precondition");
+  assert.equal(e.details.code, "duplicate-used");
+  assert.equal(dbState.transactions, 0);
+});
+
+test("the original settles: the claim is taken for it and the fingerprint reaches the transaction", async () => {
+  resetPool();
+  const fp = paymentFingerprint(PAY);
+  dbState.pool[`eft_pool/${K1}`] = PAY;
+  dbState.txCurrent = PAY;
+  await eftPoolSettle(settleReq(K1)).catch(() => {});
+  assert.equal(dbState.fingerprints[`eft_pool_fingerprints/${fp}`].poolKey, K1);
+  assert.deepEqual(dbState.txPaths, [`eft_pool_fingerprints/${fp}`, `eft_pool/${K1}`], "claim first, then the settle");
+  assert.equal(dbState.txNext?.status, "used");
+  resetPool();
+});
+
+test("releaseHold is the OWNER alone", async () => {
+  resetPool();
+  await rejects(eftPoolSettle({ ...REVIEWER, data: { action: "releaseHold", poolKey: K1, reason: "on the statement" } }), "permission-denied");
+  await rejects(eftPoolSettle({ ...CASHIER, data: { action: "releaseHold", poolKey: K1, reason: "on the statement" } }), "permission-denied");
+  assert.equal(dbState.transactions, 0);
+  dbState.txCurrent = { ...PAY, bankRef: null, outcome: "held-no-bankref" };
+  await eftPoolSettle({ ...OWNER, data: { action: "releaseHold", poolKey: K1, reason: "on FNB statement" } }).catch(() => {});
+  assert.equal(dbState.txNext?.outcome, "recorded");
+  assert.equal(dbState.txNext?.releasedFromHold?.reason, "on FNB statement");
+  resetPool();
+});

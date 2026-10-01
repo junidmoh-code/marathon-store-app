@@ -19,6 +19,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   eftCreditIdOf, allocateRemainderDecision, remainderStatusDecision,
 } = require("../lib/eft-settle.cjs");
+const { paymentFingerprint } = require("../lib/eft-fingerprint.cjs");
 
 // ── an RTDB-transaction stand-in ─────────────────────────────────────────────
 // Serialised CAS with re-run-on-contention, like the real database. `stall`
@@ -62,12 +63,17 @@ function recorded(over = {}) {
   };
 }
 
+// The fingerprint the callable checked (fix 1) — every settle carries it.
+const FP = paymentFingerprint({ reader: "standardbank", bankRef: "4140542552" });
+
 const tillA = {
+  fingerprint: FP,
   attemptId: "P-a1", at: 5000, cashierUid: "uA", cashierName: "Ahmed",
   storeId: "pe", tillId: "till1", customerId: "c1", customerName: "Mr Dlamini",
   appliedCents: 55000,
 };
 const tillB = {
+  fingerprint: FP,
   attemptId: "P-b1", at: 5001, cashierUid: "uB", cashierName: "Sipho",
   storeId: "cr", tillId: "till2", customerId: null, customerName: null,
   appliedCents: 55000,

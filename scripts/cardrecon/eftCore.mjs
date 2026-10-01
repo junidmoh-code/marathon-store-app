@@ -48,6 +48,10 @@ import { clip, messageKey } from "./intakeCore.mjs";
 // copy would need the same history to be worth the same trust.
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const { parseRandsToCents } = require("./lib/card-recon.cjs");
+// The payment fingerprint is SHARED with the settle callable — one definition,
+// so what the poller claims is exactly what the till's settle re-checks.
+const { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH } = require("./lib/eft-fingerprint.cjs");
+export { paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH };
 
 export const EFT_POOL_PATH = "eft_pool";
 
@@ -689,6 +693,58 @@ export function eftPoolRecord({ message, verdict, parsed, account, reader, rawTe
   };
 }
 
+// ─── ONE BANK TRANSACTION, ONE LIVE RECORD (fix 1) ───────────────────────────
+// A record about to be stored as a recorded payment is checked against the
+// bank's OWN transaction id (functions/lib/eft-fingerprint.cjs), not the email:
+//
+//   · no usable bank id → "held-no-bankref". Nothing distinguishes it from a
+//     resent copy, so it is not spendable; only the owner can release it,
+//     after checking the statement (eftPoolSettle "releaseHold").
+//   · the fingerprint is already claimed by ANOTHER pool record → this is a
+//     resend of a payment the pool already holds → "held-duplicate", naming
+//     the original. Never released: the original holds that money.
+//   · otherwise the claim is this record's and it is stored live, carrying
+//     its fingerprint.
+//
+// Held records keep every field — amount, reference, payer, destination — so
+// the owner sees exactly what arrived; they simply carry no `status`, and
+// both the search and the settle refuse anything whose outcome is not
+// "recorded". The quarantine is the owner-only /eft_pool node itself.
+export const HELD_OUTCOMES = ["held-duplicate", "held-no-bankref"];
+
+/**
+ * @param {object} record     eftPoolRecord's output
+ * @param {object} p
+ * @param {string|null} p.fingerprint  paymentFingerprint(record)
+ * @param {string|null} p.holder       the pool key the fingerprint claim names
+ *                                     after this run (null: no claim made, or
+ *                                     a corrupt claim — nobody clean holds it)
+ * @param {string} p.poolKey           the key this record is about to land on
+ */
+export function applyFingerprintHold(record, { fingerprint, holder, poolKey }) {
+  if (!record || record.outcome !== "recorded") return record;
+  const { status: _status, ...held } = record;
+  if (!fingerprint) {
+    return {
+      ...held,
+      outcome: "held-no-bankref",
+      reason: "This notification carries no bank transaction id (Trace ID / transaction number), so a resent copy of it could not be told apart — HELD, not spendable. Check it on the bank statement; the owner can release it.",
+    };
+  }
+  if (holder !== poolKey) {
+    return {
+      ...held,
+      outcome: "held-duplicate",
+      fingerprint,
+      duplicateOf: holder ?? null,
+      reason: holder
+        ? "A second notification for a payment the pool already holds (same bank transaction id) — a resent proof of payment. HELD, never spendable: the original record holds this money."
+        : "The bank transaction id's claim could not be read cleanly — HELD rather than risk a second spendable copy.",
+    };
+  }
+  return { ...record, fingerprint };
+}
+
 // ─── SEVERAL PAYMENTS ON ONE MESSAGE ─────────────────────────────────────────
 // Standard Bank batches payments: one email, several PaymentConfirmation PDFs,
 // each PDF one payment. The earlier shape recorded a message as AT MOST one
@@ -785,6 +841,9 @@ export function eftRetryPlan({ poolKey, record, seenRow, at }) {
   }
   if (record.outcome === "recorded") {
     return { ok: false, why: `That record is a RECORDED payment (${record.status}). A recorded payment is evidence and is never re-run.` };
+  }
+  if (HELD_OUTCOMES.includes(record.outcome)) {
+    return { ok: false, why: `That payment is HELD (${record.outcome}). A hold is never re-run: a resent copy stays held for ever, and a payment with no bank transaction id is released by the owner from the EFT payments tab after checking the statement.` };
   }
   if (record.outcome === "unknown-bank") {
     return { ok: false, why: "That is an unknown-bank sighting, not a refusal: the message was never claimed or marked read, so there is nothing to undo. Add the bank's domain to EFT_ALLOWED_DOMAINS and a reader, and the next tick reads it." };
