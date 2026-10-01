@@ -36,10 +36,14 @@ const STANDARD_FONT_DATA_URL = (() => {
 // of magnitude larger than the wobble.
 const Y_TOLERANCE = 1;
 
-// A terminal's batch report is one page, occasionally two for a long roll.
-// More than this is not a batch report, and rendering it would be a way to
-// spend a manager's time and the function's memory on nothing.
-const MAX_PAGES = 10;
+// A terminal's batch report is usually one or two pages — but NOT ALWAYS. A
+// batch left open across busy days lists every transaction and runs long:
+// Marathon Till 1's batch 66 (open from 30 Sept 2026) emailed a 16-page report
+// on 1 Oct, and the old cap of 10 filed it as "not a batch report", so the
+// till's card money never reached /card_batches and the screen showed nothing.
+// This is a sanity bound, not a description of a normal slip; the real guard
+// against a hostile file is the text ceiling below.
+const MAX_PAGES = 60;
 
 // A CEILING ON WHAT COMES OUT, not just on what goes in. readPdfPayload bounds
 // the UPLOAD to 10MB, but a PDF's content streams are compressed: a small,
@@ -121,7 +125,7 @@ async function pdfToLines(buffer) {
   let chars = 0;
   try {
     if (pages > MAX_PAGES) {
-      return { ok: false, reason: `That PDF has ${pages} pages — a batch report is one or two. Check it is the right file.` };
+      return { ok: false, reason: `That PDF has ${pages} pages — more than any batch report. Check it is the right file.` };
     }
     for (let n = 1; n <= pages; n++) {
       const page = await doc.getPage(n);

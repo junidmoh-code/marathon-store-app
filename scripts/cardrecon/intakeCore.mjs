@@ -241,6 +241,7 @@ const NOT_A_SLIP = [
   /password-protected/i,
   /more text than a batch report/i,
   /pages — a batch report is one or two/i,
+  /pages — more than any batch report/i,
 ];
 
 /** "refused" (someone must look) or "unrelated" (it was never a slip). */
