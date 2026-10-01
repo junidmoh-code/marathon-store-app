@@ -255,6 +255,27 @@ function batchKeyFor(batchNo, revision) {
 // DECLINED TRANSACTIONS ARE NOT PART OF THIS COMPARISON. They are not in the
 // card total and not in `lines`; a decline appearing in the fuller report is
 // not evidence about the approved list either way.
+//
+// ── AN EMPTY BATCH IS NOT A SUMMARY-ONLY CAPTURE ─────────────────────────────
+// Marathon Till 3 (TID 67365901) settled batch #84 with no card in it on
+// 29 Sept 2026. emptyBatchExtraction recorded exactly that — R0.00, txnCount 0
+// and NO `lines` key at all. The batch then went on taking card and reported
+// again under the same number, and the rule below refused it with "Batch #84
+// for this terminal is already captured", because an empty recorded side has
+// no lines and "no lines" was read as "cannot show containment".
+//
+// It is the batch-58 incident again, through the one door left open. The whole
+// reason containment is required is that the recorded figure might be the right
+// one and must not be displaced by a report that disagrees with it. A recorded
+// EMPTY batch has nothing to disagree with: zero lines and a zero total are not
+// an unread roll, they are the terminal stating that nothing happened. A later
+// report carrying transactions cannot contradict that — it can only add.
+//
+// So an empty prior capture extends, and a summary-only one still does not. The
+// difference is not "how many lines" — both are none — but whether the record
+// SAYS it is empty. Only the emailed parser sets that flag, and only against a
+// report whose every figure is zero (buildBatchRecord refuses it otherwise), so
+// a summary-only photo capture can never wear it.
 /**
  * How an incoming capture relates to the one already recorded.
  *
@@ -262,10 +283,14 @@ function batchKeyFor(batchNo, revision) {
  *
  * @param {{tsn:number, amountCents:number, rrn?:string}[]} recorded
  * @param {{tsn:number, amountCents:number, rrn?:string}[]} incoming
+ * @param {{recordedEmptyBatch?:boolean}} [opts]  `recordedEmptyBatch` is true
+ *   ONLY when the record in force is a settled empty batch — see above. The
+ *   caller proves it from the record (windowSource and a zero total), never
+ *   from the line count, which cannot tell an empty batch from an unread roll.
  * @returns {{relation:"extends"|"identical"|"shrinks"|"conflict"|"unknown",
  *            added:number[], reason:string|null}}
  */
-function comparePriorCapture(recorded, incoming) {
+function comparePriorCapture(recorded, incoming, opts = {}) {
   const index = (rows) => {
     const m = new Map();
     for (const r of rows || []) {
@@ -280,7 +305,15 @@ function comparePriorCapture(recorded, incoming) {
   // Nothing to compare against. Never assumed to be containment — a
   // summary-only capture records a total and no lines, and "more lines than
   // none" would let any report overwrite it.
+  //
+  // THE ONE EXCEPTION is a recorded EMPTY batch, which is a statement that
+  // nothing happened rather than a roll nobody read: see the note above. It
+  // still takes a report that actually carries transactions — an empty report
+  // arriving twice is a re-send and falls through to `unknown` below.
   if (!was.size) {
+    if (opts.recordedEmptyBatch === true && now.size) {
+      return { relation: "extends", added: [...now.keys()].sort((a, b) => a - b), reason: null };
+    }
     return { relation: "unknown", added: [], reason: "the recorded capture has no transaction lines to compare against" };
   }
   if (!now.size) {
@@ -450,8 +483,12 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // OCR's confidence in it — and in the purchases figure printed beside it,
   // which on a half-printed slip is usually not on the paper either — says
   // nothing. Every other key field is still gated exactly as before.
+  // A TYPED CAPTURE HAS NO OCR EITHER — there is no photograph at all, so there
+  // is no reading to be confident or uncertain about. Everything it DOES carry
+  // (the total, the window, the TID) is still checked below exactly as it is
+  // for every other source; only the question OCR answers is not asked.
   const gated = declaredTotal ? KEY_FIELDS.filter((f) => !DECLARED_EXEMPT_FIELDS.includes(f)) : KEY_FIELDS;
-  if (source !== "pdf") {
+  if (source !== "pdf" && source !== "typed") {
     const conf = ex.confidence || {};
     for (const f of gated) {
       const c = Number(conf[f]);
@@ -888,6 +925,130 @@ function mayDeclareTotal(token) {
   return !!token && token.email === DECLARED_TOTAL_EMAIL && token.email_verified === true;
 }
 
+// ─── A TYPED-TOTAL MACHINE: THE WHOLE CAPTURE, FROM ONE FIGURE ───────────────
+// Trophy Till 2 cannot email and does not print its total, so there is no slip
+// to read and no photograph worth storing (Junid, 1 Oct 2026). Every field the
+// record normally gets off the paper has to come from somewhere else, and this
+// is the one place that decides where — pure, so what it invents and what it
+// refuses can be read as data rather than inferred from a cloud function.
+//
+// WHAT IS INVENTED, AND WHY IT IS HONEST:
+//
+//   BATCH NUMBER — the terminal's own number is on a slip nobody is reading, so
+//     the record is filed under the next number after this terminal's highest.
+//     It is a FILING KEY here, not a reading of the machine, and the record
+//     says so via `format: "typed"`. What matters is that it is unique and
+//     monotonic per terminal: that is what the duplicate guard keys on, and it
+//     is what makes a correction (which reuses the number, see below) land as a
+//     revision of the right record instead of a new batch.
+//
+//   WINDOW — the previous batch's close through NOW. Both ends are real,
+//     recorded instants: the last settlement actually happened, and the typing
+//     is happening. This is the whole reason the typed path is better than the
+//     declared-fallback it replaces for this machine — anchorDeclaredWindow had
+//     to GUESS which day a bare clock time belonged to, and when it guessed
+//     wrong the till's card money fell outside its own window and was reported
+//     twice: once as a slip with no money and once as money with no slip.
+//
+// WHAT IS REFUSED RATHER THAN GUESSED: a window that would run longer than the
+// 7-day cap, and a second entry on the same South African day — that is a
+// double-entry, and it must be an explicit replacement or nothing.
+// [typed-capture:start] — see card-batch-numbers.test.cjs. The batch-number
+// scan in that file deliberately does NOT read this region: it exists to stop
+// a number READ OFF A REPORT being judged by its size or sequence, and this
+// path reads no report. The number minted here is a filing key and is never
+// compared with anything, never warned about and never refused.
+const TYPED_WINDOW_FALLBACK_MS = 24 * 60 * 60 * 1000;
+
+/** The SA calendar day an instant falls in, as an integer. */
+function sastDayIndexOf(ms) {
+  return Math.floor((ms + SAST_OFFSET_MS) / (24 * 60 * 60 * 1000));
+}
+
+/**
+ * One typed figure → the extraction to record, or a refusal in plain words.
+ *
+ * @param {object} p
+ * @param {string} p.tid                  the terminal, from the registry
+ * @param {string} p.totalText            exactly what was typed
+ * @param {number} p.nowMs                the server's clock
+ * @param {number|null} p.lastBatchNo     this terminal's highest recorded batch, or null
+ * @param {number|null} p.lastClosedAt    that batch's close, or null
+ * @param {boolean} p.lastWasTyped        was that batch itself a typed capture?
+ * @param {boolean} p.correction          replace today's entry rather than add one
+ * @returns {{ok:true, extraction:object, batchNo:number, warnings:string[]}
+ *          | {ok:false, reason:string}}
+ */
+function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastClosedAt = null,
+                            lastWasTyped = false, correction = false }) {
+  if (!normaliseTid(tid)) return { ok: false, reason: `"${tid}" does not look like a terminal ID. Nothing was recorded.` };
+  if (!Number.isFinite(nowMs)) return { ok: false, reason: "The server clock could not be read, so nothing was recorded. Try again." };
+  const declared = readDeclaredTotal(totalText);
+  if (declared.err) return { ok: false, reason: declared.err };
+
+  const hasPrior = Number.isInteger(lastBatchNo);
+  // ── ONE ENTRY PER DAY, OR AN EXPLICIT REPLACEMENT ─────────────────────────
+  // Without this, a manager who taps twice records the evening's takings twice
+  // under two batch numbers and the till reads double. The batch number cannot
+  // catch it the way it catches a re-sent email — every typed entry gets a
+  // fresh number by construction — so the DAY is the guard.
+  const typedToday = hasPrior && lastWasTyped && Number.isFinite(lastClosedAt)
+    && sastDayIndexOf(lastClosedAt) === sastDayIndexOf(nowMs);
+  if (typedToday && !correction) {
+    return { ok: false, reason: `A total for this machine has already been typed in today (batch #${lastBatchNo}). If that figure was wrong, submit this one as a replacement — both are kept.` };
+  }
+  if (correction && !typedToday) {
+    return { ok: false, reason: "There is no typed total for this machine today to replace. Submit it normally." };
+  }
+  // A correction reuses the number so it lands as a revision of the record it
+  // replaces; an ordinary entry takes the next one.
+  const batchNo = correction ? lastBatchNo : (hasPrior ? lastBatchNo + 1 : 1);
+
+  // ── THE WINDOW ────────────────────────────────────────────────────────────
+  // A correction covers the SAME trading period as the entry it replaces, so it
+  // starts where that one started — not at its close, which would make the
+  // replacement cover no trading at all.
+  const priorClose = correction ? null : lastClosedAt;
+  const warnings = [];
+  let openedAt = Number.isFinite(priorClose) && priorClose < nowMs ? priorClose : nowMs - TYPED_WINDOW_FALLBACK_MS;
+  let windowSource = Number.isFinite(priorClose) && priorClose < nowMs ? "typed-span" : "typed-fallback";
+  if (nowMs - openedAt > MAX_WINDOW_MS) {
+    // Longer than any batch runs. Clamped rather than refused: the figure in
+    // front of the manager is real and refusing it would lose it, but the
+    // window it is compared against is not trustworthy and the record says so.
+    openedAt = nowMs - MAX_WINDOW_MS;
+    windowSource = "typed-clamped";
+    warnings.push(`This machine's previous batch closed more than 7 days ago, so the period this total covers had to be cut back to the last 7 days. The card money before that is not counted against it.`);
+  }
+  if (!hasPrior) {
+    warnings.push("This is the first batch recorded for this machine, so there is no previous settlement to start the period from — the last 24 hours were used.");
+  }
+
+  return {
+    ok: true,
+    batchNo,
+    warnings,
+    extraction: {
+      tid, batchNo: String(batchNo),
+      mid: null, mids: [],
+      openedAt, closedAt: nowMs, printedAt: nowMs,
+      openedText: null, closedText: null,
+      // NOT READ, NOT ZERO. A figure nobody saw is null on this record; zero
+      // would be a claim that the slip printed a zero.
+      txnCount: null,
+      purchasesCents: null, cashCents: null, refundsCents: null,
+      totalCents: declared.cents,
+      reconLine: null,
+      confidence: null,
+      format: "typed",
+      windowSource,
+      lastTxnAt: null,
+      lines: [], declined: [], declinedCount: null, declinedUnread: null,
+    },
+  };
+}
+// [typed-capture:end]
+
 // ─── WHICH SOURCE IS THIS SUBMISSION? ────────────────────────────────────────
 // ONE PATH PER SUBMISSION. A PDF is the whole slip in one file — header, totals
 // and detail roll together — so there is no detail/summary split on that path
@@ -936,6 +1097,7 @@ module.exports = {
   MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
   normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
+  planTypedCapture, sastDayIndexOf,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
   DECLARED_TOTAL_EMAIL, MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,

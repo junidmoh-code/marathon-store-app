@@ -10,7 +10,7 @@
 // writes `retired: true` instead of a stamp.
 import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
-import { captureCards, isRetiredTerminal, captureMode, takesPhoto } from "./terminalRegistry";
+import { captureCards, isRetiredTerminal, captureMode, takesPhoto, typesTotal } from "./terminalRegistry";
 
 const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/card-terminals.cjs");
@@ -39,15 +39,29 @@ describe("the client and server halves of the registry agree", () => {
   });
 
   it("agree on the capture mode for every shape the field takes", () => {
-    const values = [undefined, null, "", "email", "photo", "both", "EMAIL", "fax", 1, true, {}, []];
+    const values = [undefined, null, "", "email", "photo", "typed", "both", "EMAIL", "Typed", "fax", 1, true, {}, []];
     for (const capture of values) {
       const row = { ...ROW, ...(capture === undefined ? {} : { capture }) };
       expect(captureMode(row), JSON.stringify(capture)).toBe(server.captureMode(row));
       expect(takesPhoto(row), JSON.stringify(capture)).toBe(server.takesPhoto(row));
+      expect(typesTotal(row), JSON.stringify(capture)).toBe(server.typesTotal(row));
     }
-    expect(new Set(values.map((capture) => captureMode({ capture })))).toEqual(new Set(["email", "photo", "both"]));
+    expect(new Set(values.map((capture) => captureMode({ capture })))).toEqual(new Set(["email", "photo", "typed", "both"]));
     expect(takesPhoto({ capture: "email" })).toBe(false);
     expect(takesPhoto({})).toBe(true);
+  });
+
+  it("a typed-total machine takes no photograph, and only it types", () => {
+    // The two predicates must not overlap: a card that offered BOTH a camera
+    // and a figure box is the half-built state this setting exists to avoid.
+    expect(takesPhoto({ capture: "typed" })).toBe(false);
+    expect(typesTotal({ capture: "typed" })).toBe(true);
+    for (const capture of ["email", "photo", "both", undefined, "fax"]) {
+      expect(typesTotal({ capture }), String(capture)).toBe(false);
+    }
+    // A mangled value never silently becomes typed-only — that would take a
+    // trading till's camera away and leave a figure box nobody expected.
+    expect(typesTotal({ capture: "TYPED" })).toBe(false);
   });
 
   it("a row with no stamp is live, and a row with a junk stamp is live", () => {

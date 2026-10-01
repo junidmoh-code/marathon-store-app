@@ -1,0 +1,188 @@
+// ─── A TYPED-TOTAL MACHINE: ONE FIGURE, NO PAPER ─────────────────────────────
+// Trophy Till 2 (TID 0000Z4M6) cannot email its report and its printer leaves
+// the total off the paper, so there is nothing to photograph and nothing to
+// read (Junid, 1 Oct 2026). Its capture is a typed figure and that is all.
+//
+// WHAT THESE PIN is not that the path is permissive — it is that it invents
+// LESS than the path it replaces. anchorDeclaredWindow had to guess which day a
+// bare clock time belonged to; when it guessed wrong the till's card money fell
+// outside its own batch window and was reported twice, once as a slip with no
+// money and once as money with no slip. Here both ends of the window are real
+// instants, and the things that genuinely cannot be known are refused or named
+// rather than filled in.
+"use strict";
+
+const { test } = require("node:test");
+const assert = require("node:assert/strict");
+const { planTypedCapture, validateExtraction, MAX_WINDOW_MS } = require("../lib/card-recon.cjs");
+const { captureMode, takesPhoto, typesTotal } = require("../lib/card-terminals.cjs");
+
+const TID = "0000Z4M6";
+const DAY = 24 * 60 * 60 * 1000;
+// 1 Oct 2026, 17:30 SAST.
+const NOW = Date.parse("2026-10-01T17:30:00+02:00");
+const YESTERDAY_CLOSE = Date.parse("2026-09-30T16:45:00+02:00");
+
+const plan = (over = {}) => planTypedCapture({
+  tid: TID, totalText: "2250.00", nowMs: NOW,
+  lastBatchNo: 486, lastClosedAt: YESTERDAY_CLOSE, lastWasTyped: true, ...over,
+});
+
+// ── the registry setting ─────────────────────────────────────────────────────
+
+test("a typed machine takes no photograph, and nothing else types", () => {
+  assert.equal(captureMode({ capture: "typed" }), "typed");
+  assert.equal(takesPhoto({ capture: "typed" }), false);
+  assert.equal(typesTotal({ capture: "typed" }), true);
+  for (const capture of ["email", "photo", "both", undefined]) {
+    assert.equal(typesTotal({ capture }), false, String(capture));
+  }
+});
+
+// ── the number ───────────────────────────────────────────────────────────────
+
+test("the batch number is the next after this terminal's highest", () => {
+  const out = plan({ lastWasTyped: false });
+  assert.equal(out.ok, true);
+  assert.equal(out.batchNo, 487);
+  assert.equal(out.extraction.batchNo, "487");
+});
+
+test("the first batch on a machine with no history is #1, and says so", () => {
+  const out = plan({ lastBatchNo: null, lastClosedAt: null, lastWasTyped: false });
+  assert.equal(out.ok, true);
+  assert.equal(out.batchNo, 1);
+  assert.match(out.warnings.join(" "), /first batch recorded for this machine/);
+});
+
+// ── the window ───────────────────────────────────────────────────────────────
+
+test("the window runs from the previous settlement to NOW — both real instants", () => {
+  const out = plan({ lastWasTyped: false });
+  assert.equal(out.extraction.openedAt, YESTERDAY_CLOSE);
+  assert.equal(out.extraction.closedAt, NOW);
+  assert.equal(out.extraction.windowSource, "typed-span");
+  // THE POINT OF THE WHOLE CHANGE: not a guessed day. A reader can tell this
+  // window apart from the one anchorDeclaredWindow invents.
+  assert.notEqual(out.extraction.windowSource, "declared-fallback");
+});
+
+test("with no previous settlement the window is the last 24 hours, named as such", () => {
+  const out = plan({ lastBatchNo: null, lastClosedAt: null, lastWasTyped: false });
+  assert.equal(out.extraction.openedAt, NOW - DAY);
+  assert.equal(out.extraction.windowSource, "typed-fallback");
+});
+
+test("a settlement more than 7 days back is CLAMPED and said out loud, never refused", () => {
+  // The figure in front of the manager is real; refusing it would lose it. But
+  // the period it is compared against is not trustworthy, so the record says so.
+  const out = plan({ lastClosedAt: NOW - 30 * DAY, lastWasTyped: false });
+  assert.equal(out.ok, true);
+  assert.equal(out.extraction.openedAt, NOW - MAX_WINDOW_MS);
+  assert.equal(out.extraction.windowSource, "typed-clamped");
+  assert.match(out.warnings.join(" "), /more than 7 days ago/);
+  // …and it still passes the 7-day window cap it was clamped to.
+  assert.equal(validateExtraction(out.extraction, { summaryOnly: true, source: "typed", declaredTotal: true }).ok, true);
+});
+
+test("a prior close in the FUTURE is not used as a window start", () => {
+  // A clock that ran ahead, or a hand-edited record. Falls back rather than
+  // producing a window that ends before it begins.
+  const out = plan({ lastClosedAt: NOW + DAY, lastWasTyped: false });
+  assert.equal(out.extraction.openedAt, NOW - DAY);
+  assert.equal(out.extraction.closedAt, NOW);
+  assert.ok(out.extraction.closedAt > out.extraction.openedAt);
+});
+
+// ── double entry ─────────────────────────────────────────────────────────────
+
+test("a second typed total on the same SA day is refused, with the way out", () => {
+  // The batch number cannot catch this the way it catches a re-sent email —
+  // every typed entry gets a fresh number by construction — so the DAY is the
+  // guard. Without it, tapping twice records the evening's takings twice.
+  const out = plan({ lastClosedAt: Date.parse("2026-10-01T16:45:00+02:00") });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /already been typed in today/);
+  assert.match(out.reason, /replacement/);
+});
+
+test("the same day's entry CAN be replaced, and reuses the number so it supersedes", () => {
+  const sameDay = Date.parse("2026-10-01T16:45:00+02:00");
+  const out = plan({ lastClosedAt: sameDay, correction: true });
+  assert.equal(out.ok, true);
+  // The SAME number: resolveBatchWrite then lands it as 486-r2, a revision of
+  // the record it replaces, rather than a second batch of its own.
+  assert.equal(out.batchNo, 486);
+  // A replacement covers the same trading period, so it does not start at the
+  // close of the entry it is replacing — that would cover no trading at all.
+  assert.ok(out.extraction.openedAt < sameDay);
+});
+
+test("a replacement with nothing to replace is refused", () => {
+  const out = plan({ correction: true });
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /no typed total for this machine today/i);
+});
+
+test("yesterday's typed entry does not block today's", () => {
+  assert.equal(plan().ok, true);
+});
+
+test("a PHOTOGRAPHED batch yesterday does not count as a typed entry", () => {
+  // The day guard asks about typed entries only: a machine switched to typed
+  // entry today must not be blocked by the slip that was photographed for it.
+  const out = plan({ lastClosedAt: Date.parse("2026-10-01T16:45:00+02:00"), lastWasTyped: false });
+  assert.equal(out.ok, true);
+  assert.equal(out.batchNo, 487);
+});
+
+// ── the figure ───────────────────────────────────────────────────────────────
+
+test("the typed figure goes through the slip's own strict parser", () => {
+  assert.equal(plan({ totalText: "2,250.00" }).extraction.totalCents, 225000);
+  assert.equal(plan({ totalText: "R 2 250,00" }).ok, false);
+  assert.match(plan({ totalText: "two thousand" }).reason, /is not an amount/);
+  assert.match(plan({ totalText: "-5.00" }).reason, /cannot be negative/);
+  assert.match(plan({ totalText: "99999999.00" }).reason, /more than any terminal takes/);
+  assert.match(plan({ totalText: 2250 }).reason, /did not arrive as text/);
+});
+
+test("R0.00 is a real answer — a till that took no card still reports", () => {
+  const out = plan({ totalText: "0.00", lastWasTyped: false });
+  assert.equal(out.ok, true);
+  assert.equal(out.extraction.totalCents, 0);
+});
+
+// ── what the record claims about itself ──────────────────────────────────────
+
+test("nothing that was never read is recorded as zero", () => {
+  // A figure nobody saw is null. Zero would be a claim that a slip printed a
+  // zero, and this capture never saw a slip at all.
+  const { extraction } = plan({ lastWasTyped: false });
+  for (const f of ["txnCount", "purchasesCents", "cashCents", "refundsCents", "mid", "reconLine", "confidence"]) {
+    assert.equal(extraction[f], null, f);
+  }
+  assert.deepEqual(extraction.lines, []);
+  assert.equal(extraction.format, "typed");
+});
+
+test("the extraction passes validation as a typed, summary-only, declared capture", () => {
+  const { extraction } = plan({ lastWasTyped: false });
+  const v = validateExtraction(extraction, { summaryOnly: true, source: "typed", declaredTotal: true });
+  assert.equal(v.ok, true, v.reason);
+  assert.match(v.warnings.join(" "), /Summary only/);
+});
+
+test("a typed extraction is NOT accepted as a photo capture", () => {
+  // The confidence gate is skipped only for a source that has no OCR behind it.
+  // Called as a photo, this extraction has no confidence and must be refused —
+  // so the exemption cannot be reached by mislabelling the source.
+  const { extraction } = plan({ lastWasTyped: false });
+  const v = validateExtraction(extraction, { summaryOnly: true, source: "photo", declaredTotal: true });
+  assert.equal(v.ok, false);
+});
+
+test("a bad terminal id or clock is refused rather than filed somewhere", () => {
+  assert.match(plan({ tid: "" }).reason, /does not look like a terminal ID/);
+  assert.match(plan({ nowMs: NaN }).reason, /server clock/);
+});

@@ -79,7 +79,7 @@ import { planPhotoIntake, payloadRefusal } from "./photoIntake";
 import { describeCallableError, describeDecodeError } from "./captureFailure";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
-import { captureCards, takesPhoto } from "./terminalRegistry";
+import { captureCards, takesPhoto, typesTotal } from "./terminalRegistry";
 import TerminalSettings from "./TerminalSettings";
 import { FONT } from "./cardReconStyles";
 
@@ -199,6 +199,11 @@ const T = {
   // What Submit is waiting for, said in words — a grey button alone did not.
   waiting: { fontSize: 13, fontWeight: 600, color: "#FFD479", textAlign: "center" },
   typeNote: { fontSize: 12.5, lineHeight: 1.5, color: "rgba(233,238,255,.5)" },
+  // The typed-total card's hint, where the camera glyph sits on the others.
+  // Words rather than a glyph: there is no icon for "type a number" that a
+  // manager reads correctly at arm's length, and the quiet grey keeps it at the
+  // same weight as the camera it stands in for — a prompt, never an alarm.
+  typedHint: { fontSize: 13, fontWeight: 600, color: "rgba(233,238,255,.4)", whiteSpace: "nowrap" },
 };
 
 /**
@@ -453,6 +458,50 @@ export default function CardReconScreen({ onExit }) {
     await send(tid, photo.base64, false, text);
   };
 
+  // ── A TYPED-TOTAL MACHINE — one figure, and that is the whole capture ──────
+  // Trophy Till 2 cannot email and does not print its total, so there is no
+  // photograph to take. Its card carries one box; this sends it. The server
+  // does the rest, including deciding whether the machine really is set up this
+  // way — the card is hidden from a machine that is not, and the callable
+  // refuses it regardless.
+  const sendTyped = async (tid, text, correction) => {
+    setPhase(tid, { phase: "busy" });
+    try {
+      const { data } = await cardBatchCaptureFn({
+        action: "typed", pickedTid: tid, declaredTotal: text, correction,
+      });
+      if (!data.ok) {
+        setPhase(tid, { phase: "failed", reason: reasonOf(data),
+                        // The one refusal with a way out, worded by the server:
+                        // a figure already typed in today can be replaced.
+                        canReplace: /already been typed in today|submit this one as a replacement/i.test(data.reason || "") });
+        return;
+      }
+      const { data: done } = await cardBatchCaptureFn({ action: "submit", draftId: data.draftId });
+      if (!done.ok) { setPhase(tid, { phase: "failed", reason: reasonOf(done) }); return; }
+      rememberHandCapture(tid, today);
+      setMine((prev) => new Set(prev).add(tid));
+      setPhase(tid, null);
+      delete lastTyped.current[tid];
+      // Only THIS till's panel closes — another card's may have been opened
+      // while this was in flight.
+      setTyped((prev) => (prev && prev.tid === tid ? null : prev));
+    } catch (err) {
+      const online = typeof navigator === "undefined" ? true : navigator.onLine !== false;
+      const failure = describeCallableError(err, { online });
+      console.error(failure.logLine, err);
+      setPhase(tid, { phase: "failed", reason: failure.message,
+                      canReplace: /already been typed in today|submit this one as a replacement/i.test(failure.message) });
+    }
+  };
+
+  const submitTypedOnly = async (tid, correction = false) => {
+    const text = (typed && typed.tid === tid ? typed.text : lastTyped.current[tid] || "").trim();
+    if (!text) return;
+    lastTyped.current[tid] = text;
+    await sendTyped(tid, text, correction);
+  };
+
   return (
     <div style={T.page}>
       <button onClick={onExit} style={T.back}>← Home</button>
@@ -485,6 +534,11 @@ export default function CardReconScreen({ onExit }) {
           // AN EMAIL-ONLY TILL HAS NO CAMERA — set in the terminal settings.
           // Its card is the tick and nothing else: no input, nothing to tap.
           const camera = takesPhoto(t);
+          // A TYPED-TOTAL TILL HAS NO CAMERA EITHER, but it is not silent: it
+          // is tappable, and what opens is one box for the figure. The two are
+          // mutually exclusive by construction (terminalRegistry.js), so a card
+          // can never offer both a camera and a figure box.
+          const typedOnly = typesTotal(t);
           const cardStyle = { ...T.card, ...(done ? T.cardDone : null), ...(busy ? T.cardBusy : null) };
           const face = (
             <>
@@ -495,7 +549,11 @@ export default function CardReconScreen({ onExit }) {
                    only the hint that a photo is what it takes. Drawn rather
                    than typed — an emoji renders as a grey smudge at this
                    opacity, and differently on every handset. */
-                : camera ? <CameraGlyph /> : null}
+                : camera ? <CameraGlyph />
+                /* A typed-total till says what it wants, because a camera
+                   glyph would be a lie and a blank card reads as "nothing to
+                   do here" — the one thing it must not say. */
+                : typedOnly ? <span style={T.typedHint}>Type total</span> : null}
             </>
           );
           return (
@@ -504,6 +562,13 @@ export default function CardReconScreen({ onExit }) {
                 <button type="button" style={{ ...cardStyle, ...T.cardButton }} disabled={busy}
                         aria-expanded={chooserFor === t.tid}
                         onClick={() => { setTyped(null); setChooserFor(chooserFor === t.tid ? null : t.tid); }}>
+                  {face}
+                </button>
+              ) : typedOnly ? (
+                <button type="button" style={{ ...cardStyle, ...T.cardButton }} disabled={busy}
+                        aria-expanded={!!typed && typed.tid === t.tid}
+                        onClick={() => { setChooserFor(null);
+                          setTyped((prev) => (prev && prev.tid === t.tid ? null : { tid: t.tid, photo: null, text: "" })); }}>
                   {face}
                 </button>
               ) : (
@@ -517,10 +582,19 @@ export default function CardReconScreen({ onExit }) {
                   Its emailed report arrived today and was not recorded. {refused.get(t.tid)}
                 </div>
               )}
-              {state.phase === "failed" && state.canReplace && lastPhoto.current[t.tid] && (
+              {state.phase === "failed" && state.canReplace && !typedOnly && lastPhoto.current[t.tid] && (
                 <button style={T.again}
                         onClick={() => send(t.tid, lastPhoto.current[t.tid], true, lastTyped.current[t.tid])}>
                   Replace the earlier capture
+                </button>
+              )}
+              {/* The same way out on the typed path: there is no photo to carry
+                  over, only the figure that was just refused as a second entry
+                  for today. Resent as a replacement, it supersedes the first —
+                  both records are kept, as the server's own sentence says. */}
+              {state.phase === "failed" && state.canReplace && typedOnly && lastTyped.current[t.tid] && (
+                <button style={T.again} onClick={() => submitTypedOnly(t.tid, true)}>
+                  Replace today's typed total
                 </button>
               )}
               {/* THE CHOOSER — only under the card that was tapped. Each photo
@@ -546,6 +620,34 @@ export default function CardReconScreen({ onExit }) {
                     </button>
                   )}
                   <button type="button" style={T.sheetCancel} onClick={() => setChooserFor(null)}>Cancel</button>
+                </div>
+              )}
+              {/* A TYPED-TOTAL MACHINE — one box, one button, no photo step.
+                  Open to anyone who can reach this screen: it is the machine's
+                  ONLY capture route, so gating it on the owner would mean the
+                  till simply does not reconcile on an evening he is not here
+                  (Junid, 1 Oct 2026). The server holds the same line. */}
+              {typedOnly && typed && typed.tid === t.tid && (
+                <div style={T.sheet} data-testid="typed-only">
+                  <div style={T.step}>Total on the machine</div>
+                  <input style={T.typeInput} inputMode="decimal" autoComplete="off" enterKeyHint="done"
+                         aria-label={`Total for ${t.label || t.tid}, typed by hand`}
+                         placeholder="e.g. 2,250.00" value={typed.text} disabled={busy}
+                         onChange={(e) => { const v = e.target.value; setTyped((prev) => (prev ? { ...prev, text: v } : prev)); }} />
+                  <button type="button" style={{ ...T.submit, ...(typed.text.trim() && !busy ? null : T.submitOff) }}
+                          disabled={!typed.text.trim() || busy}
+                          onClick={() => submitTypedOnly(t.tid)}>
+                    {busy ? "Sending…" : "Submit"}
+                  </button>
+                  {!busy && !typed.text.trim() && (
+                    <div style={T.waiting} role="status">Type the total to submit.</div>
+                  )}
+                  <button type="button" style={T.sheetCancel} disabled={busy} onClick={() => setTyped(null)}>Cancel</button>
+                  <div style={T.typeNote}>
+                    This machine has no slip to photograph, so the figure is the whole record.
+                    It is kept against your name, and the period it covers runs from the last
+                    time this machine was captured until now.
+                  </div>
                 </div>
               )}
               {/* THE TYPED TOTAL — photo first, then the figure, then Submit. */}

@@ -41,7 +41,10 @@
 const { isRetiredTerminal } = require("./card-terminals.cjs");
 
 /** How a terminal's report reaches us. Absent on a row = "both". */
-const CAPTURE_MODES = Object.freeze(["email", "photo", "both"]);
+// "typed" joined these on 1 Oct 2026 for Trophy Till 2 — a machine that cannot
+// email and does not print its total, so there is nothing to photograph. See
+// captureMode in card-terminals.cjs for what each one means on the card.
+const CAPTURE_MODES = Object.freeze(["email", "photo", "typed", "both"]);
 
 const LABEL_MAX = 40;
 
@@ -91,7 +94,7 @@ function readCommon(input, stores) {
   const mid = readMid(input.mid);
   if (!mid.ok) return mid;
   const capture = readCapture(input.capture);
-  if (!capture) return { ok: false, reason: "Pick how this terminal's report arrives: Email, Photo or Both." };
+  if (!capture) return { ok: false, reason: "Pick how this terminal's report arrives: Email, Photo, Typed or Both." };
   const placed = checkPlacement(stores, input.storeId, input.tillId);
   if (!placed.ok) return placed;
   return { ok: true, label: label.label, mid: mid.mid, capture, storeId: input.storeId, tillId: input.tillId };

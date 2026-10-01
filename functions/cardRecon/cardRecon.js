@@ -60,6 +60,7 @@ const {
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
   hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
+  planTypedCapture,
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
@@ -67,7 +68,7 @@ const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
-const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto } = require("../lib/card-terminals.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal } = require("../lib/card-terminals.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -503,6 +504,29 @@ async function readRecordedLinesFor(db, storeId, tid, keys) {
 }
 
 /**
+ * Is the capture in force for this batch a SETTLED EMPTY BATCH?
+ *
+ * Read from the record's own slip, never inferred from the line count: an empty
+ * batch and a summary-only capture both have no lines, and only one of them may
+ * be superseded automatically (comparePriorCapture's note has the whole case,
+ * and Marathon Till 3 #84 on 29 Sept 2026 is why it is here).
+ *
+ * BOTH halves are required. `windowSource` is written only by
+ * emptyBatchExtraction, and buildBatchRecord refuses a report wearing the flag
+ * unless every figure on it is zero — so the total is already guaranteed. It is
+ * re-checked anyway because this is the gate on overwriting a recorded figure,
+ * and a gate that trusts one field is a gate that opens when that field is
+ * mangled by a hand edit or a half-written record.
+ */
+async function recordedIsEmptyBatch(db, storeId, tid, keys) {
+  if (!keys.length) return false;
+  const key = keys[keys.length - 1];
+  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${key}/slip`).once("value");
+  const slip = snap.val() || {};
+  return slip.windowSource === "empty-batch" && slip.totalCents === 0;
+}
+
+/**
  * Decide the write for a batch, reading what is already recorded.
  *
  * ONE place, used by both extract paths and by submit, so the three cannot
@@ -520,7 +544,12 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines })
   let comparison = null;
   if (existingKeys.length && !correction) {
     const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
-    comparison = comparePriorCapture(recorded, lines || []);
+    // Only asked when there is nothing to compare against — the one case where
+    // the answer can change the relation, and one read saved on every other.
+    const recordedEmptyBatch = recorded.length
+      ? false
+      : await recordedIsEmptyBatch(db, storeId, tid, existingKeys);
+    comparison = comparePriorCapture(recorded, lines || [], { recordedEmptyBatch });
   }
   const write = resolveBatchWrite({
     existingKeys, batchNo, correction,
@@ -616,6 +645,151 @@ async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
   });
   return matchLegs(extraction.lines, legs, terminal);
 }
+
+// [typed-capture:start] — see card-batch-numbers.test.cjs for why this region
+// is held apart from that file's batch-number scan.
+/**
+ * This terminal's highest recorded batch, and what that record is — the whole
+ * state the typed path needs to decide the next number and where its window
+ * starts (planTypedCapture has the reasoning).
+ *
+ * ONE QUERY, bounded by the index the live rules already declare on this node
+ * (`batchNo`, see rules-live-backup-*.json). Never a read of the whole
+ * terminal: a machine on batch 530 has 530 records under it.
+ *
+ * A REVISION WEARS ITS BATCH'S NUMBER, so ordering by batchNo can land on
+ * either `487` or `487-r2`; both carry the same batchNo, which is all the
+ * caller reads, and the LATER CLOSE of the two is the one a window should
+ * start from. limitToLast(2) is what makes that choice possible at all.
+ */
+async function readLastBatchFor(db, storeId, tid) {
+  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`)
+    .orderByChild("batchNo").limitToLast(2).once("value");
+  const rows = Object.values(snap.val() || {})
+    .filter((r) => r && typeof r === "object" && Number.isInteger(Number(r.batchNo)));
+  if (!rows.length) return { batchNo: null, closedAt: null, typed: false };
+  const highest = Math.max(...rows.map((r) => Number(r.batchNo)));
+  const ofHighest = rows.filter((r) => Number(r.batchNo) === highest);
+  const closes = ofHighest.map((r) => Number(r.slip && r.slip.closedAt)).filter(Number.isFinite);
+  const latest = ofHighest.find((r) => Number(r.slip && r.slip.closedAt) === Math.max(...closes)) || ofHighest[0];
+  return {
+    batchNo: highest,
+    closedAt: closes.length ? Math.max(...closes) : null,
+    typed: (latest.slip && latest.slip.format) === "typed",
+  };
+}
+
+/**
+ * A TYPED-TOTAL MACHINE'S WHOLE CAPTURE — one figure, no photograph, no OCR.
+ *
+ * Trophy Till 2 cannot email and does not print its total, so there is nothing
+ * to photograph and nothing to read (Junid, 1 Oct 2026). What makes this safe
+ * is not that it checks less, but that it INVENTS LESS THAN THE PATH IT
+ * REPLACES: the window runs from the previous settlement to now, both real
+ * instants, where anchorDeclaredWindow had to guess which day a bare clock time
+ * belonged to — and when it guessed wrong, the till's money fell outside its
+ * own window and was reported twice.
+ *
+ * ── WHO MAY DO THIS, AND WHY IT IS NOT mayDeclareTotal ──────────────────────
+ * The owner's typed total beside a photograph stays his alone and is untouched.
+ * THIS is a different thing: the machine's only capture route, which has to work
+ * on the evening the owner is not there, so it is open to anyone the
+ * `card_recon` permission already trusts to capture that till's money (Junid,
+ * 1 Oct 2026). It is bounded by the registry, not by the caller: only a
+ * terminal an admin has set to "typed" can be captured this way at all, and
+ * every such record says in its warnings that no paper exists behind it.
+ */
+async function handleTypedCapture(db, request, { picked, terminal }) {
+  const correction = !!request.data?.correction;
+  const last = await readLastBatchFor(db, terminal.storeId, picked);
+  const plan = planTypedCapture({
+    tid: picked,
+    totalText: request.data?.declaredTotal,
+    nowMs: Date.now(),
+    lastBatchNo: last.batchNo,
+    lastClosedAt: last.closedAt,
+    lastWasTyped: last.typed,
+    correction,
+  });
+  if (!plan.ok) return reject(plan.reason);
+  const { extraction, batchNo } = plan;
+
+  const verdict = validateExtraction(extraction, { summaryOnly: true, source: "typed", declaredTotal: true });
+  if (!verdict.ok) return reject(verdict.reason);
+
+  const { write } = await resolveWriteFor(db, {
+    storeId: terminal.storeId, tid: picked, batchNo, correction, lines: [],
+  });
+  if (!write.ok) return reject(write.reason);
+
+  const expected = await computeExpectedCard(db, {
+    storeId: terminal.storeId, tillId: terminal.tillId,
+    startMs: extraction.openedAt, endMs: extraction.closedAt,
+    edgeMs: edgeMsFor(extraction),
+  });
+
+  // ── WHAT THE RECORD SAYS ABOUT ITSELF ─────────────────────────────────────
+  // Loudly, and first: there is no slip behind this figure and nobody can check
+  // it against paper afterwards. A reader of this batch must never have to work
+  // that out from the absence of a photo path.
+  const who = request.auth.token?.email || request.auth.uid;
+  const warnings = [
+    `The total (${formatCents(extraction.totalCents)}) was typed in by ${who}. This machine is set to typed entry: there is no slip photo and no emailed report behind this figure, and nothing can be checked against paper afterwards.`,
+    `Batch #${batchNo} is this record's filing number, not a number read off the machine — a typed capture never sees the terminal's own batch number.`,
+    ...plan.warnings,
+    ...verdict.warnings,
+  ];
+  const straddle = tillMoveWarning(picked, terminal, extraction.openedAt);
+  if (straddle) warnings.push(straddle);
+
+  const userDraftsRef = db.ref(`${CARD_BATCH_DRAFTS_PATH}/${request.auth.uid}`);
+  const draftRef = userDraftsRef.push();
+  const draftId = draftRef.key;
+  await draftRef.set({
+    by: request.auth.uid,
+    byEmail: request.auth.token?.email || null,
+    createdAt: Date.now(),
+    expiresAt: Date.now() + DRAFT_TTL_MS,
+    pickedTid: picked,
+    summaryOnly: true,
+    correction,
+    warnings,
+    photoPaths: [],
+    // The flag submit re-checks against the registry before it records — a
+    // draft cannot talk its own way out of needing a photograph.
+    typedOnly: true,
+    extraction: JSON.parse(JSON.stringify(extraction)),
+    terminal: { storeId: terminal.storeId, tillId: terminal.tillId, label: terminal.label ?? null },
+    reviewedExpectedCents: expected.cardCents,
+    ocr: null,
+    declaredTotal: {
+      cents: extraction.totalCents, ocrReadCents: null,
+      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, at: Date.now(),
+    },
+  });
+
+  // CAPTURE ONLY, exactly as the photo path returns: no expected figure and no
+  // variance reach the handset — see the note on handleExtract's reply.
+  return {
+    ok: true,
+    draftId,
+    review: {
+      tid: picked, mid: null, batchNo: Number(batchNo),
+      revision: write.revision, supersedes: write.supersedes,
+      terminal: { storeId: terminal.storeId, tillId: terminal.tillId, label: terminal.label ?? null },
+      openedAt: extraction.openedAt, closedAt: extraction.closedAt, printedAt: extraction.printedAt,
+      openedText: null, closedText: null,
+      txnCount: null,
+      purchasesCents: null, cashCents: null, refundsCents: null,
+      totalCents: extraction.totalCents,
+      reconLine: null, confidence: null, lineCount: 0,
+      summaryOnly: true, totalDeclaredByHand: true, typedOnly: true,
+      warnings,
+    },
+  };
+}
+
+// [typed-capture:end]
 
 async function handleExtract(db, request) {
   const { photos, pdf, pickedTid, channel } = request.data || {};
@@ -1238,7 +1412,27 @@ async function handleSubmit(db, request) {
   // owner at the moment of record, still the figure on the draft, still
   // summary-only, still a photograph.
   const declaredTotal = draft.declaredTotal || null;
-  if (declaredTotal) {
+  // ── A TYPED-ONLY CAPTURE IS A DIFFERENT CONTRACT ──────────────────────────
+  // No photograph, and not the owner's alone — but it is only ever allowed for
+  // a machine the REGISTRY says is captured that way, and the registry is read
+  // again HERE rather than taken from the draft. A draft that claims to be
+  // typed-only against a machine that takes photographs is refused: that is the
+  // one way this could otherwise become a route around the camera for every
+  // till. (Read fresh for the same reason the terminal mapping is — a draft is
+  // never allowed to vouch for itself.)
+  const typedOnly = draft.typedOnly === true;
+  if (typedOnly) {
+    const row = (await db.ref(`${CARD_TERMINALS_PATH}/${extraction.tid}`).once("value")).val();
+    const intact = !!declaredTotal && Number.isInteger(declaredTotal.cents)
+      && declaredTotal.cents === extraction.totalCents
+      && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
+      && extraction.format === "typed"
+      && (!Array.isArray(draft.photoPaths) || draft.photoPaths.length === 0);
+    if (!row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
+      await draftRef.remove().catch(() => {});
+      return reject("This typed total could not be verified against the machine it was typed for — nothing was recorded. Try again.");
+    }
+  } else if (declaredTotal) {
     const intact = Number.isInteger(declaredTotal.cents) && declaredTotal.cents === extraction.totalCents
       && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
       && Array.isArray(draft.photoPaths) && draft.photoPaths.length > 0;
@@ -1272,7 +1466,8 @@ async function handleSubmit(db, request) {
     ? { ok: false, reason: "This capture no longer matches a registered terminal — extract the slip again." }
     : validateExtraction(extraction, {
         summaryOnly: !!draft.summaryOnly,
-        source: draft.capturedVia === "pdf" ? "pdf" : "photo",
+        // A typed capture has no OCR confidence to gate — see validateExtraction.
+        source: typedOnly ? "typed" : (draft.capturedVia === "pdf" ? "pdf" : "photo"),
         declaredTotal: !!declaredTotal,
       });
   if (!revalid.ok) {
@@ -1382,7 +1577,10 @@ async function handleSubmit(db, request) {
     submittedAt: Date.now(),
     draftId,
     ocr: draft.ocr || null,
-    capturedVia: draft.capturedVia === "pdf" ? "pdf" : "photo",
+    // HOW THIS RECORD CAME TO EXIST, as a fact about it for ever. "typed" is
+    // its own value and not a flavour of "photo": a reader asking what evidence
+    // sits behind a figure must get the honest answer from this field alone.
+    capturedVia: typedOnly ? "typed" : (draft.capturedVia === "pdf" ? "pdf" : "photo"),
     pdfPath: draft.pdfPath || null,
     intake: draftIntake,
     // WHO and WHEN come from the verified caller at the moment of record, never
@@ -1443,8 +1641,33 @@ exports.cardBatchCapture = onCall(
       }
       return out;
     }
+    // ── A TYPED-TOTAL MACHINE — its own action, not a photo capture with the
+    // photo missing. Keeping it off `extract` is deliberate: that path's first
+    // job is to decide which of two file sources it was handed, and a third
+    // shape carrying neither would have to be threaded past every check built
+    // for a document. This one reads the registry, confirms the machine really
+    // is set to typed entry, and goes straight to the draft `submit` records.
+    if (action === "typed") {
+      const picked = normaliseTid(request.data?.pickedTid);
+      if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
+      const terminals = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
+      const terminal = terminals[picked];
+      if (!terminal || !terminal.storeId || !terminal.tillId) {
+        return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before anything can be captured.`);
+      }
+      if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
+      // THE REGISTRY DECIDES, NEVER THE CALLER. A machine that can produce a
+      // readable slip must keep producing one: typing a figure for it would
+      // put an unverifiable number on the record where evidence was available.
+      if (!typesTotal(terminal)) {
+        return reject(`${terminal.label || picked} is not set to typed entry, so its total cannot be typed in — photograph its slip. Junid can change this in Card machines → settings.`);
+      }
+      const out = await handleTypedCapture(db, request, { picked, terminal });
+      if (out && out.ok === false) console.warn(refusalLogLine(picked, out.reason));
+      return out;
+    }
     if (action === "submit") return handleSubmit(db, request);
-    throw new HttpsError("invalid-argument", "action must be 'extract' or 'submit'.");
+    throw new HttpsError("invalid-argument", "action must be 'extract', 'typed' or 'submit'.");
   },
 );
 

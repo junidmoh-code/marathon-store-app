@@ -52,19 +52,44 @@ function isRetiredTerminal(row) {
 }
 
 /**
- * How this machine's report reaches us: "email", "photo" or "both". Set from
- * the terminal settings sheet; a row without it (every row written before
- * 21 Sept 2026) is "both", which is how every card behaved until then — so
- * nothing loses its camera by the field being absent or mangled.
+ * How this machine's report reaches us: "email", "photo", "typed" or "both".
+ * Set from the terminal settings sheet; a row without it (every row written
+ * before 21 Sept 2026) is "both", which is how every card behaved until then —
+ * so nothing loses its camera by the field being absent or mangled.
+ *
+ * ── "typed" — A FIGURE, AND NOTHING ELSE (Junid, 1 Oct 2026) ────────────────
+ * Trophy Till 2 cannot email its report, and its printer does not put the total
+ * on the paper — so there is no photograph worth taking and no slip to read.
+ * Its total is typed in, by whoever settles the till, and that IS the capture.
+ *
+ * This is NOT the same as the owner's typed total beside a photograph, which
+ * stays exactly as it was: there the paper is the evidence and the server still
+ * reads the TID, the batch and the window off it. Here there is no paper at
+ * all, so the record says so in the loudest terms it has — see the warnings on
+ * the typed path in cardRecon.js. It is deliberately a per-machine setting and
+ * never a general one: a till that CAN produce a readable slip must keep
+ * producing one.
  */
 function captureMode(row) {
   const m = row && row.capture;
-  return m === "email" || m === "photo" ? m : "both";
+  return m === "email" || m === "photo" || m === "typed" ? m : "both";
 }
 
-/** Does this machine's card take a photograph? */
+/**
+ * Does this machine's card take a photograph?
+ *
+ * A typed-total machine does not, for the same reason an email-only one does
+ * not: there is nothing for the camera to do. The screen shows neither a camera
+ * nor a chooser, and the callable refuses a photograph sent against one anyway.
+ */
 function takesPhoto(row) {
-  return captureMode(row) !== "email";
+  const m = captureMode(row);
+  return m !== "email" && m !== "typed";
+}
+
+/** Is this machine captured by typing its total, with no photograph at all? */
+function typesTotal(row) {
+  return captureMode(row) === "typed";
 }
 
 /**
@@ -144,4 +169,4 @@ function retiredCaptureRefusal(tid, row) {
   return `${label} (${tid}) is retired — it is no longer mapped to a till that can take a capture. If this machine is trading again, Junid reinstates it from Card machines → settings before its slips can be recorded.`;
 }
 
-module.exports = { isRetiredTerminal, captureMode, takesPhoto, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
+module.exports = { isRetiredTerminal, captureMode, takesPhoto, typesTotal, wasActiveAt, tillMoveWarning, retiredSlipWarning, retiredCaptureRefusal };
