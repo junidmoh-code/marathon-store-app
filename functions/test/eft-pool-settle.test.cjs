@@ -652,19 +652,13 @@ test("mark-as-used refuses without an ACTOR or a time, and on anything that is n
 // phone at a counter is the difference between marking a payment now and never
 // marking it; an unmarked payment is a real hole in the pool, a missing "why"
 // is not. What the owner's by-hand review reads is who and when.
-test("mark-as-used goes through with NO reason, and still stamps who and when", () => {
-  for (const noReason of [{ ...ownerMark, reason: "" }, { ...ownerMark, reason: "   " }, { ...ownerMark, reason: null }, (() => { const m = { ...ownerMark }; delete m.reason; return m; })()]) {
+test("mark-as-used REQUIRES a reason (fix 4) — nothing is written without one", () => {
+  for (const noReason of [{ ...ownerMark, reason: "" }, { ...ownerMark, reason: "   " }, { ...ownerMark, reason: null }, { ...ownerMark, reason: "ok" }, (() => { const m = { ...ownerMark }; delete m.reason; return m; })()]) {
     const node = makeNode(recorded());
     const r = runMark(node, noReason);
-    assert.equal(r.ok, true, JSON.stringify(noReason));
-    const after = node.get();
-    assert.equal(after.status, "used");
-    assert.equal(after.used.sale, null);
-    assert.equal(after.used.outsidePos.actorUid, ownerMark.actorUid);
-    assert.equal(after.used.outsidePos.actorName, ownerMark.actorName);
-    assert.equal(after.used.outsidePos.at, ownerMark.at);
-    // null, never "" — an absent reason and an empty one must not be two states.
-    assert.equal(after.used.outsidePos.reason, null);
+    assert.equal(r.ok, false, JSON.stringify(noReason));
+    assert.equal(r.code, "bad-reason");
+    assert.equal(node.get().status, "unmatched");
   }
 });
 

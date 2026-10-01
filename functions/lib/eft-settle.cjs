@@ -150,13 +150,12 @@ function settleDecision(current, settlement) {
 // record. Reversal is the ordinary owner reversal: the settlement moves whole
 // to `reversals`, outsidePos included — both records survive.
 //
-// THE REASON IS OPTIONAL, and that is a deliberate trade. It used to be
-// required, and a required sentence typed on a phone at a counter is the
-// difference between marking a payment now and never marking it — an unmarked
-// payment is a real hole in the pool, a missing "why" is not. Who and when are
-// still stamped and are what the owner's by-hand review actually reads. A
-// reason that IS sent is still kept, and older marks keep theirs.
+// THE REASON IS REQUIRED (fix 4). #598 made it optional ("two taps and no
+// keyboard"); Junid has decided otherwise: a payment marked used outside the
+// POS has no sale, no slip and no customer, so the typed reason is the ONLY
+// account of where that money went. Three characters at least.
 const OUTSIDE_POS_REASON_MAX = 300;
+const OUTSIDE_POS_REASON_MIN = 3;
 
 /**
  * unmatched → used with no sale, by the owner. `mark` carries
@@ -172,6 +171,9 @@ function markUsedOutsidePosDecision(current, mark) {
     return refuse("bad-actor", "The mark does not say who is marking — refused.");
   }
   if (!Number.isInteger(m.at)) return refuse("bad-time", "The mark carries no server time — refused.");
+  if (reason.length < OUTSIDE_POS_REASON_MIN) {
+    return refuse("bad-reason", "Say how this payment was settled outside the POS — the reason stays on the record.");
+  }
   const base = settleDecision(current, {
     // The attempt id is the mark's own moment: nothing else can hold it, so a
     // second tap is a second attempt and loses to the first — exactly one
@@ -200,9 +202,7 @@ function markUsedOutsidePosDecision(current, mark) {
         ...base.value.used,
         sale: null,
         outsidePos: {
-          // null, never "" — an absent reason and an empty one must not be two
-          // states for a reader to tell apart.
-          reason: reason ? reason.slice(0, OUTSIDE_POS_REASON_MAX) : null,
+          reason: reason.slice(0, OUTSIDE_POS_REASON_MAX),
           actorUid: m.actorUid,
           actorName: m.actorName,
           at: m.at,
@@ -559,7 +559,7 @@ function poolTransactionStep(decide, capture) {
 
 module.exports = {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
   releaseHoldDecision, RELEASE_REASON_MIN,

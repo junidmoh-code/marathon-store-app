@@ -72,7 +72,8 @@ dbState.reads["users/cashier-uid/posAccess"] = { isActive: true, displayName: "A
 const REVIEWER = { auth: { uid: "reviewer-uid", token: { email: "ibrahim@marathon.internal" } } };
 dbState.reads["users/reviewer-uid/posAccess/isActive"] = true;
 dbState.reads["users/reviewer-uid/posAccess/displayName"] = "ibrahim";
-dbState.reads["users/reviewer-uid/posAccess"] = { isActive: true, displayName: "ibrahim", role: "manager", eftReview: true };
+// `individual`: the owner confirmed this login is one person's own (fix 4).
+dbState.reads["users/reviewer-uid/posAccess"] = { isActive: true, displayName: "ibrahim", role: "manager", eftReview: true, individual: true };
 
 // The same person, DEACTIVATED. The capability must go with the account.
 const SUSPENDED = { auth: { uid: "suspended-uid", token: { email: "x@marathon.internal" } } };
@@ -161,7 +162,7 @@ test("REVOKING THE FLAG TAKES EFFECT ON THE NEXT CALL — nothing is cached", as
   assert.equal(dbState.transactions, 1);
   // …the owner takes the capability away…
   const restore = dbState.reads["users/reviewer-uid/posAccess"];
-  dbState.reads["users/reviewer-uid/posAccess"] = { isActive: true, displayName: "ibrahim", role: "manager" };
+  dbState.reads["users/reviewer-uid/posAccess"] = { isActive: true, displayName: "ibrahim", role: "manager", individual: true };
   dbState.transactions = 0;
   // …and the VERY NEXT call is refused, with no transaction reached.
   await rejects(eftPoolSettle({ ...REVIEWER, data: { action: "markUsed", poolKey: key, reason: "paid at the shop" } }), "permission-denied");
@@ -186,19 +187,36 @@ test("REVERSAL IS THE OWNER ALONE — an eftReview holder is refused server-side
   assert.equal(dbState.transactions, 0, "no reversal transaction is ever reached");
 });
 
-test("markUsed by the owner needs NO reason — two taps and no keyboard", async () => {
+test("markUsed needs a REASON — owner and reviewer alike, refused before any transaction (fix 4)", async () => {
   const key = "a".repeat(40);
-  // No reason field at all, and a blank one: both reach the transaction. A
-  // required sentence is what stops this being done at a counter.
-  for (const data of [
-    { action: "markUsed", poolKey: key },
-    { action: "markUsed", poolKey: key, reason: "" },
-    { action: "markUsed", poolKey: key, reason: "   " },
-  ]) {
-    dbState.transactions = 0;
-    await eftPoolSettle({ ...OWNER, data }).catch(() => {});
-    assert.equal(dbState.transactions, 1, JSON.stringify(data));
+  for (const who of [OWNER, REVIEWER]) {
+    for (const data of [
+      { action: "markUsed", poolKey: key },
+      { action: "markUsed", poolKey: key, reason: "" },
+      { action: "markUsed", poolKey: key, reason: "  ok " },
+    ]) {
+      dbState.transactions = 0;
+      const e = await rejects(eftPoolSettle({ ...who, data }), "invalid-argument");
+      assert.equal(e.details.code, "bad-reason");
+      assert.equal(dbState.transactions, 0, JSON.stringify(data));
+    }
   }
+});
+
+test("markUsed refuses eftReview on a login NOT confirmed as one person's — a shared till login (fix 4)", async () => {
+  const key = "a".repeat(40);
+  const SHARED = { auth: { uid: "shared-uid", token: { email: "pe-till@marathon.internal", name: "PE Till" } } };
+  dbState.reads["users/shared-uid/posAccess/isActive"] = true;
+  dbState.reads["users/shared-uid/posAccess"] = { isActive: true, displayName: "PE Till", role: "cashier", eftReview: true };
+  dbState.transactions = 0;
+  const e = await rejects(eftPoolSettle({ ...SHARED, data: { action: "markUsed", poolKey: key, reason: "paid in June" } }), "permission-denied");
+  assert.equal(e.details.code, "not-individual");
+  assert.equal(dbState.transactions, 0);
+  // Confirmed individual but nameless: refused — never a token fallback.
+  dbState.reads["users/shared-uid/posAccess"] = { isActive: true, displayName: "  ", eftReview: true, individual: true };
+  const e2 = await rejects(eftPoolSettle({ ...SHARED, data: { action: "markUsed", poolKey: key, reason: "paid in June" } }), "permission-denied");
+  assert.equal(e2.details.code, "no-actor-name");
+  assert.equal(dbState.transactions, 0);
 });
 
 test("markUsed refuses a malformed pool key before anything else", async () => {

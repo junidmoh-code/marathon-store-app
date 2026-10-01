@@ -34,10 +34,10 @@
 //                   remainder to a customer — same mint, same records.
 //                   A fifth, "markUsed", is a payment marked as settled
 //                   OUTSIDE the POS (no sale attached; the actor's uid and
-//                   NAME and server time on the record, and an OPTIONAL
-//                   reason — see markUsedOutsidePosDecision for why). The
-//                   owner, OR a uid the owner has given the eftReview
-//                   capability to — /users/{uid}/posAccess/eftReview on an
+//                   NAME and server time on the record, and a REQUIRED
+//                   reason — fix 4). The owner, OR a uid the owner has given
+//                   the eftReview capability to on an account confirmed as
+//                   ONE PERSON'S (posAccess.eftReview + individual on an
 //                   ACTIVE account, granted from the POS users screen and
 //                   re-read here on every call, so revoking it takes effect on
 //                   the next one. The SAME transaction as a till's settle, so
@@ -85,7 +85,7 @@ const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEf
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, releaseHoldDecision,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN, releaseHoldDecision,
   saleCheckOf, flagSaleMismatchDecision,
 } = require("../lib/eft-settle.cjs");
 const {
@@ -142,21 +142,23 @@ async function assertPosIdentity(request) {
 
 /**
  * Owner, or a uid the OWNER has given the eftReview capability to — an ACTIVE
- * POS account with posAccess.eftReview === true. It is granted and revoked from
- * the POS users screen in marathon-pos-app, so adding or removing a person
- * never needs a deploy.
+ * POS account with posAccess.eftReview === true AND posAccess.individual ===
+ * true. Returns the ACTOR'S NAME as the access record knows it.
  *
- * Read from the database on EVERY call, deliberately: that is what makes a
- * revocation take effect on the very next one. Nothing is carried on the token
- * and nothing is cached, so there is no client state to ride past.
+ * FIX 4 — ONE PERSON, NOT A SHARED LOGIN. A mark-as-used has no sale, no slip
+ * and no customer; the actor is its only accountability. posAccess had no
+ * notion of a login being one person's, so eftReview on a shared till login
+ * let anyone at that till mark money as settled. `individual` is the owner's
+ * attestation, given in the SAME step as granting eftReview on the POS users
+ * screen ("this login is one named person's own"), and both are re-read here
+ * on every call — revoking either takes effect on the next one. The name must
+ * come off that record: no display name, no mark (never a token fallback).
  *
  * WHAT IT GRANTS HERE IS EXACTLY ONE ACTION — marking a payment as settled
- * outside the POS. It is NOT a widening of settle, attach, release, allocate or
- * reverse: reversing a settlement stays the owner alone (eftPoolReverse checks
- * isOwner itself), and a holder calling it is refused server-side.
+ * outside the POS. Reversing stays the owner alone (eftPoolReverse).
  */
 async function assertEftReviewer(request) {
-  if (isOwner(request)) return;
+  if (isOwner(request)) return "owner";
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let access = null;
@@ -172,6 +174,14 @@ async function assertEftReviewer(request) {
   if (access?.isActive !== true || access?.eftReview !== true) {
     throw new HttpsError("permission-denied", "Only the owner, or someone given EFT review, can mark a payment as settled outside the POS.");
   }
+  if (access?.individual !== true) {
+    throw new HttpsError("permission-denied", "This login is not confirmed as one person's own. Marking a payment as settled needs a personal login — Junid can confirm it on the POS users screen.", { code: "not-individual" });
+  }
+  const name = typeof access.displayName === "string" ? access.displayName.trim() : "";
+  if (!name) {
+    throw new HttpsError("permission-denied", "This login has no name on its POS record, so a mark could not say who made it.", { code: "no-actor-name" });
+  }
+  return name.slice(0, 80);
 }
 
 /** The cashier's display name as the POS access record knows it — resolved
@@ -541,21 +551,19 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     // delegates to settleDecision), so a till settling the same payment in the
     // same instant still gets exactly one winner. Undone only by eftPoolReverse,
     // which is the owner ALONE and keeps both records.
-    await assertEftReviewer(request);
-    // OPTIONAL. Two taps and no keyboard is what makes this get done at a
-    // counter at all; who and when are still stamped, and a reason that IS
-    // sent is still kept.
+    const actorName = await assertEftReviewer(request);
+    // REQUIRED (fix 4): the typed reason is the only account of where money
+    // with no sale went. Refused here before any transaction, and again inside
+    // markUsedOutsidePosDecision.
     const reason = String(data.reason ?? "").trim().slice(0, OUTSIDE_POS_REASON_MAX);
-    // THE ACTOR IS NAMED, NOT ASSUMED. This used to stamp the literal string
-    // "owner" because the owner was the only caller; now that staff can mark a
-    // payment, the record has to say WHICH person did, resolved server-side
-    // from their POS access record rather than from anything they sent.
-    const actorName = await cashierNameOf(request);
+    if (reason.length < OUTSIDE_POS_REASON_MIN) {
+      throw new HttpsError("invalid-argument", "Say how this payment was settled outside the POS — the reason stays on the record.", { code: "bad-reason" });
+    }
     decision = await runPoolTransaction(key, (current) => markUsedOutsidePosDecision(current, {
       at: now, actorUid: uid, actorName, reason,
     }));
     if (!decision.ok) throw refusalToError(decision);
-    console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid})${reason ? ` — ${reason}` : ""}`);
+    console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
     // WHAT WAS ACTUALLY STAMPED travels back, so a caller repainting a card in
     // place shows the record rather than its own guess at it. Without this the
     // phone screen had to invent a name and a moment, and they could differ
