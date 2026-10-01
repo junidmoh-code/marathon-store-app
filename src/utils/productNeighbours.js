@@ -316,7 +316,6 @@ export function topNeighbours(target, candidates, { limit = MAX_NEIGHBOURS } = {
   const scored = [];
   for (const c of candidates) {
     const { score: similarity } = scorePair(target, c);
-    if (similarity <= 0) continue;
     // Size fit is applied HERE and not inside scorePair: similarity is a
     // symmetric relation about what the shoes look like, and "does B come in
     // A's sizes" is not symmetric (a 3–13 shoe covers a 3–6 one, not the

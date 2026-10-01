@@ -43,6 +43,8 @@ const NEIGH = "src/utils/productNeighbours.js";
 const ALT = "src/components/stock/alternativesCore.js";
 const CHIP = "src/components/stock/sizeChipTheme.js";
 const STRIP = "src/components/stock/AlternativesStrip.jsx";
+const SHOE = "src/utils/shoeSize.js";
+const TELE = "src/components/stock/alternativesTelemetry.js";
 const EXTRACT = "src/utils/attributeExtraction.js";
 const APP = "src/App.jsx";
 
@@ -55,6 +57,9 @@ const SUITE = [
   "src/components/stock/rtdbEmptyArray.test.js",
   "src/components/stock/alternativesFuzz.test.js",
   "src/components/stock/AlternativesStrip.render.test.jsx",
+  "src/utils/shoeSize.test.js",
+  "src/components/stock/alternativesTelemetry.test.js",
+  "src/components/stock/altSheetWiring.test.js",
 ];
 
 const MUTATIONS = [
@@ -80,8 +85,8 @@ const MUTATIONS = [
     guard: "Only the sizes that are ACTUALLY available are listed",
     file: ALT,
     kind: "behavioural",
-    from: `    const sizes = (sizesOf(product) || []).filter((s) => sizeAvailable(product, s));`,
-    to: `    const sizes = (sizesOf(product) || []);`,
+    from: `    const sizes = grid.filter((s) => sizeAvailable(product, s));`,
+    to: `    const sizes = grid;`,
   },
   {
     id: "G4",
@@ -278,7 +283,7 @@ const MUTATIONS = [
   },
   {
     id: "G18",
-    guard: "A zero-score neighbour is never stored — an empty list is a real answer",
+    guard: "A zero-score neighbour is never stored — across the wall OR with no shared size; an empty list is a real answer",
     file: NEIGH,
     kind: "behavioural",
     from: `    if (score <= 0) continue;`,
@@ -387,11 +392,11 @@ const MUTATIONS = [
 
   {
     id: "G22b",
-    guard: "An empty result renders NOTHING — no section header, no \"no matches\" row; the sheet falls back to the bare refusal",
+    guard: "A result that has NOT ANSWERED renders nothing — never the empty state, a claim the screen cannot yet make",
     file: STRIP,
     kind: "behavioural",
-    from: `  if (!rows?.length) return null;`,
-    to: ``,
+    from: `  if (!answered) return null;`,
+    to: `  if (!answered) rows = [];`,
   },
   {
     id: "G22c",
@@ -497,6 +502,88 @@ const MUTATIONS = [
     kind: "source-pin",
     from: `      availabilityKnown: (p) => !!sneakerHubOf(p),`,
     to: `      availabilityKnown: () => true,`,
+  },
+
+  // ── 7. THE SIZE GATE (2026-10-01) ────────────────────────────────────────
+  {
+    id: "G26",
+    guard: "THE SIZE GATE: every row is sellable in the size that was tapped (Junid, 2026-10-01: a 3\u20136 Air Force offered for an 8)",
+    file: ALT,
+    kind: "behavioural",
+    from: "    if (matchedSize === undefined) { sizeGateRemoved += 1; continue; }",
+    to: "",
+  },
+  {
+    id: "G26b",
+    guard: "Sizes are compared through the normaliser, never by raw label",
+    file: ALT,
+    kind: "behavioural",
+    from: "    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s) === wantKey) : undefined;",
+    to: "    const matchedSize = sizes.find((s) => s === requestedSize);",
+  },
+  {
+    id: "G26c",
+    guard: "A kids 6Y is never an adult 6",
+    file: SHOE,
+    kind: "behavioural",
+    from: "  { re: new RegExp(`^${NUM}\\\\s*(?:Y|GS|YOUTH)$`), scale: () => SHOE_SCALES.youth },",
+    to: "  { re: new RegExp(`^${NUM}\\\\s*(?:Y|GS|YOUTH)$`), scale: () => SHOE_SCALES.uk },",
+  },
+  {
+    id: "G26d",
+    guard: "A label that cannot be read with confidence is refused, never rounded",
+    file: SHOE,
+    kind: "behavioural",
+    from: "  return null;               // \"8.3\" is not a shoe size anyone sells \u2014 refuse it",
+    to: "  return w;",
+  },
+  {
+    id: "G26e",
+    guard: "Tapping an alternative preselects the CHOSEN shoe's own label for the size",
+    file: ALT,
+    kind: "behavioural",
+    from: "  return { product: row.product, size: row.matchedSize ?? requestedSize };",
+    to: "  return { product: row.product, size: requestedSize };",
+  },
+  {
+    id: "G26f",
+    guard: "Zero survivors says so in words \u2014 \"No similar styles in size X\"",
+    file: STRIP,
+    kind: "behavioural",
+    from: "        No similar styles in size {formatSize(requestedSize)}",
+    to: "",
+  },
+  {
+    id: "G26g",
+    guard: "The build excludes a candidate sharing no size with the product",
+    file: NEIGH,
+    kind: "behavioural",
+    from: "  if (cov === 0) return 0;",
+    to: "",
+  },
+  {
+    id: "G26h",
+    guard: "The build down-ranks partial size overlap",
+    file: NEIGH,
+    kind: "behavioural",
+    from: "  return SIZE_FIT_FLOOR + (1 - SIZE_FIT_FLOOR) * cov;",
+    to: "  return 1;",
+  },
+  {
+    id: "G26i",
+    guard: "Telemetry counts what the size gate removed",
+    file: ALT,
+    kind: "behavioural",
+    from: "    if (matchedSize === undefined) { sizeGateRemoved += 1; continue; }",
+    to: "    if (matchedSize === undefined) { continue; }",
+  },
+  {
+    id: "G26j",
+    guard: "Telemetry records the gate's count on every sheet open",
+    file: TELE,
+    kind: "behavioural",
+    from: "    sizeGateRemoved: result.sizeGateRemoved,",
+    to: "",
   },
 ];
 
