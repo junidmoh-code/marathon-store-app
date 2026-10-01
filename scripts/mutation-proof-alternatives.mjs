@@ -518,7 +518,7 @@ const MUTATIONS = [
     guard: "Sizes are compared through the normaliser, never by raw label",
     file: ALT,
     kind: "behavioural",
-    from: "    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s) === wantKey) : undefined;",
+    from: "    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s, { kidsGrid }) === wantKey) : undefined;",
     to: "    const matchedSize = sizes.find((s) => s === requestedSize);",
   },
   {

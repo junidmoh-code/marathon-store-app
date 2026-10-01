@@ -264,6 +264,11 @@ describe("size fit — the stored list is spent on shoes that come in this shoe'
     expect(sizeFitFactor(wide, narrow)).toBeGreaterThanOrEqual(SIZE_FIT_FLOOR);
     expect(sizeFitFactor(narrow, wide)).toBe(1);
   });
+  it("a bare-number kids grid never neighbours an adult one", () => {
+    const t = prof("t", {}, { sizes: ADULT });
+    const c = prof("c", {}, { sizes: ADULT, categoryKey: "kids-shoes" });
+    expect(topNeighbours(t, [c])).toEqual([]);
+  });
   it("an unknown grid on either side changes nothing", () => {
     const t = prof("t", {}, { sizes: ADULT });
     const unknown = prof("c", {}, { sizes: ["S"] });

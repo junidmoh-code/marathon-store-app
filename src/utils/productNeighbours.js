@@ -30,7 +30,7 @@
 // the difference between a ranked list and a random one.
 
 import { colourFamily, MAX_STYLE_TAGS } from "./productAttributes.js";
-import { shoeSizeRange } from "./shoeSize.js";
+import { shoeSizeRange, productIsKidsGrid } from "./shoeSize.js";
 
 // ── SILHOUETTE GROUPS — the wall ─────────────────────────────────────────────
 // A shoe may only be offered as an alternative to another shoe in its own
@@ -132,7 +132,7 @@ export function neighbourProfile(product, attrs) {
     // never reads it — but topNeighbours uses it so the twelve stored
     // neighbours are ones that can actually come in the sizes this shoe is
     // asked for. Empty when the record has no classifiable size.
-    sizeKeys: shoeSizeRange(product?.sizes)?.keys || [],
+    sizeKeys: shoeSizeRange(product?.sizes, { kidsGrid: productIsKidsGrid(product) })?.keys || [],
   };
 }
 

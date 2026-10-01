@@ -10184,8 +10184,9 @@ function AssistantView({ products, onExit, orders = [] }) {
     // a clothing tile's grey-out reads its cell by a different rule
     // (availabilityCore's header, the deliberately-unmerged clothing lane).
     if ((product.productType || "sneaker") === "clothing") return null;
-    if (!ordersSettled || !sneakerGateReady("hub1") || !sneakerGateReady("hub2")) return null;
+    if (!ordersSettled) return null;
     const result = alternativesForSize({
+      sourceProduct: product,
       neighbours: product[NEIGHBOURS_FIELD],
       requestedSize: size,
       // FOLLOWS MERGES. A pid in a list written last week may since have been
@@ -10270,6 +10271,13 @@ function AssistantView({ products, onExit, orders = [] }) {
     // a card whose only available size is picked by Hub 2. The requested size
     // when the shoe has it, otherwise the first size actually on offer.
     });
+    // AN EMPTY ANSWER IS ONLY CLAIMED ONCE BOTH GATED HUBS HAVE ANSWERED. While
+    // one is still loading, its candidates were dropped as "unknown", so "no
+    // similar styles" would be premature. A hub that ERRORED has answered, so
+    // it cannot hold the sheet hostage for good (architect review, PR #660);
+    // the other hub's shoes still show.
+    const hubLoading = ["hub1", "hub2"].some((h) => { const st = sneakerCellsState(h); return !st.settled && !st.error; });
+    if (!result.rows.length && hubLoading) return null;
     // The requested size's own label on that shoe — every row has one now.
     return {
       ...result,

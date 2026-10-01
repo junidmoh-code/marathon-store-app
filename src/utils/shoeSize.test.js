@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { normaliseShoeSize, shoeSizeKey, findMatchingSize, shoeSizeRange } from "./shoeSize";
+import { normaliseShoeSize, shoeSizeKey, findMatchingSize, shoeSizeRange, productIsKidsGrid } from "./shoeSize";
 import { SIZES_FOOTWEAR, SIZES_KIDS } from "./productTaxonomy";
 
 describe("the labels actually in the catalogue (sampled 2026-10-01)", () => {
@@ -119,5 +119,31 @@ describe("shoeSizeRange", () => {
   it("null when there is nothing at all", () => {
     expect(shoeSizeRange([])).toBe(null);
     expect(shoeSizeRange(null)).toBe(null);
+  });
+});
+
+describe("a bare number on a KIDS shoe is a kids size (architect review, PR #660)", () => {
+  it("the kids category and the trade's kids markers flag a grid", () => {
+    expect(productIsKidsGrid({ categoryKey: "kids-shoes" })).toBe(true);
+    for (const name of ["Air Force 1 (GS) White", "Jordan 4 GS Bred", "Nike Dunk Kids Panda", "Yeezy 350 Infant", "Air Max PS"]) {
+      expect(productIsKidsGrid({ name, categoryKey: "sneakers" }), name).toBe(true);
+    }
+  });
+  it("…and adult names that merely look close are not flagged", () => {
+    for (const name of ["Nike Air Force 1 Baby Blue", "Adidas Kid Cudi", "Nike Air Force 1 Low Stüssy Cream White", "Gsx runner"]) {
+      expect(productIsKidsGrid({ name, categoryKey: "sneakers" }), name).toBe(false);
+    }
+    expect(productIsKidsGrid(null)).toBe(false);
+  });
+  it("a kids UK 10 never equals an adult UK 10", () => {
+    expect(shoeSizeKey("10", { kidsGrid: true })).toBe("uk-kids:10");
+    expect(shoeSizeKey("10", { kidsGrid: true })).not.toBe(shoeSizeKey("10"));
+    expect(normaliseShoeSize("10", { kidsGrid: true }).kids).toBe(true);
+    expect(findMatchingSize(["10", "11"], "10", { kidsGrid: true })).toBe(undefined);
+    expect(findMatchingSize(["10", "11"], "10", { kidsGrid: true, requestedKidsGrid: true })).toBe("10");
+  });
+  it("labelled scales are untouched by the grid flag", () => {
+    expect(shoeSizeKey("6Y", { kidsGrid: true })).toBe("youth:6");
+    expect(shoeSizeKey("EU 30", { kidsGrid: true })).toBe("eu:30");
   });
 });

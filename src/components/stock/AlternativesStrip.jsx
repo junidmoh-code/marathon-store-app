@@ -33,12 +33,15 @@ export function AlternativesStrip({ rows, requestedSize, onPick, onShown, compac
   const shownFor = useRef("");
   const answered = Array.isArray(rows);
   useEffect(() => {
-    if (!answered || !onShown) return;
-    const k = String(requestedSize ?? "");
+    if (!answered || !onShown || !requestedSize) return;
+    const k = String(requestedSize);
     if (shownFor.current === k) return;
     shownFor.current = k;
     onShown();
-  });
+    // onShown is a fresh closure every render; the ref, not the deps, makes
+    // this once per open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answered, requestedSize]);
   if (!answered) return null;
   if (!rows.length) {
     if (!requestedSize) return null;

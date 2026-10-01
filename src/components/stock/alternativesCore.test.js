@@ -113,6 +113,16 @@ describe("the stored ranking is kept among the survivors", () => {
     const products = { p1: P("p1", { sizes: ["6Y", "7Y"] }), p2: P("p2", { sizes: ["6"] }), p3: P("p3", { sizes: ["S"] }) };
     expect(call(LIST, world({ products }), "6").map((r) => r.product.id)).toEqual(["p2"]);
   });
+  it("a bare-number KIDS grid never satisfies an adult request, and vice versa", () => {
+    const products = { p1: P("p1", { sizes: ["10", "11"], categoryKey: "kids-shoes" }), p2: P("p2", { sizes: ["10"] }), p3: P("p3", { sizes: ["10"], name: "Dunk Low (GS)" }) };
+    const w = world({ products });
+    const run = (sourceProduct) => alternativesForSize({
+      neighbours: LIST, requestedSize: "10", sourceProduct, resolveProduct: w.resolveProduct, sizesOf: w.sizesOf,
+      availabilityKnown: w.availabilityKnown, sizeAvailable: w.sizeAvailable, isSellable: w.isSellable,
+    }).rows.map((r) => r.product.id);
+    expect(run({ id: "adult", name: "Air Force 1" })).toEqual(["p2"]);
+    expect(run({ id: "kid", categoryKey: "kids-shoes" })).toEqual(["p1", "p3"]);
+  });
   it("an unclassifiable requested size matches nothing, even a byte-equal label", () => {
     const products = { p1: P("p1", { sizes: ["S"] }), p2: P("p2", { sizes: ["S"] }), p3: P("p3", { sizes: ["S"] }) };
     expect(call(LIST, world({ products }), "S")).toEqual([]);

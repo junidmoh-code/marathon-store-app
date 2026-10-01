@@ -27,7 +27,7 @@
 // touching firebase.
 
 import { parseNeighbours } from "../../utils/productNeighbours";
-import { shoeSizeKey } from "../../utils/shoeSize";
+import { shoeSizeKey, productIsKidsGrid } from "../../utils/shoeSize";
 
 /** How many alternatives the sheet shows. Owner spec: up to 8. */
 export const MAX_ALTERNATIVES_SHOWN = 8;
@@ -38,6 +38,8 @@ export const MAX_ALTERNATIVES_SHOWN = 8;
  *
  * @param neighbours       the raw stored value from product[NEIGHBOURS_FIELD]
  * @param requestedSize    the size the customer actually asked for
+ * @param sourceProduct    the shoe that size was tapped on — a bare "10" on a
+ *                         kids shoe is a kids 10 (shoeSize.productIsKidsGrid)
  * @param resolveProduct   pid -> product record (or null). MUST follow merges —
  *                         a merged-away pid still sits in an older stored list.
  * @param sizesOf          product -> the sizes on its record
@@ -61,7 +63,7 @@ export const MAX_ALTERNATIVES_SHOWN = 8;
  *   through as padding (telemetry, log only).
  */
 export function alternativesForSize({
-  neighbours, requestedSize, resolveProduct, sizesOf, availabilityKnown,
+  neighbours, requestedSize, sourceProduct = null, resolveProduct, sizesOf, availabilityKnown,
   sizeAvailable, isSellable, limit = MAX_ALTERNATIVES_SHOWN,
 }) {
   const rows = [];
@@ -79,7 +81,7 @@ export function alternativesForSize({
   // and the tapped "8_5" are one size, a "6Y" and a "6" are not. A requested
   // size that cannot be classified matches NOTHING — the sheet says so rather
   // than guessing.
-  const wantKey = shoeSizeKey(requestedSize);
+  const wantKey = shoeSizeKey(requestedSize, { kidsGrid: productIsKidsGrid(sourceProduct) });
   for (const n of parsed) {
     // A merged-away neighbour resolves to its SURVIVOR, which may already be in
     // the list under its own pid — and the same shoe twice is a worse list than
@@ -92,7 +94,8 @@ export function alternativesForSize({
     const sizes = grid.filter((s) => sizeAvailable(product, s));
     if (!sizes.length) continue;
     seen.add(product.id);
-    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s) === wantKey) : undefined;
+    const kidsGrid = productIsKidsGrid(product);
+    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s, { kidsGrid }) === wantKey) : undefined;
     if (matchedSize === undefined) { sizeGateRemoved += 1; continue; }
     rows.push({ product, sizes, why: n.why, code: n.code, hasRequestedSize: true, matchedSize });
   }

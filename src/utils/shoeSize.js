@@ -30,6 +30,7 @@
 /** Scales a size can be on. Two sizes match only on the same scale. */
 export const SHOE_SCALES = Object.freeze({
   uk: "uk",        // adult UK — the catalogue's own run (bare numbers 1–15)
+  ukKids: "uk-kids", // bare UK numbers on a KIDS product's grid (productIsKidsGrid)
   us: "us",        // labelled US / US M
   usW: "us-w",     // US women's (labelled W)
   eu: "eu",        // labelled EU, or a bare number 16–50
@@ -39,7 +40,19 @@ export const SHOE_SCALES = Object.freeze({
 });
 
 // Scales that are a child's foot, whatever the number.
-const KIDS_SCALES = new Set([SHOE_SCALES.youth, SHOE_SCALES.child, SHOE_SCALES.toddler]);
+const KIDS_SCALES = new Set([SHOE_SCALES.youth, SHOE_SCALES.child, SHOE_SCALES.toddler, SHOE_SCALES.ukKids]);
+
+// ── A BARE NUMBER ON A KIDS SHOE IS A KIDS SIZE ──────────────────────────────
+// The label alone cannot tell a kids UK 10 from an adult UK 10 — both are "10"
+// (architect review, PR #660). The PRODUCT can: the kids-shoes category, or a
+// name carrying the trade's kids markers. Such a grid's bare UK numbers are
+// keyed "uk-kids:", so they never meet an adult grid's "uk:".
+const KIDS_NAME = /\b(kids|junior|youth|toddler|infant|gs|ps|td)\b/i;
+export function productIsKidsGrid(product) {
+  if (!product) return false;
+  if (String(product.categoryKey || "").trim() === "kids-shoes") return true;
+  return KIDS_NAME.test(String(product.name || ""));
+}
 // EU kids sizes run up to 35; at 35 and above an EU number is an adult foot.
 const EU_ADULT_FROM = 35;
 
@@ -88,7 +101,7 @@ const PATTERNS = [
  * `key` is what to compare: two sizes are the same physical size exactly when
  * their keys are equal.
  */
-export function normaliseShoeSize(label) {
+export function normaliseShoeSize(label, { kidsGrid = false } = {}) {
   if (label == null) return null;
   if (typeof label !== "string" && typeof label !== "number") return null;
   const t = String(label).trim().toUpperCase().replace(/\s+/g, " ");
@@ -98,7 +111,8 @@ export function normaliseShoeSize(label) {
     if (!m) continue;
     const value = numberOf(m[1], m[2], m[3]);
     if (value == null || value <= 0) return null;
-    const sc = scale(value);
+    let sc = scale(value);
+    if (kidsGrid && sc === SHOE_SCALES.uk) sc = SHOE_SCALES.ukKids;
     // A bare number past any shoe scale (a fitted-cap 57, a waist 32 that
     // reached a footwear grid) — refuse rather than call it EU.
     if (sc === SHOE_SCALES.eu && (value < 16 || value > 50)) return null;
@@ -109,8 +123,8 @@ export function normaliseShoeSize(label) {
 }
 
 /** The comparison key for a label, or null when it cannot be classified. */
-export function shoeSizeKey(label) {
-  return normaliseShoeSize(label)?.key ?? null;
+export function shoeSizeKey(label, opts) {
+  return normaliseShoeSize(label, opts)?.key ?? null;
 }
 
 /**
@@ -119,10 +133,10 @@ export function shoeSizeKey(label) {
  * cells and its size grid are keyed by, which need not be byte-equal to the
  * label that was tapped on a different shoe.
  */
-export function findMatchingSize(sizes, requested) {
-  const want = shoeSizeKey(requested);
+export function findMatchingSize(sizes, requested, { requestedKidsGrid = false, kidsGrid = false } = {}) {
+  const want = shoeSizeKey(requested, { kidsGrid: requestedKidsGrid });
   if (!want || !Array.isArray(sizes)) return undefined;
-  return sizes.find((s) => shoeSizeKey(s) === want);
+  return sizes.find((s) => shoeSizeKey(s, { kidsGrid }) === want);
 }
 
 /**
@@ -132,13 +146,13 @@ export function findMatchingSize(sizes, requested) {
  *
  * Returns null when no label could be classified.
  */
-export function shoeSizeRange(sizes) {
+export function shoeSizeRange(sizes, { kidsGrid = false } = {}) {
   const list = Array.isArray(sizes) ? sizes : sizes && typeof sizes === "object" ? Object.values(sizes) : [];
   const byScale = new Map();
   const unclassified = [];
   for (const s of list) {
     if (s == null || s === "" || s === "_") continue;      // sentinel / RTDB hole
-    const n = normaliseShoeSize(s);
+    const n = normaliseShoeSize(s, { kidsGrid });
     if (!n) { unclassified.push(String(s)); continue; }
     if (!byScale.has(n.scale)) byScale.set(n.scale, []);
     byScale.get(n.scale).push(n);

@@ -48,7 +48,7 @@ import {
 } from "../../src/utils/productNeighbours.js";
 import { readMapPaged, shallowKeys } from "../lib/rtdbPaged.mjs";
 import { isSneakerProduct } from "../lib/sneakerScope.mjs";
-import { shoeSizeRange } from "../../src/utils/shoeSize.js";
+import { shoeSizeRange, productIsKidsGrid } from "../../src/utils/shoeSize.js";
 
 const flags = process.argv.slice(2);
 const arg = (n) => { const i = flags.indexOf(n); if (i === -1) return null; const v = flags[i + 1]; if (!v || v.startsWith("--")) { console.error(`${n} needs a value`); process.exit(2); } return v; };
@@ -90,7 +90,7 @@ for (const [pid, p] of Object.entries(products)) {
   productOf[pid] = p;
 }
 profiles.sort((a, b) => a.pid.localeCompare(b.pid));
-const byPidEarly = new Map(profiles.map((p) => [p.pid, p]));
+const byPid = new Map(profiles.map((p) => [p.pid, p]));
 
 console.log(`candidate pool: ${profiles.length} sneaker(s)`);
 console.log(`  excluded — not a sneaker: ${rejected.notSneaker} · merged: ${rejected.merged} · ` +
@@ -135,7 +135,7 @@ const SIZE_RANGE_VERSION = 1;
 const ranges = new Map();
 const unclassified = new Map();      // label -> [pid…]
 for (const prof of profiles) {
-  const r = shoeSizeRange(productOf[prof.pid].sizes);
+  const r = shoeSizeRange(productOf[prof.pid].sizes, { kidsGrid: productIsKidsGrid(productOf[prof.pid]) });
   ranges.set(prof.pid, r);
   for (const label of r?.unclassified || []) {
     if (!unclassified.has(label)) unclassified.set(label, []);
@@ -160,7 +160,7 @@ for (const prof of profiles) {
   const stored = parseNeighbours(productOf[prof.pid][NEIGHBOURS_FIELD]);
   let hit = false;
   for (const n of stored) {
-    const c = byPidEarly.get(n.pid);
+    const c = byPid.get(n.pid);
     if (!c) continue;
     oldEntries += 1;
     if (sizeCoverage(prof, c) === 0) { oldNoOverlap += 1; hit = true; }
@@ -175,7 +175,7 @@ let sizeSlots = 0, sizeSlotsBare = 0;
 const productsWithBareSize = new Set();
 for (const prof of profiles) {
   const list = lists.get(prof.pid) || [];
-  const carried = new Set(list.flatMap((n) => byPidEarly.get(n.pid)?.sizeKeys || []));
+  const carried = new Set(list.flatMap((n) => byPid.get(n.pid)?.sizeKeys || []));
   for (const k of prof.sizeKeys) {
     sizeSlots += 1;
     if (!carried.has(k)) { sizeSlotsBare += 1; productsWithBareSize.add(prof.pid); }
@@ -189,7 +189,6 @@ console.log(`new lists: ${sizeSlotsBare}/${sizeSlots} (product, size) pairs have
 // way to find out whether it is any good. Spread across the pool rather than
 // taken from the front: the front is one week's delivery.
 console.log(`\n${"=".repeat(78)}\nSPOT-CHECK — ${SPOT} products, top 5 each\n${"=".repeat(78)}`);
-const byPid = new Map(profiles.map((p) => [p.pid, p]));
 const step = Math.max(1, Math.floor(profiles.length / SPOT));
 for (let i = 0, shown = 0; i < profiles.length && shown < SPOT; i += step, shown++) {
   const t = profiles[i];
