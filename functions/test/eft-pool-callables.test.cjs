@@ -59,7 +59,7 @@ function stub(name, exportsObj) {
 stub("firebase-functions/v2/https", { onCall: (_opts, handler) => handler, HttpsError });
 stub("firebase-functions/v2/scheduler", { onSchedule: (_opts, handler) => handler });
 stub("firebase-admin", fakeAdmin);
-const { eftPoolSearch, eftPoolSettle, eftPoolReverse } = require("../eftPool/eftPool.js");
+const { eftPoolSearch, eftPoolSettle, eftPoolReverse, eftRemainderScan } = require("../eftPool/eftPool.js");
 
 const OWNER = { auth: { uid: "owner-uid", token: { email: "gunidmoh@gmail.com", email_verified: true } } };
 const CASHIER = { auth: { uid: "cashier-uid", token: { email: "ahmed@marathon.internal" } } };
@@ -345,4 +345,23 @@ test("attach refuses a malformed sale id before any read", async () => {
   resetPool();
   await rejects(eftPoolSettle({ ...CASHIER, data: { action: "attach", poolKey: K1, attemptId: "P-1", saleId: "../users" } }), "invalid-argument");
   assert.deepEqual(dbState.txPaths, []);
+});
+
+test("the scan verifies an attach made before its sale reached the server — and flags a bigger leg", async () => {
+  resetPool();
+  const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", customerId: "0821234567", customerConfirmed: true, appliedCents: 5000,
+    sale: { saleId: "S-late", receiptNumber: "1", at: 6, verified: false } };
+  dbState.reads["eft_pending_sale_checks"] = { [K1]: { at: Date.now() - 60_000, saleId: "S-late" } };
+  dbState.pool[`eft_pool/${K1}/used`] = usedRec;
+  dbState.reads["pos/sales/S-late"] = { customerId: "0821234567", payments: { p: { method: "eft", amount: 50000, eftPoolKey: K1 } } };
+  dbState.txCurrent = { ...PAY, status: "used", used: usedRec, amountCents: 100000 };
+  await eftRemainderScan();
+  assert.equal(dbState.txNext?.used?.saleMismatch?.legCents, 50000);
+  // …and the right leg is marked verified instead.
+  dbState.reads["pos/sales/S-late"] = { customerId: "0821234567", payments: { p: { method: "eft", amount: 5000, eftPoolKey: K1 } } };
+  await eftRemainderScan();
+  assert.equal(dbState.txNext?.used?.sale?.verified, true);
+  delete dbState.reads["eft_pending_sale_checks"];
+  delete dbState.reads["pos/sales/S-late"];
+  resetPool();
 });

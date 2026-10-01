@@ -86,7 +86,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN, releaseHoldDecision,
-  saleCheckOf, flagSaleMismatchDecision,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
 } = require("../lib/eft-settle.cjs");
 const {
   EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck,
@@ -378,6 +378,24 @@ async function resolveCustomer(data) {
     "No customer record matches that. Create the customer at a till first, then allocate.");
 }
 
+/** A customer id followed through merge tombstones to its survivor — the same
+ *  walk resolveCustomer does, without throwing. Null in, null out. */
+async function followMerges(id) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,60}$/.test(id)) return id ?? null;
+  let cur = id;
+  for (let hops = 0; hops < 3; hops++) {
+    const merged = (await admin.database().ref(`customers/${cur}/mergedInto`).once("value")).val();
+    if (typeof merged !== "string" || !/^[A-Za-z0-9_-]{1,60}$/.test(merged)) return cur;
+    cur = merged;
+  }
+  return cur;
+}
+
+// FIX 5, LATER HALF — an attach made while the sale was not on the server is
+// verified by eftRemainderScan from this breadcrumb (key → {at, saleId}).
+const SALE_CHECK_PATH = "eft_pending_sale_checks";
+const SALE_CHECK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 // ─── SEARCH ──────────────────────────────────────────────────────────────────
 exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   await assertPosIdentity(request);
@@ -487,7 +505,16 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       admin.database().ref(`pos/sales/${saleId}`).once("value"),
       admin.database().ref(`${EFT_POOL_PATH}/${key}/used`).once("value"),
     ]);
-    const saleCheck = saleCheckOf({ poolKey: key, used: heldSnap.val(), sale: saleSnap.val() });
+    const sale = saleSnap.val();
+    const saleCheck = saleCheckOf({
+      poolKey: key, used: heldSnap.val(), sale,
+      saleCustomerId: sale ? await followMerges(sale.customerId ?? null) : undefined,
+    });
+    if (saleCheck.state === "absent") {
+      // Durable BEFORE the attach transaction: the scan verifies this sale
+      // when it reaches the server, and flags it if it never does.
+      await admin.database().ref(`${SALE_CHECK_PATH}/${key}`).set({ at: now, saleId });
+    }
     if (saleCheck.state === "mismatch") {
       // Evidence first, on the payment itself, where the owner's tab shows it.
       // Only the holder's own attach may leave that evidence.
@@ -683,6 +710,39 @@ exports.eftRemainderScan = onSchedule(
         console.error(`EFT_REMAINDER_STUCK: ${key} could not be finished —`, err?.message || err);
       }
     }
-    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck }));
+    // FIX 5, LATER HALF: attaches made before their sale reached the server.
+    const checks = (await db.ref(SALE_CHECK_PATH).once("value")).val() || {};
+    let verified = 0, flagged = 0;
+    for (const [key, crumb] of Object.entries(checks)) {
+      const saleId = typeof crumb?.saleId === "string" ? crumb.saleId : "";
+      if (!/^[0-9a-f]{40}$/.test(key) || !/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) {
+        await db.ref(`${SALE_CHECK_PATH}/${key}`).remove(); cleared++; continue;
+      }
+      try {
+        const [saleSnap, usedSnap] = await Promise.all([
+          db.ref(`pos/sales/${saleId}`).once("value"),
+          db.ref(`${EFT_POOL_PATH}/${key}/used`).once("value"),
+        ]);
+        const sale = saleSnap.val();
+        const saleCheck = saleCheckOf({
+          poolKey: key, used: usedSnap.val(), sale,
+          saleCustomerId: sale ? await followMerges(sale.customerId ?? null) : undefined,
+        });
+        const ageMs = now - (Number.isInteger(crumb.at) ? crumb.at : 0);
+        const d = await runPoolTransaction(key, (cur) => laterSaleCheckDecision(cur, {
+          saleId, saleCheck, at: Date.now(), ageMs, maxAgeMs: SALE_CHECK_MAX_AGE_MS,
+        }));
+        if (d.outcome === "wait") { waited++; continue; }
+        if (d.outcome === "flagged") {
+          flagged++;
+          console.error(`EFT_SALE_MISMATCH: ${key} sale ${saleId} — ${saleCheck.state === "mismatch" ? saleCheck.why : "never reached the server"}`);
+        } else if (d.outcome === "done") verified++;
+        await db.ref(`${SALE_CHECK_PATH}/${key}`).remove();
+      } catch (err) {
+        stuck++;
+        console.error(`EFT_SALE_CHECK_STUCK: ${key} could not be checked —`, err?.message || err);
+      }
+    }
+    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged }));
   },
 );

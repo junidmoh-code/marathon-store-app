@@ -291,7 +291,7 @@ function remainderPlanOf(poolKey, used, amountCents, { holdReason = null } = {})
 //   mismatch  → REFUSE the attach. The callable stamps used.saleMismatch on
 //               the payment and logs EFT_SALE_MISMATCH; it shows on the
 //               owner's tab as a used payment with no sale attached.
-function saleCheckOf({ poolKey, used, sale }) {
+function saleCheckOf({ poolKey, used, sale, saleCustomerId }) {
   if (!sale || typeof sale !== "object") return { state: "absent" };
   const legs = Object.values(sale.payments ?? {})
     .filter((p) => p && typeof p === "object" && p.method === "eft" && p.eftPoolKey === poolKey);
@@ -305,10 +305,43 @@ function saleCheckOf({ poolKey, used, sale }) {
       why: `the sale's EFT for this payment is ${Number.isInteger(legCents) ? legCents : "unreadable"}c but ${used?.appliedCents}c was settled`,
     };
   }
-  if (used?.customerId && sale.customerId !== used.customerId) {
+  // The sale's customer, followed through merges by the caller (the
+  // settlement stores the merge SURVIVOR; the cart may still hold the merged-
+  // away id). Falls back to the raw id.
+  const onSale = saleCustomerId !== undefined ? saleCustomerId : sale.customerId;
+  if (used?.customerId && onSale !== used.customerId) {
     return { state: "mismatch", legCents, why: "the sale names a different customer from the one confirmed when the payment was settled" };
   }
   return { state: "verified", legCents };
+}
+
+/**
+ * LATER VERIFICATION of an attach made while the sale was not yet on the
+ * server (a till that queued the sale offline — or a till that attached a sale
+ * id it then wrote with a bigger EFT leg). eftRemainderScan re-reads the sale
+ * and calls this with the fresh check:
+ *   verified  → stamp used.sale.verified = true ("done")
+ *   mismatch  → stamp used.saleMismatch, the owner's evidence ("flagged")
+ *   absent    → "wait" until maxAgeMs, then flag it as never having arrived.
+ * Only acts on the settlement that attached THIS sale id; anything else
+ * (reversed, re-settled) is "gone" and the breadcrumb is simply cleared.
+ */
+function laterSaleCheckDecision(current, { saleId, saleCheck, at, ageMs, maxAgeMs }) {
+  if (!current?.used || current.status !== "used" || current.used.sale?.saleId !== saleId) {
+    return { ok: false, code: "gone", message: "the settlement no longer holds that sale" };
+  }
+  if (current.used.sale.verified === true) return { ok: true, already: true, outcome: "done" };
+  if (saleCheck?.state === "verified") {
+    const { saleMismatch: _s, ...rest } = current.used;
+    return { ok: true, outcome: "done", value: { ...current, used: { ...rest, sale: { ...current.used.sale, verified: true, verifiedAt: at } } } };
+  }
+  const why = saleCheck?.state === "mismatch" ? saleCheck.why
+    : ageMs > maxAgeMs ? "the sale this payment was attached to never reached the server" : null;
+  if (!why) return { ok: true, already: true, outcome: "wait" };
+  return {
+    ok: true, outcome: "flagged",
+    value: { ...current, used: { ...current.used, saleMismatch: { saleId, legCents: saleCheck?.legCents ?? null, why, at } } },
+  };
 }
 
 /** Stamp a refused attach's evidence on the payment, without changing its state. */
@@ -343,7 +376,10 @@ function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poo
     return refuse("sale-mismatch", `The sale does not match what was settled against this payment (${saleCheck.why}) — nothing was attached. The owner has been shown it.`);
   }
   const verified = saleCheck?.state === "verified";
-  const used = { ...current.used, sale: { saleId, receiptNumber: receiptNumber ?? null, at, verified } };
+  const { saleMismatch: _staleMismatch, ...held } = current.used;
+  // A verified attach supersedes evidence from an earlier refused one; an
+  // unverified attach keeps it for the owner.
+  const used = { ...(verified ? held : current.used), sale: { saleId, receiptNumber: receiptNumber ?? null, at, verified } };
   const remainder = remainderPlanOf(poolKey, used, current.amountCents, {
     holdReason: verified ? null : "the sale was not on the server when the payment was attached, so it could not be checked",
   });
@@ -563,5 +599,5 @@ module.exports = {
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
   releaseHoldDecision, RELEASE_REASON_MIN,
-  saleCheckOf, flagSaleMismatchDecision,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
 };

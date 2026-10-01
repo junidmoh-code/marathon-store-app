@@ -8,7 +8,7 @@
 
 const test = require("node:test");
 const assert = require("node:assert/strict");
-const { attachSaleDecision, saleCheckOf, flagSaleMismatchDecision, remainderPlanOf } = require("../lib/eft-settle.cjs");
+const { attachSaleDecision, saleCheckOf, flagSaleMismatchDecision, remainderPlanOf, laterSaleCheckDecision } = require("../lib/eft-settle.cjs");
 
 const KEY = "k".repeat(40);
 const used = { attemptId: "P-1", at: 5000, cashierUid: "u", cashierName: "Ahmed", customerId: "c1", customerName: "Mr Dlamini", customerConfirmed: true, appliedCents: 5000, sale: null };
@@ -72,4 +72,52 @@ test("a settlement whose customer was never confirmed (pre-fix) can never mint c
   assert.equal(r.disposition, "unallocated");
   assert.equal(r.creditId, null);
   assert.match(r.holdReason, /never confirmed/);
+});
+
+// ─── REVIEW FOLLOW-UPS ───────────────────────────────────────────────────────
+test("a merged-away customer on the sale is followed to the survivor — no false mismatch", () => {
+  // The settlement stores the merge survivor c1; the cart still held c0.
+  const s = sale([eftLeg(5000)], { customerId: "c0" });
+  assert.equal(saleCheckOf({ poolKey: KEY, used, sale: s }).state, "mismatch");
+  assert.equal(saleCheckOf({ poolKey: KEY, used, sale: s, saleCustomerId: "c1" }).state, "verified");
+});
+
+test("a verified attach clears evidence from an earlier refused attach; an unverified one keeps it", () => {
+  const flagged = { ...held, used: { ...used, saleMismatch: { saleId: "S0", legCents: 9, why: "x", at: 1 } } };
+  const ok = attachSaleDecision(flagged, { attemptId: "P-1", saleId: "S1", receiptNumber: "1", at: 6, poolKey: KEY, saleCheck: { state: "verified" } });
+  assert.equal(ok.value.used.saleMismatch, undefined);
+  const later = attachSaleDecision(flagged, { attemptId: "P-1", saleId: "S1", receiptNumber: "1", at: 6, poolKey: KEY, saleCheck: { state: "absent" } });
+  assert.ok(later.value.used.saleMismatch);
+});
+
+// The absent-sale path was a hole: attach a sale id that does not exist yet,
+// THEN write it with a bigger EFT leg, and nothing re-read it. The scan now
+// verifies every such attach once the sale lands.
+test("LATER CHECK: an absent-at-attach sale that lands with the right leg is marked verified", () => {
+  const attached = attach({ state: "absent" }).value;
+  const d = laterSaleCheckDecision(attached, { saleId: "S1", saleCheck: saleCheckOf({ poolKey: KEY, used: attached.used, sale: sale([eftLeg(5000)]) }), at: 9, ageMs: 60_000, maxAgeMs: 86_400_000 });
+  assert.equal(d.outcome, "done");
+  assert.equal(d.value.used.sale.verified, true);
+});
+
+test("LATER CHECK: one that lands with a BIGGER leg is flagged as a mismatch", () => {
+  const attached = attach({ state: "absent" }).value;
+  const check = saleCheckOf({ poolKey: KEY, used: attached.used, sale: sale([eftLeg(50000)]) });
+  const d = laterSaleCheckDecision(attached, { saleId: "S1", saleCheck: check, at: 9, ageMs: 60_000, maxAgeMs: 86_400_000 });
+  assert.equal(d.outcome, "flagged");
+  assert.equal(d.value.used.saleMismatch.legCents, 50000);
+});
+
+test("LATER CHECK: still absent waits, then after a day is flagged as never arriving", () => {
+  const attached = attach({ state: "absent" }).value;
+  assert.equal(laterSaleCheckDecision(attached, { saleId: "S1", saleCheck: { state: "absent" }, at: 9, ageMs: 60_000, maxAgeMs: 86_400_000 }).outcome, "wait");
+  const late = laterSaleCheckDecision(attached, { saleId: "S1", saleCheck: { state: "absent" }, at: 9, ageMs: 86_400_001, maxAgeMs: 86_400_000 });
+  assert.equal(late.outcome, "flagged");
+  assert.match(late.value.used.saleMismatch.why, /never reached the server/);
+});
+
+test("LATER CHECK: a reversed or re-settled payment is 'gone' — nothing written", () => {
+  const d = laterSaleCheckDecision({ ...held, status: "unmatched", used: null }, { saleId: "S1", saleCheck: { state: "verified" }, at: 9, ageMs: 1, maxAgeMs: 2 });
+  assert.equal(d.ok, false);
+  assert.equal(d.code, "gone");
 });
