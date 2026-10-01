@@ -530,7 +530,12 @@ function releaseHoldDecision(current, { at, by, reason }) {
   if (current.outcome === "held-duplicate") {
     return refuse("duplicate-never-released", "This is a second copy of a payment the pool already holds under another record. A copy is never released — use the original.");
   }
-  if (current.outcome !== "held-no-bankref") {
+  // A payment recorded BEFORE fix 1 without a bank transaction id is held in
+  // effect (the settle refuses it) though its outcome says "recorded" — the
+  // owner can release it the same way, or it would be stranded.
+  const legacyIdless = current.outcome === "recorded" && current.status === "unmatched"
+    && !paymentFingerprint(current) && !current.releasedFromHold;
+  if (current.outcome !== "held-no-bankref" && !legacyIdless) {
     return refuse("not-held", "Only a payment held for having no bank transaction id can be released.");
   }
   const why = String(reason ?? "").trim();
@@ -542,7 +547,7 @@ function releaseHoldDecision(current, { at, by, reason }) {
       ...current,
       outcome: "recorded",
       status: "unmatched",
-      releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from: "held-no-bankref" },
+      releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from: current.outcome === "recorded" ? "recorded-before-fix" : "held-no-bankref" },
     },
   };
 }

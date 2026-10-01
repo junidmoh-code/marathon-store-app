@@ -89,7 +89,7 @@ const {
   saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
 } = require("../lib/eft-settle.cjs");
 const {
-  EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck,
+  EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck, paymentFingerprint,
 } = require("../lib/eft-fingerprint.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
@@ -406,7 +406,7 @@ exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   // tell. A till build that still sends an amount field is refused loudly
   // rather than quietly answered with nothing.
   if (data.amount != null || data.amountCents != null) {
-    throw new HttpsError("invalid-argument", "Amount is not a search key — search by the reference or the payer's name.");
+    throw new HttpsError("invalid-argument", "Amount is not a search key — search by the payment reference or the bank's transaction id.");
   }
   const query = String(data.query ?? "").slice(0, 120);
   // A QUERY IS REQUIRED — three characters of letters and digits at least. An
@@ -590,6 +590,16 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       at: now, actorUid: uid, actorName, reason,
     }));
     if (!decision.ok) throw refusalToError(decision);
+    // A marked payment's fingerprint is claimed too (create-only, best
+    // effort): a pre-fix copy of it can then never be spent later, even once
+    // the marked record has scrolled out of the settle's sibling window.
+    try {
+      const marked = (await admin.database().ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+      const fp = paymentFingerprint(marked ?? {});
+      if (fp) await admin.database().ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(fingerprintClaimStep(key, now));
+    } catch (e) {
+      console.error(`eftPoolSettle: markUsed ${key} — fingerprint claim failed (the sibling check still covers the tail):`, e?.message || e);
+    }
     console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
     // WHAT WAS ACTUALLY STAMPED travels back, so a caller repainting a card in
     // place shows the record rather than its own guess at it. Without this the

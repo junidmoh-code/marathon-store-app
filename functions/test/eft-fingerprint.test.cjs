@@ -164,3 +164,12 @@ test("mark-as-used pays nothing out, so a no-bank-id payment can still be closed
   const d = markUsedOutsidePosDecision(noId, { at: 7, actorUid: "u", actorName: "Junid", reason: "refunded in cash" });
   assert.equal(d.ok, true);
 });
+
+test("a payment RECORDED before fix 1 with no bank id is releasable too — never stranded", () => {
+  const legacy = { ...original, bankRef: null };
+  const r = releaseHoldDecision(legacy, { at: 9, by: "gunidmoh@gmail.com", reason: "on the statement" });
+  assert.equal(r.ok, true);
+  assert.equal(r.value.releasedFromHold.from, "recorded-before-fix");
+  assert.equal(releaseHoldDecision(r.value, { at: 10, by: "o", reason: "again" }).code, "not-held", "once released, not again");
+  assert.equal(releaseHoldDecision(original, { at: 9, by: "o", reason: "has an id" }).code, "not-held");
+});

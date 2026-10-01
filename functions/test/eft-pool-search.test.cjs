@@ -49,7 +49,7 @@ const keys = (pool, q) => searchEftPool(pool, q).results.map((r) => r.key);
 
 test("publicEftView projects a payment and nothing else", () => {
   const v = publicEftView("k1", recorded());
-  assert.deepEqual(Object.keys(v).sort(), ["amountCents", "at", "key", "paidAt", "payerInitials", "reference", "reversals", "status", "used"]);
+  assert.deepEqual(Object.keys(v).sort(), ["amountCents", "at", "key", "needsOwner", "paidAt", "payerInitials", "reference", "reversals", "status", "used"]);
   assert.equal(v.amountCents, 55000);
   assert.equal(v.reference, "JUNID1234");
   assert.equal(v.payerInitials, "J S");
@@ -204,4 +204,32 @@ test("a reversed payment says so on its row", () => {
 test("searched counts the payments in the window, refusals and holds excluded", () => {
   const pool = { a: recorded(), b: recorded({ outcome: "refused-auth" }), c: recorded({ outcome: "held-duplicate" }) };
   assert.equal(searchEftPool(pool, "nothing").searched, 1);
+});
+
+// ─── REVIEW FOLLOW-UPS ───────────────────────────────────────────────────────
+test("copies of ONE bank transaction (pre-fix resends) are one payment, not an ambiguity", () => {
+  const pool = {
+    a: recorded({ at: 1, bankRef: "5TG59DVQ", reader: "fnb" }),
+    b: recorded({ at: 2, bankRef: "5TG59DVQ", reader: "fnb" }),
+  };
+  assert.deepEqual(keys(pool, "junid1234"), ["a"], "the OLDEST copy — the one the settle claim favours");
+  const spent = { ...pool, b: { ...pool.b, status: "used", used: { at: 3, sale: { receiptNumber: "9" } } } };
+  const out = searchEftPool(spent, "junid1234");
+  assert.deepEqual(out.results.map((r) => r.key), ["b"], "a used copy stands for the group: the money is spent");
+  assert.equal(out.results[0].status, "used");
+  // Different bank ids are still two payments → ambiguous.
+  const two = { ...pool, b: { ...pool.b, bankRef: "OTHER999" } };
+  assert.equal(searchEftPool(two, "junid1234").ambiguous, true);
+});
+
+test("a near match never echoes the stored reference", () => {
+  const out = searchEftPool({ a: recorded({ reference: "JUNID1234" }) }, "juind1234");
+  assert.equal(out.results[0].matchedOn, "near");
+  assert.equal(out.results[0].reference, null);
+});
+
+test("a payment with no bank id that the owner never released says so (needsOwner)", () => {
+  assert.equal(publicEftView("k", recorded({ bankRef: null })).needsOwner, true);
+  assert.equal(publicEftView("k", recorded()).needsOwner, false);
+  assert.equal(publicEftView("k", recorded({ bankRef: null, releasedFromHold: { at: 1 } })).needsOwner, false);
 });

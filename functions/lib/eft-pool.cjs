@@ -38,6 +38,8 @@
 
 "use strict";
 
+const { paymentFingerprint } = require("./eft-fingerprint.cjs");
+
 const EFT_POOL_PATH = "eft_pool";
 
 // The callable reads the pool's TAIL (orderByChild("at").limitToLast(WINDOW)),
@@ -93,6 +95,9 @@ function publicEftView(key, record) {
       : Number.isInteger(record.receivedAt) ? record.receivedAt
       : (record.at ?? null),
     at: record.at ?? null,
+    // No bank transaction id and never released by the owner: the settle will
+    // refuse it (fix 1), so the till says so instead of offering it.
+    needsOwner: !paymentFingerprint(record) && !(record.releasedFromHold && typeof record.releasedFromHold === "object"),
     used,
     // A payment that has been settled and REVERSED carries its history count,
     // so the till can say "returned to the pool by the owner".
@@ -154,6 +159,28 @@ function matchOf(record, plan) {
   return null;
 }
 
+/**
+ * Copies of ONE bank transaction (records written before fix 1 — a resend
+ * that landed as a second live record) are one payment to the cashier, not an
+ * ambiguity: a used copy stands for the group (the money is spent), otherwise
+ * the OLDEST copy does — the one the settle's fingerprint claim will favour.
+ * Payments with no fingerprint stay as they are.
+ */
+function collapseCopies(hits) {
+  const byFp = new Map();
+  const out = [];
+  for (const h of hits) {
+    const fp = paymentFingerprint(h.record);
+    if (!fp) { out.push(h); continue; }
+    const cur = byFp.get(fp);
+    if (!cur) { byFp.set(fp, h); continue; }
+    const rank = (x) => [x.record.status === "used" ? 0 : 1, Number.isInteger(x.record.at) ? x.record.at : Infinity];
+    const [a, b] = [rank(h), rank(cur)];
+    if (a[0] < b[0] || (a[0] === b[0] && a[1] < b[1])) byFp.set(fp, h);
+  }
+  return [...out, ...byFp.values()];
+}
+
 // ─── THE SEARCH ──────────────────────────────────────────────────────────────
 /**
  * Find THE payment a cashier's query names — or nothing.
@@ -176,14 +203,18 @@ function searchEftPool(poolTail, query) {
   if (plan.tooShort) return { results: [], searched, needQuery: true };
   const hits = payments.map(([key, record]) => ({ key, record, on: matchOf(record, plan) })).filter((h) => h.on);
   const exact = hits.filter((h) => h.on !== "near");
-  const candidates = exact.length ? exact : hits;
+  const candidates = collapseCopies(exact.length ? exact : hits);
   if (!candidates.length) return { results: [], searched };
   const unmatched = candidates.filter((h) => h.record.status === "unmatched");
   const pick = unmatched.length === 1 ? unmatched[0]
     : unmatched.length === 0 && candidates.length === 1 ? candidates[0]
     : null;
   if (!pick) return { results: [], searched, ambiguous: true };
-  return { results: [{ ...publicEftView(pick.key, pick.record), matchedOn: pick.on }], searched };
+  const view = { ...publicEftView(pick.key, pick.record), matchedOn: pick.on };
+  // A NEAR match never echoes the stored reference: a cashier probing with
+  // typo'd guesses must not learn another customer's reference from it.
+  if (pick.on === "near") view.reference = null;
+  return { results: [view], searched };
 }
 
 module.exports = {
