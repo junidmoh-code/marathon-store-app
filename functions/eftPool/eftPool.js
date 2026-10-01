@@ -86,6 +86,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
   markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, releaseHoldDecision,
+  saleCheckOf, flagSaleMismatchDecision,
 } = require("../lib/eft-settle.cjs");
 const {
   EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck,
@@ -466,6 +467,26 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       // panel are layers, not the mechanism.
       console.error(`eftPool: breadcrumb write failed for ${key}:`, e);
     }
+    // FIX 5 — READ THE COMMITTED SALE BACK. Its EFT legs for this payment
+    // must add up to exactly what was settled, and it must name the confirmed
+    // customer (saleCheckOf). A sale id is a push key — charset-checked before
+    // it becomes a path. One record read, never the node.
+    const saleId = String(data.saleId ?? "").slice(0, 60);
+    if (!/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) throw new HttpsError("invalid-argument", "That is not a sale id.");
+    const [saleSnap, heldSnap] = await Promise.all([
+      admin.database().ref(`pos/sales/${saleId}`).once("value"),
+      admin.database().ref(`${EFT_POOL_PATH}/${key}/used`).once("value"),
+    ]);
+    const saleCheck = saleCheckOf({ poolKey: key, used: heldSnap.val(), sale: saleSnap.val() });
+    if (saleCheck.state === "mismatch") {
+      // Evidence first, on the payment itself, where the owner's tab shows it.
+      // Only the holder's own attach may leave that evidence.
+      await runPoolTransaction(key, (current) => (
+        current?.used && (current.used.cashierUid === uid || isOwner(request)) && current.used.attemptId === attemptId
+          ? flagSaleMismatchDecision(current, { saleId, legCents: saleCheck.legCents, why: saleCheck.why, at: now })
+          : { ok: false, code: "not-holder", message: "not the holder" }));
+      console.error(`EFT_SALE_MISMATCH: ${key} sale ${saleId} by ${uid} — ${saleCheck.why}`);
+    }
     decision = await runPoolTransaction(key, (current) => {
       // Holder-only twice over: the attempt id must match AND the settlement
       // must have been made by this very account — an attempt id is not a
@@ -475,10 +496,11 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       }
       return attachSaleDecision(current, {
         attemptId,
-        saleId: String(data.saleId ?? "").slice(0, 60),
+        saleId,
         receiptNumber: data.receiptNumber == null ? null : String(data.receiptNumber).slice(0, 30),
         at: now,
         poolKey: key,
+        saleCheck,
       });
     });
   } else if (action === "allocate") {

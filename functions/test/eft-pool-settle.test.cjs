@@ -149,7 +149,8 @@ test("attach records the sale on the settlement, idempotently, holder-only", () 
 
   const ok = attach({ attemptId: "P-a1", saleId: "S-1", receiptNumber: "00042", at: 6000 });
   assert.equal(ok.ok, true);
-  assert.deepEqual(node.get().used.sale, { saleId: "S-1", receiptNumber: "00042", at: 6000 });
+  // No sale check passed → treated as "absent": attached, flagged unverified.
+  assert.deepEqual(node.get().used.sale, { saleId: "S-1", receiptNumber: "00042", at: 6000, verified: false });
 
   // A retried attach of the same sale is a no-op, not an error.
   assert.equal(attach({ attemptId: "P-a1", saleId: "S-1", receiptNumber: "00042", at: 6001 }).already, true);
@@ -305,7 +306,11 @@ function settleAndAttach(node, settlement, saleId = "S-1") {
   runSettle(node, settlement);
   let out = null;
   node.transaction((cur) => {
-    out = attachSaleDecision(cur, { attemptId: settlement.attemptId, saleId, receiptNumber: "00042", at: 6000, poolKey: KEY });
+    out = attachSaleDecision(cur, {
+      attemptId: settlement.attemptId, saleId, receiptNumber: "00042", at: 6000, poolKey: KEY,
+      // The committed sale, read back, takes exactly what was settled (fix 5).
+      saleCheck: { state: "verified", legCents: settlement.appliedCents },
+    });
     return out.ok && !out.already ? out.value : undefined;
   });
   return out;

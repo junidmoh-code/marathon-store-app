@@ -308,3 +308,23 @@ test("the settlement names the customer from /customers, never the till's text",
   assert.equal(dbState.txNext?.used?.customerConfirmed, true);
   resetPool();
 });
+
+// ─── FIX 5: ATTACH READS THE COMMITTED SALE BACK ─────────────────────────────
+test("attach refuses a sale whose EFT leg exceeds what was settled — and stamps the evidence", async () => {
+  resetPool();
+  const usedRec = { attemptId: "P-1", at: 5, cashierUid: "cashier-uid", cashierName: "Ahmed", customerId: "0821234567", customerConfirmed: true, appliedCents: 5000, sale: null };
+  dbState.pool[`eft_pool/${K1}/used`] = usedRec;
+  dbState.reads["pos/sales/S-big"] = { customerId: "0821234567", payments: { p1: { method: "eft", amount: 50000, eftPoolKey: K1 } } };
+  dbState.txCurrent = { ...PAY, status: "used", used: usedRec, amountCents: 100000 };
+  const realTxn = dbState.txPaths;
+  const e = await rejects(eftPoolSettle({ ...CASHIER, data: { action: "attach", poolKey: K1, attemptId: "P-1", saleId: "S-big", receiptNumber: "00042" } }), "failed-precondition");
+  assert.equal(e.details.code, "sale-mismatch");
+  assert.equal(realTxn.filter((p) => p === `eft_pool/${K1}`).length, 2, "the evidence stamp, then the refused attach");
+  resetPool();
+});
+
+test("attach refuses a malformed sale id before any read", async () => {
+  resetPool();
+  await rejects(eftPoolSettle({ ...CASHIER, data: { action: "attach", poolKey: K1, attemptId: "P-1", saleId: "../users" } }), "invalid-argument");
+  assert.deepEqual(dbState.txPaths, []);
+});

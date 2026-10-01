@@ -236,11 +236,22 @@ function eftCreditIdOf(poolKey, usedAt) {
  *  (credit minted) or "held" (/eft_unallocated written) — so a crash between
  *  the transaction and the IO leaves a visibly unfinished record, never a
  *  silently swallowed difference. */
-function remainderPlanOf(poolKey, used, amountCents) {
+function remainderPlanOf(poolKey, used, amountCents, { holdReason = null } = {}) {
   const cents = Number.isInteger(amountCents) && Number.isInteger(used?.appliedCents)
     ? amountCents - used.appliedCents
     : 0;
   if (cents <= 0) return null;
+  // FIX 5 — CREDIT ONLY FOR A CONFIRMED CUSTOMER ON A VERIFIED SALE. The
+  // remainder used to become store credit for whatever customer id the till
+  // sent. Now only a settlement whose customer was resolved and confirmed
+  // (customerConfirmed, fix 3) AND whose sale was read back and matched
+  // (no holdReason) may mint; anything else is HELD for the owner, visibly.
+  if (holdReason || used?.customerConfirmed !== true) {
+    return {
+      cents, disposition: "unallocated", customerId: null, customerName: null, creditId: null, status: "pending",
+      holdReason: holdReason || "the settlement's customer was never confirmed at the till",
+    };
+  }
   // The customer id came from the till's settle payload and is about to
   // become a credit id and a database PATH SEGMENT (customers/{id}/…,
   // creditLedger/{id}/…). An id that fails the charset check is treated as NO
@@ -266,7 +277,50 @@ function remainderPlanOf(poolKey, used, amountCents) {
  * owes nobody anything).
  * @returns same shape as settleDecision
  */
-function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey }) {
+// ─── FIX 5: THE SALE MUST TAKE EXACTLY WHAT WAS SETTLED ─────────────────────
+// The till writes the sale itself, so nothing used to compare the sale's EFT
+// leg with what the settle actually applied: settle R50, record a sale with an
+// R500 EFT leg against the same payment, and the books said R500 was paid. The
+// attach now READS THE COMMITTED SALE BACK (the callable does the read; this
+// decides) and requires its EFT legs for this payment to add up to exactly
+// `appliedCents`, and its customer to be the settlement's customer.
+//   verified  → attach normally.
+//   absent    → the sale is not on the server yet (a till that queued it
+//               offline): attach, but HOLD any remainder for the owner — no
+//               credit is minted against a sale nobody has seen.
+//   mismatch  → REFUSE the attach. The callable stamps used.saleMismatch on
+//               the payment and logs EFT_SALE_MISMATCH; it shows on the
+//               owner's tab as a used payment with no sale attached.
+function saleCheckOf({ poolKey, used, sale }) {
+  if (!sale || typeof sale !== "object") return { state: "absent" };
+  const legs = Object.values(sale.payments ?? {})
+    .filter((p) => p && typeof p === "object" && p.method === "eft" && p.eftPoolKey === poolKey);
+  if (!legs.length) {
+    return { state: "mismatch", legCents: 0, why: "the sale carries no EFT payment for this pool record" };
+  }
+  const legCents = legs.reduce((sum, p) => sum + (Number.isInteger(p.amount) ? p.amount : Number.NaN), 0);
+  if (!Number.isInteger(legCents) || legCents !== used?.appliedCents) {
+    return {
+      state: "mismatch", legCents: Number.isInteger(legCents) ? legCents : null,
+      why: `the sale's EFT for this payment is ${Number.isInteger(legCents) ? legCents : "unreadable"}c but ${used?.appliedCents}c was settled`,
+    };
+  }
+  if (used?.customerId && sale.customerId !== used.customerId) {
+    return { state: "mismatch", legCents, why: "the sale names a different customer from the one confirmed when the payment was settled" };
+  }
+  return { state: "verified", legCents };
+}
+
+/** Stamp a refused attach's evidence on the payment, without changing its state. */
+function flagSaleMismatchDecision(current, { saleId, legCents, why, at }) {
+  if (!current?.used || current.status !== "used") return refuse("not-held", "No settlement is holding this payment.");
+  return {
+    ok: true,
+    value: { ...current, used: { ...current.used, saleMismatch: { saleId: String(saleId ?? ""), legCents: legCents ?? null, why: String(why ?? ""), at } } },
+  };
+}
+
+function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey, saleCheck }) {
   if (!current || current.status !== "used" || !current.used) {
     return refuse("not-held", "No settlement is holding this payment — the sale cannot be attached.");
   }
@@ -285,8 +339,14 @@ function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poo
     if (current.used.sale.saleId === saleId) return { ok: true, already: true };
     return refuse("sale-mismatch", "This settlement already records a different sale — nothing was changed.");
   }
-  const used = { ...current.used, sale: { saleId, receiptNumber: receiptNumber ?? null, at } };
-  const remainder = remainderPlanOf(poolKey, used, current.amountCents);
+  if (saleCheck?.state === "mismatch") {
+    return refuse("sale-mismatch", `The sale does not match what was settled against this payment (${saleCheck.why}) — nothing was attached. The owner has been shown it.`);
+  }
+  const verified = saleCheck?.state === "verified";
+  const used = { ...current.used, sale: { saleId, receiptNumber: receiptNumber ?? null, at, verified } };
+  const remainder = remainderPlanOf(poolKey, used, current.amountCents, {
+    holdReason: verified ? null : "the sale was not on the server when the payment was attached, so it could not be checked",
+  });
   if (remainder) used.remainder = remainder;
   return { ok: true, value: { ...current, used } };
 }
@@ -503,4 +563,5 @@ module.exports = {
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
   releaseHoldDecision, RELEASE_REASON_MIN,
+  saleCheckOf, flagSaleMismatchDecision,
 };
