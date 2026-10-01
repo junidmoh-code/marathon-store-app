@@ -711,11 +711,12 @@ async function readLastBatchFor(db, storeId, tid) {
  * belonged to — and when it guessed wrong, the till's money fell outside its
  * own window and was reported twice.
  *
- * ── WHO MAY DO THIS ─────────────────────────────────────────────────────────
- * The owner only — the same mayDeclareTotal gate as his typed total beside a
- * photograph, checked by the callable before this runs and again at submit.
- * Staff get no manual-typing capture route (standing rule, 1 Oct 2026). It is
- * ALSO bounded by the registry: only a terminal an admin has set to "typed" can
+ * ── WHO MAY DO THIS, AND WHY IT IS NOT mayDeclareTotal ──────────────────────
+ * Anyone the `card_recon` permission already trusts to capture that till's
+ * money (Junid, 1 Oct 2026): it is the machine's only capture route and has to
+ * work on the evening the owner is not there. The owner's typed total beside a
+ * photograph stays his alone and is untouched. This is bounded by the
+ * registry, not by the caller: only a terminal an admin has set to "typed" can
  * be captured this way at all, and every such record says in its warnings that
  * no paper exists behind it.
  */
@@ -1449,7 +1450,7 @@ async function handleSubmit(db, request) {
       && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
       && extraction.format === "typed"
       && (!Array.isArray(draft.photoPaths) || draft.photoPaths.length === 0);
-    if (!mayDeclareTotal(request.auth?.token) || !row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
+    if (!row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
       await draftRef.remove().catch(() => {});
       return reject("This typed total could not be verified against the machine it was typed for — nothing was recorded. Try again.");
     }
@@ -1669,14 +1670,9 @@ exports.cardBatchCapture = onCall(
     // for a document. This one reads the registry, confirms the machine really
     // is set to typed entry, and goes straight to the draft `submit` records.
     if (action === "typed") {
-      // OWNER ONLY. Staff do not get a manual-typing capture route (standing
-      // rule, 1 Oct 2026): the figure is the whole record, with no paper
-      // behind it, so the one identity already trusted to type a total is the
-      // one that may type this one. A till left uncaptured for an evening is
-      // not lost — the next typed entry's window runs from the last settlement.
-      if (!mayDeclareTotal(request.auth?.token)) {
-        throw new HttpsError("permission-denied", "Only Junid can type in a machine's total.");
-      }
+      // OPEN TO ANYONE assertCardRecon (above) already lets capture this till's
+      // money — not the owner alone (Junid, 1 Oct 2026). It is the machine's
+      // only capture route and has to work on an evening he is not there.
       const picked = normaliseTid(request.data?.pickedTid);
       if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
       // This one terminal's row, never the whole registry.

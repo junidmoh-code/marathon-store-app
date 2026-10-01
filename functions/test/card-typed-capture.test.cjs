@@ -237,19 +237,22 @@ test("a typed draft survives RTDB deleting its nulls and empty arrays", () => {
   assert.equal(record.slip.txnCount, null);
 });
 
-test("the typed action is the owner's alone, and reads one terminal row", () => {
-  // No manual-typing capture route for staff (standing rule, 1 Oct 2026), and
-  // no whole-node read of the terminal registry on this path.
+test("the typed action is open to card_recon, not the owner alone, and reads one terminal row", () => {
+  // Junid, 1 Oct 2026: anyone who can capture the till may type its total — it
+  // is the machine's only capture route. assertCardRecon guards every action;
+  // the owner-only mayDeclareTotal gate must NOT be on this path.
   const src = require("node:fs").readFileSync(require.resolve("../cardRecon/cardRecon.js"), "utf8");
+  const callable = src.slice(src.indexOf("exports.cardBatchCapture = onCall"));
+  assert.ok(callable.indexOf("assertCardRecon(request)") < callable.indexOf('if (action === "typed")'));
   const action = src.slice(src.indexOf('if (action === "typed")'), src.indexOf('if (action === "submit")'));
   assert.ok(action.length > 0);
-  assert.match(action, /mayDeclareTotal\(request\.auth\?\.token\)/);
-  assert.ok(action.indexOf("mayDeclareTotal") < action.indexOf("db.ref("), "the gate comes before any read");
+  assert.doesNotMatch(action, /mayDeclareTotal/);
   assert.match(action, /db\.ref\(`\$\{CARD_TERMINALS_PATH\}\/\$\{picked\}`\)/);
   assert.doesNotMatch(action, /db\.ref\(CARD_TERMINALS_PATH\)/);
-  // Submit re-asks the same question for a typed draft.
   const submit = src.slice(src.indexOf("const typedOnly = draft.typedOnly === true;"), src.indexOf("} else if (declaredTotal) {"));
-  assert.match(submit, /mayDeclareTotal\(request\.auth\?\.token\)/);
+  assert.doesNotMatch(submit, /mayDeclareTotal/);
+  // The registry still decides at submit.
+  assert.match(submit, /typesTotal\(row\)/);
 });
 
 test("the last-batch read asks only for NUMERIC batch numbers", () => {

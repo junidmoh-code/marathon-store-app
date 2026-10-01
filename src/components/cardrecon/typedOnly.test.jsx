@@ -1,4 +1,4 @@
-// ─── A TYPED-TOTAL MACHINE: ONE BOX, NO CAMERA, THE OWNER ONLY ──────────────
+// ─── A TYPED-TOTAL MACHINE: ONE BOX, NO CAMERA, ANYONE WHO CAN REACH IT ──────
 // Trophy Till 2 cannot email its report and its printer leaves the total off
 // the paper, so there is nothing to photograph (Junid, 1 Oct 2026). Its card
 // opens one box for the figure and that is the whole capture.
@@ -94,14 +94,24 @@ describe("the camera is gone from a typed-total card", () => {
     expect(textOf(typedCard(tree).findAll((n) => n.type === "span")[1] ?? { props: {} })).toBe("Type total");
   });
 
-  it("a manager sees the card and who captures it, with nothing to tap", () => {
-    // No manual-typing capture route for staff (standing rule, 1 Oct 2026).
+  it("a manager gets the same tappable card and one box (Junid, 1 Oct 2026)", () => {
     auth.currentUser = { email: "manager@marathon.co.za" };
     const tree = render();
-    expect(typedCard(tree)).toBeUndefined();
-    expect(typedInputs(tree)).toHaveLength(0);
-    const shown = tree.root.findAll((n) => typeof n.props?.children === "string").map(textOf).join(" | ");
-    expect(shown).toMatch(/Junid types this/);
+    expect(textOf(typedCard(tree).findAll((n) => n.type === "span")[1] ?? { props: {} })).toBe("Type total");
+    tap(typedCard(tree));
+    expect(panel(tree, "typed-only")).toHaveLength(1);
+    expect(typedInputs(tree)).toHaveLength(1);
+    expect(fileInputs(tree)).toHaveLength(0);
+  });
+
+  it("a manager — not only Junid — can send the figure", async () => {
+    auth.currentUser = { email: "manager@marathon.co.za" };
+    const tree = render();
+    tap(typedCard(tree));
+    type(typedInputs(tree)[0], "2250.00");
+    await act(async () => { await buttonNamed(tree, "Submit")[0].props.onClick(); });
+    expect(calls.find((c) => c.action === "typed")?.declaredTotal).toBe("2250.00");
+    expect(calls.some((c) => c.action === "submit")).toBe(true);
   });
 
   it("tapping it opens ONE box and no photo step at all", () => {
