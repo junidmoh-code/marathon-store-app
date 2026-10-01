@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./alternativesCore";
+import { sellableAlternatives, alternativesForSize, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./alternativesCore";
 import { encodeNeighbour } from "../../utils/productNeighbours";
 
 // A tiny world. Every live fact is a callback, exactly as the screen supplies
@@ -45,8 +45,8 @@ describe("nothing that cannot be sold is ever shown", () => {
     expect(call(LIST, w).map((r) => r.product.id)).toEqual(["p1", "p2"]);
   });
   it("lists only the sizes that are actually available", () => {
-    const w = world({ sizeAvailable: (p, s) => s === "9" });
-    expect(call(LIST, w)[0].sizes).toEqual(["9"]);
+    const w = world({ sizeAvailable: (p, s) => s !== "7" });
+    expect(call(LIST, w)[0].sizes).toEqual(["8", "9"]);
   });
   // A size whose only unit is the Hub 1 DISPLAY PAIR reads as available —
   // correctly, per #324 — but selling it needs the display-pair request flow,
@@ -54,7 +54,7 @@ describe("nothing that cannot be sold is ever shown", () => {
   // line for a pair on a shop floor, leaving a phantom display behind.
   it("drops a size that only exists as a display pair", () => {
     const w = world({ sizeAvailable: (p, s) => !(p.id === "p2" && s === "8") });
-    const rows = call(LIST, w, "8");
+    const rows = call(LIST, w, "9");
     expect(rows.find((r) => r.product.id === "p2").sizes).toEqual(["7", "9"]);
   });
   it("…and drops the whole shoe when EVERY size is display-only", () => {
@@ -95,23 +95,53 @@ describe("an empty result is a real answer", () => {
   });
 });
 
-describe("the requested size leads, and rank is preserved inside each half", () => {
-  it("a shoe that HAS the asked-for size comes first", () => {
-    const products = { p1: P("p1", { sizes: ["7"] }), p2: P("p2", { sizes: ["8"] }), p3: P("p3", { sizes: ["7"] }) };
-    const w = world({ products });
-    expect(call(LIST, w, "8").map((r) => r.product.id)).toEqual(["p2", "p1", "p3"]);
-  });
-  it("and inside each half the stored ranking is untouched", () => {
+describe("the stored ranking is kept among the survivors", () => {
+  it("the gate removes; it never re-orders", () => {
     const products = { p1: P("p1", { sizes: ["8"] }), p2: P("p2", { sizes: ["7"] }), p3: P("p3", { sizes: ["8"] }) };
-    const w = world({ products });
-    expect(call(LIST, w, "8").map((r) => r.product.id)).toEqual(["p1", "p3", "p2"]);
+    expect(call(LIST, world({ products }), "8").map((r) => r.product.id)).toEqual(["p1", "p3"]);
   });
-  it("with no requested size the stored order is kept exactly", () => {
-    expect(call(LIST, world(), "").map((r) => r.product.id)).toEqual(["p1", "p2", "p3"]);
+  it("with no requested size there is nothing to match, so nothing is offered", () => {
+    expect(call(LIST, world(), "")).toEqual([]);
   });
-  it("hasRequestedSize is only true when the size is genuinely available there", () => {
-    const w = world({ sizeAvailable: (p, s) => s !== "8" });
-    expect(call(LIST, w, "8").every((r) => r.hasRequestedSize === false)).toBe(true);
+  it("hasRequestedSize is true on every row, and matchedSize is the shoe's own label", () => {
+    const products = { p1: P("p1", { sizes: ["7", "8.5"] }), p2: P("p2", { sizes: ["8_5"] }), p3: P("p3", { sizes: ["UK 8.5"] }) };
+    const rows = call(LIST, world({ products }), "8.5");
+    expect(rows.map((r) => [r.product.id, r.matchedSize, r.hasRequestedSize]))
+      .toEqual([["p1", "8.5", true], ["p2", "8_5", true], ["p3", "UK 8.5", true]]);
+  });
+  it("a kids size never satisfies an adult request", () => {
+    const products = { p1: P("p1", { sizes: ["6Y", "7Y"] }), p2: P("p2", { sizes: ["6"] }), p3: P("p3", { sizes: ["S"] }) };
+    expect(call(LIST, world({ products }), "6").map((r) => r.product.id)).toEqual(["p2"]);
+  });
+  it("an unclassifiable requested size matches nothing, even a byte-equal label", () => {
+    const products = { p1: P("p1", { sizes: ["S"] }), p2: P("p2", { sizes: ["S"] }), p3: P("p3", { sizes: ["S"] }) };
+    expect(call(LIST, world({ products }), "S")).toEqual([]);
+  });
+});
+
+describe("what the size gate removed is counted (telemetry, log only)", () => {
+  const stats = (neighbours, w, requestedSize = "8") => alternativesForSize({
+    neighbours, requestedSize, resolveProduct: w.resolveProduct, sizesOf: w.sizesOf,
+    availabilityKnown: w.availabilityKnown, sizeAvailable: w.sizeAvailable, isSellable: w.isSellable,
+  });
+  it("counts only shoes that passed every other gate and failed the size", () => {
+    const products = { p1: P("p1", { sizes: ["3", "4", "5", "5.5", "6"] }), p2: P("p2"), p3: P("p3", { sizes: ["6"] }) };
+    const w = world({ products, isSellable: (p) => p.id !== "p3" });
+    const r = stats(LIST, w);
+    expect(r.rows.map((x) => x.product.id)).toEqual(["p2"]);
+    expect(r.candidates).toBe(3);
+    expect(r.sizeGateRemoved).toBe(1);       // p1; p3 was removed by isSellable, not by size
+  });
+  it("a shoe with nothing sellable at all is not the size gate's doing", () => {
+    const w = world({ sizeAvailable: (p) => p.id !== "p1" });
+    expect(stats(LIST, w).sizeGateRemoved).toBe(0);
+  });
+  it("counts past the display cap", () => {
+    const products = {}, list = [];
+    for (let i = 0; i < 12; i++) { products[`q${i}`] = P(`q${i}`, { sizes: i < 2 ? ["7"] : ["8"] }); list.push(encodeNeighbour(`q${i}`, "s")); }
+    const r = stats(list, world({ products }));
+    expect(r.rows).toHaveLength(8);
+    expect(r.sizeGateRemoved).toBe(2);
   });
 });
 
@@ -122,21 +152,19 @@ describe("the cap", () => {
     for (let i = 0; i < 12; i++) { products[`q${i}`] = P(`q${i}`); list.push(encodeNeighbour(`q${i}`, "s")); }
     expect(call(list, world({ products }))).toHaveLength(8);
   });
-  it("the cap applies AFTER the partition, so a size match is never cut for rank", () => {
+  it("the cap applies AFTER the size gate, so a size match is never cut for rank", () => {
     const products = {}, list = [];
     for (let i = 0; i < 12; i++) {
       products[`q${i}`] = P(`q${i}`, { sizes: i === 11 ? ["8"] : ["7"] });
       list.push(encodeNeighbour(`q${i}`, "s"));
     }
-    const got = call(list, world({ products }), "8");
-    expect(got[0].product.id).toBe("q11");
-    expect(got).toHaveLength(8);
+    expect(call(list, world({ products }), "8").map((r) => r.product.id)).toEqual(["q11"]);
   });
 });
 
 describe("the reason line rides along with the row", () => {
   it("carries the stored code's sentence", () => {
-    const rows = call(LIST, world(), "");
+    const rows = call(LIST, world(), "8");
     expect(rows[0].why).toMatch(/Same shape and colour/);
     expect(rows[1].why).toMatch(/Same shape, colour and brand/);
   });
@@ -146,6 +174,10 @@ describe("alternativeSelection — never back to the catalogue", () => {
   it("preselects the customer's size when the shoe has it", () => {
     const row = { product: P("p1"), sizes: ["8"], hasRequestedSize: true };
     expect(alternativeSelection(row, "8")).toEqual({ product: row.product, size: "8" });
+  });
+  it("preselects the CHOSEN shoe's own label for that size, not the tapped one", () => {
+    const row = { product: P("p1"), sizes: ["8.5"], hasRequestedSize: true, matchedSize: "8.5" };
+    expect(alternativeSelection(row, "8_5")).toEqual({ product: row.product, size: "8.5" });
   });
   it("opens the shoe's own grid when it does not", () => {
     const row = { product: P("p1"), sizes: ["9"], hasRequestedSize: false };

@@ -105,7 +105,7 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
     expect(APP).toContain("resolveProduct: (pid) => resolveProductById(pid),");
   });
   it("clothing is out of scope, as the brief says", () => {
-    expect(APP).toContain('if ((product.productType || "sneaker") === "clothing") return [];');
+    expect(APP).toContain('if ((product.productType || "sneaker") === "clothing") return null;');
   });
 });
 
@@ -115,12 +115,13 @@ describe("the strip is wired into both sheets", () => {
   // actually mounts it, which is the part that lives in App.jsx.
   it("the phone sheet renders it under the reason", () => {
     const i = APP.indexOf("{sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}");
-    const j = APP.indexOf("<AlternativesStrip rows={alternativesFor(selected, naNote.size)}");
+    const j = APP.indexOf("const alt = alternativesFor(selected, naNote.size);");
     expect(i).toBeGreaterThan(0);
     expect(j).toBeGreaterThan(i);          // BELOW the reason, never above it
   });
   it("the quick-view renders it too", () => {
-    expect(APP).toContain("<AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}");
+    expect(APP).toContain("const alt = alternativesFor?.(qv, qvNa.size) ?? null;");
+    expect(APP).toContain("<AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}");
   });
 });
 

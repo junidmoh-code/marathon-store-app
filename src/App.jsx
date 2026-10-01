@@ -124,7 +124,7 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
 import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcing, resolveSneakerSourcingHub, allocateSneakerCart, GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB } from "./components/stock/availabilityCore";
-import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
+import { alternativesForSize, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
 import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
 import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
@@ -9134,9 +9134,14 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             {/* The desktop twin of the phone sheet's strip. The
                                 reason above is unchanged; this only adds what
                                 can be sold instead. */}
-                            <AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}
-                                               requestedSize={qvNa.size}
-                                               onPick={(row) => pickQvAlternative(row, qvNa.size)} />
+                            {(() => {
+                              const alt = alternativesFor?.(qv, qvNa.size) ?? null;
+                              return (
+                                <AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}
+                                                   requestedSize={qvNa.size}
+                                                   onPick={(row) => pickQvAlternative(row, qvNa.size)} />
+                              );
+                            })()}
                           </>
                         );
                       }
@@ -10164,18 +10169,26 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     one are all out — the row has nothing to show and nothing to sell.
   //   • sneakerOut, not a second availability test. One definition of
   //     "available" on this screen, the same one that drew the chip.
+  //
+  // RETURNS { rows, candidates, sizeGateRemoved }, or NULL for "not answered
+  // yet". Every row is sellable in the tapped size (alternativesForSize, the
+  // size gate of 2026-10-01); an empty `rows` is a real answer and the strip
+  // says "No similar styles in size X". NULL renders nothing — before /orders
+  // and both gated hubs have answered, "no similar styles" would be a claim
+  // this screen cannot yet make.
   const alternativesFor = (product, size) => {
-    if (!product || !size) return [];
+    if (!product || !size) return null;
     // Sneakers only. Clothing and perfume are out of scope for this build, and
     // a clothing tile's grey-out reads its cell by a different rule
     // (availabilityCore's header, the deliberately-unmerged clothing lane).
-    if ((product.productType || "sneaker") === "clothing") return [];
-    return sellableAlternatives({
+    if ((product.productType || "sneaker") === "clothing") return null;
+    if (!ordersSettled || !sneakerGateReady("hub1") || !sneakerGateReady("hub2")) return null;
+    const result = alternativesForSize({
       neighbours: product[NEIGHBOURS_FIELD],
       requestedSize: size,
       // FOLLOWS MERGES. A pid in a list written last week may since have been
       // merged away; resolveProductById lands on the survivor, and
-      // sellableAlternatives de-duplicates when two entries land on the same
+      // alternativesForSize de-duplicates when two entries land on the same
       // shoe.
       resolveProduct: (pid) => resolveProductById(pid),
       sizesOf: (p) => (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"),
@@ -10254,11 +10267,17 @@ function AssistantView({ products, onExit, orders = [] }) {
     // that is a per-size answer, so asking it product-level could name Hub 1 on
     // a card whose only available size is picked by Hub 2. The requested size
     // when the shoe has it, otherwise the first size actually on offer.
-    }).map((row) => ({
-      ...row,
-      hubLabel: HUB_LABELS[sneakerHubOf(row.product, row.hasRequestedSize ? size : row.sizes[0])] || "",
-    }));
+    });
+    // The requested size's own label on that shoe — every row has one now.
+    return {
+      ...result,
+      rows: result.rows.map((row) => ({
+        ...row,
+        hubLabel: HUB_LABELS[sneakerHubOf(row.product, row.matchedSize)] || "",
+      })),
+    };
   };
+
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -11409,8 +11428,14 @@ function AssistantView({ products, onExit, orders = [] }) {
                         nothing to what the refusal says — the X gate blocks
                         exactly what it blocked yesterday, and the only new
                         action on this sheet is choosing a different shoe. */}
-                    <AlternativesStrip rows={alternativesFor(selected, naNote.size)}
-                                       requestedSize={naNote.size} onPick={pickAlternative} />
+                    {(() => {
+                      const alt = alternativesFor(selected, naNote.size);
+                      return (
+                        <AlternativesStrip key={`${selected.id}|${naNote.size}`} rows={alt ? alt.rows : null}
+                                           requestedSize={naNote.size}
+                                           onPick={pickAlternative} />
+                      );
+                    })()}
                   </>
                 );
               }

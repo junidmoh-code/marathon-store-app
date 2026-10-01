@@ -351,13 +351,17 @@ describe("fuzz: nothing unsellable ever reaches the sheet", () => {
         expect(!!row.product.photoUrl, `no photo · ${why}`).toBe(true);
         expect(row.sizes.length, `no sizes · ${why}`).toBeGreaterThan(0);
         for (const s of row.sizes) expect(avail.get(`${row.product.id}|${s}`), `unavailable size ${s} · ${why}`).toBe(true);
-        expect(row.hasRequestedSize).toBe(!!requested && row.sizes.includes(requested));
+        // THE SIZE GATE (2026-10-01): every row can sell the requested size.
+        expect(row.hasRequestedSize, `no requested size · ${why}`).toBe(true);
+        expect(row.matchedSize, `matched size · ${why}`).toBe(requested);
+        expect(avail.get(`${row.product.id}|${requested}`), `requested size not sellable · ${why}`).toBe(true);
         expect(typeof row.why).toBe("string");
         expect(row.why.length).toBeGreaterThan(0);
       }
-      // Size-holders lead, and rank is preserved inside each half.
-      const flags = rows.map((x) => x.hasRequestedSize);
-      expect(flags, `partition broken in round ${round}`).toEqual([...flags].sort((a, b) => Number(b) - Number(a)));
+      // Survivors keep the stored order.
+      const order = rows.map((x) => Number(x.product.id.slice(1)));
+      expect(order, `rank changed in round ${round}`).toEqual([...order].sort((a, b) => a - b));
+      if (!requested) expect(rows, `rows with no requested size · round ${round}`).toEqual([]);
     }
   });
 

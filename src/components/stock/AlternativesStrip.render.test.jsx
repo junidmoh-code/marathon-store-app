@@ -46,11 +46,27 @@ const textOf = (tree) => {
 // R1 200 in en-ZA — the space is U+00A0/U+202F, not an ASCII one.
 const money = (n) => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
 
-// THE RULE THAT MATTERS MOST ON THIS SURFACE.
-test("renders NOTHING at all when there is nothing sellable", () => {
-  for (const rows of [[], null, undefined]) {
+// NOT ANSWERED YET renders nothing — no skeleton, and never the empty state,
+// which would be a claim the screen cannot yet make.
+test("renders NOTHING while availability has not answered", () => {
+  for (const rows of [null, undefined]) {
     expect(render({ rows }).toJSON(), String(rows)).toBe(null);
   }
+});
+
+// THE RULE THAT MATTERS MOST ON THIS SURFACE (2026-10-01): an empty answer is
+// said in words, never padded with shoes that do not come in the size.
+test("an empty answer says there is nothing in that size", () => {
+  const tree = render({ rows: [] });
+  expect(textOf(tree)).toContain("No similar styles in size 8");
+  expect(tree.root.findAllByType("button")).toHaveLength(0);
+});
+test("…and still renders nothing when no size was asked for", () => {
+  expect(render({ rows: [], requestedSize: "" }).toJSON()).toBe(null);
+});
+
+test("the size badge shows the chosen shoe's own label for the size", () => {
+  expect(textOf(render({ rows: [ROW({ matchedSize: "8.5" })], requestedSize: "8_5" }))).toContain("Size 8.5");
 });
 
 test("every fact the assistant reads out is on the card", () => {
