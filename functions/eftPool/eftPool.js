@@ -7,17 +7,15 @@
 // search needs (lib/eft-pool.cjs publicEftView). Staff never gain client read
 // on the node, and no rule change ships with this build.
 //
-//   eftPoolSearch   any active POS identity: the forgiving search by
-//                   REFERENCE and PAYER NAME — partial, case-blind, typo-
-//                   tolerant. NEVER by amount: "550" finding any R550 payment
-//                   is how one customer's sale gets settled against another
-//                   customer's money; the amount is on every row for the
-//                   cashier to CONFIRM, and a request carrying an amount field
-//                   is refused outright. Three characters minimum, ten results,
-//                   no browsing. Used payments come back too, marked used with
-//                   slip/cashier/customer (or "settled outside POS", who, when,
-//                   why), because "it says used, slip 00123, Tuesday, Ahmed"
-//                   ends a counter argument in five seconds.
+//   eftPoolSearch   any active POS identity: find THE payment the customer
+//                   names by its REFERENCE or the bank's TRANSACTION ID, typed
+//                   in full (one typo tolerated on a long reference). At most
+//                   ONE result, payer as initials only; an ambiguous query
+//                   returns nothing. Never by amount (an amount field is
+//                   refused outright), never by name, no listing, no
+//                   suggestions. A used payment answers as used — when and
+//                   which slip — never whose sale or which cashier (fix 2,
+//                   lib/eft-pool.cjs).
 //   eftPoolSettle   the consume-once lifecycle: settle (unmatched → used,
 //                   BEFORE the sale is written — a lost race must stop the
 //                   sale, not follow it), attach (the committed sale's slip
