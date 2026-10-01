@@ -251,3 +251,62 @@ test("the typed action is the owner's alone, and reads one terminal row", () => 
   const submit = src.slice(src.indexOf("const typedOnly = draft.typedOnly === true;"), src.indexOf("} else if (declaredTotal) {"));
   assert.match(submit, /mayDeclareTotal\(request\.auth\?\.token\)/);
 });
+
+test("the last-batch read asks only for NUMERIC batch numbers", () => {
+  // RTDB orders null < booleans < numbers < strings, so a record whose batchNo
+  // is the string "12" sorts above every numeric one. An unbounded
+  // limitToLast(2) would hand back two such records and hide the real highest
+  // batch, and the typed path would mint a number already in use.
+  //
+  // Driven through the real function against a fake that RECORDS the query, so
+  // what is asserted is the query actually sent — not a sentence about it.
+  const { readLastBatchFor } = require("../cardRecon/cardRecon.js");
+  const asked = {};
+  const q = {
+    orderByChild: (c) => { asked.orderBy = c; return q; },
+    startAt: (v) => { asked.startAt = v; return q; },
+    endAt: (v) => { asked.endAt = v; return q; },
+    limitToLast: (n) => { asked.limitToLast = n; return q; },
+    once: async () => ({ val: () => null }),
+  };
+  return readLastBatchFor({ ref: (p) => { asked.path = p; return q; } }, "trophy", TID).then(() => {
+    assert.equal(asked.path, "card_batches/trophy/" + TID);
+    assert.equal(asked.orderBy, "batchNo");
+    assert.equal(asked.limitToLast, 2);
+    // BOTH endpoints, and both numbers: endAt is the half that excludes
+    // strings, startAt the half that excludes null and false.
+    assert.equal(typeof asked.startAt, "number", "startAt must be a number or strings stay in range");
+    assert.equal(typeof asked.endAt, "number", "endAt must be a number or strings stay in range");
+    assert.ok(asked.startAt <= 1, "a terminal's first batch must be inside the range");
+    assert.ok(asked.endAt >= Number.MAX_SAFE_INTEGER, "no real batch number may sit above the range");
+  });
+});
+
+test("the highest batch is read from the rows, not assumed to be the last one", () => {
+  // The query bounds WHICH rows come back; this picks among them. A revision
+  // wears its batch's number, so two rows can share the highest — and the one
+  // with the LATER close is the record in force.
+  const { readLastBatchFor } = require("../cardRecon/cardRecon.js");
+  const rows = {
+    "486": { batchNo: 486, slip: { openedAt: 10, closedAt: 20, format: "typed" } },
+    "487": { batchNo: 487, slip: { openedAt: 30, closedAt: 40, format: "typed" } },
+    "487-r2": { batchNo: 487, slip: { openedAt: 30, closedAt: 55, format: "typed" } },
+  };
+  const q = { orderByChild: () => q, startAt: () => q, endAt: () => q, limitToLast: () => q,
+              once: async () => ({ val: () => rows }) };
+  return readLastBatchFor({ ref: () => q }, "trophy", TID).then((last) => {
+    assert.equal(last.batchNo, 487);
+    assert.equal(last.closedAt, 55, "the revision in force, not the first capture");
+    assert.equal(last.openedAt, 30);
+    assert.equal(last.typed, true);
+  });
+});
+
+test("a terminal with nothing recorded reads as nothing, never as batch 0", () => {
+  const { readLastBatchFor } = require("../cardRecon/cardRecon.js");
+  const q = { orderByChild: () => q, startAt: () => q, endAt: () => q, limitToLast: () => q,
+              once: async () => ({ val: () => null }) };
+  return readLastBatchFor({ ref: () => q }, "trophy", TID).then((last) => {
+    assert.deepEqual(last, { batchNo: null, openedAt: null, closedAt: null, typed: false });
+  });
+});

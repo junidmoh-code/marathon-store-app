@@ -155,8 +155,11 @@ real gate: if `npm run build` finishes, nothing is deployed that didn't compile.
 - **Hosting site:** `marathon-club` → https://marathon-club.web.app
   (`firebase.json` sets `hosting.site` directly and `.firebaserc` maps no deploy
   target, so `firebase target` lists nothing here — check with
-  `firebase hosting:sites:list` before any hosting deploy rather than assuming
-  the site from this note)
+  `firebase hosting:sites:list --project=marathon-club` before any hosting
+  deploy rather than assuming the site from this note. The `--project` is not
+  decoration: without it the CLI lists the sites of whatever `firebase use` last
+  selected, so the check could pass against a different project than the one the
+  deploy command names.)
 - **Firebase config:** `src/firebase.js`
 - **Database rules:** `database.rules.json`
 - **Cloud Functions:** `functions/` — shared with marathon-pos-app, see the

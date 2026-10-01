@@ -661,10 +661,27 @@ async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
  * either `487` or `487-r2`; both carry the same batchNo, which is all the
  * caller reads, and the LATER CLOSE of the two is the one a window should
  * start from. limitToLast(2) is what makes that choice possible at all.
+ *
+ * THE RANGE IS WHAT MAKES "LAST" MEAN "HIGHEST" (CodeRabbit, PR #527).
+ * RTDB's ordering runs null < booleans < numbers < STRINGS, so a record whose
+ * batchNo is the string "12" sorts ABOVE every numeric one, however large.
+ * With an unbounded limitToLast(2), two such records would be the two rows
+ * returned and the real highest batch would not appear at all — this function
+ * would then mint a number already in use. (It would be caught: the key
+ * collides and resolveBatchWrite refuses as a duplicate. A refusal the owner
+ * cannot explain is still the wrong answer.)
+ *
+ * Bounding the query by two NUMERIC endpoints excludes every non-numeric value
+ * from the window, so what comes back is the highest numbers, by definition.
+ * Nothing is migrated to achieve it: a legacy string-valued record is simply
+ * not what this read is asking for, and readBatchKeysFor — which probes exact
+ * KEYS, not values — still finds it when the duplicate guard looks.
  */
 async function readLastBatchFor(db, storeId, tid) {
   const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`)
-    .orderByChild("batchNo").limitToLast(2).once("value");
+    .orderByChild("batchNo")
+    .startAt(0).endAt(Number.MAX_SAFE_INTEGER)
+    .limitToLast(2).once("value");
   const rows = Object.values(snap.val() || {})
     .filter((r) => r && typeof r === "object" && Number.isInteger(Number(r.batchNo)));
   if (!rows.length) return { batchNo: null, openedAt: null, closedAt: null, typed: false };
@@ -1699,6 +1716,11 @@ exports.readBatchKeysFor = readBatchKeysFor;
 // second report of a batch is a fuller account or a re-send is a rule about
 // LIVE data, and it is tested against a fake database rather than by reading it.
 exports.readRecordedLinesFor = readRecordedLinesFor;
+// Exported for the same reason as readBatchKeysFor: what this asks of the
+// database — specifically that its range is NUMERIC, so string-valued legacy
+// values cannot crowd out the highest batch — is a fact about a live query and
+// is tested by recording the query rather than by reading it.
+exports.readLastBatchFor = readLastBatchFor;
 exports.resolveWriteFor = resolveWriteFor;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;
