@@ -19,6 +19,7 @@ const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   eftCreditIdOf, allocateRemainderDecision, remainderStatusDecision,
 } = require("../lib/eft-settle.cjs");
+const { paymentFingerprint } = require("../lib/eft-fingerprint.cjs");
 
 // ── an RTDB-transaction stand-in ─────────────────────────────────────────────
 // Serialised CAS with re-run-on-contention, like the real database. `stall`
@@ -62,14 +63,21 @@ function recorded(over = {}) {
   };
 }
 
+// The fingerprint the callable checked (fix 1) — every settle carries it.
+const FP = paymentFingerprint({ reader: "standardbank", bankRef: "4140542552" });
+
 const tillA = {
+  fingerprint: FP,
   attemptId: "P-a1", at: 5000, cashierUid: "uA", cashierName: "Ahmed",
   storeId: "pe", tillId: "till1", customerId: "c1", customerName: "Mr Dlamini",
+  customerResolved: true, confirmedCustomerId: "c1",
   appliedCents: 55000,
 };
 const tillB = {
+  fingerprint: FP,
   attemptId: "P-b1", at: 5001, cashierUid: "uB", cashierName: "Sipho",
-  storeId: "cr", tillId: "till2", customerId: null, customerName: null,
+  storeId: "cr", tillId: "till2", customerId: "c2", customerName: "Mrs Mokoena",
+  customerResolved: true, confirmedCustomerId: "c2",
   appliedCents: 55000,
 };
 
@@ -141,7 +149,8 @@ test("attach records the sale on the settlement, idempotently, holder-only", () 
 
   const ok = attach({ attemptId: "P-a1", saleId: "S-1", receiptNumber: "00042", at: 6000 });
   assert.equal(ok.ok, true);
-  assert.deepEqual(node.get().used.sale, { saleId: "S-1", receiptNumber: "00042", at: 6000 });
+  // No sale check passed → treated as "absent": attached, flagged unverified.
+  assert.deepEqual(node.get().used.sale, { saleId: "S-1", receiptNumber: "00042", at: 6000, verified: false });
 
   // A retried attach of the same sale is a no-op, not an error.
   assert.equal(attach({ attemptId: "P-a1", saleId: "S-1", receiptNumber: "00042", at: 6001 }).already, true);
@@ -297,11 +306,45 @@ function settleAndAttach(node, settlement, saleId = "S-1") {
   runSettle(node, settlement);
   let out = null;
   node.transaction((cur) => {
-    out = attachSaleDecision(cur, { attemptId: settlement.attemptId, saleId, receiptNumber: "00042", at: 6000, poolKey: KEY });
+    out = attachSaleDecision(cur, {
+      attemptId: settlement.attemptId, saleId, receiptNumber: "00042", at: 6000, poolKey: KEY,
+      // The committed sale, read back, takes exactly what was settled (fix 5).
+      saleCheck: { state: "verified", legCents: settlement.appliedCents },
+    });
     return out.ok && !out.already ? out.value : undefined;
   });
   return out;
 }
+
+// A settlement made BEFORE fix 3: no customer on it, no confirmation. A till
+// can no longer produce one (settle refuses "no-customer"), but such records
+// exist in the pool and must still attach safely.
+function legacyNoCustomerSettled(amountCents, appliedCents) {
+  return recorded({
+    amountCents, status: "used",
+    used: { attemptId: "P-old", at: 5001, cashierUid: "uB", cashierName: "Sipho", storeId: "cr", tillId: "till2",
+      customerId: null, customerName: null, appliedCents, sale: null },
+  });
+}
+function attachLegacy(node) {
+  let out = null;
+  node.transaction((cur) => {
+    out = attachSaleDecision(cur, { attemptId: "P-old", saleId: "S-1", receiptNumber: "00042", at: 6000, poolKey: KEY });
+    return out.ok && !out.already ? out.value : undefined;
+  });
+  return out;
+}
+
+test("a till can no longer settle with no customer, or an unconfirmed one", () => {
+  const node = makeNode(recorded({ amountCents: 10000 }));
+  assert.equal(runSettle(node, { ...tillA, customerId: null, appliedCents: 3000 }).code, "no-customer");
+  assert.equal(runSettle(node, { ...tillA, customerResolved: false, appliedCents: 3000 }).code, "no-customer");
+  assert.equal(runSettle(node, { ...tillA, confirmedCustomerId: "c9", appliedCents: 3000 }).code, "not-confirmed");
+  assert.equal(runSettle(node, { ...tillA, confirmedCustomerId: undefined, appliedCents: 3000 }).code, "not-confirmed");
+  assert.equal(node.get().status, "unmatched");
+  assert.equal(runSettle(node, { ...tillA, appliedCents: 3000 }).ok, true);
+  assert.equal(node.get().used.customerConfirmed, true);
+});
 
 test("attach on a partial application stamps a store-credit remainder for the customer", () => {
   // R100 payment, R30 applied — tillA carries a customer.
@@ -317,8 +360,8 @@ test("attach on a partial application stamps a store-credit remainder for the cu
 });
 
 test("attach with no customer stamps an UNALLOCATED remainder — held, never swallowed", () => {
-  const node = makeNode(recorded({ amountCents: 10000 }));
-  settleAndAttach(node, { ...tillB, appliedCents: 3000 }); // tillB has no customer
+  const node = makeNode(legacyNoCustomerSettled(10000, 3000));
+  attachLegacy(node);
   const r = node.get().used.remainder;
   assert.equal(r.cents, 7000);
   assert.equal(r.disposition, "unallocated");
@@ -347,8 +390,8 @@ test("a released payment carries no remainder — nothing was owed on a sale tha
 });
 
 test("the owner allocates a held remainder to a customer; already-credited refuses", () => {
-  const node = makeNode(recorded({ amountCents: 10000 }));
-  settleAndAttach(node, { ...tillB, appliedCents: 3000 });
+  const node = makeNode(legacyNoCustomerSettled(10000, 3000));
+  attachLegacy(node);
   const allocate = (args) => {
     let out = null;
     node.transaction((cur) => {
@@ -517,7 +560,7 @@ test("a path-hostile customer id downgrades the remainder to UNALLOCATED, never 
   // able to break the mint (which would retry for ever); the money goes to
   // the visible hold instead.
   const node = makeNode(recorded({ amountCents: 10000 }));
-  settleAndAttach(node, { ...tillA, customerId: "c1/evil#path", appliedCents: 3000 });
+  settleAndAttach(node, { ...tillA, customerId: "c1/evil#path", confirmedCustomerId: "c1/evil#path", appliedCents: 3000 });
   const r = node.get().used.remainder;
   assert.equal(r.disposition, "unallocated");
   assert.equal(r.customerId, null);
@@ -609,19 +652,13 @@ test("mark-as-used refuses without an ACTOR or a time, and on anything that is n
 // phone at a counter is the difference between marking a payment now and never
 // marking it; an unmarked payment is a real hole in the pool, a missing "why"
 // is not. What the owner's by-hand review reads is who and when.
-test("mark-as-used goes through with NO reason, and still stamps who and when", () => {
-  for (const noReason of [{ ...ownerMark, reason: "" }, { ...ownerMark, reason: "   " }, { ...ownerMark, reason: null }, (() => { const m = { ...ownerMark }; delete m.reason; return m; })()]) {
+test("mark-as-used REQUIRES a reason (fix 4) — nothing is written without one", () => {
+  for (const noReason of [{ ...ownerMark, reason: "" }, { ...ownerMark, reason: "   " }, { ...ownerMark, reason: null }, { ...ownerMark, reason: "ok" }, (() => { const m = { ...ownerMark }; delete m.reason; return m; })()]) {
     const node = makeNode(recorded());
     const r = runMark(node, noReason);
-    assert.equal(r.ok, true, JSON.stringify(noReason));
-    const after = node.get();
-    assert.equal(after.status, "used");
-    assert.equal(after.used.sale, null);
-    assert.equal(after.used.outsidePos.actorUid, ownerMark.actorUid);
-    assert.equal(after.used.outsidePos.actorName, ownerMark.actorName);
-    assert.equal(after.used.outsidePos.at, ownerMark.at);
-    // null, never "" — an absent reason and an empty one must not be two states.
-    assert.equal(after.used.outsidePos.reason, null);
+    assert.equal(r.ok, false, JSON.stringify(noReason));
+    assert.equal(r.code, "bad-reason");
+    assert.equal(node.get().status, "unmatched");
   }
 });
 

@@ -36,6 +36,8 @@
 // eftCore.mjs's; this module redefines none of it.
 "use strict";
 
+const { paymentFingerprint } = require("./eft-fingerprint.cjs");
+
 /** A refusal the callable turns into an HttpsError; `message` is written to be
  *  read out at the counter. */
 function refuse(code, message) {
@@ -72,6 +74,36 @@ function settleDecision(current, settlement) {
     || !Number.isInteger(current.amountCents) || s.appliedCents > current.amountCents) {
     return refuse("bad-amount", "The amount applied to the sale must be within what the customer actually paid.");
   }
+  // WHOSE PAYMENT IS THIS? (fix 3). A till settle consumes a payment only for
+  // a customer the cashier EXPLICITLY confirmed as the payer — attached to the
+  // sale, resolved server-side against /customers (the callable stamps
+  // customerResolved; the till's own name for them is never used), and
+  // confirmed by id. A payment is never applied on its amount alone, and never
+  // to a sale nobody is named on. The owner's mark-as-used has no customer and
+  // pays nothing out, so it is exempt.
+  if (s.outsidePos !== true) {
+    if (typeof s.customerId !== "string" || !s.customerId || s.customerResolved !== true) {
+      return refuse("no-customer", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.");
+    }
+    if (s.confirmedCustomerId !== s.customerId) {
+      return refuse("not-confirmed", "Confirm that this payment belongs to the customer on the sale before using it.");
+    }
+  }
+  // THE BANK'S TRANSACTION ID, RE-CHECKED INSIDE THE TRANSACTION (fix 1). The
+  // callable verified the fingerprint claim and the siblings against the value
+  // it read; this re-derives the fingerprint from the value being COMMITTED
+  // and requires it to be the one that was checked. A payment with no bank
+  // transaction id cannot settle at all unless the owner released it from the
+  // hold by hand. The owner's mark-as-used pays nothing out and is exempt.
+  if (s.fingerprintExempt !== true) {
+    const fp = paymentFingerprint(current);
+    if (!fp && !(current.releasedFromHold && typeof current.releasedFromHold === "object")) {
+      return refuse("no-bank-id", "This payment carries no bank transaction id, so it cannot be told apart from a resent copy — it cannot settle a sale. The owner can check it against the bank statement.");
+    }
+    if ((fp ?? null) !== (s.fingerprint ?? null)) {
+      return refuse("fingerprint-unchecked", "This payment's bank transaction id was not checked against the pool — refused. Search again and retry.");
+    }
+  }
   if (current.status === "used") {
     // The same attempt retrying (a timeout, a resumed request) already holds
     // it — success, nothing to write. Anyone else lost the race.
@@ -95,6 +127,9 @@ function settleDecision(current, settlement) {
         tillId: s.tillId ?? null,
         customerId: s.customerId ?? null,
         customerName: s.customerName ?? null,
+        // The customer was resolved against /customers AND confirmed at the
+        // till (fix 3) — only such a settlement may mint remainder credit.
+        ...(s.outsidePos === true ? {} : { customerConfirmed: true }),
         appliedCents: s.appliedCents,
         sale: null, // the sale attaches only after it has committed
       },
@@ -115,13 +150,12 @@ function settleDecision(current, settlement) {
 // record. Reversal is the ordinary owner reversal: the settlement moves whole
 // to `reversals`, outsidePos included — both records survive.
 //
-// THE REASON IS OPTIONAL, and that is a deliberate trade. It used to be
-// required, and a required sentence typed on a phone at a counter is the
-// difference between marking a payment now and never marking it — an unmarked
-// payment is a real hole in the pool, a missing "why" is not. Who and when are
-// still stamped and are what the owner's by-hand review actually reads. A
-// reason that IS sent is still kept, and older marks keep theirs.
+// THE REASON IS REQUIRED (fix 4). #598 made it optional ("two taps and no
+// keyboard"); Junid has decided otherwise: a payment marked used outside the
+// POS has no sale, no slip and no customer, so the typed reason is the ONLY
+// account of where that money went. Three characters at least.
 const OUTSIDE_POS_REASON_MAX = 300;
+const OUTSIDE_POS_REASON_MIN = 3;
 
 /**
  * unmatched → used with no sale, by the owner. `mark` carries
@@ -137,6 +171,9 @@ function markUsedOutsidePosDecision(current, mark) {
     return refuse("bad-actor", "The mark does not say who is marking — refused.");
   }
   if (!Number.isInteger(m.at)) return refuse("bad-time", "The mark carries no server time — refused.");
+  if (reason.length < OUTSIDE_POS_REASON_MIN) {
+    return refuse("bad-reason", "Say how this payment was settled outside the POS — the reason stays on the record.");
+  }
   const base = settleDecision(current, {
     // The attempt id is the mark's own moment: nothing else can hold it, so a
     // second tap is a second attempt and loses to the first — exactly one
@@ -150,6 +187,11 @@ function markUsedOutsidePosDecision(current, mark) {
     customerId: null,
     customerName: null,
     appliedCents: current?.amountCents,
+    // Marking a payment used pays nothing out — no sale, no remainder — so a
+    // payment without a bank transaction id may still be closed off this way,
+    // and there is no customer to confirm.
+    fingerprintExempt: true,
+    outsidePos: true,
   });
   if (!base.ok || base.already) return base;
   return {
@@ -160,9 +202,7 @@ function markUsedOutsidePosDecision(current, mark) {
         ...base.value.used,
         sale: null,
         outsidePos: {
-          // null, never "" — an absent reason and an empty one must not be two
-          // states for a reader to tell apart.
-          reason: reason ? reason.slice(0, OUTSIDE_POS_REASON_MAX) : null,
+          reason: reason.slice(0, OUTSIDE_POS_REASON_MAX),
           actorUid: m.actorUid,
           actorName: m.actorName,
           at: m.at,
@@ -196,11 +236,22 @@ function eftCreditIdOf(poolKey, usedAt) {
  *  (credit minted) or "held" (/eft_unallocated written) — so a crash between
  *  the transaction and the IO leaves a visibly unfinished record, never a
  *  silently swallowed difference. */
-function remainderPlanOf(poolKey, used, amountCents) {
+function remainderPlanOf(poolKey, used, amountCents, { holdReason = null } = {}) {
   const cents = Number.isInteger(amountCents) && Number.isInteger(used?.appliedCents)
     ? amountCents - used.appliedCents
     : 0;
   if (cents <= 0) return null;
+  // FIX 5 — CREDIT ONLY FOR A CONFIRMED CUSTOMER ON A VERIFIED SALE. The
+  // remainder used to become store credit for whatever customer id the till
+  // sent. Now only a settlement whose customer was resolved and confirmed
+  // (customerConfirmed, fix 3) AND whose sale was read back and matched
+  // (no holdReason) may mint; anything else is HELD for the owner, visibly.
+  if (holdReason || used?.customerConfirmed !== true) {
+    return {
+      cents, disposition: "unallocated", customerId: null, customerName: null, creditId: null, status: "pending",
+      holdReason: holdReason || "the settlement's customer was never confirmed at the till",
+    };
+  }
   // The customer id came from the till's settle payload and is about to
   // become a credit id and a database PATH SEGMENT (customers/{id}/…,
   // creditLedger/{id}/…). An id that fails the charset check is treated as NO
@@ -226,7 +277,83 @@ function remainderPlanOf(poolKey, used, amountCents) {
  * owes nobody anything).
  * @returns same shape as settleDecision
  */
-function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey }) {
+// ─── FIX 5: THE SALE MUST TAKE EXACTLY WHAT WAS SETTLED ─────────────────────
+// The till writes the sale itself, so nothing used to compare the sale's EFT
+// leg with what the settle actually applied: settle R50, record a sale with an
+// R500 EFT leg against the same payment, and the books said R500 was paid. The
+// attach now READS THE COMMITTED SALE BACK (the callable does the read; this
+// decides) and requires its EFT legs for this payment to add up to exactly
+// `appliedCents`, and its customer to be the settlement's customer.
+//   verified  → attach normally.
+//   absent    → the sale is not on the server yet (a till that queued it
+//               offline): attach, but HOLD any remainder for the owner — no
+//               credit is minted against a sale nobody has seen.
+//   mismatch  → REFUSE the attach. The callable stamps used.saleMismatch on
+//               the payment and logs EFT_SALE_MISMATCH; it shows on the
+//               owner's tab as a used payment with no sale attached.
+function saleCheckOf({ poolKey, used, sale, saleCustomerId }) {
+  if (!sale || typeof sale !== "object") return { state: "absent" };
+  const legs = Object.values(sale.payments ?? {})
+    .filter((p) => p && typeof p === "object" && p.method === "eft" && p.eftPoolKey === poolKey);
+  if (!legs.length) {
+    return { state: "mismatch", legCents: 0, why: "the sale carries no EFT payment for this pool record" };
+  }
+  const legCents = legs.reduce((sum, p) => sum + (Number.isInteger(p.amount) ? p.amount : Number.NaN), 0);
+  if (!Number.isInteger(legCents) || legCents !== used?.appliedCents) {
+    return {
+      state: "mismatch", legCents: Number.isInteger(legCents) ? legCents : null,
+      why: `the sale's EFT for this payment is ${Number.isInteger(legCents) ? legCents : "unreadable"}c but ${used?.appliedCents}c was settled`,
+    };
+  }
+  // The sale's customer, followed through merges by the caller (the
+  // settlement stores the merge SURVIVOR; the cart may still hold the merged-
+  // away id). Falls back to the raw id.
+  const onSale = saleCustomerId !== undefined ? saleCustomerId : sale.customerId;
+  if (used?.customerId && onSale !== used.customerId) {
+    return { state: "mismatch", legCents, why: "the sale names a different customer from the one confirmed when the payment was settled" };
+  }
+  return { state: "verified", legCents };
+}
+
+/**
+ * LATER VERIFICATION of an attach made while the sale was not yet on the
+ * server (a till that queued the sale offline — or a till that attached a sale
+ * id it then wrote with a bigger EFT leg). eftRemainderScan re-reads the sale
+ * and calls this with the fresh check:
+ *   verified  → stamp used.sale.verified = true ("done")
+ *   mismatch  → stamp used.saleMismatch, the owner's evidence ("flagged")
+ *   absent    → "wait" until maxAgeMs, then flag it as never having arrived.
+ * Only acts on the settlement that attached THIS sale id; anything else
+ * (reversed, re-settled) is "gone" and the breadcrumb is simply cleared.
+ */
+function laterSaleCheckDecision(current, { saleId, saleCheck, at, ageMs, maxAgeMs }) {
+  if (!current?.used || current.status !== "used" || current.used.sale?.saleId !== saleId) {
+    return { ok: false, code: "gone", message: "the settlement no longer holds that sale" };
+  }
+  if (current.used.sale.verified === true) return { ok: true, already: true, outcome: "done" };
+  if (saleCheck?.state === "verified") {
+    const { saleMismatch: _s, ...rest } = current.used;
+    return { ok: true, outcome: "done", value: { ...current, used: { ...rest, sale: { ...current.used.sale, verified: true, verifiedAt: at } } } };
+  }
+  const why = saleCheck?.state === "mismatch" ? saleCheck.why
+    : ageMs > maxAgeMs ? "the sale this payment was attached to never reached the server" : null;
+  if (!why) return { ok: true, already: true, outcome: "wait" };
+  return {
+    ok: true, outcome: "flagged",
+    value: { ...current, used: { ...current.used, saleMismatch: { saleId, legCents: saleCheck?.legCents ?? null, why, at } } },
+  };
+}
+
+/** Stamp a refused attach's evidence on the payment, without changing its state. */
+function flagSaleMismatchDecision(current, { saleId, legCents, why, at }) {
+  if (!current?.used || current.status !== "used") return refuse("not-held", "No settlement is holding this payment.");
+  return {
+    ok: true,
+    value: { ...current, used: { ...current.used, saleMismatch: { saleId: String(saleId ?? ""), legCents: legCents ?? null, why: String(why ?? ""), at } } },
+  };
+}
+
+function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poolKey, saleCheck }) {
   if (!current || current.status !== "used" || !current.used) {
     return refuse("not-held", "No settlement is holding this payment — the sale cannot be attached.");
   }
@@ -245,8 +372,17 @@ function attachSaleDecision(current, { attemptId, saleId, receiptNumber, at, poo
     if (current.used.sale.saleId === saleId) return { ok: true, already: true };
     return refuse("sale-mismatch", "This settlement already records a different sale — nothing was changed.");
   }
-  const used = { ...current.used, sale: { saleId, receiptNumber: receiptNumber ?? null, at } };
-  const remainder = remainderPlanOf(poolKey, used, current.amountCents);
+  if (saleCheck?.state === "mismatch") {
+    return refuse("sale-mismatch", `The sale does not match what was settled against this payment (${saleCheck.why}) — nothing was attached. The owner has been shown it.`);
+  }
+  const verified = saleCheck?.state === "verified";
+  const { saleMismatch: _staleMismatch, ...held } = current.used;
+  // A verified attach supersedes evidence from an earlier refused one; an
+  // unverified attach keeps it for the owner.
+  const used = { ...(verified ? held : current.used), sale: { saleId, receiptNumber: receiptNumber ?? null, at, verified } };
+  const remainder = remainderPlanOf(poolKey, used, current.amountCents, {
+    holdReason: verified ? null : "the sale was not on the server when the payment was attached, so it could not be checked",
+  });
   if (remainder) used.remainder = remainder;
   return { ok: true, value: { ...current, used } };
 }
@@ -378,6 +514,44 @@ function reverseDecision(current, { at, by, reason }) {
   };
 }
 
+// ─── THE OWNER'S RELEASE FROM QUARANTINE (fix 1) ────────────────────────────
+// A payment the poller HELD because its notification carries no bank
+// transaction id can never become spendable on its own. The owner — and only
+// the owner, checked by the callable — can release it after checking it on the
+// bank statement: it becomes an ordinary unmatched payment, with the release
+// (who, when, why) on the record for ever. A HELD DUPLICATE is never released:
+// the original record already holds that money, and releasing a copy is
+// exactly the double-spend the hold exists to stop.
+const RELEASE_REASON_MIN = 3;
+const RELEASE_REASON_MAX = 300;
+
+function releaseHoldDecision(current, { at, by, reason }) {
+  if (!current || typeof current !== "object") return refuse("not-found", "That record is no longer in the pool.");
+  if (current.outcome === "held-duplicate") {
+    return refuse("duplicate-never-released", "This is a second copy of a payment the pool already holds under another record. A copy is never released — use the original.");
+  }
+  // A payment recorded BEFORE fix 1 without a bank transaction id is held in
+  // effect (the settle refuses it) though its outcome says "recorded" — the
+  // owner can release it the same way, or it would be stranded.
+  const legacyIdless = current.outcome === "recorded" && current.status === "unmatched"
+    && !paymentFingerprint(current) && !current.releasedFromHold;
+  if (current.outcome !== "held-no-bankref" && !legacyIdless) {
+    return refuse("not-held", "Only a payment held for having no bank transaction id can be released.");
+  }
+  const why = String(reason ?? "").trim();
+  if (why.length < RELEASE_REASON_MIN) return refuse("bad-reason", "Say how you checked it — the reason stays on the record.");
+  if (!Number.isInteger(at)) return refuse("bad-time", "The release carries no server time — refused.");
+  return {
+    ok: true,
+    value: {
+      ...current,
+      outcome: "recorded",
+      status: "unmatched",
+      releasedFromHold: { at, by: String(by ?? ""), reason: why.slice(0, RELEASE_REASON_MAX), from: current.outcome === "recorded" ? "recorded-before-fix" : "held-no-bankref" },
+    },
+  };
+}
+
 /**
  * What eftRemainderScan does with one /eft_pending_remainders breadcrumb.
  * Breadcrumbs are written BEFORE the attach/allocate transaction, so their
@@ -426,7 +600,9 @@ function poolTransactionStep(decide, capture) {
 
 module.exports = {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN,
   eftCreditIdOf, remainderPlanOf, allocateRemainderDecision, remainderStatusDecision,
   pendingRemainderScanAction,
+  releaseHoldDecision, RELEASE_REASON_MIN,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
 };

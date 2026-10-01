@@ -17,6 +17,8 @@ import {
   maskAccountValue, looksPaymentShaped,
   eftMessageKey, poolWriteDecision, eftPoolRecord, eftRetryPlan, applyEvictions, mergeEvictions,
   eftMessageRoute, looksLikeStrangerPayment, unknownBankRecord, UNKNOWN_BANK_RAW_LIMIT,
+  createOnlyStep, applyFingerprintHold, paymentFingerprint, fingerprintClaimStep, HELD_OUTCOMES,
+  eftPaymentKey,
 } from "./eftCore.mjs";
 
 // Verbatim from the real message (uid 6, "Banking Report for Batch 16 of
@@ -384,6 +386,149 @@ describe("identity — the same notification never lands twice", () => {
   });
 });
 
+// ─── FIX 6: AN EVIDENCE ROW IS NEVER OVERWRITTEN ─────────────────────────────
+// The stranger path's transaction returned poolWriteDecision's WRAPPER, not its
+// value: a new unknown-bank row landed as {write:true, value:{…}}, and an
+// existing record at that key — a refusal, the only evidence of an attack —
+// was replaced by {write:false, why:…}. Every create-only pool write now goes
+// through createOnlyStep, the transaction update function itself, so the
+// shape the database receives is what this test asserts.
+describe("createOnlyStep — the create-only transaction body (fix 6)", () => {
+  // A miniature RTDB transaction: undefined aborts, anything else is stored.
+  const runTxn = (store, key, update) => {
+    const out = update(store[key] ?? null);
+    if (out !== undefined) store[key] = out;
+    return out;
+  };
+  const record = { outcome: "unknown-bank", fromDomain: "discoverybank.co.za", at: 5 };
+  const refusal = { outcome: "refused-auth", reason: "Failed authentication: forgery", at: 1 };
+
+  it("BEFORE: returning poolWriteDecision itself stored the wrapper and destroyed a refusal", () => {
+    const store = { k: { ...refusal } };
+    runTxn(store, "k", (existing) => poolWriteDecision(existing, record)); // the old line 1158
+    expect(store.k).toEqual({ write: false, why: "a record for this message already exists" });
+    const fresh = {};
+    runTxn(fresh, "n", (existing) => poolWriteDecision(existing, record));
+    expect(fresh.n.write).toBe(true); // the wrapper, not the row
+  });
+
+  it("AFTER: a new key stores the record itself", () => {
+    const store = {};
+    runTxn(store, "n", createOnlyStep(record));
+    expect(store.n).toEqual(record);
+  });
+
+  it("AFTER: an existing refusal row is left byte-for-byte as it was", () => {
+    const store = { k: { ...refusal } };
+    const out = runTxn(store, "k", createOnlyStep(record));
+    expect(out).toBeUndefined();
+    expect(store.k).toEqual(refusal);
+  });
+
+  it("reports the decision it took, so the caller can count what it wrote", () => {
+    const seen = [];
+    createOnlyStep(record, (d) => seen.push(d.write))(null);
+    createOnlyStep(record, (d) => seen.push(d.write))({ outcome: "recorded" });
+    expect(seen).toEqual([true, false]);
+  });
+
+  it("no pool write anywhere in the poller hands the wrapper to a transaction", () => {
+    const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
+    expect(src).not.toMatch(/\.transaction\(\s*\(\w*\)\s*=>\s*poolWriteDecision\(/);
+    expect(src).not.toMatch(/poolWriteDecision\(/);
+    expect((src.match(/\.transaction\(createOnlyStep\(/g) ?? []).length).toBe(3);
+  });
+});
+
+// ─── FIX 1 AT INGEST: A RESENT PROOF OF PAYMENT IS NEVER A SECOND LIVE RECORD ─
+// The poller's exact sequence, run twice: the original notification, then the
+// SAME payment resent from the banking app — a new email, so a new message key
+// and a new pool key, carrying the same bank transaction id. Before: two live
+// records. After: the second is held, naming the original.
+describe("ingest dedupe on the bank's transaction id (fix 1)", () => {
+  const parse = { ok: true, amountCents: 50000, reference: "JUNID1234", payer: "J SOAP", bankTs: 5, bankRef: "5TG59DVQ", accountMask: "..3456625" };
+  const base = { outcome: "recorded", status: "unmatched", reader: "fnb", amountCents: 50000, reference: "JUNID1234", payer: "J SOAP", bankRef: "5TG59DVQ", at: 1 };
+  // The poller's write loop, against an in-memory database with RTDB
+  // transaction semantics (undefined aborts).
+  function ingest(db, poolKey, candidate) {
+    const txn = (path, step) => { const out = step(db[path] ?? null); if (out !== undefined) db[path] = out; };
+    let record = candidate;
+    if (candidate.outcome === "recorded") {
+      const fingerprint = paymentFingerprint({ reader: candidate.reader, bankRef: candidate.bankRef });
+      let holder = null;
+      if (fingerprint) txn(`fp/${fingerprint}`, fingerprintClaimStep(poolKey, 1, (d) => { holder = d.holder; }));
+      record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey });
+    }
+    txn(`pool/${poolKey}`, createOnlyStep(record));
+    return db[`pool/${poolKey}`];
+  }
+  const keyOf = (msgKey) => eftPaymentKey(msgKey, { parse, rawText: "" }, 1);
+  const live = (db) => Object.entries(db).filter(([k, v]) => k.startsWith("pool/") && v.outcome === "recorded");
+
+  it("BEFORE: two emails for one payment land on two keys — both live", () => {
+    expect(keyOf("a".repeat(40))).not.toBe(keyOf("b".repeat(40)));
+    const db = {};
+    db[`pool/${keyOf("a".repeat(40))}`] = base;          // the old write loop: no claim
+    db[`pool/${keyOf("b".repeat(40))}`] = { ...base, at: 2 };
+    expect(live(db)).toHaveLength(2);
+  });
+
+  it("AFTER: the resend is held-duplicate, naming the original; one live record", () => {
+    const db = {};
+    const kA = keyOf("a".repeat(40));
+    const kB = keyOf("b".repeat(40));
+    expect(ingest(db, kA, base).outcome).toBe("recorded");
+    const held = ingest(db, kB, { ...base, at: 2 });
+    expect(held.outcome).toBe("held-duplicate");
+    expect(held.duplicateOf).toBe(kA);
+    expect(held.status).toBeUndefined();
+    expect(held.amountCents).toBe(50000); // the owner still sees what arrived
+    expect(live(db)).toHaveLength(1);
+  });
+
+  it("a replay of the SAME message is still a no-op on the same record", () => {
+    const db = {};
+    const kA = keyOf("a".repeat(40));
+    ingest(db, kA, base);
+    db[`pool/${kA}`] = { ...db[`pool/${kA}`], status: "used" };
+    expect(ingest(db, kA, base).status).toBe("used");
+    expect(live(db)).toHaveLength(1);
+  });
+
+  it("no bank transaction id → held-no-bankref, never live", () => {
+    const db = {};
+    const rec = ingest(db, keyOf("c".repeat(40)), { ...base, bankRef: null });
+    expect(rec.outcome).toBe("held-no-bankref");
+    expect(rec.status).toBeUndefined();
+    expect(live(db)).toHaveLength(0);
+    expect(HELD_OUTCOMES).toContain(rec.outcome);
+  });
+
+  it("a recorded payment carries its fingerprint; refusals pass through untouched", () => {
+    const fp = paymentFingerprint(base);
+    expect(applyFingerprintHold(base, { fingerprint: fp, holder: "k", poolKey: "k" }).fingerprint).toBe(fp);
+    const refusal = { outcome: "refused-auth", reason: "x" };
+    expect(applyFingerprintHold(refusal, { fingerprint: null, holder: null, poolKey: "k" })).toBe(refusal);
+  });
+
+  it("the retry script never re-runs a held record", () => {
+    for (const outcome of HELD_OUTCOMES) {
+      const plan = eftRetryPlan({ poolKey: "a".repeat(40), record: { outcome, messageId: "<m>" }, seenRow: { state: "done" }, at: 1 });
+      expect(plan.ok).toBe(false);
+      expect(plan.why).toMatch(/HELD/);
+    }
+  });
+
+  it("the poller wires it: the claim runs before the create-only pool write", () => {
+    const src = readFileSync(new URL("./email-poller.mjs", import.meta.url), "utf8");
+    const claim = src.indexOf("fingerprintClaimStep(poolKey");
+    const write = src.indexOf("transaction(createOnlyStep(record, (d) => { decision = d; }))");
+    expect(claim).toBeGreaterThan(-1);
+    expect(write).toBeGreaterThan(claim);
+    expect(src).toMatch(/record = applyFingerprintHold\(candidate/);
+  });
+});
+
 describe("the pool record", () => {
   const message = { messageId: "<m@x>", from: `<${REAL_FROM}>`, subject: "Payment notification", receivedAt: 1788093716654 };
   const passVerdict = { pass: true, fromDomain: "fnb.co.za", dkimDomain: "fnb.co.za", detail: "dkim=pass, signed by fnb.co.za, aligned with fnb.co.za" };
@@ -734,7 +879,11 @@ describe("the stranger path stays a bystander", () => {
   });
 
   it("writes create-only — a replay lands on the same node and finds it there", () => {
-    expect(body).toMatch(/poolWriteDecision\(existing, record\)/);
+    // Through createOnlyStep, which unwraps the decision. The transaction used
+    // to RETURN poolWriteDecision(...) itself — the {write, value} wrapper — so
+    // a new row was stored as the wrapper and an EXISTING row (a refusal, the
+    // evidence) was overwritten with {write:false, why}. (EFT interrogation J.)
+    expect(body).toMatch(/\.transaction\(createOnlyStep\(record/);
     expect(body).toMatch(/eftMessageKey\(/);
   });
 

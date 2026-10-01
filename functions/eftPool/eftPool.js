@@ -7,17 +7,15 @@
 // search needs (lib/eft-pool.cjs publicEftView). Staff never gain client read
 // on the node, and no rule change ships with this build.
 //
-//   eftPoolSearch   any active POS identity: the forgiving search by
-//                   REFERENCE and PAYER NAME — partial, case-blind, typo-
-//                   tolerant. NEVER by amount: "550" finding any R550 payment
-//                   is how one customer's sale gets settled against another
-//                   customer's money; the amount is on every row for the
-//                   cashier to CONFIRM, and a request carrying an amount field
-//                   is refused outright. Three characters minimum, ten results,
-//                   no browsing. Used payments come back too, marked used with
-//                   slip/cashier/customer (or "settled outside POS", who, when,
-//                   why), because "it says used, slip 00123, Tuesday, Ahmed"
-//                   ends a counter argument in five seconds.
+//   eftPoolSearch   any active POS identity: find THE payment the customer
+//                   names by its REFERENCE or the bank's TRANSACTION ID, typed
+//                   in full (one typo tolerated on a long reference). At most
+//                   ONE result, payer as initials only; an ambiguous query
+//                   returns nothing. Never by amount (an amount field is
+//                   refused outright), never by name, no listing, no
+//                   suggestions. A used payment answers as used — when and
+//                   which slip — never whose sale or which cashier (fix 2,
+//                   lib/eft-pool.cjs).
 //   eftPoolSettle   the consume-once lifecycle: settle (unmatched → used,
 //                   BEFORE the sale is written — a lost race must stop the
 //                   sale, not follow it), attach (the committed sale's slip
@@ -36,16 +34,28 @@
 //                   remainder to a customer — same mint, same records.
 //                   A fifth, "markUsed", is a payment marked as settled
 //                   OUTSIDE the POS (no sale attached; the actor's uid and
-//                   NAME and server time on the record, and an OPTIONAL
-//                   reason — see markUsedOutsidePosDecision for why). The
-//                   owner, OR a uid the owner has given the eftReview
-//                   capability to — /users/{uid}/posAccess/eftReview on an
+//                   NAME and server time on the record, and a REQUIRED
+//                   reason — fix 4). The owner, OR a uid the owner has given
+//                   the eftReview capability to on an account confirmed as
+//                   ONE PERSON'S (posAccess.eftReview + individual on an
 //                   ACTIVE account, granted from the POS users screen and
 //                   re-read here on every call, so revoking it takes effect on
 //                   the next one. The SAME transaction as a till's settle, so
 //                   it cannot race a till into a double-settle; undone only by
 //                   eftPoolReverse, which stays the OWNER ALONE and keeps both
 //                   records.
+//                   A sixth, "releaseHold", is the OWNER releasing a payment
+//                   the poller HELD for carrying no bank transaction id (fix 1)
+//                   — checked on the statement, reason on the record. A held
+//                   DUPLICATE is never released.
+//   FIX 1 — ONE BANK TRANSACTION, ONE SPENDABLE RECORD. Before a settle, the
+//                   payment's fingerprint (lib/eft-fingerprint.cjs: the bank's
+//                   own transaction id) is checked against the pool tail and
+//                   CLAIMED at /eft_pool_fingerprints — a resent copy, or one
+//                   of two copies raced at two tills, is refused; a payment
+//                   with no bank id is refused unless the owner released it.
+//                   The settle transaction re-derives the fingerprint from the
+//                   value it commits.
 //   eftPoolReverse  owner-only: unwind a completed settlement. Both records
 //                   survive — the settlement moves to `reversals` on the pool
 //                   record; the sale at /pos/sales is not touched. An issued
@@ -75,8 +85,13 @@ const { EFT_POOL_PATH, EFT_SEARCH_WINDOW, EFT_MIN_QUERY, normaliseText, searchEf
 const {
   settleDecision, attachSaleDecision, releaseDecision, reverseDecision, poolTransactionStep,
   allocateRemainderDecision, remainderStatusDecision, pendingRemainderScanAction,
-  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX,
+  markUsedOutsidePosDecision, OUTSIDE_POS_REASON_MAX, OUTSIDE_POS_REASON_MIN, releaseHoldDecision,
+  saleCheckOf, flagSaleMismatchDecision, laterSaleCheckDecision,
 } = require("../lib/eft-settle.cjs");
+const {
+  EFT_FINGERPRINT_PATH, fingerprintClaimStep, consumeFingerprintCheck, claimHolderCheck, paymentFingerprint,
+  EFT_FP_BACKFILL_PATH, EFT_FP_BACKFILL_PAGE, backfillSpentStep,
+} = require("../lib/eft-fingerprint.cjs");
 const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
   ledgerApplyDecision, buildUnallocatedRecord,
@@ -128,21 +143,23 @@ async function assertPosIdentity(request) {
 
 /**
  * Owner, or a uid the OWNER has given the eftReview capability to — an ACTIVE
- * POS account with posAccess.eftReview === true. It is granted and revoked from
- * the POS users screen in marathon-pos-app, so adding or removing a person
- * never needs a deploy.
+ * POS account with posAccess.eftReview === true AND posAccess.individual ===
+ * true. Returns the ACTOR'S NAME as the access record knows it.
  *
- * Read from the database on EVERY call, deliberately: that is what makes a
- * revocation take effect on the very next one. Nothing is carried on the token
- * and nothing is cached, so there is no client state to ride past.
+ * FIX 4 — ONE PERSON, NOT A SHARED LOGIN. A mark-as-used has no sale, no slip
+ * and no customer; the actor is its only accountability. posAccess had no
+ * notion of a login being one person's, so eftReview on a shared till login
+ * let anyone at that till mark money as settled. `individual` is the owner's
+ * attestation, given in the SAME step as granting eftReview on the POS users
+ * screen ("this login is one named person's own"), and both are re-read here
+ * on every call — revoking either takes effect on the next one. The name must
+ * come off that record: no display name, no mark (never a token fallback).
  *
  * WHAT IT GRANTS HERE IS EXACTLY ONE ACTION — marking a payment as settled
- * outside the POS. It is NOT a widening of settle, attach, release, allocate or
- * reverse: reversing a settlement stays the owner alone (eftPoolReverse checks
- * isOwner itself), and a holder calling it is refused server-side.
+ * outside the POS. Reversing stays the owner alone (eftPoolReverse).
  */
 async function assertEftReviewer(request) {
-  if (isOwner(request)) return;
+  if (isOwner(request)) return "owner";
   const uid = request.auth?.uid;
   if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
   let access = null;
@@ -158,6 +175,14 @@ async function assertEftReviewer(request) {
   if (access?.isActive !== true || access?.eftReview !== true) {
     throw new HttpsError("permission-denied", "Only the owner, or someone given EFT review, can mark a payment as settled outside the POS.");
   }
+  if (access?.individual !== true) {
+    throw new HttpsError("permission-denied", "This login is not confirmed as one person's own. Marking a payment as settled needs a personal login — Junid can confirm it on the POS users screen.", { code: "not-individual" });
+  }
+  const name = typeof access.displayName === "string" ? access.displayName.trim() : "";
+  if (!name) {
+    throw new HttpsError("permission-denied", "This login has no name on its POS record, so a mark could not say who made it.", { code: "no-actor-name" });
+  }
+  return name.slice(0, 80);
 }
 
 /** The cashier's display name as the POS access record knows it — resolved
@@ -183,6 +208,47 @@ async function runPoolTransaction(key, decide) {
   let decision = null;
   await ref.transaction(poolTransactionStep(decide, (d) => { decision = d; }));
   return decision;
+}
+
+/** The pool's TAIL, never the node — the same bounded read the search makes. */
+async function readPoolTail() {
+  const snap = await admin.database()
+    .ref(EFT_POOL_PATH)
+    .orderByChild("at")
+    .limitToLast(EFT_SEARCH_WINDOW)
+    .once("value");
+  return snap.val() || {};
+}
+
+/**
+ * FIX 1 — the bank's transaction id, checked before a payment is spent.
+ * Read the record and the pool tail; refuse a payment with no bank id (unless
+ * the owner released it), and a copy of one already used; then CLAIM the
+ * fingerprint for this record — create-only, so of two copies racing at two
+ * tills exactly one holds it — and refuse unless the claim names this record.
+ * Returns the fingerprint the settle transaction must see again. A record
+ * that is missing or not a payment is left to settleDecision's own refusal.
+ */
+async function checkPaymentFingerprint(key, now) {
+  const db = admin.database();
+  const record = (await db.ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+  if (!record || record.outcome !== "recorded") return null;
+  const tail = await readPoolTail();
+  const check = consumeFingerprintCheck({ poolKey: key, record, siblings: Object.entries(tail) });
+  if (!check.ok) {
+    console.warn(`eftPoolSettle: ${check.code} on ${key} — refused before settle`);
+    throw refusalToError(check);
+  }
+  if (!check.fingerprint) return null; // owner-released no-bank-id payment
+  let claim = null;
+  await db.ref(`${EFT_FINGERPRINT_PATH}/${check.fingerprint}`)
+    .transaction(fingerprintClaimStep(key, now, (d) => { claim = d; }));
+  const holder = claimHolderCheck({ poolKey: key, holder: claim?.holder ?? null, spentBy: claim?.spentBy ?? null });
+  if (!holder.ok) {
+    console.warn(`eftPoolSettle: ${holder.code} on ${key} — fingerprint held by ${claim?.holder ?? "nothing usable"}`);
+    throw refusalToError(holder);
+  }
+  return check.fingerprint;
 }
 
 function refusalToError(decision) {
@@ -313,6 +379,24 @@ async function resolveCustomer(data) {
     "No customer record matches that. Create the customer at a till first, then allocate.");
 }
 
+/** A customer id followed through merge tombstones to its survivor — the same
+ *  walk resolveCustomer does, without throwing. Null in, null out. */
+async function followMerges(id) {
+  if (typeof id !== "string" || !/^[A-Za-z0-9_-]{1,60}$/.test(id)) return id ?? null;
+  let cur = id;
+  for (let hops = 0; hops < 3; hops++) {
+    const merged = (await admin.database().ref(`customers/${cur}/mergedInto`).once("value")).val();
+    if (typeof merged !== "string" || !/^[A-Za-z0-9_-]{1,60}$/.test(merged)) return cur;
+    cur = merged;
+  }
+  return cur;
+}
+
+// FIX 5, LATER HALF — an attach made while the sale was not on the server is
+// verified by eftRemainderScan from this breadcrumb (key → {at, saleId}).
+const SALE_CHECK_PATH = "eft_pending_sale_checks";
+const SALE_CHECK_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
 // ─── SEARCH ──────────────────────────────────────────────────────────────────
 exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   await assertPosIdentity(request);
@@ -323,7 +407,7 @@ exports.eftPoolSearch = onCall(RUNTIME, async (request) => {
   // tell. A till build that still sends an amount field is refused loudly
   // rather than quietly answered with nothing.
   if (data.amount != null || data.amountCents != null) {
-    throw new HttpsError("invalid-argument", "Amount is not a search key — search by the reference or the payer's name.");
+    throw new HttpsError("invalid-argument", "Amount is not a search key — search by the payment reference or the bank's transaction id.");
   }
   const query = String(data.query ?? "").slice(0, 120);
   // A QUERY IS REQUIRED — three characters of letters and digits at least. An
@@ -353,7 +437,7 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   // The lifecycle actions are holder-scoped and need the attempt id; the
   // owner's allocate acts on a finished settlement and has none, and the
   // owner's markUsed mints its own (the mark's moment) inside the decision.
-  if (!attemptId && action !== "allocate" && action !== "markUsed") {
+  if (!attemptId && action !== "allocate" && action !== "markUsed" && action !== "releaseHold") {
     throw new HttpsError("invalid-argument", "The request carries no attempt id.");
   }
   const uid = request.auth.uid;
@@ -363,15 +447,32 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
   if (action === "settle") {
     const appliedCents = data.appliedCents;
     const cashierName = await cashierNameOf(request);
+    // FIX 3 — THE CUSTOMER IS RESOLVED HERE, NOT TAKEN FROM THE TILL. The
+    // sale's attached customer must exist in /customers (a merge followed to
+    // its survivor), and the till must send the SAME id back as the one the
+    // cashier explicitly confirmed as the payer. The name on the settlement is
+    // the record's, never the till's.
+    const sentId = typeof data.customerId === "string" ? data.customerId.trim() : "";
+    if (!sentId) {
+      throw new HttpsError("failed-precondition", "Attach the customer who made this payment to the sale first — an EFT payment is only applied to a confirmed customer.", { code: "no-customer" });
+    }
+    if (data.confirmedCustomerId !== sentId) {
+      throw new HttpsError("failed-precondition", "Confirm that this payment belongs to the customer on the sale before using it.", { code: "not-confirmed" });
+    }
+    const customer = await resolveCustomer({ customerId: sentId });
+    const fingerprint = await checkPaymentFingerprint(key, now);
     decision = await runPoolTransaction(key, (current) => settleDecision(current, {
+      fingerprint,
+      customerResolved: true,
+      confirmedCustomerId: customer.id,
       attemptId,
       at: now,
       cashierUid: uid,
       cashierName,
       storeId: typeof data.storeId === "string" ? data.storeId.slice(0, 40) : null,
       tillId: typeof data.tillId === "string" ? data.tillId.slice(0, 40) : null,
-      customerId: typeof data.customerId === "string" ? data.customerId.slice(0, 60) : null,
-      customerName: typeof data.customerName === "string" ? data.customerName.slice(0, 80) : null,
+      customerId: customer.id,
+      customerName: customer.name,
       appliedCents,
     }));
   } else if (action === "attach") {
@@ -395,6 +496,35 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       // panel are layers, not the mechanism.
       console.error(`eftPool: breadcrumb write failed for ${key}:`, e);
     }
+    // FIX 5 — READ THE COMMITTED SALE BACK. Its EFT legs for this payment
+    // must add up to exactly what was settled, and it must name the confirmed
+    // customer (saleCheckOf). A sale id is a push key — charset-checked before
+    // it becomes a path. One record read, never the node.
+    const saleId = String(data.saleId ?? "").slice(0, 60);
+    if (!/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) throw new HttpsError("invalid-argument", "That is not a sale id.");
+    const [saleSnap, heldSnap] = await Promise.all([
+      admin.database().ref(`pos/sales/${saleId}`).once("value"),
+      admin.database().ref(`${EFT_POOL_PATH}/${key}/used`).once("value"),
+    ]);
+    const sale = saleSnap.val();
+    const saleCheck = saleCheckOf({
+      poolKey: key, used: heldSnap.val(), sale,
+      saleCustomerId: sale ? await followMerges(sale.customerId ?? null) : undefined,
+    });
+    if (saleCheck.state === "absent") {
+      // Durable BEFORE the attach transaction: the scan verifies this sale
+      // when it reaches the server, and flags it if it never does.
+      await admin.database().ref(`${SALE_CHECK_PATH}/${key}`).set({ at: now, saleId });
+    }
+    if (saleCheck.state === "mismatch") {
+      // Evidence first, on the payment itself, where the owner's tab shows it.
+      // Only the holder's own attach may leave that evidence.
+      await runPoolTransaction(key, (current) => (
+        current?.used && (current.used.cashierUid === uid || isOwner(request)) && current.used.attemptId === attemptId
+          ? flagSaleMismatchDecision(current, { saleId, legCents: saleCheck.legCents, why: saleCheck.why, at: now })
+          : { ok: false, code: "not-holder", message: "not the holder" }));
+      console.error(`EFT_SALE_MISMATCH: ${key} sale ${saleId} by ${uid} — ${saleCheck.why}`);
+    }
     decision = await runPoolTransaction(key, (current) => {
       // Holder-only twice over: the attempt id must match AND the settlement
       // must have been made by this very account — an attempt id is not a
@@ -404,10 +534,11 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
       }
       return attachSaleDecision(current, {
         attemptId,
-        saleId: String(data.saleId ?? "").slice(0, 60),
+        saleId,
         receiptNumber: data.receiptNumber == null ? null : String(data.receiptNumber).slice(0, 30),
         at: now,
         poolKey: key,
+        saleCheck,
       });
     });
   } else if (action === "allocate") {
@@ -448,26 +579,46 @@ exports.eftPoolSettle = onCall(RUNTIME, async (request) => {
     // delegates to settleDecision), so a till settling the same payment in the
     // same instant still gets exactly one winner. Undone only by eftPoolReverse,
     // which is the owner ALONE and keeps both records.
-    await assertEftReviewer(request);
-    // OPTIONAL. Two taps and no keyboard is what makes this get done at a
-    // counter at all; who and when are still stamped, and a reason that IS
-    // sent is still kept.
+    const actorName = await assertEftReviewer(request);
+    // REQUIRED (fix 4): the typed reason is the only account of where money
+    // with no sale went. Refused here before any transaction, and again inside
+    // markUsedOutsidePosDecision.
     const reason = String(data.reason ?? "").trim().slice(0, OUTSIDE_POS_REASON_MAX);
-    // THE ACTOR IS NAMED, NOT ASSUMED. This used to stamp the literal string
-    // "owner" because the owner was the only caller; now that staff can mark a
-    // payment, the record has to say WHICH person did, resolved server-side
-    // from their POS access record rather than from anything they sent.
-    const actorName = await cashierNameOf(request);
+    if (reason.length < OUTSIDE_POS_REASON_MIN) {
+      throw new HttpsError("invalid-argument", "Say how this payment was settled outside the POS — the reason stays on the record.", { code: "bad-reason" });
+    }
     decision = await runPoolTransaction(key, (current) => markUsedOutsidePosDecision(current, {
       at: now, actorUid: uid, actorName, reason,
     }));
     if (!decision.ok) throw refusalToError(decision);
-    console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid})${reason ? ` — ${reason}` : ""}`);
+    // A marked payment's fingerprint is claimed too (create-only, best
+    // effort): a pre-fix copy of it can then never be spent later, even once
+    // the marked record has scrolled out of the settle's sibling window.
+    try {
+      const marked = (await admin.database().ref(`${EFT_POOL_PATH}/${key}`).once("value")).val();
+      const fp = paymentFingerprint(marked ?? {});
+      if (fp) await admin.database().ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(fingerprintClaimStep(key, now));
+    } catch (e) {
+      console.error(`eftPoolSettle: markUsed ${key} — fingerprint claim failed (the sibling check still covers the tail):`, e?.message || e);
+    }
+    console.log(`eftPoolSettle: markUsed ${key} by ${actorName} (${uid}) — ${reason}`);
     // WHAT WAS ACTUALLY STAMPED travels back, so a caller repainting a card in
     // place shows the record rather than its own guess at it. Without this the
     // phone screen had to invent a name and a moment, and they could differ
     // from the ones on the record until the next full reload.
     return { ok: true, already: decision.already === true, remainder: null, actorName, at: now, reason };
+  } else if (action === "releaseHold") {
+    // FIX 1 — THE OWNER ALONE releases a payment held for having no bank
+    // transaction id, after checking it on the statement. A held duplicate is
+    // never released (releaseHoldDecision refuses it).
+    if (!isOwner(request)) {
+      throw new HttpsError("permission-denied", "Only the owner can release a held payment.");
+    }
+    const reason = String(data.reason ?? "").trim().slice(0, 300);
+    decision = await runPoolTransaction(key, (current) => releaseHoldDecision(current, { at: now, by: ADMIN_EMAIL, reason }));
+    if (!decision.ok) throw refusalToError(decision);
+    console.log(`eftPoolSettle: releaseHold ${key} by owner — ${reason}`);
+    return { ok: true };
   } else if (action === "release") {
     decision = await runPoolTransaction(key, (current) => {
       if (current?.used && current.used.cashierUid !== uid && !isOwner(request)) {
@@ -570,6 +721,76 @@ exports.eftRemainderScan = onSchedule(
         console.error(`EFT_REMAINDER_STUCK: ${key} could not be finished —`, err?.message || err);
       }
     }
-    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck }));
+    // FIX 1, ONE-TIME BACKFILL: spent pre-fix payments stamp their claims.
+    // One bounded page per run (orderByKey + startAfter cursor), never the
+    // node; a sentinel says when it is done and it never runs again.
+    let backfilled = 0;
+    try {
+      const state = (await db.ref(EFT_FP_BACKFILL_PATH).once("value")).val() || {};
+      if (state.done !== true) {
+        let q = db.ref(EFT_POOL_PATH).orderByKey();
+        if (typeof state.cursor === "string") q = q.startAfter(state.cursor);
+        const snap = await q.limitToFirst(EFT_FP_BACKFILL_PAGE).once("value");
+        // The cursor follows the DATABASE's key order (forEach), never a JS
+        // sort, so startAfter can neither skip nor repeat a record.
+        const keys = [];
+        snap.forEach((child) => { keys.push(child.key); });
+        const page = snap.val() || {};
+        for (const k of keys) {
+          const rec = page[k];
+          if (rec?.outcome !== "recorded" || rec.status !== "used") continue;
+          const fp = paymentFingerprint(rec);
+          if (!fp) continue;
+          // One bad record must not stall every page after it: logged, then
+          // the walk moves on.
+          try {
+            await db.ref(`${EFT_FINGERPRINT_PATH}/${fp}`).transaction(backfillSpentStep(k, now));
+            backfilled++;
+          } catch (err) {
+            console.error(`EFT_FP_BACKFILL_RECORD_FAILED: ${k} —`, err?.message || err);
+          }
+        }
+        await db.ref(EFT_FP_BACKFILL_PATH).set(keys.length < EFT_FP_BACKFILL_PAGE
+          ? { done: true, at: now, cursor: keys[keys.length - 1] ?? state.cursor ?? null }
+          : { done: false, at: now, cursor: keys[keys.length - 1] });
+      }
+    } catch (err) {
+      console.error("EFT_FP_BACKFILL_STUCK:", err?.message || err);
+    }
+
+    // FIX 5, LATER HALF: attaches made before their sale reached the server.
+    const checks = (await db.ref(SALE_CHECK_PATH).once("value")).val() || {};
+    let verified = 0, flagged = 0;
+    for (const [key, crumb] of Object.entries(checks)) {
+      const saleId = typeof crumb?.saleId === "string" ? crumb.saleId : "";
+      if (!/^[0-9a-f]{40}$/.test(key) || !/^[A-Za-z0-9_-]{1,60}$/.test(saleId)) {
+        await db.ref(`${SALE_CHECK_PATH}/${key}`).remove(); cleared++; continue;
+      }
+      try {
+        const [saleSnap, usedSnap] = await Promise.all([
+          db.ref(`pos/sales/${saleId}`).once("value"),
+          db.ref(`${EFT_POOL_PATH}/${key}/used`).once("value"),
+        ]);
+        const sale = saleSnap.val();
+        const saleCheck = saleCheckOf({
+          poolKey: key, used: usedSnap.val(), sale,
+          saleCustomerId: sale ? await followMerges(sale.customerId ?? null) : undefined,
+        });
+        const ageMs = now - (Number.isInteger(crumb.at) ? crumb.at : 0);
+        const d = await runPoolTransaction(key, (cur) => laterSaleCheckDecision(cur, {
+          saleId, saleCheck, at: Date.now(), ageMs, maxAgeMs: SALE_CHECK_MAX_AGE_MS,
+        }));
+        if (d.outcome === "wait") { waited++; continue; }
+        if (d.outcome === "flagged") {
+          flagged++;
+          console.error(`EFT_SALE_MISMATCH: ${key} sale ${saleId} — ${saleCheck.state === "mismatch" ? saleCheck.why : "never reached the server"}`);
+        } else if (d.outcome === "done") verified++;
+        await db.ref(`${SALE_CHECK_PATH}/${key}`).remove();
+      } catch (err) {
+        stuck++;
+        console.error(`EFT_SALE_CHECK_STUCK: ${key} could not be checked —`, err?.message || err);
+      }
+    }
+    console.log("eftRemainderScan done", JSON.stringify({ finished, cleared, waited, stuck, verified, flagged, backfilled }));
   },
 );

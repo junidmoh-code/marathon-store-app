@@ -67,7 +67,8 @@ import {
 // live in eftCore.mjs; here is only the wiring. See handleEftMessage.
 import {
   EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
-  eftMessageKey, poolWriteDecision, eftPoolRecord,
+  eftMessageKey, createOnlyStep, eftPoolRecord,
+  paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
   redactAccountDigits, domainOfAddress, parseAllowedAccountTails, accountVerdict,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
@@ -458,7 +459,7 @@ async function run() {
   // The EFT reader's own tallies — separable on purpose: a refused slip means a
   // terminal is not reconciling; a refused-auth notification means somebody
   // tried to forge a payment. Different alarms for different people.
-  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftErrors = 0;
+  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftHeld = 0, eftErrors = 0;
   let scannedSoFar = 0;
   let windowCount = 0;
   try {
@@ -554,6 +555,7 @@ async function run() {
             eftRefusedAuth += result.eftRefusedAuth || 0;
             eftRefusedParse += result.eftRefusedParse || 0;
             eftRefusedAccount += result.eftRefusedAccount || 0;
+            eftHeld += result.eftHeld || 0;
             eftErrors += result.eftErrors || 0;
           } catch (err) {
             console.error(`  ✗ message uid ${uid}: ${err.message}`);
@@ -579,7 +581,7 @@ async function run() {
       lastRunAt: serverNowMs(), scanned, window: windowCount, processed, recorded, refused, unrelated,
       // The EFT reader beats on the same heart: counts only, never a figure —
       // this node is readable by every card_recon holder.
-      eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount,
+      eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount, eftHeld,
       // Counted where it happens: noteStrangerPayment hands nothing back (it
       // must not consume the message), so the tally is a run counter rather
       // than a value threaded through six return points.
@@ -599,8 +601,8 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
-  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || unknownBankThisRun) {
-    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftHeld || unknownBankThisRun) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftHeld} HELD (resent copy or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
   }
   return 0;
 }
@@ -786,7 +788,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
 // THE SAME NOTIFICATION NEVER CREATES TWO POOL RECORDS. Three layers:
 //   1. The record's node name IS the message's key (eftMessageKey) — a replay
 //      lands on the same node.
-//   2. The write is a CREATE-ONLY transaction (poolWriteDecision): an existing
+//   2. The write is a CREATE-ONLY transaction (createOnlyStep): an existing
 //      record — whatever status a later session has moved it to — is never
 //      overwritten.
 //   3. The shared claim at /card_batch_intake_seen/{key}, same discipline and
@@ -828,7 +830,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     return null;
   }
 
-  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0 };
+  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftHeld: 0 };
   const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
   // The auth verdict is part of the key so a forgery carrying a guessed genuine
   // Message-ID cannot occupy the key the genuine notification will need.
@@ -862,10 +864,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     if (!cfg.dryRun) {
       const forgery = eftPoolRecord({ message, verdict, parsed: null, account: null, reader: null, rawText: bodyText, at: serverNowMs() });
       let d = null;
-      await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => {
-        d = poolWriteDecision(cur, forgery);
-        return d.write ? d.value : undefined;
-      });
+      await db.ref(`${EFT_POOL_PATH}/${key}`).transaction(createOnlyStep(forgery, (x) => { d = x; }));
       if (d?.write) console.log(`  · EFT: refused-auth recorded (message also carries attachments — handed to the slip path)`);
     }
     return null;
@@ -1053,12 +1052,25 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
   // "claimed", the next tick retries the whole message, and every record
   // already written aborts its transaction — never doubled, never reset.
   const written = [];
-  for (const { poolKey, record } of outcomes) {
+  for (const { poolKey, record: candidate } of outcomes) {
+    // FIX 1 — THE BANK'S TRANSACTION ID, NOT THE EMAIL, DECIDES WHETHER THIS
+    // IS NEW MONEY. Claim the fingerprint for this record (create-only) BEFORE
+    // the pool write; a resend finds the original's claim and is held. A crash
+    // between the two is harmless: the retry derives the same pool key, finds
+    // its own claim, and lands on the same record.
+    let record = candidate;
+    if (candidate.outcome === "recorded") {
+      const fingerprint = paymentFingerprint({ reader: candidate.reader, bankRef: candidate.bankRef });
+      let holder = null;
+      if (fingerprint) {
+        await db.ref(`${EFT_FINGERPRINT_PATH}/${fingerprint}`)
+          .transaction(fingerprintClaimStep(poolKey, serverNowMs(), (d) => { holder = d.holder; }));
+      }
+      record = applyFingerprintHold(candidate, { fingerprint, holder, poolKey });
+    }
     let decision = null;
-    await db.ref(`${EFT_POOL_PATH}/${poolKey}`).transaction((cur) => {
-      decision = poolWriteDecision(cur, record);
-      return decision.write ? decision.value : undefined; // undefined = abort, keep what is there
-    });
+    // createOnlyStep: undefined = abort, keep what is there.
+    await db.ref(`${EFT_POOL_PATH}/${poolKey}`).transaction(createOnlyStep(record, (d) => { decision = d; }));
     if (decision?.write) written.push(record);
   }
   // The claim flips to done AFTER the pool writes. A crash between costs a
@@ -1098,6 +1110,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     eftRefusedAuth: count("refused-auth"),
     eftRefusedParse: count("refused-parse"),
     eftRefusedAccount: count("refused-account"),
+    eftHeld: written.filter((r) => HELD_OUTCOMES.includes(r.outcome)).length,
   };
 }
 
@@ -1155,8 +1168,12 @@ async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity,
     unknownBankThisRun += 1;
     return;
   }
-  const written = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((existing) => poolWriteDecision(existing, record));
-  if (!written.committed || !written.snapshot.exists()) return;   // an earlier tick already noted it
+  // createOnlyStep, never poolWriteDecision itself: the wrapper used to be
+  // RETURNED to the transaction, storing {write,value} as the row and
+  // overwriting an existing record (a refusal — evidence) with {write:false}.
+  let decision = null;
+  await db.ref(`${EFT_POOL_PATH}/${key}`).transaction(createOnlyStep(record, (d) => { decision = d; }));
+  if (!decision?.write) return;   // an earlier tick already noted it — and that row is untouched
   unknownBankThisRun += 1;
   console.log(`  · EFT: unknown-bank — payment-shaped mail from ${fromDomain}, which is not a bank this pool knows. Nothing was read from it.`);
 }
