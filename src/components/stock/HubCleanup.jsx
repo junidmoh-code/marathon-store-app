@@ -46,7 +46,7 @@ import { buildLinkSuggestions, codeSuggestions, TIER_SCORES } from "../../utils/
 import { isMergedAway } from "../../utils/mergedProducts";
 import {
   CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
-  buildLeftovers, buildFinishedLines, buildDeactivatedRows, locationsHolding, registrationProgress, realSizes,
+  buildLeftovers, buildFinishedLines, buildUnregisteredElsewhere, buildDeactivatedRows, locationsHolding, registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
   DISPLAY_STORES, DISPLAY_STORE_LABELS,
@@ -60,6 +60,7 @@ import {
   fetchColourwayAnswers, recordColourwayAnswer, deactivateProduct, reactivateProduct,
 } from "./hubCleanupStore";
 import { deactivationLine } from "../../utils/deactivation.js";
+import { buildTwinIndex, suggestTwin } from "./duplicateGroups.js";
 import { allRegisteredSiblings, claimOwnerIds } from "../../utils/styleCodeSiblings";
 import {
   extractDominantColours, orderByColourAffinity, selectByColourAffinity, matchColourwayAnswers,
@@ -152,6 +153,64 @@ function BigButton({ children, onClick, tone = "blue", disabled, style }) {
                ...tones[tone], ...style }}>
       {children}
     </button>
+  );
+}
+
+// ─── THE EXIT FOR A LEFTOVER — MERGE FIRST, DEACTIVATE SECOND ────────────────
+// (Owner spec 2026-09-05, BUILD 2.) Every leftovers card — INCLUDING the
+// zero-stock ones, which used to offer Deactivate and nothing else — offers
+// both exits, in this order and no other:
+//
+//   MERGE is primary. When a twin exists it is strictly better: the bad NAME
+//   leaves the system and the loser's barcodes are repointed onto the survivor,
+//   so a scan of the old sticker still finds the shoe. Deactivating instead
+//   leaves that name in the catalogue forever.
+//
+//   DEACTIVATE is the fallback, for a line with no twin — the honest end of a
+//   product that simply finished.
+//
+// Nothing about a merge requires the loser to hold units: the server plans zero
+// cells, moves nothing, repoints the barcodes and marks the loser mergedInto.
+// (functions/lib/product-merge.cjs — no quantity precondition anywhere.)
+//
+// THE TWIN ROW, when one is known, is the whole point: the candidate's PHOTO,
+// its name, its stock and why it was nominated, as ONE TAP that opens the merge
+// screen with both sides already chosen. It is never a merge — the merge screen
+// still shows the plan and still asks. `Choose another…` stays right beside it,
+// because a photo the operator does not recognise must never be the only door.
+function LeftoverExits({ product, twin, busy, onMerge, onDeactivate }) {
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 12 }}>
+      {twin && (
+        <button type="button" disabled={busy} onClick={() => onMerge(product, twin.product)}
+          style={{ display: "flex", alignItems: "center", gap: 12, width: "100%", textAlign: "left",
+                   padding: 10, borderRadius: 15, fontFamily: FONT, cursor: busy ? "not-allowed" : "pointer",
+                   opacity: busy ? 0.45 : 1, background: "rgba(74,127,255,.13)",
+                   border: "2px solid rgba(74,127,255,.55)", color: "#D7E3FF" }}>
+          <Photo url={twin.product.photoUrl} size={56} radius={12} />
+          <span style={{ minWidth: 0, flex: 1 }}>
+            <span style={{ display: "block", fontSize: 12, fontWeight: 800, letterSpacing: ".04em", color: BLUE_L }}>
+              ⇄ MERGE INTO THIS ONE
+            </span>
+            <span style={{ display: "block", fontSize: 15, fontWeight: 800, color: "#fff", lineHeight: 1.25, marginTop: 2 }}>
+              {twin.product.name}
+            </span>
+            <span style={{ display: "block", fontSize: 11.5, color: GRAY, marginTop: 2 }}>
+              {twin.units > 0 ? `holds ${twin.units} unit${twin.units === 1 ? "" : "s"} · ` : "holds no stock · "}
+              {twin.reason}
+            </span>
+          </span>
+        </button>
+      )}
+      <BigButton tone="blue" disabled={busy} onClick={() => onMerge(product, null)}
+                 style={twin ? { minHeight: 46, fontSize: 15 } : undefined}>
+        {twin ? "⇄ Choose another product to merge into…" : "⇄ Merge into another product…"}
+      </BigButton>
+      <BigButton tone="ghost" disabled={busy} onClick={() => onDeactivate(product)}
+                 style={{ minHeight: 46, fontSize: 15 }}>
+        ⏸ Deactivate — finished line, stop refills &amp; ordering
+      </BigButton>
+    </div>
   );
 }
 
@@ -976,9 +1035,48 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
     if (!hubStock || !identity.ready || !allStock) return [];
     return buildFinishedLines({ hub, products, hubStock, registered, allStock, identityMap: identity.map });
   }, [hub, products, hubStock, registered, allStock, identity.map, identity.ready]);
+  // THE THIRD SECTION (owner spec 2026-08-31, BUG 2): every unregistered
+  // footwear product the other two lists structurally cannot carry — stock only
+  // outside the cleanup hubs, or no cells at all. 174 products live on
+  // 2026-08-31, visible in NO list before this.
+  const unregisteredElsewhere = useMemo(() => {
+    if (!hubStock || !identity.ready || !allStock) return [];
+    return buildUnregisteredElsewhere({ hub, products, hubStock, registered, allStock, identityMap: identity.map });
+  }, [hub, products, hubStock, registered, allStock, identity.map, identity.ready]);
   const deactivatedRows = useMemo(
     () => buildDeactivatedRows({ products, allStock }),
     [products, allStock]);
+
+  // ── THE LIKELY TWIN, PER LEFTOVER CARD (owner spec 2026-09-05, BUILD 2) ────
+  // Built from ONE index over the catalogue (buildTwinIndex) rather than a scan
+  // per card: with 300 rows on screen a per-card scan of ~4k products would
+  // lock a warehouse phone up. Only the rows actually rendered are asked, and
+  // only when the network stock picture is in (the ranking is evidence-based —
+  // units, locations, photo, code — and ranking on a null allStock would
+  // nominate on the wrong evidence). Never merges anything: the row is a
+  // one-tap route into the existing merge screen, which still asks.
+  const twinIndex = useMemo(
+    () => (allStock ? buildTwinIndex({ products, identityMap: identity.map }) : null),
+    [products, identity.map, allStock]);
+  const twinFor = useMemo(() => {
+    if (!twinIndex) return () => null;
+    const cache = new Map();
+    return (product) => {
+      if (!product || !product.id) return null;
+      if (!cache.has(product.id)) {
+        cache.set(product.id, suggestTwin(product, { index: twinIndex, allStock, identityMap: identity.map }));
+      }
+      return cache.get(product.id);
+    };
+  }, [twinIndex, allStock, identity.map]);
+
+  // One route into the merge overlay from every leftovers card, with the
+  // pre-picked survivor when the card offered one. `ensureAllStock` first: the
+  // merge screen refuses to enable its commit without the network picture.
+  const openMerge = useCallback(async (loser, other) => {
+    await ensureAllStock().catch(() => {});
+    setMerge({ loser, other: other || null });
+  }, [ensureAllStock]);
   // One tap each way. No confirm dialog by design — the action is reversible
   // in one tap, and the flash says what happened and what it means.
   const doDeactivate = useCallback(async (product) => {
@@ -1489,20 +1587,14 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                     </span>
                   ))}
                 </div>
-                <BigButton tone="blue" disabled={busy}
-                  onClick={async () => { await ensureAllStock().catch(() => {}); setMerge({ loser: product, other: null }); }}>
-                  ⇄ Merge into another product…
-                </BigButton>
-                {/* One tap, reversible, never a delete: the finished-line exit.
-                    The card leaves this list (buildLeftovers skips deactivated)
-                    and reappears in the Deactivated section below with its
-                    stock chips — a deactivated product holding stock is never
-                    invisible. */}
-                <div style={{ marginTop: 8 }}>
-                  <BigButton tone="ghost" disabled={busy} onClick={() => doDeactivate(product)}>
-                    ⏸ Deactivate — finished line, stop refills &amp; ordering
-                  </BigButton>
-                </div>
+                {/* Merge first, deactivate second — and the likely twin, with
+                    its photo, above both. Deactivating is reversible and never
+                    a delete: the card leaves this list (buildLeftovers skips
+                    deactivated) and reappears in the Deactivated section below
+                    with its stock chips, so a deactivated product holding stock
+                    is never invisible. */}
+                <LeftoverExits product={product} twin={twinFor(product)} busy={busy}
+                               onMerge={openMerge} onDeactivate={doDeactivate} />
               </div>
             ))}
 
@@ -1532,11 +1624,61 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                         </div>
                       </div>
                     </div>
-                    <div style={{ marginTop: 10 }}>
-                      <BigButton tone="ghost" disabled={busy} onClick={() => doDeactivate(product)}>
-                        ⏸ Deactivate — finished line, stop refills &amp; ordering
-                      </BigButton>
+                    {/* ZERO STOCK IS NOT A REASON TO OFFER ONLY DEACTIVATE.
+                        A merge needs no units to move — it removes the bad name
+                        and repoints the barcodes, which deactivating never
+                        does. (Owner spec 2026-09-05, BUILD 2.) */}
+                    <LeftoverExits product={product} twin={twinFor(product)} busy={busy}
+                                   onMerge={openMerge} onDeactivate={doDeactivate} />
+                  </div>
+                ))}
+              </>
+            )}
+
+            {/* ── UNREGISTERED, NOT HELD HERE (owner spec 2026-08-31) ────────
+                The hole: buildLeftovers needs stock AT THIS HUB and
+                buildFinishedLines needs zero EVERYWHERE, so an unregistered
+                product holding stock only at PE/Trophy/Pine/Hub 3 — or holding
+                no cells at all — was in NEITHER list, and therefore in no list
+                this app renders. */}
+            {allStock && !leftoversUnknown && unregisteredElsewhere.length > 0 && (
+              <>
+                <div style={{ marginTop: 18, fontSize: 14, fontWeight: 800, color: BLUE_L }}>
+                  Unregistered, not held here · {unregisteredElsewhere.length}
+                </div>
+                <div style={{ fontSize: 12.5, color: GRAY, marginTop: -6 }}>
+                  No style code, no claim, no label alias — and nothing on this hub's floor, so the
+                  list above cannot show them. Their stock sits elsewhere, or they hold none at all.
+                </div>
+                {unregisteredElsewhere.map(({ product, net, cellLocs, locations }) => (
+                  <div key={product.id}
+                       style={{ background: "rgba(12,16,30,.6)", border: "1px dashed rgba(120,150,255,.35)", borderRadius: 18, padding: 16 }}>
+                    <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
+                      <Photo url={product.photoUrl} size={64} radius={12} />
+                      <div style={{ minWidth: 0, flex: 1 }}>
+                        <div style={{ fontSize: 15.5, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
+                        <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>
+                          {net > 0
+                            ? `${net} unit${net === 1 ? "" : "s"} — none of it here`
+                            : cellLocs.length
+                              ? `No stock · cells at ${cellLocs.map((l) => labelFor(l, registry)).join(", ")}`
+                              : "No stock and no cells anywhere"}
+                        </div>
+                      </div>
                     </div>
+                    {(locations || []).length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 7, margin: "10px 0 0" }}>
+                        {locations.map(({ loc, qty }) => (
+                          <span key={loc} style={{ fontSize: 12.5, fontWeight: 800, padding: "6px 10px", borderRadius: 10,
+                                                   fontVariantNumeric: "tabular-nums",
+                                                   background: "rgba(74,127,255,.1)", border: "1px solid rgba(74,127,255,.32)", color: BLUE_L }}>
+                            {labelFor(loc, registry)} · {qty}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                    <LeftoverExits product={product} twin={twinFor(product)} busy={busy}
+                                   onMerge={openMerge} onDeactivate={doDeactivate} />
                   </div>
                 ))}
               </>

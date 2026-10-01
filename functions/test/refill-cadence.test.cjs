@@ -5,8 +5,10 @@
 // 96-runs-a-day schedule or the 45-day ledger window fails here rather than
 // showing up on a bill six weeks later:
 //
-//   1. the SCHEDULE — 07:00→19:00 inclusive, Africa/Johannesburg, and NOT the
-//      unix-cron form that would overshoot past 19:00
+//   1. the SCHEDULE — hourly on the hour, 07:00→19:00 inclusive,
+//      Africa/Johannesburg, and NOT the unix-cron form that would overshoot
+//      past 19:00. (The order-key consequences of the cadence have their own
+//      file: test/refill-hourly-order-keys.test.cjs.)
 //   2. the WINDOW — held at 45, with the max() guard intact, and a regression
 //      test for the in-flight ledger evidence that forced it to stay
 //   3. IDEMPOTENCY ACROSS THE OVERNIGHT GAP — the 07:00 run produces exactly
@@ -27,9 +29,11 @@ const SRC = readFileSync(join(__dirname, "..", "refill-scan.cjs"), "utf8");
 
 // ── 1. THE SCHEDULE ──────────────────────────────────────────────────────────
 test("schedule runs 07:00 to 19:00 inclusive, not around the clock", () => {
-  assert.match(SRC, /schedule:\s*"every 15 minutes from 07:00 to 19:00"/);
-  // The bare form this replaces — 96 runs/day, ~31 MB each.
+  assert.match(SRC, /schedule:\s*"every 60 minutes from 07:00 to 19:00"/);
+  // The bare form — 96 runs/day, ~25 MB each.
   assert.doesNotMatch(SRC, /schedule:\s*"every 15 minutes"\s*,/);
+  // And the 49-runs-a-day form this replaces.
+  assert.doesNotMatch(SRC, /schedule:\s*"every 15 minutes from 07:00 to 19:00"/);
 });
 
 test("timeZone is set EXPLICITLY to Africa/Johannesburg", () => {
@@ -136,8 +140,10 @@ const CLOSE = Date.parse("2026-08-04T15:30:00.000Z");  // 17:30 SAST
 const OPEN  = Date.parse("2026-08-05T05:00:00.000Z");  // 07:00 SAST next day
 
 test("the 07:00 plan equals what the skipped overnight runs would have produced", () => {
-  // Every 15 minutes from 19:00 to 07:00, on UNCHANGED state — what the old
-  // cadence would have done.
+  // Every 15 minutes from 19:00 to 07:00, on UNCHANGED state — what the
+  // around-the-clock cadence would have done. Still the right control: the
+  // claim is that the plan does not depend on how many runs preceded it, so
+  // the denser the skipped series, the stronger the check.
   const skipped = [];
   for (let t = Date.parse("2026-08-04T17:00:00.000Z"); t <= OPEN; t += 15 * 60_000) {
     skipped.push(computeRefillPlan(snapshot(t)));

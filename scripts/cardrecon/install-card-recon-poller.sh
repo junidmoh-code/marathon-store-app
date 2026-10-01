@@ -69,6 +69,27 @@ say "installing imapflow + mailparser…"
 ( cd "$REPO/scripts/cardrecon" && npm install --omit=dev --no-audit --no-fund >/dev/null )
 [ -d "$REPO/scripts/cardrecon/node_modules/imapflow" ] || { echo "✗ imapflow did not install"; exit 1; }
 [ -d "$REPO/functions/node_modules/firebase-admin" ] || { echo "✗ functions/node_modules/firebase-admin is missing — run npm install in $REPO/functions"; exit 1; }
+# The EFT reader borrows the card path's PDF text extraction
+# (functions/cardRecon/pdfText.js), which lazily imports pdfjs-dist from
+# functions/node_modules — declared in functions/package.json but absent when
+# only firebase-admin was installed there by hand. --no-save: the manifests
+# already carry it; this only materialises it.
+# A PRESENT DIRECTORY IS NOT A CORRECT VERSION. An installed pdfjs-dist whose
+# major differs from the manifest's range would skip the install and then fail
+# (or drift) at run time — validate, and reinstall on mismatch. (CodeRabbit.)
+PDFJS_WANT_MAJOR=$("$NODE" -p "String(require('$REPO/functions/package.json').dependencies['pdfjs-dist']).replace(/[^0-9]*([0-9]+).*/, '\$1')")
+PDFJS_HAVE_MAJOR=$("$NODE" -p "require('$REPO/functions/node_modules/pdfjs-dist/package.json').version.split('.')[0]" 2>/dev/null || echo "absent")
+if [ "$PDFJS_HAVE_MAJOR" != "$PDFJS_WANT_MAJOR" ]; then
+  say "pdfjs-dist is $PDFJS_HAVE_MAJOR, manifest wants major $PDFJS_WANT_MAJOR — installing…"
+  # PINNED TO THE MANIFEST'S OWN RANGE — an unpinned install would let the
+  # mini's extraction drift from the one the deployed function uses. npm
+  # OVERWRITES in place, so the working copy is never deleted first: a failed
+  # install (offline mini) leaves the old one running rather than none.
+  # (Delta review, v2.)
+  PDFJS_RANGE=$("$NODE" -p "require('$REPO/functions/package.json').dependencies['pdfjs-dist']")
+  ( cd "$REPO/functions" && npm install --no-save --no-audit --no-fund "pdfjs-dist@$PDFJS_RANGE" >/dev/null )
+  [ -d "$REPO/functions/node_modules/pdfjs-dist" ] || { echo "✗ pdfjs-dist did not install"; exit 1; }
+fi
 say "dependencies: ready"
 
 # 5 · THE IDENTITY, BEFORE THE SCHEDULE. RunAtLoad fires this the moment the

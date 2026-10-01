@@ -2,7 +2,7 @@
 // Tomorrow gate's pure outcome rule. Pure — no firebase, no I/O.
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "fs";
-import { availableUnits, readyPromisedByCell, cellAvailability, promisedKey } from "./availabilityCore";
+import { availableUnits, readyPromisedByCell, cellAvailability, cellBlockInfo, promisedKey, promiseFresh, READY_PROMISE_MAX_AGE_MS } from "./availabilityCore";
 import { tomorrowTapOutcome } from "./tomorrowGate";
 import { decodeSizeKey } from "../../utils/sizeKey";
 
@@ -131,6 +131,105 @@ describe("tomorrowTapOutcome — the moment-of-tap rule", () => {
   });
   it("UNKNOWN (null) fails open to Tomorrow — a false OOS messages a customer wrongly", () => {
     expect(tomorrowTapOutcome(null)).toBe("tomorrow");
+  });
+});
+
+// ─── THE GHOST-PROMISE BOUND (2026-09-01) ────────────────────────────────────
+// /orders is keyed by the DAILY order number, so a stale record survives until
+// its number is reused — measured live: 56 "ready" records older than 30 days,
+// each permanently ✕-ing a size that had real stock (3 blocked cells traced to
+// promises from exactly one month before). A promise now expires after
+// READY_PROMISE_MAX_AGE_MS; an order with no parseable timestamp still counts.
+describe("readyPromisedByCell — the ghost-promise bound", () => {
+  const NOW = Date.parse("2026-09-01T12:00:00.000Z");
+  const iso = (msAgo) => new Date(NOW - msAgo).toISOString();
+  it("a month-old ready record no longer books the cell", () => {
+    const ghosts = [
+      { status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: iso(31 * 86400000) },
+      { status: "ready", productId: "p1", size: "8", hub: "hub1", createdAt: iso(31 * 86400000) },   // readyAt missing — createdAt ages it
+    ];
+    expect(readyPromisedByCell(ghosts, "hub1", PRODUCTS, NOW)).toEqual({});
+  });
+  it("the deadline IS twenty minutes — the owner's number, pinned literally", () => {
+    expect(READY_PROMISE_MAX_AGE_MS).toBe(20 * 60 * 1000);
+  });
+  it("a fresh ready order (5 minutes) books exactly as before", () => {
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: iso(5 * 60000) }],
+      "hub1", PRODUCTS, NOW);
+    expect(m["p1::7"]).toBe(1);
+  });
+  it("an uncollected order past the 20-minute deadline frees its size (owner directive 2026-09-01)", () => {
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: iso(21 * 60000) }],
+      "hub1", PRODUCTS, NOW);
+    expect(m).toEqual({});
+  });
+  it("the boundary: inside the window counts, past it does not", () => {
+    const at = (msAgo) => readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: iso(msAgo) }],
+      "hub1", PRODUCTS, NOW)["p1::7"];
+    expect(at(READY_PROMISE_MAX_AGE_MS)).toBe(1);
+    expect(at(READY_PROMISE_MAX_AGE_MS + 1)).toBeUndefined();
+  });
+  it("a fresh readyAt outranks a stale createdAt — the collection clock starts at ready", () => {
+    // Ordered this morning, only marked ready five minutes ago: the
+    // 20-minute collection window opened at READY, so the promise is fresh.
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", createdAt: iso(6 * 3600000), readyAt: iso(5 * 60000) }],
+      "hub1", PRODUCTS, NOW);
+    expect(m["p1::7"]).toBe(1);
+  });
+  it('an unparseable readyAt ("" default in the wild) falls THROUGH to createdAt, not to "keep forever"', () => {
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1", readyAt: "", createdAt: iso(31 * 86400000) }],
+      "hub1", PRODUCTS, NOW);
+    expect(m).toEqual({});
+  });
+  it("an un-ageable order (no timestamps) keeps its promise — legacy shapes stay ✕-ward", () => {
+    const m = readyPromisedByCell(
+      [{ status: "ready", productId: "p1", size: "7", hub: "hub1" }],
+      "hub1", PRODUCTS, NOW);
+    expect(m["p1::7"]).toBe(1);
+    expect(promiseFresh({}, NOW)).toBe(true);
+  });
+});
+
+// ─── REGRESSION: the Lacoste Powercourt size 8 report (owner, 2026-09-01) ───
+// Hub 1 physically held (and had counted) one size-8 pair; the picker showed
+// ✕. Two truths, pinned apart:
+//   • a FRESH ready order genuinely reserves the last pair → ✕ stands, and
+//     cellBlockInfo carries the split so the UI can say "reserved", not
+//     silently look like "this size doesn't exist";
+//   • the same record gone stale (its daily key never reused) must NOT keep
+//     blocking the size — that was the bug class this pins against.
+describe("regression — counted stock vs picker ✕ (Lacoste Powercourt shape)", () => {
+  const LACOSTE = { id: "p1779610355274", category: "Footwear", productType: "sneaker" };
+  const BY_ID = { [LACOSTE.id]: LACOSTE };
+  // The live cell shape: numeric size keys 6..11, size 8 holding the counted 1.
+  const cells = { [LACOSTE.id]: { 6: { qty: 3 }, 7: { qty: 2 }, 8: { qty: 1 }, 9: { qty: 1 }, 10: { qty: 2 }, 11: { qty: 2 } } };
+  const order113 = { status: "ready", productId: LACOSTE.id, size: "8", hub: "hub1", placedAtHub: "hub1", readyAt: "2026-09-01T10:19:11.147Z" };
+  it("inside the 20-minute window: the last pair reads ✕, and the why-split says reserved", () => {
+    const AT_10_30 = Date.parse("2026-09-01T10:30:00.000Z");   // 11 min after ready
+    const promised = readyPromisedByCell([order113], "hub1", BY_ID, AT_10_30);
+    expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: "8" })).toBe(0);
+    expect(cellBlockInfo({ cells, promised, productId: LACOSTE.id, size: "8" }))
+      .toEqual({ booked: 1, promised: 1, available: 0 });
+  });
+  it("uncollected past the deadline (the live report was at ~12:00, 101 min after ready): size 8 is orderable", () => {
+    const AT_NOON = Date.parse("2026-09-01T12:00:00.000Z");
+    const promised = readyPromisedByCell([order113], "hub1", BY_ID, AT_NOON);
+    expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: "8" })).toBe(1);
+  });
+  it("a month-stale ghost record never blocks (the original bug class)", () => {
+    const promised = readyPromisedByCell([{ ...order113, readyAt: "2026-08-01T10:19:11.147Z" }], "hub1", BY_ID, Date.parse("2026-09-01T12:00:00.000Z"));
+    expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: "8" })).toBe(1);
+  });
+  it("every other counted size stays available throughout", () => {
+    const AT_10_30 = Date.parse("2026-09-01T10:30:00.000Z");
+    const promised = readyPromisedByCell([order113], "hub1", BY_ID, AT_10_30);
+    for (const [sz, want] of [["6", 3], ["7", 2], ["9", 1], ["10", 2], ["11", 2]])
+      expect(cellAvailability({ cells, promised, productId: LACOSTE.id, size: sz })).toBe(want);
   });
 });
 

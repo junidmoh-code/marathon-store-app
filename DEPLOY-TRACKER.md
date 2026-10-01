@@ -362,3 +362,62 @@ targeting stays off.
 **Before arming footwear targeting, ALL of these must be true:** hub inventory
 verification complete, the exception-bucket gate shipped, and an explicit owner
 go-ahead. Two of the three are not done.
+
+---
+
+## /orders keys are RECYCLED, so `onValueCreated` is the wrong trigger for "a new order"
+
+**What's true.** Both order counters reset daily and cycle 001–999 while the
+nodes they key persist. Measured live 2026-09-06: 2,942 nodes under `/orders`,
+565 numeric customer keys and 2,377 `R###-{line}` refill keys going back to
+July — and `R040-1` had just been rewritten over an August record by that
+morning's engine run.
+
+**Why it costs something.** A `google.firebase.database.ref.v1.created` trigger
+fires on null → value only. On this node that means it fires the first time a
+number is ever used and stays silent every time it comes round again — no
+error, no log, nothing that looks like a fault. Anything that must react to "a
+new order arrived" has to key off a value that CHANGES per order.
+`createdAt` is that value: every producer writes a fresh one, and the ordinary
+lifecycle (status, readyAt, dispatch, collection) never touches it.
+
+**What a change has to do first.** Any consumer of `/orders` creation must
+also treat the id as non-unique: an idempotency key must be
+`${orderId}::${createdAt}`, never the bare id, or one day's order silently
+swallows the next day's at the same number. `orderPlacedPush` is the worked
+example (`functions/lib/order-push.cjs`).
+
+---
+
+## `/orders` numeric keys sort as INTEGERS — the range sentinel is load-bearing and INVISIBLE
+
+**What's true.** RTDB compares `"001"`-style keys as integers, not as strings.
+Measured live 2026-09-06 with the Admin SDK:
+
+```
+orderByKey().startAt("0").endAt("9")       →   8 rows   (orders 001–008: ints 1–8 ≤ 9)
+orderByKey().startAt("0").endAt("99")      →  98 rows   (ints 1–98)
+orderByKey().startAt("0").endAt("9\uF8FF") → 565 rows   (every customer order)
+```
+
+`TV_ORDER_KEY_END` in `src/utils/tvOrdersRange.js` is `"9\uF8FF"` — a bare `"9"`
+followed by U+F8FF, the private-use sentinel that sorts after every integer key.
+**The kiosk is correct and always has been.** The danger is that U+F8FF renders
+as NOTHING in `cat`, `grep`, a diff and most editors, so the constant reads on
+screen as `"9"` and looks like a bug. It is not one. Do not "tidy" it away, and
+check the bytes (`grep … | xxd`, or a script that tests for `"\uF8FF" in line`)
+before concluding anything about this range.
+
+I got this wrong in the first draft of this entry: I read the constant through
+`cat`, tested a bare `"9"` I had typed myself, and reported the pickup board as
+broken. It was not.
+
+**What IS understated.** Three one-off analysis scripts use a bare `"9"` and so
+only ever saw orders 001–009:
+
+- `scripts/census-hub2-gate-blast-radius.mjs:143` and `:207`
+- `scripts/verify-louboutin-sourcing.mjs:38`
+
+(`scripts/census-hub1-promised.mjs:25` has the sentinel and is fine.) Any figure
+those two produced about customer orders is low. They are already-run one-offs,
+not live surfaces — re-run them with the sentinel before trusting an old number.

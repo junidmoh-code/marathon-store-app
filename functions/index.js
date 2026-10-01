@@ -4,6 +4,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { onValueWritten } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
+const { markInventoryDirty } = require("./lib/shopify-inventory-dirty.cjs");
 const admin = require("firebase-admin");
 const Anthropic = require("@anthropic-ai/sdk");
 const { toAuthPassword, usernameToEmail } = require("./lib/auth-utils.cjs");
@@ -11,6 +12,7 @@ const reorderDemand = require("./lib/reorder-demand.cjs");
 const { runHoldRevealSweep } = require("./lib/hold-reveal-sweep.cjs");
 const { notifyHoldAvailability } = require("./lib/hold-availability-notify.cjs");
 const { notifyOrderTomorrow } = require("./lib/order-tomorrow-notify.cjs");
+const { notifyOrderPlaced } = require("./lib/order-push.cjs");
 const { deliverOutboxDoc } = require("./lib/outbox-deliver.cjs");
 
 // Initialise the admin SDK once at module scope. Required for Phase 13A's
@@ -569,6 +571,95 @@ exports.holdAvailabilityNotify = onValueWritten(
       before:    event.data.before.val(),
       after:     event.data.after.val(),
     });
+  }
+);
+
+// ─── FIRST BATCH DIRECT TO SHOP: HUB 2'S DEFERRED LEG ────────────────────────
+// A Missing Products Solve can raise a SHOP's own request from Central (tagged
+// createdFrom.firstBatch). When that row is fulfilled, partially sent or
+// cancelled, Hub 2's own request from Central is raised here — once, with an
+// engine lock, sized from what Central still has. It runs server-side because
+// (a) no browser may need to stay open for it and (b) /refill_engine/open is
+// not client-writable, and without the lock the next scan would raise a second
+// hub2<-central request beside it. All logic and every scoped read live in
+// lib/first-batch.cjs (node-tested against the fake RTDB). Every non-transient
+// outcome RETURNS; only real I/O failures throw, so retry re-drives exactly
+// those. Whole-node ref (not /status): a partial send writes sentQty and qty,
+// never status. The handler re-reads the row and exits early on its own
+// marker writes.
+exports.firstBatchLeg = onValueWritten(
+  {
+    ref:            "/refill_requests/{requestId}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          true,
+  },
+  async (event) => {
+    if (!event.data.after.exists()) return;   // a deleted row has no leg to raise
+    const { processFirstBatchRequest } = require("./lib/first-batch.cjs");
+    const res = await processFirstBatchRequest({ db: admin.database(), requestId: event.params.requestId });
+    if (res && (res.raised || res.none || res.deferredTo)) console.log("firstBatchLeg:", event.params.requestId, JSON.stringify(res));
+  }
+);
+
+// ─── SHOPIFY INVENTORY: MARK WHAT MOVED ──────────────────────────────────────
+// The storefront was overselling. reconcile.mjs writes a product's inventory to
+// Shopify exactly once — at the moment it goes live — and never again, so a
+// product's quantity on the shop froze on its publish day while stock kept
+// moving in the shops. Measured 2026-09-04 over 1,152 live products: 564
+// drifted, 1,190 variants, and 220 variants OFFERED FOR SALE against an app
+// quantity of zero.
+//
+// This is the half that could not be built before, because it needs a database
+// trigger. It writes ONE small counter key per changed product;
+// scripts/shopify/inventorySync.mjs drains those keys on the Mac mini's
+// two-minute commit tick. The alternative — sweeping /stock — is a 5.36 MB read
+// every two minutes, ~2.6 GB a day, to usually learn that nothing moved.
+//
+// Scoped to /stock/{loc}/{pid}, so ONE movement wakes it ONCE however many
+// size cells it touched. Every decision (unsellable locations, the per-size
+// comparison, the live-on gate, the fresh re-read of the changed cells) lives
+// in lib/shopify-inventory-dirty.cjs and is node-tested.
+//
+// retry: false ON PURPOSE. A missed mark is repaired by the very next movement
+// on that product, and by the reconciler's own periodic full pass — while a
+// retry storm on a hot stock node would multiply invocations against the one
+// path the whole shop floor writes through. The counter is idempotent-ish by
+// design (over-marking is free), so this is the cheap side to fail on.
+//   firebase deploy --only functions:shopifyInventoryDirty
+exports.shopifyInventoryDirty = onValueWritten(
+  {
+    ref:            "/stock/{loc}/{pid}",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 60,
+    retry:          false,
+  },
+  async (event) => {
+    try {
+      await markInventoryDirty(
+        {
+          db:        admin.database(),
+          increment: (n) => admin.database.ServerValue.increment(n),
+          log:       () => {},
+        },
+        {
+          loc:    event.params.loc,
+          pid:    event.params.pid,
+          before: event.data.before.val(),
+        }
+      );
+    } catch (e) {
+      // NEVER let this throw into the stock write path's retry machinery. The
+      // marker is an optimisation over a full sweep; failing to write one costs
+      // a delayed correction, and the next movement on this product writes it
+      // again. Failing LOUDLY here would put retries on the busiest node in the
+      // database for no gain.
+      console.error(`shopifyInventoryDirty: ${String(e?.message || e)}`);
+    }
   }
 );
 
@@ -1710,6 +1801,23 @@ exports.analyzeReorderNeeds = onCall(
       }
 
       // ── 2. Load full operational history in parallel.
+      //
+      // /insights_log is read WHOLE here, deliberately, and it is the last
+      // whole-node read of it left in the project.
+      //
+      // It cannot be narrowed by a key range: the planner's inputs include
+      // per-product ALL-TIME totals (totalSales, salesPerDay over the product's
+      // whole life) alongside the REORDER_RECENT_DAYS window, so a bounded
+      // window would change the numbers the model is given.
+      //
+      // It COULD be served from /insights_rollup — about 10 MB of day nodes
+      // against 35.99 MB — and that is worth doing. It is not done here, for
+      // two reasons stated rather than implied: this function is inside the
+      // refill engine's maintenance-mode governance, which wants evidence
+      // before a change; and it does not appear in the measured cost at all
+      // (the cost watcher's table for 2026-09-20 has no line for it), so it
+      // would be a change made against no measurement. Deferred, not
+      // overlooked. (Fable-vs-spec review.)
       let productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap;
       try {
         [productsSnap, ordersSnap, logsSnap, returnsSnap, contextSnap] = await Promise.all([
@@ -2596,7 +2704,20 @@ async function loadStyleKit(db) {
 // to a truncated raw message for anything unrecognised.
 function classifyPhotoError(msg, engName) {
   const m = String(msg || "").trim();
-  if (/HTTP 429|credits are depleted|rate|quota|RESOURCE_EXHAUSTED/i.test(m)) {
+  // ── OUR OWN CAP IS NOT THE PROVIDER'S ────────────────────────────────────
+  // FIRST, and deliberately so. The daily image-generation cap's message
+  // contains the word "generated", and "generated" contains "rate" — so the
+  // provider branch below matched it and reported a refusal we made
+  // ourselves, for free, as "AI credits depleted — check Gemini billing".
+  // That is the worst possible misdirection: it sends the reader to a billing
+  // page to fix a limit that is in this repository.
+  //
+  // (The `rate` alternative below is now anchored to a real rate LIMIT for the
+  // same reason — a bare /rate/ matches "generated", "accelerate" and
+  // "moderate", and an error classifier that guesses is worse than one that
+  // quotes.)
+  if (/daily image-generation (cap|budget)/i.test(m)) return m.slice(0, 140);
+  if (/HTTP 429|credits are depleted|\brate[ -]?limit|quota|RESOURCE_EXHAUSTED/i.test(m)) {
     const provider = engName === "openai" ? "OpenAI" : "Gemini";  // gemini + nbpro → Gemini
     return `AI credits depleted or rate-limited (429) — check ${provider} billing`;
   }
@@ -2848,6 +2969,11 @@ exports.generateProductPhotos = onCall(
 const CHAT_MODEL                  = "claude-sonnet-4-6";
 const CHAT_MAX_TOKENS             = 4096;
 const CHAT_CONTEXT_RECENT_LIMIT   = 100;
+// How many rows the bounded read pulls before the newest CHAT_CONTEXT_RECENT_LIMIT
+// are picked out of them by timestamp. Twenty times the slice — about two days
+// of trading — so the key/timestamp disagreement on this node cannot change
+// which hundred the model sees.
+const CHAT_CONTEXT_FETCH          = 2000;
 const CHAT_ALLOWED_ORIGINS = new Set([
   "https://marathon-club-ai.web.app",
   "http://localhost:5174",
@@ -2926,13 +3052,25 @@ exports.chatStream = onRequest(
     }
 
     // ── Load live context. RTDB reads under Admin SDK bypass security rules.
+    //
+    // /insights_log is read BOUNDED. This used to be once("value") on the whole
+    // node — 35.99 MB, per chat turn — to hand the model its newest 100 rows.
+    // The Admin SDK bypasses the rule that would refuse that shape, but the
+    // egress is the same egress, and this project's largest bill is egress.
+    //
+    // limitToLast(CHAT_CONTEXT_FETCH) by KEY, then the same sort-by-timestamp
+    // and slice the prompt builder always did. Key order and timestamp order
+    // disagree by up to a few minutes on this node, so the fetch is twenty
+    // times the slice — two days of trading against a hundred rows — and the
+    // hundred that come out are the same hundred.
     const db = admin.database();
-    let ordersSnap, logsSnap, planSnap;
+    let ordersSnap, logsSnap, planSnap, totalsSnap;
     try {
-      [ordersSnap, logsSnap, planSnap] = await Promise.all([
+      [ordersSnap, logsSnap, planSnap, totalsSnap] = await Promise.all([
         db.ref("orders").once("value"),
-        db.ref("insights_log").once("value"),
+        db.ref("insights_log").orderByKey().limitToLast(CHAT_CONTEXT_FETCH).once("value"),
         db.ref("insights/reorderPlan/latest").once("value"),
+        db.ref("insights_rollup/meta/logTotals").once("value"),
       ]);
     } catch (err) {
       console.error("chatStream: context read failed:", err.message);
@@ -2943,7 +3081,11 @@ exports.chatStream = onRequest(
     const logs   = logsSnap.val()   || {};
     const plan   = planSnap.val()   || null;
     const ordersCount = Object.keys(orders).length;
-    const logsCount   = Object.keys(logs).length;
+    // "of N total" in the prompt. The bounded read cannot know it, so it comes
+    // from the rollup's running counter; with no counter the prompt says how
+    // many rows it is looking at rather than inventing a total.
+    const logTotals = totalsSnap.val();
+    const logsCount   = Number(logTotals && logTotals.n) || Object.keys(logs).length;
     const ordersSent  = Math.min(ordersCount, CHAT_CONTEXT_RECENT_LIMIT);
     const logsSent    = Math.min(logsCount,   CHAT_CONTEXT_RECENT_LIMIT);
 
@@ -3411,6 +3553,173 @@ exports.updateStaffPassword = onCall(
 //   firebase deploy --only functions:refillHealthScan
 exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 
+// ─── "WRITTEN OFF AFTER REFUSAL" — DAILY DIGEST TO JUNID ─────────────────────
+// Once a day, after the last refill scan (19:00), everything the scan wrote
+// off since the previous digest goes to Junid in one message. Channels are the
+// only extension point (lib/writeoff-digest.cjs): email today, through the
+// existing alarm route (log marker → Cloud Monitoring → email; install with
+// scripts/refill/install-writeoff-digest-alarm.mjs). A WhatsApp channel is one
+// more entry in this list — the engine and the scan never change. Deploy scoped:
+//   firebase deploy --only functions:refusalWriteoffDigest
+// "Sent" used to mean only "the marker was logged" (23 Sep: logged, never
+// arrived). Every run now asks Google whether the alert — the email — actually
+// left, and records the verdict where the card reads it (lib/writeoff-digest.cjs
+// confirmDelivery). A run that throws is recorded too.
+exports.refusalWriteoffDigest = onSchedule(
+  { schedule: "40 19 * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 540 },
+  async () => {
+    const digest = require("./lib/writeoff-digest.cjs");
+    await digest.runDigestAndConfirm({
+      db: admin.database(), nowMs: Date.now(), channels: [digest.emailViaAlertLog()], api: digest.monitoringApi(),
+    });
+  }
+);
+
+// ─── STRANDED-TRANSIT SWEEP ──────────────────────────────────────────────────
+// Hourly: every unit parked in stock/in_transit by the central→hub hold lane
+// lands at its destination on its own once its window is past (or holding is
+// off), and anything that cannot be credited is reported — never a unit that
+// waits forever for a tap (FULFIL-CREDIT-GAP.md). Not the refill engine: a
+// separate function with one job. Deploy scoped:
+//   firebase deploy --only functions:strandedTransitSweep
+exports.strandedTransitSweep = require("./strandedTransitSweep.cjs").strandedTransitSweep;
+
+// ─── STORE ORDER → STAFF PUSH NOTIFICATION ───────────────────────────────────
+// Tells the people who pick and dispatch that a shop has placed an order, on a
+// phone that is locked with the app closed.
+//
+// ONE trigger covers EVERY creation path because they converge on one write:
+// the store app's checkout (AssistantView.placeOrders), the store app's refill
+// cart (placeRefillRequests), and the refill engine's own store legs
+// (refill-scan.cjs) all end at /orders/{id}. Hooking the node rather than any
+// producer means none can be missed, and a future producer is covered on the
+// day it ships. The POS never creates an order — it only marks one collected
+// (marathon-pos-app/src/sale/markOrderCollected.js), so it needs no coverage
+// here and gets none.
+//
+// ── WHY createdAt AND NOT THE ORDER NODE ────────────────────────────────────
+// onValueCreated fires on null → value only, and an order id is NOT unique:
+// both counters reset daily and cycle 001–999 while the nodes persist (2,942
+// live nodes on 2026-09-06, 2,377 of them R-keys back to July; R040-1 had been
+// rewritten over an August record that morning). Most new orders are therefore
+// a set() over an EXISTING node, which onValueCreated does not see at all —
+// silently, with no error and nobody told. A createdAt write whose value
+// changes is exactly "a new order has taken this id" under both cases, and the
+// ordinary lifecycle (status, readyAt, dispatch, collection) never touches it,
+// so the invocation count stays near one per order placed.
+//
+// The record is RE-READ rather than taken from the event payload — the house
+// rule for RTDB triggers here — and the re-read record's createdAt is checked
+// against the one the event fired on, so a node already replaced by the NEXT
+// order at that recycled id is left to its own event.
+//
+// ── retry: false, ON PURPOSE ────────────────────────────────────────────────
+// The engine sweep can create hundreds of orders in one run. A retry storm
+// across that many invocations, each of which may hold a flush window open, is
+// a real cost and a real risk to the function's concurrency budget — while the
+// thing being protected is a convenience notification, not a customer message
+// and not a stock movement. The core is idempotent regardless (the window's
+// `seen` map survives the window closing), so redelivery is handled where it is
+// cheap rather than by re-driving the whole trigger.
+//
+// timeoutSeconds must exceed MAX_FLUSH_WAIT_MS (240s) plus the send. The
+// claimer waits for the burst to go QUIET rather than for a fixed delay, and
+// the engine's apply loop is time-boxed at 200s, so the ceiling has to clear
+// that or a large sweep would arrive as several notifications instead of one.
+// 300 leaves a minute for a slow multicast to a few dozen devices without the
+// claimer being killed mid-flush.
+//
+// Only the ONE claiming invocation per burst waits; every other order for that
+// store transacts and exits in milliseconds. And the wait ends when the burst
+// does — a single order placed by hand costs one tick (12s), not the ceiling.
+//
+// ── THE KNOWN GAPS, STATED PLAINLY ──────────────────────────────────────────
+// Each of these is accepted, not overlooked. Every one costs at most a late or
+// a duplicate NOTIFICATION; none of them loses an order, which is on the queue
+// and on screen regardless.
+//
+// 1. Recovery from a killed claimer is REACTIVE: an abandoned window's count is
+//    carried forward by the NEXT order at that store, and a failed send
+//    restores its count for the same next order to flush. Both need a next
+//    order to exist. If a claimer dies on the last cart of the day at a quiet
+//    store and nothing else is placed there, that burst is never announced.
+//    Closing it completely means a scheduled sweep over the destination stores,
+//    which is a SECOND function; this feature was scoped to one.
+//
+// 2. A REDELIVERY is recognised as a replay and returns before the
+//    carry-forward runs, so a redelivered last-order-of-the-day cannot revive
+//    an abandoned window either. Same shape as (1), same cost.
+//
+// 3. A redelivery arriving after REPLAY_TTL_MS (30 min), or after the id has
+//    been evicted from the capped `seen` map by a burst larger than MAX_SEEN,
+//    is no longer recognised. At worst that is one extra "1 new order"; it
+//    cannot duplicate a burst.
+//
+// 4. An order that has already advanced past "incoming" by the time the
+//    re-read happens is skipped. That is deliberate — somebody has already
+//    picked it — but it does mean a very fast fulfil suppresses the alert.
+//
+// 5. A transient failure of the re-read itself drops that one order's
+//    contribution (retry:false, and no window was claimed yet to restore).
+//    It logs PUSH_ALARM so the loss is visible rather than merely survivable.
+//
+// Every guard, the burst window, the replay memory and the dead-token pruning
+// live in lib/order-push.cjs (node-tested, mutation-proven).
+//   firebase deploy --only functions:orderPlacedPush
+exports.orderPlacedPush = onValueWritten(
+  {
+    ref:            "/orders/{orderId}/createdAt",
+    instance:       "marathon-club-default-rtdb",
+    region:         "europe-west1",
+    memory:         "256MiB",
+    timeoutSeconds: 300,
+    retry:          false,
+  },
+  async (event) => {
+    // A DELETE (the shadow sweep clearing stale artifacts, a manual tidy) is
+    // not an order arriving.
+    const after = event.data && event.data.after;
+    if (!after || !after.exists()) return;
+    const orderId = event.params.orderId;
+    const db = admin.database();
+    // RE-READ. Never the event payload: delivery is at-least-once and can be
+    // minutes late, and this path's ids are recycled — the truth about what
+    // order lives at this key right now is only in the database.
+    //
+    // WRAPPED, because this read happens BEFORE any window is claimed. Every
+    // later failure self-heals — a failed send puts its count back for the next
+    // order to flush — but a throw here leaves nothing behind at all: with
+    // retry:false the invocation is dropped and this order's contribution to
+    // the count simply vanishes, silently. The alarm marker is the same one the
+    // send path uses, so one Monitoring rule sees both.
+    let record = null;
+    try {
+      record = (await db.ref(`orders/${orderId}`).get()).val();
+    } catch (err) {
+      console.error(`PUSH_ALARM orderPlacedPush could not re-read orders/${orderId}:`, err && err.message);
+      return;
+    }
+    const res = await notifyOrderPlaced({
+      db,
+      messaging: admin.messaging(),
+      orderId,
+      record,
+      createdAt: after.val(),
+      // Google's clock, not a device's — the whole reason serverNowMs() exists
+      // on the client is to avoid trusting a till's clock, and here there is no
+      // till in the loop at all.
+      nowMs:     Date.now(),
+      sleep:     (ms) => new Promise((r) => setTimeout(r, ms)),
+    });
+    if (res.sent) {
+      console.log(
+        `orderPlacedPush: ${res.hub} ${res.count} order(s) -> ${res.delivered}/${res.tokens} devices`
+        + (res.pruned ? `, pruned ${res.pruned} dead token(s)` : ""),
+      );
+    }
+  }
+);
+
 // ─── DISPLAY CHECKS — onClothingSale (PR 2: dormant trigger, writes only) ─────
 // Clothing `sold` movements at enabled stores become display checks in the
 // displayChecks* namespaces. Pure logic in displayChecks/lib.cjs (node-tested);
@@ -3418,6 +3727,22 @@ exports.refillHealthScan = require("./refill-scan.cjs").refillHealthScan;
 // docs/display-checks-sale-source.md. Deploy scoped:
 //   firebase deploy --only functions:onClothingSale
 exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothingSale;
+
+// ─── closeDisplayRowOnSale — the display record closes itself at the till ─────
+// Gen-2 RTDB onCreate on /stock_movements/{movementId}, the SAME node
+// onClothingSale watches. A `sold` movement at Marathon PE or Trophy closes the
+// open display row for that product at that store, matched on the row's own
+// CAPTURED SIZE. A sale out of a HUB cell (which is how sneakers sell) closes
+// one only when the evidence leaves no alternative — see the module header.
+// A shop→hub transfer is deliberately NOT treated as a display return: a
+// display stays booked at its hub, so it is not in the shop's cell and a
+// transfer out of a shop can never be the display pair.
+// Idempotent (a lease under /settings/displayRows_meta, plus the
+// structural guarantee that only OPEN rows are ever closed), and it needs no
+// change to marathon-pos-app — the till already writes the movement.
+// See functions/displayRows/closeDisplayRowOnSale.js for the whole contract.
+// DEPLOY (scoped): firebase deploy --only functions:closeDisplayRowOnSale
+exports.closeDisplayRowOnSale = require("./displayRows/closeDisplayRowOnSale.js").closeDisplayRowOnSale;
 
 // ─── DISPLAY CHECKS — wakeHeldChecks (scheduled hold→wake sweep, no UI) ────────
 // Every 5 min (Africa/Johannesburg), walks the active index
@@ -3586,12 +3911,48 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // from /pos/paymentEvents tender legs (Admin SDK — the browser never reads POS
 // money), and writes slip + expected + variance APPEND-ONLY at
 // /card_batches (top-level, owner-only read). Nobody types the card total
-// anywhere. Gated by the
+// anywhere, bar Junid on a half-printed slip (readDeclaredTotal). Gated by the
 // dedicated card_recon permission flag, not stockRole. Cost logged to
 // /aiAssistant/usage. Model + docs: functions/lib/card-recon.cjs,
 // lib/card-expected.cjs, docs/CARD-RECON.md.
 //   firebase deploy --only functions:cardBatchCapture
 exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
+
+// ─── CARD RECON — cardTerminalAdmin (the terminal settings sheet) ────────────
+// Owner-only add / edit / retire / reinstate / replace of /config/cardTerminals,
+// through the Admin SDK — the Card machines screen's settings sheet is its only
+// caller. Decisions in lib/card-terminal-admin.cjs.
+//   firebase deploy --only functions:cardTerminalAdmin
+exports.cardTerminalAdmin = require("./cardRecon/cardTerminalAdmin.js").cardTerminalAdmin;
+
+// ─── DEVICE ENROLMENT — enrolDevice (a phone types its 4-digit code) ─────────
+// A login marked /users/{uid}/deviceCodeRequired needs a code per device. This
+// checks the code (rate-limited per device, per network and per login), records
+// the device against the person, and returns a custom token for the SAME uid
+// that carries the device's own identity for the database rules to check.
+// Decisions in lib/device-enrolment.cjs.
+//   firebase deploy --only functions:enrolDevice
+exports.enrolDevice = require("./deviceEnrolment/deviceEnrolment.js").enrolDevice;
+
+// ─── DEVICE ENROLMENT — deviceEnrolmentAdmin (the Device codes screen) ───────
+// Junid, or an enrolled device whose person may make codes (MC): list people
+// and devices, make a code (shown once), revoke a device, revoke a person.
+//   firebase deploy --only functions:deviceEnrolmentAdmin
+exports.deviceEnrolmentAdmin = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentAdmin;
+
+// ─── DEVICE ENROLMENT — deviceEnrolmentEmail (Junid's email) ─────────────────
+// Every 5 min: new enrolments, codes reaching their limit, a full code typed
+// again and lockouts, as ONE DEVICE_ENROLMENT_ALERT line → Cloud Monitoring
+// log-match policy → email (scripts/device-enrolment/install-enrolment-alarm.mjs).
+//   firebase deploy --only functions:deviceEnrolmentEmail
+exports.deviceEnrolmentEmail = require("./deviceEnrolment/deviceEnrolment.js").deviceEnrolmentEmail;
+
+// ─── PRODUCT TYPE — setProductType (the edit page's Sneaker / Clothing toggle)
+// Manager-only (Junid, or MC's enrolled code-making device) once a product has
+// stock or sales; refuses a switch to Clothing that would strand Hub 1 units;
+// logs every change on the product under typeLog. lib/product-type.cjs.
+//   firebase deploy --only functions:setProductType
+exports.setProductType = require("./productType/setProductType.js").setProductType;
 
 // ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
 // Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
@@ -3602,6 +3963,85 @@ exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
 // retried because a dropped REVOKE is the failure that matters.
 //   firebase deploy --only functions:syncCardReconClaim
 exports.syncCardReconClaim = require("./cardRecon/cardReconClaim.js").syncCardReconClaim;
+
+// ─── CARD RECON — cardReconHealthScan (the poller's dead-man switch) ─────────
+// On 2026-08-31 the Mac mini's launchd silently stopped firing the mailbox
+// poller at 01:16 — no error, no reboot — and payments sat unread for nine
+// hours because the only witness was a heartbeat panel the owner has to open.
+// This scan is the poller's voice when the poller has none: it runs on
+// Google's scheduler (never on the mini — an alarm must not run on the
+// machinery it watches), reads the heartbeat the poller writes every tick at
+// /card_batch_poll_status, and when it has been silent for 15+ minutes prints
+// the CARD_RECON_ALARM marker that Cloud Monitoring turns into an email
+// (scripts/cardrecon/install-cardrecon-alarm.mjs — the same machinery as the
+// social engine's silence alarm). One email per outage, a reminder every six
+// hours while it lasts, and the decision itself is pure and tested
+// (lib/poller-health.cjs, test/poller-health.test.cjs).
+//
+// THE MARKER IS LOAD-BEARING: renaming the string in pollerAlarmLine without
+// re-running the installer disconnects the alarm while every green check
+// stays green. The installer's --verify pins the two together.
+//   firebase deploy --only functions:cardReconHealthScan
+const { assessPollerHealth } = require("./lib/poller-health.cjs");
+
+function pollerAlarmLine(verdict) {
+  const silence = verdict.staleMinutes === null
+    ? "has NEVER written a heartbeat"
+    : `has not ticked for ${verdict.staleMinutes} minutes`;
+  return `CARD_RECON_ALARM The card recon mailbox poller ${silence}. `
+    + `Card slips AND EFT payment notifications are NOT being read. `
+    + `Check the Mac mini: is it on and on the network? Then: `
+    + `launchctl kickstart -k gui/$(id -u)/com.marathon.cardreconpoll — `
+    + `and read ~/marathon-store-app/logs/card-recon-poll.log.`;
+}
+
+exports.cardReconHealthScan = onSchedule(
+  { schedule: "*/10 * * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 60 },
+  async () => {
+    const db = admin.database();
+    const [beatSnap, healthSnap] = await Promise.all([
+      db.ref("card_batch_poll_status/lastRunAt").once("value"),
+      db.ref("card_batch_poll_health").once("value"),
+    ]);
+    const health = healthSnap.val() || {};
+    const verdict = assessPollerHealth({
+      nowMs: Date.now(),
+      lastRunAt: beatSnap.val(),
+      lastAlarm: health.lastAlarm || null,
+    });
+    // Written on EVERY run, healthy or not — a watchdog that only writes when
+    // it is unhappy is indistinguishable from a watchdog that has stopped.
+    const update = { checkedAt: Date.now(), ok: verdict.ok, staleMinutes: verdict.staleMinutes };
+    if (verdict.alarm) update.lastAlarm = { at: Date.now(), signature: verdict.signature };
+    if (verdict.ok && health.lastAlarm) update.lastAlarm = null; // recovery: the next outage is new
+    await db.ref("card_batch_poll_health").update(update);
+    if (verdict.alarm) {
+      console.error(pollerAlarmLine(verdict));
+    } else if (verdict.recovered) {
+      console.log(`cardReconHealthScan: the poller is back (heartbeat ${verdict.staleMinutes} min old) — the outage alerted on is over.`);
+    } else {
+      console.log(`cardReconHealthScan: ${verdict.ok ? "ok" : `stale ${verdict.staleMinutes} min (already alerted)`}`);
+    }
+  },
+);
+
+// ─── EFT POOL — the till's window on an owner-only node ──────────────────────
+// /eft_pool (payment notifications the mailbox poller verified) is owner-only
+// by rule; the POS settles EFT sales against it through these callables, which
+// read with the Admin SDK and return only the search's projection — staff
+// never gain client read on other customers' payment data. eftPoolSettle is
+// the consume-once transition (unmatched → used, exactly one till wins);
+// eftPoolReverse is the owner's unwind that keeps both records. Decisions are
+// pure in lib/eft-settle.cjs; the two-tills race is pinned in
+// test/eft-pool-settle.test.cjs.
+// The remainder of a partially-applied payment becomes store credit (or a
+// visible /eft_unallocated hold); eftRemainderScan is the 5-minute sweep that
+// finishes any remainder whose follow-up IO crashed — pending never means lost.
+//   firebase deploy --only functions:eftPoolSearch,functions:eftPoolSettle,functions:eftPoolReverse,functions:eftRemainderScan
+exports.eftPoolSearch = require("./eftPool/eftPool.js").eftPoolSearch;
+exports.eftPoolSettle = require("./eftPool/eftPool.js").eftPoolSettle;
+exports.eftPoolReverse = require("./eftPool/eftPool.js").eftPoolReverse;
+exports.eftRemainderScan = require("./eftPool/eftPool.js").eftRemainderScan;
 
 // ─── ENGINE POLICY — setCategoryPolicy ────────────────────────────────────────
 // The ONLY supported way to change /config/refillEngine/categoryPolicy: the
@@ -3756,117 +4196,11 @@ async function generateSocialScene(apiKey, prompt, productImages, refs, format =
   });
 }
 
-// Fit the generated scene to the one size all three platforms accept. Never
-// crops: "inside" preserves the whole composition, which matters when the
-// model has spaced four products across the frame. Best-effort — on a sharp
-// failure the raw output is kept rather than the post being lost.
-async function normalizeSocialImage(buffer, fallbackMime, format = "feed") {
-  try {
-    const sharp = require("sharp");
-    const [w, h] = format === "feed" ? [SOCIAL_W, SOCIAL_H] : [SOCIAL_VERTICAL_W, SOCIAL_VERTICAL_H];
-    const out = await sharp(buffer)
-      .resize(w, h, { fit: "inside", withoutEnlargement: true })
-      .jpeg({ quality: 90, chromaSubsampling: "4:4:4" })
-      .toBuffer();
-    return { buffer: out, mime: "image/jpeg" };
-  } catch (e) {
-    console.warn("normalizeSocialImage failed, using raw output:", e && e.message);
-    return { buffer, mime: fallbackMime || "image/jpeg" };
-  }
-}
-
-// ── MEASURE THE PHOTOGRAPH SO THE LAYOUT CAN ANSWER TO IT ────────────────────
-// The master direction forbids a fixed layout: "Do not automatically place the
-// logo in the top-left, the product list on the right... Study the composition
-// first. If the left side has beautiful negative space, information can live
-// there." We cannot look at the picture the way an art director does, but we
-// can MEASURE it, which is enough to choose a side honestly.
-//
-// Mean luminance says whether type must be light or dark. Standard deviation
-// says whether a region is EMPTY: flat tone is negative space, high variance is
-// product. Those two numbers per edge are all social-design.cjs needs.
-async function measureEdges(buffer) {
-  try {
-    const sharp = require("sharp");
-    const meta = await sharp(buffer).metadata();
-    const w = meta.width || SOCIAL_W, h = meta.height || SOCIAL_H;
-    const third = Math.max(1, Math.floor(w / 3));
-    const band = Math.max(1, Math.floor(h / 4));
-    // ── extract() IS NOT HONOURED BY stats() ───────────────────────────────
-    // sharp's stats() reads the SOURCE image and ignores pipeline operations
-    // before it, so `sharp(buf).extract(region).stats()` returns the stats of
-    // the WHOLE image. Verified against sharp 0.33/0.34 with a half-black,
-    // half-white test image: both halves reported mean 127.5.
-    //
-    // Left unfixed this is invisible and total — every region returns the same
-    // numbers, chooseLayout() therefore sees no difference between the sides
-    // and always picks the same one, and the layout is fixed for every image
-    // while looking measured. The region must be MATERIALISED first.
-    const region = async (left, top, width, height) => {
-      const cut = await sharp(buffer).extract({ left, top, width, height }).toBuffer();
-      const st = await sharp(cut).greyscale().stats();
-      const ch = st.channels[0];
-      return { mean: ch.mean, stdev: ch.stdev };
-    };
-    const half = Math.max(1, Math.floor(h / 2));
-    const [left, right, lTop, lBot, rTop, rBot] = await Promise.all([
-      region(0, 0, third, h),
-      region(w - third, 0, third, h),
-      // Each column also measured in halves: a column can average flat while a
-      // product sits low in it, which is how the first render put the total
-      // block over a perfume box.
-      region(0, 0, third, half),
-      region(0, h - half, third, half),
-      region(w - third, 0, third, half),
-      region(w - third, h - half, third, half),
-    ]);
-    return {
-      left: { ...left, top: lTop, bottom: lBot },
-      right: { ...right, top: rTop, bottom: rBot },
-    };
-  } catch (e) {
-    // A measurement failure must not lose a paid image. social-design falls
-    // back to a sensible default side and light ink when the numbers are absent.
-    console.warn("measureEdges failed, layout will use defaults:", e && e.message);
-    return {};
-  }
-}
-
-// ── COMPOSITE THE TYPE ───────────────────────────────────────────────────────
-// The model produced a photograph with negative space and NO lettering. Every
-// name, every price and the outfit total are placed here, as real text, from
-// the product records — summed in code, never by a model.
-//
-// Best-effort in the same way normalizeSocialImage is: a failure here keeps the
-// photograph rather than losing a generation that has already been paid for. An
-// undesigned post is a post Junid can still look at; a lost one is not.
-async function compositeSocialDesign(buffer, { products, kind, format = "feed" }) {
-  try {
-    const socialDesign = require("./lib/social-design.cjs");
-    const rows = socialDesign.sellableRows(products || []);
-    if (!rows.length) return { buffer, designed: false, reason: "no product carried a usable price" };
-    const sharp = require("sharp");
-    const edges = await measureEdges(buffer);
-    // The overlay must match the photograph's ACTUAL size: normalizeSocialImage
-    // fits "inside" without enlarging, so it is often a few pixels short of
-    // its target and sharp refuses an overlay bigger than its base.
-    const meta = await sharp(buffer).metadata();
-    const canvas = socialDesign.canvasFor(format);
-    const svg = socialDesign.buildOverlay({
-      products, edges, kind, format,
-      width: meta.width || canvas.w,
-      height: meta.height || canvas.h,
-    });
-    const out = await sharp(buffer)
-      .composite([{ input: Buffer.from(svg), top: 0, left: 0 }])
-      .jpeg({ quality: 92, chromaSubsampling: "4:4:4" })
-      .toBuffer();
-    return { buffer: out, designed: true, named: rows.length };
-  } catch (e) {
-    console.warn("compositeSocialDesign failed, keeping the bare photograph:", e && e.message);
-    return { buffer, designed: false, reason: String(e && e.message) };
-  }
-}
+// Fitting the photograph to its canvas, measuring it, and compositing the type
+// over it — including the second, 1080x1350 render a twinned story carries —
+// live in lib/social-render.cjs, so the tests and scripts/social/proof-safe-zone.mjs
+// run exactly this code without Firebase. See docs/SOCIAL-SAFE-ZONE.md.
+const { normalizeSocialImage, compositeSocialDesign } = require("./lib/social-render.cjs");
 
 // Generated post media goes to its OWN Storage path, under the aiStudio prefix
 // the Style Kit already owns (public read, super-admin write — the access these
@@ -4104,8 +4438,12 @@ async function loadSocialGenerationContext(db, { nowMs, style }) {
   // that does not fit the partial-read rule, and it is called out rather than
   // hidden.
   //
-  // ONLY the unsellable locations are dropped, and that list is
-  // UNSELLABLE_LOCATIONS — the same one the Shopify inventory push uses.
+  // ONLY the locations that do not count toward online availability are
+  // dropped, and that list is ONLINE_EXCLUDED_LOCATIONS — the same one the
+  // Shopify inventory push uses (in_transit, plus hub3 and marathon-pine
+  // whose counts are not trusted, owner decision 2026-09-08). Dropping them
+  // HERE rather than only inside availableUnits also saves the point reads:
+  // cells that could not change the answer are never fetched.
   //
   // An earlier version also dropped `active: false` locations to save reads.
   // That quietly re-opened the very divergence the stock-parity test exists
@@ -4117,7 +4455,7 @@ async function loadSocialGenerationContext(db, { nowMs, style }) {
   // hundred point reads is not worth a second source of truth.
   const locationsSnap = await db.ref("locations").once("value");
   const locations = Object.keys(locationsSnap.val() || {})
-    .filter((id) => !socialSelect.UNSELLABLE_LOCATIONS.has(id));
+    .filter((id) => !socialSelect.ONLINE_EXCLUDED_LOCATIONS.has(id));
   const products = {}, stockByPid = {};
   const READ_BATCH = 20;
   for (let i = 0; i < shortlist.length; i += READ_BATCH) {
@@ -4159,9 +4497,49 @@ async function loadSocialGenerationContext(db, { nowMs, style }) {
  *
  * @returns { ok: true, created } or { ok: false, skipped }
  */
+// ── THE DAY'S IMAGE BUDGET, RESERVED BEFORE THE MONEY IS SPENT ───────────────
+// One RTDB transaction per generation, against a counter keyed on the SA date.
+// Durable (it is in the database, so a restarted instance sees it), shared
+// (the 06:00 autopilot and a Generate-tab run at 06:01 are two processes on
+// one budget), and taken BEFORE the paid call, so a generation that succeeds
+// at Gemini and then dies on the upload has still spent its unit — which is
+// what "retries count against it" means.
+//
+// The path is Admin-SDK-only and carries no rule, like /social_signal: nothing
+// in the browser reads or writes it, and a browser that could forge a spent
+// budget would be a browser that could switch the engine off.
+//
+// A FAILURE TO READ THE COUNTER REFUSES. If RTDB cannot be reached the honest
+// answer is "I do not know how much has been spent today", and the safe
+// reading of that is the cap. A cap that fails open is not a cap.
+async function claimImageGeneration(db, saDate) {
+  const cap = socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY;
+  try {
+    const res = await db.ref(`social_generation_budget/${saDate}/count`)
+      .transaction((cur) => socialBudget.reserveGeneration(cur, cap));
+    // committed is the only outcome that means a unit is ours. An abort is the
+    // cap (or an unreadable counter — see reserveGeneration).
+    if (res.committed) return { ok: true, count: Number(res.snapshot.val()) || 0, cap };
+    // ── "AT THE CAP" AND "I CANNOT READ THE COUNTER" ARE DIFFERENT NIGHTS ───
+    // Both refuse, and they must refuse — but they are not the same message.
+    // reserveGeneration aborts on a counter it does not trust as well as on a
+    // full one, so reporting every abort as "the cap of 4 was already reached"
+    // would tell the reader a deliberate limit had done its job on a morning
+    // when the database was unreachable. That is the same class of
+    // misdirection this whole PR is about: a skip whose stated reason sends
+    // you to the wrong place.
+    const current = res.snapshot.val();
+    const atCap = typeof current === "number" && Number.isFinite(current) && current >= cap;
+    return { ok: false, count: atCap ? current : cap, cap, why: atCap ? "cap" : "unreadable" };
+  } catch (err) {
+    console.error(`socialBudget: could not reserve a generation for ${saDate} — refusing:`, err && err.message);
+    return { ok: false, count: cap, cap, why: "unreadable" };
+  }
+}
+
 async function generateOnePost(db, {
   kind, format, style, platforms, styleKit, library, candidates, used,
-  signal, geminiApiKey, status, scheduledAt, updatedBy,
+  signal, geminiApiKey, status, scheduledAt, updatedBy, saDate,
 }) {
   const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
   if (!picks.length) return { ok: false, skipped: { kind, format, reason } };
@@ -4169,13 +4547,13 @@ async function generateOnePost(db, {
   const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
   const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
   let media = [];
+  // A story that will be twinned carries both renders of its design:
+  // { story: {url,width,height}, feed: {url,width,height} }. See social-render.
+  let artwork = null;
+  // Every object this call put in Storage, so a failed record write can remove
+  // all of them — a story now uploads two.
+  const uploadedUrls = [];
   let costUSD = 0;
-  // Set once the paid image is in Storage. If the record write then fails,
-  // the object is referenced by nothing and nothing would ever clean it up
-  // — so the catch deletes it. The COST is still counted either way by the
-  // caller: it reads costUSD off the skipped/created result either way, so
-  // the ledger stays honest about money spent even when the picture is lost.
-  let uploadedPath = null;
   // What was ACTUALLY sent to the model — library references plus Style Kit
   // references. Recording only the library share meant a post grounded on
   // six Style Kit photographs was filed as refsUsed: 0, i.e. the audit
@@ -4213,6 +4591,19 @@ async function generateOnePost(db, {
         style,
         styleNotes: library.notes,
       });
+      // ── THE CAP, IMMEDIATELY BEFORE THE ONLY LINE THAT COSTS MONEY ───────
+      // Here and nowhere else: this is the single paid call in the whole
+      // generator, so a unit reserved here can never be a unit spent
+      // somewhere the cap cannot see. Everything above is free — reading the
+      // catalogue, fetching product photographs, building a prompt — and a
+      // refusal at this point has charged nothing.
+      const budgetDay = saDate || saDateForUsage(Date.now());
+      const budget = await claimImageGeneration(db, budgetDay);
+      if (!budget.ok) {
+        throw new Error(budget.why === "unreadable"
+          ? socialBudget.unreadableBudgetReason(budgetDay)
+          : socialBudget.capReachedReason(budgetDay, budget.cap));
+      }
       const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
       costUSD = gen.costUSD;
       const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime, format);
@@ -4221,11 +4612,24 @@ async function generateOnePost(db, {
       const designed = await compositeSocialDesign(normBuf, {
         products: picks.map((p) => ({ displayName: p.displayName || p.name, retailPrice: p.retailPrice })),
         kind, format,
+        // The feed twin gets its own 1080x1350 render of the same design.
+        alsoFeed: format === "story" && STORY_ALSO_POSTS_TO_FEED,
       });
       const outBuf = designed.buffer;
       if (!designed.designed) console.warn(`social: ${kind} post went out undesigned — ${designed.reason}`);
-      uploadedPath = `aiStudio/social/posts/${postId}/0`;   // for the cleanup below
-      media = [{ url: await uploadSocialImage(postId, 0, outBuf, mime), type: "image" }];
+      const storyUrl = await uploadSocialImage(postId, 0, outBuf, mime);
+      uploadedUrls.push(storyUrl);
+      media = [{ url: storyUrl, type: "image" }];
+      if (designed.feed) {
+        const feedUrl = await uploadSocialImage(postId, "feed", designed.feed.buffer, mime);
+        uploadedUrls.push(feedUrl);
+        artwork = {
+          story: { url: storyUrl, width: designed.width, height: designed.height },
+          feed: { url: feedUrl, width: designed.feed.width, height: designed.feed.height },
+        };
+      } else if (format === "story" && STORY_ALSO_POSTS_TO_FEED) {
+        console.warn(`social: story ${postId} has no feed render (${designed.feedReason || designed.reason || "undesigned"}) — it will not be twinned onto the feed`);
+      }
     }
 
     // ── THE LINK ─────────────────────────────────────────────────────
@@ -4249,7 +4653,10 @@ async function generateOnePost(db, {
     // a caption IS shown, so the model is asked for a real one and the twin
     // carries it. The story still carries none — the two records are separate
     // and each is honest about its own surface.
-    const wantsTwin = socialTwin.wantsFeedTwin(format, media, STORY_ALSO_POSTS_TO_FEED);
+    // A twin needs the feed render. Without one the only picture is the
+    // 1080x1920 file, which the feed crops through the wordmark — so no twin.
+    const wantsTwin = socialTwin.wantsFeedTwin(format, media, STORY_ALSO_POSTS_TO_FEED)
+      && socialTwin.hasFeedArtwork({ artwork });
     const { caption, source: captionSource, reason: captionReason } =
       format === "story" && !wantsTwin
         ? { caption: socialCaption.fallbackCaption({ kind, products: picks }), source: "not-needed", reason: null }
@@ -4279,6 +4686,7 @@ async function generateOnePost(db, {
       kind,
       format,
       media,
+      ...(artwork ? { artwork } : {}),
       caption: storyCaption,
       captionSource: storyCaptionSource,
       ...(storyCaptionNote ? { captionNote: storyCaptionNote } : {}),
@@ -4314,7 +4722,8 @@ async function generateOnePost(db, {
     // can be two shapes at once would have touched every one of them. Two
     // records that happen to share an image touch none.
     //
-    // It shares: the picture (the identical URL — see STORY_ALSO_POSTS_TO_FEED),
+    // It shares: the design (the feed gets its own 1080x1350 render of it, see
+    // social-render.cjs — never the 1080x1920 file, which the feed crops),
     // the products, the link, the platforms, and the SLOT. Sharing the slot is
     // the point: "post them both places" means both go out on the same tick,
     // not hours apart. Two records on one timestamp is fine — the publisher
@@ -4327,12 +4736,30 @@ async function generateOnePost(db, {
     //
     // The image is NOT re-uploaded, so the failure cleanup below still has
     // exactly one object to worry about.
-    const twinId = wantsTwin ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
-    const twin = twinId
-      ? socialTwin.buildFeedTwin(record, {
-          twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
-        })
-      : null;
+    // ── OR THE STORY TWIN, WHICH IS THE SAME MECHANISM TURNED AROUND ─────────
+    // A reel also goes out as a story, from the SAME encoded video — the file
+    // does not exist yet (ffmpeg lives on the Mac mini, not here), so the twin
+    // carries `videoFrom` and the publisher resolves it. See social-twin.cjs.
+    //
+    // The two twins are mutually exclusive by construction: wantsFeedTwin only
+    // fires on a story and wantsStoryTwin only on a reel. Written as an
+    // if/else anyway, because "they cannot both be true" is the kind of thing
+    // that stays true until someone adds a format.
+    const storyTwinWanted = socialTwin.wantsStoryTwin(format, media, REEL_ALSO_POSTS_TO_STORY);
+    const twinId = (wantsTwin || storyTwinWanted) ? db.ref(SOCIAL_POSTS_PATH).push().key : null;
+    const twin = !twinId
+      ? null
+      : wantsTwin
+        ? socialTwin.buildFeedTwin(record, {
+            twinId, storyId: postId, caption, captionSource, captionNote: captionReason,
+          })
+        : socialTwin.buildStoryTwin(record, {
+            twinId, reelId: postId,
+            // The reel's model-written caption is NOT copied: nothing can show
+            // a story's caption, and a record claiming one it cannot display is
+            // the exact lie primaryCaptionFields exists to prevent.
+            fallbackCaption: socialCaption.fallbackCaption({ kind, products: picks }),
+          });
     // ── THE ALBUM RIDES THE SAME UPDATE ──────────────────────────────────────
     // Merged into the post's own atomic write rather than written after it. A
     // second, later write is a second thing that can fail, and the failure
@@ -4353,7 +4780,7 @@ async function generateOnePost(db, {
       created: {
         postId, kind, format, products: picks.length, costUSD: +costUSD.toFixed(6), captionSource,
         scheduledAt: scheduledAt || null,
-        ...(twinId ? { twinId, twinFormat: "feed" } : {}),
+        ...(twinId ? { twinId, twinFormat: wantsTwin ? "feed" : "story" } : {}),
       },
     };
   } catch (err) {
@@ -4362,9 +4789,9 @@ async function generateOnePost(db, {
     // orphaned by a failed record write. A failure here is logged and
     // ignored — an orphan costs pennies of storage; throwing would lose the
     // reason the post failed in the first place.
-    if (uploadedPath && media.length) {
+    for (const url of uploadedUrls) {
       try {
-        const objectPath = decodeURIComponent(new URL(media[0].url).pathname.split("/o/")[1] || "");
+        const objectPath = decodeURIComponent(new URL(url).pathname.split("/o/")[1] || "");
         if (objectPath) await admin.storage().bucket(STORAGE_BUCKET).file(objectPath).delete();
       } catch (cleanupErr) {
         console.warn(`social: could not clean up the orphaned image for ${postId}:`, cleanupErr && cleanupErr.message);
@@ -4465,6 +4892,9 @@ exports.generateSocialPosts = onCall(
         signal, geminiApiKey, status: "draft",
         scheduledAt: slots[index] || null,
         updatedBy: request.auth.uid,
+        // ONE budget, shared with the autopilot. A manual run on the morning
+        // the cron already spent the day's four must not get four more.
+        saDate: saDateForUsage(nowMs),
       });
       if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
       else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
@@ -4525,10 +4955,31 @@ exports.generateSocialPosts = onCall(
 // Social screen), read fresh on every run — see loadSocialPolicy below. These
 // are its defaults, used only when nothing has ever been saved there, so the
 // autopilot was never depending on that screen existing to run at all.
+// ── TWO REELS A DAY, AND NOTHING ELSE GENERATED ──────────────────────────────
+// Owner brief, 2026-09-19. Each reel also goes out as a story from the same
+// encoded file (REEL_ALSO_POSTS_TO_STORY), so the day is two generations and
+// four posts: 2 reels + 2 stories.
+//
+// THE FEED PHOTO AND THE STANDALONE STORIES ARE NOT DELETED, THEY ARE EMPTY.
+// `photos` and `stories` are the same lists they always were and every code
+// path behind them is untouched; they simply ask for nothing. Putting a time
+// back in either list — here, or in the Policy tab, which is the live config
+// and wins over these defaults — turns that slot straight back on with no
+// code change and no deploy.
+//
+// RTDB CANNOT STORE AN EMPTY ARRAY: a saved policy with no photos comes back
+// with the key ABSENT, not as []. asRtdbList already reads that as zero, which
+// is why "switched off" and "never configured" are distinguishable only by
+// whether a /social_policy record exists at all.
+//
+// 12:00 and 19:00 SAST: lunch, and after supper. The two windows a South
+// African audience is actually on a phone rather than at work or in traffic.
+// The old 08:00 slot competed with the commute and 18:00 with it in the other
+// direction.
 const DEFAULT_POLICY_TIMES = {
-  reels: ["08:00"],
-  photos: ["11:00"],
-  stories: ["09:00", "13:00", "17:00"],
+  reels: ["12:00", "19:00"],
+  photos: [],
+  stories: [],
 };
 // A safety ceiling on what a saved policy can ask for, independent of
 // whatever the UI itself enforces — the UI is a courtesy, this is the actual
@@ -4556,23 +5007,20 @@ const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
 // should be posted both places". A story is gone in 24 hours; the picture that
 // earned it is worth keeping.
 //
-// The twin reuses the STORY'S OWN IMAGE — the identical Storage URL, not a
-// re-render. That is a deliberate choice made against a measurement rather
-// than a guess. Instagram's feed used to refuse anything narrower than 4:5,
-// which would have made a 9:16 story impossible to feed-post without cropping
-// it; checked against the live account on 2026-08-27, a 9:16 feed container is
-// now ACCEPTED and the image comes back off Instagram's own CDN at 1072x1920.
-// It is not cropped to 4:5. So there is nothing to re-render, no second
-// generation to pay for, and no crop that could cut a product in half — the
-// twin is the same photograph, whole.
+// The twin is the same PHOTOGRAPH and the same DESIGN, in its own FILE. Until
+// 2026-09-13 it reused the story's 1080x1920 file, on the strength of a 9:16
+// feed container being accepted. But the feed shows that file in a 4:5 frame,
+// 285 rows off the top and the bottom, and on the 4 Sep NIKE NOCTA post the
+// MARATHON wordmark was sliced in half and the web address cropped away.
 //
-// The one visible consequence, stated because it is a real one: Instagram's
-// GRID thumbnail is at most 4:5, so a 9:16 post is centre-cropped in the grid
-// and whole when opened. That is inherent to posting a story-shaped picture on
-// the feed, not a defect in this code.
+// So the story's layout now lives inside y 345..1575 (social-design.cjs
+// SAFE_BAND), and social-render.cjs renders it a second time at a native
+// 1080x1350 over the same photograph's central rows. The twin's media is that
+// file (artwork.feed); a story without one is not twinned. See
+// docs/SOCIAL-SAFE-ZONE.md.
 //
 // WHAT IT COSTS: nothing extra to generate. One Nano Banana Pro image already
-// paid for, used twice. The twin does add one caption call — a story does not
+// paid for, composited twice. The twin does add one caption call — a story does not
 // need a caption and skips the model entirely, but a feed post shows one, so
 // the twin gets a real one. That is a few hundredths of a cent.
 //
@@ -4592,6 +5040,26 @@ const AUTOPILOT_KINDS = ["single", "pairing", "outfit", "flatlay"];
 // together, because a screen that promises feed copies the backend is not
 // making is worse than a screen that says nothing.
 const STORY_ALSO_POSTS_TO_FEED = process.env.STORY_ALSO_POSTS_TO_FEED !== "false";
+
+// ── EVERY REEL IS ALSO A STORY, FROM THE SAME ENCODED FILE ───────────────────
+// Owner brief, 2026-09-19: two reels a day, each one also posted as a story,
+// and nothing generated twice. The day is two image generations, two encodes
+// — one per reel — and four posts.
+//
+// It costs NOTHING extra. The picture is paid for once by the reel; the video
+// is encoded once on the Mac mini at publish time and the story sends the same
+// file (see social-twin.cjs's STORY_TWIN_ROLE and publish.mjs's
+// resolveVideoFor). Not even a caption: a story shows none on either platform,
+// so the twin never calls the model.
+//
+// A BUILD-TIME flag, the same convention as STORY_ALSO_POSTS_TO_FEED: set
+// REEL_ALSO_POSTS_TO_STORY=false in functions/.env and redeploy
+// functions:socialDailyAutopilot and functions:generateSocialPosts.
+//
+// KEEP IN STEP with socialCore.js's REEL_ALSO_POSTS_TO_STORY, which is what
+// the Policy tab reads to describe the day. socialFormat.test.js pins the two
+// literals together.
+const REEL_ALSO_POSTS_TO_STORY = process.env.REEL_ALSO_POSTS_TO_STORY !== "false";
 
 /**
  * The saved policy, or the built-in defaults if nothing has been saved.
@@ -4633,6 +5101,15 @@ async function loadSocialPolicy(db) {
   if (total < rawTotal) {
     console.warn(`socialDailyAutopilot: saved policy asked for ${rawTotal}/day, over MAX_ITEMS_PER_DAY (${MAX_ITEMS_PER_DAY}) and/or MAX_ITEMS_PER_FORMAT (${MAX_ITEMS_PER_FORMAT}) — trimmed to ${total}`);
   }
+  // ── TWO DAY CEILINGS, AND THE SMALLER ONE IS THE ONE THAT BITES ───────────
+  // MAX_ITEMS_PER_DAY (8) is what one unattended RUN can finish; the budget
+  // cap (4) is what the day may PAY for. A policy of six slots is legal by the
+  // clamp above, saves cleanly, and then makes four — every day, with the only
+  // trace in a skip reason. Said out loud here, and the Policy tab refuses to
+  // leave it unsaid too (PolicyCard's MAX_GENERATIONS_PER_DAY mirror).
+  if (total > socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY) {
+    console.warn(`socialDailyAutopilot: the policy asks for ${total} generations a day but the daily cap is ${socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} — ${total - socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} will be skipped every day until one of the two changes`);
+  }
   return clamped;
 }
 
@@ -4668,6 +5145,7 @@ function parseHHMM(s) {
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
 const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
 const socialTwin = require("./lib/social-twin.cjs");
+const socialBudget = require("./lib/social-budget.cjs");
 const socialLibrary = require("./lib/social-library.cjs");
 const DAY_MS = 86400000;
 
@@ -4695,6 +5173,30 @@ function nextHourSlot(fromMs, hour, minute = 0, taken = new Set()) {
   return null;   // exhausted two weeks of the same hour — a bug, not real load
 }
 
+// ── THE SKIPS, AS ONE READABLE SENTENCE PER DISTINCT CAUSE ───────────────────
+// Six skips for one cause is one line, not six. The count is kept because
+// "all six" and "one of six" are different mornings, and the reason is
+// already classified by classifyPhotoError, so a Gemini 429 arrives here as
+// "AI credits depleted or rate-limited (429) — check Gemini billing" rather
+// than a raw HTTP body.
+//
+// Returns null, never [], when there is nothing to say: RTDB cannot store an
+// empty array — it deletes the key — so writing one would leave YESTERDAY'S
+// reasons sitting on a run that had none. See the same guard on
+// social_health/days reasons.
+function summariseSkips(skipped) {
+  const byReason = new Map();
+  for (const s of skipped || []) {
+    const reason = String((s && s.reason) || "skipped").slice(0, 200);
+    byReason.set(reason, (byReason.get(reason) || 0) + 1);
+  }
+  const out = [...byReason.entries()]
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6)
+    .map(([reason, count]) => (count > 1 ? `${count}x ${reason}` : reason));
+  return out.length ? out : null;
+}
+
 exports.socialDailyAutopilot = onSchedule(
   {
     schedule: "0 6 * * *",
@@ -4703,6 +5205,11 @@ exports.socialDailyAutopilot = onSchedule(
     secrets: [geminiApiKey, anthropicApiKey],
     memory: "1GiB",
     // Up to MAX_ITEMS_PER_DAY (8) sequential generations, each able to spend
+    // — a WORST CASE that the daily budget cap (4) now makes unreachable in
+    // practice, since the fifth onward is refused before the Gemini call and
+    // returns in milliseconds. Sized for the old worst case anyway: the cap is
+    // a constant somebody may raise, and a timeout that only fits the current
+    // value of another constant is a trap for whoever raises it.
     // up to GEMINI_FETCH_TIMEOUT_MS (180s) on the Gemini call alone before
     // the rest of its own work — worst case that is 1440s before the LAST
     // caption or upload has even started. 540s (the onCall generator's own
@@ -4803,6 +5310,7 @@ exports.socialDailyAutopilot = onSchedule(
           kind: req.kind, format: req.format, style, platforms, styleKit, library, candidates, used,
           signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
           updatedBy: "cron:socialDailyAutopilot",
+          saDate,
         });
         if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
         else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
@@ -4814,8 +5322,27 @@ exports.socialDailyAutopilot = onSchedule(
         // queue, not just what was generated. socialHealthScan judges the day
         // on `created` — the generations — which is the number that goes to
         // zero when the picture engine is broken.
-        feedTwins: created.filter((c) => c.twinId).length,
+        feedTwins: created.filter((c) => c.twinFormat === "feed").length,
+        // Counted apart from feedTwins because they are different things: a
+        // feed twin is a second SURFACE for a picture already paid for, a
+        // story twin is a second surface for a VIDEO already encoded. Folding
+        // them into one number would make "twins" mean nothing.
+        storyTwins: created.filter((c) => c.twinFormat === "story").length,
         estCostUSD: +estCostUSD.toFixed(4),
+        // ── WHY IT SKIPPED, IN THE DATABASE, NOT ONLY IN A LOG ───────────────
+        // Between 2026-09-13 and 2026-09-19 this run wrote `created: 0,
+        // skipped: 6` every morning and nothing else. The REASON — Gemini
+        // answering 429 "prepayment credits are depleted" — existed only as a
+        // console line in Cloud Logging, which needs a Google identity with
+        // logging.viewer to read; the publisher's own service account is
+        // refused ("Permission denied for all log views"). So the one field
+        // that says what to DO about a dead engine was the one field nobody
+        // diagnosing it could reach, and six days of runs looked identical to
+        // a day with nothing worth posting.
+        //
+        // Deduped and bounded: the same reason six times is one entry with a
+        // count, so this stays a sentence rather than a transcript.
+        skipReasons: summariseSkips(skipped),
       });
       await logReorderUsage(db, saDate, {
         at: nowMs, kind: "socialDailyAutopilot", by: "cron",
@@ -4828,8 +5355,8 @@ exports.socialDailyAutopilot = onSchedule(
       // make a six-image day read as nine and quietly inflate every cost
       // comparison against it.
       const twins = created.filter((c) => c.twinId).length;
-      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ${twins} feed twin(s), ~$${estCostUSD.toFixed(3)}`,
-        { created: created.map((c) => `${c.kind}/${c.format}${c.twinId ? "+feed" : ""}`), skipped });
+      console.log(`socialDailyAutopilot ${saDate}: ${created.length} made, ${skipped.length} skipped, ${twins} twin(s), ~$${estCostUSD.toFixed(3)}`,
+        { created: created.map((c) => `${c.kind}/${c.format}${c.twinFormat ? `+${c.twinFormat}` : ""}`), skipped });
     } catch (err) {
       // The claim must not lie about a run that blew up partway through — a
       // half-finished day (the reel made, the crash before the stories) is
@@ -4912,6 +5439,17 @@ exports.socialHealthScan = onSchedule(
       autopilotLog: logSnap.val(),
       posts,
       publisherTickAt: tickSnap.val() ?? null,
+      // ── THE OBLIGATION FOLLOWS THE TWINS ─────────────────────────────────
+      // Two reel slots owe two reels AND two stories, because each reel is
+      // also posted as a story from the same encoded file. Passed in rather
+      // than re-derived inside the assessor, which is pure and has no
+      // business reading process.env — and passed as the LIVE flags, so
+      // switching a twin off in functions/.env cannot leave the watchdog
+      // alarming for the day about posts nobody is making any more.
+      twins: {
+        reelAlsoPostsToStory: REEL_ALSO_POSTS_TO_STORY,
+        storyAlsoPostsToFeed: STORY_ALSO_POSTS_TO_FEED,
+      },
     });
 
     // The record is written on EVERY run, healthy or not. A watchdog that only
@@ -4933,6 +5471,29 @@ exports.socialHealthScan = onSchedule(
 
     if (verdict.ok) {
       console.log(`socialHealthScan ${saDate}: ok`, verdict.counts);
+      return;
+    }
+
+    // ── ONLY "DOWN" REACHES A PHONE ──────────────────────────────────────────
+    // Owner, 2026-08-31: "the alert should only come when the system is down".
+    // He was right, and the reason is instructive: ONE post failed its
+    // Instagram leg on 28 August — Facebook took it, Instagram's media
+    // container had expired — and it can never succeed, because the container
+    // is gone. It sat in `failed`, so every day since, a healthy engine that
+    // generated and published everything it owed still produced
+    // `degraded · 1 post(s) are in failed` and mailed him about it.
+    //
+    // An alarm that fires on a known, unfixable, three-day-old backlog item is
+    // an alarm that teaches you to ignore alarms — and the next one it sends
+    // will be the real outage nobody opens.
+    //
+    // So DEGRADED is recorded and shown, but does not page. Only SILENT does:
+    // nothing published when something was owed, or the publisher stopped
+    // ticking. That is the shape of "down", and it is the shape that was
+    // actually happening at 01:16 this morning when the publisher stalled for
+    // 625 minutes and nothing on this earth would have told him.
+    if (verdict.severity !== "silent") {
+      console.log(`socialHealthScan ${saDate}: ${verdict.severity} (not paging)`, verdict.reasons);
       return;
     }
 
@@ -4999,3 +5560,84 @@ function socialScheduleSlots(existingPosts, count, fromMs) {
 
 // The usage ledger is keyed by SA calendar date, like every other entry in it.
 const saDateForUsage = (ms) => require("./lib/sa-time.cjs").saDateStringFromMs(ms);
+
+// ─── OFFLINE MIRROR — the change log every device reads ──────────────────────
+// One trigger per mutable mirrored node appends a tiny pointer record to
+// /mirror_changes; a daily census publishes row counts to /mirror_counts so a
+// dropped invocation self-heals instead of drifting for ever; a daily sweep
+// holds the log to thirty days. Design and the rule to paste:
+// docs/store-offline-mirror.md. Deploy scoped by name — the full list is
+// printed by `node scripts/print-mirror-deploy.mjs`.
+{
+  const mirror = require("./mirrorChanges/mirrorChanges.js");
+  for (const name of Object.keys(mirror)) {
+    // The underscore-prefixed exports are the pure helpers the node:test suite
+    // imports. They are not functions and must never be deployed as any.
+    if (name.startsWith("_")) continue;
+    exports[name] = mirror[name];
+  }
+}
+
+// ─── INSIGHTS ROLLUP SWEEP ───────────────────────────────────────────────────
+//
+// Writes one node per finished SA day at /insights_rollup/days/{date}, holding
+// that day's /insights_log rows dictionary-encoded — about a fifth of the bytes
+// (measured: 338,270 -> 72,439 on 2026-09-18). The Insights, Customers and
+// Admin screens read the days their window needs instead of the whole 35.99 MB
+// node, and read today live and bounded because today is still being written.
+//
+// Every read the sweep makes is bounded, even though the Admin SDK bypasses
+// the rules that would insist on it: this project's largest bill is database
+// egress, and a server-side once("value") costs the same 35.99 MB a browser's
+// does.
+//
+// All the logic is in functions/insightsRollup/builder.cjs and is unit-tested
+// against a fake database that actually honours key ranges and page limits.
+// This is the wiring.
+//
+// FOUR TIMES A DAY. A rebuild is idempotent and the sweep is cheap — one short
+// page of what is new, plus two or three day rebuilds — so the cadence is set
+// by how soon a finished day should appear rather than by cost. 00:20 SA closes
+// yesterday twenty minutes after midnight; the other three catch late writes.
+//
+//   firebase deploy --only functions:insightsRollupSweep
+const { runSweep: _runInsightsRollupSweep } = require("./insightsRollup/builder.cjs");
+const { makeIo: _insightsRollupIo } = require("./insightsRollup/io.cjs");
+
+exports.insightsRollupSweep = onSchedule(
+  {
+    schedule: "20 0,7,13,19 * * *",
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    memory: "512MiB",
+    timeoutSeconds: 540,
+    // ONE at a time. Two overlapping sweeps would write identical bytes (a day
+    // node is a pure function of its day), so this is belt and braces rather
+    // than the correctness story — but there is no reason to pay twice.
+    maxInstances: 1,
+  },
+  async () => {
+    const db = admin.database();
+    const res = await _runInsightsRollupSweep({
+      io: _insightsRollupIo(db),
+      nowMs: Date.now(),
+      log: (m) => console.log(m),
+    });
+    console.log(
+      `insightsRollupSweep: built ${res.dates.length} day(s), ${res.rows} rows` +
+      (res.late ? `, ${res.late} late row(s) bucketed` : "") +
+      (res.truncated ? " — CATCH-UP TRUNCATED, another run is needed" : ""),
+    );
+    // A refused cursor advance is not a no-op to log and move on from. The day
+    // nodes landed — they are recomputations — but this run's rows were NOT
+    // folded into the counter the Insights sidebar reads, and the next run
+    // starts from the same place. Returning normally would make a run that
+    // never advances look exactly like a quiet day, for ever. (CodeRabbit.)
+    if (res.advanced === false) {
+      throw new Error(
+        "insightsRollupSweep: the cursor advance was refused — the counter did not move. " +
+        "Either another writer moved it (a backfill?), or the transaction is failing.",
+      );
+    }
+  },
+);

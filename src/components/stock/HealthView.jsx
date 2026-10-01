@@ -12,20 +12,21 @@
 //                card-by-card cleanup; Central queue → per-size availability
 //                transfer), read-only where it's intelligence.
 //
-// Data producers: functions/refill-scan.cjs (15-min scan) → /stock_exceptions,
+// Data producers: functions/refill-scan.cjs (hourly scan) → /stock_exceptions,
 // /refill_engine/shadow, /stock_confidence. All styling comes from ui.js tokens
 // + healthWidgets.jsx — the existing design language, no new system.
 
-import React, { useMemo, useState } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { ref, update, set } from "firebase/database";
 import { database } from "../../firebase";
 import {
-  useStockExceptions, useEngineShadow, useEngineOpen, useEngineRuns,
+  useStockExceptions, useStrandedTransit, useEngineShadow, useEngineOpen, useEngineRuns,
   useEngineConfig, useRefillRequests, useReceivingSession, useStockCells,
   useStockTargetsState,
   useStockTargets, useTransfers, useRetryState,
-  useHiddenMissingProducts,
+  useHiddenMissingProducts, useRefusalWriteoffs, useRefusalWriteoffDigestStatus,
 } from "./useStock";
+import { writeoffRows, recentCount, digestStatusLine } from "./refusalWriteoffsCore";
 import InTransit from "./InTransit";
 import { STALE_TRANSIT_HOURS } from "./transitLanes";
 import IntroduceExisting from "./IntroduceExisting";
@@ -36,7 +37,11 @@ import { decodeSizeKey, encodeSizeKey } from "../../utils/sizeKey";
 import { FONT, BG, GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen } from "./ui";
 import { StatCard, DetailShell, ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
 import RefillQueue from "./RefillQueue";
-import MoveExcess from "./MoveExcess";
+// The store-source clothing excess screen (MoveExcess) is NOT deleted — it
+// stays mounted at Stock → Move Excess (StockView.jsx:112). This tab is now the
+// sneakers-only hub → Central screen; hub clothing excess returns here by
+// flipping config/refillEngine/excessClothingEnabled, with no code change.
+import ExcessHubToCentral from "./ExcessHubToCentral";
 import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
@@ -210,14 +215,24 @@ function RecountChip({ row, actorRole }) {
     setState("busy");
     try {
       await set(ref(database, `refill_engine/rejectStreak/${row.loc}/${row.pid}/${encodeSizeKey(row.size)}`), null);
-      setState("cleared");   // exception list refreshes on the next scan (≤15 min)
+      setState("cleared");   // exception list refreshes on the next scan (≤1 h)
     } catch { setState("failed"); }
   };
+  // PASS-THROUGH (2026-09-23): while the shop's need is being routed round
+  // the disputed count — or after it was — the row says so, so nobody reads
+  // "the shop is stuck" when Central is already sending. The count is still
+  // the thing to fix, which is why the row stays.
+  const routed = row.passThrough === "raised" || row.passThrough === "in_flight"
+    ? `Central is sending ${locLabel(row.source)} this shop's ${row.deficit} — the shop asks again when it lands`
+    : row.countDisputed
+      ? `Stock was routed round this count — recount ${locLabel(row.source)} (a Count or Adjust clears this)`
+      : null;
   return (
-    <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+    <span style={{ display: "inline-flex", flexDirection: "column", gap: 3, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 7 }}>
       <span style={{ fontWeight: 800, color: "#fff" }}>{row.size || "One size"}</span>
       <span style={{ fontWeight: 700, color: RED }}>
-        for {locLabel(row.loc)} · {row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
+        for {locLabel(row.loc)} · {row.countDisputed ? "count disputed" : row.rejections != null ? `${row.rejections}× no` : "both levels"} · {locLabel(row.source)} shows {row.showing}
       </span>
       {/* confirmedOut rows (rejections == null) have no streak node to clear —
           their suppression is the 14-day both-levels window, which a recount
@@ -228,6 +243,8 @@ function RecountChip({ row, actorRole }) {
           {state === "busy" ? "…" : state === "cleared" ? "Cleared ✓" : state === "failed" ? "Retry" : "Recounted — ask again"}
         </button>
       )}
+    </span>
+      {routed && <span data-routed style={{ fontSize: 11, color: "rgba(255,255,255,.7)" }}>{routed}</span>}
     </span>
   );
 }
@@ -256,6 +273,18 @@ export default function HealthView({ products = [], onExit }) {
   // the whole Inventory Health visit. (Sonnet substitute review, PR #361.)
   const [solveUndoables, setSolveUndoables] = useState([]);
   const exceptions = useStockExceptions();
+  // Units the hold lane parked in stock/in_transit that the hourly sweep could
+  // NOT land by itself (a deleted product, a phantom line) — the one place
+  // those refusals are read (FULFIL-CREDIT-GAP.md; Fable-vs-spec review, PR #602).
+  const strandedState = useStrandedTransit();
+  const strandedTransit = strandedState.value;
+  const strandedKnown = strandedState.settled && !strandedState.error && !!strandedTransit;
+  const strandedRows = useMemo(() => [
+    ...((strandedTransit?.refusals) || []).map((r) => ({ ...r, kind: "refused" })),
+    ...((strandedTransit?.failures) || []).map((r) => ({ ...r, kind: "failed" })),
+    ...((strandedTransit?.pending) || []).map((r) => ({ ...r, kind: "pending" })),
+  ], [strandedTransit]);
+  const strandedNeedsHuman = strandedRows.filter((r) => r.kind !== "pending").length;
   const shadow = useEngineShadow();
   const openEngine = useEngineOpen();
   const runs = useEngineRuns(8);
@@ -283,7 +312,7 @@ export default function HealthView({ products = [], onExit }) {
   );
 
   // Live negative clothing cells across the whole network (never the snapshot:
-  // the scan exceptions lag up to 15 min, which made fixed cells look unfixed).
+  // the scan exceptions lag up to an hour, which made fixed cells look unfixed).
   const liveNegatives = useMemo(() => {
     if (!allStock || !Object.keys(allStock).length) return null; // still loading
     const isClothingP = (p) => p?.productType === "clothing" ||
@@ -302,6 +331,23 @@ export default function HealthView({ products = [], onExit }) {
   }, [allStock, byId]);
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  // WRITTEN OFF AFTER REFUSAL (2026-09-23) — Junid only. The read is never
+  // opened for anyone else; staff see nothing new on this screen.
+  const writeoffState = useRefusalWriteoffs(isSuperAdmin);
+  const digestStatus = useRefusalWriteoffDigestStatus(isSuperAdmin);
+  // A minute tick, so a tab left open still turns red when the digest goes
+  // stale or a check never finishes — with no database change to re-render it
+  // (CodeRabbit, #644). Super admin only, like the card.
+  const [digestNowMs, setDigestNowMs] = useState(() => serverNowMs());
+  useEffect(() => {
+    if (!isSuperAdmin) return undefined;
+    const id = setInterval(() => setDigestNowMs(serverNowMs()), 60_000);
+    return () => clearInterval(id);
+  }, [isSuperAdmin]);
+  const digestLine = digestStatus.settled
+    ? (digestStatus.error ? { tone: "fail", text: "Could not read how the daily email went." } : digestStatusLine(digestStatus.value, digestNowMs))
+    : null;
+  const writeoffList = useMemo(() => writeoffRows(writeoffState.value), [writeoffState.value]);
   const canRunSession = ["store", "warehouse", "admin"].includes(actorRole);
 
   const toggleSession = async () => {
@@ -445,8 +491,8 @@ export default function HealthView({ products = [], onExit }) {
         );
       case "excess":
         return (
-          <DetailShell title="Excess Rebalance" sub="Above target — one tap auto-splits: network needs → Hub 2, true surplus → Central" count={count("excess")} onBack={back}>
-            <MoveExcess products={products} actorRole={actorRole} />
+          <DetailShell title="Excess Inventory" count={count("excess")} onBack={back}>
+            <ExcessHubToCentral products={products} actorRole={actorRole} />
           </DetailShell>
         );
       case "intransit":
@@ -633,6 +679,209 @@ export default function HealthView({ products = [], onExit }) {
             <NoTargetQueue products={products} />
           </DetailShell>
         );
+      // ── FOOTWEAR COVERAGE (2026-09-15) ────────────────────────────────────
+      // Two lists the scan computes from its own snapshot (refill-engine.cjs,
+      // "FOOTWEAR COVERAGE"). Read-only here: the fix for a row is the record
+      // (give it a category), the Engine Policy card (arm the category at
+      // that hub) or the Seating tab (move it to a hub) — never a write from
+      // this screen, because a policy says HOW MANY and this screen must not
+      // decide WHERE.
+      // ── SHORT BUT NOT REQUESTED (2026-09-23) ────────────────────────────────
+      // The scan's standing check: every shop cell below its keep, with the
+      // size at its hub or Central, and NOTHING on its way. Read-only — every
+      // row names why the engine parked it, so what is here is either a
+      // person's call (a recount, a refusal upstream) or a defect. Owner report
+      // that started it: PE / M of the Brown 2 tracksuit, empty for weeks with
+      // 38 mediums at Central. Computed by refill-engine.cjs on every scan from
+      // the snapshot it already holds; this screen only draws it.
+      // ── WRITTEN OFF AFTER REFUSAL (2026-09-23, super admin only) ─────────────
+      // Every size the scan erased because the location said "out of stock" on
+      // four different days with no fulfilment in between
+      // (functions/lib/refusal-writeoff.cjs). Read-only: what, where, how many,
+      // and who said no on which day. The same list is emailed daily.
+      case "refusalWriteoffs": {
+        if (!isSuperAdmin) return null;
+        const groups = new Map();
+        for (const r of writeoffList) { if (!groups.has(r.pid)) groups.set(r.pid, []); groups.get(r.pid).push(r); }
+        const units = writeoffList.reduce((t, r) => t + r.units, 0);
+        return (
+          <DetailShell title="Written off after refusal"
+            sub={`Sizes a location said were not there on four different days, with no fulfilment in between — their count was erased so the size flows again. ${writeoffList.length} write-off${writeoffList.length === 1 ? "" : "s"}, ${units} unit${units === 1 ? "" : "s"} (newest first).`}
+            count={writeoffList.length} onBack={back}>
+            {digestLine && (
+              <div data-digest-status={digestLine.tone} style={{ ...GLASS, padding: 14, fontSize: 13, lineHeight: 1.5,
+                color: digestLine.tone === "fail" ? RED : digestLine.tone === "warn" ? AMBER : GREEN }}>
+                {digestLine.text}
+              </div>
+            )}
+            {writeoffState.error && (
+              <div style={{ ...GLASS, padding: 16, color: RED, fontSize: 13 }}>Could not read the write-offs.</div>
+            )}
+            {writeoffState.settled && !writeoffState.error && writeoffList.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Nothing has been written off</div>
+            )}
+            {[...groups.entries()].map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid) !== pid ? nameOf(pid) : rows[0].productName}
+                badges={<Badge tone={AMBER}>WRITTEN OFF</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {rows.map((r) => (
+                    <div key={r.id} data-writeoff-row={r.id} style={{ marginBottom: 8 }}>
+                      <SizeFactChip size={r.size} value={`${r.location} · ${r.units} written off${r.left != null ? ` · ${r.left} left` : ""}`} tone={AMBER} />
+                      <div style={{ marginTop: 3 }}>
+                        {r.refusals.map((x, i) => (
+                          <span key={i}>{i ? " · " : "Refused "}{x.when} by {x.who}{x.device ? ` on phone ${x.device}` : ""}{x.forShop ? ` (for ${x.forShop})` : ""}</span>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
+      case "shortNotRequested": {
+        const snr = ex.shortNotRequested || {};
+        const REASON = {
+          recount: "Hub said “not there” repeatedly while its count shows stock, and Central could not be asked instead (it has none, has refused, or its units are promised) — recount the hub",
+          confirmed_out: "Refused at both the hub and Central in the last 14 days — the shelves beat the count",
+          upstream_blocked: "Central recently refused the hub's restock — the engine asks again after the cooldown",
+          cooldown: "Refused recently — the engine asks again on its own after the retry window",
+          awaiting_upstream: "Hub is empty and its own restock is not open yet",
+          hub_no_target: "The hub keeps none of this size (a deliberate 0) or Central's units are already promised",
+          throttled: "Raised on the next scan — this scan hit its request cap",
+        };
+        const shops = (snr.shops || []).map(locLabel);
+        const summary = Object.entries(snr.byReason || {}).map(([k, n]) => `${n} ${k.replace(/_/g, " ")}`).join(" · ");
+        return (
+          <DetailShell title="Short but not requested"
+            sub={`Shop sizes below their keep, with stock at the hub or Central, and no request on its way. Checked every scan${shops.length ? ` for ${shops.join(" and ")}` : ""}${(snr.shops || []).includes("marathon-pine") ? "" : " (Pine has no keep numbers, so nothing there can be short)"}.${summary ? ` ${summary}.` : ""}${count("shortNotRequested") > items("shortNotRequested").length ? ` Showing ${items("shortNotRequested").length} of ${count("shortNotRequested")}.` : ""}`}
+            count={count("shortNotRequested")} onBack={back}>
+            {count("shortNotRequested") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every short shop size has a request on its way 🎉</div>
+            )}
+            {groupByProduct(items("shortNotRequested")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={RED}>NOTHING ASKED</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {rows.map((r) => (
+                    <div key={`${r.loc}|${r.size}`} data-snr-row={`${r.loc}|${r.size}`} style={{ marginBottom: 6 }}>
+                      <SizeFactChip size={r.size || "one size"}
+                        value={`${locLabel(r.loc)} ${r.have}/${r.keep} · ${locLabel(r.hub)} ${r.hubHas} · ${locLabel(r.upstream)} ${r.upHas}`}
+                        tone={RED} />
+                      <div style={{ marginTop: 3 }}>{REASON[r.reason] || `Unexplained (${r.reason}) — report this`}</div>
+                    </div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
+      case "unarmedFootwear": {
+        const REASON = {
+          no_category_key: "no category on the record — assign one",
+          no_policy: "category not armed at this hub — arm it in Engine Policy, or move the units",
+          size_not_declared: "size is stocked but not on the record — declare it",
+          size_outside_run: "size is not in the hub's per-size policy — widen the run",
+        };
+        return (
+          <DetailShell title="Unarmed Footwear" sub={`Sizes holding units at a hub where no policy, rule or row arms THAT size — the engine will never restock those units; the product's other sizes may be armed. Legacy sneakers with no category key are governed since 15 Sep; what is left needs a decision.${count("unarmedFootwear") > items("unarmedFootwear").length ? ` Showing the largest ${items("unarmedFootwear").length} of ${count("unarmedFootwear")}.` : ""}`} count={count("unarmedFootwear")} onBack={back}>
+            {count("unarmedFootwear") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every stocked shoe at every hub is armed 🎉</div>
+            )}
+            {groupByProduct(items("unarmedFootwear")).map(([pid, rows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)}
+                badges={<Badge tone={AMBER}>{rows[0]?.key || "NO CATEGORY"}</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {rows.map((r, i) => (
+                    <div key={i} style={{ marginBottom: 6 }}>
+                      <div>{locLabel(r.loc)} · {r.units} unit{r.units === 1 ? "" : "s"} unarmed</div>
+                      <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                        {(r.sizes || []).map((sz, j) => <SizeFactChip key={j} size={sz.size || "one size"} value={`${sz.units} · ${REASON[sz.reason] || sz.reason}`} tone={AMBER} />)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
+      case "footwearPolicyDrift":
+        return (
+          <DetailShell title="Footwear Policy Drift" sub="Every footwear category at Hub 1 and Hub 2 follows ONE footwear policy (Engine Policy → Footwear). Each line is a way that is no longer true — a category with its own numbers, a category left out, Hub 1 and Hub 2 not matching. Fix it on the Engine Policy card; the next scan clears the line." count={count("footwearPolicyDrift")} onBack={back}>
+            {count("footwearPolicyDrift") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Footwear is one policy 🎉</div>
+            )}
+            {items("footwearPolicyDrift").map((d, i) => (
+              <div key={i} style={{ ...GLASS, padding: "12px 14px", marginBottom: 8, fontSize: 13, color: "rgba(255,255,255,.85)" }}>
+                <Badge tone={RED}>{String(d.kind || "").replace(/_/g, " ").toUpperCase()}</Badge>
+                <div style={{ marginTop: 6 }}>{d.detail}</div>
+              </div>
+            ))}
+          </DetailShell>
+        );
+      case "unorderableFootwear":
+        return (
+          <DetailShell title="Unorderable Footwear" sub={`Shoes with units somewhere in the network but no stock cell at Hub 1 or Hub 2. The order sheet reads only the two hubs, so every size shows dashed, and a hub policy cannot arm a product the hub does not hold. Seat it (Engine Policy → Seating → Move) or transfer it.${count("unorderableFootwear") > items("unorderableFootwear").length ? ` Showing the largest ${items("unorderableFootwear").length} of ${count("unorderableFootwear")}.` : ""}`} count={count("unorderableFootwear")} onBack={back}>
+            {count("unorderableFootwear") === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>Every stocked shoe has a hub cell 🎉</div>
+            )}
+            {items("unorderableFootwear").map((r) => (
+              <ProductCard key={r.pid} photo={byId.get(r.pid)?.photoUrl} name={nameOf(r.pid)}
+                badges={<Badge tone={AMBER}>SEATED NOWHERE</Badge>}>
+                <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                  {Object.entries(r.byLoc || {}).map(([loc, u]) => <SizeFactChip key={loc} size={locLabel(loc)} value={`${u} unit${u === 1 ? "" : "s"}`} tone={AMBER} />)}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      case "shortfalls": {
+        const rows = exceptions?.shortfalls?.items || [];
+        return (
+          <DetailShell title="Sale Shortfalls" sub={`A sale or layby rang more units than the cell held. The sale stands; the cell stopped at 0; the difference is recorded on the movement. Per cell, over the scan's ledger window (a flow, not a stock figure). Count the shelf.${count("shortfalls") > rows.length ? ` Showing the newest ${rows.length} of ${count("shortfalls")}.` : ""}`} count={count("shortfalls")} onBack={back}>
+            {rows.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>No recent shortfalls 🎉</div>
+            )}
+            {groupByProduct(rows).map(([pid, prows]) => (
+              <ProductCard key={pid} photo={byId.get(pid)?.photoUrl} name={nameOf(pid)} badges={<Badge tone={AMBER}>SHORTFALL</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.6 }}>
+                  {prows.map((r, i) => (
+                    <div key={i}>{locLabel(r.loc)} · size {r.size} · {r.uncovered} of {r.sold} sold uncovered{r.withheldReturns ? ` · ${r.withheldReturns} return unit(s) held back` : ""} · {r.events} event(s) · last {fmtTs(r.lastTs)}</div>
+                  ))}
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
+      case "strandedTransit": {
+        const HUB_NAMES = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+        return (
+          <DetailShell title="Stranded In Transit"
+            sub={strandedKnown ? `Hourly sweep · last ${fmtTs(strandedTransit.computedAt)} · ${strandedTransit.released || 0} released last run` : strandedState.error ? "Could not read the sweep's report" : strandedState.settled ? "The hourly sweep has not run yet" : "Loading…"}
+            count={strandedKnown ? strandedRows.length : null} onBack={back}>
+            {strandedKnown && strandedRows.length === 0 && (
+              <div style={{ ...GLASS, padding: 20, textAlign: "center", color: GREEN, fontWeight: 700, fontSize: 14 }}>
+                Nothing parked that the sweep cannot land 🎉
+              </div>
+            )}
+            {strandedRows.map((r) => (
+              <ProductCard key={`${r.kind}|${r.lineId}`} photo={byId.get(r.productId)?.photoUrl}
+                name={r.productName || nameOf(r.productId)}
+                badges={<Badge tone={r.kind === "pending" ? AMBER : RED}>{r.kind === "pending" ? "PENDING" : r.kind === "failed" ? "FAILED" : "NEEDS A DECISION"}</Badge>}>
+                <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.5 }}>
+                  <div>Size {r.size || r.sizeKey} · {r.qty ?? r.inTransitQty ?? "?"} unit(s) · to {HUB_NAMES[r.dest] || r.dest || "—"}{r.shipmentId ? ` · shipment ${r.shipmentId}` : ""}</div>
+                  <div style={{ color: "rgba(255,255,255,.55)" }}>{r.why || r.reason}</div>
+                  <div style={{ color: "rgba(255,255,255,.35)", fontSize: 11 }}>{r.productId} · {r.lineId}</div>
+                </div>
+              </ProductCard>
+            ))}
+          </DetailShell>
+        );
+      }
       case "negative": {
         // LIVE data (bugfix): fixed cells disappear instantly instead of
         // lingering in the up-to-15-min-old scan snapshot.
@@ -742,6 +991,22 @@ export default function HealthView({ products = [], onExit }) {
               <StatCard label="Auto Refill Status" value={modeSummary} tone={modeTone}
                         sub={lastRun?.counts ? `${lastRun.counts.intents || 0} created · ${lastRun.counts.shadow || 0} planned last scan` : undefined}
                         onClick={() => setScreen("activity")} />
+              {/* SHORT BUT NOT REQUESTED (2026-09-23) — the standing check that a
+                  shop size below its keep, with stock upstream, is never left
+                  with nothing asked. Scan-computed, read-only; up front
+                  because a non-zero here is a shop shelf the engine is NOT
+                  going to fill on its own. */}
+              <StatCard label="Short but not requested" value={count("shortNotRequested")} tone={count("shortNotRequested") ? RED : GREEN}
+                        sub="Shop below keep, stock upstream, nothing asked" onClick={() => setScreen("shortNotRequested")} />
+              {/* WRITTEN OFF AFTER REFUSAL (2026-09-23) — super admin only. */}
+              {isSuperAdmin && (
+                <StatCard label="Written off after refusal"
+                          value={!writeoffState.settled ? "…" : writeoffState.error ? "!" : recentCount(writeoffList, serverNowMs())}
+                          tone={writeoffState.error || digestLine?.tone === "fail" ? RED : AMBER}
+                          sub={digestLine?.tone === "fail" ? "Daily email problem — tap for why"
+                            : digestLine?.tone === "warn" ? "Daily email unconfirmed — tap for why" : "Refused on 4 different days · last 30 days"}
+                          onClick={() => setScreen("refusalWriteoffs")} />
+              )}
               <StatCard label="Waiting for Hub 2" value={storeWaiting} tone={storeWaiting ? BLUE_L : GREEN}
                         sub="Store refills · in Warehouse → Clothing" onClick={() => setScreen("autorefills")} />
               <StatCard label="Waiting for Central" value={centralQueue} tone={centralQueue ? BLUE_L : GREEN}
@@ -783,6 +1048,26 @@ export default function HealthView({ products = [], onExit }) {
                         value={liveNegatives == null ? count("negativeCells") : liveNegatives.length}
                         tone={(liveNegatives == null ? count("negativeCells") : liveNegatives.length) ? RED : GREEN}
                         sub="Live count — one-tap fix" onClick={() => setScreen("negative")} />
+              <StatCard label="Sale Shortfalls" value={count("shortfalls")} tone={count("shortfalls") ? AMBER : GREEN}
+                        sub="Recent sales the books could not cover — a sale no longer takes a cell negative" onClick={() => setScreen("shortfalls")} />
+              {/* FOOTWEAR COVERAGE (2026-09-15) — the scan's two standing blind-spot
+                  lists for shoes: every clothing queue on this screen is
+                  isClothing-gated, so a shoe stocked with nothing arming it
+                  had no card until now. Both are read from the 15-min
+                  exceptions snapshot like Missing Sizes; neither writes. */}
+              <StatCard label="Unarmed Footwear" value={count("unarmedFootwear")} tone={count("unarmedFootwear") ? AMBER : GREEN}
+                        sub="Stocked sizes at a hub that no policy, rule or row arms" onClick={() => setScreen("unarmedFootwear")} />
+              {/* ONE FOOTWEAR POLICY (2026-09-24) — structural drift, from the
+                  same check the Engine Policy card badges. Zero is the only
+                  healthy number. */}
+              <StatCard label="Footwear Policy Drift" value={count("footwearPolicyDrift")} tone={count("footwearPolicyDrift") ? RED : GREEN}
+                        sub="Footwear categories not following the one footwear policy" onClick={() => setScreen("footwearPolicyDrift")} />
+              <StatCard label="Unorderable Footwear" value={count("unorderableFootwear")} tone={count("unorderableFootwear") ? AMBER : GREEN}
+                        sub="Units in the network, no cell at either hub — the order sheet can't offer it" onClick={() => setScreen("unorderableFootwear")} />
+              <StatCard label="Stranded In Transit" value={strandedKnown ? strandedRows.length : "—"}
+                        tone={!strandedKnown ? GRAY : strandedNeedsHuman ? RED : strandedRows.length ? AMBER : GREEN}
+                        sub={!strandedKnown ? (strandedState.error ? "Report unreadable" : strandedState.settled ? "Sweep has not run yet" : "Loading…") : strandedNeedsHuman ? "Parked units the hourly sweep cannot land" : "Hold-lane units land on their own"}
+                        onClick={() => setScreen("strandedTransit")} />
               <StatCard label="Stuck Refills" value={count("stuckRefills")} tone={count("stuckRefills") ? RED : GREEN}
                         sub={`Waiting > ${config?.staleIntentHours || 48}h`} onClick={() => setScreen("activity")} />
             </div>

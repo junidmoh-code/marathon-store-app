@@ -4,13 +4,15 @@
 // rules require auth != null — a listener registered before sign-in is rejected
 // and does NOT auto-retry on permission errors.
 
-import { useEffect, useMemo, useState } from "react";
-import { ref, onValue } from "firebase/database";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { ref, onValue, query, orderByKey, limitToLast } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
+import { useMirroredPath } from "../../offline/useMirroredPath";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { STOCK_HOLD_ROOT } from "../../config/stockHold";
 import { DISPLAY_SLOTS_ROOT } from "./displaySlots";
+import { DISPLAY_ROWS_ROOT } from "./displayRowCore";
 import { HIDDEN_ROOT } from "./hiddenProductsCore";
 
 function useAuthReady() {
@@ -19,22 +21,32 @@ function useAuthReady() {
   return ready;
 }
 
+// ─── THE OFFLINE MIRROR ENTERS HERE ──────────────────────────────────────────
+//
+// usePath and usePathState are the chokepoint for /stock, /stock_movements,
+// /refill_requests, /transfers, /locations and the /settings display nodes —
+// most of the megabytes this app reads. When this device is serving those from
+// its local copy, the live subscription below is NEVER OPENED: skipping it is
+// the whole saving, and opening it "just for a moment" while the local read
+// resolves would pay the full node every time.
+//
+// That decision has to be made synchronously, on the first render, which is
+// what the serving hint in src/offline/serving.js is for. The mirror hook
+// returns one of three verdicts and this reads them literally:
+//
+//   "mirror"    serve the local value; open nothing.
+//   "pending"   the local copy is expected to answer and has not yet. Open
+//               nothing, and report `settled: false` — which is exactly what a
+//               live read reports before its first snapshot, so a caller that
+//               gates on `settled` behaves identically.
+//   "fallback"  the mirror cannot answer. Subscribe, exactly as before.
+//
+// With the flag off, `verdict` is always "fallback" and every line below runs
+// as it did before this change.
+
 // Generic single-path live read. Returns the raw snapshot value (object or null).
 function usePath(path, enabled = true) {
-  const authReady = useAuthReady();
-  const [value, setValue] = useState(null);
-  useEffect(() => {
-    // Drop any cached snapshot when we lose read permission (sign-out / auth loss),
-    // so a previous user's stock data can't linger on screen.
-    if (!authReady || !enabled || !path) { setValue(null); return; }
-    const unsub = onValue(
-      ref(database, path),
-      (snap) => setValue(snap.val()),
-      (err) => console.warn(`Stock read error on /${path}:`, err)
-    );
-    return () => unsub();
-  }, [authReady, enabled, path]);
-  return value;
+  return usePathState(path, enabled).value;
 }
 
 // usePath, but reporting the THREE states RTDB's null conflates. `snap.val()` is
@@ -51,22 +63,63 @@ function usePath(path, enabled = true) {
 //             gate, never `value != null`.
 //   error   — the read failed. Callers must degrade rather than block: an
 //             unreadable node means "this input is unknown", not "stop".
+const UNSETTLED = Object.freeze({ value: null, settled: false, error: false });
+
 export function usePathState(path, enabled = true) {
   const authReady = useAuthReady();
-  const [state, setState] = useState({ value: null, settled: false, error: false });
+  const mirrored = useMirroredPath(path, enabled && authReady);
+  const live = mirrored.verdict === "fallback";
+  // Tagged with the path it answers for, so a render for a new path is never
+  // handed the old path's snapshot before the effect below has reset it.
+  const [state, setState] = useState({ path, answer: UNSETTLED });
   useEffect(() => {
-    if (!authReady || !enabled || !path) { setState({ value: null, settled: false, error: false }); return; }
+    // `live` is a DEPENDENCY, not an early return: a device that falls back
+    // after the local copy turns out to be unusable must then open the read it
+    // skipped, and a device whose setup finishes mid-session must close the
+    // one it opened.
+    if (!authReady || !enabled || !path || !live) {
+      setState({ path, answer: UNSETTLED });
+      return;
+    }
     const unsub = onValue(
       ref(database, path),
-      (snap) => setState({ value: snap.val(), settled: true, error: false }),
+      (snap) => setState({ path, answer: { value: snap.val(), settled: true, error: false } }),
       (err) => {
         console.warn(`Stock read error on /${path}:`, err);
-        setState({ value: null, settled: true, error: true });
+        setState({ path, answer: { value: null, settled: true, error: true } });
       },
     );
     return () => unsub();
-  }, [authReady, enabled, path]);
-  return state;
+  }, [authReady, enabled, path, live]);
+  // "pending" reports settled:false — the same thing a live read reports
+  // before its first snapshot — so every caller that gates on `settled`
+  // behaves identically whichever source it is on.
+  const liveAnswer = state.path === path ? state.answer : UNSETTLED;
+  const answer = live ? liveAnswer : mirrored;
+
+  // ── A SOURCE SWITCH IS NOT AN EMPTY NODE ──────────────────────────────────
+  //
+  // The mirror going unusable, the kill switch going off, a device's setup
+  // finishing mid-session: each moves this path from one source to the other,
+  // and the new source has not answered yet. Handing that unanswered state to
+  // the screen blanked every refill, fulfil and transfer list for the length
+  // of the switch (21 Sep 2026). What was last KNOWN about this same path is
+  // kept on screen until the new source answers — the same thing a live
+  // onValue does between two snapshots. A different path, a disabled read or
+  // a signed-out device holds nothing.
+  //
+  // The hold is WRITTEN only once a render has committed (the layout effect),
+  // never during render: a render React starts and then discards must not
+  // leave behind an answer the screen never showed. (Sonnet architect review.)
+  const heldRef = useRef(null);
+  const active = authReady && enabled && !!path;
+  useLayoutEffect(() => {
+    if (!active) heldRef.current = null;
+    else if (answer.settled) heldRef.current = { path, answer };
+  });
+  if (!active || answer.settled) return answer;
+  if (heldRef.current && heldRef.current.path === path) return heldRef.current.answer;
+  return answer;
 }
 
 // /locations -> { id: {label,kind,sellable,active} } (object map, as stored).
@@ -128,13 +181,56 @@ export function useDisplaySlots(enabled = true) {
   return usePath(DISPLAY_SLOTS_ROOT, enabled);
 }
 
+// The same node WITH its readiness. A consumer that only marks a tile can
+// treat "not loaded yet" as "no displays" — the marker simply appears a moment
+// later. A consumer that RECOMMENDS a size cannot: an empty display map before
+// the subscription answers is indistinguishable from a real absence, and the
+// display-only exclusion then fails OPEN exactly when its evidence is missing
+// (independent review, 2026-09-06). Those callers need the flag.
+export function useDisplaySlotsState(enabled = true) {
+  return usePathState(DISPLAY_SLOTS_ROOT, enabled);
+}
+
+// /settings/displayRows → { store: { productId: { rowId: row } } } — the
+// DISPLAY ROW LEDGER (displayRowCore.js / displayRowStore.js are the writers).
+//
+// This is the node the two display cleanup tabs judge, and it is deliberately
+// read WHOLE, exactly as /settings/displaySlots is. Same shape, same scale
+// class: one record per display that has ever stood on a wall, three stores,
+// ~500 live rows plus their closed history. It is not a /stock-sized node and
+// it never becomes one — a closed row is small and a wall holds what a wall
+// holds.
+//
+// `enabled=false` skips the subscription entirely, so nothing streams until an
+// admin actually opens one of the two tabs.
+export function useDisplayRows(enabled = true) {
+  return usePath(DISPLAY_ROWS_ROOT, enabled);
+}
+
+// The same node WITH its readiness. The duplicate tab needs it: "no rows yet"
+// and "the subscription has not answered" look identical in an empty object,
+// and a screen that offers a CLOSE button must never offer one on the strength
+// of data it has not actually received.
+export function useDisplayRowsState(enabled = true) {
+  return usePathState(DISPLAY_ROWS_ROOT, enabled);
+}
+
 // /settings/hubSneakerCount/register/{hub} → { "pid__sizeKey": row } — the
 // display REGISTER: every registered display's size (qty, style code), but no
 // store and never decremented (write-only-upward history; hubCleanupStore.js
-// is the writer). The display marker reads it as the store-less second source
-// (71% of registered displays have no slot — measured 2026-08-26). Cost,
-// stated: the hub1 node is ~172 KB, subscribed on assistant devices next to
-// the ~60 KB slots node and the ~474 KB hub1 stock subtree.
+// is the writer).
+//
+// THE ASSISTANT SIZE GRID MUST NEVER READ THIS. It did until 2026-09-07, as a
+// second source beside the display slots, and that is exactly what made one
+// display draw two markers: the key carries the size, so a display that
+// changes size leaves its old row behind forever and nothing can clear it
+// (docs/display-marker-findings.md). The marker's one source is
+// /settings/displaySlots — useDisplaySlotsState above.
+//
+// The two callers left are the ones the register is actually FOR: the Display
+// Registration card's own list, and offShelf.js's hub-count evidence. There is
+// deliberately no "…State" variant any more — the readiness flag existed only
+// for the marker lane that no longer reads this node.
 export function useDisplayRegister(hub, enabled = true) {
   return usePath(hub ? `settings/hubSneakerCount/register/${hub}` : null, enabled);
 }
@@ -184,6 +280,16 @@ export function useStockExceptions() {
   return usePath("stock_exceptions/latest");
 }
 
+// /stock_exceptions/strandedTransit → { computedAt, released, refusals:[…],
+// pending:[…], failures:[…] } — written hourly by strandedTransitSweep
+// (functions/lib/transit-sweep.cjs). A small node: only the lines the sweep
+// could not land on its own, each with the one reason a human must decide.
+export function useStrandedTransit() {
+  // With readiness: "the sweep has not run" and "not loaded yet" must not
+  // both render as a green zero (CodeRabbit, PR #602).
+  return usePathState("stock_exceptions/strandedTransit");
+}
+
 // /stock_confidence → { computedAt, byLocation: { loc: { pid: {score,factors} } } }
 export function useStockConfidence() {
   return usePath("stock_confidence");
@@ -211,6 +317,16 @@ export function useEngineRuns(limit = 8) {
 // /config/refillEngine → { enabled, mode, routes, ... }
 export function useEngineConfig() {
   return usePath("config/refillEngine");
+}
+
+// The same node, reporting the three states a bare null conflates. A screen that
+// RESOLVES TARGETS from this config must gate on `settled`: every arming answer
+// is a function of the category policy, so rendering before the first snapshot
+// arrives produces a confident "armed nowhere" — which on the Arming tab is a
+// clean, wrong verdict on the exact defect it exists to surface. See
+// usePathState's own note on why `value != null` is not the gate.
+export function useEngineConfigState() {
+  return usePathState("config/refillEngine");
 }
 
 // /settings/stockHold/config → { enabled, delegates, ... } — the central→hub
@@ -253,6 +369,41 @@ export function useTargetDecisions() {
 // Rejected refill requests the engine will retry automatically every 24h.
 export function useRetryState() {
   return usePath("refill_engine/retryState");
+}
+
+// /refill_engine/refusalWriteoffs — what the scan erased after a location
+// refused a size on four different days (functions/lib/refusal-writeoff.cjs).
+// Super-admin only: callers pass enabled=false for everyone else, so the read
+// is never even opened. Bounded: the newest 200 by key (keys are ordered by
+// the run's last refusal), never the whole node.
+export const REFUSAL_WRITEOFFS_PATH = "refill_engine/refusalWriteoffs";
+export function useRefusalWriteoffs(enabled) {
+  const authReady = useAuthReady();
+  const [state, setState] = useState({ value: null, settled: false, error: false });
+  useEffect(() => {
+    if (!enabled || !authReady) return undefined;
+    const q = query(ref(database, REFUSAL_WRITEOFFS_PATH), orderByKey(), limitToLast(200));
+    return onValue(q,
+      (snap) => setState({ value: snap.val() || {}, settled: true, error: false }),
+      () => setState({ value: null, settled: true, error: true }));
+  }, [enabled, authReady]);
+  return state;
+}
+
+// /refill_engine/refusalWriteoffDigestStatus — ONE small node: how the last
+// daily digest email went (functions/lib/writeoff-digest.cjs confirmDelivery).
+// Super-admin only, like the write-offs themselves.
+export const REFUSAL_DIGEST_STATUS_PATH = "refill_engine/refusalWriteoffDigestStatus";
+export function useRefusalWriteoffDigestStatus(enabled) {
+  const authReady = useAuthReady();
+  const [state, setState] = useState({ value: null, settled: false, error: false });
+  useEffect(() => {
+    if (!enabled || !authReady) return undefined;
+    return onValue(ref(database, REFUSAL_DIGEST_STATUS_PATH),
+      (snap) => setState({ value: snap.val(), settled: true, error: false }),
+      () => setState({ value: null, settled: true, error: true }));
+  }, [enabled, authReady]);
+  return state;
 }
 
 // /settings/missingProductsHidden → { pid: {at,by,reason?} } — the Missing

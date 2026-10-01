@@ -214,6 +214,11 @@ export const REASON_TEXT = {
   awaiting_upstream: "source had none — returns automatically when it restocks",
   order_lost: "its order record was lost (daily number reuse)",
   hold_released: "its customer order left on-hold — nothing to send any more",
+  // first batch direct to shop (2026-09-17) and its incident revert
+  first_batch_central_declined: "Central had none for the shop's first batch — Hub 2's own request carries it",
+  solve_undone: "the Solve that raised it was undone",
+  first_batch_path_off: "first batch to the shop is switched off — Hub 2 seeded, the normal route takes over",
+  first_batch_repair_hub2_present: "Hub 2 already holds this product — the shop asks Hub 2, not Central",
 };
 
 /** When did this request's OUTCOME happen? Open ones are dated by when they

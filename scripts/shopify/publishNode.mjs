@@ -97,10 +97,65 @@ async function trimOffLog(db, productId) {
 }
 
 let offsetMs = null;
+// `once("value")`, NEVER `get()`. This is not a style preference — `get()` does
+// not work on `/.info` at all, and its failure was invisible.
+//
+// `/.info` is a CLIENT-SYNTHESISED tree; it does not exist on the server. The
+// SDK routes a read there to `infoSyncTree_` only through the event path
+// (`repoAddEventCallbackForQuery`, which tests `pathGetFront(path) === ".info"`
+// — index.node.cjs.js:11533-11541). `repoGetValue`, which backs `get()`, has no
+// such branch: it asks the WIRE for a path called ".info/serverTimeOffset".
+//
+// Measured on the mini, 4 Sep 2026, through the same firebase-admin this script
+// loads:
+//     get()          → THREW "Invalid token in path"
+//     once("value")  → -88          (the real offset, ms)
+//
+// So the try/catch below caught that throw on EVERY call, `offsetMs` was set to
+// 0 every time, and `serverNowMs()` has been an alias for `Date.now()` since it
+// was written — silently, in `confirmLiveState`, `markBlocked`, `adopt.mjs` and
+// `migrate-live-state.mjs` as well as here. Every `updatedAt` this side of the
+// system stamped has been the writing machine's raw clock, which is precisely
+// what this module exists to prevent. The browser half was never affected: it
+// subscribes with `onValue` (App.jsx), which takes the event path and works.
 export async function serverNowMs(db) {
   if (offsetMs === null) {
-    try { offsetMs = Number((await db.ref(".info/serverTimeOffset").get()).val()) || 0; }
-    catch { offsetMs = 0; }   // degrades to this machine's clock, never blocks a take-down
+    // BOUNDED. `once("value")` on /.info does not resolve with a placeholder —
+    // the info tree raises no null event on initial data and serverTimeOffset is
+    // written only when the connection handshake completes — so it WAITS. That
+    // is what makes it correct (no premature 0 to swallow), and it is also why
+    // it must not be waited on for ever: this is the first awaited RTDB call in
+    // a reconcile tick, so a connection that never comes up would hang the tick
+    // with the catch below unable to fire, and the loud degrade written for
+    // exactly this case never printing. A launchd-wedged mini is not
+    // hypothetical here. Ten seconds, then degrade the same way any other
+    // failure degrades: loudly, on this machine's clock, never blocking a
+    // take-down.
+    try {
+      offsetMs = Number(await Promise.race([
+        db.ref(".info/serverTimeOffset").once("value").then((s) => s.val()),
+        // `.unref?.()` — and the optional call is LOAD-BEARING, do not
+        // "simplify" it: vitest's fake timers return a plain id with no unref,
+        // and the test that proves this bound works drives it with fake timers.
+        // The timer is deliberately not cleared on the happy path: unref'd, it
+        // cannot hold the event loop open or delay exit, so all it can do is
+        // reject an already-settled promise, which is a no-op.
+        new Promise((_, reject) => setTimeout(
+          () => reject(new Error("timed out after 10s waiting for the connection handshake")), 10_000).unref?.()),
+      ])) || 0;
+    }
+    catch (e) {
+      // Degrades to this machine's clock rather than blocking a take-down —
+      // right, and it must not be SILENT. The reconciler's incremental window
+      // compares its watermark against `updatedAt` values stamped through here,
+      // so a failed offset read puts the two back in different clock domains:
+      // exactly the fault that was removed, restored without a word. On a
+      // machine with an accurate clock nothing changes; on a skewed one every
+      // window goes empty and every press waits for the next full scan.
+      offsetMs = 0;
+      console.error(`  ⚠ could not read /.info/serverTimeOffset (${String(e?.message || e)}) — falling back to THIS machine's clock. ` +
+        "If this machine's clock is off, timestamps written now are off by the same amount.");
+    }
   }
   return Date.now() + offsetMs;
 }

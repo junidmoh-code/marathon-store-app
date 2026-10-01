@@ -109,9 +109,10 @@ export default function IntroduceExisting({ products = [] }) {
           following each store's own assortment (a store gets targets only for products it actually
           carries — sales or stock evidence; Hub 2 buffers everything) — {cellEstimate.toLocaleString()} target cells.
           From the next scan the engine creates the refill and distribution work — paced by the circuit breaker at{" "}
-          {config?.maxIntentsPerRun ?? 200} requests per 15-minute scan — and the warehouse validates it; nothing
+          {config?.maxIntentsPerRun ?? 200} requests per hourly scan — and the warehouse validates it; nothing
           moves without a human. <b>Expect busy warehouse queues while the backlog drains</b>; before
-          tapping, set maxIntentsPerRun to the pace the warehouse can absorb per scan (e.g. 300 ≈ a 4-hour drain).
+          tapping, set maxIntentsPerRun to the pace the warehouse can absorb per scan — the scan runs
+          13 times a day (07:00–19:00), so the daily ceiling is 13 times that number.
           {numeric.length > 0 && <> <span style={{ color: AMBER }}>{numeric.length} product{numeric.length === 1 ? "" : "s"} with numeric sizes</span> (no
           approved standard quantities) stay in the Decision Queue.</>}
         </div>

@@ -186,7 +186,8 @@ describe("3 · both customer messages fire server-side; the raise/withdraw links
 
   it("releasing a hold still withdraws its still-open ask (holdReleaseUpdate)", () => {
     expect(SRC).toMatch(/holdReleaseUpdate\(order, status/);
-    expect(SRC).toContain('if (live && live.status === "open") await update(reqRef, rel.patch);');
+    // The patch carries the device stamp (src/device/deviceStamp.js) on top.
+    expect(SRC).toContain('if (live && live.status === "open") await update(reqRef, stampPatch(rel.patch, "hold-released"));');
   });
 
   it("the rest of the customer-facing coming_tomorrow path is intact (status stamp, TV, insights)", () => {

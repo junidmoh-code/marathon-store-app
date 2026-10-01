@@ -20,6 +20,30 @@ const at = (hourSast) => SAST_MIDNIGHT + hourSast * 3600000;
 const POLICY = { reels: ["08:00", "18:00"], photos: ["11:00"], stories: ["09:00", "13:00", "17:00"] };
 const okResults = { instagram: { state: "ok" }, facebook: { state: "ok" } };
 
+// ── WHAT THIS POLICY ACTUALLY OWES EACH SURFACE ──────────────────────────────
+// Six slots, but not six posts: every story's picture is also a feed post and
+// every reel is also a story, so the day owes 2 reels, 4 feed posts (1 photo +
+// 3 story twins) and 5 stories (3 stories + 2 reel twins).
+//
+// The default fixture below carries exactly those records, because "a healthy
+// day says nothing" has to be a day that really is healthy. A fixture holding
+// one post passed only while nothing looked at the surfaces.
+const OWED = { reel: 2, feed: 4, story: 5 };
+function healthyDayPosts() {
+  const out = [];
+  let n = 0;
+  for (const [format, count] of Object.entries(OWED)) {
+    for (let i = 0; i < count; i++) {
+      out.push({
+        id: `${format}${i}`, status: "posted", format,
+        createdAt: at(6) + (++n) * 1000,
+        scheduledAt: at(11), postedAt: at(11) + MIN, results: okResults,
+      });
+    }
+  }
+  return out;
+}
+
 function day(over = {}) {
   const has = (k) => Object.prototype.hasOwnProperty.call(over, k);
   return assessSocialDay({
@@ -27,9 +51,8 @@ function day(over = {}) {
     policy: has("policy") ? over.policy : POLICY,
     autopilotLog: has("autopilotLog") ? over.autopilotLog
       : { startedAt: at(6), finishedAt: at(6) + 3 * MIN, created: 6, skipped: 0 },
-    posts: has("posts") ? over.posts : [
-      { id: "a", status: "posted", scheduledAt: at(11), postedAt: at(11) + MIN, results: okResults },
-    ],
+    posts: has("posts") ? over.posts : healthyDayPosts(),
+    twins: has("twins") ? over.twins : undefined,
     publisherTickAt: has("publisherTickAt") ? over.publisherTickAt : NOW - 2 * MIN,
   });
 }
@@ -81,8 +104,53 @@ describe("REAL_2026_08_27 — the day that reported success and produced nothing
     assert.equal(day(REAL).reasons.some((r) => /nothing has published/.test(r)), false);
   });
 
-  test("it reads as degraded, not silent — a post did go out", () => {
-    assert.equal(day(REAL).severity, "degraded");
+  // ── THIS TEST USED TO ASSERT "degraded", AND THAT IS WHY IT HAPPENED AGAIN ──
+  // Only "silent" pages (socialHealthScan does not email on degraded, owner
+  // ruling 2026-08-31). So this exact shape — generator dead, backlog still
+  // draining, mini still ticking — was recorded, shown, and never sent. It ran
+  // that way for six days from 2026-09-13 with the same cause, Gemini's
+  // prepayment credits, and the only two days that paged did so because they
+  // tripped a DIFFERENT check as well.
+  //
+  // "A post did go out" is the backlog, not the engine. A generator that made
+  // nothing cannot make tomorrow, and that is down.
+  test("it is SILENT — a generator that made nothing is down, backlog or no backlog", () => {
+    assert.equal(day(REAL).severity, "silent");
+  });
+
+  test("…and the day's own published post does not soften it", () => {
+    // The distinction that got this wrong: check 3 is satisfied (something
+    // published) and check 1 is not. One passing check must not downgrade a
+    // failing one.
+    assert.equal(day(REAL).counts.publishedToday, 1);
+    assert.equal(day(REAL).severity, "silent");
+  });
+
+  // ── THE REASON REACHES THE READER, NOT JUST THE SYMPTOM ────────────────────
+  // "made nothing — all 6 skipped" is the same sentence for depleted credits,
+  // a revoked key and an empty style library. The autopilot now records WHY on
+  // its own run record, because the Cloud Logging line that held it is not
+  // readable by the service account that diagnoses this machine.
+  test("the skip reason travels into the alarm when the autopilot recorded one", () => {
+    const v = day({
+      ...REAL,
+      autopilotLog: {
+        ...REAL.autopilotLog,
+        skipReasons: ["6x AI credits depleted or rate-limited (429) — check Gemini billing"],
+      },
+    });
+    assert.match(v.reasons.join(" "), /check Gemini billing/);
+  });
+
+  test("a run with no recorded reasons still reads cleanly — no \"(undefined)\"", () => {
+    const withoutList = day(REAL).reasons.join(" ");
+    assert.match(withoutList, /generator made nothing — all 6 skipped$|generator made nothing — all 6 skipped\b/);
+    assert.doesNotMatch(withoutList, /undefined|\(\)/);
+    // And rubbish in that field is ignored rather than rendered.
+    for (const junk of [[], {}, "", 7, [""], [null]]) {
+      const v = day({ ...REAL, autopilotLog: { ...REAL.autopilotLog, skipReasons: junk } });
+      assert.doesNotMatch(v.reasons.join(" "), /undefined|\(\)/);
+    }
   });
 
   test("the message names the day and the reason in one line", () => {
@@ -324,7 +392,9 @@ describe("4. heartbeat", () => {
   test("a dead publisher is SILENT even on a day that already published", () => {
     // The damage has not happened yet — that is the point of catching it here.
     const v = day({ publisherTickAt: NOW - 60 * MIN });
-    assert.equal(v.counts.publishedToday, 1);
+    // The whole day published — the default fixture is a healthy one — and it
+    // is STILL silent, which is the point: the damage has not happened yet.
+    assert.ok(v.counts.publishedToday > 0);
     assert.equal(v.severity, "silent");
   });
 });
@@ -342,5 +412,148 @@ describe("the assessor never throws on rubbish", () => {
       assert.ok(Array.isArray(v.reasons));
       assert.ok(["ok", "degraded", "silent"].includes(v.severity));
     }
+  });
+});
+
+// ─── 1b. WHAT THE DAY OWES EACH SURFACE — THE 2026-09-19 RHYTHM ──────────────
+// Two reels a day, each also posted as a story from the same encoded video.
+// Check 1 asks whether the PICTURES were made; this asks whether the POSTS
+// exist, and since the rhythm changed those are different questions: two reel
+// slots owe two reels AND two stories, and the stories cost nothing.
+//
+// A run that made both pictures and twinned neither satisfies check 1
+// completely and leaves the account with no stories on it. That is the shape
+// this section exists for.
+const { dayObligation } = require("../lib/social-health.cjs");
+
+describe("the new rhythm's obligation", () => {
+  const TWO_REELS = { reels: ["12:00", "19:00"], photos: [], stories: [] };
+  const TWINS = { reelAlsoPostsToStory: true, storyAlsoPostsToFeed: true };
+  const ranAt6 = { startedAt: at(6), finishedAt: at(6) + 3 * MIN, created: 2, skipped: 0 };
+  // Posted, not approved: these fixtures are about SURFACES, and leaving them
+  // approved with a slot in the past would also trip checks 2 and 3 and make
+  // every assertion below pass or fail for the wrong reason.
+  const post = (format, over = {}) => ({
+    id: `${format}${Math.random()}`, status: "posted", format,
+    createdAt: at(6) + 60000, scheduledAt: at(12), postedAt: at(12) + MIN,
+    results: okResults, ...over,
+  });
+  const newDay = (posts, over = {}) =>
+    day({ policy: TWO_REELS, twins: TWINS, autopilotLog: ranAt6, posts, publisherTickAt: NOW - 2 * MIN, ...over });
+
+  test("two reel slots owe two reels AND two stories", () => {
+    const o = dayObligation(TWO_REELS, TWINS);
+    assert.equal(o.generations, 2);
+    assert.deepEqual(o.byFormat, { reel: 2, feed: 0, story: 2 });
+  });
+
+  test("a full day of two reels and their two stories says nothing about surfaces", () => {
+    const v = newDay([post("reel"), post("reel"), post("story"), post("story")]);
+    assert.equal(v.reasons.some((r) => /owes/.test(r)), false);
+    assert.deepEqual(v.counts.owed, { reel: 2, feed: 0, story: 2 });
+    assert.deepEqual(v.counts.madeByFormat, { reel: 2, story: 2, feed: 0 });
+  });
+
+  // ── THE FAILURE CHECK 1 CANNOT SEE ────────────────────────────────────────
+  test("two pictures made and NEITHER twinned is caught, and it PAGES", () => {
+    const v = newDay([post("reel"), post("reel")]);
+    assert.equal(v.ok, false);
+    assert.match(v.reasons.join(" "), /owes 0 of 2 stories/);
+    // Owner brief: "it must alarm if either is missed." Two reels a day means
+    // a missing surface is half the day, not a rounding error.
+    assert.equal(v.severity, "silent");
+  });
+
+  test("ONE missing reel is caught too — and its story goes with it", () => {
+    const v = newDay([post("reel"), post("story")]);
+    assert.equal(v.ok, false);
+    assert.match(v.reasons.join(" "), /1 of 2 reels/);
+    assert.match(v.reasons.join(" "), /1 of 2 stories/);
+    assert.equal(v.severity, "silent");
+  });
+
+  // ── THE RETIRED SLOTS MUST NOT ALARM ──────────────────────────────────────
+  test("the retired photo slot owes nothing and cannot alarm", () => {
+    const v = newDay([post("reel"), post("reel"), post("story"), post("story")]);
+    assert.equal(v.counts.owed.feed, 0);
+    assert.equal(v.reasons.some((r) => /feed/.test(r)), false);
+  });
+
+  test("a day with NO feed post and NO standalone story is a healthy day", () => {
+    assert.equal(newDay([post("reel"), post("reel"), post("story"), post("story")]).ok, true);
+  });
+
+  test("putting a photo time back turns its obligation straight back on", () => {
+    // The off switch is config, not code. This is the proof that re-enabling
+    // it is one entry in the Policy tab.
+    const withPhoto = { reels: ["12:00", "19:00"], photos: ["15:00"], stories: [] };
+    assert.deepEqual(dayObligation(withPhoto, TWINS).byFormat, { reel: 2, feed: 1, story: 2 });
+  });
+
+  test("switching the reel twin off removes the story obligation with it", () => {
+    // A watchdog that goes on demanding posts nobody is making any more is a
+    // watchdog you turn off.
+    const off = { reelAlsoPostsToStory: false, storyAlsoPostsToFeed: true };
+    assert.deepEqual(dayObligation(TWO_REELS, off).byFormat, { reel: 2, feed: 0, story: 0 });
+    const v = newDay([post("reel"), post("reel")], { twins: off });
+    assert.equal(v.reasons.some((r) => /owes/.test(r)), false);
+  });
+
+  // ── COUNTED BY createdAt, NOT BY scheduledAt ──────────────────────────────
+  test("a reclaimed run that schedules TOMORROW still counts as made today", () => {
+    // A retry at 13:00 assigns the 12:00 reel to tomorrow's 12:00. Counting by
+    // slot would report a missing reel on a day the generator did its job.
+    const tomorrow = at(12) + 86400000;
+    const v = newDay([
+      post("reel", { scheduledAt: tomorrow }), post("reel", { scheduledAt: tomorrow }),
+      post("story", { scheduledAt: tomorrow }), post("story", { scheduledAt: tomorrow }),
+    ]);
+    assert.equal(v.reasons.some((r) => /owes/.test(r)), false);
+  });
+
+  test("yesterday's posts do not pay for today's obligation", () => {
+    const yday = at(6) - 86400000;
+    const v = newDay([
+      post("reel", { createdAt: yday }), post("reel", { createdAt: yday }),
+      post("story", { createdAt: yday }), post("story", { createdAt: yday }),
+    ]);
+    assert.match(v.reasons.join(" "), /owes 0 of 2 reels/);
+  });
+
+  test("a discarded post does not pay for it either", () => {
+    const v = newDay([
+      post("reel"), post("reel"),
+      post("story", { status: "discarded" }), post("story", { status: "discarded" }),
+    ]);
+    assert.match(v.reasons.join(" "), /0 of 2 stories/);
+  });
+
+  // ── IT DOES NOT FIRE WHILE THE RUN IS STILL GOING ─────────────────────────
+  test("a run still in flight is not accused of being short", () => {
+    const inFlight = { startedAt: NOW - 60000, created: 1 };   // no finishedAt
+    const v = newDay([post("reel")], { autopilotLog: inFlight });
+    assert.equal(v.reasons.some((r) => /owes/.test(r)), false);
+  });
+
+  test("a run that made NOTHING is check 1's business, not this one", () => {
+    // Otherwise a dead engine reports the same failure twice in one sentence.
+    const none = { startedAt: at(6), finishedAt: at(6) + 5000, created: 0, skipped: 2 };
+    const v = newDay([], { autopilotLog: none });
+    assert.match(v.reasons.join(" "), /generator made nothing/);
+    assert.equal(v.reasons.some((r) => /owes/.test(r)), false);
+  });
+
+  test("dayObligation survives rubbish", () => {
+    for (const junk of [null, undefined, {}, { reels: "no" }, { reels: null }]) {
+      const o = dayObligation(junk, TWINS);
+      assert.equal(Number.isFinite(o.generations), true);
+      for (const v of Object.values(o.byFormat)) assert.equal(Number.isFinite(v), true);
+    }
+  });
+
+  test("an RTDB object-shaped list counts as a list", () => {
+    // RTDB hands arrays back as objects often enough that this is not academic.
+    const asObject = { reels: { 0: "12:00", 1: "19:00" }, photos: null, stories: null };
+    assert.deepEqual(dayObligation(asObject, TWINS).byFormat, { reel: 2, feed: 0, story: 2 });
   });
 });

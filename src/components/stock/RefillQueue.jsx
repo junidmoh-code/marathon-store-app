@@ -39,7 +39,7 @@
 //     Out of Stock writes the same response record it always has.
 
 import React, { useEffect, useMemo, useState } from "react";
-import { ref, update, get } from "firebase/database";
+import { ref, update, get, runTransaction } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig, useStockHoldConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
@@ -63,9 +63,27 @@ import { holdActive, shipmentIdFor } from "./stockHoldCore";
 import { recordHeldLine } from "./stockHoldStore";
 import { canFulfilCard } from "../../utils/productIdentity";
 import { SizeTag } from "../SizeTag";
+import { CENTRAL_DECLINED_REASON, isFirstBatchShopLeg, sourceQueueLists } from "./firstBatchCore";
+import { notePendingUpdate } from "../../offline/pendingWrites";
+import { refusalTxn, trancheMovementId, sendInFlight } from "./refusalGuard";
+import { deviceStamp, stampAt, stampPatch, stampTxn } from "../../device/deviceStamp";
+import { countReject, thisDevicePaused } from "../../device/rejectCount";
+import { PAUSED_MESSAGE } from "../../device/deviceRejects";
 
 const SOURCE_LOC = "central";
-const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
+// Destinations this queue serves: the three hubs, and — first batch direct to
+// shop (2026-09-17) — the two shops whose Solve raises a request from Central.
+const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", trophy: "Trophy", "marathon-pe": "Marathon PE" };
+// The SHOP destinations. A shop's ordinary refills come from Hub 2 (the
+// engine's route), and those requests are Hub 2's work, not Central's: this
+// queue — whose Fulfil moves stock OUT OF CENTRAL — must list, for a shop,
+// ONLY the first-batch legs the Solve raised from Central
+// (isFirstBatchShopLeg). Incident 2026-09-17: mounted with dest = a shop and
+// filtered by requestingLocation alone, the Trophy/Marathon tabs listed the
+// engine's entire hub2→shop backlog (225 rows, 142 products all stocked at
+// Hub 2) as Central's picking list. Nothing was fulfilled from them; one tap
+// would have moved a Central unit for a request Hub 2 was meant to send.
+const SHOP_DESTS = new Set(["trophy", "marathon-pe"]);
 // Sale-row ledger reasons — the Source Transfer & Fulfil contract (#209).
 const SOURCE_REFILL_REASON = "source_refill";
 const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
@@ -262,6 +280,7 @@ function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfi
           <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}><SizeTag size={row.size} /></span>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: BLUE, fontVariantNumeric: "tabular-nums" }}>×{remaining}</span>
           {sent > 0 && <span style={{ fontSize: 11, color: GRAY }}>· {sent} sent</span>}
+          {row.forLabel && <span data-for-shops style={{ fontSize: 11, color: GRAY }}>· for {row.forLabel}</span>}
         </span>
         <span style={{ flex: 1 }} />
         <button disabled={busy} onClick={onToggleFulfil}
@@ -330,7 +349,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
 
   // Request rows for this destination, one row per request (per size already).
   const requestRows = useMemo(() => {
-    let mine = allRequests.filter((r) => r.status === "open" && r.requestingLocation === DEST_LOC && r.productId);
+    // A shop tab is Central's list of the shop's FIRST-BATCH legs only — never
+    // the engine's hub2→shop rows (see SHOP_DESTS). The SAME predicate the
+    // Source badges count (firstBatchCore.sourceQueueLists).
+    let mine = allRequests.filter((r) => r.requestingLocation === DEST_LOC && sourceQueueLists(r, SHOP_DESTS));
     if (lineFilter) mine = mine.filter((r) => lineFilter(byId.get(r.productId), r.size));
     return mine.map((r) => {
       const p = byId.get(r.productId);
@@ -341,6 +363,12 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         size: String(r.size), qty: r.qty || 1, sent: Number(r.sentQty) || 0,
         createdAt: r.createdAt, createdMs: parseMs(r.createdAt),
         earlyRelease: r.earlyRelease, shadow: !!r.shadow, _r: r,
+        // A PASS-THROUGH request (refill engine, 2026-09-23) is raised at a hub
+        // FOR the shops it feeds — the hub itself keeps none of it, or its
+        // count is disputed. Name the shops so the picker knows why a hub ask
+        // exists for a line the hub does not stock.
+        forLabel: Array.isArray(r.forDests) && r.forDests.length
+          ? r.forDests.map((d) => HUB_LABEL[d] || d).join(" + ") : null,
       };
     });
   }, [allRequests, DEST_LOC, lineFilter, byId]);
@@ -375,6 +403,8 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
   // History accumulates them per link.refillId (mergeRows), so the fulfilled
   // row reports the true total.
   const fulfilRequest = async (row, qty, avail) => {
+    // A phone Junid has quarantined sends nothing (src/device/deviceRejects.js).
+    if (await thisDevicePaused()) return { ok: false, reason: PAUSED_MESSAGE };
     const r = row._r;
     let q = qty, liveQty = r.qty || 1, already = 0;
     // The live read is LOAD-BEARING for tranches and must not be skipped on
@@ -476,16 +506,22 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // Lock-less requests (Missing Sneakers, former holds) have no twin to
       // desync. Watch item recorded in the engine backlog.
       try {
-        await update(ref(database), {
+        const partial = {
           [`refill_requests/${r.id}/qty`]: remaining,
           [`refill_requests/${r.id}/sentQty`]: already + appliedQty,
-        });
+          ...stampAt(`refill_requests/${r.id}`, "send-part"),
+        };
+        await update(ref(database), partial);
+        // THE OFFLINE MIRROR — see applyMovement. The person who just pressed
+        // Send must see the remaining quantity they created, not the one from
+        // before they pressed it. After the write, so it echoes only what RTDB
+        // accepted; a no-op with the flag off.
+        notePendingUpdate(partial);
       } catch { return { ok: false, reason: "Sent, but updating the remaining quantity failed — retry (stock will not move twice)." }; }
       setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} sent → ${destLabel} ✓ · ${remaining} still open` }));
       return { ok: true };
     }
-    try {
-      await update(ref(database), {
+    const fulfilled = {
         [`refill_requests/${r.id}/status`]: "fulfilled",
         [`refill_requests/${r.id}/fulfilledBy`]: { movementId: mvId, qty: appliedQty, ...(already ? { totalQty: already + appliedQty } : {}), ...(counted ? {} : { uncounted: true }) },
         [`refill_requests/${r.id}/resolvedAt`]: serverNowIso(),
@@ -493,7 +529,11 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         // leave its stale reason on a row now marked fulfilled (Kimi, #332).
         [`refill_requests/${r.id}/cancelReason`]: null,
         ...(auth.currentUser?.uid ? { [`refill_requests/${r.id}/resolvedBy`]: auth.currentUser.uid } : {}),
-      });
+        ...stampAt(`refill_requests/${r.id}`, "fulfil"),
+    };
+    try {
+      await update(ref(database), fulfilled);
+      notePendingUpdate(fulfilled);            // see the partial-send echo above
     } catch { return { ok: false, reason: "Sent, but marking it fulfilled failed — retry (stock will not move twice)." }; }
     setMsg((m) => ({ ...m, [row.rowKey]: `${appliedQty} unit${appliedQty === 1 ? "" : "s"} → ${destLabel} ✓` }));
     return { ok: true };
@@ -501,27 +541,93 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
 
   // Out of Stock on a request = the human rejection: cancelled with NO
   // cancelReason (the engine reads exactly that shape — cooldown + learning).
+  // Written in a TRANSACTION that refuses to touch a request already sent
+  // (refusalGuard.js): a stale list can no longer turn a fulfilled request
+  // into a refusal. A blocked tap is logged on the request and otherwise
+  // silent — the row leaves the list as fulfilled, as it would have anyway.
   const rejectRequest = async (row) => {
     if (busyRow || !canTransfer) return;
     setBusyRow(row.rowKey);
-    const upd = {
-      [`refill_requests/${row.id}/status`]: "cancelled",
-      [`refill_requests/${row.id}/resolvedAt`]: serverNowIso(),
-      [`refill_requests/${row.id}/rejectedBy`]: actorRole || "unknown",
+    if (await thisDevicePaused()) {
+      setMsg((m) => ({ ...m, [row.rowKey]: PAUSED_MESSAGE }));
+      setBusyRow(null);
+      return;
+    }
+    // WHICH PHONE said no (2026-09-25), beside resolvedBy's account: the
+    // refusal write-off copies both into its record. Same id the stamp and the
+    // Mirror Fleet screen use.
+    const refusingDeviceId = deviceStamp().deviceId || null;
+    const fields = {
+      ...(refusingDeviceId ? { resolvedDeviceId: refusingDeviceId } : {}),
+      status: "cancelled",
+      resolvedAt: serverNowIso(),
+      rejectedBy: actorRole || "unknown",
       // Clear any stale reason from an earlier lifecycle, mirroring the fulfil
       // path: the engine recognises a HUMAN rejection precisely as "cancelled
       // with NO cancelReason" — a leftover reason would silently skip the
       // cooldown and confirmed-out learning (CodeRabbit, PR #337).
-      [`refill_requests/${row.id}/cancelReason`]: null,
-      ...(auth.currentUser?.uid ? { [`refill_requests/${row.id}/resolvedBy`]: auth.currentUser.uid } : {}),
+      // EXCEPT a first-batch SHOP leg (2026-09-17): Central's "no" to the
+      // shop's batch must not become a rejection at the SHOP's cell, so the
+      // reason is stamped HERE, in the same write as the cancel — the trigger
+      // stamps it too, but a scan landing between the two writes would have
+      // read the bare cancel (Sonnet round 2, PR #607). Hub 2's own leg keeps
+      // the human shape: that "no" is the Central-level answer.
+      cancelReason: isFirstBatchShopLeg(row._r) ? CENTRAL_DECLINED_REASON : null,
+      ...(auth.currentUser?.uid ? { resolvedBy: auth.currentUser.uid } : {}),
     };
-    try { await update(ref(database), upd); }
-    catch { setMsg((m) => ({ ...m, [row.rowKey]: "failed — retry" })); }
+    // MID-SEND: Fulfil records the tranche's movement before it marks the
+    // request. One single-record read; a movement older than MID_SEND_MS is a
+    // stuck send, not one in flight, and does not block (refusalGuard.js). If
+    // the read can't be made (offline) the refusal proceeds as it always has
+    // and the status guard still applies.
+    const listSent = Number(row._r?.sentQty) || 0;
+    let sendingAt = null;
+    try {
+      const mv = (await get(ref(database, `stock_movements/${trancheMovementId(row.id, listSent)}`))).val();
+      if (sendInFlight(mv, serverNowMs())) sendingAt = listSent;
+    } catch { sendingAt = null; }
+    try {
+      // applyLocally stays at the SDK default (true), like the update() this
+      // replaced: the row leaves the list the instant it is tapped, whatever
+      // the connection. The server still decides — a local guess that the
+      // server's copy contradicts is rolled back and the body re-runs on truth.
+      // The device stamp rides on the record the transaction commits — never
+      // on a refusal that was blocked (refusalTxn returned undefined).
+      const res = await runTransaction(ref(database, `refill_requests/${row.id}`),
+        stampTxn((cur) => refusalTxn(cur, fields, { sendingAt }), "reject"));
+      const live = res?.snapshot?.val?.() ?? null;
+      if (res?.committed && live) {
+        countReject({ kind: "request", ref: row.id, hub: live.createdFrom?.source || live.source || null, productId: live.productId, size: live.size });
+        // see the fulfil echo above — the same paths the old update wrote
+        notePendingUpdate(Object.fromEntries(Object.entries(fields).map(([k, v]) => [`refill_requests/${row.id}/${k}`, v])));
+      } else if (!res?.committed && live) {
+        // BLOCKED: the request was sent, closed or mid-send before this tap
+        // landed. Keep a trace on the request (who, when, what it said) and
+        // change nothing else.
+        const atMs = serverNowMs();
+        console.warn(`Out of Stock on ${row.id} blocked — ${sendingAt !== null ? "mid-send" : `already ${live.status || "sent"}`}`);
+        const { deviceId, personName } = deviceStamp();
+        update(ref(database, `refill_requests/${row.id}/blockedRefusals/${atMs}`), {
+          atMs, byUid: auth.currentUser?.uid || null, byRole: actorRole || null, deviceId, personName,
+          sawStatus: live.status || null, ...(sendingAt !== null ? { midSend: true } : {}),
+        }).catch((e) => console.warn(`blocked-refusal log for ${row.id} failed`, e));
+      }
+    } catch { setMsg((m) => ({ ...m, [row.rowKey]: "failed — retry" })); }
     setBusyRow(null);
   };
 
   // ── SALE-ROW ACTIONS — the Source Transfer & Fulfil contract, unchanged ────
+  // A sale row's answer (Available without transfer / Out of Stock) is the
+  // parent's write — asked the same quarantine question first, and an Out of
+  // Stock is counted against this phone like every other reject.
+  const saleResponse = async (row, response) => {
+    if (await thisDevicePaused()) { setMsg((m) => ({ ...m, [row.rowKey]: PAUSED_MESSAGE })); return; }
+    if (response === "out_of_stock") countReject({ kind: "sale", ref: row.rowKey, hub: SOURCE_LOC, productId: row.productId, size: row.size });
+    onSaleResponse?.(row, response);
+  };
+
   const fulfilSale = async (row, pickLoc, qty, avail) => {
+    if (await thisDevicePaused()) return { ok: false, reason: PAUSED_MESSAGE };
     const counted = typeof avail === "number";
     const mvId = `${row.movementIdSeed}_${row.sent}`;
     // HOLD LANE (same contract as fulfilRequest): a cross-building pick parks
@@ -591,7 +697,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     const patch = releaseEarlyPatch({ nowIso: serverNowIso(), uid: auth.currentUser?.uid || null, reason });
     if (!patch) { setReleaseErr("A reason is required — nothing was released."); return; }
     setReleasingId(row.id); setReleaseErr(null);
-    try { await update(ref(database, `refill_requests/${row.id}`), patch); }
+    try { await update(ref(database, `refill_requests/${row.id}`), stampPatch(patch, "early-release")); }
     catch (e) { setReleaseErr(`Early release failed — ${String(e?.message || e)}`); }
     setReleasingId(null);
   };
@@ -713,7 +819,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
           }
         }}
         onCancel={() => setOpenRow(null)}
-        onWithoutTransfer={isReq ? null : () => { setOpenRow(null); onSaleResponse?.(row, "available"); }}
+        onWithoutTransfer={isReq ? null : () => { setOpenRow(null); saleResponse(row, "available"); }}
       />
     );
     return (
@@ -724,10 +830,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         msg={msg[row.rowKey]}
         fulfilOpen={openRow === row.rowKey && canAct}
         onToggleFulfil={() => {
-          if (!canAct) { if (!isReq) onSaleResponse?.(row, "available"); return; }
+          if (!canAct) { if (!isReq) saleResponse(row, "available"); return; }
           setOpenRow(openRow === row.rowKey ? null : row.rowKey);
         }}
-        onOutOfStock={() => { isReq ? rejectRequest(row) : onSaleResponse?.(row, "out_of_stock"); }}
+        onOutOfStock={() => { isReq ? rejectRequest(row) : saleResponse(row, "out_of_stock"); }}
         panel={panel}
       />
     );

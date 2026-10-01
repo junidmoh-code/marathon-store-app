@@ -467,19 +467,26 @@ test("AUTO-RESIZE respects sibling reservations — never steals another request
   assert.ok(!plan.resizes.some((r) => r.dest === "marathon-pe"), "PE ask (2) already ≤ its share");
 });
 
-test("NO SILENT STARVATION (v9): a source with no buffer target is a CONFIG block, never 'chain flowing'", () => {
-  // Stores need M; hub2 is empty AND has NO target for the cell — no
-  // central→hub2 leg will ever auto-create, so labelling this
-  // awaiting-upstream would starve silently behind a self-healing promise.
+test("NO SILENT STARVATION (v9, pass-through 2026-09-23): a source with no buffer target carries the stores' need itself", () => {
+  // Stores need M; hub2 is empty AND resolves NO target for the cell, so it
+  // will never raise a central→hub2 leg of its own. Until 2026-09-23 this was
+  // labelled "no buffer target — set one" and waited for a human who never
+  // came (40 live shop cells). Now the engine raises ONE pass-through leg at
+  // hub2 sized to the stores' combined shortfall — never a hub2 target.
   const plan = computeRefillPlan(base({
     targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, trophy: { p1: { M: { target: 2, minQty: 1 } } } },
     stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } } },
   }));
-  assert.equal(plan.exceptions.awaitingUpstream.count, 0, "nothing may claim the chain is flowing");
-  const blocked = plan.exceptions.awaitingSupplier.items.filter((w) => /no buffer target/.test(w.note));
-  assert.equal(blocked.length, 2, "both stores surface as blocked-by-config, demanding a human");
-  // Give hub2 its buffer target → the chain genuinely flows: hub2 leg created,
-  // stores correctly park as awaiting-upstream.
+  const legs = plan.intents.filter((x) => x.dest === "hub2");
+  assert.equal(legs.length, 1, "ONE hub2 leg carries both stores");
+  assert.deepEqual({ source: legs[0].source, qty: legs[0].qty, passThrough: legs[0].passThrough, forDests: legs[0].forDests },
+    { source: "central", qty: 4, passThrough: "no_target", forDests: ["marathon-pe", "trophy"] });
+  assert.equal(plan.exceptions.awaitingSupplier.items.filter((w) => /no buffer target/.test(w.note)).length, 0,
+    "no store is left waiting for a human to set a hub2 target");
+  assert.equal(plan.exceptions.awaitingUpstream.items.filter((w) => w.passThrough === "no_target").length, 2);
+  assert.ok(!plan.intents.some((x) => x.dest !== "hub2"), "no store leg yet — the hub has nothing to send");
+  // Give hub2 its buffer target → the ordinary chain flows exactly as before:
+  // hub2's OWN leg, stores awaiting upstream, no pass-through.
   const flowing = computeRefillPlan(base({
     targets: {
       "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, trophy: { p1: { M: { target: 2, minQty: 1 } } },
@@ -487,8 +494,20 @@ test("NO SILENT STARVATION (v9): a source with no buffer target is a CONFIG bloc
     },
     stock: { "marathon-pe": { p1: { M: cell(0) } }, trophy: { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } } },
   }));
-  assert.equal(flowing.intents.filter((x) => x.dest === "hub2").length, 1, "upstream leg created");
+  const own = flowing.intents.filter((x) => x.dest === "hub2");
+  assert.equal(own.length, 1, "upstream leg created");
+  assert.equal(own[0].passThrough, undefined, "the hub's own buffer leg is not a pass-through");
   assert.equal(flowing.exceptions.awaitingUpstream.items.filter((w) => w.loc !== "hub2").length, 2, "stores now genuinely awaiting upstream");
+});
+
+test("an EXPLICIT hub2 target of 0 is a human 'not here' — respected, never routed around", () => {
+  const plan = computeRefillPlan(base({
+    targets: { "marathon-pe": { p1: { M: { target: 2, minQty: 1 } } }, hub2: { p1: { M: { target: 0, minQty: 0 } } } },
+    stock: { "marathon-pe": { p1: { M: cell(0) } }, hub2: { p1: { M: cell(0) } }, central: { p1: { M: cell(50) } }, trophy: {} },
+  }));
+  assert.equal(plan.intents.length, 0, "no pass-through past a deliberate 0");
+  assert.equal(plan.exceptions.awaitingSupplier.items.filter((w) => /no buffer target/.test(w.note)).length, 1,
+    "still surfaced as the config decision it is");
 });
 
 test("BLOCKED UPSTREAM (v9): a rejection-parked source leg is labelled blocked, not flowing", () => {
@@ -1404,15 +1423,34 @@ test("reject while denier counted EMPTY → full 24h cooldown unchanged", () => 
 // restored the guard; the assertion is inverted to match, and the precedence
 // (park BEATS retry) is pinned explicitly below.
 test("streak at limit + stock still shown → PARKED in Recount Needed, not re-asked", () => {
-  const plan = computeRefillPlan(base({ orders: rejectedOrder(30), rejectStreak: streakNode(4) }));
+  // Central holds NOTHING here, so there is no way round the disputed hub2
+  // count: the cell waits for the recount, exactly as the 2026-07-19 guard says.
+  const plan = computeRefillPlan(base({
+    orders: rejectedOrder(30), rejectStreak: streakNode(4),
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub2: { p1: { M: cell(10) } }, central: { p1: { M: cell(0) } }, trophy: {} },
+  }));
   assert.equal(
     plan.intents.filter((x) => x.dest === "marathon-pe" && x.sizeKey === "M").length, 0,
     "30h later the guard still holds — a bad count must not be re-asked forever",
   );
+  assert.equal(plan.intents.length, 0, "nothing to route round — Central is empty");
   const r = plan.exceptions.recountNeeded.items.find((x) => x.loc === "marathon-pe" && x.size === "M");
   assert.ok(r, "surfaced for a human recount");
   assert.equal(r.rejections, 4);
   assert.match(r.note, /Ask again/, "note tells staff how to release it");
+});
+
+test("streak at limit, Central HAS the size → the shop is still not re-asked, but Central is asked for the hub (pass-through, disputed)", () => {
+  const plan = computeRefillPlan(base({ orders: rejectedOrder(30), rejectStreak: streakNode(4) }));
+  assert.equal(plan.intents.filter((x) => x.dest === "marathon-pe").length, 0, "the loop guard still stops re-asking hub2 for the shop");
+  const leg = plan.intents.find((x) => x.dest === "hub2" && x.sizeKey === "M");
+  assert.ok(leg, "a central→hub2 leg is raised on the shop's behalf");
+  assert.deepEqual({ source: leg.source, qty: leg.qty, passThrough: leg.passThrough, forDests: leg.forDests },
+    { source: "central", qty: 2, passThrough: "disputed", forDests: ["marathon-pe"] });
+  const r = plan.exceptions.recountNeeded.items.find((x) => x.loc === "marathon-pe" && x.size === "M");
+  assert.ok(r, "the count is still suspect — the recount card stays");
+  assert.equal(r.passThrough, "raised");
+  assert.match(r.note, /asks again when it lands/);
 });
 
 test("streak park BEATS the 24h auto-retry (precedence is load-bearing)", () => {

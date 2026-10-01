@@ -42,6 +42,7 @@ import {
   requireOnlineStorePublication,
 } from "./collections.mjs";
 import { readAllPublishNodes } from "./publishNode.mjs";
+import { isProductRecordKey } from "./idMap.mjs";
 
 const flags = process.argv.slice(2);
 const COMMIT = flags.includes("--commit");
@@ -139,7 +140,7 @@ const publishNodes = await readAllPublishNodes(db);
 const syncNodes = (await db.ref("shopify_sync").get()).val() || {};
 const pids = [...new Set([
   ...Object.keys(publishNodes),
-  ...Object.keys(syncNodes).filter((k) => k !== "_collections"),
+  ...Object.keys(syncNodes).filter(isProductRecordKey),   // skips _collections, _reconcile, _claims
 ])].filter((pid) => !ONLY || ONLY.has(pid)).sort();
 // A named pid this program has never heard of is almost always a typo, and a
 // typo that exits 0 is the false success this script exists to stop producing.

@@ -10,7 +10,7 @@ import { dirname, join } from "node:path";
 import {
   PLATFORMS, PLATFORM_KEYS, POST_KINDS, STATUSES, MAX_ATTEMPTS, CAPTION_MIN, MAX_MEDIA,
   postBlocker, enabledPlatforms, outstandingPlatforms, attemptsExhausted, isDue,
-  captionWithLink, captionFor, truncateWords,
+  captionWithLink, captionWithBioNote, captionFor, truncateWords, BIO_NOTE,
   nextSlots, assignSlots, formatSlot, toLocalInput, fromLocalInput,
   productLink, describePost, resultLine, SLOT_DAYS, SLOT_HOUR_SAST,
   needsVerification, QUEUE_FILTERS, STALE_CLAIM_MS,
@@ -522,5 +522,59 @@ describe("the vocabulary is internally consistent", () => {
       expect(p.mediaMax).toBeGreaterThan(0);
     }
     expect(PLATFORMS.find((p) => p.key === "tiktok").titleMax).toBe(150);
+  });
+});
+
+// ── THE PER-PLATFORM LINK ────────────────────────────────────────────────────
+// Instagram cannot linkify a caption; Facebook can. The same post therefore
+// leaves with two different last lines, and that difference is the whole point
+// of the bio-link work, so it is pinned here rather than left to be noticed.
+describe("per-platform link style", () => {
+  const post = { caption: "Clean whites.", link: "https://marathonclub.co.za/products/tee-white" };
+
+  it("Facebook keeps the tappable product URL", () => {
+    expect(captionFor(post, "facebook").caption).toContain("https://marathonclub.co.za/products/tee-white");
+  });
+
+  it("Instagram carries no URL at all, and points at the bio", () => {
+    const { caption } = captionFor(post, "instagram");
+    expect(caption).not.toContain("http");
+    expect(caption).toContain(BIO_NOTE);
+    expect(caption).toContain("Clean whites.");
+  });
+
+  it("Instagram strips a URL the generator inlined mid-sentence", () => {
+    const { caption } = captionFor(
+      { caption: "Order here https://marathonclub.co.za/products/tee-white today.", link: "https://marathonclub.co.za/products/tee-white" },
+      "instagram"
+    );
+    expect(caption).not.toContain("http");
+    expect(caption).toContain("Order here");
+  });
+
+  it("does not double up when the caption already says link in bio", () => {
+    const { caption } = captionFor(
+      { caption: "Shop both online — link in bio.", link: "https://marathonclub.co.za/products/x" },
+      "instagram"
+    );
+    expect(caption.match(/link in bio/gi)).toHaveLength(1);
+  });
+
+  it("adds nothing to a post that is not selling anything", () => {
+    expect(captionFor({ caption: "Just a mood.", link: "" }, "instagram").caption).toBe("Just a mood.");
+  });
+
+  it("still respects the Instagram caption cap", () => {
+    const long = { caption: "x".repeat(3000), link: "https://marathonclub.co.za/products/x" };
+    expect(captionFor(long, "instagram").caption.length).toBeLessThanOrEqual(2200);
+  });
+
+  it("captionWithBioNote leaves a linkless caption exactly as it was", () => {
+    expect(captionWithBioNote("Just a mood.", "")).toBe("Just a mood.");
+    expect(captionWithBioNote("", "")).toBe("");
+  });
+
+  it("every platform declares a link style", () => {
+    for (const p of PLATFORMS) expect(["url", "bio"]).toContain(p.linkStyle);
   });
 });

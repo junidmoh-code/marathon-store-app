@@ -28,6 +28,9 @@
 //   • same size key with different IDs, or a different shopifyProductId
 //                                          → REFUSE loudly (human decision)
 import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
+// Paged reader — the claim-index backfill reads the existing map in bounded
+// pages rather than in one whole-node request.
+import { readMapPaged } from "../lib/rtdbPaged.mjs";
 
 // rows: [{ size, variantId, inventoryItemId }] with the ORIGINAL catalogue
 // size token ("5.5", "M", "_") — never a Shopify display value like "One Size".
@@ -82,52 +85,476 @@ export function planIdMapWrite(existing, mapping) {
   return newKeys.length ? { action: "merge", newKeys } : { action: "noop" };
 }
 
-// Atomically claim a Shopify product for ONE record: a single transaction on
-// the /shopify_sync parent verifies no other node references the gid AND
-// writes this record's pending {shopifyProductId} pointer — closing the
-// scan-then-write race two concurrent runs would otherwise have. The parent
-// transaction moves the whole node; fine at this slice's scale (handfuls),
-// revisit with a reverse index when the sync goes catalogue-wide. Throws if
-// the gid is already claimed elsewhere or this record maps to a different gid.
+// ── The claim index: /shopify_sync/_claims ───────────────────────────────────
+// The uniqueness guarantee below — "no OTHER record already maps this Shopify
+// product" — used to be enforced by a TRANSACTION ON THE /shopify_sync ROOT.
+// That is correct and it was affordable at the scale the original comment
+// anticipated ("handfuls; revisit with a reverse index when the sync goes
+// catalogue-wide"). The sync went catalogue-wide: 3 Sep profiling measured
+// ~1 MB per root transaction, ONE per created product (reconcile.mjs's adopt
+// and create branches are mutually exclusive, so a product takes one or the
+// other, never both). An earlier note here said THREE, which the code never
+// supported and which inflated the table in docs/SHOPIFY-SYNC.md until it was
+// corrected. This is that reverse index.
+//
+//   /shopify_sync/_claims/{numeric Shopify product id} = productId
+//
+// The claim is still made ATOMICALLY, against the server's value — it is a
+// transaction, just on ONE child instead of the whole map. It is NOT, however,
+// everything the root transaction was: that wrote the uniqueness check and the
+// durable pointer in a single commit, and these are two, and it checked
+// uniqueness against /shopify_sync itself rather than a derived index. Both
+// residuals are set out with their real cost in docs/SHOPIFY-SYNC.md §9 —
+// neither is a divergence, and neither is left implied. A numeric key is
+// used because a gid contains slashes and cannot be an RTDB path segment.
+//
+// The index is built ONCE, from a PAGED read (never a whole-node read), the
+// first time a claim is made after this code ships; a sentinel records that it
+// happened. Until it is built the index is empty and would call every existing
+// gid unclaimed — hence the backfill is a precondition of the first claim, not
+// a lazy nicety.
+const CLAIMS_PATH = "shopify_sync/_claims";
+// Underscore-prefixed like the sentinel, so it can never collide with a claim
+// key (claimKeyFor only ever produces digits).
+export const CLAIMS_CONFLICTS_KEY = "_conflicts";
+const CLAIMS_BUILT_KEY = "_builtAt";
+
+// How many backfill entries are written at once. One-time cost; small enough
+// to stay polite to the database, large enough that a few thousand keys finish
+// inside a single two-minute tick.
+const CLAIM_BACKFILL_CONCURRENCY = 25;
+
+// ── Which keys under /shopify_sync are product records ───────────────────────
+// The node holds product records keyed by product id, alongside this module's
+// own bookkeeping siblings. There used to be exactly one (`_collections`) and
+// callers hardcoded `k !== "_collections"`; this branch added `_reconcile` and
+// `_claims`, which would have walked straight through those filters and been
+// processed as if they were products. The rule is the PREFIX, and it lives
+// here once so the next sibling does not have to be added in five places.
+export const isProductRecordKey = (key) => typeof key === "string" && !key.startsWith("_");
+
+// A gid is "gid://shopify/Product/9339656536213". The trailing digits are the
+// key. Anything else is not a Product gid and never reaches here — buildMapping
+// already refuses it — but this throws rather than inventing a key.
+export function claimKeyFor(shopifyProductId) {
+  const m = /^gid:\/\/shopify\/Product\/(\d+)$/.exec(String(shopifyProductId || ""));
+  if (!m) throw new Error(`not a Shopify Product gid: ${shopifyProductId}`);
+  return m[1];
+}
+
+// Pure: what the claim transaction must do given the index entry it found.
+//   → { action: "claim" | "held" | "refuse", refusal? }
+export function planClaim(currentOwner, productId) {
+  if (currentOwner == null) return { action: "claim" };
+  if (currentOwner === productId) return { action: "held" };
+  return { action: "refuse", refusal: `already claimed by record ${currentOwner}` };
+}
+
+export async function ensureClaimIndex(db) {
+  const built = (await db.ref(`${CLAIMS_PATH}/${CLAIMS_BUILT_KEY}`).get()).val();
+  if (built) return { built: false };
+  // One paged pass over the existing map. Keys beginning with "_" are this
+  // module's own bookkeeping siblings (_collections, _reconcile, _claims) and
+  // are never product records.
+  const all = await readMapPaged(db, "shopify_sync", { pageSize: 300 });
+  const index = {};
+  let n = 0;
+  // Double mappings found while building. They are PERSISTED, not merely
+  // logged: the sentinel means this backfill runs exactly once in the lifetime
+  // of the database, so a warning printed here is one line in a launchd stderr
+  // log that nothing will ever mention again — and a double mapping is a live
+  // divergence generator (one record's off-intent unpublishes the product the
+  // other is still recorded live on). Written where a person can find it later.
+  const conflicts = {};
+  for (const [pid, node] of Object.entries(all)) {
+    if (!isProductRecordKey(pid)) continue;
+    const gid = node?.shopifyProductId;
+    // SKIP, NEVER THROW. This filter used to be `startsWith("gid://shopify/
+    // Product/")`, which is looser than claimKeyFor's `\d+$` — so a single
+    // malformed value anywhere in the node ("…/Product/12ab", a trailing
+    // space, a variant gid) passed the filter and made claimKeyFor throw,
+    // taking the whole backfill down with it. The sentinel is written LAST, so
+    // that backfill would never complete: it would be retried on every tick,
+    // for ever, and every claim behind it would fail. One bad record must not
+    // be able to do that, so the test here is now exactly the one claimKeyFor
+    // applies, and anything failing it is skipped and named.
+    let key = null;
+    try { key = claimKeyFor(gid); } catch { /* not a product gid */ }
+    if (key === null) {
+      if (gid != null) console.error(`  ⚠ ${pid} has an unusable shopifyProductId (${JSON.stringify(gid)}) — not indexed; it can neither claim nor block a gid until this is corrected`);
+      continue;
+    }
+    // A DUPLICATE IS NOT A TIE TO BE BROKEN SILENTLY. Two records mapping the
+    // same gid is exactly the state this index exists to make impossible — and
+    // it is possible in the data being read, because the index did not exist
+    // when that data was written. `index[key] = pid` alone is last-one-wins by
+    // Object.entries order: the loser keeps a legitimate mapping the index does
+    // not know about, is refused for ever afterwards with "already claimed by
+    // record X" about the gid it really holds, and the sentinel guarantees no
+    // later run re-examines it. One line from the malformed-gid case that was
+    // just fixed, and the one with a publish-blocking consequence.
+    //
+    // Resolved deterministically — the first pid in LEXICOGRAPHIC order wins, so
+    // a re-run reaches the same answer whichever page came back first. That is
+    // not the numerically lowest ("p10" sorts before "p9"); determinism is the
+    // property relied on here, not the identity of the winner, which is exactly
+    // why BOTH sides are named — the repair is a person deciding which record
+    // should own the product.
+    if (index[key] != null && index[key] !== pid) {
+      const [keep, drop] = [index[key], pid].sort();
+      // Careful about the wording: the backfill writes fill-if-empty, so if the
+      // key is ALREADY held (by a partial earlier run, possibly by `drop`) that
+      // owner stands and this preference does not apply. Say what is proposed,
+      // not what is guaranteed.
+      console.error(`  ⚠ ${index[key]} and ${pid} BOTH map ${gid} — a double mapping the claim index cannot represent. ` +
+        `Proposing ${keep}; the other will be refused this gid until one of them is re-pointed by hand ` +
+        `(an owner already recorded for this key wins over both).`);
+      conflicts[key] = { gid: String(gid), records: [keep, drop], seenAt: Date.now() };
+      index[key] = keep;
+      continue;
+    }
+    index[key] = pid;
+    n += 1;
+  }
+  // FILL GAPS, NEVER OVERWRITE. The obvious shape here is one bulk
+  // `update(index)`, and it is wrong: the paged read above is not a snapshot,
+  // so a claim legitimately committed while it was in flight is not in
+  // `index`, and a plain update() is last-writer-wins — it would revert that
+  // fresh claim to whatever the stale page said. The old root transaction was
+  // correct under any overlap and this must be too, or the move to a child
+  // index is a downgrade of the one guarantee it exists to provide.
+  //
+  // So each entry goes in under its own transaction that writes ONLY into an
+  // empty slot. A key someone else has already claimed is left exactly as it
+  // is: this is a backfill of history, and anything with a live owner is by
+  // definition more current than the page we read.
+  //
+  // Bounded concurrency because this is a one-time pass over a few thousand
+  // keys and the tick that runs it holds the single-flight lock.
+  const entries = Object.entries(index);
+  let filled = 0, kept = 0;
+  for (let i = 0; i < entries.length; i += CLAIM_BACKFILL_CONCURRENCY) {
+    await Promise.all(entries.slice(i, i + CLAIM_BACKFILL_CONCURRENCY).map(async ([key, owner]) => {
+      const res = await db.ref(`${CLAIMS_PATH}/${key}`).transaction((cur) => (cur == null ? owner : cur));
+      if (res.snapshot?.val() === owner) filled += 1; else kept += 1;
+    }));
+  }
+  // The sentinel goes in LAST and on its own. Written first (or in the same
+  // payload), a crash midway would leave the index part-built and permanently
+  // marked done — and a missing entry is a gid nothing holds, which is the one
+  // way a second record could claim a product that is already mapped.
+  // Conflicts BEFORE the sentinel, for the same reason the entries go before it:
+  // the sentinel means "this has been done", and it must not be able to mean
+  // that while the record of what was found is missing.
+  if (Object.keys(conflicts).length) {
+    await db.ref(`${CLAIMS_PATH}/${CLAIMS_CONFLICTS_KEY}`).update(conflicts);
+    console.error(`  ⚠ ${Object.keys(conflicts).length} double mapping(s) recorded at ` +
+      `${CLAIMS_PATH}/${CLAIMS_CONFLICTS_KEY} — each is one Shopify product two records both map, ` +
+      `and until one of each pair is re-pointed the loser cannot publish.`);
+  }
+  await db.ref(`${CLAIMS_PATH}/${CLAIMS_BUILT_KEY}`).set(Date.now());
+  return { built: true, entries: n, filled, kept, conflicts: Object.keys(conflicts).length };
+}
+
+// WHY THERE IS NO LOCK AROUND THIS FUNCTION (reviewed and declined, PR #551).
+// A reviewer asked for per-product serialisation so that no concurrent call can
+// commit a pointer during the gap between the claim and the pointer write. The
+// gap is real; it does not need a lock, because the losing writer resolves it
+// correctly on its own. Worst interleaving, two processes A and B on the same
+// record P with different gids G1 and G2, both past the pre-check:
+//
+//   A: claim G1               → claims/G1 = P        (atomic, own key)
+//   B: claim G2               → claims/G2 = P        (atomic, own key, no contention)
+//   A: pointer txn cur=null   → writes G1            (atomic, commits)
+//   B: pointer txn cur=G1≠G2  → clash; confirms against the server; releases
+//                               its own G2 claim (ownership-checked) and throws
+//
+//   Final: claims/G1 = P, pointer = G1, claims/G2 gone. A wins, B refuses
+//   cleanly, nothing is corrupt. Symmetric if B's pointer lands first.
+//
+// The same gid for two different records is serialised by the transaction on
+// the single claim key, so one of them refuses. Both invariants therefore hold
+// without a lock — and a distributed lock in a script whose scheduled path is
+// already single-flight would add a stale-lock failure mode that is worse than
+// the race it closes. The one residual is a release that itself fails, which is
+// logged loudly and named as needing a manual clear.
+//
+// Atomically claim a Shopify product for ONE record. Two guarantees, unchanged
+// from the root-transaction version:
+//   · no other record may map this gid (the transaction on the claim child);
+//   · this record may not already map a DIFFERENT gid (checked against its own
+//     node, a single small read).
+// Throws with the same wording as before if either is violated; on success the
+// record's pending {shopifyProductId} pointer exists, exactly as before.
 export async function claimShopifyProduct(db, productId, shopifyProductId) {
   assertSafeSegment(productId, "productId");
+  const key = claimKeyFor(shopifyProductId);
+  await ensureClaimIndex(db);
+
+  // This record's own pointer first — a record that already maps elsewhere must
+  // be refused before it can take a claim it would then have to give back.
+  const mineGid = (await db.ref(`shopify_sync/${productId}/shopifyProductId`).get()).val();
+  if (mineGid && mineGid !== shopifyProductId) {
+    throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${mineGid}`);
+  }
+
+  // THE RULE, AND ITS PREMISE — written together, because the rule alone is not
+  // sufficient and the next person to edit this file needs both.
+  //
+  //   RULE: an abort must be unreachable from `cur == null`.
+  //   WHY IT WORKS: a cold cache presents null on the FIRST invocation, so that
+  //     invocation writes; the write carries the hash of the pre-write state;
+  //     the server rejects it if reality differs; and by then the value listener
+  //     runTransaction attached has delivered the truth, so the re-invocation —
+  //     and any abort it takes — is on real server data.
+  //   PREMISE: that "a fresh process presents null" is true of THIS file, not of
+  //     the API. It holds because nothing here registers a persistent `on()`
+  //     listener, every read is a `get()` (which evicts its own registration),
+  //     and the transactions are awaited sequentially so no local write is in
+  //     flight over the same path. Break any of those — add a watchdog listener,
+  //     or overlap two transactions on nested paths — and a warm-but-stale
+  //     non-null view can reach an abort branch again, with no round trip.
+  //
+  // This claim transaction obeys the rule: `planClaim(null, …)` is "claim", so
+  // the null branch WRITES. The refusal below is therefore only ever reached on
+  // a re-invocation holding server data.
+  //
+  // The confirming read that follows is kept as belt and braces, not as the
+  // mechanism. An earlier draft of this file presented "confirm every abort with
+  // a fresh read and retry once" as THE discipline; it is not implementable —
+  // there is no way to warm the cache the callback reads — and two functions
+  // that relied on it (removeMappingIfUnchanged, releaseClaim) never worked.
+  // See reconcileScope.mjs for the SDK trace.
+  const ref = db.ref(`${CLAIMS_PATH}/${key}`);
   for (let attempt = 0; ; attempt++) {
     let refusal = null;
-    const result = await db.ref("shopify_sync").transaction((all) => {
+    const result = await ref.transaction((cur) => {
       refusal = null;
-      const nodes = all || {};
-      for (const [pid, node] of Object.entries(nodes)) {
-        if (pid !== productId && node?.shopifyProductId === shopifyProductId) {
-          refusal = `already claimed by record ${pid}`;
-          return undefined; // abort
-        }
-      }
-      const mine = nodes[productId];
-      if (mine && mine.shopifyProductId !== shopifyProductId) {
-        refusal = `record already maps to ${mine.shopifyProductId}`;
-        return undefined;
-      }
-      if (mine) return all; // claim already held — commit unchanged
-      return { ...nodes, [productId]: { shopifyProductId } };
+      const plan = planClaim(cur, productId);
+      if (plan.action === "refuse") { refusal = plan.refusal; return undefined; }
+      if (plan.action === "held") return cur;
+      return productId;
     });
     if (refusal) {
-      // Same stale-local-cache caveat as writeIdMap: confirm once against the
-      // server before treating the refusal as real.
-      if (attempt === 0) {
-        const server = (await db.ref("shopify_sync").get()).val() || {};
-        const clash = Object.entries(server).find(
-          ([pid, node]) =>
-            (pid !== productId && node?.shopifyProductId === shopifyProductId) ||
-            (pid === productId && node?.shopifyProductId !== shopifyProductId)
-        );
-        if (!clash) continue;
-        throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
-      }
-      throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}`);
+      if (attempt === 0 && planClaim((await ref.get()).val(), productId).action !== "refuse") continue;
+      // IS THE CLAIM STILL BACKED BY A MAPPING? The claim and the durable
+      // pointer are two commits, not one — the root transaction this replaced
+      // wrote both together — so a process killed between them leaves a claim
+      // whose owning record maps nothing, or maps something else. On the create
+      // path that record does not recover the same gid: it creates a NEW draft
+      // next tick and the orphan is caught by the title-duplicate guard, which
+      // is the same outcome the old code gave for a crash a few lines earlier.
+      // What is new is that the key stays claimed for ever.
+      //
+      // The harm is small — it blocks one gid that is an orphan draft nobody
+      // should map — but it surfaces much later, as a deliberate adoption being
+      // refused for a reason that looks impossible. So the refusal diagnoses
+      // itself: one small read of the owner's pointer, on the refusal path
+      // only, turns "already claimed by record X" into a one-line repair.
+      let stale = "";
+      try {
+        const owner = String(refusal).match(/\bp[0-9]+\b/)?.[0];
+        if (owner && owner !== productId) {
+          const ownerGid = (await db.ref(`shopify_sync/${owner}/shopifyProductId`).get()).val();
+          if (ownerGid !== shopifyProductId) {
+            stale = ` — NOTE: ${owner} does not map ${shopifyProductId} (it maps ${JSON.stringify(ownerGid)}), so this claim is stale, left by a run that stopped between taking the claim and writing the pointer. Clearing ${CLAIMS_PATH}/${key} by hand releases it.`;
+          }
+        }
+      } catch { /* diagnosis is a nicety; never let it replace the refusal */ }
+      throw new Error(`refusing to claim ${shopifyProductId}: ${refusal}${stale}`);
     }
     if (!result.committed) throw new Error("claim transaction did not commit");
-    return;
+    break;
   }
+
+  // The durable pointer. Written AFTER the claim, and this is the one place the
+  // child index is genuinely WEAKER than the root transaction it replaced: that
+  // wrote the uniqueness check and the pointer in a single commit, and these are
+  // two.
+  //
+  // Be exact about what a crash between them costs. TWO earlier versions of this
+  // comment were not, in opposite directions, and the second was mine.
+  //
+  // It first said the next attempt by the SAME record "finds 'held' and
+  // completes", which reads as if nothing could go wrong at all. I replaced that
+  // with the claim that a record with no pointer creates a NEW draft and never
+  // returns for the old gid. That is ALSO wrong, and reconcile.mjs says so ten
+  // lines above its own create branch: probeHandleOwner(payload.handle) runs
+  // BEFORE the create, buildHandle is deterministic so the orphan still holds
+  // the wanted handle, and adoptionVerdict returns ok for exactly what a crashed
+  // productSet leaves behind — a draft with no stock, on no sales channel. The
+  // orphan is ADOPTED, planClaim then finds "held", and the pointer is written.
+  // Same gid, no second draft, no stranded key. The normal case RECOVERS.
+  //
+  // So the residual is narrower again: it needs the handle to have MOVED between
+  // ticks (a rename), or adoptionVerdict to refuse for some other reason. Even
+  // then nothing on the storefront differs and nothing diverges — a crash a few
+  // lines earlier, between productSet and the mapping write, left the identical
+  // orphan under the root transaction too. The one new residual is a key in
+  // _claims blocking a gid that is an orphan draft nobody should map. It
+  // surfaces only if someone later adopts that draft by hand, and the refusal
+  // above diagnoses itself when they do.
+  //
+  // An attempt by any OTHER record is still refused throughout, which is the
+  // direction that matters and is the invariant the index exists to hold.
+  // A TRANSACTION, not a set(). `mineGid` was read before the claim was taken,
+  // so a plain set() here would overwrite a different gid written in between —
+  // exactly the double-mapping the read at the top of this function refuses,
+  // reintroduced at the bottom. Commit only into an empty slot or onto the same
+  // gid; anything else aborts and is reported, leaving the other writer's value
+  // alone.
+  if (!mineGid) {
+    // The same rule, and this one obeys it too: `cur == null` returns
+    // shopifyProductId, so the null branch WRITES and the clash below can only
+    // be reached on a re-invocation holding server data. That matters most
+    // here, because this abort is the expensive one — it does not merely
+    // refuse, it GIVES THE CLAIM BACK first, so a phantom gid in a stale cache
+    // would hand away a claim this record legitimately holds and then refuse
+    // the publish citing a mapping the server does not have.
+    //
+    // Worth naming the one path that keeps the premise true here: `ptr` is
+    // shopify_sync/{pid}/shopifyProductId, which is `get()`-read ~100 lines
+    // above. It is safe only because `get()` evicts its own registration. If
+    // that ever becomes an `on()`, this branch can see a warm stale value.
+    const ptr = db.ref(`shopify_sync/${productId}/shopifyProductId`);
+    let clash = null;
+    for (let attempt = 0; ; attempt++) {
+      clash = null;
+      await ptr.transaction((cur) => {
+        clash = null;   // same rule: only the LAST invocation's verdict counts
+        if (cur == null || cur === shopifyProductId) return shopifyProductId;
+        clash = cur;
+        return undefined;
+      });
+      if (!clash) break;
+      // Confirm once. If the server says the slot is free or already ours, the
+      // abort was against a stale cache — run the transaction again, for real.
+      if (attempt === 0) {
+        const onServer = (await ptr.get()).val();
+        if (onServer == null || onServer === shopifyProductId) continue;
+        clash = onServer;   // report what the SERVER holds, not what the cache did
+      }
+      break;
+    }
+    if (clash) {
+      // GIVE THE CLAIM BACK. It was taken a few lines above and this record is
+      // now known to map somewhere else, so holding it would block the gid for
+      // every other record forever — a leak with no way back, because nothing
+      // else releases a claim except the deleted-product path, and that only
+      // runs for a record whose own map still points at the gid. The release is
+      // ownership-checked, so it can only ever free the entry we just made.
+      //
+      // Tried TWICE. The window is already narrow — a pointer clash and a
+      // failing release — but a stranded claim blocks the gid for every record
+      // permanently and the only repair is by hand, so a second attempt is
+      // cheap insurance against one transient error. Whatever happens, the
+      // CLASH is what gets thrown: it is what the caller needs to act on, and
+      // a release failure must not replace it with a different error.
+      // THE OUTCOME IS NOT ONLY THE EXCEPTION. releaseClaim does not throw when
+      // it declines — it RETURNS "absent" / "held-by-other" / "contended". The
+      // first version of this block hardened only the throwing path, so a
+      // "contended" decline (the write did not land, our claim is still there)
+      // left the claim stranded with nothing logged at all. Now that nothing
+      // aborts, that outcome is RARE rather than likely — a resolved
+      // committed:false is close to unreachable, the Admin SDK rejecting on
+      // max-retry instead — but it is the one branch on which a claim leaks, so
+      // it is handled rather than assumed away. Only
+      // "contended" is a leak of OUR claim: "absent" means there is nothing to
+      // free and "held-by-other" means it is not ours to free.
+      let releaseError = null;
+      for (let tries = 0; tries < 2; tries++) {
+        try {
+          const outcome = await releaseClaim(db, productId, shopifyProductId);
+          releaseError = outcome === "contended"
+            ? new Error("release did not commit")
+            : null;
+          if (!releaseError) break;
+        } catch (e) {
+          releaseError = e;
+        }
+      }
+      if (releaseError) {
+        // Not silent. The clash message names the OTHER gid, not the one left
+        // stranded, so without this line recovering means deducing which key is
+        // stuck from a message that does not mention it.
+        console.error(`  ⚠ could not release claim ${claimKeyFor(shopifyProductId)} after a pointer clash (${String(releaseError?.message || releaseError)}) — that claim key is now stranded and will block this gid until it is cleared by hand`);
+      }
+      throw new Error(`refusing to claim ${shopifyProductId}: record already maps to ${clash}`);
+    }
+  }
+}
+
+// Release a claim. Used only where a mapping is being removed because Shopify
+// says the product does not exist — leaving the index entry behind would block
+// the gid forever for a product that is gone.
+//
+// OWNERSHIP IS CHECKED, not assumed. An unconditional remove() frees the slot
+// whoever holds it, so if the index had drifted — a legacy entry, or a claim
+// re-pointed by another record — this would quietly release a claim a
+// different, still-live product legitimately holds, and the gid could then be
+// double-claimed with nothing left to stop it. The uniqueness guarantee is the
+// entire reason this index exists; it must not be undone by a cleanup path.
+// A transaction that removes ONLY our own entry keeps it. Returns what it did.
+export async function releaseClaim(db, productId, shopifyProductId) {
+  assertSafeSegment(productId, "productId");
+  // `outcome` is reset at the TOP of every invocation, like `refusal` and
+  // `clash` elsewhere in this file. The callback may run more than once — the
+  // first against a local cache, again against the server value on a conflict —
+  // and only the last invocation describes what happened. Setting it without
+  // clearing it lets an earlier invocation's verdict survive into the answer:
+  // a first pass seeing null ("absent") followed by a real release would still
+  // report "absent", and the caller logs that as "nothing to do".
+  // `undefined` ABORTS without a write — which is right for a path whose job is
+  // to decline, and which brings with it the same hazard claimShopifyProduct
+  // guards above: the abort is ONE-SHOT, and the callback's first invocation is
+  // not guaranteed the server value. A stale cache reading null, or reading a
+  // different owner, would abort and report "absent" / "held-by-other" for a
+  // claim the server really does hold for us — and the claim would silently NOT
+  // be released, which is the leak this function exists to prevent.
+  //
+  // (The earlier version returned `cur` here. That committed a needless write,
+  // but it also forced a server round trip, so it was "accidentally safe".)
+  //
+  // IT WAS NOT AN ACCIDENT — it was the only mechanism there is, and the
+  // version that replaced it with an abort plus a confirming read was broken.
+  // There is no way to warm the cache the callback reads: `runTransaction` runs
+  // it synchronously against `repoGetLatestState()` before any server data can
+  // arrive and, on `undefined`, unwatches and completes without asking the
+  // server; `get()` removes its own registration afterwards, so it leaves
+  // nothing cached ("only active queries are cached"). Both checked against the
+  // installed @firebase/database. See reconcileScope.mjs `removeMappingIfUnchanged`
+  // for the line numbers and the full trace.
+  //
+  // On a fresh process — every tick — `cur` was null, the callback aborted with
+  // "absent", the confirming read found the claim IS ours, the retry saw null
+  // again and returned "absent" anyway. The claim was silently never released,
+  // which is precisely the leak this function exists to prevent, and the caller
+  // logs "absent" as nothing to do.
+  //
+  // THE RULE, and it is mechanical: AN ABORT MUST BE UNREACHABLE FROM
+  // `cur == null`. ensureClaimIndex's backfill above already obeys it
+  // (`cur == null ? owner : cur`); so do the claim and pointer transactions,
+  // whose null branches WRITE. These two declines are the only places that got
+  // it backwards, and a source guard below now keeps it that way.
+  //
+  // So: never abort. A decline writes `cur` back unchanged, which forces the
+  // round trip and re-invokes the callback with the real value, and the verdict
+  // that matters — "someone else holds it" — is read off the COMMITTED
+  // SNAPSHOT rather than a flag.
+  const ref = db.ref(`${CLAIMS_PATH}/${claimKeyFor(shopifyProductId)}`);
+  // Only ever used to tell "there was nothing to release" apart from "released
+  // it", both of which commit with the key absent. It is safe to read a latch
+  // HERE and nowhere else in this function: with no abort, the callback's last
+  // invocation is by definition the committed one. The verdict that can cost
+  // something does not come from it.
+  let sawAbsent = false;
+  const res = await ref.transaction((cur) => {
+    sawAbsent = cur == null;
+    return (cur == null || cur === productId) ? null : cur;
+  });
+  if (!res.committed) return "contended";
+  if (res.snapshot.val() != null) return "held-by-other";
+  return sawAbsent ? "absent" : "released";
 }
 
 // db = admin.database(). Returns the plan it executed.

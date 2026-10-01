@@ -14,6 +14,7 @@
 
 import { readFileSync, writeFileSync } from "fs";
 import { execSync } from "child_process";
+import { requireCleanTree } from "./lib/mutationPreflight.mjs";
 
 const CORE   = "scripts/lib/customerMergeCore.mjs";
 const PHONE  = "src/utils/phone.js";
@@ -157,6 +158,9 @@ function runSuite(tests) {
     return false;
   }
 }
+
+// ── PREFLIGHT: NEVER MUTATE AN ALREADY-DIRTY FILE ───────────────────────────
+requireCleanTree([CINDEX, CORE, ORDER, PHONE, SEARCH]);
 
 const results = [];
 let failed = false;

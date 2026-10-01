@@ -95,3 +95,17 @@ describe("solveUndoBlockers — snapshot identity, never clocks", () => {
     })).toEqual([]);
   });
 });
+
+describe("ownRunId (first batch): only THIS solve's own server lock is exempt", () => {
+  const paths = ["stock/trophy/p1/M"];
+  it("a lock stamped with the solve's own run id is not a blocker", () => {
+    const openByLoc = { trophy: { M: { runId: "first_batch:fb_p1_x", refillId: "r1", createdAt: "t" } } };
+    expect(solveUndoBlockers({ paths, openByLoc, priorOpenByLoc: {}, ownRunId: "first_batch:fb_p1_x" })).toEqual([]);
+  });
+  it("ANY other lock still blocks, even when an own run id is supplied", () => {
+    const openByLoc = { trophy: { M: { runId: "scan-4", refillId: "eng1", createdAt: "t" } } };
+    expect(solveUndoBlockers({ paths, openByLoc, priorOpenByLoc: {}, ownRunId: "first_batch:fb_p1_x" })).toHaveLength(1);
+    const other = { trophy: { M: { runId: "first_batch:fb_p1_OTHER", refillId: "r9", createdAt: "t" } } };
+    expect(solveUndoBlockers({ paths, openByLoc: other, priorOpenByLoc: {}, ownRunId: "first_batch:fb_p1_x" })).toHaveLength(1);
+  });
+});

@@ -59,8 +59,9 @@ const {
   MAX_TARGET, MAX_REORDER_POINT,
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
-const { effectivePolicyFor, locationEntryMode, armedGroupForCategory } = require("./policy-resolve.cjs");
-const { encodeSizeKey, resolveTarget } = require("./refill-engine.cjs");
+const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
+  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
+const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-engine.cjs");
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -209,6 +210,47 @@ async function readMapPaged(db, path, pageSize = 500) {
 
 const val = (db, path) => db.ref(path).once("value").then((s) => s.val());
 
+// ── ONE FOOTWEAR POLICY — THE WRITE-SIDE HALF (2026-09-24) ───────────────────
+// While the footwear-all group is ARMED, it is the one place footwear numbers
+// live. Two writes would quietly make a second copy, and both are refused:
+//
+//   • an own entry on a footwear category (own beats group, so the category
+//     would leave the one policy and keep whatever numbers were typed — the
+//     exact shape of the 24 Sep drift), and
+//   • a footwear-all write that drops one of the eight categories.
+//
+// Deleting an own entry (policy: null) is always allowed — that is how a stray
+// copy is removed. With the group DISARMED nothing here refuses: the group is
+// then not in the engine's order and an own entry is the only way to arm a
+// category, which is the emergency brake working as designed.
+//
+// A REVERT IS EXEMPT. The history's one-tap revert must always be able to put
+// back what a change replaced; the scan's drift flag then says so out loud.
+// `revertOf` must name a history entry for the same key whose `before` is
+// exactly what is being written — a caller cannot wave the refusal away with an
+// arbitrary id.
+async function isGenuineRevert(db, d, { kind, key, value }) {
+  const id = d.revertOf;
+  if (typeof id !== "string" || !id || !/^[A-Za-z0-9_-]+$/.test(id)) return false;
+  const h = await val(db, `${HISTORY_PATH}/${id}`);
+  if (!isPlainObject(h)) return false;
+  const sameKey = (e) => (kind === "group"
+    ? e?.kind === "group" && e.groupKey === key
+    : e?.kind !== "group" && e?.kind !== "targets" && e?.kind !== "rows" && e?.categoryKey === key);
+  if (!sameKey(h) || h.status !== "applied") return false;
+  // ONLY THE NEWEST CHANGE TO THIS KEY can be reverted past the rule. An older
+  // entry whose `after` happens to equal today's live value (a deletion from
+  // an earlier arm/disarm cycle) would otherwise resurrect numbers from weeks
+  // ago as a "revert". (Sonnet architect review, PR #646.) The recent history
+  // is the same bounded read the card's list comes from, so the only entries
+  // it can offer a Revert on are the ones checked here.
+  const recent = (await readHistory(db, 50)).filter((e) => sameKey(e) && e.status === "applied");
+  if (!recent.length || recent[0].id !== id) return false;
+  return sameValue(h.before ?? null, value ?? null);
+}
+const footwearGroupArmed = (cfg) => isPlainObject(cfg?.policyGroups?.[FOOTWEAR_GROUP_KEY])
+  && cfg.policyGroups[FOOTWEAR_GROUP_KEY].armed === true;
+
 // ── NORMALISE THE INCOMING EDIT ──────────────────────────────────────────────
 // The card sends whole numbers or blanks. Blank "Ask at" means ABSENT, which is
 // a real and different policy from 0 (absent = top up eagerly; 0 = ask only
@@ -217,6 +259,82 @@ const val = (db, path) => db.ref(path).once("value").then((s) => s.val());
 // is the ratio every armed batch has used and what the engine falls back to
 // anyway — so the owner never types it from scratch and the value is never a
 // surprise.
+// ═════════════════════════════════════════════════════════════════════════════
+// THE SEATING GATE — A POLICY SAYS HOW MANY, NEVER WHERE
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// THE INCIDENT (2026-09-09). Slides was armed at hub1 AND hub2 with a per-size
+// keep of 3 and no carriage scope. An unscoped leg is the map's standing
+// promise — "the category IS the arming act, carriage or not" — so every slide
+// in the catalogue became demand at BOTH hubs, including the ones only one hub
+// has ever kept. Overnight the engine asked each hub for the other's range.
+//
+// THE RULE THIS ESTABLISHES. An engine policy sets HOW MANY to keep, never
+// WHERE to keep. Arming a category at a location may only reach products that
+// location ALREADY holds a stock cell for. Arming must never create a seating.
+//
+// HOW IT IS ENFORCED, AND WHY HERE. `carriedOnly: true` already IS that gate —
+// refill-engine.cjs categoryPolicyEntry line 429, `storeCarries` (cell
+// existence, zero cells included), the one choke point every consumer of the
+// map resolves through. Nothing new is written; a NEWLY ARMED LEG IS SIMPLY
+// GIVEN THE FLAG. And it is given it HERE, inside applyCategoryPolicy, because
+// this function is the single door: the Engine Policy card's arming tab, the
+// group editor, scripts/apply-engine-policy.mjs and every arm-* script all
+// write the map through it and none of them writes the node directly. A gate in
+// the card would be a gate one script bypasses.
+//
+// ONLY NEW LEGS. A location already armed in `before` passes through
+// BYTE-IDENTICAL — Hub 1's armed sneakers, the whole clothing arming, every
+// existing category. Retro-fitting the flag onto a live leg would silently
+// narrow a policy somebody decided on months ago, which is the same class of
+// mistake in the other direction. Un-arming is unaffected: a leg dropped from
+// `after` is not a leg the gate can see.
+//
+// WHAT IT DOES NOT TOUCH. An explicit /stock_targets row still outranks the map
+// entirely (resolveTarget:468), so a hand-written `target: 0` seating switch-off
+// stays honoured, and a hand-written positive row still arms a product at a
+// location the gate would have skipped. That precedence is the owner's, and this
+// gate sits strictly below it.
+const SEATING_GATE_FIELD = "carriedOnly";
+
+// Is this location entry armed in the BEFORE state? Absent, null, or a shape
+// the engine refuses ("invalid") all mean "not armed here" — the conservative
+// reading, because a leg the engine ignores is a leg the owner has not in
+// practice armed, and arming it now is a new arming.
+function legWasArmed(before, loc) {
+  if (!isPlainObject(before)) return false;
+  return locationEntryMode(before[loc]) !== "invalid";
+}
+
+/** Force `carriedOnly: true` onto every location leg of `after` that was not
+ *  already armed in `before`. Returns { policy, gatedLocations } — the caller
+ *  reports the second so a save says what it scoped, rather than doing it
+ *  silently. `after` is never mutated. */
+function gateNewLegsToSeated(before, after) {
+  if (!isPlainObject(after)) return { policy: after, gatedLocations: [] };
+  const out = {};
+  const gated = [];
+  for (const [loc, leg] of Object.entries(after)) {
+    if (loc === "perSize") { out[loc] = leg; continue; }
+    // A leg the engine would ignore is left exactly as sent — the validator
+    // below is what names it, and stamping a flag onto a shape that is about to
+    // be refused would only confuse the error.
+    if (!isPlainObject(leg) || locationEntryMode(leg) === "invalid") { out[loc] = leg; continue; }
+    if (legWasArmed(before, loc)) { out[loc] = leg; continue; }
+    // A NEW LEG IS SCOPED WHATEVER THE CALLER SENT, including an explicit
+    // `carriedOnly: false`. There is no opt-out and that is the point: the
+    // 2026-09-08 arming did not tick a box marked "all products", it simply
+    // never mentioned carriage, and an escape hatch reachable by omission is
+    // not a gate. Widening a leg is still possible — arm it seated, look at
+    // what the engine actually asks for, then clear the scope on the leg as a
+    // second, separate edit against a policy you can see the effect of.
+    if (carriedOnlyOf(leg) && leg[SEATING_GATE_FIELD] === true) { out[loc] = leg; continue; }
+    out[loc] = { ...leg, [SEATING_GATE_FIELD]: true };
+    gated.push(loc);
+  }
+  return { policy: out, gatedLocations: gated };
+}
+
 function normalizePolicy(input) {
   if (input === null) return null;
   if (!input || typeof input !== "object" || Array.isArray(input)) return input;
@@ -555,7 +673,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   const rowsByCategory = {};
   for (const loc of rowLocs) {
     for (const [pid, bySize] of Object.entries(targets[loc] || {})) {
-      const key = products[pid]?.categoryKey;
+      const key = policyCategoryKey(products[pid]);
       if (!key) continue;
       const r = rowsByCategory[key] || (rowsByCategory[key] = { cells: 0, products: new Set(), byLocation: {} });
       const n = Object.keys(bySize || {}).length;
@@ -582,6 +700,12 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     for (const m of (Array.isArray(g?.memberCategoryKeys) ? g.memberCategoryKeys : [])) memberOf[m] = memberOf[m] || gk;
   }
 
+  // ── ONE FOOTWEAR POLICY: THE DRIFT THE CARD SHOWS ─────────────────────────
+  // The same structural check the scan writes to Health, computed from the
+  // same config, attached to the entries it concerns — so a footwear category
+  // with its own numbers, or a footwear policy that has stopped being one,
+  // carries a badge on the card without anybody having to go looking.
+  const footwearDrift = footwearPolicyDrift(config);
   const categories = [];
   for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
@@ -672,6 +796,9 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       // overstated the figure by exactly 188.
       resolvesMapCells: m ? m.legs.reduce((n, l) => n + (l.cells - l.overrides - l.legacyRows), 0) : 0,
       resolvesMapProducts: m ? Math.max(pids.length - m.overriddenProducts, 0) : 0,
+      // A footwear category's numbers live on the footwear policy only.
+      footwearMember: FOOTWEAR_CATEGORY_KEYS.includes(key),
+      footwearDrift: FOOTWEAR_CATEGORY_KEYS.includes(key) ? footwearDrift.filter((i) => i.key === key) : [],
     });
   }
   // ── A GROUP AS ONE ENTRY ──────────────────────────────────────────────────
@@ -759,9 +886,11 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       legacyRowCells: sum("legacyRowCells"),
       resolvesMapCells: sum("resolvesMapCells"),
       resolvesMapProducts: sum("resolvesMapProducts"),
+      footwearPolicy: gk === FOOTWEAR_GROUP_KEY,
+      footwearDrift: gk === FOOTWEAR_GROUP_KEY ? footwearDrift : [],
     });
   }
-  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs };
+  return { categories, groupEntries, destinations, groups, rowLocations: rowLocs, footwearDrift };
 }
 
 // The audit trail, newest first, bounded. `.indexOn: ["at"]` is part of the
@@ -847,7 +976,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // one shop made the All chip read "All (240)". The bound this action exists
     // for is on the PAYLOAD, not on the count. (Delta review, PR #401.)
     const products = await readMapPaged(db, "products");
-    const pids = new Set(Object.keys(products).filter((pid) => rowKeys.has(products[pid]?.categoryKey)));
+    const pids = new Set(Object.keys(products).filter((pid) => rowKeys.has(policyCategoryKey(products[pid]))));
     const all = [];
     const byLocation = {};
     for (const loc of allRowLocs) {
@@ -1231,7 +1360,17 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     }
     const liveGroups = isPlainObject(cfg.policyGroups) ? cfg.policyGroups : {};
     const before = liveGroups[groupKey] ?? null;
-    const after = d.group;
+    // ── THE SEATING GATE, ON THE GROUP'S OWN LEGS ────────────────────────────
+    // A group arms its member categories at the group's locations, so a new
+    // group leg is a new arming of every member — the widest version of the act
+    // this gate exists for. Same rule, same helper: a location not already
+    // armed on THIS GROUP's policy is scoped to seated products. Deleting the
+    // group (`group: null`) and editing an existing leg both pass through
+    // untouched.
+    const groupGate = gateNewLegsToSeated(before?.policy ?? null, isPlainObject(d.group?.policy) ? d.group.policy : null);
+    const after = isPlainObject(d.group) && isPlainObject(d.group.policy)
+      ? { ...d.group, policy: groupGate.policy }
+      : d.group;
     // ── THE SIZES A GROUP MAY BE GIVEN A POLICY ON ──────────────────────────
     // The UNION of its members' derived runs, read live at the moment of the
     // write — never the list the client offered. Only read when the edit
@@ -1271,6 +1410,18 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       allowedSizes: groupAllowedSizes,
     });
     if (err) throw httpsError("invalid-argument", err);
+    // ── THE FOOTWEAR POLICY KEEPS ALL EIGHT ─────────────────────────────────
+    // An ARMED footwear-all that names fewer than the eight footwear
+    // categories would leave the missing one on its own numbers or on none.
+    // Disarming or deleting the group stays possible — that is the off switch.
+    if (groupKey === FOOTWEAR_GROUP_KEY && isPlainObject(after) && after.armed === true) {
+      const missing = FOOTWEAR_CATEGORY_KEYS.filter((k) => !(after.memberCategoryKeys || []).includes(k));
+      if (missing.length && !(await isGenuineRevert(db, d, { kind: "group", key: groupKey, value: d.group }))) {
+        throw httpsError("failed-precondition",
+          `The footwear policy covers all eight footwear categories — ${missing.join(", ")} cannot be left out while it is armed.`,
+          { footwearOnePolicy: true, missing });
+      }
+    }
     for (const m of (after?.memberCategoryKeys || [])) {
       if (REFUSED_CATEGORY_KEYS.has(m)) {
         throw httpsError("invalid-argument", `"${m}" carries no policy by owner decision and cannot be put in a group`);
@@ -1314,6 +1465,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 
     if (d.dryRun === true) {
       return { ok: true, dryRun: true, action: "setGroup", groupKey, before, after, armModel,
+        seatedOnlyLocations: groupGate.gatedLocations,
         armedNow: after?.armed === true, sizeRun: groupRun ? groupRun.sizes : null, sizeRunPartial: groupRun ? groupRun.partial : null };
     }
     if (sameValue(before, after)) {
@@ -1329,6 +1481,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     await historyRef.set({
       kind: "group", groupKey, at: nowMs, by: callerEmail, byUid: callerUid || null,
       before, after, armed: after?.armed === true,
+      seatedOnlyLocations: groupGate.gatedLocations.length ? groupGate.gatedLocations : null,
       modelled: armModel ? { requests: armModel.totalRequests, units: armModel.totalUnits, cap: armModel.cap } : null,
       status: "pending",
     });
@@ -1348,6 +1501,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
         { historyId: historyRef.key, written: written ?? null });
     }
     return { ok: true, action: "setGroup", groupKey, before, after, armModel,
+      seatedOnlyLocations: groupGate.gatedLocations,
       historyId: historyRef.key, history: await readHistory(db) };
   }
 
@@ -1361,7 +1515,24 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     throw httpsError("invalid-argument",
       'policy is required — send `policy: null` to un-arm a category. Omitting it is refused, because a dropped field must not delete a live policy.');
   }
-  const policyAfter = normalizePolicy(d.policy);
+  // ── THE SEATING GATE, APPLIED BEFORE ANYTHING ELSE SEES THE POLICY ────────
+  // `before` is read here rather than below because the gate needs it, and one
+  // read of the live entry is the same read either way. Every downstream step —
+  // validation, the size-run derivation, the diff, the preview, the history
+  // entry, the post-verify — then works on the GATED policy, so what is modelled
+  // is what is written and the audit trail records the leg as it landed.
+  // ── A FOOTWEAR CATEGORY HAS NO NUMBERS OF ITS OWN ─────────────────────────
+  // See the ONE FOOTWEAR POLICY note above isGenuineRevert. Refused on a dry
+  // run too: previewing a copy that cannot be saved is offering a refusal.
+  if (FOOTWEAR_CATEGORY_KEYS.includes(categoryKey) && d.policy !== null && footwearGroupArmed(cfg)
+    && !(await isGenuineRevert(db, d, { kind: "category", key: categoryKey, value: d.policy }))) {
+    throw httpsError("failed-precondition",
+      `Footwear is set once, on the Footwear policy — "${categoryKey}" cannot have numbers of its own while that policy is armed. Open Footwear to change it.`,
+      { footwearOnePolicy: true, groupKey: FOOTWEAR_GROUP_KEY });
+  }
+  const before = cfg.categoryPolicy?.[categoryKey] ?? null;
+  const gate = gateNewLegsToSeated(before, normalizePolicy(d.policy));
+  const policyAfter = gate.policy;
   // ── THE SIZES THIS CATEGORY MAY BE GIVEN A POLICY ON ──────────────────────
   // Derived from live data — what its products declare, what /stock holds, what
   // /stock_targets rows exist — intersected with the registry's declared run.
@@ -1388,8 +1559,6 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   const err = validateCategoryPolicy(categoryKey, policyAfter, { knownLocations, knownCategoryKeys, allowedSizes });
   if (err) throw httpsError("invalid-argument", err);
 
-  const before = cfg.categoryPolicy?.[categoryKey] ?? null;
-
   // ── DRIFT ─────────────────────────────────────────────────────────────────
   // The card sends back the exact entry it rendered the editor from. If live no
   // longer matches it, somebody (or something) changed the policy while this
@@ -1410,7 +1579,8 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   const preview = await buildPreview(db, { config: cfg, categoryKey, policyAfter, locations: knownLocations });
 
   if (dryRun) {
-    return { ok: true, dryRun: true, categoryKey, before, after: policyAfter, changes, preview, live: before };
+    return { ok: true, dryRun: true, categoryKey, before, after: policyAfter, changes, preview, live: before,
+      seatedOnlyLocations: gate.gatedLocations };
   }
   // No-change means BYTE-SAME, not diff-empty (PR #448 review): the diff is a
   // human-facing change list, and any blind spot in it must never eat a write.
@@ -1432,6 +1602,9 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     before: before === undefined ? null : before,
     after: policyAfter,
     changes,
+    // Which legs this save scoped to seated products. Absent on every entry
+    // written before the gate existed, and empty when nothing new was armed.
+    seatedOnlyLocations: gate.gatedLocations.length ? gate.gatedLocations : null,
     // The model the decision was taken on, kept small: the per-leg totals only,
     // not the row lists. A revert six weeks from now should be able to see what
     // was expected at the time without re-deriving it against stock that moved.
@@ -1473,6 +1646,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
 
   return {
     ok: true, categoryKey, before, after: policyAfter, changes, preview,
+    seatedOnlyLocations: gate.gatedLocations,
     historyId: historyRef.key, history: await readHistory(db),
   };
 }

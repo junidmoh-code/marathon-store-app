@@ -651,6 +651,58 @@ function approvedSection(rows, totalsIdx) {
   return { from: approved.at, to: Math.min(next ? next.at - 1 : limit, limit) };
 }
 
+/**
+ * The span of the DECLINED TRANSACTIONS section, or null when there is none.
+ *
+ * ── WHY THIS IS NOT approvedSection WITH A DIFFERENT WORD ────────────────────
+ * The fallback is the opposite one, and that is the whole point. A report with
+ * no APPROVED heading falls back to the whole document, because the
+ * transactions are in there somewhere and older firmware prints no dividers. A
+ * report with no DECLINED heading has NO DECLINES — falling back to the whole
+ * document would read the approved list a second time and report every sale as
+ * a decline. Absent means absent here, and it says so by returning null.
+ *
+ * Marathon Till 1's batch 58 on 19 Sept 2026 prints this section FIRST, above
+ * the approved list: one declined attempt (TSN 25, R750, auth code 000000)
+ * followed by 48 approved. The order is the terminal's, not a rule, so nothing
+ * here depends on which section comes first.
+ */
+function declinedSection(rows, totalsIdx) {
+  const limit = totalsIdx >= 0 ? totalsIdx : rows.length;
+  const starts = sectionStarts(rows);
+  const sec = starts.find((s) => /declined/i.test(s.heading) && s.at < limit);
+  if (!sec) return null;
+  const next = starts.find((s) => s.at > sec.at);
+  return { from: sec.at, to: Math.min(next ? next.at - 1 : limit, limit) };
+}
+
+/**
+ * The "Items: n" figure stated inside one section.
+ *
+ * EACH SECTION STATES ITS OWN, AND THEY ARE DIFFERENT FACTS. A report with a
+ * decline prints "Items: 1" under DECLINED and "Items: 48" under APPROVED;
+ * summing them, or reading the first, or treating the pair as a contradiction,
+ * are three different ways of getting the same wrong answer. Within ONE section
+ * a repeated count must still agree, because there it IS the same fact twice.
+ *
+ * @returns {{ok:true, count:number} | {ok:false, reason:string}}
+ */
+function sectionItemCount(rows, span, what) {
+  const counts = [];
+  for (const row of rows.slice(span.from, span.to + 1)) {
+    const m = EMAILED.items.exec(row);
+    if (m) counts.push(Number(m[1]));
+  }
+  if (!counts.length) {
+    return { ok: false, reason: `That banking report's ${what} section does not print an Items count. If it is the right file, photograph the slip instead.` };
+  }
+  const disagreeing = [...new Set(counts)];
+  if (disagreeing.length > 1) {
+    return { ok: false, reason: `That report states its ${what} Items count more than once and the counts differ (${disagreeing.join(" and ")}). Nothing was recorded — photograph the slip instead.` };
+  }
+  return { ok: true, count: counts[0] };
+}
+
 // ─── A TRANSACTION IS A BLOCK, NOT A ROW ─────────────────────────────────────
 // This is the shape the real emailed report actually uses — one transaction
 // spread over eight or nine lines rather than printed across one:
@@ -815,6 +867,60 @@ function readTxnBlock(block, batchNo) {
 }
 
 /**
+ * Does this banking report have the shape of a batch in which NO card was
+ * taken? No section headings of its own (the TOTALS SUMMARY / CARD TOTALS
+ * dividers aside), and not a single transaction block anywhere in it. The
+ * caller still requires the printed TOTAL to be exactly zero.
+ */
+function isEmptyBatchShape(rows) {
+  const txnSection = sectionStarts(rows).some((sec) => /transactions?\b/i.test(sec.heading));
+  if (txnSection) return false;
+  // …and a heading printed WITHOUT a divider above it (older firmware).
+  if (rows.some((r) => EMAILED.approved.test(r) || /^\s*declined transactions\b/i.test(r))) return false;
+  if (rows.some((r) => EMAILED.items.test(r))) return false;
+  if (rows.some((r) => BLOCK.tsnBatch.test(r) || /^\s*TSN\s*:/i.test(r))) return false;
+  return rows.some((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+}
+
+/**
+ * The extraction for an empty batch: R0.00, no lines, and a one-millisecond
+ * window at the moment the report was printed — the same "a millisecond puts
+ * the instant inside its own half-open window" convention the transaction
+ * windows use. A batch with no transactions declares no span of trading, so
+ * there is nothing wider to reconcile; the record says so via windowSource.
+ */
+function emptyBatchExtraction(rows, { tid, batchNo }) {
+  const headerStamp = rows.map(parseEmailedStamp).find((v) => v !== null) ?? null;
+  const labelledPrinted = field(rows, EMAILED.printed);
+  const printedAt = headerStamp ?? (labelledPrinted ? parseSlipTimestamp(labelledPrinted) : null);
+  if (printedAt === null) {
+    return { ok: false, reason: "That banking report is for an empty batch but prints no date, so it cannot be placed. Nothing was recorded." };
+  }
+  return {
+    ok: true,
+    extraction: {
+      mid: field(rows, EMAILED.mid),
+      mids: [...new Set(fieldAll(rows, EMAILED.mid).map(normaliseMid).filter(Boolean))],
+      tid, batchNo: String(batchNo),
+      openedAt: printedAt, closedAt: printedAt + 1, printedAt,
+      openedText: null, closedText: null,
+      txnCount: 0,
+      purchasesCents: 0, cashCents: 0, refundsCents: 0, totalCents: 0,
+      reconLine: field(rows, RE.reconLine),
+      confidence: null,
+      format: "emailed",
+      windowSource: "empty-batch",
+      emptyBatch: true,
+      lastTxnAt: null,
+      lines: [],
+      declined: [],
+      declinedCount: null,
+      declinedUnread: null,
+    },
+  };
+}
+
+/**
  * Read an emailed banking report.
  *
  * @param {string[]} rows  tidied text, one entry per visual line
@@ -874,19 +980,28 @@ function parseEmailedReport(rows) {
   // repeated count must still agree, because there it IS the same fact stated
   // twice, and this figure is what the line-count check measures a missed
   // transaction against.
-  const itemCounts = [];
-  for (const row of rows.slice(approved.from, approved.to + 1)) {
-    const m = EMAILED.items.exec(row);
-    if (m) itemCounts.push(Number(m[1]));
+  const approvedCount = sectionItemCount(rows, approved, "approved");
+  // ── AN EMPTY BATCH IS A BATCH ─────────────────────────────────────────────
+  // Marathon Till 3 (67365901) emailed batch 81 on 21 Sept 2026 with NO
+  // transaction sections at all — header, "TOTALS SUMMARY / Total ZAR 0.00",
+  // "CARD TOTALS" with nothing under it. The terminal settled a batch in which
+  // no card was taken. There is no Items count because there are no items, and
+  // refusing it for that left the till looking like it had not reported.
+  //
+  // Recognised NARROWLY, so it cannot swallow a report this parser simply
+  // failed to read: no section headings, not one transaction block anywhere in
+  // the document, and a printed TOTAL of exactly zero (checked further down).
+  // Anything else missing its Items count still refuses, as before.
+  const emptyBatch = !approvedCount.ok && isEmptyBatchShape(rows);
+  if (!approvedCount.ok && !emptyBatch) {
+    // The wording for a report with no sections at all stays what it was: the
+    // span is then the whole document and "the approved section" would name
+    // something the reader cannot see.
+    return bad(approved.from === 0
+      ? "That banking report does not print an Items count. If it is the right file, photograph the slip instead."
+      : approvedCount.reason);
   }
-  if (!itemCounts.length) {
-    return bad("That banking report does not print an Items count. If it is the right file, photograph the slip instead.");
-  }
-  const disagreeing = [...new Set(itemCounts)];
-  if (disagreeing.length > 1) {
-    return bad(`That report states its Items count more than once and the counts differ (${disagreeing.join(" and ")}). Nothing was recorded — photograph the slip instead.`);
-  }
-  const txnCount = itemCounts[0];
+  const txnCount = emptyBatch ? 0 : approvedCount.count;
 
 
   // ── THE TRANSACTIONS, WHICH ARE BLOCKS AND NOT ROWS ──
@@ -903,6 +1018,74 @@ function parseEmailedReport(rows) {
     if (read.skip) continue;    // a stamp with no TSN under it is not a transaction
     if (read.err) return bad(read.err);
     txns.push(read.txn);
+  }
+
+  // ── THE DECLINED SECTION, READ AND KEPT ───────────────────────────────────
+  // A decline is not money and never enters a total — but it is evidence. A
+  // card that declines and is re-swiped a minute later is one of the real
+  // causes of a variance, and the terminal's own report is the ONLY place that
+  // attempt is visible at all: the till has no leg for it, and the approved
+  // list simply skips its sequence number.
+  //
+  // So these lines are captured, marked, and carried to the record for the
+  // investigation view. They are NOT in `lines`, so nothing downstream can add
+  // them to the card total or measure them against the till's takings — and
+  // this is structural rather than remembered, because `lines` is the only
+  // thing the total and the match ever read.
+  //
+  // THE TWO COUNTS ARE VALIDATED SEPARATELY AND NEVER SUMMED. "Items: 1" under
+  // DECLINED and "Items: 48" under APPROVED are two facts about two lists;
+  // each list is checked against its own figure.
+  const declinedSpan = declinedSection(rows, totalsRegionIdx);
+  const declined = [];
+  // Declined blocks this parser could not read. See the loop below.
+  let unreadableBlocks = 0;
+  // NULL FOR THE SAME REASON declinedCount IS: a report with no declined
+  // section has no unread declines, it has no declines to speak of at all.
+  let declinedUnread = null;
+  // NULL, NOT ZERO. A report with no declined section STATED NOTHING about
+  // declines; one that prints "Items: 0" stated zero. Those are different
+  // facts and buildBatchRecord's contract reserves null for the first, so
+  // starting at 0 would record "the terminal reported no declines" for a
+  // report that never mentioned them. (CodeRabbit, PR #615.)
+  let declinedCount = null;
+  if (declinedSpan) {
+    const stated = sectionItemCount(rows, declinedSpan, "declined");
+    if (!stated.ok) return bad(stated.reason);
+    declinedCount = stated.count;
+    for (const blk of collectTxnBlocks(rows.slice(0, declinedSpan.to + 1), declinedSpan.from)) {
+      const read = readTxnBlock(blk, batchNo);
+      if (read.skip) continue;
+      // A MALFORMED DECLINED BLOCK IS COUNTED, NOT FATAL — the same trade as
+      // the count mismatch below, and it was left inconsistent here: a
+      // declined line this parser could not read would have refused a report
+      // whose forty approved transactions and printed total were perfectly
+      // sound. The approved loop above still refuses on a bad block, because
+      // there a misread IS the money. (CodeRabbit, PR #615.)
+      if (read.err) { unreadableBlocks++; continue; }
+      // Marked at the point of reading. A consumer must never have to know
+      // which array a line came out of to know what it is.
+      declined.push({ ...read.txn, outcome: "declined" });
+    }
+    // ── A DECLINED SECTION NEVER REFUSES THE REPORT ─────────────────────────
+    // This was a refusal for about an hour, and it was the wrong trade. The
+    // declined list is SUPPLEMENTARY EVIDENCE; the approved list and the total
+    // are the money, and each is validated on its own. Refusing the whole file
+    // because a supplementary section did not parse would have thrown away
+    // forty good transactions and a correct R30,120 total — caught by an
+    // existing test whose fixture prints a declined heading with no readable
+    // blocks beneath it, which is exactly what an unparseable section looks
+    // like.
+    //
+    // So the discrepancy is REPORTED, not fatal: the stated figure and the
+    // lines actually read both stand, and the gap between them becomes a
+    // warning on the record. Nothing claims a decline it could not read.
+    // NOT unreadableBlocks + shortfall: a block that failed to read is ALSO
+    // missing from `declined`, so it is already inside the shortfall and
+    // adding both would double-count it. The shortfall is the whole truth —
+    // the block count only matters when the stated figure is itself wrong,
+    // which is why the larger of the two is taken rather than their sum.
+    declinedUnread = Math.max(0, declinedCount - declined.length, unreadableBlocks);
   }
 
   // ── the figures live in the TOTALS REGION, and nowhere else ──
@@ -950,7 +1133,9 @@ function parseEmailedReport(rows) {
     }
     return found;
   };
-  const purchases = money(MONEY.purchases, "purchases figure", { required: true });
+  // An empty batch prints its TOTAL and nothing else — no purchases row to
+  // read, because there were none.
+  const purchases = money(MONEY.purchases, "purchases figure", { required: !emptyBatch });
   if (purchases.err) return bad(purchases.err);
   const total = money(MONEY.total, "TOTAL", { required: true });
   if (total.err) return bad(total.err);
@@ -966,6 +1151,15 @@ function parseEmailedReport(rows) {
   // file it reads 16:26:31, seventeen minutes after the batch's last sale.
   const headerStamp = rows.slice(0, approved.from)
     .map(parseEmailedStamp).find((v) => v !== null) ?? null;
+  if (emptyBatch) {
+    // THE ZERO IS WHAT MAKES IT EMPTY. A report with no sections that prints
+    // a non-zero TOTAL is one whose transactions this parser could not find,
+    // and recording it as R0 would lose money.
+    if (total.cents !== 0 || purchases.cents !== 0 || refunds.cents !== 0 || cash.cents !== 0) {
+      return bad("That banking report does not print an Items count. If it is the right file, photograph the slip instead.");
+    }
+    return emptyBatchExtraction(rows, { tid, batchNo });
+  }
   if (!txns.length) {
     return bad("No transactions could be read from that banking report. If it is the right file, photograph the slip instead.");
   }
@@ -1039,9 +1233,21 @@ function parseEmailedReport(rows) {
       windowSource: closesAtPrint ? "transactions-to-print" : "transactions",
       lastTxnAt,
       lines: txns,
+      // The declined attempts, and the figure the report states for them.
+      // Never part of `lines`, never part of a total — see the declined
+      // section above.
+      declined,
+      declinedCount,
+      // How many declines the report SAID it had that could not be read. Zero
+      // on every report on file; a warning rather than a refusal when not.
+      declinedUnread,
     },
   };
 }
+
+// "Settlement failed", "failed to settle", "settlement unsuccessful"… Never a
+// phrase a real batch report prints.
+const SETTLEMENT_FAILED = /\bsettlement\b[^.]{0,40}\b(?:fail(?:ed|ure)?|unsuccessful|not\s+completed|rejected)\b|\b(?:failed|unable)\s+to\s+settle\b|\bnot\s+(?:been\s+)?settled\b/i;
 
 /**
  * Read whichever of the two reports this is.
@@ -1053,6 +1259,19 @@ function parseSlipPdf(lines) {
   const rows = (Array.isArray(lines) ? lines : []).map(tidy).filter(Boolean);
   if (!rows.length) {
     return { ok: false, reason: "That PDF has no readable text — it may be a scan rather than the terminal's own file. Photograph the slip instead." };
+  }
+  // ── A SETTLEMENT-FAILURE NOTICE IS NOT A BATCH ────────────────────────────
+  // The bank can email that a batch FAILED to settle. It carries a terminal and
+  // perhaps a batch number, but no settled figures, and reading it as a batch
+  // would record money that never moved. Said plainly, before any parse. (No
+  // real notice is on file yet; the wording is matched loosely on purpose.
+  // LIMIT: this sees only a notice that arrives as a PDF — the poller hands
+  // nothing else to the parser. A notice in an email BODY produces no row.)
+  if (rows.some((r) => SETTLEMENT_FAILED.test(r))) {
+    return {
+      ok: false,
+      reason: "That email is a settlement-failure notice from the bank, not a batch report — the batch did not settle, so there is nothing to record. The terminal will report the batch once it settles; if it does not, call FNB Merchant Services.",
+    };
   }
   const format = detectReportFormat(rows);
   if (format === "emailed") return parseEmailedReport(rows);
@@ -1066,7 +1285,7 @@ function parseSlipPdf(lines) {
 module.exports = {
   parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
-  sectionStarts, approvedSection,
+  sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, SETTLEMENT_FAILED,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
   // The email-intake path's seams: `field`/`fieldAll` read a labelled header row
   // (and every row that matches, which is how a file naming two terminals is

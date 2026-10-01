@@ -331,7 +331,48 @@ const REAL_REPORT = {
   missingTsns: [5, 21, 22, 23, 24, 30, 31, 33, 34, 43],
 };
 
+// ─── THE REPORT WITH A DECLINED SECTION ──────────────────────────────────────
+// Marathon Till 1's batch 58, settled 19 Sept 2026 — the first report on file
+// with TWO transaction sections. It prints DECLINED TRANSACTIONS with
+// "Items: 1" ABOVE APPROVED TRANSACTIONS with "Items: 48": two lists, two
+// counts, in one document. A reader that assumes one Items figure reads the
+// wrong one; a reader that sums them expects 49 lines and finds 48.
+//
+// SANITISED, AND THE STRUCTURE IS THE POINT. This was built from the real
+// nine-page file — every line, in order, with its page furniture and its
+// mid-UTI wrap points intact — and then every identifier and amount was
+// replaced with a deterministic synthetic one: merchant id, masked PANs, RRNs,
+// UTIs, auth codes and every figure.
+//
+// THIS REPOSITORY IS PUBLIC. The real file is a bank's record of a real day's
+// trading for a real business, and committing it would publish a merchant id,
+// forty-nine masked card numbers with their retrieval reference numbers and
+// authorisation codes, and the takings of one till on one day. None of that is
+// needed to test a parser: what the parser reads is the SHAPE, and the shape
+// is preserved here exactly. (Raised by CodeRabbit, PR #615.)
+//
+// The one structural fact that survives as a value: the declined block's
+// authorisation code is six zeros, because that is what a decline prints and a
+// test asserting it should assert the real thing.
+//
+// The batch also spans TWO DAYS (18 Sept 11:25 -> 19 Sept 16:12), because it
+// was left open overnight — which is what made it collide with the interim
+// report recorded the evening before. See card-batch-supersede.test.cjs.
+const declinedReportLines = () => require("./real-report-declined-lines.json").lines.slice();
+
+const DECLINED_REPORT = {
+  tid: "67325636", batchNo: 58, mid: "100000000000001", pages: 9,
+  approvedItems: 48, declinedItems: 1,
+  // The synthetic sums, recomputed from the synthetic amounts.
+  totalCents: 2632000,
+  // The one declined attempt: TSN 25, absent from the approved list because
+  // it declined, and an authorisation code of six zeros.
+  declinedTsn: 25, declinedCents: 35000, declinedAuth: "000000",
+  firstTsn: 2, lastTsn: 55,
+};
+
 module.exports = {
+  declinedReportLines, DECLINED_REPORT,
   makeSlipPdf, makeSlipPdfFragmented, makeSlipPdfPaged, slipLines,
   emailedLines, REAL_TSNS, realReportPdf, realReportLines, REAL_REPORT, REAL_REPORT_PDF,
 };

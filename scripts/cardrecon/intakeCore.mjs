@@ -266,6 +266,12 @@ export function attachmentOutcome({ filename, capture, error }) {
       batchKey: clip(capture.batchKey, 20) || null,
       storeId: clip(capture.storeId, 30) || null,
       tillId: clip(capture.tillId, 30) || null,
+      // The terminal's name AT CAPTURE. Not looked up when the feed renders:
+      // the registry row moves (renames, till moves), and a row that resolved
+      // the name later would relabel history. Absent on rows written before
+      // 2026-09-18, which the reader falls back from to the TID — itself
+      // immutable, which is why it is the fallback.
+      terminalLabel: clip(capture.terminalLabel, 60) || null,
       linesCaptured: capture.linesCaptured === true,
       warnings: (capture.warnings || []).map((w) => text(w, 300)).filter(Boolean).slice(0, 6),
       reason: null,

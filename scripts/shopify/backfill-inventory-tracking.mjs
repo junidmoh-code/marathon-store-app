@@ -41,9 +41,10 @@ import { createRequire } from "module";
 import { graphql } from "./client.mjs";
 import { assertSafeSegment, encodeSizeKey, stockSizeKey } from "../../src/utils/sizeKey.js";
 import { findSizeCollisions } from "./sizeOrder.mjs";
+import { isProductRecordKey } from "./idMap.mjs";
 import { shallowKeys } from "../lib/rtdbPaged.mjs";
 import {
-  networkTotals, requireSingleLocation, setAvailable,
+  networkTotals, requireSingleLocation, setAvailable, readAvailable,
   untrackedVariants, enforceTracking,
 } from "./inventory.mjs";
 import { readAllPublishNodes } from "./publishNode.mjs";
@@ -75,7 +76,7 @@ const confirmedOn = (n) => n?.state === "live" && n?.liveState === "on";
 const syncNodes = (await db.ref("shopify_sync").get()).val() || {};
 const publishNodes = await readAllPublishNodes(db);
 const mappedPids = Object.keys(syncNodes)
-  .filter((k) => k !== "_collections")
+  .filter(isProductRecordKey)   // _collections, _reconcile, _claims, and any future sibling
   .filter((pid) => !ONLY || ONLY.has(pid));
 const pids = mappedPids
   .filter((pid) => !LIVE_ONLY || confirmedOn(publishNodes[pid]))
@@ -224,6 +225,15 @@ for (const pid of pids) {
       continue;
     }
 
+    // Shopify's side FIRST — this is the compare-and-set baseline for the write
+    // below, and reading it before the /stock snapshot is what makes that guard
+    // cover the whole operation rather than its own last microsecond. See
+    // setAvailable in inventory.mjs.
+    const invBaseline = await readAvailable(
+      graphql, locId,
+      Object.values(variantMap).map((v) => v.shopifyInventoryItemId).filter(Boolean),
+    );
+
     // Current network quantity per RAW size token, from /stock. One request per
     // location, ALL IN FLIGHT AT ONCE rather than ten sequential round-trips
     // per product.
@@ -270,11 +280,19 @@ for (const pid of pids) {
     }
 
     if (untracked.length) await enforceTracking(graphql, gid, untracked.map((r) => r.variantId));
-    await setAvailable(graphql, locId, items);
+    // Ids the baseline could not resolve are dropped so one unknown variant
+    // cannot make Shopify reject the whole mutation — but DROPPED IS NOT
+    // DONE. Reported by name, because "quantities-refreshed" on a product
+    // whose sizes were silently skipped is the report lying about its own
+    // work. (CodeRabbit, #589.)
+    const writable = items.filter((i) => invBaseline.has(i.inventoryItemId));
+    const unresolved = items.filter((i) => !invBaseline.has(i.inventoryItemId));
+    await setAvailable(graphql, locId, writable, invBaseline);
     results.push({
       pid, status: untracked.length ? "tracked" : "quantities-refreshed",
       detail: `${bp.title} · ${untracked.length} variant(s) tracked · quantities ${JSON.stringify(totals)}` +
-        (retiredKeys.length ? ` · ${retiredKeys.length} retired size(s) zeroed (${retiredKeys.join(", ")})` : ""),
+        (retiredKeys.length ? ` · ${retiredKeys.length} retired size(s) zeroed (${retiredKeys.join(", ")})` : "") +
+        (unresolved.length ? ` · ⚠ ${unresolved.length} variant(s) NOT written — Shopify does not know their inventory items (id map stale)` : ""),
     });
   } catch (e) {
     results.push({ pid, status: "failed", detail: String(e?.message || e) });

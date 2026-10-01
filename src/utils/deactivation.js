@@ -69,9 +69,41 @@ export function reactivateUpdates(pid, { uid, byName, nowMs, reason }) {
 // deactivated product's sizes are unavailable for ANY product type; otherwise
 // the existing clothing rule (zero at the serving CR hub) applies unchanged.
 // Pure so the contract is pinned by src/utils/deactivation.test.js.
-export function orderSizeOut(product, { clothingOrder, hubQty }) {
-  if (isDeactivated(product)) return true;
+// `deactivated` defaults to the product's own flag, which is what every strict
+// store wants. An EXEMPT store (the Pine exemption — src/config/
+// assistantVisibility.js) passes `false`: at Pine a deactivated line is shown
+// AND orderable, because Hub 3 is uncounted and the shoe may be on the shelf.
+// Overriding here rather than at three call sites keeps the size rule single.
+export function orderSizeOut(product, { clothingOrder, hubQty, deactivated }) {
+  if (deactivated === undefined ? isDeactivated(product) : !!deactivated) return true;
   return !!clothingOrder && hubQty <= 0;
+}
+
+// ── THE BROWSE FILTER (owner spec 2026-08-31, BUG 1) ─────────────────────────
+// The flag was being WRITTEN and not READ: "Air foce 1" sat in the Deactivated
+// list AND still rendered as an orderable Tap-to-add card in the product grid.
+// orderSizeOut above only greys the SIZES — the card was still there, and staff
+// tapped whichever copy they saw first, found no sizes, and lost the sale.
+//
+// So every list a product is BROWSED from drops deactivated records here. The
+// places a deactivated product must still be findable are deliberately NOT
+// browse lists and must NOT call this:
+//   • the merge picker (mergeSearch.js — already marks them "· deactivated"),
+//   • the Deactivated list on the Leftovers tab, where it is reactivated,
+//   • the ADMIN / Stock section's own searches (Adjust, Set Qty, Count,
+//     Transfer, Locator, Movement History, Network Totals, Barcode catalogue,
+//     Seating, Label print) — a deactivated product keeps every detail, its
+//     stock and its history there, which is the whole point of a flag.
+//
+// AMENDED 2026-09-05 (owner spec, BUG 1). SEARCH used to be on that list: a
+// typed query searched the FULL universe and marked the hits. That is still
+// true in the admin section — and is now FALSE in the assistant view, the one
+// screen facing a customer, where a marked hit was read as "no stock" and cost
+// the sale. AssistantView therefore gates its whole pool (`base`) instead, so
+// browse AND search are covered by one filter, with Marathon Pine exempt by
+// config. See src/config/assistantVisibility.js.
+export function browsableProducts(list) {
+  return (list || []).filter((p) => !isDeactivated(p));
 }
 
 /** Short "who and when" line for a card. */

@@ -21,7 +21,7 @@ import { encodeSizeKey, assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { sortSizes, displaySizeName, findSizeCollisions } from "./sizeOrder.mjs";
 import { cleanTitleFor, isTriggerFree } from "../../src/utils/shopifyTriggers.js";
 import { VENDOR, validatePayload } from "./compliance.mjs";
-import { buildMapping, writeIdMap, claimShopifyProduct } from "./idMap.mjs";
+import { buildMapping, writeIdMap, claimShopifyProduct, isProductRecordKey } from "./idMap.mjs";
 import { TRACKED_VARIANT, untrackedVariants, enforceTracking } from "./inventory.mjs";
 
 const [productId, ...flags] = process.argv.slice(2);
@@ -170,8 +170,12 @@ if (mapNode) {
     // /shopify_sync scan is fine at this slice's scale (handfuls of nodes);
     // an indexed query can replace it when the sync goes catalogue-wide.
     const allMapped = (await db.ref("shopify_sync").get()).val() || {};
+    // Bookkeeping siblings are excluded by rule, not left to luck. None of
+    // _collections, _claims or _reconcile carries a `shopifyProductId` today,
+    // so the filter below changes nothing now — but a future sibling that did
+    // would be named here as the owner of someone else's product.
     const owner = Object.entries(allMapped).find(
-      ([, node]) => node?.shopifyProductId === exact[0].id
+      ([pid, node]) => isProductRecordKey(pid) && node?.shopifyProductId === exact[0].id
     );
     if (owner) {
       console.error(
@@ -450,7 +454,8 @@ console.log(JSON.stringify(mapping, null, 2));
 // running one product at a time, detection is proportionate.
 const finalScan = (await db.ref("shopify_sync").get()).val() || {};
 const twins = Object.keys(finalScan).filter(
-  (pid) => pid !== productId && finalScan[pid]?.shopifyProductId === shopifyProductId
+  (pid) => isProductRecordKey(pid) && pid !== productId &&
+    finalScan[pid]?.shopifyProductId === shopifyProductId
 );
 if (twins.length) {
   console.error(

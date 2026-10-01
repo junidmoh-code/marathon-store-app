@@ -1,0 +1,14 @@
+{
+  "_comment": "Shared drift table for the two /stock writers (marathon-store-app applyMovement.js and marathon-pos-app stockMovement.js). Both repos hold a byte-identical copy and assert every row. Owner decision 2026-09-11: no negative cells — a sale deducts what is booked, the rest is the row's shortfall; a return credits from max(cell,0); a legacy negative reads as zero and is recorded as negativeCleared.",
+  "rows": [
+    { "case": "sale fully covered",          "type": "sold",   "curQty": 4,  "qty": 1, "newQty": 3, "shortfall": null, "negativeCleared": null },
+    { "case": "sale exactly covered",        "type": "sold",   "curQty": 1,  "qty": 1, "newQty": 0, "shortfall": null, "negativeCleared": null },
+    { "case": "sale partly covered",         "type": "sold",   "curQty": 1,  "qty": 3, "newQty": 0, "shortfall": 2,    "negativeCleared": null },
+    { "case": "sale on an empty cell",       "type": "sold",   "curQty": 0,  "qty": 1, "newQty": 0, "shortfall": 1,    "negativeCleared": null },
+    { "case": "sale on a missing cell",      "type": "sold",   "curQty": null, "qty": 2, "newQty": 0, "shortfall": 2,  "negativeCleared": null },
+    { "case": "sale on a legacy negative",   "type": "sold",   "curQty": -2, "qty": 1, "newQty": 0, "shortfall": 1,    "negativeCleared": -2 },
+    { "case": "return onto stock",           "type": "return", "curQty": 2,  "qty": 1, "newQty": 3, "shortfall": null, "negativeCleared": null },
+    { "case": "return onto zero",            "type": "return", "curQty": 0,  "qty": 1, "newQty": 1, "shortfall": null, "negativeCleared": null },
+    { "case": "return onto a legacy negative","type": "return", "curQty": -3, "qty": 1, "newQty": 1, "shortfall": null, "negativeCleared": -3 }
+  ]
+}

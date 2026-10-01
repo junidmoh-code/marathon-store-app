@@ -135,6 +135,57 @@ function normaliseTid(raw) {
 }
 
 /**
+ * The TID as a MODEL returned it, read tolerantly. The slip prints
+ * "TID:0000HP1X", and a model asked for the field sometimes hands back the
+ * label with it, or a space in the middle ("0000 HP1X"). normaliseTid refuses
+ * both, which reads as "no terminal ID could be read" about a slip that
+ * printed one plainly. Only a leading TID label and separators are dropped —
+ * the characters themselves are never changed here.
+ */
+function readSlipTid(raw) {
+  if (typeof raw !== "string") return null;
+  const s = raw.trim().toUpperCase()
+    .replace(/^(?:TID|TERMINAL(?:\s*ID)?)\s*(?:NO\.?|#)?\s*[:.#-]?\s*/, "")
+    .replace(/[\s-]/g, "");
+  return normaliseTid(s);
+}
+
+// O and 0, I and 1: the pairs a thermal-print read confuses. Two TIDs that
+// differ ONLY in those are the same printed characters read two ways.
+const foldTid = (t) => String(t || "").replace(/O/g, "0").replace(/I/g, "1");
+
+/**
+ * Is the TID read off the slip the PICKED till's, allowing for O/0 and I/1?
+ * Only ever used to confirm the pick — never to choose a terminal — and only
+ * when no OTHER registered terminal folds to the same characters. The one
+ * thing it cannot rule out is an UNREGISTERED machine whose TID differs from
+ * the picked one only by O/0 or I/1; that slip would be filed on the picked
+ * till where the exact reading would have refused it. Accepted: two FNB TIDs
+ * that close, one of them unregistered, in the same shop, is not a real risk.
+ */
+function slipTidMatchesPicked(readTid, picked, registeredTids = []) {
+  if (!readTid || !picked) return false;
+  if (readTid === picked) return true;
+  if (foldTid(readTid) !== foldTid(picked)) return false;
+  return !registeredTids.some((t) => t !== picked && foldTid(t) === foldTid(readTid));
+}
+
+/**
+ * Where an EMPTY batch's window opens: at the previous batch's close, when
+ * that is on file, before this report's print, and no more than the 7-day
+ * window cap back. Otherwise null, and the 1 ms window at print time stands.
+ */
+function emptyBatchOpenedAt(prevClosedAt, printedAt) {
+  if (!Number.isFinite(prevClosedAt) || !Number.isFinite(printedAt)) return null;
+  if (prevClosedAt >= printedAt) return null;
+  // The window closes at printedAt + 1 (emptyBatchExtraction), and
+  // validateExtraction refuses closedAt - openedAt > MAX_WINDOW_MS — measured
+  // the same way here, so an accepted opening can never be refused there.
+  if (printedAt + 1 - prevClosedAt > MAX_WINDOW_MS) return null;
+  return prevClosedAt;
+}
+
+/**
  * Merchant ids print with leading zeros and are stored the same way, but a
  * terminal registered by hand may carry one form and the slip the other.
  * Compared as DIGITS ONLY with leading zeros dropped, so "000000004977890" and
@@ -173,7 +224,95 @@ function batchKeyFor(batchNo, revision) {
  * @returns {{ok:true,key:string,revision:number,supersedes:string|null} |
  *           {ok:false,reason:string}}
  */
-function resolveBatchWrite({ existingKeys, batchNo, correction }) {
+// ─── A BATCH CAN BE REPORTED TWICE, AND THE SECOND ONE CAN BE THE REAL ONE ───
+// Marathon Till 1 left batch 58 OPEN overnight on 18 Sept 2026. The terminal
+// emailed an INTERIM report that evening — 11 approved transactions, R7,620 —
+// and that is what was recorded. It settled the next afternoon and emailed the
+// FINAL report for the same batch 58: 48 approved transactions and one
+// declined, R43,530, spanning 18 Sept 11:25 through 19 Sept 16:12. TSNs 2..13
+// of the interim report are the first eleven lines of the final one.
+//
+// The dedup refused it as a duplicate, all day, invisibly. It is not a
+// duplicate: it is the same batch, reported in full. Refusing it left that
+// till R35,910 short in every figure that reads /card_batches.
+//
+// ── WHAT IS ALLOWED TO SUPERSEDE AUTOMATICALLY, AND WHAT IS NOT ──────────────
+// Only a STRICTLY FULLER report: one that contains every transaction the
+// recorded capture had, agreeing on every shared line, plus at least one more.
+// That is the narrow case where the newer file cannot be telling us anything
+// different — only more. Anything else still refuses and waits for a person:
+//
+//   • a line the recorded capture had is MISSING from the incoming one —
+//     that is a contradiction about what the terminal processed, not an
+//     extension, and the recorded figure may be the right one
+//   • a shared TSN disagrees on amount, or on RRN where both carry one —
+//     a misread or a different batch wearing the same number
+//   • the same transactions again, and no more — a genuine re-send, which is
+//     the case the dedup was built for and still refuses
+//   • the recorded capture has no lines to compare against (a summary-only
+//     photo capture) — containment cannot be shown, so it is not assumed
+//
+// DECLINED TRANSACTIONS ARE NOT PART OF THIS COMPARISON. They are not in the
+// card total and not in `lines`; a decline appearing in the fuller report is
+// not evidence about the approved list either way.
+/**
+ * How an incoming capture relates to the one already recorded.
+ *
+ * Pure. Both sides are the APPROVED lines only, as `dedupeLines` leaves them.
+ *
+ * @param {{tsn:number, amountCents:number, rrn?:string}[]} recorded
+ * @param {{tsn:number, amountCents:number, rrn?:string}[]} incoming
+ * @returns {{relation:"extends"|"identical"|"shrinks"|"conflict"|"unknown",
+ *            added:number[], reason:string|null}}
+ */
+function comparePriorCapture(recorded, incoming) {
+  const index = (rows) => {
+    const m = new Map();
+    for (const r of rows || []) {
+      const tsn = Number(r && r.tsn);
+      if (Number.isInteger(tsn)) m.set(tsn, r);
+    }
+    return m;
+  };
+  const was = index(recorded);
+  const now = index(incoming);
+
+  // Nothing to compare against. Never assumed to be containment — a
+  // summary-only capture records a total and no lines, and "more lines than
+  // none" would let any report overwrite it.
+  if (!was.size) {
+    return { relation: "unknown", added: [], reason: "the recorded capture has no transaction lines to compare against" };
+  }
+  if (!now.size) {
+    return { relation: "unknown", added: [], reason: "this report has no transaction lines to compare" };
+  }
+
+  const missing = [];
+  const disagreeing = [];
+  for (const [tsn, before] of was) {
+    const after = now.get(tsn);
+    if (!after) { missing.push(tsn); continue; }
+    if (Number(before.amountCents) !== Number(after.amountCents)) { disagreeing.push(tsn); continue; }
+    // RRN only where BOTH carry one: the printed slip and the emailed report
+    // do not always read the same fields, and an absent RRN is not a conflict.
+    const a = String(before.rrn || "").trim(), b = String(after.rrn || "").trim();
+    if (a && b && a !== b) disagreeing.push(tsn);
+  }
+
+  if (disagreeing.length) {
+    return { relation: "conflict", added: [],
+      reason: `transaction ${disagreeing.length === 1 ? "number" : "numbers"} ${disagreeing.slice(0, 5).join(", ")} ${disagreeing.length === 1 ? "reads" : "read"} differently in the two reports` };
+  }
+  if (missing.length) {
+    return { relation: "shrinks", added: [],
+      reason: `the recorded capture has ${missing.length} transaction${missing.length === 1 ? "" : "s"} this report does not (${missing.slice(0, 5).join(", ")})` };
+  }
+  const added = [...now.keys()].filter((t) => !was.has(t)).sort((a, b) => a - b);
+  if (!added.length) return { relation: "identical", added: [], reason: null };
+  return { relation: "extends", added, reason: null };
+}
+
+function resolveBatchWrite({ existingKeys, batchNo, correction, extends: extendsPrior = false }) {
   const keys = Array.isArray(existingKeys) ? existingKeys : [];
   const revisions = keys
     .map((k) => {
@@ -187,16 +326,26 @@ function resolveBatchWrite({ existingKeys, batchNo, correction }) {
     // First capture of this batch. A "correction" of a batch never captured is
     // a confusion worth surfacing, not silently accepting.
     if (correction) return { ok: false, reason: `Batch #${batchNo} has not been captured yet — nothing to correct. Submit it normally.` };
-    return { ok: true, key: batchKeyFor(batchNo, 1), revision: 1, supersedes: null };
+    return { ok: true, key: batchKeyFor(batchNo, 1), revision: 1, supersedes: null, autoSuperseded: false };
   }
-  if (!correction) {
+  // A FULLER REPORT OF THE SAME BATCH supersedes on its own — see
+  // comparePriorCapture for the narrow definition of "fuller" and why nothing
+  // wider is allowed through without a person. A re-send of the same
+  // transactions is NOT fuller and still refuses here.
+  if (!correction && !extendsPrior) {
     return { ok: false, reason: `Batch #${batchNo} for this terminal is already captured. If the earlier capture was wrong, resubmit as a correction — both records are kept.` };
   }
   const revision = highest + 1;
   if (revision > MAX_REVISIONS) {
     return { ok: false, reason: `Batch #${batchNo} already has ${highest} captures — this is not a correction chain any more. Talk to the owner.` };
   }
-  return { ok: true, key: batchKeyFor(batchNo, revision), revision, supersedes: batchKeyFor(batchNo, highest) };
+  return {
+    ok: true, key: batchKeyFor(batchNo, revision), revision,
+    supersedes: batchKeyFor(batchNo, highest),
+    // Which of the two routes got here. The record keeps this so a figure that
+    // moved on its own can be explained later without re-deriving it.
+    autoSuperseded: !correction && extendsPrior,
+  };
 }
 
 // ── TSN CONTIGUITY ───────────────────────────────────────────────────────────
@@ -261,6 +410,15 @@ const MIN_KEY_FIELD_CONFIDENCE = 0.75;
 // strict parse (a garbled figure stays null and is refused below) plus the
 // slip arithmetic.
 const KEY_FIELDS = ["tid", "batchNo", "totalCents", "openedAt", "closedAt", "purchasesCents", "txnCount"];
+// What a total declared by hand excuses from the confidence gate: the TOTAL it
+// replaces, the purchases figure printed beside it, the Transactions count, and
+// — since 26 Sept 2026 — the TID and the Opened/Closed times too. Trophy Till
+// 2's printer prints no TID and prints its times without dates, at 70%
+// confidence; the typed-total path exists for exactly that slip, so the
+// callable fills the TID from the till that was tapped and anchors the times
+// itself (anchorDeclaredWindow), and says so on the record. The batch number
+// is still gated: it is the record's key.
+const DECLARED_EXEMPT_FIELDS = ["totalCents", "purchasesCents", "txnCount", "tid", "openedAt", "closedAt"];
 // No FNB batch runs a week: a window wider than this is a misread date (or a
 // forged draft) and must never become the bounds of a ledger query.
 const MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
@@ -276,7 +434,7 @@ const MAX_REVISIONS = 20;
  *
  * @returns {{ok:true, warnings:string[]} | {ok:false, reason:string}}
  */
-function validateExtraction(ex, { summaryOnly = false, source = "photo", format = null } = {}) {
+function validateExtraction(ex, { summaryOnly = false, source = "photo", format = null, declaredTotal = false } = {}) {
   // The extraction names its own format; the caller may override for a test.
   const reportFormat = format || ex.format || "printed";
   // THE CONFIDENCE GATE IS ABOUT OCR, AND ONLY OCR. A PDF carries the slip's
@@ -288,9 +446,14 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // EVERY OTHER CHECK BELOW APPLIES UNCHANGED to both sources — the shape of
   // each figure, the slip's own arithmetic, the 7-day window cap, the line
   // count against the printed Transactions figure, and TSN contiguity.
+  // A TOTAL DECLARED BY HAND (see readDeclaredTotal) was not read by OCR, so
+  // OCR's confidence in it — and in the purchases figure printed beside it,
+  // which on a half-printed slip is usually not on the paper either — says
+  // nothing. Every other key field is still gated exactly as before.
+  const gated = declaredTotal ? KEY_FIELDS.filter((f) => !DECLARED_EXEMPT_FIELDS.includes(f)) : KEY_FIELDS;
   if (source !== "pdf") {
     const conf = ex.confidence || {};
-    for (const f of KEY_FIELDS) {
+    for (const f of gated) {
       const c = Number(conf[f]);
       if (!Number.isFinite(c) || c < MIN_KEY_FIELD_CONFIDENCE) {
         return { ok: false, reason: `Could not read the slip's ${describeField(f)} confidently — retake that photo in better light.` };
@@ -299,7 +462,7 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   }
   if (!normaliseTid(ex.tid)) return { ok: false, reason: `"${ex.tid}" does not look like a terminal ID — retake the header photo.` };
   if (normaliseBatchNo(ex.batchNo) === null) return { ok: false, reason: `"${ex.batchNo}" does not look like a batch number — retake the header photo.` };
-  for (const f of ["totalCents", "purchasesCents", "refundsCents", "cashCents"]) {
+  for (const f of declaredTotal ? ["totalCents"] : ["totalCents", "purchasesCents", "refundsCents", "cashCents"]) {
     if (!Number.isInteger(ex[f])) return { ok: false, reason: `The slip's ${describeField(f)} did not read as an amount — retake the totals photo.` };
   }
   // ── THE RECONCILIATION WINDOW ─────────────────────────────────────────────
@@ -337,20 +500,46 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // printed figure would not parse — and null was refused by the loop above,
   // so a garbled figure can never be silently treated as zero.
   const cash = ex.cashCents;
-  if (ex.purchasesCents + cash - ex.refundsCents !== ex.totalCents) {
+  // With a hand-declared total the printed block is usually missing, so its
+  // arithmetic cannot be demanded. Where OCR DID read all three figures
+  // confidently and they disagree with the typed total, that is said on the
+  // record (a typo is the likeliest cause) — never a refusal, because the
+  // paper that would settle it is exactly what did not print.
+  const declaredWarnings = [];
+  if (declaredTotal) {
+    const block = [ex.purchasesCents, cash, ex.refundsCents];
+    const confident = Number(ex.confidence?.purchasesCents) >= MIN_KEY_FIELD_CONFIDENCE;
+    if (confident && block.every(Number.isInteger) && ex.purchasesCents + cash - ex.refundsCents !== ex.totalCents) {
+      declaredWarnings.push(`The purchases, cash and refunds read off the slip come to ${formatCents(ex.purchasesCents + cash - ex.refundsCents)}, but the total declared by hand is ${formatCents(ex.totalCents)}. Check the typed figure against the slip photo.`);
+    }
+  } else if (ex.purchasesCents + cash - ex.refundsCents !== ex.totalCents) {
     return {
       ok: false,
       reason: `The slip's figures don't add up as read (${formatCents(ex.purchasesCents)} purchases + ${formatCents(cash)} cash − ${formatCents(ex.refundsCents)} refunds ≠ ${formatCents(ex.totalCents)} total) — retake the totals photo.`,
     };
   }
-  if (!Number.isInteger(ex.txnCount) || ex.txnCount < 0) {
+  if (!declaredTotal && (!Number.isInteger(ex.txnCount) || ex.txnCount < 0)) {
     return { ok: false, reason: "The printed Transactions count did not read cleanly — retake the header photo." };
   }
 
   const warnings = [];
-  if (summaryOnly) return { ok: true, warnings: ["Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
+  if (summaryOnly) return { ok: true, warnings: [...declaredWarnings, "Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
+  // A declared total is only ever accepted summary-only (the callable forces
+  // it): a slip that did not print its total did not print a whole roll either.
+  if (declaredTotal) return { ok: false, reason: "A total declared by hand can only be recorded summary-only." };
 
   const lines = Array.isArray(ex.lines) ? ex.lines : [];
+  // AN EMPTY BATCH (lib/card-recon-pdf.cjs → emptyBatchExtraction): the
+  // terminal settled a batch in which no card was taken. Only the emailed
+  // parser sets the flag, and only this exact shape passes — zero lines, a
+  // zero count, every figure zero. Anything else with the flag is refused.
+  if (ex.emptyBatch === true) {
+    if (reportFormat === "emailed" && !lines.length && ex.txnCount === 0 && ex.totalCents === 0
+        && ex.purchasesCents === 0 && ex.cashCents === 0 && ex.refundsCents === 0) {
+      return { ok: true, warnings: ["This batch closed with no card transactions — recorded as R0.00. Any card sale the till rang since the previous batch shows as this batch's variance."] };
+    }
+    return { ok: false, reason: "That report claims to be an empty batch but carries figures or lines. Nothing was recorded — tell Junid." };
+  }
   if (!lines.length) {
     return { ok: false, reason: "No transaction lines could be read from the detail photos. Reshoot the detail roll, or submit as summary-only." };
   }
@@ -383,6 +572,13 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   }
   if (!tsn.ok) {
     warnings.push(`${tsn.gaps.length} sequence number${tsn.gaps.length === 1 ? "" : "s"} between ${tsn.first} and ${tsn.last} are not in this report (${tsn.gaps.slice(0, 8).join(", ")}${tsn.gaps.length > 8 ? "…" : ""}) — expected on a banking report, which lists approved transactions only.`);
+  }
+  // A DECLINED SECTION THAT DID NOT FULLY PARSE IS REPORTED, NEVER FATAL. The
+  // approved list and the total are the money and are checked on their own; a
+  // decline is supplementary evidence, and losing a whole report over it would
+  // throw away every good transaction in it. See card-recon-pdf.cjs.
+  if (Number.isInteger(ex.declinedUnread) && ex.declinedUnread > 0) {
+    warnings.push(`This report states ${ex.declinedCount} declined transaction${ex.declinedCount === 1 ? "" : "s"} but ${ex.declinedUnread} of them could not be read. The approved transactions and the total are unaffected; a declined attempt that was re-swiped is a common cause of a variance, so check the slip if this batch looks wrong.`);
   }
   for (const l of lines) {
     if (!Number.isInteger(l.amountCents)) {
@@ -435,6 +631,12 @@ function describeField(f) {
  */
 function buildBatchRecord({
   extraction, terminal, tid, batchKey, revision, supersedes,
+  // TRUE when this revision was created by the server itself, because the
+  // incoming report was a strictly fuller account of the same batch rather
+  // than a re-send — see comparePriorCapture. A figure that moved without
+  // anybody asking must say so on the record; `supersedes` alone cannot tell
+  // an automatic supersede from a deliberate correction.
+  autoSuperseded = false,
   photoPaths, summaryOnly, warnings, expected, cashiers, match = null,
   // True when the terminal's total and the till's card total agreed, so the
   // transactions were never walked — see the summary-first note in cardRecon.js.
@@ -451,6 +653,11 @@ function buildBatchRecord({
   // callable — so a figure recorded with no human in the loop still names what
   // put it there. See lib/card-recon-email.cjs.
   intake = null,
+  // A TOTAL DECLARED BY HAND — { cents, ocrReadCents, byUid, byEmail, at } —
+  // or null. When present, slip.totalCents IS the typed figure and this block
+  // says so, with who and when. Absent from every other record, so an ordinary
+  // batch is byte-for-byte what it was. See readDeclaredTotal.
+  declaredTotal = null,
 }) {
   const lines = summaryOnly ? null : Object.fromEntries(
     (extraction.lines || []).map((l) => [String(l.tsn), {
@@ -463,9 +670,36 @@ function buildBatchRecord({
       amountCents: l.amountCents,
     }]),
   );
+  // ── THE DECLINED ATTEMPTS ──────────────────────────────────────────────────
+  // Kept on the record and NOWHERE in a total. A decline is not money: it is
+  // evidence about a variance, and the terminal's report is the only place it
+  // is visible at all — the till has no leg for it and the approved list simply
+  // skips its sequence number.
+  //
+  // Keyed separately from `lines` rather than mixed into it with a flag,
+  // because `lines` is what every total and every match reads. A reader that
+  // has never heard of a decline cannot accidentally count one.
+  //
+  // SUMMARY-ONLY captures carry none: a single photo of the totals block never
+  // showed the declined section, and an empty list there would read as "there
+  // were no declines" rather than "nobody looked".
+  const declinedRows = summaryOnly ? [] : (extraction.declined || []);
+  const declined = declinedRows.length ? Object.fromEntries(
+    declinedRows.map((l) => [String(l.tsn), {
+      tsn: Number(l.tsn),
+      at: l.at ?? null,
+      date: l.date ?? null, time: l.time ?? null,
+      uti: l.uti ?? null, rrn: l.rrn ?? null,
+      authCode: l.authCode ?? null, pan: l.pan ?? null,
+      type: l.type ?? "purchase",
+      amountCents: l.amountCents,
+      outcome: "declined",
+    }]),
+  ) : null;
+
   return {
     batchNo: Number(normaliseBatchNo(extraction.batchNo)),
-    batchKey, revision, supersedes: supersedes ?? null,
+    batchKey, revision, supersedes: supersedes ?? null, autoSuperseded: !!autoSuperseded,
     tid, mid: extraction.mid ?? null,
     storeId: terminal.storeId, tillId: terminal.tillId,
     terminalLabel: terminal.label ?? null,
@@ -473,9 +707,11 @@ function buildBatchRecord({
       openedAt: extraction.openedAt, closedAt: extraction.closedAt,
       printedAt: extraction.printedAt ?? null,
       openedText: extraction.openedText ?? null, closedText: extraction.closedText ?? null,
-      txnCount: extraction.txnCount,
+      // An unread count (possible only on a hand-declared batch) is null, not NaN.
+      txnCount: Number.isInteger(extraction.txnCount) ? extraction.txnCount : null,
       purchasesCents: extraction.purchasesCents,
-      cashCents: Number.isInteger(extraction.cashCents) ? extraction.cashCents : 0,
+      // A hand-declared batch keeps an unread cash figure as unread, not zero.
+      cashCents: Number.isInteger(extraction.cashCents) ? extraction.cashCents : (declaredTotal ? null : 0),
       refundsCents: extraction.refundsCents,
       totalCents: extraction.totalCents,
       reconLine: extraction.reconLine ?? null,
@@ -492,6 +728,14 @@ function buildBatchRecord({
     lines,
     linesCaptured: !summaryOnly,
     lineCount: summaryOnly ? 0 : (extraction.lines || []).length,
+    declined,
+    declinedUnread: summaryOnly || !Number.isInteger(extraction.declinedUnread)
+      ? null : extraction.declinedUnread,
+    // The figure the report STATED for its declined section, which the parser
+    // has already checked against the list it read. null where the report has
+    // no declined section at all — which is not the same as a stated zero.
+    declinedCount: summaryOnly || !Number.isInteger(extraction.declinedCount)
+      ? null : extraction.declinedCount,
     warnings: warnings && warnings.length ? warnings : null,
     photos: photoPaths,
     expected: {
@@ -510,6 +754,11 @@ function buildBatchRecord({
       // honestly — see the tail note in lib/card-expected.cjs.
       tailLegs: expected.tailLegs ?? 0,
       tailCents: expected.tailCents ?? 0,
+      // Legs just OUTSIDE a derived window that answered one of this report's
+      // own transactions, and so ARE in cardCents — see DERIVED_WINDOW_SLACK_MS
+      // in lib/card-expected.cjs.
+      slackLegs: expected.slackLegs ?? 0,
+      slackCents: expected.slackCents ?? 0,
     },
     // ── WHAT COULD BE ACCOUNTED FOR, WHEREVER IT WAS RUNG ──────────────────
     // The subtraction above is scoped to the till this terminal is MAPPED to.
@@ -558,7 +807,85 @@ function buildBatchRecord({
     capturedVia,
     pdfPath: pdfPath ?? null,
     intake: intake ?? null,
+    ...(declaredTotal ? { declaredTotal } : {}),
   };
+}
+
+// ─── A TOTAL DECLARED BY HAND ────────────────────────────────────────────────
+// THE ONE PLACE IN THE SYSTEM WHERE A HUMAN NUMBER IS ACCEPTED, and it is
+// Junid's alone. Some terminals' printers print half the slip (Trophy Till 2,
+// Marathon Till 2), so the TOTAL is not on the paper and no reader can find it.
+// For those, the owner may type the total beside the photo:
+//
+//   • the PHOTO IS STILL REQUIRED and still stored — the paper is the evidence;
+//     the typed figure only replaces the one thing OCR could not read;
+//   • everything else is still read off the slip and checked as normal — TID
+//     (which must still be the picked till), batch number, timestamps;
+//   • the record carries `declaredTotal` with who and when, and the owner's
+//     report never shows such a batch as clean.
+//
+// The parse is the slip's own strict parser: a mangled figure is refused,
+// never coerced. A STRING only — a JSON number would skip the shape check.
+const DECLARED_TOTAL_EMAIL = "gunidmoh@gmail.com";
+// A day's takings on one terminal; anything larger is a slipped finger.
+const MAX_DECLARED_TOTAL_CENTS = 100000000; // R1,000,000
+
+/** Was a total declared at all? Absent, null and "" all mean no. */
+function hasDeclaredTotal(raw) {
+  return raw !== undefined && raw !== null && !(typeof raw === "string" && raw.trim() === "");
+}
+
+/** @returns {{cents:number} | {err:string}} */
+function readDeclaredTotal(raw) {
+  if (typeof raw !== "string") return { err: "The typed total did not arrive as text — type it again." };
+  const cents = parseRandsToCents(raw.trim());
+  if (!Number.isInteger(cents)) {
+    return { err: `"${raw.trim().slice(0, 30)}" is not an amount — type the total as it would print, e.g. 12,345.67.` };
+  }
+  if (cents < 0) return { err: "A typed total cannot be negative. Nothing was recorded." };
+  if (cents > MAX_DECLARED_TOTAL_CENTS) {
+    return { err: `${formatCents(cents)} is more than any terminal takes in a batch — check the figure.` };
+  }
+  return { cents };
+}
+
+/**
+ * THE WINDOW FOR A HAND-DECLARED BATCH whose slip did not print full dates.
+ *
+ * Trophy Till 2 prints "19:00:05" and "16:17:36" — times with no dates. The
+ * close is placed on the capture day (the day before, if that time has not yet
+ * come), and the open on the latest day that puts it before the close. With no
+ * usable time at all, the window is the 24 hours before capture. Either way the
+ * record says so in `windowSource`, and the batch is already declared by hand.
+ *
+ * @returns {{openedAt:number, closedAt:number, windowSource:string}}
+ */
+function anchorDeclaredWindow({ openedText, closedText, nowMs }) {
+  const DAY = 24 * 60 * 60 * 1000;
+  const clock = (t) => {
+    const m = typeof t === "string" && t.trim().match(/(?:^|\s)(\d{1,2}):(\d{2})(?::(\d{2}))?$/);
+    if (!m) return null;
+    const [h, mi, se] = [Number(m[1]), Number(m[2]), Number(m[3] || 0)];
+    return h < 24 && mi < 60 && se < 60 ? ((h * 60 + mi) * 60 + se) * 1000 : null;
+  };
+  const sastMidnight = (ms) => Math.floor((ms + SAST_OFFSET_MS) / DAY) * DAY - SAST_OFFSET_MS;
+  const o = clock(openedText), c = clock(closedText);
+  if (o === null || c === null) {
+    return { openedAt: nowMs - DAY, closedAt: nowMs, windowSource: "declared-fallback" };
+  }
+  let closedAt = sastMidnight(nowMs) + c;
+  if (closedAt > nowMs) closedAt -= DAY;
+  let openedAt = sastMidnight(closedAt) + o;
+  while (openedAt >= closedAt) openedAt -= DAY;
+  return { openedAt, closedAt, windowSource: "declared-time-only" };
+}
+
+/** Only the owner's own VERIFIED token may declare a total — the eftPool
+ *  isOwner test (Junid signs in with Google, always verified), and nothing a
+ *  permission flag grants. An unverified credential claiming the address must
+ *  not inherit the one human number in card recon. (CodeRabbit, PR #649.) */
+function mayDeclareTotal(token) {
+  return !!token && token.email === DECLARED_TOTAL_EMAIL && token.email_verified === true;
 }
 
 // ─── WHICH SOURCE IS THIS SUBMISSION? ────────────────────────────────────────
@@ -608,7 +935,9 @@ module.exports = {
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
   MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
-  normaliseTid, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   checkTsnContiguity, dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload,
+  DECLARED_TOTAL_EMAIL, MAX_DECLARED_TOTAL_CENTS, hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal,
+  anchorDeclaredWindow,
 };

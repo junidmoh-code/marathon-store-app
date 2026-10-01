@@ -38,6 +38,8 @@ import { resolveScan, realSizesOf, forgivingBarcodeCandidates } from "./scanReso
 import { installBarcodeListener, subscribeBarcode } from "./barcodeListener";
 import FilterPicker from "./FilterPicker";
 import { serverNowIso } from "../../utils/serverTime";
+import { setUpdateBusy } from "../../update/updateChecker";
+import { stampAt } from "../../device/deviceStamp";
 
 // RTDB keys can't contain . # $ [ ] / — guard so a junk code is "not found", not a
 // mis-pathed read. (Mirrors the POS barcodeLookup reader.)
@@ -100,6 +102,15 @@ export default function Transfer({ products, registry, actorRole }) {
   const [picking, setPicking] = useState(false);         // destination sheet open
   const [sizePrompt, setSizePrompt] = useState(null);    // { product } awaiting a size after a scan
   const [busy, setBusy] = useState(false);
+  // A basket with lines in it is a job in hand: the auto-updater must not
+  // reload over it and a device quarantine must not cover it
+  // (src/device/quarantine.js).
+  useEffect(() => {
+    // `busy` too: a Clear tapped while the writes are still going must not
+    // let anything reload or cover the screen before they land.
+    setUpdateBusy("transfer-basket", Object.keys(basket).length > 0 || !!busy);
+    return () => setUpdateBusy("transfer-basket", false);
+  }, [basket, busy]);
   const [toast, setToast] = useState(null);
   // Stable transfer id for the CURRENT cart. Minted at the first Confirm and kept
   // across retries so every line's movement id is deterministic (idempotent retry).
@@ -391,6 +402,7 @@ export default function Transfer({ products, registry, actorRole }) {
               createdAt: serverNowIso(), createdBy: auth.currentUser?.uid || null,
               lines: linesObj,
             },
+            ...stampAt(`transfers/${tId}`, "dispatch"),
           });
         } else {
           // Retry with an existing doc: merge THIS attempt's lines in (per-path
@@ -398,7 +410,7 @@ export default function Transfer({ products, registry, actorRole }) {
           // must survive).
           const mergeLines = {};
           for (const ln of lines) mergeLines[`transfers/${tId}/lines/${ln.productId}/${stockSizeKey(ln.size)}`] = ln.qty;
-          await update(ref(database), mergeLines);
+          await update(ref(database), { ...mergeLines, ...stampAt(`transfers/${tId}`, "dispatch-retry") });
         }
       } catch {
         setBusy(false);
@@ -472,6 +484,7 @@ export default function Transfer({ products, registry, actorRole }) {
         [`refill_requests/${refillId}/status`]: "fulfilled",
         [`refill_requests/${refillId}/fulfilledBy`]: { transferId: tId },
         [`refill_requests/${refillId}/resolvedAt`]: serverNowIso(),
+        ...stampAt(`refill_requests/${refillId}`, "fulfil-transfer"),
       }).catch(() => {});
     }
 

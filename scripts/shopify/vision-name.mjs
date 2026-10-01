@@ -42,15 +42,16 @@ import {
   VISION_PROMPT, regenerationNote, parseVisionResponse, validateVisionName,
   buildNameProposal, identityTextFrom, projectCost, mayProposeFor,
   NAME_PROPOSAL_KEY, VISION_NAME_SOURCE,
-  visionModel, THINKING_CONFIG, costFromUsage, leadShapeHint, USD_TO_ZAR,
+  visionModel, leadShapeHint, USD_TO_ZAR,
 } from "../../src/utils/visionNaming.js";
 import {
   SEARCH_IDENTITY_PATH, shouldReplaceIdentity,
 } from "../../src/utils/searchIdentity.js";
+import { ATTRIBUTE_NAME_SOURCE } from "../../src/utils/productAttributes.js";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
+import { callVision } from "./visionCall.mjs";
 
 const MODEL = visionModel(process.env);
-const API = "https://generativelanguage.googleapis.com/v1beta/models";
 
 const flags = process.argv.slice(2);
 const arg = (name) => {
@@ -115,7 +116,7 @@ if (onlyPids && onlyPids.size === 0) { console.error("--pids parsed to an empty 
 
 const products = await readMapPaged(db, "products", { pageSize: 500 });
 
-const skipped = { manual: 0, priceRecord: 0, noPhoto: 0, merged: 0 };
+const skipped = { manual: 0, priceRecord: 0, noPhoto: 0, merged: 0, attributeNamed: 0 };
 const scope = [];
 for (const [pid, p] of Object.entries(products)) {
   if (!p || typeof p !== "object" || !p.id) continue;
@@ -139,6 +140,28 @@ for (const [pid, p] of Object.entries(products)) {
   // so; nothing here writes cleanName.
   if (!requested && !mayProposeFor(node)) { skipped.manual += 1; continue; }
   if (UNNAMED_ONLY && node?.cleanName) continue;
+  // ── ONE NAMER PER PRODUCT (2026-09-06) ────────────────────────────────────
+  // name-from-attributes.mjs derives a name from the extracted attribute
+  // schema and writes it to this same nameProposal key. Both runners writing
+  // it would have them overwrite each other for ever — this one is scheduled
+  // on the mini (com.marathon.visionnaming.plist), so the prose namer would
+  // simply win the last word every night (spec-conformance review).
+  //
+  // The split is by OWNERSHIP, not by preference: a product the attribute
+  // namer could name, it has named, and this run leaves it alone. Everything
+  // else — clothing, accessories, perfume, unenriched sneakers, and the shoes
+  // the attribute namer REFUSED because their attributes cannot separate them
+  // from another shoe — is still this runner's, and it is the right lane for
+  // them because prose can say things a closed vocabulary cannot.
+  //
+  // A REQUEST OVERRIDES IT, like every other exclusion here: the reconciler
+  // asks for a fresh name only when it has PROVED the current one cannot be
+  // published, and a product blocked for ever behind an unusable name is worse
+  // than a second opinion.
+  if (!requested && node?.[NAME_PROPOSAL_KEY]?.source === ATTRIBUTE_NAME_SOURCE) {
+    skipped.attributeNamed += 1;
+    continue;
+  }
   // One image per call, so a product with no photo has nothing to read.
   const photo = String(p.photoUrl || "").trim();
   if (!photo) { skipped.noPhoto += 1; continue; }
@@ -149,7 +172,7 @@ const work = LIMIT ? scope.slice(0, LIMIT) : scope;
 
 const quote = projectCost(work.length);
 console.log(`scope: ${work.length} product(s)${LIMIT && scope.length > LIMIT ? ` (capped from ${scope.length} by --limit)` : ""}`);
-console.log(`  skipped — manual name: ${skipped.manual} · price record: ${skipped.priceRecord} · no photo: ${skipped.noPhoto} · merged: ${skipped.merged}`);
+console.log(`  skipped — manual name: ${skipped.manual} · price record: ${skipped.priceRecord} · no photo: ${skipped.noPhoto} · merged: ${skipped.merged} · already named from attributes: ${skipped.attributeNamed}`);
 console.log(`\nPROJECTED COST: $${quote.usd} (~R${quote.zar}) at $${quote.perNameUsd}/name, one image per call`);
 console.log(`FOR REFERENCE, the whole catalogue (${Object.keys(products).length} records): $${projectCost(Object.keys(products).length).usd} (~R${projectCost(Object.keys(products).length).zar})`);
 
@@ -167,89 +190,20 @@ if (CONFIRM !== work.length) {
 if (!work.length) { console.log("nothing in scope."); process.exit(0); }
 
 // ── One call per photo ───────────────────────────────────────────────────────
-// The photo download is the fragile step, and it fails for reasons that have
-// nothing to do with this program: on the first full run 2,479 of 2,916 products
-// failed with a bare "fetch failed" because the machine's network dropped
-// mid-run. None of them reached the API, so nothing was charged — but the run
-// reported 85% failure for a transient cause. A bounded retry with backoff turns
-// that into a pause instead of a loss.
-async function fetchWithRetry(url, attempts = 4) {
-  let last;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      const r = await fetch(url, { signal: AbortSignal.timeout(30000) });
-      if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return r;
-    } catch (e) {
-      last = e;
-      if (i < attempts - 1) await new Promise((res) => setTimeout(res, 1000 * 2 ** i));
-    }
-  }
-  throw new Error(`could not fetch the photo after ${attempts} attempts (${String(last?.message || last)})`);
-}
-
+// The transport MOVED to visionCall.mjs (2026-09-06) so the attribute
+// extractor is the same pipeline rather than a second one. Every comment that
+// used to live here — the photo-download retry, the timeout-is-not-a-transport-
+// failure rule, the thinking config — moved with it, unchanged.
 async function callGemini(photoUrl, extraInstruction, shapeHint) {
-  const img = await fetchWithRetry(photoUrl);
-  const mimeType = img.headers.get("content-type")?.split(";")[0] || "image/jpeg";
-  const data = Buffer.from(await img.arrayBuffer()).toString("base64");
-  const parts = [{ inlineData: { mimeType, data } }, { text: VISION_PROMPT }];
-  // The rotating lead-shape preference. Without it the model converges on one
-  // template — measured: 13 of the first 20 opened identically.
-  if (shapeHint) parts.push({ text: shapeHint });
-  if (extraInstruction) parts.push({ text: extraInstruction });
-  // The API call gets the same treatment, but ONLY for transport failures —
-  // never after a response arrives, because a completed generation has already
-  // been charged and retrying would pay for it twice.
-  const body = JSON.stringify({
-    contents: [{ parts }],
-    generationConfig: {
-      temperature: 0.4,
-      responseMimeType: "application/json",
-      // Thinking is billed at the OUTPUT rate and measured 46% more expensive
-      // for an answer of the same quality. See THINKING_CONFIG.
-      thinkingConfig: { ...THINKING_CONFIG },
-    },
+  return callVision(photoUrl, VISION_PROMPT, {
+    apiKey: API_KEY,
+    model: MODEL,
+    extra: [shapeHint, extraInstruction],
+    // The model's OWN reported usage. The projection is a constant so a batch
+    // can be quoted before it runs; this is what it actually cost, so drift
+    // between the two is visible instead of assumed.
+    onCost: (usd) => { measuredUsd += usd; },
   });
-  let res, lastErr;
-  for (let attempt = 0; attempt < 3; attempt++) {
-    try {
-      res = await fetch(`${API}/${MODEL}:generateContent`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", "x-goog-api-key": API_KEY },
-        body,
-        signal: AbortSignal.timeout(90000),
-      });
-      break;
-    } catch (e) {
-      lastErr = e;
-      // A TIMEOUT IS NOT A TRANSPORT FAILURE. The retry above exists for
-      // errors that prove the request never reached the server; a timeout
-      // proves nothing of the kind — the server may have accepted it and
-      // generated an answer, which has already been CHARGED. Retrying then
-      // pays for the same photo twice, which is the exact rule the comment
-      // above states and the abort quietly broke (reviewer finding). One
-      // photo lost is cheaper than an unbounded double-charge, and the next
-      // run picks it up because nothing was written for it.
-      if (e && (e.name === "TimeoutError" || e.name === "AbortError")) {
-        throw new Error(`the request timed out after 90s — not retried, because a timed-out ` +
-                        `generation may already have been charged`);
-      }
-      if (attempt < 2) await new Promise((r) => setTimeout(r, 1500 * 2 ** attempt));
-    }
-  }
-  if (!res) throw new Error(`could not reach Gemini after 3 attempts (${String(lastErr?.message || lastErr)})`);
-  if (!res.ok) throw new Error(`Gemini HTTP ${res.status}: ${(await res.text()).slice(0, 200)}`);
-  const json = await res.json();
-  const text = json?.candidates?.[0]?.content?.parts?.map((p) => p.text).filter(Boolean).join("") || "";
-  if (!text) {
-    const why = json?.promptFeedback?.blockReason || json?.candidates?.[0]?.finishReason || "no text in response";
-    throw new Error(`Gemini returned nothing usable (${why})`);
-  }
-  // The model's OWN reported usage. The projection is a constant so a batch can
-  // be quoted before it runs; this is what it actually cost, so drift between
-  // the two is visible instead of assumed.
-  measuredUsd += costFromUsage(json.usageMetadata);
-  return text;
 }
 
 const results = [];

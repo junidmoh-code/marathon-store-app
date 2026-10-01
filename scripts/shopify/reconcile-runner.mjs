@@ -3,7 +3,9 @@
 // actually talks to Shopify. Until 2026-08-14 that was a command Junid typed on
 // his MacBook — and his laptop's network already failed one commit run with
 // ETIMEDOUT mid-push. This wrapper is what makes Publish "just work": launchd
-// on the always-on Mac mini fires it every 2 minutes (owner spec 2026-08-14).
+// on the always-on Mac mini fires it every 2 minutes (owner spec 2026-08-14),
+// and since 2026-09-22 it only WORKS 07:00–19:00 SAST plus a 06:30 catch-up
+// (tradingHours.mjs).
 //
 // What the wrapper adds over calling reconcile.mjs directly:
 //
@@ -47,6 +49,7 @@ import {
   writeFileSync, readFileSync, unlinkSync, linkSync,
   mkdirSync, statSync, renameSync, appendFileSync,
 } from "node:fs";
+import { tickDecision } from "./tradingHours.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -102,9 +105,12 @@ function log(line) {
 function readState() {
   try { return JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch { return { consecutiveFailures: 0 }; }
 }
+// MERGED into what is there, never a replacement: the schedule's own
+// bookkeeping (tradingHours.mjs — the morning catch-up, the hourly idle line)
+// rides the same file and must survive a run writing its failure counter.
 function writeState(state) {
   try {
-    writeFileSync(STATE_FILE, JSON.stringify(state));
+    writeFileSync(STATE_FILE, JSON.stringify({ ...readState(), ...state }));
   } catch (e) {
     // Losing the counter costs the "N in a row" wording, nothing else — the
     // failure itself is already in the log.
@@ -229,6 +235,24 @@ function releaseLock() {
 // definition, so it goes to stderr, which the plist captures in
 // logs/launchd.err.log, and the exit code is non-zero so the failure is not
 // mistaken for a quiet tick.
+// ── Trading hours (tradingHours.mjs) ─────────────────────────────────────────
+// Decided BEFORE the lock and before anything reads the database: an idle tick
+// outside 07:00–19:00 SAST costs a node boot and nothing else.
+{
+  const decision = tickDecision({ now: Date.now(), state: readState(), env: process.env });
+  if (!decision.run) {
+    if (decision.logIdle) {
+      log("idle — outside trading hours (07:00–19:00 SAST); the next run is the 06:30 catch-up");
+      writeState({ lastIdleLog: decision.idleKey });
+    }
+    process.exit(0);
+  }
+  if (decision.why === "catch-up") {
+    log("06:30 catch-up — applying anything published since 19:00");
+    writeState({ catchUpDate: decision.catchUpDate });
+  }
+}
+
 let child = null;
 try {
   if (!acquireLock()) {

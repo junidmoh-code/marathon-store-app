@@ -43,7 +43,10 @@ function makeCase(r) {
       productType: maybe(pick(["clothing", "sneaker", undefined])),
       category: maybe(pick(["Footwear", "Clothing", undefined])),
       categoryKey: maybe(pick(CATS)),
-      subcategory: maybe(pick(["Watches", "Caps", undefined])),
+      // "Sneakers" is in the pool on purpose: category "Footwear" + subcategory
+      // "Sneakers" with NO categoryKey is the legacy-sneaker pair the engine and
+      // this mirror both resolve to the sneakers policy (2026-09-15).
+      subcategory: maybe(pick(["Watches", "Caps", "Sneakers", undefined])),
     },
   };
   const stock = {};

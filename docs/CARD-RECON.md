@@ -24,36 +24,111 @@ against the wrong till rejects itself because its TID maps elsewhere, and no
 cashier name is ever selected anywhere in the feature.
 
 ```json
-{ "mid": "000000004977890", "storeId": "pe", "tillId": "till-1", "label": "PE Till 1" }
+{ "mid": "000000004977890", "storeId": "pe", "tillId": "till-2",
+  "label": "Marathon Till 2", "activeFrom": 1789689600000 }
 ```
 
 Seed with `node scripts/seed-card-terminals.mjs --tid <TID> [--mid <MID>] --store <pe|pine|trophy> --till <till-N> --label "<label>" --execute`.
 
-**All four terminals, live as of 2026-08-29:**
+**All six terminals, live as of 2026-09-18** (applied by
+`scripts/apply-terminal-registry-20260918.mjs`):
 
-| TID | MID | store · till | prints |
-|---|---|---|---|
-| `0000HP1X` | `000000004977890` | pe · till-1 | THE MARATHON |
-| `67365901` | `100000001178101` | pe · till-2 | OMARS FASHION |
-| `67364485` | `100000001178101` | pine · till-1 | OMARS FASHION |
-| `67377843` | *(none printed)* | trophy · till-1 | Marathon Club |
+| TID | MID | store · till | label | prints | change |
+|---|---|---|---|---|---|
+| `67325636` | `100000002453164` | pe · till-1 | Marathon Till 1 | — | **new**, arrived on batch 57 |
+| `0000HP1X` | `000000004977890` | pe · till-2 | Marathon Till 2 | THE MARATHON | was pe · till-1, "PE Till 1" |
+| `67365901` | `100000001178101` | pe · till-3 | Marathon Till 3 | OMARS FASHION | was pe · till-2, "PE Till 2" |
+| `67377843` | `100000002816030` | trophy · till-1 | Trophy Till 1 | Marathon Club | MID now registered |
+| `0000Z4M6` | `000000004977890` | trophy · till-2 | Trophy Till 2 | — | **new**, arrived on batch 480 |
+| `67364485` | `100000001178101` | pine · till-1 | Pine Till 1 | OMARS FASHION | unchanged |
 
-**Three things that table makes unsafe, and one more beside it.** Each is the
-kind of assumption a later change makes by accident, so each is pinned by
-`functions/test/card-terminal-identity.test.cjs` (6 tests, 5/5 mutations killed):
+**The store key is `pe`, and the shop is called Marathon.** That is not a
+contradiction, it is the distinction the whole estate rests on. `storeId` is a
+**join key**: `/pos/paymentEvents` rows carry `storeId: "pe"`, and the
+expected-card calculator joins the registry's `storeId` + `tillId` against them
+verbatim — a registry saying `marathon` would compute R0 expected for every
+Marathon till and report every batch as a 100% variance. The same id keys
+`/pos/sales`, `/pos/cashups`, the credit ledger and `/card_batches` itself (30
+records live under `/card_batches/pe`). The **trading name lives in `label`**,
+which is exactly what this change moved. The precedent is the owner's own: POS
+PR #26 renamed the shops to "Marathon PE / Marathon Pine / Trophy" and kept the
+ids `pe / pine / trophy`, explicitly to avoid a data migration; POS #357
+(17 Sep 2026) reverted a reader that followed a terminal's *store-mapping
+history*, on the owner's instruction. Nothing migrated in this change and
+nothing was orphaned.
 
-- **A MID is not unique to a store.** `pe/till-2` and `pine/till-1` share
-  `100000001178101` — two different *stores* on one merchant account. Resolving
-  a store from a MID would put Pine's takings on a PE till.
-- **A MID may not exist.** `trophy/till-1` prints no Merchant line, and is
-  registered with **no `mid` key** — not an empty string, not a placeholder.
-  Anything that required one would refuse that shop's slips outright. `mid` is
-  absent from `KEY_FIELDS`, so an unreadable MID cannot fail a capture either.
-- **The trading name identifies nothing.** Three names across four terminals in
+**A till move is safe where a store move would not be.** Two rows changed
+`tillId` — a batch record stamps its own `storeId`, `tillId` and
+`terminalLabel` at capture, so the twelve batches already filed under
+`0000HP1X` still read `pe · till-1 · "PE Till 1"`, which is where that money was
+actually rung. Only new captures join on the new till. A **store** change would
+move where future batches are *filed*, leaving the past ones under a node no
+reader subscribes to — `seed-card-terminals.mjs` refuses one outright while
+records exist under the old path, and prints what would have to be migrated.
+
+**A TID mapping is never deleted; a machine that leaves is retired.**
+
+```
+node scripts/seed-card-terminals.mjs --tid <TID> --retire --reason "..." --execute
+node scripts/seed-card-terminals.mjs --tid <TID> --reinstate --execute
+```
+
+`retiredAt` — the stamp itself, never a boolean beside it — is the flag. The row
+stays, its history keeps resolving, the capture screen stops drawing its card
+and the callable refuses a hand capture against it. **An emailed batch report
+from a retired terminal is still recorded**, with the retirement said out loud
+on the record: a late final settlement is money that still has to reconcile, and
+refusing it to make a point about tidiness is the worse answer. Nothing is
+retired today — the 2026-09-18 change added two machines and removed none — and
+the mechanism exists now because the next swap will need it.
+
+**A till move is stamped, and the first batch after it says it cannot be
+trusted.** `tillChangedAt` is written whenever a row's `tillId` changes. The
+expected-card figure joins the terminal's **current** `storeId`+`tillId` against
+`/pos/paymentEvents` over the slip's **own** Opened→Closed window — and a batch
+settles at ~18:50, so the first window after a move *opened before the move*.
+Across that part of the evening the machine's real card legs are tagged with the
+old till (excluded — a false shortfall) while whatever worked the new till is
+included (a contaminated total). The variance that comes out is confident and
+wrong, on exactly the slip somebody will look at hardest.
+
+There is no fix that computes the right figure — the registry holds a terminal's
+current mapping and no history of it, deliberately (POS #357 reverted a reader
+that followed a terminal's mapping history, on the owner's instruction). So the
+capture **refuses to be confident** instead: a slip whose window opened before
+the stamp carries a warning on its own record, where the owner reads the
+variance, on all three paths (photo extract, PDF extract, submit — the last
+recomputed against the registry as it stands at the moment of record). It
+expires by itself: the next batch opens after the stamp.
+
+`activeFrom` is when a machine entered **this estate**, which is neither when it
+was made nor batch 1: two of the six arrived second-hand, mid-life, on batches 57
+and 480. It bounds the outstanding-slip report, which would otherwise report a
+terminal registered today as having missed every evening in the range. A row
+seeded before the field existed (the four from 2026-08-29) has **always** been
+active — a missing `activeFrom` is not "not yet arrived".
+
+**Four things that table makes unsafe.** Each is the kind of assumption a later
+change makes by accident, so each is pinned by
+`functions/test/card-terminal-identity.test.cjs`:
+
+- **A MID is not unique to a store.** `pe/till-3` and `pine/till-1` share
+  `100000001178101` — two different *stores* on one merchant account — and since
+  2026-09-18 `pe/till-2` and `trophy/till-2` share `000000004977890`, the same
+  trap across two *shops*. Resolving a store from a MID would put Pine's takings
+  on a Marathon till.
+- **A MID may not exist.** `trophy/till-1` was registered with **no `mid` key**
+  — not an empty string, not a placeholder — because its merchant number was not
+  known. It is known now (all 15 of its emailed reports print
+  `100000002816030`), but a machine can be mapped before its merchant number is,
+  so the MID-less path is still live code and is still tested. `mid` is absent
+  from `KEY_FIELDS`, so an unreadable MID cannot fail a capture either.
+- **The trading name identifies nothing.** Three names across six terminals in
   three stores, one of them shared by two stores. It is not in the OCR schema at
   all, and the test refuses to let it in.
-- **The TID format is not one thing.** One alphanumeric (`0000HP1X`), three
-  8-digit numeric. `normaliseTid` accepts `[A-Z0-9]{4,16}`; nothing narrower.
+- **The TID format is not one thing.** Two alphanumeric (`0000HP1X`,
+  `0000Z4M6`), four 8-digit numeric. `normaliseTid` accepts `[A-Z0-9]{4,16}`;
+  nothing narrower.
 
 **Store identity comes from the TID→store map and from nowhere else.** The test
 asserts the registry is only ever indexed by a TID, and that no code reads a MID
@@ -65,6 +140,33 @@ need.
 rules engine rather than by reading: a MID-less terminal is accepted, a numeric
 TID is accepted, a terminal missing `storeId` is still refused, and a non-admin
 still cannot write the registry at all.
+
+### Which name a row shows
+
+**A row that has a RECORD shows the name the terminal had WHEN THE SLIP WAS
+CAPTURED. A row with no record shows the current name, because that is the only
+name there is.**
+
+The record carries its own `storeId`, `tillId` and `terminalLabel`, stamped by
+`buildBatchRecord` and never re-read from the registry; the intake row on
+`/card_batch_intake` carries `terminalLabel` for the same reason, stamped by the
+poller from the capture response. Rows written before 2026-09-18 carry none and
+fall back to the **TID** — the right fallback precisely because a TID is the one
+thing about a terminal that never changes.
+
+| surface | what it shows | why |
+|---|---|---|
+| Card recon tab, batch row | `b.terminalLabel \|\| b.tid` + `tillLabel(b.storeId, b.tillId)` | has a record |
+| Card recon tab, NO SLIP row | `info.label` off `/config/cardTerminals` | no record exists |
+| Emailed slips tab | `a.terminalLabel \|\| TID a.tid` | has a record |
+| EFT settlement row | `storeLabel(used.storeId) · tillLabel(used.storeId, used.tillId)` | ids stamped at settle; only the NAME is looked up |
+| Store app capture screen | `t.label` off the registry | nothing captured yet |
+
+This stopped being theoretical on 2026-09-18: three of six terminals were
+renamed and two also moved till. Without it the twelve batches filed under
+`0000HP1X` as "PE Till 1" at `pe/till-1` would have retitled themselves
+"Marathon Till 2" at `pe/till-2` — a report describing money as rung at a till
+it was not rung at.
 
 ### `/card_batches/{storeId}/{tid}/{batchKey}`  ·  TOP-LEVEL, owner-only
 
@@ -319,7 +421,21 @@ be a decision rather than a surprise on the day. It is the reason this is still
 written down as an option rather than done.
 
 - `batchKey` is the batch number (`"494"`); a **duplicate batch number for the
-  same TID is rejected** (same slip shot twice, or a re-print).
+  same TID is rejected** (same slip shot twice, or a re-print). **Scoped to the
+  terminal, and that is not academic:** 67325636 joined the estate on batch 57
+  while 67365901 — at the same store, `pe` — was live on 59–77 and had filed its
+  own 57 weeks earlier. A refusal scoped to the STORE would have refused the new
+  machine's first slips as "already captured", and would look perfectly correct
+  in any test that used one terminal. The scoping is structural (a batch number
+  is a key under a terminal) and the probe that reads it is pinned by
+  `functions/test/card-batch-numbers.test.cjs`, which asserts the exact paths it
+  touches.
+- **No terminal starts at 1.** Two of the six arrived second-hand, mid-life, on
+  batches 57 and 480; a third is past 509. Nothing anywhere compares a batch
+  number to a previous one, expects a sequence or bounds it by size — only its
+  SHAPE is checked (1–8 digits). TSN contiguity is a different question and is
+  still checked, because those run inside one batch and a gap there is a missing
+  line.
 - A **correction** is a deliberate re-capture: it lands beside the original at
   `494-r2` (`-r3`, …) carrying `supersedes: "494"`. Both records are kept;
   readers take the highest revision.
@@ -351,7 +467,17 @@ figure**.
 ## Two ways in: the PDF and the photos
 
 An FNB terminal can email its batch report as a **PDF**, and that is the fast
-path. Photographing the printed slip remains for terminals that cannot email.
+path. **Photographing the printed slip remains available for every till, and no
+till is hardcoded as the one that needs it.** A machine that does not email, one
+whose email failed tonight, one nobody has tested yet — the card is tapped and
+the slip is photographed. Which machines email is answered by what turns up in
+`/card_batch_intake`, never by a name in the source: PE Till 1 (`0000HP1X`) was
+the estate's one manual-only terminal until 18 Sep 2026, when it was replaced
+with a PAX A920Pro — the same hardware as the terminals that email themselves —
+and renamed Marathon Till 2. Whether the new machine actually emails is a
+question for the mailbox. Nothing in either app asks it in advance, and
+`functions/test/card-terminal-identity.test.cjs` pins that no TID appears in a
+capability decision anywhere in the feature.
 A submission is **one or the other, never both** — the callable refuses a
 request carrying a PDF and photos together, and the screen enforces the same
 rule by disabling whichever input the other has claimed.
@@ -942,7 +1068,7 @@ nothing — and the panel checks it first:
 * the poller ran minutes ago and nothing came in → **nothing is said**. An alarm
   here is the kind that teaches people to ignore alarms.
 * the mailbox has not been checked for an hour → **"the poller has stopped. Any
-  batch report emailed since is sitting unread."** Even when the feed looks
+  batch report emailed since is sitting unprocessed."** Even when the feed looks
   recent.
 
 Three nodes go into the rules, not two: without the heartbeat, "no refusals"
@@ -1100,6 +1226,93 @@ ssh marathonclub@100.64.186.78 'tail -40 ~/marathon-store-app/logs/card-recon-po
 ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && GOOGLE_APPLICATION_CREDENTIALS=~/.config/marathon/shopify-reconciler-sa.json /opt/homebrew/bin/node scripts/cardrecon/email-poller.mjs --dry-run'
 ```
 
-A tick with no unread mail logs one line, so a quiet log still proves the
+A tick with nothing unprocessed logs one line, so a quiet log still proves the
 schedule is alive. Refused slips surface in the **Card recon tab → Emailed
 slips**, in red, at the top.
+
+# The EFT payment pool — the second reader on the same mailbox
+
+Customers paying by EFT enter **marathon6631@gmail.com** as the notification
+address in their banking app, and **the PAYER'S OWN BANK** emails a payment
+notification to the mailbox the card recon poller already reads (the R100
+test payment of 2026-08-30 arrived from standardbank.co.za, carrying every
+field in an attached PaymentConfirmation.pdf). The **same poller, same tick,
+same launchd agent** examines those messages — a separate poller could never
+work, because this one marks ordinary mail `\Seen` and would hide every
+notification from it.
+
+Routing is by **content, not sender or attachment shape**: each PDF's text is
+extracted (borrowing the slip path's own `pdfToLines`) and classified — a
+batch slip goes to the card path, a recognised bank notification to its
+reader, anything else to a recorded refusal.
+
+**This is ingestion and storage only.** A verified notification becomes a
+record at top-level **`/eft_pool`** with `status: "unmatched"`. The only
+reader is the owner-only panel described below — no matching, no cashier
+surface, no sale release consumes the pool yet; those are later sessions. The
+status field is designed for `matched` and `used` but no transition exists.
+
+## The message is believed only on Gmail's word
+
+The visible From address is attacker-controlled text and is **never the check
+on its own**. A message claiming an allowlisted bank domain must carry Gmail's
+own `Authentication-Results` stamp (authserv-id `mx.google.com`, topmost)
+recording **dkim=pass with the signing domain aligned to the From domain**.
+The allowlist is the SA banks customers pay from — fnb.co.za,
+standardbank.co.za, absa.co.za, nedbank.co.za, capitecbank.co.za,
+tymebank.co.za — each verified against its OWN domain. A claiming-but-failing
+message is recorded as a **failed-authentication refusal — a forgery
+attempt** — separable from the other refusals. Return-Path, the Received
+chain, Message-ID and TLS are deliberately not checked.
+
+## Per-bank readers — exact or refused
+
+Every bank lays its notification out differently, so parsing is **per format**
+(`scripts/cardrecon/eftBanks.mjs`), the same way the slip parsers are: detect
+which bank's document this is from its content, then read it with that bank's
+reader. Standard Bank is the first reader, built from the real R100
+notification and pinned by its extracted lines as a fixture. **An
+unrecognised format is a clean refusal** that stores the raw text (account
+digits struck out) and names the sending domain — the work order for the next
+reader, never a guess. Expect refusals to be the common case until the
+formats accumulate. Amounts go through card recon's fuzzed
+`parseRandsToCents`; the extracted *reference* (Standard Bank: "Beneficiary
+reference") is the customer's typed matching key and is kept verbatim.
+
+## Only the shop's own accounts
+
+**`EFT_ALLOWED_ACCOUNTS`** in the gitignored `.env` on the mini — comma-
+separated account numbers (full numbers or last-four; never committed, the
+repo is public). The payer's bank prints the destination **masked**
+(`XXXXXXXXXXXX…` plus the last digits), so matching is on the **last four**.
+A real, authenticated payment into any other account is recorded as
+**refused-account** — its amount and masked destination on show — and never
+enters the pool as money. No allowlist configured refuses everything,
+deliberately.
+
+## Never twice
+
+The record's node name IS the message's key (auth verdict included, so a
+forgery guessing a genuine Message-ID cannot squat on the genuine record's
+key); the write is a create-only transaction; and the shared claim ledger at
+`/card_batch_intake_seen` covers it with the same stale-claim rescue as the
+slips.
+
+## Where the owner sees it
+
+**Card recon tab → EFT payments** (renders only for the super-admin; the
+`/eft_pool` rule — owner-only read, `.write: false`, Admin SDK only, the
+`/card_batches` isolation pattern — refuses everyone else anyway). Recorded
+payments show amount · reference · payer; refusals are red at the top, with
+the stored raw text behind a tap. The poller heartbeat
+(`/card_batch_poll_status`) carries `eftRecorded / eftRefusedAuth /
+eftRefusedParse / eftRefusedAccount` counts per tick.
+
+Rules live in `scripts/cardrecon/eftRules.mjs`, applied with the house method
+by `scripts/cardrecon/apply-eft-pool-rules.mjs [--apply]` — never
+`firebase deploy --only database`.
+
+The poll interval is **120 seconds** (was 300): the clock that matters is a
+customer at the counter who has just paid, and 720 IMAP sessions/day is far
+below Gmail's throttling territory. Nothing new to add to `.env` — the EFT
+reader uses the same mailbox credentials the card poller already reads.

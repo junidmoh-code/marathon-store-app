@@ -1,0 +1,197 @@
+{%- comment -%}
+  ── THE WAY OUT OF THE IN-APP BROWSER ────────────────────────────────────────
+  Rendered on the cart page — the last surface this theme controls before
+  Shopify checkout takes over and, from there, PayFast takes the shopper
+  off-site entirely.
+
+  ── THE TRAP THIS AVOIDS ─────────────────────────────────────────────────────
+  A Shopify cart lives in a COOKIE. Hand somebody the current URL and send them
+  to Chrome and they arrive in a different browser with no cookie and an EMPTY
+  basket — strictly worse than leaving them where they were. So the hand-off is
+  not window.location.href. It is a CART PERMALINK,
+  /cart/<variantId>:<qty>,<variantId>:<qty>, which rebuilds the basket in
+  whichever browser opens it. The basket travels; that is the whole point.
+
+  ── WHAT IT CAN AND CANNOT DO ────────────────────────────────────────────────
+  ANDROID gets a real button: an intent:// URL naming Chrome explicitly.
+  iOS gets an instruction and a copy-link button, because a WKWebView has no
+  API to hand a page to Safari. The copy says so rather than pretending.
+
+  ── HOW IT IS MEASURED ───────────────────────────────────────────────────────
+  Every cart is stamped with a `browser` attribute (facebook / instagram /
+  other-inapp / standard) and an `escaped` attribute. Cart attributes survive
+  into the ORDER and the ABANDONED CHECKOUT record, both readable from the
+  Admin API, so the funnel can be split by browser after the fact —
+  scripts/shopify/inapp-funnel.mjs does exactly that. The stamp is written for
+  EVERY shopper, not only the nudged ones, because a denominator made only of
+  nudged people would be worthless.
+
+  Arriving in the real browser re-stamps as `arrived-from-<source>`, which is
+  the "it actually worked" signal: a cart that crossed browsers and can be
+  followed to an order or an abandonment like any other.
+{%- endcomment -%}
+
+<script src="{{ 'marathon-inapp.js' | asset_url }}" defer></script>
+
+<div id="marathon-inapp-root" hidden></div>
+
+<script>
+  (function () {
+    "use strict";
+
+    function stamp(fields) {
+      // Fire and forget. A failed stamp must never block a shopper.
+      try {
+        fetch("/cart/update.js", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ attributes: fields }),
+          keepalive: true,
+        }).catch(function () {});
+      } catch (e) {}
+    }
+
+    function start() {
+      var M = window.MarathonInApp;
+      if (!M) return;
+      var ua = navigator.userAgent || "";
+      var source = M.inAppSource(ua);
+      var plat = M.platform(ua);
+
+      // One read serves both jobs: deciding whether this cart already carries
+      // an arrival stamp, and building the hand-off from its real contents.
+      fetch("/cart.js", { headers: { Accept: "application/json" } })
+        .then(function (r) { return r.json(); })
+        .then(function (cart) {
+          var existing = (cart && cart.attributes) || {};
+
+          // ── NEVER CLOBBER AN ARRIVAL ─────────────────────────────────────
+          // A shopper who escaped arrives on a permalink carrying
+          // attributes[escaped]=arrived-from-<app>. Shopify forwards that
+          // permalink STRAIGHT TO CHECKOUT, so this script does not run on
+          // the way in — but it does run if they navigate back to the cart,
+          // and a blind default stamp there would erase the one fact the
+          // whole measurement depends on. Proven on the live store: without
+          // this guard the arrival attributes were overwritten with
+          // {browser: standard, escaped: no}.
+          if (M.isArrivalStamp(existing.escaped)) return;
+
+          // Only stamp the default when NOTHING has been recorded yet.
+          // Guarding arrivals alone let a later page view overwrite
+          // `tapped-android-chrome` / `copied-link` with "no", erasing the
+          // engagement the funnel report counts.
+          if (M.shouldWriteDefaultStamp(existing.escaped)) {
+            stamp({ browser: source, escaped: "no" });
+          }
+          if (source === "standard") return;
+
+          var root = document.getElementById("marathon-inapp-root");
+          if (!root) return;
+
+          var target = M.handoffUrl(window.location.origin, cart.items, source);
+          if (!target) return; // empty basket: nothing worth moving
+          render(root, M, source, plat, target);
+        })
+        .catch(function () {});
+    }
+
+    function render(root, M, source, plat, target) {
+      var appName = source === "instagram" ? "Instagram" : "Facebook";
+      var html =
+        '<div class="mc-inapp">' +
+        '<p class="mc-inapp__title">Paying is smoother in your normal browser</p>' +
+        '<p class="mc-inapp__body">You are browsing inside the ' + appName +
+        " app. Card payment opens a secure page outside this window, and this " +
+        "window can lose your basket on the way back. Your basket comes with you.</p>";
+
+      if (plat === "android") {
+        html +=
+          '<a class="mc-inapp__btn" id="mc-inapp-open" href="' +
+          M.androidIntentUrl(target).replace(/"/g, "&quot;") +
+          '">Open in Chrome</a>';
+      } else if (plat === "ios") {
+        html +=
+          '<p class="mc-inapp__body mc-inapp__how">Tap <strong>•••</strong> at the ' +
+          "top of this window, then <strong>Open in browser</strong>. Or copy the " +
+          "link below and paste it into Safari.</p>";
+      }
+
+      html +=
+        '<button class="mc-inapp__link" id="mc-inapp-copy" type="button">Copy my basket link</button>' +
+        '<p class="mc-inapp__done" id="mc-inapp-done" hidden>Copied — paste it into Safari or Chrome.</p>' +
+        "</div>";
+
+      root.innerHTML = html;
+      root.hidden = false;
+
+      var openBtn = document.getElementById("mc-inapp-open");
+      if (openBtn) {
+        openBtn.addEventListener("click", function () {
+          stamp({ browser: source, escaped: "tapped-android-chrome" });
+        });
+      }
+
+      var copyBtn = document.getElementById("mc-inapp-copy");
+      if (copyBtn) {
+        copyBtn.addEventListener("click", function () {
+          var done = document.getElementById("mc-inapp-done");
+          function ok() {
+            if (done) done.hidden = false;
+            stamp({ browser: source, escaped: "copied-link" });
+          }
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(target).then(ok, ok);
+          } else {
+            var t = document.createElement("textarea");
+            t.value = target;
+            document.body.appendChild(t);
+            t.select();
+            try { document.execCommand("copy"); } catch (e) {}
+            document.body.removeChild(t);
+            ok();
+          }
+        });
+      }
+    }
+
+    if (document.readyState === "loading") {
+      document.addEventListener("DOMContentLoaded", start);
+    } else {
+      start();
+    }
+  })();
+</script>
+
+<style>
+  .mc-inapp {
+    margin: 1.4rem 0;
+    padding: 1.3rem 1.4rem;
+    border: 1px solid rgba(var(--color-foreground, 18 18 18), 0.22);
+    border-radius: 0.6rem;
+    font-size: 1.4rem;
+    line-height: 1.5;
+  }
+  .mc-inapp__title { margin: 0 0 0.5rem; font-weight: 700; }
+  .mc-inapp__body { margin: 0 0 0.8rem; }
+  .mc-inapp__how { opacity: 0.9; }
+  .mc-inapp__btn {
+    display: inline-block;
+    padding: 0.9rem 1.6rem;
+    border: 1px solid currentColor;
+    border-radius: 0.4rem;
+    text-decoration: none;
+    font-weight: 700;
+  }
+  .mc-inapp__link {
+    display: inline-block;
+    margin-top: 0.8rem;
+    background: none;
+    border: 0;
+    padding: 0;
+    font: inherit;
+    color: inherit;
+    text-decoration: underline;
+    cursor: pointer;
+  }
+  .mc-inapp__done { margin: 0.6rem 0 0; font-weight: 700; }
+</style>

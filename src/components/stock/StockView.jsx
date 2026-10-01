@@ -20,6 +20,8 @@ import CountedStockReview from "./CountedStockReview";
 import StockErrorBoundary from "./StockErrorBoundary";
 import MoveExcess from "./MoveExcess";
 import InTransit from "./InTransit";
+import DuplicatesTab from "./DuplicatesTab";
+import DisplayRecordsTab from "./DisplayRecordsTab";
 
 // Stock rework: Transfer (assistant-style) + Locator are primary;
 // History/Adjust/Count retained. Receiving moved into the admin product-add
@@ -37,6 +39,13 @@ const BASE_TABS = [
   ["count",     "Count"],
   ["recount",   "Counted"],      // PERMANENT counted-stock review (admin-only; owner decision 2026-07-16)
   ["excess",    "Move Excess"],  // TEMPORARY bulk hub2→central rebalance (admin-only)
+  ["duplicates","Duplicates"],   // side-by-side twin records + a recommended survivor (admin-only)
+  // DUPLICATE DISPLAYS and UNREGISTERED DISPLAYS USED TO BE HERE. They moved
+  // into the Display Registration card (owner correction, 2026-09-08), beside
+  // its Hub 1 and Hub 2 tabs — that card is where an operator looks for
+  // anything about a display wall, and the Stock console is not. Display
+  // Records stays: it is about the hub REGISTER, which is stock-console work.
+  ["displayrecs","Display Records"],  // a hub REGISTER row the shop floor contradicts (admin-only)
 ];
 
 // Tabs only an ADMIN sees — they write `adjustment` movements, which the rule layer
@@ -44,7 +53,7 @@ const BASE_TABS = [
 // opening]/history) is available to warehouse|admin. (Barcodes moved to the home page.)
 // Move Excess writes transfer_out (warehouse-permitted at the rule layer) but is a
 // bulk tool — deliberately admin-gated in the UI.
-const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess"]);
+const ADMIN_ONLY_TABS = new Set(["adjust", "count", "recount", "excess", "duplicates", "displayrecs"]);
 
 // Desktop shell — icons per tool, grouped in the sidebar, plus a one-line
 // header per tool. Tool CONTENTS are unchanged (they render in the main pane).
@@ -58,6 +67,11 @@ const TAB_ICON = {
   adjust:   <><path d="M20 7h-9M4 7h3M14 17h6M4 17h6" /><circle cx="9" cy="7" r="2.5" /><circle cx="14" cy="17" r="2.5" /></>,
   count:    <><path d="M9 11l3 3 8-8" /><path d="M20 12v6a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2h9" /></>,
   recount:  <><path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></>,
+  duplicates: <><rect x="9" y="9" width="12" height="12" rx="2" /><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1" /></>,
+  // The display monitor, matching the shop-side marker glyph.
+  displayrecs: <><rect x="3" y="4" width="18" height="12" rx="2" /><path d="M12 16v4M8 20h8" /></>,
+  // two monitors overlapping — one product on the wall twice
+  // the monitor with a question mark — a wall nobody wrote down
 };
 const TAB_META = {
   transfer: ["Transfer", "Move stock between locations."],
@@ -69,13 +83,17 @@ const TAB_META = {
   adjust:   ["Adjust", "Admin stock corrections."],
   count:    ["Count", "Run a stock-take."],
   recount:  ["Counted", "Review & post counted differences."],
+  duplicates: ["Duplicates", "Twin records side by side, with a recommended survivor."],
+  displayrecs: ["Display Records", "A hub display record the shop floor contradicts — retire the one that is wrong."],
 };
 const TAB_GROUPS = [
   ["Move & find", ["transfer", "intransit", "locate", "setqty"]],
   ["Audit", ["history", "adjust", "count", "recount", "excess"]],
+  ["Catalogue", ["duplicates"]],
+  ["Displays", ["displayrecs"]],
 ];
 
-export default function StockView({ products = [], onExit }) {
+export default function StockView({ products = [], orders = [], ordersScope = null, onExit }) {
   const isWide = useWide(1024);
   const { permRecord, isSuperAdmin, hasPermission } = usePermissions();
   const registry = useLocations();
@@ -111,6 +129,8 @@ export default function StockView({ products = [], onExit }) {
       {tab === "history"  && <MovementHistory {...shared} />}
       {tab === "count"    && isAdmin && <CountSession {...shared} />}
       {tab === "recount"  && isAdmin && <StockErrorBoundary><CountedStockReview {...shared} /></StockErrorBoundary>}
+      {tab === "duplicates" && isAdmin && <StockErrorBoundary><DuplicatesTab products={products} registry={registry} /></StockErrorBoundary>}
+      {tab === "displayrecs" && isAdmin && <StockErrorBoundary><DisplayRecordsTab products={products} isAdmin={isAdmin} mode="records" /></StockErrorBoundary>}
     </>
   );
 

@@ -59,7 +59,10 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     expect(app).toContain("activeHub && isReactiveRefillHub(activeHub) ? saleRowsFor(activeHub, activeCellFilter) : []");
     expect(app).toContain("activeHub && isReactiveRefillHub(activeHub) ? completedSaleFor(activeHub, activeCellFilter) : []");
     // The open-request badge still counts hub1 — those rows render in the tab.
-    expect(app).toContain('(r.requestingLocation === "hub1" || r.requestingLocation === "hub2")');
+    // (Since the first-batch shop tabs, 2026-09-17, the counted set is the
+    // `counts` map's own keys: hub1 and hub2 as before, plus the two shops.)
+    expect(app).toContain('const counts = { hub1: 0, hub2: 0, trophy: 0, "marathon-pe": 0 };');
+    expect(app).toContain("Object.prototype.hasOwnProperty.call(counts, r.requestingLocation)");
   });
 });
 

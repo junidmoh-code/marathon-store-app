@@ -22,9 +22,16 @@
 //     no-op (offline re-sync, double-tap, retried network all collapse to one).
 //   • Paired write: all touched cells + the movement are one atomic update — all-or-
 //     nothing. A rejected attempt writes NOTHING (safe to retry).
-//   • Negative floor: only the `sold` decrement may drive a cell negative (already-
-//     happened event → surfaces as an accuracy signal, not a hidden clamp). Transfers,
-//     receives and adjustments are blocked from going negative.
+//   • Negative floor: a `sold` never drives a cell below zero (owner decision
+//     2026-09-11) — it deducts what is booked and writes the uncovered part as
+//     `shortfall` on the movement, so the accuracy signal lives in the ledger
+//     where a later arrival cannot eat it. Transfers, receives and adjustments
+//     are refused when they would overdraw; the one deliberate exception is a
+//     caller passing `allowNegative` (a customer-order dispatch: the parcel has
+//     physically left, so the hub's shortage is recorded as it is).
+//   • Negative BASE (2026-09-11, the Diesel Slide incident): an ARRIVAL at a real
+//     shelf — received, opening, return, or the +leg of a relocation — lands on
+//     max(cell, 0), never on top of a negative. See NEGATIVE BASE below.
 //
 // NOTE on retries: a rule rejection (version conflict) and a genuine permission
 // denial both surface as PERMISSION_DENIED — RTDB can't distinguish them client-side.
@@ -36,6 +43,8 @@ import { database, auth } from "../../firebase";
 import { stockCellPath } from "../../utils/sizeKey";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { reactivateUpdates, REACTIVATED_EVENT } from "../../utils/deactivation";
+import { notePendingUpdate } from "../../offline/pendingWrites";
+import { deviceStamp } from "../../device/deviceStamp";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -55,6 +64,31 @@ function isArrival(m) {
   // in_transit is not a shelf — an adjustment INTO it must not reactivate any
   // more than a transfer_out's +leg does. (CodeRabbit, PR #445.)
   return m.type === "adjustment" && !!m.to && m.to !== "in_transit";
+}
+
+// ── NEGATIVE BASE — an arrival never pays a phantom debt ──────────────────────
+// Owner policy (2026-08-25, scripts/zero-negative-cells.mjs, availabilityCore):
+// a negative cell is a count artifact and READS AS ZERO everywhere. Until
+// 2026-09-11 this writer still landed an arrival on top of the negative, so
+// "+1 onto −1" wrote 0 and the unit that was physically put on the shelf was
+// booked nowhere — whether it showed depended on whether the periodic zeroing
+// script happened to run before the box arrived (Diesel Slide Full Black,
+// Hub 1 size 6, FULFIL-CREDIT-GAP.md: 13 units in 30 days by this route alone,
+// 85 across every arrival type). Order of unrelated events must not decide a
+// stock count, so an arrival at a real shelf now credits from max(cell, 0) and
+// the debt it cleared is written into the movement (`negativeCleared`) so the
+// ledger says exactly what happened.
+//
+// Deliberately NOT clamped:
+//   • `adjustment` — an absolute intent ("the shelf holds 8", a count, a
+//     recon) whose delta the counter derived from the live negative; clamping
+//     would overshoot the number the human wrote down.
+//   • a +leg landing at in_transit — not a shelf; a negative transit cell is
+//     an unmatched relocation leg and the reconciliation signal must survive
+//     (scan-negative-cells.mjs excludes in_transit for the same reason).
+//   • any negative delta — the sold/allowNegative contract is unchanged.
+function clampsNegativeBase(movement, delta, loc) {
+  return delta > 0 && movement.type !== "adjustment" && loc !== "in_transit";
 }
 
 function emptyLink(link) {
@@ -160,6 +194,14 @@ export async function applyMovement(movement, opts = {}) {
       const path = stockCellPath(d.loc, movement.productId, movement.size);
       const snap = await get(child(ref(database), path));
       const cell = snap.val();
+      // The server-side writer (functions/lib/admin-movement.cjs) mutates cells
+      // one transaction at a time and stamps each with the movement id it is
+      // applying (`relMv`) before the ledger row exists. A stamp under THIS id
+      // means the server is mid-flight on this very movement: a device must
+      // neither re-apply the leg nor claim success (the other leg and the
+      // ledger row may not exist yet — the server's next attempt completes
+      // them). Refuse, retryable; the stamp is gone once the row is written.
+      if (cell && cell.relMv === mvId) return { ok: false, reason: "in_flight_elsewhere", location: d.loc };
       const curQty = cell && typeof cell.qty === "number" ? cell.qty : 0;
       // The absolute-value precondition, checked against the read we are about to
       // write from — NOT against whatever the caller saw earlier. Re-checked on
@@ -167,7 +209,24 @@ export async function applyMovement(movement, opts = {}) {
       if (expectQty !== null && curQty !== expectQty) {
         return { ok: false, reason: "stale_expectation", location: d.loc, expected: expectQty, live: curQty };
       }
-      const newQty = curQty + d.delta;
+      // NEGATIVE BASE (see clampsNegativeBase above): an arrival at a shelf
+      // credits from zero when the cell is negative; the cleared debt is
+      // recorded on the movement.
+      const clearedDebt = curQty < 0 && clampsNegativeBase(movement, d.delta, d.loc) ? curQty : 0;
+      let newQty = (curQty - clearedDebt) + d.delta;
+      // NO NEGATIVE CELLS (owner decision 2026-09-11): a `sold` deducts what is
+      // BOOKED and no more — the cell floors at 0 and the uncovered part of the
+      // sale is written on the movement as `shortfall`. The sale itself is
+      // unchanged; the shortage now lives in the ledger, where a later arrival
+      // cannot eat it. Mirrors the POS writer (marathon-pos-app stockMovement.js).
+      let shortfall = 0, soldCleared = 0;
+      if (movement.type === "sold") {
+        const booked = Math.max(curQty, 0);
+        const deducted = Math.min(Number(movement.qty), booked);
+        shortfall = Number(movement.qty) - deducted;
+        newQty = booked - deducted;
+        soldCleared = curQty < 0 ? curQty : 0;   // a legacy negative the floor wiped — recorded like an arrival's
+      }
       // P0 (stock-integrity): only a NEGATIVE delta can be floored — a positive
       // delta (a return / the +to leg of a transfer) always applies, even onto a
       // cell already negative (raising −3 to −2 is an improvement; the old
@@ -179,20 +238,30 @@ export async function applyMovement(movement, opts = {}) {
       if (d.delta < 0 && newQty < 0 && movement.type !== "sold" && !movement.allowNegative) {
         return { ok: false, reason: "insufficient_stock", location: d.loc, available: curQty, requested: Number(movement.qty) };
       }
-      cells.push({ path, cell, newQty });
+      cells.push({ path, cell, newQty, clearedDebt: clearedDebt || soldCleared, shortfall });
     }
 
     // Per-cell old→new snapshot for the audit trail, keyed by location so a two-cell
     // relocation (transfer) is unambiguous. Derived from the SAME reads that compute
     // the write, so the ledger's before/after can never disagree with the qty it wrote.
-    const before = {}, after = {};
+    const before = {}, after = {}, negativeCleared = {};
+    let shortfall = 0;
     cells.forEach((c, i) => {
       const loc = deltas[i].loc;
       before[loc] = c.cell && typeof c.cell.qty === "number" ? c.cell.qty : 0;
       after[loc]  = c.newQty;
+      if (c.clearedDebt) negativeCleared[loc] = c.clearedDebt;   // the phantom debt this arrival wiped
+      if (c.shortfall) shortfall += c.shortfall;                 // the part of a sale the books could not cover
     });
 
     const now = serverNowIso();
+    // Who, on which device, when (src/device/deviceStamp.js). No `action`:
+    // the movement's own type says that, and this ledger is read in bulk. The
+    // link keeps its deviceId for the callers that already set one; everyone
+    // else gets this device's.
+    const by = deviceStamp();
+    const link = emptyLink(movement.link);
+    if (!link.deviceId) link.deviceId = by.deviceId;
     const mv = {
       type: movement.type,
       productId: movement.productId,
@@ -207,7 +276,12 @@ export async function applyMovement(movement, opts = {}) {
       ts: movement.ts || now,            // REAL event time (offline sale time, not sync time)
       appliedAt: now,                    // when it actually hit RTDB
       reason: movement.reason ?? null,
-      link: emptyLink(movement.link),
+      link,
+      by,
+      // Present ONLY when a negative base was cleared — RTDB stores no empty
+      // object, and an absent key is the honest "nothing was cleared".
+      ...(Object.keys(negativeCleared).length ? { negativeCleared } : {}),
+      ...(shortfall > 0 ? { shortfall } : {}),
     };
 
     const updates = {};
@@ -226,6 +300,18 @@ export async function applyMovement(movement, opts = {}) {
 
     try {
       await update(ref(database), updates);
+      // ─── THE OFFLINE MIRROR ───────────────────────────────────────────────
+      // Every fulfil, transfer, receive, count and adjust in this app lands
+      // here, and on a device reading from its local copy the new quantity is
+      // a second or two away — RTDB, then the change trigger, then this
+      // device's feed. A second is long enough for someone to press a button,
+      // see the old number and press it again. So the paths just written are
+      // echoed locally until the feed carries the same fact back round.
+      //
+      // AFTER the write, deliberately: this echoes what RTDB has ACCEPTED,
+      // never what we hoped it would. It is a no-op with the mirror flag off.
+      // See src/offline/pendingWrites.js.
+      notePendingUpdate(updates);
       if (reactivation && typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
         // Every receive surface announces the reactivation without opting in.
         window.dispatchEvent(new CustomEvent(REACTIVATED_EVENT, {
@@ -268,6 +354,7 @@ export async function setCellState(loc, productId, size, state) {
   }
   try {
     await update(ref(database), updates);
+    notePendingUpdate(updates);           // see applyMovement above
     return { ok: true };
   } catch (err) {
     return { ok: false, reason: "write_failed", error: String(err?.message || err) };

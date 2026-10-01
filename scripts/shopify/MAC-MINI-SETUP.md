@@ -57,8 +57,13 @@ npm ci --prefix functions
 which node && node --version
 ```
 
-If `which node` is not `/usr/local/bin/node`, update the first
-`ProgramArguments` string in the plist to the real path.
+The plist names `/opt/homebrew/bin/node`, which is where Homebrew puts it on
+Apple silicon and where it is on this mini. **If `which node` says anything
+else, update the first `ProgramArguments` string in the plist to the real
+path** — launchd does not search `PATH`, so a wrong absolute path does not
+error: the job loads, appears in `launchctl list`, and silently never runs.
+(This file used to name the Intel path, `/usr/local/bin/node`. See the note in
+"Cost of an idle tick" below for how long that went unnoticed.)
 
 ---
 
@@ -142,8 +147,13 @@ launchctl load  ~/Library/LaunchAgents/com.marathon.shopifyreconcile.plist
 launchctl list | grep shopifyreconcile     # expect a line ending in the label
 ```
 
-`RunAtLoad` fires the first tick immediately; `StartInterval 120` fires every 2
-minutes thereafter.
+`RunAtLoad` fires the first tick immediately. After that the cadence comes from
+`KeepAlive` plus `ThrottleInterval 120`, **not** from `StartInterval` — launchd
+respawns the runner on every exit, no sooner than every 2 minutes, and the
+runner does one tick and exits. (It was `StartInterval 120` until 31 Aug 2026,
+when launchd silently stopped firing every `StartInterval` agent on this machine
+at 01:16 — PR #531. Diagnosing against `StartInterval` now means looking for a
+key that is not installed.)
 
 **Reboot survival:** a LaunchAgent in `~/Library/LaunchAgents` is loaded
 automatically at every login of that user — the same property that keeps
@@ -233,13 +243,50 @@ scheduled run):
 cd ~/marathon-store-app && node scripts/shopify/reconcile-runner.mjs
 ```
 
-**Cost of an idle tick.** `reconcile.mjs` reads `/shopify_publish`, finds no
-unapplied intent and exits *before* minting a Shopify token — so an idle tick
-is one RTDB read plus a node boot, 720 times a day. That read is the whole
-`/shopify_publish` node; it is small today (one record per reviewed product)
-but grows with the catalogue. If it ever matters, the fix is an indexed query
+**Cost of an idle tick.** This paragraph used to say the read "is small today
+… but grows with the catalogue. If it ever matters, the fix is an indexed query
 rather than a longer interval — worth revisiting past a few thousand reviewed
-products, not before.
+products, not before." It got there: **3,832 nodes, ~2.2 MB, read TWICE per
+tick**, measured on 3 Sep 2026 at 45–79% of all traffic in the database
+(`docs/SHOPIFY-SYNC.md` §9; the raw capture is `docs/bandwidth-capture-sept.md`,
+which lands with PR #550). The indexed query it predicted is now
+built — see `docs/SHOPIFY-SYNC.md` §9.
+
+`reconcile.mjs` still exits *before* minting a Shopify token when there is no
+unapplied intent, so an idle tick is a node boot plus:
+
+- **~100 bytes**, once `".indexOn": ["state", "updatedAt"]` is on
+  `/shopify_publish` in the console rules (§9.1 of that doc). An empty
+  `updatedAt` window really is a handful of bytes, but the tick also reads its
+  own scan state at `/shopify_sync/_reconcile`, and once the index is pasted
+  that read *is* the idle tick. (An earlier draft of this line said ~8 bytes,
+  counting only the window: `readReconcileState` was the one read in the loop
+  with no `meter()` call, so the loop's own report left out its largest
+  remaining item. It is metered now, and the figure the tick prints includes
+  it.) A tick with retries pending also does **one point read per retry pid**,
+  up to 50, and every commit tick *writes* the scan state once — 720 writes a
+  day, which is a write cost, not a download one;
+- **~2.2 MB** until then — RTDB *refuses* an unindexed query rather than
+  sorting it, so the tick falls back to the old whole-node read and logs a line
+  saying so on every tick. That line is the reminder; it goes away when the
+  index is pasted, with no code change.
+
+The expensive drift-repair passes (full scan, search-index sweep) run every
+30 minutes, and every 3 hours between 01:00 and 07:00 SAST — the window the
+mini's own log measures as dead. 23:00 is the *busiest* publishing hour and gets
+the daytime cadence (see `docs/SHOPIFY-SYNC.md` §9). The **tick** stays at two
+minutes either way: a publish pressed at 23:40 still goes out at 23:42.
+
+**A trap worth knowing about, found 3 Sep 2026.** The plist committed in this
+repo named `/usr/local/bin/node` — the Intel Homebrew location. The mini is
+Apple silicon and has node at `/opt/homebrew/bin/node`; nothing is at the Intel
+path. The agent ran anyway only because the *installed* copy in
+`~/Library/LaunchAgents` had been corrected by hand at some point, after which
+the two copies drifted and the repo's version was never right. The repo copy is
+corrected now. **launchd has no PATH of its own**, so a wrong absolute path in
+`ProgramArguments` does not error — the job loads, appears in `launchctl list`,
+and simply never runs. Check `which node` on the target before installing this
+anywhere else.
 
 **Updating the code on the mini:**
 
@@ -248,4 +295,6 @@ ssh marathonclub@100.64.186.78 'cd ~/marathon-store-app && git pull && npm ci --
 ```
 
 No launchd reload is needed — each tick spawns a fresh node process, so the
-next tick picks the new code up.
+next tick picks the new code up. **There is no auto-pull**: on 3 Sep 2026 the
+mini was found sitting on `main` at #540 while `main` was at #549, nine merged
+PRs behind. If a fix is not visible on the mini, this command is why.

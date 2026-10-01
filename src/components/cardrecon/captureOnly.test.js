@@ -75,9 +75,11 @@ describe("the store app is capture-only", () => {
       expect(stripComments(raw).length / raw.length,
         `${file} must not be largely deleted by stripping`).toBeGreaterThan(0.5);
     }
-    // …and a real comment must still go.
+    // …and a real comment must still go. The probe is a phrase that exists in
+    // the screen's header block and nowhere in its code, so a stripper that
+    // stopped stripping would fail here rather than pass on absence.
     expect(stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8")))
-      .not.toContain("the OS opens the camera");
+      .not.toContain("the label IS the control");
   });
 
   it("reads none of the card-recon nodes, anywhere in src/", () => {
@@ -91,7 +93,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the card recon screens read exactly three nodes, and each is named here on purpose", () => {
+  it("the card recon screen reads exactly two nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -99,46 +101,57 @@ describe("the store app is capture-only", () => {
     //   card_batch_intake      what the mailbox poller did with each emailed
     //                          PDF — outcomes only: a sender, a subject, a file
     //                          name, recorded-or-why-not. NO figures, no lines,
-    //                          no PANs; the evidence itself stays in the
-    //                          owner-only records. It is read here because a
-    //                          refused emailed slip means a terminal is not
-    //                          reconciling, and a refusal only the owner could
-    //                          ever see is the failure this feature exists to
-    //                          prevent.
+    //                          no PANs. It is read here for ONE thing now: the
+    //                          tick on a till card, which needs to know that
+    //                          THIS terminal's report was recorded TODAY. The
+    //                          refusals themselves — which attachment, and why
+    //                          — are read by the owner on the POS reports tab;
+    //                          a manager gets the one bit they can act on,
+    //                          which is that a slip still has to be
+    //                          photographed.
     //
-    //   card_batch_poll_status  the poller's heartbeat — one small node saying
-    //                          when the mailbox was last checked and nothing
-    //                          else. It is read because a quiet mailbox and a
-    //                          dead poller are the same empty feed without it,
-    //                          and "no refusals" from a poller that stopped
-    //                          hours ago is the most dangerous thing this panel
-    //                          could imply.
+    // The poller's heartbeat (/card_batch_poll_status) went with the emailed-
+    // slip feed to marathon-pos-app → Reports → Emailed slips (POS #290). It
+    // answered "is the mailbox still being read at all?", which is an owner
+    // question about infrastructure, and it belongs beside the refusals it
+    // qualifies rather than on a handset that cannot act on either.
+    //
+    // The EFT pool used to be read here too (/eft_pool, /eft_unallocated).
+    // It is not any more: that panel is owner work — unallocated money, giving
+    // a remainder to a customer, reversing a settlement — and it moved to
+    // marathon-pos-app → Reports → EFT payments, behind RequireAdmin, in POS
+    // PR #289. This app reads neither node, and if either name appears in this
+    // list again it means an owner-only surface has been put back on a
+    // manager's handset.
     //
     // Everything else about a slip still goes to the callable and comes back as
-    // an acknowledgement. A FOURTH node appearing here is a change of policy and
+    // an acknowledgement. A THIRD node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
-    // EVERY file in the feature, not one of them: the emailed-slip panel is its
-    // own file now, and a scan naming a single file goes stale the moment
-    // something is extracted.
+    // EVERY file in the directory, not a named one: a scan naming a single file
+    // goes stale the moment something is extracted into a sibling.
     const reads = [];
     for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
       if (!/\.jsx?$/.test(file) || /\.test\./.test(file)) continue;
       const src = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
       for (const m of src.matchAll(/dbRef\(\s*database\s*,\s*["'`]([^"'`]+)/g)) reads.push(m[1]);
     }
-    expect(reads.slice().sort()).toEqual(["card_batch_intake", "card_batch_poll_status", "config/cardTerminals"]);
+    // DEDUPED: the capture screen and the emailed-slip panel both read
+    // /card_batch_intake — the screen for the per-till tick, the panel for the
+    // feed — and the same node read twice is still one node. What this pins is
+    // the SET of nodes this feature touches, which is the thing that must not
+    // grow quietly.
+    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "config/cardTerminals"]);
   });
 
-  it("the emailed-slip feed is read as a bounded TAIL, never as a whole node", () => {
-    // It grows by a row per message for ever. A whole-node read on a handset on
-    // shop wifi is the mistake this repo keeps a rule against.
-    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
+  it("the intake node is read as a bounded TAIL, never as a whole node", () => {
+    // It grows by a row per message for ever, and this screen opens on a
+    // handset on shop wifi. The guard followed the read: it used to live on the
+    // emailed-slip panel, which has moved to the POS reports tab — the capture
+    // screen now does this read itself, for the ticks.
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
     const at = code.indexOf("card_batch_intake");
-    expect(at, "the feed read has moved — this scan must follow it").toBeGreaterThan(-1);
+    expect(at, "the intake read has moved — this scan must follow it").toBeGreaterThan(-1);
     expect(code.slice(at, at + 200)).toMatch(/limitToLast/);
-    // The heartbeat is ONE small node and is read whole, deliberately; that is
-    // the difference this assertion must not blur.
-    expect(code).toMatch(/card_batch_poll_status/);
   });
 
   it("the emailed-slip feed renders outcomes, never money", () => {
@@ -173,9 +186,22 @@ describe("the store app is capture-only", () => {
     // is covered the moment it exists, without anyone remembering to add it.
     // (Independent review, PR #510: the first attempt at this fix hand-listed
     // two files 45 lines after criticising single-file naming for going stale.)
+    // EftPool.jsx is the SECOND allowed file, and the exemption is argued the
+    // same way CardReconScreen.jsx's is: it renders the EFT payment pool,
+    // which is owner-only by rule (/eft_pool, the /card_batches isolation
+    // pattern) AND owner-only by render (it returns null for anyone but the
+    // super-admin — pinned by its own test below). The figures it shows are
+    // EFT amounts the owner must see to know a payment landed; they are not
+    // card-batch material leaking to a manager's handset.
     let scanned = 0;
     for (const file of readdirSync(resolve(root, "src/components/cardrecon"))) {
-      if (!/\.jsx?$/.test(file) || /\.test\./.test(file) || file === "CardReconScreen.jsx") continue;
+      // NOTHING IN THIS DIRECTORY IS EXEMPT ANY MORE, and that is the point of
+      // where the feature has got to. The capture screen used to render the
+      // slip in the manager's own hand (the review step, since deleted), and
+      // EftPool.jsx used to render EFT amounts under an owner-only render gate
+      // — it moved to the POS reports tab, where the owner works. What is left
+      // here is capture, and capture handles no money field at all.
+      if (!/\.jsx?$/.test(file) || /\.test\./.test(file)) continue;
       scanned++;
       const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon", file), "utf8"));
       for (const token of forbidden) {
@@ -183,24 +209,29 @@ describe("the store app is capture-only", () => {
       }
     }
     expect(scanned, "the scan found no files — it is passing on nothing").toBeGreaterThan(1);
-    // The scan is only worth anything if it CAN fail, so prove the tokens are
-    // findable: the capture screen's own review section renders them.
-    const screen = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
-    expect(screen, "the review section still renders the slip's own figures — if this fails the scan above proves nothing").toMatch(/\btotalCents\b/);
+    // The scan is only worth anything if it CAN fail, so prove the patterns
+    // match real code that exists in this repo. The anchor is the SERVER's
+    // card-recon module, which legitimately computes and stores every one of
+    // these figures — and which is not going away, unlike the two client files
+    // this control used to point at (a deleted review section, then a panel
+    // that moved repos). An anchor aimed at code that can be deleted is an
+    // assertion that quietly starts passing on nothing.
+    const server = readFileSync(resolve(root, "functions/cardRecon/cardRecon.js"), "utf8");
+    expect(server, "the server still names the figures this scan forbids on the client")
+      .toMatch(/\btotalCents\b/);
   });
 
-  it("the silence notice is recomputed while the screen sits open", () => {
-    // THE ONE THING THIS PANEL EXISTS TO SAY is that the mailbox has stopped
-    // being checked — and nothing about a dead poller changes, so nothing
-    // re-renders. A clock read once at mount sits at the moment the tab was
-    // opened and the notice never appears, on a screen a manager leaves open on
-    // a counter. (CodeRabbit, PR #510.)
-    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/EmailedSlips.jsx"), "utf8"));
-    expect(code, "the clock must be state, not a render-time read").toMatch(/setNowMs\(serverNowMs\(\)\)/);
-    expect(code, "…on a bounded timer").toMatch(/setInterval/);
-    expect(code, "…cleared on unmount").toMatch(/clearInterval/);
-    expect(code, "…and the notice must use it").toMatch(/silenceNotice\(lastAt, nowMs/);
-  });
+  // The EFT pool panel's own owner-gate test went with the panel: it is now
+  // marathon-pos-app's src/reports/eftpool/__tests__/EftPoolTab.gate.test.jsx,
+  // which pins BOTH gates there (the RequireAdmin route and the component's own
+  // isSuperAdmin check, including that a non-owner opens no subscription).
+  // Nothing in this app reads the pool any more — the allow-list above is what
+  // enforces that here.
+
+  // The silence notice's own test went with the panel: a stopped poller is now
+  // reported by marathon-pos-app's Emailed slips tab, whose suite pins both the
+  // ticking server clock behind it and the difference between a heartbeat that
+  // is MISSING and one that merely could not be read.
 
   it("shows no variance, expected figure or cashier list on the handset", () => {
     // #499 removed these from the callable's response. If a screen starts

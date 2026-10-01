@@ -12,6 +12,7 @@
 
 import React, { useMemo, useState } from "react";
 import { searchProducts } from "../utils/productSearch";
+import { isDeactivated } from "../utils/deactivation";
 import { ensureBarcode } from "./stock/barcodeStore";
 import { connectTransport, printLabels, defaultTransportId } from "./stock/printers";
 import { useLocations, useStockCells } from "./stock/useStock";
@@ -64,6 +65,10 @@ export default function LabelPrintView({ products = [], onExit }) {
 
   const shown = useMemo(() => {
     const predicate = (p) => {
+      // Off every staff list (owner spec 2026-09-05, BUG 1): Print Labels is
+      // open to every signed-in staff member, not the stockRole-gated admin
+      // section, so a retired line is neither printable nor findable here.
+      if (isDeactivated(p)) return false;
       if (cat !== "all" && p.category !== cat) return false;
       if (store !== "all" && !storeCells[p.id]) return false;
       return true;

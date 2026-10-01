@@ -22,6 +22,7 @@ import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, 
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
+import { isDeactivated } from "../../utils/deactivation";
 import { formatSize } from "../../utils/sizeLabel";
 import { SizeTag } from "../SizeTag";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
@@ -127,7 +128,13 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   // category pre-filter both; a typed search keeps its relevance ranking.
   const createdMs = (p) => { const m = /^p(\d{13})$/.exec(p?.id || ""); return m ? Number(m[1]) : 0; };
   const filtered = useMemo(() => {
+    // A DEACTIVATED product is off every staff list (owner spec 2026-09-05,
+    // BUG 1). Barcodes is open to EVERY signed-in staff member — not the
+    // stockRole-gated admin section — so a retired line must not be printable
+    // or findable here. It stays in full in the Stock section, where its cells
+    // are adjusted and its history read, and one tap in Leftovers puts it back.
     const predicate = (p) =>
+      !isDeactivated(p) &&
       Array.isArray(p.sizes) && p.sizes.length &&
       (cat === "all" || p.category === cat) &&
       (loc === "all" || (cells?.[loc]?.[p.id] && locTotal(p.id) > 0));

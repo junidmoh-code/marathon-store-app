@@ -73,12 +73,13 @@ import {
   COLUMN_LABELS, FIELD_ORDER, editorRows, draftFromEntry, seedLocation,
   onTargetChanged, policyFromDraft, validateDraft, previewKey, canSave, changedFields,
   nextScanAt, previewVerdict, firstSentence, lastChange, defaultMinQty,
-  isPerSizeRow, fillAllSizes, seedPerSizeLocation, bySizeRank, sizeLabel,
+  isPerSizeRow, fillAllSizes, seedPerSizeLocation, seedArmedLocation, bySizeRank, sizeLabel,
   perSizeMode, setEverySize,
   mainListEntries, previewFromArmModel,
 } from "./enginePolicyCore";
 import { serverNowMs } from "../../utils/serverTime";
 import SeatingTab from "./SeatingTab";
+import ArmingTab from "./ArmingTab";
 import { writableRow, shapeOfRow } from "./targetOverride";
 import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 
@@ -360,9 +361,22 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     setDraft((d) => ({ ...d, [loc]: setEverySize(d[loc], value, sizeRun) }));
   };
 
-  // Arming a store that does not carry the category is its own deliberate act,
-  // with its own confirmation, because it invents demand rather than adjusting
-  // it. See the header note.
+  // ── ARMING A LOCATION SEATS NOTHING (2026-09-09) ────────────────────────────
+  // A POLICY SAYS HOW MANY TO KEEP, NEVER WHERE TO KEEP. A newly armed leg is
+  // therefore seeded "Carried only" — it reaches only products this location
+  // already holds a stock cell for (a zero cell counts; a sold-out product
+  // stays armed). The server enforces it whatever this screen sends, in
+  // applyCategoryPolicy's gateNewLegsToSeated, so a script cannot arm wide
+  // either; seeding it here is what makes the chip on screen tell the truth
+  // from the first render instead of after a save.
+  //
+  // The owner can still turn the scope off with the chip before saving — this
+  // is a default, not a lock. What is gone is arming a category at a shop
+  // WITHOUT DECIDING, which is what put every slide in the catalogue on both
+  // hubs' queues on 2026-09-08.
+  //
+  // An ALREADY ARMED leg is untouched by any of this: it does not pass through
+  // here, and the server gates new legs only.
   const armStore = (loc, carries) => {
     if (!carries) {
       // A DISARMED GROUP's numbers reach nothing until the group is armed, so
@@ -372,9 +386,9 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
         `${locLabel(loc)} does not stock ${open?.label} today.\n\n` +
         (dormant
           ? `These numbers do nothing while the group is not armed. Once it is armed, the engine will ask ` +
-            `for every product in its ${(open.memberCategoryKeys || []).length} categories at ${locLabel(loc)}, not only ones it has sold.\n\n`
-          : `Arming it tells the engine to keep this category there — it will start asking ` +
-            `for every product in the category at ${locLabel(loc)}, not only ones it has sold.\n\n`) +
+            `for the products ${locLabel(loc)} already stocks in its ${(open.memberCategoryKeys || []).length} categories — and ${locLabel(loc)} stocks none of them today, so it will ask for nothing until stock arrives there.\n\n`
+          : `${locLabel(loc)} holds no stock cell for anything in this category, and arming it does not create one. ` +
+            `The engine will ask for nothing here until stock arrives — arming sets how many to keep, not where to keep it.\n\n`) +
         `Arm it anyway?`);
       if (!ok) return;
     }
@@ -384,11 +398,9 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // ever be given one number — which, for a sized category, arms nothing at
     // all. The run is the condition now: it comes from live data, and where
     // there is none (a one-size category) the single field is still correct.
-    const run = open?.sizeRun || [];
     setDraft((d) => ({ ...d,
-      [loc]: run.length
-        ? seedPerSizeLocation(run)
-        : seedLocation(open?.effectiveEntry?.[loc]?.target ?? null) }));
+      [loc]: seedArmedLocation({ sizeRun: open?.sizeRun || [],
+        target: open?.effectiveEntry?.[loc]?.target ?? null }) }));
   };
 
   const dropStore = (loc) => {
@@ -536,6 +548,15 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
 
   const save = async () => {
     if (!saveable) return;
+    // A footwear category's numbers live on the footwear policy. The server
+    // refuses an own entry while that policy is armed; saying so here, before
+    // a round trip, is the honest version of the same answer.
+    // A null `proposed` (every location dropped) DELETES a stray own entry —
+    // always allowed, it is how a copy is removed. (CodeRabbit, PR #646.)
+    if (open && !open.isGroup && open.footwearMember && proposed !== null && census?.groups?.["footwear-all"]?.armed === true) {
+      flash("bad", `Footwear is set once, on ${parent?.label || open.groupLabel || "Footwear"} — change the numbers there.`);
+      return;
+    }
     // A MEMBER that has no entry of its own gets one here — and leaves its
     // group's governance for good, even if the numbers typed are the group's
     // own. That is a bigger change than the numbers look, so it is confirmed.
@@ -675,9 +696,13 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
         // expectation — same drift discipline as a category revert. A revert
         // that would re-ARM a group goes through the same cap gate as any
         // other arming write; the server refuses it over the cap.
-        await setCategoryPolicyFn()({ action: "setGroup", groupKey: h.groupKey, group: h.before ?? null, expectedBefore: h.after ?? null });
+        // `revertOf` names the entry being undone: the server lets a genuine
+        // revert put back a state its footwear rule would otherwise refuse
+        // (a footwear category's own numbers), and the scan then flags it as
+        // drift. It checks the entry itself — the id is not a password.
+        await setCategoryPolicyFn()({ action: "setGroup", groupKey: h.groupKey, group: h.before ?? null, expectedBefore: h.after ?? null, revertOf: h.id });
       } else {
-        await setCategoryPolicyFn()({ categoryKey: h.categoryKey, policy: h.before ?? null, expectedBefore: h.after ?? null });
+        await setCategoryPolicyFn()({ categoryKey: h.categoryKey, policy: h.before ?? null, expectedBefore: h.after ?? null, revertOf: h.id });
       }
       flash("ok", `${what} put back to how it was on ${fmtWhen(h.at)}.`);
       closeAll();
@@ -788,6 +813,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
           <div style={{ display: "flex", gap: 8, marginBottom: "1rem" }}>
             <button onClick={() => setTab("categories")} style={tab === "categories" ? tabOn : tabOff}>Categories</button>
             <button onClick={() => setTab("seating")} style={tab === "seating" ? tabOn : tabOff}>Seating</button>
+            {/* ARMING — the same policy question asked of the whole catalogue at
+                once: which products is each hub holding, where do the two
+                answers overlap when they must not, and what is armed nowhere.
+                It edits through the Seating tab's own rows, inline. */}
+            <button onClick={() => setTab("arming")} style={tab === "arming" ? tabOn : tabOff}>Arming</button>
           </div>
         )}
 
@@ -807,6 +837,24 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
                 <button onClick={onExit} style={bGhost}>Back</button>
               </div>
               <SeatingTab products={products} viewer={viewer} flash={flash} />
+            </>
+          ) : <Refused onExit={onExit} />
+        ) : tab === "arming" && !open ? (
+          // GATE 2d. The card's fourth independent check, on the Arming tab
+          // itself. EnginePolicyAuthed already only mounts for a verified
+          // viewer, App.jsx gates the tile and the route, and the Seating tab
+          // asks for itself — this asks again, so that deleting any ONE of the
+          // four leaves the other three working. Mutation-proved, not asserted.
+          enginePolicyVisibleForViewer(viewer) ? (
+            <>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: "1rem" }}>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <h1 style={{ margin: 0, fontSize: "1.35rem", fontWeight: 700 }}>Arming</h1>
+                  <div style={{ marginTop: 6, color: "#6b7280", fontSize: ".8rem" }}>What each hub is holding</div>
+                </div>
+                <button onClick={onExit} style={bGhost}>Back</button>
+              </div>
+              <ArmingTab products={products} viewer={viewer} flash={flash} />
             </>
           ) : <Refused onExit={onExit} />
         ) : open ? (
@@ -933,6 +981,10 @@ function categoryChips(c) {
   // "N old rows" — the explicit /stock_targets rows the engine reads first. A
   // LINK that opens them for editing; never a count of something to clear.
   if (c.ownRowCells > 0) out.push({ tone: "amber", text: `${c.ownRowCells} old ${c.ownRowCells === 1 ? "row" : "rows"}`, rows: true });
+  // ONE FOOTWEAR POLICY: any way footwear has stopped being one policy — a
+  // category with its own numbers, a missing member, Hub 1 ≠ Hub 2. Computed
+  // server-side by the same check the scan writes to Health.
+  if ((c.footwearDrift || []).length) out.push({ tone: "red", text: "drift" });
   if (c.refused) out.push({ tone: "red", text: "no policy by decision" });
   if (c.rowOnly) out.push({ tone: "gray", text: "not in the taxonomy" });
   return out;
@@ -996,9 +1048,23 @@ function CategoryDetail({
 
       {/* A MEMBER opened from inside its group: one line, because it is the
           one thing about this screen that is not obvious from the numbers. */}
-      {!c.isGroup && c.memberOfGroup && (
+      {!c.isGroup && c.footwearMember ? (
+        <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
+          Footwear is set once, on {parent?.label || c.groupLabel || "Footwear"} — change the numbers there.
+        </div>
+      ) : !c.isGroup && c.memberOfGroup && (
         <div style={{ color: "#dbe6ff", fontSize: ".82rem", marginBottom: ".9rem" }}>
           Saving here gives {c.label} its own numbers — they beat {parent?.label || c.groupLabel || "the group"}'s.
+        </div>
+      )}
+
+      {(c.footwearDrift || []).length > 0 && (
+        <div role="alert" style={{ marginBottom: ".9rem", padding: ".7rem .9rem", borderRadius: RADIUS,
+          background: "rgba(248,113,113,.08)", border: "1px solid rgba(248,113,113,.35)" }}>
+          <div style={{ color: RED, fontWeight: 700, fontSize: ".85rem", marginBottom: 4 }}>Footwear is not one policy</div>
+          {c.footwearDrift.map((d, i) => (
+            <div key={i} style={{ color: "#fecaca", fontSize: ".8rem", lineHeight: 1.5 }}>{d.detail}</div>
+          ))}
         </div>
       )}
 
@@ -1216,7 +1282,14 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                     for; "All products" = the map's standing promise (the whole
                     category is armed here, carriage or not). The engine is what
                     enforces it — categoryPolicyEntry's carriedOnly gate. */}
-                {inDraft && (
+                {/* A LEG BEING ARMED FOR THE FIRST TIME CANNOT BE WIDENED HERE.
+                    The server writes every new leg carried-only whatever this
+                    screen sends (gateNewLegsToSeated), so offering the toggle
+                    would be offering something that does not happen. It shows
+                    as a plain, un-tappable chip saying what the leg will do.
+                    An ALREADY-ARMED leg keeps the toggle: widening is a second,
+                    deliberate edit against a policy whose effect is visible. */}
+                {inDraft && r.armed && (
                   <button onClick={() => onScope(r.loc, !row.carriedOnly)}
                     title={row.carriedOnly
                       ? "Only products this location already stocks get these numbers. Tap for every product in the category."
@@ -1224,6 +1297,12 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
                     style={{ ...(row.carriedOnly ? bGray : bGhost), ...smallBtn }}>
                     {row.carriedOnly ? "Carried only" : "All products"}
                   </button>
+                )}
+                {inDraft && !r.armed && (
+                  <span title={`Arming sets how many to keep, not where to keep it. These numbers reach the ${r.productsCarried} product${r.productsCarried === 1 ? "" : "s"} ${locLabel(r.loc)} already stocks in this category — including any that have sold out — and no others.`}
+                    style={{ ...bGray, ...smallBtn, cursor: "default" }}>
+                    Carried only
+                  </span>
                 )}
                 {inDraft && canPerSize && (
                   <button onClick={() => onSwitchShape(r.loc, !perSize, sizeRun)} style={{ ...bGhost, ...smallBtn }}>

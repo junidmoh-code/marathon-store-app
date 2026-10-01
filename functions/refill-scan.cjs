@@ -1,7 +1,7 @@
 // ─── REFILL HEALTH SCAN (Cloud Function I/O wrapper) ──────────────────────────
-// Every 15 minutes during trading hours (07:00-19:00 SAST): snapshot the RTDB,
-// ask lib/refill-engine.cjs (pure, tested)
-// what should happen, then apply it:
+// Hourly, on the hour, during trading hours (07:00-19:00 SAST inclusive, 13 runs
+// a day): snapshot the RTDB, ask lib/refill-engine.cjs (pure, tested) what
+// should happen, then apply it:
 //   • close finished/cancelled refill locks
 //   • create refill intents — per destination MODE from /config/refillEngine:
 //       off    → compute exceptions only
@@ -11,9 +11,15 @@
 //                battle-tested fulfillCRBatch split-lock does the actual move);
 //                hub2 legs get /refill_requests only, fulfilled via the
 //                Transfer screen's "Open refill requests" prefill.
-//   • write /stock_exceptions/latest (dashboard) and /stock_confidence (hourly)
+//   • write /stock_exceptions/latest (dashboard) and /stock_confidence (hourly
+//     — and now genuinely hourly: every run starts on the hour)
 //
-// SAFETY: the engine NEVER writes /stock. Claim-before-act lock so overlapping
+// SAFETY: the engine NEVER writes /stock — with ONE owner-mandated exception
+// (2026-09-23): the refusal write-off below, which erases a phantom count after
+// the location refused the size on four different days. It writes one cell per
+// write-off, only through applyMovementAdmin (ledger row type refusal_writeoff,
+// guarded by the exact count it planned from), and never touches another size
+// or location (functions/lib/refusal-writeoff.cjs). Claim-before-act lock so overlapping
 // runs can't double-create. Idempotency = one open lock per (dest,product,size)
 // in /refill_engine/open; R-numbers are daily-recycled and never used as
 // identity. Kill switch: /config/refillEngine/enabled = false.
@@ -24,6 +30,8 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
+const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
+const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
 // The ledger slice every run reads. HELD AT 45 — the reduction to 31 was
@@ -260,7 +268,7 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
 // A closure consumes on passing the check, not on the transaction committing. An
 // aborted transaction means the request was resolved by someone else in the gap;
 // re-crediting its units would need a second pass for a case whose only cost is
-// that one sibling stays visible as work for another 15 minutes — the safe
+// that one sibling stays visible as work until the next scan — the safe
 // direction, and self-healing.
 //
 // db is injected so the whole apply path is testable without firebase-admin.
@@ -336,6 +344,30 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
   return { satisfied, stale, deferred, errors };
 }
 
+// ─── the request + lock records for ONE live intent (pure) ────────────────────
+// Extracted so the fields the NEXT scan depends on are testable without
+// firebase-admin. A PASS-THROUGH leg (refill-engine.cjs, 2026-09-23) is a
+// Central→hub request raised for the shops the hub feeds; its lock MUST carry
+// `passThrough`, because that is the only thing that tells the next scan's
+// reconcile to judge it by the shops' need rather than the hub's own target —
+// without it the leg reads "not needed" and is withdrawn an hour later. The
+// request carries the same two fields (inside createdFrom, with the rest of
+// its provenance, and `forDests` at the top level so a queue can say who it
+// is for) — never undefined: absent unless the intent is a pass-through.
+function intentRecords({ intent, startedAt, runId, rrKey, orderId = null, orderCreatedAt = null }) {
+  const { productId: pid, size, qty, source, dest } = intent;
+  const pt = intent.passThrough
+    ? { passThrough: intent.passThrough, forDests: Array.isArray(intent.forDests) ? intent.forDests : [] }
+    : null;
+  const rr = {
+    productId: pid, size, qty, requestingLocation: dest, status: "open",
+    createdFrom: { engine: true, runId, source, ...(pt || {}) }, createdAt: startedAt,
+    ...(pt ? { forDests: pt.forDests } : {}),
+  };
+  const lock = { qty, source, createdAt: startedAt, runId, refillId: rrKey, orderId, orderCreatedAt, ...(pt || {}) };
+  return { rr, lock };
+}
+
 function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt }) {
       const upd = {};
       const wantOrders = new Set();
@@ -360,7 +392,9 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
                 // ("5_5"→"5.5") so queue availability lookups and the UI match.
                 productId: pid, size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), qty: s.qty,
                 requestingLocation: dest, status: "open", shadow: true,
-                createdFrom: { engine: true, shadow: true, runId, source: s.source },
+                // A pass-through preview says who it is for, like the live row.
+                ...(s.passThrough ? { forDests: s.forDests || [] } : {}),
+                createdFrom: { engine: true, shadow: true, runId, source: s.source, ...(s.passThrough ? { passThrough: s.passThrough, forDests: s.forDests || [] } : {}) },
                 createdAt: existing?.createdAt || startedAt,
               };
             } else {
@@ -396,6 +430,33 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
         if (key.startsWith("SHDWrr-") && !wantRrs.has(key)) upd[`refill_requests/${key}`] = null;
       }
       return upd;
+}
+
+// The transaction body that closes one /refill_requests row for a plan close
+// (lifted out of runScan unchanged so it can be tested without firebase-admin).
+function closeRequestTxn(cur, c, startedAt) {
+  // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
+  // way): the FIRST pass runs against the cold local cache and sees
+  // null even when the node exists. Returning undefined there ABORTS
+  // permanently — 2,304 statuses silently never wrote. Returning
+  // null probes: a real node fails the compare and the callback
+  // re-runs with true data; a genuinely-missing node no-ops.
+  if (cur === null) return null;
+  if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
+  return {
+    ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}),
+    // A hub's "out of stock" on a shop line: keep WHEN it was said
+    // and WHICH location said it — the refusal write-off counts
+    // calendar days by it — and, since 2026-09-23, WHO: the account
+    // lands in resolvedBy, the field Central's queue has always
+    // written, so the write-off names both the same way. Lines
+    // refused before then carry no account and stay as they were.
+    ...(c.humanReject && c.refusedAt ? { refusedAt: c.refusedAt } : {}),
+    ...(c.humanReject && c.denier ? { refusedByLoc: c.denier } : {}),
+    ...(c.humanReject && c.refusedByUid && !cur.resolvedBy ? { resolvedBy: c.refusedByUid } : {}),
+    // …and since 2026-09-25 WHICH PHONE, in the field Central's queue writes.
+    ...(c.humanReject && c.refusedByDeviceId && !cur.resolvedDeviceId ? { resolvedDeviceId: c.refusedByDeviceId } : {}),
+  };
 }
 
 async function runScan() {
@@ -434,7 +495,7 @@ async function runScan() {
       console.warn(
         "refillHealthScan: /config/refillEngine/scanIntervalMinutes is DEAD and controls nothing " +
         `(value: ${JSON.stringify(config.scanIntervalMinutes)}). Cadence comes from the function's ` +
-        "schedule (every 15 minutes from 07:00 to 19:00, Africa/Johannesburg). Delete the field."
+        "schedule (every 60 minutes from 07:00 to 19:00, Africa/Johannesburg). Delete the field."
       );
     }
     if (!config || config.enabled !== true) {
@@ -460,7 +521,7 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, writeoffCursors, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
@@ -473,11 +534,42 @@ async function runScan() {
       // the owner releases the box. computeRefillPlan counts them as INBOUND —
       // without this read every held cell double-orders (see refill-engine.cjs).
       db.ref("settings/stockHold/held").once("value").then((s) => s.val() || {}),
+      // Refusal write-off cursors: one small entry per cell ever written off
+      // (the run it consumed), so a run is never written off twice.
+      db.ref("refill_engine/refusalWriteoffCursor").once("value").then((s) => s.val() || {}),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
     const stock = Object.fromEntries(stockSnaps);
     const movements = Object.values(movementsSnap.val() || {});
+
+    // ── WRITE-OFF AFTER FOUR REFUSED DAYS (owner rule 2026-09-23) ─────────────
+    // BEFORE the engine plans: a location (Hub 1, Hub 2, Central) that refused
+    // one size on four different days has its pre-refusal paper count for that
+    // one cell erased, through applyMovementAdmin. The snapshot is patched to
+    // match, so THIS scan already plans from the empty cell — the item leaves
+    // Recount Needed and the cell asks upstream as usual. Every input is one
+    // the scan has already read; the only extra reads are a user's name per
+    // refuser and the ledger row per write-off. A failure here is logged and
+    // the scan carries on (the next run re-plans from the same records).
+    try {
+      const woSnap = { nowMs, config, stock, products, refillRequests, movements, rejectStreak, cursors: writeoffCursors, windowStartMs: Date.parse(windowStart) };
+      const wo = refusalWriteoff.planRefusalWriteoffs(woSnap);
+      if (wo.writeoffs.length) {
+        const r = await refusalWriteoff.applyRefusalWriteoffs({
+          db, writeoffs: wo.writeoffs, snapshot: woSnap, nowMs, runId,
+          update: (patch, label) => safeUpdate(db, patch, label),
+          maxPerRun: config.refusalWriteoff?.maxPerRun, deadlineMs: Date.now() + 60e3,
+        });
+        if (r.deferredForTime) counts.refusalWriteoffNextRun = r.deferredForTime;
+        counts.refusalWriteoffs = r.applied.length;
+        counts.refusalWriteoffUnits = r.units;
+        if (r.skipped.length) counts.refusalWriteoffSkipped = r.skipped.slice(0, 25);
+      }
+      if (wo.deferred.length) counts.refusalWriteoffDeferred = wo.deferred.length;
+    } catch (e) {
+      counts.errors.push(`refusal write-off: ${String(e && e.message ? e.message : e)}`);
+    }
 
     const plan = engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines,
@@ -514,17 +606,7 @@ async function runScan() {
         if (!proceed) continue;   // fulfilment won the race — leave rr + lock for the next scan
         if (c.refillId && c.rrStatus) {
           try {
-            const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => {
-              // NULL-TOLERANT (the #199 lesson, relearned 2026-07-13 the hard
-              // way): the FIRST pass runs against the cold local cache and sees
-              // null even when the node exists. Returning undefined there ABORTS
-              // permanently — 2,304 statuses silently never wrote. Returning
-              // null probes: a real node fails the compare and the callback
-              // re-runs with true data; a genuinely-missing node no-ops.
-              if (cur === null) return null;
-              if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
-              return { ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}) };
-            });
+            const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => closeRequestTxn(cur, c, startedAt));
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one
             // window): the fulfilment wins — never record a strike against a
@@ -676,6 +758,7 @@ async function runScan() {
       if (mode === "shadow") {
         ((shadowNode[intent.dest] ||= {})[intent.productId] ||= {})[intent.sizeKey] = {
           qty: intent.qty, source: intent.source, priority: intent.priority, runId, computedAt: startedAt,
+          ...(intent.passThrough ? { passThrough: intent.passThrough, forDests: intent.forDests || [] } : {}),
         };
         counts.shadow++;
       } else if (mode === "live") {
@@ -738,10 +821,6 @@ async function runScan() {
         if (!claim.committed || claim.snapshot.val()?.runId !== runId) continue;
 
         const rrKey = db.ref("refill_requests").push().key;
-        const rr = {
-          productId: pid, size, qty, requestingLocation: dest, status: "open",
-          createdFrom: { engine: true, runId, source }, createdAt: startedAt,
-        };
         let orderId = null, orderCreatedAt = null, order = null, insight = null;
         if (isStoreLeg) {
           if (!refillNum) refillNum = await drawRefillNumber(db, nowMs);
@@ -781,9 +860,10 @@ async function runScan() {
         // order, insight and the finalized lock land together or not at all —
         // no window where a claimed lock points at nothing (the orphaned-
         // pending self-heal in the engine covers a crash before this line).
+        const { rr, lock } = intentRecords({ intent, startedAt, runId, rrKey, orderId, orderCreatedAt });
         const upd = {
           [`refill_requests/${rrKey}`]: rr,
-          [lockPath]: { qty, source, createdAt: startedAt, runId, refillId: rrKey, orderId, orderCreatedAt },
+          [lockPath]: lock,
         };
         if (order) {
           upd[`orders/${orderId}`] = order;
@@ -806,6 +886,26 @@ async function runScan() {
     // visible on one run record, present only when non-zero.
     if (plan.stats?.resizeSuppressed) counts.resizeSuppressed = plan.stats.resizeSuppressed;
     await safeSet(db, "stock_exceptions/latest", { computedAt: startedAt, runId, stats: plan.stats, ...plan.exceptions }, "exceptions snapshot");
+
+    // ── STOCK AUDIT — the once-a-day shelf-walk lists ────────────────────────
+    // Rides on the snapshot this run already holds (orders, stock, products,
+    // movements) — it re-reads none of it. One tiny kill-switch read per run;
+    // everything else only on the first run after 07:00 SAST. See
+    // stockAudit/dailyPass.cjs for the exact cost.
+    //
+    // WRAPPED, and deliberately not rethrown: these lists are a render cache
+    // recomputed from live state on the next pass, so a failure here must never
+    // stop the thing that restocks the shops. Same contract as safeUpdate.
+    try {
+      const auditRes = await runStockAuditPass({
+        db, app: admin.app(), nowMs,
+        stock, products, orders, movements,
+        setFn: safeSet, updFn: safeUpdate,
+      });
+      if (auditRes && !auditRes.skipped) counts.stockAudit = auditRes;
+    } catch (e) {
+      console.error("[refill-scan] stock audit pass failed:", e && e.message ? e.message : e);
+    }
     if (new Date(nowMs).getUTCMinutes() < 15) {
       const confidence = engine.computeConfidence({ nowMs, stock, movements, openIndex, products });
       await safeSet(db, "stock_confidence", { computedAt: startedAt, byLocation: confidence }, "confidence");
@@ -835,25 +935,106 @@ async function runScan() {
   }
 }
 
-// ── CADENCE — trading hours only ─────────────────────────────────────────────
-// Was "every 15 minutes", i.e. 96 runs/day. Each run snapshots the RTDB
-// (stock_targets, products, refill_requests, orders, per-location stock, plus a
-// 45-day stock_movements slice) — ~31 MB measured live on 2026-08-04, of which
-// 14 MB is the ledger. Overnight that snapshot recomputes a picture that has not
-// changed: movements between 19:00 and 07:00 SAST are 4.27% of all ledger
-// activity, and once scripts and migrations are excluded, ~69 per night across
-// 22 nights. Roughly a third of the daily cost bought nothing.
+// ── CADENCE — hourly, on the hour, trading hours only ────────────────────────
+// "every 15 minutes from 07:00 to 19:00" (49 runs/day) → "every 60 minutes from
+// 07:00 to 19:00" (13 runs/day). Thirty-six runs a day stop happening; nothing
+// else about the scan changes.
 //
-// 07:00 to 19:00 inclusive, every 15 minutes = 49 runs/day (was 96):
-//   • 07:00      — morning sweep, before the 08:30 open, catches anything an
-//                  evening transfer left behind
-//   • 08:30–17:30 — trading; unchanged behaviour, still 15-minute cadence
-//   • 17:30–19:00 — the catch-up window after close
+// WHAT A RUN READS, weighed node by node against live data 2026-09-20 by
+// reading exactly what the snapshot block below reads:
+//
+//   stock_movements (45d)  15.73 MB      stock/hub1              0.52 MB
+//   refill_requests         8.68 MB      stock/trophy            0.49 MB
+//   products                4.47 MB      stock/marathon-pine     0.29 MB
+//   orders                  2.51 MB      refill_engine/*         0.25 MB
+//   stock_targets           1.67 MB      stock/hub3              0.12 MB
+//   stock/marathon-pe       1.54 MB      config + 3 small nodes  0.01 MB
+//   stock/hub2              1.48 MB      ─────────────────────────────────
+//   stock/central           1.35 MB      TOTAL PER RUN          39.11 MB
+//
+// So 49 runs is 1.87 GB/day and 13 runs is 0.50 GB/day — about $1.87/day
+// falling to $0.50/day, ~$41 a month.
+//
+// NOT the figure the Cost Watch card shows, and the difference is worth
+// knowing. That card attributes Admin-SDK reads from Google addresses BY PATH
+// SIGNATURE, not by function name (the profiler does not record one): the
+// `fn:refillHealthScan*` lines cover /refill_requests, /stock_movements and
+// /stock_targets only — 26 MB of the 39 — while this run's reads of /products,
+// /orders and the seven /stock nodes land under generic `cloud-function:` lines
+// it shares with every other function. The card is a floor, not the total.
+//
+// WHY NOT ONCE A DAY (PR #616, held 2026-09-19). Store-leg orders are minted at
+// `orders/${refillNum}-${lineIdx}` — see the apply loop above. refillNum comes
+// from /refillCounter, which RESETS every SA day, and lineIdx restarts at 1 per
+// destination per run. So the keys a run occupies are decided by how many draws
+// precede it that day, and yesterday's run-k orders are overwritten by today's
+// run-k orders. The engine detects that (refill-engine.cjs: `orderLost`),
+// cancels the request and drops the lock, and the NEXT run re-proposes.
+//
+// That self-heal is what the cadence has to keep alive, and it needs two things:
+//
+//   1. the re-proposal must happen soon. It is ONE run: the same plan that
+//      raises the order_lost close also carries a fresh intent for the cell,
+//      and the closes are applied above, before the apply loop, so the lock is
+//      gone by the time the new claim is made. At 60 minutes a vanished
+//      warehouse card is back within the hour. At one run a day, 24 hours.
+//   2. the re-proposal must land on a DIFFERENT key. /refillCounter is strictly
+//      increasing within a day, so run k+1 always draws a number run k did not.
+//      At one run a day there IS no run k+1: the re-proposal comes round the
+//      next day, draws R001 again, and lands on the very key that was just
+//      clobbered — it never converges. That is the hazard, and it is a property
+//      of having exactly one run, not of having fewer runs.
+//
+// Pinned in test/refill-hourly-order-keys.test.cjs, which drives the real
+// drawRefillNumber and the real computeRefillPlan rather than restating either.
+//
+// MEASURED, not modelled: the number of live order keys a day's draws rewrite is
+// cadence-INVARIANT, because it equals the number of lines written, which the
+// cadence does not change. Replaying the last five trading days' own orders
+// against an hourly draw table (scripts/audit/refill-cadence-key-reach.mjs),
+// hourly vs the 15-minute cadence it replaces: 231 vs 292, 59 vs 64, 113 vs
+// 112, 135 vs 134, 122 vs 128. Lower on three days and higher by ONE on two —
+// not "never more", which is what an earlier draft of this comment claimed
+// while the counter-examples sat in the same sentence. The honest reading is
+// that the cadence changes how a day's lines are grouped, not how many there
+// are, so the reach does not move.
+//
+// EVERY TIMER RE-CHECKED AGAINST A 60-MINUTE GAP:
+//   • LOCK_STEAL_MS (10 min) — the next run is 60 min later, so a dead run's
+//     lock is always stale and always steals cleanly. Strictly safer than at 15
+//     minutes, where a run lasting >10 min could be joined by the next one.
+//   • the /stock_confidence gate (getUTCMinutes() < 15) — every scheduled run
+//     starts at minute 0, so it fires on EVERY run. Confidence was ALREADY
+//     hourly (the :00 run of each hour passed the gate); what changes is that
+//     the gate stops being a throttle over 4 runs and becomes a no-op, so a
+//     skipped or late run is the only way an hour goes uncomputed. (The sibling
+//     job already on this exact schedule, strandedTransitSweep, has fired at
+//     :00 — once :01 — every hour for the last two days; Cloud Logging,
+//     2026-09-20.)
+//   • recheckCooldownMinutes — LIVE VALUE 1440, and rejectCooldownHours
+//     defaults to 24h. A 60-minute gap is ≤4% late on a 24h window, not the
+//     doubling that one run a day would have caused.
+//   • rejectStreakLimit (live 4) — counts human rejections, not runs.
+//   • staleIntentHours (live 168) — REPORTS stuckRefills, never withdraws.
+//   • the daily /refillCounter — ~16 draws a day instead of ~39; 999 is
+//     unreachable either way, and fewer draws means fewer R-numbers recycled.
+//   • RUNS_KEEP_DAYS (7) — 91 run records instead of ~342.
+//   • the 200s apply budget — bounded by maxIntentsPerRun, not by the gap.
+//
+// WHAT THE OWNER MAY WANT TO TURN: maxIntentsPerRun is LIVE 75. It was a
+// per-15-minute throttle; it is now a per-hour one, so the ceiling is 13 × 75 =
+// 975 intents a day against 199–667 observed. The busiest single hour in the
+// last week would have computed ~161 and been throttled to 75, spilling 86 into
+// the next hour — a delay, since the engine is stateless and re-proposes.
+// maxFootwearIntentsPerRun is LIVE 25, i.e. 325 a day, and that breaker has
+// already fired at the current cadence (44 computed, capped to 25, 2026-09-17).
+// Both are live config under /config/refillEngine; neither needs a deploy.
 //
 // App Engine cron syntax ("every N minutes from HH:MM to HH:MM") is used rather
-// than unix-cron because it is INCLUSIVE of the end time: `*/15 7-19 * * *`
-// would also fire at 19:15/19:30/19:45, which is exactly the window we are
-// closing. The previous value used the same syntax family ("every 15 minutes").
+// than unix-cron because it is INCLUSIVE of the end time: it fires at 07:00,
+// 08:00 … 19:00, thirteen times. `*/60 7-19 * * *` is the same thing only by
+// accident of the minute field, and the family it belongs to (`*/15 7-19`) is
+// exactly the overshoot this window was drawn to avoid.
 //
 // timeZone is set EXPLICITLY: Cloud Scheduler defaults to UTC, which in SAST
 // (UTC+2, no DST) would shift the whole window two hours and run the "morning
@@ -864,7 +1045,7 @@ async function runScan() {
 // project (see the header note).
 exports.refillHealthScan = onSchedule(
   {
-    schedule: "every 15 minutes from 07:00 to 19:00",
+    schedule: "every 60 minutes from 07:00 to 19:00",
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     timeoutSeconds: 300,
@@ -877,3 +1058,5 @@ exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/re
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
 exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
+exports._closeRequestTxn = closeRequestTxn; // pure — the request side of a plan close
+exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable

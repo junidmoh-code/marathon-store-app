@@ -388,3 +388,190 @@ describe("the vertical overlay is sized to the photograph, not to a constant", (
     expect(svg).toContain("R1,350");   // summed in code, not drawn
   });
 });
+
+// ── THE 4:5 SAFE BAND ────────────────────────────────────────────────────────
+// A story's picture also goes on the feed, and the feed shows the central
+// 1080x1350 of it — y 285..1635. The first vertical layout put the wordmark at
+// y 266..296 and the address at 1686..1738, so on the 4 Sep NIKE NOCTA post the
+// wordmark was sliced and the address was gone. These hold the layout inside
+// y 345..1575, measured three ways: by the layout's own boxes, by rasterising
+// the type alone, and against the reel's zoom.
+describe("every word of a vertical layout lives inside the 4:5 safe band", () => {
+  const sharp = require("sharp");
+  const NOCTA = P("Nike nocta tracksuits hot curry FN 9868-717", 850);
+  const CASES = {
+    "the 4 Sep NOCTA single": { products: [NOCTA], kind: "single" },
+    "a three-piece outfit": { products: OUTFIT, kind: "outfit" },
+    "a five-item flat lay of long names": {
+      kind: "flatlay",
+      products: [
+        P('Nike x NOCTA Northstar Nylon Tracksuit in the "Desert Berry" pink colorway', 2499),
+        P("Raw-edge distressed denim sneaker with side appliqué and contrast stitching", 1899),
+        P("Louis Vuitton Paris white end pink", 1350),
+        P("Adidas Predator Elite Fold-Over Tongue Firm Ground football boot", 1600),
+        P("Sport under Armour tracksuits black 81344", 900),
+      ],
+    },
+    "a name that is one enormous word": { products: [P("Supercalifragilisticexpialidocious".repeat(4), 500)], kind: "single" },
+  };
+
+  it("the band is the feed frame less a 60px margin", () => {
+    expect(D.FEED_CROP_TOP).toBe(285);
+    expect(D.SAFE_BAND).toEqual({ top: 345, bottom: 1575 });
+  });
+
+  it("survives the reel's Ken Burns zoom about the centre", async () => {
+    const { REEL_ZOOM, REEL_H } = await import("../../../scripts/social/reel.mjs");
+    const c = REEL_H / 2;
+    expect(c - (c - D.SAFE_BAND.top) * REEL_ZOOM).toBeGreaterThanOrEqual(285);
+    expect(c + (D.SAFE_BAND.bottom - c) * REEL_ZOOM).toBeLessThanOrEqual(1635);
+  });
+
+  for (const [label, { products, kind }] of Object.entries(CASES)) {
+    describe(label, () => {
+      const layout = D.verticalLayout({ products, kind });
+
+      it("places every text box inside the band and the column", () => {
+        for (const t of layout.texts) {
+          const b = D.textBox(t);
+          expect(b.y0, t.text).toBeGreaterThanOrEqual(345);
+          expect(b.y1, t.text).toBeLessThanOrEqual(1575);
+          expect(b.x1, t.text).toBeLessThanOrEqual(1080 - 72);
+        }
+      });
+
+      it("prints every product name in full — no ellipsis, no dropped word", () => {
+        const svg = D.buildOverlay({ products, kind, format: "story" });
+        expect(svg).not.toMatch(/…|\.\.\./);
+        for (const p of products) {
+          const { brand, rest } = D.splitName(p.displayName);
+          const want = `${brand} ${rest}`.replace(/\s+/g, "");
+          const shown = layout.texts.filter((t) => t.role === "brand" || t.role === "name").map((t) => t.text).join("").replace(/\s+/g, "");
+          expect(shown).toContain(want);
+        }
+      });
+
+      it("rasterised, the type alone stays inside the band on the story", async () => {
+        const svg = D.buildOverlay({ products, kind, format: "story", layers: "text" });
+        const { data, info } = await sharp(Buffer.from(svg)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+        let top = Infinity, bottom = -1, right = -1;
+        for (let y = 0; y < info.height; y++) {
+          for (let x = 0; x < info.width; x++) {
+            if (data[(y * info.width + x) * 4 + 3] > 0) { top = Math.min(top, y); bottom = Math.max(bottom, y); right = Math.max(right, x); }
+          }
+        }
+        expect(top).toBeGreaterThanOrEqual(345);
+        expect(bottom).toBeLessThan(1575);
+        expect(right).toBeLessThan(1080 - 72);
+      });
+    });
+  }
+
+  it("the feed render is the same design moved up by 285, not a second design", () => {
+    const products = [NOCTA];
+    const story = D.buildOverlay({ products, kind: "single", format: "story" });
+    const feed = D.buildOverlay({ products, kind: "single", format: "story", surface: "feed" });
+    const texts = (svg) => svg.match(/<text[\s\S]*?<\/text>/g);
+    expect(texts(feed)).toEqual(texts(story));
+    expect(feed).toContain('viewBox="0 0 1080 1350"');
+    expect(feed).toContain('transform="translate(0 -285)"');
+    expect(story).toContain('transform="translate(0 0)"');
+  });
+
+  it("rasterised at 1080x1350, the wordmark, name and price are whole and inside the frame", async () => {
+    const svg = D.buildOverlay({ products: [NOCTA], kind: "single", format: "story", surface: "feed", layers: "text" });
+    const head = svg.slice(0, svg.indexOf("<g "));
+    const group = svg.match(/<g [^>]*>/)[0];
+    for (const role of ["wordmark", "name", "price"]) {
+      const only = (svg.match(new RegExp(`<text data-role="${role}"[\\s\\S]*?</text>`, "g")) || []).join("\n");
+      expect(only, role).not.toBe("");
+      const one = `${head}${group}${only}</g></svg>`;
+      const { data, info } = await sharp(Buffer.from(one)).ensureAlpha().raw().toBuffer({ resolveWithObject: true });
+      expect(info.height).toBe(1350);
+      let top = Infinity, bottom = -1;
+      for (let y = 0; y < info.height; y++) {
+        for (let x = 0; x < info.width; x++) if (data[(y * info.width + x) * 4 + 3] > 0) { top = Math.min(top, y); bottom = Math.max(bottom, y); }
+      }
+      expect(top, role).toBeGreaterThanOrEqual(60);
+      expect(bottom, role).toBeLessThan(1290);
+    }
+  });
+});
+
+describe("fitLines keeps every character", () => {
+  const base = { maxWidth: 300, size: 19, weight: 400, letterSpacing: 2 };
+  it("keeps a short name on one line at full size", () => {
+    expect(D.fitLines("AIR MAX 90", base)).toEqual({ lines: ["AIR MAX 90"], size: 19 });
+  });
+  it("wraps rather than cutting, and every word survives in order", () => {
+    const text = "NOCTA TRACKSUITS HOT CURRY FN 9868-717 WITH A VERY LONG TAIL";
+    const f = D.fitLines(text, base);
+    expect(f.lines.join(" ")).toBe(text);
+    for (const ln of f.lines) expect(D.textWidth(ln, { ...base, size: f.size, letterSpacing: 2 * f.size / 19 })).toBeLessThanOrEqual(300);
+  });
+  it("breaks a single word wider than the column instead of overflowing it", () => {
+    const word = "X".repeat(80);
+    const f = D.fitLines(word, base);
+    expect(f.lines.join("")).toBe(word);
+    for (const ln of f.lines) expect(D.textWidth(ln, { ...base, size: f.size, letterSpacing: 2 * f.size / 19 })).toBeLessThanOrEqual(300);
+  });
+  it("the feed card's rail never ellipsises either", () => {
+    const svg = D.buildOverlay({ products: [P("Nike x NOCTA Northstar Nylon Tracksuit in the Desert Berry pink colorway", 2499)], kind: "single", format: "feed" });
+    expect(svg).not.toContain("…");
+    const shown = (svg.match(/data-role="(?:brand|name)"[^>]*>([^<]*)</g) || []).map((m) => m.replace(/^[^>]*>/, "").replace(/<$/, "")).join(" ");
+    expect(shown.replace(/\s+/g, " ")).toBe("NIKE X NOCTA NORTHSTAR NYLON TRACKSUIT IN THE DESERT BERRY PINK COLORWAY");
+  });
+});
+
+// ── THE RENDER PATH THE GENERATOR ACTUALLY CALLS ─────────────────────────────
+describe("social-render: one photograph, two files", () => {
+  const sharp = require("sharp");
+  const R = require("../../../functions/lib/social-render.cjs");
+  const NOCTA = P("Nike nocta tracksuits hot curry FN 9868-717", 850);
+  const photo = (w, h) => sharp({ create: { width: w, height: h, channels: 3, background: { r: 70, g: 66, b: 60 } } }).jpeg().toBuffer();
+
+  for (const [w, h] of [[1536, 2752], [1072, 1920], [1080, 1920], [2000, 3000]]) {
+    it(`a vertical photograph of ${w}x${h} is fitted to exactly 1080x1920`, async () => {
+      const { buffer } = await R.normalizeSocialImage(await photo(w, h), "image/png", "story");
+      const m = await sharp(buffer).metadata();
+      expect([m.width, m.height]).toEqual([1080, 1920]);
+    });
+  }
+
+  it("a feed card still fits inside and never crops", async () => {
+    const { buffer } = await R.normalizeSocialImage(await photo(1600, 2000), "image/png", "feed");
+    const m = await sharp(buffer).metadata();
+    expect(m.width).toBeLessThanOrEqual(1080);
+    expect(m.height).toBeLessThanOrEqual(1350);
+  });
+
+  it("a twinned story comes back with a native 1080x1350 feed render", async () => {
+    const { buffer } = await R.normalizeSocialImage(await photo(1536, 2752), "image/png", "story");
+    const out = await R.compositeSocialDesign(buffer, { products: [NOCTA], kind: "single", format: "story", alsoFeed: true });
+    expect(out.designed).toBe(true);
+    expect([out.width, out.height]).toEqual([1080, 1920]);
+    const fm = await sharp(out.feed.buffer).metadata();
+    expect([fm.width, fm.height]).toEqual([1080, 1350]);
+    expect([out.feed.width, out.feed.height]).toEqual([1080, 1350]);
+  });
+
+  it("the feed file is the story file's central rows — the same design, pixel for pixel", async () => {
+    const { buffer } = await R.normalizeSocialImage(await photo(1536, 2752), "image/png", "story");
+    const out = await R.compositeSocialDesign(buffer, { products: [NOCTA], kind: "single", format: "story", alsoFeed: true });
+    const a = await sharp(out.buffer).extract({ left: 0, top: 285, width: 1080, height: 1350 }).greyscale().raw().toBuffer();
+    const b = await sharp(out.feed.buffer).greyscale().raw().toBuffer();
+    let diff = 0;
+    for (let i = 0; i < a.length; i++) diff += Math.abs(a[i] - b[i]);
+    expect(diff / a.length).toBeLessThan(2);   // JPEG noise only
+  });
+
+  it("only a twinned story pays for the second render", async () => {
+    const { buffer } = await R.normalizeSocialImage(await photo(1536, 2752), "image/png", "reel");
+    const out = await R.compositeSocialDesign(buffer, { products: [NOCTA], kind: "single", format: "reel" });
+    expect(out.feed).toBeUndefined();
+  });
+
+  it("the 4:5 window of a 1080x1920 canvas is y 285..1635", () => {
+    expect(R.feedWindow(1080, 1920)).toEqual({ left: 0, top: 285, width: 1080, height: 1350 });
+  });
+});

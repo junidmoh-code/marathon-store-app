@@ -3,8 +3,10 @@
 // this callable OCRs it, refuses anything it could not read soundly, computes
 // what the POS tender ledger says the card takings for that till over the
 // slip's Opened→Closed window should have been, and records slip + expectation
-// + variance append-only at /card_batches. NOBODY TYPES THE CARD TOTAL —
-// there is no input for one, here or in the UI.
+// + variance append-only at /card_batches. NOBODY TYPES THE CARD TOTAL — with
+// ONE exception, Junid's alone: on a terminal whose printer prints half the
+// slip he may type the total BESIDE the photo (`declaredTotal`), and the record
+// says so, with who and when. See readDeclaredTotal in lib/card-recon.cjs.
 //
 // TWO PHASES, one callable:
 //   action:"extract" — photos in, OCR (Gemini 3.6 Flash, structured JSON — the
@@ -54,16 +56,18 @@ const {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX,
   parseSlipTimestamp, parseRandsToCents,
-  normaliseTid, normaliseBatchNo, resolveBatchWrite, MAX_REVISIONS,
+  normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, resolveBatchWrite, comparePriorCapture, MAX_REVISIONS,
   dedupeLines, validateExtraction, buildBatchRecord,
   chooseCaptureSource, readPdfPayload, formatCents,
+  hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
 } = require("../lib/card-recon.cjs");
 const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
 const { pdfToLines } = require("./pdfText.js");
-const { computeExpectedCard, cardLegsInWindow } = require("../lib/card-expected.cjs");
+const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
+const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto } = require("../lib/card-terminals.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -77,13 +81,35 @@ const geminiApiKey = defineSecret("GEMINI_API_KEY");
 // low-contrast thermal print and misreading a digit here becomes a recorded
 // "variance", so this is not a Flash-Lite job. ONE constant, one-line swap.
 const OCR_MODEL = "gemini-3.6-flash";
-const GEMINI_ENDPOINT = `https://generativelanguage.googleapis.com/v1beta/models/${OCR_MODEL}:generateContent`;
+// ── WHEN THE MODEL IS OVERLOADED ─────────────────────────────────────────────
+// On 20-21 Sept 2026 gemini-3.6-flash answered "503 — This model is currently
+// experiencing high demand" to most slip photos: every Trophy Till 2 attempt
+// in the log, and 12 of 13 probes of a real Marathon Till 2 slip (the 13th read
+// it perfectly on its 7th try). The account was funded throughout. So a 503 is
+// retried a few times, briefly, and then ONE attempt goes to the next model
+// tier, which read the same real slips correctly (TID, batch, total) while
+// 3.6 was refusing. Every other status fails at once — a 402 does not get
+// better by asking twice.
+const OCR_FALLBACK_MODEL = "gemini-3.8-flash";
+const OCR_503_RETRIES = 3;
+const OCR_503_BACKOFF_MS = [1500, 3000, 5000];
+// No new attempt starts unless it could still finish inside the callable's
+// 300 s — a slow reader must end in the named message, not a killed call.
+const OCR_BUDGET_MS = 270 * 1000;
+const geminiEndpoint = (model) => `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`;
 const GEMINI_TIMEOUT_MS = 120000;
 
 // Published gemini-2.5-flash rates; 3.6-flash had no separate public sheet at
 // build time. Order-of-magnitude honest for the usage log, revisit when billed.
 const IN_PER_MTOK_USD = 0.30;
 const OUT_PER_MTOK_USD = 2.50;
+// Per model, so a fallback-served capture is logged against its own tier. No
+// public sheet for either 3.x flash at build time: both carry the estimate
+// above until one is billed, and `model` on the usage row says which it was.
+const OCR_RATES = {
+  "gemini-3.6-flash": { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD },
+  "gemini-3.8-flash": { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD },
+};
 
 // A batch of 50 transactions is 2-4 detail photos plus the summary. 14 is the
 // abuse ceiling, not the expectation. Client downscales to ≤2000px JPEG.
@@ -108,6 +134,12 @@ const WINDOW_EDGE_MS = 2 * 60 * 1000;
 // transactions; only the second kind has an edge worth reporting.
 const edgeMsFor = (extraction) => (
   extraction.windowSource && extraction.windowSource !== "printed" ? WINDOW_EDGE_MS : 0);
+// …and the SLACK a derived window's own transactions may claim legs from — see
+// DERIVED_WINDOW_SLACK_MS in lib/card-expected.cjs. Printed windows get none.
+const slackFor = (extraction) => (
+  extraction.windowSource && extraction.windowSource !== "printed"
+    ? { slackMs: DERIVED_WINDOW_SLACK_MS, lines: extraction.lines || [] }
+    : {});
 
 const EXTRACTION_PROMPT = [
   "These photographs show ONE printed card-terminal Batch Report from an FNB",
@@ -115,9 +147,14 @@ const EXTRACTION_PROMPT = [
   "and totals. Read ONLY what is literally printed. Never invent, infer or",
   "complete a value — an unreadable field is an empty string with confidence 0.",
   "",
+  // THE EXAMPLE TID IS MADE UP, deliberately. It is there to show the model the
+  // SHAPE of the thing — four-to-eight alphanumerics, sometimes leading zeros —
+  // and a real one would be a live machine written into a shipped artefact, in
+  // a feature whose whole rule is that no terminal is named in what ships.
   "HEADER fields: MID (merchant ID, long digits), TID (terminal ID, e.g.",
-  "0000HP1X), the batch number (printed like 'Batch Report (#494)' — return",
-  "the digits), Opened, Closed and Printed timestamps (return exactly as",
+  "0000AB1C or 67000000 — letters AND digits are both normal; return only the",
+  "ID itself, without the 'TID:' label), the batch number (printed like 'Batch Report (#494)'",
+  "— return the digits), Opened, Closed and Printed timestamps (return exactly as",
   "printed, e.g. '2026/08/26 18:50:04'), the Transactions count, and any",
   "reconciliation line (e.g. '500 - Reconciled, in balance').",
   "",
@@ -266,8 +303,37 @@ function decodePhoto(raw, i) {
 }
 
 // ── OCR — one structured-JSON Gemini call over every photo ───────────────────
-async function runSlipOcr(photos, apiKey) {
-  const res = await fetch(GEMINI_ENDPOINT, {
+// One photo set, tried against the primary model with a short 503 retry, then
+// once against the fallback. `deps` is the test seam: fetch and sleep.
+async function runSlipOcr(photos, apiKey, deps = {}) {
+  const sleep = deps.sleep || ((ms) => new Promise((r) => setTimeout(r, ms)));
+  const clock = deps.now || Date.now;
+  const started = clock();
+  const plan = [
+    ...Array.from({ length: 1 + OCR_503_RETRIES }, () => OCR_MODEL),
+    OCR_FALLBACK_MODEL,
+  ];
+  let last;
+  let made = 0;
+  for (let i = 0; i < plan.length; i++) {
+    if (i > 0 && clock() - started + GEMINI_TIMEOUT_MS > OCR_BUDGET_MS) break;
+    made++;
+    try {
+      const out = await runSlipOcrOnce(photos, apiKey, plan[i], deps.fetch || fetch);
+      return { ...out, model: plan[i], attempts: i + 1 };
+    } catch (err) {
+      last = err;
+      if (err.httpStatus !== 503) throw err;
+      const wait = OCR_503_BACKOFF_MS[i];
+      if (wait && plan[i + 1] === OCR_MODEL) await sleep(wait);
+    }
+  }
+  last.attempts = made;
+  throw last;
+}
+
+async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
+  const res = await fetchImpl(geminiEndpoint(model), {
     method: "POST",
     // Key in a HEADER, never the query string — URLs land in logs and traces.
     headers: { "Content-Type": "application/json", "x-goog-api-key": apiKey },
@@ -283,7 +349,20 @@ async function runSlipOcr(photos, apiKey) {
     }),
     signal: AbortSignal.timeout(GEMINI_TIMEOUT_MS),
   });
-  if (!res.ok) throw new Error(`gemini HTTP ${res.status}`);
+  // The STATUS travels with the error. It used to be formatted into a string
+  // and nothing else, which made "out of credit" (402) indistinguishable from
+  // "the reader is down" (503) by the time anyone could act on it — and on
+  // 19 Sept 2026 that cost a full day of captures across the whole estate,
+  // because the one sentence both produced told managers to check the signal.
+  if (!res.ok) {
+    const err = new Error(`gemini HTTP ${res.status}`);
+    err.httpStatus = res.status;
+    // The body carries Google's own explanation ("Your prepayment credits are
+    // depleted"). Read best-effort and kept for the LOG only — it names an
+    // internal billing account and never goes to a shop floor.
+    try { err.body = (await res.text()).slice(0, 400); } catch { /* body is a bonus */ }
+    throw err;
+  }
   const payload = await res.json();
   const text = ((((payload.candidates || [])[0] || {}).content || {}).parts || [])
     .map((p) => p && p.text).filter(Boolean).join("");
@@ -320,13 +399,19 @@ function toExtraction(parsed) {
   });
   return {
     mid: typeof parsed.mid === "string" && parsed.mid.trim() ? parsed.mid.trim() : null,
-    tid: normaliseTid(parsed.tid),
+    tid: readSlipTid(parsed.tid),
     batchNo: parsed.batchNo,
     openedAt: parseSlipTimestamp(parsed.opened),
     closedAt: parseSlipTimestamp(parsed.closed),
     printedAt: parseSlipTimestamp(parsed.printed),
     openedText: parsed.opened || null, closedText: parsed.closed || null,
-    txnCount: Number(parsed.txnCount),
+    // A slip that prints no Transactions count comes back with the field
+    // ABSENT, and Number(undefined) is NaN — which the callable cannot encode,
+    // so Trophy Till 2's typed-total capture died as INTERNAL on 26 Sept 2026.
+    // Unread is null: validateExtraction still refuses it on any capture
+    // without a typed total.
+    txnCount: Number.isFinite(Number(parsed.txnCount)) && parsed.txnCount !== null && parsed.txnCount !== ""
+      ? Number(parsed.txnCount) : null,
     purchasesCents: parseRandsToCents(parsed.purchases),
     // ABSENCE is zero (many slips print no cash/refunds line); a GARBLED
     // printed figure stays null and validateExtraction refuses it — the
@@ -346,6 +431,21 @@ function toExtraction(parsed) {
     },
     lines,
   };
+}
+
+// ── WHAT THE MODEL READ, ONE LINE PER EXTRACTION ─────────────────────────────
+// One OCR call reads every photo of a capture together, so this is one line per
+// extraction, not per photo. On 21 Sept a retake at Junid's till was refused
+// after its TID matched and nothing said why. An ALLOWLIST of header fields and
+// confidences — never a transaction line, PAN, RRN, UTI or auth code.
+const LOGGED_HEADER_FIELDS = ["tid", "batchNo", "total", "purchases", "refunds", "cash", "opened", "closed", "txnCount", "confidence"];
+function photoReadLogLine(picked, ocr) {
+  const p = (ocr && ocr.parsed) || {};
+  const header = Object.fromEntries(LOGGED_HEADER_FIELDS.map((k) => [k, p[k] ?? null]));
+  return `cardBatchCapture: photo read picked=${picked} model=${ocr && ocr.model} attempts=${ocr && ocr.attempts} ${JSON.stringify(header)}`;
+}
+function refusalLogLine(picked, reason) {
+  return `cardBatchCapture: extract refused picked=${picked || "(email)"} reason=${JSON.stringify(reason)}`;
 }
 
 // A reject the operator can act on — travels as a NORMAL response, not an
@@ -374,6 +474,64 @@ async function readBatchKeysFor(db, storeId, tid, batchNo) {
     keys.push(key);
   }
   return keys;
+}
+
+/**
+ * The APPROVED lines of the capture currently in force for this batch — the
+ * highest revision, which is the last key readBatchKeysFor found.
+ *
+ * Read so a fuller report of the same batch can be told from a re-send of it;
+ * see comparePriorCapture. Only the three fields the comparison uses are kept,
+ * because this runs on every second-and-later report of a batch and the whole
+ * roll is not needed to answer whether one list contains another.
+ *
+ * RTDB HANDS BACK A SPARSE ARRAY AS AN OBJECT, and a dense integer-keyed one
+ * as a real array WITH NULL HOLES (560 of 5,793 /stock rows were array-coerced
+ * on 15 Sept 2026). Both shapes are walked, and null cells are skipped rather
+ * than read — a hole is not a transaction.
+ */
+async function readRecordedLinesFor(db, storeId, tid, keys) {
+  if (!keys.length) return [];
+  const key = keys[keys.length - 1];
+  const snap = await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${key}/lines`).once("value");
+  const raw = snap.val();
+  const rows = Array.isArray(raw) ? raw : Object.values(raw || {});
+  return rows
+    .filter((r) => r && typeof r === "object")
+    .map((r) => ({ tsn: Number(r.tsn), amountCents: Number(r.amountCents), rrn: r.rrn || "" }))
+    .filter((r) => Number.isInteger(r.tsn));
+}
+
+/**
+ * Decide the write for a batch, reading what is already recorded.
+ *
+ * ONE place, used by both extract paths and by submit, so the three cannot
+ * drift — the extract-time answer is the message the operator hears and the
+ * submit-time answer is the guarantee, and they must agree about what counts
+ * as a fuller report.
+ *
+ * A refusal caused by a CONTRADICTION says what the contradiction was. "Batch
+ * #58 is already captured" is the right sentence for a re-send and the wrong
+ * one for a report that disagrees with the record, which is a thing somebody
+ * has to look at.
+ */
+async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines }) {
+  const existingKeys = await readBatchKeysFor(db, storeId, tid, batchNo);
+  let comparison = null;
+  if (existingKeys.length && !correction) {
+    const recorded = await readRecordedLinesFor(db, storeId, tid, existingKeys);
+    comparison = comparePriorCapture(recorded, lines || []);
+  }
+  const write = resolveBatchWrite({
+    existingKeys, batchNo, correction,
+    extends: comparison ? comparison.relation === "extends" : false,
+  });
+  if (!write.ok && comparison && comparison.reason &&
+      (comparison.relation === "conflict" || comparison.relation === "shrinks")) {
+    return { existingKeys, comparison, write: { ok: false,
+      reason: `Batch #${batchNo} is already captured, and this report does not agree with it: ${comparison.reason}. Nothing was recorded — tell Junid, and keep the slip.` } };
+  }
+  return { existingKeys, comparison, write };
 }
 
 
@@ -460,7 +618,29 @@ async function matchBatch(db, { extraction, terminal, summaryOnly = false }) {
 }
 
 async function handleExtract(db, request) {
-  const { photos, pdf, pickedTid, summaryOnly, channel } = request.data || {};
+  const { photos, pdf, pickedTid, channel } = request.data || {};
+
+  // ── A TOTAL DECLARED BY HAND — Junid's alone, and never without the paper ──
+  // Checked FIRST, before a byte of OCR is paid for. See readDeclaredTotal in
+  // lib/card-recon.cjs for the whole contract.
+  const declaring = hasDeclaredTotal(request.data?.declaredTotal);
+  let declared = null;
+  if (declaring) {
+    if (!mayDeclareTotal(request.auth?.token)) {
+      throw new HttpsError("permission-denied", "Only Junid can type a batch total. Photograph the slip instead.");
+    }
+    if (channel === "email" || pdf) {
+      throw new HttpsError("invalid-argument", "A typed total goes with a photo of the slip, never with a file.");
+    }
+    if (!Array.isArray(photos) || photos.length === 0) {
+      return reject("A typed total is refused without a photo of the slip — the paper is the evidence. Nothing was recorded.");
+    }
+    declared = readDeclaredTotal(request.data.declaredTotal);
+    if (declared.err) return reject(declared.err);
+  }
+  // A declared total is always summary-only: a slip that did not print its
+  // total did not print a whole roll either.
+  const summaryOnly = !!request.data?.summaryOnly || declaring;
 
   // ONE PATH PER SUBMISSION — decided once, in chooseCaptureSource, because the
   // same answer stamps `capturedVia` on the record further down.
@@ -496,34 +676,131 @@ async function handleExtract(db, request) {
   if (!terminal || !terminal.storeId || !terminal.tillId) {
     return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
   }
+  // A RETIRED MACHINE TAKES NO HAND CAPTURE. Its row stays (its batches are
+  // filed under its TID and would be stranded by a delete), but there is no
+  // longer a till to stand at, and a capture made against one is a slip filed
+  // against a machine that left. The screen does not offer the card; this is
+  // the half that holds when someone calls the callable anyway.
+  if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
+  // AN EMAIL-ONLY MACHINE TAKES NO PHOTO. The screen shows it no camera; this
+  // is the half that holds when an old bundle or a direct call sends one
+  // anyway — before any OCR is paid for.
+  if (!takesPhoto(terminal)) {
+    return reject(`${terminal.label || picked} is set to Email only, so its report is not photographed — it ticks when the email arrives. Junid can change this in Card machines → settings.`);
+  }
 
   // ── OCR ──
   let ocr;
   try {
     ocr = await runSlipOcr(decoded, geminiApiKey.value());
   } catch (err) {
-    console.error("cardBatchCapture: OCR failed:", err.message);
-    throw new HttpsError("unavailable", "Could not read the photos right now — try again.");
+    // ── THE SENTENCE THE MANAGER GETS IS THE POINT OF ALL THIS ──────────────
+    // "Could not read the photos right now — try again." was the answer to
+    // EVERY OCR failure, including an account with no money in it, and trying
+    // again never once helped. Attaching the status to the error was only half
+    // the fix; this is the half a person reads.
+    //
+    // THE LOG KEEPS THE DETAIL, THE SCREEN NEVER SEES IT. Google's body names
+    // an internal billing account and links a console nobody at a till can
+    // open, so it goes to Cloud Logging and no further.
+    console.error(`cardBatchCapture: OCR failed: ${err.message}`
+      + `${err.httpStatus ? ` [status=${err.httpStatus}]` : ""}`
+      + `${err.body ? ` body=${String(err.body).slice(0, 300)}` : ""}`);
+    // 402 is prepayment credits depleted; 429 is the same wall with a
+    // different number on it (a depleted PREPAY account answers 429 to image
+    // generation and 402 here, which is how one outage wore two faces for six
+    // days). Both mean the same thing to the person holding the slip: this
+    // will not work until somebody puts money in, so DO NOT retake the photo.
+    if (err.httpStatus === 402 || err.httpStatus === 429) {
+      throw new HttpsError("resource-exhausted",
+        "The slip reader has run out of credit, so photographed slips cannot be read until it is topped up. "
+        + "Retaking the photo will not help. Tell Junid — the machines that email their report are still recording normally.");
+    }
+    // 503 after every retry and the fallback: Google's reader is overloaded.
+    // Not the signal, not the photo — and it passes, usually within minutes.
+    if (err.httpStatus === 503) {
+      throw new HttpsError("unavailable",
+        "Google's slip reader is overloaded right now (it refused every attempt, on two models), so the photo could not be read. "
+        + "It is not your signal and not the photo — wait a few minutes and tap the till again.");
+    }
+    // EVERY OTHER FAILURE STILL SAYS WHAT IT WAS. A reader that took too long
+    // and one that answered with an error are different things to do about.
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new HttpsError("deadline-exceeded",
+        "Google's slip reader took over two minutes and gave up, so the photo was not read. "
+        + "It is not your signal — try again in a few minutes.");
+    }
+    if (err.httpStatus) {
+      throw new HttpsError("unavailable",
+        `Google's slip reader answered with an error (HTTP ${err.httpStatus}), so the photo was not read. `
+        + "It is not your signal and not the photo — try again in a few minutes, and tell Junid if it keeps happening.");
+    }
+    throw new HttpsError("unavailable",
+      "The slip reader could not be reached from the server, so the photo was not read. "
+      + "It is not your phone's signal — try again in a few minutes, and tell Junid if it keeps happening.");
   }
   // Cost is logged for EVERY billed call, rejected extractions included.
-  const costUSD = +((ocr.tokensIn / 1e6) * IN_PER_MTOK_USD + (ocr.tokensOut / 1e6) * OUT_PER_MTOK_USD).toFixed(6);
+  const rate = OCR_RATES[ocr.model] || { in: IN_PER_MTOK_USD, out: OUT_PER_MTOK_USD };
+  const costUSD = +((ocr.tokensIn / 1e6) * rate.in + (ocr.tokensOut / 1e6) * rate.out).toFixed(6);
   try {
     await db.ref(`aiAssistant/usage/${new Date().toISOString().slice(0, 10)}`).push({
-      at: Date.now(), kind: "cardBatchOcr", by: request.auth.uid, model: OCR_MODEL,
+      at: Date.now(), kind: "cardBatchOcr", by: request.auth.uid, model: ocr.model, attempts: ocr.attempts,
       photos: decoded.length, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD,
     });
   } catch (err) { console.warn("cardBatchCapture: usage log failed:", err.message); }
 
   if (!ocr.parsed) return reject("The photos could not be read as a batch report — retake them, filling the frame with the slip.");
   const extraction = toExtraction(ocr.parsed);
+  console.log(photoReadLogLine(picked, ocr));
+  // What the reader made of the total, kept beside the typed one — on a
+  // half-printed slip this is normally null, and when it is not, the owner can
+  // see both.
+  const ocrReadCents = Number.isInteger(extraction.totalCents) ? extraction.totalCents : null;
 
   // ── THE TID DECIDES, NOT THE PICKER — a wrong slip rejects itself ──
+  // The model's RAW answer is logged on a TID refusal. On 20 Sept Marathon
+  // Till 2's slip was refused here and nothing recorded what the model had
+  // actually returned, so the cause could not be established afterwards.
+  if (!extraction.tid || extraction.tid !== picked) {
+    console.warn(`cardBatchCapture: TID refusal picked=${picked} raw=${JSON.stringify(ocr.parsed.tid)}`
+      + ` conf=${JSON.stringify((ocr.parsed.confidence || {}).tid)} batch=${JSON.stringify(ocr.parsed.batchNo)}`
+      + ` model=${ocr.model} tokensOut=${ocr.tokensOut}`);
+  }
+  // ── A HAND-DECLARED SLIP MAY PRINT NO TID, AND TIMES WITHOUT DATES ─────────
+  // The typed-total path exists for the slip that did not print everything
+  // (Trophy Till 2, 26 Sept 2026: no TID, "19:00:05" → "16:17:36"). A slip
+  // that prints NO TID is filed under the till Junid tapped; one that prints a
+  // DIFFERENT TID is still refused below — that is the wrong slip. Every
+  // substitution is said on the record.
+  const declaredNotes = [];
+  if (declared && !extraction.tid) {
+    extraction.tid = picked;
+    declaredNotes.push("The slip printed no terminal ID, so this batch is filed under the till that was tapped.");
+  }
+  if (declared && (!Number.isInteger(extraction.openedAt) || !Number.isInteger(extraction.closedAt)
+      || extraction.closedAt <= extraction.openedAt)) {
+    const w = anchorDeclaredWindow({ openedText: extraction.openedText, closedText: extraction.closedText, nowMs: Date.now() });
+    extraction.openedAt = w.openedAt;
+    extraction.closedAt = w.closedAt;
+    extraction.windowSource = w.windowSource;
+    declaredNotes.push(w.windowSource === "declared-time-only"
+      ? "The slip printed its Opened/Closed times without dates; the close was placed on the capture day and the open on the day before it where needed."
+      : "The slip's Opened/Closed times could not be read, so the window is the 24 hours before this capture.");
+  }
   if (!extraction.tid) return reject("No terminal ID could be read off the slip — retake the header photo.");
+  // An O read for a 0 (or I for 1) on the PICKED till's own TID is that TID.
+  // From here on the record carries the registry's spelling, never the misread.
+  if (extraction.tid !== picked && slipTidMatchesPicked(extraction.tid, picked, Object.keys(terminals))) {
+    extraction.tid = picked;
+  }
   if (extraction.tid !== picked) {
     const mapped = terminals[extraction.tid];
     const where = mapped && mapped.label ? ` (that slip belongs to ${mapped.label})` : mapped ? ` (that slip belongs to ${mapped.storeId}/${mapped.tillId})` : " — and that TID is not registered at all";
     return reject(`This slip prints TID ${extraction.tid}, not the till you picked${where}. Capture the slip on its own till.`);
   }
+
+  // THE TOTAL ONLY, and only now that the slip has proved which till it is.
+  if (declared) extraction.totalCents = declared.cents;
 
   // Overlapping photos collapse; conflicting readings refuse.
   if (!summaryOnly) {
@@ -534,15 +811,17 @@ async function handleExtract(db, request) {
     extraction.lines = [];
   }
 
-  const verdict = validateExtraction(extraction, { summaryOnly: !!summaryOnly });
+  const verdict = validateExtraction(extraction, { summaryOnly: !!summaryOnly, declaredTotal: declaring });
   if (!verdict.ok) return reject(verdict.reason);
 
   // Duplicate check at extract time so the operator hears it BEFORE reviewing.
   // The submit transaction re-checks — this one is for the message, that one
   // is the guarantee.
   const batchNo = normaliseBatchNo(extraction.batchNo);
-  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
-  const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
+  const { write } = await resolveWriteFor(db, {
+    storeId: terminal.storeId, tid: extraction.tid, batchNo,
+    correction: !!request.data.correction, lines: extraction.lines,
+  });
   if (!write.ok) return reject(write.reason);
 
   // ── EXPECTED — the POS ledger's answer for the slip's own window ──
@@ -550,6 +829,7 @@ async function handleExtract(db, request) {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
     tailFromMs: extraction.windowSource === "transactions-to-print"
@@ -567,6 +847,16 @@ async function handleExtract(db, request) {
   // saying nothing about it left a manager unable to see that a machine had
   // been moved until after they had submitted. (CodeRabbit, PR #516.)
   const warnings = [...verdict.warnings, ...matchNotes(match)];
+  // A WINDOW THAT SPANS A TILL REASSIGNMENT cannot produce a trustworthy
+  // expected figure — the reasoning is in tillMoveWarning (lib/card-terminals.cjs).
+  // Said out loud on the record rather than left to be chased as an ordinary
+  // variance on the one batch most likely to be looked at.
+  const straddle = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
+  if (straddle) warnings.push(straddle);
+  if (declared) {
+    warnings.unshift(...declaredNotes);
+    warnings.unshift(`The total (${formatCents(declared.cents)}) was typed by ${request.auth.token?.email || request.auth.uid}, not read off the slip — the slip did not print it. Nobody has verified it against paper.`);
+  }
 
   // Drafts live under the CALLER's uid, so this sweep of abandoned (expired)
   // drafts is bounded by construction — one person holds at most a handful.
@@ -608,7 +898,13 @@ async function handleExtract(db, request) {
     // What the REVIEW screen showed — kept so submit can say out loud when the
     // ledger moved between review and record (architect review, 2026-08-28).
     reviewedExpectedCents: expected.cardCents,
-    ocr: { model: OCR_MODEL, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD },
+    ocr: { model: ocr.model, tokensIn: ocr.tokensIn, tokensOut: ocr.tokensOut, costUSD },
+    // Who typed the total, when, and what the reader made of it. Server-written
+    // (the drafts node is owner-only by rule) and re-checked at submit.
+    declaredTotal: declared ? {
+      cents: declared.cents, ocrReadCents,
+      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, at: Date.now(),
+    } : null,
   };
   await draftRef.set(draft);
 
@@ -629,6 +925,7 @@ async function handleExtract(db, request) {
       confidence: extraction.confidence,
       lineCount: extraction.lines.length,
       summaryOnly: !!summaryOnly,
+      totalDeclaredByHand: !!declared,
       warnings,
       // CAPTURE ONLY. The manager confirms the OCR read the SLIP IN THEIR HAND
       // correctly and that is the end of their involvement. Deliberately NOT
@@ -651,7 +948,28 @@ async function handleExtract(db, request) {
 // a reason naming what it could not find. A fuzzy second attempt would be the
 // one thing worse than refusing: a figure nobody can vouch for, recorded as a
 // variance against a named person's till. Photos remain, and the refusal says so.
-async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
+// ─── WHICH TERMINAL WAS REFUSED ──────────────────────────────────────────────
+// A REFUSAL HAS TO NAME ITS TILL, or it cannot be shown against one.
+//
+// On the email channel nobody picks a till: the PDF's own printed TID is the
+// routing key. So until the file is parsed there is no terminal to blame — but
+// AFTER it is parsed there always is, and every refusal from that point on was
+// still answering `{ ok:false, reason }` and nothing else.
+//
+// The cost was exact. On 19 Sept 2026 all 24 refused attachments on file
+// carried no TID, against 53 of 53 recorded ones that did — so the poller wrote
+// "refused" rows the capture screen could not attribute to any card, and
+// Marathon Till 1's refusal was invisible for a day. The TID is stamped on the
+// way out here rather than at each of the dozen `reject` sites inside, so a
+// refusal added later cannot forget to carry it.
+async function handleExtractPdf(db, request, opts) {
+  const seen = { tid: null };
+  const out = await handleExtractPdfBody(db, request, opts, seen);
+  if (out && out.ok === false && !out.tid && seen.tid) return { ...out, tid: seen.tid };
+  return out;
+}
+
+async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }, seen) {
   // Intactness, size and the magic bytes, all in one pure seam — see
   // readPdfPayload. A malformed upload is a sentence, never a transport error.
   const payload = readPdfPayload(pdf.base64, MAX_PDF_BYTES);
@@ -673,6 +991,10 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
     if (!pickedTerminal || !pickedTerminal.storeId || !pickedTerminal.tillId) {
       return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
     }
+    // Retired: same refusal as the photo path. The EMAIL path deliberately does
+    // NOT refuse — see lib/card-recon-email.cjs. A late final batch that
+    // arrives by itself is money that still has to reconcile.
+    if (isRetiredTerminal(pickedTerminal)) return reject(retiredCaptureRefusal(picked, pickedTerminal));
   }
 
   const text = await pdfToLines(buffer);
@@ -680,6 +1002,8 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   const parsed = parseSlipPdf(text.lines);
   if (!parsed.ok) return reject(parsed.reason);
   const extraction = parsed.extraction;
+  // From here on every refusal can name its terminal — see handleExtractPdf.
+  seen.tid = normaliseTid(extraction.tid) || null;
 
   // ── WHICH TILL, AND WHAT VOUCHES FOR THAT ANSWER ──────────────────────────
   // TWO PATHS, ONE PRINCIPLE: the answer is never allowed to be a guess.
@@ -723,6 +1047,40 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
     return reject("This slip could not be matched to its terminal — nothing was recorded. Tell Junid.");
   }
 
+  // ── AN EMPTY BATCH SPANS BACK TO THE BATCH BEFORE IT ──────────────────────
+  // It prints no transactions and so no span of its own, but it DOES say "no
+  // card was taken on this machine since the last settlement". The window is
+  // therefore the previous batch's close → this report's print, so a card leg
+  // the till rang in that gap shows up as this batch's variance instead of
+  // falling between two windows unseen. With no previous batch on file (or one
+  // more than a week back), the 1 ms window at print time stands.
+  if (extraction.emptyBatch === true) {
+    const prevNo = Number(normaliseBatchNo(extraction.batchNo)) - 1;
+    if (prevNo > 0) {
+      // THE REVISION IN FORCE, not the bare key: a batch reported twice
+      // (58 → 58-r2) closed when its FULLER report says it did.
+      // A READ THAT FAILS REFUSES — recording R0 over a window that could not
+      // be worked out would hide the very gap this exists to show. The poller
+      // records the refusal and the file can be re-run.
+      let prevClosed;
+      try {
+        const keys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, String(prevNo));
+        prevClosed = keys.length
+          ? (await db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}/${keys.at(-1)}/slip/closedAt`).once("value")).val()
+          : null;
+      } catch (err) {
+        console.error("cardBatchCapture: previous batch read failed:", err.message);
+        return reject(`Batch ${extraction.batchNo} is an empty batch, and the batch before it could not be read to place it. Nothing was recorded — it can be re-run once the database answers.`);
+      }
+      const opened = emptyBatchOpenedAt(prevClosed, extraction.printedAt);
+      if (opened !== null) {
+        extraction.openedAt = opened;
+        extraction.openedFrom = "previous-batch";
+      }
+    }
+  }
+
+
   // Overlapping sections cannot happen in a single file, but a terminal that
   // prints a line twice still must not be averaged away.
   const dedup = dedupeLines(extraction.lines);
@@ -734,14 +1092,17 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
   if (!verdict.ok) return reject(verdict.reason);
   const batchNo = normaliseBatchNo(extraction.batchNo);
-  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
-  const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!request.data.correction });
+  const { write } = await resolveWriteFor(db, {
+    storeId: terminal.storeId, tid: extraction.tid, batchNo,
+    correction: !!request.data.correction, lines: extraction.lines,
+  });
   if (!write.ok) return reject(write.reason);
 
   const expected = await computeExpectedCard(db, {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
     tailFromMs: extraction.windowSource === "transactions-to-print"
@@ -765,6 +1126,9 @@ async function handleExtractPdf(db, request, { picked, pdf, source, intake }) {
   // owner has to know to look at.
   const warnings = [...routingWarnings, ...verdict.warnings];
   warnings.push(...matchNotes(match));
+  // The same guard as the photo path.
+  const straddleTill = tillMoveWarning(extraction.tid, terminal, extraction.openedAt);
+  if (straddleTill) warnings.push(straddleTill);
   if (expected.tailLegs > 0) {
     warnings.push(
       `${expected.tailLegs} card leg${expected.tailLegs === 1 ? "" : "s"} on this till ` +
@@ -870,6 +1234,20 @@ async function handleSubmit(db, request) {
   const terminal = draft.terminal;
   const batchNo = normaliseBatchNo(extraction.batchNo);
 
+  // A TOTAL DECLARED BY HAND is re-checked like everything else: still the
+  // owner at the moment of record, still the figure on the draft, still
+  // summary-only, still a photograph.
+  const declaredTotal = draft.declaredTotal || null;
+  if (declaredTotal) {
+    const intact = Number.isInteger(declaredTotal.cents) && declaredTotal.cents === extraction.totalCents
+      && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
+      && Array.isArray(draft.photoPaths) && draft.photoPaths.length > 0;
+    if (!mayDeclareTotal(request.auth?.token) || !intact) {
+      await draftRef.remove().catch(() => {});
+      return reject("This capture's typed total could not be verified — nothing was recorded. Photograph the slip and type the total again.");
+    }
+  }
+
   // ── RE-VALIDATE THE DRAFT, IN FULL ──────────────────────────────────────
   // DEFENCE IN DEPTH, not compensation for an open rule. This used to note that
   // the drafts sat under /pos, whose `$other` write grant would have let a
@@ -895,6 +1273,7 @@ async function handleSubmit(db, request) {
     : validateExtraction(extraction, {
         summaryOnly: !!draft.summaryOnly,
         source: draft.capturedVia === "pdf" ? "pdf" : "photo",
+        declaredTotal: !!declaredTotal,
       });
   if (!revalid.ok) {
     await draftRef.remove().catch(() => {});
@@ -919,6 +1298,26 @@ async function handleSubmit(db, request) {
     await draftRef.remove().catch(() => {});
     return reject("This capture's source could not be verified — nothing was recorded.");
   }
+  // RETIREMENT IS PART OF THAT RE-CHECK, and it has to be asked SEPARATELY —
+  // retiring a machine changes neither its storeId nor its tillId, so the
+  // re-validation above is blind to it. Without this, a slip extracted moments
+  // before an admin retires the machine was still recorded against a terminal
+  // that had left: the refusal was only ever as strong as the gap between
+  // extract and submit, during a swap, which is the exact moment this mechanism
+  // exists for.
+  //
+  // IT ASKS ONLY OF A HAND CAPTURE, and the position of this block is the whole
+  // reason it is correct. A retired terminal's EMAILED slip is deliberately
+  // RECORDED, with the retirement said out loud on it (lib/card-recon-email.cjs)
+  // — a late final settlement is money that still has to reconcile, and
+  // dropping it to make a point about tidiness is the worse answer. An earlier
+  // version of this guard sat above, before the draft's provenance had been
+  // read, and so refused the emailed slip too: a fix for one path that quietly
+  // broke the other. (CodeRabbit, PR #611.)
+  if (!draftIntake && mapped && isRetiredTerminal(mapped)) {
+    await draftRef.remove().catch(() => {});
+    return reject(retiredCaptureRefusal(extraction.tid, mapped));
+  }
   if (draftIntake) {
     await assertEmailIntake(request);
     const rerouted = routeEmailSlip({ extraction, terminals: terminalsNow });
@@ -937,6 +1336,7 @@ async function handleSubmit(db, request) {
     storeId: terminal.storeId, tillId: terminal.tillId,
     startMs: extraction.openedAt, endMs: extraction.closedAt,
     edgeMs: edgeMsFor(extraction),
+    ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
     tailFromMs: extraction.windowSource === "transactions-to-print"
@@ -948,20 +1348,34 @@ async function handleSubmit(db, request) {
   const match = reconciledByTotals
     ? null
     : await matchBatch(db, { extraction, terminal, summaryOnly: !!draft.summaryOnly });
+  // The straddle warning is recomputed HERE too, against the registry as it
+  // stands now: the till move can land between extract and submit, and the
+  // record is written from this side. The draft's own warnings are kept — this
+  // adds to them without replacing what extract saw.
+  // `mapped`, not the draft's copy of the terminal: the move can land between
+  // extract and submit, and this is the side the record is written from. It is
+  // non-null by here — the re-validation above rejects an unmapped TID.
+  const straddleNow = tillMoveWarning(extraction.tid, mapped, extraction.openedAt);
 
   // Re-resolve the key against NOW's children, then guarantee append-only with
   // a transaction on the exact key: existing data aborts, never overwritten.
   const tidRef = db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`);
-  const existingKeys = await readBatchKeysFor(db, terminal.storeId, extraction.tid, batchNo);
-  const write = resolveBatchWrite({ existingKeys, batchNo, correction: !!draft.correction });
+  const { write } = await resolveWriteFor(db, {
+    storeId: terminal.storeId, tid: extraction.tid, batchNo,
+    correction: !!draft.correction, lines: extraction.lines,
+  });
   if (!write.ok) return reject(write.reason);
 
   const record = buildBatchRecord({
     extraction, terminal, tid: extraction.tid, match, reconciledByTotals,
     batchKey: write.key, revision: write.revision, supersedes: write.supersedes,
+    autoSuperseded: !!write.autoSuperseded,
     photoPaths: draft.photoPaths,
     summaryOnly: !!draft.summaryOnly,
-    warnings: draft.warnings || [],
+    // The draft's warnings PLUS anything only now can know. Deduped, because
+    // extract computed the straddle too and the same sentence twice on one
+    // record reads like two findings.
+    warnings: [...new Set([...(draft.warnings || []), ...(straddleNow ? [straddleNow] : [])])],
     expected,
     cashiers: expected.cashiers,
     submittedBy: { uid: request.auth.uid, email: request.auth.token?.email || null },
@@ -971,6 +1385,17 @@ async function handleSubmit(db, request) {
     capturedVia: draft.capturedVia === "pdf" ? "pdf" : "photo",
     pdfPath: draft.pdfPath || null,
     intake: draftIntake,
+    // WHO and WHEN come from the verified caller at the moment of record, never
+    // from the draft: the drafts node is owner-writable, so a draft cannot be
+    // trusted to say who typed the figure. mayDeclareTotal has just proved this
+    // caller is the owner. (CodeRabbit, PR #649.)
+    declaredTotal: declaredTotal ? {
+      cents: declaredTotal.cents,
+      ocrReadCents: Number.isInteger(declaredTotal.ocrReadCents) ? declaredTotal.ocrReadCents : null,
+      byUid: request.auth.uid,
+      byEmail: request.auth.token?.email || null,
+      at: Date.now(),
+    } : null,
   });
 
   const txn = await tidRef.child(write.key).transaction((cur) => {
@@ -1009,7 +1434,15 @@ exports.cardBatchCapture = onCall(
     await assertCardRecon(request);
     const db = admin.database();
     const action = request.data?.action;
-    if (action === "extract") return handleExtract(db, request);
+    if (action === "extract") {
+      const out = await handleExtract(db, request);
+      // Every refusal leaves its reason in the log, not only on the phone —
+      // so "it said try again" can be read back exactly afterwards.
+      if (out && out.ok === false) {
+        console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+      }
+      return out;
+    }
     if (action === "submit") return handleSubmit(db, request);
     throw new HttpsError("invalid-argument", "action must be 'extract' or 'submit'.");
   },
@@ -1020,5 +1453,22 @@ exports.toExtraction = toExtraction;
 // The summary-first gate, exported so it can be tested directly: everything
 // else about it lives inside async handlers behind a database.
 exports.totalsAgree = totalsAgree;
+// The duplicate-batch probe, exported for the same reason. What has to be
+// provable about it is WHICH PATHS IT READS — a probe that widened to the store
+// node, or to the registry, would make one terminal's batch number collide with
+// another's. Two of the six machines joined the estate mid-life, on batches 57
+// and 480, and 57 lands inside a sibling terminal's live range in the SAME
+// store. See functions/test/card-batch-numbers.test.cjs.
+exports.readBatchKeysFor = readBatchKeysFor;
+// Exported for the same reason as readBatchKeysFor: what decides whether a
+// second report of a batch is a fuller account or a re-send is a rule about
+// LIVE data, and it is tested against a fake database rather than by reading it.
+exports.readRecordedLinesFor = readRecordedLinesFor;
+exports.resolveWriteFor = resolveWriteFor;
 exports.EXTRACTION_SCHEMA = EXTRACTION_SCHEMA;
 exports.OCR_MODEL = OCR_MODEL;
+exports.EXTRACTION_PROMPT = EXTRACTION_PROMPT;
+exports.OCR_FALLBACK_MODEL = OCR_FALLBACK_MODEL;
+exports.runSlipOcr = runSlipOcr;
+exports.photoReadLogLine = photoReadLogLine;
+exports.refusalLogLine = refusalLogLine;

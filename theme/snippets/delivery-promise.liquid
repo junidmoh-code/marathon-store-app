@@ -1,0 +1,68 @@
+{%- comment -%}
+  ── THE DELIVERY ANSWER, BEFORE ANYONE HAS TO ASK ────────────────────────────
+  Renders on every product page, under the buy button.
+
+  WHY IT EXISTS
+  The product page described condition and returns and said nothing at all
+  about delivery. Meanwhile the two most common questions arriving as DMs on
+  Instagram and Facebook were "do you deliver?" and "how do I order?". A
+  shopper who has to open a chat to find out whether a parcel can reach them
+  is a shopper who mostly does not bother.
+
+  WHY THE NUMBERS ARE HARD-CODED HERE AND NOT PULLED FROM A SETTING
+  There is no Liquid object that exposes a shipping RATE — `shop.shipping_policy`
+  is prose written by hand, and rates live in Settings → Shipping where the
+  storefront cannot read them. So these two figures are the one thing in this
+  file that can drift out of step with checkout.
+
+  They are not guesses. They were read off 41 real orders placed since the
+  28 August 2026 rate change (the day "Shipping R130" became "Standard
+  delivery"): every order with a subtotal at or above R1,000 shipped free
+  (19 of them, R1,000–R9,700) and every order below it was charged R99
+  (22 of them, R250–R850). No order contradicted the rule.
+
+  IF THE RATES CHANGE, CHANGE THEM HERE. Nothing else reads them.
+{%- endcomment -%}
+
+{%- assign free_from = 1000 -%}
+{%- assign flat_rate = 99 -%}
+
+<div class="delivery-promise" role="note">
+  <p class="delivery-promise__line">
+    <strong>Delivered anywhere in South Africa.</strong>
+  </p>
+  <p class="delivery-promise__line">
+    R{{ flat_rate }} delivery — free on orders over R{{ free_from }}.
+  </p>
+  {%- if shop.shipping_policy.body != blank -%}
+    <p class="delivery-promise__line delivery-promise__link">
+      <a href="{{ shop.shipping_policy.url }}">Delivery details</a>
+    </p>
+  {%- endif -%}
+</div>
+
+{%- comment -%}
+  Styles are inline-scoped to the snippet so this cannot be broken by, or
+  break, the theme's global stylesheet. Colours are inherited rather than
+  stated, so the block follows the page in both the light and dark treatments
+  rather than pinning a background that only suits one of them.
+{%- endcomment -%}
+<style>
+  .delivery-promise {
+    margin: 1.2rem 0 0;
+    padding: 1.1rem 1.2rem;
+    border: 1px solid rgba(var(--color-foreground, 18 18 18), 0.18);
+    border-radius: 0.6rem;
+    font-size: 1.4rem;
+    line-height: 1.5;
+  }
+  .delivery-promise__line {
+    margin: 0;
+  }
+  .delivery-promise__line + .delivery-promise__line {
+    margin-top: 0.35rem;
+  }
+  .delivery-promise__link a {
+    text-decoration: underline;
+  }
+</style>

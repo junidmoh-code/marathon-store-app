@@ -1,25 +1,38 @@
-import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, useContext, useDeferredValue, useLayoutEffect } from "react";
 import { ref, onValue, set, update, remove, push, runTransaction, get, query, orderByChild, orderByKey, equalTo, startAt, endAt } from "firebase/database";
 import AiSpendTab from "./components/AiSpendTab";
-import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
+import { ref as storageRef, uploadBytes, getDownloadURL, getBlob, deleteObject } from "firebase/storage";
 import { signInAnonymously, signInWithPopup, signOut, onAuthStateChanged } from "firebase/auth";
 import { httpsCallable } from "firebase/functions";
 import { database, storage, auth, googleProvider, functions, functionsUS } from "./firebase";
 import Fuse from "fuse.js";
 import { productMatchesQuery } from "./utils/productSearch";
-import { isDeactivated, orderSizeOut, REACTIVATED_EVENT } from "./utils/deactivation";
+import { isDeactivated, orderSizeOut, browsableProducts, REACTIVATED_EVENT } from "./utils/deactivation";
+import { ProductActionsButton, DeactivatedChip } from "./components/stock/ProductActions.jsx";
+import { showsDeactivated } from "./config/assistantVisibility";
+import { useAssistantVisibility } from "./config/useAssistantVisibility";
+import { assistantCatalogue } from "./components/assistant/assistantCatalogue";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./components/stock/reactiveRefillHubs";
 import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from "./utils/searchIdentity";
-import { filterMergedProducts, followMerge } from "./utils/mergedProducts";
-import { stockCellPath, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
-import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour, saTodayKey } from "./utils/serverTime";
+import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
+import { stockCellPath, decodedCellKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
+import { productPhotoObjectPath } from "./utils/productPhotoPaths";
+import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
+import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
+import { getTodayKey, getNextOrderNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
+import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
+import { MirrorDot } from "./offline/MirrorDot.jsx";
+import { MirroredImg } from "./offline/MirroredImg.jsx";
+import { notePendingUpdate } from "./offline/pendingWrites";
 import { InsightsLogProvider } from "./insights/InsightsLogProvider";
 import { recentDaysStartKey } from "./insights/insightsLogRange";
+import { useInsightsWindow } from "./insights/useInsightsWindow";
 import { buildCustomerIndex, byMostRecentOrder } from "./insights/customerIndex";
 import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
+import { setUpdateBusy } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
 import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
@@ -61,9 +74,15 @@ import { hubSneakerCountVisibleForViewer } from "./config/hubSneakerCount";
 import { setDisplaySlot, clearDisplaySlot } from "./components/stock/displaySlots";
 import StockHoldCard from "./components/stock/StockHoldCard";
 import DisplayRegistrationCard from "./components/stock/DisplayRegistrationCard";
+// Stock Audit — the daily shelf-walk lists (Out of Stock / Not Selling). Both
+// are precomputed once a day inside refillHealthScan; the screen reads one
+// small node per store and nothing else.
+import StockAuditView from "./components/stock/StockAuditView";
+import { stockAuditVisibleForViewer } from "./config/stockAudit";
 import DisplayRegistrationView from "./components/stock/DisplayRegistrationView";
 import ShopifyPublishView, { useShopifyAwaitingCount } from "./components/shopify/ShopifyPublishView";
 import SocialView from "./components/social/SocialView";
+import TvAdSettingsCard from "./components/TvAdSettingsCard";
 import { isCardHidden, isRoleHidden } from "./components/hiddenCards";
 // The photo regenerator's vocabulary and call-shaping, shared with the same
 // tool on the Shopify product page so the two can never offer different fixes
@@ -73,6 +92,22 @@ import { FIX_PRESETS, PHOTO_ENGINES, NOTE_MAX, buildGenerateRequest, costByEngin
 import StockHoldRelease from "./components/stock/StockHoldRelease";
 import { STOCK_HOLD_ENABLED } from "./config/stockHold";
 import RefillQueue from "./components/stock/RefillQueue";
+import { countsTowardSourceQueue } from "./components/stock/firstBatchCore";
+import NotificationSettingsRow from "./push/NotificationSettingsRow";
+import PushBanner from "./push/PushBanner";
+import { usePushRegistration } from "./push/usePush";
+import { usePushMute } from "./push/useMute";
+import PushAssignmentsCard from "./push/PushAssignmentsCard";
+import CostWatchCard from "./components/admin/CostWatchCard";
+import MirrorFleetCard from "./components/admin/MirrorFleetCard";
+import DeviceCodesCard from "./device/DeviceCodesCard";
+import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
+import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
+import { countReject, thisDevicePaused } from "./device/rejectCount";
+import { PAUSED_MESSAGE } from "./device/deviceRejects";
+import { useForegroundPush } from "./push/useForegroundPush";
+import { useFocusOrder } from "./push/useFocusOrder";
+import { orderCardKey } from "./push/deepLink";
 import { earliestSaleTs, pendingSaleRows } from "./components/stock/refillQueueCore";
 import RefillHistory from "./components/stock/RefillHistory";
 import HealthView from "./components/stock/HealthView";
@@ -87,12 +122,18 @@ import { displaySendNeedsSize } from "./utils/displaySend";
 import { sendFlowInit, sendFlowReduce, sendConfirmCopy, sentBannerCopy } from "./utils/sendConfirm";
 import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
-import { fetchCentralAvailability, tomorrowTapOutcome } from "./components/stock/tomorrowGate";
-import { readyPromisedByCell, cellAvailability, isFootwearProduct, promisedKey } from "./components/stock/availabilityCore";
+import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
+import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcing, resolveSneakerSourcingHub, allocateSneakerCart, GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB } from "./components/stock/availabilityCore";
+import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
+import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
+import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
+import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
-import { useStockCells, useStockCellsState, useDisplaySlots, useDisplayRegister, useLocations, useRefillRequests } from "./components/stock/useStock";
-import { displayUnitsByCell, displayOnly, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
+import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
+import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
+import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
 import { shopUniverse, SHOP_LABELS } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
@@ -135,6 +176,11 @@ import { useTaxonomy } from "./components/admin/useTaxonomy";
 import CategorySelect from "./components/admin/CategorySelect";
 import { receiveEntries, zeroEntries } from "./components/admin/SizeQtyBoxes";
 import NewProductForm from "./components/admin/NewProductForm";
+import DuplicateSuggestPanel from "./components/admin/DuplicateSuggestPanel";
+import { exactRowsOf, createAnywayPrompt, splitPrefillSizes, gatherExactTotals, prefillIsFresh } from "./components/admin/duplicateGate";
+import { rankCandidates } from "./utils/productDupMatch";
+import { onceAtATime } from "./utils/onceAtATime";
+import { productTotals } from "./components/stock/networkTotalsStore";
 import PrintedBarcodeCapture from "./components/admin/PrintedBarcodeCapture";
 import AssignCategoriesTab from "./components/admin/AssignCategoriesTab";
 import TaxonomyTab from "./components/admin/TaxonomyTab";
@@ -208,6 +254,41 @@ function compressImageFile(file, maxDim, maxBytes) {
   });
 }
 
+// ── OFFLINE-MIRROR THUMBNAIL: the Storage leg ────────────────────────────────
+// The POS tills cache products/{id}/thumb_300.webp so till search shows
+// pictures with no network. Nothing generated one for a NEW photo until now —
+// see src/utils/productThumb.js for why this is a browser encode and not a
+// Storage trigger (the functions project is shared with marathon-pos-app).
+// writeProductThumb owns the path, the encode and the never-throw contract;
+// this is only "put these bytes there", bound to this app's Storage handle.
+const uploadThumbObject = (path, blob, metadata) =>
+  uploadBytes(storageRef(storage, path), blob, metadata);
+// The repair leg. A thumbnail that could NOT be replaced is deleted rather than
+// left standing: the photo it depicts has just been replaced, so it is wrong,
+// and a wrong thumbnail under a marker the till believes is current is never
+// revisited — where a missing one is retried every 6h and regenerated by the
+// POS repo's generate.mjs. See writeProductThumb.
+const removeThumbObject = (path) => deleteObject(storageRef(storage, path));
+
+// ── THE APPROVED AI PHOTO NEEDS ITS OWN THUMBNAIL ────────────────────────────
+// Approving an AI re-shoot points products/{id}/photoUrl at the proposal object
+// and deliberately leaves photo.jpg alone. The offline thumbnail lives at ONE
+// deterministic path per product and was generated from photo.jpg — so before
+// this, an approval left the shop showing the clean white-background photo
+// while every till showed the ORIGINAL, for ever. The logic lives in
+// productThumb.js (testable, no Firebase imports); this binds it to this app's
+// Storage handle.
+//
+// getBlob, not fetch(). The proposal URL carries a Firebase download token,
+// which is a bearer credential that works without reference to the rules;
+// getBlob goes through the SDK and is gated by them. (The bucket's CORS allows
+// both — verified live, 2026-09-04.)
+const downloadByUrl = (url) => getBlob(storageRef(storage, url));
+const writeApprovedProposalThumb = (productId, proposedUrl) =>
+  writeApprovedThumbFromUrl(productId, proposedUrl, {
+    download: downloadByUrl, upload: uploadThumbObject, remove: removeThumbObject,
+  });
+
 // Upload a sneaker's box photo → products/{id}/source_box.jpg + photoBoxUrl.
 // House-style sneaker generations attach it automatically so the AI reproduces
 // the REAL box instead of guessing. Used by the Regenerate popup + product page.
@@ -273,12 +354,17 @@ function ProductThumb({ name, photoMap, size = 40 }) {
 }
 
 // Helper to render product photo or icon — replaces inline `{p.photoUrl ? <img> : "👟"}` patterns
-function ProductPhoto({ url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)" }) {
+//
+// `productId` is optional and is the offline mirror's hook: given one, this
+// serves the device's own 300px thumbnail instead of fetching the ~109 KB
+// original from Storage. Without one it behaves exactly as it always has, so
+// a call site that has no id is not a bug — it is simply not mirrored.
+function ProductPhoto({ productId = null, url, photo, size = 60, radius = 10, bg = "rgba(255,255,255,.08)" }) {
   const src = url || (photo && (photo.startsWith("data:") || photo.startsWith("http")) ? photo : null);
   return (
     <div style={{ width:size, height:size, borderRadius:radius, background:bg, display:"flex", alignItems:"center", justifyContent:"center", flexShrink:0, overflow:"hidden" }}>
       {src
-        ? <img src={src} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}/>
+        ? <MirroredImg productId={productId} src={src} alt="" style={{ width:"100%", height:"100%", objectFit:"cover" }} onError={e => { e.currentTarget.style.display = "none"; }}/>
         : <ProductIcon size={Math.round(size * 0.5)} />}
     </div>
   );
@@ -330,7 +416,7 @@ function GalleryLightbox({ photos, onClose }) {
   );
 }
 
-const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon" };
+const ROLES = { ADMIN: "admin", ASSISTANT: "assistant", WAREHOUSE: "warehouse", CUSTOMER: "customer", DISPLAY: "display", INSIGHTS: "insights", SOURCE: "source", RETURNS: "returns", CUSTOMERS_DB: "customers_db", BROADCAST_GROUPS: "broadcast_groups", USER_MANAGEMENT: "user_management", STOCK: "stock", HEALTH: "health", ATTENTION: "attention", MARKETING: "marketing", BARCODES: "barcodes", LABEL_PRINT: "label_print", AI_STUDIO: "ai_studio", DISPLAY_CHECKS: "display_checks", HUB_SNEAKER_COUNT: "hub_sneaker_count", STOCK_HOLD: "stock_hold", DISPLAY_REGISTRATION: "display_registration", SHOPIFY_PUBLISH: "shopify_publish", ENGINE_POLICY: "engine_policy", TOTAL_STOCK: "total_stock", SOCIAL: "social", CARD_RECON: "card_recon", TV_AD: "tv_ad", STOCK_AUDIT: "stock_audit" };
 
 // Each role tile maps to a permission string. Tiles are hidden when the
 // signed-in user lacks the permission. Super-admin (gunidmoh@gmail.com)
@@ -512,11 +598,15 @@ function useProducts() {
   const authReady = useAuthReady();
   const [products, setProducts] = useState([]);
 
-  useEffect(() => {
-    if (!authReady) return;
-    const productsRef = ref(database, "products");
-    const unsub = onValue(productsRef, (snap) => {
-      const data = snap.val();
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /products is 4.7 MB and this subscription is paid on every cold load. When
+  // this device serves it from its local copy the subscription below is never
+  // opened; `applyProductsSnapshot` is the SAME function either way, so what
+  // the app ends up holding is identical to the byte.
+  const mirrored = useMirroredPath("products", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  const applyProductsSnapshot = useCallback((data, { allowMigration }) => {
       if (!data) { setProducts([]); return; }
 
       // Legacy shape: { items: [...] } written by old useFirebaseState code.
@@ -526,9 +616,16 @@ function useProducts() {
       if (data.items && Array.isArray(data.items) && data.items.length > 0) {
         const validItems = data.items.filter(p => p && p.id && p.name);
         if (validItems.length > 0) {
+          if (!allowMigration) {
+            // Read-only path: present the items, write nothing.
+            ALL_PRODUCTS_BY_ID = Object.fromEntries(validItems.map(p => [p.id, p]));
+            setProducts(filterMergedProducts(validItems));
+            return;
+          }
           const patch = { items: null };
           for (const p of validItems) patch[p.id] = p;
-          update(productsRef, patch).catch(err => console.warn("Product migration failed:", err));
+          update(ref(database, "products"), patch)
+            .catch(err => console.warn("Product migration failed:", err));
           ALL_PRODUCTS_BY_ID = Object.fromEntries(validItems.map(p => [p.id, p]));
           setProducts(filterMergedProducts(validItems));
         }
@@ -550,11 +647,27 @@ function useProducts() {
       const all = Object.values(data).filter(v => v && typeof v === "object" && v.id && v.name);
       ALL_PRODUCTS_BY_ID = Object.fromEntries(all.map(p => [p.id, p]));
       setProducts(filterMergedProducts(all));
+  }, []);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const productsRef = ref(database, "products");
+    const unsub = onValue(productsRef, (snap) => {
+      // The legacy {items:[...]} migration WRITES, so it only ever runs on the
+      // live path — a mirrored read must never write to the database it is a
+      // copy of, and a device holding a stale mirror could otherwise re-post a
+      // migration that has long since happened.
+      applyProductsSnapshot(snap.val(), { allowMigration: true });
     }, (err) => {
       console.warn("Firebase read error on /products:", err);
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applyProductsSnapshot]);
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applyProductsSnapshot(mirrored.value, { allowMigration: false });
+  }, [live, mirrored.settled, mirrored.value, applyProductsSnapshot]);
 
   return products;
 }
@@ -833,12 +946,42 @@ function updateProductHubs(id, hubs) {
 // read is a destShop-scoped query — the /orders rule REJECTS an unscoped full read
 // from a store-assigned user, so this is genuine data-level isolation, not just UI.
 // null/undefined (warehouse, admin, super-admin, anonymous TV) → full-node read.
+// The returned array carries a `settled` FLAG (a property on the array, so
+// every existing consumer — map, filter, length, spread — is untouched). Most
+// screens do not care: a list that fills in a moment later is normal. The
+// alternatives strip does, because before /orders answers the ready-promise
+// map is EMPTY, which is indistinguishable from "nothing is promised" — and a
+// recommendation made on that basis asserts availability nobody has checked
+// (independent review, 2026-09-06).
 function useOrders(scopeShop = null) {
   const authReady = useAuthReady();
-  const [orders, setOrders] = useState([]);
+  const [orders, setOrders] = useState(() => Object.assign([], { settled: false }));
+
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /orders is 2.6 MB. The mirror holds the whole node, so a SCOPED caller
+  // filters locally on the same `destShop` the server query uses — the same
+  // rows, chosen the same way, without the node coming down the wire.
+  const mirroredOrders = useMirroredPath("orders", authReady);
+  const liveOrders = mirroredOrders.verdict === "fallback";
 
   useEffect(() => {
-    if (!authReady) return;
+    if (liveOrders || !mirroredOrders.settled) return;
+    const data = mirroredOrders.value;
+    if (!data) { setOrders(Object.assign([], { settled: true })); return; }
+    const arr = Object.values(data)
+      // Not just filter(Boolean). The legacy {items:[...]} shape would yield
+      // ONE element that is an array, which sorts by an undefined createdAt
+      // and renders as a broken order row. The live path detects and MIGRATES
+      // that shape; a read-only path cannot, so it declines to render it —
+      // same guard useProducts applies, for the same reason.
+      .filter(o => o && typeof o === "object" && !Array.isArray(o))
+      .filter(o => !scopeShop || o?.destShop === scopeShop)
+      .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
+    setOrders(Object.assign(arr, { settled: true }));
+  }, [liveOrders, mirroredOrders.settled, mirroredOrders.value, scopeShop]);
+
+  useEffect(() => {
+    if (!authReady || !liveOrders) return undefined;
     const ordersRef = ref(database, "orders");
     // Legacy /orders can briefly be an ARRAY under .items; a scoped query only
     // makes sense on the per-id map. The migration below rewrites it, after which
@@ -849,7 +992,7 @@ function useOrders(scopeShop = null) {
     const unsub = onValue(readRef, (snap) => {
       const data = snap.val();
       if (!data) {
-        setOrders([]);
+        setOrders(Object.assign([], { settled: true }));
         return;
       }
       // Legacy shape detected — migrate.
@@ -867,19 +1010,27 @@ function useOrders(scopeShop = null) {
         const arr = data.items.slice().sort((a, b) =>
           tsMs(b?.createdAt) - tsMs(a?.createdAt)
         );
-        setOrders(arr);
+        setOrders(Object.assign(arr, { settled: true }));
         return;
       }
       // Normal shape: map of id → order. Convert to sorted array.
       const arr = Object.values(data)
         .filter(Boolean)
         .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt));
-      setOrders(arr);
+      setOrders(Object.assign(arr, { settled: true }));
     }, (err) => {
+      // A read ERROR leaves settled FALSE deliberately: the promise map is
+      // empty for a reason that has nothing to do with the shelf.
       console.warn("Firebase read error on /orders:", err);
+      // …but an error AFTER a first successful snapshot left `settled` true and
+      // the last array in place, so a consumer went on treating stale evidence
+      // as current (final gate review). The flag says so without disturbing
+      // `settled`, which every other consumer reads: the display self-heal is
+      // the one consumer that WRITES from this evidence, and it stops.
+      setOrders((prev) => Object.assign(prev.slice(), { settled: prev.settled === true, error: true }));
     });
     return () => unsub();
-  }, [authReady, scopeShop]);
+  }, [authReady, scopeShop, liveOrders]);
 
   return orders;
 }
@@ -900,25 +1051,51 @@ function useOrders(scopeShop = null) {
 function useTvOrders() {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState([]);
+
+  const shapeTvOrders = useCallback((data) => (
+    data
+      ? Object.values(data).filter(Boolean)
+          .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+      : []
+  ), []);
+
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // THE TV IS THE WORST CASE THIS WORK EXISTS FOR. It is always on, it
+  // auto-reloads, and every reload re-pays the key range — 465 KB of customer
+  // orders out of the 2,150 KB the unscoped listen used to cost (measured
+  // 2026-08-13). On a mirrored device the range is applied to the LOCAL copy
+  // of /orders instead, by the same key comparison the server query uses, so
+  // the rows are identical and the reload costs nothing.
+  const mirrored = useMirroredPath("orders", authReady);
+  const live = mirrored.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    const data = mirrored.value;
+    if (!data) { setOrders([]); return; }
+    // The SAME bound as the server query. TV_ORDER_KEY_END's \uf8ff is
+    // invisible in an editor and must never be "tidied" — see
+    // src/utils/tvOrdersRange.js for why the range is what it is.
+    const inRange = {};
+    for (const [key, value] of Object.entries(data)) {
+      if (key >= TV_ORDER_KEY_START && key <= TV_ORDER_KEY_END) inRange[key] = value;
+    }
+    setOrders(shapeTvOrders(Object.keys(inRange).length ? inRange : null));
+  }, [live, mirrored.settled, mirrored.value, shapeTvOrders]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const readRef = query(
       ref(database, "orders"),
       orderByKey(), startAt(TV_ORDER_KEY_START), endAt(TV_ORDER_KEY_END)
     );
     const unsub = onValue(readRef, (snap) => {
-      const data = snap.val();
-      setOrders(
-        data
-          ? Object.values(data).filter(Boolean)
-              .sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
-          : []
-      );
+      setOrders(shapeTvOrders(snap.val()));
     }, (err) => {
       console.warn("Firebase read error on /orders (TV key range):", err);
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, shapeTvOrders]);
   return orders;
 }
 
@@ -941,7 +1118,16 @@ function writeOrder(order) {
     console.error("writeOrder rejected:", err.message, { orderId: order.id ?? null, undefinedFields });
     throw err;
   }
-  return set(ref(database, `orders/${order.id}`), order).catch((err) => {
+  // Who placed it, on which device (src/device/deviceStamp.js).
+  order = stampRecord(order, "placed");
+  return set(ref(database, `orders/${order.id}`), order).then((ok) => {
+    // THE OFFLINE MIRROR. A person who has just placed an order must see it,
+    // not the shelf as it was a moment ago. Echoed AFTER the write resolves,
+    // so it only ever echoes what RTDB accepted. No-op with the flag off —
+    // src/offline/pendingWrites.js.
+    notePendingUpdate({ [`orders/${order.id}`]: order });
+    return ok;
+  }).catch((err) => {
     // Propagate (don't swallow) so placeOrders / placeRefillRequests surface the
     // real reason AND don't false-clear the cart. Both callers await this inside
     // a try/catch and writeOrder has no other callers. Previously an async
@@ -955,8 +1141,10 @@ function writeOrder(order) {
 // Patch a single order. Used by WarehouseView and DisplayView.
 // Writes only the changed fields directly to /orders/{id} — no array
 // replacement, no race with concurrent writes to other orders.
+// Every action carries the device stamp — who, on which device, when — under
+// orders/{id}/stamps, one key per action (src/device/deviceStamp.js).
 function updateOrder(id, patch) {
-  return update(ref(database, `orders/${id}`), patch).catch((err) => {
+  return update(ref(database, `orders/${id}`), stampPatch(patch, orderActionName(patch))).catch((err) => {
     console.warn(`Firebase updateOrder(${id}) failed:`, err);
   });
 }
@@ -1006,8 +1194,41 @@ function useInsightsLogRecentDays(days) {
     const t = setInterval(() => setSaDay(saDateString()), 60_000);
     return () => clearInterval(t);
   }, []);
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // The local copy answers the SAME key range, against the same push keys, so
+  // the window is identical — and the caller still filters on `timestamp`
+  // afterwards, as it always has. mirrorVersion re-reads when the feed brings
+  // new entries; without it a screen left open would never see today's.
+  // useMirrorLeg, NOT useMirroredPath: this reader wants a RANGE, and asking
+  // for the whole node just to learn that it changed would rebuild 112,968
+  // rows in memory every time the feed moved — which is the cost the ranged
+  // local read exists to avoid, moved onto the device.
+  const { serving: insightsServing, version: insightsVersion } = useMirrorLeg("insights", authReady);
+  const liveInsights = !insightsServing;
+
   useEffect(() => {
-    if (!authReady) return undefined;
+    if (liveInsights) return undefined;
+    let cancelled = false;
+    (async () => {
+      const { startKey } = recentDaysStartKey(days, serverNowMs());
+      const { getMirrorDbHandle } = await import("./offline/mirrorDbHandle");
+      const { readInsightsFromKey } = await import("./offline/localReads");
+      try {
+        const data = await readInsightsFromKey(await getMirrorDbHandle(), startKey);
+        if (cancelled) return;
+        setLog(!data ? [] : Object.values(data).filter(Boolean)
+          .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp)));
+      } catch (err) {
+        // Not an empty window — a local read that failed. Leaving the last
+        // rendered log in place is the honest thing; the next pass re-reads.
+        console.warn("offline mirror: local /insights_log range failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [liveInsights, insightsVersion, days, saDay]);
+
+  useEffect(() => {
+    if (!authReady || !liveInsights) return undefined;
     const { startKey } = recentDaysStartKey(days, serverNowMs());
     const q = query(ref(database, "insights_log"), orderByKey(), startAt(startKey));
     const unsub = onValue(q, snap => {
@@ -1022,8 +1243,26 @@ function useInsightsLogRecentDays(days) {
     return () => unsub();
     // saDay is a DEPENDENCY, not decoration: when the SA date rolls over the
     // query re-anchors to the new day's window.
-  }, [authReady, days, saDay]);
+  }, [authReady, days, saDay, liveInsights]);
   return log;
+}
+
+// The sentinels InsightsView already uses for its All Time period, hoisted so
+// the two all-time screens ask for the same window in the same words.
+const ALL_TIME_START = "0000-01-01T00:00:00.000Z";
+const ALL_TIME_END   = "9999-12-31T23:59:59.999Z";
+
+// The SA date, re-stamped on a slow tick. A window read is an effect, and a
+// millisecond clock as its dependency would re-run it on every render; a till
+// is also left open across midnight, so the boundary still has to move. Same
+// pattern as useInsightsLogRecentDays.
+function useSaDayTick() {
+  const [day, setDay] = useState(() => saDateString());
+  useEffect(() => {
+    const t = setInterval(() => setDay(saDateString()), 60_000);
+    return () => clearInterval(t);
+  }, []);
+  return day;
 }
 
 // ─── SOUTH AFRICA TIME HELPERS ────────────────────────────────────────────────
@@ -1222,10 +1461,12 @@ function useAllSourceResponses() {
   const authReady = useAuthReady();
   const [responses, setResponses] = useState({});
   const [progress, setProgress] = useState({});
-  useEffect(() => {
-    if (!authReady) return;
-    const unsub = onValue(ref(database, "restock_requests"), snap => {
-      const data = snap.val() || {};
+
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /restock_requests is 1.4 MB and carries base64 photos inline. Six screens
+  // read it. The shaping below is the SAME function on both paths, so what
+  // they render cannot depend on where the rows came from.
+  const applySourceResponses = useCallback((data) => {
       const result = {};
       const prog = {};
       Object.entries(data).forEach(([date, dateNode]) => {
@@ -1254,9 +1495,24 @@ function useAllSourceResponses() {
       });
       setResponses(result);
       setProgress(prog);
+  }, []);
+
+  const mirrored = useMirroredPath("restock_requests", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applySourceResponses(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value, applySourceResponses]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const unsub = onValue(ref(database, "restock_requests"), snap => {
+      applySourceResponses(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applySourceResponses]);
+
   return { responses, progress };
 }
 
@@ -1278,7 +1534,7 @@ function useAllSourceResponses() {
 // leaves are raw whole/letter sizes, which encode to themselves — no migration.
 function saveSourceResponse(date, productKey, size, response, extra) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { response, respondedOn: serverNowIso(), ...(extra || {}), by: deviceStamp(`source-${response}`) }
   }).catch(err => console.warn("saveSourceResponse failed:", err));
 }
 
@@ -1287,7 +1543,7 @@ function saveSourceResponse(date, productKey, size, response, extra) {
 // "n of m sent" badge until the remainder ships and saveSourceResponse closes it.
 function saveSourceFulfilProgress(date, productKey, size, fulfilledQty, meta) {
   update(ref(database, sourceResponsePath(date, productKey)), {
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}) }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { fulfilledQty, lastFulfilledAt: serverNowIso(), ...(meta || {}), by: deviceStamp("source-fulfil-part") }
   }).catch(err => console.warn("saveSourceFulfilProgress failed:", err));
 }
 
@@ -1332,10 +1588,9 @@ function clearSourceResponse(date, productKeys, size) {
 function useClothingOos() {
   const authReady = useAuthReady();
   const [oos, setOos] = useState({});
-  useEffect(() => {
-    if (!authReady) return;
-    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
-      const data = snap.val() || {};
+
+  // Same shaping on both paths — see useAllSourceResponses.
+  const applyClothingOos = useCallback((data) => {
       const result = {};
       Object.entries(data).forEach(([store, storeNode]) => {
         if (!storeNode || typeof storeNode !== "object") return;
@@ -1352,9 +1607,24 @@ function useClothingOos() {
         if (Object.keys(byProduct).length) result[store] = byProduct;
       });
       setOos(result);
+  }, []);
+
+  const mirrored = useMirroredPath("clothing_sold_refills", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    applyClothingOos(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value, applyClothingOos]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    const unsub = onValue(ref(database, "clothing_sold_refills"), snap => {
+      applyClothingOos(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live, applyClothingOos]);
+
   return oos;
 }
 
@@ -1365,7 +1635,7 @@ function saveClothingOut(store, productId, size, hub) {
     // Encoded key (same half-size fix as saveSourceResponse): a "." size here
     // threw synchronously; a "." in clearClothingOut's path silently addressed
     // a child node instead. Reader (useClothingOos) decodes back to raw.
-    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid }
+    [assertSafeSegment(encodeSizeKey(size), "size key")]: { outHub: hub || null, at: serverNowIso(), by: uid, device: deviceStamp("clothing-out") }
   }).catch(err => console.warn("saveClothingOut failed:", err));
 }
 function clearClothingOut(store, productId, size) {
@@ -1511,20 +1781,49 @@ function useClothingSoldMovements(fromSaDate) {
   let start = fromSaDate || dflt;
   if (start < maxBack) start = maxBack;   // cap: never before today-90
   if (start > dflt)    start = dflt;      // floor: always cover the default window
+  // ─── THE OFFLINE MIRROR ─────────────────────────────────────────────────
+  // /stock_movements is 31.8 MB and 90,922 rows. The local copy answers the
+  // same ts range through an IndexedDB index on the same field, so the window
+  // is identical — and the walk stays an indexed one rather than becoming a
+  // scan of every row, which would only move the cost onto the device.
+  // useMirrorLeg for the same reason as useInsightsLogRecentDays above: a
+  // range reader must not rebuild 90,922 rows to find out the leg moved.
+  const { serving: mvServing, version: mvVersion } = useMirrorLeg("movements", authReady);
+  const liveMv = !mvServing;
+
+  const shapeMovements = useCallback((data) => {
+    const arr = [];
+    Object.entries(data || {}).forEach(([mvId, m]) => {
+      if (m && typeof m === "object") arr.push({ mvId, ...m });
+    });
+    return arr;
+  }, []);
+
   useEffect(() => {
-    if (!authReady) return;
+    if (liveMv) return undefined;
+    let cancelled = false;
+    (async () => {
+      const { getMirrorDbHandle } = await import("./offline/mirrorDbHandle");
+      const { readMovementsFromTs } = await import("./offline/localReads");
+      try {
+        const data = await readMovementsFromTs(await getMirrorDbHandle(), saStartIso(start));
+        if (!cancelled) setMovements(shapeMovements(data));
+      } catch (err) {
+        console.warn("offline mirror: local /stock_movements range failed:", err);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [liveMv, mvVersion, start, shapeMovements]);
+
+  useEffect(() => {
+    if (!authReady || !liveMv) return undefined;
     const startIso = saStartIso(start);
     const q = query(ref(database, "stock_movements"), orderByChild("ts"), startAt(startIso));
     const unsub = onValue(q, snap => {
-      const data = snap.val() || {};
-      const arr = [];
-      Object.entries(data).forEach(([mvId, m]) => {
-        if (m && typeof m === "object") arr.push({ mvId, ...m });
-      });
-      setMovements(arr);
+      setMovements(shapeMovements(snap.val()));
     }, err => console.warn("stock_movements read error:", err));
     return () => unsub();
-  }, [authReady, start]);
+  }, [authReady, start, liveMv, shapeMovements]);
   return movements;
 }
 
@@ -1546,15 +1845,27 @@ function relativeTimeFromIso(iso) {
 function useRestockLogRaw(date) {
   const authReady = useAuthReady();
   const [entries, setEntries] = useState([]);
+  // One day of /restock_log. Small on its own, but the whole node is 8.0 MB
+  // and already mirrored, so reading one day from the local copy costs
+  // nothing at all rather than a subscription per day viewed.
+  const mirrored = useMirroredPath(date ? `restock_log/${date}` : null, authReady && !!date);
+  const live = mirrored.verdict === "fallback";
+
   useEffect(() => {
-    if (!authReady || !date) return;
+    if (live || !mirrored.settled) return;
+    const data = mirrored.value;
+    setEntries(data ? Object.values(data).filter(Boolean) : []);
+  }, [live, mirrored.settled, mirrored.value]);
+
+  useEffect(() => {
+    if (!authReady || !date || !live) return undefined;
     const unsub = onValue(ref(database, `restock_log/${date}`), snap => {
       const data = snap.val();
       if (!data) { setEntries([]); return; }
       setEntries(Object.values(data).filter(Boolean));
     });
     return () => unsub();
-  }, [authReady, date]);
+  }, [authReady, date, live]);
   return entries;
 }
 
@@ -1649,13 +1960,20 @@ function returnedCompositeKeySet(returnsLog) {
 function useRestockLogAll() {
   const authReady = useAuthReady();
   const [log, setLog] = useState({});
+  // /restock_log is 8.0 MB read whole.
+  const mirrored = useMirroredPath("restock_log", authReady);
+  const live = mirrored.verdict === "fallback";
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setLog(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "restock_log"), snap => {
       setLog(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live]);
   return log;
 }
 
@@ -1668,16 +1986,29 @@ function logReturn(entry) {
 function useReturnsLog() {
   const authReady = useAuthReady();
   const [log, setLog] = useState([]);
+  const mirrored = useMirroredPath("returns_log", authReady);
+  const live = mirrored.verdict === "fallback";
+  const shape = useCallback((data) => {
+    if (!data) return [];
+    return Object.values(data).filter(Boolean)
+      .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp));
+  }, []);
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setLog(shape(mirrored.value));
+  }, [live, mirrored.settled, mirrored.value, shape]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "returns_log"), snap => {
-      const data = snap.val();
-      if (!data) { setLog([]); return; }
-      setLog(Object.values(data).filter(Boolean)
-        .sort((a, b) => tsMs(b.timestamp) - tsMs(a.timestamp)));
+      setLog(shape(snap.val()));
     });
     return () => unsub();
-  }, [authReady]);
+    // `live` is LOAD-BEARING in this list. Without it the effect only re-runs
+    // when authReady moves, so a device whose mirror goes unusable mid-session
+    // — a census drift, an expired cursor — would fall back to the live path
+    // and never open the subscription, leaving Returns frozen on the last
+    // mirrored value until a reload. (Sonnet architect review, PR #618.)
+  }, [authReady, live, shape]);
   return log;
 }
 
@@ -1705,13 +2036,22 @@ function setCustomerOptIn(phone, optedIn) {
 function useCustomersDb() {
   const authReady = useAuthReady();
   const [customers, setCustomers] = useState({});
+  // /customers is 1.8 MB and 9,662 records. Same value either way — `|| {}`
+  // is applied to both, so an empty node is `{}` on both paths exactly as it
+  // is today.
+  const mirrored = useMirroredPath("customers", authReady);
+  const live = mirrored.verdict === "fallback";
   useEffect(() => {
-    if (!authReady) return;
+    if (live || !mirrored.settled) return;
+    setCustomers(mirrored.value || {});
+  }, [live, mirrored.settled, mirrored.value]);
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
     const unsub = onValue(ref(database, "customers"), snap => {
       setCustomers(snap.val() || {});
     });
     return () => unsub();
-  }, [authReady]);
+  }, [authReady, live]);
   return customers;
 }
 
@@ -1870,21 +2210,11 @@ onValue(ref(database, ".info/serverTimeOffset"), (snap) => setServerTimeOffsetMs
 // keyed by their number (/orders/001), a re-issued number silently OVERWRITES
 // the earlier order. On 2026-07-17 this reset the counter 4 times and destroyed
 // 47 orders before the numbers were pinned to server time (PR #236).
-const getTodayKey = saTodayKey;
-
-async function getNextOrderNumber() {
-  const todayKey = getTodayKey();
-  const counterRef = ref(database, "orderCounter");
-  const txResult = await runTransaction(counterRef, (current) => {
-    if (!current || current.day !== todayKey) {
-      return { day: todayKey, counter: 1 };
-    }
-    const next = current.counter >= 999 ? 1 : current.counter + 1;
-    return { day: todayKey, counter: next };
-  });
-  const counter = txResult.snapshot.val()?.counter ?? 1;
-  return String(counter).padStart(3, "0");
-}
+// getTodayKey / getNextOrderNumber MOVED to src/utils/orderCounter.js
+// (2026-09-08), byte-identical, because the wall-walk "Request Display" raises
+// an ordinary display-partner request from the Stock section and needs the same
+// number space. Imported at the top of this file; nothing about the rule
+// changed, and a second copy of it is exactly what the note above warns about.
 
 // ─── SHOP-REFILL NUMBER COUNTER ───────────────────────────────────────────────
 // Clothing "Shop Refill" requests get their OWN daily counter, kept completely
@@ -1948,7 +2278,19 @@ const CUSTOMERS_SESSION_KEY = "customersAuth";
 
 function CustomersView({ onExit }) {
   const [tab, setTab] = usePersistedTab("customers", "insights");
-  const insightsLog  = useInsightsLog();
+  // ALL-TIME, and it has to be: the customer list is every `placed` event ever,
+  // deduplicated by phone, and the stats walk the same set. What changes is
+  // where it comes from — rollup day nodes plus a bounded read for today,
+  // rather than 35.99 MB of /insights_log on every mount.
+  const customersSaDay = useSaDayTick();
+  const customersAuthReady = useAuthReady();
+  const { log: insightsLog } = useInsightsWindow({
+    startIso: ALL_TIME_START,
+    endIso: ALL_TIME_END,
+    allTime: true,
+    enabled: customersAuthReady,
+    saDay: customersSaDay,
+  });
   const customersDb  = useCustomersDb();
   const broadcasts   = useBroadcastHistory();
   const returnsLog   = useReturnsLog();
@@ -2518,6 +2860,11 @@ function CustomerDrillModal({ drill, detail, onClose, fmt }) {
 // ─── ROLE SELECTOR ────────────────────────────────────────────────────────────
 // ── Role icon SVGs (match HTML design exactly) ─────────────────────────────
 const RoleIcons = {
+  stock_audit: (
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M20 12v7a2 2 0 0 1-2 2H6a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h9"/><path d="M9 11l3 3 7-7"/>
+    </svg>
+  ),
   stock: (
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="M3 9h18M3 15h18"/><rect x="2" y="4" width="20" height="16" rx="2"/><line x1="9" y1="4" x2="9" y2="20"/><line x1="15" y1="4" x2="15" y2="20"/>
@@ -2581,6 +2928,47 @@ const RoleIcons = {
     <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
       <path d="m22 2-7 20-4-9-9-4Z"/>
       <path d="M22 2 11 13"/>
+    </svg>
+  ),
+  cost_watch: (
+    // lucide-style "trending line in a frame": a cost chart, not a currency
+    // symbol — the card is about where the money goes, not about money.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 3v16a2 2 0 0 0 2 2h16"/>
+      <path d="m7 15 3.5-4 3 2.5L20 7"/>
+      <path d="M20 11V7h-4"/>
+    </svg>
+  ),
+  mirror_fleet: (
+    // lucide-style "tablet + arrow down": a device with a copy coming into it.
+    // Deliberately NOT a cloud — the point of this screen is the devices, not
+    // the database.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="4" y="2" width="16" height="20" rx="2"/>
+      <path d="M12 7v7"/>
+      <path d="m9 11 3 3 3-3"/>
+      <path d="M10 18.5h4"/>
+    </svg>
+  ),
+  device_codes: (
+    // lucide-style "key + phone": a phone with a key beside it — a code that
+    // lets one device in. Not a padlock (that reads as "locked out").
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="3" width="11" height="18" rx="2"/>
+      <path d="M6.5 17.5h2"/>
+      <circle cx="17.5" cy="9" r="2.5"/>
+      <path d="M17.5 11.5V19"/>
+      <path d="M17.5 15.5h2"/>
+      <path d="M17.5 18h1.5"/>
+    </svg>
+  ),
+  push_alerts: (
+    // lucide-style "bell + check": the alert bell with a small tick, so it
+    // reads as "who is signed up for alerts" rather than as an alert itself.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h14"/>
+      <path d="M13.73 21a2 2 0 0 1-3.46 0"/>
+      <path d="m16 17 2 2 4-4"/>
     </svg>
   ),
   user_management: (
@@ -2687,6 +3075,16 @@ const RoleIcons = {
       <rect x="2.5" y="5.5" width="19" height="13" rx="2.5"/>
       <line x1="2.5" y1="10" x2="21.5" y2="10"/>
       <line x1="6" y1="15" x2="11" y2="15"/>
+    </svg>
+  ),
+  tv_ad: (
+    // A TV screen with a play triangle: the queue board's monitor shape (see
+    // Display's screen-on-a-stand) with a play glyph inside, standing in for
+    // the ad creative it pops up over the board.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="2" y="4" width="20" height="14" rx="2"/>
+      <path d="M8 22h8M12 18v4"/>
+      <path d="M10.5 8.5l5 3-5 3z" fill="#4A7FFF" stroke="none"/>
     </svg>
   ),
   barcodes: (
@@ -2830,9 +3228,9 @@ function MiniTile({ icon, name, desc, badge, onClick }) {
   );
 }
 
-function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin }) {
+function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, canAccessStock, isSuperAdmin, push, mute }) {
   const isDesktop = !useIsNarrow(1024);
-  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut } = usePermissions();
+  const { user: homeUser, permRecord: homePerm, signOut: homeSignOut, deviceIdentity: homeDevice } = usePermissions();
   // Engine Policy's tile gate reads the FIREBASE AUTH email and the permFlags
   // MIRROR — not hasPermission, not the permissions array, not stockRole. The
   // flag is the same scalar the server callable checks, so the two can never
@@ -2852,9 +3250,10 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // (owner spec 2026-08-08), not a separate class of Source work.
   const restockToday = useRestockLogRaw(today);
   const sourceBadge = (restockToday || []).length;
-  // assistant badge = today's placed orders
+  // assistant badge = today's placed orders. A wall-walk display request
+  // (displayRequestCore.js) is a warehouse task, not a placed order.
   const assistantBadge = orders ? orders.filter(o =>
-    o.createdAt && o.createdAt.slice(0,10) === today
+    o.createdAt && o.createdAt.slice(0,10) === today && o.wallWalk !== true
   ).length : 0;
 
   // Display Checks card — behind the master flag + the module's own access gate
@@ -2917,6 +3316,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   // Junid or a stockRole admin. The route below re-checks the same gate.
   const socialVisible = isSuperAdmin || homePerm?.stockRole === "admin";
 
+  // TV Ad — writes /settings/tvAd, which the TV screen overlay reads live.
+  // Same identity as Social/Shopify: super-admin or stockRole admin, matching
+  // the console write rule on /settings/tvAd.
+  const tvAdVisible = isSuperAdmin || homePerm?.stockRole === "admin";
+
   // Shared, permission-gated role data — rendered as a desktop tile grid or the
   // mobile RoleCard list.
   const groups = [
@@ -2936,6 +3340,12 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // gone. Restoring it is this one line.
       { key:"barcodes", icon:RoleIcons.barcodes, name:"Barcodes", desc:"Print product barcodes", onClick:()=>onSelect(ROLES.BARCODES) },
       { key:"label_print", icon:RoleIcons.label_print, name:"Print Labels", desc:"Product labels · name, price, barcode", onClick:()=>onSelect(ROLES.LABEL_PRINT) },
+      // Stock Audit — the two daily shelf-walk lists. UNGATED, beside the other
+      // two tiles everyone already has: it is a list of shelves to look at, and
+      // the people who walk them are not the people with stock permissions.
+      // (Owner, 2026-09-09.) It writes only /settings/stockAudit, which the
+      // live rules already open to every signed-in account.
+      { key:"stock_audit", icon:RoleIcons.stock_audit, name:"Stock Audit", desc:"Out of stock checks & audit", onClick:()=>onSelect(ROLES.STOCK_AUDIT) },
       dcVisible && { key:"display_checks", icon:RoleIcons.display_checks, name:"Display Checks", desc:"Clothing display checks", onClick:()=>onSelect(ROLES.DISPLAY_CHECKS) },
     ].filter(Boolean) },
     { label: "Insights & Display", cards: [
@@ -2976,10 +3386,37 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // card above (HubCleanupCard). We no longer track what is on display.
       hasPermission(ROLE_TO_PERMISSION[ROLES.BROADCAST_GROUPS]) && { key:"broadcast", icon:RoleIcons.broadcast_groups, name:"Group Broadcast", desc:"Send to WhatsApp groups", onClick:()=>onSelect(ROLES.BROADCAST_GROUPS) },
       hasPermission(ROLE_TO_PERMISSION[ROLES.USER_MANAGEMENT]) && { key:"user_mgmt", icon:RoleIcons.user_management, name:"User Management", desc:"Manage staff accounts", onClick:()=>(window.location.hash = "#admin/users") },
+      // Order alerts — WHO is told when a shop places an order, and for which
+      // hub. Super-admin ONLY, on the email, exactly like the route below it:
+      // this is a decision about other people's phones, and Junid's /users
+      // record carries no permissions array, so a permission-keyed gate would
+      // lock out the one person the card exists for. GATE 1 of 3; the RTDB rule
+      // on /push_assignments is the one that actually enforces it.
+      isSuperAdmin && { key:"push_alerts", icon:RoleIcons.push_alerts, name:"Order Alerts", desc:"Who is alerted, and for which hub", onClick:()=>(window.location.hash = "#admin/notifications") },
+      // Cost Watch — what Firebase costs, by device and by cause, measured
+      // continuously by marathon-cost-watch on the Mac mini. Super-admin ONLY,
+      // on the email, for the same reason as the tile above: the breakdown
+      // names individual staff devices, and Junid's /users record carries no
+      // permissions array, so a permission-keyed gate would lock out the one
+      // person the card is for. GATE 1 of 2; the route gate below is the twin.
+      isSuperAdmin && { key:"cost_watch", icon:RoleIcons.cost_watch, name:"Cost Watch", desc:"What Firebase costs, and who is spending it", onClick:()=>(window.location.hash = "#admin/cost") },
+      // Mirror Fleet — every device's own report of its offline copy, and the
+      // one switch that drops the whole fleet back to live reads. Super-admin
+      // ONLY, on the email, for the same reason as the two tiles above: the
+      // list names individual staff devices. GATE 1 of 3; the route gate and
+      // the card's own check are the others, and the RTDB rules on
+      // /mirror_devices and /mirror_switch are what actually enforce it.
+      isSuperAdmin && { key:"mirror_fleet", icon:RoleIcons.mirror_fleet, name:"Mirror Fleet", desc:"Every device's offline copy, and the kill switch", onClick:()=>(window.location.hash = "#admin/mirror") },
+      // Device codes — the 4-digit code every phone on MC's login needs
+      // (src/device/enrolment.js). Junid, or an enrolled device whose person may
+      // make codes (MC). GATE 1 of 3; the route below and the deviceEnrolmentAdmin
+      // callable (which re-checks the person on every call) are the others.
+      (isSuperAdmin || homeDevice?.canManageCodes === true) && { key:"device_codes", icon:RoleIcons.device_codes, name:"Device Codes", desc:"A code for each staff phone · who is on which device", onClick:()=>(window.location.hash = "#admin/devices") },
       // Card Recon — capture the card machine's batch slip, see the variance
       // against the POS tender ledger. Dedicated per-user permission; the
       // figure is OCR'd from the slip, never typed.
       hasPermission(ROLE_TO_PERMISSION[ROLES.CARD_RECON]) && { key:"card_recon", icon:RoleIcons.card_recon, name:"Card Recon", desc:"Batch slip capture · variance", onClick:()=>onSelect(ROLES.CARD_RECON) },
+      tvAdVisible && { key:"tv_ad", icon:RoleIcons.tv_ad, name:"TV Ad", desc:"Overlay creative · schedule", onClick:()=>onSelect(ROLES.TV_AD) },
       // AI Studio — super-admin sees every tool; `photo_generation` sees the
       // Photo Studio and NOTHING else (the view filters its own tool list, and
       // the description below changes to match so the card never promises a tab
@@ -3139,6 +3576,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
               ))}
             </>
           )}
+          <NotificationSettingsRow push={push} mute={mute} />
           <HomeSignOutRow name={name} onSignOut={homeSignOut} />
         </div>
       </div>
@@ -3190,6 +3628,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
             No tools assigned to your account yet. Ask an admin to update your permissions.
           </div>
         )}
+        <NotificationSettingsRow push={push} mute={mute} />
         <HomeSignOutRow name={name} onSignOut={homeSignOut} />
       </div>
     </div>
@@ -3312,7 +3751,7 @@ function RecentPickCard({ p, selected, onToggle }) {
                   border:"1px solid " + (selected ? "rgba(74,202,122,.65)" : "rgba(255,255,255,.08)"),
                   boxShadow: selected ? "0 0 0 1px rgba(74,202,122,.65), 0 4px 18px rgba(74,202,122,.14)" : "none",
                   transition:"border-color .15s ease, box-shadow .15s ease" }}>
-      <img src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
+      <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async" onLoad={() => setLoaded(true)}
            style={{ width:"100%", aspectRatio:"1", objectFit:"cover", display:"block",
                     opacity: loaded ? 1 : 0, transition:"opacity .25s ease" }}/>
       {!loaded && (
@@ -3456,6 +3895,10 @@ function AdminReviewPhotosTab({ products = [] }) {
     setBusyId(row.id);
     try {
       await update(ref(database, `products/${row.id}`), { photoUrl: row.proposedUrl, photoUrlOriginal: row.originalUrl });
+      // The till reads a thumbnail, not photoUrl. Re-encode the approved
+      // proposal onto the product's one thumbnail path so the shop and the
+      // tills show the same picture. Never throws — see the helper.
+      await writeApprovedProposalThumb(row.id, row.proposedUrl);
       await update(ref(database, `aiAssistant/photoProposals/${row.id}`), { status: "approved", decidedAt: serverNowMs() });
       return true;
     } catch (e) { setRunMsg(`Approve failed for “${row.name || row.id}”: ${e?.message || e}`); return false; }
@@ -3740,7 +4183,7 @@ function AdminReviewPhotosTab({ products = [] }) {
                 <div key={p.id} onClick={() => toggleSel(p.id)}
                      style={{ display:"flex", alignItems:"center", gap:10, padding:"6px 8px", borderRadius:9, cursor:"pointer",
                               background: on ? "rgba(74,202,122,.16)" : "rgba(255,255,255,.03)", border:"1px solid "+(on ? "rgba(74,202,122,.5)" : "rgba(255,255,255,.07)") }}>
-                  <img src={p.photoUrl} alt="" loading="lazy" decoding="async"
+                  <MirroredImg productId={p.id} src={p.photoUrl} alt="" loading="lazy" decoding="async"
                        style={{ width:38, height:38, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
                   <span style={{ flex:1, minWidth:0, fontSize:12.5, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</span>
                   <span style={{ fontSize:15, color: on ? "#4ACA7A" : "rgba(255,255,255,.25)" }}>{on ? "✓" : "+"}</span>
@@ -4550,7 +4993,7 @@ function AdminReviewCategoriesTab({ products = [] }) {
                         border: checked ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.07)" }}>
             <input type="checkbox" checked={checked} readOnly
                    style={{ width:17, height:17, accentColor:"#4A7FFF", flexShrink:0, cursor:"pointer" }}/>
-            <img src={p.photoUrl || ""} alt="" loading="lazy"
+            <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
                  style={{ width:40, height:40, borderRadius:7, objectFit:"cover", background:"rgba(255,255,255,.08)", flexShrink:0 }}/>
             <div style={{ flex:1, minWidth:0 }}>
               <div style={{ fontSize:13, color:"#fff", overflow:"hidden", textOverflow:"ellipsis", whiteSpace:"nowrap" }}>{p.name}</div>
@@ -4910,7 +5353,7 @@ function MissingPricesTab({ products = [] }) {
               <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 10, background: liveSelected.has(p.id) ? "rgba(74,127,255,.08)" : "rgba(255,255,255,.03)", border: "1px solid " + (liveSelected.has(p.id) ? "rgba(74,127,255,.4)" : "rgba(255,255,255,.07)") }}>
                 <input type="checkbox" checked={liveSelected.has(p.id)} onChange={() => toggleSelect(p.id)}
                   style={{ width: 16, height: 16, accentColor: "#4A7FFF", cursor: "pointer", flexShrink: 0 }} />
-                <img src={p.photoUrl || ""} alt="" loading="lazy"
+                <MirroredImg productId={p.id} src={p.photoUrl || ""} alt="" loading="lazy"
                   style={{ width: 44, height: 44, borderRadius: 8, objectFit: "cover", background: "rgba(255,255,255,.08)", flexShrink: 0 }} />
                 <div style={{ flex: 1, minWidth: 0 }}>
                   <div style={{ fontSize: 13, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{p.name}</div>
@@ -5152,7 +5595,7 @@ function AdminReviewNamesTab({ products }) {
           const changed = (row.suggested || "") !== (row.current || "");
           return (
             <div key={row.id} style={{ display:"flex", gap:11, background:"rgba(8,11,20,.9)", border:"1px solid rgba(255,255,255,.08)", borderRadius:14, padding:11 }}>
-              <ProductPhoto url={row.photoUrl} size={64} radius={10}/>
+              <ProductPhoto productId={row.id} url={row.photoUrl} size={64} radius={10}/>
               <div style={{ flex:1, minWidth:0 }}>
                 <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:6 }}>
                   <span style={{ fontSize:10, fontWeight:800, color: confColor(row.confidence || 0), background:"rgba(255,255,255,.05)", border:`1px solid ${confColor(row.confidence || 0)}55`, borderRadius:10, padding:"2px 8px" }}>{pct}% sure</span>
@@ -5553,6 +5996,27 @@ function AdminView({ products, orders, onExit }) {
   // label. (CodeRabbit, PR #340.)
   const [distribUsesPrintedBarcode, setDistribUsesPrintedBarcode] = useState(false);
   const recvRegistry = useLocations();
+  // ── EVERY LOCATION, for the duplicate panel's unit counts ─────────────────
+  // "How many are on hand" is the number that tells a live record from an
+  // abandoned twin, so it is summed over the WHOLE network — no exclusions.
+  // (Total Stock's EXCLUDED_LOCATIONS exist to shape a reorder figure; this is
+  // a recognition figure and a unit sitting at Pine is still a unit that exists.)
+  // A RETIRED LOCATION IS NOT DROPPED. Filtering on `active !== false` saved a
+  // read and produced a confident wrong number: a twin whose units all sit at a
+  // retired location summed to 0, and the confirm then said "already exists as X
+  // with 0 units" — which reads as "dead record, safe to replace" and pushes the
+  // operator into making the duplicate. Units at a retired location are still
+  // units that exist. (Adversarial delta review, PR #594.)
+  const dupLocationIds = useMemo(
+    () => Object.keys(recvRegistry || {}).sort(),
+    [recvRegistry],
+  );
+  // ── THE HANDOFF INTO AN EXISTING PRODUCT ─────────────────────────────────
+  // Picking a suggestion CREATES NOTHING. It carries the destination, the sizes
+  // and the quantities already typed into the receive-stock section of that
+  // product's own page — the same path a re-order has always used. Held here
+  // rather than in the URL because it is a one-shot handoff, not a place.
+  const [receivePrefill, setReceivePrefill] = useState(null); // { productId, loc, qtys }
   const fileInputRef = useRef(null);
   // ── List search + type filter ───────────────────────────────────────────
   const [productSearch, setProductSearch] = useState("");
@@ -5590,7 +6054,19 @@ function AdminView({ products, orders, onExit }) {
   // Insights log → fuels the detail page's "Last sold X · N orders all-time"
   // context line. orders[] alone isn't enough — it's daily-counter-ephemeral
   // (see project-insights-past-days-pattern memory).
-  const insightsLog = useInsightsLog();
+  //
+  // All-time, from the rollup: the line is a count and a most-recent timestamp
+  // over every event this product has, so the window cannot be narrowed. The
+  // 35.99 MB whole-node read it used to make can.
+  const adminSaDay = useSaDayTick();
+  const adminAuthReady = useAuthReady();
+  const { log: insightsLog } = useInsightsWindow({
+    startIso: ALL_TIME_START,
+    endIso: ALL_TIME_END,
+    allTime: true,
+    enabled: adminAuthReady,
+    saDay: adminSaDay,
+  });
   // Desktop workspace gate (≥1024px). Mobile keeps the single column.
   const isWide = !useIsNarrow(1024);
 
@@ -5636,7 +6112,31 @@ function AdminView({ products, orders, onExit }) {
     ...f, printedBarcode: null, printedBarcodeAuto: !f.printedBarcodeAuto,
   }));
 
-  const addProduct = async () => {
+  // ── ONE TAP IS ONE PRODUCT ────────────────────────────────────────────────
+  // The Save button only disables on `saving`, and `saving` is not set until
+  // AFTER the duplicate gate has awaited its per-location stock reads. That
+  // await is real network I/O on shop-floor wifi, and through all of it the
+  // button stayed live: two taps ran two addProduct calls, both read the same
+  // still-unset gate, both raised a confirm, and an operator who
+  // answered both created TWO products for one code — precisely the failure
+  // this whole feature exists to prevent, produced by its own gate.
+  //
+  // A REF, NOT STATE. State updates are asynchronous; the second tap arrives
+  // before any re-render, so a state flag would still be false when it reads it.
+  // (Sonnet architect review, PR #594.)
+  // The ref keeps the guard STABLE across renders while still calling the
+  // CURRENT handler. A guard rebuilt every render holds a fresh, unlocked flag
+  // and therefore locks nothing at all.
+  //
+  // NOT useMemo. React documents useMemo as a performance hint it MAY discard
+  // and recompute — and a discarded memo hands back a brand-new, unlocked guard,
+  // which is precisely the failure this guard exists to prevent. A ref is the
+  // only thing React promises to keep. (Adversarial delta review, PR #594.)
+  const addProductRef = useRef();
+  const addProductGuard = useRef(null);
+  if (!addProductGuard.current) addProductGuard.current = onceAtATime((...a) => addProductRef.current(...a));
+  const addProduct = addProductGuard.current;
+  const addProductOnce = async () => {
     setSaveAttempted(true);
     // Category is REQUIRED — and it must resolve to a real registry entry with a
     // legacy derivation. Without it we cannot write the legacy fields, and a
@@ -5656,6 +6156,68 @@ function AdminView({ products, orders, onExit }) {
       alert("Photograph the barcode printed on the box — or tap “generate a shop barcode instead” if it will not read.");
       return;
     }
+    // ── A SECOND RECORD FOR A CODE WE ALREADY HOLD IS A DELIBERATE ACT ──────
+    // Re-derived HERE, from the name actually being saved, rather than read off
+    // the panel: the panel's view is debounced and can be a keystroke behind,
+    // and a gate that can be outrun by typing quickly is not a gate. Pure and in
+    // memory against the catalogue this view already holds — no read.
+    //
+    // EXACT CODE MATCHES ONLY. A fuzzy name overlap gets the panel and nothing
+    // else; a dialog in front of a guess is how the operator learns to dismiss
+    // dialogs, including the one that mattered.
+    // EVERY ATTEMPT CONFIRMS. There was a "already confirmed for this name"
+    // flag; it was worse than useless. Cleared only on success, it stayed set
+    // after a failed save — and the product record is written EARLY, so a later
+    // step throwing (a rejected attachPrintedBarcode, say) left the form open,
+    // the name unchanged and the flag standing. The obvious retry then sailed
+    // past this gate and created a SECOND product with no dialog and no
+    // /insights_log row: the duplicate that actually landed was the one with no
+    // audit trail. Cleared on every exit instead, it could never be observed at
+    // all — set and cleared inside one call.
+    //
+    // So there is no flag. Creating a twin asks, every time, because each
+    // attempt to create one is its own deliberate act.
+    //
+    // BE HONEST ABOUT WHAT THE RETRY DIALOG BUYS. On that post-write path the
+    // twin exists but its stock movements have not run, so the count read back
+    // is a truthful 0 — and the dialog says "already exists as X with 0 units",
+    // which duplicateGate's own header calls the sentence that pushes an
+    // operator TOWARD the duplicate. The number is honest and the ask is right;
+    // it simply does not argue the case on that one path. What the removal
+    // actually fixes is the silent create with NO dialog and NO /insights_log
+    // row — the duplicate that landed with no audit trail at all.
+    // (Adversarial delta review, PR #594.)
+    const exactDupes = exactRowsOf(rankCandidates(form.name, products));
+    if (exactDupes.length) {
+      // Unit counts for the sentence. gatherExactTotals holds BOTH unknown
+      // rules — an empty location set is not read at all, and a failed read is
+      // null — so neither can degrade into a confident "0 units".
+      const totalsById = await gatherExactTotals(exactDupes, dupLocationIds, productTotals);
+      if (!window.confirm(createAnywayPrompt(form.name, exactDupes, totalsById))) return;
+      // The decision itself is the record. /insights_log is the append-only feed
+      // this app already keeps; nothing new is invented for it, and consumers
+      // filter on `action`, so an action they do not know is one they ignore.
+      logInsight({
+        // ISO, NOT MILLISECONDS — matching every other row in this node. It is
+        // still server time (serverNowIso is serverNowMs formatted), so the
+        // no-Date.now rule holds; a lone numeric timestamp in a node whose
+        // readers sort and compare ISO strings is a schema divergence waiting to
+        // be tripped over. (Fable spec review, PR #594.)
+        timestamp: serverNowIso(),
+        action: "duplicate_created_despite_match",
+        productId: null,
+        productName: form.name.trim(),
+        productCategory: formLegacy?.category || "",
+        productType: formLegacy?.productType || "",
+        matchedProductIds: exactDupes.map((r) => r.product.id),
+        matchedProductNames: exactDupes.map((r) => r.product.name || ""),
+        matchedUnits: exactDupes.map((r) => {
+          const t = totalsById[r.product.id];
+          return t && Number.isFinite(t.total) ? t.total : null;
+        }),
+        by: auth.currentUser?.uid ?? null,
+      });
+    }
     setSaving(true);
     try {
       const id = "p" + serverNowMs();
@@ -5663,11 +6225,17 @@ function AdminView({ products, orders, onExit }) {
 
       if (form.photoBlob) {
         // Upload compressed image to Firebase Storage; store only the HTTPS URL in RTDB.
-        const sRef = storageRef(storage, `products/${id}/photo.jpg`);
+        const sRef = storageRef(storage, productPhotoObjectPath(id));
         // Bounded cache (NOT immutable): products/{id}/photo.jpg is overwritten
         // in place when the photo is re-shot, so cap staleness at 7 days.
         await uploadBytes(sRef, form.photoBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
         photoUrl = await getDownloadURL(sRef);
+        // The offline-mirror thumbnail, written the instant the photo exists —
+        // otherwise this product is a blank square on every offline till until
+        // somebody re-runs the POS repo's generate.mjs by hand. Best-effort by
+        // contract: writeProductThumb never throws, so the product still saves
+        // if the encode or the write fails.
+        await writeProductThumb(id, form.photoBlob, { upload: uploadThumbObject, remove: removeThumbObject });
       }
 
       // ── LABEL PHOTO ─────────────────────────────────────────────────────
@@ -6067,6 +6635,13 @@ function AdminView({ products, orders, onExit }) {
       setSaving(false);
     }
   };
+  // ASSIGNED IN A LAYOUT EFFECT, NOT DURING RENDER. React may replay or discard
+  // a render, and a ref written during one that never commits leaks a handler
+  // closed over state the UI never showed. useLayoutEffect (not useEffect) because
+  // it runs before paint: a passive effect can be beaten by an operator tap on a
+  // painted button, which would call the previous render's handler.
+  // (CodeRabbit + React Doctor, PR #594.)
+  useLayoutEffect(() => { addProductRef.current = addProductOnce; });
 
   // Per-product edit handlers (name/sizes/hubs/photo/delete) used to live
   // here as inline-editor flows in the list. They've been moved into
@@ -6200,6 +6775,8 @@ function AdminView({ products, orders, onExit }) {
         product={detailProduct}
         allProducts={products}
         insightsLog={insightsLog}
+        receivePrefill={receivePrefill && receivePrefill.productId === detailProduct.id && prefillIsFresh(receivePrefill, serverNowMs()) ? receivePrefill : null}
+        onPrefillConsumed={() => setReceivePrefill(null)}
         onBack={() => window.history.back()}
       />
     );
@@ -6351,6 +6928,23 @@ function AdminView({ products, orders, onExit }) {
           fileInputRef={fileInputRef} handleImageUpload={handleImageUpload}
           products={products}
           isPerfume={formIsPerfume}
+          nameSuggestions={
+            <DuplicateSuggestPanel
+              typed={form.name}
+              products={products}
+              locationIds={dupLocationIds}
+              onPick={(p) => {
+                if (!p?.id) return;
+                // Everything already typed travels with them. Sizes are filtered
+                // against the TARGET product on arrival (splitPrefillSizes), and
+                // anything it cannot hold is named on screen rather than dropped.
+                setReceivePrefill({ productId: p.id, loc: recvLoc, qtys: recvQtys, at: serverNowMs() });
+                setShowAdd(false); setIntake(null); setCategoryChosen(false);
+                window.location.hash = "product/" + p.id;
+              }}
+
+            />
+          }
           onCapturePrintedBarcode={(code) => setForm((f) => ({ ...f, printedBarcode: code, printedBarcodeAuto: false }))}
           onClearPrintedBarcode={() => setForm((f) => ({ ...f, printedBarcode: null }))}
           onUseAutoBarcode={useAutoBarcode}
@@ -6577,7 +7171,7 @@ function AdminProductRow({ product }) {
            border:"1px solid rgba(255,255,255,.07)",
            borderRadius:14, padding:"10px 14px", marginBottom:8, cursor:"pointer",
          }}>
-      <ProductPhoto url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
+      <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={56} radius={10}/>
       <div style={{ flex:1, minWidth:0 }}>
         <div style={{ fontSize:16, fontWeight:600, color:"#fff", whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{product.name}</div>
         <div style={{ fontSize:12, color:"rgba(255,255,255,.5)", marginTop:4, whiteSpace:"nowrap", overflow:"hidden", textOverflow:"ellipsis" }}>{meta}</div>
@@ -6595,7 +7189,18 @@ function AdminProductRow({ product }) {
 // existing compression pipeline and uploads immediately on file pick (no
 // preview step; consistent with the auto-save theme). Delete prompts for
 // confirmation then navigates back.
-function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) {
+const setProductTypeCall = httpsCallable(functions, "setProductType");
+
+function AdminProductDetail({ product: listProduct, allProducts = [], insightsLog, receivePrefill = null, onPrefillConsumed, onBack }) {
+  // What the SERVER holds, not the device's offline copy (productSave.js).
+  const product = useLiveProduct(listProduct);
+  // Every field saves through here: awaited, echoed, and a failure SHOWN.
+  const [saveError, setSaveError] = useState(null);
+  const save = async (patch, label) => {
+    const res = await saveProductPatch({ id: product.id, patch, label });
+    setSaveError(res.ok ? null : res.message);
+    return res.ok;
+  };
   const isClothing = (product.productType || "sneaker") === "clothing";
   const productSizes = Array.isArray(product.sizes) && product.sizes.length
     ? product.sizes
@@ -6646,7 +7251,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   useEffect(() => { setNameDraft(product.name); }, [product.name]);
   const saveName = () => {
     const next = nameDraft.trim();
-    if (next && next !== product.name) updateProductName(product.id, next, product);
+    if (next && next !== product.name) {
+      // Seed FIRST, then rename (see updateProductName).
+      seedSearchIdentityFrom(product)
+        .then(() => save({ name: next }, "the name"))
+        .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
+    }
     else if (!next) setNameDraft(product.name);
   };
 
@@ -6679,11 +7289,16 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
             if (candidate.length * 0.75 <= MAX_BYTES) { dataUrl = candidate; break; }
           }
           const blob = dataURLToBlob(dataUrl);
-          const sRef = storageRef(storage, `products/${product.id}/photo.jpg`);
+          const sRef = storageRef(storage, productPhotoObjectPath(product.id));
           // Bounded cache (NOT immutable): photo.jpg is overwritten in place on
           // a re-shoot, so cap staleness at 7 days instead of a year.
           await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
           const url = await getDownloadURL(sRef);
+          // A re-shoot replaces BOTH objects: photo.jpg above and the offline
+          // thumbnail here, both at their deterministic paths, so a till can
+          // never keep serving a cached picture of the photo that was replaced.
+          // Never throws — a failed thumbnail must not fail the re-shoot.
+          await writeProductThumb(product.id, blob, { upload: uploadThumbObject, remove: removeThumbObject });
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't
           // a new upload, so approve() deliberately leaves it alone.
@@ -6702,7 +7317,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const removePhoto = async () => {
     if (!product.photoUrl) return;
     if (!window.confirm(`Remove the photo for "${product.name}"?`)) return;
-    await update(ref(database, `products/${product.id}`), { photoUrl: null });
+    await save({ photoUrl: null }, "the photo removal");
   };
 
   // ── THE PRINTED BARCODE (perfume) ─────────────────────────────────────────
@@ -6849,34 +7464,37 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const removeBoxPhoto = async () => {
     if (!product.photoBoxUrl) return;
     if (!window.confirm(`Remove the box photo for "${product.name}"?`)) return;
-    await update(ref(database, `products/${product.id}`), { photoBoxUrl: null });
+    await save({ photoBoxUrl: null }, "the box photo removal");
   };
 
   // Type — switching to Clothing strips Hub 1 (mirrors the Add Product
   // form's setProductType helper). Double-writes `hub` for back-compat per
   // the project-broadcast-api-async/14A double-write pattern.
-  const setType = (nextType) => {
-    if (nextType === (product.productType || "sneaker")) return;
-    const patch = { productType: nextType };
-    if (nextType === "clothing") {
-      const stripped = productHubs.filter(h => h !== "hub1");
-      patch.hubs = stripped.length ? stripped : ["hub2"];
-      patch.hub  = patch.hubs[0];
-      // Clothing never has a shoebox — clear the flag when converting.
-      patch.hasShoeBoxOption = false;
-    }
-    update(ref(database, `products/${product.id}`), patch);
+  // Through the setProductType callable (productSave.changeProductType): the
+  // server decides the patch (Clothing still strips Hub 1 and the shoebox;
+  // back to Sneaker restores the hubs it had), refuses a product with stock or
+  // sales unless Junid or MC is asking, and logs who, which device and when.
+  const [typeBusy, setTypeBusy] = useState(false);
+  const setType = async (nextType) => {
+    if (typeBusy || nextType === (product.productType || "sneaker")) return;
+    setTypeBusy(true);
+    const res = await changeProductType({
+      id: product.id, productType: nextType, deviceId: getDeviceId(), call: setProductTypeCall,
+    });
+    setSaveError(res.ok ? null : res.message);
+    setTypeBusy(false);
   };
 
   const toggleSize = (s) => {
     const next = productSizes.includes(s)
       ? productSizes.filter(x => x !== s)
       : [...productSizes, s];
-    updateProductSizes(product.id, next);
+    save({ sizes: next }, `size ${s}`);
     // GUARANTEE ON EDIT: mint barcodes for the (possibly new) size set so editing
     // a product never leaves a size without a code. Best-effort; idempotent
     // (ensureBarcode reuses any existing slot, only newly-added sizes get a code).
-    ensureBarcodes(product.id, next.length ? next : [null]).catch(() => {});
+    ensureBarcodes(product.id, next.length ? next : [null])
+      .catch((err) => setSaveError(`Size ${s} saved, but its barcode could not be made (${err?.message || err}). Toggle it again to retry.`));
   };
 
   const toggleHub = (h) => {
@@ -6885,7 +7503,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       ? productHubs.filter(x => x !== h)
       : [...productHubs, h];
     if (next.length === 0) return; // require ≥1 hub
-    updateProductHubs(product.id, next);
+    save({ hubs: next }, "the hubs");
   };
 
   // POS Phase 2: local drafts for the two price fields so the input still
@@ -6926,15 +7544,14 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
       if (!res.ok) {
         revertPriceDraft(field);
         if (res.code === "on_special") alert(res.message);
-        else console.warn(`update ${field} failed:`, res.message);
+        else setSaveError(`Could not save the ${field === "stockPrice" ? "stock price" : "retail price"}: ${res.message}`);
       }
     }).finally(() => setPriceSaving(false));
   };
   const toggleShoebox = () => {
     if (isClothing) return; // clothing never has a shoebox
     const next = !(product.hasShoeBoxOption === true);
-    update(ref(database, `products/${product.id}`), { hasShoeBoxOption: next })
-      .catch(err => console.warn("update hasShoeBoxOption failed:", err));
+    save({ hasShoeBoxOption: next }, "the shoebox option");
   };
 
   // POS Phase 2 (scanner workflow): sku + barcode are auto-assigned at
@@ -6979,6 +7596,32 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   const [recvOpen, setRecvOpen] = useState(false);
   const [recvQtys, setRecvQtys] = useState({});
   const [recvLoc, setRecvLoc] = useState(""); // destination — NO default; must be picked before receiving
+  // ── ARRIVING FROM THE DUPLICATE PANEL ────────────────────────────────────
+  // The operator typed a name that was already in the catalogue, tapped the
+  // product, and everything they had entered travelled with them: the
+  // destination, the sizes and the quantities. Nothing was created and nothing
+  // was received — this only OPENS the section with their work in it, so the
+  // receive is still their own deliberate tap on the same button as always.
+  //
+  // Sizes that this product does not have cannot be carried (receiving into one
+  // would invent a stock cell), so they are named on screen. A silent drop here
+  // means eleven units received against a belief of fourteen, surfacing weeks
+  // later as a shortfall nobody can explain.
+  const [prefillDropped, setPrefillDropped] = useState([]);
+  const prefillKey = receivePrefill ? `${receivePrefill.productId}:${receivePrefill.loc}:${JSON.stringify(receivePrefill.qtys || {})}` : null;
+  useEffect(() => {
+    if (!receivePrefill || receivePrefill.productId !== product.id) return;
+    const { carried, dropped } = splitPrefillSizes(receivePrefill.qtys, productSizes);
+    setRecvQtys(carried);
+    setPrefillDropped(dropped);
+    // The destination is carried VERBATIM — "stock lands at the location
+    // selected, unchanged". An empty one stays empty and the button stays
+    // disabled, exactly as it does for any other receive.
+    setRecvLoc(receivePrefill.loc || "");
+    setRecvOpen(true);
+    if (onPrefillConsumed) onPrefillConsumed();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillKey, product.id]);
   const [recvBusy, setRecvBusy] = useState(false);
   const [recvMsg,  setRecvMsg]  = useState(null);
   const [lastReceived, setLastReceived] = useState(null); // { productId, productName, items:[{size,added}] }
@@ -7044,7 +7687,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           <div onClick={photos.length ? () => setGalleryView(photos) : undefined}
                title={photos.length > 1 ? `View ${photos.length} photos` : (photos.length ? "View photo" : undefined)}
                style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-            <ProductPhoto url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
+            <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={140} radius={12}/>
           </div>
           <div style={{ flex:1, display:"flex", flexDirection:"column", gap:8 }}>
             <input ref={fileRef} type="file" accept="image/*" onChange={handlePhotoFile} style={{ display:"none" }} />
@@ -7141,14 +7784,17 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           {[["sneaker","Sneaker"],["clothing","Clothing"]].map(([val, label]) => {
             const on = (product.productType || "sneaker") === val;
             return (
-              <button key={val} onClick={() => setType(val)}
-                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor:"pointer", fontSize:14, fontWeight:600,
+              <button key={val} onClick={() => setType(val)} disabled={typeBusy}
+                      style={{ flex:1, padding:"10px 0", borderRadius:10, border:"none", cursor: typeBusy ? "default" : "pointer", fontSize:14, fontWeight:600, opacity: typeBusy ? 0.6 : 1,
                                background: on ? "rgba(60,110,255,.18)" : "transparent",
                                color: on ? "#4A7FFF" : "rgba(255,255,255,.55)" }}>
                 {label}
               </button>
             );
           })}
+        </div>
+        <div style={{ padding:"0 12px 10px", fontSize:11.5, color:"rgba(255,255,255,.4)", lineHeight:1.4 }}>
+          {typeBusy ? "Changing…" : "A product with stock or sales can only change Type by Junid or MC. Every change is logged."}
         </div>
       </div>
 
@@ -7199,6 +7845,12 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
                 style={{ ...bBlue, padding:"0.55rem 1.25rem", marginTop:14, opacity: (recvBusy || !recvLoc) ? 0.5 : 1 }}>
                 {recvBusy ? "Receiving…" : recvLoc ? `Receive into ${labelFor(recvLoc, recvRegistry)}` : "Pick a destination first"}
               </button>
+              {prefillDropped.length > 0 && (
+                <div style={{ marginTop:10, fontSize:12.5, fontWeight:600, color:"#FBBF24", lineHeight:1.5 }}>
+                  {prefillDropped.join(", ")} could not be carried over — this product does not have {prefillDropped.length === 1 ? "that size" : "those sizes"}.
+                  Add {prefillDropped.length === 1 ? "it" : "them"} to its size list above first if it should.
+                </div>
+              )}
               {recvMsg && <div style={{ marginTop:10, fontSize:12.5, fontWeight:600, color: recvMsg.ok ? "#4ADE80" : "#FF9B9B" }}>{recvMsg.text}</div>}
               <div style={{ fontSize:11, color:"#666", marginTop:8 }}>
                 Posts <span style={{ color:"#4ADE80" }}>received</span> movements; changes nothing else on this product.
@@ -7389,9 +8041,22 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
   // Two-column CSS multi-column on desktop (each section kept intact via
   // break-inside), single column on mobile.
   const detailColumns = (
-    <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
-      {detailSections}
-    </div>
+    <>
+      {/* A save that did not land says so, in red, until the next one does. */}
+      {saveError && (
+        <div role="alert" data-product-save-error=""
+             style={{ margin:"0 16px 12px", padding:"10px 12px", borderRadius:10, background:"rgba(248,113,113,.1)",
+                      border:"1px solid rgba(248,113,113,.45)", color:"#F87171", fontSize:13.5, lineHeight:1.4,
+                      display:"flex", gap:10, alignItems:"flex-start" }}>
+          <span style={{ flex:1 }}>{saveError}</span>
+          <button onClick={() => setSaveError(null)} aria-label="Dismiss"
+                  style={{ background:"transparent", border:"none", color:"#F87171", fontSize:16, cursor:"pointer", padding:0 }}>✕</button>
+        </div>
+      )}
+      <div style={{ columnCount: isWide ? 2 : 1, columnGap: 28 }}>
+        {detailSections}
+      </div>
+    </>
   );
 
   // ── DESKTOP WORKSPACE (>=1024px) — rail with product summary + main pane. ──
@@ -7410,7 +8075,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
           </button>
           <div style={{ display:"flex", justifyContent:"center", padding:"4px 0" }}>
             <div onClick={photos.length ? () => setGalleryView(photos) : undefined} style={{ cursor: photos.length ? "zoom-in" : "default" }}>
-              <ProductPhoto url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
+              <ProductPhoto productId={product.id} url={product.photoUrl} photo={product.photo} size={168} radius={16}/>
             </div>
           </div>
           <div>
@@ -7475,7 +8140,7 @@ function AdminProductDetail({ product, allProducts = [], insightsLog, onBack }) 
 // Renders one clothing product with per-size qty steppers. Each card owns its
 // own draft qty state. Tapping "Add to Cart" reports cart lines back to the
 // parent (one per non-zero size) and resets the draft to zeros.
-function ClothingCard({ product, onAdd, onViewPhoto }) {
+function ClothingCard({ product, onAdd, onViewPhoto, allProducts = [] }) {
   const sizes = Array.isArray(product.sizes) ? product.sizes : [];
   // Initial state: every available size starts at 0.
   const [qty, setQty] = useState(() => sizes.reduce((m, s) => (m[s] = 0, m), {}));
@@ -7504,7 +8169,7 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
              title={product.photoUrl ? (product.gallery?.length ? `View ${productPhotos(product).length} photos` : "View full photo") : undefined}
              style={{ position:"relative", width:96, height:96, flexShrink:0, background:"rgba(255,255,255,.05)", borderRadius:10, overflow:"hidden", display:"flex", alignItems:"center", justifyContent:"center", cursor: product.photoUrl && onViewPhoto ? "zoom-in" : "default" }}>
           {product.photoUrl
-            ? <img src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
+            ? <MirroredImg productId={product.id} src={product.photoUrl} alt={product.name} style={{ width:"100%", height:"100%", objectFit:"cover" }}/>
             : <span style={{ fontSize:36 }}>{product.photo}</span>}
           {product.gallery?.length > 0 && (
             <span style={{ position:"absolute", bottom:5, left:5, display:"inline-flex", alignItems:"center", gap:3, background:"rgba(0,0,0,.6)", color:"#fff", fontSize:10, fontWeight:600, padding:"2px 6px", borderRadius:999 }}>
@@ -7514,7 +8179,12 @@ function ClothingCard({ product, onAdd, onViewPhoto }) {
           )}
         </div>
         <div style={{ flex:1, minWidth:0 }}>
-          <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:8 }}>{product.name}</div>
+          <div style={{ display:"flex", alignItems:"flex-start", gap:8, marginBottom:8 }}>
+            <div style={{ flex:1, minWidth:0, fontSize:15, fontWeight:700, color:"#fff" }}>
+              {product.name}{isDeactivated(product) && <DeactivatedChip small />}
+            </div>
+            <ProductActionsButton product={product} products={allProducts} style={{ flexShrink:0 }} />
+          </div>
           <div style={{ display:"flex", flexDirection:"column", gap:6 }}>
             {sizes.map(sz => {
               const n = qty[sz] || 0;
@@ -7709,7 +8379,7 @@ function RefillTrackingProductCard({ group, onViewPhoto }) {
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(group.photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
-          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          <ProductPhoto productId={group.productId} url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-4, bottom:-4, width:18, height:18, borderRadius:9, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="2.5" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -7832,6 +8502,49 @@ function RefillTrackingPage({ orders, shop, registry, products, onViewPhoto, onC
 // which is what made typing in the search box lag. A screenful is ~12-20 cards.
 const AD_PAGE = 60;
 
+// The ✕-note text for a sneaker size — WHY the serving hub can't give it out.
+// Three ✕ causes that looked identical and read as "this size doesn't exist"
+// (owner report 2026-09-01, Lacoste Powercourt size 8): the cell truly has
+// nothing; the cell has stock but every unit is reserved for a ready-but-
+// uncollected order; or this cart already holds everything the hub can give.
+// `w` is sneakerOutWhy's { booked, promised, available, pullOnly, hubLabel }.
+// hubLabel is the hub that actually refused (Hub 1 or, since 2026-09-05, Hub
+// 2): naming the wrong shelf sends staff to the wrong building. It defaults to
+// "Hub 1" only when there is no split at all, which is the pre-2026-09-05
+// wording verbatim.
+function sneakerBlockNoteText(size, w) {
+  const sz = formatSize(size);
+  const hub = w?.hubLabel || "Hub 1";
+  // "another customer's order", not "awaiting collection": the promised
+  // scalar merges ready promises WITH pending display-pair pulls, and the
+  // note must not name a reason it cannot distinguish (adversarial review).
+  // The hold is SHORT (20-minute collection deadline, owner directive
+  // 2026-09-01) and the note says so — staff should retry, not give up.
+  // EXCEPT a block explained only by a display-pair pull claim (w.pullOnly):
+  // that lane holds for up to 48h, and calling it a 20-minute hold would be
+  // false (CodeRabbit, #546).
+  // BOTH GATED HUBS CHECKED, BOTH EMPTY (2026-09-06). Since sourcing became
+  // stock-aware, an ✕ on a size neither Hub 1 nor Hub 2 holds is a genuinely
+  // different fact from "the hub this shoe is tagged to hasn't got it" — and
+  // the old wording said the second while meaning the first, which is the
+  // shape of the report that started this work: staff read a hub-named ✕ as
+  // "this size doesn't exist" and stopped looking. Say what was actually
+  // checked. Only when the resolver really did read both (w.checkedBoth);
+  // an unsettled alternate keeps the single-hub wording verbatim.
+  if (!w || w.booked <= 0) return w?.checkedBoth
+    ? `Size ${sz} isn't at Hub 1 or Hub 2 right now — it can't be ordered.`
+    : `Size ${sz} isn't available at ${hub} right now — it can't be ordered.`;
+  if (w.available <= 0) {
+    if (w.pullOnly)
+      return `Size ${sz} at ${hub} is claimed by a pending display-pair request — it can't be ordered.`;
+    return w.booked === 1
+      ? `${hub}'s only size ${sz} is reserved for another customer's order (20-minute hold) — try again shortly.`
+      : `All ${w.booked} of size ${sz} at ${hub} are reserved for other customers' orders (20-minute hold) — try again shortly.`;
+  }
+  return `Your cart already has all ${w.available} of size ${sz} that ${hub} can give out.`;
+}
+
+
 function AssistantDesktop({ products, searchResults, effectiveShop, availableShops, onSelectShop, shopRegistry,
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
@@ -7839,7 +8552,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
-                            hubQty, servingHubLabel, sneakerOut, sneakerDisplayOnly, sneakerDisplayInfo }) {
+                            hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
+                            alternativesFor,
+                            deadForOrder = isDeactivated }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
   // clothing catalog with live per-size availability at the serving CR hub
@@ -7855,8 +8570,6 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvSize, setQvSize] = useState(null);
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
-  const [qvDisplayPrompt, setQvDisplayPrompt] = useState(null); // { size, stores } — "on display" prompt
-  const [qvDisplayPair, setQvDisplayPair]     = useState(null); // { store } — display-pair pull taken
   const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
@@ -7954,8 +8667,19 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvNa, setQvNa] = useState(null);
   const openQv = (p) => {
     setQv(p); setQvSize(null); setQvQty(1); setQvDP(false); setQvNa(null);
-    setQvDisplayPrompt(null); setQvDisplayPair(null);
     setQvRefill((Array.isArray(p.sizes) ? p.sizes : []).reduce((m, s) => (m[s] = 0, m), {}));
+  };
+  // Taking an alternative from the ✕ sheet. The quick-view SWAPS to the chosen
+  // shoe rather than closing — the assistant is mid-sentence with a customer,
+  // and sending them back to the catalogue to find it again is how the
+  // suggestion stops being used. openQv already clears every piece of state
+  // that belonged to the previous shoe (the display-pair claim, the partner
+  // toggle, the quantity), so the size is set AFTER it.
+  const pickQvAlternative = (row, requestedSize) => {
+    const pick = alternativeSelection(row, requestedSize);
+    if (!pick) return;
+    openQv(pick.product);
+    if (pick.size) setQvSize(pick.size);
   };
   // objectFit CONTAIN, not cover: live product photos are predominantly
   // 600×800 portrait (13-sample survey of /orders productPhotoUrl,
@@ -7963,7 +8687,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   // portrait photo in a landscape cover box lost ~half the shoe on laptops;
   // contain shows the whole product on the card's dark stage instead.
   const Photo = ({ p, big }) => p.photoUrl
-    ? <img src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
+    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { e.currentTarget.style.display = "none"; }} />
     : <span style={{ fontSize: big ? 110 : 52 }}>{p.photo || "👟"}</span>;
 
   return (
@@ -8182,6 +8906,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         </button>
                       )}
                       <Photo p={p} />
+                      {/* Deactivate / reactivate / merge, right on the card the
+                          operator is looking at (owner spec 2026-08-31).
+                          Renders nothing for a non-admin. */}
+                      <ProductActionsButton product={p} products={products}
+                                            style={{ position: "absolute", top: 8, left: 8, zIndex: 3 }} />
                     </div>
                     <div className="ad-body">
                       <div className="ad-name">{p.name}
@@ -8201,33 +8930,54 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                               // Clothing: a size the serving hub has zero of is
                               // greyed/disabled here (hover quick-add has no room
                               // for the inline note — the quick-view carries it).
-                              // Hub 1 sneakers: same disable from the shared
-                              // availability resolver (sneakerOut), composed
+                              // Sneakers (Hub 1 and Hub 2): same disable from
+                              // the shared availability resolver (sneakerOut), composed
                               // with the deactivation/clothing rule (#445).
-                              const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz) })
+                              const out = orderSizeOut(p, { clothingOrder, hubQty: hubQty(p.id, sz), deactivated: deadForOrder(p) })
                                 || (!clothingOrder && !!sneakerOut?.(p, sz));
-                              // "Only the display pair is left": the hover
-                              // grid has no room for the prompt (its own
-                              // standing note), so a marked tap opens the
-                              // quick-view with the prompt already up.
-                              const dOnly = !out && !clothingOrder && !isDeactivated(p)
-                                ? sneakerDisplayOnly?.(p, sz) : null;
-                              // Quiet tier — glyph on any AVAILABLE size that
-                              // is on a display; amber only when it is the
-                              // last one. Never on a ✕/deactivated tile — the
-                              // ✕ is authoritative (the drift rule).
-                              const dInfo = !clothingOrder && !out && !isDeactivated(p) ? sneakerDisplayInfo?.(p, sz) : null;
+                              // THE GLYPH IS INFORMATIONAL AND NOTHING ELSE.
+                              // It says "a unit of this size is on a floor" —
+                              // it does not gate the tile. Never on a
+                              // ✕/deactivated tile: the ✕ is authoritative
+                              // (the drift rule), and a cell the books call
+                              // empty must not advertise a display.
+                              const dInfo = !clothingOrder && !out && !deadForOrder(p) ? sneakerDisplayInfo?.(p, sz) : null;
+                              // THE THIRD SIZE-CHIP SURFACE. The spec says
+                                // the unavailable chip becomes tappable, and
+                                // that has to mean here too — this hover panel
+                                // has no room for a sheet, so the tap opens the
+                                // quick-view with the note and the alternatives
+                                // already up. Exactly the route the
+                                // display-only tile has taken since #456.
+                                // A CLOTHING or DEACTIVATED tile keeps its
+                                // disabled state: neither has a sheet to open.
+                              const snkTappable = out && !clothingOrder && !deadForOrder(p) && !!sneakerOut?.(p, sz);
                               return (
-                                <button key={sz} className="ad-sz" disabled={out}
-                                  title={out ? (isDeactivated(p) ? "Deactivated — finished line" : `Not available at ${servingHubLabel}`)
-                                    : dOnly ? "Only the display pair remains at Hub 1 — tap to request it"
+                                <button key={sz} className="ad-sz" disabled={out && !snkTappable}
+                                  title={out ? (deadForOrder(p) ? "Deactivated — finished line"
+                                      : clothingOrder ? `Not available at ${servingHubLabel}`
+                                      // Sneaker ✕: name the real reason — a cell
+                                      // whose stock is reserved for an uncollected
+                                      // order must not read as "doesn't exist".
+                                      : sneakerBlockNoteText(sz, sneakerOutWhy?.(p, sz)))
                                     : dInfo ? "This size is on a display" : undefined}
-                                  style={out ? { opacity:.3, cursor:"not-allowed", textDecoration:"line-through" }
-                                    : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
+                                  // No line-through, for the same reason the ✕
+                                  // went: the size number is the content. And
+                                  // the same FOUR-AXIS container difference the
+                                  // other two surfaces use — opacity alone left
+                                  // this tile reading as an ordinary blue chip
+                                  // at 32%, a fifth of a signal (CodeRabbit).
+                                  style={out ? hoverGridSizeChipStyle({ out: true, tappable: snkTappable })
                                     : dInfo ? { position:"relative" } : undefined}
                                   onClick={e => {
-                                    e.stopPropagation(); if (out) return;
-                                    if (dOnly) { openQv(p); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
+                                    e.stopPropagation();
+                                    // The unavailable tap OPENS the quick-view's
+                                    // note. It still selects nothing and still
+                                    // cannot raise a request — openQv clears
+                                    // qvSize, and the note is raised through the
+                                    // same qvNa the quick-view's own out-tap uses.
+                                    if (snkTappable) { openQv(p); setQvNa({ size: sz, left: 0, snk: true }); return; }
+                                    if (out) return;
                                     // quickAdd returns 0 when the cart already
                                     // holds everything the hub has — no ✓ flash
                                     // for an add that didn't happen.
@@ -8242,7 +8992,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                                     const b = e.currentTarget;
                                     b.classList.add("flash");
                                     setTimeout(() => b.classList.remove("flash"), 430);
-                                  }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
+                                  }}>{sz === "Free Size" ? "OS" : sz}{dInfo ? <span aria-hidden="true" style={{ position:"absolute", top:0, right:1, lineHeight:1 }}><svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg></span> : null}</button>
                               );
                             })}
                           </div>
@@ -8367,13 +9117,35 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                         more than the hub can still cover. Live: recomputes
                         remaining (hub minus cart) every render and hides once
                         more is addable than when it was raised. */}
-                    {(clothingOrder || isDeactivated(qv)) && qvNa && (() => {
+                    {qvNa && (clothingOrder || deadForOrder(qv) || qvNa.snk) && (() => {
+                      // Sneaker ✕ note (2026-09-01): raised by tapping a ✕
+                      // tile; says WHY (empty vs reserved vs already-in-cart)
+                      // instead of leaving "reserved" indistinguishable from
+                      // "doesn't exist". Self-hides once the size frees up.
+                      if (qvNa.snk && !deadForOrder(qv)) {
+                        // Belt on the toggle's clear: partner mode lifts the
+                        // grey-out, so the note must never outlive it either way.
+                        if (qvDP || !sneakerOut?.(qv, qvNa.size)) return null;
+                        return (
+                          <>
+                            <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, marginBottom:8 }}>
+                              {sneakerBlockNoteText(qvNa.size, sneakerOutWhy?.(qv, qvNa.size))}
+                            </div>
+                            {/* The desktop twin of the phone sheet's strip. The
+                                reason above is unchanged; this only adds what
+                                can be sold instead. */}
+                            <AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}
+                                               requestedSize={qvNa.size}
+                                               onPick={(row) => pickQvAlternative(row, qvNa.size)} />
+                          </>
+                        );
+                      }
                       const have = hubQty(qv.id, qvNa.size);
                       const rem = have - clothingInCart(qv.id, qvNa.size);
                       // Deactivation is not a stock condition — its note never
                       // self-hides on availability.
-                      if (!isDeactivated(qv) && rem > qvNa.left) return null;
-                      const text = isDeactivated(qv)
+                      if (!deadForOrder(qv) && rem > qvNa.left) return null;
+                      const text = deadForOrder(qv)
                         ? `${qv.name} is deactivated — a finished line. Its sizes can't be ordered.`
                         : have <= 0
                         ? `Size ${formatSize(qvNa.size)} isn't available at ${servingHubLabel} right now — it can't be ordered.`
@@ -8389,92 +9161,64 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     <div className="ad-svsz" style={{ display: "flex", flexWrap: "wrap", gap: 8 }}>
                       {sizesOf(qv).map(sz => {
                         // Clothing (and a deactivated line, #445) keeps its
-                        // note-raising tap; a Hub 1 sneaker size with none
-                        // available is simply not tappable (✕). The Display
-                        // Partner toggle lifts the ✕ — a partner request
-                        // exists to ask for what Hub 1 lacks.
-                        const snkOut = !clothingOrder && !qvDP && !isDeactivated(qv) && !!sneakerOut?.(qv, sz);
-                        const out = orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz) }) || snkOut;
-                        // "Only the display pair is left" — marked, not
-                        // blocked; tapping opens the display-pair prompt.
-                        const dOnly = !out && !clothingOrder && !qvDP && !isDeactivated(qv)
-                          ? sneakerDisplayOnly?.(qv, sz) : null;
-                        // Quiet tier — same rule as the phone sheet and the
-                        // hover grid: never on a ✕/deactivated tile.
-                        const dInfo = !clothingOrder && !out && !isDeactivated(qv)
+                        // note-raising tap; a sneaker size its serving hub has
+                        // none available of (Hub 1 or Hub 2) is simply not
+                        // tappable (✕). The Display Partner toggle lifts the
+                        // ✕ — a partner request exists to ask for what Hub 1
+                        // lacks, and that lane stays Hub 1's.
+                        const snkOut = !clothingOrder && !qvDP && !deadForOrder(qv) && !!sneakerOut?.(qv, sz);
+                        const out = orderSizeOut(qv, { clothingOrder, hubQty: hubQty(qv.id, sz), deactivated: deadForOrder(qv) }) || snkOut;
+                        // Informational glyph only — same rule as the phone
+                        // sheet and the hover grid: never on a ✕/deactivated
+                        // tile, and it gates nothing.
+                        const dInfo = !clothingOrder && !out && !deadForOrder(qv)
                           ? sneakerDisplayInfo?.(qv, sz) : null;
                         return (
                           <button key={sz} aria-pressed={qvSize === sz} aria-disabled={out}
-                            style={out ? { opacity:.35, cursor:"not-allowed", textDecoration:"line-through" }
-                              : dOnly ? { position:"relative", border:"1px solid rgba(251,191,36,.55)", background:"rgba(251,191,36,.1)", color:"#FBBF24" }
-                              : dInfo ? { position:"relative" } : undefined}
+                            // The ✕ is gone here too, and with it the
+                            // line-through that made a half size unreadable on
+                            // a 34px tile. sizeChipTheme carries the four-axis
+                            // container difference that replaces both.
+                            // ONE STYLE FOR EVERY AVAILABLE CHIP. A marked size
+                            // is not a different kind of chip; the glyph in the
+                            // corner is the whole difference (it is absolutely
+                            // positioned, and quickViewSizeChipStyle already
+                            // carries the position:relative it needs).
+                            style={quickViewSizeChipStyle({ out })}
                             onClick={() => {
                               // Deselect FIRST — before the out gate — so a
                               // size that went ✕ while selected can still be
-                              // un-stuck. A prompt-minted selection unwinds
-                              // partner mode with it (leaving qvDP on kept the
-                              // Add button live for a cancelled request).
+                              // un-stuck.
                               if (qvSize === sz) {
-                                if (qvDisplayPair) setQvDP(false);
-                                setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(null);
+                                setQvNa(null); setQvSize(null);
                                 return;
                               }
-                              if (out) { if (clothingOrder || isDeactivated(qv)) setQvNa({ size: sz, left: 0 }); return; }
-                              if (dOnly) { setQvNa(null); setQvDisplayPrompt({ size: sz, stores: dOnly.stores }); return; }
-                              // A plain size selection drops any display-pair
-                              // claim — it belongs to the prompted size only.
-                              setQvNa(null); setQvDisplayPrompt(null); setQvDisplayPair(null); setQvSize(sz);
+                              // A sneaker ✕ tap raises the why-note (snk flag)
+                              // instead of dying silently — reserved stock
+                              // otherwise reads as "size doesn't exist".
+                              if (out) { setQvNa(clothingOrder || deadForOrder(qv) ? { size: sz, left: 0 } : { size: sz, left: 0, snk: true }); return; }
+                              setQvNa(null); setQvSize(sz);
                             }}>
-                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span aria-label="none available" style={{ marginLeft: 4, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
+                            {sz === "Free Size" ? "One size" : formatSize(sz)}{snkOut ? <span style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                             {dInfo ? (
-                              <span aria-label={dOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
-                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke={dOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                              <span aria-label="this size is on a display" style={{ position:"absolute", top:1, right:2, lineHeight:1 }}>
+                                <svg width="8" height="8" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                               </span>
                             ) : null}
                           </button>
                         );
                       })}
                     </div>
-                    {/* Display-pair prompt — the quick-view twin of the phone
-                        sheet's panel: one button, flags the line as a pull of
-                        the display pair itself. */}
-                    {qvDisplayPrompt && (
-                      <div style={{ background:"rgba(251,191,36,.1)", border:"1px solid rgba(251,191,36,.4)", borderRadius:10, padding:"10px 12px", marginTop:8 }}>
-                        <div style={{ color:"#FBBF24", fontSize:12.5, fontWeight:800, marginBottom:3 }}>
-                          Size {formatSize(qvDisplayPrompt.size)} — on display
-                        </div>
-                        <div style={{ color:"#E8D5A8", fontSize:11.5, fontWeight:600, marginBottom:8 }}>
-                          The only size {formatSize(qvDisplayPrompt.size)} at Hub 1 is the display pair{qvDisplayPrompt.stores?.length ? ` (on ${qvDisplayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : " (registered as a display — the shop wasn't recorded)"}.
-                        </div>
-                        <div style={{ display:"flex", gap:8 }}>
-                          <button onClick={() => {
-                              setQvSize(qvDisplayPrompt.size);
-                              setQvDP(true);
-                              setQvQty(1);
-                              // Store only when unambiguous — see the phone
-                              // sheet's twin: never guess whose slot to clear.
-                              setQvDisplayPair({ store: qvDisplayPrompt.stores?.length === 1 ? qvDisplayPrompt.stores[0] : null });
-                              setQvDisplayPrompt(null);
-                            }}
-                            style={{ flex:1, padding:"8px 10px", borderRadius:8, border:"1px solid rgba(251,191,36,.6)", background:"rgba(251,191,36,.16)", color:"#FBBF24", fontWeight:800, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>
-                            Request display pair
-                          </button>
-                          <button onClick={() => setQvDisplayPrompt(null)}
-                            style={{ padding:"8px 10px", borderRadius:8, border:"1px solid rgba(255,255,255,.16)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.6)", fontWeight:700, fontSize:11.5, cursor:"pointer", fontFamily:"inherit" }}>
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
                   {/* Display Partner request — sneakers only; one line, size optional. */}
                   {!clothingOrder && (
                   <div>
                     <div className="ad-qlab">Display Partner (optional)</div>
-                    {/* A MANUAL toggle (either direction) drops any display-pair
-                        claim — that claim is only ever minted by the prompt
-                        button, and must never ride a hand-made partner line. */}
-                    <button onClick={() => { setQvDP(v => !v); if (qvDisplayPair) setQvSize(null); setQvDisplayPair(null); }}
+                    {/* The toggle drops any sneaker ✕ note: partner mode lifts
+                        every ✕, and a note still saying "can't be ordered"
+                        above a now-selectable size contradicts the screen
+                        (adversarial review). */}
+                    <button onClick={() => { setQvDP(v => !v); setQvNa(null); }}
                             style={{ padding: "9px 15px", borderRadius: 10, fontSize: 12.5, fontWeight: 700, cursor: "pointer", fontFamily: "inherit",
                                      border: `1px solid ${qvDP ? "#4A7FFF" : "rgba(255,255,255,.14)"}`,
                                      background: qvDP ? "rgba(74,127,255,.18)" : "rgba(255,255,255,.03)",
@@ -8491,7 +9235,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                     const canAdd = clothingOrder ? !!qvSize : (!!qvSize || dp);
                     const doAdd = () => {
                       if (!canAdd) return;
-                      if (dp) { onAddDisplayPartner(qv, qvSize || null, qvDisplayPair); setQv(null); return; }
+                      if (dp) { onAddDisplayPartner(qv, qvSize || null); setQv(null); return; }
                       // Clothing: quickAdd caps at hub-minus-cart availability
                       // and returns what it actually added — a short add keeps
                       // the quick-view open with the explanatory note.
@@ -8716,7 +9460,31 @@ function AssistantView({ products, onExit, orders = [] }) {
   // signed-in (non-anonymous) staff account, no stockRole needed for reads.
   const servingHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
   const servingHubCells = useStockCells(servingHub);   // { pid: { size: cell } }
-  const hubQty = (pid, size) => Number(servingHubCells?.[pid]?.[size]?.qty) || 0;
+  // ONE DEFINITION OF "AVAILABLE" (2026-09-05). The zero-test below used to be
+  // its own `Number(qty) || 0`; it now runs through availabilityCore's
+  // availableUnits — the same arithmetic the sneaker lane uses at Hub 1 and
+  // (from this change) Hub 2. Clothing nets no promises: readyPromisedByCell is
+  // footwear-only, so the promised term is structurally 0 here.
+  //
+  // BYTE-IDENTICAL, and proved: for every value a cell can hold, availableUnits
+  // agrees with the old expression on the OUT/IN test, on the add clamp, and on
+  // the note's self-hide. The only difference is that a NEGATIVE cell now
+  // reports 0 instead of its negative — and every consumer of this number
+  // already floors at 0 (hub2SneakerAvailability.test.js exhausts it).
+  //
+  // CELL KEY (owner decision 2026-09-10). This lookup used to index the hub
+  // subtree by the RAW declared size. Real /stock cells are keyed by
+  // stockSizeKey — the one-size "Free Size" chip the order screen shows for a
+  // sunglass / perfume / bag lives in the "_" cell, and a half-size in "5_5".
+  // The raw lookup found no "Free Size" cell, read 0, and greyed every one-size
+  // accessory out as "not available at Hub 2" while Hub 2 held units. Reading
+  // through decodedCellKey makes this lane read the SAME cell that Send deducts
+  // (stockCellPath) — the number shown and the number moved can't disagree.
+  // decodedCellKey, NOT stockSizeKey: useStockCells hands back a DECODED map
+  // ("5_5" → "5.5"), so the encoded key would miss every half size; the
+  // decoded cell key matches one-size ("_"), half sizes and S/M/L/XL alike —
+  // the same lookup the sneaker lane already uses (availabilityCore).
+  const hubQty = (pid, size) => availableUnits(servingHubCells?.[pid]?.[decodedCellKey(size)]?.qty);
   // ── HUB 1 SNEAKER AVAILABILITY (2026-08-25) ───────────────────────────────
   // The sneaker mirror of the clothing subscription above: sneaker orders
   // sourcing from Hub 1 grey out (✕) sizes Hub 1 cannot supply, through the
@@ -8732,6 +9500,21 @@ function AssistantView({ products, onExit, orders = [] }) {
   // can never gate anything. A null location leaves settled=false, which the
   // gate already reads as "no ✕".
   const hub1CellsState = useStockCellsState(effectiveStoreMode === "pine" ? null : "hub1");
+  // ── HUB 2 SNEAKER AVAILABILITY (2026-09-05) ───────────────────────────────
+  // The gap this closes: Hub 1 sneakers got the ✕ in August and Hub 2 clothing
+  // has had its own since long before, but a HUB 2 SNEAKER — a shoe whose
+  // product record routes to hub2 — was still orderable into nothing. Same
+  // resolver, same gate, same tile; the ONLY new thing is the second hub's
+  // data. No third code path (see sneakerHubOf below).
+  //
+  // COSTS NOTHING EXTRA ON THE WIRE. `stock/hub2` is ALREADY streamed on every
+  // non-Pine device — servingHubCells subscribes to exactly this path for the
+  // clothing grey-out (CR_HUB_BY_UNIVERSE.central === "hub2"). Two listeners
+  // on one path share a single server subscription in the RTDB SDK's sync
+  // tree, so this hook re-reads the cache, not the network. Pine skips it for
+  // the same reason it skips hub1: computeHubForItem returns hub3 there, so
+  // the gate could never fire and the stream would be pure cost.
+  const hub2CellsState = useStockCellsState(effectiveStoreMode === "pine" ? null : "hub2");
   const productsById = useMemo(() => {
     const m = {};
     for (const p of products || []) if (p?.id) m[p.id] = p;
@@ -8740,24 +9523,204 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Ready promises PLUS pending display pulls: an incoming displayPairRequest
   // order claims a known unit whose slot is already tombstoned, so the tile
   // must not read as plain shelf stock during that window.
+  // The MINUTE tick keeps the collection deadline honest on an idle device:
+  // promiseFresh reads the clock inside the memo, so without a time term in
+  // the deps a promise crossing the 20-minute deadline (owner directive
+  // 2026-09-01) would only be re-judged when some unrelated /orders write
+  // fired the listener — a quiet screen would hold the ✕ past the deadline.
+  // 60s granularity means a size frees at most a minute late; the recompute
+  // is one pass over the in-memory orders array, no read.
+  const [promiseTick, setPromiseTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPromiseTick(v => v + 1), 60 * 1000);
+    return () => clearInterval(t);
+  }, []);
+  // The two maps stay reachable SEPARATELY: the ✕ note names the 20-minute
+  // collection hold only when a ready promise is involved — a pull claim
+  // lives 48h and must not be miscalled a 20-minute hold (CodeRabbit, #546).
+  const hub1ReadyPromised = useMemo(
+    () => readyPromisedByCell(orders, "hub1", productsById),
+    [orders, productsById, promiseTick]
+  );
+  const hub1PullPromised = useMemo(
+    () => pendingDisplayPullsByCell(orders, productsById),
+    [orders, productsById, promiseTick]
+  );
   const hub1Promised = useMemo(
-    () => mergePromised(readyPromisedByCell(orders, "hub1", productsById), pendingDisplayPullsByCell(orders, productsById)),
-    [orders, productsById]
+    () => mergePromised(hub1ReadyPromised, hub1PullPromised),
+    [hub1ReadyPromised, hub1PullPromised]
+  );
+  // Hub 2's promises: READY ORDERS ONLY, and deliberately so. The display-pair
+  // PULL lane (pendingDisplayPullsByCell) is a HUB 1 build — it is charged,
+  // verified and netted at hub1 — and that map is NOT hub-scoped, so folding it
+  // in here would let a Hub 1 pull claim ✕ an unrelated Hub 2 cell.
+  //
+  // This used to end "same reason the display marker below stays Hub 1 only",
+  // and that sentence is now wrong twice over: the MARKER reads the serving
+  // hub's slots (2026-09-08), and the slots node it reads was never hub1-scoped
+  // — every hub's shops book rows in it. Only the pull is Hub 1's, and it is
+  // the pull this paragraph is about.
+  const hub2ReadyPromised = useMemo(
+    () => readyPromisedByCell(orders, "hub2", productsById),
+    [orders, productsById, promiseTick]
   );
   // ── DISPLAY-PAIR MARKER DATA (2026-08-26) ─────────────────────────────────
   // The live display slots — one ~60 KB listener (the marker cannot be
   // derived from stock cells; cost stated in useDisplaySlots). Skipped on
   // Pine, like the hub1 stock subscription above.
-  const displaySlots = useDisplaySlots(effectiveStoreMode !== "pine");
-  // The register joins as the store-less second source: 71% of registered
-  // displays have no slot (store never picked at registration), so keying the
-  // marker on slots alone left most registered displays invisible (owner
-  // report, 2026-08-26). displayUnitsByCell applies the double-count guard.
-  const hub1DisplayRegister = useDisplayRegister("hub1", effectiveStoreMode !== "pine");
-  const hub1DisplayUnits = useMemo(
-    () => displayUnitsByCell(displaySlots, "hub1", hub1DisplayRegister),
-    [displaySlots, hub1DisplayRegister]
+  const displaySlotsState = useDisplaySlotsState(effectiveStoreMode !== "pine");
+  const displaySlots = displaySlotsState.value;
+  // THE DISPLAY REGISTER USED TO JOIN HERE AS A SECOND SOURCE AND IT WAS THE
+  // BUG. That node is write-only-upward history keyed pid__sizeKey (its one
+  // reader is now the Display Registration card and the hub count's
+  // offShelf.js); a display that changes size leaves its old row standing, so
+  // one display drew two glyphs (51 products live, 2026-09-07 census —
+  // docs/display-marker-findings.md). The slot is one record per product per
+  // store: a replacement OVERWRITES it and a sale CLEARS it, so accumulation is
+  // impossible by construction. One source, and this screen no longer streams
+  // the ~172 KB register node at all.
+  // Has the display lane actually ANSWERED? The one source, no read error. The
+  // tile marker does not need this (a marker that arrives late is harmless);
+  // the alternatives strip does, because an empty display map before the
+  // subscription answers looks exactly like "nothing is on a floor", and the
+  // display-only exclusion would fail open precisely when its evidence is
+  // missing (independent review). A read ERROR makes it permanent.
+  const displayLaneReady = displaySlotsState.settled && !displaySlotsState.error;
+  // Has /orders answered at all? See useOrders — the flag rides on the array.
+  // ANSWERED, AND STILL TRUSTWORTHY. An error after a first successful snapshot
+  // leaves `settled` true with the last array in place, so every order-derived
+  // gate went on treating retained evidence as current. Folding the error in
+  // here reaches all three at once — the alternatives strip, the display-pair
+  // pre-flight and the self-heal — and each already means "cannot verify" by
+  // this flag being false. (CodeRabbit + final gate review.)
+  const ordersSettled = orders?.settled === true && orders?.error !== true;
+  // The projection derives from the same evidence, so it uses it only while it
+  // is trustworthy; without it the marker falls back to the durable slot, which
+  // is exactly the behaviour before any of this.
+  const ordersForExits = ordersSettled ? orders : null;
+  // THE EXITS ARE REPLAYED OFF THE ORDERS, not merely written. Every exit —
+  // sale, replacement, retire, failed pull — already writes the slot, but all
+  // four are best-effort (the ORDER is the fact that must never be lost), so a
+  // dropped write would leave a marker standing on a shoe that has left the
+  // floor with nothing to retry it. slotsAfterOrderExits replays the same
+  // events from the orders this screen already streams and lets the newer of
+  // the two win, so the marker clears at the sale and moves at the replacement
+  // whether or not the slot write landed. No listener, no write, no cleanup.
+  const displaySlotsLive = useMemo(
+    () => slotsAfterOrderExits(displaySlots, ordersForExits),
+    [displaySlots, ordersForExits]
   );
+  // ── TWO LANES, TWO MAPS, AND THE NAMES SAY WHICH IS WHICH ─────────────────
+  // A display slot answers two different questions and they must not be
+  // conflated, because one of them can refuse a sale and the other cannot:
+  //
+  //   THE MARKER (informational). "Is a unit of this size standing on a shop
+  //   floor?" Any hub CAN answer it — every hub's shops have walls — and it
+  //   draws a glyph and nothing else: it nets nothing, gates nothing and blocks
+  //   nothing (#576).
+  //
+  //   THE PULL (contractual). "May this order name an identified physical pair
+  //   and instruct the warehouse to take it off a wall?" That is HUB 1 ONLY,
+  //   by construction: the pull is charged to hub1 in the allocation, the
+  //   checkout pre-flight verifies it against hub1, and pendingDisplayPullsByCell
+  //   is keyed pid::sizeKey with NO hub term — so it may only ever be netted
+  //   against a hub whose lane actually raises those claims. Netting it
+  //   anywhere else imports a Hub 1 claim's ✕ onto an unrelated cell.
+  //
+  // Before this the marker rode the pull lane's map and the pull lane's
+  // predicate, so it inherited hub1 scope it never needed — and Trophy's 113
+  // hub2-booked displays drew nothing at all, though each names a real shop and
+  // a real size (live census 2026-09-08). They are separate names now so that
+  // widening one can never quietly widen the other.
+  //
+  // ── ONE MAP PER GATED HUB, AND PINE IS NOT ONE OF THEM ────────────────────
+  // The first cut of this built a hub3 map too and the commit said Pine's
+  // displays would now be marked. They are not, and the map was unreachable
+  // dead code that read as a delivered promise (independent review, 2026-09-08).
+  // The glyph asks the SERVING hub, the serving hub comes from sneakerHubOf,
+  // and that runs through gatedSneakerHub — which answers only from
+  // GATED_SNEAKER_HUBS, ["hub1", "hub2"]. A Pine sneaker resolves to no hub at
+  // all on this screen: availabilityKnown is false for it, sneakerOut declines
+  // to answer, and the alternatives sheet says so in as many words. The marker
+  // cannot be wider than the availability lane it hangs off, and making it so
+  // would mean widening the sneaker gate — a stock-routing change, not a glyph.
+  //
+  // So the maps are built FROM the gate rather than from a list written beside
+  // it. Pine's 18 hub3 slots stay unmarked, which is the truth and is now said
+  // out loud; and if hub3 is ever admitted to the sneaker gate, the marker
+  // follows it in the same commit instead of needing to be remembered.
+  //
+  // AND MARKING PINE WOULD TAKE MORE THAN A WIDER GATE, which is the other
+  // reason not to fake it here: a Pine device does not subscribe to the slots
+  // node at all (displaySlotsState above is passed `!== "pine"`), so
+  // displaySlotsLive is empty there whatever this map contains. Marking Pine
+  // means a new listener on a Pine device plus a hub source for the glyph that
+  // stops short of the availability gate — a data-cost decision and a
+  // stock-routing one. Neither is a glyph change, and neither is this PR.
+  const displayUnitsByHub = useMemo(() => Object.fromEntries(
+    GATED_SNEAKER_HUBS.map((h) => [h, displayUnitsByCell(displaySlotsLive, h)])
+  ), [displaySlotsLive]);
+  // THE PULL LANE'S MAP. Hub 1, and it stays Hub 1 — the checkout pre-flight is
+  // its only reader. If the pull lane is ever extended to another hub, that
+  // change has to give pendingDisplayPullsByCell a real hub filter FIRST
+  // (displayPairCore's own header says so); widening the marker did not and
+  // must not be read as having done so.
+  const hub1DisplayUnits = displayUnitsByHub.hub1;
+  // ── AND THE REPAIR IS PERSISTED, because the projection alone cannot hold ──
+  // Two reasons a derived-only fix un-fixes itself, both found in review:
+  //   • /orders IS EPHEMERAL — ids recycle daily. When the order that proves
+  //     the exit is overwritten, the projection reverts and the ghost is back.
+  //   • THE ORDER FEED IS STORE-SCOPED (useOrders(myShop), rules-enforced).
+  //     When Trophy pulls a pair standing on Marathon PE's floor, PE's own
+  //     device never receives that order and would keep the ghost for ever.
+  // So the device that CAN see the evidence writes the durable record for
+  // every device that cannot, through the ordinary fenced writers, stamped
+  // with the EVENT's instant — which makes the repair indistinguishable from
+  // the write that was dropped, so it can never win over a real transition
+  // that landed in between. Idempotent, once per repair per session; a repair
+  // that fails is found again on the next load. Nothing here runs until
+  // the slots subscription has actually answered — an empty map before it
+  // lands would otherwise read as "no slot" and mint a create.
+  const repairedRef = useRef(new Set());
+  useEffect(() => {
+    if (!displaySlotsState.settled || displaySlotsState.error || !ordersSettled) return;
+    const repairs = displaySlotRepairs(displaySlots, ordersForExits);
+    for (const r of repairs) {
+      const k = displayRepairKey(r);
+      if (repairedRef.current.has(k)) continue;
+      repairedRef.current.add(k);
+      // ONE ATTEMPT PER REPAIR PER SESSION, and the key is remembered whatever
+      // the outcome. An earlier cut un-remembered a FAILED repair so it would
+      // "retry" — but the effect re-runs on every /orders snapshot, so a repair
+      // that fails persistently was resubmitted on every unrelated till
+      // transaction, from every device at once (reviewer's case). A failure now
+      // simply waits for the next load, which is when the divergence is found
+      // again. Nothing user-facing waits on this write.
+      // loseTies: a repair decided what to write against a SNAPSHOT, and a real
+      // write stamped the same instant may have landed since. Its own fence is
+      // strict; the transaction's must be too, or the repair could still clear
+      // a replacement that had just arrived.
+      const done = r.op === "clear"
+        ? clearDisplaySlot({ store: r.store, productId: r.productId, source: r.source, orderId: r.orderId, at: r.at, loseTies: true })
+        : setDisplaySlot({ store: r.store, productId: r.productId, productName: r.productName,
+                           size: r.size, bookedHub: r.bookedHub, source: r.source, orderId: r.orderId, at: r.at, loseTies: true });
+      // The writers resolve { ok: true, superseded } / { ok: true, noop } when a
+      // transaction legitimately aborts, which is indistinguishable from "wrote
+      // fine" to a bare .catch(). A repair is the one write here nobody is
+      // watching, so it says what happened. `superseded`/`noop` are EXPECTED —
+      // a real transition beat it, which is the fence working — and are logged
+      // as information, not failure.
+      done.then((res) => {
+        if (res && res.ok && (res.superseded || res.noop)) {
+          console.info("[displaySlot] repair skipped — a newer transition stands:", k);
+        } else if (!res || res.ok !== true) {
+          console.warn("[displaySlot] repair FAILED, retrying on next load:", k, res && res.message);
+        }
+      }).catch((err) => {
+        console.warn("[displaySlot] repair threw, retrying on next load:", k, String(err?.message || err));
+      });
+    }
+  }, [displaySlots, ordersForExits, displaySlotsState.settled, displaySlotsState.error, ordersSettled]);
   // ── SHOP-SWITCH GUARD ─────────────────────────────────────────────────────
   // The SHOP toggle silently re-routes EVERY order placed afterwards to that
   // store's warehouse→shop transfer (order.destShop). A single mis-tap here
@@ -8824,12 +9787,6 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `left`, so arriving stock or a shrinking cart drops it on the next
   // snapshot.
   const [naNote, setNaNote]                             = useState(null);
-  // Display-pair prompt — { size, stores } while the "on display" sheet is
-  // open for a tapped marked tile; pendingDisplayPair — { store } once the
-  // request button was taken, stamped onto the cart line so the order clears
-  // (and the refill later re-fills) the RIGHT store's slot.
-  const [displayPrompt, setDisplayPrompt]               = useState(null);
-  const [pendingDisplayPair, setPendingDisplayPair]     = useState(null);
   // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
   // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
   const selectedSizes = useMemo(() => {
@@ -8877,21 +9834,47 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Products matching the active mode (sneaker/clothing) + store universe,
   // BEFORE any text search. The fuzzy search runs over this candidate set so a
   // typo can never pull in products from the wrong mode/hub.
-  const base = useMemo(() =>
-    products.filter(p => {
-      const isClothingProduct = (p.productType || "sneaker") === "clothing";
-      if (isClothingProduct !== wantsClothing) return false;
-      if (!wantsClothing) {
-        const hubs = getProductHubs(p);
-        if (effectiveStoreMode === "pine") {
-          if (!hubs.includes("hub3")) return false;
-        } else {
-          if (hubs.length && !hubs.includes("hub1") && !hubs.includes("hub2")) return false;
-        }
-      }
-      return true;
+  // ── THE DEACTIVATION GATE (owner spec 2026-09-05, BUG 1 + 1b) ──────────────
+  // A deactivated product is COMPLETELY ABSENT from this screen — not greyed,
+  // not badged, not showing zero sizes. It was badged before, and that cost
+  // real sales: the assistant found the deactivated duplicate, saw no sizes,
+  // and told the customer there was no stock while the sizes sat under the
+  // other copy. The exemption is Marathon Pine (uncounted Hub 3, manual floor),
+  // and it lives in /config/assistantView so it can be switched off without a
+  // deploy — see src/config/assistantVisibility.js for the whole contract.
+  //
+  // THE GATE IS APPLIED IN `base`, DELIBERATELY. `base` is the ONE pool this
+  // screen derives everything from: the browse grid, the Fuse index, the
+  // barcode/SKU code-hit branch, the 1-char substring branch, the desktop
+  // overlay's catalog, and the tongue-label finder. Filtering here is what
+  // makes "not findable by search either" structurally true instead of a rule
+  // four call sites have to remember.
+  const { deactivatedShops } = useAssistantVisibility();
+  const showDeactivated = showsDeactivated(deactivatedShops, effectiveShop);
+
+  const base = useMemo(
+    () => assistantCatalogue({
+      products, wantsClothing, storeMode: effectiveStoreMode, showDeactivated, isDeactivated,
     }),
-  [products, wantsClothing, effectiveStoreMode]);
+    [products, wantsClothing, effectiveStoreMode, showDeactivated]);
+
+  // `browse` is what the GRID renders with no query. For every strict store it
+  // is already identical to `base` (the gate above removed them); for an EXEMPT
+  // store it must NOT drop them — Pine's assistant view shows everything —
+  // so browsableProducts runs only when the gate is off. One pair of memos
+  // feeds BOTH the phone grid (`filtered` below) and the desktop overlay (which
+  // takes `products={browse}` + `searchResults={filtered}`), so neither can drift.
+  const browse = useMemo(() => (showDeactivated ? base : browsableProducts(base)), [base, showDeactivated]);
+
+  // THE ORDERING PREDICATE, once. At a strict store `base` no longer contains a
+  // deactivated product at all, so this can only ever fire on a cart line added
+  // before someone tapped Deactivate (the stale-cart window the submit guard
+  // closes). At an EXEMPT store it is permanently false — Pine sees the card
+  // AND may order it, because the shoe may be on Pine's uncounted shelf. It is
+  // passed into AssistantDesktop so the two layouts cannot disagree.
+  const deadForOrder = useCallback(
+    (p) => !showDeactivated && isDeactivated(p),
+    [showDeactivated]);
 
   // Fuzzy search (Fuse.js): typo- and case-tolerant matching over name +
   // category. Rebuilt only when `base` changes (memoised — fine for ~1.2k
@@ -8915,7 +9898,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   const deferredSearch = useDeferredValue(search);
   const filtered = useMemo(() => {
     const q = deferredSearch.trim();
-    if (!q) return base;
+    if (!q) return browse;   // no query = browsing: deactivated products are not on offer
     // BARCODE / SKU match — typing or SCANNING a product code finds the product
     // directly, not just its name. Matches the product-level barcode + sku and any
     // per-size code (products/{id}/barcodes/{sizeKey}, carried on the product). Exact
@@ -8942,7 +9925,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         p.name.toLowerCase().includes(lc) || (p.category || "").toLowerCase().includes(lc)));
     }
     return merge(fuse.search(q).map(r => r.item));
-  }, [deferredSearch, base, fuse]);
+  }, [deferredSearch, base, browse, fuse]);
 
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
@@ -8955,20 +9938,54 @@ function AssistantView({ products, onExit, orders = [] }) {
     return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";
   };
 
-  // ── THE HUB 1 GRID GATE (2026-08-25) ──────────────────────────────────────
-  // A sneaker size Hub 1 has none available of renders as ✕ — not tappable, no
-  // order line, no note. HUB 1 ONLY: hub2-routed sneakers (and everything at
-  // Pine/hub3) keep exactly yesterday's behaviour, pinned by test. The gate
-  // opens only once the subtree has settled, and never on a read error.
-  // isFootwearProduct, not merely "not clothing": the sneaker browse grid also
-  // carries perfumes, bags and one-size accessories (no productType), whose
-  // availability promises this gate does not model — they keep yesterday's
-  // behaviour. (Adversarial review, PR #446.)
-  const sneakerServedByHub1 = (p) =>
-    isFootwearProduct(p) && (p?.productType || "sneaker") !== "clothing"
-    && computeHubForItem({ product: p }) === "hub1";
-  const sneakerAvail = (pid, size) =>
-    cellAvailability({ cells: hub1CellsState.cells, promised: hub1Promised, productId: pid, size });
+  // ── THE SNEAKER GRID GATE (2026-08-25; Hub 2 joined 2026-09-05) ───────────
+  // A sneaker size the serving hub has none available of renders as ✕ — not
+  // tappable, no order line, a note on tap saying why. HUB 1 AND HUB 2: the
+  // shoe's own product record decides which hub answers (computeHubForItem, the
+  // same routing the order itself will take), so the tile is always gated by
+  // the hub that would actually have to supply it. Pine/hub3 keeps exactly
+  // yesterday's behaviour — computeHubForItem returns hub3 there and
+  // sneakerHubOf refuses it — as do the shops, which never run this screen's
+  // gate at all. Pinned by hubIsolation.test.js.
+  //
+  // ONE PATH, TWO HUBS. Hub 2 did NOT get its own predicate, its own
+  // arithmetic or its own tile: sneakerHubOf names the hub and every helper
+  // below indexes its data by that name. A second, hub-named copy of sneakerOut
+  // sitting beside this one is exactly the drift this file's availability work
+  // exists to prevent — hubIsolation.test.js refuses to let one appear.
+  //
+  // The gate opens only once THAT hub's subtree has settled, and never on a
+  // read error. isFootwearProduct, not merely "not clothing": the sneaker
+  // browse grid also carries perfumes, bags and one-size accessories (no
+  // productType), whose availability promises this gate does not model — they
+  // keep yesterday's behaviour. (Adversarial review, PR #446.)
+  // gatedSneakerHub lives in availabilityCore next to the resolver it feeds, so
+  // "which hub answers" is testable without mounting the screen (hubIsolation).
+  const sneakerCellsState = (hub) => (hub === "hub2" ? hub2CellsState : hub1CellsState);
+  const sneakerPromisedMap = (hub) => (hub === "hub2" ? hub2ReadyPromised : hub1Promised);
+  const sneakerGateReady = (hub) => {
+    const st = sneakerCellsState(hub);
+    return !!hub && st.settled && !st.error;
+  };
+  // ── THE SOURCING HUB IS A STOCK QUESTION, NOT ONLY A TAG (2026-09-06) ─────
+  // computeHubForItem answers from the product record's `hubs` tag alone, and
+  // a tag does not move when stock does. On 2026-09-06 that refused every size
+  // of a shoe whose eleven units had been transferred to Hub 2 while its tag
+  // still read hub1 — the gate was right, the hub it asked was wrong.
+  // resolveSneakerSourcingHub keeps the tag whenever the tagged hub can supply
+  // the size and only reroutes a ZERO to a gated hub that actually holds it;
+  // the rule, its narrowness and the census behind it live in availabilityCore
+  // next to the resolver it feeds. Both hub subtrees are already streamed on
+  // every non-Pine device (hub1CellsState / hub2CellsState), so this reads
+  // cache and costs nothing on the wire.
+  //
+  // Per SIZE: the routing question and the ✕ question are now the same
+  // question, so a tile and the order line placed from it cannot disagree
+  // about which hub picks. Passing no size yields the tag, unchanged.
+  const sneakerHubData = () => ({
+    hub1: { cells: hub1CellsState.cells, promised: hub1Promised, ready: sneakerGateReady("hub1") },
+    hub2: { cells: hub2CellsState.cells, promised: hub2ReadyPromised, ready: sneakerGateReady("hub2") },
+  });
   // Units of this product+size already in the cart. Classic partner rows are
   // excluded (they become requests, not pulls) — but a display-pair PULL line
   // IS a pull of a known unit and counts, so the same single pair can never
@@ -8978,32 +9995,270 @@ function AssistantView({ products, onExit, orders = [] }) {
     cart.filter(l => (l.productType || "sneaker") !== "clothing"
       && l.product?.id === pid && l.size === size
       && (!l.requestDisplayPartner || l.displayPairRequest === true)).length;
-  const sneakerOut = (p, s) =>
-    sneakerServedByHub1(p) && hub1CellsState.settled && !hub1CellsState.error
-    && !!s && sneakerAvail(p.id, s) <= sneakerInCart(p.id, s);
-  // ── "ONLY THE DISPLAY PAIR IS LEFT" (2026-08-26) ──────────────────────────
-  // Marked, not blocked: the tile keeps its number, gains a corner display
-  // icon + warning tint, and tapping it offers "Request display pair" instead
-  // of a plain select. Fires only when the resolver's availability is fully
-  // covered by live display slots (displayPairCore.displayOnly); a cell at 0
-  // stays ✕ exactly as before, whatever a slot claims. Returns null or
-  // { stores } (whose floor the pair is on — from the slot, so the request
-  // can clear and later refill the RIGHT store's slot).
-  const sneakerDisplayOnly = (p, s) => {
-    if (!s || !sneakerServedByHub1(p) || !hub1CellsState.settled || hub1CellsState.error) return null;
-    const d = hub1DisplayUnits[promisedKey(p.id, s)];
-    if (!d) return null;
-    const avail = sneakerAvail(p.id, s) - sneakerInCart(p.id, s);
-    return displayOnly(avail, d.units) ? { stores: d.stores } : null;
+
+  // ── THE CART IS ALLOCATED ONCE, LINE BY LINE, HUB BY HUB ─────────────────
+  // Every question the screen asks about a sneaker size depends on what THIS
+  // DEVICE'S CART has already claimed and, crucially, FROM WHICH HUB. Two
+  // earlier attempts got this wrong in ways that routed real orders to empty
+  // shelves:
+  //
+  //   • a scalar "the cart holds N of this size" drained the tagged hub first
+  //     and spilled the rest — which charges a Hub 1 display pull against a
+  //     Hub 2 tag, and then routes the NEXT line to the Hub 1 whose only unit
+  //     is that same display pair, allocating it twice;
+  //   • counting every non-clothing line charged CLASSIC Display Partner
+  //     requests, which are requests for what a hub does NOT have and consume
+  //     nothing (sneakerInCart excludes them, and this must agree).
+  //
+  // So the cart is walked ONCE, in order, and each line is charged to the hub
+  // it is actually allocated to. Both the tile ("can I add one more?") and the
+  // checkout ("where does THIS line come from?") read the same walk — they ask
+  // different questions of one allocation rather than each keeping a count.
+  //
+  // Cart order is the allocation order, which is stable and is what the
+  // assistant sees; a line added first keeps its hub when a later one is added.
+  const cartAllocation = useMemo(() => allocateSneakerCart({
+    lines: cart,
+    hubData: sneakerHubData(),
+    taggedHubFor: (p) => gatedSneakerHub(p, computeHubForItem({ product: p })),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [cart, hub1CellsState, hub2CellsState, hub1Promised, hub2ReadyPromised, effectiveStoreMode]);
+
+  // ── ROUTING AND AVAILABILITY ARE ONE ANSWER ──────────────────────────────
+  // They were two, and they disagreed. The resolver decided the hub from stock
+  // alone while sneakerOut subtracted the CART afterwards against whatever hub
+  // it had already picked — so a cart holding the tagged hub's last unit made
+  // the tile ✕ without the alternate ever being consulted, however much it
+  // held. Measured on live stock: 14 cells at cart depth 1, 46 at depth 2.
+  // One call now returns both, and the cart goes IN rather than being applied
+  // after the fact.
+  const sneakerSourcing = (p, s) => resolveSneakerSourcing({
+    product: p, taggedHub: gatedSneakerHub(p, computeHubForItem({ product: p })),
+    size: s, hubData: sneakerHubData(),
+    // What the cart has already taken FROM EACH HUB — the allocation above,
+    // not a recount. Nothing server-side knows about the cart, which is why the
+    // resolver could not see it before.
+    consumedByHub: cartAllocation.consumed.get(`${p?.id}::${s}`) || null,
+  });
+  const sneakerHubOf = (p, s) => sneakerSourcing(p, s).hub;
+  // THE PULL LANE'S PREDICATE, and it is still only the pull lane's. A Hub 2
+  // shoe must never be offered a HUB 1 display pair: the pull is charged at
+  // hub1, verified at hub1 and netted at hub1. It takes the size because after
+  // 2026-09-06 the serving hub is a per-size answer, and a lane that asked the
+  // product-level question would offer a Hub 1 pair for a size Hub 1 is no
+  // longer picking.
+  //
+  // The MARKER used to ride this too and no longer does — see
+  // sneakerDisplayInfo. Nothing about a glyph needs to be Hub 1's.
+  const sneakerServedByHub1 = (p, s) => sneakerHubOf(p, s) === "hub1";
+  const sneakerAvail = (pid, size, hub = "hub1") =>
+    cellAvailability({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: pid, size });
+  const sneakerOut = (p, s) => {
+    if (!s) return false;
+    const { hub, available } = sneakerSourcing(p, s);
+    // Number.isFinite, not `available <= 0`: `available` is NULL when the rule
+    // does not answer for this product (Pine, clothing, an unread hub), and
+    // `null <= 0` is TRUE in JavaScript — which would turn "not our business"
+    // into "out of stock" for every one of them.
+    return sneakerGateReady(hub) && Number.isFinite(available) && available <= 0;
   };
-  // THE QUIET TIER (owner ask, 2026-08-26): a size that is on a display shows
-  // the small glyph ALWAYS — informational, no tint, no prompt — so staff can
-  // see at a glance which size is out on a floor. It only escalates to the
-  // amber marker + "Request display pair" prompt when the display pair is the
-  // last availability (sneakerDisplayOnly above). Same slots data the screen
-  // already streams; needs no availability read, so no settled gate.
-  const sneakerDisplayInfo = (p, s) =>
-    (s && sneakerServedByHub1(p) ? hub1DisplayUnits[promisedKey(p.id, s)] || null : null);
+  // WHY that ✕ — booked vs reserved vs in-cart, for the explanatory note. An
+  // ✕ whose cell holds real stock reserved for an uncollected order looked
+  // identical to "this size doesn't exist", and staff read it exactly that
+  // way (owner report 2026-09-01: Lacoste Powercourt size 8, counted at Hub 1
+  // that morning, ✕ on the picker — the one unit was promised to a ready
+  // order placed minutes earlier). Same inputs as sneakerOut, kept apart.
+  // pullOnly: the block is explained ENTIRELY by a pending display-pair
+  // pull claim (48h lane) — the note must not call that a 20-minute hold.
+  // hubLabel travels WITH the split: the note names the hub that refused, and
+  // a Hub 2 shoe blamed on "Hub 1" would send staff to the wrong shelf.
+  // pullOnly is a Hub 1 fact only — Hub 2 nets no pull claims (see
+  // hub2ReadyPromised), so it can never be true there.
+  const sneakerOutWhy = (p, s) => {
+    const hub = sneakerHubOf(p, s) || "hub1";
+    return {
+      ...cellBlockInfo({ cells: sneakerCellsState(hub).cells, promised: sneakerPromisedMap(hub), productId: p.id, size: s }),
+      pullOnly: hub === "hub1"
+        && !(hub1ReadyPromised[promisedKey(p.id, s)] > 0) && hub1PullPromised[promisedKey(p.id, s)] > 0,
+      hubLabel: HUB_LABELS[hub] || hub,
+      // Did the sourcing resolver actually READ both gated hubs and find
+      // nothing at either? Only then may the note say so. `hub` is the
+      // RESOLVED hub, so it staying put while the other hub is settled and
+      // empty is exactly that case; an unsettled alternate is silence, not
+      // evidence, and keeps the single-hub wording.
+      checkedBoth: GATED_SNEAKER_HUBS.includes(hub)
+        && GATED_SNEAKER_HUBS.every(h => sneakerGateReady(h))
+        && GATED_SNEAKER_HUBS.every(h => sneakerAvail(p.id, s, h) <= 0),
+    };
+  };
+  // ── THE MARKER, AND THE WHOLE OF WHAT IT DOES ────────────────────────────
+  // A size that has a unit on a display shows the small glyph — informational,
+  // no tint, no prompt, no gate — so staff can see at a glance which size is
+  // out on a floor. That is the entire feature.
+  //
+  // It used to escalate: when the display pair was the LAST availability the
+  // tile went amber and the tap was intercepted into a "Request display pair"
+  // panel instead of selecting. That divert is deleted (owner spec,
+  // 2026-09-07). It confused a marker with a gate, and the two are not the
+  // same thing.
+  //
+  // THE RULE, STATED HONESTLY, because a loose version of it went into the
+  // first draft of this comment and an independent review caught it: the old
+  // predicate was `0 < available <= displayUnits`, so four units against one
+  // slot did NOT divert. What DID divert was every case where the display
+  // units covered the whole remaining count — one unit with one slot, two
+  // units with two slots — and, because `available` is the RESOLVER's live
+  // remaining number rather than the shelf count, a cell physically holding
+  // four also diverted the moment three of them were promised or in a cart.
+  // The size then offered nothing at all, though a pair was standing right
+  // there. Availability is now governed by quantity alone, through
+  // sneakerOut, exactly as it is for an unmarked size; a display pair is hub
+  // stock (#324) and always was.
+  //
+  // A display-pair PULL — the flagged line that tells the warehouse to take
+  // the shoe off the wall — is no longer minted from this screen at all. The
+  // "Request Display Partner" button is the one request path, and it is
+  // untouched.
+  //
+  // Same slots data the screen already streams; needs no availability read,
+  // so no settled gate.
+  // THE SERVING HUB'S WALLS, not just Hub 1's. The glyph answers "is a unit of
+  // this size standing on a shop floor", and the slot that answers it is the
+  // one booked at the hub THIS SIZE resolves to — Trophy's displays are booked
+  // hub2 and are as real as PE's hub1 ones. Reading the
+  // serving hub's own map is what keeps that honest: a Hub 2 size is marked by
+  // a Hub 2 slot, never by a Hub 1 one, so the marker cannot claim a wall that
+  // has nothing to do with the shelf the pair would come off.
+  //
+  // Still appearance-only. It nets nothing into availability and the caller
+  // suppresses it on a ✕ tile, so an unresolved hub simply means no glyph —
+  // which is also what a Pine/hub3 shoe gets, because gatedSneakerHub answers
+  // for hub1 and hub2 only and the glyph may not outrun the availability lane.
+  const sneakerDisplayInfo = (p, s) => {
+    if (!s) return null;
+    const hub = sneakerHubOf(p, s);
+    return hub ? (displayUnitsByHub[hub]?.[promisedKey(p.id, s)] || null) : null;
+  };
+
+  // ── "NOT AVAILABLE — BUT THESE ARE, RIGHT NOW" (2026-09-06) ───────────────
+  // The greyed size chip used to be a dead end: a reason, and the sale walks
+  // out. It now opens a sheet that keeps the reason UNCHANGED and adds, below
+  // it, the alternatives that can actually be sold this minute.
+  //
+  // THE READ PATH IS THE WHOLE DESIGN. The ranking was computed offline
+  // (scripts/shopify/build-neighbours.mjs) and stored on the product record, so
+  // this does no similarity arithmetic, opens no subscription and scans no
+  // catalogue: it reads at most twelve pids out of a list the screen already
+  // holds, and checks each one against the SAME maps the grid behind it is
+  // already using. 1,410 sneakers is ~1M pairs; scoring that at tap time is a
+  // frozen phone in front of a customer.
+  //
+  // EVERY GATE FAILS CLOSED. A suggestion an assistant reads out that turns out
+  // not to exist is worse than the bare refusal it replaced — it costs the
+  // customer twice and teaches the assistant not to trust the screen. So:
+  //   • availabilityKnown is FALSE for a Pine/hub3 shoe and for a hub whose
+  //     cells have not settled. sneakerOut returns false there meaning "no
+  //     gate", NOT "in stock", and reading it the other way is exactly how an
+  //     unverified shoe reaches a customer.
+  //   • a deactivated line (#445/#532/#566), a priceless one and a photoless
+  //     one are all out — the row has nothing to show and nothing to sell.
+  //   • sneakerOut, not a second availability test. One definition of
+  //     "available" on this screen, the same one that drew the chip.
+  const alternativesFor = (product, size) => {
+    if (!product || !size) return [];
+    // Sneakers only. Clothing and perfume are out of scope for this build, and
+    // a clothing tile's grey-out reads its cell by a different rule
+    // (availabilityCore's header, the deliberately-unmerged clothing lane).
+    if ((product.productType || "sneaker") === "clothing") return [];
+    return sellableAlternatives({
+      neighbours: product[NEIGHBOURS_FIELD],
+      requestedSize: size,
+      // FOLLOWS MERGES. A pid in a list written last week may since have been
+      // merged away; resolveProductById lands on the survivor, and
+      // sellableAlternatives de-duplicates when two entries land on the same
+      // shoe.
+      resolveProduct: (pid) => resolveProductById(pid),
+      sizesOf: (p) => (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"),
+      // PRODUCT-LEVEL: is this shoe gated AT ALL? With no size,
+      // resolveSneakerSourcingHub yields the TAG, which is null for a Pine/hub3
+      // shoe — exactly the "this screen cannot answer for it" case. The
+      // per-size readiness check moved into sizeAvailable below, because after
+      // #568 the serving hub is a per-size answer and a product-level gate
+      // would vouch for sizes routed to a hub that has not settled.
+      availabilityKnown: (p) => !!sneakerHubOf(p),
+      // ONE DEFINITION OF AVAILABLE, AND IT IS sneakerOut.
+      //
+      // A display-marked size used to be excluded from this sheet outright:
+      // selling it required the display-pair request flow, which this sheet has
+      // no prompt for, so recommending it would have created a plain cart line
+      // for a pair standing on a wall. That reasoning went with the divert. A
+      // marked size is now sold on the ordinary path like any other — the
+      // marker asserts nothing about availability — so there is nothing left
+      // for this sheet to exclude, and a shoe that can be sold this minute is
+      // no longer hidden from a customer standing in front of one.
+      //
+      // PER SIZE, and every input must have ANSWERED — not merely be empty.
+      //
+      // sneakerOut returns false for an unready hub meaning "no gate", NOT "in
+      // stock", so the stock gate is explicit. After #568 each size resolves
+      // its own hub, so one size of a shoe can be answerable while another is
+      // not.
+      //
+      // ordersSettled is the same mistake in the other input, and an
+      // independent review found it (2026-09-06). Before /orders answers, the
+      // ready-promise map is EMPTY — identical to "nothing is promised" — so a
+      // pair already spoken for reads as free. That does not matter for a TILE
+      // (a marker that arrives late is harmless); it matters for a
+      // RECOMMENDATION, which asserts availability rather than merely failing
+      // to deny it.
+      //
+      // The display lane is NOT waited on any more: nothing here reads it.
+      sizeAvailable: (p, sz) => {
+        const hub = sneakerHubOf(p, sz);
+        if (!sneakerGateReady(hub)) return false;
+        if (!ordersSettled) return false;
+        return !sneakerOut(p, sz);
+      },
+      // ── SUGGESTING IS NOT THE SAME AS PERMITTING ──────────────────────
+      // isDeactivated, NOT deadForOrder. deadForOrder is Pine-exempt (#566:
+      // `/config/assistantView/showDeactivatedShops/marathon-pine` lets Pine
+      // still see and order a deactivated line, because Pine works an
+      // uncounted manual floor). That exemption is about not HIDING what Pine
+      // staff go looking for. It is not a licence for the app to go and
+      // RECOMMEND a line the owner has retired — nobody asked for that, and a
+      // suggestion is the app's own initiative in a way a search result is not
+      // (CodeRabbit).
+      //
+      // isMergedAway too: followMerge returns the LAST resolved record on a
+      // dangling pointer or a cycle, and that record is still merged-away. A
+      // priced, photographed, live-looking corpse would pass every other gate.
+      isSellable: (p) => !isDeactivated(p) && !isMergedAway(p)
+        && Number(p.retailPrice) > 0 && !!String(p.photoUrl || "").trim(),
+    // WHICH SHELF IT COMES OFF. The refusal note names the hub that refused,
+    // and an alternative may be supplied by the OTHER one — a Hub 1 assistant
+    // offered a Hub 2 shoe with no signal is being asked to promise a
+    // collection time they cannot know (spec-conformance review). The hub is
+    // already computed to decide availability; it just was not carried.
+    // ── THE ONE RESIDUAL, STATED ─────────────────────────────────────────
+    // A store-assigned device can only read ITS OWN shop's /orders (rule-
+    // enforced, useOrders(scopeShop)), so a pair promised to a ready order at
+    // another shop is invisible to it and reads as free. That is inherited
+    // from the resolver and is exactly the blind spot the ✕ this sheet sits
+    // under already has — the note above and the row below are computed from
+    // the same data, so they cannot disagree with each other. It cannot be
+    // closed on the client without giving every shop device read access to
+    // every other shop's orders, which is a rules decision, not a code one.
+    // Recorded rather than hidden (independent review, 2026-09-06).
+    //
+    // WHICH SHELF, for the size the assistant will actually take. After #568
+    // that is a per-size answer, so asking it product-level could name Hub 1 on
+    // a card whose only available size is picked by Hub 2. The requested size
+    // when the shoe has it, otherwise the first size actually on offer.
+    }).map((row) => ({
+      ...row,
+      hubLabel: HUB_LABELS[sneakerHubOf(row.product, row.hasRequestedSize ? size : row.sizes[0])] || "",
+    }));
+  };
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -9019,7 +10274,33 @@ function AssistantView({ products, onExit, orders = [] }) {
   const customerCount     = cart.filter(isCustomerLine).length;
   const refillCount       = cart.length - customerCount;
 
-  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
+  const resetSheet = () => { setSelected(null); setPendingSize(""); setNaNote(null); setPendingQty(1); setPendingDisplay(false); setPendingDisplayPartner(false); };
+
+  // ── TAKING AN ALTERNATIVE ─────────────────────────────────────────────────
+  // The sheet STAYS OPEN and swaps to the chosen shoe. Never a bounce back to
+  // the catalogue: the assistant is mid-sentence with a customer, and making
+  // them find the shoe again is how the suggestion stops being used.
+  //
+  // The customer's original size travels with them ONLY when that shoe has it
+  // available (alternativeSelection decides, and it decides from the sizes the
+  // availability join already verified). Otherwise the shoe opens on its own
+  // grid with nothing chosen — pre-selecting a size nobody asked for is how a
+  // wrong pair gets ordered.
+  //
+  // Every other piece of sheet state is cleared, exactly as resetSheet would:
+  // a display-pair claim, a partner toggle and a quantity all belong to the
+  // shoe that was on screen a moment ago, and carrying any of them across
+  // would attach them to a different product.
+  const pickAlternative = (row) => {
+    const pick = alternativeSelection(row, naNote?.size || pendingSize || "");
+    if (!pick) return;
+    setNaNote(null);
+    setPendingDisplay(false);
+    setPendingDisplayPartner(false);
+    setPendingQty(1);
+    setPendingSize(pick.size);
+    setSelected(pick.product);
+  };
 
   const addToCart = () => {
     if (!selected) return;
@@ -9049,11 +10330,11 @@ function AssistantView({ products, onExit, orders = [] }) {
     }
     // Sneakers: size is optional when a Display Partner request is set.
     if (!pendingSize && !pendingDisplayPartner) return;
-    // Hub 1 availability belt: the grid already renders an unavailable size as
-    // a disabled ✕, but a size selected BEFORE the stock moved (sheet left
-    // open) must not order into nothing either — and a quantity larger than
-    // Hub 1 can still give out (net of cart lines) is clamped down, the same
-    // promise the clothing path makes.
+    // The availability belt (Hub 1 and Hub 2 alike): the grid already renders an
+    // unavailable size as a disabled ✕, but a size selected BEFORE the stock
+    // moved (sheet left open) must not order into nothing either — and a
+    // quantity larger than the serving hub can still give out (net of cart
+    // lines) is clamped down, the same promise the clothing path makes.
     if (pendingSize && !pendingDisplayPartner && sneakerOut(selected, pendingSize)) { setPendingSize(""); return; }
     // Quantity expansion: pendingQty > 1 → push N identical cart lines so the
     // warehouse fulfils one box per pair (no "qty" multiplier on a single
@@ -9063,19 +10344,30 @@ function AssistantView({ products, onExit, orders = [] }) {
       : 1;
     // The quantity clamp half of the belt above: with 2 available a 10-pair
     // add lands 2 lines, never 10. Only where the gate has real data.
-    if (pendingSize && !pendingDisplayPartner && sneakerServedByHub1(selected)
-        && hub1CellsState.settled && !hub1CellsState.error) {
-      reps = Math.min(reps, Math.max(1, sneakerAvail(selected.id, pendingSize) - sneakerInCart(selected.id, pendingSize)));
+    // The quantity clamp reads the resolver's OWN remaining count. It used to
+    // recompute one — sneakerAvail(clampHub) minus the whole cart — which
+    // double-counted the cart the moment the resolver had already accounted for
+    // it: Hub 1 with 1, Hub 2 with 3 and one pair in the cart offers three
+    // more, and a request for three silently landed two (independent review).
+    const { hub: clampHub, available: clampLeft } =
+      pendingSize && !pendingDisplayPartner ? sneakerSourcing(selected, pendingSize) : { hub: null, available: null };
+    if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
+      reps = Math.min(reps, Math.max(1, clampLeft));
     }
+    // ── NO DISPLAY-PAIR PULL IS MINTED HERE ANY MORE ────────────────────────
+    // A pull — `displayPairRequest: true` plus the store whose floor the pair
+    // stands on — used to be stamped here whenever the "on display" prompt had
+    // taken a claim. That prompt is deleted (owner spec 2026-09-07: the marker
+    // is informational), and it was the claim's only minter, so the branch
+    // that read it went with the state. Cart state is in memory and never
+    // persisted, so nothing survives that could still carry the flag.
+    //
+    // The ORDER-side readers of `displayPairRequest` are untouched and must
+    // stay: the warehouse "take it off the display" banner, the slot clear at
+    // placement, the refill replay and the out-of-stock reinstate all read it
+    // off records in RTDB, and orders placed before this shipped still carry
+    // it. Re-attaching a minter is the separate display source-of-truth job.
     const line = { product: selected, size: pendingSize || null, requestDisplay: false, requestDisplayPartner: pendingDisplayPartner };
-    // A display-PAIR pull (the "on display" prompt path): the pair to send IS
-    // the display pair, possibly on ANOTHER store's floor — the flag drives
-    // the warehouse "take it off the display" banner, and the store drives
-    // which slot the order clears / the refill later re-fills.
-    if (pendingDisplayPartner && pendingDisplayPair) {
-      line.displayPairRequest = true;
-      line.displayPairStore = pendingDisplayPair.store || null;
-    }
     setCart(c => [...c, ...Array.from({ length: reps }, () => ({ ...line }))]);
     resetSheet();
   };
@@ -9101,9 +10393,33 @@ function AssistantView({ products, onExit, orders = [] }) {
       reps = Math.min(reps, Math.max(0, hubQty(p.id, size) - clothingInCart(p.id, size)));
       if (reps <= 0) return 0;
     } else if (size && sneakerOut(p, size)) {
-      // Hub 1 sneaker with none available — same refusal the grid's ✕ makes,
-      // enforced here too so a stale hover panel can't add past it.
+      // A sneaker its hub has none available of — same refusal the grid's ✕
+      // makes, enforced here too so a stale hover panel can't add past it.
       return 0;
+    } else if (size) {
+      // ── THE QUANTITY CLAMP, WHICH THIS PATH WAS MISSING ──────────────────
+      // The check above is a ZERO check. Without a clamp beside it, a stepper
+      // set to 5 against a cell holding 1 added FIVE lines: five boxes asked
+      // of a hub that has one pair, on the desktop path only, while the phone
+      // sheet's addToCart has clamped all along.
+      //
+      // It was left standing on 2026-09-05 as a pre-existing gap the sourcing
+      // change had not widened. This change widens it: a size whose only unit
+      // is the display pair used to divert into a request that forced qty 1,
+      // and now takes the ordinary path with the stepper live — so the worst
+      // case is five orders against one pair standing on a shop floor
+      // (independent review, 2026-09-07). Closing it here is the smaller edit
+      // by far, and it makes the two surfaces agree.
+      //
+      // The SAME belt addToCart uses, deliberately: the resolver's own
+      // remaining count (which already has the cart in it — recomputing one
+      // double-counts, the defect #570 closed), applied only where the gate
+      // has real data, and never below 1 for a size the zero check already
+      // let through.
+      const { hub: clampHub, available: clampLeft } = sneakerSourcing(p, size);
+      if (sneakerGateReady(clampHub) && Number.isFinite(clampLeft)) {
+        reps = Math.min(reps, Math.max(1, clampLeft));
+      }
     }
     const line = isClothingCustomer
       ? { product: p, size, productType: "clothing", intent: "customer" }
@@ -9119,19 +10435,32 @@ function AssistantView({ products, onExit, orders = [] }) {
     return i < 0 ? c : [...c.slice(0, i), ...c.slice(i + 1)];
   });
   // Desktop Display-Partner request — ONE line, size optional (sneakers only),
-  // mirroring addToCart's requestDisplayPartner branch. `displayPair` (from
-  // the quick-view's display-pair prompt) marks a PULL of the display pair
-  // itself, carrying whose floor it is on.
-  const addDisplayPartner = (p, size, displayPair = null) =>
+  // mirroring addToCart's requestDisplayPartner branch. It took a third
+  // `displayPair` argument that stamped a PULL of the display pair itself;
+  // that argument could only ever come from the quick-view's "on display"
+  // prompt, which is deleted, so it is gone too rather than left as a live
+  // parameter with a dead caller.
+  const addDisplayPartner = (p, size) =>
     setCart(c => [...c, {
       product: p, size: size || null, requestDisplay: false, requestDisplayPartner: true,
-      ...(displayPair ? { displayPairRequest: true, displayPairStore: displayPair.store || null } : {}),
     }]);
 
   const removeFromCart = idx => setCart(c => c.filter((_, i) => i !== idx));
 
   const openCheckout = () => { resetSheet(); setCheckoutOpen(true); };
   const closeCheckout = () => { setCheckoutOpen(false); setCustomerName(""); setCustomerPhone(""); setMarketingOptIn(false); };
+
+  // ─── NEVER MID-ORDER ──────────────────────────────────────────────────
+  // The update checker refuses to reload while anything is registered busy,
+  // and on a mirrored device that reload is FORCED. A cart with lines in it is
+  // exactly the thing "never mid-order" means, and nothing in this file was
+  // registering it — only the two count screens were. (Fable-vs-spec review,
+  // PR #618.) Registered while the cart has lines, and cleared when it is
+  // empty or this view goes away, so a forgotten flag can never wedge updates.
+  useEffect(() => {
+    setUpdateBusy("assistant-cart", cart.length > 0);
+    return () => setUpdateBusy("assistant-cart", false);
+  }, [cart.length]);
 
   const placeOrders = async (bypassDestConfirm = false) => {
     if (!cart.length || !customerName || submitting) return;
@@ -9148,9 +10477,75 @@ function AssistantView({ products, onExit, orders = [] }) {
     // subscription), falling back to the cart's own copy.
     {
       const dead = cart.filter(isCustomerLine)
-        .find((item) => isDeactivated(resolveProductById(item.product.id) || item.product));
+        .find((item) => deadForOrder(resolveProductById(item.product.id) || item.product));
       if (dead) {
         alert(`${dead.product.name} was deactivated — a finished line. Remove it from the cart to place the rest.`);
+        return;
+      }
+    }
+    // ── A DISPLAY-PAIR CLAIM THAT NO LONGER STANDS UP ────────────────────────
+    // The same stale-cart window as the deactivation guard above, for the one
+    // line type that names an IDENTIFIED PHYSICAL PAIR rather than "a unit of
+    // this size". The claim was minted when Hub 1 could still supply it; if it
+    // cannot now, somebody else has taken that pair.
+    //
+    // NOTHING MINTS SUCH A LINE TODAY (owner spec 2026-09-07): the "on display"
+    // prompt that stamped it is deleted along with its claim state, and cart
+    // state is in memory only, so this block cannot currently fire. It is kept
+    // rather than deleted because it only ever REFUSES — it can neither write
+    // nor re-arm anything — and because the display source-of-truth job that
+    // re-attaches a minter will need exactly this check standing on the day it
+    // does. The composer state was deleted for the opposite reason: it was on
+    // the WRITE side, where a dormant copy re-arms silently.
+    //
+    // FAIL, NEVER REDIRECT. Hub 2 has no display register and no slot for it —
+    // an order sent there carries an instruction it cannot act on. Refusing
+    // leaves the cart intact so the assistant can drop the line or ask again.
+    {
+      // IT CHECKS THE NAMED PAIR, NOT THE SHELF TOTAL. Hub 1 availability being
+      // positive says nothing about whether THIS display pair still stands: a
+      // fresh ordinary pair arriving after somebody else pulled the display one
+      // would let the claim through, and the warehouse would be told to take a
+      // shoe off a floor it has already left (independent review, 2026-09-06).
+      // So the register/slot record is the evidence, and the claimed store must
+      // still be among the floors holding one.
+      //
+      // AND IT FAILS CLOSED. Unreadable display data, an unsettled Hub 1 or an
+      // unanswered /orders map all mean "cannot verify", and a claim on a named
+      // physical unit is exactly the thing not to place on a guess.
+      const gone = cart.filter(isCustomerLine).find((item) => {
+        if (item.displayPairRequest !== true) return false;
+        if (!displayLaneReady || !ordersSettled) return true;      // cannot verify
+        if (!sneakerGateReady(DISPLAY_PAIR_HUB)) return true;
+        const d = hub1DisplayUnits[promisedKey(item.product.id, item.size)];
+        // The cart's own pulls of this cell already exceed Hub 1 — infeasible
+        // whatever the shelf says, and recorded by the allocation rather than
+        // discovered at the warehouse.
+        if (cartAllocation.overAllocated.has(`${item.product.id}::${item.size}`)) return true;
+        if (!d || !(d.units > 0)) return true;                     // no display left at all
+        // A store was recorded only when the claim was UNAMBIGUOUS; when one
+        // was, that floor must still be listed.
+        if (item.displayPairStore && !(d.stores || []).includes(item.displayPairStore)) return true;
+        // ── THE RESIDUAL, STATED ────────────────────────────────────────────
+        // A STORE-LESS claim cannot be verified any further here, and this does
+        // not pretend otherwise. Such a claim is minted when the prompt found
+        // TWO floors showing the same pid+size and refused to guess between
+        // them (displaySlotStoreFor's rule) — so the units are real and named,
+        // but which floor this one is on is not decided.
+        //
+        // THIS USED TO SAY the residual came from the display REGISTER's
+        // never-decremented rows, and that was true until 2026-09-07: the
+        // register is no longer an input to hub1DisplayUnits at all, every
+        // marked unit now names its store, and `unverified` is always 0
+        // (displayPairCore.js). What is left is genuine two-floor ambiguity,
+        // not drift, and it is NOT closed here on purpose — refusing an
+        // ambiguous claim would block a live flow nobody asked this to change,
+        // and the failure it prevents is the visible one: the warehouse looks,
+        // does not find the pair, and marks it out of stock.
+        return sneakerAvail(item.product.id, item.size, DISPLAY_PAIR_HUB) <= 0;
+      });
+      if (gone) {
+        alert(`The display pair of ${gone.product.name} size ${formatSize(gone.size)} can no longer be confirmed at ${HUB_LABELS[DISPLAY_PAIR_HUB] || DISPLAY_PAIR_HUB} — somebody else may have taken it. Remove that line to place the rest.`);
         return;
       }
     }
@@ -9172,7 +10567,56 @@ function AssistantView({ products, onExit, orders = [] }) {
       // lines stay in the cart and get placed via the floating Place Refill
       // Request bar (different shape, no customer info).
       const customerCart = cart.filter(isCustomerLine);
+      // ── CLAUSE 1 — AT MOST ONE OPEN DISPLAY REQUEST PER PRODUCT PER STORE ──
+      // (Owner directive, 2026-09-08.) A second open request walks a second
+      // pair to a wall that is already getting one, and the operator sending
+      // them has no way to see the first from the refill card. The guard reads
+      // the orders this screen already streams — a guard that needs a round
+      // trip is a guard that gets skipped on a slow tab.
+      //
+      // It also fences the CURRENT BATCH against itself (`raisedHere`): two
+      // Display Partner lines for the same shoe in one cart are the same
+      // duplicate, and the live orders map cannot see the first one because it
+      // has not been written yet.
+      //
+      // The line is SKIPPED, not the checkout REFUSED — the rest of the
+      // customer's order is real and must go through. What was skipped is named
+      // afterwards, so nobody is left wondering.
+      const raisedHere = new Set();
+      const skippedRequests = [];
+      // ── WHY THIS GUARD IS NOT BLIND, AND WHAT WOULD MAKE IT SO ────────────
+      // /orders is store-scoped at the rule layer (useOrders(myShop)), so a
+      // guard that reads it can only fence a store the feed can SEE. The wall
+      // walk hits this and refuses (UnregisteredDisplaysTab's `canRequest`).
+      // Here it cannot arise, for two reasons that are worth naming because
+      // both are load-bearing and neither is local to this line:
+      //
+      //   • `availableShops` is CLAMPED to `myShop` when there is one (8878),
+      //     so a scoped user's `effectiveShop` IS the feed's scope; an unscoped
+      //     user (super-admin, warehouse) has myShop null and sees every order.
+      //     Either way the feed covers the store this guard asks about.
+      //   • the other branch — `displayPairStore`, a CROSS-store target — has
+      //     had no minter on this screen since #576 deleted the divert.
+      //
+      // If a display-pull minter ever comes back (the display source-of-truth
+      // job is expected to re-attach one), that second reason goes with it and
+      // this guard starts passing silently on a wall it cannot read. Pinned by
+      // displaySizeNeverPreselected.test.js so the reintroduction is a red test
+      // rather than two pairs walked to one wall. (Spec-conformance review.)
+      const alreadyRequested = (item) => {
+        if (!item.requestDisplayPartner) return false;
+        const store = (item.displayPairRequest === true && item.displayPairStore) || effectiveShop;
+        const k = `${store}::${item.product.id}`;
+        if (raisedHere.has(k) || hasOpenDisplayRequest(orders, { store, productId: item.product.id })) return true;
+        raisedHere.add(k);
+        return false;
+      };
       for (const item of customerCart) {
+        if (alreadyRequested(item)) {
+          skippedRequests.push(item);
+          setCart(prev => prev.filter(it => it !== item));
+          continue;
+        }
         const orderNum = await getNextOrderNumber();
         // Customer clothing orders route to the universe's CR hub (hub2 for
         // PE/Trophy, hub3 for Pine — CR_HUB_BY_UNIVERSE), where the clothing
@@ -9181,9 +10625,44 @@ function AssistantView({ products, onExit, orders = [] }) {
         // normal dispatch path: Send fires the real hub→destShop transfer.
         // Sneakers keep their existing hub routing.
         const isClothingCustomer = item.productType === "clothing";
+        // SNEAKERS: the SAME stock-aware answer the tile was gated on
+        // (sneakerHubOf — see it and availabilityCore.resolveSneakerSourcingHub
+        // for the rule). Before 2026-09-06 this was the raw tag, so an order
+        // for a shoe whose stock had moved hubs was placed against the hub that
+        // no longer had it — the sheet could not offer that size at all, and
+        // for the 2026-09-06 report it could not offer any of six. Falls back
+        // to computeHubForItem for everything the sneaker gate does not cover
+        // (Pine, perfume/bags/one-size accessories, a null size), so their
+        // routing is byte-for-byte what it was.
+        // ── A DISPLAY-PAIR LINE'S HUB IS FIXED, NOT RESOLVED ──────────────
+        // A displayPairRequest names an IDENTIFIED PHYSICAL PAIR standing on a
+        // named shop's floor, booked against Hub 1. "Which hub can supply this
+        // size" is not a question that applies to it: there is exactly one such
+        // pair and it is where it is.
+        //
+        // The PULL is what is Hub 1's — it is charged at hub1, verified against
+        // hub1 in the checkout pre-flight, and netted through a claim map with
+        // no hub term in its key. This used to say "the whole display lane is
+        // hub1-scoped — slots, register, sneakerServedByHub1", and none of that
+        // premise survives: the register stopped feeding the grid in #574, and
+        // the slots node holds every hub's rows and is read per serving hub by
+        // the marker since 2026-09-08. The conclusion is unchanged and it never
+        // rested on the premise.
+        //
+        // Sending it through the stock-aware resolver did apply that question,
+        // and if Hub 1's availability hit zero between the request and
+        // checkout the order went to HUB 2 still carrying "take it off the
+        // display" and the Hub 1 store name — instructing a hub that has no
+        // display register to pull a pair it has never seen (independent
+        // review, 2026-09-06). The pre-flight above refuses that line rather
+        // than redirecting it; this is the second lock.
         const placedHub = isClothingCustomer
           ? (CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
-          : computeHubForItem(item);
+          // THE SAME ALLOCATION THE TILE WAS GATED ON, keyed by the line
+          // itself so no index can drift out of step with it. A line the walk
+          // skipped (a classic partner request, an ungated shoe) falls back to
+          // the tag router, exactly as it did before any of this.
+          : (cartAllocation.hubOf.get(item) || computeHubForItem(item));
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -9257,9 +10736,32 @@ function AssistantView({ products, onExit, orders = [] }) {
         {
           const slotStore = displaySlotStoreFor(order);
           if (order.requestDisplayPartner && slotStore) {
+            // THE LEDGER FOLLOWS THE SLOT. A Display Partner request means the
+            // pair on that wall is being sold right now — which is exactly why
+            // the slot is tombstoned here — so the display ROW it describes has
+            // to close too, or the two records disagree from the first sale
+            // onward. It does its own small keyed read (this is the ordering
+            // screen; a whole-node listener here would be mounted for every
+            // assistant all day) and closes ONE row or none.
+            closeDisplayRowForPartnerSale({
+              store: slotStore, productId: order.productId,
+              // `?? null`, NOT `|| null`: an empty-string size is MALFORMED and
+              // must reach the refusal inside, where it stops a row of some
+              // other size being closed. `||` collapsed it to "no size on the
+              // order", which is a different and permissive case.
+              // (Adversarial review of the fix round.)
+              size: order.size ?? null, orderId: order.id, at: order.createdAt,
+            }).then((r) => { if (r && r.ok === false) console.warn(`Display row not closed for #${order.id}: ${r.message}`); })
+              .catch(() => {});
             clearDisplaySlot({
               store: slotStore, productId: order.productId,
               source: "display_sold", orderId: order.id,
+              // The sale's instant is the ORDER's, not this call's — the write
+              // happens after `await writeOrder` and could otherwise stamp
+              // minutes late, overwriting a registration that landed in
+              // between. It also makes this write and displayPairCore's replay
+              // of the same event identical. (Independent review, PR #574.)
+              at: order.createdAt,
             }).catch(() => {});
           }
         }
@@ -9292,6 +10794,11 @@ function AssistantView({ products, onExit, orders = [] }) {
         // already-written lines with fresh order numbers. Object identity (not a
         // productId/size key) so qty>1 duplicate lines prune individually.
         setCart(prev => prev.filter(it => it !== item));
+      }
+      if (skippedRequests.length) {
+        const names = [...new Set(skippedRequests.map((i) => i.product.name))].join(", ");
+        alert(`A display partner is already on its way for ${names}, so it was not requested again. `
+          + `Everything else on this order was placed. The wall gets one pair, not two — ask again once this one arrives.`);
       }
       setLastOrders(placed);
       // Print the customer order slip(s) — one per order, in a single 80mm print
@@ -9480,7 +10987,8 @@ function AssistantView({ products, onExit, orders = [] }) {
       )}
       {isDesktop && !noStoreAccess && (
         <AssistantDesktop
-          products={base} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
+          products={browse} searchResults={filtered} effectiveShop={effectiveShop} availableShops={availableShops}
+          deadForOrder={deadForOrder}
           onSelectShop={selectShop} shopRegistry={shopRegistry}
           search={search} setSearch={setSearch} onLabelFind={() => setLabelFinderOpen(true)}
           cart={cart} onQuickAdd={quickAdd} onRemoveOne={removeOneLine} onAddDisplayPartner={addDisplayPartner}
@@ -9493,7 +11001,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
-          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerDisplayOnly={sneakerDisplayOnly} sneakerDisplayInfo={sneakerDisplayInfo} />
+          hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayInfo={sneakerDisplayInfo}
+          alternativesFor={alternativesFor} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -9780,7 +11289,7 @@ function AssistantView({ products, onExit, orders = [] }) {
         // Responsive: 1 column on a phone, 2 on iPad (see .mc-grid-refill above).
         <div className="mc-grid-refill" style={{ display:"grid", gap:10 }}>
           {filtered.map(p => (
-            <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} />
+            <ClothingCard key={p.id} product={p} onAdd={addClothingLines} onViewPhoto={setFullPhoto} allProducts={products} />
           ))}
         </div>
       ) : (
@@ -9799,7 +11308,7 @@ function AssistantView({ products, onExit, orders = [] }) {
                       cropped ~45% of the shoe in this 140px-tall box on phone
                       and tablet too, not just the desktop grid. */}
                   {p.photoUrl
-                    ? <img src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
+                    ? <MirroredImg productId={p.id} src={p.photoUrl} alt={p.name} style={{ width:"100%", height:"100%", objectFit:"contain" }}/>
                     : <span>{p.photo}</span>}
                   {/* View full photo(s) — opens the gallery viewer (primary + extra
                       angles) without triggering the card's add-to-cart tap. */}
@@ -9818,8 +11327,15 @@ function AssistantView({ products, onExit, orders = [] }) {
                     </span>
                   )}
                 </div>
+                {/* ADMIN ACTIONS ON THE CARD ITSELF (owner spec 2026-08-31):
+                    deactivate / reactivate / merge, right where the product is
+                    seen. Renders nothing for a non-admin. */}
+                <ProductActionsButton product={p} products={products}
+                                      style={{ position:"absolute", top:8, left:8, zIndex:2 }} />
                 <div style={{ padding:"12px 13px 14px" }}>
-                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>{p.name}</div>
+                  <div style={{ fontSize:15, fontWeight:700, color:"#fff", marginBottom:4 }}>
+                    {p.name}{isDeactivated(p) && <DeactivatedChip small />}
+                  </div>
                   {typeof p.retailPrice === "number" && p.retailPrice > 0 ? (
                     <div className="mc-price-siri" style={{ fontSize:16, fontWeight:800, marginBottom:4, width:"fit-content" }}>
                       R{p.retailPrice.toLocaleString("en-ZA", { minimumFractionDigits:0, maximumFractionDigits:2 })}
@@ -9827,7 +11343,9 @@ function AssistantView({ products, onExit, orders = [] }) {
                   ) : (
                     <div style={{ fontSize:12, fontWeight:600, color:"rgba(255,255,255,.35)", marginBottom:4 }}>No price set</div>
                   )}
-                  <div style={{ fontSize:13, fontWeight:500, color:"#4A7FFF" }}>Tap to add →</div>
+                  <div style={{ fontSize:13, fontWeight:500, color: deadForOrder(p) ? "#B9C0D4" : "#4A7FFF" }}>
+                    {deadForOrder(p) ? "Deactivated — no sizes on offer" : "Tap to add →"}
+                  </div>
                 </div>
                 <div style={{ position:"absolute", bottom:12, right:12, width:28, height:28,
                               background: isSel ? "rgba(60,110,255,.2)" : "rgba(60,110,255,.1)",
@@ -9874,14 +11392,35 @@ function AssistantView({ products, onExit, orders = [] }) {
                 than the hub can still cover. Live: it recomputes remaining
                 (hub qty minus cart) every render and hides the moment more
                 stock is actually addable than when it was raised. */}
-            {((selected.productType || "sneaker") === "clothing" || isDeactivated(selected)) && naNote && (() => {
+            {naNote && ((selected.productType || "sneaker") === "clothing" || deadForOrder(selected) || naNote.snk) && (() => {
+              // Sneaker ✕ note (2026-09-01) — the phone-sheet twin of the
+              // quick-view's: tapping a ✕ tile says WHY (empty vs reserved
+              // vs already-in-cart). Self-hides once the size frees up.
+              if (naNote.snk && !deadForOrder(selected)) {
+                // Belt on the toggle's clear: partner mode lifts the grey-out,
+                // so the note must never outlive it either way.
+                if (pendingDisplayPartner || !sneakerOut(selected, naNote.size)) return null;
+                return (
+                  <>
+                    <div style={{ background:"rgba(255,170,40,.1)", border:"1px solid rgba(255,170,40,.35)", color:"#FFC46B", borderRadius:10, padding:"9px 12px", fontSize:"0.82rem", fontWeight:600, marginBottom:"0.65rem" }}>
+                      {sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}
+                    </div>
+                    {/* THE REASON IS UNCHANGED. This sits BELOW it and adds
+                        nothing to what the refusal says — the X gate blocks
+                        exactly what it blocked yesterday, and the only new
+                        action on this sheet is choosing a different shoe. */}
+                    <AlternativesStrip rows={alternativesFor(selected, naNote.size)}
+                                       requestedSize={naNote.size} onPick={pickAlternative} />
+                  </>
+                );
+              }
               const have = hubQty(selected.id, naNote.size);
               const rem = have - clothingInCart(selected.id, naNote.size);
               // A deactivated product's note never self-hides on stock — stock
               // is not the reason its sizes are blocked.
-              if (!isDeactivated(selected) && rem > naNote.left) return null;
+              if (!deadForOrder(selected) && rem > naNote.left) return null;
               const label = HUB_LABELS[servingHub] || servingHub;
-              const text = isDeactivated(selected)
+              const text = deadForOrder(selected)
                 ? `${selected.name} is deactivated — a finished line. Its sizes can't be ordered.`
                 : have <= 0
                 ? `Size ${formatSize(naNote.size)} isn't available at ${label} right now — it can't be ordered.`
@@ -9894,103 +11433,73 @@ function AssistantView({ products, onExit, orders = [] }) {
                 </div>
               );
             })()}
-            {/* Display-pair prompt — opened by tapping a marked (amber) size
-                tile: the only remaining size at Hub 1 is the display pair.
-                One button; taking it flags the line so the warehouse card
-                says "take it off the display" and the slot bookkeeping
-                targets the right store. */}
-            {displayPrompt && (
-              <div style={{ background:"rgba(251,191,36,.1)", border:"1px solid rgba(251,191,36,.4)", borderRadius:10, padding:"11px 12px", marginBottom:"0.65rem" }}>
-                <div style={{ color:"#FBBF24", fontSize:"0.92rem", fontWeight:800, marginBottom:4 }}>
-                  Size {formatSize(displayPrompt.size)} — on display
-                </div>
-                <div style={{ color:"#E8D5A8", fontSize:"0.8rem", fontWeight:600, marginBottom:10 }}>
-                  The only size {formatSize(displayPrompt.size)} at Hub 1 is the display pair{displayPrompt.stores?.length ? ` (on ${displayPrompt.stores.map(st => labelFor(st)).join(", ")}'s display)` : " (registered as a display — the shop wasn't recorded)"}.
-                </div>
-                <div style={{ display:"flex", gap:8 }}>
-                  <button onClick={() => {
-                      setPendingSize(displayPrompt.size);
-                      setPendingDisplayPartner(true);
-                      // Store only when UNAMBIGUOUS — two stores each showing
-                      // this size means we refuse to guess whose slot to
-                      // tombstone; the prompt copy names them all and the
-                      // picker takes whichever pair they find.
-                      setPendingDisplayPair({ store: displayPrompt.stores?.length === 1 ? displayPrompt.stores[0] : null });
-                      setPendingQty(1);
-                      setDisplayPrompt(null);
-                    }}
-                    style={{ flex:1, padding:"10px 12px", borderRadius:10, border:"1px solid rgba(251,191,36,.6)", background:"rgba(251,191,36,.16)", color:"#FBBF24", fontWeight:800, fontSize:"0.85rem", cursor:"pointer" }}>
-                    Request display pair
-                  </button>
-                  <button onClick={() => setDisplayPrompt(null)}
-                    style={{ padding:"10px 12px", borderRadius:10, border:"1px solid rgba(255,255,255,.16)", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.6)", fontWeight:700, fontSize:"0.8rem", cursor:"pointer" }}>
-                    Cancel
-                  </button>
-                </div>
-              </div>
-            )}
             <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap", marginBottom:"1.25rem" }}>
               {selectedSizes.map(s => {
                 // Clothing sizes the serving hub has ZERO of are greyed out and
                 // not selectable — tapping one raises the note above instead of
                 // silently ordering into nothing. Hub 1 sneakers get the same
                 // treatment from the shared availability resolver (✕, truly
-                // not tappable); hub2/hub3 sneakers stay untouched, and the
-                // deactivation rule (#445) disables everywhere. A Display
+                // not tappable) — Hub 1 and, since 2026-09-05, Hub 2; hub3
+                // sneakers stay untouched, and the deactivation rule (#445)
+                // disables everywhere. A Display
                 // Partner request EXISTS to ask for what Hub 1 lacks (it
                 // becomes a request, not a pull), so the partner toggle lifts
                 // the ✕ — the addToCart belt has the same exemption.
                 const clothing = (selected.productType || "sneaker") === "clothing";
-                const snkOut = !clothing && !pendingDisplayPartner && !isDeactivated(selected) && sneakerOut(selected, s);
-                const out = orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s) }) || snkOut;
-                // "Only the display pair is left" — the tile STAYS the size
-                // number (the grid is built on single characters and flips
-                // constantly); it gains a corner display glyph + amber tint,
-                // and tapping it opens the display-pair prompt above instead
-                // of selecting. Suppressed while the partner toggle is on
-                // (that flow already exists to ask for what hub1 lacks).
-                const dispOnly = !out && !clothing && !pendingDisplayPartner && !isDeactivated(selected)
-                  ? sneakerDisplayOnly(selected, s) : null;
-                // The quiet tier: any AVAILABLE size on a display carries the
-                // glyph — amber only when the display pair is the last one.
+                const snkOut = !clothing && !pendingDisplayPartner && !deadForOrder(selected) && sneakerOut(selected, s);
+                const out = orderSizeOut(selected, { clothingOrder: clothing, hubQty: hubQty(selected.id, s), deactivated: deadForOrder(selected) }) || snkOut;
+                // ── THE MARKER IS INFORMATIONAL, FULL STOP ──────────────
+                // Any AVAILABLE size that has a unit standing on a floor
+                // carries the corner glyph. It says so and nothing else: the
+                // tile selects, adds and steps exactly like an unmarked one,
+                // and availability is governed by quantity through sneakerOut
+                // alone. A display pair IS hub stock (#324), so one pair out
+                // on a wall must never cost the shop the other three in the
+                // box — which is precisely what the old divert did.
                 // Never on a ✕/deactivated tile: the ✕ is authoritative
                 // (displayPairCore's drift rule — a cell the books call empty
                 // must not advertise a display), and the two on one 34px tile
                 // say opposite things.
-                const dispInfo = !clothing && !out && !isDeactivated(selected)
+                const dispInfo = !clothing && !out && !deadForOrder(selected)
                   ? sneakerDisplayInfo(selected, s) : null;
                 return (
-                  <button key={s} disabled={snkOut && pendingSize !== s}
+                  // No `disabled` on a ✕ tile: the tap must land so it can
+                  // raise the why-note below (selection is still blocked by
+                  // the `out` guard in the handler). aria keeps the truth.
+                  <button key={s} aria-disabled={out && pendingSize !== s}
                     onClick={() => {
                       // Tapping the ALREADY-SELECTED size deselects it — a
                       // mis-tapped size was otherwise stuck (owner bug report
                       // 2026-08-26; it matters most on a size-optional Display
                       // Partner request). It stays tappable even when the size
                       // went ✕ while selected (the disabled attr exempts the
-                      // selected size for exactly this escape). A prompt-minted
-                      // selection unwinds partner mode with it — leaving the
-                      // toggle on kept the Add button live for a request the
-                      // user just cancelled.
+                      // selected size for exactly this escape).
                       if (pendingSize === s) {
-                        if (pendingDisplayPair) setPendingDisplayPartner(false);
-                        setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize("");
+                        setNaNote(null); setPendingSize("");
                         return;
                       }
-                      if (out) { if (clothing || isDeactivated(selected)) setNaNote({ size: s, left: 0 }); return; }
-                      if (dispOnly) { setNaNote(null); setDisplayPrompt({ size: s, stores: dispOnly.stores }); return; }
-                      // A plain size selection drops any display-pair claim —
-                      // the claim belongs to the size the prompt was about.
-                      setNaNote(null); setDisplayPrompt(null); setPendingDisplayPair(null); setPendingSize(s);
+                      // A sneaker ✕ tap raises the why-note (snk flag) —
+                      // reserved stock must not read as "size doesn't exist".
+                      if (out) { setNaNote(clothing || deadForOrder(selected) ? { size: s, left: 0 } : { size: s, left: 0, snk: true }); return; }
+                      setNaNote(null); setPendingSize(s);
                     }}
                     style={out
-                      ? { padding:"10px 18px", borderRadius:"10px", border:"2px dashed rgba(255,255,255,.14)", background:"transparent", color:"rgba(255,255,255,.28)", cursor: pendingSize===s ? "pointer" : "not-allowed", fontWeight:"700", fontSize:"1rem" }
-                      : dispOnly
-                        ? { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?"#FBBF24":"rgba(251,191,36,.45)", background: pendingSize===s?"rgba(251,191,36,.18)":"rgba(251,191,36,.08)", color:"#FBBF24", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }
-                        : { position:"relative", padding:"10px 18px", borderRadius:"10px", border:"2px solid", borderColor: pendingSize===s?BLUE:"rgba(60,110,255,.15)", background: pendingSize===s?"rgba(60,110,255,.15)":"transparent", color: pendingSize===s?BLUE_L:"#888", cursor:"pointer", fontWeight:"700", fontSize:"1rem" }}>
-                    <SizeTag size={s} />{snkOut ? <span aria-label="none available" style={{ marginLeft: 6, color: "#FF6B6B", fontWeight: 800 }}>✕</span> : null}
+                      // THE GLYPH IS GONE (owner spec 2026-09-06). The
+                      // container alone carries the signal now, and it was
+                      // widened to carry it: dashed instead of solid, grey
+                      // instead of blue, faintly filled instead of transparent,
+                      // and dimmer text — four independent differences, pinned
+                      // by sizeChipTheme.test.js so a later edit cannot quietly
+                      // converge them. The size number reads clearly, which is
+                      // the whole reason the glyph could go.
+                      ? phoneSizeChipStyle({ out: true, selected: pendingSize === s })
+                      // ONE STYLE FOR EVERY AVAILABLE CHIP — marked or not.
+                      // The glyph is the whole difference.
+                      : phoneSizeChipStyle({ out: false, selected: pendingSize === s })}>
+                    <SizeTag size={s} />{snkOut ? <span className="sr-only" style={{ position:"absolute", width:1, height:1, overflow:"hidden", clip:"rect(0 0 0 0)", whiteSpace:"nowrap" }}>not available</span> : null}
                     {dispInfo ? (
-                      <span aria-label={dispOnly ? "only the display pair remains" : "this size is on a display"} style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
-                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke={dispOnly ? "#FBBF24" : "rgba(157,188,255,.75)"} strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
+                      <span aria-label="this size is on a display" style={{ position:"absolute", top:2, right:3, lineHeight:1 }}>
+                        <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="rgba(157,188,255,.75)" strokeWidth="3"><rect x="3" y="5" width="18" height="12" rx="2"/><line x1="12" y1="17" x2="12" y2="21"/><line x1="8" y1="21" x2="16" y2="21"/></svg>
                       </span>
                     ) : null}
                   </button>
@@ -10018,14 +11527,10 @@ function AssistantView({ products, onExit, orders = [] }) {
               <div style={{ color:"#555", fontSize:"0.72rem", marginBottom:"0.5rem", textTransform:"uppercase", letterSpacing:"0.08em" }}>Display Partner (optional)</div>
               <div style={{ display:"flex", gap:"0.5rem", flexWrap:"wrap" }}>
                 <button onClick={() => {
-                  // A manual toggle drops any display-pair claim — AND the
-                  // prompt-minted size selection with it: leaving the display-
-                  // only size selected would place a plain line into a shelf
-                  // that is empty on purpose, the exact false-OOS this feature
-                  // kills.
                   setPendingDisplayPartner(v => !v);
-                  if (pendingDisplayPair) setPendingSize("");
-                  setPendingDisplayPair(null);
+                  // Partner mode lifts every ✕ — a lingering "can't be
+                  // ordered" note would contradict the now-selectable tiles.
+                  setNaNote(null);
                 }}
                   style={{ padding:"8px 16px", borderRadius:"10px", border:`2px solid ${pendingDisplayPartner?BLUE_L:"rgba(60,110,255,.15)"}`, background:pendingDisplayPartner?"rgba(60,110,255,.12)":"transparent", color:pendingDisplayPartner?BLUE_L:"#666", cursor:"pointer", fontWeight:"600", fontSize:"0.85rem" }}>
                   Request Display Partner
@@ -10242,14 +11747,16 @@ const WH_TAB_ICON = {
 };
 
 // ─── WAREHOUSE VIEW ───────────────────────────────────────────────────────────
-// ─── THE TOMORROW ACTION, DATA-DRIVEN (2026-08-25) ───────────────────────────
+// ─── THE TOMORROW ACTION, DATA-DRIVEN (2026-08-25; Hub 2 joined 2026-09-05) ──
 // One button per warehouse row where "Schedule for Tomorrow" used to be. The
 // label comes from a one-time single-cell read of Central's availability for
 // this order's product+size (via tomorrowGate.js — never a subtree read, cost
 // note there): Central holds some → the Tomorrow promise is offered; Central
 // holds none → the row offers "Out of stock" instead, and taking it sends the
 // out-of-stock outcome automatically (the existing updateStatus path — OOS
-// WhatsApp, insight row, hold-release — nothing new).
+// WhatsApp, insight row, hold-release — nothing new; the same call the
+// "Mark as Out of Stock" button next to it makes, so the approved
+// notification templates are reused untouched, at Hub 2 exactly as at Hub 1).
 //
 // THE TAP RE-CHECKS the same cell FRESH, so a screen left open cannot send a
 // promise that has expired: an expired Tomorrow converts SILENTLY to
@@ -10258,21 +11765,41 @@ const WH_TAB_ICON = {
 // An unresolvable row (no productId/size, unreadable cell) keeps today's
 // Tomorrow behaviour — fail-open, because a false OOS wrongly messages the
 // customer while a false Tomorrow merely keeps the human's own promise.
-function TomorrowActionButton({ order, onOutcome }) {
+function TomorrowActionButton({ order, product, onOutcome }) {
   // sentSize is what physically left when a substitute was sent; the promise
   // (and the refill request updateStatus raises) draws on the same cell.
   const gateSize = order.sentSize ?? order.size ?? null;
-  // HUB 1 ROWS ONLY. The warehouse queue is hub-switched and this card is
-  // shared; hub3/hubC replenish from hub stock Central may never carry, so a
-  // missing Central cell there would read as a false "Out of stock". Hub rule
-  // matches the app's orderInHub: hub3/hubC live in placedAtHub, hub1 in `hub`.
-  const hub1Row = (order.hub || "hub1") === "hub1"
-    && order.placedAtHub !== "hub3" && order.placedAtHub !== "hubC";
+  // CENTRAL-FED ROWS ONLY — hub1 (2026-08-25) and hub2 (2026-09-05). The
+  // warehouse queue is hub-switched and this card is shared; hub3/hubC
+  // replenish from hub stock Central may never carry, so a missing Central
+  // cell there would read as a false "Out of stock". Hub 2 is not in that
+  // class: it is a Central-fed hub, the same replenishment Hub 1 draws on, so
+  // the same question ("does Central hold this?") is the right one to ask
+  // before promising a Hub 2 customer a pair tomorrow.
+  //
+  // The hub rule matches the app's orderInHub verbatim: hub3/hubC live in
+  // placedAtHub, hub1/hub2 in `hub` (defaulted hub1). Hub 1's answer is
+  // unchanged, character for character — hub2 is added as a disjunct and
+  // nothing else moved. Pinned by hubIsolation.test.js.
+  // centralFedRow lives in tomorrowGate.js beside the read it guards, so this
+  // row rule is testable on its own (hubIsolation.test.js).
+  // `product` is the catalogue record for this row, from the map WarehouseView
+  // already builds — no read. Absent (an order for a deleted/unknown product)
+  // means the hub2 arm cannot tell footwear from perfume, so it does not probe.
+  //
+  // A RAW LOOKUP, NOT resolveProductById — deliberately, and the two reviewers
+  // split on it. Following the merge pointer would classify the row correctly,
+  // but the PROBE still reads order.productId's own Central cell, and a merged
+  // loser's cell is empty by definition (its stock moved to the survivor). So
+  // resolving the merge would turn a silently-unprobed row into a confident
+  // false "Out of stock" — the one answer this feature must never invent. Not
+  // probing is the safe direction: it keeps the promise a human just made.
+  const gatedRow = centralFedRow(order, product);
   const [avail, setAvail] = useState(undefined);   // undefined=probing, null=unknown
   const [busy, setBusy]   = useState(false);
   const busyRef = useRef(false);                   // state lags a frame; the ref doesn't
   useEffect(() => {
-    if (!hub1Row) return undefined;
+    if (!gatedRow) return undefined;
     let on = true;
     setAvail(undefined);   // a reused instance must not wear its neighbour's label
     fetchCentralAvailability(order.productId, gateSize).then((a) => {
@@ -10280,14 +11807,14 @@ function TomorrowActionButton({ order, onOutcome }) {
       if (on && !busyRef.current) setAvail(a);
     });
     return () => { on = false; };
-  }, [order.productId, gateSize, hub1Row]);
-  const offersOOS = hub1Row && avail !== undefined && avail !== null && avail <= 0;
+  }, [order.productId, gateSize, gatedRow]);   // gatedRow already folds in the product
+  const offersOOS = gatedRow && avail !== undefined && avail !== null && avail <= 0;
   const tap = async () => {
     if (busyRef.current) return;
     busyRef.current = true;
     setBusy(true);
     try {
-      if (!hub1Row) { await onOutcome("tomorrow"); return; }   // yesterday's behaviour, verbatim
+      if (!gatedRow) { await onOutcome("tomorrow"); return; }   // hub3/hubC: yesterday's behaviour, verbatim
       const fresh = await fetchCentralAvailability(order.productId, gateSize, { fresh: true });
       setAvail(fresh);
       await onOutcome(tomorrowTapOutcome(fresh));
@@ -10316,6 +11843,21 @@ function TomorrowActionButton({ order, onOutcome }) {
 
 function WarehouseView({ products = [], orders, onExit }) {
   const [mainTab, setMainTab] = usePersistedTab("warehouse", "queue");
+  // The display ROW LEDGER (/settings/displayRows). The send closes whatever is
+  // open for that wall in the same write that opens the new row, so it needs to
+  // know what IS open — and it must read it from a live subscription rather
+  // than a fetch at tap time, because a fetch at tap time is a read the
+  // operator waits on with a shoe in their hand. Subscribed only while the
+  // Refills tab is the one on screen.
+  //
+  // ITS READINESS IS LOAD-BEARING, not decoration. An unanswered subscription
+  // and an empty ledger are the same null, so a Send confirmed before the node
+  // has answered would close NOTHING and open a second row beside the one
+  // already there — manufacturing the exact duplicate the ledger exists to
+  // surface. The send refuses until it has actually been read.
+  // (Spec-conformance review.)
+  const displayRowsState = useDisplayRowsState(mainTab === "refills");
+  const displayRows = displayRowsState.value;
   const [filter, setFilter] = useState("incoming");
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
   const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
@@ -10382,8 +11924,17 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Which Ready-tab row's ⋮ action menu is open (one at a time). A dispatched
   // order lives in the Ready tab — there is no separate "Sent" tab.
   const [menuOpenId, setMenuOpenId] = useState(null);
+  // A push notification tapped for ONE order leaves a marker naming it; this
+  // scrolls that card into view and rings it (src/push/useFocusOrder.js).
+  // Armed only once a hub is chosen, because before that there is no queue to
+  // search and the marker would be spent on the hub picker.
+  const focusOrderKey = useFocusOrder(!!selectedHub);
   // Dispatch-label print toast (non-blocking — Send never waits on the printer).
   const [printToast, setPrintToast] = useState(null);
+  const showPausedToast = () => {
+    setPrintToast({ kind: "err", text: PAUSED_MESSAGE });
+    setTimeout(() => setPrintToast(null), 6000);
+  };
   const [nowTick, setNowTick] = useState(() => serverNowMs());
   useEffect(() => {
     const id = setInterval(() => setNowTick(serverNowMs()), 30 * 1000);
@@ -10451,9 +12002,14 @@ function WarehouseView({ products = [], orders, onExit }) {
     for (const p of products || []) if (p?.id) m[p.id] = p;
     return m;
   }, [products]);
+  // nowTick (30s, server-anchored) is both the clock passed in AND a dep:
+  // with the 20-minute collection deadline (owner directive 2026-09-01) a
+  // promise crossing the boundary must be re-judged on a QUIET tab too, not
+  // only when some /orders write fires the listener — the same staleness the
+  // assistant view's promiseTick closes for hub1Promised.
   const whPromised = useMemo(
-    () => readyPromisedByCell(orders, selectedHub, whProductsById),
-    [orders, selectedHub, whProductsById]
+    () => readyPromisedByCell(orders, selectedHub, whProductsById, nowTick),
+    [orders, selectedHub, whProductsById, nowTick]
   );
   const depletedCards = useMemo(
     () => selectedHub === "hub1"
@@ -10466,6 +12022,21 @@ function WarehouseView({ products = [], orders, onExit }) {
   // fresh stock landing, updates "Stock has arrived" without a tab remount —
   // and without probing on every /orders stream delta.
   const reviveTick = Math.floor(nowTick / (5 * 60 * 1000));
+  // Which depleted cards clause 1 will not let back into the due list — see the
+  // paragraph inside the probe. Derived here, and reduced to a STABLE STRING
+  // KEY for the probe's dep list, because the probe deliberately does not run
+  // on every /orders delta (it does single-cell reads) and `orders` as a dep
+  // would make it do exactly that.
+  const revivalBlockedIds = useMemo(() => {
+    const out = {};
+    for (const o of depletedCards) {
+      const reqStore = requestStoreFor(o);
+      if (!reqStore || !o.productId) continue;
+      if (hasOpenDisplayRequest(orders, { store: reqStore, productId: o.productId })) out[o.id] = true;
+    }
+    return out;
+  }, [depletedCards, orders]);
+  const revivalBlockedKey = Object.keys(revivalBlockedIds).sort().join(",");
   const [revivedIds, setRevivedIds] = useState({});
   useEffect(() => {
     if (!depletedIdsKey) { setRevivedIds({}); return undefined; }
@@ -10475,6 +12046,22 @@ function WarehouseView({ products = [], orders, onExit }) {
       for (const o of depletedCards) {
         const size = o.displayRefillSize || o.sentSize || o.size;
         if (!o.productId || !size) continue;
+        // ── CLAUSE 1 REACHES THE REVIVAL TOO ───────────────────────────────
+        // A revived card is a display task the warehouse can SEND, so a wall
+        // holding one is a wall that has already been asked for. But the card
+        // still carries `displayRefillStatus: "stockDepleted"`, which is one of
+        // the things isOpenDisplayRequest counts as RESOLVED — so the checkout
+        // and wall-walk guards both read this wall as free and let a second
+        // request through, and two pairs walk to one wall. The guard is right
+        // about a depleted task (it IS resolved); the revival is what re-opens
+        // it, so the revival is where the second one has to be refused.
+        //
+        // Refusing the REVIVAL, not the new request, is deliberate: the newer
+        // request is a live intention someone just expressed, and the depleted
+        // card is days old by construction. The card stays where it was, as a
+        // completed task, and comes back on its own once the newer request is
+        // resolved. (Spec-conformance review.)
+        if (revivalBlockedIds[o.id]) continue;
         try {
           const snap = await get(ref(database, stockCellPath(selectedHub, o.productId, String(size))));
           const cellQty = snap.val()?.qty ?? 0;
@@ -10486,7 +12073,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     })();
     return () => { on = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [depletedIdsKey, selectedHub, reviveTick]);
+  }, [depletedIdsKey, selectedHub, reviveTick, revivalBlockedKey]);
   // Session-local dismissal: tapping Stock Depleted on a REVIVED card is the
   // operator saying "I looked, there is still nothing to put out" — without
   // this the probe would bounce the card straight back and the button would
@@ -10494,15 +12081,19 @@ function WarehouseView({ products = [], orders, onExit }) {
   const [dismissedRevived, setDismissedRevived] = useState({});
   const dueWithRevived = useMemo(() => [
     ...dueRefills,
-    ...depletedCards.filter((o) => revivedIds[o.id] && !dismissedRevived[o.id])
+    // `revivalBlockedIds` again, and not only inside the probe: the probe is
+    // async and its result is a snapshot, so a request raised after it last ran
+    // would leave an already-revived card sendable until the next tick. The
+    // clause-1 answer is synchronous — apply it at the point of display too.
+    ...depletedCards.filter((o) => revivedIds[o.id] && !dismissedRevived[o.id] && !revivalBlockedIds[o.id])
       // _revivedAt buckets the card under TODAY in the day-collapsed list —
       // its scheduledAt is days old by construction (the whole point of the
       // revival) and would land it in the collapsed "Older" section.
       .map((o) => ({ ...o, _revivedDepleted: true, _revivedAt: new Date(nowTick).toISOString() })),
-  ], [dueRefills, depletedCards, revivedIds, dismissedRevived, nowTick]);
+  ], [dueRefills, depletedCards, revivedIds, dismissedRevived, revivalBlockedIds, nowTick]);
   const completedSansRevived = useMemo(
-    () => completedRefills.filter((o) => !revivedIds[o.id] || dismissedRevived[o.id]),
-    [completedRefills, revivedIds, dismissedRevived]
+    () => completedRefills.filter((o) => !revivedIds[o.id] || dismissedRevived[o.id] || revivalBlockedIds[o.id]),
+    [completedRefills, revivedIds, dismissedRevived, revivalBlockedIds]
   );
   const [showRefilledCompleted, setShowRefilledCompleted] = useState(false);
   // Size run order — the SHARED hubSizeRank comparator (letters S→4XL in run
@@ -10680,7 +12271,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // the warehouse picks a substitute size. Insights/restock logs continue to
   // log order.size (the customer-requested value); only Source view surfaces
   // sentSize, by design.
-  const updateStatus = async (order, status, extraPatch = {}) => {
+  const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {
+    // A phone Junid has quarantined changes nothing (src/device/deviceRejects.js).
+    // gateChecked: the caller already asked, and stock may have moved since —
+    // asking again could strand a transfer with its order never marked.
+    if (!gateChecked && await thisDevicePaused()) { showPausedToast(); return false; }
     const now = serverNowIso();
     // ── THE POS IS THE ONLY RESTOCK TRIGGER (2026-07-30, owner) ──────────────
     // This used to write a restock_log entry on COLLECTED. Source is now fed by
@@ -10698,6 +12293,17 @@ function WarehouseView({ products = [], orders, onExit }) {
     const patch = { status, updatedAt: now, ...extraPatch };
     if (status === STATUS.READY)           patch.readyAt = now;
     if (status === STATUS.OUT_OF_STOCK)    patch.outOfStockAt = now;
+    // Out of Stock is a reject: one more on this device's count for Junid's
+    // device lists (src/device/rejectCount.js) — and, on the order itself,
+    // WHO and WHICH PHONE (2026-09-25). Before this a sneaker Out of Stock
+    // recorded neither, and four false ones at Hub 2 could only be traced
+    // through the profiler captures. The stamps/ history names the phone too,
+    // but these two fields are what a person or the engine reads.
+    if (status === STATUS.OUT_OF_STOCK) {
+      const rej = countReject({ kind: "order", ref: order.id, hub: order.placedAtHub || order.hub || "hub1", productId: order.productId, size: order.size });
+      patch.outOfStockByUid = rej.uid;
+      patch.outOfStockDeviceId = rej.deviceId;
+    }
     // A FAILED display-pair pull reinstates the slot it tombstoned at order
     // creation: the pair never left the floor, and without this the marker
     // disappears while the cell still reads 1 — the next order for that size
@@ -10709,7 +12315,9 @@ function WarehouseView({ products = [], orders, onExit }) {
         setDisplaySlot({
           store: slotStore, productId: order.productId, productName: order.productName || "",
           size: String(order.size), bookedHub: order.placedAtHub || order.hub || "hub1",
-          source: "manual", orderId: order.id,
+          // `now` is the instant stamped on outOfStockAt in the same patch, so
+          // the write and displayPairCore's replay of this reinstate agree.
+          source: "manual", orderId: order.id, at: now,
         }).catch(() => {});
       }
     }
@@ -10747,7 +12355,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (plan.ok) {
         try {
           const existing = (await get(ref(database, `refill_requests/${plan.requestId}`))).val();
-          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), plan.record);
+          if (!existing) await set(ref(database, `refill_requests/${plan.requestId}`), stampRecord(plan.record, "hold"));
           // Stamp the order either way — the held-card list hides items that
           // are represented in a refill queue, new or re-tapped.
           patch.onHoldRefillRequestId = plan.requestId;
@@ -10769,7 +12377,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         try {
           const reqRef = ref(database, `refill_requests/${rel.requestId}`);
           const live = (await get(reqRef)).val();
-          if (live && live.status === "open") await update(reqRef, rel.patch);
+          if (live && live.status === "open") await update(reqRef, stampPatch(rel.patch, "hold-released"));
         } catch (err) {
           console.warn(`On-hold refill request ${rel.requestId} not withdrawn (${err?.message || err}) — the engine's satisfied-sweep will retire it.`);
         }
@@ -10787,15 +12395,58 @@ function WarehouseView({ products = [], orders, onExit }) {
         // Resolved through the UNFILTERED index — an order stamped with a
         // merged-away productId must still route by its survivor's hubs.
         const product = resolveProductById(order.productId);
-        patch.displayRefillScheduledAt     = now;
-        // Phase 14B: refill task routes by where the order was placed —
-        // Pine-placed orders go to Hub 3's refill section. Falls back to the
-        // product's stocking hub for legacy orders without placedAtHub.
-        patch.displayRefillHub             = order.placedAtHub || getProductHubs(product)[0] || "hub1";
-        patch.displayRefillStatus          = null;
-        patch.displayRefilledAt            = null;
-        patch.displayRefillStockDepletedAt = null;
-        patch.displayRefilledBy            = null;
+        // ── CLAUSE 1 ON THE PATH THAT ACTUALLY MINTS THE TASK ──────────────
+        // This line IS the auto-raise: it schedules the refill task the
+        // warehouse sees fifteen minutes later, and nothing raises it by hand.
+        // The one-open-request guard sat on the two places a request is CREATED
+        // and not here, where one is RE-OPENED — so the reachable second-opener
+        // was:
+        //
+        //   order A goes out of stock  -> scheduledAt cleared, A reads closed
+        //   someone raises order B for the same wall  -> guard passes, correctly
+        //   A's "Available" button  -> markSentWithTransfer -> READY -> re-stamp
+        //   result: two due tasks, two pairs walked to one wall.
+        //
+        // A wall that already has an open request does not get a second task.
+        // The order still goes READY — that is the customer's half and it is
+        // real — it simply does not schedule a duplicate refill.
+        // (Spec-conformance review.)
+        const reqStore = requestStoreFor(order);
+        const blockers = reqStore
+          ? otherOpenDisplayRequests(orders, { store: reqStore, productId: order.productId, exceptId: order.id })
+          : [];
+        //
+        // NO EARLY RETURN. The order still goes READY and everything the
+        // CUSTOMER's half depends on still happens — the insight log, the
+        // order_ready WhatsApp, the normal write below. Only the wall's refill
+        // task is withheld. Returning here would have silently swallowed a
+        // customer notification to enforce a rule about a display wall.
+        //
+        // AND WITHHOLDING TOUCHES NOTHING ELSE. A first cut nulled scheduledAt
+        // but still ran the four resets below, which was worse than the bug it
+        // fixed: an order that had ALREADY been resolved (`refilled`) and was
+        // then marked READY while blocked had its resolution wiped, leaving
+        // scheduledAt null, displayRefillStatus null and status "ready" — which
+        // isOpenDisplayRequest reads as OPEN. A fence with no task behind it:
+        // invisible in the warehouse list, and it would hold that wall until
+        // the daily /orders id recycled, long after the real blocker resolved.
+        // (CodeRabbit.)
+        //
+        // So a blocked READY leaves every display-refill field exactly as it
+        // found them. A resolved order stays resolved and fences nothing.
+        if (blockers.length) {
+          console.warn(`Display refill NOT scheduled for #${order.id}: order #${blockers[0].id} already holds an open display request for ${order.productId} at ${reqStore}.`);
+        } else {
+          patch.displayRefillScheduledAt     = now;
+          // Phase 14B: refill task routes by where the order was placed —
+          // Pine-placed orders go to Hub 3's refill section. Falls back to the
+          // product's stocking hub for legacy orders without placedAtHub.
+          patch.displayRefillHub             = order.placedAtHub || getProductHubs(product)[0] || "hub1";
+          patch.displayRefillStatus          = null;
+          patch.displayRefilledAt            = null;
+          patch.displayRefillStockDepletedAt = null;
+          patch.displayRefilledBy            = null;
+        }
       } else if (status !== STATUS.COLLECTED) {
         patch.displayRefillScheduledAt = null;
         patch.displayRefillHub         = null;
@@ -10827,6 +12478,8 @@ function WarehouseView({ products = [], orders, onExit }) {
       // reset clobbers the live order row.
       ...(status === STATUS.COMING_TOMORROW && patch.onHoldRefillRequestId
         ? { refillRequestId: patch.onHoldRefillRequestId } : {}),
+      // Who + which phone said out of stock, on the permanent log.
+      ...(status === STATUS.OUT_OF_STOCK ? { byUid: patch.outOfStockByUid, deviceId: patch.outOfStockDeviceId } : {}),
     });
     // ── WhatsApp notifications ───────────────────────────────────────────────
     // order_ready template: pass customer_name and order_number ONLY.
@@ -10887,6 +12540,10 @@ function WarehouseView({ products = [], orders, onExit }) {
   // reason) — an auditable flag a sweep can query, not a toast that fades.
   // Returns the transfer result so callers can gate their own follow-ups.
   const markSentWithTransfer = async (order, extraPatch = {}) => {
+    // Asked BEFORE the transfer: a paused phone must not move stock either.
+    // Asked ONCE — updateStatus below is told it was, so a flag landing
+    // between the transfer and the status can't leave the order unmarked.
+    if (await thisDevicePaused()) { showPausedToast(); return { moved: false, skipped: false, blockSend: true, reason: "device_paused" }; }
     const sentSize = extraPatch.sentSize ?? order.sentSize ?? order.size ?? null;
     const transfer = await recordDispatchTransfer(order, sentSize);
     // Clothing negative guard: a clothing order whose size the hub no longer
@@ -10904,7 +12561,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       ...(transfer.moved || transfer.skipped
         ? { transferFailed: null }
         : { transferFailed: transfer.reason || "unknown" }),
-    });
+    }, { gateChecked: true });
     return transfer;
   };
 
@@ -11082,7 +12739,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // 'refilled' (display replenished) or 'stockDepleted' (no inventory left,
   // feeds Phase 11 Insights). displayRefilledBy stores the hub label
   // (anonymous auth has no email; selectedHub is the meaningful signal).
-  const setDisplayRefillStatus = (order, status, refillSize = null) => {
+  const setDisplayRefillStatus = async (order, status, refillSize = null) => {
     const now = serverNowIso();
     const patch = {
       displayRefillStatus: status,
@@ -11106,30 +12763,134 @@ function WarehouseView({ products = [], orders, onExit }) {
       // one label, never the refill itself.
       if (refillSize) {
         patch.displayRefillSize = String(refillSize);
-        // displaySlotStoreFor: a display-pair PULL refills the slot of the
-        // store whose floor lost the pair (displayPairStore), which can
-        // differ from the ordering shop. Classic partner orders keep
-        // destShop exactly as before.
-        if (displaySlotStoreFor(order) && order.productId) {
-          setDisplaySlot({
-            store: displaySlotStoreFor(order), productId: order.productId,
-            productName: order.productName || "",
-            size: String(refillSize),
-            bookedHub: order.displayRefillHub || order.placedAtHub || order.hub || null,
-            source: "display_refill", orderId: order.id,
-          }).catch(() => {});
-        }
       }
     } else if (status === "stockDepleted") {
       patch.displayRefillStockDepletedAt = now;
       patch.displayRefilledAt            = null;
     }
 
-    // Resolve the refill task on the order. (Product-level depletion blocking
-    // was retired — a "stock depleted" resolution no longer flags the product
-    // un-orderable; it only resolves this task and feeds Insights below. So this
-    // is now a plain per-order write for both outcomes.)
-    updateOrder(order.id, patch);
+    // ── CLAUSE 2 — SEND IS ONE ATOMIC WRITE ────────────────────────────────
+    // The operator has picked a size and confirmed. In a SINGLE multi-path
+    // update: every open display row for this product at this wall is CLOSED
+    // (reason `replaced`, with the instant and the actor), the new row is
+    // OPENED at the picked size, and the request is cleared by carrying this
+    // very `patch` into the same update.
+    //
+    // It used to be two writes — the order patch, then a slot write — and the
+    // gap between them is exactly how a wall ends up with a request that is
+    // still asking and a record that has already moved on. The display SLOT
+    // stays its own fenced transaction inside sendDisplayRow (a multi-path
+    // update cannot carry a transaction, and the fence is load-bearing); the
+    // rows and the order move together.
+    //
+    // displaySlotStoreFor: a display-pair PULL refills the wall of the store
+    // that lost the pair (displayPairStore), which can differ from the ordering
+    // shop. Classic partner orders keep destShop exactly as before.
+    // ── WHO GETS A ROW, AND WHO KEEPS THE OLD SLOT-ONLY PATH ────────────────
+    // The ledger is a SHOE WALL ledger. Two populations are deliberately not in
+    // it, and both keep the exact write they had before this change:
+    //
+    //   • CLOTHING and one-size partner refills. Their size is the order's own
+    //     and no human picks it, so minting a row would put a size on the
+    //     display record that nobody chose — the absolute rule, from the other
+    //     direction — and those rows would then show up on the Duplicate
+    //     Displays tab as shoe-wall work. (Spec-conformance review.)
+    //   • PINE, and anything else booked outside GATED_SNEAKER_HUBS. Hub 3 is
+    //     out of scope on every read surface here; writing rows it can never
+    //     show would be a ledger nobody maintains.
+    //
+    // Both still write the display SLOT exactly as they always did, so the
+    // count and the marker are unaffected for them.
+    const rowStore = displaySlotStoreFor(order);
+    // `selectedHub` is last in the chain and it matters: the first three fields
+    // can be absent on an older order, or hold a SHOP id rather than a hub, and
+    // when they did, a genuine footwear display refill fell through the gate
+    // below and wrote a slot with no ledger row — invisible, with the two tabs
+    // then reading that wall as unregistered. The hub actually doing the refill
+    // is the truth of last resort, and it is the same value the patch already
+    // stamps as displayRefilledBy. (Independent second-brain review.)
+    //
+    // ...BUT `||` COULD NOT REACH IT. The chain short-circuits on the first
+    // TRUTHY value, and the failure the paragraph above describes is a field
+    // holding a SHOP id — which is truthy. So the fallback the comment called
+    // the truth of last resort was dead: `placedAtHub: "marathon-pe"` would win
+    // and `rowEligible` go false. Taking the first value that is actually a
+    // gated hub makes the expression do what the paragraph says.
+    //
+    // IT CHANGES NO OUTCOME TODAY, and the round that wrote it said it did.
+    // Every order that can reach setDisplayRefillStatus comes through the
+    // refill-card build below, which drops anything where
+    // `displayRefillHub !== selectedHub` — so displayRefillHub is always set,
+    // always equal to selectedHub, and both the old chain and this one pick it.
+    // The divergence needs an order with an unset or non-gated displayRefillHub
+    // reaching here while selectedHub is a different gated hub, and that filter
+    // makes it unreachable. Kept because the expression should mean what its
+    // comment says and because the filter is not this line's to rely on, but
+    // recorded as robustness, NOT as a live bug fixed.
+    // (Adversarial review of the fix round.)
+    const rowHub = [order.displayRefillHub, order.placedAtHub, order.hub]
+      .find((h) => GATED_SNEAKER_HUBS.includes(h)) || selectedHub || null;
+    const rowEligible = productIsFootwear(resolveProductById(order.productId))
+      && GATED_SNEAKER_HUBS.includes(rowHub);
+    if (status === "refilled" && refillSize && rowStore && order.productId && rowEligible) {
+      // The ledger must have ANSWERED. See the subscription's own note.
+      if (!displayRowsState.settled || displayRowsState.error) {
+        window.alert("The display records have not loaded yet — give it a moment and tap Refilled again. Nothing was changed.");
+        return;
+      }
+      const res = await sendDisplayRow({
+        rows: displayRows,
+        store: rowStore,
+        productId: order.productId,
+        productName: order.productName || "",
+        size: String(refillSize),
+        bookedHub: rowHub,
+        orderId: order.id,
+        // The order's OWN instant for the "requested" timeline entry — the
+        // request happened when the customer asked, not when the pair went out.
+        // Stamping the send instant made every timeline read "requested and
+        // sent in the same minute". (Spec-conformance review.)
+        requestedAt: order.createdAt || null,
+        // The request-clearing patch, carried INTO the atomic update.
+        orderPatch: Object.fromEntries(Object.entries(patch).map(([k, v]) => [`orders/${order.id}/${k}`, v])),
+        // `now` is the same instant the patch writes to displayRefilledAt,
+        // which is what displayPairCore's replay reads — one transition, one
+        // instant, whichever record it is read from.
+        at: now,
+      });
+      if (!res.ok) {
+        // The atomic write failed, so NOTHING landed — not the rows, not the
+        // order. Falling through to a bare updateOrder here would resolve the
+        // task while the wall's record still shows the old pair, which is the
+        // split this change exists to remove. Tell the operator and stop.
+        console.warn(`Display send failed for #${order.id}: ${res.message}`);
+        window.alert(`The display record could not be saved (${res.message}). Nothing was changed — try again.`);
+        return;
+      }
+      if (res.warning) console.warn(res.warning);
+    } else {
+      // Stock Depleted, an undo, clothing, Pine, and a footwear refill with no
+      // size to record: the write this has always been. (Product-level
+      // depletion blocking was retired — a "stock depleted" resolution no
+      // longer flags the product un-orderable; it only resolves this task and
+      // feeds Insights below.)
+      updateOrder(order.id, patch);
+      // The display SLOT, byte-for-byte the write that was here before the
+      // ledger existed. Clothing and Pine partner refills still set the shop's
+      // slot, so the count card and the marker see exactly what they saw.
+      if (status === "refilled" && refillSize && rowStore && order.productId) {
+        setDisplaySlot({
+          store: rowStore, productId: order.productId,
+          productName: order.productName || "",
+          size: String(refillSize),
+          bookedHub: rowHub,
+          // `now` is the same instant this patch writes to displayRefilledAt,
+          // which is what displayPairCore's replay reads — one transition, one
+          // instant, whichever of the two records it.
+          source: "display_refill", orderId: order.id, at: now,
+        }).catch(() => {});
+      }
+    }
 
     // Stock-deplete: append an insights_log entry so the Stock Depleted tab
     // can show past-day counts. Without this, the tab only ever sees today's
@@ -11162,13 +12923,77 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Reverse a refill resolution — clears status + both timestamps + by-hub so
   // the task reappears in the active list. Leaves displayRefillScheduledAt
   // alone so the original 15-min window resumes from where it was.
-  const undoDisplayRefill = (order) => {
+  const undoDisplayRefill = async (order) => {
+    const now = serverNowIso();
+    // ── CLAUSE 1 REACHES THE UNDO TOO ──────────────────────────────────────
+    // An undo RE-OPENS this order's refill task: it nulls displayRefillStatus
+    // and deliberately leaves displayRefillScheduledAt, so the wall is owed a
+    // pair again. That makes it a second-opener, and it had no guard — so if a
+    // newer request was raised for the same wall while this one read as
+    // "refilled", undoing produced two open tasks and two pairs would be walked
+    // to one wall.
+    //
+    // Refused rather than silently skipped, because an undo is a deliberate
+    // operator action and they need to know why nothing happened — and the
+    // message names the order to look at instead of sending them hunting.
+    // (Spec-conformance review.)
+    const undoStore = requestStoreFor(order);
+    const undoBlockers = undoStore
+      ? otherOpenDisplayRequests(orders, { store: undoStore, productId: order.productId, exceptId: order.id })
+      : [];
+    if (undoBlockers.length) {
+      window.alert(`Order #${undoBlockers[0].id} already has an open display request for this shoe at ${SHOP_LABELS[undoStore] || undoStore}. Undoing this one would send a second pair to the same wall — resolve that task instead. Nothing was changed.`);
+      return;
+    }
+    // THE SAME READINESS GATE THE SEND HAS, for the same reason and in the
+    // opposite direction. An unanswered subscription and an empty ledger are
+    // the same null, so an undo before the node answers would find no rows,
+    // reset the order to unrefilled and leave the row OPEN — and the next send
+    // would then open a second beside it. The `console.warn` in the loop below
+    // could never fire, because the loop body never ran.
+    // (Independent second-brain review.)
+    if (!displayRowsState.settled || displayRowsState.error) {
+      window.alert("The display records have not loaded yet — give it a moment and undo again. Nothing was changed.");
+      return;
+    }
+    // An undo says the pair did NOT go on the wall after all, so the row that
+    // send opened is CANCELLED — closed with a reason, never deleted. Without
+    // this the ledger would keep asserting a display that the operator has just
+    // taken back, and the Duplicate tab would show it as a second pair the next
+    // time a real one goes out. Found by the row's own requestOrderId; a row
+    // opened by a wall walk has none and is untouched.
+    const openForOrder = openRowsFor(displayRows, displaySlotStoreFor(order), order.productId)
+      .filter((r) => r.requestOrderId === order.id);
+    let closedSoFar = 0;
+    for (const row of openForOrder) {
+      // eslint-disable-next-line no-await-in-loop
+      const res = await closeDisplayRow({ rows: displayRows, row, reason: "cancelled", via: "undo",
+                                          detail: { reason: "cancelled", orderId: order.id }, at: now });
+      if (!res.ok) {
+        // STOP, exactly as the send path does. Warning and carrying on let the
+        // order reset to "not refilled" while the row stayed OPEN — a wall with
+        // a record for a task the app now treats as unresolved, and no visible
+        // error. It self-heals on the next send (which closes every open row
+        // for that wall) but until then it is the very state this ledger exists
+        // to prevent. (CodeRabbit.)
+        console.warn(`Undo could not close display row ${row.rowId}: ${res.message}`);
+        // The message names what actually happened. An earlier version said
+        // "nothing was changed", which is untrue once an earlier row in the
+        // loop has already closed — and it is the ORDER that is being reopened,
+        // while the ROW is being closed. (Adversarial review of the fix round.)
+        window.alert(closedSoFar
+          ? `Part of this undo did not save (${res.message}). ${closedSoFar} display record${closedSoFar === 1 ? " was" : "s were"} already closed and the order was NOT reopened — try the undo again.`
+          : `The display record could not be closed (${res.message}). Nothing was changed — try again.`);
+        return;
+      }
+      closedSoFar++;
+    }
     updateOrder(order.id, {
       displayRefillStatus:          null,
       displayRefilledAt:            null,
       displayRefillStockDepletedAt: null,
       displayRefilledBy:            null,
-      updatedAt:                    serverNowIso(),
+      updatedAt:                    now,
     });
   };
 
@@ -11202,6 +13027,8 @@ function WarehouseView({ products = [], orders, onExit }) {
     // Shadow previews are never fulfillable — hard guard in case any UI path
     // slips one through (the card itself renders read-only).
     if (batch?.shadow) return { ok: 0, fail: 0, errors: ["Shadow preview — enable Live Mode to fulfil"] };
+    // A phone Junid has quarantined sends and rejects nothing (src/device/deviceRejects.js).
+    if (await thisDevicePaused()) return { ok: 0, fail: batch.items.filter(it => !it.status).length, errors: [PAUSED_MESSAGE] };
     const now = serverNowIso();
     const store = batch.destShop;
     let ok = 0, fail = 0; const errors = [];
@@ -11268,7 +13095,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           // function returns — the engine's scan treats an unresolved order
           // whose source just emptied as withdrawable, and a fire-and-forget
           // write here widens that race for no benefit.
-          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
+          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
@@ -11280,9 +13107,16 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
       } else if (reject) {
         // Reject is a flag-only write (no stock) — allowed without a stockRole.
+        // clothingOutOfStockByUid: WHO pressed it (2026-09-23), the same account
+        // Central's queue records as resolvedBy. The hourly scan copies it onto
+        // the request it closes, so the refusal write-off can name the person.
+        // clothingOutOfStockDeviceId (2026-09-25): WHICH PHONE. The account
+        // alone cannot say — accounts are shared. The scan copies it onto the
+        // request it closes, so the write-off names the phone as well.
         ok++;
-        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
-        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
+        const rej = countReject({ kind: "clothing", ref: it.orderId, hub: it.placedAtHub || "hub2", productId: batch.productId, size: it.size });
+        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingOutOfStockDeviceId: rej.deviceId, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
+        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null, byUid: rej.uid, deviceId: rej.deviceId });
       }
       // qty 0 & not rejected → left pending for a later pass.
     }
@@ -11328,7 +13162,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
       }
       ok++;
-      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
     }
     return { ok, fail, errors };
   };
@@ -11382,7 +13216,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           </div>
           {!onHoldExpanded && onHoldOrders[0] && (
             <div style={{ display:"flex", alignItems:"center", gap:10, marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)" }}>
-              <ProductPhoto url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
+              <ProductPhoto productId={onHoldOrders[0].productId} url={onHoldOrders[0].productPhotoUrl} photo={onHoldOrders[0].productPhoto} size={44} radius={8}/>
               <div style={{ fontSize:13, fontWeight:700, color:"#4A7FFF" }}>#{onHoldOrders[0].id}</div>
               <div style={{ fontSize:13, color:"rgba(255,255,255,.8)", flex:1 }}>{onHoldOrders[0].productName}{onHoldOrders[0].size ? ` — Size ${onHoldOrders[0].size}` : ""}</div>
               {onHoldOrders.length > 1 && <div style={{ fontSize:12, color:"#4A7FFF", fontWeight:600 }}>+{onHoldOrders.length - 1} more</div>}
@@ -11392,7 +13226,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             <div style={{ marginTop:10, paddingTop:10, borderTop:"1px solid rgba(255,255,255,.06)", display:"flex", flexDirection:"column", gap:10 }}>
               {onHoldOrders.map(order => (
                 <div key={order.id} style={{ background:"rgba(60,110,255,.05)", border:"1px solid rgba(60,110,255,.15)", borderRadius:12, padding:12, display:"flex", alignItems:"center", gap:10, flexWrap:"wrap" }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
+                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={40} radius={8}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ fontWeight:800, color:"#6A9FFF", fontSize:14 }}>#{order.id}</div>
                     <div style={{ fontWeight:600, fontSize:13 }}>{order.productName}{order.size ? ` — Sz ${order.size}` : ""}</div>
@@ -11483,12 +13317,21 @@ function WarehouseView({ products = [], orders, onExit }) {
             const chipBg = incoming ? "rgba(60,110,255,.15)" : ready ? "rgba(0,180,80,.12)" : oos ? "rgba(200,40,40,.12)" : "rgba(255,255,255,.05)";
             const chipColor = incoming ? "#6A9FFF" : ready ? "#4ACA7A" : oos ? "#FF6B6B" : "#888";
             const chipLabel = incoming ? "Incoming" : ready ? "Ready" : oos ? "Out of Stock" : (STATUS_CONFIG[status]?.label || status);
+            // The card's identity for a push focus marker: id AND createdAt,
+            // because order numbers are recycled daily and the bare id would
+            // ring an unrelated card from a previous day at the same number.
+            const cardKey = orderCardKey(order.id, order.createdAt);
+            const focused = focusOrderKey != null && focusOrderKey === cardKey;
             return (
-              <div style={{ borderRadius:14, overflow:"hidden", position:"relative", background:cardBg, border:cardBorder }}>
+              <div data-order-card={cardKey}
+                   style={{ borderRadius:14, overflow:"hidden", position:"relative", background:cardBg,
+                            border: focused ? "1px solid rgba(74,127,255,.95)" : cardBorder,
+                            boxShadow: focused ? "0 0 0 3px rgba(74,127,255,.35)" : undefined,
+                            transition:"box-shadow .25s ease, border-color .25s ease" }}>
                 {/* color bar */}
                 <div style={{ position:"absolute", left:0, top:0, bottom:0, width:3, background:`linear-gradient(180deg,transparent,${barColor},transparent)` }}/>
                 <div style={{ padding:"12px 12px 12px 16px", display:"flex", alignItems:"flex-start", gap:11 }}>
-                  <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
+                  <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={60} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:8, marginBottom:4 }}>
                       <div style={{ fontSize:13, fontWeight:800, color:"#4A7FFF", letterSpacing:"0.5px" }}>#{order.id}</div>
@@ -11588,10 +13431,13 @@ function WarehouseView({ products = [], orders, onExit }) {
                     const flow = sendFlows[sendFlowKey(order)] || sendFlowInit();
                     const d = (action) => sendFlowDispatch(order, action);
                     const hubLabel = ({ hub1:"Hub 1", hub2:"Hub 2", hub3:"Hub 3" })[order.placedAtHub || order.hub] || selectedHub || "the hub";
-                    const commitFlow = () => {
+                    const commitFlow = async () => {
                       const done = sendFlowReduce(flow, { type: "CONFIRM" });
                       d({ type: "CONFIRM" });
                       if (!done.commit) return;
+                      // A paused phone gets the paused message, never a
+                      // "sent" banner beside it (src/device/deviceRejects.js).
+                      if (await thisDevicePaused()) { showPausedToast(); return; }
                       if (done.commit.kind === "send") {
                         markSentAndPrint(order, { sentSize: done.commit.size });
                       } else {
@@ -11688,7 +13534,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                             <svg width="13" height="13" viewBox="0 0 24 24" stroke="currentColor" fill="none" strokeWidth="2.5" strokeLinecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
                             Mark as Out of Stock
                           </button>
-                          <TomorrowActionButton order={order}
+                          <TomorrowActionButton order={order} product={whProductsById[order.productId]}
                             onOutcome={(kind) => updateStatus(order, kind === "out_of_stock" ? STATUS.OUT_OF_STOCK : STATUS.COMING_TOMORROW)} />
                           <button onClick={() => subAvailable && setPickerOpenId(order.id)}
                                   disabled={!subAvailable}
@@ -11760,6 +13606,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             canFulfil={canFulfilCR}
             onViewPhoto={setCrPhoto}
             products={products}
+            focusOrderKey={focusOrderKey}
           />
         </div>
       )}
@@ -12022,22 +13869,39 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
   // a warehouse. Pick, see it selected, then Send.
   const [sizeSheet, setSizeSheet] = useState(null);   // { order, options, picked }
 
-  // EVERY footwear refill asks which size is going ON THE DISPLAY NOW (owner
-  // bug report 2026-08-26). It used to ask only when the order carried no
-  // size — but the staged send ALWAYS stamps sentSize, so the sheet never
-  // appeared, and the system silently recorded the SENT size as the new
-  // display size when staff often put a different size out. The sent size is
-  // only the PRESELECTED suggestion (one extra tap when it happens to match);
-  // what staff confirm is what the display slot records. Falls back to the
-  // direct action only when the product declares no sizes to choose from.
+  // ── THE ABSOLUTE RULE: NOTHING PICKS THE DISPLAY SIZE BUT THE OPERATOR ─────
+  // (Owner directive, 2026-09-08 — no default, no last-used, no most-available,
+  // no auto-fill, and no pre-selection.)
+  //
+  // EVERY footwear refill asks which size is going ON THE DISPLAY NOW. It used
+  // to ask only when the order carried no size — the staged send always stamps
+  // sentSize, so the sheet never appeared and the SENT size was silently
+  // recorded as the display size while staff routinely put a different one out.
+  // That was fixed on 2026-08-26 by always asking, but the sent size was left
+  // PRESELECTED in the sheet, which is the same mistake wearing a smaller hat:
+  // a preselected answer is the one that gets confirmed, so the record still
+  // says "the size we sent" rather than "the size on the wall".
+  //
+  // So there is no `known` any more, at all. Not as a default, not as a
+  // highlight, not as a sort order. The sheet opens with nothing chosen and the
+  // Send button is dead until a human touches a size.
+  //
+  // A footwear order whose product declares NO sizes no longer falls through to
+  // a direct write either: it opens the sheet, which says the product has no
+  // sizes on record and offers no way through. Writing the order's size there
+  // would be exactly the guess this rule forbids, and a product with no sizes
+  // is a catalogue fault to fix, not a display record to invent.
+  //
+  // NON-FOOTWEAR IS UNCHANGED and is not an exception to the rule. A clothing
+  // partner order names one size and there is no second size to choose between,
+  // so nothing is being picked FOR the operator — there is nothing to pick. The
+  // rule governs the shoe wall, where the sheet is the whole point.
   const refillSizeChoices = (order) => {
-    const known = order.sentSize || order.size || null;
     const prod = resolveProductById(order.productId);
-    if (!productIsFootwear(prod)) return { needed: false, options: [], known };
+    if (!productIsFootwear(prod)) return { needed: false, options: [], known: order.sentSize || order.size || null };
     const options = (Array.isArray(prod?.sizes) ? prod.sizes : [])
       .map(String).map((x) => x.trim()).filter((x) => x && x !== "_");
-    if (!options.length && known) return { needed: false, options: [], known };
-    return { needed: true, options, known };
+    return { needed: true, options, known: null };
   };
   const fmtWaiting = (iso) => {
     const ms = nowTick - new Date(iso).getTime();
@@ -12170,11 +14034,18 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
           renderItem={(order) => (
             <div style={{ background:CARD, border:"1px solid rgba(245,158,11,.4)", borderLeft:"3px solid #F59E0B", borderRadius:RADIUS, padding:14, boxShadow:"0 0 12px rgba(245,158,11,.1)" }}>
               <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:10 }}>
-                <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={10}/>
+                <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={48} radius={10}/>
                 <div style={{ flex:1, minWidth:0 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                     <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1.1rem", color:BLUE_L, lineHeight:1 }}>#{order.id}</span>
                     <span style={{ background:"rgba(245,158,11,.15)", color:"#F59E0B", border:"1px solid rgba(245,158,11,.35)", borderRadius:999, padding:"1px 8px", fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:".5px" }}>Partner</span>
+                    {/* A wall-walk "Not on the wall" request has no customer behind
+                        it — say whose wall it is for, since that is the whole job. */}
+                    {order.wallWalk === true && (
+                      <span style={{ background:"rgba(74,127,255,.12)", color:"#4A7FFF", border:"1px solid rgba(74,127,255,.3)", borderRadius:999, padding:"1px 8px", fontSize:9, fontWeight:700, textTransform:"uppercase", letterSpacing:".5px" }}>
+                        Wall · {labelFor(displaySlotStoreFor(order) || order.destShop)}
+                      </span>
+                    )}
                     <span style={{ marginLeft:"auto", background:"rgba(255,255,255,.04)", color:"rgba(255,255,255,.55)", border:"1px solid rgba(255,255,255,.08)", borderRadius:999, padding:"1px 8px", fontSize:10, fontWeight:600 }}>
                       waiting {fmtWaiting(order.displayRefillScheduledAt)}
                     </span>
@@ -12199,9 +14070,11 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
               <div style={{ display:"flex", gap:8 }}>
                 <button onClick={() => {
                           const sz = refillSizeChoices(order);
-                          // Footwear with no size on the order opens the confirm
-                          // sheet; everything else keeps the direct action.
-                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: sz.known && sz.options.includes(String(sz.known)) ? String(sz.known) : null });
+                          // Footwear ALWAYS opens the sheet, with NOTHING picked
+                          // (the absolute rule above). Clothing and one-size
+                          // items have no display size to record and keep the
+                          // direct action.
+                          if (sz.needed) setSizeSheet({ order, options: sz.options, picked: null });
                           else onSetStatus(order, "refilled", sz.known || null);
                         }}
                         style={{ flex:1, padding:"11px 8px", borderRadius:10, fontSize:12, fontWeight:700, cursor:"pointer", display:"flex", alignItems:"center", justifyContent:"center", gap:6, background:"rgba(0,150,70,.2)", border:"1px solid rgba(0,180,80,.4)", color:"#4ADE80" }}>
@@ -12245,7 +14118,7 @@ function DisplayRefillsTab({ dueRefills, completedRefills, showCompleted, setSho
               return (
                 <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                   <div style={{ display:"flex", alignItems:"center", gap:12, marginBottom:8 }}>
-                    <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
+                    <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={44} radius={10}/>
                     <div style={{ flex:1, minWidth:0 }}>
                       <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                         <span style={{ fontFamily:"'SF Pro Display',-apple-system,sans-serif", fontWeight:800, fontSize:"1rem", color:"rgba(255,255,255,.85)", lineHeight:1 }}>#{order.id}</span>
@@ -12335,7 +14208,7 @@ function SizeStatusChips({ items }) {
 // card open at a time. Send fires a real hub2→store transfer per fulfilled size
 // (onFulfill → fulfillCRBatch, idempotent per line+date+generation). History
 // cards still hold exactly one request.
-function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle }) {
+function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onViewPhoto, products, fmtTime, open, onToggle, focusOrderKey = null }) {
   const [qtys, setQtys]       = useState({});   // { orderId: qty } (only for touched lines)
   const [touched, setTouched] = useState({});   // { orderId: true }
   const [rejects, setRejects] = useState({});   // { orderId: true }
@@ -12387,8 +14260,24 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
     }
   };
 
+  // A CR card is a whole request, so it stands for SEVERAL orders. The push
+  // focus marker names one of them; `data-order-card` therefore carries every
+  // line's key and the lookup matches one of the list (src/push/useFocusOrder).
+  // Without this a shop refill or an engine leg — most of what this feature
+  // notifies about — would deep-link to the tab and ring nothing.
+  const focusKeys = (batch.items || []).map((it) => orderCardKey(it.orderId, it.createdAt)).join(" ");
+  const focusedHere = !!focusOrderKey && (batch.items || [])
+    .some((it) => orderCardKey(it.orderId, it.createdAt) === focusOrderKey);
+
   return (
-    <div style={{ background:CARD, border: open ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(60,110,255,.3)", borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS, boxShadow: open ? "0 0 12px rgba(60,110,255,.15)" : "none", overflow:"hidden" }}>
+    <div data-order-card={focusKeys}
+         style={{ background:CARD,
+                  border: focusedHere ? "1px solid rgba(74,127,255,.95)"
+                        : open ? "1px solid rgba(60,110,255,.55)" : "1px solid rgba(60,110,255,.3)",
+                  borderLeft:"3px solid #4A7FFF", borderRadius:RADIUS,
+                  boxShadow: focusedHere ? "0 0 0 3px rgba(74,127,255,.35)"
+                           : open ? "0 0 12px rgba(60,110,255,.15)" : "none",
+                  transition:"box-shadow .25s ease, border-color .25s ease", overflow:"hidden" }}>
       {/* Compact header row — always visible; tap to expand/collapse. */}
       <div onClick={onToggle} role="button" tabIndex={0} aria-expanded={open}
            onKeyDown={(e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); onToggle(); } }}
@@ -12396,7 +14285,7 @@ function CRFulfillCard({ batch, hubCells, hubLabel, canFulfil, onFulfill, onView
         <div onClick={hasPhotos ? (e) => { e.stopPropagation(); onViewPhoto(photos); } : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:8 }}>
-          <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
+          <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={38} radius={8}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-3, bottom:-3, width:14, height:14, borderRadius:7, background:"rgba(4,5,10,.9)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="7" height="7" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round"><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -12533,7 +14422,7 @@ function UndoCRButton({ batch, onUndo }) {
   );
 }
 
-function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products }) {
+function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products, focusOrderKey = null }) {
   // Accordion — one request expanded at a time so the whole queue stays scannable.
   const [openKey, setOpenKey] = useState(null);
   // Open = the working queue (only unresolved requests); History = resolved ones
@@ -12589,6 +14478,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
               <CRFulfillCard key={batch.batchKey}
                              batch={batch} hubCells={hubCells} hubLabel={hubLabel} canFulfil={canFulfil}
                              onFulfill={onFulfill} onViewPhoto={onViewPhoto} products={products} fmtTime={fmtTime}
+                             focusOrderKey={focusOrderKey}
                              open={openKey === batch.batchKey}
                              onToggle={() => setOpenKey(k => k === batch.batchKey ? null : batch.batchKey)} />
             ))}
@@ -12620,7 +14510,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
             return (
               <div style={{ background:CARD, border:`1px solid ${accent}`, borderLeft:`3px solid ${accent}`, borderRadius:RADIUS, padding:14, opacity:0.85 }}>
                 <div style={{ display:"flex", alignItems:"flex-start", gap:12, marginBottom:8 }}>
-                  <ProductPhoto url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
+                  <ProductPhoto productId={batch.productId} url={batch.productPhotoUrl} photo={batch.productPhoto} size={48} radius={10}/>
                   <div style={{ flex:1, minWidth:0 }}>
                     <div style={{ display:"flex", alignItems:"center", gap:6, marginBottom:2 }}>
                       <span style={{ fontWeight:700, color:"rgba(255,255,255,.85)", fontSize:13 }}>{batch.productName}</span>
@@ -12788,7 +14678,7 @@ function CustomerView({ orders, onExit }) {
                 <button key={o.id} className="ot-row" onClick={() => { setOrderId(o.id); setFound(o); setSearched(true); }}
                   style={{ display: "flex", alignItems: "center", gap: 10, padding: 8, borderRadius: 12, cursor: "pointer", textAlign: "left", fontFamily: FONT,
                            background: on ? "rgba(74,127,255,.14)" : "transparent", border: on ? "1px solid rgba(74,127,255,.45)" : "1px solid transparent" }}>
-                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
+                  <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={40} radius={9} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
                     <div style={{ fontSize: 11, color: "rgba(233,238,255,.45)", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{o.customerName || "—"}</div>
@@ -12934,7 +14824,7 @@ function CustomerView({ orders, onExit }) {
               </div>
             </div>
             <div style={{ display: "flex", gap: 14, alignItems: "center" }}>
-              <ProductPhoto url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
+              <ProductPhoto productId={found.productId} url={found.productPhotoUrl} photo={found.productPhoto} size={78} radius={14} />
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ fontSize: 16, fontWeight: 700, color: "#fff", lineHeight: 1.25 }}>{found.productName}</div>
                 <div style={{ display: "flex", alignItems: "center", gap: 7, marginTop: 7, flexWrap: "wrap" }}>
@@ -13015,7 +14905,7 @@ function CustomerView({ orders, onExit }) {
               return (
                 <button key={o.id} onClick={() => doSearch(o.id)} className="ot-press"
                         style={{ width: "100%", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.08)", borderRadius: 14, padding: 10, cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 11, fontFamily: FONT }}>
-                  <ProductPhoto url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
+                  <ProductPhoto productId={o.productId} url={o.productPhotoUrl} photo={o.productPhoto} size={44} radius={10} />
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div style={{ fontSize: 13.5, fontWeight: 700, color: "#fff", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>#{o.id} · {o.productName}</div>
                     <div style={{ fontSize: 11.5, color: "rgba(233,238,255,.45)", marginTop: 2 }}>{o.customerName || "—"}{orderShopLabel(o) ? ` · ${orderShopLabel(o)}` : ""}</div>
@@ -13694,7 +15584,7 @@ function ClothingSoldCard({ group, showStore, onViewPhoto, allCells, registry, a
         <div onClick={hasPhotos ? () => onViewPhoto(group.photos) : undefined}
              title={hasPhotos ? "Tap to enlarge" : undefined}
              style={{ position:"relative", flexShrink:0, cursor: hasPhotos ? "zoom-in" : "default", borderRadius:10 }}>
-          <ProductPhoto url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
+          <ProductPhoto productId={group.productId} url={group.photoUrl} photo={group.photo} size={48} radius={10}/>
           {hasPhotos && (
             <div style={{ position:"absolute", right:-3, bottom:-3, width:16, height:16, borderRadius:"50%", background:"rgba(4,5,10,.95)", border:"1px solid rgba(60,110,255,.5)", display:"flex", alignItems:"center", justifyContent:"center" }}>
               <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="#6A9FFF" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><circle cx="11" cy="11" r="7"/><path d="M21 21l-4.3-4.3M11 8v6M8 11h6"/></svg>
@@ -14179,6 +16069,10 @@ const SOURCE_TAB_ICON = {
   // Refill history — a calendar, since this lane is chosen by DATE RANGE. The
   // "history" glyph above is already taken by the customer-request history.
   refillhistory: <><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></>,
+  // Shop tabs (first batch direct to shop, 2026-09-17) — a storefront, since
+  // these lanes are the SHOPS' own requests from Central.
+  trophy: <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 006 0 3 3 0 006 0 3 3 0 006 0"/><path d="M5 11v9h14v-9M10 20v-5h4v5"/></>,
+  marathonpe: <><path d="M3 9l1.5-5h15L21 9"/><path d="M3 9a3 3 0 006 0 3 3 0 006 0 3 3 0 006 0"/><path d="M5 11v9h14v-9M10 20v-5h4v5"/></>,
 };
 // ── THE SOURCE CONSOLIDATION (owner directive 2026-08-08) ────────────────────
 // Three tabs, down from six. Today's Request, History and On Hold are GONE as
@@ -14192,7 +16086,17 @@ const SOURCE_TAB_ICON = {
 // New holds raise a real refill request against their hub (onHoldRefill.js)
 // and appear in the queue; held cards remain only for legacy holds and
 // fail-closed ones (unroutable hub / no product id / write refused).
-const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],["refillhistory","Refill History"]];
+// FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17): a Missing Products
+// Solve on a Central-stranded product can now raise the SHOP's own request
+// from Central (see firstBatchCore.js). Those rows are requestingLocation
+// "trophy" / "marathon-pe" and are picked by Central here, on their own tabs —
+// the same RefillQueue, same Fulfil / Out of Stock, same partial tranches and
+// `rrf_` movement ids, destination the shop. No sale rows: a shop's POS sales
+// restock through its hub, never through Central.
+const SOURCE_SHOP_TABS = [["trophy","Trophy","trophy"],["marathonpe","Marathon","marathon-pe"]];
+const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],...SOURCE_SHOP_TABS.map(([k, label]) => [k, label]),["refillhistory","Refill History"]];
+const SOURCE_SHOP_BY_TAB = Object.fromEntries(SOURCE_SHOP_TABS.map(([k, , loc]) => [k, loc]));
+const SOURCE_SHOP_LOCS = new Set(SOURCE_SHOP_TABS.map(([, , loc]) => loc));
 
 function SourceView({ onExit, orders, returnsLog, products }) {
   const [rawTab, setTab] = usePersistedTab("source", "hub1refill");
@@ -14440,7 +16344,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // Per-hub badge for the Hub 1 / Hub 2 tabs: pending sale cells (today +
   // stragglers) plus open refill requests — everything the one queue lists.
   const hubBadges = useMemo(() => {
-    const counts = { hub1: 0, hub2: 0 };
+    const counts = { hub1: 0, hub2: 0, trophy: 0, "marathon-pe": 0 };
     const todayResponses = allResponses[todayDate] || {};
 
     REACTIVE_REFILL_HUBS.forEach(h => {
@@ -14475,9 +16379,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
 
     // Open refill requests — rows in the same queue (holds included: they are
     // ordinary requests now, so they count here and nowhere else).
+    // A SHOP key counts only the shop's first-batch legs from Central — the
+    // rows its tab lists (RefillQueue SHOP_DESTS). The engine's hub2→shop rows
+    // are Hub 2's work; counting them here put 112/113 on the Trophy/Marathon
+    // tabs for work Central never had (incident 2026-09-17).
     allRefillRequests.forEach((r) => {
-      if (r.status === "open" && !r.shadow && r.productId &&
-          (r.requestingLocation === "hub1" || r.requestingLocation === "hub2"))
+      if (Object.prototype.hasOwnProperty.call(counts, r.requestingLocation) && countsTowardSourceQueue(r, SOURCE_SHOP_LOCS))
         counts[r.requestingLocation] += 1;
     });
 
@@ -14590,6 +16497,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     <>
         {tab==="hub1refill" && hubTabContent("hub1")}
         {tab==="clothing" && hubTabContent("hub2")}
+        {/* Shop tabs — first-batch requests from Central (request rows only). */}
+        {SOURCE_SHOP_BY_TAB[tab] && <RefillQueue products={products} dest={SOURCE_SHOP_BY_TAB[tab]} fulfilCtx={fulfilCtx} />}
         {/* Refill History (2026-08-07, redone 2026-08-08). Every outcome, both
             hubs and the shops, over a chosen date range. */}
         {tab==="refillhistory" && <RefillHistory products={products} />}
@@ -14600,11 +16509,11 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   if (isWide) {
     const activeTab = tab;                       // already normalised above
     const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Hub 1 Refill"])[1];
-    const totalPending = (hubBadges.hub1 || 0) + (hubBadges.hub2 || 0);
+    const totalPending = Object.values(hubBadges).reduce((t, n) => t + (n || 0), 0);
     const navItem = ([key, label]) => {
       const on = activeTab === key;
       // Per-hub pending work (sold cells + stragglers + open requests) on its hub tab.
-      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
+      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : 0;
       return (
         <button key={key} onClick={() => setTab(key)}
           style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
@@ -14679,7 +16588,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             phone instead of the strip scrolling. Adding the sixth tab is what
             made this reachable. (CodeRabbit, PR #332.) */}
         {SOURCE_TABS.map(([key, label]) => {
-          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : 0;
+          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : 0;
           return (
             <div key={key} onClick={() => setTab(key)}
                  style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
@@ -14906,7 +16815,7 @@ function ReturnsView({ orders, products = [], onExit }) {
     return (
       <div style={{ background:"rgba(255,255,255,.024)", border: isReturned ? "1px solid rgba(74,222,128,.28)" : isExpanded ? "1px solid rgba(74,127,255,.5)" : "1px solid rgba(255,255,255,.08)", borderRadius:16, overflow:"hidden", transition:"border-color .18s, box-shadow .18s", boxShadow: isExpanded ? "0 18px 44px -26px rgba(74,127,255,.55)" : "none", opacity: isReturned ? .78 : 1 }}>
         <div style={{ display:"flex", alignItems:"center", gap:13, padding:14 }}>
-          <ProductPhoto url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
+          <ProductPhoto productId={order.productId} url={order.productPhotoUrl} photo={order.productPhoto} size={52} radius={11}/>
           <div style={{ flex:1, minWidth:0 }}>
             <div style={{ display:"flex", alignItems:"center", gap:8 }}>
               <span className="ret-siri" style={{ fontSize:14, fontWeight:800, letterSpacing:".04em", fontVariantNumeric:"tabular-nums" }}>#{order.id}</span>
@@ -16703,10 +18612,87 @@ function InsightsView({ onExit }) {
   const [storeFilter, setStoreFilter] = useState("all");
   const [auditOpen,  setAuditOpen]  = useState(false);
   const touchStartX = useRef(null);
-  const log        = useInsightsLog();
   const returnsLog = useReturnsLog();
   const products   = useProducts();
   const orders     = useOrders();
+
+  // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
+  const { filterStart, filterEnd, filterLabel } = useMemo(() => {
+    // All Time short-circuit — sentinel ISO strings that pass every
+    // existing `iso >= filterStart && iso < filterEnd` comparison in tabs.
+    // Day-mode special branches naturally skip because filterMode !== "day".
+    if (filterMode === "all") {
+      return {
+        filterStart: "0000-01-01T00:00:00.000Z",
+        filterEnd:   "9999-12-31T23:59:59.999Z",
+        filterLabel: "All Time",
+      };
+    }
+    const base = dateStrToLocal(filterDate);
+    let start, end, label;
+    if (filterMode === "day") {
+      start = new Date(base); start.setHours(0,0,0,0);
+      end   = new Date(base); end.setDate(end.getDate()+1); end.setHours(0,0,0,0);
+      label = filterDate === getSADateString() ? "today"
+        : base.toLocaleDateString([], { day:"numeric", month:"short", year:"numeric" });
+    } else if (filterMode === "week") {
+      const dow = (base.getDay()+6)%7;
+      start = new Date(base); start.setDate(base.getDate()-dow); start.setHours(0,0,0,0);
+      end   = new Date(start); end.setDate(start.getDate()+7);
+      const sunday = new Date(end.getTime()-1);
+      const fmt = d => `${d.getDate()} ${_MONTHS[d.getMonth()].slice(0,3)}`;
+      label = `${fmt(start)} – ${fmt(sunday)}`;
+    } else if (filterMode === "month") {
+      start = new Date(base.getFullYear(), base.getMonth(), 1);
+      end   = new Date(base.getFullYear(), base.getMonth()+1, 1);
+      label = `${_MONTHS[base.getMonth()]} ${base.getFullYear()}`;
+    } else {
+      // year
+      start = new Date(base.getFullYear(), 0, 1);
+      end   = new Date(base.getFullYear()+1, 0, 1);
+      label = `${base.getFullYear()}`;
+    }
+    return { filterStart: start.toISOString(), filterEnd: end.toISOString(), filterLabel: label };
+  }, [filterMode, filterDate]);
+
+  // ─── THE LOG, WINDOWED ────────────────────────────────────────────────────
+  // This used to be `useInsightsLog()` — all 35.99 MB of /insights_log, on
+  // every mount, whichever period was selected. It now reads the window that
+  // is actually on screen: rollup nodes for the finished days, a bounded live
+  // read for today and for a partial day at an edge. Same events, same order,
+  // same numbers (src/insights/rollupWindow.test.js proves that against a real
+  // trading day); the selectors below are untouched.
+  //
+  // saDay, not a clock: this is an effect dependency, and a till is left open
+  // across midnight, so the day boundary has to move without the read re-running
+  // on every render. Same helper the other two all-time screens use.
+  const insightsSaDay = useSaDayTick();
+  const insightsAuthReady = useAuthReady();
+  // ── THE WINDOW IS WIDER THAN THE ONE ON SCREEN, ON PURPOSE ───────────────
+  // The Overview KPIs carry a "vs previous" figure, and it is computed by
+  // running the same selectors over the PREVIOUS equal-length window
+  // (InsightOverviewTab's `deltas`). With an array holding only the selected
+  // period those chips read zero and vanish — a rendered figure quietly
+  // changing, which is the one thing this work is not allowed to do. So the
+  // read covers the period AND the period before it, and every selector still
+  // filters to its own bounds exactly as before. (Fable-vs-spec review.)
+  const logStart = useMemo(() => {
+    const a = Date.parse(filterStart);
+    const b = Date.parse(filterEnd);
+    if (!Number.isFinite(a) || !Number.isFinite(b) || b <= a) return filterStart;
+    const prev = a - (b - a);
+    // The All Time sentinel is already before everything; doubling it just
+    // overflows into an unusable date.
+    if (!Number.isFinite(prev) || prev < 0) return filterStart;
+    return new Date(prev).toISOString();
+  }, [filterStart, filterEnd]);
+  const { log, totals: logTotals } = useInsightsWindow({
+    startIso: logStart,
+    endIso: filterEnd,
+    allTime: filterMode === "all",
+    enabled: insightsAuthReady,
+    saDay: insightsSaDay,
+  });
 
   // Pre-filter the three event streams by storeFilter so every downstream
   // tab/audit consumes an already-narrowed slice. dedupeByOrderNumber and
@@ -16725,6 +18711,30 @@ function InsightsView({ onExit }) {
     return (e) => e && (e.destShop === "marathon-pe" || (e.destShop == null && e.placedAtHub !== "hub3")); // marathon-pe
   }, [storeFilter]);
   const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
+  // ─── "N EVENTS IN VIEW" IS NOT THE WINDOW'S COUNT ────────────────────────
+  // It never was: it counted every event this store has ever logged, sliced by
+  // the store filter, whatever period was selected. The log array no longer
+  // holds all of history, so the number comes from the counter the rollup
+  // sweep keeps over its own walk — the same arithmetic over the same events,
+  // and a few hundred bytes instead of 35.99 MB.
+  //
+  // THE FALLBACK COUNTS THE PERIOD, NOT THE ARRAY. Before the rollup is
+  // readable there is no all-time figure to show, so this counts what is
+  // loaded — and what is loaded is the selected period PLUS the previous one,
+  // because the Overview deltas need it. Counting `filteredLog` would show
+  // close to double. It is still not the all-time number the label promises;
+  // it is the closest honest thing available until the rule is pasted, and the
+  // rollup doc says so. (Sonnet architect re-review.)
+  const allTimeEventCount = useMemo(() => {
+    if (logTotals) {
+      if (storeFilter === "all") return logTotals.n;
+      const key = storeFilter === "marathon-pe" ? "pe" : storeFilter;
+      return Number(logTotals[key]) || 0;
+    }
+    return filteredLog.filter(
+      (e) => e && e.timestamp >= filterStart && e.timestamp < filterEnd,
+    ).length;
+  }, [logTotals, storeFilter, filteredLog, filterStart, filterEnd]);
   const filteredReturnsLog = useMemo(() => returnsLog.filter(matchesStore),  [returnsLog, matchesStore]);
   const filteredOrders     = useMemo(() => orders.filter(matchesStore),      [orders, matchesStore]);
 
@@ -16733,7 +18743,9 @@ function InsightsView({ onExit }) {
   // so the audit reflects the same slice the user is viewing.
   const audit = useMemo(() => {
     const today = getSADateString();
-    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
+    // "display_request" = a wall-walk display refill task (displayRequestCore.js):
+    // a known state with no customer half, not a corrupt status.
+    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow","display_request"]);
     const onTodayCreated = filteredOrders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
 
     // Status distributions
@@ -16781,7 +18793,7 @@ function InsightsView({ onExit }) {
     const incoming  = onTodayCreated.filter(o => o.status === STATUS.INCOMING).length;
     const sumByStatus = ready + collected + oos + tomorrow + incoming;
 
-    const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
+    const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING, "display_request"]);
     const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
 
     const returnsToday = filteredReturnsLog.filter(r => (r.timestamp||"").slice(0,10) === today).length;
@@ -16800,44 +18812,6 @@ function InsightsView({ onExit }) {
     };
   }, [filteredOrders, filteredReturnsLog]);
 
-  // Compute filterStart / filterEnd (exclusive) / filterLabel from mode + anchor date.
-  const { filterStart, filterEnd, filterLabel } = useMemo(() => {
-    // All Time short-circuit — sentinel ISO strings that pass every
-    // existing `iso >= filterStart && iso < filterEnd` comparison in tabs.
-    // Day-mode special branches naturally skip because filterMode !== "day".
-    if (filterMode === "all") {
-      return {
-        filterStart: "0000-01-01T00:00:00.000Z",
-        filterEnd:   "9999-12-31T23:59:59.999Z",
-        filterLabel: "All Time",
-      };
-    }
-    const base = dateStrToLocal(filterDate);
-    let start, end, label;
-    if (filterMode === "day") {
-      start = new Date(base); start.setHours(0,0,0,0);
-      end   = new Date(base); end.setDate(end.getDate()+1); end.setHours(0,0,0,0);
-      label = filterDate === getSADateString() ? "today"
-        : base.toLocaleDateString([], { day:"numeric", month:"short", year:"numeric" });
-    } else if (filterMode === "week") {
-      const dow = (base.getDay()+6)%7;
-      start = new Date(base); start.setDate(base.getDate()-dow); start.setHours(0,0,0,0);
-      end   = new Date(start); end.setDate(start.getDate()+7);
-      const sunday = new Date(end.getTime()-1);
-      const fmt = d => `${d.getDate()} ${_MONTHS[d.getMonth()].slice(0,3)}`;
-      label = `${fmt(start)} – ${fmt(sunday)}`;
-    } else if (filterMode === "month") {
-      start = new Date(base.getFullYear(), base.getMonth(), 1);
-      end   = new Date(base.getFullYear(), base.getMonth()+1, 1);
-      label = `${_MONTHS[base.getMonth()]} ${base.getFullYear()}`;
-    } else {
-      // year
-      start = new Date(base.getFullYear(), 0, 1);
-      end   = new Date(base.getFullYear()+1, 0, 1);
-      label = `${base.getFullYear()}`;
-    }
-    return { filterStart: start.toISOString(), filterEnd: end.toISOString(), filterLabel: label };
-  }, [filterMode, filterDate]);
 
   // Build name → { photoUrl, photo } lookup for thumbnail display in every tab.
   // Also indexes by normalized name (lowercase, collapsed spaces, no spaces around
@@ -16951,7 +18925,7 @@ function InsightsView({ onExit }) {
           })}
           <div style={{ flex:1 }} />
           <div style={{ padding:"9px 11px", borderRadius:11, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", fontSize:11, color:"rgba(233,238,255,.5)" }}>
-            <span style={{ color:"#9DBCFF", fontWeight:800, fontVariantNumeric:"tabular-nums" }}>{filteredLog.length.toLocaleString()}</span> events in view
+            <span style={{ color:"#9DBCFF", fontWeight:800, fontVariantNumeric:"tabular-nums" }}>{allTimeEventCount.toLocaleString()}</span> events in view
           </div>
         </aside>
 
@@ -16990,7 +18964,7 @@ function InsightsView({ onExit }) {
           </svg>
           <div style={{ fontSize:12, fontWeight:700, color:"#fff", letterSpacing:"0.5px" }}>INTERNAL INSIGHTS</div>
         </div>
-        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{filteredLog.length} entries</div>
+        <div style={{ fontSize:10, color:"#4A7FFF", fontWeight:500 }}>{allTimeEventCount} entries</div>
       </div>
       {/* Store filter — All / Marathon PE / Trophy / Pine. Hidden on the AI
           Reorder tab (global analysis, not store-sliced). */}
@@ -17934,7 +19908,30 @@ function AdminSignInScreen({ onCancel }) {
 // (which means this branch only ever fires when isSuperAdmin === false from
 // AuthGate's perspective, e.g. signed out from the Google session).
 function AppInner() {
-  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut } = usePermissions();
+  const { user: authUser, permRecord, isSuperAdmin, hasPermission, signOut: doSignOut, deviceIdentity } = usePermissions();
+  // ── WEB PUSH ───────────────────────────────────────────────────────────────
+  // Hoisted to the app root rather than to the home screen, because a staff
+  // member with a persisted role opens straight into their workspace and may go
+  // weeks without rendering home. The token has to be refreshed on every app
+  // LOAD (it rotates silently — see src/push/registerPush.js), so it is driven
+  // from the one component every session mounts.
+  //
+  // WHO receives is set by Junid on the Notifications card in Admin
+  // (#admin/notifications) and read by the fan-out from /push_hub_audience.
+  // This registers the ADDRESS, and grants nothing.
+  const push = usePushRegistration({ user: authUser });
+  // The one thing a staff member controls: a MUTE, not an opt-in. Hoisted
+  // alongside `push` for the same reason — the home screen may go weeks without
+  // rendering, and both are passed down to the settings row that lives there.
+  // A mute can only ever REMOVE somebody from a send (src/push/pushMute.js).
+  const mute = usePushMute({ uid: push.uid });
+  // The in-app half: banner + chime instead of an OS notification while the app
+  // is open. No listener at all when push is off.
+  // Gated on `ready` (this uid's registration actually returned ON), not merely
+  // on the preference: registration can be in flight or have failed, and some
+  // of those paths leave an older token alive, which would chime at someone
+  // whose push is not really working.
+  const foregroundPush = useForegroundPush({ enabled: !!push.ready && !!push.uid });
   // Gates the shared /insights_log subscription (mounted at the bottom of this
   // component): the read is rules-gated on a non-anonymous user.
   const insightsAuthReady = useAuthReady();
@@ -17968,11 +19965,14 @@ function AppInner() {
   // Display Registration: any stock-capable staff — the display-wall lane is
   // a fact recorder (register rows + slots, never movements).
   const displayRegRouteOpen = !!authUser && canAccessStock;
+  const stockAuditRouteOpen = stockAuditVisibleForViewer({ signedIn: !!authUser });
   // Shopify Publishing route — same identities the /shopify_publish console
   // write rule accepts (Junid via super-admin, or a stockRole admin).
   const shopifyRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin" || hasPermission("shopify_publish");
   // Social route — the same identities the /social_posts console rule accepts.
   const socialRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
+  // TV Ad route — same identities the /settings/tvAd console write rule accepts.
+  const tvAdRouteOpen = isSuperAdmin || permRecord?.stockRole === "admin";
   // AI Studio route — super-admin, or a `photo_generation` holder (who gets the
   // Photo Studio tool only; AiStudioView decides that, not this gate).
   const aiStudioRouteOpen = isSuperAdmin || hasPermission("photo_generation");
@@ -17991,6 +19991,22 @@ function AppInner() {
   // Management routes. This constant only recognises the HASH — it grants
   // nothing. Authorization happens at the mount below.
   const wantUserMgmt = hash === "#admin/users" || hash === "#admin/users/" || hash.startsWith("#admin/users/");
+  // /#admin/notifications — ORDER ALERTS, the card where recipients are
+  // assigned hub by hub. Like wantUserMgmt this recognises the HASH only and
+  // grants nothing; authorization happens at the mount below, and the real
+  // enforcement is the RTDB rule on /push_assignments.
+  const wantPushAssign = hash === "#admin/notifications" || hash === "#admin/notifications/";
+  // /#admin/cost — COST WATCH. Recognises the HASH only and grants nothing;
+  // authorization happens at the mount below, and the RTDB rule on
+  // /cost_watch is what actually refuses the read.
+  const wantCostWatch = hash === "#admin/cost" || hash === "#admin/cost/";
+  // /#admin/mirror — MIRROR FLEET. Recognises the HASH only and grants
+  // nothing; authorization happens at the mount below, and the RTDB rules on
+  // /mirror_devices and /mirror_switch are what actually refuse.
+  const wantMirrorFleet = hash === "#admin/mirror" || hash === "#admin/mirror/";
+  // /#admin/devices — DEVICE CODES. Recognises the HASH only and grants
+  // nothing; the deviceEnrolmentAdmin callable is what actually refuses.
+  const wantDeviceCodes = hash === "#admin/devices" || hash === "#admin/devices/";
   // Legacy isAdmin alias — true for super-admin only. Some downstream views
   // (e.g. BroadcastGroupsView role check) still read this; the right gate is
   // hasPermission("broadcast"), but we keep isAdmin for back-compat.
@@ -18035,15 +20051,17 @@ function AppInner() {
     // The temporary Shipment Release surface obeys the same rule.
     if (role === ROLES.STOCK_HOLD && !stockHoldRouteOpen) { setRole(null); return; }
     if (role === ROLES.DISPLAY_REGISTRATION && !displayRegRouteOpen) { setRole(null); return; }
+    if (role === ROLES.STOCK_AUDIT && !stockAuditRouteOpen) { setRole(null); return; }
     // Shopify Publishing mirrors the console write rule on /shopify_publish
     // (super-admin or stockRole admin) — a stale persisted role drops home.
     if (role === ROLES.SHOPIFY_PUBLISH && !shopifyRouteOpen) { setRole(null); return; }
     // Social obeys the same rule — a role persisted before a permission change
     // must not strand the user on a view they can no longer read.
     if (role === ROLES.SOCIAL && !socialRouteOpen) { setRole(null); return; }
+    if (role === ROLES.TV_AD && !tvAdRouteOpen) { setRole(null); return; }
     const required = ROLE_TO_PERMISSION[role];
     if (required && !hasPermission(required)) setRole(null);
-  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, shopifyRouteOpen, socialRouteOpen, aiStudioRouteOpen, permRecord]);
+  }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, stockAuditRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
 
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
@@ -18061,7 +20079,9 @@ function AppInner() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     const today = getSADateString();
-    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow"]);
+    // "display_request" = a wall-walk display refill task (displayRequestCore.js):
+    // a known state with no customer half, not a corrupt status.
+    const KNOWN = new Set(["ready","collected","out_of_stock","tomorrow","on_hold","incoming","coming_tomorrow","display_request"]);
 
     const onTodayCreated  = orders.filter(o => o.createdAt && o.createdAt.slice(0,10) === today);
     const onTodayTouched  = orders.filter(o => {
@@ -18156,7 +20176,7 @@ function AppInner() {
       console.log("══════════════════════════════════════════════════════════════════");
 
       // Show every unaccounted-for order
-      const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING]);
+      const accounted = new Set([STATUS.READY, STATUS.COLLECTED, STATUS.OUT_OF_STOCK, STATUS.COMING_TOMORROW, STATUS.INCOMING, "display_request"]);
       const unaccounted = onTodayCreated.filter(o => !accounted.has(o.status));
       if (unaccounted.length) {
         console.log("UNACCOUNTED-FOR ORDERS:", unaccounted.length);
@@ -18241,7 +20261,42 @@ function AppInner() {
   const guard = (roleKey, node) => hasPermission(ROLE_TO_PERMISSION[roleKey]) ? node : null;
 
   let view = null;
-  if (wantUserMgmt) {
+  if (wantDeviceCodes) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // Junid, or MC's enrolled code-making device. Anyone else signed in as a
+    // real account gets the admin sign-in (which only Junid can pass).
+    view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
+      ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantMirrorFleet) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // A non-super-admin never gets the card mounted, so none of its reads
+    // happen and the kill switch is never rendered. Layer 1 is the tile,
+    // layer 3 the component's own identical check.
+    view = isSuperAdmin
+      ? <MirrorFleetCard authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantCostWatch) {
+    // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
+    // A non-super-admin never gets the card mounted, so none of its reads
+    // happen. Layer 2 is the component's own identical check, evaluated
+    // independently; deleting either still leaves a working client gate. The
+    // enforcement that matters is the RTDB rule on /cost_watch.
+    view = isSuperAdmin
+      ? <CostWatchCard authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantPushAssign) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    // A non-super-admin never gets the card mounted at all, so none of its
+    // reads happen. Layer 1 is the tile; layer 3 — the only one that is
+    // ENFORCEMENT rather than UI — is the RTDB rule that refuses the write
+    // (PUSH-ASSIGNMENT-RULES-DEPLOY.md). The component re-checks this same
+    // condition independently, so deleting either client layer still leaves a
+    // working client gate.
+    view = isSuperAdmin
+      ? <PushAssignmentsCard authUser={authUser} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantUserMgmt) {
     // ── THE ROUTE GATE (layer 1 of 2) ──────────────────────────────────────
     // A REAL check: a non-super-admin never gets UserManagement mounted at all,
     // so none of its state, effects or subscriptions are created. They get the
@@ -18263,7 +20318,7 @@ function AppInner() {
   } else if (wantAdmin && !isSuperAdmin) {
     view = <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (!role) {
-    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} />;
+    view = <RoleSelector onSelect={setRole} orders={orders} returnsLog={returnsLog} products={products} hasPermission={hasPermission} canAccessStock={canAccessStock} isSuperAdmin={isSuperAdmin} push={push} mute={mute} />;
   } else if (role === ROLES.INSIGHTS)     view = guard(ROLES.INSIGHTS,     <InsightsView   onExit={() => setRole(null)} />);
   else if (role === ROLES.SOURCE)         view = guard(ROLES.SOURCE,       <SourceView     orders={orders} returnsLog={returnsLog} products={products} onExit={() => setRole(null)} />);
   else if (role === ROLES.RETURNS)        view = guard(ROLES.RETURNS,      <ReturnsView    orders={orders} products={products} onExit={() => setRole(null)} />);
@@ -18282,7 +20337,7 @@ function AppInner() {
   // or store-scoped grant); a viewer who no longer qualifies gets null and the
   // reset effect drops them home. Shell only — reads no data.
   else if (role === ROLES.DISPLAY_CHECKS) view = displayChecksRouteOpen ? <DisplayChecks onExit={() => setRole(null)} products={products} /> : null;
-  else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} onExit={() => setRole(null)} /> : null;
+  else if (role === ROLES.STOCK)     view = canAccessStock ? <StockView products={products} orders={orders} ordersScope={myShop} onExit={() => setRole(null)} /> : null;
   // TEMPORARY — hub sneaker stock-take. `products` is passed (not re-read): App
   // already holds the catalogue, and the count view freezes it on entry.
   // viewer.stockRole is the STORED role, deliberately NOT the super-admin-widened
@@ -18303,7 +20358,17 @@ function AppInner() {
         actorRole={stockRole} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.DISPLAY_REGISTRATION) view = displayRegRouteOpen
-    ? <DisplayRegistrationView products={products} onExit={() => setRole(null)} />
+    // `orders`/`ordersScope` are for the Unregistered Displays tab that now
+    // lives inside this card: the wall walk raises display requests, and its
+    // one-open-request guard is only as wide as the order feed it can see, so
+    // it needs the scope to refuse a wall it cannot read. Same two props the
+    // Stock console passed it before the move.
+    ? <DisplayRegistrationView products={products} orders={orders} ordersScope={myShop} onExit={() => setRole(null)} />
+    : null;
+  else if (role === ROLES.STOCK_AUDIT) view = stockAuditRouteOpen
+    // `products` is the list App already streams for every screen — the row
+    // photos come off it, so a picture costs the audit snapshot nothing.
+    ? <StockAuditView products={products} onExit={() => setRole(null)} />
     : null;
   else if (role === ROLES.HEALTH)    view = canAccessStock ? <HealthView products={products} onExit={() => setRole(null)} /> : null;
   else if (role === ROLES.TOTAL_STOCK) view = canAccessStock ? <NetworkTotals products={products} onExit={() => setRole(null)} /> : null;
@@ -18322,6 +20387,10 @@ function AppInner() {
   // approval itself at the moment of sending.
   else if (role === ROLES.SOCIAL) view = socialRouteOpen
     ? <SocialView products={products} onExit={() => setRole(null)} />
+    : null;
+  // TV Ad — writes /settings/tvAd only; the TV screen overlay reads it live.
+  else if (role === ROLES.TV_AD) view = tvAdRouteOpen
+    ? <TvAdSettingsCard onExit={() => setRole(null)} />
     : null;
   // ── ENGINE POLICY — GATE 2 OF 3: THE ROUTE ────────────────────────────────
   // Evaluated INDEPENDENTLY of the tile. A persisted role in localStorage, a
@@ -18374,6 +20443,9 @@ function AppInner() {
     <>
       <PWAUpdateBanner />
       <ReactivationNotice />
+      {/* Sibling of the boundary, like the clock warning: a crash in `view`
+          still leaves the alert on screen. */}
+      <PushBanner banner={foregroundPush.banner} onOpen={foregroundPush.open} onDismiss={foregroundPush.dismiss} />
       {showClockWarning && <ClockWarningBanner />}
       {!role && <AndroidInstallChip />}
       {!role && <IOSInstallTooltip />}
@@ -18828,6 +20900,14 @@ export default function App() {
           auto-reload (src/update/updateChecker.js). Outside AuthGate so the
           TV shell (which never navigates or re-auths) updates itself too. */}
       <UpdateBanner />
+      {/* The offline mirror's status dot. Renders nothing at all unless this
+          device is running the mirror, so it costs nothing everywhere else.
+          Fixed rather than in a header because this app has several shells
+          (warehouse, assistant, TV) and the one question it answers — "is what
+          I am looking at current?" — is the same in all of them. */}
+      <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900 }}>
+        <MirrorDot />
+      </div>
       <AuthGate renderTv={() => <TvOnlyShell />}>
         <AppErrorBoundary>
           <AppInner />

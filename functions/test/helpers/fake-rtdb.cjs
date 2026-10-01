@@ -84,7 +84,12 @@ function writeAt(root, path, value) {
   if (!ks.length) return v === null ? {} : v;
   const walk = (node, i) => {
     const k = ks[i];
-    const base = node && typeof node === "object" && !Array.isArray(node) ? { ...node } : {};
+    // An ARRAY-coerced node (dense integer keys) is an object to RTDB: a
+    // write under it keeps every present index as a string key. Replacing it
+    // with {} silently destroyed its cells here (adversarial review, PR #609).
+    const base = node && typeof node === "object"
+      ? (Array.isArray(node) ? Object.fromEntries(node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)) : { ...node })
+      : {};
     if (i === ks.length - 1) {
       if (v === null) delete base[k]; else base[k] = v;
     } else {
@@ -104,7 +109,16 @@ let pushCounter = 0;
 // deserializes fresh objects every time, and the difference is not cosmetic: a
 // fake that returns references makes a drift check untestable, because the
 // "before" snapshot silently follows the very change it is supposed to catch.
-const clone = (v) => (v === null || typeof v !== "object" ? v : structuredClone(v));
+// An array-coerced node is handed back with NULL in its holes — exactly what
+// the SDK's val() returns for a sparse index-keyed node ("null for missing
+// indices") — never a JS hole, which reads as undefined and lets a `=== undefined`
+// test pass here while the live database answers null. (PR #607.)
+const fillHoles = (v) => {
+  if (Array.isArray(v)) { const out = []; for (let i = 0; i < v.length; i++) out[i] = i in v ? fillHoles(v[i]) : null; return out; }
+  if (v && typeof v === "object") { for (const k of Object.keys(v)) v[k] = fillHoles(v[k]); }
+  return v;
+};
+const clone = (v) => (v === null || typeof v !== "object" ? v : fillHoles(structuredClone(v)));
 
 function makeSnapshot(key, value) {
   return {
@@ -147,6 +161,26 @@ function makeFakeDb(initial = {}, hooks = {}) {
           return undefined;
         },
         child(k) { return api.ref(`${path}/${k}`); },
+        // transaction(fn): the RTDB wire shape a Cloud Function sees — the
+        // FIRST callback runs on null (no local cache). Returning undefined
+        // THERE aborts at once — the server is never asked (the cold-null
+        // trap, guarded-txn.cjs). A proposed write is a CAS on the server
+        // value: a mismatch re-invokes fn with the real value. Modelled
+        // exactly so: fn(null); undefined → abort; else if the real value is
+        // not null, fn(real). Atomic by construction here — the concurrency a
+        // test wants must be injected via beforeRead hooks on the reads
+        // AROUND the transaction, never inside it.
+        async transaction(fn) {
+          if (hooks.beforeRead) await hooks.beforeRead(path, state);
+          const real = readAt(state.root, path);
+          let next = fn(null);
+          if (next === undefined) return { committed: false, snapshot: makeSnapshot(self.key, real), coldAbort: true };
+          if (real !== null) next = fn(real === undefined ? null : structuredClone(real));
+          if (next === undefined) return { committed: false, snapshot: makeSnapshot(self.key, real) };
+          state.root = writeAt(state.root, path, next);
+          if (hooks.afterWrite) await hooks.afterWrite(path, next, state);
+          return { committed: true, snapshot: makeSnapshot(self.key, readAt(state.root, path)) };
+        },
         push() {
           pushCounter += 1;
           const key = `-fake${String(pushCounter).padStart(6, "0")}`;
@@ -162,6 +196,18 @@ function makeFakeDb(initial = {}, hooks = {}) {
         // that pre-reversed would hide a caller that forgot to.
         orderByChild(field) {
           return {
+            // orderByChild(field).equalTo(v): the indexed per-product read
+            // (first-batch.cjs openHub2RequestIds). Equality on the child
+            // field, RTDB key order.
+            equalTo(value) {
+              return { async once() {
+                if (hooks.beforeRead) await hooks.beforeRead(path, state);
+                const v = readAt(state.root, path);
+                if (!v || typeof v !== "object") return makeSnapshot(parts(path).pop() || null, null);
+                const hits = Object.entries(v).filter(([, r]) => r && typeof r === "object" && r[field] === value);
+                return makeSnapshot(parts(path).pop() || null, hits.length ? Object.fromEntries(hits) : null);
+              } };
+            },
             limitToLast(n) {
               return { async once() {
                 if (hooks.beforeRead) await hooks.beforeRead(path, state);
@@ -197,6 +243,14 @@ function makeFakeDb(initial = {}, hooks = {}) {
           return makeSnapshot(self.key, Object.fromEntries(from.slice(0, n).map((k) => [k, v[k]])));
         }, startAt(k) { self._startAt = k; return this; } }; },
         startAt(k) { self._startAt = k; return self; },
+        // orderByKey().limitToLast(n): the last n children in RTDB key order.
+        limitToLast(n) { return { async once() {
+          if (hooks.beforeRead) await hooks.beforeRead(path, state);
+          const v = readAt(state.root, path);
+          if (!v || typeof v !== "object") return makeSnapshot(self.key, null);
+          const keys = rtdbKeyOrder(v).slice(-n);
+          return makeSnapshot(self.key, keys.length ? Object.fromEntries(keys.map((k) => [k, v[k]])) : null);
+        } }; },
       };
       return self;
     },

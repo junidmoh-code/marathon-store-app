@@ -8,7 +8,7 @@ import { describe, it, expect, afterEach } from "vitest";
 import {
   GRAPH_VERSION, CONTAINER_MAX_WAIT_MS, REQUEST_TIMEOUT_MS,
   isVideo, igContainerPayload, fbStoryEndpoint, igCarouselPayload, metaError, isRetryable, waitForContainer,
-  fbStoryResultId, fbStoryPermalink, STORY_PERMALINK_ATTEMPTS, publishFacebookStory,
+  fbStoryResultId, fbStoryPermalink, STORY_PERMALINK_ATTEMPTS, publishFacebookStory, publishInstagram,
 } from "./meta.mjs";
 
 describe("isRetryable — Meta's throttling is an HTTP 400", () => {
@@ -422,5 +422,68 @@ describe("publishFacebookStory makes the calls Meta actually expects", () => {
       pageId: "P", token: "t", media: [{ type: "image", url: "https://x/a.jpg" }], sleep: async () => {},
     });
     expect(out).toEqual({ id: "S1", permalink: null });
+  });
+});
+
+// ── A PHOTO CONTAINER IS WAITED FOR TOO ──────────────────────────────────────
+// From 2026-09-10 most Instagram photo posts and stories failed with "The media
+// is not ready to be published" (9007/2207027): image containers were published
+// the instant they were created. Every container now goes through
+// waitForContainer before media_publish.
+describe("publishInstagram waits for every container before publishing", () => {
+  const ok = (body) => ({ ok: true, status: 200, text: async () => JSON.stringify(body) });
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+
+  const stub = (log, readyAfter = 2) => {
+    let polls = 0;
+    globalThis.fetch = async (u, init = {}) => {
+      const url = String(u);
+      const method = init.method || "GET";
+      if (method === "POST" && url.includes("/media_publish")) { log.push("publish"); return ok({ id: "P1" }); }
+      if (method === "POST" && url.includes("/media")) { log.push("create"); return ok({ id: `C${log.length}` }); }
+      if (url.includes("fields=status_code")) {
+        polls++;
+        log.push(`poll:${polls >= readyAfter ? "FINISHED" : "IN_PROGRESS"}`);
+        return ok({ status_code: polls >= readyAfter ? "FINISHED" : "IN_PROGRESS" });
+      }
+      return ok({ permalink: "https://instagram.com/p/x" });
+    };
+  };
+
+  for (const format of ["feed", "story"]) {
+    it(`a single photo ${format} is not published until its container is FINISHED`, async () => {
+      const log = [];
+      stub(log);
+      const r = await publishInstagram({
+        igUserId: "IG", token: "t", format, caption: "c",
+        media: [{ type: "image", url: "https://s/a.jpg" }], sleep: async () => {},
+      });
+      expect(r.id).toBe("P1");
+      expect(log).toEqual(["create", "poll:IN_PROGRESS", "poll:FINISHED", "publish"]);
+    });
+  }
+
+  it("a carousel waits on each child and on the parent", async () => {
+    const log = [];
+    stub(log, 1);
+    await publishInstagram({
+      igUserId: "IG", token: "t", caption: "c", sleep: async () => {},
+      media: [{ type: "image", url: "https://s/a.jpg" }, { type: "image", url: "https://s/b.jpg" }],
+    });
+    expect(log.filter((l) => l.startsWith("poll")).length).toBe(3);
+    expect(log[log.length - 1]).toBe("publish");
+  });
+});
+
+describe("a container that reports no status_code is not waited on forever", () => {
+  const realFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = realFetch; });
+  it("returns ready on the first poll instead of running out the budget", async () => {
+    let polls = 0, slept = 0;
+    globalThis.fetch = async () => { polls++; return { ok: true, status: 200, text: async () => JSON.stringify({ id: "C1" }) }; };
+    await expect(waitForContainer("C1", "t", { sleep: async () => { slept++; } })).resolves.toBe(true);
+    expect(polls).toBe(1);
+    expect(slept).toBe(0);
   });
 });

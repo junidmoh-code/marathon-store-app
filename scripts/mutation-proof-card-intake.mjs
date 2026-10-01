@@ -16,6 +16,7 @@
 import { readFileSync, writeFileSync } from "fs";
 import { execFileSync } from "child_process";
 import { fileURLToPath } from "url";
+import { requireCleanTree } from "./lib/mutationPreflight.mjs";
 
 const REPO = fileURLToPath(new URL("../", import.meta.url));
 const FUNCTIONS_DIR = fileURLToPath(new URL("../functions/", import.meta.url));
@@ -41,6 +42,10 @@ const TARGETS = {
     run: () => execFileSync("npx", ["vitest", "run", "scripts/cardrecon/intakeCore.test.mjs"], { cwd: REPO, stdio: "pipe" }),
   },
 };
+// ── PREFLIGHT: NEVER MUTATE AN ALREADY-DIRTY FILE ───────────────────────────
+// Runs BEFORE the baseline is captured — see scripts/lib/mutationPreflight.mjs.
+requireCleanTree(Object.values(TARGETS).map((t) => t.src));
+
 for (const t of Object.values(TARGETS)) t.original = readFileSync(t.src, "utf8");
 
 const restore = () => {

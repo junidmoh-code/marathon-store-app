@@ -117,9 +117,9 @@ test("every new action is refused for anyone but the owner", async () => {
 test("a group is written disarmed, and writing it arms nothing", async () => {
   const db = makeFakeDb(world());
   invalidateCensusCache();
-  const res = await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP() });
+  const res = await call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP() });
   assert.equal(res.ok, true);
-  const live = groupAt(db, "footwear-all");
+  const live = groupAt(db, "shoes-sample");
   assert.equal(live.armed, false);
   assert.deepEqual(live.memberCategoryKeys, ["sneakers", "slides"]);
   // The category map is untouched — a group is not a category entry.
@@ -137,17 +137,17 @@ test("ARMING IS REFUSED WHEN THE MODELLED VOLUME EXCEEDS THE PER-SCAN CAP", asyn
   w.config.refillEngine.maxIntentsPerRun = 1;
   const db = makeFakeDb(w);
   invalidateCensusCache();
-  await rejects(() => call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP({ armed: true }) }),
+  await rejects(() => call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP({ armed: true }) }),
     "failed-precondition", /against a limit of 1/);
-  assert.equal(groupAt(db, "footwear-all"), null, "nothing may be written when arming is refused");
+  assert.equal(groupAt(db, "shoes-sample"), null, "nothing may be written when arming is refused");
 });
 
 test("arming succeeds under the cap and the group then governs its members", async () => {
   const db = makeFakeDb(world());
   invalidateCensusCache();
-  const res = await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP({ armed: true }) });
+  const res = await call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP({ armed: true }) });
   assert.equal(res.ok, true);
-  assert.equal(groupAt(db, "footwear-all").armed, true);
+  assert.equal(groupAt(db, "shoes-sample").armed, true);
   assert.ok(res.armModel.totalRequests > 0, "arming must be modelled, and the model must be non-empty here");
   assert.ok(res.armModel.totalRequests <= res.armModel.cap);
 });
@@ -176,31 +176,31 @@ test("a category cannot belong to two groups", async () => {
 test("an omitted group field is refused — a dropped field must not delete a live group", async () => {
   const db = makeFakeDb(world());
   invalidateCensusCache();
-  await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP() });
-  await rejects(() => call(db, { action: "setGroup", groupKey: "footwear-all" }), "invalid-argument", /group is required/);
-  assert.ok(groupAt(db, "footwear-all"), "the group must survive the refusal");
+  await call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP() });
+  await rejects(() => call(db, { action: "setGroup", groupKey: "shoes-sample" }), "invalid-argument", /group is required/);
+  assert.ok(groupAt(db, "shoes-sample"), "the group must survive the refusal");
 });
 
 test("group: null deletes it, and the group's members go back to whatever they had", async () => {
   const db = makeFakeDb(world());
   invalidateCensusCache();
-  await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP({ armed: true }) });
+  await call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP({ armed: true }) });
   invalidateCensusCache();
-  await call(db, { action: "setGroup", groupKey: "footwear-all", group: null });
-  assert.equal(groupAt(db, "footwear-all"), null);
+  await call(db, { action: "setGroup", groupKey: "shoes-sample", group: null });
+  assert.equal(groupAt(db, "shoes-sample"), null);
 });
 
 test("a group write refuses on drift and writes nothing", async () => {
   const db = makeFakeDb(world());
   invalidateCensusCache();
-  await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP() });
+  await call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP() });
   invalidateCensusCache();
   await rejects(() => call(db, {
-    action: "setGroup", groupKey: "footwear-all",
+    action: "setGroup", groupKey: "shoes-sample",
     group: GROUP({ label: "Renamed" }),
     expectedBefore: null,                       // "I opened this when it did not exist"
   }), "failed-precondition", /changed while this was open/);
-  assert.equal(groupAt(db, "footwear-all").label, "All footwear except soccer boots");
+  assert.equal(groupAt(db, "shoes-sample").label, "All footwear except soccer boots");
 });
 
 // ═══ PER-SIZE POLICY ═════════════════════════════════════════════════════════
@@ -478,17 +478,17 @@ test("EDITING AN ALREADY-ARMED GROUP IS RE-MODELLED — the cap gate is on the r
   // through the one path the gate did not cover.
   const db = makeFakeDb(world());
   invalidateCensusCache();
-  await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP({ armed: true }) });
+  await call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP({ armed: true }) });
   invalidateCensusCache();
   // Now raise the numbers hard, with `armed` unchanged at true, and drop the cap
   // so the modelled volume is over it.
   await db.ref("config/refillEngine/maxIntentsPerRun").set(1);
-  await rejects(() => call(db, { action: "setGroup", groupKey: "footwear-all",
+  await rejects(() => call(db, { action: "setGroup", groupKey: "shoes-sample",
     group: GROUP({ armed: true, policy: { perSize: true, hub2: { sizes: {
       7: { target: 50, minQty: 25 }, 8: { target: 50, minQty: 25 },
     } } } }) }), "failed-precondition", /against a limit of 1/);
   // …and the group still holds its previous numbers.
-  assert.equal(groupAt(db, "footwear-all").policy.hub2.sizes["7"].target, 2);
+  assert.equal(groupAt(db, "shoes-sample").policy.hub2.sizes["7"].target, 2);
 });
 
 test("a batch bigger than the cap is refused rather than half-applied", async () => {
@@ -513,12 +513,12 @@ test('the census reports "with their own rows" for an UNARMED category too', asy
 test("the census reports a grouped category's source and numbers", async () => {
   const db = makeFakeDb(world());
   invalidateCensusCache();
-  await call(db, { action: "setGroup", groupKey: "footwear-all", group: GROUP({ armed: true }) });
+  await call(db, { action: "setGroup", groupKey: "shoes-sample", group: GROUP({ armed: true }) });
   invalidateCensusCache();
   const res = await call(db, { action: "census", refresh: true });
   const sneakers = res.categories.find((c) => c.key === "sneakers");
   assert.equal(sneakers.policySource, "group");
-  assert.equal(sneakers.groupKey, "footwear-all");
+  assert.equal(sneakers.groupKey, "shoes-sample");
   assert.deepEqual(sneakers.armedEffective, ["hub2"]);
   // …and a category with its OWN entry is not reported as grouped.
   const caps = res.categories.find((c) => c.key === "caps-beanies");

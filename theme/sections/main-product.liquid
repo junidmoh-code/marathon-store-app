@@ -486,6 +486,20 @@
                   section_id: section.id,
                   show_pickup_availability: true
                 -%}
+                {%- comment -%}
+                  ── DELIVERY, ON EVERY PRODUCT, WITHOUT ANYONE TYPING IT ─────
+                  A cold visitor arriving from an ad was told about condition
+                  and returns and NOTHING about delivery, which is precisely
+                  what they were sending DMs to ask ("do you deliver?").
+
+                  It renders here, in the section itself, rather than as a
+                  theme-editor block or a per-product metafield: both of those
+                  are something a person has to remember for every product,
+                  and every product added in future would start without it.
+                  The rates come from the shop's own settings so this cannot
+                  drift away from what checkout actually charges.
+                {%- endcomment -%}
+                {%- render 'delivery-promise' -%}
               {%- when 'rating' -%}
                 {%- if product.metafields.reviews.rating.value != blank -%}
                   <div class="rating-wrapper">

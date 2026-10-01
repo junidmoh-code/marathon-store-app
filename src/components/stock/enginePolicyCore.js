@@ -450,6 +450,30 @@ export function seedPerSizeLocation(sizeRun) {
   return fillAllSizes(sizeRun, { target: "", minQty: "", reorderPoint: "" });
 }
 
+// ── ARMING A LOCATION SEATS NOTHING (2026-09-09) ──────────────────────────────
+// The draft row for a location being armed FOR THE FIRST TIME. It is always
+// `carriedOnly` — this leg reaches only products the location already holds a
+// stock cell for (a zero cell counts; a sold-out product stays armed).
+//
+// A POLICY SAYS HOW MANY TO KEEP, NEVER WHERE TO KEEP. On 2026-09-08 Slides was
+// armed at hub1 and hub2 with neither leg mentioning carriage, and the map's
+// standing promise did the rest: all 64 slides became demand at both hubs when
+// 3 are actually kept at both — 181 open lines, 125 of them at a hub with no
+// cell for the product.
+//
+// The SERVER is the gate (applyCategoryPolicy's gateNewLegsToSeated refuses to
+// write a new leg any other way, so a script cannot arm wide either). This
+// function exists so the chip on screen tells the truth from the first render
+// rather than after the save, and so the rule is testable without a browser.
+//
+// It shapes a NEW leg only. An existing leg is loaded by draftFromEntry, which
+// carries whatever the live entry holds — narrowing a live policy nobody asked
+// to narrow is the same class of mistake in the other direction.
+export function seedArmedLocation({ sizeRun = [], target = null } = {}) {
+  const run = Array.isArray(sizeRun) ? sizeRun : [];
+  return { ...(run.length ? seedPerSizeLocation(run) : seedLocation(target)), carriedOnly: true };
+}
+
 export function canSave({ preview, previewKeyNow, errors, busy }) {
   if (busy) return false;
   if (errors && Object.keys(errors).length) return false;
@@ -535,9 +559,21 @@ export function changedFields(before, after, { perSize = null } = {}) {
 }
 
 // ── NEXT SCAN ────────────────────────────────────────────────────────────────
-// The scan runs "every 15 minutes from 07:00 to 19:00" in Africa/Johannesburg
-// (refill-scan.cjs). Africa/Johannesburg is UTC+2 year-round with no daylight
-// saving, so the offset is a constant and not a lie waiting for October.
+// The scan runs "every 60 minutes from 07:00 to 19:00" in Africa/Johannesburg
+// (refill-scan.cjs) — on the hour, 07:00 through 19:00 inclusive, thirteen runs.
+// Africa/Johannesburg is UTC+2 year-round with no daylight saving, so the offset
+// is a constant and not a lie waiting for October.
+//
+// This predictor is rendered as "Next scan" in the Engine Policy tile, in the
+// save toast ("the next scan (11:00) uses these numbers") and in Seating
+// actions. It is the one place in the app that RESTATES the function's
+// schedule, so it has to move whenever the schedule does.
+//
+// Nothing enforces that automatically, and it is worth saying so plainly: this
+// module cannot read refill-scan.cjs, so its test pins the thirteen labels
+// independently. The functions-side test parses the real schedule string; this
+// one asserts the answer it should produce. Two halves of the same contract,
+// held together by a reader rather than by code.
 //
 // Returns { at: epochMs, label } — or { at: null } when the day's last scan has
 // run, because "in 13 hours" is a worse answer than "tomorrow from 07:00".
@@ -548,11 +584,10 @@ export function nextScanAt(nowMs) {
   const h = sa.getUTCHours(), m = sa.getUTCMinutes();
   const dayStart = nowMs - ((h * 60 + m) * 60000 + sa.getUTCSeconds() * 1000 + sa.getUTCMilliseconds());
   if (h < 7) return { at: dayStart + 7 * 3600000, label: "07:00" };
+  // 19:00 is the LAST run, not the end of a window that still has runs in it:
+  // once the clock has reached 19:00 the day's scanning is done.
   if (h >= 19) return { at: null, label: "tomorrow from 07:00" };
-  const nextMin = (Math.floor(m / 15) + 1) * 15;
-  const at = dayStart + h * 3600000 + nextMin * 60000;
-  // 19:00 is past the window's end — the 18:45 run is the day's last.
-  if (nextMin >= 60 && h + 1 >= 19) return { at: null, label: "tomorrow from 07:00" };
+  const at = dayStart + (h + 1) * 3600000;
   const d = new Date(at + SA_OFFSET_MS);
   return { at, label: `${String(d.getUTCHours()).padStart(2, "0")}:${String(d.getUTCMinutes()).padStart(2, "0")}` };
 }

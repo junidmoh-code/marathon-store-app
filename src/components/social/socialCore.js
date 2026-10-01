@@ -43,6 +43,11 @@ export const PLATFORMS = [
     captionMax: 2200,
     mediaMax: 10,
     video: true,
+    // Instagram renders NO tappable link in a feed caption — a URL there is
+    // dead text a shopper has to retype, and it reads like a broken post. So
+    // the product URL is dropped and replaced by a pointer to the bio link,
+    // which is the one link Instagram does honour. See BIO_NOTE.
+    linkStyle: "bio",
   },
   {
     key: "facebook",
@@ -52,6 +57,9 @@ export const PLATFORMS = [
     captionMax: 5000,
     mediaMax: 10,
     video: true,
+    // Facebook DOES linkify a URL in the message body, so the product link
+    // goes in whole and is tappable straight to the product page.
+    linkStyle: "url",
   },
   {
     key: "tiktok",
@@ -63,6 +71,9 @@ export const PLATFORMS = [
     titleMax: 150,
     mediaMax: 35,
     video: true,
+    // TikTok's description linkifies for a business account, and there is room
+    // for the URL, so it is treated like Facebook.
+    linkStyle: "url",
   },
 ];
 
@@ -156,6 +167,16 @@ export const postKind = (key) => KIND_BY_KEY.get(key) || null;
 // Mon/Wed/Sat plist and SLOT_DAYS already live under.
 export const STORY_ALSO_POSTS_TO_FEED = true;
 
+// ── EVERY REEL IS ALSO A STORY ───────────────────────────────────────────────
+// Owner brief, 2026-09-19: two reels a day, each also posted as a story, from
+// THE SAME ENCODED VIDEO FILE. A MIRROR of REEL_ALSO_POSTS_TO_STORY in
+// functions/index.js, where the decision is actually made — the browser never
+// creates a twin, it only describes what the backend will do.
+//
+// socialFormat.test.js asserts the two literals agree, the same drift guard
+// STORY_ALSO_POSTS_TO_FEED lives under.
+export const REEL_ALSO_POSTS_TO_STORY = true;
+
 //   feed   1080x1350, a still, media_type from the media
 //   story  1080x1920, a still, media_type=STORIES, no caption, 24h
 //   reel   1080x1920, a VIDEO, media_type=REELS
@@ -167,8 +188,51 @@ export const STORY_ALSO_POSTS_TO_FEED = true;
 export const FORMATS = ["feed", "story", "reel"];
 export const DEFAULT_FORMAT = "feed";
 export const formatOf = (post) => (FORMATS.includes(post?.format) ? post.format : DEFAULT_FORMAT);
-/** Only a reel needs a video; the others are stills. */
-export const needsVideo = (post) => formatOf(post) === "reel";
+
+// ── A STORY THAT SHARES A REEL'S VIDEO ───────────────────────────────────────
+// `videoFrom` is another post's id, written by the generator onto a reel's
+// story twin (functions/lib/social-twin.cjs). It is NEVER a URL: at generation
+// no video exists yet, because the encode happens on the Mac mini at publish
+// time. The publisher resolves it — whichever of the pair it reaches first
+// encodes once onto the REEL's record and the other reuses that same file.
+//
+// A pointer rather than a copied URL on purpose. Two records holding the same
+// URL is two copies of one fact, and they drift the first time anything
+// re-encodes.
+export const videoSourceOf = (post) => {
+  const id = post?.videoFrom;
+  return typeof id === "string" && id ? id : null;
+};
+
+/**
+ * Does this post go out as a video?
+ *
+ * A reel always does. A story does ONLY when it is a reel's twin — an
+ * ordinary story is a still, and encoding one would spend CPU and bandwidth on
+ * a slideshow of a single frame.
+ */
+export const needsVideo = (post) => formatOf(post) === "reel" || videoSourceOf(post) !== null;
+
+// ── THE FILE FOR THE SURFACE ─────────────────────────────────────────────────
+// A generated story carries `artwork: { story, feed }` — one design rendered at
+// 1080x1920 and at 1080x1350 (functions/lib/social-render.cjs). The publisher
+// sends the render made for the surface it is posting to, so a feed post never
+// goes out as a 9:16 file that Instagram crops through the wordmark.
+//
+// Only a single still is ever swapped. A reel's encoded video, a carousel, and
+// every record written before `artwork` existed are sent exactly as `media`.
+export function mediaForSurface(post) {
+  const media = Array.isArray(post?.media) ? post.media : [];
+  const art = post?.artwork?.[formatOf(post)];
+  const url = art && typeof art.url === "string" ? art.url : "";
+  if (!url || media.length !== 1 || media[0]?.type !== "image") return media;
+  // Only while media is still one of THIS record's own renders. A picture
+  // replaced by hand must go out as replaced, not be swapped back for the
+  // generated one the artwork still remembers.
+  const renders = Object.values(post.artwork || {}).map((r) => r && r.url).filter(Boolean);
+  if (!renders.includes(media[0].url)) return media;
+  return [{ ...media[0], url }];
+}
 
 export const STATUSES = ["draft", "approved", "posting", "posted", "failed", "discarded"];
 
@@ -430,6 +494,40 @@ export function captionWithLink(caption, link) {
   return body ? `${body}\n\n${url}` : url;
 }
 
+// ── THE INSTAGRAM LINE ───────────────────────────────────────────────────────
+// Instagram is the only platform here that will not linkify a caption, and it
+// is the one driving the most traffic. Pasting the product URL in anyway was
+// the old behaviour and it produced posts ending in a long dead string that a
+// shopper cannot tap — which is a large part of why they DM instead.
+//
+// So Instagram gets this line instead of the URL. The bio link points at the
+// Shop the Feed collection (scripts/social/shop-the-feed.mjs), which is kept
+// in sync with exactly these posts, so "link in bio" resolves to the product
+// that was just posted rather than to a homepage the shopper has to search.
+export const BIO_NOTE = "🔗 Shop this — link in bio";
+
+// Whether a caption already tells the reader where the link is. The generator
+// writes this line by itself often enough ("Shop both online — link in bio")
+// that appending ours unconditionally would double it up.
+const MENTIONS_BIO = /link in bio/i;
+
+/**
+ * The Instagram form: the product URL is REPLACED by the bio pointer.
+ *
+ * A post with no link gets nothing added — a bio pointer on a post that is not
+ * selling anything sends people to a page that does not feature it.
+ */
+export function captionWithBioNote(caption, link) {
+  const body = String(caption || "").trim();
+  const url = String(link || "").trim();
+  if (!url) return body;
+  // A URL the generator inlined mid-sentence is stripped, so the caption never
+  // carries an untappable link on Instagram whatever wrote it.
+  const cleaned = body.split(url).join("").replace(/[ \t]{2,}/g, " ").replace(/\n{3,}/g, "\n\n").trim();
+  if (MENTIONS_BIO.test(cleaned)) return cleaned;
+  return cleaned ? `${cleaned}\n\n${BIO_NOTE}` : BIO_NOTE;
+}
+
 /**
  * What actually gets sent to one platform.
  *   instagram / facebook → { caption }
@@ -441,7 +539,10 @@ export function captionWithLink(caption, link) {
 export function captionFor(post, platformKey) {
   const p = platform(platformKey);
   if (!p) throw new Error(`unknown platform: ${platformKey}`);
-  const full = captionWithLink(post && post.caption, post && post.link);
+  const full =
+    p.linkStyle === "bio"
+      ? captionWithBioNote(post && post.caption, post && post.link)
+      : captionWithLink(post && post.caption, post && post.link);
   if (platformKey === "tiktok") {
     return {
       title: truncateWords(String((post && post.caption) || "").trim(), p.titleMax),

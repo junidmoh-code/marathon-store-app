@@ -63,6 +63,18 @@ export const warehouseLocations = (registry) => activeLocations(registry).filter
 // holding, never a manual target). Deliberately returns ALL of them — no routing.
 export const transferTargets    = (registry) => activeLocations(registry).filter(l => l.id !== "in_transit");
 
+// EVERY registered location id, active or not. Not a picker helper — every
+// picker wants the ACTIVE ones — but a carriage CONTEXT is not a picker: a
+// deactivated warehouse (studio, base) still holds cells the engine counts, and
+// a product's held stock must be reported from all of them. Falls back to the
+// seed exactly as activeLocations does, so an unseeded /locations node does not
+// silently narrow the snapshot. (Was private to SeatingTab; the product-actions
+// sheet needs the same list, so there is now ONE definition.)
+export function allLocationIds(registry) {
+  const ids = registry && typeof registry === "object" ? Object.keys(registry) : [];
+  return ids.length ? ids : DEFAULT_LOCATIONS.map((l) => l.id);
+}
+
 export const IN_TRANSIT = "in_transit";
 
 // Default receiving warehouse: the pre-selected destination for the New Product /

@@ -31,9 +31,11 @@
 //   1. A CLAIM at /card_batch_intake_seen/{messageKey}, taken in a transaction
 //      before any work. A claim a killed run left behind is retaken after
 //      STALE_CLAIM_MS, so a SIGKILL costs a delay and never a lost slip.
-//   2. The message is flagged \Seen in the mailbox, and only UNSEEN mail is
-//      searched — so the mailbox itself remembers, and a lost database claim
-//      does not mean re-reading a year of mail.
+//   2. A LOCAL CACHE of ledger-confirmed keys (and uid markers), so a lost
+//      database claim does not mean re-reading a fortnight of mail every
+//      tick. \Seen is still SET after processing, as politeness to the
+//      human's inbox — but never consulted: the owner reads this mailbox on
+//      their phone, and the read-flag is theirs, not this program's memory.
 // The duplicate-batch refusal downstream is a third, and it is the owner's
 // instruction that it must not be the only one. It is not.
 //
@@ -45,7 +47,7 @@
 //
 // See docs/CARD-RECON.md ("The email poller") for setup, and
 // scripts/cardrecon/install-card-recon-poller.sh for the launchd agent.
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 import { createRequire } from "node:module";
@@ -55,13 +57,34 @@ import { simpleParser } from "mailparser";
 
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
-  parseEnvText,
+  parseEnvText, classifyAttachment,
 } from "./intakeCore.mjs";
+// ── THE SECOND READER ────────────────────────────────────────────────────────
+// EFT payment notifications arrive in the SAME mailbox (customers enter it as
+// the notification address in their FNB app). This poller is the only IMAP
+// consumer — a separate poller could never work, because this one marks
+// ordinary mail \Seen and would hide every notification from it. The decisions
+// live in eftCore.mjs; here is only the wiring. See handleEftMessage.
+import {
+  EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
+  eftMessageKey, poolWriteDecision, eftPoolRecord,
+  redactAccountDigits, domainOfAddress, parseAllowedAccountTails, accountVerdict,
+  looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
+} from "./eftCore.mjs";
+import { selectReader, noReaderReason } from "./eftBanks.mjs";
+import { envelopeCandidateKeys, groupEftPayments, eftPaymentKey, applyEvictions } from "./eftCore.mjs";
 
 // firebase-admin is BORROWED from functions/, the way every other script on the
 // mini borrows it (scripts/shopify, scripts/social). One copy, one version.
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
+// The PDF text extraction and the slip-format detector are the CARD PATH'S
+// OWN, borrowed — the EFT reader must see a batch slip exactly the way the
+// slip pipeline would, or the two would disagree about whose document it is.
+// pdfjs-dist ships in functions' dependencies; the installer ensures it is
+// present in functions/node_modules on the mini.
+const { pdfToLines } = require("./cardRecon/pdfText.js");
+const { detectReportFormat } = require("./lib/card-recon-pdf.cjs");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -194,8 +217,52 @@ function config() {
     // to disagree with the program it is checking. (Independent review, #510.)
     uid: String(env.CARD_RECON_POLLER_UID ?? "").trim() || "card-recon-email-poller",
     lookbackDays: number("CARD_RECON_LOOKBACK_DAYS", DEFAULT_LOOKBACK_DAYS, { min: 1, max: 365, what: "a number of days between 1 and 365" }),
+    // The shop's own account numbers, LAST FOUR each, from EFT_ALLOWED_ACCOUNTS
+    // in .env (comma-separated; full numbers or last-four both work). NEVER a
+    // value in a log — at most the count. An empty list refuses every payment
+    // as refused-account, deliberately: fail-closed until the owner fills it.
+    eftAccountTails: parseAllowedAccountTails(env.EFT_ALLOWED_ACCOUNTS),
+    eftAccountsConfigured: !!String(env.EFT_ALLOWED_ACCOUNTS ?? "").trim(),
     dryRun: process.argv.includes("--dry-run"),
   };
+}
+
+// ─── THE LOCAL PROCESSED-KEY CACHE ───────────────────────────────────────────
+// A convenience layer over the claim ledger, never a second truth: keys the
+// ledger has confirmed "done", remembered locally so the every-two-minutes
+// tick does not re-ask RTDB about the same fortnight of mail for ever. Lost or
+// deleted, the next tick simply re-reads the ledger once per message and
+// rebuilds it. Pruned past the lookback window so it cannot grow unbounded.
+const PROCESSED_CACHE_FILE = join(REPO, "logs", "card-recon-processed.json");
+// THE EVICTION LIST. A retry script (retry-eft-message.mjs, retry-intake-
+// message.mjs) that wants a message looked at again cannot just delete its
+// keys from the cache file: a tick in flight holds its own copy for minutes
+// and would write the keys straight back. So the scripts also record the keys
+// here, and this program forgets them at load AND at every save — whatever
+// its in-memory copy says. Entries age out with the cache's own window.
+const EVICT_FILE = join(REPO, "logs", "card-recon-evict.json");
+function readEvictions() {
+  try { return JSON.parse(readFileSync(EVICT_FILE, "utf8")) || {}; } catch { return {}; }
+}
+function loadProcessedCache(lookbackDays) {
+  let entries = {};
+  try { entries = JSON.parse(readFileSync(PROCESSED_CACHE_FILE, "utf8")) || {}; } catch { /* first run, or corrupt — rebuilt from the ledger */ }
+  const windowMs = (lookbackDays + 3) * 86400000;
+  const oldest = Date.now() - windowMs;
+  let dirty = false;
+  for (const [k, at] of Object.entries(entries)) {
+    if (!Number.isFinite(at) || at < oldest) { delete entries[k]; dirty = true; }
+  }
+  if (applyEvictions(entries, readEvictions(), Date.now(), windowMs)) dirty = true;
+  return { entries, dirty, windowMs };
+}
+function saveProcessedCache(cache) {
+  // Re-read the eviction list at the moment of writing: a retry that ran
+  // while this tick was in flight is honoured, never overwritten.
+  if (applyEvictions(cache.entries, readEvictions(), Date.now(), cache.windowMs)) cache.dirty = true;
+  if (!cache.dirty) return;
+  try { writeFileSync(PROCESSED_CACHE_FILE, JSON.stringify(cache.entries)); }
+  catch (err) { console.warn(`⚠ could not write ${PROCESSED_CACHE_FILE} (${err.message}) — the ledger is the truth; this only costs re-reads`); }
 }
 
 // ─── TIME ────────────────────────────────────────────────────────────────────
@@ -303,7 +370,12 @@ async function captureOne(getToken, { attachment, message }) {
       receivedAt: message.receivedAt,
     },
   });
-  if (!extract.ok) return { ok: false, reason: extract.reason };
+  // THE TID TRAVELS WITH THE REFUSAL. The duplicate check runs at EXTRACT, so
+  // the commonest refusal of all was returning here — and returning no
+  // terminal, which left the capture screen unable to show it against any
+  // card. The callable now stamps the TID onto every refusal it makes once the
+  // file has been parsed; this carries it through.
+  if (!extract.ok) return { ok: false, reason: extract.reason, tid: extract.tid || null };
 
   const submit = await callCapture(await getToken(), { action: "submit", draftId: extract.draftId });
   if (!submit.ok) return { ok: false, reason: submit.reason, tid: extract.review?.tid };
@@ -312,6 +384,14 @@ async function captureOne(getToken, { attachment, message }) {
     tid: extract.review?.tid || null,
     storeId: extract.review?.terminal?.storeId || null,
     tillId: extract.review?.terminal?.tillId || null,
+    // THE NAME THE TILL HAD WHEN THIS SLIP WAS CAPTURED, stamped here rather
+    // than looked up later. The registry row is edited whenever a machine is
+    // renamed or moved — three of the six were on 18 Sep 2026 — and a feed that
+    // resolved the label at RENDER time would retitle every historical row to
+    // whatever the machine is called today. The record on /card_batches keeps
+    // its own `terminalLabel` for exactly this reason; this is the same rule
+    // applied to the intake feed.
+    terminalLabel: extract.review?.terminal?.label || null,
     batchKey: submit.batchKey,
     linesCaptured: submit.linesCaptured === true,
     warnings: submit.warnings || [],
@@ -375,20 +455,76 @@ async function run() {
   }
 
   let scanned = 0, processed = 0, recorded = 0, refused = 0, unrelated = 0;
+  // The EFT reader's own tallies — separable on purpose: a refused slip means a
+  // terminal is not reconciling; a refused-auth notification means somebody
+  // tried to forge a payment. Different alarms for different people.
+  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftErrors = 0;
   let scannedSoFar = 0;
+  let windowCount = 0;
   try {
     const lock = await client.getMailboxLock(cfg.mailbox);
     try {
       const since = new Date(serverNowMs() - cfg.lookbackDays * 86400000);
-      const uids = await client.search({ seen: false, since }, { uid: true });
-      const take = (uids || []).slice(-MAX_MESSAGES_PER_TICK);
+      // ── EVERY message in the window, READ OR NOT ─────────────────────────
+      // The old search asked for UNSEEN mail — and the owner reads this
+      // mailbox on their phone, which marks messages read before the poller
+      // ever sees them. \Seen is a person's gesture, not this program's
+      // memory: what has been PROCESSED lives in the claim ledger at
+      // /card_batch_intake_seen, keyed by message id, and that is what the
+      // filter below consults. The read-flag is still SET after processing
+      // (politeness to the human's inbox) but never trusted again.
+      const uids = await client.search({ since }, { uid: true });
+      // One envelope fetch answers "which of these are new?" without
+      // downloading a single body: with a Message-ID the ledger key is
+      // computable right here (envelopeCandidateKeys — both readers' key
+      // shapes). Known keys come from the local cache first, so a routine
+      // tick makes ZERO ledger reads; a key the cache does not know is read
+      // from the ledger once and cached. No Message-ID → download it and let
+      // the per-message claim decide: one wasted download, never a wrong skip.
+      const candidates = [];
+      if (uids?.length) {
+        for await (const msg of client.fetch(uids, { uid: true, envelope: true }, { uid: true })) {
+          candidates.push({ uid: msg.uid, messageId: msg.envelope?.messageId ?? null });
+        }
+      }
+      windowCount = candidates.length;
+      const cache = loadProcessedCache(cfg.lookbackDays);
+      // A second cache marker keyed by the mailbox's OWN identity for the
+      // message (uidValidity + uid), learned whenever a message reaches a
+      // durably-final state. It exists for the case where the envelope's
+      // Message-ID string differs byte-for-byte from the parsed one the
+      // ledger was keyed with (folding, exotic headers): without it such a
+      // message would be re-downloaded every tick for a fortnight; with it,
+      // once.
+      const uidKeyOf = (uid) => `u:${String(client.mailbox?.uidValidity ?? "")}:${uid}`;
+      const unprocessed = [];
+      for (const c of candidates) {
+        if (cache.entries[uidKeyOf(c.uid)]) continue;
+        const keys = envelopeCandidateKeys({ messageId: c.messageId });
+        if (!keys) { unprocessed.push(c); continue; }
+        if (keys.some((k) => cache.entries[k])) continue;
+        let done = false;
+        for (const k of keys) {
+          const state = (await db.ref(`${SEEN_PATH}/${k}/state`).once("value")).val();
+          if (state === "done") {
+            cache.entries[k] = Date.now();
+            cache.entries[uidKeyOf(c.uid)] = Date.now();
+            cache.dirty = true;
+            done = true;
+            break;
+          }
+        }
+        if (!done) unprocessed.push(c);
+      }
+      const take = unprocessed.slice(-MAX_MESSAGES_PER_TICK).map((c) => c.uid);
       scanned = take.length;
+      if (!cfg.dryRun) saveProcessedCache(cache);
       if (!take.length) {
         // A QUIET TICK STILL BEATS. The heartbeat below is written on the way
         // out either way, which is what tells the tab apart from a dead poller.
-        console.log("· 0 unread messages to look at");
+        console.log(`· 0 unprocessed messages to look at (${candidates.length} in the window)`);
       } else {
-        console.log(`· ${take.length} unread message${take.length === 1 ? "" : "s"} to look at`);
+        console.log(`· ${take.length} unprocessed message${take.length === 1 ? "" : "s"} to look at (${candidates.length} in the window)`);
 
         const deadline = Date.now() + TICK_BUDGET_MS;
         for (const uid of take) {
@@ -402,15 +538,29 @@ async function run() {
           // each is recorded against that message and the next one still runs.
           try {
             const result = await handleMessage({ client, uid, db, getToken, cfg });
+            // `done` = this message's outcome is durably in the database (or
+            // it was found already done) — safe to never download again. A
+            // held claim, a dry run and a throw all stay un-cached, so the
+            // retry that rescues them still sees them.
+            if (result.done && !cfg.dryRun) {
+              cache.entries[uidKeyOf(uid)] = Date.now();
+              cache.dirty = true;
+            }
             if (result.processed) processed++;
             recorded += result.recorded;
             refused += result.refused;
             unrelated += result.unrelated;
+            eftRecorded += result.eftRecorded || 0;
+            eftRefusedAuth += result.eftRefusedAuth || 0;
+            eftRefusedParse += result.eftRefusedParse || 0;
+            eftRefusedAccount += result.eftRefusedAccount || 0;
+            eftErrors += result.eftErrors || 0;
           } catch (err) {
             console.error(`  ✗ message uid ${uid}: ${err.message}`);
           }
         }
       }
+      if (!cfg.dryRun) saveProcessedCache(cache);
     } finally {
       lock.release();
     }
@@ -423,7 +573,24 @@ async function run() {
   // already recorded, and the next tick writes it again.
   try {
     await db.ref(STATUS_PATH).set({
-      lastRunAt: serverNowMs(), scanned, processed, recorded, refused, unrelated,
+      // `scanned` = messages this tick actually took on (was "unread found"
+      // before the processed-ledger scan); `window` = everything the lookback
+      // held, so the two together say how much of the mailbox is settled.
+      lastRunAt: serverNowMs(), scanned, window: windowCount, processed, recorded, refused, unrelated,
+      // The EFT reader beats on the same heart: counts only, never a figure —
+      // this node is readable by every card_recon holder.
+      eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount,
+      // Counted where it happens: noteStrangerPayment hands nothing back (it
+      // must not consume the message), so the tally is a run counter rather
+      // than a value threaded through six return points.
+      eftUnknownBank: unknownBankThisRun,
+      // How many account tails the allowlist held this tick — a COUNT, never
+      // a value. Zero is the loudest number on this line: it means every
+      // payment refuses until EFT_ALLOWED_ACCOUNTS is set in .env.
+      eftAccountTails: cfg.eftAccountTails.length,
+      // Messages the EFT reader THREW on this tick (left unread, retried) — a
+      // persistent environment failure must not hide behind a healthy beat.
+      eftErrors,
       mailbox: cfg.mailbox,
     });
   } catch (err) {
@@ -432,6 +599,9 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || unknownBankThisRun) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
+  }
   return 0;
 }
 
@@ -462,6 +632,10 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     subject: clip(parsed.subject, 200),
     receivedAt: parsed.date instanceof Date && !Number.isNaN(parsed.date.getTime()) ? parsed.date.getTime() : null,
   };
+  // The subject as LOGS may show it: FNB subject lines can carry an account
+  // number, and the launchd log must not. Records sweep separately
+  // (eftPoolRecord); this is for every console line. (CodeRabbit, this PR.)
+  message.logSubject = redactAccountDigits(message.subject) || "(no subject)";
   message.key = messageKey({
     messageId: parsed.messageId, from: message.from, subject: message.subject,
     // imapflow's DownloadObject.meta names it expectedSize; `size` is always
@@ -473,11 +647,50 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     uid, uidValidity: String(client.mailbox?.uidValidity ?? ""),
   });
 
+  // ── ROUTING IS BY CONTENT, DECIDED BEFORE EITHER READER CLAIMS ─────────────
+  // The R100 test payment of 2026-08-30 proved the previous shape wrong twice:
+  // the notification came from the PAYER'S bank (standardbank.co.za, not
+  // fnb.co.za), and every field of it lived in an attached PDF — so an
+  // attachment's PRESENCE says nothing about which reader owns a message. What
+  // decides is what the documents ARE:
+  //
+  //   · a batch report (FNB's own subject line, or PDF content that
+  //     detectReportFormat recognises as a slip) → the card capture path;
+  //   · a bank-domain message whose content a bank reader recognises — or
+  //     fails to, which is a recorded refusal — → the EFT reader, which then
+  //     owns the message ENTIRELY, its PDFs included;
+  //   · everything else → ordinary mail or the slip path, exactly as before.
+  //
+  // handleEftMessage does the content inspection itself (it must extract the
+  // PDF text to decide) and returns null when the message is NOT the EFT
+  // reader's — including when its PDFs turn out to be batch slips, which fall
+  // through to the card path untouched. A throw inside it leaves the message
+  // UNREAD so the next tick retries; nothing is marked \Seen on a message
+  // whose outcome is not durably recorded.
+  let eft = null;
+  try {
+    eft = await handleEftMessage({
+      client, range, db, parsed, message, cfg,
+      uid, uidValidity: String(client.mailbox?.uidValidity ?? ""),
+      size: downloaded.meta?.expectedSize || 0,
+    });
+  } catch (err) {
+    console.error(`  ✗ EFT reader on "${message.logSubject}": ${err.message} — the message stays unread and is retried`);
+    return { ...empty, eftErrors: 1 };
+  }
+  if (eft) return eft;
+
   const { take, refused: badAttachments, skipped } = planMessage(parsed.attachments);
   if (!take.length && !badAttachments.length) {
-    // Ordinary mail. Marked read so it is not looked at again, and nothing is
-    // written — a record per newsletter would bury the thing this feed is for.
-    if (!cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true });
+    // Ordinary mail. A tiny DONE row in the ledger is what stops it being
+    // re-downloaded every tick now that the read-flag is nobody's memory —
+    // \Seen used to carry this, and \Seen is the owner's phone's to set.
+    // Still no intake record: a row per newsletter would bury the feed.
+    if (!cfg.dryRun) {
+      await db.ref(`${SEEN_PATH}/${message.key}`).set({ state: "done", at: serverNowMs(), unrelated: true });
+      await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+      return { ...empty, done: true };
+    }
     return empty;
   }
 
@@ -487,7 +700,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   // the one that stopped the poller capturing. (CodeRabbit, PR #510.)
   const claim = cfg.dryRun ? { taken: true, done: false, why: "dry run" } : await claimMessage(db, message.key);
   if (!claim.taken) {
-    console.log(`  · "${message.subject || "(no subject)"}" — ${claim.why}`);
+    console.log(`  · "${message.logSubject}" — ${claim.why}`);
     // WHETHER TO MARK IT READ DEPENDS ENTIRELY ON WHY WE STOOD DOWN, and
     // getting this wrong loses a slip silently.
     //
@@ -495,13 +708,13 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     //     what stops it being re-downloaded every tick for ever.
     //
     //   ANOTHER RUN IS HOLDING IT — including a run that DIED holding it. That
-    //     claim goes stale in 30 minutes and the next tick is supposed to
-    //     retake it — but only if the search still returns it, and the search
-    //     only returns UNSEEN mail. Marking it read here would hide it from
-    //     the very tick that was going to rescue it, and the slip would sit in
-    //     the mailbox unread by anything for ever.
+    //     claim goes stale in 30 minutes and the next tick retakes it: the
+    //     scan filters by the LEDGER, a held claim is not "done", so the
+    //     message stays visible to the rescue tick. (The read-flag stopped
+    //     mattering when the scan stopped consulting it — but it is still only
+    //     set on done outcomes, so the human's inbox tells the same story.)
     if (claim.done && !cfg.dryRun) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
-    return empty;
+    return { ...empty, done: claim.done && !cfg.dryRun };
   }
 
   const results = badAttachments.map((r) => attachmentOutcome({ filename: r.filename, error: r.reason }));
@@ -539,13 +752,413 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   // the claim and the duplicate-batch refusal both handle; crash after marking
   // it read with nothing recorded and the slip is gone.
   await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
-    console.warn(`  ⚠ could not mark "${message.subject}" read (${err.message}) — the claim still stops it being submitted twice`);
+    console.warn(`  ⚠ could not mark "${message.logSubject}" read (${err.message}) — the claim still stops it being submitted twice`);
   });
 
   return {
-    processed: true,
+    processed: true, done: true,
     recorded: record.recorded, refused: record.refused, unrelated: record.unrelated,
   };
+}
+
+// ─── THE EFT READER ──────────────────────────────────────────────────────────
+// One payment notification, all the way through: authenticate, inspect the
+// CONTENT of every document it carries, read it with the right bank's reader,
+// check the destination account, store. Returns null when the message is not
+// this reader's — not a bank candidate, or its documents turn out to be batch
+// slips, which belong to the card path.
+//
+// THE DOCUMENTS DECIDE, NOT THE ATTACHMENT COUNT. The R100 test payment
+// (2026-08-30) carried every field in an attached PaymentConfirmation.pdf and
+// nothing in the body; a batch report is also a PDF from a bank domain. So
+// each PDF's text is extracted (borrowing functions/cardRecon/pdfText.js, the
+// same extraction the slip path trusts) and classified:
+//   · detectReportFormat recognises it as a slip → the card path's, untouched;
+//   · a bank reader (eftBanks.mjs) recognises it → parsed exactly;
+//   · nobody recognises it → a refusal that stores the text and names the
+//     domain — the work order for the missing reader, never a guess.
+//
+// NOTHING IS SILENTLY DROPPED: every message this reader owns leaves a record
+// at /eft_pool — recorded (status "unmatched"), refused-auth (forgery
+// attempt), refused-parse (no reader / format change), or refused-account
+// (real money, somebody else's account).
+//
+// THE SAME NOTIFICATION NEVER CREATES TWO POOL RECORDS. Three layers:
+//   1. The record's node name IS the message's key (eftMessageKey) — a replay
+//      lands on the same node.
+//   2. The write is a CREATE-ONLY transaction (poolWriteDecision): an existing
+//      record — whatever status a later session has moved it to — is never
+//      overwritten.
+//   3. The shared claim at /card_batch_intake_seen/{key}, same discipline and
+//      the same stale-claim rescue as the slips. One mailbox, one ledger.
+//
+// A throw anywhere in here is caught by handleMessage and leaves the message
+// UNREAD, so the next tick retries; \Seen is only ever set below, after the
+// outcome is durably in the database.
+
+// One message is never worth unbounded PDF rendering. Standard Bank BATCHES
+// payments — several PDFs on one email is now the expected shape, not a
+// duplicate-attach tolerance — so the ceiling is what a real batch could
+// plausibly carry. Past it, each unrendered PDF still leaves a refusal row
+// (see the unreadable-documents guard in handleEftMessage), never silence.
+const MAX_EFT_PDFS = 8;
+
+async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, uidValidity, size }) {
+  // mailparser can fail to resolve a From ADDRESS a human would read fine; the
+  // raw header text is the fallback so a bank-claiming message with an odd
+  // From still gets examined (and refused visibly) rather than silently filed
+  // as ordinary mail. (Independent adversarial review.)
+  const fromAddress = parsed.from?.value?.[0]?.address
+    || /<([^<>\s]+@[^<>\s]+)>/.exec(message.from || "")?.[1]
+    || null;
+  const route = eftMessageRoute({ fromAddress, subject: message.subject });
+  // A batch report is the slip path's, always. A stranger gets the
+  // visibility-only path below — never a reader, never an opened attachment.
+  if (route === "card") return null;
+  const fromDomain = domainOfAddress(fromAddress);
+  if (route === "stranger") {
+    // NOTE it, then HAND IT BACK. Returning a result here would consume the
+    // message, and a stranger's message is not this reader's to consume: a
+    // batch report forwarded from someone's own address with an edited subject
+    // is a stranger too, and swallowing it would lose the slip inside —
+    // silently, which is the failure this whole change is about. The row is
+    // written; the message carries on down the ordinary route exactly as it
+    // did before, and the card path claims and reads it as usual.
+    await noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity, size, fromDomain });
+    return null;
+  }
+
+  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0 };
+  const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
+  // The auth verdict is part of the key so a forgery carrying a guessed genuine
+  // Message-ID cannot occupy the key the genuine notification will need.
+  const key = eftMessageKey({
+    messageId: parsed.messageId, from: message.from, subject: message.subject,
+    date: message.receivedAt, size, uid, uidValidity, authPass: verdict.pass,
+  });
+
+
+  // ── CONTENT INSPECTION, BEFORE ANY CLAIM ───────────────────────────────────
+  // Only an AUTHENTICATED message earns PDF rendering — a forgery's
+  // attachments are attacker files and are not opened; its refusal record
+  // carries the body text.
+  const bodyText = (parsed.text || "").trim() || htmlToText(parsed.html || "");
+  const documents = []; // { lines: string[]|null, text: string }
+  let slipPdfs = 0;
+  // ── AN AUTH-FAILED MESSAGE WITH ATTACHMENTS IS NOT CONSUMED ────────────────
+  // Its PDFs are never opened HERE (attacker files; the capture callable
+  // opens them server-side with its own hardening), so their content cannot
+  // be routed — and consuming the message would eat a GENUINE batch report
+  // whose delivery path broke its DKIM (a forward, a relay). It falls through
+  // to the slip path, whose callable validates every byte; a forged "slip"
+  // refuses harmlessly there, a real one is captured.
+  //
+  // BUT THE FORGERY ATTEMPT IS STILL RECORDED FIRST — attaching one PDF must
+  // not silence the forgery alarm. The pool record (body text only, no claim
+  // needed: the create-only transaction on the auth-fail key is the dedupe)
+  // is written before the hand-off; the slip path then owns claim and \Seen.
+  // (Delta review, v2.)
+  if (!verdict.pass && (parsed.attachments || []).some((a) => { try { return classifyAttachment(a).ok; } catch { return false; } })) {
+    if (!cfg.dryRun) {
+      const forgery = eftPoolRecord({ message, verdict, parsed: null, account: null, reader: null, rawText: bodyText, at: serverNowMs() });
+      let d = null;
+      await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((cur) => {
+        d = poolWriteDecision(cur, forgery);
+        return d.write ? d.value : undefined;
+      });
+      if (d?.write) console.log(`  · EFT: refused-auth recorded (message also carries attachments — handed to the slip path)`);
+    }
+    return null;
+  }
+  if (verdict.pass) {
+    // Every attachment is ACCOUNTED FOR in the record, even the ones that are
+    // not extracted: an oversized or corrupt PDF, or one past the ceiling,
+    // leaves a placeholder line in the raw text instead of vanishing — a
+    // refusal that hides the very document it refused would be undiagnosable.
+    const verdicts = (Array.isArray(parsed.attachments) ? parsed.attachments : [])
+      .map((att) => {
+        // planMessage guards this same call; an EFT message's attachment list
+        // is outside data too. (Independent adversarial review, v2.)
+        try { return { att, cls: classifyAttachment(att) }; }
+        catch { return { att, cls: { ok: false, kind: "refuse", why: "That attachment could not be read at all." } }; }
+      })
+      .filter(({ cls }) => cls.ok || cls.kind === "refuse"); // skip = inline logos etc.
+    let extracted = 0;
+    for (const { att, cls } of verdicts) {
+      if (!cls.ok) {
+        documents.push({ lines: null, text: `[attachment "${clip(att.filename, 80)}" not read: ${cls.why}]` });
+        continue;
+      }
+      if (++extracted > MAX_EFT_PDFS) {
+        documents.push({ lines: null, text: `[PDF "${clip(att.filename, 80)}" not read: more than ${MAX_EFT_PDFS} PDFs on one message]` });
+        continue;
+      }
+      const out = await pdfToLines(att.content);
+      if (!out.ok) {
+        // AN ENVIRONMENTAL FAILURE MUST NOT BECOME A DURABLE REFUSAL. pdfjs
+        // failing to LOAD is this machine's problem, not the document's — a
+        // refusal here would be create-only and \Seen for ever, unrecoverable
+        // after the environment is fixed. Throw instead: the message stays
+        // unread and every later tick retries. (Independent adversarial
+        // review, v2 — found while pdfjs-dist was genuinely absent.)
+        if (/reader is unavailable/i.test(out.reason)) {
+          throw new Error(`the PDF reader is unavailable on this machine (pdfjs-dist missing from functions/node_modules?) — run scripts/cardrecon/install-card-recon-poller.sh`);
+        }
+        documents.push({ lines: null, text: `[PDF "${clip(att.filename, 80)}" could not be read: ${out.reason}]` });
+        continue;
+      }
+      // A batch slip inside a bank-domain message belongs to the CARD path.
+      if (detectReportFormat(out.lines)) { slipPdfs++; continue; }
+      documents.push({ lines: out.lines, text: out.lines.join("\n") });
+    }
+    if (slipPdfs > 0 && !documents.some((d) => d.lines)) {
+      // Every READABLE document was a slip (placeholders for corrupt or
+      // oversized attachments do not count — a real slip must not be kept out
+      // of the card path by a broken sibling). This whole message is the card
+      // path's. (Delta review, v2.)
+      return null;
+    }
+
+  }
+
+  if (cfg.dryRun) {
+    console.log(`  · would examine as an EFT notification (auth ${verdict.pass ? "pass" : "FAIL"}, ${documents.length} document(s)): "${message.logSubject}"`);
+    return empty;
+  }
+
+  const claim = await claimMessage(db, key);
+  if (!claim.taken) {
+    console.log(`  · EFT "${message.logSubject}" — ${claim.why}`);
+    // done = the outcome is recorded, the message may be marked read and
+    // never downloaded again. NOT done = a run (possibly dead) still holds it
+    // — it must stay visible to the rescue tick.
+    if (claim.done) await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+    return { ...empty, done: claim.done === true };
+  }
+
+  if (slipPdfs > 0) {
+    // Mixed cargo — a slip AND other documents on one message. The EFT reader
+    // takes the message, so the slip will NOT be captured from this email —
+    // and a launchd log line is not a place anyone looks. The loss goes into
+    // the SLIP feed as a refusal row, where slip problems live. AFTER the
+    // claim, so a crash-retry cannot write it twice.
+    // (Independent adversarial review, v2.)
+    const slipLoss = intakeRecord({
+      message,
+      results: [attachmentOutcome({ filename: `${slipPdfs} batch-slip PDF(s)`, error: "Arrived alongside a payment notification, which this message was read as — the slip was NOT captured. Forward the batch report on its own." })],
+      skipped: [], at: serverNowMs(),
+    });
+    // A DETERMINISTIC child, not a push id: the claim this sits behind is
+    // merely "claimed" until the pool write lands, and a crash between the
+    // two retries this whole block — a push would file the same loss twice.
+    // (Delta review, v2.)
+    await db.ref(`${INTAKE_PATH}/eftslip-${key}`).set(slipLoss).catch((err) => {
+      console.warn(`  ⚠ could not record the uncaptured slip in the intake feed (${err.message})`);
+    });
+    console.warn(`  ⚠ "${message.logSubject}" carries ${slipPdfs} batch-slip PDF(s) alongside other documents — refusal row written to the slip feed`);
+  }
+
+  // ── WHICH BANK'S DOCUMENT IS THIS — AND HOW MANY PAYMENTS IS IT? ───────────
+  // Every extracted document is offered to the readers, then the body itself
+  // (a bank that prints its fields in the email body is read there). Standard
+  // Bank BATCHES payments — one email, several PaymentConfirmation PDFs, each
+  // one payment — so a message is not "a payment": it is a LIST of them.
+  // groupEftPayments (eftCore, pure, tested) turns the claimed documents into
+  // distinct payments: identical parses are one payment printed twice (a
+  // reprint, or the same figures in body and PDF — the bank's own transaction
+  // id anchors the identity), different parses are different payments, and an
+  // unparseable document is its own refusal. Each gets ITS OWN pool record
+  // under its own deterministic key (eftPaymentKey); a single-payment message
+  // keeps the message key itself, so every record written before batching
+  // existed is still where a replay looks for it.
+  //
+  // Recognised by nobody stays what it was: one refusal whose raw text and
+  // named domain are the work order for the missing reader.
+  const outcomes = []; // { poolKey, record }
+  const at = serverNowMs();
+  if (!verdict.pass) {
+    outcomes.push({
+      poolKey: key,
+      record: eftPoolRecord({ message, verdict, parsed: null, account: null, reader: null, rawText: bodyText, at }),
+    });
+  } else {
+    const bodyLines = bodyText ? bodyText.split("\n") : [];
+    const offered = [...documents.filter((d) => d.lines), { lines: bodyLines, text: bodyText }];
+    const claimed = offered
+      .map((d) => ({ d, r: selectReader({ fromDomain, lines: d.lines }) }))
+      .filter((x) => x.r);
+    if (claimed.length >= 1) {
+      const parsedDocs = claimed.map((x) => ({ ...x, p: x.r.parse(x.d.lines) }));
+      // ── AN UNREADABLE SIBLING IS A REFUSAL ROW, NEVER SILENCE ──────────────
+      // Placeholder documents (lines: null — a corrupt or password-protected
+      // PDF, or one past MAX_EFT_PDFS) cannot be offered to a reader, and
+      // before this guard they simply fell out of `offered` — so a batched
+      // message with three readable payments and one broken PDF recorded
+      // three, marked the message done, and the fourth was lost with nothing
+      // to show it ever existed. Each unreadable document now refuses
+      // alongside its readable siblings: the payment may be inside it, and a
+      // red row a person can chase beats a silence nobody can.
+      // (CodeRabbit, this PR.)
+      for (const d of documents.filter((x) => x.lines === null)) {
+        parsedDocs.push({
+          d, r: null,
+          p: { ok: false, reason: `An attachment on this message could not be read — a payment may be inside it. ${clip(d.text, 200)}` },
+        });
+      }
+      const groups = groupEftPayments(parsedDocs);
+      for (const group of groups) {
+        const account = group.parse.ok
+          ? accountVerdict({ accountMask: group.parse.accountMask, allowedTails: cfg.eftAccountTails, configured: cfg.eftAccountsConfigured })
+          : null;
+        outcomes.push({
+          poolKey: eftPaymentKey(key, group, groups.length),
+          record: eftPoolRecord({
+            message, verdict, parsed: group.parse, account,
+            reader: group.readerId, rawText: group.rawText, at,
+          }),
+        });
+      }
+    } else {
+      // NOBODY RECOGNISES IT. If it is payment-shaped at all, the refusal is
+      // the work order for the missing reader. If not — a statement, a fraud
+      // alert, bank marketing — recording it would fill the owner's refusal
+      // feed with red rows about newsletters, and red must keep meaning
+      // something. Ordinary mail: ledger done, marked read, nothing written.
+      // (Independent adversarial review, v2.)
+      const everything = [...documents.map((d) => d.text), bodyText].filter(Boolean).join("\n────────\n");
+      // AN UNREADABLE ATTACHMENT FORCES THE GATE OPEN: a password-protected
+      // or corrupt PDF on a bank message is exactly where a payment hides,
+      // and its body ("please see the attached document") carries no cue.
+      // Silence here would be an unrecoverable loss. (Delta review, v2.)
+      const unreadable = documents.some((d) => d.lines === null);
+      if (!unreadable && !looksPaymentShaped(`${message.subject || ""}\n${everything}`)) {
+        console.log(`  · bank mail, not payment-shaped: "${message.logSubject}" — marked read, nothing recorded`);
+        // The claim is settled (not abandoned to go stale), THEN the flag.
+        await db.ref(`${SEEN_PATH}/${key}`).set({ state: "done", at: serverNowMs(), eft: true });
+        await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch(() => {});
+        return { ...empty, done: true };
+      }
+      outcomes.push({
+        poolKey: key,
+        record: eftPoolRecord({
+          message, verdict, parsed: { ok: false, reason: noReaderReason(fromDomain) },
+          account: null, reader: null, rawText: everything, at,
+        }),
+      });
+    }
+  }
+
+  // ── ONE CREATE-ONLY WRITE PER PAYMENT ────────────────────────────────────
+  // Each record lands under its own key; a crash mid-list leaves the claim
+  // "claimed", the next tick retries the whole message, and every record
+  // already written aborts its transaction — never doubled, never reset.
+  const written = [];
+  for (const { poolKey, record } of outcomes) {
+    let decision = null;
+    await db.ref(`${EFT_POOL_PATH}/${poolKey}`).transaction((cur) => {
+      decision = poolWriteDecision(cur, record);
+      return decision.write ? decision.value : undefined; // undefined = abort, keep what is there
+    });
+    if (decision?.write) written.push(record);
+  }
+  // The claim flips to done AFTER the pool writes. A crash between costs a
+  // stale-claim delay; the create-only transactions make the retry land on
+  // the existing records instead of doubling them.
+  await db.ref(`${SEEN_PATH}/${key}`).set({ state: "done", at: serverNowMs(), eft: true, payments: outcomes.length });
+  // Last, and deliberately: a message is only marked read once its outcome is
+  // in the database.
+  await client.messageFlagsAdd(range, ["\\Seen"], { uid: true }).catch((err) => {
+    console.warn(`  ⚠ could not mark "${message.logSubject}" read (${err.message}) — the claim still stops it landing twice`);
+  });
+
+  // A REPLAY REPORTS NOTHING. Records written by an earlier run are counted by
+  // that run; saying "recorded" again makes a no-op look like a payment.
+  // (Independent adversarial review.)
+  if (!written.length) {
+    console.log(`  · EFT "${message.logSubject}" — every record for this message already exists`);
+    return { ...empty, done: true };
+  }
+  for (const record of written) {
+    const label = record.outcome === "recorded"
+      ? `payment recorded (status unmatched, ${record.reader} reader)`
+      : `${record.outcome} — ${record.reason}`;
+    console.log(`  · EFT: ${label}`);
+  }
+  if (outcomes.length > 1) {
+    console.log(`  · EFT: ${outcomes.length} payment document(s) on one message — each recorded separately`);
+  }
+  const count = (o) => written.filter((r) => r.outcome === o).length;
+  return {
+    // processed feeds the "N with slips" line and the heartbeat's slip count —
+    // an EFT message is not slip work and must not inflate it; the EFT
+    // tallies are its whole story.
+    ...empty,
+    done: true,
+    eftRecorded: count("recorded"),
+    eftRefusedAuth: count("refused-auth"),
+    eftRefusedParse: count("refused-parse"),
+    eftRefusedAccount: count("refused-account"),
+  };
+}
+
+// ─── A BANK THE POOL IS NOT SET UP FOR ───────────────────────────────────────
+// The message is from a domain that is not on the allowlist. Everything this
+// does is deliberately less than the bank path does:
+//
+//   NOTHING IS AUTHENTICATED. Authentication answers "is this really the bank
+//   it claims to be?", and this sender claims to be a bank we do not know. A
+//   verdict here would file a bank the owner has simply not set up alongside
+//   forgery attempts, which are a different thing entirely.
+//
+//   NO ATTACHMENT IS OPENED. Rendering a PDF from an unauthenticated stranger
+//   is the one thing this poller has always refused to do, and being curious
+//   about the sender does not change that. Only the attachment NAMES are read,
+//   off the envelope, which is where a bank puts the word "payment".
+//
+//   NOTHING IS PARSED. No reader is offered the document, so no amount, no
+//   reference and no account can reach the record. It cannot be settled
+//   against, by construction — there is nothing to settle.
+//
+//   NOTHING IS CONSUMED. The message is not claimed and not marked read: it
+//   goes on down the ordinary route, so a batch report that happens to reach us
+//   from an unexpected address is still captured by the card path. Recording a
+//   sighting must never cost the thing sighted.
+//
+// What is left is one visible row naming the domain, which is the whole point:
+// a bank paying the shop that nobody has set up used to be ordinary mail, seen
+// by no one.
+let unknownBankThisRun = 0;
+
+async function noteStrangerPayment({ db, parsed, message, cfg, uid, uidValidity, size, fromDomain }) {
+  const bodyText = (parsed.text || "").trim() || htmlToText(parsed.html || "");
+  const attachmentNames = (parsed.attachments || []).map((a) => a?.filename || "").filter(Boolean);
+  if (!looksLikeStrangerPayment({ subject: message.subject, bodyText, attachmentNames })) return;
+
+  // The key carries authPass:false — the same shape a refused record uses — and
+  // is derived from the message, so the next tick computes the same key and the
+  // create-only write below finds the record already there. That is the only
+  // dedupe this path needs: it claims nothing.
+  const key = eftMessageKey({
+    messageId: parsed.messageId, from: message.from, subject: message.subject,
+    date: message.receivedAt, size, uid, uidValidity, authPass: false,
+  });
+  const record = unknownBankRecord({
+    message, fromDomain,
+    // The BODY only. The attachment names are named in the text so the row can
+    // be recognised without anything being opened.
+    rawText: [bodyText, attachmentNames.length ? `Attachments (not opened): ${attachmentNames.join(", ")}` : ""].filter(Boolean).join("\n────────\n"),
+    at: serverNowMs(),
+  });
+
+  if (cfg.dryRun) {
+    console.log(`  · EFT (dry run): would note unknown-bank mail from ${fromDomain} — "${message.logSubject}"`);
+    unknownBankThisRun += 1;
+    return;
+  }
+  const written = await db.ref(`${EFT_POOL_PATH}/${key}`).transaction((existing) => poolWriteDecision(existing, record));
+  if (!written.committed || !written.snapshot.exists()) return;   // an earlier tick already noted it
+  unknownBankThisRun += 1;
+  console.log(`  · EFT: unknown-bank — payment-shaped mail from ${fromDomain}, which is not a bank this pool knows. Nothing was read from it.`);
 }
 
 // ── THE TICK'S OWN EXIT ──────────────────────────────────────────────────────

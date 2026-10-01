@@ -135,3 +135,108 @@ describe("slot write fence — fresh truth always wins", () => {
     expect(store["settings/displaySlots/marathon-pe/p1"].sizeKey).toBe("9");
   });
 });
+
+// ─── THE TRANSITION'S OWN INSTANT, AND WHO WINS A TIE ────────────────────────
+// The staleness fence decides which of two writes for the same slot stands.
+// Two properties matter and both were review findings:
+//   • a caller who KNOWS the transition's instant passes `at`, so the write is
+//     judged at the moment the thing happened rather than the moment the
+//     network got round to it (a sale clear fires after `await writeOrder`);
+//   • a STAND-IN write — displayPairCore's repair of a dropped write — passes
+//     loseTies, because between the snapshot it decided on and this
+//     transaction, a real write stamped the same millisecond may have landed.
+describe("the staleness fence: `at` and `loseTies`", () => {
+  let runTransaction, committedValue;
+  beforeEach(async () => {
+    const db = await import("firebase/database");
+    runTransaction = db.runTransaction;
+    committedValue = undefined;
+  });
+
+  // Drive the real updater the writers hand to runTransaction against a
+  // given stored record, and report what it decided.
+  const decide = async (call, current) => {
+    let updater = null;
+    runTransaction.mockImplementation((_ref, fn) => {
+      updater = fn;
+      const next = fn(current);
+      committedValue = next;
+      return Promise.resolve({ committed: next !== undefined, snapshot: { val: () => current } });
+    });
+    const res = await call();
+    return { res, next: committedValue, updater };
+  };
+
+  const stored = (at, over = {}) => ({ productId: "p1", size: "6", sizeKey: "6", bookedHub: "hub1", at, ...over });
+
+  it("`at` is the instant judged AND the instant stamped — not the call time", async () => {
+    const { setDisplaySlot } = await import("./displaySlots");
+    const { next } = await decide(
+      () => setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "8", bookedHub: "hub1",
+                             source: "display_refill", at: "2026-08-12T09:00:00.000Z" }),
+      stored("2026-08-12T08:00:00.000Z"));
+    expect(next.at).toBe("2026-08-12T09:00:00.000Z");     // not the mocked "now" of 12:00
+    expect(next.sizeKey).toBe("8");
+  });
+
+  it("omitting `at` keeps the old behaviour exactly — stamped now", async () => {
+    const { setDisplaySlot } = await import("./displaySlots");
+    const { next } = await decide(
+      () => setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "8", bookedHub: "hub1", source: "display_refill" }),
+      stored("2026-08-12T08:00:00.000Z"));
+    // whatever serverNowIso currently answers — the point is that it is used
+    const { serverNowIso } = await import("../../utils/serverTime");
+    expect(next.at).toBe(serverNowIso());
+  });
+
+  it("a STRICTLY newer record always wins, `at` given or not", async () => {
+    const { setDisplaySlot } = await import("./displaySlots");
+    const { next, res } = await decide(
+      () => setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "8", bookedHub: "hub1",
+                             source: "display_refill", at: "2026-08-12T09:00:00.000Z" }),
+      stored("2026-08-12T10:00:00.000Z"));
+    expect(next).toBeUndefined();                          // aborted
+    expect(res).toEqual({ ok: true, superseded: true });
+  });
+
+  it("AN AUTHOR WINS A TIE; a stand-in with loseTies does NOT", async () => {
+    const { setDisplaySlot } = await import("./displaySlots");
+    const T = "2026-08-12T09:00:00.000Z";
+    // The author: its own newer intent, stamped the same millisecond.
+    const author = await decide(
+      () => setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "8", bookedHub: "hub1", source: "display_refill", at: T }),
+      stored(T));
+    expect(author.next).toBeDefined();
+    expect(author.next.sizeKey).toBe("8");
+    // The stand-in: a real write may have landed at T since its snapshot.
+    const standIn = await decide(
+      () => setDisplaySlot({ store: "marathon-pe", productId: "p1", size: "8", bookedHub: "hub1",
+                             source: "display_refill", at: T, loseTies: true }),
+      stored(T));
+    expect(standIn.next).toBeUndefined();
+    expect(standIn.res).toEqual({ ok: true, superseded: true });
+  });
+
+  it("and the same for a CLEAR — a repair may not tombstone a replacement stamped the same instant", async () => {
+    const { clearDisplaySlot } = await import("./displaySlots");
+    const T = "2026-08-12T09:00:00.000Z";
+    const standIn = await decide(
+      () => clearDisplaySlot({ store: "marathon-pe", productId: "p1", source: "display_sold", at: T, loseTies: true }),
+      stored(T, { size: "8", sizeKey: "8", source: "display_refill" }));
+    expect(standIn.next).toBeUndefined();                  // the replacement stands
+    const author = await decide(
+      () => clearDisplaySlot({ store: "marathon-pe", productId: "p1", source: "display_sold", at: T }),
+      stored(T, { size: "8", sizeKey: "8", source: "display_refill" }));
+    expect(author.next.sizeKey).toBeNull();
+    expect(author.next.prevSize).toBe("8");
+  });
+
+  it("clearing an already-cleared record is still a quiet no-op, ties or not", async () => {
+    const { clearDisplaySlot } = await import("./displaySlots");
+    const { next, res } = await decide(
+      () => clearDisplaySlot({ store: "marathon-pe", productId: "p1", at: "2026-08-12T09:00:00.000Z", loseTies: true }),
+      stored("2026-08-12T08:00:00.000Z", { size: null, sizeKey: null }));
+    expect(next).toBeUndefined();
+    expect(res).toEqual({ ok: true, noop: true });
+  });
+});

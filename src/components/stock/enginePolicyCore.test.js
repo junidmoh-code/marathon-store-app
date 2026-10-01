@@ -204,23 +204,46 @@ describe("the changed-fields banner names every edit as old -> new", () => {
   });
 });
 
-describe("next scan — every 15 min, 07:00 to 19:00 SAST", () => {
+describe("next scan — hourly on the hour, 07:00 to 19:00 SAST inclusive", () => {
   const sast = (h, m) => Date.parse(`2026-08-21T${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}:00+02:00`);
-  it("rounds up to the next quarter inside the window", () => {
-    expect(nextScanAt(sast(9, 1)).label).toBe("09:15");
-    expect(nextScanAt(sast(9, 15)).label).toBe("09:30");
+  it("rounds up to the top of the next hour inside the window", () => {
+    expect(nextScanAt(sast(9, 1)).label).toBe("10:00");
+    expect(nextScanAt(sast(9, 15)).label).toBe("10:00");
     expect(nextScanAt(sast(9, 59)).label).toBe("10:00");
+    // The quarter-hour answers the 15-minute cadence used to give. If any of
+    // these come back, the predictor has drifted from the function's schedule.
+    for (const t of [sast(9, 1), sast(9, 15), sast(9, 30)]) {
+      expect(nextScanAt(t).label).not.toBe("09:15");
+      expect(nextScanAt(t).label).not.toBe("09:30");
+      expect(nextScanAt(t).label).not.toBe("09:45");
+    }
+  });
+  it("names every run of the day, and only those thirteen", () => {
+    // Walk the trading day a minute at a time and collect every label offered.
+    const labels = new Set();
+    for (let h = 0; h < 24; h++) {
+      for (let m = 0; m < 60; m += 1) {
+        const r = nextScanAt(sast(h, m));
+        if (r.at != null) labels.add(r.label);
+      }
+    }
+    expect([...labels].sort()).toEqual([
+      "07:00", "08:00", "09:00", "10:00", "11:00", "12:00", "13:00",
+      "14:00", "15:00", "16:00", "17:00", "18:00", "19:00",
+    ]);
   });
   it("before the window opens, the next scan is 07:00", () => {
     expect(nextScanAt(sast(5, 30)).label).toBe("07:00");
+    expect(nextScanAt(sast(6, 59)).label).toBe("07:00");
   });
-  it("after the day's last run it says tomorrow rather than 'in 13 hours'", () => {
+  it("19:00 is the last run of the day, and it is inclusive", () => {
+    expect(nextScanAt(sast(18, 40)).label).toBe("19:00");
+    expect(nextScanAt(sast(18, 0)).label).toBe("19:00");
+  });
+  it("after the day's last run it says tomorrow rather than 'in 12 hours'", () => {
+    expect(nextScanAt(sast(19, 0)).at).toBe(null);
     expect(nextScanAt(sast(19, 5)).at).toBe(null);
-    expect(nextScanAt(sast(18, 50)).at).toBe(null);
     expect(nextScanAt(sast(23, 30)).label).toBe("tomorrow from 07:00");
-  });
-  it("18:45 is the last run of the day", () => {
-    expect(nextScanAt(sast(18, 40)).label).toBe("18:45");
   });
   it("garbage in gives 'unknown', not a wrong time", () => {
     expect(nextScanAt(NaN).at).toBe(null);

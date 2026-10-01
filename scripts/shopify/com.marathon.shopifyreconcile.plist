@@ -7,9 +7,10 @@
   under the repo. No second scheduling system is introduced.
 
   Differences from photograbber, and why:
-    · StartInterval 120 instead of KeepAlive — this is a periodic TICK, not a
-      long-lived server. launchd starts it every 2 minutes; it does its work
-      and exits. KeepAlive here would restart it in a hot loop.
+    · KeepAlive + ThrottleInterval 120, since 2026-08-31 (was StartInterval
+      120, on the theory KeepAlive would hot-loop a tick-and-exit job —
+      ThrottleInterval is what that theory was missing). launchd respawns the
+      runner no sooner than every 2 minutes; it does its work and exits.
     · RunAtLoad true — after a reboot the first tick happens immediately
       rather than 2 minutes later.
     · Single-flight is enforced by the runner's own lockfile, not by launchd
@@ -19,6 +20,16 @@
   INSTALL: see scripts/shopify/MAC-MINI-SETUP.md. Paths below assume the repo
   is checked out at /Users/marathonclub/marathon-store-app — change BOTH the
   ProgramArguments path and WorkingDirectory if it lives elsewhere.
+
+  NODE PATH: /opt/homebrew/bin/node, which is where Homebrew puts it on Apple
+  silicon — and where it actually is on the mini. This file said
+  /usr/local/bin/node (the Intel location) until 2026-09-03; nothing on the
+  mini has that path, so the agent AS COMMITTED HERE would never have started.
+  It only ran because the installed copy in ~/Library/LaunchAgents had been
+  corrected by hand and the two then drifted. Verified against the machine
+  before changing. Check `which node` on the target before installing this
+  anywhere else; launchd has no PATH of its own and a wrong absolute path
+  fails silently, as a job that is loaded and simply never runs.
 
   CREDENTIALS: nothing secret belongs in this file (it is committed to the
   repo). Shopify credentials are read from the git-ignored .env at the repo
@@ -30,18 +41,33 @@
   <key>Label</key><string>com.marathon.shopifyreconcile</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/usr/local/bin/node</string>
+    <string>/opt/homebrew/bin/node</string>
     <string>/Users/marathonclub/marathon-store-app/scripts/shopify/reconcile-runner.mjs</string>
   </array>
   <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
   <key>EnvironmentVariables</key>
   <dict>
-    <key>PATH</key><string>/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin</string>
+    <!-- Homebrew's arm64 prefix FIRST: /usr/local/bin is the Intel prefix and
+         does not exist on this machine. Nothing here resolves `node` (that is
+         an absolute path above), but a child process shelling out to git or
+         npm would otherwise search a dead directory first. -->
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
     <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
   </dict>
   <!-- Every 2 minutes (owner spec). A tick with nothing to do exits in under a
        second having made zero Shopify calls. -->
-  <key>StartInterval</key><integer>120</integer>
+  <!-- KEEPALIVE, NOT StartInterval — 2026-08-31. At 01:16 launchd silently
+       stopped firing every StartInterval agent in this session at once
+       (spawns "pended", no error, no reboot, no sleep); the one agent with
+       KeepAlive survived. KeepAlive means launchd MUST keep the job running
+       and respawns it on any exit — a crash, a clean tick, or the very wedge
+       that killed the interval schedule. The runner still runs one tick and
+       exits; ThrottleInterval spaces the respawns to the old cadence, so this
+       is NOT a hot loop, and the single-flight lock keeps overlap impossible.
+       (The old comment feared a hot loop — ThrottleInterval is the piece that
+       fear was missing.) -->
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>120</integer>
   <key>RunAtLoad</key><true/>
   <!-- launchd's own capture is the LAST-RESORT log: anything the runner could
        not handle itself (node failing to start, a syntax error) lands here.

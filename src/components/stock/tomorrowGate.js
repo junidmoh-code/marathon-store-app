@@ -35,7 +35,7 @@
 import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { stockCellPath, assertSafeSegment } from "../../utils/sizeKey";
-import { availableUnits } from "./availabilityCore";
+import { availableUnits, gatedSneakerHub } from "./availabilityCore";
 
 const CENTRAL = "central";
 const CACHE_TTL_MS = 60 * 1000;
@@ -71,6 +71,66 @@ export async function fetchCentralAvailability(productId, size, { fresh = false 
   } catch {
     return null;
   }
+}
+
+// ─── WHICH ROWS THE GATE COVERS (2026-09-05) ─────────────────────────────────
+// The warehouse queue is hub-switched and the order card is shared, so the
+// button itself decides whether the Central question applies to this row.
+//
+// CENTRAL-FED SNEAKER ROWS ONLY — hub1 (2026-08-25) and hub2 (2026-09-05).
+// Hub 2 draws the same Central replenishment Hub 1 does, so "does Central hold
+// this?" is the right question before promising a Hub 2 customer a pair
+// tomorrow. hub3/hubC are NOT in that class: they replenish from hub stock
+// Central may never carry, so a missing Central cell there would read as a
+// false "Out of stock" — the one failure this feature must never produce. They
+// keep yesterday's behaviour verbatim (Tomorrow always offered, no probe, no
+// re-check), and so do the shops, which never render this button.
+//
+// AND THE HUB 2 ARM IS FOOTWEAR ONLY — the correction that took two review
+// rounds, because Hub 2 is where everything that is not a Hub 1 sneaker lives.
+//
+//   ROUND 1: a customer CLOTHING order placed in the central universe is
+//   stamped hub:"hub2", placedAtHub:"hub2" (App.jsx: placedHub =
+//   CR_HUB_BY_UNIVERSE[...] for a clothing line), so a bare hub2 disjunct swept
+//   every Hub 2 clothing row into the gate.
+//
+//   ROUND 2: excluding productType "clothing" was still not enough, because
+//   "not clothing" is not "footwear". A PERFUME record carries hubs:["hub2"],
+//   no productType at all (63 of 65 perfumes have the field absent — the new
+//   product form omits it for that category), and its customer order takes the
+//   SNEAKER checkout branch, which stamps productType: "sneaker". So a perfume
+//   row read as a gated Hub 2 sneaker row, and a perfume Central does not hold
+//   would have offered "Out of stock" and auto-sent that outcome to a customer.
+//   Perfume is not one of the seven sneaker categories, and "nothing else
+//   changes" is the whole brief.
+//
+// So the hub2 arm asks the SAME question the grid gate asks — literally the
+// same function, gatedSneakerHub, not a second predicate that happens to agree
+// today. Round 3 of review is why: an earlier cut called isFootwearProduct
+// directly, which drops the grid's second clause (a Footwear record stamped
+// productType "clothing" is ungated there), so the two surfaces could have
+// disagreed about the same shoe — the ✕ absent on the grid while the warehouse
+// refused to promise it. One call, one answer, both screens.
+//
+// An UNKNOWN product (no record in hand — including one merged away, whose id
+// the order still carries) is not probed: that is fail-open toward yesterday's
+// behaviour, matching this module's stated asymmetry (a false "Out of stock"
+// wrongly tells a customer their order is dead; a false Tomorrow merely keeps
+// the promise a human just chose to make).
+//
+// Hub 1's arm is untouched and asks NOTHING about the product — hub1 carries
+// neither clothing nor perfume, and "unchanged" beats "consistent" on a rule
+// that was already right.
+//
+// The hub rule matches the app's orderInHub VERBATIM: hub3/hubC live in
+// placedAtHub, hub1/hub2 in `hub` (defaulted hub1).
+export const CENTRAL_FED_HUBS = ["hub1", "hub2"];
+export function centralFedRow(order, product) {
+  if (order?.placedAtHub === "hub3" || order?.placedAtHub === "hubC") return false;
+  const hub = order?.hub || "hub1";
+  if (!CENTRAL_FED_HUBS.includes(hub)) return false;
+  if (hub === "hub1") return true;                                  // 2026-08-25, verbatim
+  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate
 }
 
 // The outcome a tap must produce, from a fresh availability answer.

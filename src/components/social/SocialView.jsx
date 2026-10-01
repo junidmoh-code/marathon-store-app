@@ -44,6 +44,8 @@ import StyleLibraryCard from "./StyleLibraryCard";
 import GenerateCard from "./GenerateCard";
 import PolicyCard from "./PolicyCard";
 import AlbumCard from "./AlbumCard";
+import { requestPublisherRevive, loadPublisherHeartbeat } from "./socialStore";
+import { publisherStatus } from "./publisherHealth";
 
 const TABS = [
   { key: "queue", label: "Queue" },
@@ -52,6 +54,58 @@ const TABS = [
   { key: "generate", label: "Generate" },
   { key: "policy", label: "Policy" },
 ];
+
+// ── PUBLISHER STATE, AND THE BUTTON THAT REVIVES IT ──────────────────────────
+// The publisher is a launchd agent on a Mac mini. On 31 Aug 2026 it stopped
+// firing for 625 minutes and the only cure was an ssh session and a launchctl
+// command. Owner: "I need one quick button to revive without having to open a
+// session."
+//
+// The browser cannot reach the mini — no public address, and opening a port
+// for this would be a security hole to save a click. So the button writes a
+// timestamped REQUEST to RTDB and the mini's watchdog, which polls every two
+// minutes, does the kickstart. That is why the confirmation says "within two
+// minutes" rather than pretending it is instant.
+function PublisherStrip() {
+  const [tick, setTick] = useState(undefined);   // undefined = not read yet
+  const [busy, setBusy] = useState(false);
+  const [said, setSaid] = useState(null);
+
+  const read = useCallback(async () => {
+    const r = await loadPublisherHeartbeat();
+    setTick(r.ok ? r.lastTickAt : null);
+  }, []);
+  useEffect(() => { read(); }, [read]);
+
+  const revive = async () => {
+    setBusy(true);
+    const r = await requestPublisherRevive();
+    setBusy(false);
+    setSaid(r.ok
+      ? "Asked the Mac mini to restart the publisher — it picks this up within two minutes."
+      : (r.message || "Could not send the request."));
+    if (r.ok) setTimeout(read, 2500);
+  };
+
+  if (tick === undefined) return null;           // say nothing until we know
+  const st = publisherStatus(tick, Date.now());
+  const colour = st.state === "down" ? RED : st.state === "late" ? AMBER : st.state === "ok" ? GREEN : GRAY;
+
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap",
+                  padding: "8px 10px", marginBottom: 10, background: GLASS,
+                  border: `1px solid ${st.state === "down" ? "rgba(248,113,113,.5)" : "rgba(255,255,255,.12)"}`,
+                  borderRadius: 10 }}>
+      <span style={{ width: 8, height: 8, borderRadius: 8, background: colour, flex: "0 0 auto" }} />
+      <span style={{ fontSize: ".78rem", color: colour }}>{st.text}</span>
+      <button onClick={revive} disabled={busy}
+              style={{ ...bGray, fontSize: ".74rem", marginLeft: "auto" }}>
+        {busy ? "asking…" : "Revive publisher"}
+      </button>
+      {said && <span style={{ fontSize: ".72rem", color: GRAY, flexBasis: "100%" }}>{said}</span>}
+    </div>
+  );
+}
 
 const STATUS_BADGE = {
   draft: { label: "draft", color: AMBER, border: "rgba(251,191,36,.55)" },
@@ -495,6 +549,8 @@ export default function SocialView({ products = [], onExit }) {
           ))}
         </div>
       </div>
+
+      <PublisherStrip />
 
       {tab === "queue" && <Queue notice={notice} onNotice={onNotice} />}
       {tab === "album" && <AlbumCard products={products} onNotice={onNotice} />}
