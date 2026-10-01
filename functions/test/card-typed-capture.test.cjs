@@ -186,3 +186,68 @@ test("a bad terminal id or clock is refused rather than filed somewhere", () => 
   assert.match(plan({ tid: "" }).reason, /does not look like a terminal ID/);
   assert.match(plan({ nowMs: NaN }).reason, /server clock/);
 });
+
+// ── review fixes (PR #527) ───────────────────────────────────────────────────
+
+test("a replacement covers EXACTLY the period of the entry it replaces", () => {
+  // Not "the last 24 hours": when the replaced entry's window started three
+  // days back, a 24-hour replacement would drop two days of card money out of
+  // the comparison and read as a false shortfall.
+  const replacedOpened = Date.parse("2026-09-28T16:00:00+02:00");
+  const sameDay = Date.parse("2026-10-01T16:45:00+02:00");
+  const out = plan({ lastOpenedAt: replacedOpened, lastClosedAt: sameDay, correction: true });
+  assert.equal(out.ok, true);
+  assert.equal(out.extraction.openedAt, replacedOpened);
+  assert.equal(out.extraction.windowSource, "typed-span");
+});
+
+test("a typed draft survives RTDB deleting its nulls and empty arrays", () => {
+  // The draft is written to RTDB and read back at submit. RTDB stores neither
+  // null nor an empty array — so every never-read figure and `lines: []` come
+  // back ABSENT. Submit must still validate and build the record from that.
+  const { buildBatchRecord } = require("../lib/card-recon.cjs");
+  const strip = (v) => {
+    if (v === null || v === undefined) return undefined;
+    if (Array.isArray(v)) { const a = v.map(strip).filter((x) => x !== undefined); return a.length ? a : undefined; }
+    if (typeof v === "object") {
+      const o = {};
+      for (const [k, x] of Object.entries(v)) { const s = strip(x); if (s !== undefined) o[k] = s; }
+      return Object.keys(o).length ? o : undefined;
+    }
+    return v;
+  };
+  const extraction = strip(plan({ lastWasTyped: false }).extraction);
+  assert.equal("lines" in extraction, false, "the fake must reproduce RTDB dropping lines: []");
+  assert.equal("txnCount" in extraction, false);
+  // What handleSubmit does on read-back.
+  if (!Array.isArray(extraction.lines)) extraction.lines = [];
+  const v = validateExtraction(extraction, { summaryOnly: true, source: "typed", declaredTotal: true });
+  assert.equal(v.ok, true, v.reason);
+  const record = buildBatchRecord({
+    extraction, terminal: { storeId: "trophy", tillId: "till-2", label: "Trophy Till 2" }, tid: TID,
+    match: null, reconciledByTotals: false, batchKey: "487", revision: 1, supersedes: null,
+    autoSuperseded: false, photoPaths: undefined, summaryOnly: true, warnings: [],
+    expected: { cardCents: 225000, cashiers: [] }, cashiers: [],
+    submittedBy: { uid: "u1", email: null }, submittedAt: NOW, draftId: "d1", ocr: null,
+    capturedVia: "typed", pdfPath: null, intake: null,
+    declaredTotal: { cents: 225000, ocrReadCents: null, byUid: "u1", byEmail: null, at: NOW },
+  });
+  assert.equal(record.slip.totalCents, 225000);
+  assert.equal(record.slip.format, "typed");
+  assert.equal(record.slip.txnCount, null);
+});
+
+test("the typed action is the owner's alone, and reads one terminal row", () => {
+  // No manual-typing capture route for staff (standing rule, 1 Oct 2026), and
+  // no whole-node read of the terminal registry on this path.
+  const src = require("node:fs").readFileSync(require.resolve("../cardRecon/cardRecon.js"), "utf8");
+  const action = src.slice(src.indexOf('if (action === "typed")'), src.indexOf('if (action === "submit")'));
+  assert.ok(action.length > 0);
+  assert.match(action, /mayDeclareTotal\(request\.auth\?\.token\)/);
+  assert.ok(action.indexOf("mayDeclareTotal") < action.indexOf("db.ref("), "the gate comes before any read");
+  assert.match(action, /db\.ref\(`\$\{CARD_TERMINALS_PATH\}\/\$\{picked\}`\)/);
+  assert.doesNotMatch(action, /db\.ref\(CARD_TERMINALS_PATH\)/);
+  // Submit re-asks the same question for a typed draft.
+  const submit = src.slice(src.indexOf("const typedOnly = draft.typedOnly === true;"), src.indexOf("} else if (declaredTotal) {"));
+  assert.match(submit, /mayDeclareTotal\(request\.auth\?\.token\)/);
+});

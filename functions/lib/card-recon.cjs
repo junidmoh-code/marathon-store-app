@@ -973,13 +973,14 @@ function sastDayIndexOf(ms) {
  * @param {string} p.totalText            exactly what was typed
  * @param {number} p.nowMs                the server's clock
  * @param {number|null} p.lastBatchNo     this terminal's highest recorded batch, or null
+ * @param {number|null} p.lastOpenedAt    that batch's open, or null — a correction starts here
  * @param {number|null} p.lastClosedAt    that batch's close, or null
  * @param {boolean} p.lastWasTyped        was that batch itself a typed capture?
  * @param {boolean} p.correction          replace today's entry rather than add one
  * @returns {{ok:true, extraction:object, batchNo:number, warnings:string[]}
  *          | {ok:false, reason:string}}
  */
-function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastClosedAt = null,
+function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastOpenedAt = null, lastClosedAt = null,
                             lastWasTyped = false, correction = false }) {
   if (!normaliseTid(tid)) return { ok: false, reason: `"${tid}" does not look like a terminal ID. Nothing was recorded.` };
   if (!Number.isFinite(nowMs)) return { ok: false, reason: "The server clock could not be read, so nothing was recorded. Try again." };
@@ -1008,10 +1009,10 @@ function planTypedCapture({ tid, totalText, nowMs, lastBatchNo = null, lastClose
   // A correction covers the SAME trading period as the entry it replaces, so it
   // starts where that one started — not at its close, which would make the
   // replacement cover no trading at all.
-  const priorClose = correction ? null : lastClosedAt;
+  const start = correction ? lastOpenedAt : lastClosedAt;
   const warnings = [];
-  let openedAt = Number.isFinite(priorClose) && priorClose < nowMs ? priorClose : nowMs - TYPED_WINDOW_FALLBACK_MS;
-  let windowSource = Number.isFinite(priorClose) && priorClose < nowMs ? "typed-span" : "typed-fallback";
+  let openedAt = Number.isFinite(start) && start < nowMs ? start : nowMs - TYPED_WINDOW_FALLBACK_MS;
+  let windowSource = Number.isFinite(start) && start < nowMs ? "typed-span" : "typed-fallback";
   if (nowMs - openedAt > MAX_WINDOW_MS) {
     // Longer than any batch runs. Clamped rather than refused: the figure in
     // front of the manager is real and refusing it would lose it, but the

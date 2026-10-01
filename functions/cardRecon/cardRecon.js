@@ -667,13 +667,17 @@ async function readLastBatchFor(db, storeId, tid) {
     .orderByChild("batchNo").limitToLast(2).once("value");
   const rows = Object.values(snap.val() || {})
     .filter((r) => r && typeof r === "object" && Number.isInteger(Number(r.batchNo)));
-  if (!rows.length) return { batchNo: null, closedAt: null, typed: false };
+  if (!rows.length) return { batchNo: null, openedAt: null, closedAt: null, typed: false };
   const highest = Math.max(...rows.map((r) => Number(r.batchNo)));
   const ofHighest = rows.filter((r) => Number(r.batchNo) === highest);
   const closes = ofHighest.map((r) => Number(r.slip && r.slip.closedAt)).filter(Number.isFinite);
   const latest = ofHighest.find((r) => Number(r.slip && r.slip.closedAt) === Math.max(...closes)) || ofHighest[0];
+  const opened = Number(latest.slip && latest.slip.openedAt);
   return {
     batchNo: highest,
+    // Where the record in force STARTED — what a correction must start from,
+    // since it replaces that record's figure for the same trading period.
+    openedAt: Number.isFinite(opened) ? opened : null,
     closedAt: closes.length ? Math.max(...closes) : null,
     typed: (latest.slip && latest.slip.format) === "typed",
   };
@@ -690,14 +694,13 @@ async function readLastBatchFor(db, storeId, tid) {
  * belonged to — and when it guessed wrong, the till's money fell outside its
  * own window and was reported twice.
  *
- * ── WHO MAY DO THIS, AND WHY IT IS NOT mayDeclareTotal ──────────────────────
- * The owner's typed total beside a photograph stays his alone and is untouched.
- * THIS is a different thing: the machine's only capture route, which has to work
- * on the evening the owner is not there, so it is open to anyone the
- * `card_recon` permission already trusts to capture that till's money (Junid,
- * 1 Oct 2026). It is bounded by the registry, not by the caller: only a
- * terminal an admin has set to "typed" can be captured this way at all, and
- * every such record says in its warnings that no paper exists behind it.
+ * ── WHO MAY DO THIS ─────────────────────────────────────────────────────────
+ * The owner only — the same mayDeclareTotal gate as his typed total beside a
+ * photograph, checked by the callable before this runs and again at submit.
+ * Staff get no manual-typing capture route (standing rule, 1 Oct 2026). It is
+ * ALSO bounded by the registry: only a terminal an admin has set to "typed" can
+ * be captured this way at all, and every such record says in its warnings that
+ * no paper exists behind it.
  */
 async function handleTypedCapture(db, request, { picked, terminal }) {
   const correction = !!request.data?.correction;
@@ -707,6 +710,7 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
     totalText: request.data?.declaredTotal,
     nowMs: Date.now(),
     lastBatchNo: last.batchNo,
+    lastOpenedAt: last.openedAt,
     lastClosedAt: last.closedAt,
     lastWasTyped: last.typed,
     correction,
@@ -1428,7 +1432,7 @@ async function handleSubmit(db, request) {
       && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
       && extraction.format === "typed"
       && (!Array.isArray(draft.photoPaths) || draft.photoPaths.length === 0);
-    if (!row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
+    if (!mayDeclareTotal(request.auth?.token) || !row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
       await draftRef.remove().catch(() => {});
       return reject("This typed total could not be verified against the machine it was typed for — nothing was recorded. Try again.");
     }
@@ -1648,10 +1652,18 @@ exports.cardBatchCapture = onCall(
     // for a document. This one reads the registry, confirms the machine really
     // is set to typed entry, and goes straight to the draft `submit` records.
     if (action === "typed") {
+      // OWNER ONLY. Staff do not get a manual-typing capture route (standing
+      // rule, 1 Oct 2026): the figure is the whole record, with no paper
+      // behind it, so the one identity already trusted to type a total is the
+      // one that may type this one. A till left uncaptured for an evening is
+      // not lost — the next typed entry's window runs from the last settlement.
+      if (!mayDeclareTotal(request.auth?.token)) {
+        throw new HttpsError("permission-denied", "Only Junid can type in a machine's total.");
+      }
       const picked = normaliseTid(request.data?.pickedTid);
       if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
-      const terminals = (await db.ref(CARD_TERMINALS_PATH).once("value")).val() || {};
-      const terminal = terminals[picked];
+      // This one terminal's row, never the whole registry.
+      const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${picked}`).once("value")).val();
       if (!terminal || !terminal.storeId || !terminal.tillId) {
         return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before anything can be captured.`);
       }
