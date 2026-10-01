@@ -156,3 +156,22 @@ describe("alternativeSelection — never back to the catalogue", () => {
     expect(alternativeSelection({}, "8")).toBe(null);
   });
 });
+
+// ─── JUNID'S CASE (2026-10-01) ───────────────────────────────────────────────
+// He tapped a greyed size 8 on an Air Force. The sheet listed alternatives, and
+// some of them do not come in an 8 at all — an Air Force that only runs 3–6
+// (p1777977940582 "Air Force 1 Low Stüssy Cream White" carries exactly
+// ["3","4","5","5.5","6"] on the live record). A row the assistant reads out
+// that cannot be sold in the size the customer asked for is not an
+// alternative; it is the refusal again, one tap later.
+describe("every row is sellable in the size that was tapped", () => {
+  const RUN_3_TO_6 = ["3", "4", "5", "5.5", "6"];
+  it("a neighbour that only runs sizes 3–6 never appears for an adult 8", () => {
+    const products = { p1: P("p1", { sizes: RUN_3_TO_6 }), p2: P("p2", { sizes: ["7", "8", "9"] }), p3: P("p3", { sizes: RUN_3_TO_6 }) };
+    expect(call(LIST, world({ products }), "8").map((r) => r.product.id)).toEqual(["p2"]);
+  });
+  it("a neighbour that HAS an 8 on its grid but cannot sell one right now is dropped too", () => {
+    const w = world({ sizeAvailable: (p, s) => !(p.id === "p1" && s === "8") });
+    expect(call(LIST, w, "8").map((r) => r.product.id)).toEqual(["p2", "p3"]);
+  });
+});
