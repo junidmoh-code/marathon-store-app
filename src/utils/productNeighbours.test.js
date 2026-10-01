@@ -3,6 +3,7 @@ import {
   SIMILARITY_WEIGHTS, SILHOUETTE_GROUP, MAX_NEIGHBOURS, MATCH_REASONS,
   silhouetteGroup, neighbourProfile, scorePair, topNeighbours,
   matchReasonCode, matchReasonText, encodeNeighbour, parseNeighbours,
+  sizeCoverage, sizeFitFactor, SIZE_FIT_FLOOR,
 } from "./productNeighbours.js";
 import { SILHOUETTES, PRICE_BANDS, MAX_STYLE_TAGS } from "./productAttributes.js";
 
@@ -221,5 +222,57 @@ describe("storage encoding", () => {
   });
   it("an unknown code still renders a sentence", () => {
     expect(parseNeighbours(["p1:Q"])[0].why).toBe(MATCH_REASONS.x);
+  });
+});
+
+// ─── SIZE FIT IN THE BUILD (2026-10-01) ──────────────────────────────────────
+// Junid's case: an Air Force running 6–11 was carrying Air Forces that run
+// 3–6. The display gate refuses them for an 8; the build must stop spending
+// the twelve stored slots on them in the first place.
+describe("size fit — the stored list is spent on shoes that come in this shoe's sizes", () => {
+  const ADULT = ["6", "7", "8", "9", "10", "11"];
+  const SMALL = ["3", "4", "5", "5.5", "6"];
+  it("the profile carries the normalised grid", () => {
+    expect(prof("p1", {}, { sizes: SMALL }).sizeKeys).toEqual(["uk:3", "uk:4", "uk:5", "uk:5.5", "uk:6"]);
+    expect(prof("p1", {}, { sizes: ["S", "_"] }).sizeKeys).toEqual([]);
+    expect(prof("p1").sizeKeys).toEqual([]);
+  });
+  it("a candidate sharing NO size is excluded, however alike it looks", () => {
+    const t = prof("t", {}, { sizes: ["8", "9", "10"] });
+    const c = prof("c", {}, { sizes: SMALL });
+    expect(scorePair(t, c).score).toBeGreaterThan(0);       // it IS alike
+    expect(topNeighbours(t, [c])).toEqual([]);              // and still not stored
+  });
+  it("the kids/adult wall: a youth grid never neighbours an adult one", () => {
+    const t = prof("t", {}, { sizes: ADULT });
+    const c = prof("c", {}, { sizes: ["4Y", "5Y", "6Y", "7Y"] });
+    expect(sizeFitFactor(t, c)).toBe(0);
+    expect(topNeighbours(t, [c])).toEqual([]);
+  });
+  it("partial overlap is kept but ranked below full coverage", () => {
+    const t = prof("t", {}, { sizes: ADULT });
+    // Identical looks; the 3–6 one shares only the 6.
+    const small = prof("a-small", {}, { sizes: SMALL });
+    const full = prof("z-full", {}, { sizes: [...SMALL, ...ADULT] });
+    expect(topNeighbours(t, [small, full]).map((n) => n.pid)).toEqual(["z-full", "a-small"]);
+  });
+  it("never below the floor, and asymmetric — a wide shoe covers a narrow one", () => {
+    const wide = prof("w", {}, { sizes: [...SMALL, ...ADULT] });
+    const narrow = prof("n", {}, { sizes: SMALL });
+    expect(sizeCoverage(narrow, wide)).toBe(1);
+    expect(sizeCoverage(wide, narrow)).toBe(0.5);       // 5 of the 10 distinct sizes
+    expect(sizeFitFactor(wide, narrow)).toBeGreaterThanOrEqual(SIZE_FIT_FLOOR);
+    expect(sizeFitFactor(narrow, wide)).toBe(1);
+  });
+  it("an unknown grid on either side changes nothing", () => {
+    const t = prof("t", {}, { sizes: ADULT });
+    const unknown = prof("c", {}, { sizes: ["S"] });
+    expect(sizeCoverage(t, unknown)).toBe(null);
+    expect(sizeFitFactor(t, unknown)).toBe(1);
+    expect(topNeighbours(t, [unknown])[0].score).toBe(scorePair(t, unknown).score);
+  });
+  it("similarity itself stays symmetric — size fit is not a similarity term", () => {
+    const a = prof("a", {}, { sizes: ADULT }), b = prof("b", {}, { sizes: SMALL });
+    expect(scorePair(a, b).score).toBe(scorePair(b, a).score);
   });
 });
