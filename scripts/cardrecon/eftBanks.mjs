@@ -354,6 +354,13 @@ const capitec = {
     const when = take(/^Payment date\s+(.+)$/i, "Payment date");
     const bankTs = when.ok && when.value ? capitecTimestamp(when.value) : null;
 
+    // "Payment type Immediate Payment" (fix 7b). Exactly that phrase is
+    // immediate; any other type printed is not; an absent or contradictory
+    // line is unknown (null) — the pool refuses unknown, never assumes.
+    const type = take(/^Payment type\s+(.+)$/i, "Payment type");
+    const paymentType = type.ok && type.value ? clip(type.value, 60) : null;
+    const immediate = paymentType === null ? null : /^immediate payment$/i.test(paymentType);
+
     return {
       ok: true,
       amountCents,
@@ -364,6 +371,8 @@ const capitec = {
       beneficiaryName: beneficiaryName.ok ? clip(beneficiaryName.value, 120) : null,
       destBankName: destBankName.ok ? clip(destBankName.value, 60) : null,
       accountMask: clip(account.value, 40),
+      paymentType,
+      immediate,
     };
   },
 };
@@ -401,13 +410,10 @@ const capitec = {
 // never skipped over, so "USD 80.00" would still refuse rather than read as
 // eighty rand.
 //
-// NOT USED, AND WORTH KNOWING: "Immediate payment: N" says the money may only
-// land by midnight rather than at once. Every bank's notification carries some
-// version of that caveat (Standard Bank: "up to one business day"), and the
-// pool has always treated a notification as evidence of an INSTRUCTION, not of
-// cleared funds — so this reader does not smuggle it into a field the record
-// has no place for. If it should gate settling, that is a record-shape change
-// and a decision, not a parser detail.
+// "Immediate payment: N" says the money may only land by midnight rather than
+// at once. Junid decided (fix 7b) that only an immediate payment may become a
+// spendable record, so the reader returns it as `immediate` and the pool
+// refuses anything not immediate (eftCore.mjs immediacyVerdict).
 const ABSA_LABELISH = /.+:\s*$|.+:\s.+/;
 function absaLabelValue(lines, re, what) {
   const hits = [];
@@ -481,6 +487,16 @@ const absa = {
     const when = take(/^Payment date:\s*(.*)$/i, "Payment date");
     const bankTs = when.ok && when.value ? parseBankTimestamp(when.value) : null;
 
+    // "Immediate payment:" then "Y"/"N" on the next line (fix 7b). The real
+    // R80 sample printed "N" (normal clearing — by midnight); "Y" is the
+    // field's other value. Anything else, or no line, is unknown (null).
+    const imm = take(/^Immediate payment:\s*(.*)$/i, "Immediate payment");
+    const paymentType = imm.ok && imm.value ? clip(imm.value, 20) : null;
+    const immediate = paymentType === null ? null
+      : /^(y|yes)$/i.test(paymentType) ? true
+      : /^(n|no)$/i.test(paymentType) ? false
+      : null;
+
     return {
       ok: true,
       amountCents,
@@ -491,6 +507,8 @@ const absa = {
       beneficiaryName: beneficiaryName.ok && beneficiaryName.value ? clip(beneficiaryName.value, 120) : null,
       destBankName: destBankName.ok && destBankName.value ? clip(destBankName.value, 60) : null,
       accountMask: clip(account.value, 40),
+      paymentType,
+      immediate,
     };
   },
 };

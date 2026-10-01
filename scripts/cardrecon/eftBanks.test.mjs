@@ -312,6 +312,8 @@ describe("the Capitec reader — built from the real notification", () => {
       destBankName: "First National Bank",
       // Capitec prints it IN FULL; the pool masks it on the way in.
       accountMask: "62900004321",
+      paymentType: "Immediate Payment", // fix 7b
+      immediate: true,
     });
   });
 
@@ -535,6 +537,8 @@ describe("the Absa reader — built from the real R80 payment", () => {
       beneficiaryName: "Marathon club",
       destBankName: "FIRST NATIONAL BANK",
       accountMask: "62900004321",
+      paymentType: "N",          // the real R80 sample: normal clearing (fix 7b)
+      immediate: false,
     });
   });
 
@@ -613,5 +617,37 @@ describe("the Absa reader — built from the real R80 payment", () => {
     expect(parsed.reference).toBe("test");
     expect(parsed.bankRef).toBe("80D2F2AB5A-1");
     expect(parsed.reference).not.toBe(parsed.bankRef);
+  });
+});
+
+
+// ─── FIX 7b: THE IMMEDIATE-PAYMENT SIGNAL, FROM THE REAL DOCUMENTS ───────────
+describe("immediate-payment signal (fix 7b)", () => {
+  const capr = EFT_READERS.find((r) => r.id === "capitec");
+  const absr = EFT_READERS.find((r) => r.id === "absa");
+  const fnbr = EFT_READERS.find((r) => r.id === "fnb");
+  const sbr = EFT_READERS.find((r) => r.id === "standardbank");
+  it("Capitec prints a Payment type; only 'Immediate Payment' is immediate", () => {
+    expect(capr.parse(REAL_CAPITEC_PDF_LINES).immediate).toBe(true);
+    const other = REAL_CAPITEC_PDF_LINES.map((l) => (l === "Payment type Immediate Payment" ? "Payment type Future Dated Payment" : l));
+    expect(capr.parse(other)).toMatchObject({ immediate: false, paymentType: "Future Dated Payment" });
+    const none = REAL_CAPITEC_PDF_LINES.filter((l) => !l.startsWith("Payment type"));
+    expect(capr.parse(none).immediate).toBe(null);
+  });
+  it("Absa prints 'Immediate payment:' with Y/N on the next line", () => {
+    expect(absr.parse(REAL_ABSA_PDF_LINES)).toMatchObject({ immediate: false, paymentType: "N" });
+    const yes = REAL_ABSA_PDF_LINES.map((l, i, a) => (a[i - 1] === "Immediate payment:" ? "Y" : l));
+    expect(absr.parse(yes).immediate).toBe(true);
+    const garbled = REAL_ABSA_PDF_LINES.map((l, i, a) => (a[i - 1] === "Immediate payment:" ? "MAYBE" : l));
+    expect(absr.parse(garbled).immediate).toBe(null);
+  });
+  it("FNB and Standard Bank print no such field in the real samples — the reader returns nothing for it", () => {
+    expect(fnbr.parse(FNB_LINES).immediate).toBeUndefined();
+    expect(sbr.parse(REAL_SB_PDF_LINES).immediate).toBeUndefined();
+  });
+  it("every reader's real sample names the destination bank as FNB (fix 7a input)", () => {
+    for (const [r, lines] of [[capr, REAL_CAPITEC_PDF_LINES], [absr, REAL_ABSA_PDF_LINES], [fnbr, FNB_LINES], [sbr, REAL_SB_PDF_LINES]]) {
+      expect(String(r.parse(lines).destBankName).toUpperCase().replace(/[^A-Z]/g, ""), r.id).toBe("FIRSTNATIONALBANK");
+    }
   });
 });
