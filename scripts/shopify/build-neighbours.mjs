@@ -25,18 +25,30 @@
 // shared availability resolver at render time and drops whatever cannot be
 // given out right now (App.jsx, availabilityCore).
 //
-// WRITES: /products/{pid}/alternatives only. One child, never the record.
+// ── SIZE FIT (2026-10-01) ────────────────────────────────────────────────────
+// The sheet shows a neighbour only when it can sell the TAPPED size, so a list
+// spent on shoes that never come in this shoe's sizes shows nothing. The build
+// now reads each grid through shoeSize.js: a candidate sharing no size is
+// excluded and a partial one is down-ranked (productNeighbours.sizeFitFactor).
+// The normalised range of every pool product is recorded, additively, at
+// /product_size_ranges/{pid} — { scale, lo, hi, kids, sizes, v, at } — a new
+// admin-only node no client reads. The dry run prints every size label it
+// could not classify; those are excluded from matching, never guessed.
+//
+// WRITES: /products/{pid}/alternatives (one child, never the record) and
+// /product_size_ranges/{pid}. Nothing else — styleCodeNormalised included.
 import { createRequire } from "module";
 import "./env.mjs";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 import { isDeactivated } from "../../src/utils/deactivation.js";
 import { ATTRIBUTES_PATH, usableAttributes } from "../../src/utils/productAttributes.js";
 import {
-  neighbourProfile, topNeighbours, scorePair, encodeNeighbour, matchReasonText,
-  MAX_NEIGHBOURS, NEIGHBOURS_FIELD, SIMILARITY_WEIGHTS,
+  neighbourProfile, topNeighbours, scorePair, encodeNeighbour, matchReasonText, parseNeighbours,
+  sizeCoverage, MAX_NEIGHBOURS, NEIGHBOURS_FIELD, SIMILARITY_WEIGHTS,
 } from "../../src/utils/productNeighbours.js";
 import { readMapPaged, shallowKeys } from "../lib/rtdbPaged.mjs";
 import { isSneakerProduct } from "../lib/sneakerScope.mjs";
+import { shoeSizeRange, productIsKidsGrid } from "../../src/utils/shoeSize.js";
 
 const flags = process.argv.slice(2);
 const arg = (n) => { const i = flags.indexOf(n); if (i === -1) return null; const v = flags[i + 1]; if (!v || v.startsWith("--")) { console.error(`${n} needs a value`); process.exit(2); } return v; };
@@ -78,6 +90,7 @@ for (const [pid, p] of Object.entries(products)) {
   productOf[pid] = p;
 }
 profiles.sort((a, b) => a.pid.localeCompare(b.pid));
+const byPid = new Map(profiles.map((p) => [p.pid, p]));
 
 console.log(`candidate pool: ${profiles.length} sneaker(s)`);
 console.log(`  excluded — not a sneaker: ${rejected.notSneaker} · merged: ${rejected.merged} · ` +
@@ -115,12 +128,67 @@ const full = sizes.filter((n) => n === MAX_NEIGHBOURS).length;
 console.log(`list length: ${full} at the ${MAX_NEIGHBOURS} cap · min ${sizes.length ? Math.min(...sizes) : 0} · ` +
             `mean ${(sizes.reduce((a, b) => a + b, 0) / Math.max(sizes.length, 1)).toFixed(1)}`);
 
+// ── SIZE REPORT ──────────────────────────────────────────────────────────────
+// What the size fit changed, and what it could not read.
+const SIZE_RANGES_PATH = "product_size_ranges";
+const SIZE_RANGE_VERSION = 1;
+const ranges = new Map();
+const unclassified = new Map();      // label -> [pid…]
+for (const prof of profiles) {
+  const r = shoeSizeRange(productOf[prof.pid].sizes, { kidsGrid: productIsKidsGrid(productOf[prof.pid]) });
+  ranges.set(prof.pid, r);
+  for (const label of r?.unclassified || []) {
+    if (!unclassified.has(label)) unclassified.set(label, []);
+    unclassified.get(label).push(prof.pid);
+  }
+}
+const byScale = {};
+for (const r of ranges.values()) {
+  const k = r?.scale ? `${r.scale}${r.kids ? "(kids)" : ""}` : "unknown";
+  byScale[k] = (byScale[k] || 0) + 1;
+}
+console.log(`\nsize ranges: ${Object.entries(byScale).map(([k, v]) => `${k}=${v}`).join(" · ")}`);
+if (unclassified.size) {
+  console.log(`UNCLASSIFIED size labels — excluded from matching, never guessed:`);
+  for (const [label, pids] of unclassified) console.log(`   ${JSON.stringify(label)} on ${pids.length}: ${pids.slice(0, 8).join(", ")}${pids.length > 8 ? " …" : ""}`);
+} else {
+  console.log("every size label classified");
+}
+// The lists as they are stored TODAY, judged by the new rule.
+let oldEntries = 0, oldNoOverlap = 0, oldListsHit = 0;
+for (const prof of profiles) {
+  const stored = parseNeighbours(productOf[prof.pid][NEIGHBOURS_FIELD]);
+  let hit = false;
+  for (const n of stored) {
+    const c = byPid.get(n.pid);
+    if (!c) continue;
+    oldEntries += 1;
+    if (sizeCoverage(prof, c) === 0) { oldNoOverlap += 1; hit = true; }
+  }
+  if (hit) oldListsHit += 1;
+}
+console.log(`stored lists today: ${oldNoOverlap}/${oldEntries} entries share NO size with their product ` +
+            `(on ${oldListsHit} product(s)) — the build now excludes them`);
+// The new lists: for each product SIZE, does any stored neighbour's grid carry
+// it? A size with none can only ever show "No similar styles in size X".
+let sizeSlots = 0, sizeSlotsBare = 0;
+const productsWithBareSize = new Set();
+for (const prof of profiles) {
+  const list = lists.get(prof.pid) || [];
+  const carried = new Set(list.flatMap((n) => byPid.get(n.pid)?.sizeKeys || []));
+  for (const k of prof.sizeKeys) {
+    sizeSlots += 1;
+    if (!carried.has(k)) { sizeSlotsBare += 1; productsWithBareSize.add(prof.pid); }
+  }
+}
+console.log(`new lists: ${sizeSlotsBare}/${sizeSlots} (product, size) pairs have no neighbour that comes in that size, ` +
+            `on ${productsWithBareSize.size} product(s); ${profiles.length - lists.size} product(s) have no neighbours at all`);
+
 // ── THE SPOT-CHECK ───────────────────────────────────────────────────────────
 // Printed so the ranking can be eyeballed against the photos, which is the only
 // way to find out whether it is any good. Spread across the pool rather than
 // taken from the front: the front is one week's delivery.
 console.log(`\n${"=".repeat(78)}\nSPOT-CHECK — ${SPOT} products, top 5 each\n${"=".repeat(78)}`);
-const byPid = new Map(profiles.map((p) => [p.pid, p]));
 const step = Math.max(1, Math.floor(profiles.length / SPOT));
 for (let i = 0, shown = 0; i < profiles.length && shown < SPOT; i += step, shown++) {
   const t = profiles[i];
@@ -185,10 +253,16 @@ if (!APPLY) {
 // /products record with no inner `id`.
 const liveKeys = new Set(await shallowKeys(admin.app(), "products"));
 const patch = {};
+const rangePatch = {};
 let wrote = 0, cleared = 0, vanished = 0;
 for (const p of profiles) {
   assertSafeSegment(p.pid, "productId");
   if (!liveKeys.has(p.pid)) { vanished += 1; continue; }
+  const r = ranges.get(p.pid);
+  rangePatch[p.pid] = r?.scale
+    ? { scale: r.scale, lo: r.lo, hi: r.hi, kids: r.kids, sizes: r.keys.length, v: SIZE_RANGE_VERSION, at: admin.database.ServerValue.TIMESTAMP }
+    : { unknown: true, v: SIZE_RANGE_VERSION, at: admin.database.ServerValue.TIMESTAMP };
+  if (r?.unclassified?.length) rangePatch[p.pid].unclassified = r.unclassified;
   const list = lists.get(p.pid);
   if (list?.length) {
     patch[`${p.pid}/${NEIGHBOURS_FIELD}`] = list.map((n) => encodeNeighbour(n.pid, n.code));
@@ -226,6 +300,15 @@ for (let i = 0; i < keys.length; i += CHUNK) {
   await db.ref("products").update(slice);
   console.log(`  … wrote ${Math.min(i + CHUNK, keys.length)}/${keys.length}`);
 }
+// The size ranges, to their own node — additive, never on /products.
+const rangeKeys = Object.keys(rangePatch);
+for (const k of rangeKeys) assertSafeSegment(k, "productId");
+for (let i = 0; i < rangeKeys.length; i += CHUNK) {
+  const slice = {};
+  for (const k of rangeKeys.slice(i, i + CHUNK)) slice[k] = rangePatch[k];
+  await db.ref(SIZE_RANGES_PATH).update(slice);
+}
+console.log(`  … recorded ${rangeKeys.length} size range(s) at /${SIZE_RANGES_PATH}`);
 console.log(`\nwrote ${wrote} list(s)${PRUNE ? ` · cleared ${cleared}` : ""}` +
             `${vanished ? ` · skipped ${vanished} deleted` : ""}. ` +
             `Bytes added to /products: ~${(wrote * MAX_NEIGHBOURS * 20 / 1024).toFixed(0)} KB.`);

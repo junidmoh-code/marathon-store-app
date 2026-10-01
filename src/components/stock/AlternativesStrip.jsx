@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { formatSize } from "../../utils/sizeLabel";
 import { MirroredImg } from "../../offline/MirroredImg.jsx";
 
@@ -7,11 +8,15 @@ import { MirroredImg } from "../../offline/MirroredImg.jsx";
 // now. Photo, name, the sizes actually available, the price, and one short line
 // saying why it matched.
 //
-// SHOWS NOTHING WHEN THERE IS NOTHING. No empty section, no "no matches" row,
-// no skeleton. The sheet falls back to exactly what it said before this
-// existed, which is the correct answer when the catalogue genuinely has no
-// substitute: an assistant reading out a suggestion that cannot be sold is
-// worse than the bare refusal, because it spends the customer's patience twice.
+// EVERY ROW IS SELLABLE IN THE SIZE THAT WAS TAPPED (2026-10-01). When none
+// is, the strip says so in words — "No similar styles in size 8" — instead of
+// padding the row with shoes that do not come in an 8. An assistant reading out
+// a suggestion that cannot be sold is worse than the bare refusal, because it
+// spends the customer's patience twice.
+//
+// `rows` null/undefined means "not answered yet" (availability still settling)
+// and renders NOTHING — no skeleton, and never the empty state, which would be
+// a claim the screen cannot yet make. An empty ARRAY is a real answer.
 //
 // Every row here has ALREADY passed the availability join (alternativesCore);
 // this component renders and never re-decides. The sizes printed are the ones
@@ -22,8 +27,32 @@ import { MirroredImg } from "../../offline/MirroredImg.jsx";
 // customer's original size comes with them when the shoe has it; when it does
 // not, the shoe opens on its own size grid with nothing chosen, because
 // pre-choosing a size nobody asked for is how a wrong pair gets ordered.
-export function AlternativesStrip({ rows, requestedSize, onPick, compact = false }) {
-  if (!rows?.length) return null;
+export function AlternativesStrip({ rows, requestedSize, onPick, onShown, compact = false }) {
+  // Telemetry hook, log only: fired once per (shoe, size) the strip is shown
+  // for, after availability has answered. Never feeds back into the rows.
+  const shownFor = useRef("");
+  const answered = Array.isArray(rows);
+  useEffect(() => {
+    if (!answered || !onShown || !requestedSize) return;
+    const k = String(requestedSize);
+    if (shownFor.current === k) return;
+    shownFor.current = k;
+    onShown();
+    // onShown is a fresh closure every render; the ref, not the deps, makes
+    // this once per open.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [answered, requestedSize]);
+  if (!answered) return null;
+  if (!rows.length) {
+    if (!requestedSize) return null;
+    return (
+      <div role="status" style={{ marginBottom: compact ? 8 : "0.9rem", padding: compact ? "8px 10px" : "10px 12px",
+                                  borderRadius: 10, border: "1px dashed rgba(255,255,255,.16)",
+                                  color: "rgba(233,238,255,.62)", fontSize: compact ? 11.5 : 12.5, fontWeight: 700 }}>
+        No similar styles in size {formatSize(requestedSize)}
+      </div>
+    );
+  }
   const money = (n) => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
   const cardW = compact ? 132 : 148;
   return (
@@ -57,7 +86,7 @@ export function AlternativesStrip({ rows, requestedSize, onPick, compact = false
                 <span style={{ position: "absolute", top: 6, left: 6, padding: "2px 7px", borderRadius: 999,
                                background: "rgba(16,185,129,.92)", color: "#04150E", fontSize: 10, fontWeight: 900,
                                letterSpacing: ".03em" }}>
-                  Size {formatSize(requestedSize)}
+                  Size {formatSize(r.matchedSize ?? requestedSize)}
                 </span>
               )}
             </div>

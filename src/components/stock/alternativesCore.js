@@ -12,8 +12,9 @@
 // trust the screen. So every gate here fails CLOSED — if availability is not
 // known for a candidate, the candidate is dropped, not shown with a caveat.
 //
-// And an empty result is a real answer. The sheet shows the reason alone; it
-// never renders an empty section and never renders a "nothing found" row.
+// And an empty result is a real answer. Since 2026-10-01 the sheet says so in
+// words — "No similar styles in size 8" — rather than padding the row with
+// shoes that do not come in an 8.
 //
 // ── THE READ PATH ────────────────────────────────────────────────────────────
 // The stored list (already on the product record the app holds in memory) plus
@@ -26,15 +27,19 @@
 // touching firebase.
 
 import { parseNeighbours } from "../../utils/productNeighbours";
+import { shoeSizeKey, productIsKidsGrid } from "../../utils/shoeSize";
 
 /** How many alternatives the sheet shows. Owner spec: up to 8. */
 export const MAX_ALTERNATIVES_SHOWN = 8;
 
 /**
- * The sellable alternatives to (product, size), best first.
+ * The sellable alternatives to (product, size), best first, plus what the size
+ * gate did — `{ rows, candidates, sizeGateRemoved }`.
  *
  * @param neighbours       the raw stored value from product[NEIGHBOURS_FIELD]
  * @param requestedSize    the size the customer actually asked for
+ * @param sourceProduct    the shoe that size was tapped on — a bare "10" on a
+ *                         kids shoe is a kids 10 (shoeSize.productIsKidsGrid)
  * @param resolveProduct   pid -> product record (or null). MUST follow merges —
  *                         a merged-away pid still sits in an older stored list.
  * @param sizesOf          product -> the sizes on its record
@@ -42,20 +47,44 @@ export const MAX_ALTERNATIVES_SHOWN = 8;
  *                         FALSE for a Pine/hub3 shoe (never gated) and for a
  *                         hub whose cells have not settled. A candidate we
  *                         cannot answer for is dropped, never assumed available.
- * @param sizeAvailable    (product, size) -> is a unit sellable right now
+ * @param sizeAvailable    (product, size) -> is a unit sellable right now. The
+ *                         SAME sneakerOut test that greys the chip, PLUS
+ *                         fail-closed readiness (hub settled, /orders settled).
+ *                         So the sheet only ever offers a size the chip would
+ *                         also show as available — a strict subset, never more.
  * @param isSellable       product -> not deactivated, has a photo, has a price
  * @param limit            default MAX_ALTERNATIVES_SHOWN
  *
- * @returns [{ product, sizes, why, code, hasRequestedSize }] — `sizes` is never
- *          empty (a product with no sellable size is not an alternative).
+ * rows: [{ product, sizes, why, code, hasRequestedSize, matchedSize }] — every
+ *   row is sellable in the requested size (hasRequestedSize is always true);
+ *   `matchedSize` is THAT SHOE'S OWN label for it, which is what its cells and
+ *   its grid are keyed by. `sizes` is every size it can sell right now.
+ * candidates: how many stored neighbours were looked at.
+ * sizeGateRemoved: how many passed every other gate and had stock in SOME size,
+ *   but could not sell the requested one — the rows this gate used to let
+ *   through as padding (telemetry, log only).
  */
-export function sellableAlternatives({
-  neighbours, requestedSize, resolveProduct, sizesOf, availabilityKnown,
+export function alternativesForSize({
+  neighbours, requestedSize, sourceProduct = null, resolveProduct, sizesOf, availabilityKnown,
   sizeAvailable, isSellable, limit = MAX_ALTERNATIVES_SHOWN,
 }) {
-  const out = [];
+  const rows = [];
   const seen = new Set();
-  for (const n of parseNeighbours(neighbours)) {
+  const parsed = parseNeighbours(neighbours);
+  let sizeGateRemoved = 0;
+  // ── THE SIZE GATE (2026-10-01) ─────────────────────────────────────────────
+  // Every row must be sellable in the size that was tapped. Before this, a
+  // shoe with stock in ANY size was a row, and the size-holders were merely
+  // sorted to the front — so an Air Force running 3–6 was offered to a
+  // customer who asked for an 8 (Junid's report). A row that cannot be sold in
+  // the asked-for size is the refusal again, one tap later.
+  //
+  // Compared through shoeSize.js, never by raw label: the candidate's "8.5"
+  // and the tapped "8_5" are one size, a "6Y" and a "6" are not. A requested
+  // size that cannot be classified matches NOTHING — the sheet says so rather
+  // than guessing.
+  const wantKey = shoeSizeKey(requestedSize, { kidsGrid: productIsKidsGrid(sourceProduct) });
+  for (const n of parsed) {
     // A merged-away neighbour resolves to its SURVIVOR, which may already be in
     // the list under its own pid — and the same shoe twice is a worse list than
     // a shorter one.
@@ -63,24 +92,23 @@ export function sellableAlternatives({
     if (!product || seen.has(product.id)) continue;
     if (!isSellable(product)) continue;
     if (!availabilityKnown(product)) continue;
-    const sizes = (sizesOf(product) || []).filter((s) => sizeAvailable(product, s));
+    const grid = sizesOf(product) || [];
+    const sizes = grid.filter((s) => sizeAvailable(product, s));
     if (!sizes.length) continue;
     seen.add(product.id);
-    out.push({
-      product, sizes, why: n.why, code: n.code,
-      hasRequestedSize: !!requestedSize && sizes.includes(requestedSize),
-    });
+    const kidsGrid = productIsKidsGrid(product);
+    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s, { kidsGrid }) === wantKey) : undefined;
+    if (matchedSize === undefined) { sizeGateRemoved += 1; continue; }
+    rows.push({ product, sizes, why: n.why, code: n.code, hasRequestedSize: true, matchedSize });
   }
+  // The stored order IS the ranking and is not second-guessed here: the
+  // survivors keep exactly the order the neighbour build wrote.
+  return { rows: rows.slice(0, limit), candidates: parsed.length, sizeGateRemoved };
+}
 
-  // ── A STABLE PARTITION, NOT A RE-RANK ──────────────────────────────────────
-  // The stored order IS the ranking and is not second-guessed here. But a
-  // customer who asked for an 8 is better served by a slightly-less-similar
-  // shoe that HAS an 8 than by a closer one that does not — that is the whole
-  // transaction. So the list is partitioned, and rank is preserved inside each
-  // half. A shoe never moves relative to another shoe in the same half.
-  const withSize = out.filter((r) => r.hasRequestedSize);
-  const without = out.filter((r) => !r.hasRequestedSize);
-  return [...withSize, ...without].slice(0, limit);
+/** The rows alone — see alternativesForSize. */
+export function sellableAlternatives(args) {
+  return alternativesForSize(args).rows;
 }
 
 /**
@@ -88,9 +116,14 @@ export function sellableAlternatives({
  * original size preselected when that shoe has it, otherwise the shoe's own
  * size grid with nothing chosen — and never a trip back to the catalogue.
  *
+ * The preselected label is the CHOSEN SHOE'S OWN (`matchedSize`), not the one
+ * tapped on the other shoe: the two can be spelled differently and still be
+ * the same size, and the cart line must address the chosen shoe's cell.
+ *
  * Returns { product, size } where size is "" for "open the grid".
  */
 export function alternativeSelection(row, requestedSize) {
   if (!row?.product) return null;
-  return { product: row.product, size: row.hasRequestedSize ? requestedSize : "" };
+  if (!row.hasRequestedSize) return { product: row.product, size: "" };
+  return { product: row.product, size: row.matchedSize ?? requestedSize };
 }

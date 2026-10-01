@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { readFileSync } from "node:fs";
+import { resolve } from "node:path";
 
 // ─── SOURCE PINS FOR THE ✕ SHEET'S WIRING ────────────────────────────────────
 // These read App.jsx as text. That is CIRCULAR and it is admitted: a pin proves
@@ -105,7 +106,7 @@ describe("the alternatives join uses the shared resolver and nothing else", () =
     expect(APP).toContain("resolveProduct: (pid) => resolveProductById(pid),");
   });
   it("clothing is out of scope, as the brief says", () => {
-    expect(APP).toContain('if ((product.productType || "sneaker") === "clothing") return [];');
+    expect(APP).toContain('if ((product.productType || "sneaker") === "clothing") return null;');
   });
 });
 
@@ -115,12 +116,13 @@ describe("the strip is wired into both sheets", () => {
   // actually mounts it, which is the part that lives in App.jsx.
   it("the phone sheet renders it under the reason", () => {
     const i = APP.indexOf("{sneakerBlockNoteText(naNote.size, sneakerOutWhy(selected, naNote.size))}");
-    const j = APP.indexOf("<AlternativesStrip rows={alternativesFor(selected, naNote.size)}");
+    const j = APP.indexOf("const alt = alternativesFor(selected, naNote.size);");
     expect(i).toBeGreaterThan(0);
     expect(j).toBeGreaterThan(i);          // BELOW the reason, never above it
   });
   it("the quick-view renders it too", () => {
-    expect(APP).toContain("<AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}");
+    expect(APP).toContain("const alt = alternativesFor?.(qv, qvNa.size) ?? null;");
+    expect(APP).toContain("<AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}");
   });
 });
 
@@ -185,5 +187,29 @@ describe("taking an alternative never returns to the catalogue", () => {
     const body = fn.slice(0, fn.indexOf("\n  };"));
     expect(body).toContain("openQv(pick.product);");
     expect(body).toContain("if (pick.size) setQvSize(pick.size);");
+  });
+});
+
+describe("telemetry is wired on both sheets, and is log only", () => {
+  it("both surfaces log the open and the pick", () => {
+    expect(APP).toContain('onShown={() => logAlternativesShown("sheet", selected, naNote.size, alt)}');
+    expect(APP).toContain('onShown={() => onAlternativesShown?.("quickview", qv, qvNa.size, alt)}');
+    expect(APP).toContain('logAlternativePicked("sheet", selected, naNote.size, row); pickAlternative(row);');
+    expect(APP).toContain('onAlternativePicked?.("quickview", qv, qvNa.size, row); pickQvAlternative(row, qvNa.size);');
+  });
+  it("the log is written, never read — its path appears ONLY in the one push", () => {
+    const uses = APP.split("\n").filter((l) => /ALTERNATIVES_LOG_PATH|["'`]alternatives_log/.test(l));
+    expect(uses.map((l) => l.trim())).toEqual([
+      'import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./components/stock/alternativesTelemetry";',
+      "push(ref(database, ALTERNATIVES_LOG_PATH), entry)",
+    ]);
+  });
+  it("…and the neighbour build never opens it: ranking takes no feedback", () => {
+    const build = readFileSync(resolve(process.cwd(), "scripts/shopify/build-neighbours.mjs"), "utf8");
+    expect(build).not.toMatch(/alternatives_log|alternativesTelemetry/);
+  });
+  it("its timestamp is server time", () => {
+    expect(APP).toContain("shownEntry({ ts: serverNowMs(),");
+    expect(APP).toContain("pickedEntry({ ts: serverNowMs(),");
   });
 });

@@ -124,10 +124,11 @@ import BarcodeCatalog from "./components/stock/BarcodeCatalog";
 import { applyMovement, setCellState } from "./components/stock/applyMovement";
 import { fetchCentralAvailability, tomorrowTapOutcome, centralFedRow } from "./components/stock/tomorrowGate";
 import { readyPromisedByCell, cellAvailability, cellBlockInfo, isFootwearProduct, promisedKey, availableUnits, gatedSneakerHub, resolveSneakerSourcing, resolveSneakerSourcingHub, allocateSneakerCart, GATED_SNEAKER_HUBS, DISPLAY_PAIR_HUB } from "./components/stock/availabilityCore";
-import { sellableAlternatives, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
+import { alternativesForSize, alternativeSelection, MAX_ALTERNATIVES_SHOWN } from "./components/stock/alternativesCore";
 import { NEIGHBOURS_FIELD } from "./utils/productNeighbours";
 import { phoneSizeChipStyle, quickViewSizeChipStyle, hoverGridSizeChipStyle } from "./components/stock/sizeChipTheme";
 import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
+import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./components/stock/alternativesTelemetry";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
@@ -8553,7 +8554,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
-                            alternativesFor,
+                            alternativesFor, onAlternativesShown, onAlternativePicked,
                             deadForOrder = isDeactivated }) {
   const flow = mode === "cr" ? "refill" : "order";   // the two workspace flows
   // Clothing customer mode: same "order" flow as sneakers, but browsing the
@@ -9134,9 +9135,15 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             {/* The desktop twin of the phone sheet's strip. The
                                 reason above is unchanged; this only adds what
                                 can be sold instead. */}
-                            <AlternativesStrip compact rows={alternativesFor?.(qv, qvNa.size) || []}
-                                               requestedSize={qvNa.size}
-                                               onPick={(row) => pickQvAlternative(row, qvNa.size)} />
+                            {(() => {
+                              const alt = alternativesFor?.(qv, qvNa.size) ?? null;
+                              return (
+                                <AlternativesStrip compact key={`${qv.id}|${qvNa.size}`} rows={alt ? alt.rows : null}
+                                                   requestedSize={qvNa.size}
+                                                   onShown={() => onAlternativesShown?.("quickview", qv, qvNa.size, alt)}
+                                                   onPick={(row) => { onAlternativePicked?.("quickview", qv, qvNa.size, row); pickQvAlternative(row, qvNa.size); }} />
+                              );
+                            })()}
                           </>
                         );
                       }
@@ -10164,18 +10171,27 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     one are all out — the row has nothing to show and nothing to sell.
   //   • sneakerOut, not a second availability test. One definition of
   //     "available" on this screen, the same one that drew the chip.
+  //
+  // RETURNS { rows, candidates, sizeGateRemoved }, or NULL for "not answered
+  // yet". Every row is sellable in the tapped size (alternativesForSize, the
+  // size gate of 2026-10-01); an empty `rows` is a real answer and the strip
+  // says "No similar styles in size X". NULL renders nothing — before /orders
+  // and both gated hubs have answered, "no similar styles" would be a claim
+  // this screen cannot yet make.
   const alternativesFor = (product, size) => {
-    if (!product || !size) return [];
+    if (!product || !size) return null;
     // Sneakers only. Clothing and perfume are out of scope for this build, and
     // a clothing tile's grey-out reads its cell by a different rule
     // (availabilityCore's header, the deliberately-unmerged clothing lane).
-    if ((product.productType || "sneaker") === "clothing") return [];
-    return sellableAlternatives({
+    if ((product.productType || "sneaker") === "clothing") return null;
+    if (!ordersSettled) return null;
+    const result = alternativesForSize({
+      sourceProduct: product,
       neighbours: product[NEIGHBOURS_FIELD],
       requestedSize: size,
       // FOLLOWS MERGES. A pid in a list written last week may since have been
       // merged away; resolveProductById lands on the survivor, and
-      // sellableAlternatives de-duplicates when two entries land on the same
+      // alternativesForSize de-duplicates when two entries land on the same
       // shoe.
       resolveProduct: (pid) => resolveProductById(pid),
       sizesOf: (p) => (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"),
@@ -10254,11 +10270,38 @@ function AssistantView({ products, onExit, orders = [] }) {
     // that is a per-size answer, so asking it product-level could name Hub 1 on
     // a card whose only available size is picked by Hub 2. The requested size
     // when the shoe has it, otherwise the first size actually on offer.
-    }).map((row) => ({
-      ...row,
-      hubLabel: HUB_LABELS[sneakerHubOf(row.product, row.hasRequestedSize ? size : row.sizes[0])] || "",
-    }));
+    });
+    // AN EMPTY ANSWER IS ONLY CLAIMED ONCE BOTH GATED HUBS HAVE ANSWERED. While
+    // one is still loading, its candidates were dropped as "unknown", so "no
+    // similar styles" would be premature. A hub that ERRORED has answered, so
+    // it cannot hold the sheet hostage for good (architect review, PR #660);
+    // the other hub's shoes still show.
+    const hubLoading = ["hub1", "hub2"].some((h) => { const st = sneakerCellsState(h); return !st.settled && !st.error; });
+    if (!result.rows.length && hubLoading) return null;
+    // The requested size's own label on that shoe — every row has one now.
+    return {
+      ...result,
+      rows: result.rows.map((row) => ({
+        ...row,
+        hubLabel: HUB_LABELS[sneakerHubOf(row.product, row.matchedSize)] || "",
+      })),
+    };
   };
+
+  // ── TELEMETRY, LOG ONLY (alternativesTelemetry.js) ─────────────────────────
+  // One row per sheet open and one per alternative taken, to /alternatives_log
+  // for Junid's monthly review. NOTHING READS IT BACK INTO THE RANKING.
+  // `ts` is serverNowMs(), never Date.now(): the rule validates it against
+  // `now`. Fire-and-forget: a refused write costs a console line, never a sale.
+  const logAlternatives = (entry) => {
+    if (!entry) return;
+    push(ref(database, ALTERNATIVES_LOG_PATH), entry)
+      .catch((err) => console.warn("alternatives telemetry write failed:", err?.message || err));
+  };
+  const logAlternativesShown = (surface, product, size, result) =>
+    logAlternatives(shownEntry({ ts: serverNowMs(), shop: effectiveShop, surface, product, size, result }));
+  const logAlternativePicked = (surface, product, size, row) =>
+    logAlternatives(pickedEntry({ ts: serverNowMs(), shop: effectiveShop, surface, product, size, row }));
 
   const hasClothingInCart = cart.some(it => it.productType === "clothing");
   // Cart-driven submit decision: a line needs the customer Checkout
@@ -11002,7 +11045,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
           hubQty={hubQty} servingHubLabel={HUB_LABELS[servingHub] || servingHub} sneakerOut={sneakerOut} sneakerOutWhy={sneakerOutWhy} sneakerDisplayInfo={sneakerDisplayInfo}
-          alternativesFor={alternativesFor} />
+          alternativesFor={alternativesFor}
+          onAlternativesShown={logAlternativesShown} onAlternativePicked={logAlternativePicked} />
       )}
       {/* Responsive product-grid columns: phone stays 2-up (photo) / 1-up (refill);
           iPad (≥768px) goes 5-up (photo) / 2-up (refill). Fixed counts (not auto-fill)
@@ -11409,8 +11453,15 @@ function AssistantView({ products, onExit, orders = [] }) {
                         nothing to what the refusal says — the X gate blocks
                         exactly what it blocked yesterday, and the only new
                         action on this sheet is choosing a different shoe. */}
-                    <AlternativesStrip rows={alternativesFor(selected, naNote.size)}
-                                       requestedSize={naNote.size} onPick={pickAlternative} />
+                    {(() => {
+                      const alt = alternativesFor(selected, naNote.size);
+                      return (
+                        <AlternativesStrip key={`${selected.id}|${naNote.size}`} rows={alt ? alt.rows : null}
+                                           requestedSize={naNote.size}
+                                           onShown={() => logAlternativesShown("sheet", selected, naNote.size, alt)}
+                                           onPick={(row) => { logAlternativePicked("sheet", selected, naNote.size, row); pickAlternative(row); }} />
+                      );
+                    })()}
                   </>
                 );
               }

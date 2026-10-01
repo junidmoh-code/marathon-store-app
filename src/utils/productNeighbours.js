@@ -30,6 +30,7 @@
 // the difference between a ranked list and a random one.
 
 import { colourFamily, MAX_STYLE_TAGS } from "./productAttributes.js";
+import { shoeSizeRange, productIsKidsGrid } from "./shoeSize.js";
 
 // ── SILHOUETTE GROUPS — the wall ─────────────────────────────────────────────
 // A shoe may only be offered as an alternative to another shoe in its own
@@ -127,7 +128,52 @@ export function neighbourProfile(product, attrs) {
     // the MODEL returns; confirmed.styleTags is written by a person and does
     // not pass through it.
     styleTags: Array.isArray(attrs.styleTags) ? [...new Set(attrs.styleTags)] : [],
+    // The size GRID, normalised (shoeSize.js). Not a similarity term — scorePair
+    // never reads it — but topNeighbours uses it so the twelve stored
+    // neighbours are ones that can actually come in the sizes this shoe is
+    // asked for. Empty when the record has no classifiable size.
+    sizeKeys: shoeSizeRange(product?.sizes, { kidsGrid: productIsKidsGrid(product) })?.keys || [],
   };
+}
+
+// ── SIZE FIT (2026-10-01) ────────────────────────────────────────────────────
+// The sheet only shows a neighbour that can sell the TAPPED size (the display
+// gate in alternativesCore). A stored list that spends its twelve slots on
+// shoes that never come in this shoe's sizes therefore shows nothing — Junid's
+// Air Force 6–11 was carrying Air Forces that run 3–6. So the build looks at
+// the grids too:
+//
+//   • NO SHARED SIZE AT ALL → excluded. Nothing it could ever be offered for.
+//     This is also the kids/adult wall: a 4Y–7Y grid and a 3–13 grid share no
+//     key (shoeSize.js keys them on different scales).
+//   • PARTIAL OVERLAP → down-ranked by the share of THIS shoe's sizes the
+//     candidate also carries, never below SIZE_FIT_FLOOR of its score. A
+//     3–6 shoe still serves a customer who asked a 6–11 shoe for a 6, so it is
+//     kept — below the shoes that cover the whole run.
+//   • UNKNOWN (either side has no classifiable size) → unchanged. The display
+//     gate still refuses anything it cannot match, so unknown costs a slot,
+//     never a wrong suggestion.
+export const SIZE_FIT_FLOOR = 0.5;
+
+/**
+ * The share (0..1) of `target`'s sizes that `candidate`'s grid also carries,
+ * or null when either grid is unknown.
+ */
+export function sizeCoverage(target, candidate) {
+  const t = target?.sizeKeys, c = candidate?.sizeKeys;
+  if (!Array.isArray(t) || !Array.isArray(c) || !t.length || !c.length) return null;
+  const cs = new Set(c);
+  let shared = 0;
+  for (const k of t) if (cs.has(k)) shared += 1;
+  return shared / t.length;
+}
+
+/** The multiplier topNeighbours applies: 0 excludes, 1 leaves the score alone. */
+export function sizeFitFactor(target, candidate) {
+  const cov = sizeCoverage(target, candidate);
+  if (cov === null) return 1;
+  if (cov === 0) return 0;
+  return SIZE_FIT_FLOOR + (1 - SIZE_FIT_FLOOR) * cov;
 }
 
 // Price bands are ORDERED, so "one band apart" is a real relationship and
@@ -260,15 +306,21 @@ export function parseNeighbours(value) {
  * Ties break on pid so a re-run produces the identical list and a diff of two
  * runs shows only what actually moved.
  *
- * A zero score is never a neighbour: across the silhouette wall, or with
- * nothing at all in common, "no suggestion" is the right answer and an empty
- * list is what the sheet is built to handle.
+ * A zero score is never a neighbour: across the silhouette wall, with
+ * nothing at all in common, or with no size in common (sizeFitFactor),
+ * "no suggestion" is the right answer and an empty list is what the sheet is
+ * built to handle.
  */
 export function topNeighbours(target, candidates, { limit = MAX_NEIGHBOURS } = {}) {
   if (!target) return [];
   const scored = [];
   for (const c of candidates) {
-    const { score } = scorePair(target, c);
+    const { score: similarity } = scorePair(target, c);
+    // Size fit is applied HERE and not inside scorePair: similarity is a
+    // symmetric relation about what the shoes look like, and "does B come in
+    // A's sizes" is not symmetric (a 3–13 shoe covers a 3–6 one, not the
+    // reverse). The reason code still describes the look, never the size.
+    const score = similarity * sizeFitFactor(target, c);
     if (score <= 0) continue;
     scored.push({ pid: c.pid, score, code: matchReasonCode(target, c) });
   }
