@@ -29,6 +29,7 @@ describe("view helpers", () => {
   it("Ready does not need the name: 'naming pending' and Approve still offered", () => {
     const pending = ready({ suggestedName: undefined, naming: { status: "pending", since: 1 } });
     expect(shopifyNameLine(pending)).toBe("Shopify name: naming pending");
+    expect(shopifyNameLine({ suggestedName: "A", chain: { name: { name: "Applied" } } })).toBe("Shopify name: Applied");
     expect(actionsFor(pending).approve).toBe(true);
     const approved = { status: "approved", approvedAt: 1, naming: { status: "pending" } };
     expect(destinationLines(approved)).toEqual(["Shopify — waiting for its name (the groups don't wait)", "WhatsApp — next posting window"]);

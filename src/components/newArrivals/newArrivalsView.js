@@ -73,6 +73,8 @@ export function rejectionText(item) {
 /** Done tab: where the item went, and when. One line per destination. */
 /** The Shopify name line on a card: the suggestion, or why there is none yet. */
 export function shopifyNameLine(item) {
+  // The name actually APPLIED by the chain wins; then the suggestion.
+  if (item?.chain?.name?.name) return `Shopify name: ${item.chain.name.name}`;
   if (item?.suggestedName) return `Shopify name: ${item.suggestedName}`;
   if (item?.naming?.status === "pending") return "Shopify name: naming pending";
   if (item?.naming?.status === "failed") return `Shopify name: ${item.naming.reason || "could not be named"}`;
