@@ -172,7 +172,10 @@ describe("every other category is untouched", () => {
   it("saves a sneaker with no barcode answer at all", async () => {
     const r = await mount({
       isPerfume: false,
-      form: { ...baseForm, categoryKey: "sneakers", sizeRun: ["9"], printedBarcode: null, printedBarcodeAuto: false },
+      // The shoe + box photos are present: since the guided-photo work
+      // (2026-10-02) footwear cannot save without them — that gate is pinned in
+      // NewProductForm.guidedPhotos.test.jsx; this test is about the barcode.
+      form: { ...baseForm, categoryKey: "sneakers", sizeRun: ["9"], printedBarcode: null, printedBarcodeAuto: false, photoBlob: {}, boxBlob: {} },
       formSizes: ["9"], formOneSize: false,
       selectedCat: { key: "sneakers", label: "Sneakers" },
     });
