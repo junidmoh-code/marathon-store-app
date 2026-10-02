@@ -7,7 +7,7 @@
 //
 // Reads and writes ONLY through `api` (newArrivalsApi.js → callables), so this
 // file has no Firebase import and renders in tests with a fake api.
-import React, { useCallback, useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
 import { TABS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText } from "./newArrivalsView";
 
@@ -67,7 +67,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
   // is dropped — it must never paint the wrong tab's items and buttons.
   const loadSeq = useRef(0);
   const activeTab = useRef(tab);
-  activeTab.current = tab;
+  // Track the tab whose render COMMITTED (not one merely being rendered).
+  useLayoutEffect(() => { activeTab.current = tab; }, [tab]);
   const load = useCallback(async (which = tab) => {
     const seq = ++loadSeq.current;
     const stale = () => seq !== loadSeq.current || which !== activeTab.current;

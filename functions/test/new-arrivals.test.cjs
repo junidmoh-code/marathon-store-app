@@ -128,7 +128,8 @@ test("retry after a chain refusal clears the old lap (chain stamps, name, destin
 
 test("a redelivered enqueue repairs a missing index entry", async () => {
   const db = makeFakeDb({ new_arrivals: { items: { [PID]: { pid: PID, status: "ready", enqueuedAt: 7 } } } });
-  assert.equal((await na.enqueue(db, PID, upload(), NOW)).enqueued, false);
+  // Even a delivery far outside the window repairs it.
+  assert.equal((await na.enqueue(db, PID, upload({ createdBy: { at: 1 } }), NOW)).enqueued, false);
   assert.equal((await db.ref(`${core.BY_STATUS}/ready/${PID}`).once()).val(), 7);
 });
 

@@ -43,6 +43,15 @@ async function assertNewArrivalsAccess(request, db = admin.database()) {
 
 // ── enqueue ──────────────────────────────────────────────────────────────────
 async function enqueue(db, pid, product, nowMs) {
+  // An item already queued is repaired FIRST, whatever the eligibility window
+  // says now: a late redelivery must still restore a lost index entry.
+  if (core.PID_RE.test(String(pid || ""))) {
+    const existing = (await db.ref(`${core.ITEMS}/${pid}`).once("value")).val();
+    if (existing && existing.status) {
+      await db.ref(core.ROOT).update(core.indexMove(pid, null, existing.status, existing.enqueuedAt));
+      return { enqueued: false, why: "already queued" };
+    }
+  }
   const verdict = core.enqueueDecision(pid, product, nowMs);
   if (!verdict.ok) return { enqueued: false, why: verdict.why };
   const item = core.buildItem(pid, product, nowMs);
