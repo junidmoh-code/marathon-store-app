@@ -6262,7 +6262,8 @@ function AdminView({ products, orders, onExit }) {
       if (form.photoBlob && form.photoSourceBlob) {
         try {
           const srcRef = storageRef(storage, `products/${id}/source_photo.jpg`);
-          await uploadBytes(srcRef, form.photoSourceBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
+          // no-cache: these paths are reused, and a stale cached copy would be fed to the photo pipeline.
+          await uploadBytes(srcRef, form.photoSourceBlob, { contentType: "image/jpeg", cacheControl: "no-cache" });
           photoSourceUrl = await getDownloadURL(srcRef);
         } catch (srcErr) {
           if (needsSources) throw srcErr;
@@ -6272,7 +6273,7 @@ function AdminView({ products, orders, onExit }) {
       let photoBoxUrl = null;
       if (needsSources && form.boxBlob) {
         const boxRef = storageRef(storage, `products/${id}/source_box.jpg`);
-        await uploadBytes(boxRef, form.boxBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
+        await uploadBytes(boxRef, form.boxBlob, { contentType: "image/jpeg", cacheControl: "no-cache" });
         photoBoxUrl = await getDownloadURL(boxRef);
       }
 
@@ -7338,7 +7339,9 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
           // photoUpdatedAt: upload-time stamp for the AI Photo Studio "Recent"
           // view. Only human uploads stamp it — an approved AI re-shoot isn't
           // a new upload, so approve() deliberately leaves it alone.
-          await update(ref(database, `products/${product.id}`), { photoUrl: url, photoUpdatedAt: serverNowMs() });
+          // A replaced photo makes the hi-res upload copy stale: clear it so the
+          // New Arrivals pipeline generates from the photo the product now shows.
+          await update(ref(database, `products/${product.id}`), { photoUrl: url, photoUpdatedAt: serverNowMs(), photoSourceUrl: null });
         } catch (err) {
           console.error("photo upload failed:", err);
           alert("Failed to save photo. Please try again.");

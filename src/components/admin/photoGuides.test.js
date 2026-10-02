@@ -110,3 +110,10 @@ describe("geometry", () => {
     expect(GARMENT_STEP.shape.h).toBeGreaterThan(GARMENT_STEP.shape.w);
   });
 });
+
+describe("box step covers every key the photo pipeline treats as footwear", () => {
+  it("designer shoes and sandals get the box step too", () => {
+    expect(guideFor({ categoryKey: "designer-shoes" }).steps.map((x) => x.id)).toEqual(["shoe", "box"]);
+    expect(guideFor({ categoryKey: "sandals" }).steps.map((x) => x.id)).toEqual(["shoe", "box"]);
+  });
+});

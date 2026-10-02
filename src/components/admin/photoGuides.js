@@ -96,9 +96,16 @@ export const GARMENT_STEP = Object.freeze({
  * @param {{ categoryKey?: string, isFootwear?: boolean, isClothing?: boolean }} q
  * @returns {{ kind: "footwear"|"clothing", steps: object[] } | null}
  */
+// Every key the New Arrivals photo pipeline composes on the FOOTWEAR plate
+// (marathon-group-poster src/plates.mjs FOOTWEAR_KEYS). Wider than the stock
+// FOOTWEAR_CATEGORY_KEYS on purpose: a designer shoe or a sandal is still
+// photographed with its box, and an upload without the box step would only be
+// rejected "box photo needed" downstream.
+export const BOX_PHOTO_KEYS = Object.freeze([...new Set([...FOOTWEAR_CATEGORY_KEYS, "designer-shoes", "sandals"])]);
+
 export function guideFor({ categoryKey, isFootwear, isClothing } = {}) {
   const key = typeof categoryKey === "string" ? categoryKey.trim() : "";
-  if (isFootwear === true || (key && FOOTWEAR_CATEGORY_KEYS.includes(key))) {
+  if (isFootwear === true || (key && BOX_PHOTO_KEYS.includes(key))) {
     return { kind: "footwear", steps: [SHOE_STEP, BOX_STEP] };
   }
   if (isClothing === true) return { kind: "clothing", steps: [GARMENT_STEP] };
