@@ -75,10 +75,12 @@ export const SHOE_STEP = Object.freeze({
   place: { cx: 0.5, cy: 0.62, maxW: 0.86, maxH: 0.5 },
 });
 
+// OPTIONAL (Junid, 2 Oct): a shoe with no box photo gets a box of the SAME
+// BRAND from the poster's box library (or none). The shoe's own box upgrades it.
 export const BOX_STEP = Object.freeze({
-  id: "box", formField: "box", required: true,
-  title: "Box photo",
-  instruction: "The shoe's own box · front panel facing you · whole box in the outline",
+  id: "box", formField: "box", required: false,
+  title: "Box photo (optional)",
+  instruction: "If you have the shoe's own box · front panel facing you · whole box in the outline",
   shape: BOX,
   place: { cx: 0.5, cy: 0.55, maxW: 0.84, maxH: 0.55 },
 });
@@ -98,9 +100,8 @@ export const GARMENT_STEP = Object.freeze({
  */
 // Every key the New Arrivals photo pipeline composes on the FOOTWEAR plate
 // (marathon-group-poster src/plates.mjs FOOTWEAR_KEYS). Wider than the stock
-// FOOTWEAR_CATEGORY_KEYS on purpose: a designer shoe or a sandal is still
-// photographed with its box, and an upload without the box step would only be
-// rejected "box photo needed" downstream.
+// FOOTWEAR_CATEGORY_KEYS on purpose: a designer shoe or a sandal is offered the
+// same (optional) box step.
 export const BOX_PHOTO_KEYS = Object.freeze([...new Set([...FOOTWEAR_CATEGORY_KEYS, "designer-shoes", "sandals"])]);
 
 export function guideFor({ categoryKey, isFootwear, isClothing } = {}) {
