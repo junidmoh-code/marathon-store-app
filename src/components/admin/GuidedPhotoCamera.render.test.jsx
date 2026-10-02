@@ -70,6 +70,21 @@ describe("with a camera stream", () => {
     expect(buttonWith(tr, "Choose from photos")).toBeTruthy();
   });
 
+  it("a capture that fails (no canvas) falls back, releases the camera and frees the button", async () => {
+    setNavigator({ mediaDevices: { getUserMedia } });
+    const onCapture = vi.fn(), onFallback = vi.fn();
+    let tr;
+    // A video element with a real frame size; no `document` here, so drawing throws.
+    await act(async () => {
+      tr = TestRenderer.create(<GuidedPhotoCamera step={SHOE_STEP} onCapture={onCapture} onFallback={onFallback} onClose={vi.fn()} />,
+        { createNodeMock: (el) => (el.type === "video" ? { videoWidth: 640, videoHeight: 480, play: () => Promise.resolve(), srcObject: null } : {}) });
+    });
+    await act(async () => { await buttonWith(tr, "Take photo").props.onClick(); });
+    expect(onCapture).not.toHaveBeenCalled();
+    expect(onFallback).toHaveBeenCalledTimes(1);
+    expect(stopped).toBeGreaterThan(0);
+  });
+
   it("the box step draws the box outline and its copy", async () => {
     setNavigator({ mediaDevices: { getUserMedia } });
     const tr = await mount(<GuidedPhotoCamera step={BOX_STEP} onCapture={vi.fn()} onFallback={vi.fn()} onClose={vi.fn()} />);

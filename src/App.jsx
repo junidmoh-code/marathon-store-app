@@ -6665,6 +6665,8 @@ function AdminView({ products, orders, onExit }) {
         console.warn("opening-stock receive failed:", recErr);
       }
 
+      // Any photo still being prepared belongs to the product just saved.
+      photoPrepSeq.current.photo += 1; photoPrepSeq.current.box += 1;
       setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, boxBlob:null, boxPreviewUrl:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
       setShoeboxTouched(false);
       setRecvQtys({});
@@ -6776,11 +6778,17 @@ function AdminView({ products, orders, onExit }) {
   // source copy (photoSourceBlob → source_photo.jpg) for the AI Studio
   // pipeline. One decode feeds both; the encode lives in productPhotoEncode.js.
   // A picked file and a guided-camera shot both arrive here as a Blob.
+  // ONE CURRENT PREPARATION PER SLOT. Encoding a photo takes a moment; a newer
+  // pick of the same slot, or the form being saved and reset, makes an older
+  // one stale — its result must never land (it would put the last product's
+  // photo on the next one). Each slot has its own counter; a reset bumps both.
+  const photoPrepSeq = useRef({ photo: 0, box: 0 });
   const applyProductPhotoFile = (file) => {
     if (!file) return;
+    const seq = ++photoPrepSeq.current.photo;
     prepareProductPhoto(file)
-      .then((p) => setForm(f => ({ ...f, photoUrl: p.photoUrl, photoBlob: p.photoBlob, photoSourceBlob: p.photoSourceBlob })))
-      .catch((err) => { console.warn("product photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
+      .then((p) => { if (seq === photoPrepSeq.current.photo) setForm(f => ({ ...f, photoUrl: p.photoUrl, photoBlob: p.photoBlob, photoSourceBlob: p.photoSourceBlob })); })
+      .catch((err) => { if (seq !== photoPrepSeq.current.photo) return; console.warn("product photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
   };
   const handleImageUpload = e => applyProductPhotoFile(e.target.files[0]);
   // A guided step's capture (photoGuides.js): the shoe / garment step fills the
@@ -6789,9 +6797,10 @@ function AdminView({ products, orders, onExit }) {
   const handleGuidedPhoto = (step, file) => {
     if (!file) return;
     if (step.formField !== "box") { applyProductPhotoFile(file); return; }
+    const seq = ++photoPrepSeq.current.box;
     prepareBoxPhoto(file)
-      .then((b) => setForm(f => ({ ...f, boxBlob: b.boxBlob, boxPreviewUrl: b.boxPreviewUrl })))
-      .catch((err) => { console.warn("box photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
+      .then((b) => { if (seq === photoPrepSeq.current.box) setForm(f => ({ ...f, boxBlob: b.boxBlob, boxPreviewUrl: b.boxPreviewUrl })); })
+      .catch((err) => { if (seq !== photoPrepSeq.current.box) return; console.warn("box photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
   };
 
   // Detail page: which product, and stale-hash guard. If the hash points

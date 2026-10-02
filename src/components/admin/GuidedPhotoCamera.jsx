@@ -120,12 +120,20 @@ export default function GuidedPhotoCamera({ step, onCapture, onFallback, onClose
     const video = videoRef.current;
     if (!video || !video.videoWidth) { stopStream(); onFallback(); return; }
     setShooting(true);
-    const canvas = drawScaled(video, video.videoWidth, video.videoHeight, SOURCE_PHOTO_MAX_DIM);
-    // High quality on purpose: this frame is re-encoded by the product photo
-    // pipeline, and every generation of JPEG loss lands on the AI source copy.
-    const blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.95));
-    stopStream();
-    setShooting(false);
+    let blob = null;
+    try {
+      const canvas = drawScaled(video, video.videoWidth, video.videoHeight, SOURCE_PHOTO_MAX_DIM);
+      // High quality on purpose: this frame is re-encoded by the product photo
+      // pipeline, and every generation of JPEG loss lands on the AI source copy.
+      blob = await new Promise((resolve) => canvas.toBlob(resolve, "image/jpeg", 0.95));
+    } catch (err) {
+      console.warn("guided photo capture failed:", err);
+      blob = null;
+    } finally {
+      // Whatever happened, the camera is released and the button comes back.
+      stopStream();
+      setShooting(false);
+    }
     if (blob) onCapture(blob);
     else onFallback();
   };
