@@ -36,7 +36,7 @@ Rejection codes:
 
 ## Who writes
 
-- **`newArrivalsEnqueue`** (`onValueCreated products/{pid}`) enqueues only records carrying the upload form's own `createdBy.at` from the last 15 minutes. No merges and no price records.
+- **`newArrivalsEnqueue`** (`onValueCreated products/{pid}`) enqueues records carrying the upload form's marker `newArrivalAt` (written in `addProductOnce`), with no time window. Devices still running an older bundle without the marker are caught by the upload form's own `createdBy.at` stamp from the last 15 minutes. Merges and price records are never queued.
 - **The card** reads and writes only through the callables `newArrivalsList`, `newArrivalsApprove` and `newArrivalsRetry`. These are gated to the super-admin or `permFlags/shopify_publish`.
 - **The Mac mini agents** use the Admin SDK: `marathon-group-poster` for generation, checking and posting, and `scripts/newArrivals/chainCore.mjs` for the post-approval chain.
 
