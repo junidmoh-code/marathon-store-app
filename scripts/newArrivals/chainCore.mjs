@@ -83,6 +83,15 @@ export async function advance(pid, deps) {
   if (item.status === "approved" && item.naming?.status === "pending") {
     return { pid, outcome: "waiting", step: "name-pending" };
   }
+  // A FAILED name refuses the Shopify leg BEFORE anything is written — no
+  // photo swap, no publisher-card edits for a listing that cannot happen.
+  if (item.status === "approved" && item.naming?.status === "failed") {
+    const reason = item.naming.reason || "the name suggester could not name it";
+    const at = await deps.now();
+    await move(db, pid, "approved", "rejected", { rejection: { code: "chain", step: "name", reason, at } }, at);
+    log(`${pid}: REJECTED at name — ${reason}`);
+    return { pid, outcome: "rejected", step: "name", reason };
+  }
   if (item.status === "approved") {
     item = await move(db, pid, "approved", "chaining", {}, await deps.now());
     if (!item) return { pid, outcome: "skipped", reason: "could not claim" };
@@ -145,7 +154,6 @@ export async function advance(pid, deps) {
   if (!chain.name) {
     // Without the shown proposal's timestamp the mutator's freshness check is
     // skipped and a NEWER proposal could be applied unseen — refuse instead.
-    if (item.naming?.status === "failed") return reject("name", item.naming.reason || "the name suggester could not name it");
     if (item.nameProposedAt == null) return reject("name", "the card did not record which suggested name was shown — Retry for a fresh one");
     const res = await decide(db, pid, node, applyProposalMutator, { seenProposedAt: item.nameProposedAt ?? null }, await ctx());
     if (!res.ok) {

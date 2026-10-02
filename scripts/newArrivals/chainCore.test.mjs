@@ -197,6 +197,10 @@ describe("the original photo, resume, and publish-once", () => {
     const db = world({ item: { naming: { status: "failed", reason: "duplicate name — needs a distinct name" } } });
     const r = await advance(PID, deps(db).d);
     expect(r).toMatchObject({ outcome: "rejected", step: "name", reason: "duplicate name — needs a distinct name" });
+    // Nothing of the Shopify leg was written.
+    expect((await read(db, `products/${PID}`)).photoUrl).toBe(ORIG);
+    expect((await read(db, `shopify_publish/${PID}`)).photos).toBeUndefined();
+    expect((await read(db, `new_arrivals/items/${PID}`)).status).toBe("rejected");
   });
 
   it("an item that is not approved/chaining is left alone", async () => {
