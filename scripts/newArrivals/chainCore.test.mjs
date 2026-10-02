@@ -103,6 +103,13 @@ describe("refusals go to Rejected in plain words — never forced", () => {
     expect((await read(db, `shopify_publish/${PID}`)).cleanName).toBeUndefined();
   });
 
+  it("no record of the name Junid saw → refused, never applied blind", async () => {
+    const db = world({ item: { nameProposedAt: null } });
+    const r = await advance(PID, deps(db).d);
+    expect(r).toMatchObject({ outcome: "rejected", step: "name" });
+    expect((await read(db, `shopify_publish/${PID}`)).cleanName).toBeUndefined();
+  });
+
   it("no retail price → rejected before anything is written", async () => {
     const db = world({ product: { retailPrice: null } });
     const r = await advance(PID, deps(db).d);

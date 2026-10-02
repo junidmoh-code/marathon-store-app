@@ -7,7 +7,7 @@
 //
 // Reads and writes ONLY through `api` (newArrivalsApi.js → callables), so this
 // file has no Firebase import and renders in tests with a fake api.
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
 import { TABS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText } from "./newArrivalsView";
 
@@ -63,11 +63,20 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
+  // A response for a tab no longer shown, or overtaken by a newer request,
+  // is dropped — it must never paint the wrong tab's items and buttons.
+  const loadSeq = useRef(0);
+  const activeTab = useRef(tab);
+  activeTab.current = tab;
   const load = useCallback(async (which = tab) => {
+    const seq = ++loadSeq.current;
+    const stale = () => seq !== loadSeq.current || which !== activeTab.current;
     try {
       const res = await api.list(which);
+      if (stale()) return;
       setData({ items: res.items || [], tabCounts: res.tabCounts || {} });
     } catch (e) {
+      if (stale()) return;
       setMsg(`Couldn't load: ${e?.message || e}`);
       setData((d) => ({ ...d, items: d.items || [] }));
     }
@@ -87,18 +96,18 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
       const res = await fn();
       const skipped = res?.skipped?.length ? ` · ${res.skipped.length} not approved (${res.skipped.map((s) => s.why).join("; ")})` : "";
       setMsg(okText(res) + skipped);
-      await load(tab);
+      await load(activeTab.current);
     } catch (e) {
       setMsg(`Not done: ${e?.message || e}`);
     } finally { setBusy(false); }
   };
 
-  const onApprove = (pid) => run(() => api.approve([pid]), (r) => (r?.approved?.length ? "Approved — it will be published and posted automatically." : "Nothing approved."));
+  const onApprove = (pid) => run(() => api.approve([pid]), (r) => (r?.approved?.length ? "Approved — publishing has started. Its progress, or any refusal, shows under Done or Rejected." : "Nothing approved."));
   // Approve all = every item ON THIS SCREEN — never items Junid has not seen.
   const onApproveAll = () => {
     const pids = (data.items || []).filter((it) => actionsFor(it).approve).map((it) => it.pid);
     if (!pids.length) return;
-    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Approve all ${pids.length} items shown? Each will be published to Shopify and posted to the groups.`)) return;
+    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Approve all ${pids.length} items shown? Publishing to Shopify and the groups starts for each; any that Shopify refuses will show in Rejected.`)) return;
     run(() => api.approve(pids), (r) => `Approved ${r?.approved?.length || 0}.`);
   };
   const approvable = (items || []).filter((it) => actionsFor(it).approve).length;

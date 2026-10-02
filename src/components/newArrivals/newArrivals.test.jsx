@@ -98,7 +98,7 @@ describe("NewArrivalsScreen", () => {
     await act(async () => { button(tree, "Approve").props.onClick(); });
     expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
     expect(api.list).toHaveBeenCalledTimes(2);
-    expect(text(tree)).toContain("published and posted automatically");
+    expect(text(tree)).toContain("publishing has started");
   });
 
   it("Approve all asks first and does nothing if Junid cancels", async () => {
@@ -121,6 +121,18 @@ describe("NewArrivalsScreen", () => {
     const tree = await render(api);
     await act(async () => { button(tree, "Approve").props.onClick(); });
     expect(text(tree)).toContain("1 not approved (it is approved, not ready)");
+  });
+
+  it("a slow response for a tab no longer shown is dropped", async () => {
+    let resolveReady;
+    const api = fakeApi([], { list: vi.fn((tab) => tab === "ready"
+      ? new Promise((r) => { resolveReady = r; })
+      : Promise.resolve({ items: [{ pid: "p1789999990009", status: "rejected", rejection: { code: "source", reason: "retake photo" }, product: {} }], tabCounts: {} })) });
+    const tree = await render(api);
+    await act(async () => { tree.root.findAll((n) => n.props?.role === "tab")[2].props.onClick(); });
+    await act(async () => { resolveReady({ items: [ready()], tabCounts: {} }); });
+    expect(text(tree)).toContain("retake photo");
+    expect(text(tree)).not.toContain("Shopify name: Low-top sneaker in black");
   });
 
   it("a load failure is shown in words", async () => {

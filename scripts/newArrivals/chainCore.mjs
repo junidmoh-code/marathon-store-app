@@ -137,6 +137,9 @@ export async function advance(pid, deps) {
 
   // (b) the name — the proposal Junid saw on the card, and only that one.
   if (!chain.name) {
+    // Without the shown proposal's timestamp the mutator's freshness check is
+    // skipped and a NEWER proposal could be applied unseen — refuse instead.
+    if (item.nameProposedAt == null) return reject("name", "the card did not record which suggested name was shown — Retry for a fresh one");
     const res = await decide(db, pid, node, applyProposalMutator, { seenProposedAt: item.nameProposedAt ?? null }, await ctx());
     if (!res.ok) {
       // Resume after a crash between the apply and its stamp: the proposal
