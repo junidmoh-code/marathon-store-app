@@ -77,6 +77,12 @@ export async function advance(pid, deps) {
   const { db, log = () => {} } = deps;
   let item = (await db.ref(`${ITEMS}/${pid}`).once("value")).val();
   if (!item) return { pid, outcome: "skipped", reason: "not in the queue" };
+  // THE SHOPIFY LEG WAITS FOR THE NAME (Junid's call, 2 Oct): naming is its own
+  // retrying step; an approved item whose name is still pending is not started
+  // — nothing is written — and the other legs (WhatsApp, socials) carry on.
+  if (item.status === "approved" && item.naming?.status === "pending") {
+    return { pid, outcome: "waiting", step: "name-pending" };
+  }
   if (item.status === "approved") {
     item = await move(db, pid, "approved", "chaining", {}, await deps.now());
     if (!item) return { pid, outcome: "skipped", reason: "could not claim" };
@@ -139,6 +145,7 @@ export async function advance(pid, deps) {
   if (!chain.name) {
     // Without the shown proposal's timestamp the mutator's freshness check is
     // skipped and a NEWER proposal could be applied unseen — refuse instead.
+    if (item.naming?.status === "failed") return reject("name", item.naming.reason || "the name suggester could not name it");
     if (item.nameProposedAt == null) return reject("name", "the card did not record which suggested name was shown — Retry for a fresh one");
     const res = await decide(db, pid, node, applyProposalMutator, { seenProposedAt: item.nameProposedAt ?? null }, await ctx());
     if (!res.ok) {

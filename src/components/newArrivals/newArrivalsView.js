@@ -71,14 +71,24 @@ export function rejectionText(item) {
 }
 
 /** Done tab: where the item went, and when. One line per destination. */
+/** The Shopify name line on a card: the suggestion, or why there is none yet. */
+export function shopifyNameLine(item) {
+  if (item?.suggestedName) return `Shopify name: ${item.suggestedName}`;
+  if (item?.naming?.status === "pending") return "Shopify name: naming pending";
+  if (item?.naming?.status === "failed") return `Shopify name: ${item.naming.reason || "could not be named"}`;
+  return null;
+}
+
 export function destinationLines(item) {
   const d = item?.destinations || {};
   const out = [];
   if (d.shopify?.at) out.push(`Shopify — live ${whenText(d.shopify.at)}${d.shopify.title ? ` as “${d.shopify.title}”` : ""}`);
+  else if (item?.naming?.status === "pending" && item?.approvedAt) out.push("Shopify — waiting for its name (the groups don't wait)");
+  else if (item?.naming?.status === "failed" && item?.approvedAt) out.push(`Shopify — not published: ${item.naming.reason}`);
   else if (item?.status === "chaining" || item?.status === "approved") out.push("Shopify — publishing");
   if (item?.soldOutBeforePosting?.at) out.push(`WhatsApp groups — not posted: sold out before the ${item.soldOutBeforePosting.window || ""} window`.replace("  ", " "));
   else if (d.groups?.at) out.push(`WhatsApp — ${d.groups.count || 0} groups, ${whenText(d.groups.at)}`);
-  else if (d.shopify?.at) out.push("WhatsApp — next posting window");
+  else if (item?.approvedAt) out.push("WhatsApp — next posting window");
   if (d.social?.at) out.push(`Instagram & Facebook — carousel ${whenText(d.social.scheduledAt || d.social.at)}`);
   return out;
 }

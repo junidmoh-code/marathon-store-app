@@ -5,6 +5,7 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import NewArrivalsScreen from "./NewArrivalsScreen";
 import {
+  shopifyNameLine,
   priceText, sizesText, statusLine, rejectionText, destinationLines, actionsFor, chainProgress, MAX_ATTEMPTS,
 } from "./newArrivalsView";
 
@@ -23,6 +24,16 @@ describe("view helpers", () => {
     // RTDB returns a sparse array as an index-keyed object.
     expect(sizesText({ 0: "6", 2: "8" })).toBe("6 · 8");
     expect(sizesText(undefined)).toBe("No sizes");
+  });
+
+  it("Ready does not need the name: 'naming pending' and Approve still offered", () => {
+    const pending = ready({ suggestedName: undefined, naming: { status: "pending", since: 1 } });
+    expect(shopifyNameLine(pending)).toBe("Shopify name: naming pending");
+    expect(actionsFor(pending).approve).toBe(true);
+    const approved = { status: "approved", approvedAt: 1, naming: { status: "pending" } };
+    expect(destinationLines(approved)).toEqual(["Shopify — waiting for its name (the groups don't wait)", "WhatsApp — next posting window"]);
+    expect(destinationLines({ status: "rejected", approvedAt: 1, naming: { status: "failed", reason: "duplicate name — needs a distinct name" } })[0])
+      .toBe("Shopify — not published: duplicate name — needs a distinct name");
   });
 
   it("Approve only with a generated photo — never on an original", () => {
@@ -52,7 +63,7 @@ describe("view helpers", () => {
     // destinations.groups written as [] comes back absent.
     const lines = destinationLines({ status: "done", destinations: { shopify: { at: NOW, title: "Low-top sneaker in black" } } });
     expect(lines[0]).toMatch(/^Shopify — live .* as “Low-top sneaker in black”/);
-    expect(lines[1]).toBe("WhatsApp — next posting window");
+    expect(lines.length).toBe(1); // not approved here, so no WhatsApp line
     expect(destinationLines({ status: "done", soldOutBeforePosting: { at: NOW, window: "10:00" }, destinations: { shopify: { at: NOW } } })[1])
       .toBe("WhatsApp groups — not posted: sold out before the 10:00 window");
     expect(destinationLines({ status: "done" })).toEqual([]);
