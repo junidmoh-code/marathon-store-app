@@ -34,6 +34,7 @@ describe("view helpers", () => {
     expect(destinationLines(approved)).toEqual(["Shopify — waiting for its name (the groups don't wait)", "WhatsApp — next posting window"]);
     expect(destinationLines({ status: "rejected", approvedAt: 1, naming: { status: "failed", reason: "duplicate name — needs a distinct name" } })[0])
       .toBe("Shopify — not published: duplicate name — needs a distinct name");
+    expect(destinationLines({ status: "approved", approvedAt: 1, naming: { status: "failed" } })[0]).toBe("Shopify — not published: could not be named");
   });
 
   it("Approve only with a generated photo — never on an original", () => {

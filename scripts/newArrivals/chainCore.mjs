@@ -83,15 +83,6 @@ export async function advance(pid, deps) {
   if (item.status === "approved" && item.naming?.status === "pending") {
     return { pid, outcome: "waiting", step: "name-pending" };
   }
-  // A FAILED name refuses the Shopify leg BEFORE anything is written — no
-  // photo swap, no publisher-card edits for a listing that cannot happen.
-  if (item.status === "approved" && item.naming?.status === "failed") {
-    const reason = item.naming.reason || "the name suggester could not name it";
-    const at = await deps.now();
-    await move(db, pid, "approved", "rejected", { rejection: { code: "chain", step: "name", reason, at } }, at);
-    log(`${pid}: REJECTED at name — ${reason}`);
-    return { pid, outcome: "rejected", step: "name", reason };
-  }
   if (item.status === "approved") {
     item = await move(db, pid, "approved", "chaining", {}, await deps.now());
     if (!item) return { pid, outcome: "skipped", reason: "could not claim" };
@@ -114,6 +105,9 @@ export async function advance(pid, deps) {
     chain[step] = { at, ...extra };
   };
   const ctx = async () => ({ now: await deps.now(), uid: AGENT_UID });
+  // A FAILED name refuses the Shopify leg here — through the one reject path,
+  // after the claim and before any photo or publisher-card write.
+  if (item.naming?.status === "failed") return reject("name", item.naming.reason || "could not be named");
   const product = (await db.ref(`products/${pid}`).once("value")).val();
   if (!product) return reject("photo", "the product record no longer exists");
   if (!item.generatedUrl) return reject("photo", "no generated photo on the item");
