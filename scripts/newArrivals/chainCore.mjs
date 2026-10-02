@@ -77,6 +77,12 @@ export async function advance(pid, deps) {
   const { db, log = () => {} } = deps;
   let item = (await db.ref(`${ITEMS}/${pid}`).once("value")).val();
   if (!item) return { pid, outcome: "skipped", reason: "not in the queue" };
+  // THE SHOPIFY LEG WAITS FOR THE NAME (Junid's call, 2 Oct): naming is its own
+  // retrying step; an approved item whose name is still pending is not started
+  // — nothing is written — and the other legs (WhatsApp, socials) carry on.
+  if (item.status === "approved" && item.naming?.status === "pending") {
+    return { pid, outcome: "waiting", step: "name-pending" };
+  }
   if (item.status === "approved") {
     item = await move(db, pid, "approved", "chaining", {}, await deps.now());
     if (!item) return { pid, outcome: "skipped", reason: "could not claim" };
@@ -99,6 +105,9 @@ export async function advance(pid, deps) {
     chain[step] = { at, ...extra };
   };
   const ctx = async () => ({ now: await deps.now(), uid: AGENT_UID });
+  // A FAILED name refuses the Shopify leg here — through the one reject path,
+  // after the claim and before any photo or publisher-card write.
+  if (item.naming?.status === "failed") return reject("name", item.naming.reason || "could not be named");
   const product = (await db.ref(`products/${pid}`).once("value")).val();
   if (!product) return reject("photo", "the product record no longer exists");
   if (!item.generatedUrl) return reject("photo", "no generated photo on the item");

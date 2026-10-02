@@ -9,7 +9,7 @@
 // file has no Firebase import and renders in tests with a fake api.
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
-import { TABS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText } from "./newArrivalsView";
+import { TABS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText, shopifyNameLine } from "./newArrivalsView";
 
 const REFRESH_MS = 30_000;
 
@@ -36,8 +36,8 @@ function ItemCard({ item, tab, busy, onApprove, onRetry }) {
         {(tab !== "new") && <Photo url={item.generatedUrl || (tab === "done" ? p.photoUrl : null)} label="Generated" />}
       </div>
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
-      {item.suggestedName && (
-        <div style={{ color: BLUE_L, fontSize: 13, marginTop: 2 }}>Shopify name: {item.suggestedName}</div>
+      {shopifyNameLine(item) && (
+        <div style={{ color: item.suggestedName ? BLUE_L : GRAY, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>
       )}
       <div style={{ color: "#dfe7ff", fontSize: 13, marginTop: 4 }}>
         {priceText(p.retailPrice)} · Sizes {sizesText(p.sizes)}

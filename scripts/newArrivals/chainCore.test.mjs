@@ -178,6 +178,31 @@ describe("the original photo, resume, and publish-once", () => {
     expect((await read(db, `shopify_publish/${PID}`)).desiredState).toBeUndefined();
   });
 
+  it("an approved item whose name is pending is NOT started — nothing written", async () => {
+    const db = world({ item: { naming: { status: "pending", since: 1 }, nameProposedAt: null } });
+    expect(await advance(PID, deps(db).d)).toEqual({ pid: PID, outcome: "waiting", step: "name-pending" });
+    expect((await read(db, `new_arrivals/items/${PID}`)).status).toBe("approved");
+    expect((await read(db, `products/${PID}`)).photoUrl).toBe(ORIG);
+  });
+
+  it("starts by itself once the name lands", async () => {
+    const db = world({ item: { naming: { status: "pending", since: 1 } } });
+    await advance(PID, deps(db).d);
+    await db.ref(`new_arrivals/items/${PID}/naming`).set({ status: "done", since: 1, at: 2 });
+    expect((await advance(PID, deps(db).d)).outcome).toBe("waiting");
+    expect((await read(db, `shopify_publish/${PID}`)).desiredState).toBe("on");
+  });
+
+  it("a failed name refuses the Shopify leg in the namer's words", async () => {
+    const db = world({ item: { naming: { status: "failed", reason: "duplicate name — needs a distinct name" } } });
+    const r = await advance(PID, deps(db).d);
+    expect(r).toMatchObject({ outcome: "rejected", step: "name", reason: "duplicate name — needs a distinct name" });
+    // Nothing of the Shopify leg was written.
+    expect((await read(db, `products/${PID}`)).photoUrl).toBe(ORIG);
+    expect((await read(db, `shopify_publish/${PID}`)).photos).toBeUndefined();
+    expect((await read(db, `new_arrivals/items/${PID}`)).status).toBe("rejected");
+  });
+
   it("an item that is not approved/chaining is left alone", async () => {
     const db = world({ item: { status: "ready" } });
     expect((await advance(PID, deps(db).d)).outcome).toBe("skipped");
