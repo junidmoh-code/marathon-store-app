@@ -107,11 +107,12 @@ describe("NewArrivalsScreen", () => {
     const confirm = vi.fn(() => false);
     globalThis.window = { confirm };
     await act(async () => { button(tree, "Approve all 1").props.onClick(); });
-    expect(api.approveAll).not.toHaveBeenCalled();
+    expect(api.approve).not.toHaveBeenCalled();
     confirm.mockReturnValue(true);
     await act(async () => { button(tree, "Approve all 1").props.onClick(); });
-    expect(api.approveAll).toHaveBeenCalledTimes(1);
-    expect(confirm.mock.calls[0][0]).toMatch(/Approve all 1 Ready items/);
+    expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
+    expect(api.approveAll).not.toHaveBeenCalled();
+    expect(confirm.mock.calls[0][0]).toMatch(/Approve all 1 items shown/);
     delete globalThis.window;
   });
 

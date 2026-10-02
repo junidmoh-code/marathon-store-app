@@ -48,7 +48,14 @@ async function enqueue(db, pid, product, nowMs) {
   const item = core.buildItem(pid, product, nowMs);
   // Idempotent under redelivery: an existing item is never overwritten.
   const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => (cur ? undefined : item));
-  if (!res.committed) return { enqueued: false, why: "already queued" };
+  if (!res.committed) {
+    // A crash between the item write and the index write would otherwise
+    // leave an item no reader can find (readers only walk by_status). The
+    // redelivered trigger lands here, so it re-asserts the index entry.
+    const cur = res.snapshot && res.snapshot.val();
+    if (cur && cur.status) await db.ref(core.ROOT).update(core.indexMove(pid, null, cur.status, cur.enqueuedAt));
+    return { enqueued: false, why: "already queued" };
+  }
   await db.ref(core.ROOT).update(core.indexMove(pid, null, "new", item.enqueuedAt));
   return { enqueued: true };
 }
@@ -158,7 +165,11 @@ async function retry(db, pid, uid, nowMs) {
     fields: {
       attemptsSinceRetry: 0, retryRequestedAt: nowMs, retryRequestedBy: uid || "unknown",
       lastRejection: cur && cur.rejection ? cur.rejection : null, rejection: null,
-      generatedUrl: null, checker: null,
+      generatedUrl: null, generatedPath: null, checker: null, namePending: null,
+      // A retry is a NEW lap: the previous lap's chain stamps, name and
+      // destinations must not let the chain skip steps with stale values.
+      chain: null, suggestedName: null, suggestedNameSource: null, nameProposedAt: null,
+      destinations: null, approvedAt: null, approvedBy: null,
     },
   }, out)(cur));
   const item = core.moved(res, "new");

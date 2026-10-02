@@ -48,6 +48,13 @@ const PID_RE = /^p\d{10,}$/;
 function enqueueDecision(pid, product, nowMs) {
   if (!PID_RE.test(String(pid || ""))) return { ok: false, why: "not an uploaded product id" };
   if (!product || typeof product !== "object") return { ok: false, why: "no record" };
+  if (product.mergedInto) return { ok: false, why: "merged record" };
+  if (product.category === PRICE_RECORD_CATEGORY) return { ok: false, why: "price record" };
+  // THE MARKER the upload form writes (addProductOnce: newArrivalAt). Explicit,
+  // so no time window applies — a late trigger delivery still queues it.
+  if (Number.isFinite(Number(product.newArrivalAt)) && Number(product.newArrivalAt) > 0) return { ok: true };
+  // Fallback for devices still running the previous bundle (no marker yet):
+  // the upload form's own createdBy stamp, if fresh.
   const at = Number(product.createdBy && product.createdBy.at);
   if (!Number.isFinite(at)) return { ok: false, why: "not created by the upload form" };
   if (nowMs - at > ENQUEUE_WINDOW_MS) return { ok: false, why: "created too long ago to be a new upload" };

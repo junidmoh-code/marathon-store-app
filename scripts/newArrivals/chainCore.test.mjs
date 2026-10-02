@@ -147,6 +147,30 @@ describe("the original photo, resume, and publish-once", () => {
     expect((await advance(PID, deps(db2, { claimPublish: () => false }).d)).outcome).toBe("waiting");
   });
 
+  it("resumes the name step when the apply landed but its stamp did not", async () => {
+    const db = world({ item: { status: "chaining", chain: { photo: { at: 1, url: GEN } } },
+      node: { photos: [GEN], cleanName: "Low-top football boot in lilac", cleanNameSource: "ai",
+        nameProposal: { status: "applied", name: "Low-top football boot in lilac", proposedAt: 111 } } });
+    expect((await advance(PID, deps(db).d)).outcome).toBe("waiting");
+  });
+
+  it("a chain stamp from an older generation is redone with the new photo", async () => {
+    const db = world({ item: { status: "chaining", chain: { photo: { at: 1, url: "https://old" } } } });
+    await advance(PID, deps(db).d);
+    expect((await read(db, `products/${PID}`)).photoUrl).toBe(GEN);
+  });
+
+  it("a publish the button would refuse releases its claim", async () => {
+    // Steps a–c done; the stored name fails the button's own trigger check.
+    const db = world({ item: { status: "chaining", chain: { photo: { at: 1, url: GEN }, name: { at: 1 }, condition: { at: 1 } } },
+      node: { condition: EXCELLENT, cleanName: "9" } });
+    const released = [];
+    const r = await advance(PID, deps(db, { releasePublish: (p) => released.push(p) }).d);
+    expect(r).toMatchObject({ outcome: "rejected", step: "publish" });
+    expect(released).toEqual([PID]);
+    expect((await read(db, `shopify_publish/${PID}`)).desiredState).toBeUndefined();
+  });
+
   it("an item that is not approved/chaining is left alone", async () => {
     const db = world({ item: { status: "ready" } });
     expect((await advance(PID, deps(db).d)).outcome).toBe("skipped");

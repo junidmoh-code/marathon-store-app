@@ -38,7 +38,7 @@ Rejection codes:
 
 - **`newArrivalsEnqueue`** (`onValueCreated products/{pid}`) enqueues only records carrying the upload form's own `createdBy.at` from the last 15 minutes. No merges and no price records.
 - **The card** reads and writes only through the callables `newArrivalsList`, `newArrivalsApprove` and `newArrivalsRetry`. These are gated to the super-admin or `permFlags/shopify_publish`.
-- **The Mac mini agents** use the Admin SDK: `marathon-group-poster` for generation, checking and posting, and `scripts/newArrivals/chain.mjs` for the post-approval chain.
+- **The Mac mini agents** use the Admin SDK: `marathon-group-poster` for generation, checking and posting, and `scripts/newArrivals/chainCore.mjs` for the post-approval chain.
 
 **No database rule is needed or changed.** The client never touches `/new_arrivals`.
 

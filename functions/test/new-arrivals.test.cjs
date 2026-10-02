@@ -24,6 +24,9 @@ test("enqueueDecision: only fresh uploads from the upload form", () => {
   assert.match(core.enqueueDecision(PID, upload({ mergedInto: "p1" }), NOW).why, /merged/);
   assert.match(core.enqueueDecision(PID, upload({ category: "Price Products" }), NOW).why, /price record/);
   assert.match(core.enqueueDecision("-Nabc", upload(), NOW).why, /not an uploaded product id/);
+  // The upload form's marker: queued however late the trigger arrives.
+  assert.equal(core.enqueueDecision(PID, upload({ newArrivalAt: NOW - 86_400_000, createdBy: { at: NOW - 86_400_000 } }), NOW).ok, true);
+  assert.match(core.enqueueDecision(PID, upload({ newArrivalAt: NOW, mergedInto: "p1" }), NOW).why, /merged/);
 });
 
 test("enqueue writes the item and the New index, and is idempotent", async () => {
@@ -113,6 +116,20 @@ test("retry: Rejected → New with a fresh budget; the rejection becomes history
   assert.equal("generatedUrl" in item, false, "a retry never reuses the previous generation");
   assert.equal("checker" in item, false);
   assert.equal((await db.ref(`${core.BY_STATUS}/rejected`).once()).val(), null);
+});
+
+test("retry after a chain refusal clears the old lap (chain stamps, name, destinations)", async () => {
+  const db = seeded("rejected", { generatedUrl: "g-old", suggestedName: "Old", nameProposedAt: 5,
+    chain: { photo: { at: 1 }, publish: { at: 2 } }, destinations: { shopify: { at: 3 } }, rejection: { code: "chain", reason: "x", at: 4 } });
+  await na.retry(db, PID, "junid", NOW);
+  const item = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  for (const k of ["chain", "suggestedName", "nameProposedAt", "destinations", "generatedUrl"]) assert.equal(k in item, false, k);
+});
+
+test("a redelivered enqueue repairs a missing index entry", async () => {
+  const db = makeFakeDb({ new_arrivals: { items: { [PID]: { pid: PID, status: "ready", enqueuedAt: 7 } } } });
+  assert.equal((await na.enqueue(db, PID, upload(), NOW)).enqueued, false);
+  assert.equal((await db.ref(`${core.BY_STATUS}/ready/${PID}`).once()).val(), 7);
 });
 
 test("retry refuses anything not Rejected", async () => {

@@ -16,7 +16,7 @@
 //
 // Every step stamps items/{pid}/chain/{step}/at, so a crashed run resumes
 // where it stopped and never repeats a finished step.
-import { applyProposalMutator, conditionMutator, photosMutator, publishMutator }
+import { applyProposalMutator, conditionMutator, photosMutator, publishMutator, precheck }
   from "../../src/components/shopify/publishMutators.js";
 import { CONDITIONS } from "../../src/components/shopify/publishShared.js";
 import { writeApprovedThumbFromUrl, writeProductThumb } from "../../src/utils/productThumb.js";
@@ -83,6 +83,11 @@ export async function advance(pid, deps) {
   }
   if (item.status !== "chaining") return { pid, outcome: "skipped", reason: `it is ${item.status}` };
   const chain = item.chain || {};
+  // A chain stamp from a different generation is not this lap's: redo it.
+  if (chain.photo && chain.photo.url && chain.photo.url !== item.generatedUrl) {
+    for (const k of Object.keys(chain)) delete chain[k];
+    await db.ref(`${ITEMS}/${pid}/chain`).set(null);
+  }
   const reject = async (step, reason) => {
     await move(db, pid, "chaining", "rejected", { rejection: { code: "chain", step, reason, at: await deps.now() } }, await deps.now());
     log(`${pid}: REJECTED at ${step} — ${reason}`);
@@ -104,13 +109,17 @@ export async function advance(pid, deps) {
     if (!(Number(product.retailPrice) > 0)) return reject("photo", "no retail price — set the price in the app, then Retry");
     // The publisher card's photo strip FIRST: it is the step that can refuse
     // (a listing already ON), and a refusal must leave the app photo untouched.
+    // The button's own argument check first, exactly as setPublishPhotos does.
+    const bad = precheck.photos([item.generatedUrl]);
+    if (bad) return reject("photo", bad);
     const res = await decide(db, pid, node, photosMutator, { photos: [item.generatedUrl], basisPhotos: node?.photos }, await ctx());
     if (!res.ok) return reject("photo", res.message);
     node = res.node;
     // AI Studio approve path: photoUrl ← generated; photoUrlOriginal keeps the
     // FIRST original for ever (never overwritten by a later approval).
     const original = product.photoUrlOriginal || item.originalUrl || product.photoUrl;
-    const update = { photoUrl: item.generatedUrl, photoUpdatedAt: await deps.now() };
+    // Exactly the AI Studio approve write (App.jsx): photoUrl + photoUrlOriginal.
+    const update = { photoUrl: item.generatedUrl };
     if (!product.photoUrlOriginal) update.photoUrlOriginal = original;
     await db.ref(`products/${pid}`).update(update);
     // The till thumbnail, by the same helper the AI Studio approve uses. The
@@ -123,21 +132,30 @@ export async function advance(pid, deps) {
       warn: (...a) => log(`${pid}: thumbnail — ${a.map(String).join(" ")}`),
       write: (id, blob, d) => writeProductThumb(id, blob, { ...d, encode: deps.encodeThumb }),
     });
-    await stampStep("photo", { thumb: !!thumb?.ok });
+    await stampStep("photo", { thumb: !!thumb?.ok, url: item.generatedUrl });
   }
 
   // (b) the name — the proposal Junid saw on the card, and only that one.
   if (!chain.name) {
     const res = await decide(db, pid, node, applyProposalMutator, { seenProposedAt: item.nameProposedAt ?? null }, await ctx());
     if (!res.ok) {
-      return reject("name", /no proposal to apply/.test(res.message) ? "the suggested name is no longer there — Retry for a fresh one" : res.message);
-    }
-    node = res.node;
+      // Resume after a crash between the apply and its stamp: the proposal
+      // Junid saw is already applied — that step is done, not refused.
+      const n = (await db.ref(`shopify_publish/${pid}`).once("value")).val();
+      const p = n?.nameProposal;
+      const alreadyApplied = p?.status === "applied" && Number(p.proposedAt) === Number(item.nameProposedAt) && n.cleanName === String(p.name).trim();
+      if (!alreadyApplied) {
+        return reject("name", /no proposal to apply/.test(res.message) ? "the suggested name is no longer there — Retry for a fresh one" : res.message);
+      }
+      node = n;
+    } else node = res.node;
     await stampStep("name", { name: node.cleanName });
   }
 
   // (c) condition Excellent
   if (!chain.condition) {
+    const bad = precheck.condition(EXCELLENT);
+    if (bad) return reject("condition", bad);
     const res = await decide(db, pid, node, conditionMutator, { condition: EXCELLENT }, await ctx());
     if (!res.ok) return reject("condition", res.message);
     node = res.node;
@@ -152,8 +170,17 @@ export async function advance(pid, deps) {
       node = (await db.ref(`shopify_publish/${pid}`).once("value")).val();
       if (node?.desiredState !== "on") return reject("publish", "an earlier publish attempt did not finish — check the publisher card, then Retry");
     } else {
-      const res = await decide(db, pid, node, publishMutator, { name: node.cleanName, source: node.cleanNameSource }, await ctx());
-      if (!res.ok) return reject("publish", res.message);
+      const bad = precheck.publish(node.cleanName);
+      if (bad) { deps.releasePublish?.(pid); return reject("publish", bad); }
+      let res;
+      try {
+        res = await decide(db, pid, node, publishMutator, { name: node.cleanName, source: node.cleanNameSource }, await ctx());
+      } catch (e) {
+        // Nothing was written: the claim must not outlive a network error.
+        deps.releasePublish?.(pid);
+        throw e;
+      }
+      if (!res.ok) { deps.releasePublish?.(pid); return reject("publish", res.message); }
       node = res.node;
     }
     await stampStep("publish");

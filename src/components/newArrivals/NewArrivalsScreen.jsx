@@ -80,6 +80,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
     return () => clearInterval(t);
   }, [tab, load]);
 
+  const items = data.items;
   const run = async (fn, okText) => {
     setBusy(true); setMsg(null);
     try {
@@ -93,14 +94,16 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
   };
 
   const onApprove = (pid) => run(() => api.approve([pid]), (r) => (r?.approved?.length ? "Approved — it will be published and posted automatically." : "Nothing approved."));
+  // Approve all = every item ON THIS SCREEN — never items Junid has not seen.
   const onApproveAll = () => {
-    const n = data.tabCounts.ready || 0;
-    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Approve all ${n} Ready items? Each will be published to Shopify and posted to the groups.`)) return;
-    run(() => api.approveAll(), (r) => `Approved ${r?.approved?.length || 0}.`);
+    const pids = (data.items || []).filter((it) => actionsFor(it).approve).map((it) => it.pid);
+    if (!pids.length) return;
+    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Approve all ${pids.length} items shown? Each will be published to Shopify and posted to the groups.`)) return;
+    run(() => api.approve(pids), (r) => `Approved ${r?.approved?.length || 0}.`);
   };
+  const approvable = (items || []).filter((it) => actionsFor(it).approve).length;
   const onRetry = (pid) => run(() => api.retry(pid), () => "Sent back to New — a completely fresh photo will be generated.");
 
-  const items = data.items;
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "16px 16px 80px" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
@@ -114,9 +117,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
           </button>
         ))}
       </div>
-      {tab === "ready" && (items?.length || 0) > 0 && (
+      {tab === "ready" && approvable > 0 && (
         <button disabled={busy} onClick={onApproveAll} style={{ ...bGreen, width: "100%", marginBottom: 12, opacity: busy ? 0.5 : 1 }}>
-          Approve all {data.tabCounts.ready || items.length}
+          Approve all {approvable}
         </button>
       )}
       {msg && <div role="status" style={{ ...GLASS, padding: 10, marginBottom: 12, fontSize: 13 }}>{msg}</div>}

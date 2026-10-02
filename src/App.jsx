@@ -6352,6 +6352,11 @@ function AdminView({ products, orders, onExit }) {
         deviceId: getDeviceId(),
         at: serverNowMs(),
       };
+      // NEW ARRIVALS MARKER: this record came through the upload form, so it
+      // belongs in the New Arrivals card. Additive; newArrivalsEnqueue (the
+      // onValueCreated trigger) turns it into the queue entry — the client
+      // never writes /new_arrivals itself, so no rule is involved.
+      newProduct.newArrivalAt = serverNowMs();
       // ── STYLE CODE PROVENANCE ───────────────────────────────────────────
       // Where the suggested data came from and who accepted it. Recorded so a
       // wrong catalogue match can be traced back later — "who confirmed this,
