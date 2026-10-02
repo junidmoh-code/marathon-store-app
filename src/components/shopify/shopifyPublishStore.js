@@ -18,10 +18,8 @@
 import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
-import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
-         NAME_PROPOSAL_KEY, PROPOSAL_APPROVED_SOURCE, proposalApplyBlocker } from "./shopifyPublishCore";
-import { MAX_PUBLISH_PHOTOS, normalizePhotoList } from "./publishShared";
-import { buildOffRecord, offAuditFields } from "./publishAudit";
+import { APP_STORAGE_PREFIX, publishPhotoListProblem, precheck, approveNameMutator, applyProposalMutator,
+         dismissProposalMutator, publishMutator, desiredStateMutator, photosMutator, conditionMutator } from "./publishMutators";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -34,7 +32,6 @@ const safeSeg = (s) => {
   }
   return seg;
 };
-const stamp = () => ({ updatedAt: serverNowMs(), updatedBy: auth.currentUser ? auth.currentUser.uid : null });
 
 // A refused write must read as a plain sentence, not a stack trace. RTDB
 // reports BOTH the identity gate and a .validate rejection as
@@ -238,282 +235,90 @@ async function writeNode(productId, mutate) {
   }
 }
 
+// The DECISIONS behind every button live in publishMutators.js (no Firebase),
+// so the New Arrivals chain on the Mac mini runs exactly the same code through
+// an Admin SDK transaction. This file binds them to the browser: server time,
+// the signed-in uid, and runTransaction via writeNode. Each mutator receives
+// the SERVER's node — or, on the cold-cache first call, the row's snapshot —
+// and every gate is evaluated inside the transaction against that value.
+const ctx = () => ({ now: serverNowMs(), uid: auth.currentUser ? auth.currentUser.uid : null });
+
+async function decide(productId, node, mutator, args) {
+  let refusal = null;
+  const res = await writeNode(productId, (cur) => {
+    const out = mutator(cur || node || {}, args, ctx());
+    if (out.refusal) { refusal = out.refusal; return undefined; }
+    return out.next;
+  });
+  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
+  return res;
+}
+
 /**
  * Approve a product's cleaned name — the review flow's core write. Stamps
- * `nameApprovedAt` (state stays "awaiting"; "approved" is a review marker,
- * not a stored state). The same trigger check that runs live on the input
- * runs again here. Refused for a product that is ON the storefront — a
- * rename there would silently diverge from what customers see; an OFF
- * product stays editable, the reconciler re-syncs its fields at turn-on.
+ * `nameApprovedAt` (state stays "awaiting"). Refused for a product that is ON
+ * the storefront — a rename there would silently diverge from what customers see.
  */
 export async function approveName(productId, node, name, source = "manual") {
-  const verdict = checkCleanName(name);
-  if (!verdict.ok) return { ok: false, message: verdict.problems.join("; ") };
-  const cleanName = String(name).trim();
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || node || {};
-    if (isOn(base)) {
-      refusal = "Listing is ON the storefront — switch it off before renaming.";
-      return undefined;
-    }
-    return { ...base, ...normalizedFields(base), cleanName, cleanNameSource: source,
-             nameApprovedAt: serverNowMs(), ...stamp() };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res;
+  const problem = precheck.approveName(name);
+  if (problem) return { ok: false, message: problem };
+  return decide(productId, node, approveNameMutator, { name, source });
 }
 
-// ─── VISION NAME PROPOSALS ───────────────────────────────────────────────────
-// scripts/shopify/vision-name.mjs proposes; THIS is where a proposal becomes
-// the product's listing name, or is put away. Both writes are the same
-// transaction every other write here uses, and both keep the proposal record
-// on the node — an applied proposal is the audit trail for where the name
-// came from, and a dismissed one is the record that the photo was read and
-// the answer was not wanted (so a later run does not re-propose it blind).
-
 /**
- * Take the proposed name. Writes cleanName + cleanNameSource "ai" (the value
- * the LIVE console rule admits — see PROPOSAL_APPROVED_SOURCE) and stamps the
- * proposal applied. The gates are re-checked against the SERVER's node inside
- * the transaction, not against the row snapshot: the reconciler may have put
- * the product live since the page loaded, and renaming a live listing is
- * exactly what approveName refuses.
- *
- * `seenProposedAt` is the proposal the caller actually DISPLAYED. Pass it —
- * it is what stops a re-run's newer proposal being approved sight unseen.
+ * Take the proposed name (cleanName + cleanNameSource "ai", proposal stamped
+ * applied and KEPT). `seenProposedAt` is the proposal the caller actually
+ * DISPLAYED — it is what stops a re-run's newer proposal being approved
+ * sight unseen.
  */
 export async function applyNameProposal(productId, node, seenProposedAt = null) {
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || node || {};
-    const gate = proposalApplyBlocker(base);
-    if (!gate.ok) { refusal = gate.reason; return undefined; }
-    const proposal = base[NAME_PROPOSAL_KEY];
-    // THE REVIEWER MAY ONLY APPROVE THE NAME HE WAS SHOWN. The mutator applies
-    // whatever the SERVER holds, and a naming re-run overwrites nameProposal
-    // outright — so between the row rendering and the click, proposal A can
-    // become proposal B, and the click would put B on the product under the
-    // impression it was A. That is the "a human approves each one" rule broken
-    // in the only direction that matters (reviewer finding). The row passes the
-    // proposedAt it displayed; a mismatch refuses and the reader gets the new
-    // name to look at. Same basis-check shape as setPublishPhotos.
-    if (seenProposedAt != null && Number(proposal?.proposedAt) !== Number(seenProposedAt)) {
-      refusal = "A newer suggestion arrived for this product while you were reading — nothing was changed. The name shown now is the new one.";
-      return undefined;
-    }
-    const cleanName = String(proposal.name).trim();
-    return {
-      ...base,
-      ...normalizedFields(base),
-      cleanName,
-      cleanNameSource: PROPOSAL_APPROVED_SOURCE,
-      nameApprovedAt: serverNowMs(),
-      [NAME_PROPOSAL_KEY]: { ...proposal, status: "applied", decidedAt: serverNowMs() },
-      ...stamp(),
-    };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res;
+  return decide(productId, node, applyProposalMutator, { seenProposedAt });
 }
 
-/**
- * Keep the name the product already has. The proposal is marked rejected and
- * KEPT — never deleted. A deleted proposal is indistinguishable from one that
- * was never made, and the next run would spend real money re-reading the same
- * photo to produce the same answer Junid has already turned down.
- */
+/** Keep the name the product already has. The proposal is marked rejected and KEPT. */
 export async function dismissNameProposal(productId, node, seenProposedAt = null) {
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || node || {};
-    const proposal = base[NAME_PROPOSAL_KEY];
-    if (!proposal || proposal.status !== "pending") {
-      refusal = "That suggestion has already been decided.";
-      return undefined;
-    }
-    // Same basis check as apply. Turning down a name he never read would bury
-    // a fresh suggestion under a decision that was never about it.
-    if (seenProposedAt != null && Number(proposal.proposedAt) !== Number(seenProposedAt)) {
-      refusal = "A newer suggestion arrived for this product while you were reading — nothing was changed. The name shown now is the new one.";
-      return undefined;
-    }
-    return {
-      ...base,
-      ...normalizedFields(base),
-      [NAME_PROPOSAL_KEY]: { ...proposal, status: "rejected", decidedAt: serverNowMs() },
-      ...stamp(),
-    };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res;
+  return decide(productId, node, dismissProposalMutator, { seenProposedAt });
 }
 
 /**
- * THE publish action — the single step that used to be Approve → Nominate →
- * Live. Records the reviewed name and the INTENT to go on the storefront
- * (desiredState "on"); the owner-run reconciler creates/validates/publishes
- * and confirms. The row shows pending until it does. Two refusals, both
- * checked against the SERVER's node: already on, and the unbreakable
- * condition gate (a product cannot reach live with condition unset).
+ * THE publish action: records the reviewed name and the INTENT to go on the
+ * storefront (desiredState "on"); the owner-run reconciler does the rest.
+ * Refused when already on, and without a condition grade.
  */
 export async function publishProduct(productId, node, name, source = "manual") {
-  const verdict = checkCleanName(name);
-  if (!verdict.ok) return { ok: false, message: verdict.problems.join("; ") };
-  const cleanName = String(name).trim();
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || node || {};
-    if (isOn(base)) {
-      refusal = "Already ON the storefront — refresh the page to see its current state.";
-      return undefined;
-    }
-    if (!canGoLive(base)) {
-      refusal = "Condition not set — a product cannot go live without one of the three grades.";
-      return undefined;
-    }
-    // A blocked product re-publishing clears its recorded refusal — the
-    // reconciler re-validates everything at apply time anyway.
-    return { ...base, ...normalizedFields(base),
-             cleanName, cleanNameSource: source, nameApprovedAt: serverNowMs(),
-             desiredState: "on", blockedReason: null, ...stamp() };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res;
+  const problem = precheck.publish(name);
+  if (problem) return { ok: false, message: problem };
+  return decide(productId, node, publishMutator, { name, source });
 }
 
 /**
- * The on/off switch (and the pending-publish cancel): write the INTENT only.
- * "on" re-checks the condition gate; "off" is always allowed — it only
- * reduces exposure. State stays whatever the reconciler last confirmed.
- *
- * EVERY off records WHY, right here (publishAudit.js). This is the path that
- * produced the "products go off by themselves" reports: it is the only way a
- * live listing's name can be changed — the rename writes all refuse a product
- * that is on — and until now the switch left no trace of that intent at all,
- * so the row could never say more than "off". `reason` is the caller's answer
- * to "why", defaulting to the honest, unadorned one. See
- * docs/PUBLISH-AUTO-OFF.md.
- *
- * The record is built INSIDE the mutator, against the server's node, for the
- * same reason every gate here is: `offLog` is trimmed from the CURRENT log,
- * and trimming a stale copy would resurrect entries a concurrent write dropped.
+ * The on/off switch: write the INTENT only. "on" re-checks the condition gate;
+ * "off" is always allowed and EVERY off records WHY (publishAudit.js,
+ * docs/PUBLISH-AUTO-OFF.md).
  */
 export async function setDesiredState(productId, node, want, { reasonCode = "switched_off", detail = null } = {}) {
-  if (want !== "on" && want !== "off") return { ok: false, message: "Switch must be on or off." };
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || node || {};
-    if (want === "on" && !canGoLive(base)) {
-      refusal = "Condition not set — a product cannot go live without one of the three grades.";
-      return undefined;
-    }
-    if (want === "on") {
-      return { ...base, ...normalizedFields(base), desiredState: "on", blockedReason: null, ...stamp() };
-    }
-    // serverNowMs() twice would be two different numbers; the record's `at`
-    // and its log key must be the same instant or the row's date and its
-    // history entry disagree.
-    const at = serverNowMs();
-    const record = buildOffRecord({ at, actor: auth.currentUser ? auth.currentUser.uid : "unknown", reasonCode, detail });
-    return { ...base, ...normalizedFields(base), desiredState: "off",
-             ...offAuditFields(base, record, at), ...stamp() };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res;
+  const problem = precheck.desiredState(want);
+  if (problem) return { ok: false, message: problem };
+  return decide(productId, node, desiredStateMutator, { want, reasonCode, detail });
 }
 
-// What a publishing photo list may contain — the client-side mirror of the
-// media.mjs guards: a URL the page accepts here but the reconciler would
-// refuse at push time would be a delayed, confusing failure. Pinned to THIS
-// app's bucket, not just the Firebase Storage host — any-bucket acceptance
-// would let a pasted URL from a stranger's project ride the push. Exported
-// for tests.
-export const APP_STORAGE_PREFIX = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/";
-export function publishPhotoListProblem(photos) {
-  if (!Array.isArray(photos) || photos.length === 0) {
-    return "The photo set can't be empty — a product never ships imageless.";
-  }
-  if (photos.length > MAX_PUBLISH_PHOTOS) {
-    return `At most ${MAX_PUBLISH_PHOTOS} photos per product.`;
-  }
-  const trimmed = photos.map((u) => (typeof u === "string" ? u.trim() : u));
-  if (new Set(trimmed).size !== trimmed.length) return "The photo set has a duplicate.";
-  for (const u of trimmed) {
-    if (typeof u !== "string" || u === "") return "The photo set has an empty entry.";
-    try { new URL(u); } catch { return "The photo set has an invalid URL."; }
-    if (!u.startsWith(APP_STORAGE_PREFIX)) {
-      return "Photos must be this app's own Firebase Storage URLs.";
-    }
-  }
-  return null;
-}
+export { APP_STORAGE_PREFIX, publishPhotoListProblem };
 
 /**
  * Set the PUBLISHING photo list — ordered, first = primary, stored at
- * /shopify_publish/{pid}/photos and NOWHERE else (/products and Storage are
- * never touched; removing a photo here only removes it from what a publish
- * would ship). `photos === null` clears the custom set back to the record's
- * own photoUrl + gallery. Refused while the listing is ON — customers are
- * looking at the current set; the reconciler re-syncs media at turn-on.
- *
- * The list write is OPTIMISTICALLY CONCURRENT, not last-write-wins: `node` is
- * the snapshot this edit was computed FROM, and the mutator refuses when the
- * server's current photos differ from that basis — two sessions editing the
- * same strip must not silently drop each other's changes (a reorder computed
- * over a stale 2-item list would otherwise erase a 3rd photo the other
- * session just added).
+ * /shopify_publish/{pid}/photos and NOWHERE else. `photos === null` clears the
+ * custom set. Optimistically concurrent: `node` is the snapshot this edit was
+ * computed FROM, and a different server list refuses.
  */
 export async function setPublishPhotos(productId, node, photos) {
-  // Validate AND store the trimmed form — the validator working on trimmed
-  // copies while the write stored the originals would let a padded URL pass
-  // here and fail at push time, the exact delayed failure this mirror
-  // prevents.
-  const clean = photos === null ? null : photos.map((u) => (typeof u === "string" ? u.trim() : u));
-  if (clean !== null) {
-    const problem = publishPhotoListProblem(clean);
-    if (problem) return { ok: false, message: problem };
-  }
-  const basis = JSON.stringify(normalizePhotoList(node?.photos));
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || node || {};
-    if (isOn(base)) {
-      refusal = "Listing is ON the storefront — switch it off before changing its photos.";
-      return undefined;
-    }
-    if (JSON.stringify(normalizePhotoList(base.photos)) !== basis) {
-      refusal = "The photo set changed in another session — reopen the strip and redo the edit.";
-      return undefined;
-    }
-    return { ...base, ...normalizedFields(base), photos: clean, ...stamp() };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res;
+  const problem = precheck.photos(photos);
+  if (problem) return { ok: false, message: problem };
+  return decide(productId, node, photosMutator, { photos, basisPhotos: node?.photos });
 }
 
 /** Set the condition grade. Unblocks a blocked product (blocked → awaiting). */
 export async function setCondition(productId, node, condition) {
-  if (!CONDITIONS.includes(condition)) return { ok: false, message: "Not one of the three condition grades." };
-  let refusal = null;
-  const res = await writeNode(productId, (cur) => {
-    const base = cur || node || {};
-    if (isOn(base)) {
-      // The ON listing's description carries the old grade — changing it here
-      // would make the page lie about what customers see. Switch it off
-      // first; the reconciler re-syncs the description at the next turn-on.
-      refusal = "Listing is ON the storefront — switch it off before changing the condition.";
-      return undefined;
-    }
-    // blocked → awaiting (unblocks, refusal reason cleared); live-off and
-    // awaiting keep their state. Every write carries `state` — the $pid
-    // .validate requires hasChildren(['state']), so a grade-first write on an
-    // unreviewed product must still include one.
-    const unblocking = normalizedState(base) === "blocked";
-    return { ...base, ...normalizedFields(base), condition,
-             ...(unblocking ? { state: "awaiting", blockedReason: null } : {}), ...stamp() };
-  });
-  if (res.aborted) return { ok: false, message: refusal || "Not saved." };
-  return res;
+  const problem = precheck.condition(condition);
+  if (problem) return { ok: false, message: problem };
+  return decide(productId, node, conditionMutator, { condition });
 }
-

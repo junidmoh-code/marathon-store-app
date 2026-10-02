@@ -120,6 +120,13 @@ async function approve(db, { pids, all }, uid, nowMs) {
   const skipped = [];
   for (const pid of targets) {
     const out = {};
+    // Shopify refuses a product with no retail price, and the groups need one:
+    // say so now, in the card, instead of failing later in the chain.
+    const listed = (await db.ref(`${core.ITEMS}/${pid}/status`).once("value")).val();
+    if (listed === "ready") {
+      const price = Number((await db.ref(`products/${pid}/retailPrice`).once("value")).val());
+      if (!(price > 0)) { skipped.push({ pid, why: "no retail price yet — set the price in the app, then approve" }); continue; }
+    }
     const ref = db.ref(`${core.ITEMS}/${pid}`);
     const res = await ref.transaction((cur) => {
       // Approve only what has a checked, generated photo — never an original.

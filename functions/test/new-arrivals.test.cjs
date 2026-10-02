@@ -86,6 +86,15 @@ test("approve refuses an item that is not Ready, and an unknown pid", async () =
   assert.equal((await db.ref(`${core.ITEMS}/p1000000000001`).once()).val(), null);
 });
 
+test("approve refuses an item with no retail price, in words", async () => {
+  const db = seeded("ready", { generatedUrl: "g" });
+  await db.ref(`products/${PID}/retailPrice`).set(null);
+  const out = await na.approve(db, { pids: [PID] }, "junid", NOW);
+  assert.deepEqual(out.approved, []);
+  assert.match(out.skipped[0].why, /no retail price yet/);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
+});
+
 test("approve all takes exactly the Ready index", async () => {
   const db = seeded("ready", { generatedUrl: "g" });
   const out = await na.approve(db, { all: true }, "junid", NOW);

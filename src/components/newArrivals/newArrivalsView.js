@@ -36,7 +36,9 @@ export function statusLine(item) {
   const tries = Number(item?.attemptsSinceRetry) || 0;
   if (s === "new") return tries ? `Waiting for a fresh attempt (${tries} of ${MAX_ATTEMPTS} used)` : "Waiting for its photo to be generated";
   if (s === "generating") return "Generating the photo now…";
-  if (s === "ready") return "Photo checked — waiting for your Approve";
+  if (s === "ready") return Number(item?.product?.retailPrice) > 0
+    ? "Photo checked — waiting for your Approve"
+    : "Photo checked — set a retail price in the app before approving";
   if (s === "approved") return "Approved — publishing will start in a minute";
   if (s === "chaining") return chainProgress(item);
   if (s === "done") return item?.soldOutBeforePosting ? "Sold out before posting" : "Done";
@@ -84,7 +86,7 @@ export function destinationLines(item) {
 /** Which buttons an item shows. Approve only with a checked, generated photo. */
 export function actionsFor(item) {
   return {
-    approve: item?.status === "ready" && !!item?.generatedUrl,
+    approve: item?.status === "ready" && !!item?.generatedUrl && Number(item?.product?.retailPrice) > 0,
     retry: item?.status === "rejected",
   };
 }

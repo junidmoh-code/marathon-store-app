@@ -28,6 +28,10 @@ describe("view helpers", () => {
   it("Approve only with a generated photo — never on an original", () => {
     expect(actionsFor(ready()).approve).toBe(true);
     expect(actionsFor(ready({ generatedUrl: undefined })).approve).toBe(false);
+    // No price → no Approve; the status line says what to do.
+    const noPrice = ready({ product: { name: "x", sizes: ["6"] } });
+    expect(actionsFor(noPrice).approve).toBe(false);
+    expect(statusLine(noPrice)).toMatch(/set a retail price/);
     expect(actionsFor({ status: "rejected" })).toEqual({ approve: false, retry: true });
     expect(actionsFor({ status: "new" })).toEqual({ approve: false, retry: false });
   });
