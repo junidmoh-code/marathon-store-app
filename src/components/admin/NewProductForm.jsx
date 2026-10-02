@@ -26,6 +26,8 @@ import PrintedBarcodeCapture from "./PrintedBarcodeCapture.jsx";
 import SizeQtyBoxes, { totalUnits } from "./SizeQtyBoxes.jsx";
 import { LocationPicker } from "../stock/widgets.jsx";
 import { labelFor, transferTargets } from "../stock/locations.js";
+import { guideFor, missingPhotoSteps, stepFilled } from "./photoGuides.js";
+import { GuidedPhotoStep } from "./GuidedPhotoCamera.jsx";
 
 const BLUE = "#4A7FFF";
 const BLUE_L = "#6A9FFF";
@@ -72,7 +74,7 @@ export default function NewProductForm({
   selectCategory, toggleHub, toggleShoebox,
   recvQtys, setRecvQtys,
   recvLoc, setRecvLoc, recvRegistry,
-  fileInputRef, handleImageUpload,
+  fileInputRef, handleImageUpload, onGuidedPhoto,
   products, isPerfume, onCapturePrintedBarcode, onClearPrintedBarcode, onUseAutoBarcode,
   nameSuggestions,
   saving, saveAttempted, onSave,
@@ -103,7 +105,16 @@ export default function NewProductForm({
     // size the save will not persist.
     setRecvQtys((q) => (sizeRun.includes(sz) ? { ...q, [sz]: "" } : q));
   };
-  const canSave = !saving && nameOk && catOk && hubsOk && locOk && sizesOk && barcodeOk;
+  // ── GUIDED PHOTOS (owner spec 2026-10-02) ─────────────────────────────────
+  // Footwear gets two REQUIRED guided steps (shoe + its box); clothing one
+  // optional garment step; everything else keeps the plain photo button. The
+  // guide is chosen off the CATEGORY KEY (photoGuides → footwearLine), so a
+  // console rename never changes it. `photoMissing` is the "why can't I save"
+  // list — empty for every category that requires no photo.
+  const photoGuide = guideFor({ categoryKey: form.categoryKey, isClothing: formIsClothing });
+  const photoMissing = missingPhotoSteps(photoGuide, form);
+  const photosOk = photoMissing.length === 0;
+  const canSave = !saving && nameOk && catOk && hubsOk && locOk && sizesOk && barcodeOk && photosOk;
   const units = totalUnits(Object.fromEntries(chosenSizes.map((sz) => [sz, recvQtys[sz]])));
   const sizeCount = chosenSizes.length;
 
@@ -238,7 +249,39 @@ export default function NewProductForm({
         </div>
       )}
 
-      {/* ── PHOTO ─────────────────────────────────────────────────────────── */}
+      {/* ── PHOTO ─────────────────────────────────────────────────────────
+          Guided for footwear and clothing: a live camera with the pose drawn
+          on it, so the AI Studio pipeline gets every product shot the same way
+          round. "Choose from photos" is always there for a device without a
+          camera stream. Every other category keeps the plain button below,
+          unchanged. */}
+      {photoGuide ? (
+        <div>
+          <Label required={photoGuide.steps.some((st) => st.required)}
+                 hint={photoGuide.kind === "footwear" ? "both photos are needed to save" : "optional"}>
+            {photoGuide.kind === "footwear" ? "Product photos" : "Product photo"}
+          </Label>
+          <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+            {photoGuide.steps.map((st) => (
+              <GuidedPhotoStep
+                key={st.id}
+                step={st}
+                filled={stepFilled(st, form)}
+                previewUrl={st.formField === "box" ? form.boxPreviewUrl || null : form.photoUrl || null}
+                invalid={saveAttempted && st.required && !stepFilled(st, form)}
+                disabled={saving}
+                onFile={(file) => onGuidedPhoto && onGuidedPhoto(st, file)}
+              />
+            ))}
+          </div>
+          {photoMissing.length > 0 && (
+            <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600,
+                          color: saveAttempted ? "#F87171" : "rgba(233,238,255,.45)" }}>
+              {`Still needed before saving: ${photoMissing.map((st) => st.title.toLowerCase()).join(" and ")}.`}
+            </div>
+          )}
+        </div>
+      ) : (
       <div>
         <Label>Product photo</Label>
         <input ref={fileInputRef} type="file" accept="image/*" onChange={handleImageUpload} style={{ display: "none" }} />
@@ -254,6 +297,7 @@ export default function NewProductForm({
                         border: "1px solid rgba(60,110,255,.25)" }} />
         )}
       </div>
+      )}
 
       {/* ── OPENING STOCK — required, always visible ──────────────────────── */}
       <div>

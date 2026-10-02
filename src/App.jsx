@@ -17,6 +17,8 @@ import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
 import { stockCellPath, decodedCellKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { productPhotoObjectPath } from "./utils/productPhotoPaths";
+import { dataURLToBlob, loadImageFile, encodeCompressed, prepareProductPhoto, prepareBoxPhoto } from "./utils/productPhotoEncode";
+import { guideFor, missingPhotoSteps } from "./components/admin/photoGuides.js";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
 import { getTodayKey, getNextOrderNumber } from "./utils/orderCounter";
@@ -216,45 +218,16 @@ function sendWhatsAppTemplate(phone, templateName, params = []) {
   }).catch(err => console.warn("WhatsApp send failed:", err));
 }
 
-// Converts a base64 data-URL to a binary Blob for Firebase Storage upload.
-function dataURLToBlob(dataUrl) {
-  const [header, data] = dataUrl.split(",");
-  const mime = header.match(/:(.*?);/)[1];
-  const binary = atob(data);
-  const arr = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) arr[i] = binary.charCodeAt(i);
-  return new Blob([arr], { type: mime });
-}
-
 // Compress an image File in-browser to maxDim / maxBytes and return a JPEG
 // blob — the same scale-then-step-quality-down pipeline the product photo
 // uploads use, promisified for the Style Kit / box-photo upload paths (which
 // need bigger targets than the 800px/200KB product thumbnails: references
-// drive scene fidelity, so they keep more detail).
-function compressImageFile(file, maxDim, maxBytes) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = () => reject(new Error("Could not read that file."));
-    reader.onload = ev => {
-      const img = new Image();
-      img.onerror = () => reject(new Error("That file isn't an image."));
-      img.onload = () => {
-        const scale = Math.min(1, maxDim / img.width, maxDim / img.height);
-        const canvas = document.createElement("canvas");
-        canvas.width  = Math.round(img.width  * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-        let dataUrl = canvas.toDataURL("image/jpeg", 0.05); // worst-case fallback
-        for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
-          const candidate = canvas.toDataURL("image/jpeg", q);
-          if (candidate.length * 0.75 <= maxBytes) { dataUrl = candidate; break; }
-        }
-        resolve(dataURLToBlob(dataUrl));
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
-  });
+// drive scene fidelity, so they keep more detail). The loop itself now lives
+// ONCE in utils/productPhotoEncode.js (dataURLToBlob too) — it was copied here
+// and in handleImageUpload, and the guided-photo work needed it a third time.
+async function compressImageFile(file, maxDim, maxBytes) {
+  const img = await loadImageFile(file);
+  return encodeCompressed(img, img.width, img.height, maxDim, maxBytes).blob;
 }
 
 // ── OFFLINE-MIRROR THUMBNAIL: the Storage leg ────────────────────────────────
@@ -5964,9 +5937,12 @@ function AdminView({ products, orders, onExit }) {
   // <input type="number"> strings here and parsed on save — an empty field
   // round-trips to "not set" instead of 0. `shoeboxTouched` tracks a manual
   // toggle; once true we stop auto-syncing it from the category.
+  // Guided photos (2026-10-02): photoSourceBlob is the ≤2400px AI source copy
+  // of the product photo; boxBlob / boxPreviewUrl the footwear box photo. See
+  // photoGuides.js and handleGuidedPhoto below.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
+  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, boxBlob:null, boxPreviewUrl:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
   // While null, "Add Product" shows the style-code gate instead of the create
@@ -6171,6 +6147,17 @@ function AdminView({ products, orders, onExit }) {
       alert("Photograph the barcode printed on the box — or tap “generate a shop barcode instead” if it will not read.");
       return;
     }
+    // ── GUIDED PHOTOS: footwear needs the shoe AND its box ──────────────────
+    // The same rule the form's Save button applies (missingPhotoSteps, pure, in
+    // photoGuides.js), re-checked here because this handler is the gate and the
+    // button is only its visible half. Clothing's garment step is optional and
+    // every other category has no guide, so neither can be stopped here.
+    const photoGuide = guideFor({ categoryKey: form.categoryKey, isClothing: formIsClothing });
+    const photoMissing = missingPhotoSteps(photoGuide, form);
+    if (photoMissing.length) {
+      alert(`Take the ${photoMissing.map((st) => st.title.toLowerCase()).join(" and ")} before saving — new footwear needs both, so the AI photo studio can place it.`);
+      return;
+    }
     // ── A SECOND RECORD FOR A CODE WE ALREADY HOLD IS A DELIBERATE ACT ──────
     // Re-derived HERE, from the name actually being saved, rather than read off
     // the panel: the panel's view is debounced and can be a keystroke behind,
@@ -6251,6 +6238,42 @@ function AdminView({ products, orders, onExit }) {
         // contract: writeProductThumb never throws, so the product still saves
         // if the encode or the write fails.
         await writeProductThumb(id, form.photoBlob, { upload: uploadThumbObject, remove: removeThumbObject });
+      }
+
+      // ── THE AI SOURCE COPIES (guided product photos, 2026-10-02) ──────────
+      // photo.jpg above is the 800px app copy and stays exactly what it was.
+      // These are the high-resolution originals (≤2400px, q0.9) the AI Studio
+      // pipeline works from, at deterministic paths beside it:
+      //   • source_photo.jpg → photoSourceUrl
+      //   • source_box.jpg   → photoBoxUrl + boxPhotoUpdatedAt — EXACTLY the
+      //     convention uploadBoxPhoto uses, so house-style sneaker generations
+      //     attach this box the same way they attach one added later from the
+      //     product page.
+      // Uploaded BEFORE the record write so all of it lands in the ONE set()
+      // below — no follow-up update that could fail and leave a shoe without
+      // the box its own form refused to save without. Bounded cache (NOT
+      // immutable): both paths are reused when a photo is replaced.
+      //
+      // Footwear: these are required, so a failed upload fails the save (no
+      // record has been written yet — a retry creates nothing twice).
+      // Clothing: the photo is optional, so its source copy is best-effort.
+      const needsSources = photoGuide?.kind === "footwear";
+      let photoSourceUrl = null;
+      if (form.photoBlob && form.photoSourceBlob) {
+        try {
+          const srcRef = storageRef(storage, `products/${id}/source_photo.jpg`);
+          await uploadBytes(srcRef, form.photoSourceBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
+          photoSourceUrl = await getDownloadURL(srcRef);
+        } catch (srcErr) {
+          if (needsSources) throw srcErr;
+          console.warn("source photo upload failed (product save continues):", srcErr);
+        }
+      }
+      let photoBoxUrl = null;
+      if (needsSources && form.boxBlob) {
+        const boxRef = storageRef(storage, `products/${id}/source_box.jpg`);
+        await uploadBytes(boxRef, form.boxBlob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
+        photoBoxUrl = await getDownloadURL(boxRef);
       }
 
       // ── LABEL PHOTO ─────────────────────────────────────────────────────
@@ -6357,6 +6380,13 @@ function AdminView({ products, orders, onExit }) {
       // onValueCreated trigger) turns it into the queue entry — the client
       // never writes /new_arrivals itself, so no rule is involved.
       newProduct.newArrivalAt = serverNowMs();
+      // The AI source copies uploaded above. Set only when present — the
+      // record never carries a null for a photo it was not given.
+      if (photoSourceUrl) newProduct.photoSourceUrl = photoSourceUrl;
+      if (photoBoxUrl) {
+        newProduct.photoBoxUrl = photoBoxUrl;
+        newProduct.boxPhotoUpdatedAt = serverNowMs();
+      }
       // ── STYLE CODE PROVENANCE ───────────────────────────────────────────
       // Where the suggested data came from and who accepted it. Recorded so a
       // wrong catalogue match can be traced back later — "who confirmed this,
@@ -6634,7 +6664,7 @@ function AdminView({ products, orders, onExit }) {
         console.warn("opening-stock receive failed:", recErr);
       }
 
-      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
+      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, boxBlob:null, boxPreviewUrl:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
@@ -6740,41 +6770,27 @@ function AdminView({ products, orders, onExit }) {
     return tabs;
   }, [products, typeFilter]);
 
-  const handleImageUpload = e => {
-    const file = e.target.files[0];
+  // The product photo — compressed exactly as before (800px / 200 KB →
+  // photoUrl + photoBlob → photo.jpg + thumbnail), and NOW ALSO a ≤2400px q0.9
+  // source copy (photoSourceBlob → source_photo.jpg) for the AI Studio
+  // pipeline. One decode feeds both; the encode lives in productPhotoEncode.js.
+  // A picked file and a guided-camera shot both arrive here as a Blob.
+  const applyProductPhotoFile = (file) => {
     if (!file) return;
-    const reader = new FileReader();
-    reader.onload = ev => {
-      const img = new Image();
-      img.onload = () => {
-        const MAX_DIM = 800;
-        const MAX_BYTES = 200 * 1024; // 200 KB target
-
-        // Scale down if wider/taller than 800 px.
-        const scale = Math.min(1, MAX_DIM / img.width, MAX_DIM / img.height);
-        const canvas = document.createElement("canvas");
-        canvas.width  = Math.round(img.width  * scale);
-        canvas.height = Math.round(img.height * scale);
-        canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
-
-        // Step quality from 0.85 down to 0.05 in 0.05 increments.
-        // dataUrl length * 0.75 ≈ actual byte count (base64 overhead is 4/3).
-        // Stop as soon as the image fits in MAX_BYTES.
-        let dataUrl = canvas.toDataURL("image/jpeg", 0.05); // worst-case fallback
-        for (let q = 0.85; q > 0.05; q = Math.round((q - 0.05) * 100) / 100) {
-          const candidate = canvas.toDataURL("image/jpeg", q);
-          if (candidate.length * 0.75 <= MAX_BYTES) {
-            dataUrl = candidate;
-            break;
-          }
-        }
-
-        const blob = dataURLToBlob(dataUrl);
-        setForm(f => ({ ...f, photoUrl: dataUrl, photoBlob: blob }));
-      };
-      img.src = ev.target.result;
-    };
-    reader.readAsDataURL(file);
+    prepareProductPhoto(file)
+      .then((p) => setForm(f => ({ ...f, photoUrl: p.photoUrl, photoBlob: p.photoBlob, photoSourceBlob: p.photoSourceBlob })))
+      .catch((err) => { console.warn("product photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
+  };
+  const handleImageUpload = e => applyProductPhotoFile(e.target.files[0]);
+  // A guided step's capture (photoGuides.js): the shoe / garment step fills the
+  // product photo; the box step fills boxBlob (≤2400px q0.9, uploaded on save
+  // to source_box.jpg) plus a small preview for the form's thumbnail.
+  const handleGuidedPhoto = (step, file) => {
+    if (!file) return;
+    if (step.formField !== "box") { applyProductPhotoFile(file); return; }
+    prepareBoxPhoto(file)
+      .then((b) => setForm(f => ({ ...f, boxBlob: b.boxBlob, boxPreviewUrl: b.boxPreviewUrl })))
+      .catch((err) => { console.warn("box photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
   };
 
   // Detail page: which product, and stale-hash guard. If the hash points
@@ -6945,7 +6961,7 @@ function AdminView({ products, orders, onExit }) {
           selectCategory={selectCategory} toggleHub={toggleHub} toggleShoebox={toggleShoebox}
           recvQtys={recvQtys} setRecvQtys={setRecvQtys}
           recvLoc={recvLoc} setRecvLoc={setRecvLoc} recvRegistry={recvRegistry}
-          fileInputRef={fileInputRef} handleImageUpload={handleImageUpload}
+          fileInputRef={fileInputRef} handleImageUpload={handleImageUpload} onGuidedPhoto={handleGuidedPhoto}
           products={products}
           isPerfume={formIsPerfume}
           nameSuggestions={
