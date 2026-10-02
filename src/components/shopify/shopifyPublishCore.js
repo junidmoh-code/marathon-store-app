@@ -4,11 +4,11 @@
 // engine with the owner-run scripts. The page and the client store import
 // from here; scripts/shopify/* has its own server-side twin of the condition
 // list (compliance.mjs) — the two are pinned equal by the tests.
-import { triggersInText, cleanTitleFor } from "../../utils/shopifyTriggers";
-import { NAME_PROPOSAL_KEY, isPendingProposal, isRefusedProposal, validateVisionName } from "../../utils/visionNaming";
-import { isPriceRecord } from "../../utils/productCategory";
-import { normalizePhotoList, CONDITIONS } from "./publishShared";
-import { staleHandleBlock } from "../../utils/shopifyHandle";
+import { triggersInText, cleanTitleFor } from "../../utils/shopifyTriggers.js";
+import { NAME_PROPOSAL_KEY, isPendingProposal, isRefusedProposal, validateVisionName } from "../../utils/visionNaming.js";
+import { isPriceRecord } from "../../utils/productCategory.js";
+import { normalizePhotoList, CONDITIONS } from "./publishShared.js";
+import { staleHandleBlock } from "../../utils/shopifyHandle.js";
 
 // Condition values, exactly these three (owner spec 2026-08-13). NO default:
 // a product with condition unset is state=blocked and cannot be pushed.
@@ -35,10 +35,10 @@ export { CONDITIONS };
 // publishState.js — a module with no imports, so the Admin-SDK scripts can
 // load it under plain Node and stop hand-rolling their own narrower `isOn`.
 // Re-exported here so every existing import path is unchanged.
-export { PUBLISH_STATES, normalizedState, isOn, isOnOrGoingOn } from "./publishState";
+export { PUBLISH_STATES, normalizedState, isOn, isOnOrGoingOn } from "./publishState.js";
 // …and imported for use inside this file: a re-export does not bring a name
 // into scope.
-import { normalizedState, isOn } from "./publishState";
+import { normalizedState, isOn } from "./publishState.js";
 
 // The state fields a WRITE must carry for this node. Writing normalizedState
 // alone would be a trap for legacy nodes: "draft" normalises to "live", and a

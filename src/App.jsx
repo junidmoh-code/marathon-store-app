@@ -47,6 +47,8 @@ import { SizeTag } from "./components/SizeTag";
 import UserManagement from "./components/UserManagement";
 import EnginePolicyCard from "./components/stock/EnginePolicyCard";
 import CardReconScreen from "./components/cardrecon/CardReconScreen";
+import NewArrivalsScreen from "./components/newArrivals/NewArrivalsScreen";
+import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import { useSpecials } from "./components/TvSpecialsRail";
@@ -2992,6 +2994,14 @@ const RoleIcons = {
       <path d="M5 14l.6 1.9L7.5 16.5l-1.9.6L5 19l-.6-1.9L2.5 16.5l1.9-.6L5 14z"/>
     </svg>
   ),
+  new_arrivals: (
+    // A box with a sparkle: something that has just come in.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M3 9.5 12 5l9 4.5v9L12 23l-9-4.5z"/>
+      <path d="M3 9.5 12 14l9-4.5M12 14v9"/>
+      <path d="M18.5 1.5v3M17 3h3"/>
+    </svg>
+  ),
   shopify_publish: (
     // Cloud with an up-arrow — pushing the catalogue OUT to the online store.
     // It was drawing the shopping bag, which is not merely similar to the Store
@@ -3376,6 +3386,10 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       canAccessStock                                           && { key:"marketing", icon:RoleIcons.marketing, name:"Marketing", desc:"Picked for advertising & display", onClick:()=>onSelect(ROLES.MARKETING) },
       // Shopify Publishing — the online-store review queue. Badge = products
       // whose names have never been reviewed (null while loading → no badge).
+      // New Arrivals — every upload, its generated photo, and Junid's one
+      // Approve. Junid or the Shopify Publishing grant (Approve ends in a
+      // Shopify publish); the callables re-check the same grant server-side.
+      (isSuperAdmin || hasPermission("shopify_publish"))      && { key:"new_arrivals", icon:RoleIcons.new_arrivals, name:"New Arrivals", desc:"New uploads · generated photo · approve", onClick:()=>(window.location.hash = "#new-arrivals") },
       shopifyVisible                                           && { key:"shopify_publish", icon:RoleIcons.shopify_publish, name:"Shopify Publishing", desc:"Clean names · condition · publish", badge:shopifyBadge, onClick:()=>onSelect(ROLES.SHOPIFY_PUBLISH) },
       // Social — generated posts waiting for approval, the style reference
       // library, and the generator. Nothing goes out without approval, so
@@ -6338,6 +6352,11 @@ function AdminView({ products, orders, onExit }) {
         deviceId: getDeviceId(),
         at: serverNowMs(),
       };
+      // NEW ARRIVALS MARKER: this record came through the upload form, so it
+      // belongs in the New Arrivals card. Additive; newArrivalsEnqueue (the
+      // onValueCreated trigger) turns it into the queue entry — the client
+      // never writes /new_arrivals itself, so no rule is involved.
+      newProduct.newArrivalAt = serverNowMs();
       // ── STYLE CODE PROVENANCE ───────────────────────────────────────────
       // Where the suggested data came from and who accepted it. Recorded so a
       // wrong catalogue match can be traced back later — "who confirmed this,
@@ -20055,6 +20074,10 @@ function AppInner() {
   // nothing; authorization happens at the mount below, and the RTDB rules on
   // /mirror_devices and /mirror_switch are what actually refuse.
   const wantMirrorFleet = hash === "#admin/mirror" || hash === "#admin/mirror/";
+  // /#new-arrivals — the New Arrivals card (the daily 09:30 email links here).
+  // Recognises the hash only; the mount below gates, and the callables are
+  // what actually refuse.
+  const wantNewArrivals = hash === "#new-arrivals" || hash === "#new-arrivals/";
   // /#admin/devices — DEVICE CODES. Recognises the HASH only and grants
   // nothing; the deviceEnrolmentAdmin callable is what actually refuses.
   const wantDeviceCodes = hash === "#admin/devices" || hash === "#admin/devices/";
@@ -20318,6 +20341,10 @@ function AppInner() {
     // real account gets the admin sign-in (which only Junid can pass).
     view = (isSuperAdmin || deviceIdentity?.canManageCodes === true)
       ? <DeviceCodesCard isOwner={isSuperAdmin} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantNewArrivals) {
+    view = (isSuperAdmin || hasPermission("shopify_publish"))
+      ? <NewArrivalsScreen api={newArrivalsApi} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantMirrorFleet) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────

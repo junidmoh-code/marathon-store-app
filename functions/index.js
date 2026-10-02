@@ -5641,3 +5641,17 @@ exports.insightsRollupSweep = onSchedule(
     }
   },
 );
+
+// ─── NEW ARRIVALS — upload → card → Approve (the Mac mini does the rest) ─────
+// An upload lands in the card's New tab (newArrivalsEnqueue, keyed on the
+// upload form's own createdBy stamp); the card reads and writes only through
+// the three callables, so /new_arrivals needs no client rule. Contract and
+// statuses: functions/newArrivals/core.cjs and docs/NEW-ARRIVALS.md.
+//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry
+{
+  const na = require("./newArrivals/newArrivals.js");
+  exports.newArrivalsEnqueue = na.newArrivalsEnqueue;
+  exports.newArrivalsList = na.newArrivalsList;
+  exports.newArrivalsApprove = na.newArrivalsApprove;
+  exports.newArrivalsRetry = na.newArrivalsRetry;
+}
