@@ -268,10 +268,18 @@ describe("2 · one list, one design — identical rows, identical actions, ident
   });
 
   it("re-validates against the CLAIMED row: a resize that landed before the claim caps what moves", async () => {
-    // the read the panel used says 2; the request as claimed says 1
+    // the list and the live read say 2; a scan resized it to 1 just before the claim landed
     const before = paths["refill_requests"].bootreq;
+    paths["refill_requests"].bootreq = { ...before, qty: 2 };
     gets["refill_requests/bootreq"] = { ...before, qty: 2 };
-    paths["refill_requests"].bootreq = { ...before, qty: 1 };
+    txnMock.mockImplementationOnce(async (r, fn) => {
+      const server = { ...before, qty: 1 };
+      let next = fn(null);
+      if (next === null) next = fn(JSON.parse(JSON.stringify(server)));
+      if (next === undefined) return { committed: false, snapshot: { val: () => server } };
+      txnWrites.push({ path: r.path, value: next });
+      return { committed: true, snapshot: { val: () => next } };
+    });
     const tree = renderQueue();
     const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
     await act(async () => { fulfilBtn.props.onClick(); });
@@ -279,7 +287,8 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
     await act(async () => { await confirm.props.onClick(); });
     tree.unmount();
-    if (applyMovementMock.mock.calls.length) expect(applyMovementMock.mock.calls[0][0].qty).toBe(1);
+    expect(applyMovementMock).toHaveBeenCalledTimes(1);
+    expect(applyMovementMock.mock.calls[0][0].qty, "the claimed row asks 1 — never the 2 the earlier read saw").toBe(1);
   });
 
   it("a failed movement releases the claim it took", async () => {

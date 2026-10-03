@@ -29,7 +29,7 @@ const MUTATIONS = [
     from: `gap: 8, flexWrap: "nowrap" }}>`, to: `gap: 8, flexWrap: "wrap" }}>`, tests: QUEUE_TESTS },
   // ── commit 3: the claim, client ───────────────────────────────────────────
   { id: "M-CLAIM-SKIPPED", guard: "Fulfil claims before it moves stock", file: QUEUE,
-    from: `    let claimed = false;\n    if (!res) {`, to: `    let claimed = false;\n    if (false) {`, tests: QUEUE_TESTS },
+    from: `    {\n      // Claimed on every path`, to: `    if (false) {\n      // Claimed on every path`, tests: QUEUE_TESTS },
   { id: "M-CLAIM-OTHER", guard: "another device's fresh claim stops Fulfil", file: MARKER,
     from: `  if (pickInProgress(cur, atMs) && !(replayOf && cur.picking.movementId === replayOf)) return undefined;`, to: ``, tests: [...MARKER_TESTS, ...QUEUE_TESTS] },
   { id: "M-CLAIM-SAME-TRANCHE", guard: "a same-tranche claim is NOT ours unless this is a replay", file: MARKER,
