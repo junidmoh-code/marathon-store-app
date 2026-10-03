@@ -44,6 +44,7 @@ vi.mock("firebase/database", () => ({
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
   runTransaction: (...a) => txnMock(...a),
+  serverTimestamp: () => ({ ".sv": "timestamp" }),
   get: (r) => rejects.has(r.path) ? Promise.reject(new Error("offline")) : Promise.resolve({ val: () => gets[r.path] ?? null }),
   // The per-device reject log (src/device/rejectCount.js).
   push: (...a) => pushMock(...a),
@@ -233,6 +234,74 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     expect(patch["refill_requests/bootreq/status"]).toBe("fulfilled");
     expect(patch["refill_requests/bootreq/fulfilledBy"]).toEqual({ movementId: "rrf_bootreq", qty: 2 });
     expect(patch["refill_requests/bootreq/resolvedBy"]).toBe("u1");
+  });
+
+  it("Fulfil CLAIMS the request before it moves stock, and the fulfil write ends the claim (a scan between the two cannot touch it)", async () => {
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    const claimIdx = txnMock.mock.calls.findIndex(([r]) => r.path === "refill_requests/bootreq");
+    expect(claimIdx, "a claim transaction on the request").toBeGreaterThanOrEqual(0);
+    const claimWrite = txnWrites.find((w) => w.path === "refill_requests/bootreq" && w.value?.picking);
+    expect(claimWrite.value.picking).toMatchObject({ atMs: { ".sv": "timestamp" }, movementId: "rrf_bootreq", by: "u1" });
+    expect(typeof claimWrite.value.picking.token).toBe("string");
+    expect(txnMock.mock.invocationCallOrder[claimIdx]).toBeLessThan(applyMovementMock.mock.invocationCallOrder[0]);
+    const patch = updateMock.mock.calls.at(-1)[1];
+    expect(patch["refill_requests/bootreq/status"]).toBe("fulfilled");
+    expect(patch).toHaveProperty("refill_requests/bootreq/picking", null);
+  });
+
+  it("another device's fresh claim stops Fulfil before any stock moves", async () => {
+    paths["refill_requests"].bootreq = { ...paths["refill_requests"].bootreq, picking: { atMs: NOW - 1000, movementId: "rrf_bootreq_9", by: "u2" } };
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    expect(textOf(tree.root.children)).toMatch(/being picked on another device/);
+    tree.unmount();
+  });
+
+  it("re-validates against the CLAIMED row: a resize that landed before the claim caps what moves", async () => {
+    // the list and the live read say 2; a scan resized it to 1 just before the claim landed
+    const before = paths["refill_requests"].bootreq;
+    paths["refill_requests"].bootreq = { ...before, qty: 2 };
+    gets["refill_requests/bootreq"] = { ...before, qty: 2 };
+    txnMock.mockImplementationOnce(async (r, fn) => {
+      const server = { ...before, qty: 1 };
+      let next = fn(null);
+      if (next === null) next = fn(JSON.parse(JSON.stringify(server)));
+      if (next === undefined) return { committed: false, snapshot: { val: () => server } };
+      txnWrites.push({ path: r.path, value: next });
+      return { committed: true, snapshot: { val: () => next } };
+    });
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    expect(applyMovementMock).toHaveBeenCalledTimes(1);
+    expect(applyMovementMock.mock.calls[0][0].qty, "the claimed row asks 1 — never the 2 the earlier read saw").toBe(1);
+  });
+
+  it("a failed movement releases the claim it took", async () => {
+    applyMovementMock.mockImplementationOnce(() => Promise.resolve({ ok: false, reason: "boom" }));
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    expect(txnMock.mock.calls.some(([r]) => r.path === "refill_requests/bootreq/picking")).toBe(true);
   });
 
   it("Fulfil on a SALE row keeps the Source contract (picked warehouse, source_refill, seeded id)", async () => {
@@ -530,24 +599,52 @@ describe("4 · the quiet page — one status line, none of the old chrome", () =
   });
 });
 
-// ── PASS-THROUGH requests name the shops they are for (2026-09-23) ──────────
-// The refill engine now raises a Central→hub request FOR a shop when the hub
-// keeps none of the size or its count is disputed. The row must say who it is
-// for — the hub does not stock the line, so an unexplained ask reads as a bug.
-describe("pass-through request rows", () => {
-  it("tag the shop(s) the request is for; an ordinary request carries no tag", () => {
+// ── NO LINE NAMES A SHOP (owner order 2026-10-03) ───────────────────────────
+// A pass-through request is raised at a hub FOR the shops it feeds, and its
+// row used to say "for Marathon PE". Central's packers read that as "send this
+// box to Marathon PE" and did — 6 boxes in the week after 23 Sep were sold at
+// the shop while the system held them at Hub 2. Every line on a hub's list now
+// reads as going to that hub: no shop name, whatever forDests holds. The
+// engine keeps forDests on the record; this screen never renders it.
+describe("a hub's picking list names no shop", () => {
+  for (const [hub, shops] of [["hub2", ["marathon-pe", "trophy"]], ["hub3", ["marathon-pine", "concrete"]]]) {
+    it(`${hub}: a pass-through line (forDests ${shops.join(" + ")}) shows no shop name, exactly like an ordinary line`, () => {
+      paths["refill_requests"] = {
+        pt: { productId: "tee", size: "M", qty: 2, requestingLocation: hub, status: "open", createdAt: RELEASED_AT,
+              forDests: shops, createdFrom: { engine: true, source: "central", passThrough: "disputed", forDests: shops } },
+        own: { productId: "tee", size: "L", qty: 1, requestingLocation: hub, status: "open", createdAt: RELEASED_AT,
+               createdFrom: { engine: true, source: "central" } },
+      };
+      const tree = renderQueue({ dest: hub, saleRows: [] });
+      const pt = rowLineOf(tree, "req:pt");
+      expect(pt, "the pass-through row renders").toBeTruthy();
+      const text = textOf(tree.root.children);
+      for (const name of ["Marathon PE", "Trophy", "Pine", "Concrete", "marathon-pe", "trophy", "marathon-pine", "concrete"]) {
+        expect(text, name).not.toContain(name);
+      }
+      expect(tree.root.findAll((n) => n.props && n.props["data-for-shops"] != null)).toHaveLength(0);
+      tree.unmount();
+    });
+  }
+
+  it("Fulfil and Out of Stock sit side by side on every line: one row that never wraps", () => {
     paths["refill_requests"] = {
       pt: { productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "open", createdAt: RELEASED_AT,
-            forDests: ["marathon-pe"], createdFrom: { engine: true, source: "central", passThrough: "disputed", forDests: ["marathon-pe"] } },
+            forDests: ["marathon-pe"], createdFrom: { engine: true, source: "central", passThrough: "no_target", forDests: ["marathon-pe"] } },
       own: { productId: "tee", size: "L", qty: 1, requestingLocation: "hub2", status: "open", createdAt: RELEASED_AT,
              createdFrom: { engine: true, source: "central" } },
     };
     const tree = renderQueue({ dest: "hub2", saleRows: [] });
-    const pt = rowLineOf(tree, "req:pt");
-    const own = rowLineOf(tree, "req:own");
-    expect(pt, "the pass-through row renders").toBeTruthy();
-    expect(textOf(pt.children)).toContain("for Marathon PE");
-    expect(own.findAll((n) => n.props && n.props["data-for-shops"] != null)).toHaveLength(0);
+    for (const key of ["req:pt", "req:own"]) {
+      const line = rowLineOf(tree, key);
+      const rows = line.findAll((n) => n.props && n.props["data-line-actions"] != null);
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      expect(row.props.style.flexWrap).toBe("nowrap");
+      const labels = row.findAll((n) => n.type === "button").map((b) => textOf(b.children));
+      expect(labels.some((l) => /Fulfil|Available/.test(l))).toBe(true);
+      expect(labels).toContain("Out of Stock");
+    }
     tree.unmount();
   });
 });

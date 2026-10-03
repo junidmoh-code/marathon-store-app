@@ -38,6 +38,7 @@ vi.mock("firebase/database", () => ({
   onValue: (r, cb) => { cb({ val: () => getPath(r.path) }); return () => {}; },
   update: (...a) => updateMock(...a),
   get: (r) => Promise.resolve({ val: () => getPath(r.path), exists: () => getPath(r.path) != null }),
+  serverTimestamp: () => ({ ".sv": "timestamp" }),
   runTransaction: async (node, fn) => {
     const cur = getPath(node.path);
     const next = fn(cur);

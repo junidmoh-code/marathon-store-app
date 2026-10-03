@@ -46,7 +46,7 @@
 "use strict";
 
 const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
-const { hubPresenceSignals } = require("./shop-source-rule.cjs");
+const { hubPresenceSignals, pickInProgress } = require("./shop-source-rule.cjs");
 
 // CJS twins of the constants in src/components/stock/firstBatchCore.js — a
 // test pins them equal.
@@ -280,6 +280,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
       // fails `status === "open"`, and a marker a CLIENT pre-set must not
       // shield the row (the server lock decides "judged", never a row field).
       if (cur.status !== "open" || (num(cur.sentQty) || 0) > 0 || (cur.sentQty != null && typeof cur.sentQty !== "number")) return undefined;
+      if (pickInProgress(cur)) return undefined;   // a picker has claimed it — never withdrawn mid-pick
       return { ...cur, status: "cancelled", cancelReason: reason, resolvedAt: now,
         firstBatch: { ...(cur.firstBatch || {}), hub2Leg: { none, at: now } } };
     });
