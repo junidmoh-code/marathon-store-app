@@ -103,6 +103,12 @@ export const SUPPLIER_LABELS = Object.freeze(["yomo", "yono", "shouzhan", "shouz
   "jinyaotong", "pattabon", "xds", "allaccess", "allaccese", "wululu", "ommf", "nakamajiang", "qiexu", "chaoxianxing", "csfgang", "bvtd",
   "borsod", "nsiminte", "extreme", "seventeen", "dkey", "hscp", "crv", "cvt", "aloha"]);
 
+// A supplier code: "Lx:1222", "Bs-8022", "GS5222", "8290 Barley" — a digit
+// first, or 1–2 letters then digits, or 3–4 letters glued to digits. Never a
+// brand + model ("Nike 270", "Jordan 4").
+const CODE_RE = /^(\d|[a-z]{1,2} ?\d|[a-z]{3,4}\d)/;
+// Folded the same way names are, so "jaja&nana" matches "Jaja&Nana tee".
+let SUPPLIER_FOLDED;
 // Apostrophes vanish ("Levi’s" → "levis"); dots and "&" become separate words
 // ("Dr.Martens" → "dr martens", "Tiffany&Co" → "tiffany & co").
 const fold = (s) => ` ${String(s || "").toLowerCase().normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[’'`]/g, "").replace(/&/g, " & ").replace(/[^a-z0-9&]+/g, " ").replace(/ +/g, " ").trim()} `;
@@ -123,6 +129,9 @@ const fold = (s) => ` ${String(s || "").toLowerCase().normalize("NFKD").replace(
 export function brandInfo(name) {
   const t = fold(name);
   if (t.trim() === "") return { brand: null, flag: null, source: null };
+  // A name that LEADS with a supplier label or a code is unbranded — checked
+  // before any brand ("Shambeen Nike tee" is a Shambeen tee with a print).
+  if (SUPPLIER_FOLDED.some((l) => t.startsWith(` ${l} `)) || CODE_RE.test(t.trim())) return { brand: null, flag: null, source: "supplier" };
   let best = null;
   for (const [order, b] of BRANDS.entries()) {
     for (const a of b.aliases) {
@@ -136,8 +145,6 @@ export function brandInfo(name) {
   // ("air jordan", "jordan 1…"), never "Michael Jordan" on a Nike tee.
   if (best && best.brand === "Nike" && / (air jordan|jordan \d+) /.test(t)) return { brand: "Jordan", flag: null, source: "list" };
   if (best) return { brand: best.brand, flag: null, source: "list" };
-  const first = t.trim().split(" ")[0];
-  if (SUPPLIER_LABELS.includes(first) || /^[a-z]{1,4}\d/.test(first) || /^\d/.test(first)) return { brand: null, flag: null, source: "supplier" };
   return { brand: null, flag: "unrecognised", source: null };
 }
 
@@ -152,6 +159,11 @@ export function brandOnRename(product, newName) {
   const r = brandInfo(newName);
   return { brand: r.brand, brandFlag: r.flag, brandSource: r.source };
 }
+
+SUPPLIER_FOLDED = SUPPLIER_LABELS.map((l) => fold(l).trim());
+
+/** Is a stored value a supplier label (unbranded on purpose)? Pure. */
+export const isSupplierLabel = (v) => SUPPLIER_FOLDED.includes(fold(v).trim()) || CODE_RE.test(fold(v).trim());
 
 /**
  * A brand read off a LABEL or LOGO (vision, a box): the whole read is the

@@ -4,7 +4,7 @@
 //   node scripts/backfill-categories.mjs           (dry-run)
 //   node scripts/backfill-categories.mjs --commit  (writes)
 import { createRequire } from "module";
-import { categorize, TOP_CATEGORIES, UNCATEGORIZED } from "../src/utils/productCategory.js";
+import { categorize, brandOf, TOP_CATEGORIES, UNCATEGORIZED } from "../src/utils/productCategory.js";
 import { brandFill } from "./lib/brandFill.mjs";
 // firebase-admin lives in functions/node_modules (not the app root) — resolve it there.
 const require = createRequire(new URL("../functions/package.json", import.meta.url));
@@ -44,7 +44,9 @@ function targetFor(p) {
     // BRAND IS NEVER OVERWRITTEN (Junid, 3 Oct): a brand that is set — however it
     // got there, including a hand correction — is left alone. The classifier may
     // only FILL an empty brand, and only with a recognised one.
-    const fill = brandFill(p.brand, t.brand);
+    // Derived from the NAME independently of the category branch (a categorised
+    // product with a blank brand gets its brand filled too).
+    const fill = brandFill(p.brand, brandOf(p.name));
     if (fill) patch.brand = fill;
     // Fix perfumes mis-typed as "sneaker" → clear productType (perfume is neither
     // sneaker nor clothing; leaving "sneaker" wrongly offers a shoebox on the POS).

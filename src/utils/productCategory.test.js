@@ -61,6 +61,10 @@ describe("brandOf", () => {
     expect(brandInfo("Sweater hoodie cream white")).toEqual({ brand: null, flag: "unrecognised", source: null });
     expect(brandInfo("Shambeen long sleeve green 9536")).toEqual({ brand: null, flag: null, source: "supplier" });
     expect(brandInfo("Bs-8022 Grey")).toEqual({ brand: null, flag: null, source: "supplier" });
+    expect(brandInfo("Jaja&Nana tee grey")).toEqual({ brand: null, flag: null, source: "supplier" });
+    expect(brandOf("Nike 270 black")).toBe("Nike");
+    expect(brandOf("Jordan 4 brue")).toBe("Jordan");
+    expect(brandInfo("Shambeen Nike tee")).toEqual({ brand: null, flag: null, source: "supplier" });
     expect(brandInfo("Nike Air Max")).toEqual({ brand: "Nike", flag: null, source: "list" });
   });
   it("review findings: no colourway, comic, first-name or English-word brands", () => {

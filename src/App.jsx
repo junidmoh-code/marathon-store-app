@@ -7306,7 +7306,8 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
     if (next && next !== product.name) {
       // Seed FIRST, then rename (see updateProductName).
       seedSearchIdentityFrom(product)
-        .then(() => save({ name: next }, "the name"))
+        // Same rule as updateProductName: only an empty brand is re-derived.
+        .then(() => save({ name: next, ...(brandOnRename(product, next) || {}) }, "the name"))
         .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
     }
     else if (!next) setNameDraft(product.name);
