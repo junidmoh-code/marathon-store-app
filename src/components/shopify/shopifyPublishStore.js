@@ -211,16 +211,20 @@ async function shallowKeys(path) {
 export const REVIEW_HIDDEN_PATH = "config/shopifyReviewHidden";
 let hiddenCache = null; // { keys: Set<pid>, at }
 /**
- * Pids hidden from review for having no sellable stock online. Never rejects:
- * a failed read answers an empty set, so nothing is hidden (fail-open).
+ * Pids hidden from review for having no sellable stock online. By default it
+ * never rejects: a failed read answers an empty set, so nothing is hidden
+ * (fail-open). `throwOnError` is for refreshes that already hold an answer.
  */
-export async function loadReviewHidden({ fresh = false } = {}) {
+export async function loadReviewHidden({ fresh = false, throwOnError = false } = {}) {
   if (!fresh && hiddenCache && Date.now() - hiddenCache.at < KEYS_TTL_MS) return hiddenCache.keys;
   try {
     const keys = await shallowKeys(REVIEW_HIDDEN_PATH);
     hiddenCache = { keys, at: Date.now() };
     return keys;
-  } catch {
+  } catch (e) {
+    // A REFRESH asks to see the failure, so that one blip does not
+    // un-hide everything the page already knows is hidden.
+    if (throwOnError) throw e;
     return new Set();
   }
 }
