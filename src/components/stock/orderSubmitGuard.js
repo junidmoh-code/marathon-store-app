@@ -54,7 +54,13 @@ export const SUBMIT_GUARD_READ_TIMEOUT_MS = 10_000;
 // Resolves to null when every line is covered, or to the first refusal:
 //   { reason: "short",      hub, productId, size, label, have, want }
 //   { reason: "unreadable", hub, productId, size, label, error }
-export async function findSubmitShortfall({ lines, readCell, timeoutMs = SUBMIT_GUARD_READ_TIMEOUT_MS }) {
+// `isOnline()` (optional) resolves true only while the device holds a live
+// server connection. Firebase `get` falls back to the local cache when it is
+// offline, so a cached POSITIVE cell could otherwise pass a pair that sold out
+// since (CodeRabbit, PR #671). Offline → every line is "unreadable": refused.
+// While connected, a cache answer is kept current by the live listener that
+// put it there, which is the floor this guard claims and no more.
+export async function findSubmitShortfall({ lines, readCell, isOnline = null, timeoutMs = SUBMIT_GUARD_READ_TIMEOUT_MS }) {
   // Demand per cell, in first-appearance order so the refusal names the line
   // the assistant added first.
   const demand = new Map();
@@ -64,6 +70,14 @@ export async function findSubmitShortfall({ lines, readCell, timeoutMs = SUBMIT_
     const d = demand.get(k);
     if (d) d.want += 1;
     else demand.set(k, { hub: line.hub, productId: line.productId, size: line.size, label: line.label || "", want: 1 });
+  }
+  if (demand.size && isOnline) {
+    let online = false;
+    try { online = (await withTimeout(isOnline(), timeoutMs)) === true; } catch { online = false; }
+    if (!online) {
+      const first = demand.values().next().value;
+      return { reason: "unreadable", ...first, error: "offline" };
+    }
   }
   // Every cell read at once — a cart of five shoes is five small reads, not
   // five round trips in a row in front of the customer.

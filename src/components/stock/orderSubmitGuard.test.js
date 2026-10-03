@@ -208,3 +208,28 @@ describe("the desktop panel cannot hide a refusal", () => {
     expect(APP).toContain("useEffect(() => { if (submitRefusal) setCoOpen(true); }, [submitRefusal]);");
   });
 });
+
+describe("offline: a cached positive cell is never trusted (CodeRabbit, #671)", () => {
+  it("disconnected → refused as unreadable, and no cell is read", async () => {
+    let reads = 0;
+    const db = liveDb();
+    const r = await findSubmitShortfall({
+      lines: [line("hub1", "7")],
+      readCell: (...a) => { reads++; return reader(db)(...a); },
+      isOnline: () => Promise.resolve(false),
+    });
+    expect(r).toMatchObject({ reason: "unreadable", error: "offline", size: "7" });
+    expect(reads).toBe(0);
+  });
+  it("a connection check that throws is offline", async () => {
+    const r = await findSubmitShortfall({ lines: [line("hub1", "7")], readCell: reader(liveDb()), isOnline: () => Promise.reject(new Error("x")) });
+    expect(r).toMatchObject({ reason: "unreadable" });
+  });
+  it("connected → judged on the cell", async () => {
+    expect(await findSubmitShortfall({ lines: [line("hub1", "7")], readCell: reader(liveDb()), isOnline: () => Promise.resolve(true) })).toBe(null);
+  });
+  it("the screen passes the .info/connected check", () => {
+    const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+    expect(APP).toContain('isOnline: () => get(ref(database, ".info/connected")).then((snap) => snap.val() === true),');
+  });
+});

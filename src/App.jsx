@@ -10722,6 +10722,8 @@ function AssistantView({ products, onExit, orders = [] }) {
             hub: placedHubFor(item), productId: item.product.id, size: item.size, label: item.product.name,
           })),
           readCell: (hub, pid, size) => get(ref(database, stockCellPath(hub, pid, String(size)))).then((snap) => snap.val()),
+          // Offline, `get` answers from cache — refuse rather than trust it.
+          isOnline: () => get(ref(database, ".info/connected")).then((snap) => snap.val() === true),
         });
         if (refusal) {
           setSubmitRefusal(submitShortfallMessage(refusal, (h) => HUB_LABELS[h] || h, formatSize));
