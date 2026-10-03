@@ -295,7 +295,11 @@ test("a stock movement already linked to the request (pick written, sentQty not 
   const cat = CATEGORIES[0];
   const { snap, pid, sk } = scenario({ shop: "trophy", cat, held: "units" });
   snap.movements = [{ type: "transfer_out", from: "central", to: "trophy", productId: pid, size: sk, qty: 1, ts: AFTER, link: { refillId: "r1" } }];
-  assert.equal(withdrawalOf(computeRefillPlan(snap)), undefined);
+  snap.stock.central[pid][sk] = cell(0);                         // the pick emptied Central: sourceEmpty would fire if not in flight
+  const plan = computeRefillPlan(snap);
+  assert.equal(withdrawalOf(plan), undefined);
+  assert.equal(plan.closes.filter((c) => c.refillId === "r1").length, 0, "no close of any kind while the pick is mid-write");
+  assert.equal(plan.resizes.filter((r) => r.refillId === "r1").length, 0);
 });
 
 test("a LOCK-LESS shop ← Central row: withdrawn (status only) when the hub held it; otherwise kept AND counted inbound, so nothing asks beside it", () => {

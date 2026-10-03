@@ -28,7 +28,7 @@
 const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 // The owner's shop-source rule (a shop never refills from Central once its hub
 // has held the product) — a leaf module, stated once. See shop-source-rule.cjs.
-const { forbiddenShopSource, shopCentralWithdrawal, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
+const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -948,7 +948,13 @@ function computeRefillPlan(snapshot) {
         // counts UNDOs, not in-progress picks.)
         const inFlightPlanGen = orderIsOurs && order.clothingPlanGen != null;
         const inFlightLedger = ledgerTouched(entry, pid, sizeKey);
-        const inFlight = inFlightPlanGen || inFlightLedger;
+        // A movement already names this request but its sentQty has not landed:
+        // a pick mid-write (Central's fulfil writes the movement first). In
+        // flight for EVERY close and resize below, not only the shop-source
+        // withdrawal (CodeRabbit, PR #673). A request whose sentQty is recorded
+        // is judged as before.
+        const inFlightMidWrite = !!rr && rr.status === "open" && requestUntouched(rr) && movedRefillIds.has(String(entry.refillId));
+        const inFlight = inFlightPlanGen || inFlightLedger || inFlightMidWrite;
         // ── A SHOP NEVER REFILLS FROM CENTRAL ONCE ITS HUB HELD IT (owner rule
         // 2026-09-17, enforced here since 2026-10-03). The only shop ← Central
         // lock is a first-batch one, judged legitimate when it was created (its
@@ -959,7 +965,7 @@ function computeRefillPlan(snapshot) {
         // A lock-less shop ← Central row gets the same judgement in the
         // lock-less pass below (satisfiedClosures).
         const hubServes = shopCentralWithdrawal({
-          dest, pid, entry, rr, inFlight: inFlight || movedRefillIds.has(String(entry.refillId)), routes, locations,
+          dest, pid, entry, rr, inFlight, routes, locations,
           snapshot: { stock, openIndex, heldLines, refillRequests },
         });
         if (hubServes) {
