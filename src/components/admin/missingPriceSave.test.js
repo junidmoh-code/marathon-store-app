@@ -27,6 +27,11 @@ describe("saveMissingPrice — the one Missing-prices save", () => {
     expect(apply).not.toHaveBeenCalled();
     expect((await saveMissingPrice(P, "700", "650", { apply, confirmed: true })).ok).toBe(true);
   });
+  it("an existing cost still triggers the 'retail below cost' question (CodeRabbit)", async () => {
+    const apply = vi.fn(async () => ({ ok: true, count: 1 }));
+    expect(await saveMissingPrice({ ...P, stockPrice: 700 }, "", "650", { apply })).toMatchObject({ ok: false, needsConfirm: true });
+    expect(apply).not.toHaveBeenCalled();
+  });
   it("a refused batch (on special) is reported, not thrown", async () => {
     const apply = vi.fn(async () => ({ ok: false, message: "on special" }));
     expect(await saveMissingPrice(P, "400", "650", { apply })).toEqual({ ok: false, error: "on special" });
