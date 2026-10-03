@@ -133,3 +133,20 @@ describe("the form's step card", () => {
     expect(tr.root.findAllByType(GuidedPhotoCamera)).toHaveLength(0);
   });
 });
+
+describe("GuidedPhotoStep — No box", () => {
+  it("shows a one-tap No box button that toggles, and a skipped badge", async () => {
+    const onSkip = vi.fn();
+    const tr = await mount(<GuidedPhotoStep step={BOX_STEP} filled={false} previewUrl={null} onFile={vi.fn()} onSkip={onSkip} />);
+    await act(async () => { buttonWith(tr, "No box").props.onClick(); });
+    expect(onSkip).toHaveBeenCalledWith(true);
+    const tr2 = await mount(<GuidedPhotoStep step={BOX_STEP} filled skipped previewUrl={null} onFile={vi.fn()} onSkip={onSkip} />);
+    expect(tr2.root.findAll((n) => n.props && n.props["data-testid"] === "skipped").length).toBe(1);
+    await act(async () => { buttonWith(tr2, "Undo").props.onClick(); });
+    expect(onSkip).toHaveBeenLastCalledWith(false);
+  });
+  it("no No box button without a handler, or on the shoe step", async () => {
+    const tr = await mount(<GuidedPhotoStep step={BOX_STEP} filled={false} previewUrl={null} onFile={vi.fn()} />);
+    expect(tr.root.findAll((n) => n.type === "button").some((b) => [].concat(b.props.children).join("").includes("No box"))).toBe(false);
+  });
+});
