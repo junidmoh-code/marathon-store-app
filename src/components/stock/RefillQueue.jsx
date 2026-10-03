@@ -275,14 +275,16 @@ function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfi
     <div data-size={row.size} data-origin={row.origin} data-row={row.rowKey}
          style={{ borderTop: "1px solid rgba(255,255,255,.06)", marginTop: 10, paddingTop: 10,
                   opacity: busy ? 0.6 : 1, transition: "opacity 120ms ease" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
-        <span style={{ display: "inline-flex", alignItems: "baseline", gap: 7, minWidth: 74 }}>
+      {/* ONE ROW, ALWAYS: size + count on the left, Fulfil and Out of Stock
+          side by side on the right. The row never wraps — the left side
+          shrinks (and truncates) instead, so Out of Stock can never fall to a
+          line of its own under Fulfil on a phone. */}
+      <div data-line-actions style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "nowrap" }}>
+        <span style={{ display: "inline-flex", alignItems: "baseline", gap: 7, minWidth: 0, flex: "1 1 auto", overflow: "hidden", whiteSpace: "nowrap" }}>
           <span style={{ fontSize: 14, fontWeight: 700, color: "#fff" }}><SizeTag size={row.size} /></span>
           <span style={{ fontSize: 12.5, fontWeight: 700, color: BLUE, fontVariantNumeric: "tabular-nums" }}>×{remaining}</span>
           {sent > 0 && <span style={{ fontSize: 11, color: GRAY }}>· {sent} sent</span>}
-          {row.forLabel && <span data-for-shops style={{ fontSize: 11, color: GRAY }}>· for {row.forLabel}</span>}
         </span>
-        <span style={{ flex: 1 }} />
         <button disabled={busy} onClick={onToggleFulfil}
                 style={{ ...BTN, flex: "0 0 auto", padding: "10px 16px",
                          border: fulfilOpen ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.12)",
@@ -363,12 +365,13 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         size: String(r.size), qty: r.qty || 1, sent: Number(r.sentQty) || 0,
         createdAt: r.createdAt, createdMs: parseMs(r.createdAt),
         earlyRelease: r.earlyRelease, shadow: !!r.shadow, _r: r,
-        // A PASS-THROUGH request (refill engine, 2026-09-23) is raised at a hub
-        // FOR the shops it feeds — the hub itself keeps none of it, or its
-        // count is disputed. Name the shops so the picker knows why a hub ask
-        // exists for a line the hub does not stock.
-        forLabel: Array.isArray(r.forDests) && r.forDests.length
-          ? r.forDests.map((d) => HUB_LABEL[d] || d).join(" + ") : null,
+        // NO SHOP NAME (owner order 2026-10-03). A pass-through request is
+        // raised at a hub FOR the shops it feeds (r.forDests — the engine
+        // reconciles the leg against their need), but Central's packers read
+        // "for Marathon PE" as "send this box to Marathon PE", and did: the
+        // box skipped the hub the system had credited. Every line on a hub's
+        // list goes to THAT HUB, so none names a shop. forDests stays on the
+        // record for the engine; nothing here renders it.
       };
     });
   }, [allRequests, DEST_LOC, lineFilter, byId]);

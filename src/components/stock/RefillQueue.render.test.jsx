@@ -530,24 +530,52 @@ describe("4 · the quiet page — one status line, none of the old chrome", () =
   });
 });
 
-// ── PASS-THROUGH requests name the shops they are for (2026-09-23) ──────────
-// The refill engine now raises a Central→hub request FOR a shop when the hub
-// keeps none of the size or its count is disputed. The row must say who it is
-// for — the hub does not stock the line, so an unexplained ask reads as a bug.
-describe("pass-through request rows", () => {
-  it("tag the shop(s) the request is for; an ordinary request carries no tag", () => {
+// ── NO LINE NAMES A SHOP (owner order 2026-10-03) ───────────────────────────
+// A pass-through request is raised at a hub FOR the shops it feeds, and its
+// row used to say "for Marathon PE". Central's packers read that as "send this
+// box to Marathon PE" and did — 6 boxes in the week after 23 Sep were sold at
+// the shop while the system held them at Hub 2. Every line on a hub's list now
+// reads as going to that hub: no shop name, whatever forDests holds. The
+// engine keeps forDests on the record; this screen never renders it.
+describe("a hub's picking list names no shop", () => {
+  for (const [hub, shops] of [["hub2", ["marathon-pe", "trophy"]], ["hub3", ["marathon-pine", "concrete"]]]) {
+    it(`${hub}: a pass-through line (forDests ${shops.join(" + ")}) shows no shop name, exactly like an ordinary line`, () => {
+      paths["refill_requests"] = {
+        pt: { productId: "tee", size: "M", qty: 2, requestingLocation: hub, status: "open", createdAt: RELEASED_AT,
+              forDests: shops, createdFrom: { engine: true, source: "central", passThrough: "disputed", forDests: shops } },
+        own: { productId: "tee", size: "L", qty: 1, requestingLocation: hub, status: "open", createdAt: RELEASED_AT,
+               createdFrom: { engine: true, source: "central" } },
+      };
+      const tree = renderQueue({ dest: hub, saleRows: [] });
+      const pt = rowLineOf(tree, "req:pt");
+      expect(pt, "the pass-through row renders").toBeTruthy();
+      const text = textOf(tree.root.children);
+      for (const name of ["Marathon PE", "Trophy", "Pine", "Concrete", "marathon-pe", "trophy", "marathon-pine", "concrete"]) {
+        expect(text, name).not.toContain(name);
+      }
+      expect(tree.root.findAll((n) => n.props && n.props["data-for-shops"] != null)).toHaveLength(0);
+      tree.unmount();
+    });
+  }
+
+  it("Fulfil and Out of Stock sit side by side on every line: one row that never wraps", () => {
     paths["refill_requests"] = {
       pt: { productId: "tee", size: "M", qty: 2, requestingLocation: "hub2", status: "open", createdAt: RELEASED_AT,
-            forDests: ["marathon-pe"], createdFrom: { engine: true, source: "central", passThrough: "disputed", forDests: ["marathon-pe"] } },
+            forDests: ["marathon-pe"], createdFrom: { engine: true, source: "central", passThrough: "no_target", forDests: ["marathon-pe"] } },
       own: { productId: "tee", size: "L", qty: 1, requestingLocation: "hub2", status: "open", createdAt: RELEASED_AT,
              createdFrom: { engine: true, source: "central" } },
     };
     const tree = renderQueue({ dest: "hub2", saleRows: [] });
-    const pt = rowLineOf(tree, "req:pt");
-    const own = rowLineOf(tree, "req:own");
-    expect(pt, "the pass-through row renders").toBeTruthy();
-    expect(textOf(pt.children)).toContain("for Marathon PE");
-    expect(own.findAll((n) => n.props && n.props["data-for-shops"] != null)).toHaveLength(0);
+    for (const key of ["req:pt", "req:own"]) {
+      const line = rowLineOf(tree, key);
+      const rows = line.findAll((n) => n.props && n.props["data-line-actions"] != null);
+      expect(rows).toHaveLength(1);
+      const row = rows[0];
+      expect(row.props.style.flexWrap).toBe("nowrap");
+      const labels = row.findAll((n) => n.type === "button").map((b) => textOf(b.children));
+      expect(labels.some((l) => /Fulfil|Available/.test(l))).toBe(true);
+      expect(labels).toContain("Out of Stock");
+    }
     tree.unmount();
   });
 });
