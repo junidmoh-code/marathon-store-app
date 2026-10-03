@@ -355,10 +355,9 @@ async function love(db, { pid, genId, loved }, uid, nowMs) {
   const item = res && res.committed && res.snapshot && res.snapshot.val();
   const gen = item && item.generations && item.generations[genId];
   if (!gen || out.refusal || (gen.loved === true) !== loved) throw new HttpsError("failed-precondition", `Can't ${loved ? "love" : "un-love"} that photo — ${out.refusal || "not saved"}.`);
-  await writeRoot(db, {
-    ...core.indexMove(pid, item.status, item.status, item.enqueuedAt),
-    ...await decisionPaths(db, pid, { at: nowMs, uid, item: prev, action: loved ? "love" : "unlove", genId }),
-  });
+  // A love never moves the item, so the lane index is left alone (re-asserting
+  // it from this snapshot could resurrect an entry a concurrent move removed).
+  await writeRoot(db, await decisionPaths(db, pid, { at: nowMs, uid, item: prev, action: loved ? "love" : "unlove", genId }));
   return { ok: true };
 }
 
