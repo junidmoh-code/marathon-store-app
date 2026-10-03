@@ -64,3 +64,15 @@ describe("saveMissingPrice — costOnly (the New Arrivals card: the stock price 
     expect(apply).not.toHaveBeenCalled();
   });
 });
+
+describe("costOnly keeps the existing-retail check (CodeRabbit)", () => {
+  it("a new stock price above an EXISTING retail price asks first", async () => {
+    const apply = vi.fn(async () => ({ ok: true, count: 1 }));
+    const r = await saveMissingPrice({ id: "p1", name: "x", stockPrice: null, retailPrice: 500 }, "650", "", { apply, costOnly: true });
+    expect(r).toMatchObject({ ok: false, needsConfirm: true });
+    expect(apply).not.toHaveBeenCalled();
+    const ok = await saveMissingPrice({ id: "p1", name: "x", stockPrice: null, retailPrice: 500 }, "650", "", { apply, costOnly: true, confirmed: true });
+    expect(ok.ok).toBe(true);
+    expect(apply.mock.calls[0][0].lines.p1.to).toEqual({ stockPrice: 650 });
+  });
+});

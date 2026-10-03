@@ -19,7 +19,8 @@ export async function saveMissingPrice(product, costDraft, retailDraft, { label,
   const rd = String(retailDraft ?? "").trim() === "" && !needsRetail(product) ? String(product.retailPrice) : retailDraft;
   // costOnly (New Arrivals): only the stock price is set; a missing retail
   // price is not asked for and never written.
-  const v = validatePrices(product, cd, costOnly ? "" : rd, { costOnly });
+  // (An EXISTING retail price still takes part in the "retail below cost" check.)
+  const v = validatePrices(product, cd, rd, { costOnly });
   if (!v.ok && !(v.needsConfirm && confirmed)) return { ok: false, error: v.error, needsConfirm: !!v.needsConfirm };
   const updates = buildUpdates(product, cd, costOnly ? "" : rd); // only the MISSING fields
   if (!Object.keys(updates).length) return { ok: true, count: 0 };

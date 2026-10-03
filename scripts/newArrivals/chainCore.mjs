@@ -181,7 +181,7 @@ export async function advance(pid, deps) {
     // A WAIT, not a rejection: the item stays in the chain and resumes by itself
     // once a retail price exists — no Retry, no regeneration, no second post.
     if (!(Number(product.retailPrice) > 0)) {
-      if (!item.chain?.waiting) await db.ref(`${ITEMS}/${pid}/chain/waiting`).set({ for: "retail price", at: deps.now ? deps.now() : Date.now() });
+      if (!item.chain?.waiting) await db.ref(`${ITEMS}/${pid}/chain/waiting`).set({ for: "retail price", at: await deps.now() });
       return { pid, outcome: "waiting", step: "retail-price" };
     }
     if (item.chain?.waiting) await db.ref(`${ITEMS}/${pid}/chain/waiting`).set(null);
