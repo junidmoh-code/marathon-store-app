@@ -169,6 +169,7 @@ import { printOrderSlips } from "./print/orderSlip";
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
 import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
+import { orderSizesForDisplay } from "./utils/sizeDisplayOrder";
 import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
 import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
@@ -8703,7 +8704,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   }, [cart]);
   const refillUnits = groupedRefill.reduce((s, g) => s + g.qty, 0);
   const fmtR = n => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
-  const sizesOf = p => { const s = (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"); return s.length ? s : ["Free Size"]; };
+  // Numeric runs in ascending order (orderSizesForDisplay) — stored order put
+  // a shoe's 10 before its 6 (2026-10-03).
+  const sizesOf = p => { const s = orderSizesForDisplay((Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_")); return s.length ? s : ["Free Size"]; };
 
   useEffect(() => {
     const h = e => {
@@ -9849,7 +9852,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
   // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
   const selectedSizes = useMemo(() => {
-    const real = (selected?.sizes || []).filter(s => s && String(s).trim() && s !== "_");
+    // Same ascending order as the desktop grid's sizesOf.
+    const real = orderSizesForDisplay((selected?.sizes || []).filter(s => s && String(s).trim() && s !== "_"));
     return real.length ? real : ["Free Size"];
   }, [selected]);
   const [pendingQty,  setPendingQty]                    = useState(1);
