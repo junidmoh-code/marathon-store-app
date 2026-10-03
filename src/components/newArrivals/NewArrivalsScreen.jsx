@@ -296,7 +296,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
       do {
         res = await api.list(which, { cursor, limit: Math.min(RELOAD_CHUNK, Math.max(PAGE, wanted - acc.length)), group: groupFor(which, g) });
         if (stale()) return;
-        acc.push(...(res.items || []));
+        // An item can change bucket between pages (photo ready / generating / none): never shown twice.
+        const have = new Set(acc.map((i) => i.pid));
+        acc.push(...(res.items || []).filter((i) => !have.has(i.pid)));
         cursor = res.nextCursor || null;
       } while (cursor && acc.length < wanted);
       setData({
