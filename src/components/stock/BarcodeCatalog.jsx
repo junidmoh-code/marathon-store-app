@@ -18,7 +18,8 @@ import { transferTargets, labelFor } from "./locations";
 import FilterPicker from "./FilterPicker";
 import { ensureBarcode, getBarcode } from "./barcodeStore";
 import { code128Modules } from "./barcode";
-import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, defaultTransportId } from "./printers";
+import { TRANSPORTS, printLabels, printTest, connectTransport, getXprinterDiag, defaultTransportId, rememberTransport } from "./printers";
+import PrinterStatus from "./PrinterStatus";
 import { Toast, Empty } from "./widgets";
 import { GLASS, CARD, GRAY, GREEN, BLUE_L, AMBER, BORDER, FONT, BG, bGreen, bGhost, input } from "./ui";
 import { searchProducts } from "../../utils/productSearch";
@@ -55,7 +56,8 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
   const [search, setSearch] = useState("");
   const [openId, setOpenId] = useState(null);
   const [sel, setSel] = useState({});   // { "pid|size": { productId, productName, size, count } }
-  const [transport, setTransport] = useState(defaultTransportId);
+  const [transport, setTransportState] = useState(defaultTransportId);
+  const setTransport = (id) => { rememberTransport(id); setTransportState(id); };
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [diagText, setDiagText] = useState(null);   // persistent printer diagnostic (manual dismiss)
@@ -161,13 +163,13 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     setBusy(true);
     // Connect FIRST — the printer picker needs the user-tap activation, which the
     // async barcode reservations below would otherwise consume (Android Chrome).
-    // Best-effort: persist the Xprinter's USB identity (VID/PID + iface/endpoints) to
-    // RTDB so it can be read server-side — captured pre-claim, so even a claim failure
-    // records it. Shown on screen too. Only for the Xprinter transport.
+    // Best-effort: persist the USB printer's identity (VID/PID + iface/endpoints, or
+    // every failed attempt) to RTDB so it can be read server-side. The on-screen
+    // status line under the printer buttons carries the same detail.
     const recordXprinterDiag = async (error) => {
       if (transport !== "xprinter") return;
       const d = getXprinterDiag();
-      if (d) setDiagText(`XP-350B ${d.vendorId}/${d.productId}${error ? ` — ${error}` : ""}`);
+      if (error) setDiagText(error);
       try { await set(ref(database, "printer_diag/xprinter"), { ...(d || {}), error: error || null }); }
       catch { /* diagnostic only */ }
     };
@@ -203,7 +205,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
     if (failReserve) skipped.push(`${failReserve} failed`);
     const extra = skipped.length ? ` · ${skipped.join(", ")}` : "";
     const diag = res.diag ? ` [${res.diag}]` : "";
-    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}${extra}.${diag}`);
+    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${res.routeLabel || TRANSPORTS.find(t => t.id === transport)?.label}${extra}.${diag}`);
     else flash("err", `Print failed: ${res.error} — codes are saved; retry.${diag}`);
   };
 
@@ -263,6 +265,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
               </button>
             );
           })}
+          {transport === "xprinter" && <PrinterStatus style={{ padding: "6px 8px 0" }} />}
           {diagText && (
             <div style={{ marginTop: 8, padding: "9px 10px", borderRadius: 9, background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.1)", fontSize: 10.5, color: "#fff", wordBreak: "break-word", fontFamily: "monospace", display: "flex", gap: 6 }}>
               <span style={{ flex: 1 }}>{diagText}</span>
@@ -459,6 +462,7 @@ export default function BarcodeCatalog({ products, canMint, onExit }) {
           </button>
         )}
       </div>
+      {transport === "xprinter" && <PrinterStatus style={{ marginBottom: 12 }} />}
 
       {diagText && (
         <div style={{ marginBottom: 12, padding: "9px 11px", borderRadius: 9, background: "rgba(255,255,255,.06)", border: BORDER,

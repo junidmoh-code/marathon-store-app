@@ -15,6 +15,7 @@ import { searchProducts } from "../utils/productSearch";
 import { isDeactivated } from "../utils/deactivation";
 import { ensureBarcode } from "./stock/barcodeStore";
 import { connectTransport, printLabels, defaultTransportId } from "./stock/printers";
+import PrinterStatus from "./stock/PrinterStatus";
 import { useLocations, useStockCells } from "./stock/useStock";
 import { sellableLocations, labelFor } from "./stock/locations";
 import { useWide } from "./stock/hooks";
@@ -49,6 +50,7 @@ export default function LabelPrintView({ products = [], onExit }) {
   const [toast, setToast] = useState(null);         // { kind: "ok"|"err", text }
   const isWide = useWide(1024);
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 4500); };
+  const [transport] = useState(defaultTransportId);   // USB label printer on a desktop, Phomemo on a phone
 
   // Category chips are data-driven — every product has a `category`.
   const categories = useMemo(() => {
@@ -99,7 +101,6 @@ export default function LabelPrintView({ products = [], onExit }) {
     setBusy(true);
     try {
       // Open the printer INSIDE the click gesture (picker the first time; silent after).
-      const transport = defaultTransportId();
       const conn = await connectTransport(transport);
       // Reserve/reuse each product's permanent code, then print the whole batch.
       const items = [];
@@ -119,7 +120,7 @@ export default function LabelPrintView({ products = [], onExit }) {
       const res = await printLabels({ items, transport, conn });
       if (res.ok) {
         const n = items.reduce((s, i) => s + i.count, 0);
-        flash("ok", `Printed ${n} label${n !== 1 ? "s" : ""}${skipped.length ? ` · ${skipped.length} skipped (no barcode)` : ""}`);
+        flash("ok", `Printed ${n} label${n !== 1 ? "s" : ""}${res.routeLabel ? ` · ${res.routeLabel}` : ""}${skipped.length ? ` · ${skipped.length} skipped (no barcode)` : ""}`);
         // Clear only what printed — keep the skipped (no-barcode) items in the
         // queue so staff can see and fix them rather than lose track.
         setCart(prev => { const next = {}; for (const p of skipped) if (prev[p.id]) next[p.id] = prev[p.id]; return next; });
@@ -261,6 +262,7 @@ export default function LabelPrintView({ products = [], onExit }) {
                    display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
           {busy ? "Printing…" : totalLabels === 0 ? "Queue is empty" : `Print ${totalLabels} label${totalLabels !== 1 ? "s" : ""}`}
         </button>
+        {transport === "xprinter" && <PrinterStatus style={{ marginTop: 9 }} />}
       </div>
     </div>
   );
