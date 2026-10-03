@@ -16,17 +16,32 @@ export function pickInProgress(rr, nowMs = Date.now()) {
   if (!p || typeof p !== "object") return false;
   const at = Number(p.atMs);
   if (!Number.isFinite(at)) return true;
-  return nowMs - at < PICK_MARKER_TTL_MS;
+  // |age|: a marker stamped by a device whose clock ran ahead (before its
+  // server offset loaded) must not block for hours (Fable review, PR #677).
+  return Math.abs(nowMs - at) < PICK_MARKER_TTL_MS;
 }
 
 // The claim's transaction body. Returns the new row, or undefined to abort:
-// a request that is no longer open is not ours to pick, and a FRESH marker
-// for a DIFFERENT tranche is another device mid-pick. Our own marker (same
-// movement id — a retry) is re-stamped. A null first callback is a cold
-// cache, never "the row is gone": return null so the server value re-runs it.
-export function claimPickTxn(cur, { movementId, atMs, by }) {
+// a request that is no longer open is not ours to pick, and ANY fresh claim
+// is another attempt mid-pick — two devices on the same tranche compute the
+// same movement id, so ownership is a per-attempt TOKEN, never the movement
+// id (CodeRabbit, PR #677). A null first callback is a cold cache, never "the
+// row is gone": return null so the server value re-runs it.
+// `replayOf`: set ONLY when the movement under this tranche id already exists
+// (a retry finishing its bookkeeping) — then a claim on that same tranche may
+// be taken over: the stock has moved, and the retry is what completes it.
+export function claimPickTxn(cur, { movementId, atMs, by, token, replayOf = null }) {
   if (cur === null || cur === undefined) return null;
   if (cur.status !== "open") return undefined;
-  if (pickInProgress(cur, atMs) && cur.picking.movementId !== movementId) return undefined;
-  return { ...cur, picking: { atMs, movementId, by: by || null } };
+  if (pickInProgress(cur, atMs) && !(replayOf && cur.picking.movementId === replayOf)) return undefined;
+  return { ...cur, picking: { atMs, movementId, by: by || null, token } };
 }
+
+// Releases a claim only while it is still THIS attempt's (its token).
+export function releasePickTxn(cur, token) {
+  if (cur === null || cur === undefined) return null;
+  return cur && cur.token === token ? null : undefined;
+}
+
+// A per-attempt token (not a secret — an identity for one tap).
+export const newPickToken = () => `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;

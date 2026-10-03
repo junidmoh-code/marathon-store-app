@@ -123,7 +123,9 @@ function pickInProgress(rr, nowMs = Date.now()) {
   if (!p || typeof p !== "object") return false;
   const at = Number(p.atMs);
   if (!Number.isFinite(at)) return true;            // a marker we cannot date blocks (fail safe)
-  return nowMs - at < PICK_MARKER_TTL_MS;
+  // |age|: a marker from a device whose clock ran ahead must not block for
+  // hours (Fable review, PR #677).
+  return Math.abs(nowMs - at) < PICK_MARKER_TTL_MS;
 }
 
 // "Untouched" must be CERTAIN before a request is withdrawn: any sentQty that

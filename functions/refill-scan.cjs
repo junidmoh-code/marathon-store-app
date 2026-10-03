@@ -195,6 +195,12 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
   for (const rz of resizes) {
     let proceed = true;
     let dropReason = null;
+    // A CLAIMED request (a pick in progress) is decided BEFORE its order is
+    // touched, so a refused resize never leaves the order at the new quantity
+    // and the request at the old one (CodeRabbit, PR #677). RefillQueue claims
+    // only order-less rows today (hub legs, first batches), so this is a
+    // backstop; the request transaction below re-checks either way.
+    if (rz.orderId && rz.refillId && await requestClaimed(db, rz.refillId)) { dropResize("request_claimed"); continue; }
     if (rz.orderId) {
       try {
         const r = await db.ref(`orders/${rz.orderId}`).transaction((cur) => {
@@ -452,6 +458,15 @@ function dropIntentsForRefused(intents, refused) {
   });
 }
 
+// Is this request claimed by a picker right now? One scoped read of the claim
+// itself; an unreadable answer is "claimed" (never touch an order on doubt).
+async function requestClaimed(db, refillId) {
+  try {
+    const p = (await db.ref(`refill_requests/${refillId}/picking`).once("value")).val();
+    return pickInProgress({ picking: p });
+  } catch { return true; }
+}
+
 // The transaction body that closes one /refill_requests row for a plan close
 // (lifted out of runScan unchanged so it can be tested without firebase-admin).
 function closeRequestTxn(cur, c, startedAt) {
@@ -625,6 +640,9 @@ async function runScan() {
       const refusedHubPresent = [];
       for (const c of plan.closes) {
         let proceed = true;
+        // Same backstop for a withdrawal that deletes an order: a claimed
+        // request keeps its order (and, below, its lock) — CodeRabbit, PR #677.
+        if (c.removeOrderId && c.refillId && await requestClaimed(db, c.refillId)) continue;
         if (c.removeOrderId) {
           try {
             const res = await db.ref(`orders/${c.removeOrderId}`).transaction((cur) => {

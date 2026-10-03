@@ -120,6 +120,14 @@ function fakeDb(nodes, opts = {}) {
   return {
     ref(path) {
       return {
+        // A scoped read (the claim pre-check, PR #677): the node itself, or a
+        // field of its stored parent.
+        async once() {
+          if (path in nodes) return snap(nodes[path]);
+          const i = path.lastIndexOf("/");
+          const parent = nodes[path.slice(0, i)];
+          return snap(parent && typeof parent === "object" ? (parent[path.slice(i + 1)] ?? null) : null);
+        },
         async transaction(fn) {
           if (opts.throwOn && opts.throwOn.test(path)) throw new Error("simulated network failure");
           const cur = path in nodes ? nodes[path] : null;
@@ -273,4 +281,16 @@ test("apply: a concurrent write RETRIES the handler and the resize still lands",
     assert.equal(nodes["refill_requests/rr1"].resizedFrom, 3,
       "resizedFrom comes from the AUTHORITATIVE in-transaction value (3), not the planning snapshot (1)");
   });
+});
+
+test("apply: a request a picker has CLAIMED is decided before its order is touched (no half-resize)", async () => {
+  const nodes = {
+    "orders/R001-1": { qty: 1, autoRefill: true },
+    "refill_requests/rr1": { status: "open", qty: 1, picking: { atMs: Date.now() - 1000, movementId: "rrf_rr1", token: "t" } },
+  };
+  const r = await applyResizes({ db: fakeDb(nodes), resizes: [RZ], startedAt: START, setFn: OK_SET });
+  assert.equal(r.resized, 0);
+  assert.deepEqual(r.resizeDrops, { request_claimed: 1 });
+  assert.equal(nodes["orders/R001-1"].qty, 1, "the order keeps its quantity");
+  assert.equal(nodes["refill_requests/rr1"].qty, 1);
 });

@@ -246,7 +246,8 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     const claimIdx = txnMock.mock.calls.findIndex(([r]) => r.path === "refill_requests/bootreq");
     expect(claimIdx, "a claim transaction on the request").toBeGreaterThanOrEqual(0);
     const claimWrite = txnWrites.find((w) => w.path === "refill_requests/bootreq" && w.value?.picking);
-    expect(claimWrite.value.picking).toEqual({ atMs: NOW, movementId: "rrf_bootreq", by: "u1" });
+    expect(claimWrite.value.picking).toMatchObject({ atMs: NOW, movementId: "rrf_bootreq", by: "u1" });
+    expect(typeof claimWrite.value.picking.token).toBe("string");
     expect(txnMock.mock.invocationCallOrder[claimIdx]).toBeLessThan(applyMovementMock.mock.invocationCallOrder[0]);
     const patch = updateMock.mock.calls.at(-1)[1];
     expect(patch["refill_requests/bootreq/status"]).toBe("fulfilled");
@@ -264,6 +265,21 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     expect(applyMovementMock).not.toHaveBeenCalled();
     expect(textOf(tree.root.children)).toMatch(/being picked on another device/);
     tree.unmount();
+  });
+
+  it("re-validates against the CLAIMED row: a resize that landed before the claim caps what moves", async () => {
+    // the read the panel used says 2; the request as claimed says 1
+    const before = paths["refill_requests"].bootreq;
+    gets["refill_requests/bootreq"] = { ...before, qty: 2 };
+    paths["refill_requests"].bootreq = { ...before, qty: 1 };
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    if (applyMovementMock.mock.calls.length) expect(applyMovementMock.mock.calls[0][0].qty).toBe(1);
   });
 
   it("a failed movement releases the claim it took", async () => {

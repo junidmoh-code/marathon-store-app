@@ -98,6 +98,7 @@ test("pickInProgress / requestUntouched: fresh blocks, stale does not, undated b
   assert.equal(pickInProgress({ picking: stale }, NOW), false);
   assert.equal(pickInProgress({ picking: { movementId: "x" } }, NOW), true);
   assert.equal(pickInProgress({}, NOW), false);
+  assert.equal(pickInProgress({ picking: { atMs: NOW + 5 * 3600e3 } }, NOW), false, "a marker from a clock hours ahead does not block");
   assert.equal(requestUntouched({ status: "open", picking: fresh }, NOW), false);
   assert.equal(requestUntouched({ status: "open", picking: stale }, NOW), true);
 });

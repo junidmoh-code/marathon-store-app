@@ -69,7 +69,7 @@ import { refusalTxn, trancheMovementId, sendInFlight } from "./refusalGuard";
 import { deviceStamp, stampAt, stampPatch, stampTxn } from "../../device/deviceStamp";
 import { countReject, thisDevicePaused } from "../../device/rejectCount";
 import { PAUSED_MESSAGE } from "../../device/deviceRejects";
-import { claimPickTxn } from "./pickMarker";
+import { claimPickTxn, releasePickTxn, newPickToken, pickInProgress } from "./pickMarker";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -268,6 +268,10 @@ function SupplyPanel({ sources, productId, size, destLabel, wantQty = 1, capFor,
 // A partial send DEDUCTS from the line — ask ×2, send 1 → ×1 stays on the
 // list. The worked example still holds: Adi 2000 size 5 (sale) and size 7
 // (hold) are two identical lines inside the same card, nothing marking either.
+// The two actions may give up width (and truncate their label) rather than
+// push each other off the card — side by side even at 200% text zoom on a
+// narrow phone (CodeRabbit, PR #677).
+const SHRINKABLE = { flex: "0 1 auto", minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" };
 function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfil, onOutOfStock, panel }) {
   // Both origins carry accumulated progress now: a sale row's progress leaf,
   // a request row's sentQty tranches (CodeRabbit, PR #338).
@@ -287,13 +291,13 @@ function SizeLine({ row, remaining, canAct, busy, msg, fulfilOpen, onToggleFulfi
           {sent > 0 && <span style={{ fontSize: 11, color: GRAY }}>· {sent} sent</span>}
         </span>
         <button disabled={busy} onClick={onToggleFulfil}
-                style={{ ...BTN, flex: "0 0 auto", padding: "10px 16px",
+                style={{ ...BTN, ...SHRINKABLE, padding: "10px 16px",
                          border: fulfilOpen ? "1px solid rgba(74,222,128,.5)" : "1px solid rgba(255,255,255,.12)",
                          background: fulfilOpen ? "rgba(74,222,128,.08)" : "rgba(255,255,255,.03)",
                          color: fulfilOpen ? GREEN : "rgba(255,255,255,.8)" }}>
           {canAct ? "Fulfil" : "Available"}
         </button>
-        <button disabled={busy} onClick={onOutOfStock} style={{ ...BTN_NEUTRAL, flex: "0 0 auto", padding: "10px 14px", color: "rgba(255,255,255,.55)" }}>
+        <button disabled={busy} onClick={onOutOfStock} style={{ ...BTN_NEUTRAL, ...SHRINKABLE, padding: "10px 14px", color: "rgba(255,255,255,.55)" }}>
           Out of Stock
         </button>
       </div>
@@ -458,24 +462,39 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     // write as sentQty / fulfilled. Only when a movement is about to be
     // written: an idempotent replay moves nothing.
     let claimed = false;
-    if (!res) {
-      try {
-        const c = await runTransaction(ref(database, `refill_requests/${r.id}`),
-          (cur) => claimPickTxn(cur, { atMs: serverNowMs(), by: auth.currentUser?.uid || null, movementId: mvId }));   // a claim, not a movement (the gate test counts movement shapes)
-        claimed = !!(c.committed && c.snapshot.val()?.picking?.movementId === mvId);
-      } catch { claimed = false; }
-      if (!claimed) return { ok: false, reason: "This line is being picked on another device, or was just resolved — refresh. Nothing was sent." };
-    }
-    // Releasing OUR claim when nothing moved (the movement failed): only while
-    // it still names this tranche. Best effort — a stale claim stops blocking
-    // on its own after PICK_MARKER_TTL_MS.
+    const token = newPickToken();
+    // Releasing OUR claim when nothing moved: only while it still carries this
+    // attempt's token. Best effort — a stale claim stops blocking on its own
+    // after PICK_MARKER_TTL_MS.
     const releaseClaim = async () => {
       if (!claimed) return;
-      try {
-        await runTransaction(ref(database, `refill_requests/${r.id}/picking`),
-          (cur) => (cur === null ? null : (cur && cur.movementId === mvId ? null : undefined)));
-      } catch { /* the TTL releases it */ }
+      try { await runTransaction(ref(database, `refill_requests/${r.id}/picking`), (cur) => releasePickTxn(cur, token)); }
+      catch { /* the TTL releases it */ }
     };
+    {
+      // Claimed on every path — an idempotent REPLAY too (a retry after the
+      // movement landed but its bookkeeping failed): that retry writes sentQty
+      // / fulfilled as well, and may take over its OWN tranche's claim, since
+      // the movement under this id already exists (Fable review, PR #677).
+      let claimedRow = null;
+      try {
+        const c = await runTransaction(ref(database, `refill_requests/${r.id}`),
+          (cur) => claimPickTxn(cur, { atMs: serverNowMs(), by: auth.currentUser?.uid || null, token, replayOf: res ? mvId : null, movementId: mvId }));   // a claim, not a movement (the gate test counts movement shapes)
+        claimedRow = c.committed ? c.snapshot.val() : null;
+        claimed = !!(claimedRow && claimedRow.picking && claimedRow.picking.token === token);
+      } catch { claimed = false; }
+      if (!claimed) return { ok: false, reason: "This line is being picked on another device, or was just resolved — refresh. Nothing was sent." };
+      // RE-VALIDATE AGAINST THE CLAIMED ROW (CodeRabbit, PR #677): a scan may
+      // have resized it, or another tranche landed, between the read above
+      // and the claim. The claimed snapshot is the truth from here on.
+      if ((Number(claimedRow.sentQty) || 0) !== already) { await releaseClaim(); return { ok: false, reason: "This line changed while you were picking — refresh. Nothing was sent." }; }
+      if (typeof claimedRow.qty === "number") liveQty = claimedRow.qty;
+      if (!res) {
+        if (q > liveQty) q = liveQty;
+        if (q <= 0) { await releaseClaim(); return { ok: false, reason: "Nothing left to send on this request." }; }
+        appliedQty = q;
+      } else appliedQty = Math.min(appliedQty, liveQty);   // a replay credits what was recorded
+    }
     try {
       if (!res) {
         res = await applyMovement(counted ? {
@@ -628,7 +647,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // The device stamp rides on the record the transaction commits — never
       // on a refusal that was blocked (refusalTxn returned undefined).
       const res = await runTransaction(ref(database, `refill_requests/${row.id}`),
-        stampTxn((cur) => refusalTxn(cur, fields, { sendingAt }), "reject"));
+        stampTxn((cur) => refusalTxn(cur, fields, { sendingAt, nowMs: serverNowMs() }), "reject"));
       const live = res?.snapshot?.val?.() ?? null;
       if (res?.committed && live) {
         countReject({ kind: "request", ref: row.id, hub: live.createdFrom?.source || live.source || null, productId: live.productId, size: live.size });
@@ -639,11 +658,14 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         // landed. Keep a trace on the request (who, when, what it said) and
         // change nothing else.
         const atMs = serverNowMs();
-        console.warn(`Out of Stock on ${row.id} blocked — ${sendingAt !== null ? "mid-send" : `already ${live.status || "sent"}`}`);
+        // Claimed by a picker (pickMarker.js): say so — the line is being sent.
+        const midPick = live.status === "open" && pickInProgress(live, atMs);
+        console.warn(`Out of Stock on ${row.id} blocked — ${midPick ? "being picked" : sendingAt !== null ? "mid-send" : `already ${live.status || "sent"}`}`);
+        if (midPick) setMsg((m) => ({ ...m, [row.rowKey]: "Being picked on another device — Out of Stock not applied." }));
         const { deviceId, personName } = deviceStamp();
         update(ref(database, `refill_requests/${row.id}/blockedRefusals/${atMs}`), {
           atMs, byUid: auth.currentUser?.uid || null, byRole: actorRole || null, deviceId, personName,
-          sawStatus: live.status || null, ...(sendingAt !== null ? { midSend: true } : {}),
+          sawStatus: live.status || null, ...(sendingAt !== null ? { midSend: true } : {}), ...(midPick ? { midPick: true } : {}),
         }).catch((e) => console.warn(`blocked-refusal log for ${row.id} failed`, e));
       }
     } catch { setMsg((m) => ({ ...m, [row.rowKey]: "failed — retry" })); }

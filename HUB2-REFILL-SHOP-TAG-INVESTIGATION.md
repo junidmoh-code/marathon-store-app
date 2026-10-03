@@ -23,10 +23,11 @@ row's own movement is read by id (`rrf_<refillId>`). Every movement of those
 products since 23 Sep was read through the `ts` index. Current cells are read
 per product.
 
-- **Tagged lines:** 76 since 23 Sep. 62 were fulfilled, 9 are open and 6 were
-  cancelled.
-- **Deducted / credited:** all 62 fulfilled lines: **Central deducted, Hub 2
-  credited.** None of them credited a shop.
+- **Tagged lines:** 76 since 23 Sep. 61 were fulfilled, 9 are open and 6 were
+  cancelled. One of the cancelled lines had already sent 1 unit, so **62 lines
+  moved stock**.
+- **Deducted / credited:** all 62 lines that moved stock: **Central deducted,
+  Hub 2 credited.** None of them credited a shop.
 - **What happened next,** for each fulfilled line, at the shop and size it
   named:
   - **28 — Hub 2 sent it on** to the shop (a hub2 → shop transfer after the
@@ -97,8 +98,22 @@ not move stock, but it explains the churn on these lines.
 
 ## What changed
 
-- Source › Hub 2 Refill (and any hub list, Hub 3 included) shows **no shop
-  name** on any line. Every line reads as going to that hub.
+- Source › Hub 2 Refill shows **no shop name** on any line. Every line reads
+  as going to Hub 2. Any hub list renders through the same component, so a
+  Hub 3 list will too. Source has no Hub 3 tab yet; that is tested by
+  rendering the component for hub3.
 - On every line, Fulfil and Out of Stock now sit side by side on one row that
   never wraps.
 - The pick-timing gap deferred from #673 is closed (see the PR).
+
+## Known residuals (pick claim)
+
+- **A picker offline for more than 30 minutes between claiming and moving
+  stock.** Their claim expires, so a scan may withdraw the request. When their
+  movement finally lands, the fulfil write marks it fulfilled. Stock and the
+  record then agree, but the engine may have re-raised the need meanwhile. A
+  claim cannot be held open indefinitely without freezing requests whenever a
+  phone dies mid-pick.
+- **Health's pass-through card** (owner screen) still names the shop in its
+  explanation line ("for Marathon PE · Central is sending Hub 2 this shop's
+  N"). It names Hub 2 as the destination and is not Central's picking list.
