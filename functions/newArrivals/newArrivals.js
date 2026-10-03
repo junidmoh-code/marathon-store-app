@@ -580,7 +580,7 @@ async function reject(db, { pid, reason }, uid, nowMs) {
   if (!core.REJECT_CHIPS.includes(reason)) throw new HttpsError("invalid-argument", "Pick one of the reasons.");
   const r = await moveOne(db, String(pid), {
     from: ["new", "ready", "rejected"], to: "rejected", at: nowMs, uid,
-    guard: (cur) => (cur.generateRequest ? "a new photo is being generated" : cur.generatedUrl ? null : "it has no generated photo"),
+    guard: (cur) => (cur.generateRequest ? "a new photo is being generated" : cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo"),
     decision: () => ({ action: "reject", reason }),
     fields: () => ({ rejection: { code: "junid", reason, at: nowMs } }),
   });

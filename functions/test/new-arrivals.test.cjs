@@ -130,6 +130,12 @@ test("approve with no generatedUrl uses the current generation's photo (older it
   assert.equal((await db.ref(`${core.ITEMS}/${PID}/generatedUrl`).once()).val(), "https://x/g1.jpg");
 });
 
+test("reject accepts an older item whose photo is only on its current generation (CodeRabbit)", async () => {
+  const db = seeded("ready", { currentGen: "g1", generations: { g1: { url: "https://x/g1.jpg", at: 1, verdict: { pass: true, failed: [] } } } });
+  await na.reject(db, { pid: PID, reason: core.REJECT_CHIPS[0] }, "junid", NOW);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "rejected");
+});
+
 test("a redelivered enqueue repairs a missing index entry", async () => {
   const db = makeFakeDb({ new_arrivals: { items: { [PID]: { pid: PID, status: "ready", enqueuedAt: 7 } } } });
   // Even a delivery far outside the window repairs it.

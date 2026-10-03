@@ -421,7 +421,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   // Approve all = every item ON THIS SCREEN whose photo the checker passed
   // (lane ready) and that has a stock price — never items Junid has not seen,
   // never a checker-failed photo without its own tap.
-  const approveAllable = (it) => it.status === "ready" && actionsFor(it).approveEnabled;
+  // Approve all: checker-PASSED photos only — a failed one (even picked onto a ready card) needs its own tap.
+  const approveAllable = (it) => it.status === "ready" && it.verdict?.pass === true && actionsFor(it).approveEnabled;
   const onApproveAll = () => {
     const pids = (data.items || []).filter(approveAllable).map((it) => it.pid);
     if (!pids.length) return;

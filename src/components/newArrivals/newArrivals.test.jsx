@@ -15,6 +15,8 @@ const NOW = Date.UTC(2026, 9, 2, 8, 0); // 10:00 SAST
 const ready = (over = {}) => ({
   pid: "p1789999990000", status: "ready", enqueuedAt: NOW, statusAt: NOW, name: "Nike AF1 Black",
   generatedUrl: "https://x/gen.jpg", originalUrl: "https://x/orig.jpg", suggestedName: "Low-top sneaker in black",
+  // A checked photo on a ready card passed the checker.
+  verdict: { pass: true, failed: [], label: "✓ passed" },
   // The groups are priced at the STOCK price (owner, 3 Oct); retail is Shopify's.
   product: { name: "Nike AF1 Black", stockPrice: 550, retailPrice: 650, sizes: ["6", "7"] }, ...over,
 });
@@ -845,6 +847,12 @@ describe("learning log — codes under every generation, ❤ Love", () => {
     expect(view.canLove("ready", { url: null })).toBe(false);
     expect(view.isLoved({ loved: "true" })).toBe(false);
   });
+});
+
+it("Approve all skips a ready card whose picked photo FAILED the checker (CodeRabbit)", async () => {
+  const api = fakeApi([ready(), ready({ pid: "p1789999990001", verdict: { pass: false, failed: ["framing"], label: "✗ framing off" } })]);
+  const tree = await render(api);
+  expect(text(tree)).toContain("Approve all 1");
 });
 
 describe("ONE PLACE TO GENERATE AND APPROVE (3 Oct night)", () => {
