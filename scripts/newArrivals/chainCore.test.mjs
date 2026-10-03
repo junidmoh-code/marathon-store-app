@@ -110,14 +110,11 @@ describe("refusals go to Rejected in plain words — never forced", () => {
     expect((await read(db, `shopify_publish/${PID}`)).cleanName).toBeUndefined();
   });
 
-  it("no retail price → photo, name and condition still done; only Shopify waits, rejected at publish", async () => {
+  it("no retail price → photo, name and condition still done; Shopify WAITS (not rejected), and resumes once retail exists", async () => {
     const db = world({ product: { retailPrice: null, stockPrice: 550 } });
     let claimed = 0;
     const r = await advance(PID, deps(db, { claimPublish: () => { claimed++; return true; } }).d);
-    expect(r).toEqual({
-      pid: PID, outcome: "rejected", step: "publish",
-      reason: "Shopify waits for a retail price — set it in the app, then Retry (the groups are posted at the stock price meanwhile)",
-    });
+    expect(r).toEqual({ pid: PID, outcome: "waiting", step: "retail-price" });
     // (a)–(c) ran without a retail price.
     expect((await read(db, `products/${PID}`)).photoUrl).toBe(GEN);
     const n = await read(db, `shopify_publish/${PID}`);
@@ -128,17 +125,22 @@ describe("refusals go to Rejected in plain words — never forced", () => {
     expect(claimed).toBe(0);
     expect(n.desiredState).not.toBe("on");
     const it2 = await read(db, `new_arrivals/items/${PID}`);
-    expect(Object.keys(it2.chain).sort()).toEqual(["condition", "name", "photo"]);
-    expect(it2.status).toBe("rejected");
-    expect(it2.rejection).toMatchObject({ code: "chain", step: "publish" });
+    expect(Object.keys(it2.chain).sort()).toEqual(["condition", "name", "photo", "waiting"]);
+    expect(it2.chain.waiting.for).toBe("retail price");
+    expect(it2.status).not.toBe("rejected");
+    expect(it2.rejection).toBeFalsy();
+    // Retail price set → the next pass publishes and clears the wait.
+    await db.ref(`products/${PID}/retailPrice`).set(650);
+    await advance(PID, deps(db, { claimPublish: () => { claimed++; return true; } }).d);
+    expect(claimed).toBe(1);
+    expect((await read(db, `new_arrivals/items/${PID}`)).chain.waiting).toBeFalsy();
   });
 
   it("a zero or junk retail price waits the same way", async () => {
     for (const retailPrice of [0, "abc"]) {
       const db = world({ product: { retailPrice } });
       const r = await advance(PID, deps(db).d);
-      expect(r).toMatchObject({ outcome: "rejected", step: "publish" });
-      expect(r.reason).toMatch(/Shopify waits for a retail price/);
+      expect(r).toMatchObject({ outcome: "waiting", step: "retail-price" });
     }
   });
 

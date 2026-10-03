@@ -40,6 +40,7 @@ export function statusLine(item) {
     ? "Photo checked — waiting for your Approve"
     : "Photo checked — needs a stock price before approving";
   if (s === "approved") return "Approved — publishing will start in a minute";
+  if (s === "chaining" && item?.chain?.waiting?.for === "retail price") return "Shopify waits for a retail price — the groups are posted at the stock price meanwhile";
   if (s === "chaining") return chainProgress(item);
   if (s === "done") return item?.soldOutBeforePosting ? "Sold out before posting" : "Done";
   if (s === "rejected") return rejectionText(item);

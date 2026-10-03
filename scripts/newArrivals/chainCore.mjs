@@ -178,7 +178,13 @@ export async function advance(pid, deps) {
     // Shopify keeps its own price logic: it needs a RETAIL price (the groups
     // are priced at the stock price and are posted regardless). The photo,
     // name and condition above are set either way; only Shopify waits.
-    if (!(Number(product.retailPrice) > 0)) return reject("publish", "Shopify waits for a retail price — set it in the app, then Retry (the groups are posted at the stock price meanwhile)");
+    // A WAIT, not a rejection: the item stays in the chain and resumes by itself
+    // once a retail price exists — no Retry, no regeneration, no second post.
+    if (!(Number(product.retailPrice) > 0)) {
+      if (!item.chain?.waiting) await db.ref(`${ITEMS}/${pid}/chain/waiting`).set({ for: "retail price", at: deps.now ? deps.now() : Date.now() });
+      return { pid, outcome: "waiting", step: "retail-price" };
+    }
+    if (item.chain?.waiting) await db.ref(`${ITEMS}/${pid}/chain/waiting`).set(null);
     if (deps.claimPublish && !deps.claimPublish(pid)) {
       // Claimed by an earlier run that died before stamping. Only proceed if
       // the intent is visibly there; otherwise stop rather than risk a double.
