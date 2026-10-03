@@ -24,11 +24,11 @@
 //   • The cart is counted PER CELL: two lines of size 8 against a cell of 1
 //     is a shortfall even though each line alone would pass.
 //
-// It deliberately does NOT net ready-promises or the display-pull lane: the
-// grid already does that from the maps it streams, and this guard's job is the
-// floor beneath it — "the shelf this order goes to holds nothing" — read live,
-// at the moment of commitment. A size the grid ✕'d for a promise cannot reach
-// the cart in the first place.
+// PROMISES ARE NETTED, the same way the grid nets them (CodeRabbit, #671): the
+// caller passes `promisedFor(hub, pid, size)` from the very maps the ✕ reads
+// (ready-but-uncollected footwear orders, plus Hub 1's display-pull claims), so
+// a pair promised after the grid last rendered is not sold twice at submit.
+// One definition of "available" — availableUnits(cell, promised).
 //
 // A FLOOR, NOT AN ORACLE. Firebase `get` answers from the device's cache when
 // a listener on an ancestor path is already open and settled, so on a device
@@ -60,7 +60,7 @@ export const SUBMIT_GUARD_READ_TIMEOUT_MS = 10_000;
 // since (CodeRabbit, PR #671). Offline → every line is "unreadable": refused.
 // While connected, a cache answer is kept current by the live listener that
 // put it there, which is the floor this guard claims and no more.
-export async function findSubmitShortfall({ lines, readCell, isOnline = null, timeoutMs = SUBMIT_GUARD_READ_TIMEOUT_MS }) {
+export async function findSubmitShortfall({ lines, readCell, isOnline = null, promisedFor = null, timeoutMs = SUBMIT_GUARD_READ_TIMEOUT_MS }) {
   // Demand per cell, in first-appearance order so the refusal names the line
   // the assistant added first.
   const demand = new Map();
@@ -85,7 +85,8 @@ export async function findSubmitShortfall({ lines, readCell, isOnline = null, ti
     try {
       const cell = await withTimeout(readCell(d.hub, d.productId, d.size), timeoutMs);
       const qty = cell && typeof cell === "object" ? cell.qty : null;
-      const have = availableUnits(typeof qty === "number" ? qty : 0);
+      const promised = promisedFor ? Number(promisedFor(d.hub, d.productId, d.size)) || 0 : 0;
+      const have = availableUnits(typeof qty === "number" ? qty : 0, promised);
       return have >= d.want ? null : { reason: "short", ...d, have };
     } catch (error) {
       return { reason: "unreadable", ...d, error: String(error?.message || error) };

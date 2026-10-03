@@ -10722,6 +10722,10 @@ function AssistantView({ products, onExit, orders = [] }) {
             hub: placedHubFor(item), productId: item.product.id, size: item.size, label: item.product.name,
           })),
           readCell: (hub, pid, size) => get(ref(database, stockCellPath(hub, pid, String(size)))).then((snap) => snap.val()),
+          // Net the same promises the ✕ nets — footwear at a gated hub only
+          // (clothing nets none: readyPromisedByCell is footwear-only).
+          promisedFor: (hub, pid, size) => (GATED_SNEAKER_HUBS.includes(hub)
+            ? (sneakerPromisedMap(hub)[promisedKey(pid, size)] || 0) : 0),
           // Offline, `get` answers from cache — refuse rather than trust it.
           // A one-shot onValue on .info/connected: the SDK answers it from its
           // own connection state, never the network (the guard times it out).

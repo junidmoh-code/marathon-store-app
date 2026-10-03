@@ -233,3 +233,18 @@ describe("offline: a cached positive cell is never trusted (CodeRabbit, #671)", 
     expect(APP).toContain('unsub = onValue(ref(database, ".info/connected"), (snap) => finish(snap.val() === true), () => finish(false));');
   });
 });
+
+describe("promises are netted like the grid nets them (CodeRabbit, #671)", () => {
+  it("a cell of 2 with 2 promised to ready orders holds nothing", async () => {
+    const r = await findSubmitShortfall({ lines: [line("hub1", "7")], readCell: reader(liveDb()),
+      promisedFor: (h, p, s) => (h === "hub1" && s === "7" ? 2 : 0) });
+    expect(r).toMatchObject({ reason: "short", have: 0 });
+  });
+  it("one promised of two leaves one", async () => {
+    expect(await findSubmitShortfall({ lines: [line("hub1", "7")], readCell: reader(liveDb()), promisedFor: () => 1 })).toBe(null);
+  });
+  it("the screen passes the grid's own promised maps, footwear hubs only", () => {
+    const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+    expect(APP).toContain("? (sneakerPromisedMap(hub)[promisedKey(pid, size)] || 0) : 0),");
+  });
+});
