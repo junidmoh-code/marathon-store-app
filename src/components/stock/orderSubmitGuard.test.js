@@ -191,3 +191,13 @@ describe("the guarded lines are the grid's gated lines", async () => {
     expect(APP).toMatch(/const stockGuardedLine = \(item\) => \{[\s\S]{0,200}if \(item\.productType === "clothing"\) return true;/);
   });
 });
+
+describe("one-size clothing reads the '_' cell the grid greys on", () => {
+  it("'Free Size' resolves to stock/{hub}/{pid}/_", async () => {
+    const db = fakeDb({ stock: { hub2: { pX: { _: { qty: 0 } } } } });
+    const r = await findSubmitShortfall({ lines: [{ hub: "hub2", productId: "pX", size: "Free Size" }], readCell: reader(db) });
+    expect(r).toMatchObject({ reason: "short", have: 0 });
+    db.set("stock/hub2/pX/_", { qty: 3 });
+    expect(await findSubmitShortfall({ lines: [{ hub: "hub2", productId: "pX", size: "Free Size" }], readCell: reader(db) })).toBe(null);
+  });
+});

@@ -30,6 +30,12 @@
 // at the moment of commitment. A size the grid ✕'d for a promise cannot reach
 // the cart in the first place.
 //
+// A FLOOR, NOT AN ORACLE. Firebase `get` answers from the device's cache when
+// a listener on an ancestor path is already open and settled, so on a device
+// streaming the hub subtree live this re-read equals what the grid saw. What it
+// closes is the case #148 came from: a grid whose hub read had not settled (or
+// was served by an incomplete offline copy) — there `get` goes to the server.
+//
 // WHICH LINES. The caller decides (it knows the routing); this module only
 // counts and judges. Pure: the cell reader is injected, so the tests drive it
 // through a fake RTDB and the screen through firebase `get`.

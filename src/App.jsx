@@ -10593,9 +10593,11 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     for it on purpose);
   //   • NOT a display-pair pull — the checkout pre-flight above verifies that
   //     one against the named pair, a stricter test than the cell;
-  //   • NOT perfume, bags and one-size accessories — their hub availability is
-  //     not modelled anywhere on this screen, and refusing them on a cell they
-  //     may never have been booked into would block real sales;
+  //   • NOT an UNTYPED perfume, bag or one-size accessory on the sneaker lane
+  //     (no productType, not Footwear) — its hub availability is not modelled
+  //     on that lane. A CLOTHING-typed accessory IS guarded, like all clothing:
+  //     its grid already greys on the same "_" cell (stockCellPath folds
+  //     "Free Size" to "_", the cell hubQty reads);
   //   • footwear ONLY where the grid gates it — Hub 1 and Hub 2, through
   //     gatedSneakerHub, the same predicate the ✕ uses — so the sheet and the
   //     tile can never disagree. NOT PINE'S HUB 3: on 2026-10-03 Hub 3's cells
