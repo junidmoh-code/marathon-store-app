@@ -101,3 +101,13 @@ test("pickInProgress / requestUntouched: fresh blocks, stale does not, undated b
   assert.equal(requestUntouched({ status: "open", picking: fresh }, NOW), false);
   assert.equal(requestUntouched({ status: "open", picking: stale }, NOW), true);
 });
+
+test("the plan: a claimed request is never RESIZED (Hub 2 needs 1 now, the request asks 2 — unclaimed it shrinks, claimed it does not)", () => {
+  for (const [picking, expectResize] of [[null, true], [fresh, false]]) {
+    const s = snap(picking);
+    s.stock.hub2.tee.M = cell(2);                     // target 3 − have 2 = need 1; the request asks 2
+    delete s.openIndex.trophy; delete s.refillRequests.r1;
+    const plan = computeRefillPlan(s);
+    assert.equal(plan.resizes.some((r) => r.refillId === "h1"), expectResize, picking ? "claimed" : "unclaimed");
+  }
+});
