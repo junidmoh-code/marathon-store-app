@@ -337,27 +337,20 @@ async function love(db, { pid, genId, loved }, uid, nowMs) {
   if (!core.GEN_ID_RE.test(String(genId || ""))) throw new HttpsError("invalid-argument", "Not a generation id.");
   if (typeof loved !== "boolean") throw new HttpsError("invalid-argument", "Say loved: true or false.");
   pid = String(pid); genId = String(genId);
-  const out = {};
-  let prev = null;
-  const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
-    out.same = false;
-    // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
-    if (!cur) { out.refusal = "not in the New Arrivals queue"; return null; }
-    const why = core.loveRefusal(cur, genId);
-    if (why) { out.refusal = why; return undefined; }
-    out.refusal = null;
-    prev = cur;
-    const next = core.lovedItem(cur, genId, loved, nowMs);
-    if (!next) { out.same = true; return undefined; }
-    return next;
+  const item = (await db.ref(`${core.ITEMS}/${pid}`).once("value")).val();
+  const why = core.loveRefusal(item, genId);
+  if (why) throw new HttpsError("failed-precondition", `Can't ${loved ? "love" : "un-love"} that photo — ${why}.`);
+  if (!core.lovedItem(item, genId, loved, nowMs)) return { ok: true, unchanged: true };
+  // ONE atomic multi-path write: the two love fields on that generation AND the
+  // decision row land together or not at all (a love never moves the item, and
+  // a generation is never removed, so no transaction is needed — and the lane
+  // index is left alone).
+  const at = `items/${pid}/generations/${genId}`;
+  await writeRoot(db, {
+    [`${at}/loved`]: loved ? true : null,
+    [`${at}/lovedAt`]: loved ? nowMs : null,
+    ...await decisionPaths(db, pid, { at: nowMs, uid, item, action: loved ? "love" : "unlove", genId }),
   });
-  if (out.same) return { ok: true, unchanged: true };
-  const item = res && res.committed && res.snapshot && res.snapshot.val();
-  const gen = item && item.generations && item.generations[genId];
-  if (!gen || out.refusal || (gen.loved === true) !== loved) throw new HttpsError("failed-precondition", `Can't ${loved ? "love" : "un-love"} that photo — ${out.refusal || "not saved"}.`);
-  // A love never moves the item, so the lane index is left alone (re-asserting
-  // it from this snapshot could resurrect an entry a concurrent move removed).
-  await writeRoot(db, await decisionPaths(db, pid, { at: nowMs, uid, item: prev, action: loved ? "love" : "unlove", genId }));
   return { ok: true };
 }
 

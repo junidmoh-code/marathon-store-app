@@ -680,6 +680,9 @@ test("love: sets loved + lovedAt on that generation only; lane, main photo and s
     assert.equal(writes.length, 1, "one multi-path write");
     const keys = Object.keys(writes[0]);
     assert.ok(!keys.some((k) => k.startsWith("by_status/")), "a love never touches the lane index");
+    // The love state and its decision row are in the SAME atomic write.
+    assert.equal(writes[0][`items/${PID}/generations/g1/loved`], true);
+    assert.equal(writes[0][`items/${PID}/generations/g1/lovedAt`], NOW + 7);
     const d = writes[0][keys.find((k) => k.startsWith("decisions/"))];
     assert.equal(d.action, "love");
     assert.equal(d.genId, "g1");
