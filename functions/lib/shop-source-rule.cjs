@@ -23,13 +23,11 @@
 //
 // WHICH LOCATIONS ARE SHOPS. Never a hardcoded list — adding a shop or a hub
 // must not silently drop the rule. A location is a shop when the /locations
-// registry says `kind: "store"`. When the registry is not supplied (a test, a
-// census replaying an old snapshot) the route shape decides instead: a shop
-// is routed to a hub that is itself routed upstream (shop → hub → central).
-// The registry wins whenever it knows the location, because the route shape
-// is exactly what a misconfiguration breaks: `routes.trophy = "central"`
-// makes Trophy look like a hub to the shape test, and the registry still
-// says it is a store.
+// registry says `kind: "store"` OR the route shape says so: routed to a hub
+// that is itself routed upstream (shop → hub → central). Either is enough.
+// The registry catches what a misconfiguration breaks in the shape
+// (`routes.trophy = "central"` makes Trophy look like a hub); the shape
+// catches what a mis-typed registry breaks.
 //
 // THE SHOP'S HUB is `routes[shop]` when that is not Central — Hub 2 for
 // Marathon PE and Trophy today. Never "any hub": a product Hub 1 has held
@@ -39,10 +37,15 @@
 
 const CENTRAL = "central";
 
+// Registry OR route shape — either one is enough, never the registry alone: a
+// mis-typed kind ("shop", "Store ") must not switch the rule off for a
+// location the routes plainly treat as a shop (Fable review, PR #673). Both
+// "store" and "shop" read as a shop, trimmed and case-folded.
+const SHOP_KINDS = new Set(["store", "shop"]);
 function isShopLoc(loc, { routes = {}, locations = null } = {}) {
   if (!loc || loc === CENTRAL) return false;
   const reg = locations && typeof locations === "object" ? locations[loc] : null;
-  if (reg && typeof reg === "object" && typeof reg.kind === "string") return reg.kind === "store";
+  if (reg && typeof reg === "object" && typeof reg.kind === "string" && SHOP_KINDS.has(reg.kind.trim().toLowerCase())) return true;
   const hub = routes[loc];
   return !!hub && hub !== CENTRAL && routes[hub] != null;
 }
@@ -112,11 +115,18 @@ function requestUntouched(rr) {
 //   • the lock is shop ← Central (dest a shop, lock source Central);
 //   • its request is open AND untouched (no sentQty) AND the engine has no
 //     in-flight evidence for it (`inFlight` — the caller's plan-gen / ledger
-//     link) — a pick in progress is never cancelled under the picker;
+//     link, or a stock movement linked to the request by refillId: Central's
+//     fulfil writes the movement BEFORE sentQty, in a separate write, so a
+//     movement with no sentQty is a pick in progress) — never cancelled under
+//     the picker;
 //   • the shop's hub shows presence for the product.
 // `snapshot` is the engine's: { stock, openIndex, heldLines, refillRequests }.
 function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locations, snapshot = {} } = {}) {
   if (!entry || !rr) return null;
+  // No createdAt → "prior" cannot be judged: every seed and lock would read as
+  // before the request and a legitimate first batch would be withdrawn. Leave
+  // it (Fable review, PR #673).
+  if (!rr.createdAt || !Number.isFinite(Date.parse(rr.createdAt))) return null;
   const source = entry.source || (routes || {})[dest];
   if (!forbiddenShopSource({ dest, source, routes, locations })) return null;
   if (rr.status !== "open" || !requestUntouched(rr) || inFlight) return null;

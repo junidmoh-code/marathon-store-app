@@ -698,6 +698,12 @@ function computeRefillPlan(snapshot) {
   // request a shop just placed — engine-created orders carry autoRefill:true and
   // are already represented by their open lock, so they're excluded here.
   const inbound = new Map();
+  // Requests a stock movement already names (link.refillId) — a pick that has
+  // physically happened even if its sentQty write has not landed (RefillQueue
+  // writes the movement first). The shop-source withdrawal treats these as in
+  // flight (Fable review, PR #673).
+  const movedRefillIds = new Set();
+  for (const m of movements || []) if (m && m.link && m.link.refillId) movedRefillIds.add(String(m.link.refillId));
   // v9: units at a SOURCE already promised to open requests — a second
   // destination must never get a card for the same physical unit.
   const sourceReserved = new Map();
@@ -711,6 +717,24 @@ function computeRefillPlan(snapshot) {
         if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, lockQty(entry));
       }
     }
+  }
+  // A LOCK-LESS open shop ← Central request (a first batch whose shop-lock
+  // claim was lost or never ran) is inbound too: without this the deficit loop
+  // raises the shop's need again from the hub — or a pass-through asks Central
+  // a second time — beside a Central request still in the queue (Fable review,
+  // PR #673). Withdrawn below when the hub holds the product, at which point
+  // the normal route takes over on the next scan.
+  const lockedRefillIds = new Set();
+  for (const byPid of Object.values(openIndex)) for (const bySize of Object.values(byPid || {})) for (const e of Object.values(bySize || {})) if (e && e.refillId) lockedRefillIds.add(e.refillId);
+  const locklessShopCentral = [];
+  for (const [id, r] of Object.entries(refillRequests || {})) {
+    if (!r || r.status !== "open" || r.shadow || lockedRefillIds.has(id) || !r.productId || r.size == null) continue;
+    const src = r.createdFrom?.source || r.source || null;
+    if (!forbiddenShopSource({ dest: r.requestingLocation, source: src, routes, locations })) continue;
+    const sk = encodeSizeKey(r.size);
+    locklessShopCentral.push([id, r, sk]);
+    bump(inbound, `${r.requestingLocation}|${r.productId}|${sk}`, Math.max(num(r.qty) || 1, 1));
+    bump(sourceReserved, `${src}|${r.productId}|${sk}`, Math.max(num(r.qty) || 1, 1));
   }
   for (const o of Object.values(orders)) {
     if (!o || o.customerName !== "Shop Refill" || o.autoRefill) continue;
@@ -928,10 +952,10 @@ function computeRefillPlan(snapshot) {
         // — its own Central leg landed first, a count, a return — the request
         // is withdrawn, untouched and not mid-pick only, and THIS plan re-raises
         // the shop's need from its hub (the close releases the inbound below).
-        // Every path that can leave a shop ← Central request open — Solve,
-        // trigger, stale bundle, resize — converges here within the hour.
+        // A lock-less shop ← Central row gets the same judgement in the
+        // lock-less pass below (satisfiedClosures).
         const hubServes = shopCentralWithdrawal({
-          dest, pid, entry, rr, inFlight, routes, locations,
+          dest, pid, entry, rr, inFlight: inFlight || movedRefillIds.has(String(entry.refillId)), routes, locations,
           snapshot: { stock, openIndex, heldLines, refillRequests },
         });
         if (hubServes) {
@@ -1137,6 +1161,7 @@ function computeRefillPlan(snapshot) {
         }
       }
     }
+    const locklessIds = new Set(locklessShopCentral.map(([id]) => id));
     for (const [id, r] of openRows) {
       const dest = r.requestingLocation;
       const sizeKey = encodeSizeKey(r.size);
@@ -1154,6 +1179,25 @@ function computeRefillPlan(snapshot) {
           deactivated: true,
         });
         continue;
+      }
+      // A LOCK-LESS shop ← Central row whose shop's hub holds the product is
+      // withdrawn exactly as a locked one is (shop-source-rule.cjs). No stock
+      // proof at the destination — the reason is the hub's presence — and the
+      // apply re-checks "untouched" inside the transaction.
+      if (locklessIds.has(id)) {
+        const hubServes = shopCentralWithdrawal({
+          dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,
+          inFlight: movedRefillIds.has(String(id)), routes, locations,
+          snapshot: { stock, openIndex, heldLines, refillRequests },
+        });
+        if (hubServes) {
+          satisfiedClosures.push({
+            refillId: id, dest, pid: r.productId, sizeKey, size: r.size, qty: 0, have: 0,
+            rrStatus: "cancelled", cancelReason: SHOP_HUB_PRESENT_REASON,
+            hubPresent: true, requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,
+          });
+        }
+        continue;   // never retired "already in stock" against the shop's own cell — the hub decides
       }
       // A destination the scan did not load has NO stock in `stock` and would
       // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so

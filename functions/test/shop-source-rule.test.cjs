@@ -271,5 +271,72 @@ test("refill-scan reads /locations (failures not swallowed) and passes it to com
   assert.match(src, /db\.ref\("locations"\)\.once\("value"\)/);
   assert.doesNotMatch(src, /db\.ref\("locations"\)[^\n]*\.catch\(/, "a swallowed registry read would run the scan with the rule weakened");
   assert.match(src, /computeRefillPlan\(\{[^}]*\blocations\b[^}]*\}\)/s);
-  assert.match(src, /if \(c\.requireUntouched && !\(res && res\.committed\)\) continue;/);
+  assert.match(src, /if \(c\.requireUntouched && !\(res && res\.committed\)\) \{ refusedHubPresent\.push\(c\); continue; \}/);
+  assert.match(src, /plan\.intents = dropIntentsForRefused\(plan\.intents, refusedHubPresent\)/);
+});
+
+// ── Fable review, PR #673 ───────────────────────────────────────────────────
+const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
+const scan = require("../refill-scan.cjs");
+
+test("a mis-typed registry kind never switches the rule off: registry OR route shape", () => {
+  const routes = CONFIG.routes;
+  for (const kind of ["shop", "Store ", "STORE"]) assert.equal(rule.isShopLoc("trophy", { routes, locations: { trophy: { kind } } }), true, kind);
+  assert.equal(rule.isShopLoc("trophy", { routes, locations: { trophy: { kind: "warehouse" } } }), true, "the route shape still says shop");
+  assert.equal(rule.isShopLoc("trophy", { routes: { ...routes, trophy: "central" }, locations: { trophy: { kind: "warehouse" } } }), false);
+});
+
+test("a request with no createdAt cannot be judged 'prior' and is left alone", () => {
+  const cat = CATEGORIES[0];
+  const { snap } = scenario({ shop: "trophy", cat, held: "units" });
+  delete snap.refillRequests.r1.createdAt;
+  assert.equal(withdrawalOf(computeRefillPlan(snap)), undefined);
+});
+
+test("a stock movement already linked to the request (pick written, sentQty not yet) is in flight: never withdrawn", () => {
+  const cat = CATEGORIES[0];
+  const { snap, pid, sk } = scenario({ shop: "trophy", cat, held: "units" });
+  snap.movements = [{ type: "transfer_out", from: "central", to: "trophy", productId: pid, size: sk, qty: 1, ts: AFTER, link: { refillId: "r1" } }];
+  assert.equal(withdrawalOf(computeRefillPlan(snap)), undefined);
+});
+
+test("a LOCK-LESS shop ← Central row: withdrawn (status only) when the hub held it; otherwise kept AND counted inbound, so nothing asks beside it", () => {
+  const cat = CATEGORIES.find((c) => c.key === "t-shirts");
+  for (const held of ["units", null]) {
+    const { snap, pid } = scenario({ shop: "trophy", cat, held });
+    snap.openIndex = {};                                          // the shop-lock claim was lost / never ran
+    const plan = computeRefillPlan(snap);
+    const s = plan.satisfiedClosures.find((c) => c.refillId === "r1");
+    if (held) {
+      assert.ok(s, "withdrawn");
+      assert.equal(s.cancelReason, "first_batch_hub2_present");
+      assert.equal(s.hubPresent, true);
+      assert.equal(s.requireUntouched, true);
+    } else {
+      assert.equal(s, undefined, "a legitimate first batch stands");
+      assert.deepEqual(plan.intents.filter((i) => i.productId === pid), [], "no shop ← hub2 and no pass-through beside the open Central request");
+    }
+  }
+});
+
+test("applySatisfied: a hub-present withdrawal needs no destination stock, and a pick that landed in the gap wins", async () => {
+  const closure = { refillId: "r1", dest: "trophy", pid: "p1", sizeKey: "M", size: "M", qty: 0, have: 0, rrStatus: "cancelled", cancelReason: "first_batch_hub2_present", hubPresent: true, requireUntouched: true };
+  const db = makeFakeDb({ refill_requests: { r1: fbRow("p1", "M", "trophy") } });
+  const r = await scan._applySatisfied({ db, closures: [closure], startedAt: "2026-10-03T10:00:00.000Z" });
+  assert.equal(r.satisfied, 1);
+  assert.equal(db.state.root.refill_requests.r1.status, "cancelled");
+  const db2 = makeFakeDb({ refill_requests: { r1: fbRow("p1", "M", "trophy", { sentQty: 1 }) } });
+  await scan._applySatisfied({ db: db2, closures: [closure], startedAt: "2026-10-03T10:00:00.000Z" });
+  assert.equal(db2.state.root.refill_requests.r1.status, "open");
+});
+
+test("a refused withdrawal drops the same pass's asks for that shop cell — its own and any leg raised FOR it", () => {
+  const intents = [
+    { dest: "trophy", productId: "p1", sizeKey: "M", source: "hub2" },
+    { dest: "hub2", productId: "p1", sizeKey: "M", source: "central", forDests: ["trophy"] },
+    { dest: "hub2", productId: "p1", sizeKey: "L", source: "central", forDests: ["trophy"] },
+    { dest: "marathon-pe", productId: "p1", sizeKey: "M", source: "hub2" },
+  ];
+  const kept = scan._dropIntentsForRefused(intents, [{ dest: "trophy", pid: "p1", sizeKey: "M" }]);
+  assert.deepEqual(kept.map((i) => `${i.dest}|${i.sizeKey}`), ["hub2|L", "marathon-pe|M"]);
 });
