@@ -31,6 +31,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
+const { requestUntouched } = require("./lib/shop-source-rule.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
@@ -443,6 +444,9 @@ function closeRequestTxn(cur, c, startedAt) {
   // re-runs with true data; a genuinely-missing node no-ops.
   if (cur === null) return null;
   if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
+  // A shop ← Central withdrawal (lib/shop-source-rule.cjs) is for an UNTOUCHED
+  // request only: a pick that landed in the snapshot gap wins, always.
+  if (c.requireUntouched && !requestUntouched(cur)) return;
   return {
     ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}),
     // A hub's "out of stock" on a shop line: keep WHEN it was said
@@ -521,7 +525,7 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, writeoffCursors, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, writeoffCursors, locations, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
@@ -537,6 +541,10 @@ async function runScan() {
       // Refusal write-off cursors: one small entry per cell ever written off
       // (the run it consumed), so a run is never written off twice.
       db.ref("refill_engine/refusalWriteoffCursor").once("value").then((s) => s.val() || {}),
+      // The location registry (~10 tiny rows): which ids are SHOPS, so the
+      // shop-source rule (lib/shop-source-rule.cjs) never depends on a list in
+      // code. Unreadable → null, and the rule falls back to the route shape.
+      db.ref("locations").once("value").then((s) => s.val() || null).catch(() => null),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
@@ -572,7 +580,7 @@ async function runScan() {
     }
 
     const plan = engine.computeRefillPlan({
-      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines,
+      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
     });
     counts.errors.push(...plan.errors);
 
@@ -607,6 +615,10 @@ async function runScan() {
         if (c.refillId && c.rrStatus) {
           try {
             const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => closeRequestTxn(cur, c, startedAt));
+            // A withdrawal that must find the request untouched and did not
+            // (picked, or resolved, in the gap) keeps its lock: the lock is
+            // what tells the next scan the shop's units are already coming.
+            if (c.requireUntouched && !(res && res.committed)) continue;
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one
             // window): the fulfilment wins — never record a strike against a
@@ -616,6 +628,7 @@ async function runScan() {
               c.streakOp = { op: "reset" };
             }
           } catch {
+            if (c.requireUntouched) continue;   // outcome unknown — keep the lock, the next scan re-decides
             // Transaction outcome unknown (network) — drop an inc rather than
             // risk a false strike; the reject, if real, recurs via the rr
             // branch on a later scan. Resets stay (benign either way).

@@ -46,6 +46,7 @@
 "use strict";
 
 const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
+const { hubPresenceSignals } = require("./shop-source-rule.cjs");
 
 // CJS twins of the constants in src/components/stock/firstBatchCore.js — a
 // test pins them equal.
@@ -105,43 +106,25 @@ async function openHub2RequestIds({ db, pid, config }) {
 // would be a phantom twin of the cell the client and the POS use (#279).
 const clientCellKey = (size) => (size == null || size === "" || size === "Free Size") ? "_" : String(size).replace(/[.#$[\]/\s]/g, "_");
 function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, sinceIso, heldLines, pid } = {}) {
-  const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
   // PRIOR presence is what counts: a qty-0 seed cell stamped AT OR AFTER the
   // request's own createdAt (`sinceIso`) was written by this Solve (its seeds
   // and its request carry the same `now`), by the trigger, or by another
   // Solve of the same product in the same window — none of them "Hub 2 held
   // it before". A seed stamped BEFORE the request, a seed with no stamp, and
   // any cell that is not a qty-0 seed (units, a movement) is presence. Judged
-  // by SHAPE + STAMP, never by a list the client supplies: #610's first cut
-  // listed only the first-batch sizes' seeds, so a normal-path size's seed —
-  // written by the same update — withdrew the request, and two shops' Solves
-  // withdrew each other. (Adversarial review, PR #610.)
-  const laterSeed = (c) => !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0)
-    && Number.isFinite(sinceMs) && !!c.updatedAt && Date.parse(c.updatedAt) >= sinceMs;
-  const cells = Array.isArray(hub2Node)
-    ? hub2Node.map((c, i) => [String(i), c]).filter(([, c]) => c != null)
-    : Object.entries(hub2Node || {}).filter(([, c]) => c != null);
-  const signals = [];
-  if (cells.some(([, c]) => !laterSeed(c))) signals.push("stock_cell");
-  // The same rule for the engine's lock at Hub 2: one claimed at/after the
-  // request is the scan running in the trigger's gap (Hub 2 just became
-  // managed), not prior presence; one that predates the request is. (Lock
-  // createdAt is the scan's START time, so a scan spanning the write reads as
-  // "before" — that error only withdraws to the normal route. Sonnet, PR #610.)
-  const priorLock = (e) => !!e && typeof e === "object" && !(Number.isFinite(sinceMs) && e.createdAt && Date.parse(e.createdAt) >= sinceMs);
-  if (hub2Locks && typeof hub2Locks === "object" && Object.values(hub2Locks).some(priorLock)) signals.push("engine_lock");
-  if (Array.isArray(hub2OpenRequestIds) && hub2OpenRequestIds.length) signals.push("open_hub2_request");
-  // A PENDING INBOUND in the hold lane: Central's fulfil of a Hub 2 request
-  // parks the units at stock/in_transit and records a held line at
-  // /settings/stockHold/held/hub2/{lineId} {productId, …} until the release
-  // credits Hub 2 — no Hub 2 cell, and the engine closes the fulfilled
-  // request's lock on its next scan. Units on the way to Hub 2 ARE Hub 2
-  // presence. (Spec review, PR #610.)
-  if (pid && heldLines && typeof heldLines === "object") {
-    const lines = Array.isArray(heldLines) ? heldLines : Object.values(heldLines);
-    if (lines.some((l) => l && typeof l === "object" && l.productId === pid)) signals.push("held_inbound");
-  }
-  return signals;
+  // by SHAPE + STAMP, never by a list the client supplies (adversarial review,
+  // PR #610). The same rule for an engine lock at Hub 2 (one claimed at/after
+  // the request is the scan running in the trigger's gap — Sonnet, PR #610),
+  // an open Hub 2 request (an id counts: it carries no date here), and a held
+  // inbound line (units on the way to Hub 2 ARE Hub 2 presence — spec review,
+  // PR #610). Since 2026-10-03 the rule lives ONCE, in shop-source-rule.cjs
+  // hubPresenceSignals, which the engine's reconcile applies to every open
+  // shop ← Central request; this is that function with Hub 2's inputs.
+  return hubPresenceSignals({
+    hubNode: hub2Node, hubLocks: hub2Locks,
+    hubOpenRequests: Array.isArray(hub2OpenRequestIds) ? hub2OpenRequestIds.map(String) : hub2OpenRequestIds,
+    heldLines, sinceIso, pid,
+  });
 }
 
 const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : 0);
@@ -380,6 +363,17 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   if (resolved && rr.cancelReason === SOLVE_UNDONE_REASON) {
     await legRef.set({ none: "solve_undone", at: now });
     return { raised: false, none: "solve_undone" };
+  }
+  // WITHDRAWN BECAUSE THE HUB HOLDS IT — by the engine's reconcile
+  // (shop-source-rule.cjs, 2026-10-03), which writes the reason without the
+  // marker this function's own withdrawal adds. Nothing was served from
+  // Central, and Hub 2 already holds the product: the engine serves the shop
+  // from Hub 2 and keeps Hub 2 itself on the normal route. Raising "Hub 2's
+  // leg" here would treat the withdrawal as a fulfilment. A sent tranche
+  // (sentQty > 0) cannot reach this: the engine only withdraws untouched rows.
+  if (resolved && rr.cancelReason === HUB2_PRESENT_REASON && !touched) {
+    await legRef.set({ none: "hub2_present", at: now });
+    return { raised: false, none: "hub2_present" };
   }
 
   // ── scoped reads ───────────────────────────────────────────────────────────

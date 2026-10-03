@@ -26,6 +26,9 @@
 // so this file can consume it without the module that reasons about this file
 // having to reach back in. See policy-resolve.cjs for the precedence order.
 const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
+// The owner's shop-source rule (a shop never refills from Central once its hub
+// has held the product) — a leaf module, stated once. See shop-source-rule.cjs.
+const { forbiddenShopSource, shopCentralWithdrawal, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -669,6 +672,7 @@ function computeRefillPlan(snapshot) {
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
     retryState = {},        // /refill_engine/retryState — persisted rejected-request retry state
     heldLines = {},         // /settings/stockHold/held — central→hub credits parked in transit (count-integrity hold lane)
+    locations = null,       // /locations — which ids are shops (kind "store"); null → the route shape decides (shop-source-rule.cjs)
     // READ-ONLY CENSUS SWITCH. The exceptions snapshot caps every list (300 by
     // default) because it is written to /stock_exceptions/latest on every run.
     // A census replaying a saved snapshot needs every cell, so it passes true.
@@ -917,6 +921,29 @@ function computeRefillPlan(snapshot) {
         const inFlightPlanGen = orderIsOurs && order.clothingPlanGen != null;
         const inFlightLedger = ledgerTouched(entry, pid, sizeKey);
         const inFlight = inFlightPlanGen || inFlightLedger;
+        // ── A SHOP NEVER REFILLS FROM CENTRAL ONCE ITS HUB HELD IT (owner rule
+        // 2026-09-17, enforced here since 2026-10-03). The only shop ← Central
+        // lock is a first-batch one, judged legitimate when it was created (its
+        // hub had never held the product). If the hub has come to hold it since
+        // — its own Central leg landed first, a count, a return — the request
+        // is withdrawn, untouched and not mid-pick only, and THIS plan re-raises
+        // the shop's need from its hub (the close releases the inbound below).
+        // Every path that can leave a shop ← Central request open — Solve,
+        // trigger, stale bundle, resize — converges here within the hour.
+        const hubServes = shopCentralWithdrawal({
+          dest, pid, entry, rr, inFlight, routes, locations,
+          snapshot: { stock, openIndex, heldLines, refillRequests },
+        });
+        if (hubServes) {
+          closes.push({
+            dest, pid, sizeKey, refillId: entry.refillId,
+            reason: "shop_hub_present", cancelReason: SHOP_HUB_PRESENT_REASON, rrStatus: "cancelled",
+            // The apply re-checks "untouched" inside the request transaction and
+            // keeps the lock if a pick landed in the snapshot gap.
+            requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,
+          });
+          continue;
+        }
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
@@ -1609,6 +1636,13 @@ function computeRefillPlan(snapshot) {
   for (const dest of dests) {
     const mode = config?.mode?.[dest] || "off";
     const src = routes[dest];
+    // A shop routed straight to Central is a refused route, never a plan: one
+    // console edit would otherwise turn every refill of that shop into a
+    // Central request on the next scan (shop-source-rule.cjs).
+    if (forbiddenShopSource({ dest, source: src, routes, locations })) {
+      errors.push(`route refused: ${dest} is a shop and config.routes names central — a shop refills from its hub`);
+      continue;
+    }
     for (const pid of managedPids(dest)) {
       // Defensive class filter (managedPids already admitted this pid). Footwear
       // is added here for the same reason it is added there: without it a shoe
@@ -1970,8 +2004,15 @@ function computeRefillPlan(snapshot) {
   // Partitioning by PRODUCT rather than by destination is deliberate: hub2 holds
   // both classes, so a destination split would not separate them.
   const isFootwearIntent = (i) => isFootwear(products?.[i.productId]);
-  const clothingIntents = intents.filter((i) => !isFootwearIntent(i));
-  const footwearIntents = intents.filter(isFootwearIntent);
+  // THE BACKSTOP — every engine intent leaves through here, so no planning
+  // branch (deficit, pass-through, a future one) can emit shop ← Central.
+  const routedIntents = intents.filter((i) => {
+    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations })) return true;
+    errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
+    return false;
+  });
+  const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i));
+  const footwearIntents = routedIntents.filter(isFootwearIntent);
   const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
   const plannedClothing = dealFairly(clothingIntents, maxIntents);
   const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
@@ -2058,7 +2099,7 @@ function computeRefillPlan(snapshot) {
       return out;
     };
     const plannedKeys = keysOf(plannedIntents);
-    const computedKeys = keysOf(intents);
+    const computedKeys = keysOf(routedIntents);
     for (const b of belowTarget) {
       const hub = routes[b.loc];
       const up = hub ? routes[hub] : null;
