@@ -679,7 +679,7 @@ test("love: sets loved + lovedAt on that generation only; lane, main photo and s
     assert.equal("loved" in it.generations.g2, false);
     assert.equal(writes.length, 1, "one multi-path write");
     const keys = Object.keys(writes[0]);
-    assert.ok(keys.includes(`by_status/${lane}/${PID}`));
+    assert.ok(!keys.some((k) => k.startsWith("by_status/")), "a love never touches the lane index");
     const d = writes[0][keys.find((k) => k.startsWith("decisions/"))];
     assert.equal(d.action, "love");
     assert.equal(d.genId, "g1");
