@@ -28,7 +28,9 @@ export const newArrivalsApi = {
   // 30s old: the current prices are re-read (two keyed scalars) first, so the
   // audit's `from` is the live value and a field he did not touch is never
   // written. → { ok, count } | { ok: false, error, needsConfirm? }.
-  savePrices: async (pid, product, drafts, opts = {}) => {
+  savePrices: async (pid, product, rawDrafts, opts = {}) => {
+    // On the card an EMPTY field means "leave it" — never "clear the real price".
+    const drafts = Object.fromEntries(Object.entries(rawDrafts || {}).filter(([, v]) => String(v ?? "").trim() !== ""));
     const [stock, retail] = await Promise.all(["stockPrice", "retailPrice"].map((f) => get(ref(database, `products/${pid}/${f}`)).then((s) => s.val())));
     const live = { ...product, id: pid, name: product?.name || "", stockPrice: stock, retailPrice: retail };
     return saveProductPrices(live, drafts, { label: `New Arrivals: ${product?.name || pid}`, ...opts });

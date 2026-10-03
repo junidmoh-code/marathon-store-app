@@ -332,7 +332,11 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
     try {
       const r = await bulk((p) => api.skip(p), pids)();
       const done = r.skippedPids || [];
-      if (done.length) setUndo({ pids: done, text: `${done.length} skipped — not advertised.` });
+      // A second Skip within the 8 s ADDS to the open toast — Undo restores all.
+      if (done.length) setUndo((cur) => {
+        const pids = [...new Set([...(cur?.pids || []), ...done])];
+        return { pids, text: `${pids.length} skipped — not advertised.` };
+      });
       const refused = refusedText(r, "skipped");
       if (refused) setMsg(refused);
       setSelected(new Set());

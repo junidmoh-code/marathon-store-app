@@ -571,6 +571,19 @@ describe("Skip — one tap, an 8-second Undo, no Skipped tab", () => {
     expect(text(tree)).toContain("Skip undone — 1 back.");
   });
 
+  it("a second Skip within 8 s ADDS to the open toast — Undo restores both", async () => {
+    const api = pagedApi([newItem(0), newItem(1)]);
+    const tree = await render(api, "new");
+    const skips = () => tree.root.findAll((n) => n.type === "button" && label(n) === "Skip — don't advertise");
+    await act(async () => { skips()[0].props.onClick(); });
+    await act(async () => { skips()[skips().length - 1].props.onClick(); });
+    expect(testid(tree, "undo-toast")).toHaveLength(1);
+    expect(text(tree)).toContain("2 skipped — not advertised.");
+    await act(async () => { button(tree, "Undo").props.onClick(); });
+    const restored = api.restore.mock.calls.flatMap((c) => c[0]);
+    expect(restored.length).toBe(2);
+  });
+
   it("the toast goes after 8 seconds and the skip stands", async () => {
     vi.useFakeTimers();
     try {
