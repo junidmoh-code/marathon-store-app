@@ -455,7 +455,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
           style={{ ...GLASS, background: "#0a0e18", position: "fixed", left: 16, right: 16, bottom: 16, zIndex: 50, padding: "10px 12px",
             display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "#fff" }}>
           <div style={{ flex: 1 }}>{undo.text}</div>
-          <button onClick={onUndo} style={{ ...bBlue, padding: "8px 14px" }}>Undo</button>
+          <button onClick={onUndo} disabled={busy} style={{ ...bBlue, padding: "8px 14px", opacity: busy ? 0.5 : 1 }}>Undo</button>
         </div>
       )}
     </div>

@@ -344,8 +344,12 @@ export default function MarketingView({ products, onExit }) {
 // changed, through the guarded batch path (audited; on-special retail edits
 // are refused by the store with its own message).
 function PriceEditModal({ product, getCurrent, onSpecial, onClose, onSaved }) {
-  const [stockDraft, setStockDraft] = useState(asStoredPrice(product.stockPrice) !== null ? String(asStoredPrice(product.stockPrice)) : "");
-  const [retailDraft, setRetailDraft] = useState(asStoredPrice(product.retailPrice) !== null ? String(asStoredPrice(product.retailPrice)) : "");
+  const asField = (v) => (asStoredPrice(v) !== null ? String(asStoredPrice(v)) : "");
+  // What the fields opened with: only a field the operator CHANGED is saved, so
+  // a price another session set meanwhile is never overwritten by a stale value.
+  const [opened] = useState(() => ({ stockPrice: asField(product.stockPrice), retailPrice: asField(product.retailPrice) }));
+  const [stockDraft, setStockDraft] = useState(opened.stockPrice);
+  const [retailDraft, setRetailDraft] = useState(opened.retailPrice);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -357,7 +361,9 @@ function PriceEditModal({ product, getCurrent, onSpecial, onClose, onSaved }) {
     const live = { ...(getCurrent ? getCurrent() : product), id: product.id, name: product.name };
     // THE product price save (productPriceSave.js) — the one copy the admin
     // product page, Missing prices and the New Arrivals card use too.
-    const drafts = { stockPrice: stockDraft, retailPrice: retailDraft };
+    const drafts = {};
+    if (stockDraft !== opened.stockPrice) drafts.stockPrice = stockDraft;
+    if (retailDraft !== opened.retailPrice) drafts.retailPrice = retailDraft;
     const plan = planProductPriceEdit(live, drafts);
     if (!plan.ok) { setErr(plan.error); return; }
     if (Object.keys(plan.to).length === 0) { onClose(); return; }
