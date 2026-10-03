@@ -150,6 +150,9 @@ function productSummary(p) {
     name: p.name || "",
     brand: p.brand || null,
     retailPrice: Number.isFinite(Number(p.retailPrice)) ? Number(p.retailPrice) : null,
+    // Cost too: the Ready card fills BOTH missing prices through the Missing
+    // prices save, so the product leaves Missing prices.
+    stockPrice: Number.isFinite(Number(p.stockPrice)) ? Number(p.stockPrice) : null,
     sizes: sizes.map(String),
     photoUrl: p.photoUrl || null,
     photoUrlOriginal: p.photoUrlOriginal || null,

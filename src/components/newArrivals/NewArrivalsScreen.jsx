@@ -9,7 +9,7 @@
 // file has no Firebase import and renders in tests with a fake api.
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
-import { TABS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText, shopifyNameLine } from "./newArrivalsView";
+import { TABS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText, shopifyNameLine, missingPricesOf } from "./newArrivalsView";
 
 const REFRESH_MS = 30_000;
 
@@ -24,7 +24,27 @@ function Photo({ url, label }) {
   );
 }
 
-function ItemCard({ item, tab, busy, onApprove, onRetry }) {
+// Ready: the price is set right here, through the Missing prices save. Retail
+// is always asked when missing; cost too when missing (both are needed for the
+// product to leave Missing prices). Approve stays disabled until retail exists.
+function PriceEntry({ item, busy, onSavePrice }) {
+  const need = missingPricesOf(item.product);
+  const [retail, setRetail] = useState("");
+  const [cost, setCost] = useState("");
+  if (!need.retail && !need.cost) return null;
+  const input = { width: "100%", padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(255,255,255,.2)", background: "rgba(0,0,0,.3)", color: "#fff", fontSize: 14, boxSizing: "border-box" };
+  return (
+    <div data-testid="price-entry" style={{ display: "flex", gap: 8, marginTop: 10, alignItems: "flex-end" }}>
+      {need.retail && <label style={{ flex: 1, color: GRAY, fontSize: 11 }}>Retail price (R)
+        <input aria-label="Retail price" inputMode="decimal" value={retail} onChange={(e) => setRetail(e.target.value)} style={input} /></label>}
+      {need.cost && <label style={{ flex: 1, color: GRAY, fontSize: 11 }}>Stock price (R)
+        <input aria-label="Stock price" inputMode="decimal" value={cost} onChange={(e) => setCost(e.target.value)} style={input} /></label>}
+      <button disabled={busy} onClick={() => onSavePrice(item, cost, retail)} style={{ ...bBlue, opacity: busy ? 0.5 : 1 }}>Save price</button>
+    </div>
+  );
+}
+
+function ItemCard({ item, tab, busy, onApprove, onRetry, onSavePrice }) {
   const p = item.product || {};
   const acts = actionsFor(item);
   const original = item.originalUrl || p.photoUrlOriginal || p.photoUrl;
@@ -43,6 +63,7 @@ function ItemCard({ item, tab, busy, onApprove, onRetry }) {
         {priceText(p.retailPrice)} · Sizes {sizesText(p.sizes)}
       </div>
       <div data-testid="status" style={{ color: statusColour, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
+      {tab === "ready" && onSavePrice && <PriceEntry item={item} busy={busy} onSavePrice={onSavePrice} />}
       {tab === "done" && destinationLines(item).map((l) => (
         <div key={l} style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>{l}</div>
       ))}
@@ -104,7 +125,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
   };
 
   const onApprove = (pid) => run(() => api.approve([pid]), (r) => (r?.approved?.length ? "Approved — publishing has started. Its progress, or any refusal, shows under Done or Rejected." : "Nothing approved."));
-  // Approve all = every item ON THIS SCREEN — never items Junid has not seen.
+  // Approve all = every PRICED item ON THIS SCREEN — never items Junid has
+  // not seen, never one without a retail price (actionsFor gates on price).
   const onApproveAll = () => {
     const pids = (data.items || []).filter((it) => actionsFor(it).approve).map((it) => it.pid);
     if (!pids.length) return;
@@ -113,6 +135,21 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
   };
   const approvable = (items || []).filter((it) => actionsFor(it).approve).length;
   const onRetry = (pid) => run(() => api.retry(pid), () => "Sent back to New — a completely fresh photo will be generated.");
+  const onSavePrice = async (item, cost, retail) => {
+    if (!api.savePrice) return;
+    setBusy(true); setMsg(null);
+    try {
+      let res = await api.savePrice(item.pid, item.product || {}, cost, retail);
+      // Retail below cost: the same question the Missing prices editor asks.
+      if (!res.ok && res.needsConfirm && typeof window !== "undefined" && window.confirm && window.confirm(res.error)) {
+        res = await api.savePrice(item.pid, item.product || {}, cost, retail, { confirmed: true });
+      }
+      setMsg(res.ok ? "Price saved — it is off Missing prices, and Approve is now open." : `Price not saved: ${res.error}`);
+      if (res.ok) await load(activeTab.current);
+    } catch (e) {
+      setMsg(`Price not saved: ${e?.message || e}`);
+    } finally { setBusy(false); }
+  };
 
   return (
     <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "16px 16px 80px" }}>
@@ -129,14 +166,14 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
       </div>
       {tab === "ready" && approvable > 0 && (
         <button disabled={busy} onClick={onApproveAll} style={{ ...bGreen, width: "100%", marginBottom: 12, opacity: busy ? 0.5 : 1 }}>
-          Approve all {approvable}
+          Approve all {approvable} priced
         </button>
       )}
       {msg && <div role="status" style={{ ...GLASS, padding: 10, marginBottom: 12, fontSize: 13 }}>{msg}</div>}
       {items === null && <div style={{ color: GRAY }}>Loading…</div>}
       {items && items.length === 0 && <div style={{ color: GRAY }}>Nothing here.</div>}
       {items && items.map((it) => (
-        <ItemCard key={it.pid} item={it} tab={tab} busy={busy} onApprove={onApprove} onRetry={onRetry} />
+        <ItemCard key={it.pid} item={it} tab={tab} busy={busy} onApprove={onApprove} onRetry={onRetry} onSavePrice={api.savePrice ? onSavePrice : null} />
       ))}
     </div>
   );

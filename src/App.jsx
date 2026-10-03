@@ -5065,6 +5065,7 @@ import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUp
 // products/{id}/stockPrice|retailPrice. See priceStore.js.
 import { applyPriceBatch, restorePriceBatch } from "./components/admin/priceStore";
 import { asStoredPrice } from "./utils/priceBatch";
+import { saveMissingPrice } from "./components/admin/missingPriceSave";
 import { buildBulkFillPlan } from "./utils/bulkPricing";
 import BulkPricePreview from "./components/admin/BulkPricePreview";
 import BulkPricingTab from "./components/admin/BulkPricingTab";
@@ -5147,35 +5148,24 @@ function MissingPricesTab({ products = [] }) {
 
   const savePrice = async () => {
     if (saving) return;
-    const validation = validatePrices(editProduct, costDraft, retailDraft);
-    if (!validation.ok) {
-      if (validation.needsConfirm) {
-        if (!window.confirm(validation.error)) return;
+    // The ONE missing-prices save (missingPriceSave.js) — also used by the New
+    // Arrivals Ready card. Asks before saving a retail price below cost.
+    let confirmed = false;
+    const first = validatePrices(editProduct, costDraft, retailDraft);
+    if (!first.ok) {
+      if (first.needsConfirm) {
+        if (!window.confirm(first.error)) return;
+        confirmed = true;
       } else {
-        alert(validation.error);
+        alert(first.error);
         return;
       }
     }
 
     setSaving(true);
     try {
-      const updates = buildUpdates(editProduct, costDraft, retailDraft);
-      // Through the guarded batch path: records who/when/from/to under a
-      // batchId and refuses to touch a product whose retail price is currently
-      // a special (wasPrice would go stale).
-      if (Object.keys(updates).length > 0) {
-        const from = {}, to = {};
-        for (const field of Object.keys(updates)) {
-          from[field] = asStoredPrice(editProduct[field]);
-          to[field] = updates[field];
-        }
-        const res = await applyPriceBatch({
-          action: "single_edit",
-          label: `Missing Prices: ${editProduct.name || editProduct.id}`,
-          lines: { [editProduct.id]: { name: editProduct.name || "", from, to } },
-        });
-        if (!res.ok) { alert("Save failed: " + res.message); return; } // finally resets saving
-      }
+      const res = await saveMissingPrice(editProduct, costDraft, retailDraft, { confirmed });
+      if (!res.ok) { alert("Save failed: " + res.error); return; } // finally resets saving
       // Open the next missing-price product for continuous entry.
       // Use openEdit so drafts are derived from the next product (preserves
       // the retail<cost confirmation for single-missing-price products).

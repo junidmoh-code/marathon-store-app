@@ -95,6 +95,13 @@ export function destinationLines(item) {
   return out;
 }
 
+/** Which prices the Ready card asks for (the same rule as Missing prices). Pure. */
+export function missingPricesOf(product) {
+  const p = product || {};
+  const none = (v) => v == null || v === "" || Number(v) === 0;
+  return { retail: none(p.retailPrice), cost: none(p.stockPrice) };
+}
+
 /** Which buttons an item shows. Approve only with a checked, generated photo. */
 export function actionsFor(item) {
   return {

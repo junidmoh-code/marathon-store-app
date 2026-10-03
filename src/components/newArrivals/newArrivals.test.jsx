@@ -88,7 +88,7 @@ const render = async (api, initialTab = "ready") => {
   await act(async () => { tree = TestRenderer.create(<NewArrivalsScreen api={api} onExit={() => {}} initialTab={initialTab} />); });
   return tree;
 };
-// Exact label match: "Approve" must not find "Approve all 1".
+// Exact label match: "Approve" must not find "Approve all 1 priced".
 const label = (n) => [].concat(n.props.children).filter((c) => typeof c === "string" || typeof c === "number").join("");
 const button = (tree, l) => tree.root.findAll((n) => n.type === "button").find((b) => label(b) === l);
 
@@ -100,7 +100,7 @@ describe("NewArrivalsScreen", () => {
     expect(t).toContain("Generated");
     expect(t).toContain("R650 · Sizes 6 · 7");
     expect(t).toContain("Shopify name: Low-top sneaker in black");
-    expect(t).toContain("Approve all 1");
+    expect(t).toContain("Approve all 1 priced");
     const imgs = tree.root.findAll((n) => n.type === "img").map((i) => i.props.src);
     expect(imgs).toEqual(["https://x/orig.jpg", "https://x/gen.jpg"]);
   });
@@ -119,10 +119,10 @@ describe("NewArrivalsScreen", () => {
     const tree = await render(api);
     const confirm = vi.fn(() => false);
     globalThis.window = { confirm };
-    await act(async () => { button(tree, "Approve all 1").props.onClick(); });
+    await act(async () => { button(tree, "Approve all 1 priced").props.onClick(); });
     expect(api.approve).not.toHaveBeenCalled();
     confirm.mockReturnValue(true);
-    await act(async () => { button(tree, "Approve all 1").props.onClick(); });
+    await act(async () => { button(tree, "Approve all 1 priced").props.onClick(); });
     expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
     expect(api.approveAll).not.toHaveBeenCalled();
     expect(confirm.mock.calls[0][0]).toMatch(/Approve all 1 items shown/);
@@ -163,5 +163,41 @@ describe("NewArrivalsScreen", () => {
     await act(async () => { button(tree, "Retry — fresh generation").props.onClick(); });
     expect(api.retry).toHaveBeenCalledWith("p1789999990001");
     expect(button(tree, "Approve")).toBeUndefined();
+  });
+});
+
+describe("Ready: the price is set on the card, through the Missing prices save", () => {
+  const priced = () => ({ ...ready(), product: { ...ready().product, stockPrice: 400 } });
+  const unpriced = (o = {}) => ({ ...ready(), pid: "p1789999990001", product: { ...ready().product, retailPrice: null, stockPrice: null }, ...o });
+  it("an unpriced item shows the price entry, no Approve, and is left out of Approve all", async () => {
+    const tree = await render(fakeApi([priced(), unpriced()], { savePrice: vi.fn() }));
+    expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "price-entry").length).toBe(1);
+    expect(text(tree)).toContain("Approve all 1 priced");
+    expect(tree.root.findAll((n) => n.type === "button" && label(n) === "Approve").length).toBe(1);
+  });
+  it("Save price calls api.savePrice with the drafts, then reloads", async () => {
+    const savePrice = vi.fn(async () => ({ ok: true, count: 2 }));
+    const api = fakeApi([unpriced()], { savePrice });
+    const tree = await render(api);
+    const [retail] = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Retail price");
+    const [cost] = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Stock price");
+    await act(async () => { retail.props.onChange({ target: { value: "650" } }); cost.props.onChange({ target: { value: "400" } }); });
+    await act(async () => { button(tree, "Save price").props.onClick(); });
+    expect(savePrice).toHaveBeenCalledWith("p1789999990001", expect.objectContaining({ retailPrice: null }), "400", "650");
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(text(tree)).toContain("Price saved");
+  });
+  it("a fully priced item shows no price entry; one missing only its cost asks for the cost", async () => {
+    const t2 = await render(fakeApi([ready()], { savePrice: vi.fn() }));
+    expect(t2.root.findAll((n) => n.type === "input").map((i) => i.props["aria-label"])).toEqual(["Stock price"]);
+    const tree = await render(fakeApi([priced()], { savePrice: vi.fn() }));
+    expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "price-entry").length).toBe(0);
+  });
+  it("a refused save says why and changes nothing", async () => {
+    const api = fakeApi([unpriced()], { savePrice: vi.fn(async () => ({ ok: false, error: "Enter a valid Retail Price greater than 0." })) });
+    const tree = await render(api);
+    await act(async () => { button(tree, "Save price").props.onClick(); });
+    expect(text(tree)).toContain("Price not saved: Enter a valid Retail Price");
+    expect(api.list).toHaveBeenCalledTimes(1);
   });
 });
