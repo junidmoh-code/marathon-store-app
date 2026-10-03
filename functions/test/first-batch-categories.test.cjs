@@ -219,7 +219,7 @@ test("Hub 2 ALREADY HOLDS the bag at creation: the shop's Central request is wit
   assert.equal(again.skipped, "hub2_leg_done");
 });
 
-test("Hub 2 receives AFTER the shop lock was claimed (the request stood when Hub 2 held nothing): presence is judged ONCE, the request is not withdrawn, the engine raises NO hub2->trophy beside the open Central request, and the remainder comes from Hub 2 only once it has closed", async () => {
+test("Hub 2 receives AFTER the shop lock was claimed (the request stood when Hub 2 held nothing): from then on the shop may not ask Central — the engine withdraws the untouched request and raises hub2->trophy in the SAME plan; the trigger raises no Hub 2 leg from the withdrawal (owner rule, 2026-10-03)", async () => {
   const db = world({
     stock: { central: { bag1: { _: cell(1) } }, trophy: { bag1: { _: seed() } } },
     refill_requests: { r1: req("bag1", "_", "trophy", 1) },
@@ -229,20 +229,37 @@ test("Hub 2 receives AFTER the shop lock was claimed (the request stood when Hub
   assert.equal(db.state.root.refill_requests.r1.status, "open");
   db.state.root.stock.hub2 = { bag1: { _: cell(4) } };              // Hub 2 receives its own batch
   const again = await run(db, "r1", "2026-09-17T10:05:00.000Z");
-  assert.equal(again.skipped, "open_untouched");
-  assert.equal(db.state.root.refill_requests.r1.status, "open", "judged once — a later Hub 2 arrival never withdraws a committed request");
+  assert.equal(again.skipped, "open_untouched", "the trigger judges creation only; the engine's reconcile owns the rule after that");
   const plan = computeRefillPlan(snapshot(db));
-  assert.equal(intentsFor(plan, "trophy", "bag1").length, 0, "no hub2->shop beside the open Central request");
-  assert.ok(!plan.closes.some((c) => c.refillId === "r1"), "and the request is not withdrawn: Central can still supply its 1");
-  // Central fulfils the 1; the request closes and its lock goes (the engine's fulfilled-close).
-  db.state.root.stock.trophy.bag1._ = cell(1);
-  db.state.root.stock.central.bag1._ = cell(0);
-  db.state.root.refill_requests.r1.status = "fulfilled";
+  const close = plan.closes.find((c) => c.refillId === "r1");
+  assert.ok(close, "the Central request is withdrawn: Hub 2 holds the product now");
+  assert.equal(close.cancelReason, "first_batch_hub2_present");
+  assert.equal(close.requireUntouched, true);
+  const shop = intentsFor(plan, "trophy", "bag1");
+  assert.equal(shop.length, 1, "the shop's need is re-raised in the same plan");
+  assert.equal(shop[0].source, "hub2");
+  assert.equal(shop[0].qty, 2, "Trophy's whole bag target (2) from Hub 2: the withdrawn Central unit is no longer inbound");
+  // The scan applies the close: request cancelled with the reason, lock gone.
+  db.state.root.refill_requests.r1 = { ...db.state.root.refill_requests.r1, status: "cancelled", cancelReason: close.cancelReason, resolvedAt: "2026-09-17T11:00:00.000Z" };
   delete db.state.root.refill_engine.open.trophy;
-  const after = intentsFor(computeRefillPlan(snapshot(db)), "trophy", "bag1");
-  assert.equal(after.length, 1);
-  assert.equal(after[0].source, "hub2");
-  assert.equal(after[0].qty, 1, "the remainder, from Hub 2, only now");
+  const fire = await run(db, "r1", "2026-09-17T11:00:05.000Z");
+  assert.deepEqual(fire, { raised: false, none: "hub2_present" }, "a withdrawal is not a fulfilment: no Hub 2 leg from Central");
+  assert.equal(hubRequests(db, "bag1").length, 0);
+  assert.equal((await run(db, "r1", "2026-09-17T11:05:00.000Z")).skipped, "hub2_leg_done");
+});
+
+test("Hub 2 receives while Central is MID-PICK (sentQty > 0): the request is never withdrawn — the picker finishes from Central", async () => {
+  const db = world({
+    stock: { central: { bag1: { _: cell(2) } }, trophy: { bag1: { _: seed() } } },
+    refill_requests: { r1: req("bag1", "_", "trophy", 2) },
+  });
+  await run(db);
+  db.state.root.refill_requests.r1.sentQty = 1;                     // one tranche already sent
+  db.state.root.refill_requests.r1.qty = 1;
+  db.state.root.stock.hub2 = { bag1: { _: cell(4) } };
+  const plan = computeRefillPlan(snapshot(db));
+  assert.ok(!plan.closes.some((c) => c.refillId === "r1" && c.reason === "shop_hub_present"));
+  assert.equal(intentsFor(plan, "trophy", "bag1").length, 0, "no hub2->shop beside the in-flight Central request");
 });
 
 test("the ENGINE already holds the SHOP's lock at creation (structurally unreachable for a stranded card — no Hub 2 stock to serve it from): the claim is lost, recorded as heldBy, retried on the next write, and the engine's lock is never touched", async () => {

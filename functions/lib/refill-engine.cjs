@@ -26,6 +26,9 @@
 // so this file can consume it without the module that reasons about this file
 // having to reach back in. See policy-resolve.cjs for the precedence order.
 const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
+// The owner's shop-source rule (a shop never refills from Central once its hub
+// has held the product) — a leaf module, stated once. See shop-source-rule.cjs.
+const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -669,6 +672,7 @@ function computeRefillPlan(snapshot) {
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
     retryState = {},        // /refill_engine/retryState — persisted rejected-request retry state
     heldLines = {},         // /settings/stockHold/held — central→hub credits parked in transit (count-integrity hold lane)
+    locations = null,       // /locations — which ids are shops (kind "store"); null → the route shape decides (shop-source-rule.cjs)
     // READ-ONLY CENSUS SWITCH. The exceptions snapshot caps every list (300 by
     // default) because it is written to /stock_exceptions/latest on every run.
     // A census replaying a saved snapshot needs every cell, so it passes true.
@@ -694,6 +698,12 @@ function computeRefillPlan(snapshot) {
   // request a shop just placed — engine-created orders carry autoRefill:true and
   // are already represented by their open lock, so they're excluded here.
   const inbound = new Map();
+  // Requests a stock movement already names (link.refillId) — a pick that has
+  // physically happened even if its sentQty write has not landed (RefillQueue
+  // writes the movement first). The shop-source withdrawal treats these as in
+  // flight (Fable review, PR #673).
+  const movedRefillIds = new Set();
+  for (const m of movements || []) if (m && m.link && m.link.refillId) movedRefillIds.add(String(m.link.refillId));
   // v9: units at a SOURCE already promised to open requests — a second
   // destination must never get a card for the same physical unit.
   const sourceReserved = new Map();
@@ -707,6 +717,28 @@ function computeRefillPlan(snapshot) {
         if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, lockQty(entry));
       }
     }
+  }
+  // A LOCK-LESS open shop ← Central request (a first batch whose shop-lock
+  // claim was lost or never ran) is inbound too: without this the deficit loop
+  // raises the shop's need again from the hub — or a pass-through asks Central
+  // a second time — beside a Central request still in the queue (Fable review,
+  // PR #673). Withdrawn below when the hub holds the product, at which point
+  // the normal route takes over on the next scan.
+  const lockedRefillIds = new Set();
+  for (const byPid of Object.values(openIndex)) for (const bySize of Object.values(byPid || {})) for (const e of Object.values(bySize || {})) if (e && e.refillId) lockedRefillIds.add(e.refillId);
+  const locklessShopCentral = [];
+  for (const [id, r] of Object.entries(refillRequests || {})) {
+    if (!r || r.status !== "open" || r.shadow || lockedRefillIds.has(id) || !r.productId || r.size == null) continue;
+    const src = r.createdFrom?.source || r.source || null;
+    if (!forbiddenShopSource({ dest: r.requestingLocation, source: src, routes, locations })) continue;
+    const sk = encodeSizeKey(r.size);
+    locklessShopCentral.push([id, r, sk]);   // judged below whatever its age
+    // Inbound is age-bounded like a lock (staleIntentHours): a row nobody has
+    // picked for longer than that stops holding the shop's deficit and
+    // Central's units (Sonnet review, PR #673).
+    if (!(nowMs - Date.parse(r.createdAt || 0) <= (num(config?.staleIntentHours) || 48) * 3600e3)) continue;
+    bump(inbound, `${r.requestingLocation}|${r.productId}|${sk}`, Math.max(num(r.qty) || 1, 1));
+    bump(sourceReserved, `${src}|${r.productId}|${sk}`, Math.max(num(r.qty) || 1, 1));
   }
   for (const o of Object.values(orders)) {
     if (!o || o.customerName !== "Shop Refill" || o.autoRefill) continue;
@@ -916,7 +948,36 @@ function computeRefillPlan(snapshot) {
         // counts UNDOs, not in-progress picks.)
         const inFlightPlanGen = orderIsOurs && order.clothingPlanGen != null;
         const inFlightLedger = ledgerTouched(entry, pid, sizeKey);
-        const inFlight = inFlightPlanGen || inFlightLedger;
+        // A movement already names this request but its sentQty has not landed:
+        // a pick mid-write (Central's fulfil writes the movement first). In
+        // flight for EVERY close and resize below, not only the shop-source
+        // withdrawal (CodeRabbit, PR #673). A request whose sentQty is recorded
+        // is judged as before.
+        const inFlightMidWrite = !!rr && rr.status === "open" && requestUntouched(rr) && movedRefillIds.has(String(entry.refillId));
+        const inFlight = inFlightPlanGen || inFlightLedger || inFlightMidWrite;
+        // ── A SHOP NEVER REFILLS FROM CENTRAL ONCE ITS HUB HELD IT (owner rule
+        // 2026-09-17, enforced here since 2026-10-03). The only shop ← Central
+        // lock is a first-batch one, judged legitimate when it was created (its
+        // hub had never held the product). If the hub has come to hold it since
+        // — its own Central leg landed first, a count, a return — the request
+        // is withdrawn, untouched and not mid-pick only, and THIS plan re-raises
+        // the shop's need from its hub (the close releases the inbound below).
+        // A lock-less shop ← Central row gets the same judgement in the
+        // lock-less pass below (satisfiedClosures).
+        const hubServes = shopCentralWithdrawal({
+          dest, pid, entry, rr, inFlight, routes, locations,
+          snapshot: { stock, openIndex, heldLines, refillRequests },
+        });
+        if (hubServes) {
+          closes.push({
+            dest, pid, sizeKey, refillId: entry.refillId,
+            reason: "shop_hub_present", cancelReason: SHOP_HUB_PRESENT_REASON, rrStatus: "cancelled",
+            // The apply re-checks "untouched" inside the request transaction and
+            // keeps the lock if a pick landed in the snapshot gap.
+            requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,
+          });
+          continue;
+        }
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
@@ -1110,6 +1171,7 @@ function computeRefillPlan(snapshot) {
         }
       }
     }
+    const locklessIds = new Set(locklessShopCentral.map(([id]) => id));
     for (const [id, r] of openRows) {
       const dest = r.requestingLocation;
       const sizeKey = encodeSizeKey(r.size);
@@ -1127,6 +1189,28 @@ function computeRefillPlan(snapshot) {
           deactivated: true,
         });
         continue;
+      }
+      // A LOCK-LESS shop ← Central row whose shop's hub holds the product is
+      // withdrawn exactly as a locked one is (shop-source-rule.cjs). qty 0:
+      // the apply's destination-stock proof asks for nothing (the reason is
+      // the hub's presence), and it re-checks "untouched" in the transaction.
+      if (locklessIds.has(id)) {
+        const hubServes = shopCentralWithdrawal({
+          dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,
+          inFlight: movedRefillIds.has(String(id)), routes, locations,
+          snapshot: { stock, openIndex, heldLines, refillRequests },
+        });
+        if (hubServes) {
+          satisfiedClosures.push({
+            refillId: id, dest, pid: r.productId, sizeKey, size: r.size, qty: 0, have: 0,
+            rrStatus: "cancelled", cancelReason: SHOP_HUB_PRESENT_REASON,
+            hubPresent: true, requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,
+          });
+          continue;
+        }
+        // No hub presence: a legitimate first batch — and like any lock-less
+        // row it may still be retired below once the shop's own cell covers
+        // it (Sonnet review, PR #673).
       }
       // A destination the scan did not load has NO stock in `stock` and would
       // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so
@@ -1609,6 +1693,13 @@ function computeRefillPlan(snapshot) {
   for (const dest of dests) {
     const mode = config?.mode?.[dest] || "off";
     const src = routes[dest];
+    // A shop routed straight to Central is a refused route, never a plan: one
+    // console edit would otherwise turn every refill of that shop into a
+    // Central request on the next scan (shop-source-rule.cjs).
+    if (forbiddenShopSource({ dest, source: src, routes, locations })) {
+      errors.push(`route refused: ${dest} is a shop and config.routes names central — a shop refills from its hub`);
+      continue;
+    }
     for (const pid of managedPids(dest)) {
       // Defensive class filter (managedPids already admitted this pid). Footwear
       // is added here for the same reason it is added there: without it a shoe
@@ -1970,8 +2061,15 @@ function computeRefillPlan(snapshot) {
   // Partitioning by PRODUCT rather than by destination is deliberate: hub2 holds
   // both classes, so a destination split would not separate them.
   const isFootwearIntent = (i) => isFootwear(products?.[i.productId]);
-  const clothingIntents = intents.filter((i) => !isFootwearIntent(i));
-  const footwearIntents = intents.filter(isFootwearIntent);
+  // THE BACKSTOP — every engine intent leaves through here, so no planning
+  // branch (deficit, pass-through, a future one) can emit shop ← Central.
+  const routedIntents = intents.filter((i) => {
+    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations })) return true;
+    errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
+    return false;
+  });
+  const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i));
+  const footwearIntents = routedIntents.filter(isFootwearIntent);
   const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
   const plannedClothing = dealFairly(clothingIntents, maxIntents);
   const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
@@ -2058,7 +2156,7 @@ function computeRefillPlan(snapshot) {
       return out;
     };
     const plannedKeys = keysOf(plannedIntents);
-    const computedKeys = keysOf(intents);
+    const computedKeys = keysOf(routedIntents);
     for (const b of belowTarget) {
       const hub = routes[b.loc];
       const up = hub ? routes[hub] : null;

@@ -11,6 +11,9 @@ import { execFileSync } from "node:child_process";
 import { requireCleanTree } from "./lib/mutationPreflight.mjs";
 
 const SERVER = "functions/lib/first-batch.cjs";
+// The presence signals live in the shared shop-source rule since 2026-10-03;
+// first-batch.cjs hub2PresenceSignals delegates to it.
+const RULE = "functions/lib/shop-source-rule.cjs";
 const CORE = "src/components/stock/firstBatchCore.js";
 const SOLVE = "src/components/stock/NetworkTransfer.jsx";
 const UNDO = "src/components/stock/solveUndo.js";
@@ -133,15 +136,15 @@ const MUTATIONS = [
   {
     id: "M-GUARD-LOCK-SINCE",
     guard: "a Hub 2 lock claimed at/after the request's own createdAt is not prior presence (the scan-in-the-gap race)",
-    file: SERVER,
-    from: `  const priorLock = (e) => !!e && typeof e === "object" && !(Number.isFinite(sinceMs) && e.createdAt && Date.parse(e.createdAt) >= sinceMs);`,
+    file: RULE,
+    from: `  const priorLock = (e) => !!e && typeof e === "object" && !atOrAfter(e.createdAt);`,
     to: `  const priorLock = (e) => !!e && typeof e === "object";`,
     nodeTests: GUARD_SERVER_TESTS,
   },
   {
     id: "M-GUARD-HELD-INBOUND",
     guard: "a held line in the hold lane (units on the way to Hub 2) is presence",
-    file: SERVER,
+    file: RULE,
     from: `    if (lines.some((l) => l && typeof l === "object" && l.productId === pid)) signals.push("held_inbound");`,
     to: ``,
     nodeTests: GUARD_SERVER_TESTS,
@@ -149,8 +152,8 @@ const MUTATIONS = [
   {
     id: "M-GUARD-OWN-SEED-STAMP",
     guard: "a qty-0 seed is excluded ONLY when stamped at/after the request (server)",
-    file: SERVER,
-    from: `  const laterSeed = (c) => !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0)\n    && Number.isFinite(sinceMs) && !!c.updatedAt && Date.parse(c.updatedAt) >= sinceMs;`,
+    file: RULE,
+    from: `  const laterSeed = (c) => !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0) && atOrAfter(c.updatedAt);`,
     to: `  const laterSeed = (c) => !!c && c.mv === "seed" && !((Number(c.qty) || 0) > 0);`,
     nodeTests: GUARD_SERVER_TESTS,
   },

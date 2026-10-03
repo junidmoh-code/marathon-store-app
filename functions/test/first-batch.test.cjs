@@ -209,11 +209,15 @@ test("PARTIAL: once Hub 2 holds its batch, the engine still raises NO hub2->shop
   delete db.state.root.refill_engine.open.hub2;
   const plan = computeRefillPlan(snapshot(db));
   assert.equal(intentsFor(plan, "trophy", "p1").length, 0, "the shop's open Central request is inbound");
-  // The proof the guard is load-bearing: without the lock the engine WOULD ask Hub 2.
+  // Without the lock the open Central row is STILL inbound (a lock-less shop ←
+  // Central row counts since PR #673 — a lost claim must not double-ask) …
   delete db.state.root.refill_engine.open.trophy;
-  const unguarded = intentsFor(computeRefillPlan(snapshot(db)), "trophy", "p1");
-  assert.equal(unguarded.length, 1);
-  assert.equal(unguarded[0].source, "hub2");
+  assert.equal(intentsFor(computeRefillPlan(snapshot(db)), "trophy", "p1").length, 0);
+  // … and once that row is closed the engine asks Hub 2: the open row is what holds it.
+  db.state.root.refill_requests.r1.status = "fulfilled";
+  const after = intentsFor(computeRefillPlan(snapshot(db)), "trophy", "p1");
+  assert.equal(after.length, 1);
+  assert.equal(after[0].source, "hub2");
 });
 
 test("after a later sell-out the shop asks HUB 2, never Central; Hub 2 asks Central exactly as before", async () => {

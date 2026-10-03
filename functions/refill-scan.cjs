@@ -31,6 +31,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
+const { requestUntouched } = require("./lib/shop-source-rule.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
@@ -285,6 +286,9 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
 // (CodeRabbit, PR #332.)
 async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }) {
   let satisfied = 0, stale = 0, deferred = 0;
+  // Hub-present withdrawals (shop-source-rule.cjs) a pick beat in the gap: the
+  // caller drops the same pass's asks for their cells (Sonnet review, PR #673).
+  const refusedHubPresent = [];
   const errors = [];
   const consumed = new Map();
   for (let i = 0; i < closures.length; i++) {
@@ -302,7 +306,9 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
     // arrived — so the live-cell proof below has nothing to verify and would
     // wrongly mark every one of them stale (the cell is empty by definition).
     // The status transaction still guards against a request resolved meanwhile.
-    if (!s.deactivated) {
+    // A hub-present withdrawal is not about the destination's cell (its reason
+    // is the hub's presence; it asks for qty 0): no stock read to prove it.
+    if (!s.deactivated && !s.hubPresent) {
       const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
       const already = consumed.get(cellKey) || 0;
       try {
@@ -323,6 +329,7 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
         // silently lost. Returning null re-probes; a missing node no-ops.
         if (cur === null) return null;
         if (cur.status && cur.status !== "open") return;      // resolved meanwhile — leave it
+        if (s.requireUntouched && !requestUntouched(cur)) return;   // a pick landed in the gap — it wins
         return {
           ...cur,
           status: s.rrStatus,
@@ -337,11 +344,12 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
         };
       });
       if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;
+      else if (s.requireUntouched && res?.snapshot?.val()?.status === "open") refusedHubPresent.push(s);
     } catch (e) {
       errors.push(`satisfied ${s.refillId}: ${e?.message || e}`);
     }
   }
-  return { satisfied, stale, deferred, errors };
+  return { satisfied, stale, deferred, errors, refusedHubPresent };
 }
 
 // ─── the request + lock records for ONE live intent (pure) ────────────────────
@@ -432,6 +440,16 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
       return upd;
 }
 
+// Intents a refused shop ← Central withdrawal makes redundant: the shop's own
+// cell, and any leg raised FOR that shop at the same product/size (pure).
+function dropIntentsForRefused(intents, refused) {
+  const keys = new Set(refused.map((c) => `${c.dest}|${c.pid}|${c.sizeKey}`));
+  return (intents || []).filter((i) => {
+    if (keys.has(`${i.dest}|${i.productId}|${i.sizeKey}`)) return false;
+    return !(Array.isArray(i.forDests) && i.forDests.some((d) => keys.has(`${d}|${i.productId}|${i.sizeKey}`)));
+  });
+}
+
 // The transaction body that closes one /refill_requests row for a plan close
 // (lifted out of runScan unchanged so it can be tested without firebase-admin).
 function closeRequestTxn(cur, c, startedAt) {
@@ -443,6 +461,9 @@ function closeRequestTxn(cur, c, startedAt) {
   // re-runs with true data; a genuinely-missing node no-ops.
   if (cur === null) return null;
   if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
+  // A shop ← Central withdrawal (lib/shop-source-rule.cjs) is for an UNTOUCHED
+  // request only: a pick that landed in the snapshot gap wins, always.
+  if (c.requireUntouched && !requestUntouched(cur)) return;
   return {
     ...cur, status: c.rrStatus, resolvedAt: startedAt, ...(c.cancelReason ? { cancelReason: c.cancelReason } : {}),
     // A hub's "out of stock" on a shop line: keep WHEN it was said
@@ -521,7 +542,7 @@ async function runScan() {
     // evidence and a size stays confirmed-out longer than configured.
     const windowDays = Math.max(MOVEMENTS_WINDOW_DAYS, (Number(config.confirmedOutDays) || 14) + 1);
     const windowStart = new Date(nowMs - windowDays * 864e5).toISOString();
-    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, writeoffCursors, movementsSnap, ...stockSnaps] = await Promise.all([
+    const [targetDecisions, targets, products, openIndex, refillRequests, orders, rejectStreak, retryState, heldLines, writeoffCursors, locations, movementsSnap, ...stockSnaps] = await Promise.all([
       db.ref("stock_targets_decisions").once("value").then((s) => s.val() || {}),
       db.ref("stock_targets").once("value").then((s) => s.val() || {}),
       db.ref("products").once("value").then((s) => s.val() || {}),
@@ -537,6 +558,11 @@ async function runScan() {
       // Refusal write-off cursors: one small entry per cell ever written off
       // (the run it consumed), so a run is never written off twice.
       db.ref("refill_engine/refusalWriteoffCursor").once("value").then((s) => s.val() || {}),
+      // The location registry (~10 tiny rows): which ids are SHOPS, so the
+      // shop-source rule (lib/shop-source-rule.cjs) never depends on a list in
+      // code. A failed read fails the scan like every other read here — never
+      // a scan run with the registry silently missing.
+      db.ref("locations").once("value").then((s) => s.val() || null),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
@@ -572,7 +598,7 @@ async function runScan() {
     }
 
     const plan = engine.computeRefillPlan({
-      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines,
+      nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
     });
     counts.errors.push(...plan.errors);
 
@@ -591,6 +617,7 @@ async function runScan() {
       // re-reconciles from truth. This keeps orders/{id} and
       // refill_requests/{id} from ever disagreeing about what happened.
       let applied = 0, withdrawn = 0;
+      const refusedHubPresent = [];
       for (const c of plan.closes) {
         let proceed = true;
         if (c.removeOrderId) {
@@ -607,6 +634,12 @@ async function runScan() {
         if (c.refillId && c.rrStatus) {
           try {
             const res = await db.ref(`refill_requests/${c.refillId}`).transaction((cur) => closeRequestTxn(cur, c, startedAt));
+            // A withdrawal that must find the request untouched and did not
+            // (picked, or resolved, in the gap) keeps its lock: the lock is
+            // what tells the next scan the shop's units are already coming.
+            // Only a request still OPEN was refused (a pick won); one resolved
+            // elsewhere just keeps its lock for the normal close next scan.
+            if (c.requireUntouched && !(res && res.committed)) { if (res?.snapshot?.val()?.status === "open") refusedHubPresent.push(c); continue; }
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one
             // window): the fulfilment wins — never record a strike against a
@@ -616,6 +649,7 @@ async function runScan() {
               c.streakOp = { op: "reset" };
             }
           } catch {
+            if (c.requireUntouched) { refusedHubPresent.push(c); continue; }   // outcome unknown — keep the lock, the next scan re-decides
             // Transaction outcome unknown (network) — drop an inc rather than
             // risk a false strike; the reject, if real, recurs via the rr
             // branch on a later scan. Resets stay (benign either way).
@@ -639,6 +673,16 @@ async function runScan() {
       }
       counts.closes = applied;
       if (withdrawn) counts.withdrawn = withdrawn;
+      // The plan released a withdrawn request's inbound and may have re-raised
+      // the shop's need in the SAME pass (shop ← hub, or a hub ← Central
+      // pass-through for the shop). A withdrawal the apply refused — a pick
+      // won — leaves the Central request live, so those intents would ask a
+      // second time: drop them; the next scan re-plans from truth (Fable
+      // review, PR #673).
+      if (refusedHubPresent.length) {
+        plan.intents = dropIntentsForRefused(plan.intents, refusedHubPresent);
+        counts.hubPresentRefused = refusedHubPresent.length;
+      }
     }
 
     // ── apply satisfied-by-stock withdrawals ─────────────────────────────────
@@ -671,6 +715,10 @@ async function runScan() {
       if (r.stale) counts.satisfiedStale = r.stale;
       if (r.deferred) counts.satisfiedDeferred = r.deferred;
       counts.errors.push(...r.errors);
+      if (r.refusedHubPresent && r.refusedHubPresent.length) {
+        plan.intents = dropIntentsForRefused(plan.intents, r.refusedHubPresent);
+        counts.hubPresentRefused = (counts.hubPresentRefused || 0) + r.refusedHubPresent.length;
+      }
     }
 
     // ── apply the deficit-loop's self-heal streak resets ──────────────────────
@@ -1059,4 +1107,5 @@ exports._applyResizes = applyResizes;      // db + writer injected — apply-pat
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
 exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
 exports._closeRequestTxn = closeRequestTxn; // pure — the request side of a plan close
+exports._dropIntentsForRefused = dropIntentsForRefused; // pure — a refused withdrawal never asks twice
 exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable
