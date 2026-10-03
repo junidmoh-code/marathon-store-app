@@ -81,6 +81,19 @@ describe("brandOf", () => {
 });
 
 import { brandOnRename } from "./brands.js";
+import { brandFromLabel } from "./brands.js";
+describe("brandFromLabel — a logo read is the brand mark itself", () => {
+  it("exact short marks count on a label, not in a name", () => {
+    expect(brandFromLabel("DC")).toBe("DC");
+    expect(brandOf("DC Comics tee")).toBeNull();
+    expect(brandFromLabel("DESCENTE")).toBe("Descente");
+    expect(brandFromLabel("Emporio Armani")).toBe("Armani");
+    expect(brandFromLabel("Giuseppe Zanotti")).toBe("Giuseppe Zanotti");
+    expect(brandFromLabel("none")).toBeNull();
+    expect(brandFromLabel("POP MART")).toBeNull();
+  });
+});
+
 describe("brandOnRename — a rename never overwrites a set brand", () => {
   it("re-derives only an empty or flagged brand", () => {
     expect(brandOnRename({ brand: null, brandFlag: "unrecognised" }, "Nike Dunk Low")).toEqual({ brand: "Nike", brandFlag: null, brandSource: "list" });

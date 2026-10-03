@@ -78,6 +78,9 @@ export const BRANDS = Object.freeze([
   { brand: "Represent", aliases: ["represent"], start: true },
   { brand: "Replay", aliases: ["replay"], start: true },
   { brand: "Iceberg", aliases: ["iceberg"], start: true },
+  { brand: "Giuseppe Zanotti", aliases: ["giuseppe zanotti", "zanotti"] },
+  { brand: "Onitsuka Tiger", aliases: ["onitsuka tiger", "onitsuka"] },
+  { brand: "DC", aliases: ["dc shoes"] },
   { brand: "Zara", aliases: ["zara"], start: true },
   { brand: "Fila", aliases: ["fila"], start: true },
   { brand: "Vans", aliases: ["vans"], start: true },
@@ -145,9 +148,22 @@ export function brandInfo(name) {
  */
 export function brandOnRename(product, newName) {
   if (!product || product.brandSource === "manual") return null;
-  if (String(product.brand ?? "").trim() && product.brandFlag !== "unrecognised") return null;
+  if (String(product.brand ?? "").trim()) return null; // a set brand is never re-derived, flagged or not
   const r = brandInfo(newName);
   return { brand: r.brand, brandFlag: r.flag, brandSource: r.source };
+}
+
+/**
+ * A brand read off a LABEL or LOGO (vision, a box): the whole read is the
+ * brand mark, so an exact short mark counts ("DC", "ON", "Tiffany & Co") even
+ * where the same word inside a product NAME would not. Falls back to brandInfo.
+ * Pure.
+ */
+export function brandFromLabel(read) {
+  const t = fold(read).trim();
+  if (!t || t === "none" || t === "unclear") return null;
+  for (const b of BRANDS) if (fold(b.brand).trim() === t || b.aliases.some((a) => fold(a).trim() === t)) return b.brand;
+  return brandInfo(read).brand;
 }
 
 /** Is this stored value one of the canonical brands? Pure. */
