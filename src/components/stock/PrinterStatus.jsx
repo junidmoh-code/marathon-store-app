@@ -26,7 +26,7 @@ export default function PrinterStatus({ style }) {
     : "Label printer";
   const sub = s.detail || "";
   const lines = s.lines || [];
-  const noneAllowed = s.state === "os" && s.devicesSeen === 0 && typeof navigator !== "undefined" && !!navigator.usb;
+  const noneAllowed = s.state === "os" && !!s.noPrinter && typeof navigator !== "undefined" && !!navigator.usb;
   const printedNote = s.printed ? ` · last label: ${s.printed === "usb" ? "USB" : "system print"}` : "";
 
   const copy = async () => {
@@ -58,6 +58,12 @@ export default function PrinterStatus({ style }) {
         <button onClick={() => findUsbPrinter({ allowPicker: true, forcePicker: true })}
           style={{ marginTop: 6, background: "none", border: "1px solid rgba(74,127,255,.4)", color: "#9DBCFF", borderRadius: 7, padding: "3px 8px", fontSize: 10.5, cursor: "pointer", fontFamily: FONT }}>
           Choose USB printer…
+        </button>
+      )}
+      {noneAllowed && (
+        <button onClick={() => findUsbPrinter({ allowPicker: true, forcePicker: true, showAll: true })}
+          style={{ marginTop: 6, marginLeft: 6, background: "none", border: "none", color: "rgba(233,238,255,.45)", padding: "3px 4px", fontSize: 10.5, cursor: "pointer", fontFamily: FONT, textDecoration: "underline" }}>
+          Not listed? Show every USB device
         </button>
       )}
     </div>

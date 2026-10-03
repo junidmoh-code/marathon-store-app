@@ -10,8 +10,11 @@
 // first — and every bulk OUT endpoint on every configuration/interface/alternate
 // is tried: open → selectConfiguration → claimInterface → a zero-length write.
 // A failure gets reset() and one retry before the next device is tried. The
-// device picker (requestDevice) appears ONLY when the site has no permitted USB
-// device at all — the one manual escape hatch. Discovery lives in usbDiscovery.js.
+// device picker (requestDevice) appears ONLY when none of the site's permitted
+// USB devices is a printer (none has a bulk OUT endpoint — e.g. the only device
+// ever allowed is a keyboard or barcode scanner). It lists printer-class and
+// vendor-specific devices only, so a keyboard can't be picked by mistake again.
+// This is the one manual escape hatch. Discovery lives in usbDiscovery.js.
 //
 // When nothing can be claimed (on macOS the print system may hold the printer),
 // the facade falls back to the OS print route (osPrint.js) — see index.js.
@@ -40,6 +43,12 @@ export const LABEL_GEOMETRY = Object.freeze({
 });
 
 const REMEMBER_KEY = "marathon.labelPrinter.usb";   // last device that worked (VID/PID/serial)
+
+// The picker lists only printer-class (0x07) and vendor-specific (0xff) devices
+// (a filter matches the device class OR any interface class). Keyboards and
+// barcode scanners (HID) are left out — on the iMac the one device ever allowed
+// was a "USB Keyboard", which is how USB printing never reached the XP-350B.
+const PICKER_FILTERS = [{ classCode: 0x07 }, { classCode: 0xff }];
 
 export function isXprinterSupported() {
   return typeof navigator !== "undefined" && !!navigator.usb;
@@ -205,7 +214,7 @@ function useConnection(device, conn, language) {
   cached = { device, endpointNumber: conn.endpointNumber, interfaceNumber: conn.interfaceNumber, language, name: deviceLabel(device), detail };
   lastDiag = { ...conn.diag, attempts: [] };
   saveRemembered(device);
-  setPrinterStatus({ state: "usb", name: cached.name, route: "usb", detail, lines: [], devicesSeen: null });
+  setPrinterStatus({ state: "usb", name: cached.name, route: "usb", detail, lines: [], devicesSeen: null, noPrinter: false });
   return { route: "usb", ...cached };
 }
 
@@ -218,7 +227,7 @@ export function findUsbPrinter(opts = {}) {
   return exclusive(() => findUnlocked(opts));
 }
 
-async function findUnlocked({ allowPicker = false, forcePicker = false } = {}) {
+async function findUnlocked({ allowPicker = false, forcePicker = false, showAll = false } = {}) {
   if (!isXprinterSupported()) {
     setPrinterStatus({ state: "os", route: "os", name: "", detail: "this browser has no WebUSB", lines: [] });
     return { route: "os", attempts: [], lines: ["WebUSB not available in this browser"] };
@@ -231,9 +240,12 @@ async function findUnlocked({ allowPicker = false, forcePicker = false } = {}) {
   } catch (e) {
     res = { ok: false, attempts: [], devicesSeen: 0, error: e };
   }
-  if (!res.ok && res.devicesSeen === 0 && allowPicker && (forcePicker || !pickerShown)) {
+  // No permitted device is a printer: every attempt stopped at discovery (no
+  // bulk OUT endpoint anywhere) — or nothing is permitted at all.
+  const noPrinter = !res.ok && res.attempts.every((a) => a.step === "discovery");
+  if (noPrinter && allowPicker && (forcePicker || !pickerShown)) {
     try {
-      const picked = await usb.requestDevice({ filters: [] });
+      const picked = await usb.requestDevice({ filters: showAll ? [] : PICKER_FILTERS });
       pickerShown = true;
       res = await discoverUsbPrinter({ getDevices: async () => [picked] }, {});
     } catch (e) {
@@ -249,6 +261,7 @@ async function findUnlocked({ allowPicker = false, forcePicker = false } = {}) {
   cached = null;
   const lines = res.attempts.map(formatAttempt);
   if (!lines.length) lines.push(res.devicesSeen ? "no device could be used" : "no USB printer has been allowed for this site yet");
+  if (noPrinter && res.devicesSeen) lines.push("none of the USB devices allowed for this site is a printer — choose the label printer once");
   if (res.error) lines.push(`getDevices failed — ${String(res.error?.message || res.error)}`);
   const held = res.attempts.some((a) => a.heldElsewhere);
   lastDiag = {
@@ -258,8 +271,8 @@ async function findUnlocked({ allowPicker = false, forcePicker = false } = {}) {
     heldElsewhere: held,
   };
   setPrinterStatus({
-    state: "os", route: "os", name: "", devicesSeen: res.devicesSeen,
-    detail: held ? "USB printer is held by the computer's print system" : res.devicesSeen ? "no USB device could be claimed" : "no USB printer permitted",
+    state: "os", route: "os", name: "", devicesSeen: res.devicesSeen, noPrinter,
+    detail: held ? "USB printer is held by the computer's print system" : noPrinter ? "no USB printer allowed for this site yet" : "no USB device could be claimed",
     lines,
   });
   return { route: "os", attempts: res.attempts, lines, devicesSeen: res.devicesSeen, heldElsewhere: held };
