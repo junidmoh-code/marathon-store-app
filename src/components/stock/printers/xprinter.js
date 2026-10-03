@@ -1,20 +1,28 @@
-// ─── XPRINTER XP-350B — WebUSB (TSPL) ─────────────────────────────────────────
-// Bulk barcode printing on a Mac (desktop Chrome). The XP-350B speaks TSPL, NOT the
-// Phomemo's ESC/POS raster: we send high-level text commands and the PRINTER renders
-// the Code 128 itself from the digits — no client-side bitmap. Self-contained:
-// failures are returned ({ok,error}), never thrown into the print flow.
+// ─── USB LABEL PRINTER — WebUSB (TSPL, or ESC/POS raster) ─────────────────────
+// Bulk barcode printing from desktop Chrome to whatever USB label printer is
+// attached: Xprinter XP-350B, XP-360B, or any other TSPL or ESC/POS label printer.
+// TSPL printers get high-level text commands and render the Code 128 themselves;
+// an ESC/POS-only printer gets the label as a raster. Self-contained: failures are
+// returned ({ok,error}), never thrown into the print flow.
 //
-// CONNECTION (WebUSB): requestDevice filtered to the USB printer class (interface
-// class 0x07) so the chooser shows the XP-350B → open → selectConfiguration(1) →
-// claim the interface that has a bulk OUT endpoint → transferOut raw TSPL bytes.
-// The device + endpoint are cached and reused across batches; on the next batch we
-// reopen the SAME device (or a previously-permitted one via getDevices) WITHOUT the
-// chooser. A USB disconnect clears the cache. claimInterface failures (common on
-// macOS when the OS owns the printer) surface a clear message.
+// CONNECTION: no device is assumed. On every print (and on load, and whenever a
+// USB device is plugged in) getDevices() is walked — the last device that worked
+// first — and every bulk OUT endpoint on every configuration/interface/alternate
+// is tried: open → selectConfiguration → claimInterface → a zero-length write.
+// A failure gets reset() and one retry before the next device is tried. The
+// device picker (requestDevice) appears ONLY when the site has no permitted USB
+// device at all — the one manual escape hatch. Discovery lives in usbDiscovery.js.
 //
-// This is a SEPARATE transport — the Phomemo M110 Bluetooth path is untouched.
+// When nothing can be claimed (on macOS the print system may hold the printer),
+// the facade falls back to the OS print route (osPrint.js) — see index.js.
 
 import { code128Modules } from "../barcode";
+import {
+  discoverUsbPrinter, sendBulk, deviceKey, deviceLabel, formatAttempt,
+  readIeee1284Id, commandLanguageFrom1284, isPrinterLike, deviceMatch,
+} from "./usbDiscovery";
+import { setPrinterStatus } from "./printerStatus";
+import { renderLabelBitmap } from "./labelBitmap";
 
 const ENCODER = typeof TextEncoder !== "undefined" ? new TextEncoder() : null;
 
@@ -24,30 +32,17 @@ const LABEL_WIDTH_MM  = 40;  // default; tune to the loaded roll
 const LABEL_HEIGHT_MM = 30;
 const GAP_MM          = 2;   // inter-label gap (printer auto-detects → one label each)
 const LABEL_WIDTH_DOTS = LABEL_WIDTH_MM * DOTS_PER_MM; // 320
+const MARGIN_DOTS     = 16;  // ~2mm edge margin
 
-const PRINTER_CLASS = 0x07;  // USB printer class (bInterfaceClass) — the chooser filter
-const TX_CHUNK = 8192;       // transferOut chunk so large batches don't choke
+// Shared with the OS print route so both routes print the same-size label.
+export const LABEL_GEOMETRY = Object.freeze({
+  widthMm: LABEL_WIDTH_MM, heightMm: LABEL_HEIGHT_MM, gapMm: GAP_MM, dotsPerMm: DOTS_PER_MM, marginDots: MARGIN_DOTS,
+});
 
-// Cached connection — reused across batches; silent reconnect (no chooser).
-let cachedDevice = null, cachedIface = null, cachedEndpoint = null;
-let disconnectWired = false;
-
-// Last selected device's identity + interface/endpoint map. Captured BEFORE claim so
-// we keep the VID/PID even if claimInterface fails. Surfaced to RTDB by the caller so
-// we can set a precise filter later (the chooser currently lists ALL devices).
-let lastXprinterDiag = null;
-export function getXprinterDiag() { return lastXprinterDiag; }
-const hex4 = (n) => (typeof n === "number" ? "0x" + n.toString(16).padStart(4, "0") : String(n));
+const REMEMBER_KEY = "marathon.labelPrinter.usb";   // last device that worked (VID/PID/serial)
 
 export function isXprinterSupported() {
   return typeof navigator !== "undefined" && !!navigator.usb;
-}
-
-function clearCache() { cachedDevice = null; cachedIface = null; cachedEndpoint = null; }
-function wireDisconnect() {
-  if (disconnectWired || typeof navigator === "undefined" || !navigator.usb) return;
-  navigator.usb.addEventListener("disconnect", (e) => { if (e.device === cachedDevice) clearCache(); });
-  disconnectWired = true;
 }
 
 // ── TSPL encoding ────────────────────────────────────────────────────────────
@@ -94,8 +89,8 @@ function fitNameLines(name, maxWidthDots, maxLines = 3) {
 // printer renders below the bars). NAME and SIZE are on SEPARATE lines so a long name
 // can never push the size off the label. Everything centred; the printer advances
 // exactly one label via SIZE+GAP auto-detection.
-function tsplLabel({ code, productName, size }, copies) {
-  const margin = 16;                                   // ~2mm edge margin
+export function tsplLabel({ code, productName, size, price }, copies) {
+  const margin = MARGIN_DOTS;                                   // ~2mm edge margin
   const maxW = LABEL_WIDTH_DOTS - margin * 2;
   // Centre an element of width w within the label.
   const at = (w) => Math.max(margin, Math.round((LABEL_WIDTH_DOTS - w) / 2));
@@ -110,7 +105,10 @@ function tsplLabel({ code, productName, size }, copies) {
 
   // SIZE — own prominent line ("Size: 9"), the largest internal font so it's spotted
   // at a glance. Sanitised like the name (no quotes/newlines to break TSPL).
-  const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}` : "";
+  // A product label (no size) carries its price in the same slot — as the
+  // Phomemo and OS-print labels do.
+  const sizeStr = (size != null && String(size).trim() !== "") ? `Size: ${String(size).trim()}`
+    : (price != null && String(price).trim() !== "") ? String(price).trim() : "";
   const sizeFont = TSPL_FONTS[0];                      // font "3" (largest)
   const sizeText = sizeStr.replace(/["\\\n\r]/g, " ");
   const sizeX = at(sizeText.length * sizeFont.w);
@@ -142,120 +140,202 @@ function tsplLabel({ code, productName, size }, copies) {
   return lines.join("\r\n");
 }
 
+
+// ── ESC/POS raster (printers that don't speak TSPL) ──────────────────────────
+// The label rendered to a 1-bit bitmap (the Phomemo renderer, sized to this
+// label), sent as GS v 0, then GS FF — "feed to the next label start".
+function escposLabel(item, copies) {
+  const widthDots = LABEL_WIDTH_MM * DOTS_PER_MM;
+  const heightDots = LABEL_HEIGHT_MM * DOTS_PER_MM;
+  const { bytesPerRow, height, mono } = renderLabelBitmap(item, { widthDots, heightDots, moduleWidth: 2 });
+  const one = [
+    0x1b, 0x40,                                               // ESC @ — initialise
+    0x1d, 0x76, 0x30, 0x00,                                   // GS v 0, normal
+    bytesPerRow & 0xff, (bytesPerRow >> 8) & 0xff, height & 0xff, (height >> 8) & 0xff,
+  ];
+  const tail = [0x1d, 0x0c];                                  // GS FF — next label
+  const out = new Uint8Array((one.length + mono.length + tail.length) * copies);
+  let o = 0;
+  for (let i = 0; i < copies; i++) { out.set(one, o); o += one.length; out.set(mono, o); o += mono.length; out.set(tail, o); o += tail.length; }
+  return out;
+}
+
 // ── USB plumbing ─────────────────────────────────────────────────────────────
-function isPrinterLike(device) {
-  for (const cfg of device.configurations || []) {
-    for (const intf of cfg.interfaces || []) {
-      for (const alt of intf.alternates || []) {
-        if (alt.interfaceClass === PRINTER_CLASS) return true;
-      }
+// Discovery, open/claim and transfer are in usbDiscovery.js; this keeps the one
+// live connection, remembers which device worked, keeps the status indicator
+// current and re-finds the printer when it is replugged or wakes.
+
+let cached = null;            // { device, endpointNumber, interfaceNumber, language, name, detail }
+let lastDiag = null;          // RTDB-safe description of the last device/attempts
+let pickerShown = false;      // the escape-hatch picker: at most once per page load
+let watching = false;
+const languages = new WeakMap();   // USBDevice → "tspl" | "escpos"
+
+export function getXprinterDiag() { return lastDiag; }
+
+function loadRemembered() {
+  try { const v = JSON.parse(localStorage.getItem(REMEMBER_KEY) || "null"); return v && typeof v === "object" ? v : null; }
+  catch { return null; }
+}
+function saveRemembered(device) {
+  try { localStorage.setItem(REMEMBER_KEY, JSON.stringify(deviceKey(device))); } catch { /* storage blocked — just no memory */ }
+}
+
+// One USB conversation at a time: the load-time probe, a replug and a print —
+// including the print's transfers — never touch the device concurrently.
+let queue = Promise.resolve();
+function exclusive(fn) {
+  const run = queue.then(fn, fn);
+  queue = run.catch(() => {});
+  return run;
+}
+
+// The command language: the printer's own IEEE 1284 id when it answers, else
+// TSPL (every Xprinter label model speaks it). Only a real answer is cached — a
+// device that didn't answer this time is asked again next time.
+async function languageFor(device, conn) {
+  if (languages.has(device)) return languages.get(device);
+  const lang = commandLanguageFrom1284(await readIeee1284Id(device, conn));
+  if (lang) languages.set(device, lang);
+  return lang || "tspl";
+}
+
+function useConnection(device, conn, language) {
+  const detail = `interface ${conn.interfaceNumber} · endpoint ${conn.endpointNumber}${language === "escpos" ? " · ESC/POS" : ""}`;
+  cached = { device, endpointNumber: conn.endpointNumber, interfaceNumber: conn.interfaceNumber, language, name: deviceLabel(device), detail };
+  lastDiag = { ...conn.diag, attempts: [] };
+  saveRemembered(device);
+  setPrinterStatus({ state: "usb", name: cached.name, route: "usb", detail, lines: [], devicesSeen: null });
+  return { route: "usb", ...cached };
+}
+
+// Find a usable USB printer. Never throws. Returns a USB connection, or
+// { route: "os", attempts, lines } when no device could be used.
+// allowPicker: only from a tap — the picker needs the click's activation, so it
+// runs right after the first await (getDevices) when NO device is permitted. A
+// print offers it once per page load; forcePicker is the explicit button.
+export function findUsbPrinter(opts = {}) {
+  return exclusive(() => findUnlocked(opts));
+}
+
+async function findUnlocked({ allowPicker = false, forcePicker = false } = {}) {
+  if (!isXprinterSupported()) {
+    setPrinterStatus({ state: "os", route: "os", name: "", detail: "this browser has no WebUSB", lines: [] });
+    return { route: "os", attempts: [], lines: ["WebUSB not available in this browser"] };
+  }
+  setPrinterStatus({ state: "checking" });
+  const usb = navigator.usb;
+  let res;
+  try {
+    res = await discoverUsbPrinter(usb, { remembered: loadRemembered(), preferred: cached?.device || null, at: new Date().toISOString() });
+  } catch (e) {
+    res = { ok: false, attempts: [], devicesSeen: 0, error: e };
+  }
+  if (!res.ok && res.devicesSeen === 0 && allowPicker && (forcePicker || !pickerShown)) {
+    try {
+      const picked = await usb.requestDevice({ filters: [] });
+      pickerShown = true;
+      res = await discoverUsbPrinter({ getDevices: async () => [picked] }, {});
+    } catch (e) {
+      // NotFoundError = the person closed the picker: don't offer it again this
+      // load. Anything else (e.g. the tap's activation expired) leaves it on offer.
+      if (e?.name === "NotFoundError") pickerShown = true;
     }
   }
-  return false;
-}
-
-// Open + claim the interface with a bulk OUT endpoint (prefer the printer-class one).
-async function openDevice(device) {
-  if (!device.opened) await device.open();
-  if (device.configuration === null) await device.selectConfiguration(1);
-  let iface = null, endpointOut = null;
-  for (const cfgIface of device.configuration.interfaces) {
-    const alt = cfgIface.alternate;
-    const out = alt.endpoints.find(e => e.direction === "out" && e.type === "bulk");
-    if (!out) continue;
-    iface = cfgIface.interfaceNumber; endpointOut = out.endpointNumber;
-    if (alt.interfaceClass === PRINTER_CLASS) break;   // prefer the printer interface
+  if (res.ok) {
+    const language = await languageFor(res.device, res.conn);
+    return useConnection(res.device, res.conn, language);
   }
-  // Capture the device's real identity + interface/endpoint map BEFORE claiming, so a
-  // claim failure still records the VID/PID we need to build a proper filter later.
-  lastXprinterDiag = {
+  cached = null;
+  const lines = res.attempts.map(formatAttempt);
+  if (!lines.length) lines.push(res.devicesSeen ? "no device could be used" : "no USB printer has been allowed for this site yet");
+  if (res.error) lines.push(`getDevices failed — ${String(res.error?.message || res.error)}`);
+  const held = res.attempts.some((a) => a.heldElsewhere);
+  lastDiag = {
     at: new Date().toISOString(),
-    name: device.productName || "",
-    manufacturer: device.manufacturerName || "",
-    serial: device.serialNumber || "",
-    vendorId: hex4(device.vendorId),
-    productId: hex4(device.productId),
-    interfaces: (device.configuration?.interfaces || []).map(ci => ({
-      number: ci.interfaceNumber,
-      class: ci.alternate?.interfaceClass,
-      subclass: ci.alternate?.interfaceSubclass,
-      protocol: ci.alternate?.interfaceProtocol,
-      endpoints: (ci.alternate?.endpoints || []).map(e => ({ number: e.endpointNumber, direction: e.direction, type: e.type })),
-    })),
-    chosen: { iface, endpointOut },
+    devicesSeen: res.devicesSeen,
+    attempts: lines,
+    heldElsewhere: held,
   };
-  console.log("[xprinter] device:", JSON.stringify(lastXprinterDiag));
-
-  if (iface === null) throw new Error("No bulk OUT endpoint found on the selected USB device — is this the label printer?");
-  try {
-    await device.claimInterface(iface);
-  } catch (e) {
-    const msg = String(e?.message || e);
-    const inUse = /in use|claim|access|denied|busy/i.test(msg);
-    throw new Error(
-      `Couldn't claim the printer${inUse ? " — the interface is in use" : ""} (${msg}). ` +
-      `On macOS the system usually owns the printer: remove the XP-350B from System Settings ▸ Printers & Scanners ` +
-      `(and quit any app using it), then retry. VID/PID ${lastXprinterDiag.vendorId}/${lastXprinterDiag.productId}.`
-    );
-  }
-  cachedDevice = device; cachedIface = iface; cachedEndpoint = endpointOut;
-  return { device, iface, endpointOut };
+  setPrinterStatus({
+    state: "os", route: "os", name: "", devicesSeen: res.devicesSeen,
+    detail: held ? "USB printer is held by the computer's print system" : res.devicesSeen ? "no USB device could be claimed" : "no USB printer permitted",
+    lines,
+  });
+  return { route: "os", attempts: res.attempts, lines, devicesSeen: res.devicesSeen, heldElsewhere: held };
 }
 
-// Reuse the live connection; else reopen the cached/known device (no chooser); else
-// prompt the chooser. Must run inside the user gesture the FIRST time (requestDevice).
-async function getConnection() {
-  wireDisconnect();
-  if (cachedDevice && cachedDevice.opened && cachedEndpoint != null) {
-    return { device: cachedDevice, iface: cachedIface, endpointOut: cachedEndpoint };
-  }
-  if (cachedDevice) return await openDevice(cachedDevice);          // reopen same device
-  // Previously-permitted device → silent reconnect (getDevices needs no gesture and is
-  // fast enough that requestDevice's transient activation, if needed, still holds).
-  const known = (await navigator.usb.getDevices());
-  const pick = known.find(isPrinterLike) || known[0];
-  if (pick) return await openDevice(pick);
-  // Empty filters → list ALL USB devices, so the XP-350B always appears even if it
-  // presents a vendor-specific class (the classCode 0x07 filter was hiding it). Once
-  // we log the real VID/PID we can narrow this back down.
-  const device = await navigator.usb.requestDevice({ filters: [] });
-  return await openDevice(device);
+// Watch for the printer being plugged in, unplugged or waking: re-find it silently.
+export function startUsbPrinterWatch() {
+  if (watching || !isXprinterSupported()) return;
+  watching = true;
+  const usb = navigator.usb;
+  // A keyboard or a phone being plugged in is not a reason to touch the printer:
+  // only a printer-looking or remembered device re-runs discovery, and only when
+  // there is no working connection already. Debounced — a replug fires in bursts.
+  let timer = null;
+  const later = () => { clearTimeout(timer); timer = setTimeout(() => { findUsbPrinter(); }, 400); };
+  // Before any device has ever worked here, any device might be the printer.
+  const relevant = (d) => { const r = loadRemembered(); return !d || !r || isPrinterLike(d) || deviceMatch(d, r) > 0; };
+  usb.addEventListener("connect", (e) => { if (!cached && relevant(e?.device)) later(); });
+  usb.addEventListener("disconnect", (e) => {
+    if (cached && e?.device === cached.device) {
+      cached = null;
+      setPrinterStatus({ state: "checking", route: null, name: "", detail: "printer unplugged — waiting for it", lines: [] });
+      later();
+    }
+  });
+  findUsbPrinter();
 }
 
 // Connect handle for the connect-first flow — call inside the user gesture.
 export async function connectXprinter() {
-  if (!isXprinterSupported()) throw new Error("WebUSB not available — use desktop Chrome.");
-  return await getConnection();
+  return await findUsbPrinter({ allowPicker: true });
 }
 
-async function sendChunked(device, endpoint, bytes) {
-  for (let i = 0; i < bytes.length; i += TX_CHUNK) {
-    const res = await device.transferOut(endpoint, bytes.slice(i, i + TX_CHUNK));
-    if (res.status !== "ok") throw new Error(`USB transfer ${res.status}`);
-  }
+// items: [{ code, productName, size, price?, count }]. One label per item with
+// PRINT copies = count (never 0 → 1), all over ONE connection. Returns sentBytes
+// so the caller knows whether falling back to the OS route could double-print.
+export function printXprinter(items, conn = null) {
+  if (!isXprinterSupported()) return Promise.resolve({ ok: false, sentBytes: 0, error: "WebUSB not available — use desktop Chrome." });
+  if (!ENCODER) return Promise.resolve({ ok: false, sentBytes: 0, error: "TextEncoder unavailable." });
+  // The whole batch holds the lock, so a replug-triggered probe can't release or
+  // close the device under a transfer.
+  return exclusive(() => sendBatch(items, conn));
 }
 
-// items: [{ code, productName, size, count }]. Emits one TSPL label per item with
-// PRINT copies = count (never 0 → 1). Streams the whole batch over ONE connection;
-// the device stays claimed afterwards for the next batch (silent reuse).
-export async function printXprinter(items, conn = null) {
-  if (!isXprinterSupported()) return { ok: false, error: "WebUSB not available — use desktop Chrome." };
-  if (!ENCODER) return { ok: false, error: "TextEncoder unavailable." };
+async function sendBatch(items, conn, retried = false) {
+  // A handle from connectXprinter is only good while it is still THE connection
+  // (an unplug in between clears it); otherwise find the printer again.
+  const live = conn?.route === "usb" && cached && cached.device === conn.device;
+  const c = live ? conn : await findUnlocked();
+  if (c.route !== "usb") return { ok: false, sentBytes: 0, error: "No USB printer could be used.", lines: c.lines || [] };
+  let sentBytes = 0, printed = 0;
   try {
-    const c = conn || await getConnection();
-    let printed = 0;
     for (const it of items || []) {
       if (!it || !it.code) continue;
       const n = Number(it.count);
       const copies = Number.isFinite(n) && n > 0 ? Math.floor(n) : 1;   // never 0
-      await sendChunked(c.device, c.endpointOut, ENCODER.encode(tsplLabel(it, copies)));
+      const bytes = c.language === "escpos" ? escposLabel(it, copies) : ENCODER.encode(tsplLabel(it, copies));
+      sentBytes += await sendBulk(c.device, c.endpointNumber, bytes);
       printed += copies;
     }
-    if (!printed) return { ok: false, error: "Nothing to print." };
-    return { ok: true, printed };
+    if (!printed) return { ok: false, sentBytes, error: "Nothing to print." };
+    return { ok: true, printed, sentBytes, route: "usb", name: c.name };
   } catch (err) {
-    return { ok: false, error: String(err?.message || err) };
+    // The device stopped answering — drop it so the next print re-discovers.
+    if (cached && cached.device === c.device) cached = null;
+    // Bytes of the failing label that did reach the printer count as sent — the
+    // caller must not then print the batch again through the OS.
+    if (typeof err?.sentBytes === "number") sentBytes += err.sentBytes;
+    // Nothing went out: the handle was probably stale (the printer slept or was
+    // re-enumerated without a disconnect event). Re-discover once and try again
+    // before giving up on USB.
+    if (sentBytes === 0 && !retried) return sendBatch(items, null, true);
+    const line = `${c.name} · interface ${c.interfaceNumber} · OUT endpoint ${c.endpointNumber} · ${String(err?.message || err)}`;
+    lastDiag = { ...(lastDiag || {}), attempts: [line] };
+    setPrinterStatus({ state: "none", route: null, name: c.name, detail: "USB transfer failed — the next print looks for the printer again", lines: [line] });
+    return { ok: false, sentBytes, error: line, lines: [line] };
   }
-  // NO release/close — keep the device claimed so the next batch reuses it (BUG-2 parity
-  // with Phomemo). The cache is cleared by the USB 'disconnect' listener.
+  // NO release/close — the device stays claimed so the next batch reuses it.
 }

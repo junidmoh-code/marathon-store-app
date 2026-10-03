@@ -10,7 +10,8 @@
 import React, { useState, useEffect } from "react";
 import { ensureBarcodes } from "./barcodeStore";
 import Barcode from "./BarcodeView";
-import { TRANSPORTS, printLabels, defaultTransportId } from "./printers";
+import { TRANSPORTS, printLabels, defaultTransportId, rememberTransport } from "./printers";
+import PrinterStatus from "./PrinterStatus";
 import { Toast } from "./widgets";
 import { GLASS_SOLID, bGreen, bGhost, GRAY, GREEN, AMBER, BLUE_L, input } from "./ui";
 import { formatSize } from "../../utils/sizeLabel";
@@ -22,7 +23,8 @@ export default function BarcodePrint({ product, items, onClose }) {
   const [err, setErr] = useState(null);
   const [sel, setSel] = useState(() => Object.fromEntries(items.map(it => [it.size, true])));
   const [counts, setCounts] = useState(() => Object.fromEntries(items.map(it => [it.size, String(Math.max(0, it.added || 0))])));
-  const [transport, setTransport] = useState(defaultTransportId);
+  const [transport, setTransportState] = useState(defaultTransportId);
+  const setTransport = (id) => { rememberTransport(id); setTransportState(id); };
   const [busy, setBusy] = useState(false);
   const [toast, setToast] = useState(null);
   const [lightbox, setLightbox] = useState(false);   // full-screen product photo
@@ -52,7 +54,7 @@ export default function BarcodePrint({ product, items, onClose }) {
     setBusy(true);
     const res = await printLabels({ items: toPrint, transport });
     setBusy(false);
-    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${TRANSPORTS.find(t => t.id === transport)?.label}.`);
+    if (res.ok) flash("ok", `Sent ${res.printed} label(s) to ${res.routeLabel || TRANSPORTS.find(t => t.id === transport)?.label}.`);
     else flash("err", `Print failed: ${res.error} — codes are saved; you can retry or scan on screen.`);
   };
 
@@ -91,6 +93,7 @@ export default function BarcodePrint({ product, items, onClose }) {
             );
           })}
         </div>
+        {transport === "xprinter" && <PrinterStatus style={{ marginTop: -6, marginBottom: 14 }} />}
 
         {/* Per-size rows */}
         {err && <div style={{ color: "#F87171", fontSize: 12.5, padding: "10px 0" }}>Could not reserve barcodes: {err}</div>}
