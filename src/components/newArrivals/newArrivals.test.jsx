@@ -657,3 +657,10 @@ describe("header: reject rate and cost per finished photo", () => {
       .toBe("Rejected 20% of 25 (target under 15%) — blurry 3, framing 2 · R4.50 per finished photo");
   });
 });
+
+describe("a re-check is never shown as a generation's cost", () => {
+  it("labels a derived (re-checked) photo", () => {
+    expect(view.costText({ costZar: 0.21, derivedFrom: "g1" })).toBe("re-check, no new generation · R0.21");
+    expect(view.costText({ costZar: 2.41 })).toBe("R2.41");
+  });
+});

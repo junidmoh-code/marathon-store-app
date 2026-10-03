@@ -81,11 +81,14 @@ export function generationsOf(item) {
 }
 
 export function costText(gen) {
+  // A RE-CHECK (a framing correction of an earlier photo — vision only, no new
+  // generation) is labelled so; its few cents are never read as a photo's cost.
+  const tag = gen?.derivedFrom ? "re-check, no new generation · " : "";
   const zar = Number(gen?.costZar);
-  if (Number.isFinite(zar) && gen?.costZar != null) return `R${zar.toFixed(2)}`;
+  if (Number.isFinite(zar) && gen?.costZar != null) return `${tag}R${zar.toFixed(2)}`;
   const usd = Number(gen?.costUsd);
-  if (Number.isFinite(usd) && gen?.costUsd != null) return `$${usd.toFixed(2)}`;
-  return "cost unknown";
+  if (Number.isFinite(usd) && gen?.costUsd != null) return `${tag}$${usd.toFixed(2)}`;
+  return `${tag}cost unknown`;
 }
 
 /** Sum of every generation's cost in rand (null when none is known). Pure. */
