@@ -80,6 +80,8 @@ function scenario({ shop, cat, held = null, row = {} }) {
   if (held === "prior_lock") openIndex.hub2 = { [pid]: { [sk]: { qty: 3, source: "central", createdAt: BEFORE, runId: "scan", refillId: "h1" } } };
   if (held === "later_lock") openIndex.hub2 = { [pid]: { [sk]: { qty: 3, source: "central", createdAt: AFTER, runId: "scan", refillId: "h1" } } };
   if (held === "prior_lock" || held === "later_lock") refillRequests.h1 = { productId: pid, size: sk, qty: 3, requestingLocation: "hub2", status: "open", createdAt: held === "prior_lock" ? BEFORE : AFTER, createdFrom: { engine: true, source: "central" } };
+  // A lock alone (its request already resolved, the lock not yet closed by a scan).
+  if (held === "prior_lock_only") openIndex.hub2 = { [pid]: { [sk]: { qty: 3, source: "central", createdAt: BEFORE, runId: "scan", refillId: "gone" } } };
   if (held === "prior_open_request") refillRequests.h2 = { productId: pid, size: sk, qty: 1, requestingLocation: "hub2", status: "open", createdAt: BEFORE, createdFrom: { manual: true, source: "central", via: "on_hold" } };
   if (held === "held_inbound") heldLines.hub2 = { line1: { productId: pid, size: sk, sizeKey: sk, qty: 2 } };
   return {
@@ -90,7 +92,7 @@ function scenario({ shop, cat, held = null, row = {} }) {
 const shopCentralIntents = (plan) => plan.intents.filter((i) => i.source === "central" && rule.isShopLoc(i.dest, { routes: CONFIG.routes, locations: LOCATIONS }));
 const withdrawalOf = (plan) => plan.closes.find((c) => c.refillId === "r1" && c.reason === "shop_hub_present");
 
-const HELD = ["units", "sold_out", "other_size", "older_seed", "unstamped_seed", "prior_lock", "prior_open_request", "held_inbound"];
+const HELD = ["units", "sold_out", "other_size", "older_seed", "unstamped_seed", "prior_lock", "prior_lock_only", "prior_open_request", "held_inbound"];
 const NOT_HELD = [null, "later_seed", "later_lock"];
 
 for (const shop of SHOPS) {
@@ -122,7 +124,7 @@ for (const shop of SHOPS) {
       }
     });
     test(`${shop} × ${cat.key}: a request Central has started (sentQty) or one whose sentQty is not a plain number is never withdrawn`, () => {
-      for (const row of [{ sentQty: 1, qty: 1 }, { sentQty: "1" }, { sentQty: null }]) {
+      for (const row of [{ sentQty: 1, qty: 1 }, { sentQty: "1" }, { sentQty: "?" }, { sentQty: {} }, { sentQty: null }]) {
         const { snap } = scenario({ shop, cat, held: "units", row });
         const plan = computeRefillPlan(snap);
         if (row.sentQty === null) assert.ok(withdrawalOf(plan), "an absent sentQty is untouched");
@@ -176,6 +178,17 @@ test("the backstop: a pass-through raised for a shop's 'hub' that is itself a sh
   const plan = computeRefillPlan(snap);
   assert.deepEqual(shopCentralIntents(plan), []);
   assert.ok(!plan.intents.some((i) => i.dest === "marathon-pe" && i.source === "central"));
+});
+
+test("the reconcile asks the REGISTRY: a shop whose hub has no upstream route (shape says 'not a shop') is still held to the rule", () => {
+  const cat = CATEGORIES.find((c) => c.key === "t-shirts");
+  const { snap } = scenario({ shop: "trophy", cat, held: "units" });
+  const routes = { hub1: "central", trophy: "hub2", "marathon-pe": "hub2" };   // hub2's own route missing
+  snap.config = { ...CONFIG, routes };
+  assert.equal(rule.isShopLoc("trophy", { routes, locations: null }), false, "the shape alone cannot see it");
+  const w = withdrawalOf(computeRefillPlan(snap));
+  assert.ok(w, "the registry says Trophy is a store, so Hub 2 holding the product withdraws its Central request");
+  assert.equal(w.hub, "hub2");
 });
 
 // ── list changes must not break the mapping ──────────────────────────────────

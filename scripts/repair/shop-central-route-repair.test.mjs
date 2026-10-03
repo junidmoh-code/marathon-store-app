@@ -92,6 +92,14 @@ describe("shop ← Central repair", () => {
     expect(db.state.root.refill_engine.open.trophy.p1.M.refillId).toBe("a");
   });
 
+  it("releases only a lock that still names its own row (a lock re-claimed by the engine for another request stays)", async () => {
+    const db = world();
+    const { plan } = await buildPlan(db, { readOpen, readSince });
+    db.state.root.refill_engine.open.trophy.p1.M = { ...db.state.root.refill_engine.open.trophy.p1.M, refillId: "other" };
+    expect(await applyPlan(db, plan, NOW)).toEqual({ withdrawn: 1, refused: 0, locksReleased: 0 });
+    expect(db.state.root.refill_engine.open.trophy.p1.M.refillId).toBe("other");
+  });
+
   it("Section 1 has the same rule: Pine ← Central is withdrawn when Hub 3 held the product (once Pine is routed via Hub 3)", () => {
     const routes = { ...ROUTES, hub3: "central", "marathon-pine": "hub3" };
     const row = fb("p1", "M", "marathon-pine", { createdFrom: { firstBatch: true, source: "central" } });
