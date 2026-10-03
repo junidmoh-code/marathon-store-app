@@ -276,7 +276,8 @@ async function uploadBoxPhoto(productId, file) {
   // replaced, so cap staleness at 7 days rather than risk a year-stale copy.
   await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
   const url = await getDownloadURL(sRef);
-  await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: serverNowMs() });
+  // A real box photo supersedes an earlier "No box" (boxSkipped removed).
+  await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: serverNowMs(), boxSkipped: null });
   return url;
 }
 

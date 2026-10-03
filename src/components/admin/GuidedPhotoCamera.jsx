@@ -222,7 +222,7 @@ export function GuidedPhotoStep({ step, filled, previewUrl, onFile, invalid, dis
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{step.title}</span>
           {filled && !skipped && <span style={{ fontSize: 11, fontWeight: 800, color: "#4ADE80" }}>✓ TAKEN</span>}
-          {skipped && <span data-testid="skipped" style={{ fontSize: 11, fontWeight: 800, color: "#4ADE80" }}>✓ NO BOX — the brand's box will be used</span>}
+          {skipped && <span data-testid="skipped" style={{ fontSize: 11, fontWeight: 800, color: "#4ADE80" }}>✓ NO BOX — the brand's box is used if we have one</span>}
           {!filled && step.required && <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em", color: "#F87171" }}>REQUIRED</span>}
         </div>
         <div style={{ fontSize: 12, color: "rgba(233,238,255,.55)", lineHeight: 1.4 }}>{step.instruction}</div>

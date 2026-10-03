@@ -146,7 +146,8 @@ describe("GuidedPhotoStep — No box", () => {
     expect(onSkip).toHaveBeenLastCalledWith(false);
   });
   it("no No box button without a handler, or on the shoe step", async () => {
-    const tr = await mount(<GuidedPhotoStep step={BOX_STEP} filled={false} previewUrl={null} onFile={vi.fn()} />);
-    expect(tr.root.findAll((n) => n.type === "button").some((b) => [].concat(b.props.children).join("").includes("No box"))).toBe(false);
+    const hasNoBox = (tr) => tr.root.findAll((n) => n.type === "button").some((b) => [].concat(b.props.children).join("").includes("No box"));
+    expect(hasNoBox(await mount(<GuidedPhotoStep step={BOX_STEP} filled={false} previewUrl={null} onFile={vi.fn()} />))).toBe(false);
+    expect(hasNoBox(await mount(<GuidedPhotoStep step={SHOE_STEP} filled={false} previewUrl={null} onFile={vi.fn()} onSkip={vi.fn()} />))).toBe(false);
   });
 });
