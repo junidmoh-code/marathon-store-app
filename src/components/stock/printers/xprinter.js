@@ -19,7 +19,7 @@
 import { code128Modules } from "../barcode";
 import {
   discoverUsbPrinter, sendBulk, deviceKey, deviceLabel, formatAttempt,
-  readIeee1284Id, commandLanguageFrom1284,
+  readIeee1284Id, commandLanguageFrom1284, isPrinterLike, deviceMatch,
 } from "./usbDiscovery";
 import { setPrinterStatus } from "./printerStatus";
 import { renderLabelBitmap } from "./labelBitmap";
@@ -181,8 +181,8 @@ function saveRemembered(device) {
   try { localStorage.setItem(REMEMBER_KEY, JSON.stringify(deviceKey(device))); } catch { /* storage blocked — just no memory */ }
 }
 
-// One discovery at a time: the load-time probe, a replug and a print must not
-// claim the same interface concurrently.
+// One USB conversation at a time: the load-time probe, a replug and a print —
+// including the print's transfers — never touch the device concurrently.
 let queue = Promise.resolve();
 function exclusive(fn) {
   const run = queue.then(fn, fn);
@@ -190,14 +190,14 @@ function exclusive(fn) {
   return run;
 }
 
-// Pick the command language once per device: the printer's own IEEE 1284 id when
-// it answers, else TSPL (every Xprinter label model speaks it).
+// The command language: the printer's own IEEE 1284 id when it answers, else
+// TSPL (every Xprinter label model speaks it). Only a real answer is cached — a
+// device that didn't answer this time is asked again next time.
 async function languageFor(device, conn) {
   if (languages.has(device)) return languages.get(device);
-  const id = await readIeee1284Id(device, conn);
-  const lang = commandLanguageFrom1284(id) || "tspl";
-  languages.set(device, lang);
-  return lang;
+  const lang = commandLanguageFrom1284(await readIeee1284Id(device, conn));
+  if (lang) languages.set(device, lang);
+  return lang || "tspl";
 }
 
 function useConnection(device, conn, language) {
@@ -214,49 +214,55 @@ function useConnection(device, conn, language) {
 // allowPicker: only from a tap — the picker needs the click's activation, so it
 // runs right after the first await (getDevices) when NO device is permitted. A
 // print offers it once per page load; forcePicker is the explicit button.
-export function findUsbPrinter({ allowPicker = false, forcePicker = false } = {}) {
-  return exclusive(async () => {
-    if (!isXprinterSupported()) {
-      setPrinterStatus({ state: "os", route: "os", name: "", detail: "this browser has no WebUSB", lines: [] });
-      return { route: "os", attempts: [], lines: ["WebUSB not available in this browser"] };
-    }
-    setPrinterStatus({ state: "checking" });
-    const usb = navigator.usb;
-    let res;
+export function findUsbPrinter(opts = {}) {
+  return exclusive(() => findUnlocked(opts));
+}
+
+async function findUnlocked({ allowPicker = false, forcePicker = false } = {}) {
+  if (!isXprinterSupported()) {
+    setPrinterStatus({ state: "os", route: "os", name: "", detail: "this browser has no WebUSB", lines: [] });
+    return { route: "os", attempts: [], lines: ["WebUSB not available in this browser"] };
+  }
+  setPrinterStatus({ state: "checking" });
+  const usb = navigator.usb;
+  let res;
+  try {
+    res = await discoverUsbPrinter(usb, { remembered: loadRemembered(), preferred: cached?.device || null, at: new Date().toISOString() });
+  } catch (e) {
+    res = { ok: false, attempts: [], devicesSeen: 0, error: e };
+  }
+  if (!res.ok && res.devicesSeen === 0 && allowPicker && (forcePicker || !pickerShown)) {
     try {
-      res = await discoverUsbPrinter(usb, { remembered: loadRemembered(), preferred: cached?.device || null, at: new Date().toISOString() });
-    } catch (e) {
-      res = { ok: false, attempts: [], devicesSeen: 0, error: e };
-    }
-    if (!res.ok && res.devicesSeen === 0 && allowPicker && (forcePicker || !pickerShown)) {
+      const picked = await usb.requestDevice({ filters: [] });
       pickerShown = true;
-      try {
-        const picked = await usb.requestDevice({ filters: [] });
-        res = await discoverUsbPrinter({ getDevices: async () => [picked] }, {});
-      } catch { /* picker dismissed — fall through to the OS route */ }
+      res = await discoverUsbPrinter({ getDevices: async () => [picked] }, {});
+    } catch (e) {
+      // NotFoundError = the person closed the picker: don't offer it again this
+      // load. Anything else (e.g. the tap's activation expired) leaves it on offer.
+      if (e?.name === "NotFoundError") pickerShown = true;
     }
-    if (res.ok) {
-      const language = await languageFor(res.device, res.conn);
-      return useConnection(res.device, res.conn, language);
-    }
-    cached = null;
-    const lines = res.attempts.map(formatAttempt);
-    if (!lines.length) lines.push(res.devicesSeen ? "no device could be used" : "no USB printer has been allowed for this site yet");
-    if (res.error) lines.push(`getDevices failed — ${String(res.error?.message || res.error)}`);
-    const held = res.attempts.some((a) => a.heldElsewhere);
-    lastDiag = {
-      at: new Date().toISOString(),
-      devicesSeen: res.devicesSeen,
-      attempts: lines,
-      heldElsewhere: held,
-    };
-    setPrinterStatus({
-      state: "os", route: "os", name: "", devicesSeen: res.devicesSeen,
-      detail: held ? "USB printer is held by the computer's print system" : res.devicesSeen ? "no USB device could be claimed" : "no USB printer permitted",
-      lines,
-    });
-    return { route: "os", attempts: res.attempts, lines, devicesSeen: res.devicesSeen, heldElsewhere: held };
+  }
+  if (res.ok) {
+    const language = await languageFor(res.device, res.conn);
+    return useConnection(res.device, res.conn, language);
+  }
+  cached = null;
+  const lines = res.attempts.map(formatAttempt);
+  if (!lines.length) lines.push(res.devicesSeen ? "no device could be used" : "no USB printer has been allowed for this site yet");
+  if (res.error) lines.push(`getDevices failed — ${String(res.error?.message || res.error)}`);
+  const held = res.attempts.some((a) => a.heldElsewhere);
+  lastDiag = {
+    at: new Date().toISOString(),
+    devicesSeen: res.devicesSeen,
+    attempts: lines,
+    heldElsewhere: held,
+  };
+  setPrinterStatus({
+    state: "os", route: "os", name: "", devicesSeen: res.devicesSeen,
+    detail: held ? "USB printer is held by the computer's print system" : res.devicesSeen ? "no USB device could be claimed" : "no USB printer permitted",
+    lines,
   });
+  return { route: "os", attempts: res.attempts, lines, devicesSeen: res.devicesSeen, heldElsewhere: held };
 }
 
 // Watch for the printer being plugged in, unplugged or waking: re-find it silently.
@@ -264,13 +270,19 @@ export function startUsbPrinterWatch() {
   if (watching || !isXprinterSupported()) return;
   watching = true;
   const usb = navigator.usb;
-  usb.addEventListener("connect", () => { findUsbPrinter(); });
+  // A keyboard or a phone being plugged in is not a reason to touch the printer:
+  // only a printer-looking or remembered device re-runs discovery, and only when
+  // there is no working connection already. Debounced — a replug fires in bursts.
+  let timer = null;
+  const later = () => { clearTimeout(timer); timer = setTimeout(() => { findUsbPrinter(); }, 400); };
+  const relevant = (d) => !d || isPrinterLike(d) || deviceMatch(d, loadRemembered()) > 0;
+  usb.addEventListener("connect", (e) => { if (!cached && relevant(e?.device)) later(); });
   usb.addEventListener("disconnect", (e) => {
-    if (cached && e.device === cached.device) {
+    if (cached && e?.device === cached.device) {
       cached = null;
       setPrinterStatus({ state: "checking", route: null, name: "", detail: "printer unplugged — waiting for it", lines: [] });
+      later();
     }
-    findUsbPrinter();
   });
   findUsbPrinter();
 }
@@ -283,10 +295,19 @@ export async function connectXprinter() {
 // items: [{ code, productName, size, price?, count }]. One label per item with
 // PRINT copies = count (never 0 → 1), all over ONE connection. Returns sentBytes
 // so the caller knows whether falling back to the OS route could double-print.
-export async function printXprinter(items, conn = null) {
-  if (!isXprinterSupported()) return { ok: false, sentBytes: 0, error: "WebUSB not available — use desktop Chrome." };
-  if (!ENCODER) return { ok: false, sentBytes: 0, error: "TextEncoder unavailable." };
-  const c = conn?.route === "usb" ? conn : await findUsbPrinter();
+export function printXprinter(items, conn = null) {
+  if (!isXprinterSupported()) return Promise.resolve({ ok: false, sentBytes: 0, error: "WebUSB not available — use desktop Chrome." });
+  if (!ENCODER) return Promise.resolve({ ok: false, sentBytes: 0, error: "TextEncoder unavailable." });
+  // The whole batch holds the lock, so a replug-triggered probe can't release or
+  // close the device under a transfer.
+  return exclusive(() => sendBatch(items, conn));
+}
+
+async function sendBatch(items, conn) {
+  // A handle from connectXprinter is only good while it is still THE connection
+  // (an unplug in between clears it); otherwise find the printer again.
+  const live = conn?.route === "usb" && cached && cached.device === conn.device;
+  const c = live ? conn : await findUnlocked();
   if (c.route !== "usb") return { ok: false, sentBytes: 0, error: "No USB printer could be used.", lines: c.lines || [] };
   let sentBytes = 0, printed = 0;
   try {

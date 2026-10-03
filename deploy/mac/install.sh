@@ -36,16 +36,25 @@ cat > "$PLIST" <<PLIST
 PLIST
 plutil -lint "$PLIST" >/dev/null
 
+# Re-run safe: bootout is asynchronous, so retry the bootstrap briefly.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-launchctl bootstrap "gui/$(id -u)" "$PLIST"
+for i in 1 2 3 4 5; do
+  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && break
+  [ "$i" = 5 ] && { echo "Could not register the login item (launchctl bootstrap)."; exit 1; }
+  sleep 1
+done
 
 # Default printer + label size for the OS print route (skipped if no queue found).
 QUEUE="$(lpstat -e 2>/dev/null | grep -i -m1 -E 'xp.?350' || true)"
-if [ -n "$QUEUE" ]; then
+# A raw/generic queue has no driver options and would print Chrome's PDF as junk.
+if [ -n "$QUEUE" ] && [ -z "$(lpoptions -p "$QUEUE" -l 2>/dev/null)" ]; then
+  echo "The $QUEUE print queue has no printer driver (raw queue) — re-add the XP-350B with its driver (see README)."
+  QUEUE=""
+elif [ -n "$QUEUE" ]; then
   lpoptions -d "$QUEUE" >/dev/null
   lpoptions -p "$QUEUE" -o media=Custom.40x30mm >/dev/null
   echo "Default printer: $QUEUE (40 x 30 mm labels)"
-else
+elif ! lpstat -e 2>/dev/null | grep -qi -E 'xp.?350'; then
   echo "No XP-350B print queue found — set the default printer by hand (see README)."
 fi
 echo "Installed. Marathon Labels opens now and at every login."

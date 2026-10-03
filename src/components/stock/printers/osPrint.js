@@ -63,10 +63,10 @@ export function labelHtml(items) {
   return `<!doctype html><html><head><meta charset="utf-8"><title>Labels</title><style>
 @page { size: ${w}mm ${h}mm; margin: 0; }
 html, body { margin: 0; padding: 0; background: #fff; color: #000; }
-.label { width: ${w}mm; height: ${h}mm; box-sizing: border-box; padding: 1.5mm 2mm; overflow: hidden;
+.label { width: ${w}mm; height: ${h - 0.2}mm; box-sizing: border-box; padding: 1.5mm 2mm; overflow: hidden;
   display: flex; flex-direction: column; align-items: center; justify-content: flex-start; gap: 0.6mm;
-  page-break-after: always; break-after: page; font-family: Arial, Helvetica, sans-serif; text-align: center; }
-.label:last-child { page-break-after: auto; break-after: auto; }
+  font-family: Arial, Helvetica, sans-serif; text-align: center; }
+.label + .label { page-break-before: always; break-before: page; }
 .name { font-weight: 700; line-height: 1.12; max-width: 100%; overflow: hidden;
   display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical; word-break: break-word; }
 .hero { font-weight: 800; font-size: 3.6mm; line-height: 1.1; }
@@ -80,9 +80,11 @@ export function countLabels(items) {
 }
 
 // Print through the OS. Uses a hidden same-origin iframe so the app page itself is
-// never re-laid-out for print. Resolves once print() returns; `dialogShown` is a
-// best guess — print() blocks while Chrome's dialog is open and returns at once
-// under --kiosk-printing.
+// never re-laid-out for print. Resolves once print() returns. The browser never
+// says whether a job was spooled: `dialogShown` is a best guess (print() blocks
+// while Chrome's dialog is open and returns at once under --kiosk-printing), and
+// when a dialog was shown the person may have pressed Cancel — callers must not
+// treat that as printed.
 export async function printViaOs(items, { doc = typeof document !== "undefined" ? document : null, now = () => Date.now() } = {}) {
   const printed = countLabels(items);
   if (!printed) return { ok: false, route: "os", error: "Nothing to print." };

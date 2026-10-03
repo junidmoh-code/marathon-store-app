@@ -136,7 +136,7 @@ describe("every permitted device is tried", () => {
     expect(good.written.map(w => w.endpoint)).toEqual([1]);
     expect(good.written[0].text).toContain('BARCODE');
     expect(held.written).toEqual([]);
-    expect(held.calls).toContain("reset");            // reset + one retry before moving on
+    expect(held.calls).not.toContain("reset");        // never reset a device the OS is printing on
     expect(held.calls.at(-1)).toBe("close");          // let go for the OS
     expect(m.getPrinterStatus()).toMatchObject({ state: "usb", printed: "usb" });
     expect(m.getPrinterStatus().name).toContain("XP-350B");
@@ -175,11 +175,12 @@ describe("every permitted device is tried", () => {
     expect(dev.calls).not.toContain("reset");         // the second endpoint worked first time
   });
 
-  it("recovers through reset() when the claim only works after it", async () => {
+  it("recovers through reset() when the endpoint only takes data after it", async () => {
     let afterReset = false;
-    const dev = fakeDevice({ claim: () => (afterReset ? "ok" : "fail") });
-    const reset = dev.reset;
+    const dev = fakeDevice();
+    const reset = dev.reset, transferOut = dev.transferOut;
     dev.reset = async () => { afterReset = true; return reset(); };
+    dev.transferOut = async (e, d) => (afterReset ? transferOut(e, d) : { status: "stall", bytesWritten: 0 });
     usb.devices = [dev];
     const m = await load();
     const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
@@ -207,7 +208,7 @@ describe("the OS print route", () => {
     expect(text).toContain("XP-350B (Xprinter 0x0483/0x5743)");
     expect(text).toContain("interface 0 · alt 0 · OUT endpoint 1");
     expect(text).toContain("claimInterface → NetworkError: Unable to claim interface.");
-    expect(text).toContain("(after reset)");
+    expect(dev.calls).not.toContain("reset");
   });
 
   it("never re-sends a batch through the OS once bytes reached the USB printer", async () => {
@@ -259,6 +260,7 @@ describe("auto-reconnect", () => {
     const back = fakeDevice();                         // a replug is a NEW USBDevice object
     usb.devices = [back];
     usb.fire("connect", back);
+    await new Promise(r => setTimeout(r, 450));        // the watch debounces replug bursts
     await settle(m);
     expect(m.getPrinterStatus().state).toBe("usb");
     expect(usb.requestDevice).not.toHaveBeenCalled();
@@ -266,6 +268,43 @@ describe("auto-reconnect", () => {
     const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
     expect(res.route).toBe("usb");
     expect(back.written.length).toBe(1);
+  });
+});
+
+describe("the watch and the print don't trip over each other", () => {
+  it("ignores an unrelated USB device being plugged in while the printer works", async () => {
+    const dev = fakeDevice();
+    usb.devices = [dev];
+    const m = await load();
+    m.startUsbPrinterWatch();
+    await settle(m);
+    const before = dev.calls.length;
+    const kbd = fakeDevice({ name: "Keyboard", vid: 0x05ac, pid: 0x024f, configurations: [{ configurationValue: 1, interfaces: [
+      { interfaceNumber: 0, alternates: [alt(0, 3, [ep("in", "interrupt", 1)])] }] }] });
+    usb.devices = [dev, kbd];
+    usb.fire("connect", kbd);
+    await new Promise(r => setTimeout(r, 450));
+    expect(dev.calls.length).toBe(before);             // the printer was not touched
+    expect(kbd.calls).toEqual([]);
+  });
+
+  it("a discovery asked for mid-batch waits until the batch is sent", async () => {
+    const dev = fakeDevice();
+    usb.devices = [dev];
+    const m = await load();
+    const conn = await m.connectTransport("xprinter");
+    const transferOut = dev.transferOut;
+    dev.transferOut = async (e, d) => { await new Promise(r => setTimeout(r, 15)); return transferOut(e, d); };
+    const printing = m.printLabels({ items: [ITEM, { ...ITEM, code: "00012346" }, { ...ITEM, code: "00012347" }], transport: "xprinter", conn });
+    await flush();
+    const probe = m.findUsbPrinter();                  // e.g. a replug event
+    const res = await printing;
+    await probe;
+    expect(res.ok).toBe(true);
+    const sends = dev.calls.map((c, i) => [c, i]).filter(([c]) => /^transferOut:1:[1-9]/.test(c)).map(([, i]) => i);
+    const reopenAt = dev.calls.lastIndexOf("claimInterface:0");
+    expect(sends).toHaveLength(3);
+    expect(reopenAt).toBeGreaterThan(Math.max(...sends)); // the probe ran AFTER the last label
   });
 });
 
@@ -301,7 +340,36 @@ describe("remembered device first", () => {
   });
 });
 
+describe("the OS route never claims a print it can't see", () => {
+  it("a print dialog (which may have been cancelled) is reported as unconfirmed", async () => {
+    usb.devices = [fakeDevice({ claim: "fail" })];
+    const m = await load();
+    const realNow = Date.now.bind(Date);
+    let skew = 0;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() + skew);
+    const print = doc.createElement;
+    doc.createElement = () => { const f = print(); const p = f.contentWindow.print; f.contentWindow.print = () => { skew += 5000; p(); }; return f; };
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
+    vi.restoreAllMocks();
+    expect(res).toMatchObject({ ok: true, route: "os", dialogShown: true, unconfirmed: true });
+    expect(res.routeLabel).toContain("check the labels");
+  });
+});
+
 describe("command language", () => {
+  it("asks GET_DEVICE_ID in the class-spec form first, then the interface number", async () => {
+    const { readIeee1284Id } = await import("./usbDiscovery");
+    const asked = [];
+    const dev = { async controlTransferIn(setup) {
+      asked.push(setup.index);
+      if (setup.index !== 1) return { status: "stall" };
+      const b = new TextEncoder().encode("..CMD:ESC/POS;");
+      return { status: "ok", data: new DataView(b.buffer) };
+    } };
+    expect(await readIeee1284Id(dev, { interfaceNumber: 1, alternateSetting: 1 })).toBe("CMD:ESC/POS;");
+    expect(asked).toEqual([0x0101, 1]);
+  });
+
   it("reads the IEEE 1284 command set", () => {
     expect(commandLanguageFrom1284("MFG:Xprinter;CMD:TSPL,ESC/POS;MDL:XP-350B;")).toBe("tspl");
     expect(commandLanguageFrom1284("MANUFACTURER:Acme;COMMAND SET:ESC/POS;MODEL:L1;")).toBe("escpos");

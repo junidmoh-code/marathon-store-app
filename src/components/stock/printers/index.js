@@ -125,8 +125,10 @@ async function printUsbOrOs(items, conn) {
   // is the more useful thing to say.
   setPrinterStatus({ state: "os", route: "os", printed: "os", lines: usbLines,
     ...(os.dialogShown ? { detail: "print dialog shown — open the app with the Marathon Labels launcher to print silently" } : {}) });
+  // With a dialog the person may have cancelled — say so rather than "printed".
   return { ok: true, route: "os", printed: os.printed, dialogShown: os.dialogShown, lines: usbLines,
-    routeLabel: "System print → default printer" };
+    unconfirmed: !!os.dialogShown,
+    routeLabel: os.dialogShown ? "the system print dialog (check the labels came out)" : "System print → default printer" };
 }
 
 // Diagnostic: print a canvas-free test pattern (solid + stripes) to prove the

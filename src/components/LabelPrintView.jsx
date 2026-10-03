@@ -14,7 +14,7 @@ import React, { useMemo, useState } from "react";
 import { searchProducts } from "../utils/productSearch";
 import { isDeactivated } from "../utils/deactivation";
 import { ensureBarcode } from "./stock/barcodeStore";
-import { connectTransport, printLabels, defaultTransportId } from "./stock/printers";
+import { TRANSPORTS, connectTransport, printLabels, defaultTransportId, rememberTransport } from "./stock/printers";
 import PrinterStatus from "./stock/PrinterStatus";
 import { useLocations, useStockCells } from "./stock/useStock";
 import { sellableLocations, labelFor } from "./stock/locations";
@@ -50,7 +50,10 @@ export default function LabelPrintView({ products = [], onExit }) {
   const [toast, setToast] = useState(null);         // { kind: "ok"|"err", text }
   const isWide = useWide(1024);
   const flash = (kind, text) => { setToast({ kind, text }); setTimeout(() => setToast(null), 4500); };
-  const [transport] = useState(defaultTransportId);   // USB label printer on a desktop, Phomemo on a phone
+  // USB label printer on a desktop, Phomemo on a phone; a pick here is remembered.
+  const [transport, setTransportState] = useState(defaultTransportId);
+  const setTransport = (id) => { rememberTransport(id); setTransportState(id); };
+  const transports = TRANSPORTS.filter(t => t.supported());
 
   // Category chips are data-driven — every product has a `category`.
   const categories = useMemo(() => {
@@ -118,7 +121,10 @@ export default function LabelPrintView({ products = [], onExit }) {
         return;
       }
       const res = await printLabels({ items, transport, conn });
-      if (res.ok) {
+      if (res.ok && res.unconfirmed) {
+        // A print dialog was shown — it may have been cancelled. Keep the queue.
+        flash("ok", `Sent ${items.reduce((s, i) => s + i.count, 0)} label(s) to ${res.routeLabel} — the queue is kept until you clear it.`);
+      } else if (res.ok) {
         const n = items.reduce((s, i) => s + i.count, 0);
         flash("ok", `Printed ${n} label${n !== 1 ? "s" : ""}${res.routeLabel ? ` · ${res.routeLabel}` : ""}${skipped.length ? ` · ${skipped.length} skipped (no barcode)` : ""}`);
         // Clear only what printed — keep the skipped (no-barcode) items in the
@@ -254,6 +260,15 @@ export default function LabelPrintView({ products = [], onExit }) {
       )}
 
       <div style={{ padding: 12, borderTop: "1px solid rgba(255,255,255,.07)" }}>
+        {transports.length > 1 && (
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 9 }}>
+            {transports.map(t => (
+              <button key={t.id} onClick={() => setTransport(t.id)} disabled={busy} style={{ ...chip(transport === t.id), fontSize: 11.5, padding: "5px 10px" }}>
+                {t.label}
+              </button>
+            ))}
+          </div>
+        )}
         <button onClick={printBatch} disabled={busy || totalLabels === 0}
           style={{ width: "100%", padding: "12px", borderRadius: 11, border: "none", fontSize: 13.5, fontWeight: 800, fontFamily: FONT,
                    cursor: busy || totalLabels === 0 ? "not-allowed" : "pointer",

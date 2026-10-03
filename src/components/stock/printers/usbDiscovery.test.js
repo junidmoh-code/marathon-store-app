@@ -260,7 +260,7 @@ describe("openUsbPrinter — open, configure, claim, select alternate", () => {
     const err = await openUsbPrinter(device, { sleep: noSleep }).catch(e => e);
     expect(device.claimAttempts()).toBe(2);
     expect(err.message).toMatch(/in use/);
-    expect(err.message).toMatch(/Printers & Scanners/);
+    expect(err.message).toMatch(/system printing instead/);
     expect(err.diag.productId).toBe("0x5678");
   });
 
@@ -318,7 +318,7 @@ describe("every failure names its step and the browser's own exception", () => {
     const device = fakeDevice({ activeValue: 1, claimFailures: 2, configurations: printerCfg });
     const err = await openUsbPrinter(device, { sleep: noSleep }).catch(e => e);
     expect(err.message).toContain("NetworkError: Unable to claim interface.");
-    expect(err.message).toMatch(/Printers & Scanners/);
+    expect(err.message).toMatch(/system printing instead/);
     expect(failureOf(err)).toMatchObject({ step: "claimInterface", name: "NetworkError" });
     expect(formatUsbDiagnostics(err.diag, err)).toContain("failed step: claimInterface");
   });

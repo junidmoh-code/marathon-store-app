@@ -7,7 +7,7 @@
 // WHY IT EXISTS: the old inline path assumed configuration 1, looked only at each
 // interface's CURRENTLY-ACTIVE alternate, never called selectAlternateInterface,
 // and claimed once with no retry. On macOS that produced "No bulk OUT endpoint
-// found" on a perfectly good XP-350B. See docs/printer-usb-map.md.
+// found" on a perfectly good XP-350B.
 //
 // WHAT IT DOES INSTEAD:
 //   • open → if there is no active configuration, select the FIRST available
@@ -250,7 +250,7 @@ export async function openUsbPrinter(device, { sleep = wait, claimRetryMs = CLAI
 
     try {
       await step("claimInterface", () => device.claimInterface(chosen.interfaceNumber));
-    } catch (firstAttempt) {
+    } catch {
       // macOS can hold the interface for a moment after a replug / driver teardown.
       await sleep(claimRetryMs);
       try {
@@ -259,9 +259,8 @@ export async function openUsbPrinter(device, { sleep = wait, claimRetryMs = CLAI
         const failure = failureOf(e);
         const inUse = /in use|claim|access|denied|busy|NetworkError/i.test(`${failure.name} ${failure.message}`);
         throw fail(
-          `Couldn't claim the printer${inUse ? " — the interface is in use" : ""} (${failure.name}: ${failure.message}). ` +
-          `On macOS the system usually owns the printer: remove it from System Settings ▸ Printers & Scanners ` +
-          `(and quit any app using it), then retry.`,
+          `Couldn't claim the printer${inUse ? " — the interface is in use, most likely by the computer's own print system" : ""} ` +
+          `(${failure.name}: ${failure.message}). Labels go through system printing instead.`,
           snapshot(failure), failure
         );
       }
@@ -442,8 +441,10 @@ export async function probeUsbDevice(device, opts = {}) {
 
   let conn = await pass("first");
   if (conn) return { ok: true, conn, attempts };
-  // A device with no bulk OUT anywhere will not grow one after a reset.
-  if (!attempts.every((a) => a.step === "discovery")) {
+  // A device with no bulk OUT anywhere will not grow one after a reset. And a
+  // device another program holds (on macOS: the print system, possibly mid-job)
+  // is NOT reset — that could cut its job short; the OS print route covers it.
+  if (!attempts.every((a) => a.step === "discovery" || a.heldElsewhere)) {
     try {
       await step("reset", () => device.reset());
       conn = await pass("after reset");
@@ -489,16 +490,19 @@ export function commandLanguageFrom1284(idString) {
 // Read the 1284 id over the claimed interface. Never throws — null when the
 // device doesn't answer (plenty don't).
 export async function readIeee1284Id(device, conn) {
-  try {
-    const res = await device.controlTransferIn({
-      requestType: "class", recipient: "interface", request: 0,
-      value: 0, index: conn.interfaceNumber,   // low byte = interface (WebUSB checks it is claimed)
-    }, 1024);
-    const view = res?.data;
-    if (res?.status !== "ok" || !view || view.byteLength < 3) return null;
-    const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
-    return new TextDecoder().decode(bytes.slice(2)).replace(/\0+$/, "");   // first 2 bytes = length
-  } catch {
-    return null;
+  // The printer-class spec puts the interface in wIndex's HIGH byte and the
+  // alternate in the low byte; Chrome checks the LOW byte is a claimed interface.
+  // Both agree for interface 0 / alt 0. Otherwise try the spec form, then the
+  // interface number alone.
+  const spec = ((conn.interfaceNumber & 0xff) << 8) | (conn.alternateSetting & 0xff);
+  for (const index of [...new Set([spec, conn.interfaceNumber])]) {
+    try {
+      const res = await device.controlTransferIn({ requestType: "class", recipient: "interface", request: 0, value: 0, index }, 1024);
+      const view = res?.data;
+      if (res?.status !== "ok" || !view || view.byteLength < 3) continue;
+      const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+      return new TextDecoder().decode(bytes.slice(2)).replace(/\0+$/, "");   // first 2 bytes = length
+    } catch { /* try the other form */ }
   }
+  return null;
 }
