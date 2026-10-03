@@ -58,10 +58,37 @@ describe("brandOf", () => {
     expect(brandOf("Alo bag green")).toBe("Alo");
   });
   it("brandInfo flags an unrecognised name; supplier labels and codes are unbranded, not flagged", () => {
-    expect(brandInfo("Sweater hoodie cream white")).toEqual({ brand: null, flag: "unrecognised" });
-    expect(brandInfo("Shambeen long sleeve green 9536")).toEqual({ brand: null, flag: null });
-    expect(brandInfo("Bs-8022 Grey")).toEqual({ brand: null, flag: null });
-    expect(brandInfo("Nike Air Max")).toEqual({ brand: "Nike", flag: null });
+    expect(brandInfo("Sweater hoodie cream white")).toEqual({ brand: null, flag: "unrecognised", source: null });
+    expect(brandInfo("Shambeen long sleeve green 9536")).toEqual({ brand: null, flag: null, source: "supplier" });
+    expect(brandInfo("Bs-8022 Grey")).toEqual({ brand: null, flag: null, source: "supplier" });
+    expect(brandInfo("Nike Air Max")).toEqual({ brand: "Nike", flag: null, source: "list" });
+  });
+  it("review findings: no colourway, comic, first-name or English-word brands", () => {
+    expect(brandOf("Nike Dunk Michael Jordan tee")).toBe("Nike");
+    expect(brandOf("Nike Air Force 1 Jordan blue")).toBe("Nike");
+    expect(brandOf("Nike Air Jordan 1 Low")).toBe("Jordan");
+    expect(brandOf("Nike Jordan 4 brue")).toBe("Jordan");
+    expect(brandOf("Tiffany blue Nike Dunk")).toBe("Nike");
+    expect(brandOf("Tiffany&Co watch")).toBe("Tiffany & Co.");
+    expect(brandOf("Karl Kani tee")).toBe("Karl Kani");
+    expect(brandOf("Karl beanie red")).toBe("Karl Lagerfeld");
+    expect(brandOf("DC Comics Batman tee")).toBeNull();
+    expect(brandOf("On sale Nike tee")).toBe("Nike");
+    expect(brandOf("On cloud brown")).toBe("On");
+    expect(brandOf("Black descent jacket")).toBeNull();
+    expect(brandOf("Dr.Martens 1460")).toBe("Dr. Martens");
+  });
+});
+
+import { brandOnRename } from "./brands.js";
+describe("brandOnRename — a rename never overwrites a set brand", () => {
+  it("re-derives only an empty or flagged brand", () => {
+    expect(brandOnRename({ brand: null, brandFlag: "unrecognised" }, "Nike Dunk Low")).toEqual({ brand: "Nike", brandFlag: null, brandSource: "list" });
+    expect(brandOnRename({ brand: null }, "Shambeen tee")).toEqual({ brand: null, brandFlag: null, brandSource: "supplier" });
+  });
+  it("leaves a set or hand-set brand alone", () => {
+    expect(brandOnRename({ brand: "Christian Louboutin" }, "Christian loubiton spikes")).toBeNull();
+    expect(brandOnRename({ brand: null, brandSource: "manual" }, "Nike Dunk")).toBeNull();
   });
   it("null for code-only / unbranded", () => {
     expect(brandOf("Lx:1222")).toBeNull();

@@ -102,6 +102,7 @@ export function buildNewProduct(registry, form, extras = {}) {
     // "unrecognised" when the name names no known brand (src/utils/brands.js) —
     // the product is saved with NO brand rather than its first word. Omitted otherwise.
     ...(extras.brandFlag ? { brandFlag: extras.brandFlag } : {}),
+    ...(extras.brandSource ? { brandSource: extras.brandSource } : {}),
     photo: form.photo,
     photoUrl: extras.photoUrl ?? null,
     hubs: cleanHubs(form.hubs, isClothing),
