@@ -28,6 +28,7 @@ import { FONT, GLASS, GRAY, RED, AMBER, BLUE_L } from "./ui";
 import { applyPriceBatch, restorePriceBatch } from "../admin/priceStore";
 import { buildBulkChangePlan } from "../../utils/bulkPricing";
 import { asStoredPrice } from "../../utils/priceBatch";
+import { saveProductPrices, planProductPriceEdit } from "../admin/productPriceSave";
 import BulkPricePreview from "../admin/BulkPricePreview";
 
 const count = (n) => new Intl.NumberFormat("en-ZA").format(n || 0);
@@ -343,8 +344,12 @@ export default function MarketingView({ products, onExit }) {
 // changed, through the guarded batch path (audited; on-special retail edits
 // are refused by the store with its own message).
 function PriceEditModal({ product, getCurrent, onSpecial, onClose, onSaved }) {
-  const [stockDraft, setStockDraft] = useState(asStoredPrice(product.stockPrice) !== null ? String(asStoredPrice(product.stockPrice)) : "");
-  const [retailDraft, setRetailDraft] = useState(asStoredPrice(product.retailPrice) !== null ? String(asStoredPrice(product.retailPrice)) : "");
+  const asField = (v) => (asStoredPrice(v) !== null ? String(asStoredPrice(v)) : "");
+  // What the fields opened with: only a field the operator CHANGED is saved, so
+  // a price another session set meanwhile is never overwritten by a stale value.
+  const [opened] = useState(() => ({ stockPrice: asField(product.stockPrice), retailPrice: asField(product.retailPrice) }));
+  const [stockDraft, setStockDraft] = useState(opened.stockPrice);
+  const [retailDraft, setRetailDraft] = useState(opened.retailPrice);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
 
@@ -353,28 +358,25 @@ function PriceEditModal({ product, getCurrent, onSpecial, onClose, onSaved }) {
     // Compare against the LIVE record, not the snapshot captured when the
     // modal opened — a price changed elsewhere while it sat open must not
     // produce a stale audit `from` or a phantom no-op (Kimi review, PR #360).
-    const live = getCurrent ? getCurrent() : product;
-    const from = {};
-    const to = {};
-    for (const [field, draft] of [["stockPrice", stockDraft], ["retailPrice", retailDraft]]) {
-      const cur = asStoredPrice(live[field]);
-      const t = String(draft).trim();
-      const next = t === "" ? null : Number(t);
-      if (next !== null && (!Number.isFinite(next) || next <= 0)) { setErr(`${field === "stockPrice" ? "Stock" : "Retail"} price must be a number above 0 (or empty to clear).`); return; }
-      if (next === cur) continue;
-      from[field] = cur;
-      to[field] = next;
-    }
-    if (Object.keys(to).length === 0) { onClose(); return; }
+    const live = { ...(getCurrent ? getCurrent() : product), id: product.id, name: product.name };
+    // THE product price save (productPriceSave.js) — the one copy the admin
+    // product page, Missing prices and the New Arrivals card use too.
+    const drafts = {};
+    if (stockDraft !== opened.stockPrice) drafts.stockPrice = stockDraft;
+    if (retailDraft !== opened.retailPrice) drafts.retailPrice = retailDraft;
+    const plan = planProductPriceEdit(live, drafts);
+    if (!plan.ok) { setErr(plan.error); return; }
+    if (Object.keys(plan.to).length === 0) { onClose(); return; }
     setSaving(true);
     setErr(null);
     try {
-      const res = await applyPriceBatch({
-        action: "single_edit",
-        label: `Marketing edit: ${product.name || product.id}`,
-        lines: { [product.id]: { name: product.name || "", from, to } },
-      });
-      if (!res.ok) { setErr(res.message); return; }
+      const label = `Marketing edit: ${product.name || product.id}`;
+      let res = await saveProductPrices(live, drafts, { label, apply: applyPriceBatch });
+      if (!res.ok && res.needsConfirm) {
+        if (!window.confirm(res.error)) return;
+        res = await saveProductPrices(live, drafts, { label, confirmed: true, apply: applyPriceBatch });
+      }
+      if (!res.ok) { setErr(res.error); return; }
       onSaved(`Saved ${product.name || product.id}.`, res.specialsCheckSkipped === true);
     } catch (e) {
       setErr(String(e?.message || e));

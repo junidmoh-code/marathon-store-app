@@ -9,40 +9,46 @@ export const TABS = [
   { key: "ready", label: "Ready" },
   { key: "rejected", label: "Rejected" },
   { key: "done", label: "Done" },
-  { key: "skipped", label: "Skipped" },
 ];
+// No Skipped tab (owner, 3 Oct): "Skip — don't advertise" is one tap with an
+// 8-second Undo. A skipped item stays in the data (status "skipped") — the
+// generator, the chain and the posters all leave it alone.
+export const UNDO_MS = 8000;
 
 // Mirror of functions/newArrivals/core.cjs REJECT_CHIPS — the exact strings
 // the ledger records (calibration contract). One tap, no typing.
 export const REJECT_CHIPS = ["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"];
 
-// The New tab's one-tap filters → the callable's filter object.
-// Category chips map onto the plate classes (core.cjs filterClassOf):
-// sneakers = footwear except slides/sandals · slides = slides + sandals ·
-// clothing = single garments · two-piece = tracksuits.
-export const FILTER_CHIPS = [
-  { key: "oneSize", label: "1 size only" },
-  { key: "sneakers", label: "Sneakers", cls: true },
-  { key: "slides", label: "Slides", cls: true },
-  { key: "clothing", label: "Clothing", cls: true },
-  { key: "twopiece", label: "Two-piece", cls: true },
-  { key: "noStockPrice", label: "No stock price" },
+// ONE switcher bar instead of filter chips (owner, 3 Oct): exactly TWO groups,
+// decided server-side from the category (functions/newArrivals/core.cjs
+// groupOf): Sneakers = all footwear; Clothing = everything else, and anything
+// uncategorised unless it is clearly footwear. New, Ready and Rejected are
+// grouped (the tabs Junid acts in); Done is the whole history, ungrouped.
+export const GROUPS = [
+  { key: "sneakers", label: "Sneakers" },
+  { key: "clothing", label: "Clothing" },
 ];
-/** Toggle a chip in the filter; the category chips are exclusive. Pure. */
-export function toggleFilter(filter, key) {
-  const f = { ...(filter || {}) };
-  const chip = FILTER_CHIPS.find((c) => c.key === key);
-  if (!chip) return f;
-  if (chip.cls) {
-    if (f.cls === key) delete f.cls; else f.cls = key;
-  } else if (f[key]) delete f[key]; else f[key] = true;
-  return f;
+export const GROUP_TABS = ["new", "ready", "rejected"];
+export const DEFAULT_GROUP = "sneakers";
+export const GROUP_STORAGE_KEY = "newArrivals.group";
+export const isGroupTab = (tab) => GROUP_TABS.includes(tab);
+export const groupLabel = (key) => (GROUPS.find((g) => g.key === key) || GROUPS[0]).label;
+/** The group one step left (-1) or right (+1), or null at an end. Pure. */
+export function stepGroup(key, dir) {
+  const i = GROUPS.findIndex((g) => g.key === key);
+  const j = (i < 0 ? 0 : i) + dir;
+  return j >= 0 && j < GROUPS.length ? GROUPS[j].key : null;
 }
-export const chipOn = (filter, key) => {
-  const chip = FILTER_CHIPS.find((c) => c.key === key);
-  return chip?.cls ? filter?.cls === key : !!filter?.[key];
-};
-export const filterActive = (filter) => !!filter && Object.keys(filter).length > 0;
+/** The last group on this device; Sneakers when none (or storage throws). */
+export function rememberedGroup(storage) {
+  try {
+    const g = storage ? storage.getItem(GROUP_STORAGE_KEY) : null;
+    return GROUPS.some((x) => x.key === g) ? g : DEFAULT_GROUP;
+  } catch { return DEFAULT_GROUP; }
+}
+export function rememberGroup(storage, key) {
+  try { if (storage) storage.setItem(GROUP_STORAGE_KEY, key); } catch { /* private mode: not remembered */ }
+}
 
 export const CLASS_LABELS = { footwear: "Footwear", single: "Clothing", twopiece: "Two-piece" };
 /** "83%" or "—" for one class, from new_arrivals/stats. Pure. */
@@ -75,11 +81,14 @@ export function generationsOf(item) {
 }
 
 export function costText(gen) {
+  // A RE-CHECK (a framing correction of an earlier photo — vision only, no new
+  // generation) is labelled so; its few cents are never read as a photo's cost.
+  const tag = gen?.derivedFrom ? "re-check, no new generation · " : "";
   const zar = Number(gen?.costZar);
-  if (Number.isFinite(zar) && gen?.costZar != null) return `R${zar.toFixed(2)}`;
+  if (Number.isFinite(zar) && gen?.costZar != null) return `${tag}R${zar.toFixed(2)}`;
   const usd = Number(gen?.costUsd);
-  if (Number.isFinite(usd) && gen?.costUsd != null) return `$${usd.toFixed(2)}`;
-  return "cost unknown";
+  if (Number.isFinite(usd) && gen?.costUsd != null) return `${tag}$${usd.toFixed(2)}`;
+  return `${tag}cost unknown`;
 }
 
 /** Sum of every generation's cost in rand (null when none is known). Pure. */
@@ -129,7 +138,7 @@ export function statusLine(item) {
   const s = item?.status;
   // Generation is Junid's call (calibration): nothing is generated until he taps Generate.
   if (s === "new") return item?.generateRequest ? "Generate requested — the generator will take it shortly" : "Waiting — tap Generate when you want its photo";
-  if (s === "skipped") return "Skipped — not advertised (Restore brings it back to New)";
+  if (s === "skipped") return "Skipped — not advertised";
   if (s === "generating") return "Generating the photo now…";
   if (s === "ready") return Number(item?.product?.stockPrice) > 0
     ? "Photo checked — waiting for your Approve"
@@ -197,19 +206,33 @@ export function needsStockPrice(product) {
 }
 
 /**
- * Which buttons an item shows. Approve (and Approve anyway) need a generated
- * photo and a stock price; the checker's verdict never gates anything.
+ * Which buttons an item shows. Approve is ALWAYS shown on Ready (owner, 3 Oct)
+ * but only ENABLED with a generated photo and a stock price (approveEnabled);
+ * Approve anyway (Rejected) likewise needs both. The checker's verdict never
+ * gates anything.
  */
 export function actionsFor(item) {
   const s = item?.status;
   const priced = Number(item?.product?.stockPrice) > 0;
   return {
-    approve: s === "ready" && !!item?.generatedUrl && priced,
+    approve: s === "ready",
+    approveEnabled: s === "ready" && !!item?.generatedUrl && priced,
     approveAnyway: s === "rejected" && !!item?.generatedUrl && priced,
     generate: s === "new" && !item?.generateRequest,
     regenerate: s === "ready" || s === "rejected",
     reject: s === "ready",
     skip: s === "new" || s === "rejected",
-    restore: s === "skipped",
   };
+}
+
+/** The tabs whose cards carry the two price fields (Done is history). */
+export const PRICE_TABS = ["new", "ready", "rejected"];
+/** A price as the field shows it: the stored number, or empty. Pure. */
+export const priceField = (v) => (Number(v) > 0 ? String(Number(v)) : "");
+/** Only the fields Junid changed from what the card showed: { stockPrice?, retailPrice? }. Pure. */
+export function changedPrices(product, stockDraft, retailDraft) {
+  const out = {};
+  if (String(stockDraft ?? "").trim() !== priceField(product?.stockPrice)) out.stockPrice = String(stockDraft ?? "").trim();
+  if (String(retailDraft ?? "").trim() !== priceField(product?.retailPrice)) out.retailPrice = String(retailDraft ?? "").trim();
+  return out;
 }

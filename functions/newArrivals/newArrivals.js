@@ -1,11 +1,11 @@
 // ─── NEW ARRIVALS — trigger + the card's three callables ─────────────────────
 // newArrivalsEnqueue  onValueCreated products/{pid}: an upload lands in New.
-// newArrivalsList     the card's read of one tab (bounded, no whole-node read).
+// newArrivalsList     the card's read of one tab + group (bounded, no whole-node read).
 // newArrivalsApprove  Junid's tap — Ready → approved (one pid, or all Ready).
 // newArrivalsRetry    (legacy, card no longer calls it) Rejected → New.
 // newArrivalsGenerate Generate / Generate selected / Regenerate → generateRequest.
-// newArrivalsSkip     Skip — don't advertise (New/Rejected → Skipped).
-// newArrivalsRestore  Skipped → New.
+// newArrivalsSkip     Skip — don't advertise (New/Rejected → skipped; marked, never deleted).
+// newArrivalsRestore  the card's Undo: skipped → back to New or Rejected (skippedFrom).
 // newArrivalsReject   Ready → Rejected with one reason chip.
 // Every action Junid takes writes new_arrivals/decisions/{push}.
 //
@@ -120,14 +120,37 @@ async function productDetail(db, pid, locations, { withStock = true } = {}) {
 }
 
 // ── list ─────────────────────────────────────────────────────────────────────
+// The card's group of each pid: products/{pid}/categoryKey and /category, two
+// keyed scalar reads (never the product, never /products). Cached per process
+// for GROUP_TTL_MS — a category edit shows on the card within minutes, and the
+// 30-second refresh does not re-read a whole lane's categories every time.
+const GROUP_TTL_MS = 5 * 60 * 1000;
+const groupCache = new WeakMap(); // db → Map(pid → { g, at })
+async function groupsOf(db, pids, nowMs = Date.now()) {
+  let cache = groupCache.get(db);
+  if (!cache) { cache = new Map(); groupCache.set(db, cache); }
+  const out = new Map();
+  await inBatches(pids, 50, async (pid) => {
+    const hit = cache.get(pid);
+    if (hit && nowMs - hit.at < GROUP_TTL_MS) { out.set(pid, hit.g); return; }
+    const [categoryKey, category] = await Promise.all([val(db, `products/${pid}/categoryKey`), val(db, `products/${pid}/category`)]);
+    const g = core.groupOf({ categoryKey, category });
+    cache.set(pid, { g, at: nowMs });
+    out.set(pid, g);
+  });
+  return out;
+}
+
 // One page of one tab. PAGED BY KEY: by_status/{status} orderByKey()
 // .startAfter(cursor).limitToFirst(n+1) per status in the tab, merged in key
 // order ("p<ms>" keys → oldest upload first). The index nodes are pid → number
-// and are read whole for the counts (they are the index — /products and
-// /new_arrivals/items are never read whole). With a New-tab filter, the lane's
-// keys are scanned and each pid's product (and stock, for "1 size only") read
-// keyed; total = the filtered count.
-async function listTab(db, tab, { cursor = null, limit, filter = null } = {}) {
+// and are read BY KEY with a ceiling for the counts (they are the index —
+// /products and /new_arrivals/items are never read whole).
+// GROUP (New, Ready, Rejected): the lane's keys are split into Sneakers /
+// Clothing by each pid's category (groupsOf: keyed scalar reads), the page is
+// taken from the group, total = the group's count, and groupCounts carries
+// both. A legacy `filter` (an older card bundle) still works on New.
+async function listTab(db, tab, { cursor = null, limit, filter = null, group = null } = {}) {
   if (!core.TABS.includes(tab)) throw new HttpsError("invalid-argument", "Unknown tab.");
   const n = core.listLimit(limit);
   const after = cursor && core.PID_RE.test(String(cursor)) ? String(cursor) : null;
@@ -147,10 +170,23 @@ async function listTab(db, tab, { cursor = null, limit, filter = null } = {}) {
   const selectable = new Set(statuses.filter((s) => s !== "generating").flatMap((s) => index[s]));
 
   const f = tab === "new" ? core.normalizeFilter(filter) : null;
+  const g = !f && core.GROUP_TABS.includes(tab) ? core.normalizeGroup(group) : null;
   const locations = await stockLocations(db);
   const details = new Map();
-  let pageKeys, more, total, matching;
-  if (!f) {
+  let pageKeys, more, total, matching, groupCounts = null;
+  const pageOf = (keys) => {
+    const rest = after ? keys.filter((k) => core.keyCmp(k, after) > 0) : keys;
+    pageKeys = rest.slice(0, n);
+    more = rest.length > n;
+    total = keys.length;
+  };
+  if (g) {
+    const groups = await groupsOf(db, laneKeys);
+    groupCounts = Object.fromEntries(core.GROUPS.map((x) => [x, 0]));
+    for (const k of laneKeys) groupCounts[groups.get(k)] += 1;
+    matching = laneKeys.filter((k) => groups.get(k) === g);
+    pageOf(matching);
+  } else if (!f) {
     const pages = await Promise.all(statuses.map(async (s) => {
       let q = db.ref(`${core.BY_STATUS}/${s}`).orderByKey();
       if (after) q = q.startAfter(after);
@@ -172,10 +208,7 @@ async function listTab(db, tab, { cursor = null, limit, filter = null } = {}) {
       if (core.matchesFilter(d.summary, d.stock || core.stockSummary(d.summary ? d.summary.sizes : [], {}), f)) matching.push(pid);
     });
     matching.sort(core.keyCmp);
-    const rest = after ? matching.filter((k) => core.keyCmp(k, after) > 0) : matching;
-    pageKeys = rest.slice(0, n);
-    more = rest.length > n;
-    total = matching.length;
+    pageOf(matching);
   }
 
   const items = (await inBatches(pageKeys, 10, async (pid) => {
@@ -191,10 +224,10 @@ async function listTab(db, tab, { cursor = null, limit, filter = null } = {}) {
   const [stats, modes] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`)]);
   const out = {
     tab, items, total, nextCursor: more && pageKeys.length ? pageKeys[pageKeys.length - 1] : null,
-    tabCounts, stats: stats || null, modes: modes || {}, filter: f,
+    tabCounts, stats: stats || null, modes: modes || {}, filter: f, group: g, groupCounts,
   };
-  // Every pid the tab's multi-select can act on — the whole filtered lane,
-  // not just the loaded page ("Select all" then "Skip selected").
+  // Every pid the tab's multi-select can act on — the whole group (or
+  // filtered lane), not just the loaded page ("Select all" then "Skip selected").
   if (tab === "new" || tab === "skipped") out.matchingPids = matching.filter((p) => selectable.has(p));
   return out;
 }
@@ -204,7 +237,7 @@ const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds:
 const newArrivalsList = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
   const d = request.data || {};
-  return listTab(admin.database(), String(d.tab || "ready"), { cursor: d.cursor || null, limit: d.limit, filter: d.filter || null });
+  return listTab(admin.database(), String(d.tab || "ready"), { cursor: d.cursor || null, limit: d.limit, filter: d.filter || null, group: d.group || null });
 });
 
 // ── moves + the ledger ───────────────────────────────────────────────────────
@@ -341,8 +374,12 @@ const newArrivalsGenerate = onCall(callableOpts, async (request) => {
 
 // ── skip / restore ───────────────────────────────────────────────────────────
 // Skip — don't advertise: New or Rejected → skipped. Never generated, posted
-// or published; nothing moves it back but Restore (enqueue only repairs the
-// index of an item already queued, whatever its status).
+// or published; marked in the data (status "skipped", skippedFrom), never
+// deleted. The card has no Skipped tab any more: Restore is its 8-second Undo,
+// which puts the item back where it was (skippedFrom: New or Rejected), in its
+// place (the index value is its enqueuedAt; the order is the pid key).
+// Nothing else moves it back (enqueue only repairs the index of an item
+// already queued, whatever its status).
 async function skip(db, { pids }, uid, nowMs) {
   const list = pidList(pids);
   const done = [];
@@ -352,7 +389,7 @@ async function skip(db, { pids }, uid, nowMs) {
       from: ["new", "rejected"], to: "skipped", at: nowMs, uid,
       decision: () => ({ action: "skip" }),
       extra: () => ({ [`requests/${pid}`]: null }),
-      fields: () => ({ skippedAt: nowMs, skippedBy: uid || "unknown", generateRequest: null }),
+      fields: (cur) => ({ skippedAt: nowMs, skippedBy: uid || "unknown", skippedFrom: cur.status, generateRequest: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
     done.push(pid);
@@ -365,10 +402,13 @@ async function restore(db, { pids }, uid, nowMs) {
   const done = [];
   const skipped = [];
   await inBatches(list, 10, async (pid) => {
+    // Back to the lane it was skipped from (an older skip, with no
+    // skippedFrom, came from New). The move itself still checks "skipped".
+    const was = await val(db, `${core.ITEMS}/${pid}/skippedFrom`);
     const r = await moveOne(db, pid, {
-      from: "skipped", to: "new", at: nowMs, uid,
+      from: "skipped", to: was === "rejected" ? "rejected" : "new", at: nowMs, uid,
       decision: () => ({ action: "restore" }),
-      fields: () => ({ skippedAt: null, skippedBy: null }),
+      fields: () => ({ skippedAt: null, skippedBy: null, skippedFrom: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
     done.push(pid);

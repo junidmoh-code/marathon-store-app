@@ -4,14 +4,15 @@
 import { httpsCallable } from "firebase/functions";
 import { functions, database } from "../../firebase";
 import { ref, get } from "firebase/database";
-import { saveMissingPrice } from "../admin/missingPriceSave";
+import { saveProductPrices } from "../admin/productPriceSave";
 
 const call = (name) => async (data) => (await httpsCallable(functions, name)(data)).data;
 
 export const newArrivalsApi = {
-  // One page of a tab: { items, total, nextCursor, tabCounts, stats, modes, matchingPids? }.
-  list: (tab, { cursor = null, limit = 30, filter = null } = {}) =>
-    call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(filter ? { filter } : {}) }),
+  // One page of a tab, within one group (Sneakers / Clothing) on New, Ready
+  // and Rejected: { items, total, nextCursor, tabCounts, groupCounts, stats, modes, matchingPids? }.
+  list: (tab, { cursor = null, limit = 30, group = null } = {}) =>
+    call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(group ? { group } : {}) }),
   approve: (pids, { anyway = false } = {}) => call("newArrivalsApprove")({ pids, ...(anyway ? { anyway: true } : {}) }),
   approveAll: () => call("newArrivalsApprove")({ all: true }),
   retry: (pid) => call("newArrivalsRetry")({ pid }),
@@ -19,13 +20,19 @@ export const newArrivalsApi = {
   skip: (pids) => call("newArrivalsSkip")({ pids }),
   restore: (pids) => call("newArrivalsRestore")({ pids }),
   reject: (pid, reason) => call("newArrivalsReject")({ pid, reason }),
-  // The Admin › Missing prices save — the same code path, no new write path.
-  // The card's list can be up to 30s old: the prices are re-read first, so a
-  // price set elsewhere meanwhile is seen as present and never overwritten.
-  // Stock price ONLY (the groups' price); retail stays Shopify's business.
-  savePrice: async (pid, product, costDraft, opts = {}) => {
+  // THE admin price save (admin/productPriceSave.saveProductPrices — the one
+  // the product page, the Marketing card and Missing prices use): the product's
+  // REAL stockPrice / retailPrice through applyPriceBatch "single_edit", so
+  // price history, POS and the Shopify price sync behave as for an admin edit.
+  // `drafts` holds only the fields Junid changed. The card's list can be up to
+  // 30s old: the current prices are re-read (two keyed scalars) first, so the
+  // audit's `from` is the live value and a field he did not touch is never
+  // written. → { ok, count } | { ok: false, error, needsConfirm? }.
+  savePrices: async (pid, product, rawDrafts, opts = {}) => {
+    // On the card an EMPTY field means "leave it" — never "clear the real price".
+    const drafts = Object.fromEntries(Object.entries(rawDrafts || {}).filter(([, v]) => String(v ?? "").trim() !== ""));
     const [stock, retail] = await Promise.all(["stockPrice", "retailPrice"].map((f) => get(ref(database, `products/${pid}/${f}`)).then((s) => s.val())));
-    const fresh = { ...product, id: pid, stockPrice: stock, retailPrice: retail };
-    return saveMissingPrice(fresh, costDraft, "", { label: `New Arrivals: ${product?.name || pid}`, costOnly: true, ...opts });
+    const live = { ...product, id: pid, name: product?.name || "", stockPrice: stock, retailPrice: retail };
+    return saveProductPrices(live, drafts, { label: `New Arrivals: ${product?.name || pid}`, ...opts });
   },
 };

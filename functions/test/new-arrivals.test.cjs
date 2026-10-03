@@ -290,6 +290,66 @@ test("class + filter mapping", () => {
   assert.equal(core.normalizeFilter({ cls: "bogus" }), null);
 });
 
+test("groupOf: exactly two groups — all footwear is Sneakers; everything else and uncategorised is Clothing", () => {
+  for (const k of ["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes", "sandals"]) {
+    assert.equal(core.groupOf({ categoryKey: k }), "sneakers", k);
+  }
+  for (const k of ["t-shirts", "hoodies", "tracksuits", "underwear", "caps", "bags", "perfume"]) {
+    assert.equal(core.groupOf({ categoryKey: k }), "clothing", k);
+  }
+  // No categoryKey: the legacy category decides, and only "Footwear" is footwear.
+  assert.equal(core.groupOf({ category: "Footwear" }), "sneakers");
+  for (const c of ["Clothing", "Accessories", "Perfume", undefined]) assert.equal(core.groupOf({ category: c }), "clothing");
+  assert.equal(core.groupOf({}), "clothing");
+  assert.equal(core.groupOf(null), "clothing");
+  // A known garment key wins over a stray legacy category.
+  assert.equal(core.groupOf({ categoryKey: "hoodies", category: "Footwear" }), "clothing");
+  // An unknown key with a Footwear legacy category is clearly footwear.
+  assert.equal(core.groupOf({ categoryKey: "mystery", category: "Footwear" }), "sneakers");
+  assert.deepEqual(core.GROUPS, ["sneakers", "clothing"]);
+  assert.equal(core.normalizeGroup("slides"), null);
+});
+
+test("list by group: the page, total and select-all come from the group; groupCounts carry both", async () => {
+  const keys = ["sneakers", "t-shirts", "slides", null, "tracksuits", "boots", "caps"];
+  const cats = [undefined, undefined, undefined, "Footwear", undefined, undefined, undefined];
+  const db = lane(7, { product: (i) => ({ categoryKey: keys[i], ...(cats[i] ? { category: cats[i] } : {}) }) });
+  const ids = (o) => o.items.map((i) => i.pid);
+  const sn = await na.listTab(db, "new", { group: "sneakers" });
+  assert.deepEqual(ids(sn), [pid(0), pid(2), pid(3), pid(5)]);
+  assert.equal(sn.total, 4);
+  assert.deepEqual(sn.groupCounts, { sneakers: 4, clothing: 3 });
+  assert.deepEqual(sn.matchingPids, [pid(0), pid(2), pid(3), pid(5)]);
+  assert.equal(sn.group, "sneakers");
+  const cl = await na.listTab(db, "new", { group: "clothing" });
+  assert.deepEqual(ids(cl), [pid(1), pid(4), pid(6)]);
+  // Pages within the group by cursor.
+  const p1 = await na.listTab(db, "new", { group: "sneakers", limit: 3 });
+  assert.deepEqual(ids(p1), [pid(0), pid(2), pid(3)]);
+  assert.equal(p1.nextCursor, pid(3));
+  const p2 = await na.listTab(db, "new", { group: "sneakers", limit: 3, cursor: p1.nextCursor });
+  assert.deepEqual(ids(p2), [pid(5)]);
+  assert.equal(p2.nextCursor, null);
+  // No group (Done, or an unknown name): the whole tab, no groupCounts.
+  const whole = await na.listTab(db, "new", { group: "bogus" });
+  assert.equal(whole.total, 7);
+  assert.equal(whole.groupCounts, null);
+});
+
+test("list by group: Ready and Rejected split too; 30 a page within the group", async () => {
+  const db = lane(70, { status: "ready", product: (i) => ({ categoryKey: i % 2 ? "hoodies" : "sneakers" }) });
+  const p1 = await na.listTab(db, "ready", { group: "sneakers" });
+  assert.equal(p1.items.length, 30);
+  assert.equal(p1.total, 35);
+  assert.deepEqual(p1.groupCounts, { sneakers: 35, clothing: 35 });
+  assert.ok(p1.items.every((i) => i.product.categoryKey === "sneakers"));
+  const p2 = await na.listTab(db, "ready", { group: "sneakers", cursor: p1.nextCursor });
+  assert.equal(p2.items.length, 5);
+  assert.equal(p2.nextCursor, null);
+  // Done is never grouped.
+  assert.equal((await na.listTab(db, "done", { group: "sneakers" })).groupCounts, null);
+});
+
 test("list returns stats and modes for the header", async () => {
   const stats = { updatedAt: 1, agreement: { footwear: { pct: 83, n: 30, window: 30 } } };
   const db = lane(1, { extra: { new_arrivals: { stats, config: { mode: { footwear: "auto" } } } } });
@@ -305,6 +365,7 @@ test("skip: New/Rejected → Skipped with a decision; restore brings it back; en
   const it = (await db.ref(`${core.ITEMS}/${pid(0)}`).once()).val();
   assert.equal(it.status, "skipped");
   assert.equal(it.skippedBy, "junid");
+  assert.equal(it.skippedFrom, "new");
   assert.equal("generateRequest" in it, false, "a skipped item is never generated");
   assert.equal((await db.ref(`${core.BY_STATUS}/skipped/${pid(0)}`).once()).val(), NOW);
   assert.equal((await db.ref(`${core.BY_STATUS}/new/${pid(0)}`).once()).val(), null);
@@ -325,6 +386,31 @@ test("skip: New/Rejected → Skipped with a decision; restore brings it back; en
   assert.equal(d[0].class, "footwear");
   assert.equal(d[0].categoryKey, "sneakers");
   assert.equal(d[0].gen, undefined, "no generation → no snapshot (null is dropped)");
+});
+
+test("skip marks (never deletes) and records where from; the Undo (restore) puts a Rejected item back in Rejected, in its place", async () => {
+  const db = lane(3, { status: "rejected", item: () => ({ rejection: { code: "junid", reason: "framing", at: 1 }, generatedUrl: "https://x/g.jpg" }) });
+  const out = await na.skip(db, { pids: [pid(1)] }, "junid", NOW + 50);
+  assert.deepEqual(out.skippedPids, [pid(1)]);
+  const it = (await db.ref(`${core.ITEMS}/${pid(1)}`).once()).val();
+  assert.equal(it.status, "skipped");
+  assert.equal(it.skippedFrom, "rejected");
+  assert.equal(it.name, "item 1", "the record is kept whole");
+  assert.equal((await na.listTab(db, "rejected", {})).total, 2);
+  const r = await na.restore(db, { pids: [pid(1)] }, "junid", NOW + 55);
+  assert.deepEqual(r.restored, [pid(1)]);
+  const back = (await db.ref(`${core.ITEMS}/${pid(1)}`).once()).val();
+  assert.equal(back.status, "rejected");
+  assert.equal(back.rejection.reason, "framing");
+  assert.equal("skippedFrom" in back, false);
+  assert.equal((await db.ref(`${core.BY_STATUS}/rejected/${pid(1)}`).once()).val(), NOW + 1, "index value = its enqueuedAt");
+  assert.deepEqual((await na.listTab(db, "rejected", {})).items.map((i) => i.pid), [pid(0), pid(1), pid(2)], "back in its place");
+  // An older skip (no skippedFrom) goes back to New.
+  await db.ref(`${core.ITEMS}/${pid(2)}`).update({ status: "skipped" });
+  await db.ref(`${core.BY_STATUS}/rejected/${pid(2)}`).set(null);
+  await db.ref(`${core.BY_STATUS}/skipped/${pid(2)}`).set(NOW + 2);
+  await na.restore(db, { pids: [pid(2)] }, "junid", NOW + 56);
+  assert.equal((await db.ref(`${core.ITEMS}/${pid(2)}/status`).once()).val(), "new");
 });
 
 test("skip refuses Ready and Generating", async () => {

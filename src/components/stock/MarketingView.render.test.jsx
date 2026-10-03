@@ -28,6 +28,7 @@ const getPath = (p) => {
 
 const failGets = new Set(); // paths whose one-shot get() rejects (missing rule)
 const subscribers = {}; // path → [cb] — lets tests push live specials updates
+const updates = []; // every multi-path update() the view writes
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path: path || "" }),
   child: (node, path) => ({ path: node.path ? `${node.path}/${path}` : path }),
@@ -41,7 +42,7 @@ vi.mock("firebase/database", () => ({
     : Promise.resolve({ val: () => getPath(r.path), exists: () => getPath(r.path) != null }),
   set: () => Promise.resolve(),
   remove: () => Promise.resolve(),
-  update: () => Promise.resolve(),
+  update: (_r, paths) => { updates.push(paths); return Promise.resolve(); },
   query: (r) => r,
   orderByKey: () => "orderByKey",
   limitToLast: () => "limitToLast",
@@ -149,4 +150,21 @@ test("per-tile edit surfaces the fail-open bypass — a silent unguarded save is
   expect(text).toContain("could not read /specials"); // the bypass is named
   expect(text).toContain("on-special guard cannot read /specials"); // standing banner armed
   failGets.delete("specials");
+});
+test("Edit price saves ONLY the field the operator changed — a price set elsewhere meanwhile is never overwritten (CodeRabbit)", async () => {
+  const tree = await render();
+  const edit = tree.root.findAllByType("button").find((b) => b.children.some((c) => typeof c === "string" && c.includes("Edit price")));
+  await act(async () => { edit.props.onClick(); });
+  // Another session sets p1's stock price while the modal is open.
+  PRODUCTS[0].stockPrice = 260;
+  const retail = tree.root.findAllByType("input").find((i) => i.props["aria-label"] === "Retail price");
+  await act(async () => { retail.props.onChange({ target: { value: "500" } }); });
+  updates.length = 0;
+  const saveBtn = tree.root.findAllByType("button").find((b) => b.children.some((c) => typeof c === "string" && c === "Save"));
+  await act(async () => { await saveBtn.props.onClick(); });
+  await flush();
+  const written = Object.keys(Object.assign({}, ...updates));
+  expect(written.some((k) => k.endsWith("p1/retailPrice"))).toBe(true);
+  expect(written.some((k) => k.endsWith("p1/stockPrice"))).toBe(false);
+  PRODUCTS[0].stockPrice = 200;
 });
