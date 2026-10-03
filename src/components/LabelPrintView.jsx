@@ -123,7 +123,7 @@ export default function LabelPrintView({ products = [], onExit }) {
       const res = await printLabels({ items, transport, conn });
       if (res.ok && res.unconfirmed) {
         // A print dialog was shown — it may have been cancelled. Keep the queue.
-        flash("ok", `Sent ${items.reduce((s, i) => s + i.count, 0)} label(s) to ${res.routeLabel} — the queue is kept until you clear it.`);
+        flash("ok", `Sent ${items.reduce((s, i) => s + i.count, 0)} label(s) to ${res.routeLabel}${skipped.length ? ` · ${skipped.length} skipped (no barcode)` : ""} — the queue is kept until you clear it.`);
       } else if (res.ok) {
         const n = items.reduce((s, i) => s + i.count, 0);
         flash("ok", `Printed ${n} label${n !== 1 ? "s" : ""}${res.routeLabel ? ` · ${res.routeLabel}` : ""}${skipped.length ? ` · ${skipped.length} skipped (no barcode)` : ""}`);
