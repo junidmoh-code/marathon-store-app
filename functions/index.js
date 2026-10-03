@@ -5226,7 +5226,7 @@ exports.socialDailyAutopilot = onSchedule(
   },
   async () => {
     if (!SOCIAL_AUTOPILOT_ENABLED) {
-      console.log("socialDailyAutopilot: disabled (SOCIAL_AUTOPILOT_ENABLED=false)");
+      console.log("socialDailyAutopilot: off (runs only when SOCIAL_AUTOPILOT_ENABLED=true)");
       return;
     }
 
