@@ -114,10 +114,11 @@ describe("batch selection — cap and eligibility", () => {
   it("batchSelectBlocker mirrors the publish gates and says why", () => {
     const node = { state: "awaiting", condition: CONDITIONS[0] };
     expect(batchSelectBlocker(node, "Low-top sneaker black", 1)).toBeNull();
-    expect(batchSelectBlocker({ state: "awaiting" }, "Low-top sneaker black", 1)).toMatch(/condition/);
+    // No condition gate any more — publishing grades Excellent itself (2026-10-03).
+    expect(batchSelectBlocker({ state: "awaiting" }, "Low-top sneaker black", 1)).toBeNull();
     expect(batchSelectBlocker(node, "", 1)).toMatch(/name/);
     expect(batchSelectBlocker(node, "Nike Air Force 1", 1)).toMatch(/name/); // trigger ⇒ not a valid name
-    expect(batchSelectBlocker(null, "Low-top sneaker black", 1)).toMatch(/condition/);
+    expect(batchSelectBlocker(null, "Low-top sneaker black", 1)).toBeNull();
     // imageless never ships — surfaced at selection, not as a blocked row
     // minutes after a script run
     expect(batchSelectBlocker(node, "Low-top sneaker black", 0)).toMatch(/photo/);
@@ -237,7 +238,7 @@ describe("isPublishableProduct — price records never reach the storefront", ()
 
   it("callers that pass no product keep the old three-argument behaviour", () => {
     expect(batchSelectBlocker(READY, "Slide brown", 1)).toBeNull();
-    expect(batchSelectBlocker({ state: "awaiting" }, "Slide brown", 1)).toBe("set a condition grade first");
+    expect(batchSelectBlocker({ state: "awaiting" }, "Slide brown", 1)).toBeNull(); // Excellent is set at publish
   });
 });
 

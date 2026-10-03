@@ -14,8 +14,8 @@ function world({ node, product = {}, stock = IN_STOCK, enabled = true, queue = {
     locations: { pe: {}, "marathon-pine": {} },
     products: { p1: { name: "Plain tee black", sizes: ["M"], photoUrl: PHOTO, ...product } },
     ...(node !== undefined ? { shopify_publish: { p1: node } } : {}),
-    stock,
-    [AUTOPUBLISH_QUEUE_PATH]: queue,
+    stock: structuredClone(stock), // a fresh copy: tests mutate it
+    [AUTOPUBLISH_QUEUE_PATH]: structuredClone(queue),
     config: { ...(enabled ? { shopifyAutoPublish: { enabled: true } } : {}), ...(hidden ? { shopifyReviewHidden: { p1: 1 } } : {}) },
   };
 }
@@ -116,6 +116,23 @@ describe("autoPublishOne", () => {
     expect(pub(f)).toBeUndefined();
   });
 
+  it("stock that drops below the bar DURING the run stops the publish step", async () => {
+    const f = fakeDb(world({ node: { state: "awaiting", cleanName: "Club Tee Plain" } }));
+    const orig = f.db.ref;
+    f.db.ref = (path) => {
+      const r = orig(path);
+      // The condition transaction runs between the two stock reads — a sale lands there.
+      if (path === "shopify_publish/p1" && r.transaction) {
+        const t = r.transaction;
+        r.transaction = async (u) => { const out = await t(u); f.store.stock.pe.p1.M.qty = 3; return out; };
+      }
+      return r;
+    };
+    const r = await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] });
+    expect(r.outcome).toBe("done");
+    expect(pub(f).desiredState).toBeUndefined();
+  });
+
   it("Pine units do not count toward the bar", async () => {
     const f = fakeDb(world({ node: undefined, stock: { pe: { p1: { M: { qty: 1 } } }, "marathon-pine": { p1: { M: { qty: 9 } } } } }));
     expect((await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] })).outcome).toBe("done");
@@ -132,8 +149,9 @@ describe("autoPublishOne", () => {
     // A brand-trigger name the lexicon refuses to clean on its own.
     const f = fakeDb(world({ node: undefined, product: { name: "Sneaker Bad Bunny x Indoor Benito" } }));
     const r = await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] });
-    if (r.outcome === "wait") expect(pub(f)?.desiredState).toBeUndefined();
-    else expect(r.outcome).toBe("published"); // the lexicon could clean it — also fine
+    // Waiting for a name, or left for a person — either way never published
+    // under a name the gate refuses; or the lexicon could clean it.
+    if (r.outcome !== "published") expect(pub(f)?.desiredState).toBeUndefined();
   });
 });
 
@@ -149,7 +167,7 @@ describe("drainAutoPublish", () => {
   it("publishes and empties the queue (the empty queue node disappears)", async () => {
     const f = fakeDb(world({ node: undefined }));
     const r = await drainAutoPublish(f.db, { now });
-    expect(r).toMatchObject({ enabled: true, published: 1 });
+    expect(r, JSON.stringify(r.results)).toMatchObject({ enabled: true, published: 1 });
     expect(f.store[AUTOPUBLISH_QUEUE_PATH]).toBeUndefined();
   });
 

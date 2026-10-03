@@ -18,6 +18,7 @@
 import { ref, child, get, runTransaction, query, orderByChild, equalTo, startAt, endAt, limitToFirst } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
+import { OFFERED_CONDITIONS } from "./shopifyPublishCore";
 import { APP_STORAGE_PREFIX, publishPhotoListProblem, precheck, approveNameMutator, applyProposalMutator,
          dismissProposalMutator, publishMutator, desiredStateMutator, photosMutator, conditionMutator } from "./publishMutators";
 
@@ -326,6 +327,14 @@ export async function dismissNameProposal(productId, node, seenProposedAt = null
 export async function publishProduct(productId, node, name, source = "manual") {
   const problem = precheck.publish(name);
   if (problem) return { ok: false, message: problem };
+  // EXCELLENT BY DEFAULT (owner, 2026-10-03: Excellent is the only grade). A
+  // product without it gets it first, through the same condition write the
+  // chip makes, so a publish never stops to ask for a grade.
+  if (node?.condition !== OFFERED_CONDITIONS[0]) {
+    const graded = await decide(productId, node, conditionMutator, { condition: OFFERED_CONDITIONS[0] });
+    if (!graded.ok) return graded;
+    node = graded.node;
+  }
   return decide(productId, node, publishMutator, { name, source });
 }
 

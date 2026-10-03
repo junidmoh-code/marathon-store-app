@@ -136,7 +136,13 @@ export async function autoPublishOne(db, pid, { now, locNames }) {
     node = res.node;
   }
 
-  // 3. Publish — the intent only; the reconciler does Shopify.
+  // 3. Publish — the intent only; the reconciler does Shopify. Stock and the
+  // hidden flag are read AGAIN first: a sale during steps 1–2 must not ship a
+  // product that has just dropped below the bar (CodeRabbit). The window left
+  // is one transaction wide; stock lives outside the node, so it cannot close.
+  const again = await judgeProduct(db, pid, locNames);
+  if (!again.inReview) return { outcome: "done", why: again.why };
+  if ((await db.ref(`${HIDDEN_PATH}/${pid}`).get()).val() != null) return { outcome: "done", why: "hidden" };
   const res = await decide(db, pid, node, publishMutator, { name: eff.name, source: eff.source }, ctx);
   if (!res.ok) return { outcome: "wait", why: res.message };
   return { outcome: "published", why: eff.name };

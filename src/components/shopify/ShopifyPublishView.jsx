@@ -17,7 +17,8 @@
 //                     products have been sitting unnoticed — 97 of them
 //                     switched off in August to be renamed and never put back
 //                     (docs/PUBLISH-AUTO-OFF.md).
-//   Suggested names — the vision-naming review lane, unchanged.
+//   (Suggested names was removed 2026-10-03 — the auto-publish agent applies
+//   AI names itself; see scripts/shopify/autoPublish.mjs.)
 //
 // The list is NAVIGATION (owner spec 2026-08-14): tapping a row opens that
 // product's own full page (ShopifyProductPage, hash route #shopify/{pid} —

@@ -689,7 +689,7 @@ test("page: the description preview is the EXACT pushed template, or the plain n
 const COND2 = "Excellent — no visible wear";
 const checkboxes = (tree) => tree.root.findAll((n) => n.type === "input" && n.props.type === "checkbox");
 
-test("batch: a condition-unset row cannot be selected and says why inline", async () => {
+test("batch: an UNGRADED row is selectable — publishing grades it Excellent (2026-10-03)", async () => {
   keys = new Set(["p2"]);
   bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", nameApprovedAt: 5, condition: COND };
   let tree;
@@ -701,13 +701,13 @@ test("batch: a condition-unset row cannot be selected and says why inline", asyn
   // any more — the whole catalogue is one list.
   expect(boxes.length).toBe(3);
   const disabled = boxes.filter((b) => b.props.disabled);
-  expect(disabled.length).toBe(2); // p1 and p3 have no condition — unselectable, not silently skipped
-  expect(texts(tree)).toContain("Can't batch-select");
-  expect(texts(tree)).toContain("set a condition grade first");
+  expect(disabled.length).toBe(0); // p1 and p3 have no condition — Excellent is set when they publish
+  expect(texts(tree)).not.toContain("set a condition grade first");
 });
 
 test("batch: select-all, the shared confirmation lists every cleaned name, confirm writes one intent per product", async () => {
   keys = new Set(["p1", "p2"]);
+  reviewHidden = new Set(["p3"]); // below the 4-unit bar — not in the list, so not in "select all"
   bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND };
   bodies.p2 = { state: "awaiting", cleanName: "Basic tee white", nameApprovedAt: 5, condition: COND2 };
   let tree;
@@ -947,6 +947,7 @@ test("the list's count drops with the row that went live", async () => {
 });
 
 test("batch → pending → confirmed: the selection empties and STAYS empty as the rows go live", async () => {
+  reviewHidden = new Set(["p3"]); // below the 4-unit bar — not in the list, so not in "select all"
   await withFakeTimers(async () => {
     keys = new Set(["p1", "p2"]);
     bodies = {
@@ -1302,6 +1303,7 @@ test("the Live filter cannot surface a price record either, even with a live nod
 });
 
 test("a selected product that stops being publishable leaves the selection", async () => {
+  reviewHidden = new Set(["p3"]); // below the 4-unit bar — not in the list, so not in "select all"
   // The prune effect reacts to productById, not only to node updates. Covers
   // the case the batch DIALOG already tolerated but the batch BAR did not: a
   // pid that has left the map still counted towards `selected.size` and still

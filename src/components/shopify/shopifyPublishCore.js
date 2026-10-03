@@ -135,7 +135,8 @@ export function batchSelectBlocker(node, effectiveName, photoCount, product) {
   // `product` is optional so an older two/three-arg caller still works — it
   // simply gets the pre-existing gates.
   if (product !== undefined && !isPublishableProduct(product)) return PRICE_RECORD_BLOCKER;
-  if (!canGoLive(node)) return "set a condition grade first";
+  // No condition gate: publishing sets Excellent itself (shopifyPublishStore
+  // publishProduct, 2026-10-03), so an ungraded row is selectable.
   if (!checkCleanName(effectiveName).ok) return "needs a valid cleaned name first";
   if (!(photoCount > 0)) return "needs at least one photo";
   return null;
