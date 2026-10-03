@@ -74,11 +74,19 @@ export function readiness(product, node) {
   if (!isPublishableProduct(product)) return { ready: false, outcome: "done", why: "not merchandise" };
   if (isOnOrGoingOn(node)) return { ready: false, outcome: "done", why: "already on or going on the storefront" };
   if (normalizedState(node) === "blocked") return { ready: false, outcome: "done", why: "blocked — needs a person" };
+  // Ever been on the website (state "live", now switched off) — a person took
+  // it off, or the reconciler did for a reason. "Don't touch anything that's
+  // live on the website": the agent only ever publishes products that have
+  // never been on it.
+  if (normalizedState(node) === "live" || node?.lastOff || node?.offLog) {
+    return { ready: false, outcome: "done", why: "has been on the website before — a person decides" };
+  }
   if (!(effectivePhotoList(product, node)?.photos?.length > 0)) return { ready: false, outcome: "wait", why: "no photo yet" };
   let name, source, viaProposal = false;
   if (isPendingProposal(node)) {
     const gate = proposalApplyBlocker(node);
-    if (!gate.ok) return { ready: false, outcome: "wait", why: `name suggestion refused: ${gate.reason}` };
+    // Left in the review list for a person (no endless retry).
+    if (!gate.ok) return { ready: false, outcome: "done", why: `name suggestion refused: ${gate.reason}` };
     name = String(node.nameProposal.name).trim(); source = "ai"; viaProposal = true;
   } else {
     const eff = effectiveNameFor(product, node);
@@ -86,7 +94,7 @@ export function readiness(product, node) {
     name = eff.name; source = eff.source;
   }
   const bad = precheck.publish(name);
-  if (bad) return { ready: false, outcome: "wait", why: `name not publishable: ${bad}` };
+  if (bad) return { ready: false, outcome: "done", why: `name not publishable: ${bad}` };
   return { ready: true, name, source, viaProposal };
 }
 
@@ -104,7 +112,8 @@ export async function autoPublishOne(db, pid, { now, locNames }) {
 
   // The stock bar is re-checked NOW, not trusted from when it was queued.
   const j = await judgeProduct(db, pid, locNames);
-  if (j.verdict !== "show") return { outcome: "done", why: j.why };
+  // A positive 4+ verdict only — "show" alone also covers "cannot be judged".
+  if (!j.inReview) return { outcome: "done", why: j.why };
   if ((await db.ref(`${HIDDEN_PATH}/${pid}`).get()).val() != null) return { outcome: "done", why: "hidden" };
 
   const ctx = { now: await now(), uid: AGENT_UID };

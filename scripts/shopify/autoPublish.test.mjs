@@ -43,7 +43,7 @@ describe("autoPublishOne", () => {
   it("a name the compliance gate refuses (brand word) is NEVER published — it waits", async () => {
     const f = fakeDb(world({ node: { state: "awaiting", cleanName: "Nike Club Tee" } }));
     const r = await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] });
-    expect(r.outcome).toBe("wait");
+    expect(r.outcome).toBe("done"); // left in the review list for a person
     expect(r.why).toMatch(/brand trigger/);
     expect(pub(f).desiredState).toBeUndefined();
   });
@@ -86,6 +86,21 @@ describe("autoPublishOne", () => {
     const r = await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] });
     expect(r.outcome).toBe("wait");
     expect(pub(f).condition).toBe("Good — light signs of wear"); // untouched
+  });
+
+  it("NEVER re-publishes a product that was on the website and switched off", async () => {
+    const off = { state: "live", liveState: "off", desiredState: "off", cleanName: "Club Tee Plain", condition: EXCELLENT };
+    const f = fakeDb(world({ node: off }));
+    const before = JSON.stringify(f.store.shopify_publish);
+    const r = await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] });
+    expect(r.outcome).toBe("done");
+    expect(JSON.stringify(f.store.shopify_publish)).toBe(before);
+  });
+
+  it("a record with no sizes (cannot be judged) is never published", async () => {
+    const f = fakeDb(world({ node: undefined, product: { sizes: null } }));
+    expect((await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] })).outcome).toBe("done");
+    expect(pub(f)).toBeUndefined();
   });
 
   it("leaves a BLOCKED product for a person", async () => {
