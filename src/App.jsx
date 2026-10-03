@@ -10595,11 +10595,20 @@ function AssistantView({ products, onExit, orders = [] }) {
   //     one against the named pair, a stricter test than the cell;
   //   • NOT perfume, bags and one-size accessories — their hub availability is
   //     not modelled anywhere on this screen, and refusing them on a cell they
-  //     may never have been booked into would block real sales.
+  //     may never have been booked into would block real sales;
+  //   • footwear ONLY where the grid gates it — Hub 1 and Hub 2, through
+  //     gatedSneakerHub, the same predicate the ✕ uses — so the sheet and the
+  //     tile can never disagree. NOT PINE'S HUB 3: on 2026-10-03 Hub 3's cells
+  //     held 7 footwear units across 343 products, while 94 of the 119 Pine
+  //     orders on /orders had been filled (ready or collected). Pine's
+  //     sneakers are picked from stock those cells do not record, so a Hub 3
+  //     cell check would refuse most of Pine's real sales. Which stock Pine
+  //     orders should be judged against is Junid's open question
+  //     (docs/ORDER-GRID-ZERO-STOCK.md), not something to guess here.
   const stockGuardedLine = (item) => {
     if (item.requestDisplayPartner || item.displayPairRequest === true) return false;
     if (item.productType === "clothing") return true;
-    return isFootwearProduct(item.product) && (item.product?.productType || "sneaker") !== "clothing";
+    return !!gatedSneakerHub(item.product, placedHubFor(item));
   };
   const placeOrders = async (bypassDestConfirm = false) => {
     if (!cart.length || !customerName || submitting) return;

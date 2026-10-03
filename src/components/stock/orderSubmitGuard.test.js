@@ -131,7 +131,9 @@ describe("submit-time stock guard — the edges", () => {
     const r = await findSubmitShortfall({ lines: [line("hub1", "7")], readCell: () => new Promise(() => {}), timeoutMs: 20 });
     expect(r).toMatchObject({ reason: "unreadable", error: "stock check timed out" });
   });
-  it("PINE: a Hub 3 line for a size Hub 3 holds none of is refused", async () => {
+  // The module is hub-agnostic: it judges whatever cells it is handed. The
+  // SCREEN never hands it a Pine footwear line (see "the guarded lines" below).
+  it("hub-agnostic: any hub's empty cell is refused when a caller asks", async () => {
     expect(await findSubmitShortfall({ lines: [line("hub3", "10")], readCell: reader(liveDb()) })).toMatchObject({ hub: "hub3", have: 0 });
   });
   it("reads ONE cell per distinct line — never a hub subtree", async () => {
@@ -167,5 +169,25 @@ describe("placeOrders wiring", () => {
   it("a refusal returns false and the desktop panel stays open on it", () => {
     expect(body).toMatch(/setSubmitRefusal\(submitShortfallMessage\([^)]*\)[^;]*;\s*return false;/);
     expect(APP).toContain("if ((await onPlaceOrder()) !== false) setCoOpen(false);");
+  });
+});
+
+// WHICH LINES ARE GUARDED — exactly the ones the grid gates. Pine's Hub 3 is
+// out: its cells do not record the stock Pine orders are filled from
+// (2026-10-03: 7 footwear units at Hub 3, 94 of 119 Pine orders filled).
+describe("the guarded lines are the grid's gated lines", async () => {
+  const { gatedSneakerHub } = await import("./availabilityCore");
+  const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+  it("footwear is guarded through gatedSneakerHub on the line's own placed hub", () => {
+    expect(APP).toContain("return !!gatedSneakerHub(item.product, placedHubFor(item));");
+  });
+  it("so Hub 1/Hub 2 shoes are guarded and a Pine (Hub 3) shoe is not", () => {
+    expect(gatedSneakerHub(SLIDE, "hub1")).toBe("hub1");
+    expect(gatedSneakerHub(SLIDE, "hub2")).toBe("hub2");
+    expect(gatedSneakerHub(SLIDE, "hub3")).toBe(null);
+  });
+  it("display partner requests and pulls are never guarded; clothing customer lines are", () => {
+    expect(APP).toContain("if (item.requestDisplayPartner || item.displayPairRequest === true) return false;");
+    expect(APP).toMatch(/const stockGuardedLine = \(item\) => \{[\s\S]{0,200}if \(item\.productType === "clothing"\) return true;/);
   });
 });

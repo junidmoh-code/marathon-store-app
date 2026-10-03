@@ -64,24 +64,53 @@ something the order screen does.
   stock check of any kind on submit** — whatever the grid let into the cart was
   written.
 
+## Hub 3 does not hold what fills Pine orders
+
+The obvious Pine fix — gate Pine's grid on Hub 3, the hub its orders go to —
+was built and **withdrawn** before shipping, on live evidence (3 Oct 2026,
+per-product reads of the 344 products with a `stock/hub3` row):
+
+* Hub 3's cells hold **7 footwear units in total** — 7 positive cells out of
+  854, across 343 footwear products.
+* Of the **119 Pine orders** on `/orders`, all routed to Hub 3: **48 collected,
+  46 ready**, 23 out of stock, 2 incoming. 94 of 119 were filled.
+
+So Pine footwear orders are being picked from stock that Hub 3's cells do not
+record (the Pine shop's own cells, `stock/marathon-pine`, do hold stock — e.g.
+this slide 8·7·8·8·2 for sizes 6–10). Gating on Hub 3 — in the grid or at
+submit — would have ✕'d and refused almost every Pine sneaker sale. Routing in
+code is unambiguous (Pine → Hub 3); **which stock a Pine order should be
+judged against is not**, so no model was invented. Grid and submit agree:
+neither gates a Pine footwear line, exactly as before.
+
 ## What changed
 
-1. **Grid:** footwear sizes sorted numerically on every size surface; Pine's
-   grid is now gated by Hub 3 — the hub its orders already go to — through the
-   same resolver as Hub 1/Hub 2 (no reroute: Hub 3 has no alternate).
-2. **Submit:** every footwear and clothing customer line re-reads the one cell
-   it will draw from (`stock/{hub}/{pid}/{size}`) inside `placeOrders`, before
-   anything is written. Zero, missing, cleared, short-for-the-cart, or an
-   unreadable cell → the sheet refuses with a message naming the size and hub;
-   the cart is left intact.
+1. **Grid:** sizes shown in numeric order on every Place Order size surface
+   (`orderSizesForDisplay`); zero, missing and cleared ("uncounted") cells pinned
+   as ✕ by test for the gated hubs.
+2. **Submit:** before anything is written, every stock-drawing line re-reads the
+   one cell it will draw from (`stock/{hub}/{pid}/{size}` — the same hub the
+   write uses) inside `placeOrders`. Zero, missing, cleared, negative, short for
+   the cart's own count, or unreadable (incl. a 10 s timeout) → the checkout is
+   refused on the sheet, the cart stays intact, nothing is placed. Guarded:
+   Hub 1/Hub 2 footwear (exactly the lines the grid gates) and clothing customer
+   lines (whose grid already reads the same CR-hub cell). Not guarded: Display
+   Partner requests, display-pair pulls (own pre-flight), perfume/bags/one-size
+   accessories, and Pine footwear (above).
+
+Had this guard existed, #148 would have been refused at 12:17 with "Diesel
+slide black size 10 is out of stock at Hub 1".
 
 ## Open questions for Junid
 
-* **Concrete** is not a shop the order screen knows (`SHOP_TO_UNIVERSE` has
-  marathon-pe, trophy, marathon-pine). If Concrete staff place orders, they
-  currently route as Central (Hub 1/Hub 2), not Hub 3. Not changed here —
-  that is a routing decision.
-* **Pine sneakers route to Hub 3**, but the topology says Hub 1 is the sneaker
-  hub. With the gate on, a Pine sneaker size Hub 3 has none of is now ✕ instead
-  of being ordered into Hub 3's queue and marked out of stock there. If Pine
-  sneaker orders should go to Hub 1, that is a routing change for you to call.
+1. **Pine footwear availability.** Pine orders go to Hub 3, but Hub 3's cells
+   hold almost none of the stock that fills them. If Pine orders are picked
+   from the Pine shop's own stock, say so and the grid and guard can read
+   Hub 3 + the Pine shop cells for Pine — that is what would have hidden the
+   slide's size 11 (none anywhere at Pine) and kept 6–10 (on Pine's floor).
+2. **Concrete** is not a shop the order screen knows (`SHOP_TO_UNIVERSE` has
+   marathon-pe, trophy, marathon-pine). Unknown shops route as Central
+   (Hub 1/Hub 2). Not changed — that is a routing decision.
+3. **#148** cannot be filled from any hub (size 10 is 0 at Hub 1, Hub 2, Hub 3
+   and Central); the only size-10 pairs are 2 on the Pine shop floor. It is
+   already marked Out of Stock and was left untouched.
