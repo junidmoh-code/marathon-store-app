@@ -51,9 +51,9 @@ const MUTATIONS = [
   { id: "M-UNTOUCHED-NUM", guard: "a sent tranche is touched", file: RULE,
     from: `return typeof rr.sentQty === "number" && !(rr.sentQty > 0);`, to: `return !(Number(rr.sentQty) > 0);`, nodeTests: RULE_TESTS },
   { id: "M-WD-UNTOUCHED", guard: "only an untouched open request is withdrawn", file: RULE,
-    from: `if (rr.status !== "open" || !requestUntouched(rr) || inFlight) return null;`, to: `if (rr.status !== "open" || inFlight) return null;`, nodeTests: RULE_TESTS },
+    from: `if (rr.status !== "open" || !requestUntouched(rr, nowMs) || inFlight) return null;`, to: `if (rr.status !== "open" || inFlight) return null;`, nodeTests: RULE_TESTS },
   { id: "M-WD-INFLIGHT", guard: "a mid-pick request is never withdrawn", file: RULE,
-    from: `if (rr.status !== "open" || !requestUntouched(rr) || inFlight) return null;`, to: `if (rr.status !== "open" || !requestUntouched(rr)) return null;`, nodeTests: RULE_TESTS },
+    from: `if (rr.status !== "open" || !requestUntouched(rr, nowMs) || inFlight) return null;`, to: `if (rr.status !== "open" || !requestUntouched(rr, nowMs)) return null;`, nodeTests: RULE_TESTS },
   // ── the engine ────────────────────────────────────────────────────────────
   { id: "M-ENG-RECONCILE", guard: "the reconcile withdraws a shop ← Central request the hub serves", file: ENGINE,
     from: `        if (hubServes) {\n          closes.push({`, to: `        if (false) {\n          closes.push({`, nodeTests: [...RULE_TESTS, ...FB_TESTS] },
