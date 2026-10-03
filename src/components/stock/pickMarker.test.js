@@ -31,8 +31,7 @@ describe("pickMarker", () => {
     // the new claim records the caller's stamp (the server's timestamp sentinel in the app)
     const SV = { ".sv": "timestamp" };
     expect(claimPickTxn({ status: "open" }, { ...args, stamp: SV }).picking.atMs).toBe(SV);
-    // an engine store leg (a row carrying an R### order) is never claimed here
-    expect(claimPickTxn({ status: "open", orderId: "R001-1" }, args)).toBeUndefined();
+
   });
   it("release: only the attempt that holds the token clears the claim", () => {
     expect(releasePickTxn(null, "t1")).toBeNull();

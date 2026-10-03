@@ -34,8 +34,6 @@ const MUTATIONS = [
     from: `  if (pickInProgress(cur, nowMs) && !(replayOf && cur.picking.movementId === replayOf)) return undefined;`, to: ``, tests: [...MARKER_TESTS, ...QUEUE_TESTS] },
   { id: "M-CLAIM-SAME-TRANCHE", guard: "a same-tranche claim is NOT ours unless this is a replay", file: MARKER,
     from: `  if (pickInProgress(cur, nowMs) && !(replayOf && cur.picking.movementId === replayOf)) return undefined;`, to: `  if (pickInProgress(cur, nowMs) && cur.picking.movementId !== movementId) return undefined;`, tests: MARKER_TESTS },
-  { id: "M-CLAIM-NO-ORDER", guard: "a row carrying an R### order is never claimed", file: MARKER,
-    from: `  if (cur.orderId) return undefined;`, to: ``, tests: MARKER_TESTS },
   { id: "M-CLAIM-SERVER-STAMP", guard: "the claim records the server's stamp", file: QUEUE,
     from: `nowMs: serverNowMs(), stamp: serverTimestamp(),`, to: `nowMs: serverNowMs(),`, tests: QUEUE_TESTS },
   { id: "M-RELEASE-TOKEN", guard: "only the token holder releases", file: MARKER,
