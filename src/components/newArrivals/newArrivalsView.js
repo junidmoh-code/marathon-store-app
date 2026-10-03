@@ -190,7 +190,10 @@ export function sizesText(sizes) {
 export function statusLine(item) {
   const s = item?.status;
   // Generation is Junid's call (calibration): nothing is generated until he taps Generate.
-  if (s === "new") return item?.generateRequest ? "Generate requested — the generator will take it shortly" : "Waiting — tap Generate when you want its photo";
+  // A failed generation is never retried on its own — the card says so and waits for a tap.
+  const failed = !item?.generateRequest && item?.lastAttempt?.failed === true
+    ? `Last photo failed: ${item.lastAttempt.reason || "tap Generate again"}` : null;
+  if (s === "new") return item?.generateRequest ? "Generate requested — the generator will take it shortly" : failed || "Waiting — tap Generate when you want its photo";
   if (s === "skipped") return "Skipped — not advertised";
   if (s === "generating") return "Generating the photo now…";
   if (s === "ready") return Number(item?.product?.stockPrice) > 0
@@ -200,7 +203,7 @@ export function statusLine(item) {
   if (s === "chaining" && item?.chain?.waiting?.for === "retail price") return "Shopify waits for a retail price — the groups are posted at the stock price meanwhile";
   if (s === "chaining") return chainProgress(item);
   if (s === "done") return item?.soldOutBeforePosting ? "Sold out before posting" : "Done";
-  if (s === "rejected") return rejectionText(item);
+  if (s === "rejected") return failed ? `${rejectionText(item)} · ${failed}` : rejectionText(item);
   return "";
 }
 

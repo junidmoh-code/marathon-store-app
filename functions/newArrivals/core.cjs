@@ -355,8 +355,13 @@ function selectRefusal(item, genId) {
   return null;
 }
 
-/** The item fields a pick sets (null = removed, as RTDB would). Pure. */
-function selectFields(gen, genId, at) {
+/**
+ * The item fields a pick sets (null = removed, as RTDB would). Pure.
+ * NOTHING POSTS WITHOUT JUNID'S APPROVAL OF THAT PHOTO (3 Oct): a pick on an
+ * item that was approved before (and later refused further down the line)
+ * clears the old approval — the new photo needs its own Approve.
+ */
+function selectFields(gen, genId, at, item = null) {
   const v = gen.verdict && typeof gen.verdict === "object" ? gen.verdict : null;
   const framing = gen.framingFlag === true || failedList(v).includes("framing");
   return {
@@ -365,6 +370,7 @@ function selectFields(gen, genId, at) {
     generatedPath: gen.path ? String(gen.path) : null,
     verdict: v ? JSON.parse(JSON.stringify({ ...v, at })) : null,
     framingFlag: framing ? true : null,
+    ...(item && item.approvedAt ? { approvedAt: null, approvedBy: null } : {}),
   };
 }
 

@@ -305,7 +305,7 @@ async function select(db, { pid, genId }, uid, nowMs) {
     out.refusal = null;
     prev = cur;
     if (cur.currentGen === genId && cur.generatedUrl === cur.generations[genId].url) { out.same = true; return undefined; }
-    const next = { ...cur, ...core.selectFields(cur.generations[genId], genId, nowMs) };
+    const next = { ...cur, ...core.selectFields(cur.generations[genId], genId, nowMs, cur) };
     for (const [k, v] of Object.entries(next)) if (v === null || v === undefined) delete next[k];
     return next;
   });

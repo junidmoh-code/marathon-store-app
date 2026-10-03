@@ -53,13 +53,12 @@ const META_MAX_INFRA_ATTEMPTS = parseInt(process.env.META_MAX_INFRA_ATTEMPTS, 10
 // functions:outboxInstantSend. No .env file exists today, so the default is
 // genuinely ON. (The other env flags above share this property.)
 const INSTANT_SEND_ENABLED   = process.env.INSTANT_SEND_ENABLED !== "false";
-// Kill switch for socialDailyAutopilot (default ON — see its own header for
-// why this is trusted to write "approved" unattended). Same convention as
-// the two switches above: a BUILD-TIME flag, not a live one — set
-// SOCIAL_AUTOPILOT_ENABLED=false in functions/.env and redeploy
-// functions:socialDailyAutopilot. The FASTEST stop, with no redeploy at all,
-// is pausing the Cloud Scheduler job itself from the GCP console.
-const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED !== "false";
+// Switch for socialDailyAutopilot — DEFAULT OFF (Junid, 3 Oct: no image is
+// generated without his tap, and nothing posts until he has approved it; the
+// autopilot generates unattended and writes its posts "approved" itself). The
+// generator stays; it runs only if SOCIAL_AUTOPILOT_ENABLED=true is set in
+// functions/.env and functions:socialDailyAutopilot is redeployed — Junid's call.
+const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED === "true";
 
 // Normalise a South African number to E.164: +27XXXXXXXXX. Returns null when
 // the input is not a recognisable SA mobile or a "+"-prefixed international
@@ -2771,6 +2770,12 @@ exports.generateProductPhotos = onCall(
     // needs neither. Fetch exactly the named records instead.
     let products, existing = {};
     const namedIds = resolveNamedIds(data, PHOTO_MAX_BATCH);
+    // NO UNATTENDED SWEEP (Junid, 3 Oct): photos are made only for products a
+    // person picked. A call naming no products used to scan the catalogue and
+    // generate the next N on its own — refused; the generator itself stays.
+    if (needsCatalogueScan(namedIds)) {
+      throw new HttpsError("invalid-argument", "Pick the products to generate — photos are only made for products you choose.");
+    }
     if (!needsCatalogueScan(namedIds)) {
       const snaps = await Promise.all(namedIds.map((id) => db.ref(`products/${id}`).once("value")));
       products = {};

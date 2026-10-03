@@ -44,6 +44,10 @@ describe("view helpers", () => {
   it("Approve only with a generated photo — never on an original", () => {
     expect(actionsFor(ready()).approve).toBe(true);
     expect(statusLine(ready())).toBe("Photo checked — waiting for your Approve");
+    // A failed generation is not retried: the card says so and waits for a tap.
+    const failedNew = { status: "new", lastAttempt: { failed: true, reason: "the photo service was busy — tap Generate again" } };
+    expect(statusLine(failedNew)).toBe("Last photo failed: the photo service was busy — tap Generate again");
+    expect(statusLine({ ...failedNew, generateRequest: 5 })).toMatch(/^Generate requested/);
     expect(actionsFor(ready()).approveEnabled).toBe(true);
     expect(actionsFor(ready({ generatedUrl: undefined })).approveEnabled).toBe(false);
     // No stock price → Approve still SHOWN on Ready, but disabled; the status line says what to do.
