@@ -75,6 +75,13 @@ const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
 
 const DIRTY_PATH = "shopify_inventory_dirty";
 
+// ── THE REVIEW LIST'S MARKER (docs/SHOPIFY-REVIEW-INSTOCK.md) ────────────────
+// A product NOT live on the storefront sits in the Shopify Publisher's review
+// list, and a product with no sellable stock must not. This marker tells the
+// Mac mini's reconcile tick (scripts/shopify/reviewStock.mjs) to re-judge one
+// product with the website's own arithmetic and hide or unhide it.
+const REVIEW_DIRTY_PATH = "shopify_review_stock_dirty";
+
 /** A cell is `{ qty, … }` from applyMovement; a bare number is tolerated for
  *  old data. Negatives are bookkeeping artefacts and are never sellable — the
  *  same clamp networkTotals applies. */
@@ -97,6 +104,23 @@ function sellableChanged(before, after) {
   const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
   for (const k of keys) {
     if (sellableQty((before || {})[k]) !== sellableQty((after || {})[k])) return true;
+  }
+  return false;
+}
+
+/**
+ * Did any size cell cross ZERO (sellable none ↔ some) between these two maps?
+ *
+ * The network total can only go between zero and non-zero if, at some
+ * location, some size cell does. So this is exact for the review list's
+ * question "does this product have ANY sellable unit?" — a crossing can never
+ * be missed — while a sale of one of three units, the common case, writes
+ * nothing.
+ */
+function sellableCrossedZero(before, after) {
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+  for (const k of keys) {
+    if ((sellableQty((before || {})[k]) > 0) !== (sellableQty((after || {})[k]) > 0)) return true;
   }
   return false;
 }
@@ -136,7 +160,16 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
   // online — tens of thousands of products — and the sweep's per-run cap would
   // then be spent clearing noise while a live product waited its turn.
   const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
-  if (!isLiveOn(node)) return { marked: false, why: "not live on the storefront" };
+  if (!isLiveOn(node)) {
+    // Not on the storefront, so in the review list: no inventory push, but the
+    // list may need to hide or show it. Only a zero crossing can change that.
+    if (!sellableCrossedZero(before, after)) {
+      return { marked: false, why: "not live on the storefront" };
+    }
+    await db.ref(`${REVIEW_DIRTY_PATH}/${pid}`).set(increment(1));
+    log(`shopify review stock marked: ${pid} (${loc})`);
+    return { marked: false, reviewMarked: true, why: "not live on the storefront" };
+  }
 
   await db.ref(`${DIRTY_PATH}/${pid}`).set(increment(1));
   log(`shopify inventory marked dirty: ${pid} (${loc})`);
@@ -145,6 +178,8 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
 
 module.exports = {
   DIRTY_PATH,
+  REVIEW_DIRTY_PATH,
+  sellableCrossedZero,
   UNSELLABLE_LOCATIONS,
   ONLINE_EXCLUDED_LOCATIONS,
   sellableQty,

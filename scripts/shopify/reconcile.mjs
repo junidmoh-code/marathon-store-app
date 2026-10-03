@@ -89,6 +89,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
 import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog } from "./inventorySync.mjs";
+import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
@@ -1431,6 +1432,42 @@ if (!ONLY) try {
   }
 } catch (e) {
   console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
+}
+
+// ── The review list's stock gate (docs/SHOPIFY-REVIEW-INSTOCK.md) ───────────
+// Hides products with no sellable stock from the Publisher's review list, and
+// shows them again when stock returns. It writes ONLY
+// /config/shopifyReviewHidden and its own markers: never /shopify_publish, never
+// Shopify. A quiet tick costs one read of an empty node. A failure never fails
+// the tick, because the markers survive and the next tick retries.
+if (!ONLY) try {
+  // Every product whose intent this tick applied is re-judged in this same
+  // sweep, because a state change is not a stock event:
+  //   · taken OFF → it re-enters the review list. With no sellable stock it
+  //     must be hidden, and no /stock event would ever mark it.
+  //   · put ON → any old hidden entry is removed ("show"). Otherwise stock
+  //     that arrives while the product is live, which writes only the
+  //     inventory marker, would leave it wrongly hidden the day it goes off
+  //     again.
+  // It is marked whatever the apply's outcome. The verdict reads the node as
+  // it now is.
+  for (const { pid } of capped) {
+    await db.ref(`${REVIEW_DIRTY_PATH}/${pid}`).set(admin.database.ServerValue.increment(1));
+  }
+  const rv = await sweepReviewStock(db, {
+    commit: true,
+    timestamp: admin.database.ServerValue.TIMESTAMP,
+    log: (line) => console.error(line),
+  });
+  if (rv.seen) {
+    console.log(
+      `\nreview stock: ${rv.seen} marker(s) · ${rv.hidden} hidden · ${rv.shown} back in review · ${rv.cleared} cleared` +
+      (rv.kept ? ` · ${rv.kept} re-marked (next tick)` : "") +
+      (rv.failed ? ` · ${rv.failed} failed (kept)` : "")
+    );
+  }
+} catch (e) {
+  console.error(`  ⚠ review-stock sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
 }
 
 if (!ONLY && sweepDue && liveNow) {

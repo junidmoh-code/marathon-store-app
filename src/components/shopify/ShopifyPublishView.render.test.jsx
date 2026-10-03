@@ -48,6 +48,7 @@ globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => 
 const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [],
                 applyProposal: [], dismissProposal: [], proposalPages: [] };
 let keys = new Set();
+let reviewHidden = new Set();
 let pipeline = {};
 let bodies = {};
 let approveResult = { ok: true };
@@ -84,6 +85,8 @@ vi.mock("./shopifyPublishStore", () => ({
       node: { ...(node || {}), [NAME_PROPOSAL_KEY]: { ...proposal, status: "rejected" } } });
   },
   loadPublishKeys: () => Promise.resolve(keys),
+  // The real one never rejects (fail-open to an empty set); this mirrors it.
+  loadReviewHidden: () => Promise.resolve(reviewHidden),
   loadPipelineNodes: () => Promise.resolve(pipeline),
   loadNodesFor: (pids) => {
     calls.nodesFor.push([...pids]);
@@ -223,6 +226,7 @@ beforeEach(() => {
   hashListeners.clear();
   fakeWindow.scrollY = 0;
   keys = new Set();
+  reviewHidden = new Set();
   pipeline = {};
   bodies = {};
   approveResult = { ok: true };
@@ -268,6 +272,32 @@ test("mounts on Awaiting review as ONE flat list, with the catalogue as filter C
   // counts come from catalogue fields already in hand — the window asks for
   // the bodies of rows on screen and nothing else.
   expect(calls.nodesFor.length).toBe(0);
+});
+
+// ── NO SELLABLE STOCK ONLINE → HIDDEN FROM REVIEW (docs/SHOPIFY-REVIEW-INSTOCK.md)
+test("a product with no sellable stock is HIDDEN from Awaiting review, and the page says how many", async () => {
+  reviewHidden = new Set(["p1"]);
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  const out = texts(tree);
+  expect(out).not.toContain("Plain tee black");     // hidden
+  expect(out).toContain("Court sneaker grey");      // in stock — still there
+  expect(out).toContain("hidden");
+  expect(out).toMatch(/1 product with no sellable stock online is hidden/);
+  // Hidden is not gone: its product page still opens by address.
+  await act(() => { fakeWindow.location.hash = "shopify/p1"; });
+  await flush();
+  expect(texts(tree)).toContain("SHOPIFY PRODUCT");
+});
+
+test("with nothing hidden (or the hidden read failed → empty) every product is listed and no note shows", async () => {
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  const out = texts(tree);
+  expect(out).toContain("Plain tee black");
+  expect(out).not.toMatch(/no sellable stock online/);
 });
 
 test("the window fetches bodies for the rows on screen and no others; rows show the cleaned name read-only", async () => {
@@ -788,6 +818,17 @@ test("home badge counts only never-seen products — live and blocked are exclud
   await act(() => { create(<Probe />); });
   await flush();
   expect(seen).toBe(1); // only p2 has never been reviewed
+});
+
+test("home badge does not count a product hidden for having no sellable stock", async () => {
+  const { useShopifyAwaitingCount } = await import("./ShopifyPublishView.jsx");
+  keys = new Set(["p1", "p3"]);
+  reviewHidden = new Set(["p2"]); // the one never-seen product has no stock online
+  let seen = null;
+  function Probe() { seen = useShopifyAwaitingCount(PRODUCTS, true); return null; }
+  await act(() => { create(<Probe />); });
+  await flush();
+  expect(seen).toBe(0);
 });
 
 // ─── KEEPING UP WITH THE RECONCILER ──────────────────────────────────────────
