@@ -305,6 +305,16 @@ describe("the OS print route", () => {
     expect(m.getPrinterStatus().noPrinter).toBe(false);
   });
 
+  it("a getDevices() failure is not 'no printer allowed' — no picker", async () => {
+    usb.getDevices = async () => { throw new Error("USB service unavailable"); };
+    const m = await load();
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
+    expect(res.route).toBe("os");
+    expect(usb.requestDevice).not.toHaveBeenCalled();
+    expect(m.getPrinterStatus().noPrinter).toBe(false);
+    expect(m.printerStatusText(m.getPrinterStatus())).toContain("getDevices failed — USB service unavailable");
+  });
+
   it("the Choose button opens the picker before touching any device", async () => {
     const kbd = fakeDevice({ name: "USB Keyboard", configurations: [{ configurationValue: 1, interfaces: [
       { interfaceNumber: 0, alternates: [alt(0, 3, [ep("in", "interrupt", 1)])] }] }] });

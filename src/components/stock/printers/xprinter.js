@@ -231,7 +231,8 @@ export function findUsbPrinter(opts = {}) {
 // descriptors (an attempt carries the endpoint it tried, null when there was
 // none) — or nothing is permitted at all. A printer that fails at open or claim
 // still HAS an endpoint, so it never counts as "no printer".
-const noPrinterIn = (r) => !r.ok && r.attempts.every((a) => a.interfaceNumber == null);
+// A failed getDevices() is not evidence that no printer is allowed.
+const noPrinterIn = (r) => !r.ok && !r.error && r.attempts.every((a) => a.interfaceNumber == null);
 
 // The explicit "Choose USB printer" button. The picker opens FIRST, straight off
 // the tap (nothing awaited before it can use up the tap's activation); then the
