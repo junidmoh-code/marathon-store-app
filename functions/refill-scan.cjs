@@ -543,8 +543,9 @@ async function runScan() {
       db.ref("refill_engine/refusalWriteoffCursor").once("value").then((s) => s.val() || {}),
       // The location registry (~10 tiny rows): which ids are SHOPS, so the
       // shop-source rule (lib/shop-source-rule.cjs) never depends on a list in
-      // code. Unreadable → null, and the rule falls back to the route shape.
-      db.ref("locations").once("value").then((s) => s.val() || null).catch(() => null),
+      // code. A failed read fails the scan like every other read here — never
+      // a scan run with the registry silently missing.
+      db.ref("locations").once("value").then((s) => s.val() || null),
       db.ref("stock_movements").orderByChild("ts").startAt(windowStart).once("value"),
       ...locs.map((l) => db.ref(`stock/${l}`).once("value").then((s) => [l, s.val() || {}])),
     ]);
