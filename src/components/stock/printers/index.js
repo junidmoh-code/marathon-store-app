@@ -15,11 +15,11 @@
 // and on-screen barcode all work regardless of whether a printer is reachable.
 
 import { printPhomemo, printPhomemoTest, connectPhomemo, isPhomemoSupported } from "./phomemo";
-import { printXprinter, connectXprinter, isXprinterSupported, getXprinterDiag, startUsbPrinterWatch, findUsbPrinter } from "./xprinter";
+import { printXprinter, connectXprinter, isXprinterSupported, getXprinterDiag, startUsbPrinterWatch, findUsbPrinter, chooseUsbPrinter } from "./xprinter";
 import { printViaOs } from "./osPrint";
 import { setPrinterStatus } from "./printerStatus";
 
-export { getXprinterDiag, startUsbPrinterWatch, findUsbPrinter };
+export { getXprinterDiag, startUsbPrinterWatch, findUsbPrinter, chooseUsbPrinter };
 export { getPrinterStatus, subscribePrinterStatus, printerStatusText } from "./printerStatus";
 
 export const TRANSPORTS = [

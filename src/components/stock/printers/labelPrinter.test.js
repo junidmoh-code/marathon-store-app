@@ -265,6 +265,82 @@ describe("the OS print route", () => {
     expect(err.step).toBe("transferOut");
   });
 
+  it("offers the picker (printers only) when the only allowed device is a keyboard — the iMac case", async () => {
+    const kbd = fakeDevice({ name: "USB Keyboard", maker: "NT", vid: 0x1a86, pid: 0x5453, configurations: [{ configurationValue: 1, interfaces: [
+      { interfaceNumber: 0, alternates: [alt(0, 3, [ep("in", "interrupt", 1)])] }] }] });
+    const printer = fakeDevice({ name: "XP-350B" });
+    usb.devices = [kbd];
+    usb.requestDevice.mockImplementation(async () => { usb.devices = [kbd, printer]; return printer; });
+    const m = await load();
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
+    expect(usb.requestDevice).toHaveBeenCalledTimes(1);
+    const filters = usb.requestDevice.mock.calls[0][0].filters;
+    expect(filters).toEqual([{ classCode: 0x07 }, { classCode: 0xff }]);   // no HID: the keyboard can't be picked again
+    expect(res).toMatchObject({ ok: true, route: "usb" });
+    expect(printer.written).toHaveLength(1);
+    expect(doc.printed).toHaveLength(0);
+  });
+
+  it("a printer picked just now that macOS holds reads 'held', not 'no printer allowed'", async () => {
+    const kbd = fakeDevice({ name: "USB Keyboard", configurations: [{ configurationValue: 1, interfaces: [
+      { interfaceNumber: 0, alternates: [alt(0, 3, [ep("in", "interrupt", 1)])] }] }] });
+    const printer = fakeDevice({ name: "XP-350B", claim: "fail" });
+    usb.devices = [kbd];
+    usb.requestDevice.mockImplementation(async () => { usb.devices = [kbd, printer]; return printer; });
+    const m = await load();
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
+    expect(res.route).toBe("os");
+    const st = m.getPrinterStatus();
+    expect(st.noPrinter).toBe(false);
+    expect(st.detail).toBe("USB printer is held by the computer's print system");
+  });
+
+  it("a printer that fails to OPEN is still a printer — no picker", async () => {
+    const dev = fakeDevice();
+    dev.open = async () => { const e = new Error("Access denied."); e.name = "SecurityError"; throw e; };
+    usb.devices = [dev];
+    const m = await load();
+    await m.printLabels({ items: [ITEM], transport: "xprinter" });
+    expect(usb.requestDevice).not.toHaveBeenCalled();
+    expect(m.getPrinterStatus().noPrinter).toBe(false);
+  });
+
+  it("a getDevices() failure is not 'no printer allowed' — no picker", async () => {
+    usb.getDevices = async () => { throw new Error("USB service unavailable"); };
+    const m = await load();
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
+    expect(res.route).toBe("os");
+    expect(usb.requestDevice).not.toHaveBeenCalled();
+    expect(m.getPrinterStatus().noPrinter).toBe(false);
+    expect(m.printerStatusText(m.getPrinterStatus())).toContain("getDevices failed — USB service unavailable");
+  });
+
+  it("the Choose button opens the picker before touching any device", async () => {
+    const kbd = fakeDevice({ name: "USB Keyboard", configurations: [{ configurationValue: 1, interfaces: [
+      { interfaceNumber: 0, alternates: [alt(0, 3, [ep("in", "interrupt", 1)])] }] }] });
+    const printer = fakeDevice({ name: "XP-350B" });
+    usb.devices = [kbd];
+    usb.requestDevice.mockImplementation(async () => { expect(kbd.calls).toEqual([]); usb.devices = [kbd, printer]; return printer; });
+    const m = await load();
+    await m.chooseUsbPrinter();
+    expect(m.getPrinterStatus().state).toBe("usb");
+    expect(printer.calls).toContain("transferOut:1:0");
+    await m.chooseUsbPrinter({ showAll: true });
+    expect(usb.requestDevice.mock.calls[1][0].filters).toEqual([]);
+  });
+
+  it("a keyboard-only site whose picker is dismissed says why and keeps the button on offer", async () => {
+    usb.devices = [fakeDevice({ name: "USB Keyboard", configurations: [{ configurationValue: 1, interfaces: [
+      { interfaceNumber: 0, alternates: [alt(0, 3, [ep("in", "interrupt", 1)])] }] }] })];
+    const m = await load();
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter" });
+    expect(res.route).toBe("os");
+    const st = m.getPrinterStatus();
+    expect(st.noPrinter).toBe(true);
+    expect(st.detail).toBe("no USB printer allowed for this site yet");
+    expect(m.printerStatusText(st)).toContain("none of the USB devices allowed for this site is a printer");
+  });
+
   it("shows the picker only when no device is permitted, and only once per page load", async () => {
     usb.devices = [];
     const m = await load();
@@ -272,7 +348,7 @@ describe("the OS print route", () => {
     const b = await m.printLabels({ items: [ITEM], transport: "xprinter" });
     expect(usb.requestDevice).toHaveBeenCalledTimes(1);
     expect([a.route, b.route]).toEqual(["os", "os"]);
-    expect(m.getPrinterStatus().detail).toBe("no USB printer permitted");
+    expect(m.getPrinterStatus().detail).toBe("no USB printer allowed for this site yet");
 
     usb.devices = [fakeDevice({ claim: "fail" })];
     usb.requestDevice.mockClear();
