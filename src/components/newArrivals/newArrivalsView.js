@@ -80,21 +80,74 @@ export function generationsOf(item) {
     .sort((a, b) => (Number(b.at) || 0) - (Number(a.at) || 0) || (a.genId < b.genId ? 1 : -1));
 }
 
-export function costText(gen) {
+// COSTS (contract, 3 Oct card fixes): every Gemini call has a cost in rand.
+// A metered cost reads "R2.38"; a list-price estimate "~R2.41 (estimated)".
+// A generation with no cost recorded at all (before the poster's backfill)
+// is shown at the model's list price for one 2K image, estimated — never
+// "cost unknown".
+export const DEFAULT_ESTIMATE_PER_GENERATION_ZAR = 2.41;
+const num = (v) => (v === null || v === undefined || v === "" ? NaN : Number(v));
+const fin = (v) => Number.isFinite(num(v));
+/** The list-price estimate of one generation, in rand (stats, else the default). Pure. */
+export function estimatePerGenerationZar(stats) {
+  const e = num(stats?.estimatePerGenerationZar);
+  return Number.isFinite(e) && e > 0 ? e : DEFAULT_ESTIMATE_PER_GENERATION_ZAR;
+}
+/** One generation's cost: { zar, estimated }. Never unknown. Pure. */
+export function genCost(gen, stats) {
+  if (fin(gen?.costZar)) return { zar: num(gen.costZar), estimated: gen.costEstimated === true };
+  // Dollars only: converted at the generation's own rate, else today's (an estimate).
+  if (fin(gen?.costUsd)) {
+    const own = num(gen.usdZar);
+    const rate = Number.isFinite(own) && own > 0 ? own : num(stats?.usdZar);
+    if (Number.isFinite(rate) && rate > 0) return { zar: num(gen.costUsd) * rate, estimated: gen.costEstimated === true || !(own > 0) };
+  }
+  return { zar: estimatePerGenerationZar(stats), estimated: true };
+}
+const randText = ({ zar, estimated }) => (estimated ? `~R${zar.toFixed(2)} (estimated)` : `R${zar.toFixed(2)}`);
+
+export function costText(gen, stats = null) {
   // A RE-CHECK (a framing correction of an earlier photo — vision only, no new
   // generation) is labelled so; its few cents are never read as a photo's cost.
   const tag = gen?.derivedFrom ? "re-check, no new generation · " : "";
-  const zar = Number(gen?.costZar);
-  if (Number.isFinite(zar) && gen?.costZar != null) return `${tag}R${zar.toFixed(2)}`;
-  const usd = Number(gen?.costUsd);
-  if (Number.isFinite(usd) && gen?.costUsd != null) return `${tag}$${usd.toFixed(2)}`;
-  return `${tag}cost unknown`;
+  return `${tag}${randText(genCost(gen, stats))}`;
 }
 
-/** Sum of every generation's cost in rand (null when none is known). Pure. */
-export function totalCostZar(item) {
-  const known = generationsOf(item).map((g) => Number(g.costZar)).filter((n) => Number.isFinite(n));
-  return known.length ? known.reduce((a, b) => a + b, 0) : null;
+/** Every generation's cost, re-checks included: { zar, estimated } (null with none). Pure. */
+export function totalCost(item, stats = null) {
+  const gens = generationsOf(item);
+  if (!gens.length) return null;
+  const parts = gens.map((g) => genCost(g, stats));
+  return { zar: parts.reduce((a, p) => a + p.zar, 0), estimated: parts.some((p) => p.estimated) };
+}
+/** "R4.76 total", or "~R4.79 total" when any part is estimated. Pure. */
+export function totalCostText(item, stats = null) {
+  const t = totalCost(item, stats);
+  return t ? `${t.estimated ? "~" : ""}R${t.zar.toFixed(2)} total` : null;
+}
+/** Sum of every generation's cost in rand, estimates included (null when none). Pure. */
+export function totalCostZar(item, stats = null) {
+  const t = totalCost(item, stats);
+  return t ? t.zar : null;
+}
+
+/** The header's spend: every generation, re-check and other Gemini call. Pure. */
+export function spentText(stats) {
+  const total = num(stats?.totalSpentZar);
+  if (!Number.isFinite(total)) return "Spent so far —";
+  const est = num(stats?.estimatedPartZar);
+  return `Spent so far R${total.toFixed(2)}${Number.isFinite(est) && est > 0 ? ` (incl. ~R${est.toFixed(2)} estimated)` : ""}`;
+}
+
+/** Can Junid make this generation the main photo ("Use this one")? Pure. */
+export function canPick(item, gen) {
+  return (item?.status === "ready" || item?.status === "rejected") && !!gen?.url && gen.genId !== currentGenId(item);
+}
+/** The generation shown big: currentGen, else the newest. Pure. */
+export function currentGenId(item) {
+  const gens = generationsOf(item);
+  const cur = gens.find((g) => g.genId === item?.currentGen) || gens[0];
+  return cur ? cur.genId : null;
 }
 
 /** The checker's verdict as a label — it never blocks anything. Pure. */

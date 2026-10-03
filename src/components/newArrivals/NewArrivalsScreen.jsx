@@ -7,7 +7,9 @@
 // advertise — is one tap: the item leaves the list (marked "skipped" in the
 // data, never deleted, never generated, posted or published) and an 8-second
 // Undo toast can bring it back. There is no Skipped tab. Every action is
-// logged to the ledger by the callables. Every generation is shown, with its cost.
+// logged to the ledger by the callables. Every generation is shown, with its cost
+// (metered, or "~R… (estimated)" — never unknown); any of them can be made the
+// main photo with "Use this one" (logged as a pick).
 //
 // PRICES: every New / Ready / Rejected card has "Stock price (R)" and "Retail
 // price (R)", pre-filled, one Save — through the admin price save
@@ -32,7 +34,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
 import {
   TABS, REJECT_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
-  shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostZar, verdictText, stockText, agreementText, rejectRateText,
+  shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, verdictText, stockText, agreementText, rejectRateText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup,
 } from "./newArrivalsView";
 
@@ -81,40 +83,49 @@ function PriceFields({ item, busy, onSavePrices, needNote }) {
 }
 
 // EVERY generation, on every tab: the one shown big (currentGen, or the
-// newest), then every earlier attempt as a thumbnail — each with its cost and
-// the checker's label.
-function Generations({ item, tab }) {
+// newest) marked "Main photo", then every earlier attempt as a thumbnail —
+// each with its cost and the checker's label. On Ready and Rejected every
+// thumbnail (checker-failed ones and re-checks too) has "Use this one", which
+// makes it the main photo — Approve then uses it.
+function Generations({ item, tab, stats, busy, onPick }) {
   const gens = generationsOf(item);
-  const main = gens.find((g) => g.genId === item.currentGen) || gens[0] || null;
+  const mainId = currentGenId(item);
+  const main = gens.find((g) => g.genId === mainId) || null;
   const mainUrl = main?.url || item.generatedUrl || (tab === "done" ? item.product?.photoUrl : null);
   const earlier = gens.filter((g) => g !== main);
-  const total = totalCostZar(item);
+  const total = totalCostText(item, stats);
   return (
     <>
       <div style={{ display: "flex", gap: 8 }}>
         <Photo url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
-        {(mainUrl || tab !== "new" || gens.length > 0) && <Photo url={mainUrl} label={main ? `Generated · ${costText(main)}` : "Generated"} />}
+        {(mainUrl || tab !== "new" || gens.length > 0) && <Photo url={mainUrl} label={main ? `Generated${earlier.length ? " · Main photo" : ""} · ${costText(main, stats)}` : "Generated"} />}
       </div>
       {earlier.length > 0 && (
         <div data-testid="earlier-generations" style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 8 }}>
           {earlier.map((g) => (
-            <a key={g.genId} href={g.url} target="_blank" rel="noreferrer" style={{ flex: "0 0 72px", textDecoration: "none" }}>
-              <img src={g.url} alt={`Earlier attempt ${whenText(g.at)}`} loading="lazy" style={{ width: 72, height: 72, objectFit: "cover", borderRadius: 8, display: "block", background: "#111" }} />
-              <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g)}{g.verdict ? ` · ${g.verdict.pass ? "pass" : "failed"}` : ""}</div>
-            </a>
+            <div key={g.genId} data-gen={g.genId} style={{ flex: "0 0 84px" }}>
+              <a href={g.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
+                <img src={g.url} alt={`Earlier attempt ${whenText(g.at)}`} loading="lazy" style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, display: "block", background: "#111" }} />
+              </a>
+              <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g, stats)}{g.verdict ? ` · ${g.verdict.pass ? "pass" : "failed"}` : ""}</div>
+              {onPick && canPick(item, g) && (
+                <button disabled={busy} onClick={() => onPick(item.pid, g.genId)}
+                  style={{ ...bBlue, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy ? 0.5 : 1 }}>Use this one</button>
+              )}
+            </div>
           ))}
         </div>
       )}
       {gens.length > 0 && (
-        <div style={{ color: GRAY, fontSize: 11, marginTop: 6 }}>
-          {gens.length} {gens.length === 1 ? "generation" : "generations"}{total !== null ? ` · R${total.toFixed(2)} total` : ""}
+        <div data-testid="gen-total" style={{ color: GRAY, fontSize: 11, marginTop: 6 }}>
+          {gens.length} {gens.length === 1 ? "generation" : "generations"}{total ? ` · ${total}` : ""}
         </div>
       )}
     </>
   );
 }
 
-function ItemCard({ item, tab, busy, selectable, selected, onToggle, h }) {
+function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats }) {
   const p = item.product || {};
   const acts = actionsFor(item);
   const statusColour = item.status === "rejected" ? RED : item.status === "ready" ? GREEN : item.status === "done" ? GREEN : AMBER;
@@ -129,7 +140,7 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h }) {
           Select
         </label>
       )}
-      <Generations item={item} tab={tab} />
+      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={(tab === "ready" || tab === "rejected") ? h.onPick : null} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
       {shopifyNameLine(item) && (
         <div style={{ color: item.suggestedName ? BLUE_L : GRAY, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>
@@ -358,6 +369,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
     onGenerate: (pids) => run(bulk((p) => api.generate(p), pids), (r) => `${n(r, "requested")} sent to the generator — results land in Ready.`),
     onRegenerate: (pid) => run(() => api.generate([pid], { regenerate: true }), (r) => (n(r, "requested") ? "A fresh attempt is requested — it lands in Ready." : "Nothing requested.")),
     onReject: (pid, reason) => run(() => api.reject(pid, reason), () => `Rejected: ${reason}.`),
+    // "Use this one": that generation becomes the main photo; Approve then uses it.
+    onPick: api.select ? (pid, genId) => run(() => api.select(pid, genId), (r) => (r?.unchanged ? "That photo is already the main one." : "Main photo changed — Approve uses this one.")) : null,
     onSkip,
   };
 
@@ -404,6 +417,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
       <div data-testid="agreement" style={{ color: GRAY, fontSize: 12, marginBottom: 12 }}>
         Agreement with you: {Object.entries(CLASS_LABELS).map(([cls, l]) => `${l} ${agreementText(stats, cls)}${data.modes?.[cls] === "auto" ? " (auto)" : ""}`).join(" · ")}
         <div data-testid="reject-rate" style={{ marginTop: 2 }}>{rejectRateText(stats)}</div>
+        <div data-testid="spent" style={{ marginTop: 2 }}>{spentText(stats)}</div>
       </div>
       <div role="tablist" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {TABS.map((t) => (
@@ -443,7 +457,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
         </div>
       )}
       {items && items.map((it) => (
-        <ItemCard key={it.pid} item={it} tab={tab} busy={busy} selectable={selectable} selected={selected.has(it.pid)} onToggle={toggle} h={h} />
+        <ItemCard key={it.pid} item={it} tab={tab} busy={busy} selectable={selectable} selected={selected.has(it.pid)} onToggle={toggle} h={h} stats={stats} />
       ))}
       {items && data.nextCursor && (
         <button disabled={loadingMore} onClick={loadMore} style={{ ...bGray, width: "100%", opacity: loadingMore ? 0.5 : 1 }}>

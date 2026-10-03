@@ -20,6 +20,8 @@ export const newArrivalsApi = {
   skip: (pids) => call("newArrivalsSkip")({ pids }),
   restore: (pids) => call("newArrivalsRestore")({ pids }),
   reject: (pid, reason) => call("newArrivalsReject")({ pid, reason }),
+  // "Use this one": make generation `genId` the item's main photo (lane kept).
+  select: (pid, genId) => call("newArrivalsSelect")({ pid, genId }),
   // THE admin price save (admin/productPriceSave.saveProductPrices — the one
   // the product page, the Marketing card and Missing prices use): the product's
   // REAL stockPrice / retailPrice through applyPriceBatch "single_edit", so
