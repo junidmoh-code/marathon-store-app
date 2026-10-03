@@ -176,7 +176,10 @@ export async function loadPublishKeys({ fresh = false } = {}) {
   return keys;
 }
 
-// The key list of one node, via the RTDB REST `?shallow=true` read.
+/**
+ * The key list of one node, via the RTDB REST `?shallow=true` read — keys
+ * only, no bodies, authenticated as the signed-in user. Rejects on failure.
+ */
 async function shallowKeys(path) {
   const user = auth.currentUser;
   if (!user) throw new Error("not signed in");
@@ -207,6 +210,10 @@ async function shallowKeys(path) {
 // it did before this existed.
 export const REVIEW_HIDDEN_PATH = "config/shopifyReviewHidden";
 let hiddenCache = null; // { keys: Set<pid>, at }
+/**
+ * Pids hidden from review for having no sellable stock online. Never rejects:
+ * a failed read answers an empty set, so nothing is hidden (fail-open).
+ */
 export async function loadReviewHidden({ fresh = false } = {}) {
   if (!fresh && hiddenCache && Date.now() - hiddenCache.at < KEYS_TTL_MS) return hiddenCache.keys;
   try {
