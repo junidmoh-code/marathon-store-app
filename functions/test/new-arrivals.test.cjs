@@ -149,6 +149,15 @@ test("paging: an item regenerated at the page boundary never makes the rest of i
   assert.deepEqual(p2.items.map((i) => i.pid), ["p1789999900002", "p1789999900003"], "the rest of the photo-ready bucket is still there");
 });
 
+test("list carries the poster's default method (full unless the poster published split)", async () => {
+  const db = seeded("new");
+  assert.equal((await na.listTab(db, "new")).defaultMethod, "full");
+  await db.ref("new_arrivals/config/defaultMethod").set("split");
+  assert.equal((await na.listTab(db, "new")).defaultMethod, "split");
+  await db.ref("new_arrivals/config/defaultMethod").set("bogus");
+  assert.equal((await na.listTab(db, "new")).defaultMethod, "full");
+});
+
 test("a redelivered enqueue repairs a missing index entry", async () => {
   const db = makeFakeDb({ new_arrivals: { items: { [PID]: { pid: PID, status: "ready", enqueuedAt: 7 } } } });
   // Even a delivery far outside the window repairs it.
@@ -947,4 +956,104 @@ test("regenerate keeps generatedUrl / currentGen / verdict / framingFlag; clears
   await na.generate(db2, { pids: [PID], regenerate: true }, "junid", NOW);
   assert.equal((await decisions(db2))[0].action, "regenerate");
   assert.equal((await db2.ref(`${core.ITEMS}/${PID}/generateRequest/regenerate`).once()).val(), true);
+});
+
+// ── how Gemini did it (newArrivalsHow) + per-item method (newArrivalsMethod) ──
+const GENLOG_REC = {
+  code: "G-0042", pid: PID, genId: "g1", method: "split",
+  thoughts: "First I isolated the shoe.\n\n  Then I kept the laces exactly.… (full text in the ledger)",
+  thoughtsLabel: "Gemini's own account — not proof",
+  drafts: [{ url: "https://firebasestorage.googleapis.com/v0/d1.jpg", path: "genlog/d1.jpg" }, { url: "https://firebasestorage.googleapis.com/v0/d2.jpg", path: "genlog/d2.jpg" }],
+  model: "gemini-3-pro-image", promptText: "SECRET PROMPT", promptSha: "abc", usage: { t: 1 }, inputs: [{ role: "source" }],
+};
+const howDb = async (rec = GENLOG_REC, genOver = {}) => {
+  const db = withGens("ready", { generations: { g1: { ...GEN, code: "G-0042", how: { code: "G-0042", draftCount: 2 }, method: "split", ...genOver }, g2: G2, g3: G3 } });
+  if (rec) await db.ref(`${core.GENLOG}/G-0042`).set(rec);
+  return db;
+};
+
+test("how: a draft that is not on our own storage is never shown", async () => {
+  const r = await na.how(await howDb({ code: "G-0042", thoughts: "t", drafts: [{ url: "https://evil.example/x.jpg" }, { url: "https://firebasestorage.googleapis.com/v0/ok.jpg" }] }), { pid: PID, genId: "g1" });
+  assert.deepEqual(r.drafts, [{ url: "https://firebasestorage.googleapis.com/v0/ok.jpg" }]);
+});
+
+test("how: returns ONLY code, method, thoughts (verbatim), label, drafts [{url}] and model — two keyed reads", async () => {
+  const db = await howDb();
+  const reads = [];
+  const ref = db.ref.bind(db);
+  db.ref = (path) => { reads.push(path); return ref(path); };
+  const out = await na.how(db, { pid: PID, genId: "g1" });
+  assert.deepEqual(out, {
+    code: "G-0042", method: "split", thoughts: GENLOG_REC.thoughts, thoughtsLabel: "Gemini's own account — not proof",
+    drafts: [{ url: "https://firebasestorage.googleapis.com/v0/d1.jpg" }, { url: "https://firebasestorage.googleapis.com/v0/d2.jpg" }], model: "gemini-3-pro-image",
+  });
+  assert.equal(JSON.stringify(out).includes("SECRET"), false, "never the prompt");
+  assert.deepEqual(reads, [`${core.ITEMS}/${PID}/generations/g1/code`, `${core.GENLOG}/G-0042`]);
+});
+
+test("how: an older generation (no code, or no genlog record) → none; an absent label gets the default", async () => {
+  const db = await howDb();
+  assert.deepEqual(await na.how(db, { pid: PID, genId: "g2" }), { code: null, none: true });
+  assert.deepEqual(await na.how(await howDb(null), { pid: PID, genId: "g1" }), { code: "G-0042", none: true });
+  const bare = await na.how(await howDb({ code: "G-0042", thoughts: "only this", drafts: { 0: { url: "https://firebasestorage.googleapis.com/v0/d.jpg" }, 1: { path: "no-url" } } }), { pid: PID, genId: "g1" });
+  assert.deepEqual(bare, { code: "G-0042", method: null, thoughts: "only this", thoughtsLabel: core.THOUGHTS_LABEL, drafts: [{ url: "https://firebasestorage.googleapis.com/v0/d.jpg" }], model: null });
+});
+
+test("how refuses bad ids and an unknown generation", async () => {
+  const db = await howDb();
+  await assert.rejects(na.how(db, { pid: "-Nx", genId: "g1" }), /Not a product id/);
+  await assert.rejects(na.how(db, { pid: PID, genId: "../x" }), /Not a generation id/);
+  await assert.rejects(na.how(db, { pid: PID, genId: "g9" }), /not on this item/);
+  await assert.rejects(na.how(makeFakeDb({}), { pid: PID, genId: "g1" }), /not on this item/);
+});
+
+test("method: set full / split, clear with null; only the method field changes; nothing logged", async () => {
+  const db = withGens("ready");
+  const before = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }), { ok: true, method: "full" });
+  let it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.method, "full");
+  const { method: _m, ...rest } = it;
+  assert.deepEqual(rest, before, "nothing else changes");
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }), { ok: true, method: "full", unchanged: true });
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "split" }), { ok: true, method: "split" });
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/method`).once()).val(), "split");
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: null }), { ok: true, method: null });
+  it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal("method" in it, false);
+  assert.deepEqual(await decisions(db), [], "a setting, not a decision");
+  for (const lane of ["new", "rejected"]) {
+    const d2 = withGens(lane);
+    assert.deepEqual(await na.setMethod(d2, { pid: PID, method: "full" }), { ok: true, method: "full" });
+  }
+});
+
+test("method is refused while a request is pending or generating, outside New, for bad input; nothing written", async () => {
+  const pending = withGens("new", { generateRequest: { at: NOW, by: "junid" } });
+  await assert.rejects(na.setMethod(pending, { pid: PID, method: "full" }), /being generated/);
+  assert.equal((await pending.ref(`${core.ITEMS}/${PID}/method`).once()).val(), null);
+  await assert.rejects(na.setMethod(withGens("generating"), { pid: PID, method: "full" }), /not new, ready or rejected/);
+  await assert.rejects(na.setMethod(withGens("approved"), { pid: PID, method: "full" }), /not new, ready or rejected/);
+  await assert.rejects(na.setMethod(withGens("ready"), { pid: PID, method: "gemini" }), /full, split or null/);
+  await assert.rejects(na.setMethod(withGens("ready"), { pid: "-Nx", method: "full" }), /Not a product id/);
+  await assert.rejects(na.setMethod(makeFakeDb({}), { pid: PID, method: "full" }), /not in the New Arrivals queue/);
+});
+
+test("list passes the item's method and each generation's how / method through to the card", async () => {
+  const db = withGens("ready", { method: "full", generations: { g1: { ...GEN, code: "G-0042", how: { code: "G-0042", draftCount: 2 }, method: "split", thoughts: "x" }, g2: { ...G2, method: "full" } } });
+  const out = await na.listTab(db, "new", { group: "sneakers" });
+  const it = out.items[0];
+  assert.equal(it.method, "full");
+  assert.deepEqual(it.generations.g1.how, { code: "G-0042", draftCount: 2 });
+  assert.equal(it.generations.g1.method, "split");
+  assert.equal(it.generations.g2.method, "full");
+  assert.equal("thoughts" in it.generations.g1, false);
+  for (const k of ["how", "method"]) assert.equal(core.CARD_GEN_OMIT.includes(k), false);
+});
+
+test("newArrivalsHow and newArrivalsMethod are exported from index and in the deploy-by-name list", () => {
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "index.js"), "utf8");
+  assert.match(src, /exports\.newArrivalsHow = na\.newArrivalsHow;/);
+  assert.match(src, /exports\.newArrivalsMethod = na\.newArrivalsMethod;/);
+  assert.match(src, /functions:newArrivalsLove,functions:newArrivalsHow,functions:newArrivalsMethod/);
 });

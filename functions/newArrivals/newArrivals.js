@@ -9,6 +9,8 @@
 // newArrivalsReject   a photo → lane rejected with one reason chip (still on the New tab).
 // newArrivalsSelect   "Use this one" — any generation becomes the main photo (lane kept).
 // newArrivalsLove     ❤ / un-❤ one generation (any lane; never moves or approves).
+// newArrivalsHow      "How Gemini did it" — one generation's genlog (thoughts + drafts), on demand.
+// newArrivalsMethod   per-item "Full Gemini" override (items/{pid}/method; a setting, not logged).
 // Every action Junid takes writes new_arrivals/decisions/{push}.
 //
 // The card never reads or writes /new_arrivals directly, so no database rule
@@ -17,7 +19,7 @@
 // (marathon-group-poster + scripts/newArrivals/chain.mjs).
 //
 // Deploy BY NAME, never a bare --only functions (DEPLOY-TRACKER.md):
-//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject,functions:newArrivalsSelect,functions:newArrivalsLove
+//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject,functions:newArrivalsSelect,functions:newArrivalsLove,functions:newArrivalsHow,functions:newArrivalsMethod
 "use strict";
 
 const { onValueCreated } = require("firebase-functions/v2/database");
@@ -269,10 +271,12 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
     return { ...core.cardItem(item), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
   })).filter(Boolean);
 
-  const [stats, modes] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`)]);
+  const [stats, modes, defaultMethod] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`), val(db, `${core.ROOT}/config/defaultMethod`)]);
   const out = {
     tab, items, total, nextCursor: cursorOut || (more && pageKeys.length ? pageKeys[pageKeys.length - 1] : null),
     tabCounts, stats: stats || null, modes: modes || {}, filter: f, group: g, groupCounts,
+    // The poster's default method (it publishes its config here): what an item with no override gets.
+    defaultMethod: core.METHODS.includes(defaultMethod) ? defaultMethod : "full",
   };
   // Every pid the tab's multi-select can act on — the whole group (or
   // filtered lane), not just the loaded page ("Select all" then "Skip selected").
@@ -404,6 +408,66 @@ async function love(db, { pid, genId, loved }, uid, nowMs) {
 const newArrivalsLove = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
   return love(admin.database(), request.data || {}, request.auth?.uid, Date.now());
+});
+
+// ── how Gemini did it ────────────────────────────────────────────────────────
+// The card's "How Gemini did it" toggle, opened on one generation: TWO keyed
+// reads — the scalar items/{pid}/generations/{genId}/code (plus the scalar
+// /url only when there is no code, to tell an older generation from an
+// unknown one), then genlog/{code}. Returns only what core.howView lets
+// through (never promptText); { code, none: true } when nothing was recorded.
+async function how(db, { pid, genId }) {
+  if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
+  if (!core.GEN_ID_RE.test(String(genId || ""))) throw new HttpsError("invalid-argument", "Not a generation id.");
+  const at = `${core.ITEMS}/${pid}/generations/${genId}`;
+  const raw = await val(db, `${at}/code`);
+  const code = typeof raw === "string" && raw.trim() ? raw.trim() : null;
+  if (!code) {
+    if (!await val(db, `${at}/url`)) throw new HttpsError("failed-precondition", "That generation is not on this item.");
+    return { code: null, none: true };
+  }
+  if (!core.CODE_RE.test(code)) return { code, none: true };
+  return core.howView(code, await val(db, `${core.GENLOG}/${code}`));
+}
+
+const newArrivalsHow = onCall(callableOpts, async (request) => {
+  await assertNewArrivalsAccess(request);
+  return how(admin.database(), request.data || {});
+});
+
+// ── per-item method ──────────────────────────────────────────────────────────
+// "Full Gemini" on one card: items/{pid}/method = "full" | "split", or removed
+// (null = the poster's configured default). A transaction on the item, so it
+// is refused while a new photo is being generated (core.methodRefusal) and a
+// concurrent Generate is never overwritten. Only the method field changes; it
+// is a setting, so nothing is logged to decisions.
+async function setMethod(db, { pid, method }) {
+  if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
+  if (method !== null && method !== undefined && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full, split or null.");
+  pid = String(pid);
+  const want = method || null;
+  const out = {};
+  const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
+    out.same = false;
+    // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
+    if (!cur) { out.refusal = "not in the New Arrivals queue"; return null; }
+    const why = core.methodRefusal(cur);
+    if (why) { out.refusal = why; return undefined; }
+    out.refusal = null;
+    if ((cur.method || null) === want) { out.same = true; return undefined; }
+    const next = { ...cur, method: want };
+    if (!want) delete next.method;
+    return next;
+  });
+  if (out.same) return { ok: true, method: want, unchanged: true };
+  const item = res && res.committed && res.snapshot && res.snapshot.val();
+  if (!item || out.refusal || (item.method || null) !== want) throw new HttpsError("failed-precondition", `Can't change the method — ${out.refusal || "not saved"}.`);
+  return { ok: true, method: want };
+}
+
+const newArrivalsMethod = onCall(callableOpts, async (request) => {
+  await assertNewArrivalsAccess(request);
+  return setMethod(admin.database(), request.data || {});
 });
 
 const MAX_PIDS = 300;
@@ -620,6 +684,7 @@ const newArrivalsRetry = onCall(callableOpts, async (request) => {
 module.exports = {
   newArrivalsEnqueue, newArrivalsList, newArrivalsApprove, newArrivalsRetry,
   newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect, newArrivalsLove,
+  newArrivalsHow, newArrivalsMethod,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, assertNewArrivalsAccess },
+  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, assertNewArrivalsAccess },
 };

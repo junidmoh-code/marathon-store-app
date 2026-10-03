@@ -28,6 +28,11 @@ export const newArrivalsApi = {
   // ❤ / un-❤ one generation (the learning log's strongest positive). Never
   // moves or approves the item.
   love: (pid, genId, loved) => call("newArrivalsLove")({ pid, genId, loved: loved === true }),
+  // "How Gemini did it" for one generation, loaded only when Junid opens it:
+  // { code, method, thoughts, thoughtsLabel, drafts: [{ url }], model } or { code, none: true }.
+  how: (pid, genId) => call("newArrivalsHow")({ pid, genId }),
+  // The per-item method override: "full" | "split" | null (null = the poster's default).
+  method: (pid, method) => call("newArrivalsMethod")({ pid, method: method === "full" || method === "split" ? method : null }),
   // THE admin price save (admin/productPriceSave.saveProductPrices — the one
   // the product page, the Marketing card and Missing prices use): the product's
   // REAL stockPrice / retailPrice through applyPriceBatch "single_edit", so
