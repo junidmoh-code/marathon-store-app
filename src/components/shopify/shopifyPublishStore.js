@@ -171,6 +171,13 @@ const markSeen = (pid) => { if (keysCache) keysCache.keys.add(pid); };
 
 export async function loadPublishKeys({ fresh = false } = {}) {
   if (!fresh && keysCache && Date.now() - keysCache.at < KEYS_TTL_MS) return keysCache.keys;
+  const keys = await shallowKeys("shopify_publish");
+  keysCache = { keys, at: Date.now() };
+  return keys;
+}
+
+// The key list of one node, via the RTDB REST `?shallow=true` read.
+async function shallowKeys(path) {
   const user = auth.currentUser;
   if (!user) throw new Error("not signed in");
   // The SDK has no shallow read — this is the documented RTDB REST parameter,
@@ -182,13 +189,33 @@ export async function loadPublishKeys({ fresh = false } = {}) {
   // API accepts Firebase ID tokens ONLY there (Authorization: Bearer is for
   // OAuth2 access tokens). HTTPS covers it in transit and the URL is never
   // logged here. Timeout so a stalled read fails visibly instead of hanging.
-  const res = await fetch(`${base}/shopify_publish.json?shallow=true&auth=${encodeURIComponent(token)}`,
+  const res = await fetch(`${base}/${path}.json?shallow=true&auth=${encodeURIComponent(token)}`,
     typeof AbortSignal !== "undefined" && AbortSignal.timeout ? { signal: AbortSignal.timeout(15000) } : {});
   if (!res.ok) throw new Error(`shallow key read failed: HTTP ${res.status}`);
   const val = await res.json();
-  const keys = new Set(val && typeof val === "object" ? Object.keys(val) : []);
-  keysCache = { keys, at: Date.now() };
-  return keys;
+  return new Set(val && typeof val === "object" ? Object.keys(val) : []);
+}
+
+// ─── HIDDEN FROM REVIEW: NO SELLABLE STOCK ONLINE ────────────────────────────
+// docs/SHOPIFY-REVIEW-INSTOCK.md. The Mac mini's reconcile tick keeps
+// /config/shopifyReviewHidden/{pid} for every product with no unit the website
+// could sell (the same networkTotals the storefront is pushed). That node is
+// readable by any signed-in staff account under the existing /config rule, so
+// no rules paste is needed. Only the KEYS are read (~20 bytes per product), and
+// before the list renders, because the list's window must not shift when rows
+// load. FAIL-OPEN: if the read fails, nothing is hidden and the page behaves as
+// it did before this existed.
+export const REVIEW_HIDDEN_PATH = "config/shopifyReviewHidden";
+let hiddenCache = null; // { keys: Set<pid>, at }
+export async function loadReviewHidden({ fresh = false } = {}) {
+  if (!fresh && hiddenCache && Date.now() - hiddenCache.at < KEYS_TTL_MS) return hiddenCache.keys;
+  try {
+    const keys = await shallowKeys(REVIEW_HIDDEN_PATH);
+    hiddenCache = { keys, at: Date.now() };
+    return keys;
+  } catch {
+    return new Set();
+  }
 }
 
 // Bounded fan-out: a large category would otherwise fire hundreds of

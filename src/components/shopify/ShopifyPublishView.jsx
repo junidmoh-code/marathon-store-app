@@ -62,7 +62,7 @@ import { describeOff } from "./publishAudit";
 import { RECONCILE_MAX_APPLY } from "./publishShared";
 import { topCategory, UNCATEGORIZED_TOP } from "../../utils/productCategory.js";
 import {
-  loadPipelineNodes, loadPublishKeys, loadNodesFor, publishProduct, setCondition,
+  loadPipelineNodes, loadPublishKeys, loadReviewHidden, loadNodesFor, publishProduct, setCondition,
   applyNameProposal, dismissNameProposal, loadProposalPage,
 } from "./shopifyPublishStore";
 import ShopifyProductPage from "./ShopifyProductPage";
@@ -442,21 +442,26 @@ function ProductListRow({ product, node, onOpen, onChanged, selection }) {
 // count, no badge" behaviour).
 export function useShopifyAwaitingCount(products, enabled) {
   const [keys, setKeys] = useState(null);
+  const [hidden, setHidden] = useState(null);
   useEffect(() => {
     if (!enabled) return undefined;
     let on = true;
     loadPublishKeys().then((k) => { if (on) setKeys(k); }).catch(() => {});
+    // Never rejects (fail-open to an empty set), so the badge always arrives.
+    loadReviewHidden().then((h) => { if (on) setHidden(h); });
     return () => { on = false; };
   }, [enabled]);
   return useMemo(() => {
-    if (!enabled || !keys) return null;
+    if (!enabled || !keys || !hidden) return null;
     let n = 0;
     // Price records are not merchandise and never enter the review flow, so
     // counting them would leave the home badge permanently 35 too high with
     // nothing on the page to work off.
-    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !keys.has(p.id)) n += 1;
+    // A product with no sellable stock online is not on the page to work off
+    // either (docs/SHOPIFY-REVIEW-INSTOCK.md), so it is not counted.
+    for (const p of products || []) if (p?.id && isPublishableProduct(p) && !keys.has(p.id) && !hidden.has(p.id)) n += 1;
     return n;
-  }, [enabled, keys, products]);
+  }, [enabled, keys, hidden, products]);
 }
 
 export default function ShopifyPublishView({ products = [], onExit }) {
@@ -477,6 +482,9 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   }, [query]);
   const [keys, setKeys] = useState(null);          // Set<pid> — pids with ANY node
   const [pipeline, setPipeline] = useState(null);  // {pid: node} for live/blocked (+legacy)
+  // Pids with no sellable stock online — hidden from review, never deleted.
+  // Empty until the mount read lands (and if it fails: fail-open).
+  const [reviewHidden, setReviewHidden] = useState(() => new Set());
   // Batch publish (owner spec 2026-08-14): selection lives at page level so it
   // survives collapsing a section; capped at the reconciler's per-run cap.
   const [selected, setSelected] = useState(() => new Set());
@@ -542,9 +550,10 @@ export default function ShopifyPublishView({ products = [], onExit }) {
   // partial by design — never get(/shopify_publish).
   useEffect(() => {
     let on = true;
-    Promise.all([loadPublishKeys({ fresh: true }), loadPipelineNodes()])
-      .then(([k, pipe]) => {
+    Promise.all([loadPublishKeys({ fresh: true }), loadPipelineNodes(), loadReviewHidden({ fresh: true })])
+      .then(([k, pipe, hidden]) => {
         if (!on) return;
+        setReviewHidden(hidden);
         setKeys(new Set(k));
         setPipeline(pipe);
         setNodes((prev) => ({ ...pipe, ...prev }));
@@ -660,10 +669,19 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     const out = [];
     for (const p of productById.values()) {
       if (publishTabFor(nodes[p.id]) !== "awaiting") continue;
+      // No sellable stock online: hidden, not deleted. It comes back by itself
+      // when stock returns (docs/SHOPIFY-REVIEW-INSTOCK.md).
+      if (reviewHidden.has(p.id)) continue;
       out.push(p);
     }
     return out;
-  }, [filter, productById, nodes]);
+  }, [filter, productById, nodes, reviewHidden]);
+  // How many the stock gate is holding back from this tab, to say so on screen.
+  const hiddenInReview = useMemo(() => {
+    let n = 0;
+    for (const pid of reviewHidden) if (productById.has(pid) && publishTabFor(nodes[pid]) === "awaiting") n += 1;
+    return n;
+  }, [reviewHidden, productById, nodes]);
 
   // Department chips (top-level category), and shelf chips within the picked
   // department. Both from the catalogue fields already in hand.
@@ -798,6 +816,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     const out = [];
     for (const [pid, n] of Object.entries(nodes)) {
       if (!pendingProposal(n)) continue;
+      if (reviewHidden.has(pid)) continue; // no sellable stock online
       const p = productById.get(pid);
       if (!p) continue;
       // Same matcher as the tabs: the ORIGINAL catalogue name and style code,
@@ -809,7 +828,7 @@ export default function ShopifyPublishView({ products = [], onExit }) {
       (Number(nodes[a.id]?.nameProposal?.proposedAt) || 0) -
       (Number(nodes[b.id]?.nameProposal?.proposedAt) || 0));
     return out;
-  }, [filter, productById, nodes, matchesQuery, proposalsLoaded]);
+  }, [filter, productById, nodes, matchesQuery, proposalsLoaded, reviewHidden]);
 
   // ─── THE WINDOW ───────────────────────────────────────────────────────────
   // A flat Awaiting list is ~2,700 rows. Rendering them all would be slow on a
@@ -1352,6 +1371,13 @@ export default function ShopifyPublishView({ products = [], onExit }) {
             </button>
           ))}
         </div>
+        {filter === "awaiting" && hiddenInReview > 0 && (
+          <div style={{ fontSize: 11, color: GRAY, marginTop: 8 }}>
+            {hiddenInReview === 1
+              ? "1 product with no sellable stock online is hidden. It comes back when stock arrives."
+              : `${hiddenInReview} products with no sellable stock online are hidden. They come back when stock arrives.`}
+          </div>
+        )}
         {/* THE CATALOGUE — department, then shelf, as one-tap filter chips over
             the same flat list. Awaiting review only: that is where the work
             is, and where "show me just the sneakers" was asked for. */}

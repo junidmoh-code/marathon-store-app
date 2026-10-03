@@ -223,8 +223,12 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
  * Returns true when it was cleared, false when a newer revision was found and
  * deliberately left standing for the next tick.
  */
-export async function clearMarker(db, pid, revision) {
-  const res = await db.ref(`${DIRTY_PATH}/${pid}`).transaction((current) => {
+//
+// `path` is the marker node. It defaults to the inventory markers; the review
+// list's markers (reviewStock.mjs) are cleared by this same guarded function
+// rather than a second copy of the trap documented below.
+export async function clearMarker(db, pid, revision, path = DIRTY_PATH) {
+  const res = await db.ref(`${path}/${pid}`).transaction((current) => {
     // ── NO ABORT MAY BE REACHABLE FROM `current == null` ──────────────────
     // This returned `undefined` here, and it was a no-op dressed as a success.
     // runTransaction attaches a listener and runs this callback SYNCHRONOUSLY

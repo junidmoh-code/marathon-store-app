@@ -6,8 +6,8 @@
 const test = require("node:test");
 const assert = require("node:assert");
 const {
-  sellableQty, sellableChanged, isLiveOn, markInventoryDirty,
-  UNSELLABLE_LOCATIONS, ONLINE_EXCLUDED_LOCATIONS, DIRTY_PATH,
+  sellableQty, sellableChanged, isLiveOn, markInventoryDirty, sellableCrossedZero,
+  UNSELLABLE_LOCATIONS, ONLINE_EXCLUDED_LOCATIONS, DIRTY_PATH, REVIEW_DIRTY_PATH,
 } = require("../lib/shopify-inventory-dirty.cjs");
 
 // A fake db: get() reads a path from a plain object, set() records the write.
@@ -91,9 +91,57 @@ test("does NOT mark a product that is not live on the storefront", async () => {
   assert.deepEqual(f.writes, []);
 });
 
-test("does NOT mark a product with no publish node at all", async () => {
+test("does NOT inventory-mark a product with no publish node at all", async () => {
   const { f, d } = deps({ stock: { pe: { p1: { M: { qty: 2 } } } } });
   assert.equal((await markInventoryDirty(d, { loc: "pe", pid: "p1", before: null })).marked, false);
+  assert.ok(!f.writes.some(([p]) => p.startsWith(DIRTY_PATH + "/")));
+});
+
+// ── THE REVIEW LIST'S MARKER (docs/SHOPIFY-REVIEW-INSTOCK.md) ───────────────
+test("sellableCrossedZero: only a none↔some change in some size cell", () => {
+  assert.equal(sellableCrossedZero({ M: { qty: 3 } }, { M: { qty: 2 } }), false); // a sale, still stocked
+  assert.equal(sellableCrossedZero({ M: { qty: 1 } }, { M: { qty: 0 } }), true);  // sold out
+  assert.equal(sellableCrossedZero(null, { M: { qty: 1 } }), true);               // restock
+  assert.equal(sellableCrossedZero({ M: { qty: 1 } }, null), true);               // cell removed
+  assert.equal(sellableCrossedZero({ M: { qty: -2 } }, { M: { qty: 0 } }), false); // negatives are zero
+  // A swap between sizes: the sum is unchanged, and still S went to zero.
+  assert.equal(sellableCrossedZero({ S: { qty: 1 }, M: { qty: 1 } }, { S: { qty: 0 }, M: { qty: 2 } }), true);
+});
+
+test("review-marks a not-live product whose last unit at a location sold", async () => {
+  const { f, d } = deps({
+    stock: { pe: { p1: { M: { qty: 0 } } } },
+    shopify_publish: { p1: { state: "awaiting" } },
+  });
+  const r = await markInventoryDirty(d, { loc: "pe", pid: "p1", before: { M: { qty: 1 } } });
+  assert.equal(r.marked, false);        // no Shopify inventory push
+  assert.equal(r.reviewMarked, true);
+  assert.deepEqual(f.writes, [[`${REVIEW_DIRTY_PATH}/p1`, { __increment: 1 }]]);
+});
+
+test("review-marks a product with NO node on restock — never-reviewed products are in the list too", async () => {
+  const { f, d } = deps({ stock: { pe: { p1: { M: { qty: 2 } } } } });
+  const r = await markInventoryDirty(d, { loc: "pe", pid: "p1", before: null });
+  assert.equal(r.reviewMarked, true);
+  assert.deepEqual(f.writes, [[`${REVIEW_DIRTY_PATH}/p1`, { __increment: 1 }]]);
+});
+
+test("does NOT review-mark a sale that leaves units in every size it touched", async () => {
+  const { f, d } = deps({ stock: { pe: { p1: { M: { qty: 2 } } } }, shopify_publish: { p1: { state: "blocked" } } });
+  const r = await markInventoryDirty(d, { loc: "pe", pid: "p1", before: { M: { qty: 3 } } });
+  assert.equal(r.reviewMarked, undefined);
+  assert.deepEqual(f.writes, []);
+});
+
+test("a live+on product gets the INVENTORY marker only, never the review marker", async () => {
+  const { f, d } = deps({ stock: { pe: { p1: { M: { qty: 0 } } } }, shopify_publish: { p1: LIVE } });
+  await markInventoryDirty(d, { loc: "pe", pid: "p1", before: { M: { qty: 1 } } });
+  assert.deepEqual(f.writes, [[`${DIRTY_PATH}/p1`, { __increment: 1 }]]);
+});
+
+test("does NOT review-mark at Pine — its units do not count toward the website", async () => {
+  const { f, d } = deps({ stock: { "marathon-pine": { p1: { M: { qty: 0 } } } } });
+  await markInventoryDirty(d, { loc: "marathon-pine", pid: "p1", before: { M: { qty: 1 } } });
   assert.deepEqual(f.writes, []);
 });
 

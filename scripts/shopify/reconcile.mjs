@@ -89,6 +89,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
 import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog } from "./inventorySync.mjs";
+import { sweepReviewStock } from "./reviewStock.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
@@ -1431,6 +1432,29 @@ if (!ONLY) try {
   }
 } catch (e) {
   console.error(`  ⚠ inventory sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
+}
+
+// ── The review list's stock gate (docs/SHOPIFY-REVIEW-INSTOCK.md) ───────────
+// Hides products with no sellable stock from the Publisher's review list, and
+// shows them again when stock returns. It writes ONLY
+// /config/shopifyReviewHidden and its own markers: never /shopify_publish, never
+// Shopify. A quiet tick costs one read of an empty node. A failure never fails
+// the tick, because the markers survive and the next tick retries.
+if (!ONLY) try {
+  const rv = await sweepReviewStock(db, {
+    commit: true,
+    timestamp: admin.database.ServerValue.TIMESTAMP,
+    log: (line) => console.error(line),
+  });
+  if (rv.seen) {
+    console.log(
+      `\nreview stock: ${rv.seen} marker(s) · ${rv.hidden} hidden · ${rv.shown} back in review · ${rv.cleared} cleared` +
+      (rv.kept ? ` · ${rv.kept} re-marked (next tick)` : "") +
+      (rv.failed ? ` · ${rv.failed} failed (kept)` : "")
+    );
+  }
+} catch (e) {
+  console.error(`  ⚠ review-stock sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
 }
 
 if (!ONLY && sweepDue && liveNow) {
