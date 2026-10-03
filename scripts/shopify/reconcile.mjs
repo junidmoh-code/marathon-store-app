@@ -89,7 +89,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
 import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog } from "./inventorySync.mjs";
-import { sweepReviewStock } from "./reviewStock.mjs";
+import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
@@ -1441,6 +1441,14 @@ if (!ONLY) try {
 // Shopify. A quiet tick costs one read of an empty node. A failure never fails
 // the tick, because the markers survive and the next tick retries.
 if (!ONLY) try {
+  // A product taken OFF the storefront this tick re-enters the review list,
+  // and if it has no sellable stock no /stock event will ever mark it, because
+  // nothing moved. So it is marked here and judged in this same sweep. It is
+  // marked whatever the apply's outcome: if it is still on, the verdict is
+  // "show", which writes nothing.
+  for (const { pid, want } of capped) {
+    if (want === "off") await db.ref(`${REVIEW_DIRTY_PATH}/${pid}`).set(admin.database.ServerValue.increment(1));
+  }
   const rv = await sweepReviewStock(db, {
     commit: true,
     timestamp: admin.database.ServerValue.TIMESTAMP,

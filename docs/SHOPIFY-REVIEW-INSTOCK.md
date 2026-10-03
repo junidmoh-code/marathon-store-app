@@ -95,7 +95,9 @@ did before this change. A product with no `sizes` is never hidden.
 
 ### Known residuals
 
-- A product switched **off** while already at zero stock gets no stock event, so
-  it shows on the list until its next zero crossing or the next full pass
-  (`scripts/shopify/review-instock-pass.mjs --commit`, which can be re-run safely).
-- A product whose `sizes` array is edited (with no stock movement) is the same.
+- A product switched **off** gets no stock event. The reconcile tick therefore
+  review-marks every product it takes off, in the same tick, before the sweep.
+- A product whose `sizes` array is edited with no stock movement is not
+  re-judged until its next zero crossing, or until the full pass is run again
+  (`scripts/shopify/review-instock-pass.mjs --commit`, which converges and is
+  safe to re-run).
