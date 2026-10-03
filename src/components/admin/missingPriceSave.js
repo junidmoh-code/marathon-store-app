@@ -12,14 +12,16 @@ import { applyPriceBatch } from "./priceStore";
  * → { ok: true, count } | { ok: false, error, needsConfirm? }.
  * `confirmed` skips the "retail below cost" question once the user said yes.
  */
-export async function saveMissingPrice(product, costDraft, retailDraft, { label, confirmed = false, apply = applyPriceBatch } = {}) {
+export async function saveMissingPrice(product, costDraft, retailDraft, { label, confirmed = false, costOnly = false, apply = applyPriceBatch } = {}) {
   // A price that already exists stands in for an empty draft — exactly as the
   // Missing prices editor pre-fills it — so "retail below cost" is still asked.
   const cd = String(costDraft ?? "").trim() === "" && !needsCost(product) ? String(product.stockPrice) : costDraft;
   const rd = String(retailDraft ?? "").trim() === "" && !needsRetail(product) ? String(product.retailPrice) : retailDraft;
-  const v = validatePrices(product, cd, rd);
+  // costOnly (New Arrivals): only the stock price is set; a missing retail
+  // price is not asked for and never written.
+  const v = validatePrices(product, cd, costOnly ? "" : rd, { costOnly });
   if (!v.ok && !(v.needsConfirm && confirmed)) return { ok: false, error: v.error, needsConfirm: !!v.needsConfirm };
-  const updates = buildUpdates(product, cd, rd); // only the MISSING fields
+  const updates = buildUpdates(product, cd, costOnly ? "" : rd); // only the MISSING fields
   if (!Object.keys(updates).length) return { ok: true, count: 0 };
   const from = {}, to = {};
   for (const field of Object.keys(updates)) { from[field] = asStoredPrice(product[field]); to[field] = updates[field]; }

@@ -16,9 +16,10 @@ export const newArrivalsApi = {
   // The Admin › Missing prices save — the same code path, no new write path.
   // The card's list can be up to 30s old: the prices are re-read first, so a
   // price set elsewhere meanwhile is seen as present and never overwritten.
-  savePrice: async (pid, product, costDraft, retailDraft, opts = {}) => {
+  // Stock price ONLY (the groups' price); retail stays Shopify's business.
+  savePrice: async (pid, product, costDraft, opts = {}) => {
     const [stock, retail] = await Promise.all(["stockPrice", "retailPrice"].map((f) => get(ref(database, `products/${pid}/${f}`)).then((s) => s.val())));
     const fresh = { ...product, id: pid, stockPrice: stock, retailPrice: retail };
-    return saveMissingPrice(fresh, costDraft, retailDraft, { label: `New Arrivals: ${product?.name || pid}`, ...opts });
+    return saveMissingPrice(fresh, costDraft, "", { label: `New Arrivals: ${product?.name || pid}`, costOnly: true, ...opts });
   },
 };

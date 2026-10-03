@@ -43,13 +43,15 @@ export function buildUpdates(editProduct, costDraft, retailDraft) {
   return updates;
 }
 
-export function validatePrices(editProduct, costDraft, retailDraft) {
+// costOnly: only the stock price is being set (New Arrivals) — a missing
+// retail price is not demanded.
+export function validatePrices(editProduct, costDraft, retailDraft, { costOnly = false } = {}) {
   const { costNum, retailNum } = parseDrafts(costDraft, retailDraft);
 
   if (needsCost(editProduct) && (costNum == null || !Number.isFinite(costNum) || costNum <= 0)) {
     return { ok: false, error: "Enter a valid Stock Price greater than 0." };
   }
-  if (needsRetail(editProduct) && (retailNum == null || !Number.isFinite(retailNum) || retailNum <= 0)) {
+  if (!costOnly && needsRetail(editProduct) && (retailNum == null || !Number.isFinite(retailNum) || retailNum <= 0)) {
     return { ok: false, error: "Enter a valid Retail Price greater than 0." };
   }
   if (retailNum != null && costNum != null && retailNum < costNum) {

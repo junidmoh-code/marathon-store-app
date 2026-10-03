@@ -74,7 +74,7 @@ export default function NewProductForm({
   selectCategory, toggleHub, toggleShoebox,
   recvQtys, setRecvQtys,
   recvLoc, setRecvLoc, recvRegistry,
-  fileInputRef, handleImageUpload, onGuidedPhoto, onSkipBox,
+  fileInputRef, handleImageUpload, onGuidedPhoto,
   products, isPerfume, onCapturePrintedBarcode, onClearPrintedBarcode, onUseAutoBarcode,
   nameSuggestions,
   saving, saveAttempted, onSave,
@@ -258,8 +258,8 @@ export default function NewProductForm({
       {photoGuide ? (
         <div>
           <Label required={photoGuide.steps.some((st) => st.required)}
-                 hint={photoGuide.kind === "footwear" ? "shoe photo, and the box photo or No box" : "optional"}>
-            {photoGuide.kind === "footwear" ? "Product photos" : "Product photo"}
+                 hint={photoGuide.kind === "footwear" ? "one photo: the shoe with its box" : "optional"}>
+            Product photo
           </Label>
           <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
             {photoGuide.steps.map((st) => (
@@ -267,19 +267,17 @@ export default function NewProductForm({
                 key={st.id}
                 step={st}
                 filled={stepFilled(st, form)}
-                previewUrl={st.formField === "box" ? form.boxPreviewUrl || null : form.photoUrl || null}
+                previewUrl={form.photoUrl || null}
                 invalid={saveAttempted && st.required && !stepFilled(st, form)}
                 disabled={saving}
                 onFile={(file) => onGuidedPhoto && onGuidedPhoto(st, file)}
-                skipped={st.skippable ? form.boxSkipped === true && !form.boxBlob : false}
-                onSkip={st.skippable && onSkipBox ? onSkipBox : null}
               />
             ))}
           </div>
           {photoMissing.length > 0 && (
             <div style={{ marginTop: 8, fontSize: 12.5, fontWeight: 600,
                           color: saveAttempted ? "#F87171" : "rgba(233,238,255,.45)" }}>
-              {`Still needed before saving: ${photoMissing.map((st) => (st.skippable ? `${st.title.toLowerCase()} (or tap ${st.skipLabel})` : st.title.toLowerCase())).join(" and ")}.`}
+              {`Still needed before saving: ${photoMissing.map((st) => st.title.toLowerCase()).join(" and ")}.`}
             </div>
           )}
         </div>

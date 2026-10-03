@@ -1,24 +1,29 @@
 // ─── GUIDED PRODUCT PHOTOS — who gets which guide, and what blocks the save ──
-// Owner spec 2026-10-02. Pinned here, pure:
-//   • footwear (by CATALOGUE KEY) → shoe + box, both REQUIRED
+// Owner spec 2026-10-02, revised 3 Oct. Pinned here, pure:
+//   • footwear (by CATALOGUE KEY) → ONE required photo: the shoe WITH its box
 //   • clothing → one OPTIONAL garment step
 //   • everything else → no guide at all (the form is unchanged)
 //   • the copy says which way the toe points — the direction is the point
-//   • the footwear form cannot be saved without the box photo
+//   • the footwear form cannot be saved without that one photo
 
 import { describe, it, expect } from "vitest";
 import {
   guideFor, missingPhotoSteps, stepFilled, containRect, placeOutline,
-  SHOE_STEP, BOX_STEP, GARMENT_STEP,
+  SHOE_STEP, GARMENT_STEP,
 } from "./photoGuides.js";
+import * as photoGuides from "./photoGuides.js";
 import { FOOTWEAR_CATEGORY_KEYS } from "../../utils/footwearLine.js";
 
 describe("guideFor", () => {
-  it.each(FOOTWEAR_CATEGORY_KEYS)("footwear key %s → shoe then box, both required", (key) => {
+  it.each(FOOTWEAR_CATEGORY_KEYS)("footwear key %s → ONE required step: the shoe with its box", (key) => {
     const g = guideFor({ categoryKey: key });
     expect(g.kind).toBe("footwear");
-    expect(g.steps.map((s) => s.id)).toEqual(["shoe", "box"]);
-    expect(g.steps.every((s) => s.required)).toBe(true);
+    expect(g.steps).toEqual([SHOE_STEP]);
+    expect(g.steps[0].required).toBe(true);
+  });
+
+  it("there is no separate box step any more", () => {
+    expect(photoGuides.BOX_STEP).toBeUndefined();
   });
 
   it("an explicit isFootwear flag also gets the footwear guide", () => {
@@ -46,14 +51,19 @@ describe("guideFor", () => {
 });
 
 describe("the copy", () => {
+  it("the shoe step asks for the shoe AND its box in one photo", () => {
+    expect(SHOE_STEP.title).toBe("Shoe + box photo");
+    expect(SHOE_STEP.instruction).toMatch(/shoe AND its box/);
+    expect(SHOE_STEP.instruction).toMatch(/One photo/);
+  });
   it("the shoe step says right shoe, outer side, toe pointing right", () => {
     expect(SHOE_STEP.instruction).toContain("toe pointing right");
-    expect(SHOE_STEP.instruction).toMatch(/Right shoe/);
+    expect(SHOE_STEP.instruction).toMatch(/right shoe/i);
     expect(SHOE_STEP.instruction).toMatch(/outer side/);
   });
-  it("the box step asks for the shoe's own box, front panel", () => {
-    expect(BOX_STEP.instruction).toMatch(/own box/);
-    expect(BOX_STEP.instruction).toMatch(/front panel/);
+  it("there is no No box option", () => {
+    expect(SHOE_STEP.skippable).toBeFalsy();
+    expect(SHOE_STEP.skipLabel).toBeUndefined();
   });
   it("the garment step asks for the front, on a hanger, whole garment", () => {
     expect(GARMENT_STEP.instruction).toMatch(/Front of the garment/);
@@ -62,19 +72,16 @@ describe("the copy", () => {
   });
 });
 
-describe("missingPhotoSteps — the footwear form refuses to save without both", () => {
+describe("missingPhotoSteps — the footwear form refuses to save without its one photo", () => {
   const shoes = guideFor({ categoryKey: "sneakers" });
-  it("nothing taken → both missing", () => {
-    expect(missingPhotoSteps(shoes, {}).map((s) => s.id)).toEqual(["shoe", "box"]);
+  it("nothing taken → the shoe (with box) photo is missing", () => {
+    expect(missingPhotoSteps(shoes, {}).map((s) => s.id)).toEqual(["shoe"]);
   });
-  it("shoe taken, NO box → the box is still missing (save refused)", () => {
-    expect(missingPhotoSteps(shoes, { photoBlob: {} }).map((s) => s.id)).toEqual(["box"]);
+  it("the photo taken → nothing missing", () => {
+    expect(missingPhotoSteps(shoes, { photoBlob: {} })).toEqual([]);
   });
-  it("box taken, no shoe → the shoe is missing", () => {
-    expect(missingPhotoSteps(shoes, { boxBlob: {} }).map((s) => s.id)).toEqual(["shoe"]);
-  });
-  it("both taken → nothing missing", () => {
-    expect(missingPhotoSteps(shoes, { photoBlob: {}, boxBlob: {} })).toEqual([]);
+  it("old box-only fields do not count as the photo", () => {
+    expect(missingPhotoSteps(shoes, { boxBlob: {}, boxSkipped: true }).map((s) => s.id)).toEqual(["shoe"]);
   });
   it("clothing with no photo → nothing missing (the photo stays optional)", () => {
     expect(missingPhotoSteps(guideFor({ isClothing: true }), {})).toEqual([]);
@@ -82,8 +89,8 @@ describe("missingPhotoSteps — the footwear form refuses to save without both",
   it("no guide → nothing missing", () => {
     expect(missingPhotoSteps(null, {})).toEqual([]);
   });
-  it("stepFilled reads the right slot", () => {
-    expect(stepFilled(BOX_STEP, { photoBlob: {} })).toBe(false);
+  it("stepFilled reads the photo slot", () => {
+    expect(stepFilled(SHOE_STEP, { photoBlob: {} })).toBe(true);
     expect(stepFilled(SHOE_STEP, { boxBlob: {} })).toBe(false);
   });
 });
@@ -105,30 +112,16 @@ describe("geometry", () => {
     expect(x + w).toBeLessThanOrEqual(300);
     expect(y + h).toBeLessThanOrEqual(400);
   });
-  it("the box is wider than tall; the garment taller than wide", () => {
-    expect(BOX_STEP.shape.w).toBeGreaterThan(BOX_STEP.shape.h);
+  it("the shoe-with-box outline holds two shapes (box + shoe); the garment taller than wide", () => {
+    expect((SHOE_STEP.shape.outline.match(/M /g) || []).length).toBeGreaterThanOrEqual(2);
+    expect(SHOE_STEP.shape.outline).toMatch(/Z/); // the box rectangle
     expect(GARMENT_STEP.shape.h).toBeGreaterThan(GARMENT_STEP.shape.w);
   });
 });
 
-describe("box step covers every key the photo pipeline treats as footwear", () => {
-  it("designer shoes and sandals get the box step too", () => {
-    expect(guideFor({ categoryKey: "designer-shoes" }).steps.map((x) => x.id)).toEqual(["shoe", "box"]);
-    expect(guideFor({ categoryKey: "sandals" }).steps.map((x) => x.id)).toEqual(["shoe", "box"]);
-  });
-});
-
-describe("No box — one tap answers the box step", () => {
-  const shoes = guideFor({ categoryKey: "sneakers" });
-  it("the box step is skippable, labelled 'No box'", () => {
-    expect(BOX_STEP.skippable).toBe(true);
-    expect(BOX_STEP.skipLabel).toBe("No box");
-    expect(SHOE_STEP.skippable).toBeFalsy();
-  });
-  it("shoe + No box → nothing missing; No box alone still needs the shoe", () => {
-    expect(missingPhotoSteps(shoes, { photoBlob: {}, boxSkipped: true })).toEqual([]);
-    expect(missingPhotoSteps(shoes, { boxSkipped: true }).map((s) => s.id)).toEqual(["shoe"]);
-    expect(stepFilled(BOX_STEP, { boxSkipped: true })).toBe(true);
-    expect(stepFilled(BOX_STEP, { boxSkipped: "yes" })).toBe(false);
+describe("the one-photo step covers every key the photo pipeline treats as footwear", () => {
+  it("designer shoes and sandals get it too", () => {
+    expect(guideFor({ categoryKey: "designer-shoes" }).steps.map((x) => x.id)).toEqual(["shoe"]);
+    expect(guideFor({ categoryKey: "sandals" }).steps.map((x) => x.id)).toEqual(["shoe"]);
   });
 });

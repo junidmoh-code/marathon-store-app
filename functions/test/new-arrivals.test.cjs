@@ -13,7 +13,7 @@ const NOW = 1_790_000_000_000;
 const PID = "p1789999990000";
 const upload = (over = {}) => ({
   id: PID, name: "Nike Air Force 1 Low Black", categoryKey: "sneakers", photoUrl: "https://x/photo.jpg",
-  retailPrice: 650, sizes: ["6", "7", "8"], createdBy: { uid: "u1", deviceId: "d1", at: NOW - 2000 }, ...over,
+  stockPrice: 550, retailPrice: 650, sizes: ["6", "7", "8"], createdBy: { uid: "u1", deviceId: "d1", at: NOW - 2000 }, ...over,
 });
 
 test("enqueueDecision: only fresh uploads from the upload form", () => {
@@ -89,13 +89,22 @@ test("approve refuses an item that is not Ready, and an unknown pid", async () =
   assert.equal((await db.ref(`${core.ITEMS}/p1000000000001`).once()).val(), null);
 });
 
-test("approve refuses an item with no retail price, in words", async () => {
+test("approve refuses an item with no stock price, in words", async () => {
+  for (const stockPrice of [null, 0, "abc"]) {
+    const db = seeded("ready", { generatedUrl: "g" });
+    await db.ref(`products/${PID}/stockPrice`).set(stockPrice);
+    const out = await na.approve(db, { pids: [PID] }, "junid", NOW);
+    assert.deepEqual(out.approved, []);
+    assert.deepEqual(out.skipped, [{ pid: PID, why: "no stock price yet — enter it on the card, then approve" }]);
+    assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
+  }
+});
+
+test("approve does not need a retail price — the groups are priced at the stock price", async () => {
   const db = seeded("ready", { generatedUrl: "g" });
   await db.ref(`products/${PID}/retailPrice`).set(null);
   const out = await na.approve(db, { pids: [PID] }, "junid", NOW);
-  assert.deepEqual(out.approved, []);
-  assert.match(out.skipped[0].why, /no retail price yet/);
-  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
+  assert.deepEqual(out.approved, [PID]);
 });
 
 test("approve all takes exactly the Ready index", async () => {
