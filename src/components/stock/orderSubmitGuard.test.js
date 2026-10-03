@@ -230,6 +230,6 @@ describe("offline: a cached positive cell is never trusted (CodeRabbit, #671)", 
   });
   it("the screen passes the .info/connected check", () => {
     const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
-    expect(APP).toContain('isOnline: () => get(ref(database, ".info/connected")).then((snap) => snap.val() === true),');
+    expect(APP).toContain('unsub = onValue(ref(database, ".info/connected"), (snap) => finish(snap.val() === true), () => finish(false));');
   });
 });

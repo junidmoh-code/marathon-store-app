@@ -10723,7 +10723,13 @@ function AssistantView({ products, onExit, orders = [] }) {
           })),
           readCell: (hub, pid, size) => get(ref(database, stockCellPath(hub, pid, String(size)))).then((snap) => snap.val()),
           // Offline, `get` answers from cache — refuse rather than trust it.
-          isOnline: () => get(ref(database, ".info/connected")).then((snap) => snap.val() === true),
+          // A one-shot onValue on .info/connected: the SDK answers it from its
+          // own connection state, never the network (the guard times it out).
+          isOnline: () => new Promise((resolve) => {
+            let unsub = null, done = false;
+            const finish = (v) => { if (done) return; done = true; resolve(v); setTimeout(() => unsub?.(), 0); };
+            unsub = onValue(ref(database, ".info/connected"), (snap) => finish(snap.val() === true), () => finish(false));
+          }),
         });
         if (refusal) {
           setSubmitRefusal(submitShortfallMessage(refusal, (h) => HUB_LABELS[h] || h, formatSize));
