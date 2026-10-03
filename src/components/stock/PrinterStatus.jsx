@@ -26,7 +26,7 @@ export default function PrinterStatus({ style }) {
     : "Label printer";
   const sub = s.detail || "";
   const lines = s.lines || [];
-  const noneAllowed = s.state === "os" && /no USB printer permitted/.test(sub);
+  const noneAllowed = s.state === "os" && s.devicesSeen === 0 && typeof navigator !== "undefined" && !!navigator.usb;
   const printedNote = s.printed ? ` · last label: ${s.printed === "usb" ? "USB" : "system print"}` : "";
 
   const copy = async () => {

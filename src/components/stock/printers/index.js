@@ -121,8 +121,10 @@ async function printUsbOrOs(items, conn) {
   }
   const os = await printViaOs(valid);
   if (!os.ok) return { ok: false, route: "os", error: [os.error, ...usbLines].join(" · "), lines: usbLines };
+  // Keep the USB driver's reason (held / none permitted) unless the dialog showing
+  // is the more useful thing to say.
   setPrinterStatus({ state: "os", route: "os", printed: "os", lines: usbLines,
-    detail: os.dialogShown ? "print dialog shown — open the app with the Marathon Labels launcher to print silently" : "sent to the default printer" });
+    ...(os.dialogShown ? { detail: "print dialog shown — open the app with the Marathon Labels launcher to print silently" } : {}) });
   return { ok: true, route: "os", printed: os.printed, dialogShown: os.dialogShown, lines: usbLines,
     routeLabel: "System print → default printer" };
 }

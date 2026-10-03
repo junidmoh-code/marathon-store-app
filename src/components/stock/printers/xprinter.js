@@ -205,7 +205,7 @@ function useConnection(device, conn, language) {
   cached = { device, endpointNumber: conn.endpointNumber, interfaceNumber: conn.interfaceNumber, language, name: deviceLabel(device), detail };
   lastDiag = { ...conn.diag, attempts: [] };
   saveRemembered(device);
-  setPrinterStatus({ state: "usb", name: cached.name, route: "usb", detail, lines: [] });
+  setPrinterStatus({ state: "usb", name: cached.name, route: "usb", detail, lines: [], devicesSeen: null });
   return { route: "usb", ...cached };
 }
 
@@ -251,7 +251,7 @@ export function findUsbPrinter({ allowPicker = false, forcePicker = false } = {}
       heldElsewhere: held,
     };
     setPrinterStatus({
-      state: "os", route: "os", name: "",
+      state: "os", route: "os", name: "", devicesSeen: res.devicesSeen,
       detail: held ? "USB printer is held by the computer's print system" : res.devicesSeen ? "no USB device could be claimed" : "no USB printer permitted",
       lines,
     });
