@@ -201,3 +201,10 @@ describe("one-size clothing reads the '_' cell the grid greys on", () => {
     expect(await findSubmitShortfall({ lines: [{ hub: "hub2", productId: "pX", size: "Free Size" }], readCell: reader(db) })).toBe(null);
   });
 });
+
+describe("the desktop panel cannot hide a refusal", () => {
+  it("a refusal reopens the checkout panel (destination-confirm path closes it first)", () => {
+    const APP = readFileSync(new URL("../../App.jsx", import.meta.url), "utf8");
+    expect(APP).toContain("useEffect(() => { if (submitRefusal) setCoOpen(true); }, [submitRefusal]);");
+  });
+});

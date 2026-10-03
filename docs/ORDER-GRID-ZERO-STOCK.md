@@ -79,15 +79,29 @@ So Pine footwear orders are being picked from stock that Hub 3's cells do not
 record (the Pine shop's own cells, `stock/marathon-pine`, do hold stock — e.g.
 this slide 8·7·8·8·2 for sizes 6–10). Gating on Hub 3 — in the grid or at
 submit — would have ✕'d and refused almost every Pine sneaker sale. Routing in
-code is unambiguous (Pine → Hub 3); **which stock a Pine order should be
-judged against is not**, so no model was invented. Grid and submit agree:
-neither gates a Pine footwear line, exactly as before.
+code is unambiguous (Pine → Hub 3), so this is a **deliberate departure from
+the brief's commit 4**, not its "ambiguous routing" branch: what is ambiguous
+is **which stock a Pine order should be judged against**, and no model was
+invented. Grid and submit agree: neither gates a Pine footwear line.
+**Junid's Pine report is therefore not fixed** beyond size order — the sheet
+still offers every Pine size, including 11, which is at no Pine location.
+
+Pine clothing customer lines ARE guarded on Hub 3, consistent with the Pine
+clothing grid (which already greys on Hub 3 cells, and fails closed while
+loading). Hub 3 holds 1 non-footwear product at 0 units, so this changes
+nothing Pine can do today; all 119 Pine orders were footwear.
+
+Method: shallow key list of `stock/hub3` (344 ids), then one read per id of
+`stock/hub3/{pid}`, `products/{pid}/category` and `products/{pid}/productType`;
+Pine orders by `orders?orderBy="destShop"&equalTo="marathon-pine"`.
 
 ## What changed
 
 1. **Grid:** sizes shown in numeric order on every Place Order size surface
    (`orderSizesForDisplay`); zero, missing and cleared ("uncounted") cells pinned
-   as ✕ by test for the gated hubs.
+   as ✕ by test for Hub 1/Hub 2 — that rule already held, so no grid logic
+   changed. The grid is still OPEN while a hub read has not settled (so a slow
+   load never blanks it); the submit guard below is what closes that window.
 2. **Submit:** before anything is written, every stock-drawing line re-reads the
    one cell it will draw from (`stock/{hub}/{pid}/{size}` — the same hub the
    write uses) inside `placeOrders`. Zero, missing, cleared, negative, short for

@@ -8622,6 +8622,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
   const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
+  // A stock-guard refusal always lands on an OPEN panel. The destination-
+  // confirm path closes it before the guard runs (placeOrders returns
+  // undefined to the button, then the modal re-invokes it), so the refusal
+  // reopens it rather than being set on a panel nobody can see.
+  useEffect(() => { if (submitRefusal) setCoOpen(true); }, [submitRefusal]);
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
   const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
