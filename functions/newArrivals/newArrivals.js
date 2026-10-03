@@ -8,6 +8,7 @@
 // newArrivalsRestore  the card's Undo: skipped → back to New or Rejected (skippedFrom).
 // newArrivalsReject   Ready → Rejected with one reason chip.
 // newArrivalsSelect   "Use this one" — any generation becomes the main photo (lane kept).
+// newArrivalsLove     ❤ / un-❤ one generation (any lane; never moves or approves).
 // Every action Junid takes writes new_arrivals/decisions/{push}.
 //
 // The card never reads or writes /new_arrivals directly, so no database rule
@@ -16,7 +17,7 @@
 // (marathon-group-poster + scripts/newArrivals/chain.mjs).
 //
 // Deploy BY NAME, never a bare --only functions (DEPLOY-TRACKER.md):
-//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject,functions:newArrivalsSelect
+//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject,functions:newArrivalsSelect,functions:newArrivalsLove
 "use strict";
 
 const { onValueCreated } = require("firebase-functions/v2/database");
@@ -219,7 +220,7 @@ async function listTab(db, tab, { cursor = null, limit, filter = null, group = n
     if (repair) await db.ref(core.ROOT).update(repair);
     if (!item || core.TAB_OF[item.status] !== tab) return null;
     const d = details.get(pid) || await productDetail(db, pid, locations);
-    return { ...item, product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
+    return { ...core.cardItem(item), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
   })).filter(Boolean);
 
   const [stats, modes] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`)]);
@@ -324,6 +325,39 @@ const newArrivalsSelect = onCall(callableOpts, async (request) => {
   return select(admin.database(), request.data || {}, request.auth?.uid, Date.now());
 });
 
+// ── love one generation ──────────────────────────────────────────────────────
+// ❤ on any generation, in any lane where it exists: a transaction on
+// items/{pid} sets generations/{genId}/loved + lovedAt (this server's clock);
+// un-love removes both. The item never moves and nothing is approved. Then
+// ONE atomic multi-path write: the index entry (re-asserted) and the
+// "love" / "unlove" ledger row with the generation's snapshot. Loving what is
+// already loved (or un-loving what is not) writes and logs nothing.
+async function love(db, { pid, genId, loved }, uid, nowMs) {
+  if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
+  if (!core.GEN_ID_RE.test(String(genId || ""))) throw new HttpsError("invalid-argument", "Not a generation id.");
+  if (typeof loved !== "boolean") throw new HttpsError("invalid-argument", "Say loved: true or false.");
+  pid = String(pid); genId = String(genId);
+  const item = (await db.ref(`${core.ITEMS}/${pid}`).once("value")).val();
+  const why = core.loveRefusal(item, genId);
+  if (why) throw new HttpsError("failed-precondition", `Can't ${loved ? "love" : "un-love"} that photo — ${why}.`);
+  if (!core.lovedItem(item, genId, loved, nowMs)) return { ok: true, unchanged: true };
+  // ONE atomic multi-path write: the two love fields on that generation AND the
+  // decision row land together or not at all (a love never moves the item, and
+  // a generation is never removed, so no transaction is needed — and the lane
+  // index is left alone).
+  const at = `items/${pid}/generations/${genId}`;
+  await writeRoot(db, {
+    [`${at}/loved`]: loved ? true : null,
+    [`${at}/lovedAt`]: loved ? nowMs : null,
+    ...await decisionPaths(db, pid, { at: nowMs, uid, item, action: loved ? "love" : "unlove", genId }),
+  });
+  return { ok: true };
+}
+
+const newArrivalsLove = onCall(callableOpts, async (request) => {
+  await assertNewArrivalsAccess(request);
+  return love(admin.database(), request.data || {}, request.auth?.uid, Date.now());
+});
 
 const MAX_PIDS = 300;
 function pidList(pids) {
@@ -535,7 +569,7 @@ const newArrivalsRetry = onCall(callableOpts, async (request) => {
 
 module.exports = {
   newArrivalsEnqueue, newArrivalsList, newArrivalsApprove, newArrivalsRetry,
-  newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect,
+  newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect, newArrivalsLove,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, assertNewArrivalsAccess },
+  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, assertNewArrivalsAccess },
 };

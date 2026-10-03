@@ -10,6 +10,17 @@ const src = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
 
 test("the daily social autopilot is OFF unless explicitly switched on", () => {
   assert.match(src, /const SOCIAL_AUTOPILOT_ENABLED = process\.env\.SOCIAL_AUTOPILOT_ENABLED === "true";/);
+  // The scheduled callback returns on the flag BEFORE any database or generation work.
+  const i = src.indexOf("exports.socialDailyAutopilot = onSchedule(");
+  assert.ok(i > 0);
+  const body = src.slice(src.indexOf("async () => {", i));
+  const guard = body.indexOf("if (!SOCIAL_AUTOPILOT_ENABLED) {");
+  assert.ok(guard > 0 && guard < 40, "the flag is the callback's first statement");
+  const ret = body.indexOf("return;", guard);
+  for (const work of ["admin.database()", "generateOnePost(", "generateSocialScene("]) {
+    const at = body.indexOf(work);
+    assert.ok(at === -1 || ret < at, `returns before ${work}`);
+  }
 });
 
 test("generateProductPhotos refuses a call that names no products (no unattended sweep), before any catalogue read", () => {
