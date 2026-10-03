@@ -232,11 +232,17 @@ export function effectivePhotoList(product, node) {
 // is what the admin catalogue is for; Blocked was a subset of awaiting that a
 // row already announces in red, and pulling it out into its own tab hid those
 // products from the list where the work happens.
+// The Suggested names tab is gone (owner, 2026-10-03): the auto-publish agent
+// (scripts/shopify/autoPublish.mjs) applies AI names itself.
 export const STATE_FILTERS = [
   { key: "live",     label: "Live" },
   { key: "awaiting", label: "Awaiting review" },
-  { key: "proposed", label: "Suggested names" },
 ];
+
+// The grades a person may PICK (owner, 2026-10-03: Excellent only). CONDITIONS
+// keeps all three because products already live carry the others, and the
+// reconciler and the description template must still read them.
+export const OFFERED_CONDITIONS = [CONDITIONS[0]];
 
 // Which tab does this product belong under? The node is the whole answer: a
 // product with no node at all has never been reviewed, which is the purest

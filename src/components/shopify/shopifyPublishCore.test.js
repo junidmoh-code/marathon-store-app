@@ -6,7 +6,7 @@ import { describe, it, expect } from "vitest";
 import {
   CONDITIONS, PUBLISH_STATES, canUseShopifyPublish, canGoLive, normalizedState,
   normalizedFields, isOn, isPendingSwitch, checkCleanName, blockedReason, blockStatus,
-  STATE_FILTERS, reviewStateFor, publishTabFor, batchSelectBlocker, effectivePhotoList,
+  STATE_FILTERS, OFFERED_CONDITIONS, reviewStateFor, publishTabFor, batchSelectBlocker, effectivePhotoList,
   isPublishableProduct, PRICE_RECORD_BLOCKER,
 } from "./shopifyPublishCore";
 import { RECONCILE_MAX_APPLY, normalizePhotoList } from "./publishShared";
@@ -179,15 +179,14 @@ describe("reviewStateFor — the page's row/filter state", () => {
     expect(reviewStateFor({ state: "live", liveState: "off" })).toBe("live");
     expect(reviewStateFor({ state: "blocked" })).toBe("blocked");
   });
-  it("every non-all filter key is a reachable review state, or the node-answered proposal lane", () => {
+  it("every filter key is a reachable review state — and the Suggested names lane is gone (2026-10-03)", () => {
     const reachable = new Set(["awaiting", "approved", "live", "blocked"]);
-    for (const { key } of STATE_FILTERS) {
-      if (key === "all" || key === "proposed") continue; // "proposed" is answered from the NODE, not a review state
-      expect(reachable.has(key)).toBe(true);
-    }
-    // and the lane IS in the list — the filter chip has to exist for the
-    // vision run's output to be reachable at all.
-    expect(STATE_FILTERS.some((f) => f.key === "proposed")).toBe(true);
+    for (const { key } of STATE_FILTERS) expect(reachable.has(key)).toBe(true);
+    expect(STATE_FILTERS.some((f) => f.key === "proposed")).toBe(false);
+  });
+  it("only Excellent is offered; all three grades stay readable for live products", () => {
+    expect(OFFERED_CONDITIONS).toEqual([CONDITIONS[0]]);
+    expect(CONDITIONS.length).toBe(3);
   });
   it("publishTabFor — Live is what a customer can SEE, everything else awaits", () => {
     expect(publishTabFor({ state: "live", liveState: "on" })).toBe("live");

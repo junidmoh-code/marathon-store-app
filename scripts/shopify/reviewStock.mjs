@@ -1,4 +1,6 @@
-// ─── THE REVIEW LIST SHOWS ONLY WHAT CAN BE SOLD ─────────────────────────────
+// ─── THE REVIEW LIST SHOWS ONLY WHAT IS WORTH SELLING ONLINE ─────────────────
+// (2026-10-03: the bar is REVIEW_MIN_UNITS units, not "any unit". Wording
+// below that says "no sellable stock" means "below the bar".)
 // docs/SHOPIFY-REVIEW-INSTOCK.md is the design. In short: a product that is not
 // on the storefront sits in the Shopify Publisher's review list, and a product
 // with no sellable stock must not sit there, because photo, name and review work
@@ -38,14 +40,25 @@ export const HIDDEN_PATH = "config/shopifyReviewHidden";
 // thousand products takes a few ticks, and nothing is lost by stopping early.
 export const MAX_PER_RUN = 200;
 
+// FEWER THAN THIS MANY UNITS (all sizes together, at the locations the website
+// sells from) → not worth a photo, a name or a listing (owner, 2026-10-03:
+// "it's not worth spending money to sell less than 4 items").
+export const REVIEW_MIN_UNITS = 4;
+
+// A product that passes the bar while sitting in the review list is queued for
+// the auto-publish agent (autoPublish.mjs), which accepts its name, sets
+// Excellent and publishes — owner instruction 2026-10-03, no human review.
+export const AUTOPUBLISH_QUEUE_PATH = "shopify_autopublish_queue";
+
 /**
- * true = some size has a sellable unit online; false = none; null = cannot be
- * judged (no sizes array — such a record cannot be published either, see
- * reconcile.mjs). null is NEVER treated as "hide".
+ * true = at least REVIEW_MIN_UNITS sellable units online, all sizes together;
+ * false = fewer; null = cannot be judged (no sizes array — such a record cannot
+ * be published either, see reconcile.mjs). null is NEVER treated as "hide".
  */
-export function hasSellableStock(stockTree, pid, sizes) {
+export function hasSellableStock(stockTree, pid, sizes, minUnits = REVIEW_MIN_UNITS) {
   if (!Array.isArray(sizes) || sizes.length === 0) return null;
-  return Object.values(networkTotals(stockTree, pid, sizes)).some((q) => q > 0);
+  const total = Object.values(networkTotals(stockTree, pid, sizes)).reduce((a, q) => a + q, 0);
+  return total >= minUnits;
 }
 
 /**
@@ -71,7 +84,9 @@ export function verdictFor({ node, sizes, sellable }) {
   if (isOnOrGoingOn(node)) return { verdict: "show", why: "on or going on the storefront" };
   if (!Array.isArray(sizes) || sizes.length === 0) return { verdict: "show", why: "no sizes — cannot be judged" };
   if (sellable === null) return { verdict: "show", why: "cannot be judged" };
-  return sellable ? { verdict: "show", why: "sellable stock" } : { verdict: "hide", why: "no sellable stock online" };
+  return sellable
+    ? { verdict: "show", why: "enough sellable stock", inReview: true }
+    : { verdict: "hide", why: `fewer than ${REVIEW_MIN_UNITS} sellable units online` };
 }
 
 /** Judge one product from point reads only. */
@@ -133,6 +148,13 @@ export async function sweepReviewStock(db, { commit = false, max = MAX_PER_RUN, 
       const j = await judgeProduct(db, pid, locNames);
       if (!commit) { out.results.push({ ...j, dryRun: true }); continue; }
       const did = await applyVerdict(db, pid, j.verdict, { timestamp });
+      // In the review list with enough stock: hand it to the auto-publish
+      // agent. Re-queuing an already-queued pid is harmless.
+      if (j.inReview) {
+        // Only the queuedAt child, so the agent's retry bookkeeping beside it survives.
+        await db.ref(`${AUTOPUBLISH_QUEUE_PATH}/${pid}/queuedAt`).set(timestamp);
+        out.queued = (out.queued || 0) + 1;
+      }
       if (did === "hidden") out.hidden++;
       if (did === "shown") out.shown++;
       out.results.push({ ...j, did });

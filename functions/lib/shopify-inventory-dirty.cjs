@@ -108,23 +108,6 @@ function sellableChanged(before, after) {
   return false;
 }
 
-/**
- * Did any size cell cross ZERO (sellable none ↔ some) between these two maps?
- *
- * The network total can only go between zero and non-zero if, at some
- * location, some size cell does. So this is exact for the review list's
- * question "does this product have ANY sellable unit?" — a crossing can never
- * be missed — while a sale of one of three units, the common case, writes
- * nothing.
- */
-function sellableCrossedZero(before, after) {
-  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
-  for (const k of keys) {
-    if ((sellableQty((before || {})[k]) > 0) !== (sellableQty((after || {})[k]) > 0)) return true;
-  }
-  return false;
-}
-
 /** Live on the storefront right now — the only products worth marking. */
 function isLiveOn(node) {
   return node?.state === "live" && node?.liveState === "on";
@@ -162,10 +145,10 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
   const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
   if (!isLiveOn(node)) {
     // Not on the storefront, so in the review list: no inventory push, but the
-    // list may need to hide or show it. Only a zero crossing can change that.
-    if (!sellableCrossedZero(before, after)) {
-      return { marked: false, why: "not live on the storefront" };
-    }
+    // list may need to hide or show it. The bar is a TOTAL (4 units, all sizes
+    // together — scripts/shopify/reviewStock.mjs), which any sellable change
+    // can cross, so every sellable change is marked; the gate above has
+    // already dropped the movements that change nothing sellable.
     await db.ref(`${REVIEW_DIRTY_PATH}/${pid}`).set(increment(1));
     log(`shopify review stock marked: ${pid} (${loc})`);
     return { marked: false, reviewMarked: true, why: "not live on the storefront" };
@@ -179,7 +162,6 @@ async function markInventoryDirty({ db, increment, log = () => {} }, { loc, pid,
 module.exports = {
   DIRTY_PATH,
   REVIEW_DIRTY_PATH,
-  sellableCrossedZero,
   UNSELLABLE_LOCATIONS,
   ONLINE_EXCLUDED_LOCATIONS,
   sellableQty,

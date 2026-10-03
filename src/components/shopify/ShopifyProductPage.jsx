@@ -23,7 +23,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
-  CONDITIONS, checkCleanName, blockStatus, reviewStateFor, effectiveNameFor,
+  CONDITIONS, OFFERED_CONDITIONS, checkCleanName, blockStatus, reviewStateFor, effectiveNameFor,
   isOn, isPendingSwitch, canGoLive, effectivePhotoList, normalizedState,
   pendingProposal, proposalApplyBlocker,
 } from "./shopifyPublishCore";
@@ -586,7 +586,7 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
         {section("Condition — sets the grade in the description", (
           <>
             <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-              {CONDITIONS.map((c) => (
+              {OFFERED_CONDITIONS.map((c) => (
                 <button key={c} disabled={busy || nameLocked}
                   onClick={() => run(() => setCondition(product.id, node, c), (res) => onChanged(product.id, res.node))}
                   style={{ ...(node?.condition === c ? tabOn : tabOff), padding: "6px 11px", fontSize: "0.72rem" }}>
