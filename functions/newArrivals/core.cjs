@@ -500,10 +500,12 @@ const CODE_RE = GEN_ID_RE;
  * thoughtsLabel, drafts [{url}] and model; never promptText or anything else.
  * { code, none: true } when nothing was recorded. Pure.
  */
+const OWN_STORAGE_RE = /^https:\/\/(firebasestorage\.googleapis\.com|storage\.googleapis\.com)\//;
 function howView(code, rec) {
   if (!rec || typeof rec !== "object") return { code, none: true };
   const list = Array.isArray(rec.drafts) ? rec.drafts : Object.values(rec.drafts || {});
-  const drafts = list.filter((d) => d && typeof d === "object" && typeof d.url === "string" && d.url).map((d) => ({ url: d.url }));
+  // Only our own storage's drafts are ever shown (the poster uploads them there).
+  const drafts = list.filter((d) => d && typeof d === "object" && typeof d.url === "string" && OWN_STORAGE_RE.test(d.url)).map((d) => ({ url: d.url }));
   const thoughts = typeof rec.thoughts === "string" ? rec.thoughts : null;
   if (!thoughts && !drafts.length) return { code, none: true };
   return {

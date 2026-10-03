@@ -954,7 +954,7 @@ const GENLOG_REC = {
   code: "G-0042", pid: PID, genId: "g1", method: "split",
   thoughts: "First I isolated the shoe.\n\n  Then I kept the laces exactly.… (full text in the ledger)",
   thoughtsLabel: "Gemini's own account — not proof",
-  drafts: [{ url: "https://x/d1.jpg", path: "genlog/d1.jpg" }, { url: "https://x/d2.jpg", path: "genlog/d2.jpg" }],
+  drafts: [{ url: "https://firebasestorage.googleapis.com/v0/d1.jpg", path: "genlog/d1.jpg" }, { url: "https://firebasestorage.googleapis.com/v0/d2.jpg", path: "genlog/d2.jpg" }],
   model: "gemini-3-pro-image", promptText: "SECRET PROMPT", promptSha: "abc", usage: { t: 1 }, inputs: [{ role: "source" }],
 };
 const howDb = async (rec = GENLOG_REC, genOver = {}) => {
@@ -962,6 +962,11 @@ const howDb = async (rec = GENLOG_REC, genOver = {}) => {
   if (rec) await db.ref(`${core.GENLOG}/G-0042`).set(rec);
   return db;
 };
+
+test("how: a draft that is not on our own storage is never shown", async () => {
+  const r = await na.how(await howDb({ code: "G-0042", thoughts: "t", drafts: [{ url: "https://evil.example/x.jpg" }, { url: "https://firebasestorage.googleapis.com/v0/ok.jpg" }] }), { pid: PID, genId: "g1" });
+  assert.deepEqual(r.drafts, [{ url: "https://firebasestorage.googleapis.com/v0/ok.jpg" }]);
+});
 
 test("how: returns ONLY code, method, thoughts (verbatim), label, drafts [{url}] and model — two keyed reads", async () => {
   const db = await howDb();
@@ -971,7 +976,7 @@ test("how: returns ONLY code, method, thoughts (verbatim), label, drafts [{url}]
   const out = await na.how(db, { pid: PID, genId: "g1" });
   assert.deepEqual(out, {
     code: "G-0042", method: "split", thoughts: GENLOG_REC.thoughts, thoughtsLabel: "Gemini's own account — not proof",
-    drafts: [{ url: "https://x/d1.jpg" }, { url: "https://x/d2.jpg" }], model: "gemini-3-pro-image",
+    drafts: [{ url: "https://firebasestorage.googleapis.com/v0/d1.jpg" }, { url: "https://firebasestorage.googleapis.com/v0/d2.jpg" }], model: "gemini-3-pro-image",
   });
   assert.equal(JSON.stringify(out).includes("SECRET"), false, "never the prompt");
   assert.deepEqual(reads, [`${core.ITEMS}/${PID}/generations/g1/code`, `${core.GENLOG}/G-0042`]);
@@ -981,8 +986,8 @@ test("how: an older generation (no code, or no genlog record) → none; an absen
   const db = await howDb();
   assert.deepEqual(await na.how(db, { pid: PID, genId: "g2" }), { code: null, none: true });
   assert.deepEqual(await na.how(await howDb(null), { pid: PID, genId: "g1" }), { code: "G-0042", none: true });
-  const bare = await na.how(await howDb({ code: "G-0042", thoughts: "only this", drafts: { 0: { url: "https://x/d.jpg" }, 1: { path: "no-url" } } }), { pid: PID, genId: "g1" });
-  assert.deepEqual(bare, { code: "G-0042", method: null, thoughts: "only this", thoughtsLabel: core.THOUGHTS_LABEL, drafts: [{ url: "https://x/d.jpg" }], model: null });
+  const bare = await na.how(await howDb({ code: "G-0042", thoughts: "only this", drafts: { 0: { url: "https://firebasestorage.googleapis.com/v0/d.jpg" }, 1: { path: "no-url" } } }), { pid: PID, genId: "g1" });
+  assert.deepEqual(bare, { code: "G-0042", method: null, thoughts: "only this", thoughtsLabel: core.THOUGHTS_LABEL, drafts: [{ url: "https://firebasestorage.googleapis.com/v0/d.jpg" }], model: null });
 });
 
 test("how refuses bad ids and an unknown generation", async () => {
