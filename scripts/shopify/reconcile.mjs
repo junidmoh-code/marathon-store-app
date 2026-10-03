@@ -1441,13 +1441,18 @@ if (!ONLY) try {
 // Shopify. A quiet tick costs one read of an empty node. A failure never fails
 // the tick, because the markers survive and the next tick retries.
 if (!ONLY) try {
-  // A product taken OFF the storefront this tick re-enters the review list,
-  // and if it has no sellable stock no /stock event will ever mark it, because
-  // nothing moved. So it is marked here and judged in this same sweep. It is
-  // marked whatever the apply's outcome: if it is still on, the verdict is
-  // "show", which writes nothing.
-  for (const { pid, want } of capped) {
-    if (want === "off") await db.ref(`${REVIEW_DIRTY_PATH}/${pid}`).set(admin.database.ServerValue.increment(1));
+  // Every product whose intent this tick applied is re-judged in this same
+  // sweep, because a state change is not a stock event:
+  //   · taken OFF → it re-enters the review list. With no sellable stock it
+  //     must be hidden, and no /stock event would ever mark it.
+  //   · put ON → any old hidden entry is removed ("show"). Otherwise stock
+  //     that arrives while the product is live, which writes only the
+  //     inventory marker, would leave it wrongly hidden the day it goes off
+  //     again.
+  // It is marked whatever the apply's outcome. The verdict reads the node as
+  // it now is.
+  for (const { pid } of capped) {
+    await db.ref(`${REVIEW_DIRTY_PATH}/${pid}`).set(admin.database.ServerValue.increment(1));
   }
   const rv = await sweepReviewStock(db, {
     commit: true,

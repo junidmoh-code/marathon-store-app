@@ -816,7 +816,9 @@ export default function ShopifyPublishView({ products = [], onExit }) {
     const out = [];
     for (const [pid, n] of Object.entries(nodes)) {
       if (!pendingProposal(n)) continue;
-      if (reviewHidden.has(pid)) continue; // no sellable stock online
+      // No sellable stock online. Only an awaiting-tab product is held back,
+      // so a stale entry on a live product can never hide its proposal.
+      if (reviewHidden.has(pid) && publishTabFor(n) === "awaiting") continue;
       const p = productById.get(pid);
       if (!p) continue;
       // Same matcher as the tabs: the ORIGINAL catalogue name and style code,

@@ -120,7 +120,14 @@ export async function sweepReviewStock(db, { commit = false, max = MAX_PER_RUN, 
   const out = { seen: pids.length, hidden: 0, shown: 0, cleared: 0, kept: 0, failed: 0, results: [] };
   if (!pids.length) return out;
   const locNames = await locationNames(db);
-  for (const pid of pids.slice(0, max)) {
+  // Over the cap, the window starts at a random offset and wraps. Failed pids
+  // keep their markers, and a fixed front-of-queue slice would let them take
+  // the whole budget on every tick.
+  const from = pids.length > max ? Math.floor(Math.random() * pids.length) : 0;
+  const window = pids.length > max
+    ? Array.from({ length: max }, (_, i) => pids[(from + i) % pids.length])
+    : pids;
+  for (const pid of window) {
     const revision = markers[pid];
     try {
       const j = await judgeProduct(db, pid, locNames);
