@@ -1181,9 +1181,9 @@ function computeRefillPlan(snapshot) {
         continue;
       }
       // A LOCK-LESS shop ← Central row whose shop's hub holds the product is
-      // withdrawn exactly as a locked one is (shop-source-rule.cjs). No stock
-      // proof at the destination — the reason is the hub's presence — and the
-      // apply re-checks "untouched" inside the transaction.
+      // withdrawn exactly as a locked one is (shop-source-rule.cjs). qty 0:
+      // the apply's destination-stock proof asks for nothing (the reason is
+      // the hub's presence), and it re-checks "untouched" in the transaction.
       if (locklessIds.has(id)) {
         const hubServes = shopCentralWithdrawal({
           dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,

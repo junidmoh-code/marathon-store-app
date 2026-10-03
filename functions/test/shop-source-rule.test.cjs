@@ -281,7 +281,10 @@ const scan = require("../refill-scan.cjs");
 
 test("a mis-typed registry kind never switches the rule off: registry OR route shape", () => {
   const routes = CONFIG.routes;
-  for (const kind of ["shop", "Store ", "STORE"]) assert.equal(rule.isShopLoc("trophy", { routes, locations: { trophy: { kind } } }), true, kind);
+  for (const kind of ["shop", "Store ", "STORE"]) {
+    assert.equal(rule.isShopLoc("trophy", { routes, locations: { trophy: { kind } } }), true, kind);
+    assert.equal(rule.isShopLoc("trophy", { routes: { ...routes, trophy: "central" }, locations: { trophy: { kind } } }), true, `${kind} over a broken route`);
+  }
   assert.equal(rule.isShopLoc("trophy", { routes, locations: { trophy: { kind: "warehouse" } } }), true, "the route shape still says shop");
   assert.equal(rule.isShopLoc("trophy", { routes: { ...routes, trophy: "central" }, locations: { trophy: { kind: "warehouse" } } }), false);
 });

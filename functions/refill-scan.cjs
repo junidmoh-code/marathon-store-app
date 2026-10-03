@@ -303,9 +303,7 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
     // arrived — so the live-cell proof below has nothing to verify and would
     // wrongly mark every one of them stale (the cell is empty by definition).
     // The status transaction still guards against a request resolved meanwhile.
-    // A hub-present withdrawal (shop-source-rule.cjs) is likewise not about the
-    // destination's cell: its condition is "untouched", re-checked below.
-    if (!s.deactivated && !s.hubPresent) {
+    if (!s.deactivated) {
       const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
       const already = consumed.get(cellKey) || 0;
       try {
