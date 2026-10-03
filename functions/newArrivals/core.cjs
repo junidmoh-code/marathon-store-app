@@ -310,7 +310,11 @@ function keyCmp(a, b) {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
+// The most index keys one list call reads per status (see listTab).
+const INDEX_CEILING = 2000;
+
 module.exports = {
+  INDEX_CEILING,
   ROOT, ITEMS, BY_STATUS, DECISIONS, STATUSES, TABS, TAB_OF, STATUSES_IN_TAB,
   ENQUEUE_WINDOW_MS, ENQUEUE_SKEW_MS, PID_RE,
   enqueueDecision, buildItem, moveMutator, moved, indexMove, indexRepair,

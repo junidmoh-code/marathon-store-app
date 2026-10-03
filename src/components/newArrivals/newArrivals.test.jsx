@@ -459,7 +459,7 @@ describe("header agreement %", () => {
     const api = fakeApi([ready()], { list: vi.fn(async () => ({ items: [ready()], tabCounts: {}, stats, modes: { footwear: "auto" } })) });
     const tree = await render(api);
     expect(testid(tree, "agreement").map((n) => text({ toJSON: () => n.children }))[0])
-      .toBe("Agreement with you: Footwear 83% (auto) · Clothing — · Two-piece —");
+      .toMatch(/^Agreement with you: Footwear 83% \(auto\) · Clothing — · Two-piece —/);
     expect(view.agreementText(null, "footwear")).toBe("—");
   });
 });
@@ -476,5 +476,14 @@ describe("view helpers for calibration", () => {
     expect(view.verdictText(null)).toBeNull();
     expect(view.stockText({ stockKnown: true, availableSizes: ["8"], totalUnits: 1 })).toBe("In stock: 8 — 1 unit");
     expect(view.REJECT_CHIPS).toHaveLength(7);
+  });
+});
+
+import { rejectRateText } from "./newArrivalsView";
+describe("header: reject rate and cost per finished photo", () => {
+  it("shows Junid's reject rate, top reasons and cost — or dashes before any data", () => {
+    expect(rejectRateText(null)).toBe("Rejected — · cost per finished photo —");
+    expect(rejectRateText({ rejectRate: { pct: 20, n: 25, byReason: { blurry: 3, framing: 2 } }, costPerFinishedZar: 4.5 }))
+      .toBe("Rejected 20% of 25 (target under 15%) — blurry 3, framing 2 · R4.50 per finished photo");
   });
 });

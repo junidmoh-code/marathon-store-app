@@ -348,6 +348,20 @@ test("generate: New → generateRequest set, once; a decision is logged", async 
   const again = await na.generate(db, { pids: [pid(0)] }, "junid", NOW + 8);
   assert.match(again.skipped[0].why, /already requested/);
   assert.deepEqual((await decisions(db)).map((d) => d.action), ["generate", "generate"]);
+  // The poster's small index: one entry per request; Skip removes it.
+  assert.equal((await db.ref(`${core.ROOT}/requests/${pid(0)}`).once()).val(), NOW + 7);
+  await na.skip(db, { pids: [pid(0)] }, "junid", NOW + 9);
+  assert.equal((await db.ref(`${core.ROOT}/requests/${pid(0)}`).once()).val(), null);
+});
+
+test("regenerate marks its request as a regeneration (logged with its reason and cost by the generator)", async () => {
+  const db = lane(1);
+  await db.ref(`${core.ITEMS}/${pid(0)}`).update({ status: "ready", generatedUrl: "https://x/g.jpg" });
+  await db.ref(`${core.BY_STATUS}/new/${pid(0)}`).set(null);
+  await db.ref(`${core.BY_STATUS}/ready/${pid(0)}`).set(1);
+  await na.generate(db, { pids: [pid(0)], regenerate: true }, "junid", NOW + 7);
+  const it = (await db.ref(`${core.ITEMS}/${pid(0)}`).once()).val();
+  assert.equal(it.generateRequest.regenerate, true);
 });
 
 test("regenerate: Ready/Rejected → New with a request; earlier generations kept; Ready refused without the flag", async () => {

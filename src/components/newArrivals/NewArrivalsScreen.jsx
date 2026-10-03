@@ -19,7 +19,7 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
 import {
   TABS, REJECT_CHIPS, FILTER_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
-  shopifyNameLine, needsStockPrice, generationsOf, costText, totalCostZar, verdictText, stockText, agreementText,
+  shopifyNameLine, needsStockPrice, generationsOf, costText, totalCostZar, verdictText, stockText, agreementText, rejectRateText,
   toggleFilter, chipOn, filterActive,
 } from "./newArrivalsView";
 
@@ -295,6 +295,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
       </div>
       <div data-testid="agreement" style={{ color: GRAY, fontSize: 12, marginBottom: 12 }}>
         Agreement with you: {Object.entries(CLASS_LABELS).map(([cls, l]) => `${l} ${agreementText(stats, cls)}${data.modes?.[cls] === "auto" ? " (auto)" : ""}`).join(" · ")}
+        <div data-testid="reject-rate" style={{ marginTop: 2 }}>{rejectRateText(stats)}</div>
       </div>
       <div role="tablist" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {TABS.map((t) => (

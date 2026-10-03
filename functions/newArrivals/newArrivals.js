@@ -131,8 +131,13 @@ async function listTab(db, tab, { cursor = null, limit, filter = null } = {}) {
   const after = cursor && core.PID_RE.test(String(cursor)) ? String(cursor) : null;
   const statuses = core.STATUSES_IN_TAB[tab];
 
+  // Each status index is read BY KEY with a ceiling (never unbounded — Done
+  // grows for ever); a lane past the ceiling shows "N+".
   const index = {};
-  await Promise.all(core.STATUSES.map(async (s) => { index[s] = Object.keys((await val(db, `${core.BY_STATUS}/${s}`)) || {}); }));
+  await Promise.all(core.STATUSES.map(async (s) => {
+    const snap = await db.ref(`${core.BY_STATUS}/${s}`).orderByKey().limitToFirst(core.INDEX_CEILING + 1).once("value");
+    index[s] = Object.keys(snap.val() || {});
+  }));
   const tabCounts = {};
   for (const t of core.TABS) tabCounts[t] = core.STATUSES_IN_TAB[t].reduce((c, s) => c + index[s].length, 0);
   const laneKeys = [...new Set(statuses.flatMap((s) => index[s]))].sort(core.keyCmp);
@@ -227,7 +232,9 @@ async function logDecision(db, { pid, action, reason = null, prev, uid, nowMs })
   let categoryKey = prev && prev.categoryKey;
   if (!categoryKey) categoryKey = await val(db, `products/${pid}/categoryKey`);
   const rec = core.decisionRecord({ pid, at: nowMs, by: uid, action, reason, item: prev, categoryKey });
-  await db.ref(core.DECISIONS).push().set(rec);
+  const ref = db.ref(core.DECISIONS).push();
+  // The item already moved: its decision must not be lost to one blip.
+  try { await ref.set(rec); } catch { await ref.set(rec); }
   return rec;
 }
 
@@ -305,11 +312,13 @@ async function generate(db, { pids, regenerate }, uid, nowMs) {
       from, to: "new", at: nowMs,
       guard: (cur) => (cur.status === "new" && cur.generateRequest ? "already requested — the generator will take it" : null),
       fields: (cur) => ({
-        generateRequest: { at: nowMs, by: uid || "unknown" },
+        generateRequest: { at: nowMs, by: uid || "unknown", ...(cur.status === "new" ? {} : { regenerate: true }) },
         ...(cur.status === "new" ? {} : { ...NEW_LAP, attemptsSinceRetry: 0, lastRejection: cur.rejection || cur.lastRejection || null }),
       }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
+    // The poster reads ONLY this small index each minute (never a scan of New).
+    await db.ref(`${core.ROOT}/requests/${pid}`).set(nowMs);
     await logDecision(db, { pid, action: r.prev.status === "new" ? "generate" : "regenerate", prev: r.prev, uid, nowMs });
     requested.push(pid);
   });
@@ -335,6 +344,7 @@ async function skip(db, { pids }, uid, nowMs) {
       fields: () => ({ skippedAt: nowMs, skippedBy: uid || "unknown", generateRequest: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
+    await db.ref(`${core.ROOT}/requests/${pid}`).set(null);
     await logDecision(db, { pid, action: "skip", prev: r.prev, uid, nowMs });
     done.push(pid);
   });

@@ -51,6 +51,20 @@ export function agreementText(stats, cls) {
   return pct === null || pct === undefined || !Number.isFinite(Number(pct)) ? "—" : `${Math.round(Number(pct))}%`;
 }
 
+/** The header's reject-rate line: Junid's rejects, top reasons, cost per finished photo. Pure. */
+export function rejectRateText(stats) {
+  const r = stats?.rejectRate;
+  const pct = Number(r?.pct);
+  const parts = [];
+  if (r && Number.isFinite(pct) && Number(r.n) > 0) {
+    const top = Object.entries(r.byReason || {}).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, v]) => `${k} ${v}`).join(", ");
+    parts.push(`Rejected ${Math.round(pct)}% of ${r.n} (target under 15%)${top ? ` — ${top}` : ""}`);
+  } else parts.push("Rejected —");
+  const c = Number(stats?.costPerFinishedZar);
+  parts.push(Number.isFinite(c) && c > 0 ? `R${c.toFixed(2)} per finished photo` : "cost per finished photo —");
+  return parts.join(" · ");
+}
+
 /** Every paid generation, newest first, as [{ genId, ...gen }]. Pure. */
 export function generationsOf(item) {
   const g = item?.generations;
