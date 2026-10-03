@@ -48,7 +48,13 @@ export const RETRY_AFTER_MS = 30 * 60 * 1000;
 async function decide(db, pid, node, mutator, args, ctx) {
   let refusal = null;
   const res = await db.ref(`shopify_publish/${pid}`).transaction((cur) => {
-    const out = mutator(cur || node || {}, args, ctx);
+    const base = cur || node || {};
+    // Re-checked INSIDE the transaction, against the server's value: a person
+    // may have published (or the reconciler confirmed) this product since it
+    // was read. The agent never writes to a product on or going on — not even
+    // the condition, which the button mutators alone would allow.
+    if (isOnOrGoingOn(base)) { refusal = "on or going on the storefront"; return undefined; }
+    const out = mutator(base, args, ctx);
     if (out.refusal) { refusal = out.refusal; return undefined; }
     return out.next;
   });

@@ -70,6 +70,24 @@ describe("autoPublishOne", () => {
     expect(JSON.stringify(f.store.shopify_publish)).toBe(before);
   });
 
+  it("a product published by a person MID-RUN is not written: the transaction re-checks", async () => {
+    const f = fakeDb(world({ node: { state: "awaiting", cleanName: "Club Tee Plain", condition: "Good — light signs of wear" } }));
+    // Between the agent's read and its first transaction, someone publishes.
+    const orig = f.db.ref;
+    let flipped = false;
+    f.db.ref = (path) => {
+      const r = orig(path);
+      if (path === "shopify_publish/p1" && !flipped) {
+        const t = r.transaction;
+        r.transaction = async (u) => { flipped = true; f.store.shopify_publish.p1.desiredState = "on"; return t(u); };
+      }
+      return r;
+    };
+    const r = await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] });
+    expect(r.outcome).toBe("wait");
+    expect(pub(f).condition).toBe("Good — light signs of wear"); // untouched
+  });
+
   it("leaves a BLOCKED product for a person", async () => {
     const f = fakeDb(world({ node: { state: "blocked", blockedReason: "trigger word" } }));
     expect((await autoPublishOne(f.db, "p1", { now, locNames: ["pe"] })).outcome).toBe("done");
