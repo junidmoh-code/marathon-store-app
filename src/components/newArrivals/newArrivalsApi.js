@@ -13,7 +13,7 @@ export const newArrivalsApi = {
   // and Rejected: { items, total, nextCursor, tabCounts, groupCounts, stats, modes, matchingPids? }.
   list: (tab, { cursor = null, limit = 30, group = null } = {}) =>
     call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(group ? { group } : {}) }),
-  approve: (pids, { anyway = false } = {}) => call("newArrivalsApprove")({ pids, ...(anyway ? { anyway: true } : {}) }),
+  approve: (pids, { anyway = false, genId = null } = {}) => call("newArrivalsApprove")({ pids, ...(anyway ? { anyway: true } : {}), ...(genId ? { genId } : {}) }),
   approveAll: () => call("newArrivalsApprove")({ all: true }),
   retry: (pid) => call("newArrivalsRetry")({ pid }),
   generate: (pids, { regenerate = false } = {}) => call("newArrivalsGenerate")({ pids, ...(regenerate ? { regenerate: true } : {}) }),

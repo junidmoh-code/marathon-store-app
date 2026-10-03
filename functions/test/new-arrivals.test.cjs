@@ -518,7 +518,7 @@ test("approve anyway still needs a stock price and a generated photo", async () 
 
 test("decisionRecord never carries undefined and tolerates absent generations", () => {
   const r = core.decisionRecord({ pid: PID, at: 1, by: null, action: "skip", item: { categoryKey: "hoodies" } });
-  assert.deepEqual(r, { pid: PID, at: 1, by: "unknown", action: "skip", reason: null, class: "single", categoryKey: "hoodies", genId: null, gen: null });
+  assert.deepEqual(r, { pid: PID, at: 1, by: "unknown", action: "skip", reason: null, class: "single", categoryKey: "hoodies", genId: null, gen: null, checkerWrong: null });
   assert.throws(() => core.decisionRecord({ pid: PID, at: 1, action: "nope" }), /unknown decision/);
 });
 
@@ -623,6 +623,34 @@ test("approve and approve anyway use the SELECTED photo (generatedUrl + ledger s
   assert.equal(it2.generatedUrl, G3.url);
   const a = (await decisions(db2)).find((d) => d.action === "approve-anyway");
   assert.equal(a.genId, "g3");
+});
+
+test("Approve anyway on ONE generation of a Rejected item approves THAT photo, logged 'checker wrong' per failed rule", async () => {
+  const db = withGens("rejected", { rejection: { code: "generation", reason: "x", at: 1 } });
+  const out = await na.approve(db, { pids: [PID], anyway: true, genId: "g3" }, "junid", NOW + 2);
+  assert.deepEqual(out.approved, [PID]);
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "approved");
+  assert.equal(it.currentGen, "g3");
+  assert.equal(it.generatedUrl, G3.url, "the chain posts the approved generation");
+  const d = (await decisions(db)).find((x) => x.action === "approve-anyway");
+  assert.equal(d.genId, "g3");
+  assert.deepEqual(d.checkerWrong, ["framing"]);
+  // No failed rules on the generation → the rejection code stands in.
+  assert.deepEqual(core.checkerWrongRules({ verdict: { pass: true, failed: [] } }, { rejection: { code: "generation" } }), ["generation"]);
+});
+
+test("Approve anyway with a generation: needs the flag, one item, a real photo, and a stock price", async () => {
+  const db = withGens("rejected", { rejection: { code: "junid", reason: "x", at: 1 } });
+  await assert.rejects(na.approve(db, { pids: [PID], genId: "g3" }, "junid", NOW), /one item at a time/);
+  await assert.rejects(na.approve(db, { pids: [PID, "p1789999990001"], anyway: true, genId: "g3" }, "junid", NOW), /one item at a time/);
+  const nope = await na.approve(db, { pids: [PID], anyway: true, genId: "zz" }, "junid", NOW);
+  assert.deepEqual(nope.approved, []);
+  await db.ref(`products/${PID}/stockPrice`).set(null);
+  const unpriced = await na.approve(db, { pids: [PID], anyway: true, genId: "g3" }, "junid", NOW);
+  assert.deepEqual(unpriced.approved, []);
+  assert.match(unpriced.skipped[0].why, /stock price/);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "rejected");
 });
 
 test("pick is a ledger action; newArrivalsSelect is exported from index", () => {

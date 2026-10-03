@@ -537,8 +537,24 @@ describe("Ready / Rejected: every generation, verdict label, chips, Approve anyw
     const tree = await render(api, "rejected");
     expect(tree.root.findAll((n) => n.type === "img")).toHaveLength(3);
     expect(text(tree)).toContain("You rejected it: framing");
-    await act(async () => { button(tree, "Approve anyway").props.onClick(); });
+    const anyway = tree.root.findAll((n) => n.type === "button" && label(n) === "Approve anyway");
+    // One per earlier generation (g1) + the main one.
+    expect(anyway).toHaveLength(2);
+    await act(async () => { anyway[anyway.length - 1].props.onClick(); });
     expect(api.approve).toHaveBeenCalledWith(["p1789999990000"], { anyway: true });
+    await act(async () => { anyway[0].props.onClick(); });
+    expect(api.approve).toHaveBeenLastCalledWith(["p1789999990000"], { anyway: true, genId: "g1" });
+  });
+
+  it("Rejected with no stock price: Approve anyway is SHOWN but disabled, with 'add stock price first'", async () => {
+    const rej = withGens({ status: "rejected", rejection: { code: "generation", reason: "x", at: NOW } });
+    rej.product = { ...rej.product, stockPrice: null };
+    const api = fakeApi([], { savePrices: vi.fn(), list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) });
+    const tree = await render(api, "rejected");
+    const anyway = tree.root.findAll((n) => n.type === "button" && label(n) === "Approve anyway");
+    expect(anyway).toHaveLength(2);
+    for (const b of anyway) expect(b.props.disabled).toBe(true);
+    expect(text(tree)).toContain("add stock price first");
   });
 
   it("Done shows every generation too", async () => {

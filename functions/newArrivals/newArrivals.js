@@ -336,7 +336,14 @@ function pidList(pids) {
 // ── approve ──────────────────────────────────────────────────────────────────
 // Ready → approved. With `anyway`, a Rejected item too ("Approve anyway":
 // straight into the approved chain). A stock price is required either way.
-async function approve(db, { pids, all, anyway }, uid, nowMs) {
+async function approve(db, { pids, all, anyway, genId }, uid, nowMs) {
+  // "Approve anyway" on ONE generation of a Rejected item approves THAT photo
+  // (it becomes the main one in the same transaction); none named = the main one.
+  const pickGen = genId === undefined || genId === null ? null : String(genId);
+  if (pickGen !== null) {
+    if (anyway !== true || !Array.isArray(pids) || pids.length !== 1) throw new HttpsError("invalid-argument", "A generation is approved one item at a time, with Approve anyway.");
+    if (!core.GEN_ID_RE.test(pickGen)) throw new HttpsError("invalid-argument", "Not a generation id.");
+  }
   let targets = [];
   if (all === true) {
     targets = Object.keys((await db.ref(`${core.BY_STATUS}/ready`).once("value")).val() || {});
@@ -359,10 +366,15 @@ async function approve(db, { pids, all, anyway }, uid, nowMs) {
     }
     const r = await moveOne(db, pid, {
       from, to: "approved", at: nowMs, uid,
-      decision: (prev) => ({ action: prev.status === "rejected" ? "approve-anyway" : "approve" }),
+      decision: (prev) => ({ action: prev.status === "rejected" ? "approve-anyway" : "approve", ...(pickGen ? { genId: pickGen } : {}) }),
       // Approve only what has a generated photo — never an original.
-      guard: (cur) => (cur.generatedUrl ? null : "it has no generated photo"),
+      guard: (cur) => {
+        if (!pickGen) return cur.generatedUrl ? null : "it has no generated photo";
+        const g = cur.generations && cur.generations[pickGen];
+        return g && typeof g === "object" && g.url ? null : "that generation has no photo on this item";
+      },
       fields: (cur) => ({
+        ...(pickGen && cur.currentGen !== pickGen ? core.selectFields(cur.generations[pickGen], pickGen, nowMs) : {}),
         approvedAt: nowMs, approvedBy: uid || "unknown",
         ...(cur.status === "rejected" ? { lastRejection: cur.rejection || null, rejection: null } : {}),
       }),

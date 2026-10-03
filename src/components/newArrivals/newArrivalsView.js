@@ -270,7 +270,9 @@ export function actionsFor(item) {
   return {
     approve: s === "ready",
     approveEnabled: s === "ready" && !!item?.generatedUrl && priced,
-    approveAnyway: s === "rejected" && !!item?.generatedUrl && priced,
+    // Shown on every Rejected item with a photo; enabled only with a stock price.
+    approveAnyway: s === "rejected" && !!item?.generatedUrl,
+    approveAnywayEnabled: s === "rejected" && !!item?.generatedUrl && priced,
     generate: s === "new" && !item?.generateRequest,
     regenerate: s === "ready" || s === "rejected",
     reject: s === "ready",
