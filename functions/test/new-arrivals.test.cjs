@@ -136,6 +136,19 @@ test("reject accepts an older item whose photo is only on its current generation
   assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "rejected");
 });
 
+test("paging: an item regenerated at the page boundary never makes the rest of its bucket vanish (CodeRabbit)", async () => {
+  const items = {};
+  const by = { ready: {}, new: {} };
+  for (let i = 0; i < 4; i++) { const p = `p17899999000${String(i).padStart(2, "0")}`; items[p] = { pid: p, status: "ready", enqueuedAt: i, generatedUrl: `https://x/${i}.jpg`, currentGen: "g", generations: { g: { url: `https://x/${i}.jpg` } } }; by.ready[p] = i; }
+  const db = makeFakeDb({ new_arrivals: { items, by_status: by }, products: Object.fromEntries(Object.keys(items).map((p) => [p, { name: p, categoryKey: "sneakers", category: "Footwear", stockPrice: 1 }])) });
+  const p1 = await na.listTab(db, "new", { group: "sneakers", limit: 2 });
+  assert.deepEqual(p1.items.map((i) => i.pid), ["p1789999900000", "p1789999900001"]);
+  // Junid taps Regenerate on the LAST item of page 1: it is now "generating".
+  await db.ref(`new_arrivals/requests/p1789999900001`).set(5);
+  const p2 = await na.listTab(db, "new", { group: "sneakers", limit: 2, cursor: p1.nextCursor });
+  assert.deepEqual(p2.items.map((i) => i.pid), ["p1789999900002", "p1789999900003"], "the rest of the photo-ready bucket is still there");
+});
+
 test("a redelivered enqueue repairs a missing index entry", async () => {
   const db = makeFakeDb({ new_arrivals: { items: { [PID]: { pid: PID, status: "ready", enqueuedAt: 7 } } } });
   // Even a delivery far outside the window repairs it.
@@ -207,7 +220,7 @@ test("list pages 30 at a time by key with a cursor, and reports the total", asyn
   assert.equal(p1.total, 75);
   assert.equal(p1.tabCounts.new, 75);
   assert.equal(p1.items[0].pid, pid(0));
-  assert.equal(p1.nextCursor, pid(29));
+  assert.equal(core.parseBucketCursor(p1.nextCursor).pid, pid(29));
   const p2 = await na.listTab(db, "new", { cursor: p1.nextCursor });
   assert.equal(p2.items[0].pid, pid(30));
   const p3 = await na.listTab(db, "new", { cursor: p2.nextCursor });
@@ -226,7 +239,7 @@ test("the New tab merges new + generating (generating before no photo yet); gene
   const out = await na.listTab(db, "new", { limit: 2 });
   assert.deepEqual(out.items.map((i) => i.pid), [pid(1), pid(0)]);
   assert.equal(out.total, 3);
-  assert.equal(out.nextCursor, pid(0));
+  assert.equal(core.parseBucketCursor(out.nextCursor).pid, pid(0));
   assert.deepEqual((await na.listTab(db, "new", { limit: 2, cursor: out.nextCursor })).items.map((i) => i.pid), [pid(2)]);
   assert.deepEqual(out.matchingPids, [pid(0), pid(2)]);
 });
@@ -273,7 +286,7 @@ test("filters: one size, category chip, no stock price — total is the filtered
   assert.deepEqual(ids(await na.listTab(db, "new", { filter: { noStockPrice: true, cls: "slides" } })), [pid(1)]);
   // A filtered page still pages.
   const pg = await na.listTab(db, "new", { filter: { noStockPrice: true }, limit: 2 });
-  assert.equal(pg.nextCursor, pid(3));
+  assert.equal(core.parseBucketCursor(pg.nextCursor).pid, pid(3));
   assert.deepEqual(ids(await na.listTab(db, "new", { filter: { noStockPrice: true }, limit: 2, cursor: pg.nextCursor })), [pid(5)]);
 });
 
@@ -323,7 +336,7 @@ test("list by group: the page, total and select-all come from the group; groupCo
   // Pages within the group by cursor.
   const p1 = await na.listTab(db, "new", { group: "sneakers", limit: 3 });
   assert.deepEqual(ids(p1), [pid(0), pid(2), pid(3)]);
-  assert.equal(p1.nextCursor, pid(3));
+  assert.equal(core.parseBucketCursor(p1.nextCursor).pid, pid(3));
   const p2 = await na.listTab(db, "new", { group: "sneakers", limit: 3, cursor: p1.nextCursor });
   assert.deepEqual(ids(p2), [pid(5)]);
   assert.equal(p2.nextCursor, null);
@@ -816,7 +829,7 @@ test("merged New tab lists all four lanes, ordered photo → generating → no p
   assert.deepEqual((await na.listTab(db, "new", {})).items.map((i) => i.pid), ORDER);
 });
 
-test("paging follows the bucket order across buckets; the cursor is the last pid of the page", async () => {
+test("paging follows the bucket order across buckets; the cursor names the last pid of the page (with its bucket)", async () => {
   const db = mergedLanes();
   const seen = [];
   let cursor = null;
@@ -825,7 +838,7 @@ test("paging follows the bucket order across buckets; the cursor is the last pid
     const page = await na.listTab(db, "new", { group: "sneakers", limit: 3, cursor });
     seen.push(...page.items.map((i) => i.pid));
     cursor = page.nextCursor;
-    if (cursor) { cursors.push(cursor); assert.equal(cursor, page.items[page.items.length - 1].pid); }
+    if (cursor) { const c = core.parseBucketCursor(cursor).pid; cursors.push(c); assert.equal(c, page.items[page.items.length - 1].pid); }
   } while (cursor);
   assert.deepEqual(seen, ORDER, "no item twice, none missed, in order");
   assert.deepEqual(cursors, [pid(5), pid(0)]);

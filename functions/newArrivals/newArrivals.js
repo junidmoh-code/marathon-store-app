@@ -178,7 +178,12 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
   const tab = core.normalizeTab(tabAsked);
   if (!tab) throw new HttpsError("invalid-argument", "Unknown tab.");
   const n = core.listLimit(limit);
-  const after = cursor && core.PID_RE.test(String(cursor)) ? String(cursor) : null;
+  // The New tab's cursor carries the bucket the last item was IN when the page
+  // was cut ("<rank>:<pid>"), so an item that changes bucket between pages
+  // (e.g. Regenerate → generating) never makes the rest of its bucket vanish.
+  const bucketCursor = core.parseBucketCursor(cursor);
+  const after = bucketCursor ? bucketCursor.pid : cursor && core.PID_RE.test(String(cursor)) ? String(cursor) : null;
+  let cursorOut = null;
   const statuses = core.STATUSES_IN_TAB[tab];
 
   // Each status index is read BY KEY with a ceiling (never unbounded — Done
@@ -225,18 +230,22 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
     const reqSnap = await db.ref(`${core.ROOT}/requests`).orderByKey().limitToFirst(core.INDEX_CEILING + 1).once("value");
     const requested = new Set(Object.keys(reqSnap.val() || {}));
     const buckets = await bucketsOf(db, matching, laneOf, requested);
-    if (after && !buckets.has(after)) {
-      // The cursor's item left this list since the last page (approved,
-      // skipped, regrouped): place it by its bucket as it is now.
+    if (after && !bucketCursor && !buckets.has(after)) {
+      // An old-style cursor whose item left this list since the last page
+      // (approved, skipped, regrouped): place it by its bucket as it is now.
       const lane = laneOf.get(after) || await val(db, `${core.ITEMS}/${after}/status`);
       (await bucketsOf(db, [after], new Map([[after, lane]]), requested)).forEach((b, k) => buckets.set(k, b));
     }
+    const rankOf = (k) => core.bucketRank(buckets.get(k));
     const cmp = core.bucketCmp((k) => buckets.get(k));
     matching = [...matching].sort(cmp);
-    const rest = after ? matching.filter((k) => cmp(k, after) > 0) : matching;
+    // Position after the cursor by the rank it HAD (bucket cursor) or has now.
+    const afterRank = bucketCursor ? bucketCursor.rank : after ? rankOf(after) : null;
+    const rest = after ? matching.filter((k) => (rankOf(k) - afterRank || core.keyCmp(k, after)) > 0) : matching;
     pageKeys = rest.slice(0, n);
     more = rest.length > n;
     total = matching.length;
+    if (more && pageKeys.length) { const last = pageKeys[pageKeys.length - 1]; cursorOut = `${rankOf(last)}:${last}`; }
   } else {
     const pages = await Promise.all(statuses.map(async (s) => {
       let q = db.ref(`${core.BY_STATUS}/${s}`).orderByKey();
@@ -262,7 +271,7 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
 
   const [stats, modes] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`)]);
   const out = {
-    tab, items, total, nextCursor: more && pageKeys.length ? pageKeys[pageKeys.length - 1] : null,
+    tab, items, total, nextCursor: cursorOut || (more && pageKeys.length ? pageKeys[pageKeys.length - 1] : null),
     tabCounts, stats: stats || null, modes: modes || {}, filter: f, group: g, groupCounts,
   };
   // Every pid the tab's multi-select can act on — the whole group (or

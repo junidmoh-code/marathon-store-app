@@ -81,6 +81,12 @@ function photoBucket({ lane, requested = false, currentGen = null, generatedUrl 
 }
 const bucketRank = (b) => { const i = BUCKETS.indexOf(b); return i < 0 ? BUCKETS.length : i; };
 /** Compare two pids by (bucket, key). `bucketOf` maps pid → bucket. Pure. */
+/** "<rank>:<pid>" → { rank, pid }, or null for any other cursor. Pure. */
+function parseBucketCursor(cursor) {
+  const m = /^(\d):(.+)$/.exec(String(cursor || ""));
+  return m && PID_RE.test(m[2]) ? { rank: Number(m[1]), pid: m[2] } : null;
+}
+
 function bucketCmp(bucketOf) {
   return (a, b) => bucketRank(bucketOf(a)) - bucketRank(bucketOf(b)) || keyCmp(a, b);
 }
@@ -493,6 +499,7 @@ function keyCmp(a, b) {
 const INDEX_CEILING = 2000;
 
 module.exports = {
+  parseBucketCursor, bucketRank,
   currentGenUrl,
   checkerWrongRules, approveAction,
   INDEX_CEILING,
