@@ -90,6 +90,7 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // offering 220 variants it had none of. See inventorySync.mjs.
 import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog } from "./inventorySync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
+import { drainAutoPublish } from "./autoPublish.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
 // The per-run cap is SHARED with the page's batch-selection cap — one place,
 // so the UI can never promise a batch this script won't take in one run.
@@ -1468,6 +1469,24 @@ if (!ONLY) try {
   }
 } catch (e) {
   console.error(`  ⚠ review-stock sweep failed (${String(e?.message || e)}) — markers kept, the next tick retries`);
+}
+
+// ── Auto-publish (owner instruction 2026-10-03: no human review step) ───────
+// Products in the review list with 4+ units: AI name applied, Excellent,
+// publish INTENT written through the same mutators the buttons use. This run
+// already built its worklist, so they go to Shopify on the NEXT tick, through
+// every check the reconciler applies. Never touches a product that is on.
+// Off switch: /config/shopifyAutoPublish/enabled (absent = off).
+if (!ONLY) try {
+  const ap = await drainAutoPublish(db, { now: () => serverNowMs(db), log: (line) => console.error(line) });
+  if (ap.queued && ap.enabled) {
+    console.log(`\nauto-publish: ${ap.queued} queued · ${ap.published} sent to publish · ${ap.done} closed · ${ap.waiting} waiting` +
+      (ap.failed ? ` · ${ap.failed} failed (kept)` : ""));
+  } else if (ap.queued) {
+    console.log(`\nauto-publish: OFF (/config/shopifyAutoPublish/enabled) — ${ap.queued} queued`);
+  }
+} catch (e) {
+  console.error(`  ⚠ auto-publish failed (${String(e?.message || e)}) — the queue is kept, the next tick retries`);
 }
 
 if (!ONLY && sweepDue && liveNow) {

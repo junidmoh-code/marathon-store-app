@@ -2,62 +2,11 @@
 import { describe, it, expect } from "vitest";
 import {
   sweepReviewStock, judgeProduct, hasSellableStock, verdictFor, reviewBucket,
-  REVIEW_DIRTY_PATH, HIDDEN_PATH, MAX_PER_RUN,
+  REVIEW_DIRTY_PATH, HIDDEN_PATH, MAX_PER_RUN, REVIEW_MIN_UNITS, AUTOPUBLISH_QUEUE_PATH,
 } from "./reviewStock.mjs";
 import { networkTotals } from "./inventory.mjs";
 
-// ── A fake RTDB that behaves like one where it matters here ─────────────────
-// RTDB stores no empty objects. Removing the last child of a node removes the
-// node, and writing null deletes. A fake that kept `{ shopifyReviewHidden: {} }`
-// would let a test believe a node exists that the server has already dropped.
-// The transaction models the cold-cache null-first pass (see inventorySync.test).
-function fakeDb(store) {
-  const writes = [];
-  const parts = (path) => path.split("/").filter(Boolean);
-  const at = (path) => {
-    let n = store;
-    for (const p of parts(path)) { n = n?.[p]; if (n === undefined) return null; }
-    return n === undefined ? null : n;
-  };
-  const prune = (path) => {
-    const ps = parts(path);
-    for (let i = ps.length - 1; i >= 1; i--) {
-      const parent = at(ps.slice(0, i).join("/"));
-      const k = ps[i - 1];
-      if (parent && typeof parent === "object" && Object.keys(parent).length === 0) {
-        const gp = i - 1 === 0 ? store : at(ps.slice(0, i - 1).join("/"));
-        delete gp[k];
-      }
-    }
-  };
-  const setAt = (path, value) => {
-    const ps = parts(path);
-    if (value === null || value === undefined) {
-      const parent = at(ps.slice(0, -1).join("/"));
-      if (parent && typeof parent === "object") delete parent[ps.at(-1)];
-      prune(ps.slice(0, -1).join("/") + "/x");
-      return;
-    }
-    let n = store;
-    for (const p of ps.slice(0, -1)) { if (typeof n[p] !== "object" || n[p] === null) n[p] = {}; n = n[p]; }
-    n[ps.at(-1)] = value;
-  };
-  const db = {
-    ref: (path) => ({
-      get: async () => ({ val: () => at(path) }),
-      set: async (v) => { writes.push(["set", path, v]); setAt(path, v); },
-      remove: async () => { writes.push(["remove", path]); setAt(path, null); },
-      transaction: async (updater) => {
-        const optimistic = updater(null);
-        if (optimistic === undefined) return { committed: false, snapshot: { val: () => null } };
-        const next = updater(at(path));
-        if (next !== undefined) { writes.push(["txn", path, next]); setAt(path, next); }
-        return { committed: next !== undefined, snapshot: { val: () => at(path) } };
-      },
-    }),
-  };
-  return { db, writes, store };
-}
+import { fakeDb } from "./fakeRtdb.testutil.mjs";
 
 const TS = { ".sv": "timestamp" };
 const LOCS = { locations: { pe: {}, hub1: {}, "marathon-pine": {}, hub3: {}, in_transit: {} } };
@@ -82,8 +31,18 @@ describe("hasSellableStock IS networkTotals", () => {
     };
     expect(Object.values(networkTotals(tree, "p1", ["8", "9"])).some((q) => q > 0)).toBe(false);
     expect(hasSellableStock(tree, "p1", ["8", "9"])).toBe(false);
-    tree.hub1 = { p1: { "9": { qty: 1 } } };
+    tree.hub1 = { p1: { "9": { qty: 4 } } };
     expect(hasSellableStock(tree, "p1", ["8", "9"])).toBe(true);
+  });
+  it("the bar is 4 units, ALL SIZES TOGETHER, counted locations only", () => {
+    expect(REVIEW_MIN_UNITS).toBe(4);
+    // 3 units across two sizes and two shops: below the bar.
+    expect(hasSellableStock({ pe: { p1: { "8": { qty: 2 } } }, hub1: { p1: { "9": { qty: 1 } } } }, "p1", ["8", "9"])).toBe(false);
+    // 4 units across two sizes: at the bar.
+    expect(hasSellableStock({ pe: { p1: { "8": { qty: 2 } } }, hub1: { p1: { "9": { qty: 2 } } } }, "p1", ["8", "9"])).toBe(true);
+    // Pine's units never count toward the bar.
+    const withPine = { pe: { p1: { "8": { qty: 3 } } }, "marathon-pine": { p1: { "8": { qty: 9 } } } };
+    expect(hasSellableStock(withPine, "p1", ["8"])).toBe(false);
   });
   it("cannot judge a record with no sizes — null, never false", () => {
     expect(hasSellableStock({ pe: { p1: { "_": { qty: 0 } } } }, "p1", undefined)).toBe(null);
@@ -132,11 +91,26 @@ describe("sweepReviewStock", () => {
   });
 
   it("SHOWS it again when stock returns, and the empty hidden node disappears", async () => {
-    const f = fakeDb(world({ hidden: 123, stock: { hub1: { p1: { "9": { qty: 1 } } } } }));
+    const f = fakeDb(world({ hidden: 123, stock: { hub1: { p1: { "9": { qty: 4 } } } } }));
     const r = await sweepReviewStock(f.db, { commit: true, timestamp: TS });
     expect(r).toMatchObject({ shown: 1, hidden: 0, cleared: 1 });
+    // …and it is handed to the auto-publish agent.
+    expect(f.store[AUTOPUBLISH_QUEUE_PATH].p1).toEqual({ queuedAt: TS });
     expect(f.store.config.shopifyReviewHidden).toBeUndefined();
     expect(f.store.config.other).toEqual({ keep: true }); // siblings untouched
+  });
+
+  it("HIDES a product with 3 units (below the 4-unit bar) and does not queue it", async () => {
+    const f = fakeDb(world({ stock: { pe: { p1: { "8": { qty: 2 }, "9": { qty: 1 } } } } }));
+    const r = await sweepReviewStock(f.db, { commit: true, timestamp: TS });
+    expect(r.hidden).toBe(1);
+    expect(f.store[AUTOPUBLISH_QUEUE_PATH]).toBeUndefined();
+  });
+
+  it("never queues a product already on the storefront", async () => {
+    const f = fakeDb(world({ node: { state: "live", liveState: "on" }, stock: { pe: { p1: { "8": { qty: 9 } } } } }));
+    await sweepReviewStock(f.db, { commit: true, timestamp: TS });
+    expect(f.store[AUTOPUBLISH_QUEUE_PATH]).toBeUndefined();
   });
 
   it("keeps the ORIGINAL hidden time on a re-judgement", async () => {

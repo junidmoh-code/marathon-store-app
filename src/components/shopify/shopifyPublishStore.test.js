@@ -49,12 +49,18 @@ describe("publishProduct — the one path from review to intent", () => {
       nameApprovedAt: 1755000000000, blockedReason: null, updatedBy: "u1",
     });
   });
-  it("refuses without a condition — the gate to live has no default", async () => {
+  it("EXCELLENT BY DEFAULT: an ungraded product is graded Excellent, then published (2026-10-03)", async () => {
     serverNode = { state: "awaiting" };
     const res = await publishProduct("p1", serverNode, "Low-top sneaker black");
-    expect(res.ok).toBe(false);
-    expect(res.message).toMatch(/Condition not set/);
-    expect(serverNode.desiredState).toBeUndefined(); // nothing written
+    expect(res.ok).toBe(true);
+    expect(serverNode.condition).toBe(CONDITIONS[0]);
+    expect(serverNode.desiredState).toBe("on");
+  });
+  it("a Good grade on a not-live product becomes Excellent on publish", async () => {
+    serverNode = { state: "awaiting", condition: CONDITIONS[2] };
+    const res = await publishProduct("p1", serverNode, "Low-top sneaker black");
+    expect(res.ok).toBe(true);
+    expect(serverNode.condition).toBe(CONDITIONS[0]);
   });
   it("refuses when the SERVER says the product is already on", async () => {
     serverNode = { state: "live", liveState: "on", condition: COND };
