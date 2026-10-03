@@ -105,11 +105,13 @@ async function stockLocations(db) {
 
 // One product's summary + sizes in stock + units: products/{pid} and
 // stock/{loc}/{pid} per location — every read keyed, never a whole node.
-async function productDetail(db, pid, locations) {
+async function productDetail(db, pid, locations, { withStock = true } = {}) {
+  // Stock is read only when needed (the page's items, or the "1 size only" filter).
   const [product, ...cells] = await Promise.all([
     val(db, `products/${pid}`),
-    ...locations.map((loc) => val(db, `stock/${loc}/${pid}`)),
+    ...(withStock ? locations : []).map((loc) => val(db, `stock/${loc}/${pid}`)),
   ]);
+  if (!withStock) return { summary: core.productSummary(product), stock: null };
   const summary = core.productSummary(product);
   const tree = {};
   locations.forEach((loc, j) => { if (cells[j]) tree[loc] = cells[j]; });
@@ -161,10 +163,13 @@ async function listTab(db, tab, { cursor = null, limit, filter = null } = {}) {
     matching = laneKeys;
   } else {
     matching = [];
+    // Only "1 size only" needs stock to match; the other filters match on the
+    // product alone, and stock is then read just for the page's items.
+    const needStock = !!f.oneSize;
     await inBatches(laneKeys, 20, async (pid) => {
-      const d = await productDetail(db, pid, locations);
-      details.set(pid, d);
-      if (core.matchesFilter(d.summary, d.stock, f)) matching.push(pid);
+      const d = await productDetail(db, pid, locations, { withStock: needStock });
+      if (needStock) details.set(pid, d);
+      if (core.matchesFilter(d.summary, d.stock || core.stockSummary(d.summary ? d.summary.sizes : [], {}), f)) matching.push(pid);
     });
     matching.sort(core.keyCmp);
     const rest = after ? matching.filter((k) => core.keyCmp(k, after) > 0) : matching;
