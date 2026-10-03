@@ -237,12 +237,16 @@ function makeFakeDb(initial = {}, hooks = {}) {
           // a string comparison — `"10" >= "9"` is false lexicographically and
           // true here, which is exactly the cursor bug this fake exists to be
           // able to catch.
-          const i = self._startAt === undefined || self._startAt === null
-            ? 0 : keys.findIndex((k) => rtdbKeyCmp(k, self._startAt) >= 0);
+          // startAfter is the EXCLUSIVE twin (the New Arrivals pager's cursor).
+          const i = self._startAfter !== undefined && self._startAfter !== null
+            ? keys.findIndex((k) => rtdbKeyCmp(k, self._startAfter) > 0)
+            : self._startAt === undefined || self._startAt === null
+              ? 0 : keys.findIndex((k) => rtdbKeyCmp(k, self._startAt) >= 0);
           const from = i === -1 ? [] : keys.slice(i);
           return makeSnapshot(self.key, Object.fromEntries(from.slice(0, n).map((k) => [k, v[k]])));
         }, startAt(k) { self._startAt = k; return this; } }; },
         startAt(k) { self._startAt = k; return self; },
+        startAfter(k) { self._startAfter = k; return self; },
         // orderByKey().limitToLast(n): the last n children in RTDB key order.
         limitToLast(n) { return { async once() {
           if (hooks.beforeRead) await hooks.beforeRead(path, state);
