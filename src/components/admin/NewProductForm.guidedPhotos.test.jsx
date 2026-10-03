@@ -123,3 +123,19 @@ describe("everything else: unchanged", () => {
     expect(saveBtn(r).props.disabled).toBe(false);
   });
 });
+
+describe("footwear: No box never blocks", () => {
+  it("shoe + No box → the save is allowed", async () => {
+    const r = await mount({ form: { ...shoeForm, photoBlob: {}, photoUrl: "data:x", boxSkipped: true } });
+    expect(saveBtn(r).props.disabled).toBe(false);
+    expect(allText(r)).not.toMatch(/Still needed/);
+  });
+  it("the box step offers No box and passes the tap through", async () => {
+    const onSkipBox = vi.fn();
+    const r = await mount({ onSkipBox });
+    const box = r.root.findAllByType(GuidedPhotoStep)[1];
+    expect(box.props.onSkip).toBe(onSkipBox);
+    expect(r.root.findAllByType(GuidedPhotoStep)[0].props.onSkip).toBeNull();
+    expect(allText(r)).toMatch(/box photo \(or tap No box\)/);
+  });
+});

@@ -75,11 +75,11 @@ export const SHOE_STEP = Object.freeze({
   place: { cx: 0.5, cy: 0.62, maxW: 0.86, maxH: 0.5 },
 });
 
-// REQUIRED for every new footwear upload (Junid, 3 Oct: "footwear = shoe photo
-// + box photo"). Older products without one get a same-brand box from the
-// poster's box library.
+// REQUIRED as a DECISION for every new footwear upload — the box photo, or one
+// tap on "No box" (Junid, 3 Oct: the box step must never block an upload). A
+// shoe with no box photo gets a box of its brand from the poster's box library.
 export const BOX_STEP = Object.freeze({
-  id: "box", formField: "box", required: true,
+  id: "box", formField: "box", required: true, skippable: true, skipLabel: "No box",
   title: "Box photo",
   instruction: "The shoe's own box · front panel facing you · whole box in the outline",
   shape: BOX,
@@ -117,7 +117,8 @@ export function guideFor({ categoryKey, isFootwear, isClothing } = {}) {
 /** Has the form got the capture this step asks for? */
 export function stepFilled(step, form) {
   if (!step || !form) return false;
-  if (step.formField === "box") return !!form.boxBlob;
+  // "No box" (one tap) answers the box step as fully as a photo does.
+  if (step.formField === "box") return !!form.boxBlob || form.boxSkipped === true;
   return !!form.photoBlob;
 }
 

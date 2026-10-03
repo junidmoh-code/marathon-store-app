@@ -117,3 +117,18 @@ describe("box step covers every key the photo pipeline treats as footwear", () =
     expect(guideFor({ categoryKey: "sandals" }).steps.map((x) => x.id)).toEqual(["shoe", "box"]);
   });
 });
+
+describe("No box — one tap answers the box step", () => {
+  const shoes = guideFor({ categoryKey: "sneakers" });
+  it("the box step is skippable, labelled 'No box'", () => {
+    expect(BOX_STEP.skippable).toBe(true);
+    expect(BOX_STEP.skipLabel).toBe("No box");
+    expect(SHOE_STEP.skippable).toBeFalsy();
+  });
+  it("shoe + No box → nothing missing; No box alone still needs the shoe", () => {
+    expect(missingPhotoSteps(shoes, { photoBlob: {}, boxSkipped: true })).toEqual([]);
+    expect(missingPhotoSteps(shoes, { boxSkipped: true }).map((s) => s.id)).toEqual(["shoe"]);
+    expect(stepFilled(BOX_STEP, { boxSkipped: true })).toBe(true);
+    expect(stepFilled(BOX_STEP, { boxSkipped: "yes" })).toBe(false);
+  });
+});

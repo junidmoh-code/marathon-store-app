@@ -198,7 +198,7 @@ export default function GuidedPhotoCamera({ step, onCapture, onFallback, onClose
 }
 
 // ─── ONE STEP'S CARD ON THE NEW PRODUCT FORM ────────────────────────────────
-export function GuidedPhotoStep({ step, filled, previewUrl, onFile, invalid, disabled }) {
+export function GuidedPhotoStep({ step, filled, previewUrl, onFile, invalid, disabled, skipped = false, onSkip = null }) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const fileRef = useRef(null);
   const pick = () => { if (fileRef.current) fileRef.current.click(); };
@@ -221,7 +221,8 @@ export function GuidedPhotoStep({ step, filled, previewUrl, onFile, invalid, dis
       <div style={{ flex: 1, minWidth: 0, display: "flex", flexDirection: "column", gap: 6 }}>
         <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" }}>
           <span style={{ fontSize: 14, fontWeight: 800, color: "#fff" }}>{step.title}</span>
-          {filled && <span style={{ fontSize: 11, fontWeight: 800, color: "#4ADE80" }}>✓ TAKEN</span>}
+          {filled && !skipped && <span style={{ fontSize: 11, fontWeight: 800, color: "#4ADE80" }}>✓ TAKEN</span>}
+          {skipped && <span data-testid="skipped" style={{ fontSize: 11, fontWeight: 800, color: "#4ADE80" }}>✓ NO BOX — the brand's box is used if we have one</span>}
           {!filled && step.required && <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".06em", color: "#F87171" }}>REQUIRED</span>}
         </div>
         <div style={{ fontSize: 12, color: "rgba(233,238,255,.55)", lineHeight: 1.4 }}>{step.instruction}</div>
@@ -229,8 +230,16 @@ export function GuidedPhotoStep({ step, filled, previewUrl, onFile, invalid, dis
           <button type="button" onClick={take} disabled={disabled}
             style={{ background: "rgba(74,127,255,.18)", border: "1px solid rgba(74,127,255,.55)", borderRadius: 10,
                      color: "#D7E3FF", fontSize: 13, fontWeight: 800, padding: "9px 14px", minHeight: 40, cursor: "pointer" }}>
-            {filled ? "Retake" : `Take ${step.title.toLowerCase()}`}
+            {filled && !skipped ? "Retake" : `Take ${step.title.toLowerCase()}`}
           </button>
+          {/* One tap, no typing: "No box" answers a skippable step (the box). */}
+          {step.skippable && onSkip && (
+            <button type="button" onClick={() => onSkip(!skipped)} disabled={disabled} aria-pressed={skipped}
+              style={{ background: skipped ? "rgba(74,222,128,.15)" : "rgba(255,255,255,.06)", border: `1px solid ${skipped ? "rgba(74,222,128,.55)" : "rgba(255,255,255,.22)"}`,
+                       borderRadius: 10, color: skipped ? "#4ADE80" : "#E9EEFF", fontSize: 13, fontWeight: 800, padding: "9px 14px", minHeight: 40, cursor: "pointer" }}>
+              {skipped ? "Undo" : step.skipLabel}
+            </button>
+          )}
           <button type="button" onClick={pick} disabled={disabled}
             style={{ background: "transparent", border: "1px solid rgba(255,255,255,.16)", borderRadius: 10,
                      color: "rgba(233,238,255,.65)", fontSize: 12.5, fontWeight: 700, padding: "9px 12px", minHeight: 40, cursor: "pointer" }}>
