@@ -61,8 +61,10 @@ const MUTATIONS = [
     from: `            requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,`, to: `            hub: hubServes.hub, signals: hubServes.signals,`, nodeTests: [...RULE_TESTS, ...FB_TESTS] },
   { id: "M-ENG-ROUTE", guard: "a shop routed to Central is a refused route", file: ENGINE,
     from: `    if (forbiddenShopSource({ dest, source: src, routes, locations })) {\n      errors.push(`, to: `    if (false) {\n      errors.push(`, nodeTests: RULE_TESTS },
-  { id: "M-ENG-BACKSTOP", guard: "no intent leaves the plan as shop ← Central", file: ENGINE,
-    from: `    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations })) return true;`, to: `    return true;`, nodeTests: RULE_TESTS },
+  // M-ENG-BACKSTOP is not listed: since "a routed-to location is a hub" no
+  // planning branch can emit shop ← Central (deficit legs are refused per
+  // destination; pass-through legs target hubs), so the intent-exit filter is
+  // unreachable defence in depth — a mutant there is equivalent by construction.
   { id: "M-ENG-LOCATIONS", guard: "the engine hands the registry to the rule", file: ENGINE,
     from: `          dest, pid, entry, rr, inFlight: inFlight || movedRefillIds.has(String(entry.refillId)), routes, locations,`, to: `          dest, pid, entry, rr, inFlight: inFlight || movedRefillIds.has(String(entry.refillId)), routes, locations: null,`, nodeTests: RULE_TESTS },
   { id: "M-ENG-MOVED", guard: "a movement linked to the request is a pick in flight", file: ENGINE,
@@ -75,7 +77,7 @@ const MUTATIONS = [
   { id: "M-SCAN-TXN", guard: "the close transaction refuses a touched request", file: SCAN,
     from: `  if (c.requireUntouched && !requestUntouched(cur)) return;`, to: ``, nodeTests: RULE_TESTS },
   { id: "M-SCAN-KEEP-LOCK", guard: "a refused withdrawal keeps its lock", file: SCAN,
-    from: `            if (c.requireUntouched && !(res && res.committed)) { refusedHubPresent.push(c); continue; }`, to: ``, nodeTests: RULE_TESTS },
+    from: `            if (c.requireUntouched && !(res && res.committed)) { if (res?.snapshot?.val()?.status === "open") refusedHubPresent.push(c); continue; }`, to: ``, nodeTests: RULE_TESTS },
   { id: "M-SCAN-REGISTRY", guard: "the scan passes /locations to the engine", file: SCAN,
     from: `retryState, heldLines, locations,\n    });`, to: `retryState, heldLines,\n    });`, nodeTests: RULE_TESTS },
   { id: "M-SCAN-SAT-UNTOUCHED", guard: "the lock-less apply refuses a touched request", file: SCAN,
@@ -84,6 +86,20 @@ const MUTATIONS = [
     from: `    if (keys.has(\`\${i.dest}|\${i.productId}|\${i.sizeKey}\`)) return false;`, to: ``, nodeTests: RULE_TESTS },
   { id: "M-SCAN-DROP-FOR", guard: "…including a leg raised FOR that shop", file: SCAN,
     from: `    return !(Array.isArray(i.forDests) && i.forDests.some((d) => keys.has(\`\${d}|\${i.productId}|\${i.sizeKey}\`)));`, to: `    return true;`, nodeTests: RULE_TESTS },
+  { id: "M-SHOP-ROUTED-TO", guard: "a routed-to location is a hub, never a shop", file: RULE,
+    from: `  if (Object.values(routes || {}).includes(loc)) return false;`, to: ``, nodeTests: RULE_TESTS },
+  { id: "M-ENG-LOCKLESS-FALLTHROUGH", guard: "a never-held lock-less row can still be retired by stock", file: ENGINE,
+    from: `            hubPresent: true, requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,\n          });\n          continue;\n        }`, to: `            hubPresent: true, requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,\n          });\n        }\n        continue;`, nodeTests: RULE_TESTS },
+  { id: "M-ENG-LOCKLESS-AGE", guard: "a stale lock-less row stops holding the shop's need", file: ENGINE,
+    from: `    if (!(nowMs - Date.parse(r.createdAt || 0) <= (num(config?.staleIntentHours) || 48) * 3600e3)) continue;`, to: ``, nodeTests: RULE_TESTS },
+  { id: "M-SCAN-SAT-NOPROOF", guard: "a hub-present withdrawal reads no destination stock", file: SCAN,
+    from: `    if (!s.deactivated && !s.hubPresent) {`, to: `    if (!s.deactivated) {`, nodeTests: RULE_TESTS },
+  { id: "M-SCAN-SAT-REFUSED", guard: "a lock-less withdrawal a pick beat is reported", file: SCAN,
+    from: `      else if (s.requireUntouched && res?.snapshot?.val()?.status === "open") refusedHubPresent.push(s);`, to: ``, nodeTests: RULE_TESTS },
+  { id: "M-SCAN-SAT-DROP", guard: "…and the same pass's asks for it are dropped", file: SCAN,
+    from: `        plan.intents = dropIntentsForRefused(plan.intents, r.refusedHubPresent);`, to: ``, nodeTests: RULE_TESTS },
+  { id: "M-SCAN-OPEN-ONLY", guard: "a request resolved elsewhere is not a refusal", file: SCAN,
+    from: `      else if (s.requireUntouched && res?.snapshot?.val()?.status === "open") refusedHubPresent.push(s);`, to: `      else if (s.requireUntouched) refusedHubPresent.push(s);`, nodeTests: RULE_TESTS },
   // ── the trigger ───────────────────────────────────────────────────────────
   { id: "M-TRIG-NO-LEG", guard: "the trigger raises no Hub 2 leg from a hub-present withdrawal", file: TRIGGER,
     from: `  if (resolved && rr.cancelReason === HUB2_PRESENT_REASON && !touched) {`, to: `  if (false) {`, nodeTests: FB_TESTS },

@@ -286,6 +286,9 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
 // (CodeRabbit, PR #332.)
 async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }) {
   let satisfied = 0, stale = 0, deferred = 0;
+  // Hub-present withdrawals (shop-source-rule.cjs) a pick beat in the gap: the
+  // caller drops the same pass's asks for their cells (Sonnet review, PR #673).
+  const refusedHubPresent = [];
   const errors = [];
   const consumed = new Map();
   for (let i = 0; i < closures.length; i++) {
@@ -303,7 +306,9 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
     // arrived — so the live-cell proof below has nothing to verify and would
     // wrongly mark every one of them stale (the cell is empty by definition).
     // The status transaction still guards against a request resolved meanwhile.
-    if (!s.deactivated) {
+    // A hub-present withdrawal is not about the destination's cell (its reason
+    // is the hub's presence; it asks for qty 0): no stock read to prove it.
+    if (!s.deactivated && !s.hubPresent) {
       const cellKey = `${s.dest}|${s.pid}|${s.sizeKey}`;
       const already = consumed.get(cellKey) || 0;
       try {
@@ -339,11 +344,12 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
         };
       });
       if (res?.committed && res.snapshot?.val()?.status === s.rrStatus) satisfied++;
+      else if (s.requireUntouched && res?.snapshot?.val()?.status === "open") refusedHubPresent.push(s);
     } catch (e) {
       errors.push(`satisfied ${s.refillId}: ${e?.message || e}`);
     }
   }
-  return { satisfied, stale, deferred, errors };
+  return { satisfied, stale, deferred, errors, refusedHubPresent };
 }
 
 // ─── the request + lock records for ONE live intent (pure) ────────────────────
@@ -631,7 +637,9 @@ async function runScan() {
             // A withdrawal that must find the request untouched and did not
             // (picked, or resolved, in the gap) keeps its lock: the lock is
             // what tells the next scan the shop's units are already coming.
-            if (c.requireUntouched && !(res && res.committed)) { refusedHubPresent.push(c); continue; }
+            // Only a request still OPEN was refused (a pick won); one resolved
+            // elsewhere just keeps its lock for the normal close next scan.
+            if (c.requireUntouched && !(res && res.committed)) { if (res?.snapshot?.val()?.status === "open") refusedHubPresent.push(c); continue; }
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one
             // window): the fulfilment wins — never record a strike against a
@@ -707,6 +715,10 @@ async function runScan() {
       if (r.stale) counts.satisfiedStale = r.stale;
       if (r.deferred) counts.satisfiedDeferred = r.deferred;
       counts.errors.push(...r.errors);
+      if (r.refusedHubPresent && r.refusedHubPresent.length) {
+        plan.intents = dropIntentsForRefused(plan.intents, r.refusedHubPresent);
+        counts.hubPresentRefused = (counts.hubPresentRefused || 0) + r.refusedHubPresent.length;
+      }
     }
 
     // ── apply the deficit-loop's self-heal streak resets ──────────────────────
@@ -1094,6 +1106,6 @@ exports._resizeDropReason = resizeDropReason; // pure — unit-tested in test/re
 exports._applyResizes = applyResizes;      // db + writer injected — apply-path accounting is testable with a fake ref
 exports._applySatisfied = applySatisfied;  // db injected — the satisfied-withdrawal apply path is testable without firebase-admin
 exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg shadow shape is testable without firebase-admin
-exports._closeRequestTxn = closeRequestTxn;
-exports._dropIntentsForRefused = dropIntentsForRefused; // pure — a refused withdrawal never asks twice // pure — the request side of a plan close
+exports._closeRequestTxn = closeRequestTxn; // pure — the request side of a plan close
+exports._dropIntentsForRefused = dropIntentsForRefused; // pure — a refused withdrawal never asks twice
 exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable

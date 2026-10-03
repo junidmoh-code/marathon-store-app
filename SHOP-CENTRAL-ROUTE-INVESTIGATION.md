@@ -125,3 +125,18 @@ obeyed the rule.
 The fix (commit 2, completed by the review fixes) is one rule module, `functions/lib/shop-source-rule.cjs`,
 applied where every engine source is chosen and where every open shop request is
 reconciled. The details are in the PR.
+
+## Known residual
+
+**A pick that starts after the scan's snapshot and before its apply, with its
+`sentQty` write not yet landed.** Central's fulfil writes the stock movement
+first and `sentQty` in a separate write a moment later. The withdrawal
+re-checks `sentQty` inside the request transaction and treats a movement
+linked by `refillId` in the snapshot as in flight. A movement written in the
+seconds *between* the snapshot and the transaction is not visible to the
+apply, because `/stock_movements` has no `refillId` index and a per-request
+query would be a whole-node read. Exposure: an hourly scan × the
+movement→`sentQty` gap (normally well under a second) × a first-batch row
+whose hub came to hold the product. The fix belongs in RefillQueue (one
+multi-path write for the movement and `sentQty`), which is a client change
+outside this PR's scope.

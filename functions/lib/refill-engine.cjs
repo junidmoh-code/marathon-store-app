@@ -732,7 +732,11 @@ function computeRefillPlan(snapshot) {
     const src = r.createdFrom?.source || r.source || null;
     if (!forbiddenShopSource({ dest: r.requestingLocation, source: src, routes, locations })) continue;
     const sk = encodeSizeKey(r.size);
-    locklessShopCentral.push([id, r, sk]);
+    locklessShopCentral.push([id, r, sk]);   // judged below whatever its age
+    // Inbound is age-bounded like a lock (staleIntentHours): a row nobody has
+    // picked for longer than that stops holding the shop's deficit and
+    // Central's units (Sonnet review, PR #673).
+    if (!(nowMs - Date.parse(r.createdAt || 0) <= (num(config?.staleIntentHours) || 48) * 3600e3)) continue;
     bump(inbound, `${r.requestingLocation}|${r.productId}|${sk}`, Math.max(num(r.qty) || 1, 1));
     bump(sourceReserved, `${src}|${r.productId}|${sk}`, Math.max(num(r.qty) || 1, 1));
   }
@@ -1196,8 +1200,11 @@ function computeRefillPlan(snapshot) {
             rrStatus: "cancelled", cancelReason: SHOP_HUB_PRESENT_REASON,
             hubPresent: true, requireUntouched: true, hub: hubServes.hub, signals: hubServes.signals,
           });
+          continue;
         }
-        continue;   // never retired "already in stock" against the shop's own cell — the hub decides
+        // No hub presence: a legitimate first batch — and like any lock-less
+        // row it may still be retired below once the shop's own cell covers
+        // it (Sonnet review, PR #673).
       }
       // A destination the scan did not load has NO stock in `stock` and would
       // read as 0 — silence, not a wrong withdrawal. Being explicit anyway, so

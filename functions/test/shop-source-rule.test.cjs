@@ -165,30 +165,13 @@ test("routes.trophy = 'central' (one console edit) is a refused route: no Trophy
   assert.ok(plan.errors.some((e) => e.startsWith("route refused: trophy")), plan.errors.join("\n"));
 });
 
-test("the backstop: a pass-through raised for a shop's 'hub' that is itself a shop routed to Central is refused at the intent exit", () => {
-  // trophy → marathon-pe → central: PE is a SHOP (registry) misrouted to
-  // Central, and Trophy's leg upstream would be PE ← Central.
-  const pid = "tee-x";
-  const snap = {
-    nowMs: NOW, products: { [pid]: { id: pid, name: pid, productType: "clothing", categoryKey: "t-shirts", sizes: ["M"] } },
-    config: { ...CONFIG, routes: { hub1: "central", hub2: "central", "marathon-pe": "central", trophy: "marathon-pe" }, mode: { ...CONFIG.mode } },
-    targets: {}, stock: { central: { [pid]: { M: cell(9) } }, trophy: { [pid]: { M: cell(0) } } },
-    openIndex: {}, refillRequests: {}, orders: {}, movements: [], heldLines: {}, locations: LOCATIONS,
-  };
-  const plan = computeRefillPlan(snap);
-  assert.deepEqual(shopCentralIntents(plan), []);
-  assert.ok(!plan.intents.some((i) => i.dest === "marathon-pe" && i.source === "central"));
-});
-
-test("the reconcile asks the REGISTRY: a shop whose hub has no upstream route (shape says 'not a shop') is still held to the rule", () => {
-  const cat = CATEGORIES.find((c) => c.key === "t-shirts");
-  const { snap } = scenario({ shop: "trophy", cat, held: "units" });
-  const routes = { hub1: "central", trophy: "hub2", "marathon-pe": "hub2" };   // hub2's own route missing
-  snap.config = { ...CONFIG, routes };
-  assert.equal(rule.isShopLoc("trophy", { routes, locations: null }), false, "the shape alone cannot see it");
-  const w = withdrawalOf(computeRefillPlan(snap));
-  assert.ok(w, "the registry says Trophy is a store, so Hub 2 holding the product withdraws its Central request");
-  assert.equal(w.hub, "hub2");
+test("a location something else routes TO is a hub, whatever the registry says — Hub 1 tagged 'store' keeps its own Central refills", () => {
+  const locations = { ...LOCATIONS, hub1: { kind: "store" } };
+  const routes = { ...CONFIG.routes, sneakerShop: "hub1" };
+  assert.equal(rule.isShopLoc("hub1", { routes, locations }), false);
+  assert.equal(rule.forbiddenShopSource({ dest: "hub1", source: "central", routes, locations }), false);
+  // and a shop routed through another shop makes that one a hub (its Central leg is a hub leg)
+  assert.equal(rule.isShopLoc("marathon-pe", { routes: { ...CONFIG.routes, trophy: "marathon-pe", "marathon-pe": "central" }, locations: LOCATIONS }), false);
 });
 
 // ── list changes must not break the mapping ──────────────────────────────────
@@ -271,7 +254,8 @@ test("refill-scan reads /locations (failures not swallowed) and passes it to com
   assert.match(src, /db\.ref\("locations"\)\.once\("value"\)/);
   assert.doesNotMatch(src, /db\.ref\("locations"\)[^\n]*\.catch\(/, "a swallowed registry read would run the scan with the rule weakened");
   assert.match(src, /computeRefillPlan\(\{[^}]*\blocations\b[^}]*\}\)/s);
-  assert.match(src, /if \(c\.requireUntouched && !\(res && res\.committed\)\) \{ refusedHubPresent\.push\(c\); continue; \}/);
+  assert.match(src, /if \(c\.requireUntouched && !\(res && res\.committed\)\) \{ if \(res\?\.snapshot\?\.val\(\)\?\.status === "open"\) refusedHubPresent\.push\(c\); continue; \}/);
+  assert.match(src, /plan\.intents = dropIntentsForRefused\(plan\.intents, r\.refusedHubPresent\)/);
   assert.match(src, /plan\.intents = dropIntentsForRefused\(plan\.intents, refusedHubPresent\)/);
 });
 
@@ -342,4 +326,41 @@ test("a refused withdrawal drops the same pass's asks for that shop cell — its
   ];
   const kept = scan._dropIntentsForRefused(intents, [{ dest: "trophy", pid: "p1", sizeKey: "M" }]);
   assert.deepEqual(kept.map((i) => `${i.dest}|${i.sizeKey}`), ["hub2|L", "marathon-pe|M"]);
+});
+
+// ── Sonnet architect review, PR #673 ────────────────────────────────────────
+test("a never-held lock-less first batch can still be retired once the shop's own cell covers it", () => {
+  const cat = CATEGORIES.find((c) => c.key === "t-shirts");
+  const { snap, pid } = scenario({ shop: "trophy", cat, held: null });
+  snap.openIndex = {};
+  snap.stock.trophy[pid].M = cell(5);
+  const s = computeRefillPlan(snap).satisfiedClosures.find((c) => c.refillId === "r1");
+  assert.ok(s);
+  assert.equal(s.cancelReason, "already_in_stock");
+});
+
+test("a lock-less shop ← Central row holds the shop's need only while it is younger than staleIntentHours", () => {
+  const cat = CATEGORIES.find((c) => c.key === "t-shirts");
+  for (const [age, expectAsk] of [[1, false], [24 * 30, true]]) {
+    const { snap, pid } = scenario({ shop: "trophy", cat, held: null });
+    snap.openIndex = {};
+    snap.config = { ...CONFIG, staleIntentHours: 168 };
+    snap.refillRequests.r1.createdAt = new Date(NOW - age * 3600e3).toISOString();
+    const asks = computeRefillPlan(snap).intents.filter((i) => i.productId === pid);
+    assert.equal(asks.length > 0, expectAsk, `${age}h old`);
+  }
+});
+
+test("applySatisfied: a hub-present withdrawal reads no destination stock; one a pick beat is reported for the caller to drop", async () => {
+  const closure = { refillId: "r1", dest: "trophy", pid: "p1", sizeKey: "M", size: "M", qty: 3, have: 0, rrStatus: "cancelled", cancelReason: "first_batch_hub2_present", hubPresent: true, requireUntouched: true };
+  const db = makeFakeDb({ refill_requests: { r1: fbRow("p1", "M", "trophy") } });   // no stock at all
+  const r = await scan._applySatisfied({ db, closures: [closure], startedAt: "2026-10-03T10:00:00.000Z" });
+  assert.equal(r.satisfied, 1);
+  assert.deepEqual(r.refusedHubPresent, []);
+  const db2 = makeFakeDb({ refill_requests: { r1: fbRow("p1", "M", "trophy", { sentQty: 1 }) } });
+  const r2 = await scan._applySatisfied({ db: db2, closures: [closure], startedAt: "2026-10-03T10:00:00.000Z" });
+  assert.equal(r2.refusedHubPresent.length, 1);
+  const db3 = makeFakeDb({ refill_requests: { r1: fbRow("p1", "M", "trophy", { status: "fulfilled" }) } });
+  const r3 = await scan._applySatisfied({ db: db3, closures: [closure], startedAt: "2026-10-03T10:00:00.000Z" });
+  assert.deepEqual(r3.refusedHubPresent, [], "resolved elsewhere is not a refusal");
 });

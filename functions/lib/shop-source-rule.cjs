@@ -44,6 +44,10 @@ const CENTRAL = "central";
 const SHOP_KINDS = new Set(["store", "shop"]);
 function isShopLoc(loc, { routes = {}, locations = null } = {}) {
   if (!loc || loc === CENTRAL) return false;
+  // A location something else is routed TO is a hub, whatever the registry
+  // says (Hub 1 sells sneakers; a "store" tag on it must never refuse its own
+  // Central refills — Sonnet review, PR #673).
+  if (Object.values(routes || {}).includes(loc)) return false;
   const reg = locations && typeof locations === "object" ? locations[loc] : null;
   if (reg && typeof reg === "object" && typeof reg.kind === "string" && SHOP_KINDS.has(reg.kind.trim().toLowerCase())) return true;
   const hub = routes[loc];
