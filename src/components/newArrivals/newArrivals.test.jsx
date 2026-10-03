@@ -102,6 +102,7 @@ describe("view helpers", () => {
 });
 
 const fakeApi = (items = [ready()], over = {}) => ({
+  select: vi.fn(async () => ({ ok: true })),
   list: vi.fn(async (tab) => ({ tab, items: tab === "ready" ? items : [], tabCounts: { new: 2, ready: items.length, rejected: 0, done: 5 } })),
   approve: vi.fn(async (pids) => ({ approved: pids, skipped: [] })),
   approveAll: vi.fn(async () => ({ approved: items.map((i) => i.pid), skipped: [] })),
@@ -506,7 +507,7 @@ describe("Ready / Rejected: every generation, verdict label, chips, Approve anyw
     const imgs = tree.root.findAll((n) => n.type === "img").map((i) => i.props.src);
     expect(imgs).toEqual(["https://x/orig.jpg", "https://x/g2.jpg", "https://x/g1.jpg"]);
     const t = text(tree);
-    expect(t).toContain("Generated · R0.75");
+    expect(t).toContain("Generated · Main photo · R0.75");
     expect(t).toContain("R0.50 · failed");
     expect(t).toContain("2 generations · R1.25 total");
     expect(t).toContain("Checker: failed — background");
@@ -639,8 +640,8 @@ describe("view helpers for calibration", () => {
     const item = { generations: { g1: GEN("g1", 1), g3: GEN("g3", 3), g2: GEN("g2", 2) } };
     expect(view.generationsOf(item).map((g) => g.genId)).toEqual(["g3", "g2", "g1"]);
     expect(view.generationsOf({})).toEqual([]);
-    expect(view.costText({ costUsd: 0.04 })).toBe("$0.04");
-    expect(view.costText({})).toBe("cost unknown");
+    expect(view.costText({ costUsd: 0.04, usdZar: 18 })).toBe("R0.72");
+    expect(view.costText({})).toBe("~R2.41 (estimated)");
     expect(view.verdictText({ pass: true })).toBe("Checker: pass");
     expect(view.verdictText({ pass: false, failed: ["framing", "quality"] })).toBe("Checker: failed — framing, quality");
     expect(view.verdictText(null)).toBeNull();
@@ -662,5 +663,95 @@ describe("a re-check is never shown as a generation's cost", () => {
   it("labels a derived (re-checked) photo", () => {
     expect(view.costText({ costZar: 0.21, derivedFrom: "g1" })).toBe("re-check, no new generation · R0.21");
     expect(view.costText({ costZar: 2.41 })).toBe("R2.41");
+  });
+});
+
+describe("pick any generation — Use this one", () => {
+  const gens = (over = {}) => ready({
+    generatedUrl: "https://x/g2.jpg", currentGen: "g2",
+    generations: {
+      g1: GEN("g1", NOW - 2000, { costZar: 2.38, verdict: { pass: false, failed: ["fidelity:colour"], label: "colour off" } }),
+      g2: GEN("g2", NOW - 1000, { costZar: undefined, costUsd: undefined }),
+      g3: GEN("g3", NOW, { costZar: 0.19, derivedFrom: "g1", verdict: { pass: false, failed: ["framing"] } }),
+    }, ...over,
+  });
+  const useButtons = (tree) => tree.root.findAll((n) => n.type === "button" && label(n) === "Use this one");
+
+  it("every earlier generation (failed ones and re-checks too) has Use this one; the current one does not and is marked Main photo", async () => {
+    const api = fakeApi([gens()]);
+    const tree = await render(api);
+    expect(useButtons(tree)).toHaveLength(2);
+    const t = text(tree);
+    expect(t).toContain("Generated · Main photo · ~R2.41 (estimated)");
+    expect(t).toContain("re-check, no new generation · R0.19 · failed");
+    expect(t).toContain("R2.38 · failed");
+    expect(t).not.toContain("unknown");
+    // Newest first: g3 (re-check) then g1.
+    await act(async () => { useButtons(tree)[1].props.onClick(); });
+    expect(api.select).toHaveBeenCalledWith("p1789999990000", "g1");
+    expect(api.list.mock.calls.length).toBeGreaterThan(1); // reloaded
+    expect(text(tree)).toContain("Main photo changed — Approve uses this one.");
+    await act(async () => { useButtons(tree)[0].props.onClick(); });
+    expect(api.select).toHaveBeenLastCalledWith("p1789999990000", "g3");
+  });
+
+  it("on Rejected too; never on Done", async () => {
+    const rej = gens({ status: "rejected", rejection: { code: "junid", reason: "framing", at: NOW } });
+    const api = fakeApi([], { list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) });
+    const tree = await render(api, "rejected");
+    expect(useButtons(tree)).toHaveLength(2);
+    const done = gens({ status: "done" });
+    const tree2 = await render(fakeApi([], { list: vi.fn(async () => ({ items: [done], tabCounts: {} })) }), "done");
+    expect(useButtons(tree2)).toHaveLength(0);
+    expect(view.canPick({ status: "approved", currentGen: "g2", generations: { g1: { url: "u" } } }, { genId: "g1", url: "u" })).toBe(false);
+    expect(view.canPick({ status: "ready", currentGen: "g2" }, { genId: "g1" })).toBe(false); // no url
+  });
+
+  it("the card total includes every generation and re-check, estimates marked ~", async () => {
+    const tree = await render(fakeApi([gens()], { list: vi.fn(async () => ({ items: [gens()], tabCounts: {}, stats: { estimatePerGenerationZar: 2.5 } })) }));
+    // 2.38 + 2.50 (estimated) + 0.19 re-check
+    expect(text(tree)).toContain("3 generations · ~R5.07 total");
+    expect(text(tree)).toContain("Generated · Main photo · ~R2.50 (estimated)");
+  });
+});
+
+describe("costs — never unknown", () => {
+  it("costText variants", () => {
+    expect(view.costText({ costZar: 2.38 })).toBe("R2.38");
+    expect(view.costText({ costZar: 2.41, costEstimated: true })).toBe("~R2.41 (estimated)");
+    expect(view.costText({}, { estimatePerGenerationZar: 2.6 })).toBe("~R2.60 (estimated)");
+    expect(view.costText({}, {})).toBe("~R2.41 (estimated)");
+    expect(view.costText(null)).toBe("~R2.41 (estimated)");
+    expect(view.costText({ costZar: null })).toBe("~R2.41 (estimated)");
+    expect(view.costText({ costUsd: 0.1 }, { usdZar: 18.5 })).toBe("~R1.85 (estimated)");
+    expect(view.costText({ costUsd: 0.1 })).toBe("~R2.41 (estimated)");
+    expect(view.costText({ costZar: 0.19, derivedFrom: "g1" })).toBe("re-check, no new generation · R0.19");
+    expect(view.costText({ costZar: 0.2, derivedFrom: "g1", costEstimated: true })).toBe("re-check, no new generation · ~R0.20 (estimated)");
+    expect(view.costText({ derivedFrom: "g1" })).toBe("re-check, no new generation · ~R2.41 (estimated)");
+    for (const g of [{}, null, { costUsd: "x" }, { costZar: "" }]) expect(view.costText(g)).not.toMatch(/unknown|\$/);
+  });
+
+  it("totals include re-checks and estimates", () => {
+    const item = { generations: { a: { at: 1, costZar: 2.38 }, b: { at: 2, costZar: 0.19, derivedFrom: "a" } } };
+    expect(view.totalCostText(item)).toBe("R2.57 total");
+    expect(view.totalCostZar(item)).toBeCloseTo(2.57);
+    item.generations.c = { at: 3 };
+    expect(view.totalCostText(item)).toBe("~R4.98 total");
+    expect(view.totalCostText(item, { estimatePerGenerationZar: 3 })).toBe("~R5.57 total");
+    expect(view.totalCostText({})).toBeNull();
+  });
+
+  it("header spend line from stats", async () => {
+    expect(view.spentText(null)).toBe("Spent so far —");
+    expect(view.spentText({ totalSpentZar: 41.2, estimatedPartZar: 12.05 })).toBe("Spent so far R41.20 (incl. ~R12.05 estimated)");
+    expect(view.spentText({ totalSpentZar: 9 })).toBe("Spent so far R9.00");
+    const stats = { totalSpentZar: 41.2, estimatedPartZar: 12.05, rejectRate: { pct: 20, n: 25, byReason: {} }, costPerFinishedZar: 4.5 };
+    const tree = await render(fakeApi([ready()], { list: vi.fn(async () => ({ items: [ready()], tabCounts: {}, stats })) }));
+    const header = text({ toJSON: () => testid(tree, "agreement")[0].children });
+    expect(header).toContain("Spent so far R41.20 (incl. ~R12.05 estimated)");
+    expect(header).toContain("Rejected 20% of 25");
+    expect(header).toContain("Agreement with you:");
+    const tree2 = await render(fakeApi());
+    expect(text({ toJSON: () => testid(tree2, "spent")[0].children })).toBe("Spent so far —");
   });
 });

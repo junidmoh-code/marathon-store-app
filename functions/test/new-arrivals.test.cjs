@@ -521,3 +521,115 @@ test("decisionRecord never carries undefined and tolerates absent generations", 
   assert.deepEqual(r, { pid: PID, at: 1, by: "unknown", action: "skip", reason: null, class: "single", categoryKey: "hoodies", genId: null, gen: null });
   assert.throws(() => core.decisionRecord({ pid: PID, at: 1, action: "nope" }), /unknown decision/);
 });
+
+// ── pick any generation (newArrivalsSelect) ──────────────────────────────────
+const G2 = { ...GEN, url: "https://x/g2.jpg", path: "na/g2.jpg", at: NOW + 10, verdict: { pass: true, failed: [] }, costZar: 2.38 };
+const G3 = { ...GEN, url: "https://x/g3.jpg", path: "na/g3.jpg", at: NOW + 20, derivedFrom: "g1", framingFlag: true, verdict: { pass: false, failed: ["framing"], label: "framing" }, costZar: 0.19 };
+const withGens = (status, over = {}) => seeded(status, {
+  generatedUrl: G2.url, generatedPath: G2.path, currentGen: "g2", generations: { g1: GEN, g2: G2, g3: G3 },
+  verdict: { ...G2.verdict, at: NOW + 10 }, categoryKey: "sneakers", ...over,
+});
+// Every multi-path write at the root, recorded (the atomic decision write).
+const spyRoot = (db) => {
+  const writes = [];
+  const ref = db.ref.bind(db);
+  db.ref = (path) => {
+    const r = ref(path);
+    if (path !== core.ROOT) return r;
+    return new Proxy(r, { get: (t, k) => (k === "update" ? async (p) => { writes.push(p); return t.update(p); } : (typeof t[k] === "function" ? t[k].bind(t) : t[k])) });
+  };
+  return writes;
+};
+
+test("select: a checker-failed earlier generation becomes the main photo; lane kept; one atomic write logs the pick", async () => {
+  const db = withGens("ready");
+  const writes = spyRoot(db);
+  assert.deepEqual(await na.select(db, { pid: PID, genId: "g1" }, "junid", NOW + 99), { ok: true });
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "ready");
+  assert.equal(it.statusAt, NOW, "the lane and its time are unchanged");
+  assert.equal(it.currentGen, "g1");
+  assert.equal(it.generatedUrl, GEN.url);
+  assert.equal(it.generatedPath, GEN.path);
+  assert.deepEqual(it.verdict, { pass: false, failed: ["fidelity:colour"], label: "colour off", at: NOW + 99 });
+  assert.equal("framingFlag" in it, false);
+  assert.equal(writes.length, 1, "one multi-path write");
+  const keys = Object.keys(writes[0]);
+  assert.ok(keys.includes(`by_status/ready/${PID}`));
+  const dk = keys.find((k) => k.startsWith("decisions/"));
+  assert.ok(dk);
+  const d = writes[0][dk];
+  assert.equal(d.action, "pick");
+  assert.equal(d.genId, "g1");
+  assert.equal(d.gen.url, GEN.url);
+  assert.equal(d.class, "footwear");
+  assert.equal(d.by, "junid");
+  assert.equal((await decisions(db)).length, 1);
+  assert.equal((await db.ref(`${core.BY_STATUS}/ready/${PID}`).once()).val(), NOW);
+});
+
+test("select: a re-check with framing failed sets framingFlag; works from Rejected; rejection kept", async () => {
+  const db = withGens("rejected", { rejection: { code: "junid", reason: "framing", at: 1 } });
+  await na.select(db, { pid: PID, genId: "g3" }, "junid", NOW + 1);
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "rejected");
+  assert.equal(it.currentGen, "g3");
+  assert.equal(it.framingFlag, true);
+  assert.equal(it.rejection.reason, "framing");
+  const [d] = await decisions(db);
+  assert.equal(d.action, "pick");
+  assert.equal(d.gen.derivedFrom, "g1");
+  // framing from the verdict alone, too
+  assert.equal(core.selectFields({ url: "u", verdict: { pass: false, failed: { 0: "framing" } } }, "g", 1).framingFlag, true);
+});
+
+test("select guards: lane, unknown generation, no url, bad ids, absent item; nothing logged", async () => {
+  for (const s of ["new", "approved", "done", "skipped", "generating"]) {
+    const db = withGens(s);
+    await assert.rejects(na.select(db, { pid: PID, genId: "g1" }, "junid", NOW), new RegExp(`it is ${s}, not ready or rejected`));
+    assert.deepEqual(await decisions(db), []);
+    assert.equal((await db.ref(`${core.ITEMS}/${PID}/currentGen`).once()).val(), "g2");
+  }
+  const db = withGens("ready", { generations: { g1: { ...GEN, url: null }, g2: G2 } });
+  await assert.rejects(na.select(db, { pid: PID, genId: "g9" }, "junid", NOW), /not on this item/);
+  await assert.rejects(na.select(db, { pid: PID, genId: "g1" }, "junid", NOW), /no photo/);
+  await assert.rejects(na.select(db, { pid: PID, genId: "../x" }, "junid", NOW), /Not a generation id/);
+  await assert.rejects(na.select(db, { pid: "-Nx", genId: "g1" }, "junid", NOW), /Not a product id/);
+  await assert.rejects(na.select(makeFakeDb({}), { pid: PID, genId: "g1" }, "junid", NOW), /not in the New Arrivals queue/);
+  assert.deepEqual(await decisions(db), []);
+});
+
+test("select of the current generation changes nothing and logs nothing", async () => {
+  const db = withGens("ready");
+  assert.deepEqual(await na.select(db, { pid: PID, genId: "g2" }, "junid", NOW), { ok: true, unchanged: true });
+  assert.deepEqual(await decisions(db), []);
+});
+
+test("approve and approve anyway use the SELECTED photo (generatedUrl + ledger snapshot)", async () => {
+  const db = withGens("ready");
+  await na.select(db, { pid: PID, genId: "g1" }, "junid", NOW + 1);
+  assert.deepEqual((await na.approve(db, { pids: [PID] }, "junid", NOW + 2)).approved, [PID]);
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "approved");
+  assert.equal(it.generatedUrl, GEN.url, "the chain sets the product photo from generatedUrl");
+  const ds = (await decisions(db)).sort((a, b) => a.at - b.at);
+  assert.deepEqual(ds.map((d) => [d.action, d.genId]), [["pick", "g1"], ["approve", "g1"]]);
+  assert.equal(ds[1].gen.url, GEN.url);
+
+  const db2 = withGens("rejected", { rejection: { code: "junid", reason: "framing", at: 1 } });
+  await na.select(db2, { pid: PID, genId: "g3" }, "junid", NOW + 1);
+  await na.approve(db2, { pids: [PID], anyway: true }, "junid", NOW + 2);
+  const it2 = (await db2.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it2.generatedUrl, G3.url);
+  const a = (await decisions(db2)).find((d) => d.action === "approve-anyway");
+  assert.equal(a.genId, "g3");
+});
+
+test("pick is a ledger action; newArrivalsSelect is exported from index", () => {
+  assert.ok(core.DECISION_ACTIONS.includes("pick"));
+  const r = core.decisionRecord({ pid: PID, at: 1, by: "j", action: "pick", genId: "g1", item: { currentGen: "g2", categoryKey: "hoodies", generations: { g1: GEN, g2: G2 } } });
+  assert.equal(r.genId, "g1");
+  assert.equal(r.gen.url, GEN.url);
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "index.js"), "utf8");
+  assert.match(src, /exports\.newArrivalsSelect = na\.newArrivalsSelect;/);
+});

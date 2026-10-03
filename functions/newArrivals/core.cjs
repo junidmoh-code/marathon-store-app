@@ -299,17 +299,20 @@ function matchesFilter(summary, stock, filter) {
 
 // ── DECISIONS ────────────────────────────────────────────────────────────────
 const REJECT_CHIPS = Object.freeze(["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"]);
-const DECISION_ACTIONS = Object.freeze(["approve", "approve-anyway", "regenerate", "reject", "skip", "restore", "generate"]);
+// "pick" (3 Oct card fixes): Junid made an earlier generation the main photo —
+// calibration counts it as an approval of THAT generation.
+const DECISION_ACTIONS = Object.freeze(["approve", "approve-anyway", "regenerate", "reject", "skip", "restore", "generate", "pick"]);
 
 /**
  * The ledger row for one of Junid's actions (decisions/{push}). `item` is the
  * item as it was when he acted; the generation snapshot is taken from it, so
  * the row records what he actually looked at. Never carries undefined. Pure.
  */
-function decisionRecord({ pid, at, by, action, reason = null, item, categoryKey = null }) {
+function decisionRecord({ pid, at, by, action, reason = null, item, categoryKey = null, genId: pickedGen = null }) {
   if (!DECISION_ACTIONS.includes(action)) throw new Error(`unknown decision action ${action}`);
   const key = (item && item.categoryKey) || categoryKey || null;
-  const genId = (item && item.currentGen) || null;
+  // A pick names the generation Junid chose; every other action is on the current one.
+  const genId = pickedGen || (item && item.currentGen) || null;
   const gen = genId && item.generations && item.generations[genId] ? item.generations[genId] : null;
   return {
     pid, at, by: by || "unknown", action,
@@ -318,6 +321,38 @@ function decisionRecord({ pid, at, by, action, reason = null, item, categoryKey 
     categoryKey: key ? String(key) : null,
     genId: gen ? genId : null,
     gen: gen ? JSON.parse(JSON.stringify(gen)) : null,
+  };
+}
+
+// ── PICK ANY GENERATION ──────────────────────────────────────────────────────
+// Junid taps "Use this one" on any earlier generation (a checker-failed one or
+// a re-check too). The item keeps its lane; the photo, its verdict and the
+// framing flag follow the chosen generation. Approve then uses it (it reads
+// generatedUrl, and the ledger snapshot comes from currentGen).
+const SELECT_LANES = Object.freeze(["ready", "rejected"]);
+const GEN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
+const failedList = (v) => (Array.isArray(v && v.failed) ? v.failed : Object.values((v && v.failed) || {}));
+
+/** Why `genId` cannot be picked on `item`, or null. Pure. */
+function selectRefusal(item, genId) {
+  if (!item) return "not in the New Arrivals queue";
+  if (!SELECT_LANES.includes(item.status)) return `it is ${item.status}, not ready or rejected`;
+  const gen = item.generations && item.generations[genId];
+  if (!gen || typeof gen !== "object") return "that generation is not on this item";
+  if (!gen.url) return "that generation has no photo";
+  return null;
+}
+
+/** The item fields a pick sets (null = removed, as RTDB would). Pure. */
+function selectFields(gen, genId, at) {
+  const v = gen.verdict && typeof gen.verdict === "object" ? gen.verdict : null;
+  const framing = gen.framingFlag === true || failedList(v).includes("framing");
+  return {
+    currentGen: genId,
+    generatedUrl: String(gen.url),
+    generatedPath: gen.path ? String(gen.path) : null,
+    verdict: v ? JSON.parse(JSON.stringify({ ...v, at })) : null,
+    framingFlag: framing ? true : null,
   };
 }
 
@@ -343,4 +378,5 @@ module.exports = {
   FOOTWEAR_KEYS, TWOPIECE_KEYS, SINGLE_KEYS, SLIDE_KEYS, CLASSES, CLASS_OF,
   FILTER_CLASSES, filterClassOf, normalizeFilter, GROUPS, GROUP_TABS, groupOf, normalizeGroup, stockSummary, matchesFilter,
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
+  SELECT_LANES, GEN_ID_RE, selectRefusal, selectFields,
 };

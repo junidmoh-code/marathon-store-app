@@ -7,6 +7,7 @@
 // newArrivalsSkip     Skip — don't advertise (New/Rejected → skipped; marked, never deleted).
 // newArrivalsRestore  the card's Undo: skipped → back to New or Rejected (skippedFrom).
 // newArrivalsReject   Ready → Rejected with one reason chip.
+// newArrivalsSelect   "Use this one" — any generation becomes the main photo (lane kept).
 // Every action Junid takes writes new_arrivals/decisions/{push}.
 //
 // The card never reads or writes /new_arrivals directly, so no database rule
@@ -15,7 +16,7 @@
 // (marathon-group-poster + scripts/newArrivals/chain.mjs).
 //
 // Deploy BY NAME, never a bare --only functions (DEPLOY-TRACKER.md):
-//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject
+//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject,functions:newArrivalsSelect
 "use strict";
 
 const { onValueCreated } = require("firebase-functions/v2/database");
@@ -265,16 +266,63 @@ async function moveOne(db, pid, { from, to, at, fields = () => ({}), guard = nul
   // decision row and any request entry land together or not at all — and a
   // retry writes the very same paths (the decision key is fixed first).
   const paths = { ...core.indexMove(pid, out.from, to, item.enqueuedAt), ...(extra ? extra(prev) : {}) };
-  if (decision) {
-    const dsc = decision(prev);
-    let categoryKey = prev && prev.categoryKey;
-    if (!categoryKey) categoryKey = await val(db, `products/${pid}/categoryKey`);
-    const key = db.ref(core.DECISIONS).push().key;
-    paths[`decisions/${key}`] = core.decisionRecord({ pid, at, by: uid, action: dsc.action, reason: dsc.reason || null, item: prev, categoryKey });
-  }
-  try { await db.ref(core.ROOT).update(paths); } catch { await db.ref(core.ROOT).update(paths); }
+  if (decision) Object.assign(paths, await decisionPaths(db, pid, { at, uid, item: prev, ...decision(prev) }));
+  await writeRoot(db, paths);
   return { item, prev };
 }
+
+// Junid's ledger row as a multi-path entry (decisions/{push}); the push key is
+// fixed before the write, so a retry writes the very same path.
+async function decisionPaths(db, pid, { at, uid, item, action, reason = null, genId = null }) {
+  let categoryKey = item && item.categoryKey;
+  if (!categoryKey) categoryKey = await val(db, `products/${pid}/categoryKey`);
+  const key = db.ref(core.DECISIONS).push().key;
+  return { [`decisions/${key}`]: core.decisionRecord({ pid, at, by: uid, action, reason, item, categoryKey, genId }) };
+}
+async function writeRoot(db, paths) {
+  try { await db.ref(core.ROOT).update(paths); } catch { await db.ref(core.ROOT).update(paths); }
+}
+
+// ── pick any generation ──────────────────────────────────────────────────────
+// "Use this one": items/{pid} keeps its lane (Ready or Rejected); currentGen,
+// generatedUrl/Path, verdict and framingFlag follow the chosen generation
+// (core.selectFields) — a transaction, so a concurrent Regenerate / Approve
+// is never overwritten. Then ONE atomic multi-path write, as every move
+// makes: the item's index entry (re-asserted) and the "pick" ledger row with
+// the generation's snapshot. Approve / Approve anyway then use this photo.
+async function select(db, { pid, genId }, uid, nowMs) {
+  if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
+  if (!core.GEN_ID_RE.test(String(genId || ""))) throw new HttpsError("invalid-argument", "Not a generation id.");
+  pid = String(pid); genId = String(genId);
+  const out = {};
+  let prev = null;
+  const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
+    out.same = false;
+    // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
+    if (!cur) { out.refusal = "not in the New Arrivals queue"; return null; }
+    const why = core.selectRefusal(cur, genId);
+    if (why) { out.refusal = why; return undefined; }
+    out.refusal = null;
+    prev = cur;
+    if (cur.currentGen === genId && cur.generatedUrl === cur.generations[genId].url) { out.same = true; return undefined; }
+    const next = { ...cur, ...core.selectFields(cur.generations[genId], genId, nowMs) };
+    for (const [k, v] of Object.entries(next)) if (v === null || v === undefined) delete next[k];
+    return next;
+  });
+  if (out.same) return { ok: true, unchanged: true };
+  const item = res && res.committed && res.snapshot && res.snapshot.val();
+  if (!item || item.currentGen !== genId || out.refusal) throw new HttpsError("failed-precondition", `Can't use that photo — ${out.refusal || "not saved"}.`);
+  await writeRoot(db, {
+    ...core.indexMove(pid, item.status, item.status, item.enqueuedAt),
+    ...await decisionPaths(db, pid, { at: nowMs, uid, item: prev, action: "pick", genId }),
+  });
+  return { ok: true };
+}
+
+const newArrivalsSelect = onCall(callableOpts, async (request) => {
+  await assertNewArrivalsAccess(request);
+  return select(admin.database(), request.data || {}, request.auth?.uid, Date.now());
+});
 
 
 const MAX_PIDS = 300;
@@ -475,7 +523,7 @@ const newArrivalsRetry = onCall(callableOpts, async (request) => {
 
 module.exports = {
   newArrivalsEnqueue, newArrivalsList, newArrivalsApprove, newArrivalsRetry,
-  newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject,
+  newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, assertNewArrivalsAccess },
+  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, assertNewArrivalsAccess },
 };
