@@ -18,6 +18,7 @@
 // browses; `subcategory` the leaf; `brand` parsed from the brand-first name.
 
 // ── The category tree (also drives the POS browse chips + the review dropdown) ──
+import { brandInfo } from "./brands.js";
 export const CATEGORY_TREE = {
   Footwear:    ["Sneakers", "Soccer Boots", "Sandals & Slides", "Boots"],
   Clothing:    ["T-Shirts", "Jerseys", "Caps & Hats", "Tracksuits & Sets", "Jeans & Denim", "Polos",
@@ -138,41 +139,12 @@ export function sizeClass(sizes) {
   return shoe > letter ? "footwear" : "clothing";
 }
 
-// ── Brand (parsed from the brand-first cleaned names) ──────────────────────────
-// Multi-word / alias brands first; otherwise the first name token. Returns null
-// for code-only / unbranded supplier names (e.g. "Lx:1222", "Barley 8290").
-const BRAND_ALIASES = [
-  [/^air jordan\b/, "Jordan"], [/^jordan\b/, "Jordan"],
-  [/^hugo boss\b/, "Boss"], [/^boss\b/, "Boss"],
-  [/^karl lagerfeld\b/, "Karl Lagerfeld"],
-  [/^g[\s-]?star\b/, "G-Star"],
-  [/^new balance\b/, "New Balance"],
-  [/^fear of god\b/, "Fear of God"],
-  [/^loro piana\b/, "Loro Piana"],
-  [/^louis vuitton\b/, "Louis Vuitton"],
-  [/^dolce ?(&|and)? ?gabbana\b/, "Dolce & Gabbana"],
-  [/^(emporio |armani exchange|armani)\b/, "Armani"],
-  [/^under armour\b/, "Under Armour"],
-  [/^alo( yoga)?\b/, "Alo"],
-  [/^calvin klein\b/, "Calvin Klein"],
-  [/^tommy( hilfiger)?\b/, "Tommy Hilfiger"],
-  [/^the north face\b/, "The North Face"],
-  [/^off[\s-]?white\b/, "Off-White"],
-  [/^true religion\b/, "True Religion"],
-  [/^stone island\b/, "Stone Island"],
-  [/^ralph lauren\b|^polo ralph\b/, "Ralph Lauren"],
-];
-
+// ── Brand — from the shared brand list (src/utils/brands.js) ──────────────────
+// A known brand anywhere in the name (typos included), else null. NEVER the
+// name's first word: an unrecognised name gets no brand (brandInfo flags it).
+export { brandInfo };
 export function brandOf(name) {
-  const n = String(name || "").trim();
-  if (!n) return null;
-  const low = n.toLowerCase();
-  for (const [re, brand] of BRAND_ALIASES) if (re.test(low)) return brand;
-  const tok = n.split(/\s+/)[0].replace(/[^A-Za-z0-9&'+-]/g, "");
-  // Not a brand: empty, numeric-leading, no letters at all, or a supplier code
-  // (short alpha prefix immediately followed by digits — "Lx1222", "GS5222", "Hb001").
-  if (!tok || /^\d/.test(tok) || !/[A-Za-z]/.test(tok) || /^[A-Za-z]{1,3}\d/.test(tok)) return null;
-  return tok.charAt(0).toUpperCase() + tok.slice(1);
+  return brandInfo(name).brand;
 }
 
 // ── Keyword maps (order matters within each list — first hit wins) ─────────────

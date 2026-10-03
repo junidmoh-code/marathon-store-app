@@ -18,7 +18,7 @@ describe("the product edit page", () => {
   });
   it("saves type, sizes, hubs, shoebox and name through the one save path", () => {
     for (const re of [/changeProductType\(\{\s*id: product\.id, productType: nextType, deviceId: getDeviceId\(\), call: setProductTypeCall,/, /save\(\{ sizes: next \}/, /save\(\{ hubs: next \}/,
-      /save\(\{ hasShoeBoxOption: next \}/, /save\(\{ name: next \}/]) expect(body).toMatch(re);
+      /save\(\{ hasShoeBoxOption: next \}/, /save\(\{ name: next[ ,]/]) expect(body).toMatch(re);
   });
   it("has no write on /products/{id} left that could fail silently", () => {
     // The photo upload is the one direct write left; it has its own alert.

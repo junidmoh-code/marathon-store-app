@@ -36,7 +36,8 @@ import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import { setUpdateBusy } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
-import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
+import { brandOnRename } from "./utils/brands.js";
+import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -803,7 +804,12 @@ function updateProductName(id, newName, product = null) {
   // Seed FIRST, then rename. The other order would race: a rebuild landing
   // between the two would read the new public name as the identity.
   return seedSearchIdentityFrom(product && product.id === id ? product : { id, name: null })
-    .then(() => update(ref(database, `products/${id}`), { name: newName.trim() }))
+    .then(() => {
+      // A product with no brand (or a flagged one) gets its brand re-derived
+      // from the new name; a set brand is never touched (brands.js brandOnRename).
+      const b = product && product.id === id ? brandOnRename(product, newName.trim()) : null;
+      return update(ref(database, `products/${id}`), { name: newName.trim(), ...(b || {}) });
+    })
     .catch(err => console.warn("updateProductName failed:", err));
 }
 
@@ -6315,7 +6321,7 @@ function AdminView({ products, orders, onExit }) {
       const newProduct = buildNewProduct(taxonomy, form, {
         id,
         photoUrl: photoUrl ?? null,
-        brand: brandOf(form.name),
+        ...(({ brand, flag, source }) => ({ brand, brandFlag: flag, brandSource: source }))(brandInfo(form.name)),
         // The style code carried through from the gate. Absent for any product
         // added without one — the field is omitted, never nulled.
         styleCode: intake ? intake.styleCode : null,
@@ -7300,7 +7306,8 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
     if (next && next !== product.name) {
       // Seed FIRST, then rename (see updateProductName).
       seedSearchIdentityFrom(product)
-        .then(() => save({ name: next }, "the name"))
+        // Same rule as updateProductName: only an empty brand is re-derived.
+        .then(() => save({ name: next, ...(brandOnRename(product, next) || {}) }, "the name"))
         .catch((err) => setSaveError(`Could not save the name: ${err?.message || err}. Try again.`));
     }
     else if (!next) setNameDraft(product.name);
@@ -8631,13 +8638,20 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const catalog = products || [];
 
   // Brand dropdown options FROM the data (product.brand), counted, most-stocked
-  // first; unbranded/code-only (brand == null) collapse into "Other".
+  // first; unbranded/code-only (brand == null) collapse into "Other". Products
+  // whose brand was NOT recognised (brandFlag) get their own "Needs brand"
+  // entry — the list someone works through to set the missing brands.
   const brandOpts = useMemo(() => {
     const m = new Map();
-    catalog.forEach(p => { const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1); });
+    let needs = 0;
+    catalog.forEach(p => {
+      if (!p.brand && p.brandFlag === "unrecognised") { needs++; return; }
+      const k = p.brand || "Other"; m.set(k, (m.get(k) || 0) + 1);
+    });
     const other = m.get("Other") || 0; m.delete("Other");
     const ranked = [...m.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
     const out = [["All", catalog.length], ...ranked];
+    if (needs) out.push(["Needs brand", needs]);
     if (other) out.push(["Other", other]);
     return out;
   }, [catalog]);
@@ -8652,7 +8666,8 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
     const results = searchResults || catalog;   // defensive: never render undefined
     let list = brand === "All"
       ? results
-      : results.filter(p => (brand === "Other" ? !p.brand : p.brand === brand));
+      : results.filter(p => (brand === "Needs brand" ? !p.brand && p.brandFlag === "unrecognised"
+        : brand === "Other" ? !p.brand && p.brandFlag !== "unrecognised" : p.brand === brand));
     if (sort === "ph") list = [...list].sort((a, b) => (b.retailPrice || 0) - (a.retailPrice || 0));
     else if (sort === "pl") list = [...list].sort((a, b) => (a.retailPrice || 0) - (b.retailPrice || 0));
     else if (sort === "az") list = [...list].sort((a, b) => a.name.localeCompare(b.name));
