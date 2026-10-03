@@ -321,7 +321,19 @@ function decisionRecord({ pid, at, by, action, reason = null, item, categoryKey 
     categoryKey: key ? String(key) : null,
     genId: gen ? genId : null,
     gen: gen ? JSON.parse(JSON.stringify(gen)) : null,
+    // Junid approved what the checker rejected: "checker wrong" for each rule it
+    // failed, so calibration tunes those thresholds against it (3 Oct).
+    checkerWrong: action === "approve-anyway" ? checkerWrongRules(gen, item) : null,
   };
+}
+
+/** The rules the checker failed on an approved-anyway generation (never empty: falls back to the rejection code). Pure. */
+function checkerWrongRules(gen, item) {
+  const v = gen && gen.verdict && typeof gen.verdict === "object" ? gen.verdict : null;
+  const rules = Array.isArray(v && v.failed) ? v.failed : Object.values((v && v.failed) || {});
+  if (rules.length) return rules.map(String);
+  const code = item && item.rejection && item.rejection.code;
+  return [code ? String(code) : "rejected"];
 }
 
 // ── PICK ANY GENERATION ──────────────────────────────────────────────────────
@@ -370,6 +382,7 @@ function keyCmp(a, b) {
 const INDEX_CEILING = 2000;
 
 module.exports = {
+  checkerWrongRules,
   INDEX_CEILING,
   ROOT, ITEMS, BY_STATUS, DECISIONS, STATUSES, TABS, TAB_OF, STATUSES_IN_TAB,
   ENQUEUE_WINDOW_MS, ENQUEUE_SKEW_MS, PID_RE,

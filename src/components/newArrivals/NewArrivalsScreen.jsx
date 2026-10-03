@@ -87,7 +87,7 @@ function PriceFields({ item, busy, onSavePrices, needNote }) {
 // each with its cost and the checker's label. On Ready and Rejected every
 // thumbnail (checker-failed ones and re-checks too) has "Use this one", which
 // makes it the main photo — Approve then uses it.
-function Generations({ item, tab, stats, busy, onPick }) {
+function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, approveEnabled = false }) {
   const gens = generationsOf(item);
   const mainId = currentGenId(item);
   const main = gens.find((g) => g.genId === mainId) || null;
@@ -111,6 +111,11 @@ function Generations({ item, tab, stats, busy, onPick }) {
               {onPick && canPick(item, g) && (
                 <button disabled={busy} onClick={() => onPick(item.pid, g.genId)}
                   style={{ ...bBlue, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy ? 0.5 : 1 }}>Use this one</button>
+              )}
+              {onApproveGen && item.status === "rejected" && g.url && (
+                <button data-testid="approve-gen" disabled={busy || !approveEnabled} onClick={() => onApproveGen(item.pid, g.genId)}
+                  title={approveEnabled ? undefined : "add stock price first"}
+                  style={{ ...bGreen, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy || !approveEnabled ? 0.4 : 1 }}>Approve anyway</button>
               )}
             </div>
           ))}
@@ -140,7 +145,8 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
           Select
         </label>
       )}
-      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={(tab === "ready" || tab === "rejected") ? h.onPick : null} />
+      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={(tab === "ready" || tab === "rejected") ? h.onPick : null}
+        onApproveGen={tab === "rejected" ? h.onApproveGen : null} approveEnabled={acts.approveAnywayEnabled} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
       {shopifyNameLine(item) && (
         <div style={{ color: item.suggestedName ? BLUE_L : GRAY, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>
@@ -153,7 +159,7 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
       {item.framingFlag === true && <div style={{ color: AMBER, fontSize: 12, marginTop: 2 }}>Framing still off after the automatic correction</div>}
       <div data-testid="status" style={{ color: statusColour, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
       {PRICE_TABS.includes(tab) && h.onSavePrices && (
-        <PriceFields item={item} busy={busy} onSavePrices={h.onSavePrices} needNote={acts.approve && needsStockPrice(p)} />
+        <PriceFields item={item} busy={busy} onSavePrices={h.onSavePrices} needNote={(acts.approve || acts.approveAnyway) && needsStockPrice(p)} />
       )}
       {tab === "done" && destinationLines(item).map((l) => (
         <div key={l} style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>{l}</div>
@@ -164,7 +170,11 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
             title={acts.approveEnabled ? undefined : "add stock price first"}
             style={{ ...bGreen, flex: 1, opacity: busy || !acts.approveEnabled ? 0.4 : 1 }}>Approve</button>
         )}
-        {acts.approveAnyway && <button disabled={busy} onClick={() => h.onApproveAnyway(item.pid)} style={{ ...bGreen, flex: 1, ...dim }}>Approve anyway</button>}
+        {acts.approveAnyway && (
+          <button disabled={busy || !acts.approveAnywayEnabled} onClick={() => h.onApproveAnyway(item.pid)}
+            title={acts.approveAnywayEnabled ? undefined : "add stock price first"}
+            style={{ ...bGreen, flex: 1, opacity: busy || !acts.approveAnywayEnabled ? 0.4 : 1 }}>Approve anyway</button>
+        )}
         {acts.generate && <button disabled={busy} onClick={() => h.onGenerate([item.pid])} style={{ ...bBlue, flex: 1, ...dim }}>Generate</button>}
         {acts.regenerate && <button disabled={busy} onClick={() => h.onRegenerate(item.pid)} style={{ ...bBlue, flex: 1, ...dim }}>Regenerate</button>}
         {acts.skip && <button disabled={busy} onClick={() => h.onSkip([item.pid])} style={{ ...bGray, flex: 1, ...dim }}>Skip — don't advertise</button>}
@@ -366,6 +376,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
   const h = {
     onApprove: (pid) => run(() => api.approve([pid]), (r) => (n(r, "approved") ? "Approved — publishing has started. Its progress, or any refusal, shows under Done or Rejected." : "Nothing approved."), "approved"),
     onApproveAnyway: (pid) => run(() => api.approve([pid], { anyway: true }), (r) => (n(r, "approved") ? "Approved anyway — publishing has started." : "Nothing approved."), "approved"),
+    onApproveGen: (pid, genId) => run(() => api.approve([pid], { anyway: true, genId }), (r) => (n(r, "approved") ? "That photo is approved — publishing has started." : "Nothing approved."), "approved"),
     onGenerate: (pids) => run(bulk((p) => api.generate(p), pids), (r) => `${n(r, "requested")} sent to the generator — results land in Ready.`),
     onRegenerate: (pid) => run(() => api.generate([pid], { regenerate: true }), (r) => (n(r, "requested") ? "A fresh attempt is requested — it lands in Ready." : "Nothing requested.")),
     onReject: (pid, reason) => run(() => api.reject(pid, reason), () => `Rejected: ${reason}.`),
