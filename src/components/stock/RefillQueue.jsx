@@ -39,7 +39,7 @@
 //     Out of Stock writes the same response record it always has.
 
 import React, { useEffect, useMemo, useState } from "react";
-import { ref, update, get, runTransaction } from "firebase/database";
+import { ref, update, get, runTransaction, serverTimestamp } from "firebase/database";
 import { database, auth } from "../../firebase";
 import { useRefillRequests, useStockCells, useEngineOpen, useEngineConfig, useStockHoldConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
@@ -479,7 +479,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       let claimedRow = null;
       try {
         const c = await runTransaction(ref(database, `refill_requests/${r.id}`),
-          (cur) => claimPickTxn(cur, { atMs: serverNowMs(), by: auth.currentUser?.uid || null, token, replayOf: res ? mvId : null, movementId: mvId }));   // a claim, not a movement (the gate test counts movement shapes)
+          (cur) => claimPickTxn(cur, { nowMs: serverNowMs(), stamp: serverTimestamp(), by: auth.currentUser?.uid || null, token, replayOf: res ? mvId : null, movementId: mvId }));   // a claim, not a movement (the gate test counts movement shapes)
         claimedRow = c.committed ? c.snapshot.val() : null;
         claimed = !!(claimedRow && claimedRow.picking && claimedRow.picking.token === token);
       } catch { claimed = false; }

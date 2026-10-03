@@ -28,8 +28,8 @@ per product.
   moved stock**.
 - **Deducted / credited:** all 62 lines that moved stock: **Central deducted,
   Hub 2 credited.** None of them credited a shop.
-- **What happened next,** for each fulfilled line, at the shop and size it
-  named:
+- **What happened next,** for each of the 62 lines that moved stock (the
+  61 fulfilled lines plus the partly sent one), at the shop and size it named:
   - **28 — Hub 2 sent it on** to the shop (a hub2 → shop transfer after the
     leg landed). This is correct.
   - **6 — STRONG evidence the box went to the shop.** The shop sold the unit

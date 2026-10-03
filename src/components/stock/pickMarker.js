@@ -30,11 +30,20 @@ export function pickInProgress(rr, nowMs = Date.now()) {
 // `replayOf`: set ONLY when the movement under this tranche id already exists
 // (a retry finishing its bookkeeping) — then a claim on that same tranche may
 // be taken over: the stock has moved, and the retry is what completes it.
-export function claimPickTxn(cur, { movementId, atMs, by, token, replayOf = null }) {
+// `nowMs` judges an existing claim; `stamp` is what the new claim records —
+// the caller passes the SERVER's timestamp sentinel, so a device whose clock
+// offset has not loaded can never stamp a claim the scan reads as expired
+// (CodeRabbit, PR #677). `picking.atMs` is not a rules-validated field.
+export function claimPickTxn(cur, { movementId, nowMs, stamp = nowMs, by, token, replayOf = null }) {
   if (cur === null || cur === undefined) return null;
   if (cur.status !== "open") return undefined;
-  if (pickInProgress(cur, atMs) && !(replayOf && cur.picking.movementId === replayOf)) return undefined;
-  return { ...cur, picking: { atMs, movementId, by: by || null, token } };
+  // Engine store legs (a lock with an R### order) are picked through the
+  // order flow, never here: refusing them keeps "a claimed request has no
+  // order" true by construction, so no scan path ever has to reconcile an
+  // order against a claim (CodeRabbit, PR #677).
+  if (cur.orderId) return undefined;
+  if (pickInProgress(cur, nowMs) && !(replayOf && cur.picking.movementId === replayOf)) return undefined;
+  return { ...cur, picking: { atMs: stamp, movementId, by: by || null, token } };
 }
 
 // Releases a claim only while it is still THIS attempt's (its token).

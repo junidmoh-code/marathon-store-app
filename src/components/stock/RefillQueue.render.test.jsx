@@ -44,6 +44,7 @@ vi.mock("firebase/database", () => ({
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
   runTransaction: (...a) => txnMock(...a),
+  serverTimestamp: () => ({ ".sv": "timestamp" }),
   get: (r) => rejects.has(r.path) ? Promise.reject(new Error("offline")) : Promise.resolve({ val: () => gets[r.path] ?? null }),
   // The per-device reject log (src/device/rejectCount.js).
   push: (...a) => pushMock(...a),
@@ -246,7 +247,7 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     const claimIdx = txnMock.mock.calls.findIndex(([r]) => r.path === "refill_requests/bootreq");
     expect(claimIdx, "a claim transaction on the request").toBeGreaterThanOrEqual(0);
     const claimWrite = txnWrites.find((w) => w.path === "refill_requests/bootreq" && w.value?.picking);
-    expect(claimWrite.value.picking).toMatchObject({ atMs: NOW, movementId: "rrf_bootreq", by: "u1" });
+    expect(claimWrite.value.picking).toMatchObject({ atMs: { ".sv": "timestamp" }, movementId: "rrf_bootreq", by: "u1" });
     expect(typeof claimWrite.value.picking.token).toBe("string");
     expect(txnMock.mock.invocationCallOrder[claimIdx]).toBeLessThan(applyMovementMock.mock.invocationCallOrder[0]);
     const patch = updateMock.mock.calls.at(-1)[1];

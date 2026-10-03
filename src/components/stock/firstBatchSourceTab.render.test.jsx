@@ -28,6 +28,7 @@ vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (r, cb) => { cb({ val: () => paths[r.path] ?? null }); return () => {}; },
   update: (...a) => updateMock(...a),
+  serverTimestamp: () => ({ ".sv": "timestamp" }),
   runTransaction: (...a) => txnMock(...a),
   get: (r) => Promise.resolve({ val: () => gets[r.path] ?? null }),
 }));

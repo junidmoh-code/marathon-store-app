@@ -18,7 +18,7 @@ describe("pickMarker", () => {
     }
   });
   it("claim: probes a cold null, refuses a resolved row and ANY fresh claim (same tranche included — two devices compute the same id); a stale one is taken over", () => {
-    const args = { movementId: "rrf_a", atMs: NOW, by: "u1", token: "t1" };
+    const args = { movementId: "rrf_a", nowMs: NOW, by: "u1", token: "t1" };
     expect(claimPickTxn(null, args)).toBeNull();
     expect(claimPickTxn({ status: "fulfilled" }, args)).toBeUndefined();
     expect(claimPickTxn({ status: "open", picking: { atMs: NOW - 1000, movementId: "rrf_a_1", token: "t0" } }, args)).toBeUndefined();
@@ -28,6 +28,11 @@ describe("pickMarker", () => {
     // a replay (its movement exists) may take over its OWN tranche's claim — never another tranche's
     expect(claimPickTxn({ status: "open", picking: { atMs: NOW - 1000, movementId: "rrf_a", token: "t0" } }, { ...args, replayOf: "rrf_a" }).picking.token).toBe("t1");
     expect(claimPickTxn({ status: "open", picking: { atMs: NOW - 1000, movementId: "rrf_a_1", token: "t0" } }, { ...args, replayOf: "rrf_a" })).toBeUndefined();
+    // the new claim records the caller's stamp (the server's timestamp sentinel in the app)
+    const SV = { ".sv": "timestamp" };
+    expect(claimPickTxn({ status: "open" }, { ...args, stamp: SV }).picking.atMs).toBe(SV);
+    // an engine store leg (a row carrying an R### order) is never claimed here
+    expect(claimPickTxn({ status: "open", orderId: "R001-1" }, args)).toBeUndefined();
   });
   it("release: only the attempt that holds the token clears the claim", () => {
     expect(releasePickTxn(null, "t1")).toBeNull();
