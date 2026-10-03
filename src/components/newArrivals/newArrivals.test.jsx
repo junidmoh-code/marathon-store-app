@@ -15,6 +15,8 @@ const NOW = Date.UTC(2026, 9, 2, 8, 0); // 10:00 SAST
 const ready = (over = {}) => ({
   pid: "p1789999990000", status: "ready", enqueuedAt: NOW, statusAt: NOW, name: "Nike AF1 Black",
   generatedUrl: "https://x/gen.jpg", originalUrl: "https://x/orig.jpg", suggestedName: "Low-top sneaker in black",
+  // A checked photo on a ready card passed the checker.
+  verdict: { pass: true, failed: [], label: "✓ passed" },
   // The groups are priced at the STOCK price (owner, 3 Oct); retail is Shopify's.
   product: { name: "Nike AF1 Black", stockPrice: 550, retailPrice: 650, sizes: ["6", "7"] }, ...over,
 });
@@ -43,20 +45,27 @@ describe("view helpers", () => {
 
   it("Approve only with a generated photo — never on an original", () => {
     expect(actionsFor(ready()).approve).toBe(true);
-    expect(statusLine(ready())).toBe("Photo checked — waiting for your Approve");
+    expect(statusLine(ready())).toBe("Photo ready — approve");
     // A failed generation is not retried: the card says so and waits for a tap.
     const failedNew = { status: "new", lastAttempt: { failed: true, reason: "the photo service was busy — tap Generate again" } };
     expect(statusLine(failedNew)).toBe("Last photo failed: the photo service was busy — tap Generate again");
-    expect(statusLine({ ...failedNew, generateRequest: 5 })).toMatch(/^Generate requested/);
+    expect(statusLine({ ...failedNew, generateRequest: 5 })).toBe("Generating…");
+    expect(statusLine({ status: "generating" })).toBe("Generating…");
+    expect(statusLine({ status: "new" })).toBe("Waiting — tap Generate when you want its photo");
     expect(actionsFor(ready()).approveEnabled).toBe(true);
+    expect(actionsFor(ready({ generatedUrl: undefined })).approve).toBe(false);
     expect(actionsFor(ready({ generatedUrl: undefined })).approveEnabled).toBe(false);
-    // No stock price → Approve still SHOWN on Ready, but disabled; the status line says what to do.
+    // No stock price → Approve still SHOWN, but disabled, with why.
     const noPrice = ready({ product: { name: "x", sizes: ["6"] } });
     expect(actionsFor(noPrice).approve).toBe(true);
     expect(actionsFor(noPrice).approveEnabled).toBe(false);
-    expect(statusLine(noPrice)).toBe("Photo checked — needs a stock price before approving");
-    expect(actionsFor({ status: "rejected" })).toMatchObject({ approve: false, approveAnyway: false, regenerate: true, skip: true, reject: false });
-    expect(actionsFor({ status: "new" })).toMatchObject({ approve: false, generate: true, skip: true, regenerate: false });
+    expect(actionsFor(noPrice).approveWhy).toBe("add stock price first");
+    expect(statusLine(noPrice)).toBe("Photo ready — approve");
+    // By PHOTO PRESENCE, never by lane: a rejected item without a photo offers Generate (regenerate flag).
+    expect(actionsFor({ status: "rejected" })).toMatchObject({ approve: false, generate: true, generateRegenerate: true, regenerate: false, skip: true, reject: false });
+    expect(actionsFor(ready({ status: "rejected" }))).toMatchObject({ approve: true, approveEnabled: true, regenerate: true, reject: true, skip: true });
+    expect(actionsFor(ready({ status: "new" }))).toMatchObject({ approve: true, approveEnabled: true, regenerate: true, generate: false });
+    expect(actionsFor({ status: "new" })).toMatchObject({ approve: false, generate: true, generateRegenerate: false, skip: true, regenerate: false });
     expect(actionsFor({ status: "new", generateRequest: { at: 1 } }).generate).toBe(false);
     expect(actionsFor({ status: "skipped" })).toMatchObject({ approve: false, skip: false, generate: false, regenerate: false });
     expect("restore" in actionsFor({ status: "skipped" })).toBe(false); // no Skipped tab: Undo is the toast
@@ -65,10 +74,10 @@ describe("view helpers", () => {
   it("the stock price gates Approve; the retail price is irrelevant", () => {
     const noRetail = ready({ product: { name: "x", stockPrice: 550, retailPrice: null, sizes: ["6"] } });
     expect(actionsFor(noRetail).approveEnabled).toBe(true);
-    expect(statusLine(noRetail)).toBe("Photo checked — waiting for your Approve");
+    expect(actionsFor(noRetail).approveWhy).toBeNull();
     const retailOnly = ready({ product: { name: "x", stockPrice: 0, retailPrice: 650, sizes: ["6"] } });
     expect(actionsFor(retailOnly).approveEnabled).toBe(false);
-    expect(statusLine(retailOnly)).toMatch(/needs a stock price/);
+    expect(actionsFor(retailOnly).approveWhy).toBe("add stock price first");
     expect(actionsFor(ready({ product: { stockPrice: "550" } })).approveEnabled).toBe(true);
     expect(actionsFor(ready({ product: { stockPrice: -5 } })).approveEnabled).toBe(false);
   });
@@ -107,7 +116,7 @@ describe("view helpers", () => {
 
 const fakeApi = (items = [ready()], over = {}) => ({
   select: vi.fn(async () => ({ ok: true })),
-  list: vi.fn(async (tab) => ({ tab, items: tab === "ready" ? items : [], tabCounts: { new: 2, ready: items.length, rejected: 0, done: 5 } })),
+  list: vi.fn(async (tab) => ({ tab, items: tab === "new" ? items : [], tabCounts: { new: items.length, done: 5 } })),
   approve: vi.fn(async (pids) => ({ approved: pids, skipped: [] })),
   approveAll: vi.fn(async () => ({ approved: items.map((i) => i.pid), skipped: [] })),
   retry: vi.fn(async () => ({ ok: true })),
@@ -130,7 +139,7 @@ const memStorage = (init = {}, { throwOn = false } = {}) => {
     map: m,
   };
 };
-const render = async (api, initialTab = "ready", storage = memStorage()) => {
+const render = async (api, initialTab = "new", storage = memStorage()) => {
   let tree;
   await act(async () => { tree = TestRenderer.create(<NewArrivalsScreen api={api} onExit={() => {}} initialTab={initialTab} storage={storage} />); });
   return tree;
@@ -190,13 +199,13 @@ describe("NewArrivalsScreen", () => {
 
   it("a slow response for a tab no longer shown is dropped", async () => {
     let resolveReady;
-    const api = fakeApi([], { list: vi.fn((tab) => tab === "ready"
+    const api = fakeApi([], { list: vi.fn((tab) => tab === "new"
       ? new Promise((r) => { resolveReady = r; })
-      : Promise.resolve({ items: [{ pid: "p1789999990009", status: "rejected", rejection: { code: "source", reason: "retake photo" }, product: {} }], tabCounts: {} })) });
+      : Promise.resolve({ items: [{ pid: "p1789999990009", status: "done", product: {} }], tabCounts: {} })) });
     const tree = await render(api);
-    await act(async () => { tree.root.findAll((n) => n.props?.role === "tab")[2].props.onClick(); });
+    await act(async () => { tree.root.findAll((n) => n.props?.role === "tab")[1].props.onClick(); });
     await act(async () => { resolveReady({ items: [ready()], tabCounts: {} }); });
-    expect(text(tree)).toContain("retake photo");
+    expect(text(tree)).toContain("p1789999990009");
     expect(text(tree)).not.toContain("Shopify name: Low-top sneaker in black");
   });
 
@@ -206,12 +215,13 @@ describe("NewArrivalsScreen", () => {
     expect(text(tree)).toContain("Couldn't load: permission-denied");
   });
 
-  it("Rejected offers Regenerate and Skip, no Approve (no photo → no Approve anyway)", async () => {
+  it("a rejected item with no photo stays on New: rejection as a label, Generate (regenerate flag) and Skip, no Approve", async () => {
     const rej = { pid: "p1789999990001", status: "rejected", rejection: { code: "source", reason: "retake photo" }, product: {} };
     const api = fakeApi([], { list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) });
-    const tree = await render(api, "rejected");
-    expect(text(tree)).toContain("retake photo");
-    await act(async () => { button(tree, "Regenerate").props.onClick(); });
+    const tree = await render(api, "new");
+    expect(text({ toJSON: () => testid(tree, "rejection")[0].children })).toBe("retake photo");
+    expect(text({ toJSON: () => testid(tree, "status")[0].children })).toBe("Waiting — tap Generate when you want its photo");
+    await act(async () => { button(tree, "Generate").props.onClick(); });
     expect(api.generate).toHaveBeenCalledWith(["p1789999990001"], { regenerate: true });
     expect(button(tree, "Approve")).toBeUndefined();
     expect(button(tree, "Approve anyway")).toBeUndefined();
@@ -226,7 +236,7 @@ describe("PRICES: Stock price (R) + Retail price (R), pre-filled, one Save — t
   const field = (tree, l) => tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === l)[0];
   const type = async (tree, l, v) => act(async () => { field(tree, l).props.onChange({ target: { value: v } }); });
 
-  it("both fields on every Ready card, pre-filled with the current prices", async () => {
+  it("both fields on every card with a photo, pre-filled with the current prices", async () => {
     const tree = await render(fakeApi([priced()], { savePrices: vi.fn() }));
     expect(field(tree, "Stock price (R)").props.value).toBe("550");
     expect(field(tree, "Retail price (R)").props.value).toBe("650");
@@ -276,11 +286,11 @@ describe("PRICES: Stock price (R) + Retail price (R), pre-filled, one Save — t
     expect(savePrices.mock.calls[0][2]).toEqual({ stockPrice: "400" });
   });
 
-  it("New and Rejected cards carry the fields too; Done does not", async () => {
+  it("every New card carries the fields (no photo yet, rejected too); Done does not", async () => {
     const rej = { ...priced(), status: "rejected", rejection: { code: "junid", reason: "framing" } };
     let tree = await render(pagedApi([newItem(0)], { savePrices: vi.fn() }), "new");
     expect(testid(tree, "price-fields")).toHaveLength(1);
-    tree = await render(fakeApi([], { savePrices: vi.fn(), list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) }), "rejected");
+    tree = await render(fakeApi([], { savePrices: vi.fn(), list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) }), "new");
     expect(testid(tree, "price-fields")).toHaveLength(1);
     tree = await render(fakeApi([], { savePrices: vi.fn(), list: vi.fn(async () => ({ items: [{ ...priced(), status: "done" }], tabCounts: {} })) }), "done");
     expect(testid(tree, "price-fields")).toHaveLength(0);
@@ -461,13 +471,14 @@ describe("New tab: the group switcher, multi-select, Generate, Skip", () => {
     expect(api.skip.mock.calls[0][0]).toEqual(all.slice(0, 45).map((i) => i.pid));
   });
 
-  it("Ready and Rejected are grouped too; Done is not", async () => {
+  it("New is grouped; an old 'ready'/'rejected' tab opens New; Done is not grouped", async () => {
     const api = pagedApi([ready()]);
     let tree = await render(api, "ready");
     expect(testid(tree, "group-switcher")).toHaveLength(1);
-    expect(api.list).toHaveBeenLastCalledWith("ready", { cursor: null, limit: 30, group: "sneakers" });
+    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 30, group: "sneakers" });
     tree = await render(api, "rejected");
     expect(testid(tree, "group-switcher")).toHaveLength(1);
+    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 30, group: "sneakers" });
     tree = await render(api, "done");
     expect(testid(tree, "group-switcher")).toHaveLength(0);
     expect(api.list).toHaveBeenLastCalledWith("done", { cursor: null, limit: 30, group: null });
@@ -499,7 +510,7 @@ describe("New tab: the group switcher, multi-select, Generate, Skip", () => {
 const GEN = (id, at, over = {}) => ({ url: `https://x/${id}.jpg`, at, model: "m", promptVersion: "v3", plate: "footwear-plate.png", kind: "footwear",
   costUsd: 0.04, costZar: 0.75, verdict: { pass: true, failed: [] }, reason: "requested", ...over });
 
-describe("Ready / Rejected: every generation, verdict label, chips, Approve anyway", () => {
+describe("ONE card on New: every generation, verdict label, chips, ONE Approve", () => {
   const withGens = (over = {}) => ready({
     generatedUrl: "https://x/g2.jpg", currentGen: "g2",
     generations: { g1: GEN("g1", NOW - 1000, { costZar: 0.5, verdict: { pass: false, failed: ["fidelity:colour"], label: "colour off" } }), g2: GEN("g2", NOW) },
@@ -535,29 +546,36 @@ describe("Ready / Rejected: every generation, verdict label, chips, Approve anyw
     expect(api.generate).toHaveBeenCalledWith(["p1789999990000"], { regenerate: true });
   });
 
-  it("Rejected shows every generation and Approve anyway (anyway: true)", async () => {
+  it("a rejected-lane item with photos stays on New: every generation, the rejection as a label, ONE Approve (no per-thumbnail Approve anyway)", async () => {
     const rej = withGens({ status: "rejected", rejection: { code: "junid", reason: "framing", at: NOW } });
-    const api = fakeApi([], { list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) });
-    const tree = await render(api, "rejected");
+    const api = fakeApi([rej]);
+    const tree = await render(api, "new");
     expect(tree.root.findAll((n) => n.type === "img")).toHaveLength(3);
-    expect(text(tree)).toContain("You rejected it: framing");
-    const anyway = tree.root.findAll((n) => n.type === "button" && label(n) === "Approve anyway");
-    // One per earlier generation (g1) + the main one.
-    expect(anyway).toHaveLength(2);
-    await act(async () => { anyway[anyway.length - 1].props.onClick(); });
-    expect(api.approve).toHaveBeenCalledWith(["p1789999990000"], { anyway: true });
-    await act(async () => { anyway[0].props.onClick(); });
-    expect(api.approve).toHaveBeenLastCalledWith(["p1789999990000"], { anyway: true, genId: "g1" });
+    expect(text({ toJSON: () => testid(tree, "rejection")[0].children })).toBe("You rejected it: framing");
+    expect(text({ toJSON: () => testid(tree, "status")[0].children })).toBe("Photo ready — approve");
+    expect(tree.root.findAll((n) => n.type === "button" && label(n) === "Approve anyway")).toHaveLength(0);
+    expect(testid(tree, "approve-gen")).toHaveLength(0);
+    const approves = tree.root.findAll((n) => n.type === "button" && label(n) === "Approve");
+    expect(approves).toHaveLength(1);
+    await act(async () => { approves[0].props.onClick(); });
+    // The main / selected photo; the server logs approve-anyway for a rejected lane.
+    expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
+    // Reject chips stay as Junid's reject-reason signal; Use this one on the earlier generation.
+    expect(testid(tree, "reject-chips")).toHaveLength(1);
+    expect(tree.root.findAll((n) => n.type === "button" && label(n) === "Use this one")).toHaveLength(1);
+    // Rejected items are not part of "Approve all" (only checker-passed photos are).
+    expect(text(tree)).not.toContain("Approve all");
   });
 
-  it("Rejected with no stock price: Approve anyway is SHOWN but disabled, with 'add stock price first'", async () => {
+  it("no stock price: the ONE Approve is SHOWN but disabled, with 'add stock price first'", async () => {
     const rej = withGens({ status: "rejected", rejection: { code: "generation", reason: "x", at: NOW } });
     rej.product = { ...rej.product, stockPrice: null };
-    const api = fakeApi([], { savePrices: vi.fn(), list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) });
-    const tree = await render(api, "rejected");
-    const anyway = tree.root.findAll((n) => n.type === "button" && label(n) === "Approve anyway");
-    expect(anyway).toHaveLength(2);
-    for (const b of anyway) expect(b.props.disabled).toBe(true);
+    const api = fakeApi([rej], { savePrices: vi.fn() });
+    const tree = await render(api, "new");
+    const approves = tree.root.findAll((n) => n.type === "button" && label(n) === "Approve");
+    expect(approves).toHaveLength(1);
+    expect(approves[0].props.disabled).toBe(true);
+    expect(approves[0].props.title).toBe("add stock price first");
     expect(text(tree)).toContain("add stock price first");
   });
 
@@ -572,7 +590,7 @@ describe("Ready / Rejected: every generation, verdict label, chips, Approve anyw
 describe("Skip — one tap, an 8-second Undo, no Skipped tab", () => {
   it("there is no Skipped tab", async () => {
     const tree = await render(pagedApi([newItem(0)]), "new");
-    expect(tree.root.findAll((n) => n.props?.role === "tab").map((t) => label(t).replace(/[\d\s]+$/, ""))).toEqual(["New", "Ready", "Rejected", "Done"]);
+    expect(tree.root.findAll((n) => n.props?.role === "tab").map((t) => label(t).replace(/[\d\s]+$/, ""))).toEqual(["New", "Done"]);
     expect(view.TABS.map((t) => t.key)).not.toContain("skipped");
     expect(view.UNDO_MS).toBe(8000);
   });
@@ -802,7 +820,7 @@ describe("learning log — codes under every generation, ❤ Love", () => {
     expect(view.genCode(null)).toBeNull();
   });
 
-  it("❤ on every generation in Ready, Rejected and Done; loved shows filled; taps call the api with loved true/false", async () => {
+  it("❤ on every generation in New (any lane) and Done; loved shows filled; taps call the api with loved true/false", async () => {
     const api = fakeApi([coded()], { love: vi.fn(async () => ({ ok: true })) });
     const tree = await render(api);
     expect(loves(tree)).toHaveLength(3);
@@ -821,12 +839,124 @@ describe("learning log — codes under every generation, ❤ Love", () => {
     expect(api.approve).not.toHaveBeenCalled();
     expect(api.select).not.toHaveBeenCalled();
 
-    for (const [tab, status] of [["rejected", "rejected"], ["done", "done"]]) {
+    for (const [tab, status] of [["new", "rejected"], ["new", "new"], ["done", "done"]]) {
       const t2 = await render(fakeApi([], { love: vi.fn(), list: listOf(coded({ status })) }), tab);
       expect(loves(t2)).toHaveLength(3);
     }
-    expect(view.canLove("new", { url: "u" })).toBe(false);
+    expect(view.canLove("new", { url: "u" })).toBe(true);
     expect(view.canLove("ready", { url: null })).toBe(false);
     expect(view.isLoved({ loved: "true" })).toBe(false);
+  });
+});
+
+it("Approve all skips a ready card whose picked photo FAILED the checker (CodeRabbit)", async () => {
+  const api = fakeApi([ready(), ready({ pid: "p1789999990001", verdict: { pass: false, failed: ["framing"], label: "✗ framing off" } })]);
+  const tree = await render(api);
+  expect(text(tree)).toContain("Approve all 1");
+});
+
+describe("ONE PLACE TO GENERATE AND APPROVE (3 Oct night)", () => {
+  const gens = (over = {}) => ready({
+    generatedUrl: "https://x/g2.jpg", currentGen: "g2",
+    generations: {
+      g1: GEN("g1", NOW - 2000, { code: "G-0001", verdict: { pass: false, failed: ["fidelity:colour"], label: "colour off" } }),
+      g2: GEN("g2", NOW - 1000, { code: "G-0002" }),
+    }, ...over,
+  });
+  const btns = (tree, l) => tree.root.findAll((n) => n.type === "button" && label(n) === l);
+
+  it("tabs are New and Done; old 'ready'/'rejected' links open New", () => {
+    expect(view.TABS.map((t) => t.key)).toEqual(["new", "done"]);
+    expect(view.normalizeTab("ready")).toBe("new");
+    expect(view.normalizeTab("rejected")).toBe("new");
+    expect(view.normalizeTab("done")).toBe("done");
+    expect(view.normalizeTab(undefined)).toBe("new");
+    expect(view.GROUP_TABS).toEqual(["new"]);
+  });
+
+  it("Approve on a new-lane item with a photo: one Approve on the main photo, Use this one on the thumbnail, Regenerate, Skip", async () => {
+    const it0 = gens({ status: "new" });
+    const api = fakeApi([it0], { love: vi.fn() });
+    const tree = await render(api, "new");
+    const t = text(tree);
+    expect(t).toContain("Original");
+    expect(t).toContain("Generated · Main photo");
+    expect(text({ toJSON: () => testid(tree, "status")[0].children })).toBe("Photo ready — approve");
+    expect(btns(tree, "Approve")).toHaveLength(1);
+    expect(btns(tree, "Approve")[0].props.disabled).toBe(false);
+    expect(btns(tree, "Use this one")).toHaveLength(1);
+    expect(btns(tree, "Use this one")[0].props.disabled).toBe(false);
+    expect(btns(tree, "Regenerate")).toHaveLength(1);
+    expect(btns(tree, "Skip — don't advertise")).toHaveLength(1);
+    expect(btns(tree, "Generate")).toHaveLength(0);
+    expect(testid(tree, "love")).toHaveLength(2);
+    expect(testid(tree, "gen-code").map((n) => text({ toJSON: () => n.children }))).toEqual(["G-0002", "G-0001"]);
+    await act(async () => { btns(tree, "Approve")[0].props.onClick(); });
+    expect(api.approve).toHaveBeenCalledWith([it0.pid]);
+    await act(async () => { btns(tree, "Regenerate")[0].props.onClick(); });
+    expect(api.generate).toHaveBeenCalledWith([it0.pid], { regenerate: true });
+  });
+
+  it("disabled without a stock price, with 'add stock price first' (any lane with a photo)", async () => {
+    for (const status of ["new", "ready", "rejected"]) {
+      const it0 = gens({ status, product: { name: "x", stockPrice: null, sizes: ["6"] } });
+      const tree = await render(fakeApi([it0], { savePrices: vi.fn() }), "new");
+      const [a] = btns(tree, "Approve");
+      expect(a.props.disabled).toBe(true);
+      expect(a.props.title).toBe("add stock price first");
+      expect(testid(tree, "approve-note")).toHaveLength(1);
+    }
+  });
+
+  it("while regenerating: the photos stay visible; Approve and Use this one are disabled ('generating…'); no Regenerate or chips", async () => {
+    const it0 = gens({ status: "new", generateRequest: { at: NOW, by: "junid", regenerate: true } });
+    const tree = await render(fakeApi([it0]), "new");
+    const imgs = tree.root.findAll((n) => n.type === "img").map((i) => i.props.src);
+    expect(imgs).toEqual(["https://x/orig.jpg", "https://x/g2.jpg", "https://x/g1.jpg"]);
+    expect(text({ toJSON: () => testid(tree, "status")[0].children })).toBe("Generating…");
+    const [a] = btns(tree, "Approve");
+    expect(a.props.disabled).toBe(true);
+    expect(a.props.title).toBe("generating…");
+    const [use] = btns(tree, "Use this one");
+    expect(use.props.disabled).toBe(true);
+    expect(use.props.title).toBe("generating…");
+    expect(btns(tree, "Regenerate")).toHaveLength(0);
+    expect(testid(tree, "reject-chips")).toHaveLength(0);
+    expect(view.actionsFor(it0)).toMatchObject({ approve: true, approveEnabled: false, approveWhy: "generating…", regenerate: false, skip: true });
+  });
+
+  it("a first photo on its way holds its place: 'Generating…' beside the original", async () => {
+    const it0 = newItem(0, { status: "generating" });
+    const tree = await render(pagedApi([it0]), "new");
+    expect(text(tree)).toContain("Generating…");
+    expect(btns(tree, "Generate")).toHaveLength(0);
+    expect(btns(tree, "Skip — don't advertise")).toHaveLength(0);
+  });
+
+  it("the verdict is a label only — a failed verdict never hides Approve; buckets by photo presence", () => {
+    const failed = gens({ status: "ready", verdict: { pass: false, failed: ["framing"] } });
+    expect(view.actionsFor(failed).approveEnabled).toBe(true);
+    expect(view.photoBucket(failed)).toBe("photo");
+    expect(view.photoBucket({ status: "new", generateRequest: { at: 1 }, generatedUrl: "u" })).toBe("generating");
+    expect(view.photoBucket({ status: "generating" })).toBe("generating");
+    expect(view.photoBucket({ status: "rejected" })).toBe("none");
+    expect(view.photoBucket({ status: "new" })).toBe("none");
+  });
+
+  it("the card keeps the server's order: photo ready → generating → no photo", async () => {
+    const list = [gens({ pid: P(3), status: "rejected" }), newItem(1, { status: "generating" }), newItem(0)];
+    const tree = await render(pagedApi(list), "new");
+    const statuses = testid(tree, "status").map((n) => text({ toJSON: () => n.children }));
+    expect(statuses).toEqual(["Photo ready — approve", "Generating…", "Waiting — tap Generate when you want its photo"]);
+  });
+
+  it("Approve all takes only checker-passed photos shown (lane ready), never rejected or new-lane ones", async () => {
+    const api = fakeApi([gens({ status: "ready" }), gens({ pid: P(5), status: "rejected" }), gens({ pid: P(6), status: "new" })]);
+    const tree = await render(api, "new");
+    expect(btns(tree, "Approve")).toHaveLength(3);
+    globalThis.window = { confirm: vi.fn(() => true) };
+    await act(async () => { button(tree, "Approve all 1").props.onClick(); });
+    delete globalThis.window;
+    expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
   });
 });

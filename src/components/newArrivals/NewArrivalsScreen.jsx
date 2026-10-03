@@ -1,30 +1,36 @@
 // ─── NEW ARRIVALS — the card ─────────────────────────────────────────────────
 // CALIBRATION (owner, 3 Oct): nothing is generated automatically. Uploads wait
-// in New until Junid taps Generate (per item, or on a selection). The result
-// lands in Ready with the checker's verdict shown as a LABEL only — it never
-// blocks. Ready: Approve, Regenerate (a fresh attempt), or Reject with one tap
-// on a reason chip. Rejected: Approve anyway, Regenerate, Skip. Skip — don't
-// advertise — is one tap: the item leaves the list (marked "skipped" in the
+// in New until Junid taps Generate (per item, or on a selection).
+// ONE PLACE TO GENERATE AND APPROVE (owner, 3 Oct night): two tabs, New and
+// Done. A generation lands ON THE SAME CARD in New — original and generated
+// side by side, every generation as a thumbnail with "Use this one", ❤ and its
+// code — with ONE Approve (the main / selected photo), Regenerate and Skip.
+// The checker's verdict (pass / failed + reasons) and any rejection are LABELS
+// only: they never move or hide an item. Within each group the list is
+// ordered photo ready → generating… → no photo yet (by the server). The
+// reject chips stay on items with a photo as Junid's reject-reason signal.
+// Skip — don't advertise — is one tap: the item leaves the list (marked "skipped" in the
 // data, never deleted, never generated, posted or published) and an 8-second
 // Undo toast can bring it back. There is no Skipped tab. Every action is
 // logged to the ledger by the callables. Every generation is shown, with its cost
 // (metered, or "~R… (estimated)" — never unknown); any of them can be made the
 // main photo with "Use this one" (logged as a pick). LEARNING LOG: each
 // generation's permanent code (G-0042) is printed under its image, and every
-// generation on Ready, Rejected and Done has a ❤ Love toggle (logged too).
+// generation on New and Done has a ❤ Love toggle (logged too).
 //
-// PRICES: every New / Ready / Rejected card has "Stock price (R)" and "Retail
+// PRICES: every New card has "Stock price (R)" and "Retail
 // price (R)", pre-filled, one Save — through the admin price save
 // (admin/productPriceSave.js), the product's REAL price fields. The stock
 // price is what the WhatsApp groups are posted at; retail is for the shops and
-// the website. Approve is always shown on Ready; without a stock price it is
-// disabled, with "add stock price first" by the price fields.
+// the website. Approve is shown on every item with a photo; without a stock
+// price it is disabled, with "add stock price first" by the price fields;
+// while a new photo is being generated it is disabled ("generating…").
 //
 // After Approve the Mac mini agents set the photo, accept the suggested name,
 // set condition Excellent, approve on the Shopify publisher, and the next
 // 10:00 / 15:00 window posts to the groups.
 //
-// GROUPS: New, Ready and Rejected show ONE group at a time — Sneakers or
+// GROUPS: New shows ONE group at a time — Sneakers or
 // Clothing — flipped with the switcher bar (‹ › or a swipe); the last group is
 // remembered on the device (default Sneakers). Done is the whole history.
 //
@@ -38,6 +44,7 @@ import {
   TABS, REJECT_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
   shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, verdictText, stockText, agreementText, rejectRateText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
+  normalizeTab, photoBucket, pickEnabled, rejectionLabel, hasPhoto,
 } from "./newArrivalsView";
 
 const REFRESH_MS = 30_000;
@@ -75,7 +82,7 @@ function Photo({ url, label, children = null }) {
 }
 
 // The two price fields, pre-filled with the product's prices, one Save. Only
-// the fields changed are sent. On Ready without a stock price, the note
+// the fields changed are sent. On an item with a photo but no stock price, the note
 // "add stock price first" sits here, next to the (disabled) Approve.
 function PriceFields({ item, busy, onSavePrices, needNote }) {
   const p = item.product || {};
@@ -103,22 +110,25 @@ function PriceFields({ item, busy, onSavePrices, needNote }) {
 }
 
 // EVERY generation, on every tab: the one shown big (currentGen, or the
-// newest) marked "Main photo", then every earlier attempt as a thumbnail —
-// each with its cost and the checker's label. On Ready and Rejected every
-// thumbnail (checker-failed ones and re-checks too) has "Use this one", which
-// makes it the main photo — Approve then uses it.
-function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, approveEnabled = false, onLove = null }) {
+// newest) marked "Main photo", side by side with the original, then every
+// earlier attempt as a thumbnail — each with its code, cost and the checker's
+// label. On New every thumbnail (checker-failed ones and re-checks too) has
+// "Use this one", which makes it the main photo — the ONE Approve then uses
+// it. While a new photo is being generated, Use this one waits ("generating…").
+function Generations({ item, tab, stats, busy, onPick, onLove = null }) {
   const gens = generationsOf(item);
   const mainId = currentGenId(item);
   const main = gens.find((g) => g.genId === mainId) || null;
   const mainUrl = main?.url || item.generatedUrl || (tab === "done" ? item.product?.photoUrl : null);
   const earlier = gens.filter((g) => g !== main);
   const total = totalCostText(item, stats);
+  // The first photo is on its way: its place is held on the card.
+  const generatingFirst = tab === "new" && !mainUrl && photoBucket(item) === "generating";
   return (
     <>
       <div style={{ display: "flex", gap: 8 }}>
         <Photo url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
-        {(mainUrl || tab !== "new" || gens.length > 0) && <Photo url={mainUrl} label={main ? `Generated${earlier.length ? " · Main photo" : ""} · ${costText(main, stats)}` : "Generated"}>
+        {(mainUrl || tab !== "new" || gens.length > 0 || generatingFirst) && <Photo url={mainUrl} label={main ? `Generated${earlier.length ? " · Main photo" : ""} · ${costText(main, stats)}` : generatingFirst ? "Generating…" : "Generated"}>
           {main && <GenCode gen={main} />}
           {main && onLove && canLove(tab, main) && <div style={{ textAlign: "center" }}><LoveButton item={item} gen={main} busy={busy} onLove={onLove} /></div>}
         </Photo>}
@@ -134,13 +144,9 @@ function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, appr
               <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g, stats)}{g.verdict ? ` · ${g.verdict.pass ? "pass" : "failed"}` : ""}</div>
               {onLove && canLove(tab, g) && <LoveButton item={item} gen={g} busy={busy} onLove={onLove} small />}
               {onPick && canPick(item, g) && (
-                <button disabled={busy} onClick={() => onPick(item.pid, g.genId)}
-                  style={{ ...bBlue, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy ? 0.5 : 1 }}>Use this one</button>
-              )}
-              {onApproveGen && item.status === "rejected" && g.url && (
-                <button data-testid="approve-gen" disabled={busy || !approveEnabled} onClick={() => onApproveGen(item.pid, g.genId)}
-                  title={approveEnabled ? undefined : "add stock price first"}
-                  style={{ ...bGreen, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy || !approveEnabled ? 0.4 : 1 }}>Approve anyway</button>
+                <button disabled={busy || !pickEnabled(item)} onClick={() => onPick(item.pid, g.genId)}
+                  title={pickEnabled(item) ? undefined : "generating…"}
+                  style={{ ...bBlue, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy || !pickEnabled(item) ? 0.4 : 1 }}>Use this one</button>
               )}
             </div>
           ))}
@@ -158,8 +164,11 @@ function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, appr
 function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats }) {
   const p = item.product || {};
   const acts = actionsFor(item);
-  const statusColour = item.status === "rejected" ? RED : item.status === "ready" ? GREEN : item.status === "done" ? GREEN : AMBER;
+  // New: green = photo ready, amber = generating, grey = no photo yet.
+  const bucket = tab === "new" ? photoBucket(item) : null;
+  const statusColour = bucket ? (bucket === "photo" ? GREEN : bucket === "generating" ? AMBER : GRAY) : item.status === "done" ? GREEN : AMBER;
   const verdict = verdictText(item.verdict);
+  const rejected = rejectionLabel(item);
   const dim = { opacity: busy ? 0.5 : 1 };
   const chip = { ...bGray, padding: "6px 10px", fontSize: 12, ...dim };
   return (
@@ -170,8 +179,7 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
           Select
         </label>
       )}
-      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={(tab === "ready" || tab === "rejected") ? h.onPick : null}
-        onApproveGen={tab === "rejected" ? h.onApproveGen : null} approveEnabled={acts.approveAnywayEnabled} onLove={h.onLove} />
+      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={tab === "new" ? h.onPick : null} onLove={h.onLove} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
       {shopifyNameLine(item) && (
         <div style={{ color: item.suggestedName ? BLUE_L : GRAY, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>
@@ -181,10 +189,11 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
       </div>
       <div data-testid="stock" style={{ color: "#dfe7ff", fontSize: 13, marginTop: 2 }}>{stockText(item)}</div>
       {verdict && <div data-testid="verdict" style={{ color: item.verdict?.pass ? GREEN : AMBER, fontSize: 12, marginTop: 4 }}>{verdict}</div>}
+      {rejected && <div data-testid="rejection" style={{ color: RED, fontSize: 12, marginTop: 2 }}>{rejected}</div>}
       {item.framingFlag === true && <div style={{ color: AMBER, fontSize: 12, marginTop: 2 }}>Framing still off after the automatic correction</div>}
       <div data-testid="status" style={{ color: statusColour, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
       {PRICE_TABS.includes(tab) && h.onSavePrices && (
-        <PriceFields item={item} busy={busy} onSavePrices={h.onSavePrices} needNote={(acts.approve || acts.approveAnyway) && needsStockPrice(p)} />
+        <PriceFields item={item} busy={busy} onSavePrices={h.onSavePrices} needNote={acts.approve && needsStockPrice(p)} />
       )}
       {tab === "done" && destinationLines(item).map((l) => (
         <div key={l} style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>{l}</div>
@@ -192,15 +201,10 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
       <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
         {acts.approve && (
           <button disabled={busy || !acts.approveEnabled} onClick={() => h.onApprove(item.pid)}
-            title={acts.approveEnabled ? undefined : "add stock price first"}
+            title={acts.approveWhy || undefined}
             style={{ ...bGreen, flex: 1, opacity: busy || !acts.approveEnabled ? 0.4 : 1 }}>Approve</button>
         )}
-        {acts.approveAnyway && (
-          <button disabled={busy || !acts.approveAnywayEnabled} onClick={() => h.onApproveAnyway(item.pid)}
-            title={acts.approveAnywayEnabled ? undefined : "add stock price first"}
-            style={{ ...bGreen, flex: 1, opacity: busy || !acts.approveAnywayEnabled ? 0.4 : 1 }}>Approve anyway</button>
-        )}
-        {acts.generate && <button disabled={busy} onClick={() => h.onGenerate([item.pid])} style={{ ...bBlue, flex: 1, ...dim }}>Generate</button>}
+        {acts.generate && <button disabled={busy} onClick={() => (acts.generateRegenerate ? h.onRegenerate(item.pid) : h.onGenerate([item.pid]))} style={{ ...bBlue, flex: 1, ...dim }}>Generate</button>}
         {acts.regenerate && <button disabled={busy} onClick={() => h.onRegenerate(item.pid)} style={{ ...bBlue, flex: 1, ...dim }}>Regenerate</button>}
         {acts.skip && <button disabled={busy} onClick={() => h.onSkip([item.pid])} style={{ ...bGray, flex: 1, ...dim }}>Skip — don't advertise</button>}
       </div>
@@ -255,8 +259,8 @@ const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, group
 const deviceStorage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 const chunks = (xs, n) => { const out = []; for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n)); return out; };
 
-export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", storage = deviceStorage() }) {
-  const [tab, setTab] = useState(initialTab);
+export default function NewArrivalsScreen({ api, onExit, initialTab = "new", storage = deviceStorage() }) {
+  const [tab, setTab] = useState(() => normalizeTab(initialTab));
   const [group, setGroup] = useState(() => rememberedGroup(storage));
   const onStepGroup = (dir) => {
     const next = stepGroup(group, dir);
@@ -292,7 +296,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
       do {
         res = await api.list(which, { cursor, limit: Math.min(RELOAD_CHUNK, Math.max(PAGE, wanted - acc.length)), group: groupFor(which, g) });
         if (stale()) return;
-        acc.push(...(res.items || []));
+        // An item can change bucket between pages (photo ready / generating / none): never shown twice.
+        const have = new Set(acc.map((i) => i.pid));
+        acc.push(...(res.items || []).filter((i) => !have.has(i.pid)));
         cursor = res.nextCursor || null;
       } while (cursor && acc.length < wanted);
       setData({
@@ -399,11 +405,10 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
   };
 
   const h = {
-    onApprove: (pid) => run(() => api.approve([pid]), (r) => (n(r, "approved") ? "Approved — publishing has started. Its progress, or any refusal, shows under Done or Rejected." : "Nothing approved."), "approved"),
-    onApproveAnyway: (pid) => run(() => api.approve([pid], { anyway: true }), (r) => (n(r, "approved") ? "Approved anyway — publishing has started." : "Nothing approved."), "approved"),
-    onApproveGen: (pid, genId) => run(() => api.approve([pid], { anyway: true, genId }), (r) => (n(r, "approved") ? "That photo is approved — publishing has started." : "Nothing approved."), "approved"),
-    onGenerate: (pids) => run(bulk((p) => api.generate(p), pids), (r) => `${n(r, "requested")} sent to the generator — results land in Ready.`),
-    onRegenerate: (pid) => run(() => api.generate([pid], { regenerate: true }), (r) => (n(r, "requested") ? "A fresh attempt is requested — it lands in Ready." : "Nothing requested.")),
+    // ONE Approve: the main / selected photo (the server logs approve-anyway when its verdict failed).
+    onApprove: (pid) => run(() => api.approve([pid]), (r) => (n(r, "approved") ? "Approved — publishing has started. Its progress shows under Done." : "Nothing approved."), "approved"),
+    onGenerate: (pids) => run(bulk((p) => api.generate(p), pids), (r) => `${n(r, "requested")} sent to the generator — each photo appears on its card.`),
+    onRegenerate: (pid) => run(() => api.generate([pid], { regenerate: true }), (r) => (n(r, "requested") ? "A fresh attempt is requested — it appears on this card; every photo stays." : "Nothing requested.")),
     onReject: (pid, reason) => run(() => api.reject(pid, reason), () => `Rejected: ${reason}.`),
     // "Use this one": that generation becomes the main photo; Approve then uses it.
     onPick: api.select ? (pid, genId) => run(() => api.select(pid, genId), (r) => (r?.unchanged ? "That photo is already the main one." : "Main photo changed — Approve uses this one.")) : null,
@@ -413,16 +418,19 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
     onSkip,
   };
 
-  // Approve all = every item ON THIS SCREEN that has a stock price — never
-  // items Junid has not seen (actionsFor gates on the stock price).
+  // Approve all = every item ON THIS SCREEN whose photo the checker passed
+  // (lane ready) and that has a stock price — never items Junid has not seen,
+  // never a checker-failed photo without its own tap.
+  // Approve all: checker-PASSED photos only — a failed one (even picked onto a ready card) needs its own tap.
+  const approveAllable = (it) => it.status === "ready" && it.verdict?.pass === true && actionsFor(it).approveEnabled;
   const onApproveAll = () => {
-    const pids = (data.items || []).filter((it) => actionsFor(it).approveEnabled).map((it) => it.pid);
+    const pids = (data.items || []).filter(approveAllable).map((it) => it.pid);
     if (!pids.length) return;
-    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Approve all ${pids.length} items shown? Publishing to Shopify and the groups starts for each; any that Shopify refuses will show in Rejected.`)) return;
+    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Approve all ${pids.length} items shown? Publishing to Shopify and the groups starts for each.`)) return;
     run(() => api.approve(pids), (r) => `Approved ${n(r, "approved")}.`, "approved");
   };
-  const approvable = (items || []).filter((it) => actionsFor(it).approveEnabled).length;
-  const unpriced = tab === "ready" ? (items || []).filter((it) => needsStockPrice(it.product)).length : 0;
+  const approvable = tab === "new" ? (items || []).filter(approveAllable).length : 0;
+  const unpriced = tab === "new" ? (items || []).filter((it) => hasPhoto(it) && needsStockPrice(it.product)).length : 0;
   // The two price fields' Save: the admin price save (api.savePrices →
   // admin/productPriceSave), with its "retail below cost" question.
   h.onSavePrices = api.savePrices ? async (item, drafts) => {
@@ -477,7 +485,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
           {tab === "new" && sel.length > 0 && <button disabled={busy} onClick={() => h.onSkip(sel)} style={{ ...bGray, opacity: busy ? 0.5 : 1 }}>Skip selected ({sel.length})</button>}
         </div>
       )}
-      {tab === "ready" && approvable > 0 && (
+      {tab === "new" && approvable > 0 && (
         <button disabled={busy} onClick={onApproveAll} style={{ ...bGreen, width: "100%", marginBottom: 12, opacity: busy ? 0.5 : 1 }}>
           Approve all {approvable}
         </button>

@@ -13,10 +13,13 @@
 // No query on /new_arrivals needs an .indexOn rule — every read here is a
 // child path or orderByKey — so database.rules.json is untouched.
 //
-// Statuses, and the card tab each one shows under:
-//   new, generating            → New
-//   ready                      → Ready     (a generated photo passed the checker)
-//   rejected                   → Rejected  (reason in plain words; Retry = fresh generation)
+// Statuses (lanes), and the card tab each one shows under:
+//   new, generating, ready, rejected → New  (ONE place to generate and approve,
+//                                     3 Oct night: the lanes stay in the data as
+//                                     the checker's state and the poster's work
+//                                     queue, but never move an item between tabs
+//                                     or hide it; the card orders them photo
+//                                     ready → generating → no photo yet)
 //   approved, chaining, done   → Done      (Junid tapped Approve; where it went, and when)
 //   skipped                    → Skipped   (Junid: "don't advertise" — never generated,
 //                                            posted or published; only Restore brings it back)
@@ -24,7 +27,8 @@
 // CALIBRATION (owner, 3 Oct; contract ~/.marathon-group-poster/work/calibration-contract.md):
 // nothing is generated automatically. Junid taps Generate on the card, which
 // sets items/{pid}.generateRequest; the poster takes it, generates ONCE and
-// puts the result in Ready with the checker's verdict as a LABEL only. Every
+// puts the result on the same card (lane ready / rejected) with the checker's
+// verdict as a LABEL only. Every
 // action Junid takes is logged to new_arrivals/decisions/{push} by the
 // callables here (decisionRecord), with a snapshot of the generation it was
 // taken on.
@@ -40,14 +44,52 @@ const DECISIONS = `${ROOT}/decisions`;
 
 const STATUSES = Object.freeze(["new", "generating", "ready", "rejected", "approved", "chaining", "done", "skipped"]);
 const TAB_OF = Object.freeze({
-  new: "new", generating: "new", ready: "ready", rejected: "rejected",
+  new: "new", generating: "new", ready: "new", rejected: "new",
   approved: "done", chaining: "done", done: "done", skipped: "skipped",
 });
-const TABS = Object.freeze(["new", "ready", "rejected", "done", "skipped"]);
+const TABS = Object.freeze(["new", "done", "skipped"]);
 const STATUSES_IN_TAB = Object.freeze(TABS.reduce((acc, t) => {
   acc[t] = STATUSES.filter((s) => TAB_OF[s] === t);
   return acc;
 }, {}));
+// The lanes the New tab merges — where Junid generates and approves.
+const NEW_LANES = Object.freeze(STATUSES_IN_TAB.new);
+// An older card bundle still asks for the Ready / Rejected tabs: both are New now.
+const LEGACY_TABS = Object.freeze({ ready: "new", rejected: "new" });
+/** The tab a request means (an old bundle's "ready"/"rejected" → "new"), or null. Pure. */
+function normalizeTab(t) {
+  const k = String(t || "");
+  if (TABS.includes(k)) return k;
+  return LEGACY_TABS[k] || null;
+}
+
+// ── THE NEW TAB'S ORDER (owner, 3 Oct night) ─────────────────────────────────
+// Within each group: items with a finished photo first ("photo ready —
+// approve"), then "generating…", then items with no photo yet; within a
+// bucket, key order (oldest upload first).
+//   photo:      lane ready; lane rejected with a generatedUrl; any lane with
+//               currentGen — and no pending request
+//   generating: lane generating, or a pending request (requests/{pid})
+//   none:       everything else
+// A pending request wins: while it is pending the photo cannot be approved.
+const BUCKETS = Object.freeze(["photo", "generating", "none"]);
+/** "photo" | "generating" | "none" for one New-tab item. Pure. */
+function photoBucket({ lane, requested = false, currentGen = null, generatedUrl = null } = {}) {
+  if (lane === "generating" || requested) return "generating";
+  if (lane === "ready" || currentGen || (lane === "rejected" && generatedUrl)) return "photo";
+  return "none";
+}
+const bucketRank = (b) => { const i = BUCKETS.indexOf(b); return i < 0 ? BUCKETS.length : i; };
+/** Compare two pids by (bucket, key). `bucketOf` maps pid → bucket. Pure. */
+/** "<rank>:<pid>" → { rank, pid }, or null for any other cursor. Pure. */
+function parseBucketCursor(cursor) {
+  const m = /^(\d):(.+)$/.exec(String(cursor || ""));
+  return m && PID_RE.test(m[2]) ? { rank: Number(m[1]), pid: m[2] } : null;
+}
+
+function bucketCmp(bucketOf) {
+  return (a, b) => bucketRank(bucketOf(a)) - bucketRank(bucketOf(b)) || keyCmp(a, b);
+}
 
 // The upload path stamps createdBy.at with serverNowMs() at save time. A
 // product created by anything else (a merge, an import, a restore script)
@@ -224,7 +266,7 @@ function normalizeFilter(f) {
 }
 
 // ── THE CARD'S TWO GROUPS (owner, 3 Oct) ─────────────────────────────────────
-// The New / Ready / Rejected lists are split into exactly TWO groups, flipped
+// The New tab (every lane in it) is split into exactly TWO groups, flipped
 // with the switcher bar:
 //   sneakers = all footwear (sneakers, slides, sandals, boots, …): a categoryKey
 //              in FOOTWEAR_KEYS, or — with no known categoryKey — the legacy
@@ -233,7 +275,7 @@ function normalizeFilter(f) {
 //              bags, perfume) AND anything uncategorised: an item goes to
 //              Sneakers only when it is CLEARLY footwear.
 const GROUPS = Object.freeze(["sneakers", "clothing"]);
-const GROUP_TABS = Object.freeze(["new", "ready", "rejected"]);
+const GROUP_TABS = Object.freeze(["new"]);
 const KNOWN_KEYS = new Set([...FOOTWEAR_KEYS, ...TWOPIECE_KEYS, ...SINGLE_KEYS]);
 /** "sneakers" | "clothing" from a product's { categoryKey, category }. Pure. */
 function groupOf(p) {
@@ -338,19 +380,42 @@ function checkerWrongRules(gen, item) {
   return [code ? String(code) : "rejected"];
 }
 
+/**
+ * The ledger action for Junid's Approve of `item` (as it was) — on generation
+ * `genId`, or the current one. "approve-anyway" (with checkerWrong) when that
+ * photo's verdict failed or the lane was rejected; otherwise "approve". Pure.
+ */
+function approveAction(item, genId = null) {
+  if (!item) return "approve";
+  if (item.status === "rejected") return "approve-anyway";
+  const id = genId || item.currentGen || null;
+  const gen = id && item.generations && item.generations[id] && typeof item.generations[id] === "object" ? item.generations[id] : null;
+  // The item's verdict follows its current photo; a named other generation brings its own.
+  const v = genId && genId !== item.currentGen ? gen && gen.verdict : item.verdict || (gen && gen.verdict);
+  return v && typeof v === "object" && v.pass === false ? "approve-anyway" : "approve";
+}
+
 // ── PICK ANY GENERATION ──────────────────────────────────────────────────────
 // Junid taps "Use this one" on any earlier generation (a checker-failed one or
-// a re-check too). The item keeps its lane; the photo, its verdict and the
-// framing flag follow the chosen generation. Approve then uses it (it reads
-// generatedUrl, and the ledger snapshot comes from currentGen).
-const SELECT_LANES = Object.freeze(["ready", "rejected"]);
+// a re-check too), in any New-tab lane while no new photo is being generated.
+// The item keeps its lane; the photo, its verdict and the framing flag follow
+// the chosen generation. Approve then uses it (it reads generatedUrl, and the
+// ledger snapshot comes from currentGen).
+const SELECT_LANES = Object.freeze(["new", "ready", "rejected"]);
 const GEN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const failedList = (v) => (Array.isArray(v && v.failed) ? v.failed : Object.values((v && v.failed) || {}));
 
 /** Why `genId` cannot be picked on `item`, or null. Pure. */
+/** The current generation's photo URL, or null. Pure. */
+function currentGenUrl(item) {
+  const g = item && item.currentGen && item.generations && item.generations[item.currentGen];
+  return g && typeof g === "object" && g.url ? String(g.url) : null;
+}
+
 function selectRefusal(item, genId) {
   if (!item) return "not in the New Arrivals queue";
-  if (!SELECT_LANES.includes(item.status)) return `it is ${item.status}, not ready or rejected`;
+  if (!SELECT_LANES.includes(item.status)) return `it is ${item.status}, not new, ready or rejected`;
+  if (item.generateRequest) return "a new photo is being generated — wait for it";
   const gen = item.generations && item.generations[genId];
   if (!gen || typeof gen !== "object") return "that generation is not on this item";
   if (!gen.url) return "that generation has no photo";
@@ -434,9 +499,12 @@ function keyCmp(a, b) {
 const INDEX_CEILING = 2000;
 
 module.exports = {
-  checkerWrongRules,
+  parseBucketCursor, bucketRank,
+  currentGenUrl,
+  checkerWrongRules, approveAction,
   INDEX_CEILING,
   ROOT, ITEMS, BY_STATUS, DECISIONS, STATUSES, TABS, TAB_OF, STATUSES_IN_TAB,
+  NEW_LANES, LEGACY_TABS, normalizeTab, BUCKETS, photoBucket, bucketCmp,
   ENQUEUE_WINDOW_MS, ENQUEUE_SKEW_MS, PID_RE,
   enqueueDecision, buildItem, moveMutator, moved, indexMove, indexRepair,
   listLimit, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, productSummary,
