@@ -295,15 +295,24 @@ const STATUS_HINT = {
 
 // Push bytes down the endpoint that was ACTUALLY discovered. Returns the number of
 // bytes the device acknowledged. Every chunk's status is checked — a partial or
-// stalled write raises rather than counting as printed.
+// stalled write raises rather than counting as printed. A raised error carries
+// `sentBytes` (bytes that reached the printer before it failed), so a caller can
+// tell "nothing went out" from "part of this label went out".
 export async function sendBulk(device, endpointNumber, bytes, chunkSize = TX_CHUNK) {
   let sent = 0;
   for (let i = 0; i < bytes.length; i += chunkSize) {
     const chunk = bytes.slice(i, i + chunkSize);
     // A rejection here (NetworkError, InvalidStateError…) is tagged "transferOut".
-    const res = await step("transferOut", () => device.transferOut(endpointNumber, chunk));
+    let res;
+    try {
+      res = await step("transferOut", () => device.transferOut(endpointNumber, chunk));
+    } catch (e) {
+      e.sentBytes = sent;
+      throw e;
+    }
     const status = res?.status;
     if (status !== "ok") {
+      if (typeof res?.bytesWritten === "number") sent += res.bytesWritten;
       const hint = STATUS_HINT[status];
       const err = new Error(
         `USB transfer returned "${status || "no status"}" on endpoint ${endpointNumber}` +
@@ -311,6 +320,7 @@ export async function sendBulk(device, endpointNumber, bytes, chunkSize = TX_CHU
       );
       err.step = "transferOut";
       err.usbFailure = { step: "transferOut", name: `status ${status || "none"}`, message: hint || "non-ok transfer status" };
+      err.sentBytes = sent;
       throw err;
     }
     sent += typeof res?.bytesWritten === "number" ? res.bytesWritten : chunk.length;

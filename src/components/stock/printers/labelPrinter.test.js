@@ -226,6 +226,28 @@ describe("the OS print route", () => {
     expect(res.error).toContain("OUT endpoint 1");
   });
 
+  it("bytes of the FIRST label that reached the printer still block the OS fallback", async () => {
+    const dev = fakeDevice();
+    usb.devices = [dev];
+    const m = await load();
+    const conn = await m.connectTransport("xprinter");
+    dev.transferOut = async (e, data) => (data.length ? { status: "stall", bytesWritten: 10 } : { status: "ok", bytesWritten: 0 });
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter", conn });
+    expect(res.ok).toBe(false);
+    expect(res.sentBytes).toBe(10);
+    expect(doc.printed).toHaveLength(0);
+    expect(m.getPrinterStatus().state).toBe("none");   // a final state, not "looking…" forever
+  });
+
+  it("a transfer that rejects after earlier chunks reports the bytes already sent", async () => {
+    const { sendBulk } = await import("./usbDiscovery");
+    let n = 0;
+    const dev = { async transferOut(e, d) { if (++n === 3) throw netError("Transfer failed."); return { status: "ok", bytesWritten: d.length }; } };
+    const err = await sendBulk(dev, 1, new Uint8Array(10), 4).catch(e => e);
+    expect(err.sentBytes).toBe(8);
+    expect(err.step).toBe("transferOut");
+  });
+
   it("shows the picker only when no device is permitted, and only once per page load", async () => {
     usb.devices = [];
     const m = await load();

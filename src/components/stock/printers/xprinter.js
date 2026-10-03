@@ -324,9 +324,12 @@ async function sendBatch(items, conn) {
   } catch (err) {
     // The device stopped answering — drop it so the next print re-discovers.
     if (cached && cached.device === c.device) cached = null;
+    // Bytes of the failing label that did reach the printer count as sent — the
+    // caller must not then print the batch again through the OS.
+    if (typeof err?.sentBytes === "number") sentBytes += err.sentBytes;
     const line = `${c.name} · interface ${c.interfaceNumber} · OUT endpoint ${c.endpointNumber} · ${String(err?.message || err)}`;
     lastDiag = { ...(lastDiag || {}), attempts: [line] };
-    setPrinterStatus({ state: "checking", route: null, lines: [line] });
+    setPrinterStatus({ state: "none", route: null, name: c.name, detail: "USB transfer failed — the next print looks for the printer again", lines: [line] });
     return { ok: false, sentBytes, error: line, lines: [line] };
   }
   // NO release/close — the device stays claimed so the next batch reuses it.

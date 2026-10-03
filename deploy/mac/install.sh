@@ -45,7 +45,7 @@ for i in 1 2 3 4 5; do
 done
 
 # Default printer + label size for the OS print route (skipped if no queue found).
-QUEUE="$(lpstat -e 2>/dev/null | grep -i -m1 -E 'xp.?350' || true)"
+QUEUE="$(lpstat -e 2>/dev/null | grep -i -m1 -E 'xp[-_ ]?350([^0-9]|$)' || true)"
 # A raw/generic queue has no driver options and would print Chrome's PDF as junk.
 if [ -n "$QUEUE" ] && [ -z "$(lpoptions -p "$QUEUE" -l 2>/dev/null)" ]; then
   echo "The $QUEUE print queue has no printer driver (raw queue) — re-add the XP-350B with its driver (see README)."
@@ -54,7 +54,7 @@ elif [ -n "$QUEUE" ]; then
   lpoptions -d "$QUEUE" >/dev/null
   lpoptions -p "$QUEUE" -o media=Custom.40x30mm >/dev/null
   echo "Default printer: $QUEUE (40 x 30 mm labels)"
-elif ! lpstat -e 2>/dev/null | grep -qi -E 'xp.?350'; then
+elif ! lpstat -e 2>/dev/null | grep -qi -E 'xp[-_ ]?350([^0-9]|$)'; then
   echo "No XP-350B print queue found — set the default printer by hand (see README)."
 fi
 echo "Installed. Marathon Labels opens now and at every login."
