@@ -169,6 +169,8 @@ import { printOrderSlips } from "./print/orderSlip";
 // derivation that keeps newly-created products inside every existing automation.
 import { catByKey, isOneSize, legacyFor, needsAssignment, isAssignable } from "./utils/productTaxonomy";
 import { sizesForCat, sizeRunsOf, runSizes, compareSizes, sizeFamily } from "./utils/sizeRuns";
+import { orderSizesForDisplay } from "./utils/sizeDisplayOrder";
+import { findSubmitShortfall, submitShortfallMessage } from "./components/stock/orderSubmitGuard";
 import { buildNewProduct, stampStyleCodeProvenance } from "./utils/newProductRecord";
 import { saveFailureMessage } from "./utils/saveFailureMessage";
 // The cross-app footwear gate. MIRRORED in marathon-pos-app/src/shared/footwearLine.js —
@@ -855,6 +857,10 @@ const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", hubC: "Hub C" 
 // fulfilling from its OWN stock. Adding a future store/hub is one line here
 // (shopUniverse(shop) → universe → hub); everything downstream derives from it.
 const CR_HUB_BY_UNIVERSE = { central: "hub2", pine: "hub3" };
+
+// The submit-time stock guard's refusal on the checkout sheet — the same red
+// family as the sheet's other blocking notes.
+const SUBMIT_REFUSAL_STYLE = { background: "rgba(255,80,80,.1)", border: "1px solid rgba(255,80,80,.4)", color: "#FF8A8A", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, marginBottom: 10 };
 const CR_HUBS = [...new Set(Object.values(CR_HUB_BY_UNIVERSE))];
 function getProductHubs(product) {
   return product?.hubs || (product?.hub ? [product.hub] : []);
@@ -8594,7 +8600,7 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                             search, setSearch, onLabelFind, cart, onQuickAdd, onRemoveOne, onAddDisplayPartner,
                             onViewPhoto, onSwitchView, userEmail, mode, setMode,
                             customerName, setCustomerName, customerPhone, setCustomerPhone,
-                            marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder,
+                            marketingOptIn, setMarketingOptIn, submitting, onPlaceOrder, submitRefusal = "",
                             customerIndex, onPickCustomer,
                             onAddClothing, onPlaceRefill, onOpenTracking, trackingPending,
                             hubQty, servingHubLabel, sneakerOut, sneakerOutWhy, sneakerDisplayInfo,
@@ -8616,6 +8622,11 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   const [qvQty, setQvQty] = useState(1);
   const [qvDP, setQvDP]   = useState(false);  // request Display Partner (sneakers)
   const [coOpen, setCoOpen] = useState(false); // desktop checkout modal
+  // A stock-guard refusal always lands on an OPEN panel. The destination-
+  // confirm path closes it before the guard runs (placeOrders returns
+  // undefined to the button, then the modal re-invokes it), so the refusal
+  // reopens it rather than being set on a panel nobody can see.
+  useEffect(() => { if (submitRefusal) setCoOpen(true); }, [submitRefusal]);
   const [nameDD, setNameDD] = useState(false);
   const [phoneDD, setPhoneDD] = useState(false);
   const [pendingShop, setPendingShop] = useState(null); // shop-switch confirm
@@ -8703,7 +8714,9 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
   }, [cart]);
   const refillUnits = groupedRefill.reduce((s, g) => s + g.qty, 0);
   const fmtR = n => "R" + Number(n).toLocaleString("en-ZA", { maximumFractionDigits: 0 });
-  const sizesOf = p => { const s = (Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_"); return s.length ? s : ["Free Size"]; };
+  // Numeric runs in ascending order (orderSizesForDisplay) — stored order put
+  // a shoe's 10 before its 6 (2026-10-03).
+  const sizesOf = p => { const s = orderSizesForDisplay((Array.isArray(p.sizes) ? p.sizes : []).filter(x => x && String(x).trim() && x !== "_")); return s.length ? s : ["Free Size"]; };
 
   useEffect(() => {
     const h = e => {
@@ -9401,7 +9414,12 @@ function AssistantDesktop({ products, searchResults, effectiveShop, availableSho
                 const phoneOk = isValidLocalSAPhone(customerPhone);
                 const canPlace = customerName && phoneOk && units && !submitting;
                 const label = !customerName ? "Enter customer name" : !phoneOk ? "Enter a valid phone" : `Place ${grouped.length} order${grouped.length > 1 ? "s" : ""}`;
-                return <button className="ad-svadd" disabled={!canPlace} onClick={async () => { await onPlaceOrder(); setCoOpen(false); }}>{submitting ? "Placing…" : label}</button>;
+                // A stock-guard refusal returns false and KEEPS the panel open,
+                // so the reason stays on screen beside the cart it names.
+                return <>
+                  {submitRefusal && <div role="alert" style={SUBMIT_REFUSAL_STYLE}>{submitRefusal}</div>}
+                  <button className="ad-svadd" disabled={!canPlace} onClick={async () => { if ((await onPlaceOrder()) !== false) setCoOpen(false); }}>{submitting ? "Placing…" : label}</button>
+                </>;
               })()}
             </div>
           </div>
@@ -9849,7 +9867,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // No-size products (bags, accessories, perfume, one-size) order as "Free Size" —
   // "_"/blank placeholders aren't real sizes. Keeps the size sheet from dead-ending.
   const selectedSizes = useMemo(() => {
-    const real = (selected?.sizes || []).filter(s => s && String(s).trim() && s !== "_");
+    // Same ascending order as the desktop grid's sizesOf.
+    const real = orderSizesForDisplay((selected?.sizes || []).filter(s => s && String(s).trim() && s !== "_"));
     return real.length ? real : ["Free Size"];
   }, [selected]);
   const [pendingQty,  setPendingQty]                    = useState(1);
@@ -9870,6 +9889,12 @@ function AssistantView({ products, onExit, orders = [] }) {
   const [marketingOptIn, setMarketingOptIn]             = useState(false);
   const [lastOrders, setLastOrders]                     = useState([]);
   const [submitting, setSubmitting]                     = useState(false);
+  // The submit-time stock guard's refusal, shown ON the checkout sheet (both
+  // the phone sheet and the desktop panel) rather than in an alert that a tap
+  // dismisses. Any cart change clears it: the assistant's next move is to drop
+  // the line it names, and the stale sentence must not outlive that.
+  const [submitRefusal, setSubmitRefusal]               = useState("");
+  useEffect(() => { setSubmitRefusal(""); }, [cart]);
   // Autocomplete dropdown open-state per input. Tap a suggestion or the
   // "+ Add new" row to dismiss; typing in the input reopens.
   const [nameDropdownOpen, setNameDropdownOpen]   = useState(false);
@@ -10557,6 +10582,41 @@ function AssistantView({ products, onExit, orders = [] }) {
     return () => setUpdateBusy("assistant-cart", false);
   }, [cart.length]);
 
+  // The hub a customer line is placed against. Clothing → the universe's CR
+  // hub; a sneaker → THE SAME ALLOCATION THE TILE WAS GATED ON, keyed by the
+  // line itself so no index can drift out of step with it. A line the walk
+  // skipped (a classic partner request, an ungated shoe) falls back to the tag
+  // router, exactly as it did before any of this.
+  const placedHubFor = (item) => (item.productType === "clothing"
+    ? (CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
+    : (cartAllocation.hubOf.get(item) || computeHubForItem(item)));
+  // Which customer lines draw a unit off a hub shelf, and so must pass the
+  // submit-time stock guard (orderSubmitGuard.js):
+  //   • clothing customer lines, and footwear (isFootwearProduct) lines;
+  //   • NOT a classic Display Partner request — it exists to ask for what the
+  //     hub does NOT have and is a request, never a pull (the grid lifts the ✕
+  //     for it on purpose);
+  //   • NOT a display-pair pull — the checkout pre-flight above verifies that
+  //     one against the named pair, a stricter test than the cell;
+  //   • NOT an UNTYPED perfume, bag or one-size accessory on the sneaker lane
+  //     (no productType, not Footwear) — its hub availability is not modelled
+  //     on that lane. A CLOTHING-typed accessory IS guarded, like all clothing:
+  //     its grid already greys on the same "_" cell (stockCellPath folds
+  //     "Free Size" to "_", the cell hubQty reads);
+  //   • footwear ONLY where the grid gates it — Hub 1 and Hub 2, through
+  //     gatedSneakerHub, the same predicate the ✕ uses — so the sheet and the
+  //     tile can never disagree. NOT PINE'S HUB 3: on 2026-10-03 Hub 3's cells
+  //     held 7 footwear units across 343 products, while 94 of the 119 Pine
+  //     orders on /orders had been filled (ready or collected). Pine's
+  //     sneakers are picked from stock those cells do not record, so a Hub 3
+  //     cell check would refuse most of Pine's real sales. Which stock Pine
+  //     orders should be judged against is Junid's open question
+  //     (docs/ORDER-GRID-ZERO-STOCK.md), not something to guess here.
+  const stockGuardedLine = (item) => {
+    if (item.requestDisplayPartner || item.displayPairRequest === true) return false;
+    if (item.productType === "clothing") return true;
+    return !!gatedSneakerHub(item.product, placedHubFor(item));
+  };
   const placeOrders = async (bypassDestConfirm = false) => {
     if (!cart.length || !customerName || submitting) return;
     // Phone is required for customer orders and must be a valid 10-digit SA
@@ -10645,7 +10705,41 @@ function AssistantView({ products, onExit, orders = [] }) {
       }
     }
     setSubmitting(true);
+    setSubmitRefusal("");
     try {
+      // ── THE SUBMIT-TIME STOCK GUARD (2026-10-03) ──────────────────────────
+      // Order #148 (Diesel slide black, size 10) went to Hub 1 with size 10
+      // at 0 there and at Hub 2: the grid's ✕ is open while a hub read is
+      // unsettled, and nothing after the tap checked again. Every
+      // stock-drawing line now re-reads the ONE cell it will draw from — the
+      // hub placedHubFor gives the write below — and the whole checkout is
+      // refused, cart intact, unless each cell covers what the cart takes from
+      // it. An unreadable cell refuses too. Single-cell reads only, never a
+      // hub subtree. Rules and reasoning: components/stock/orderSubmitGuard.js.
+      {
+        const refusal = await findSubmitShortfall({
+          lines: cart.filter(isCustomerLine).filter(stockGuardedLine).map((item) => ({
+            hub: placedHubFor(item), productId: item.product.id, size: item.size, label: item.product.name,
+          })),
+          readCell: (hub, pid, size) => get(ref(database, stockCellPath(hub, pid, String(size)))).then((snap) => snap.val()),
+          // Net the same promises the ✕ nets — footwear at a gated hub only
+          // (clothing nets none: readyPromisedByCell is footwear-only).
+          promisedFor: (hub, pid, size) => (GATED_SNEAKER_HUBS.includes(hub)
+            ? (sneakerPromisedMap(hub)[promisedKey(pid, size)] || 0) : 0),
+          // Offline, `get` answers from cache — refuse rather than trust it.
+          // A one-shot onValue on .info/connected: the SDK answers it from its
+          // own connection state, never the network (the guard times it out).
+          isOnline: () => new Promise((resolve) => {
+            let unsub = null, done = false;
+            const finish = (v) => { if (done) return; done = true; resolve(v); setTimeout(() => unsub?.(), 0); };
+            unsub = onValue(ref(database, ".info/connected"), (snap) => finish(snap.val() === true), () => finish(false));
+          }),
+        });
+        if (refusal) {
+          setSubmitRefusal(submitShortfallMessage(refusal, (h) => HUB_LABELS[h] || h, formatSize));
+          return false;
+        }
+      }
       const normalizedPhone = normalizeSAPhone(customerPhone);
       const now = serverNowIso();
       // Resolve the customer identity ONCE per checkout (all lines share it):
@@ -10751,13 +10845,10 @@ function AssistantView({ products, onExit, orders = [] }) {
         // display register to pull a pair it has never seen (independent
         // review, 2026-09-06). The pre-flight above refuses that line rather
         // than redirecting it; this is the second lock.
-        const placedHub = isClothingCustomer
-          ? (CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
-          // THE SAME ALLOCATION THE TILE WAS GATED ON, keyed by the line
-          // itself so no index can drift out of step with it. A line the walk
-          // skipped (a classic partner request, an ungated shoe) falls back to
-          // the tag router, exactly as it did before any of this.
-          : (cartAllocation.hubOf.get(item) || computeHubForItem(item));
+        // placedHubFor — ONE function, read by this write AND by the
+        // submit-time stock guard above, so the cell the guard checked is the
+        // cell the order is booked against.
+        const placedHub = placedHubFor(item);
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -11092,7 +11183,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           customerName={customerName} setCustomerName={setCustomerName}
           customerPhone={customerPhone} setCustomerPhone={setCustomerPhone}
           marketingOptIn={marketingOptIn} setMarketingOptIn={setMarketingOptIn}
-          submitting={submitting} onPlaceOrder={placeOrders}
+          submitting={submitting} onPlaceOrder={placeOrders} submitRefusal={submitRefusal}
           customerIndex={customerIndex} onPickCustomer={pickCustomer}
           onAddClothing={addClothingLines} onPlaceRefill={placeRefillRequests}
           onOpenTracking={() => setTrackingOpen(true)} trackingPending={trackingPending}
@@ -11776,12 +11867,13 @@ function AssistantView({ products, onExit, orders = [] }) {
                   : singleSku && sample.size
                     ? (n > 1 ? `Place order${shopTag} — size ${formatSize(sample.size)} × ${n}` : `Place order${shopTag} — size ${formatSize(sample.size)}`)
                     : `Place ${n} Order${n > 1 ? "s" : ""}${shopTag} →`;
-              return (
+              return (<>
+                {submitRefusal && <div role="alert" style={SUBMIT_REFUSAL_STYLE}>{submitRefusal}</div>}
                 <button onClick={() => placeOrders()} disabled={!canPlace}
                   style={{ ...bBlue, borderRadius:"10px", padding:"0.9rem 2rem", fontSize:"1rem", width:"100%", opacity:canPlace?1:0.4, cursor:canPlace?"pointer":"not-allowed" }}>
                   {submitting ? "Placing orders…" : placeLabel}
                 </button>
-              );
+              </>);
             })()}
           </div>
         </div>
