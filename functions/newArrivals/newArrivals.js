@@ -1,12 +1,12 @@
 // ─── NEW ARRIVALS — trigger + the card's three callables ─────────────────────
 // newArrivalsEnqueue  onValueCreated products/{pid}: an upload lands in New.
 // newArrivalsList     the card's read of one tab + group (bounded, no whole-node read).
-// newArrivalsApprove  Junid's tap — Ready → approved (one pid, or all Ready).
+// newArrivalsApprove  Junid's tap — any New-tab item with a photo → approved (one pid, or all Ready).
 // newArrivalsRetry    (legacy, card no longer calls it) Rejected → New.
 // newArrivalsGenerate Generate / Generate selected / Regenerate → generateRequest.
-// newArrivalsSkip     Skip — don't advertise (New/Rejected → skipped; marked, never deleted).
-// newArrivalsRestore  the card's Undo: skipped → back to New or Rejected (skippedFrom).
-// newArrivalsReject   Ready → Rejected with one reason chip.
+// newArrivalsSkip     Skip — don't advertise (new/ready/rejected → skipped; marked, never deleted).
+// newArrivalsRestore  the card's Undo: skipped → back to the lane it came from (skippedFrom).
+// newArrivalsReject   a photo → lane rejected with one reason chip (still on the New tab).
 // newArrivalsSelect   "Use this one" — any generation becomes the main photo (lane kept).
 // newArrivalsLove     ❤ / un-❤ one generation (any lane; never moves or approves).
 // Every action Junid takes writes new_arrivals/decisions/{push}.
@@ -143,17 +143,40 @@ async function groupsOf(db, pids, nowMs = Date.now()) {
   return out;
 }
 
-// One page of one tab. PAGED BY KEY: by_status/{status} orderByKey()
-// .startAfter(cursor).limitToFirst(n+1) per status in the tab, merged in key
-// order ("p<ms>" keys → oldest upload first). The index nodes are pid → number
-// and are read BY KEY with a ceiling for the counts (they are the index —
-// /products and /new_arrivals/items are never read whole).
-// GROUP (New, Ready, Rejected): the lane's keys are split into Sneakers /
-// Clothing by each pid's category (groupsOf: keyed scalar reads), the page is
-// taken from the group, total = the group's count, and groupCounts carries
-// both. A legacy `filter` (an older card bundle) still works on New.
-async function listTab(db, tab, { cursor = null, limit, filter = null, group = null } = {}) {
-  if (!core.TABS.includes(tab)) throw new HttpsError("invalid-argument", "Unknown tab.");
+// THE NEW TAB'S BUCKETS — cheap: the lane comes from the index, "generating"
+// from the small requests/{pid} index (read once), and only for new- and
+// rejected-lane pids the scalar items/{pid}/currentGen (plus, for a rejected
+// one with none, the scalar generatedUrl) — keyed reads, batched like
+// groupsOf, never the items node. Not cached: a photo landing must move the
+// item up on the next refresh.
+async function bucketsOf(db, pids, laneOf, requested) {
+  const out = new Map();
+  await inBatches(pids, 50, async (pid) => {
+    const lane = laneOf.get(pid) || null;
+    const base = { lane, requested: requested.has(pid) };
+    if (base.requested || lane === "generating" || lane === "ready") { out.set(pid, core.photoBucket(base)); return; }
+    const currentGen = await val(db, `${core.ITEMS}/${pid}/currentGen`);
+    const generatedUrl = !currentGen && lane === "rejected" ? await val(db, `${core.ITEMS}/${pid}/generatedUrl`) : null;
+    out.set(pid, core.photoBucket({ ...base, currentGen, generatedUrl }));
+  });
+  return out;
+}
+
+// One page of one tab. The index nodes are pid → number and are read BY KEY
+// with a ceiling for the counts (they are the index — /products and
+// /new_arrivals/items are never read whole).
+// NEW (lanes new, generating, ready, rejected — merged): the lane's keys are
+// split into Sneakers / Clothing by each pid's category (groupsOf: keyed
+// scalar reads), ordered photo ready → generating → no photo yet (key order
+// within a bucket), and the page is taken from that ordered list; the cursor
+// is the last pid of the page. total = the group's count; groupCounts carries
+// both. A legacy `filter` (an older card bundle) still works on New. An old
+// bundle's "ready" / "rejected" tab is New.
+// DONE / SKIPPED: PAGED BY KEY — by_status/{status} orderByKey()
+// .startAfter(cursor).limitToFirst(n+1) per status, merged in key order.
+async function listTab(db, tabAsked, { cursor = null, limit, filter = null, group = null } = {}) {
+  const tab = core.normalizeTab(tabAsked);
+  if (!tab) throw new HttpsError("invalid-argument", "Unknown tab.");
   const n = core.listLimit(limit);
   const after = cursor && core.PID_RE.test(String(cursor)) ? String(cursor) : null;
   const statuses = core.STATUSES_IN_TAB[tab];
@@ -167,7 +190,9 @@ async function listTab(db, tab, { cursor = null, limit, filter = null, group = n
   }));
   const tabCounts = {};
   for (const t of core.TABS) tabCounts[t] = core.STATUSES_IN_TAB[t].reduce((c, s) => c + index[s].length, 0);
-  const laneKeys = [...new Set(statuses.flatMap((s) => index[s]))].sort(core.keyCmp);
+  const laneOf = new Map();
+  for (const s of statuses) for (const k of index[s]) if (!laneOf.has(k)) laneOf.set(k, s);
+  const laneKeys = [...laneOf.keys()].sort(core.keyCmp);
   // What a "Select all" may act on: never an item mid-generation.
   const selectable = new Set(statuses.filter((s) => s !== "generating").flatMap((s) => index[s]));
 
@@ -176,19 +201,43 @@ async function listTab(db, tab, { cursor = null, limit, filter = null, group = n
   const locations = await stockLocations(db);
   const details = new Map();
   let pageKeys, more, total, matching, groupCounts = null;
-  const pageOf = (keys) => {
-    const rest = after ? keys.filter((k) => core.keyCmp(k, after) > 0) : keys;
+
+  if (tab === "new") {
+    if (g) {
+      const groups = await groupsOf(db, laneKeys);
+      groupCounts = Object.fromEntries(core.GROUPS.map((x) => [x, 0]));
+      for (const k of laneKeys) groupCounts[groups.get(k)] += 1;
+      matching = laneKeys.filter((k) => groups.get(k) === g);
+    } else if (f) {
+      matching = [];
+      // Only "1 size only" needs stock to match; the other filters match on the
+      // product alone, and stock is then read just for the page's items.
+      const needStock = !!f.oneSize;
+      await inBatches(laneKeys, 20, async (pid) => {
+        const d = await productDetail(db, pid, locations, { withStock: needStock });
+        if (needStock) details.set(pid, d);
+        if (core.matchesFilter(d.summary, d.stock || core.stockSummary(d.summary ? d.summary.sizes : [], {}), f)) matching.push(pid);
+      });
+    } else {
+      matching = laneKeys;
+    }
+    // The order: photo ready → generating → no photo yet.
+    const reqSnap = await db.ref(`${core.ROOT}/requests`).orderByKey().limitToFirst(core.INDEX_CEILING + 1).once("value");
+    const requested = new Set(Object.keys(reqSnap.val() || {}));
+    const buckets = await bucketsOf(db, matching, laneOf, requested);
+    if (after && !buckets.has(after)) {
+      // The cursor's item left this list since the last page (approved,
+      // skipped, regrouped): place it by its bucket as it is now.
+      const lane = laneOf.get(after) || await val(db, `${core.ITEMS}/${after}/status`);
+      (await bucketsOf(db, [after], new Map([[after, lane]]), requested)).forEach((b, k) => buckets.set(k, b));
+    }
+    const cmp = core.bucketCmp((k) => buckets.get(k));
+    matching = [...matching].sort(cmp);
+    const rest = after ? matching.filter((k) => cmp(k, after) > 0) : matching;
     pageKeys = rest.slice(0, n);
     more = rest.length > n;
-    total = keys.length;
-  };
-  if (g) {
-    const groups = await groupsOf(db, laneKeys);
-    groupCounts = Object.fromEntries(core.GROUPS.map((x) => [x, 0]));
-    for (const k of laneKeys) groupCounts[groups.get(k)] += 1;
-    matching = laneKeys.filter((k) => groups.get(k) === g);
-    pageOf(matching);
-  } else if (!f) {
+    total = matching.length;
+  } else {
     const pages = await Promise.all(statuses.map(async (s) => {
       let q = db.ref(`${core.BY_STATUS}/${s}`).orderByKey();
       if (after) q = q.startAfter(after);
@@ -199,23 +248,11 @@ async function listTab(db, tab, { cursor = null, limit, filter = null, group = n
     more = merged.length > n;
     total = tabCounts[tab];
     matching = laneKeys;
-  } else {
-    matching = [];
-    // Only "1 size only" needs stock to match; the other filters match on the
-    // product alone, and stock is then read just for the page's items.
-    const needStock = !!f.oneSize;
-    await inBatches(laneKeys, 20, async (pid) => {
-      const d = await productDetail(db, pid, locations, { withStock: needStock });
-      if (needStock) details.set(pid, d);
-      if (core.matchesFilter(d.summary, d.stock || core.stockSummary(d.summary ? d.summary.sizes : [], {}), f)) matching.push(pid);
-    });
-    matching.sort(core.keyCmp);
-    pageOf(matching);
   }
 
   const items = (await inBatches(pageKeys, 10, async (pid) => {
     const item = await val(db, `${core.ITEMS}/${pid}`);
-    const listedUnder = statuses.find((s) => index[s].includes(pid)) || statuses[0];
+    const listedUnder = laneOf.get(pid) || statuses[0];
     const repair = core.indexRepair(pid, listedUnder, item);
     if (repair) await db.ref(core.ROOT).update(repair);
     if (!item || core.TAB_OF[item.status] !== tab) return null;
@@ -239,7 +276,7 @@ const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds:
 const newArrivalsList = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
   const d = request.data || {};
-  return listTab(admin.database(), String(d.tab || "ready"), { cursor: d.cursor || null, limit: d.limit, filter: d.filter || null, group: d.group || null });
+  return listTab(admin.database(), String(d.tab || "new"), { cursor: d.cursor || null, limit: d.limit, filter: d.filter || null, group: d.group || null });
 });
 
 // ── moves + the ledger ───────────────────────────────────────────────────────
@@ -285,12 +322,13 @@ async function writeRoot(db, paths) {
 }
 
 // ── pick any generation ──────────────────────────────────────────────────────
-// "Use this one": items/{pid} keeps its lane (Ready or Rejected); currentGen,
+// "Use this one": items/{pid} keeps its lane (new, ready or rejected — never
+// while a generate request is pending); currentGen,
 // generatedUrl/Path, verdict and framingFlag follow the chosen generation
 // (core.selectFields) — a transaction, so a concurrent Regenerate / Approve
 // is never overwritten. Then ONE atomic multi-path write, as every move
 // makes: the item's index entry (re-asserted) and the "pick" ledger row with
-// the generation's snapshot. Approve / Approve anyway then use this photo.
+// the generation's snapshot. Approve then uses this photo.
 async function select(db, { pid, genId }, uid, nowMs) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (!core.GEN_ID_RE.test(String(genId || ""))) throw new HttpsError("invalid-argument", "Not a generation id.");
@@ -368,14 +406,18 @@ function pidList(pids) {
 }
 
 // ── approve ──────────────────────────────────────────────────────────────────
-// Ready → approved. With `anyway`, a Rejected item too ("Approve anyway":
-// straight into the approved chain). A stock price is required either way.
-async function approve(db, { pids, all, anyway, genId }, uid, nowMs) {
-  // "Approve anyway" on ONE generation of a Rejected item approves THAT photo
-  // (it becomes the main one in the same transaction); none named = the main one.
+// APPROVE WHEREVER A PHOTO EXISTS (3 Oct night): new, ready or rejected →
+// approved, for an item with a generated photo and no pending generate
+// request. A stock price is required. Logged "approve-anyway" (with
+// checkerWrong) when the photo's verdict failed or the lane was rejected,
+// otherwise "approve" (core.approveAction). The old `anyway` flag is still
+// accepted (it changes nothing now).
+async function approve(db, { pids, all, genId }, uid, nowMs) {
+  // ONE generation of one item may be named: THAT photo is approved (it
+  // becomes the main one in the same transaction); none named = the main one.
   const pickGen = genId === undefined || genId === null ? null : String(genId);
   if (pickGen !== null) {
-    if (anyway !== true || !Array.isArray(pids) || pids.length !== 1) throw new HttpsError("invalid-argument", "A generation is approved one item at a time, with Approve anyway.");
+    if (!Array.isArray(pids) || pids.length !== 1) throw new HttpsError("invalid-argument", "A generation is approved one item at a time.");
     if (!core.GEN_ID_RE.test(pickGen)) throw new HttpsError("invalid-argument", "Not a generation id.");
   }
   let targets = [];
@@ -386,7 +428,7 @@ async function approve(db, { pids, all, anyway, genId }, uid, nowMs) {
   }
   if (!targets.length) throw new HttpsError("invalid-argument", "Nothing to approve.");
   if (targets.length > MAX_PIDS) throw new HttpsError("invalid-argument", "Too many at once.");
-  const from = anyway === true ? ["ready", "rejected"] : ["ready"];
+  const from = ["new", "ready", "rejected"];
   const approved = [];
   const skipped = [];
   for (const pid of targets) {
@@ -400,9 +442,11 @@ async function approve(db, { pids, all, anyway, genId }, uid, nowMs) {
     }
     const r = await moveOne(db, pid, {
       from, to: "approved", at: nowMs, uid,
-      decision: (prev) => ({ action: prev.status === "rejected" ? "approve-anyway" : "approve", ...(pickGen ? { genId: pickGen } : {}) }),
-      // Approve only what has a generated photo — never an original.
+      decision: (prev) => ({ action: core.approveAction(prev, pickGen), ...(pickGen ? { genId: pickGen } : {}) }),
+      // Approve only what has a generated photo — never an original — and
+      // never while a new photo is being generated (it would replace this one).
       guard: (cur) => {
+        if (cur.generateRequest) return "a new photo is being generated — approve when it lands";
         if (!pickGen) return cur.generatedUrl ? null : "it has no generated photo";
         const g = cur.generations && cur.generations[pickGen];
         return g && typeof g === "object" && g.url ? null : "that generation has no photo on this item";
@@ -426,12 +470,14 @@ const newArrivalsApprove = onCall(callableOpts, async (request) => {
 
 // ── generate / regenerate ────────────────────────────────────────────────────
 // Sets generateRequest; the poster takes it, clears it, generates ONCE and
-// puts the result in Ready. From New (Generate), or — only with `regenerate`
-// — from Ready or Rejected: a FRESH attempt from the original photo, never a
-// fix-up edit. The lap's photo, verdict, name and chain stamps are cleared;
-// every earlier generation stays in `generations` (kept for ever).
+// puts the result on the same card (lane ready / rejected). From New
+// (Generate), or — only with `regenerate` — from Ready or Rejected: a FRESH
+// attempt from the original photo, never a fix-up edit. REGENERATE KEEPS THE
+// PHOTOS VISIBLE (3 Oct night): generatedUrl/Path, currentGen, verdict and
+// framingFlag stay (Approve and Use this one wait while the request is
+// pending); the approval, chain, names and destinations are cleared. Every
+// generation stays in `generations` (kept for ever).
 const NEW_LAP = Object.freeze({
-  generatedUrl: null, generatedPath: null, currentGen: null, verdict: null, framingFlag: null,
   checker: null, namePending: null, chain: null, suggestedName: null, suggestedNameSource: null,
   nameProposedAt: null, destinations: null, approvedAt: null, approvedBy: null, rejection: null,
 });
@@ -443,17 +489,20 @@ async function generate(db, { pids, regenerate }, uid, nowMs) {
   await inBatches(list, 10, async (pid) => {
     const r = await moveOne(db, pid, {
       from, to: "new", at: nowMs, uid,
-      decision: (prev) => ({ action: prev.status === "new" ? "generate" : "regenerate" }),
+      decision: (prev) => ({ action: prev.status === "new" && !prev.currentGen ? "generate" : "regenerate" }),
       // The poster reads ONLY this small index each minute (never a scan of New).
       // A stray entry (e.g. Skip racing Generate) is harmless: the poster takes a
       // request only for an item still in New WITH generateRequest, and clears
       // any other entry it finds.
       extra: () => ({ [`requests/${pid}`]: nowMs }),
       guard: (cur) => (cur.status === "new" && cur.generateRequest ? "already requested — the generator will take it" : null),
-      fields: (cur) => ({
-        generateRequest: { at: nowMs, by: uid || "unknown", ...(cur.status === "new" ? {} : { regenerate: true }) },
-        ...(cur.status === "new" ? {} : { ...NEW_LAP, attemptsSinceRetry: 0, lastRejection: cur.rejection || cur.lastRejection || null }),
-      }),
+      fields: (cur) => {
+        const fresh = cur.status === "new" && !cur.currentGen;
+        return {
+          generateRequest: { at: nowMs, by: uid || "unknown", ...(fresh ? {} : { regenerate: true }) },
+          ...(fresh ? {} : { ...NEW_LAP, attemptsSinceRetry: 0, lastRejection: cur.rejection || cur.lastRejection || null }),
+        };
+      },
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
     requested.push(pid);
@@ -467,10 +516,10 @@ const newArrivalsGenerate = onCall(callableOpts, async (request) => {
 });
 
 // ── skip / restore ───────────────────────────────────────────────────────────
-// Skip — don't advertise: New or Rejected → skipped. Never generated, posted
-// or published; marked in the data (status "skipped", skippedFrom), never
+// Skip — don't advertise: new, ready or rejected → skipped. Never generated,
+// posted or published; marked in the data (status "skipped", skippedFrom), never
 // deleted. The card has no Skipped tab any more: Restore is its 8-second Undo,
-// which puts the item back where it was (skippedFrom: New or Rejected), in its
+// which puts the item back where it was (skippedFrom: its lane), in its
 // place (the index value is its enqueuedAt; the order is the pid key).
 // Nothing else moves it back (enqueue only repairs the index of an item
 // already queued, whatever its status).
@@ -480,7 +529,7 @@ async function skip(db, { pids }, uid, nowMs) {
   const skipped = [];
   await inBatches(list, 10, async (pid) => {
     const r = await moveOne(db, pid, {
-      from: ["new", "rejected"], to: "skipped", at: nowMs, uid,
+      from: ["new", "ready", "rejected"], to: "skipped", at: nowMs, uid,
       decision: () => ({ action: "skip" }),
       extra: () => ({ [`requests/${pid}`]: null }),
       fields: (cur) => ({ skippedAt: nowMs, skippedBy: uid || "unknown", skippedFrom: cur.status, generateRequest: null }),
@@ -500,7 +549,7 @@ async function restore(db, { pids }, uid, nowMs) {
     // skippedFrom, came from New). The move itself still checks "skipped".
     const was = await val(db, `${core.ITEMS}/${pid}/skippedFrom`);
     const r = await moveOne(db, pid, {
-      from: "skipped", to: was === "rejected" ? "rejected" : "new", at: nowMs, uid,
+      from: "skipped", to: was === "rejected" || was === "ready" ? was : "new", at: nowMs, uid,
       decision: () => ({ action: "restore" }),
       fields: () => ({ skippedAt: null, skippedBy: null, skippedFrom: null }),
     });
@@ -520,12 +569,15 @@ const newArrivalsRestore = onCall(callableOpts, async (request) => {
 });
 
 // ── reject ───────────────────────────────────────────────────────────────────
-// Ready → Rejected with ONE of the reason chips (no typing).
+// Junid's reject-reason signal: ONE of the chips (no typing) on any item with
+// a photo and no pending request → lane rejected. The item stays on the New
+// tab, with its photos; Approve stays available (it then logs approve-anyway).
 async function reject(db, { pid, reason }, uid, nowMs) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (!core.REJECT_CHIPS.includes(reason)) throw new HttpsError("invalid-argument", "Pick one of the reasons.");
   const r = await moveOne(db, String(pid), {
-    from: "ready", to: "rejected", at: nowMs, uid,
+    from: ["new", "ready", "rejected"], to: "rejected", at: nowMs, uid,
+    guard: (cur) => (cur.generateRequest ? "a new photo is being generated" : cur.generatedUrl ? null : "it has no generated photo"),
     decision: () => ({ action: "reject", reason }),
     fields: () => ({ rejection: { code: "junid", reason, at: nowMs } }),
   });

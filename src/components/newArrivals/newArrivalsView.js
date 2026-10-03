@@ -4,12 +4,23 @@
 // agents (generation, chain, posting). Any field may be absent — RTDB drops
 // empty arrays and objects — so every reader here tolerates absence.
 
+// ONE PLACE TO GENERATE AND APPROVE (owner, 3 Oct night): two tabs. New
+// holds every item not yet approved (the lanes new, generating, ready and
+// rejected, merged — a lane never moves an item between tabs or hides it);
+// a generation lands ON THE SAME CARD. Done is the history.
 export const TABS = [
   { key: "new", label: "New" },
-  { key: "ready", label: "Ready" },
-  { key: "rejected", label: "Rejected" },
   { key: "done", label: "Done" },
 ];
+/** The lanes the New tab shows (mirror of functions/newArrivals/core.cjs NEW_LANES). */
+export const NEW_LANES = ["new", "generating", "ready", "rejected"];
+// An older link / default asked for Ready or Rejected: both are New now.
+const LEGACY_TABS = { ready: "new", rejected: "new" };
+/** The tab to show for a requested one; New for anything unknown. Pure. */
+export function normalizeTab(t) {
+  if (TABS.some((x) => x.key === t)) return t;
+  return LEGACY_TABS[t] || "new";
+}
 // No Skipped tab (owner, 3 Oct): "Skip — don't advertise" is one tap with an
 // 8-second Undo. A skipped item stays in the data (status "skipped") — the
 // generator, the chain and the posters all leave it alone.
@@ -22,13 +33,13 @@ export const REJECT_CHIPS = ["background wrong", "colour off", "detail changed",
 // ONE switcher bar instead of filter chips (owner, 3 Oct): exactly TWO groups,
 // decided server-side from the category (functions/newArrivals/core.cjs
 // groupOf): Sneakers = all footwear; Clothing = everything else, and anything
-// uncategorised unless it is clearly footwear. New, Ready and Rejected are
-// grouped (the tabs Junid acts in); Done is the whole history, ungrouped.
+// uncategorised unless it is clearly footwear. New is grouped (the tab Junid
+// acts in); Done is the whole history, ungrouped.
 export const GROUPS = [
   { key: "sneakers", label: "Sneakers" },
   { key: "clothing", label: "Clothing" },
 ];
-export const GROUP_TABS = ["new", "ready", "rejected"];
+export const GROUP_TABS = ["new"];
 export const DEFAULT_GROUP = "sneakers";
 export const GROUP_STORAGE_KEY = "newArrivals.group";
 export const isGroupTab = (tab) => GROUP_TABS.includes(tab);
@@ -139,9 +150,27 @@ export function spentText(stats) {
   return `Spent so far R${total.toFixed(2)}${Number.isFinite(est) && est > 0 ? ` (incl. ~R${est.toFixed(2)} estimated)` : ""}`;
 }
 
+/** Is a new photo being generated for this item (lane generating, or a pending request)? Pure. */
+export function isGenerating(item) {
+  return item?.status === "generating" || (NEW_LANES.includes(item?.status) && !!item?.generateRequest);
+}
+/** Does this New-tab item have a finished photo to approve? Pure. */
+export function hasPhoto(item) {
+  return NEW_LANES.includes(item?.status) && !!item?.generatedUrl;
+}
+/** "photo" | "generating" | "none" — the New tab's three buckets (server orders by them). Pure. */
+export function photoBucket(item) {
+  if (isGenerating(item)) return "generating";
+  return hasPhoto(item) ? "photo" : "none";
+}
+
 /** Can Junid make this generation the main photo ("Use this one")? Pure. */
 export function canPick(item, gen) {
-  return (item?.status === "ready" || item?.status === "rejected") && !!gen?.url && gen.genId !== currentGenId(item);
+  return NEW_LANES.includes(item?.status) && !!gen?.url && gen.genId !== currentGenId(item);
+}
+/** "Use this one" is shown but waits while a new photo is being generated. Pure. */
+export function pickEnabled(item) {
+  return !isGenerating(item);
 }
 // LEARNING LOG (3 Oct evening): every generation has a permanent code
 // ("G-0042", set by the poster) printed under its image; one with no code yet
@@ -152,7 +181,7 @@ export function genCode(gen) {
   return c || null;
 }
 /** The tabs whose generations carry the ❤ Love toggle. */
-export const LOVE_TABS = ["ready", "rejected", "done"];
+export const LOVE_TABS = ["new", "done"];
 /** Can Junid ❤ this generation here? Pure. */
 export function canLove(tab, gen) {
   return LOVE_TABS.includes(tab) && !!gen?.url;
@@ -203,24 +232,22 @@ export function sizesText(sizes) {
   return list.length ? list.join(" · ") : "No sizes";
 }
 
-/** One line under the item: where it is in its lane. */
+/** One line under the item: what it waits for. On New: photo ready, generating, or no photo yet. */
 export function statusLine(item) {
   const s = item?.status;
-  // Generation is Junid's call (calibration): nothing is generated until he taps Generate.
-  // A failed generation is never retried on its own — the card says so and waits for a tap.
-  const failed = !item?.generateRequest && item?.lastAttempt?.failed === true
-    ? `Last photo failed: ${item.lastAttempt.reason || "tap Generate again"}` : null;
-  if (s === "new") return item?.generateRequest ? "Generate requested — the generator will take it shortly" : failed || "Waiting — tap Generate when you want its photo";
+  if (NEW_LANES.includes(s)) {
+    // Generation is Junid's call (calibration): nothing is generated until he taps Generate.
+    if (isGenerating(item)) return "Generating…";
+    if (hasPhoto(item)) return "Photo ready — approve";
+    // A failed generation is never retried on its own — the card says so and waits for a tap.
+    if (item?.lastAttempt?.failed === true) return `Last photo failed: ${item.lastAttempt.reason || "tap Generate again"}`;
+    return "Waiting — tap Generate when you want its photo";
+  }
   if (s === "skipped") return "Skipped — not advertised";
-  if (s === "generating") return "Generating the photo now…";
-  if (s === "ready") return Number(item?.product?.stockPrice) > 0
-    ? "Photo checked — waiting for your Approve"
-    : "Photo checked — needs a stock price before approving";
   if (s === "approved") return "Approved — publishing will start in a minute";
   if (s === "chaining" && item?.chain?.waiting?.for === "retail price") return "Shopify waits for a retail price — the groups are posted at the stock price meanwhile";
   if (s === "chaining") return chainProgress(item);
   if (s === "done") return item?.soldOutBeforePosting ? "Sold out before posting" : "Done";
-  if (s === "rejected") return failed ? `${rejectionText(item)} · ${failed}` : rejectionText(item);
   return "";
 }
 
@@ -234,6 +261,11 @@ export function chainProgress(item) {
   const next = CHAIN_STEPS.find(([k]) => !chain[k]?.at);
   if (!doneSteps.length) return "Publishing…";
   return `${doneSteps.join(" · ")}${next ? ` — next: ${next[1]}` : ""}`;
+}
+
+/** A rejection on a New-tab item, as a LABEL (it never moves or hides the item), or null. Pure. */
+export function rejectionLabel(item) {
+  return NEW_LANES.includes(item?.status) && item?.rejection ? rejectionText(item) : null;
 }
 
 export function rejectionText(item) {
@@ -279,29 +311,35 @@ export function needsStockPrice(product) {
 }
 
 /**
- * Which buttons an item shows. Approve is ALWAYS shown on Ready (owner, 3 Oct)
- * but only ENABLED with a generated photo and a stock price (approveEnabled);
- * Approve anyway (Rejected) likewise needs both. The checker's verdict never
- * gates anything.
+ * Which buttons an item shows — by PHOTO PRESENCE, never by lane or verdict
+ * (owner, 3 Oct night). Any item with a generated photo shows Approve (the
+ * main / selected photo); it is ENABLED only with a stock price and no new
+ * photo being generated — approveWhy says why not ("add stock price first",
+ * "generating…"). With no photo: Generate (`generateRegenerate` when the
+ * lane needs the regenerate flag). The checker's verdict never gates anything.
  */
 export function actionsFor(item) {
   const s = item?.status;
+  const lane = NEW_LANES.includes(s);
   const priced = Number(item?.product?.stockPrice) > 0;
+  const generating = isGenerating(item);
+  const photo = hasPhoto(item);
+  const approveWhy = !photo ? null : generating ? "generating…" : !priced ? "add stock price first" : null;
   return {
-    approve: s === "ready",
-    approveEnabled: s === "ready" && !!item?.generatedUrl && priced,
-    // Shown on every Rejected item with a photo; enabled only with a stock price.
-    approveAnyway: s === "rejected" && !!item?.generatedUrl,
-    approveAnywayEnabled: s === "rejected" && !!item?.generatedUrl && priced,
-    generate: s === "new" && !item?.generateRequest,
-    regenerate: s === "ready" || s === "rejected",
-    reject: s === "ready",
-    skip: s === "new" || s === "rejected",
+    approve: photo,
+    approveEnabled: photo && !generating && priced,
+    approveWhy,
+    generate: lane && !photo && !generating,
+    // Lane rejected / ready without a photo: the server needs the regenerate flag.
+    generateRegenerate: lane && !photo && s !== "new",
+    regenerate: photo && !generating,
+    reject: photo && !generating,
+    skip: lane && s !== "generating",
   };
 }
 
 /** The tabs whose cards carry the two price fields (Done is history). */
-export const PRICE_TABS = ["new", "ready", "rejected"];
+export const PRICE_TABS = ["new"];
 /** A price as the field shows it: the stored number, or empty. Pure. */
 export const priceField = (v) => (Number(v) > 0 ? String(Number(v)) : "");
 /** Only the fields Junid changed from what the card showed: { stockPrice?, retailPrice? }. Pure. */

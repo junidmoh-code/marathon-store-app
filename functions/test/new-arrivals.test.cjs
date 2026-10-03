@@ -79,11 +79,13 @@ test("approve refuses an item with no generated photo — never an original", as
   assert.match(out.skipped[0].why, /no generated photo/);
 });
 
-test("approve refuses an item that is not Ready, and an unknown pid", async () => {
+test("approve refuses an item with no photo, one mid-generation, and an unknown pid", async () => {
   const db = seeded("new");
   const out = await na.approve(db, { pids: [PID, "p1000000000001"] }, "junid", NOW);
   assert.deepEqual(out.approved, []);
-  assert.match(out.skipped[0].why, /it is new/);
+  assert.match(out.skipped[0].why, /no generated photo/);
+  const gen = seeded("generating", { generatedUrl: "g" });
+  assert.match((await na.approve(gen, { pids: [PID] }, "junid", NOW)).skipped[0].why, /it is generating/);
   assert.match(out.skipped[1].why, /not in the New Arrivals queue/);
   // The cold-null path for a truly absent item committed nothing.
   assert.equal((await db.ref(`${core.ITEMS}/p1000000000001`).once()).val(), null);
@@ -222,15 +224,16 @@ test("list pages 30 at a time by key with a cursor, and reports the total", asyn
   assert.equal(p1.matchingPids.length, 75, "select-all covers the whole lane, not the page");
 });
 
-test("the New tab merges new + generating; generating is never select-all'd", async () => {
+test("the New tab merges new + generating (generating before no photo yet); generating is never select-all'd", async () => {
   const db = lane(3);
   await db.ref(`${core.ITEMS}/${pid(1)}/status`).set("generating");
   await db.ref(`${core.BY_STATUS}/new/${pid(1)}`).set(null);
   await db.ref(`${core.BY_STATUS}/generating/${pid(1)}`).set(NOW);
   const out = await na.listTab(db, "new", { limit: 2 });
-  assert.deepEqual(out.items.map((i) => i.pid), [pid(0), pid(1)]);
+  assert.deepEqual(out.items.map((i) => i.pid), [pid(1), pid(0)]);
   assert.equal(out.total, 3);
-  assert.equal(out.nextCursor, pid(1));
+  assert.equal(out.nextCursor, pid(0));
+  assert.deepEqual((await na.listTab(db, "new", { limit: 2, cursor: out.nextCursor })).items.map((i) => i.pid), [pid(2)]);
   assert.deepEqual(out.matchingPids, [pid(0), pid(2)]);
 });
 
@@ -336,14 +339,14 @@ test("list by group: the page, total and select-all come from the group; groupCo
   assert.equal(whole.groupCounts, null);
 });
 
-test("list by group: Ready and Rejected split too; 30 a page within the group", async () => {
+test("list by group: Ready items (on New) split too; 30 a page within the group", async () => {
   const db = lane(70, { status: "ready", product: (i) => ({ categoryKey: i % 2 ? "hoodies" : "sneakers" }) });
-  const p1 = await na.listTab(db, "ready", { group: "sneakers" });
+  const p1 = await na.listTab(db, "new", { group: "sneakers" });
   assert.equal(p1.items.length, 30);
   assert.equal(p1.total, 35);
   assert.deepEqual(p1.groupCounts, { sneakers: 35, clothing: 35 });
   assert.ok(p1.items.every((i) => i.product.categoryKey === "sneakers"));
-  const p2 = await na.listTab(db, "ready", { group: "sneakers", cursor: p1.nextCursor });
+  const p2 = await na.listTab(db, "new", { group: "sneakers", cursor: p1.nextCursor });
   assert.equal(p2.items.length, 5);
   assert.equal(p2.nextCursor, null);
   // Done is never grouped.
@@ -396,7 +399,7 @@ test("skip marks (never deletes) and records where from; the Undo (restore) puts
   assert.equal(it.status, "skipped");
   assert.equal(it.skippedFrom, "rejected");
   assert.equal(it.name, "item 1", "the record is kept whole");
-  assert.equal((await na.listTab(db, "rejected", {})).total, 2);
+  assert.equal((await na.listTab(db, "new", {})).total, 2);
   const r = await na.restore(db, { pids: [pid(1)] }, "junid", NOW + 55);
   assert.deepEqual(r.restored, [pid(1)]);
   const back = (await db.ref(`${core.ITEMS}/${pid(1)}`).once()).val();
@@ -404,7 +407,7 @@ test("skip marks (never deletes) and records where from; the Undo (restore) puts
   assert.equal(back.rejection.reason, "framing");
   assert.equal("skippedFrom" in back, false);
   assert.equal((await db.ref(`${core.BY_STATUS}/rejected/${pid(1)}`).once()).val(), NOW + 1, "index value = its enqueuedAt");
-  assert.deepEqual((await na.listTab(db, "rejected", {})).items.map((i) => i.pid), [pid(0), pid(1), pid(2)], "back in its place");
+  assert.deepEqual((await na.listTab(db, "new", {})).items.map((i) => i.pid), [pid(0), pid(1), pid(2)], "back in its place");
   // An older skip (no skippedFrom) goes back to New.
   await db.ref(`${core.ITEMS}/${pid(2)}`).update({ status: "skipped" });
   await db.ref(`${core.BY_STATUS}/rejected/${pid(2)}`).set(null);
@@ -413,11 +416,16 @@ test("skip marks (never deletes) and records where from; the Undo (restore) puts
   assert.equal((await db.ref(`${core.ITEMS}/${pid(2)}/status`).once()).val(), "new");
 });
 
-test("skip refuses Ready and Generating", async () => {
+test("skip takes a Ready item too (Undo puts it back in Ready); refuses Generating", async () => {
   const db = seeded("ready", { generatedUrl: "g" });
   const out = await na.skip(db, { pids: [PID] }, "junid", NOW);
-  assert.deepEqual(out.skippedPids, []);
-  assert.match(out.skipped[0].why, /it is ready/);
+  assert.deepEqual(out.skippedPids, [PID]);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/skippedFrom`).once()).val(), "ready");
+  await na.restore(db, { pids: [PID] }, "junid", NOW + 1);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/generatedUrl`).once()).val(), "g");
+  const gen = seeded("generating");
+  assert.match((await na.skip(gen, { pids: [PID] }, "junid", NOW)).skipped[0].why, /it is generating/);
   await assert.rejects(na.skip(db, { pids: [] }, "junid", NOW), /No items/);
 });
 
@@ -450,7 +458,7 @@ test("regenerate marks its request as a regeneration (logged with its reason and
   assert.equal(it.generateRequest.regenerate, true);
 });
 
-test("regenerate: Ready/Rejected → New with a request; earlier generations kept; Ready refused without the flag", async () => {
+test("regenerate: Ready/Rejected → lane new with a request; the photos stay visible; Ready refused without the flag", async () => {
   const db = seeded("ready", { generatedUrl: GEN.url, currentGen: "g1", generations: { g1: GEN }, verdict: GEN.verdict, suggestedName: "Old" });
   const no = await na.generate(db, { pids: [PID] }, "junid", NOW);
   assert.match(no.skipped[0].why, /it is ready, not new/);
@@ -459,7 +467,12 @@ test("regenerate: Ready/Rejected → New with a request; earlier generations kep
   const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
   assert.equal(it.status, "new");
   assert.equal(it.generations.g1.url, GEN.url, "every generation is kept");
-  for (const k of ["generatedUrl", "currentGen", "verdict", "suggestedName"]) assert.equal(k in it, false, k);
+  // REGENERATE KEEPS THE PHOTOS VISIBLE: the main photo, its generation and verdict stay.
+  assert.equal(it.generatedUrl, GEN.url);
+  assert.equal(it.currentGen, "g1");
+  assert.deepEqual(it.verdict, GEN.verdict);
+  // The approval, chain, names and destinations of the old lap are cleared.
+  assert.equal("suggestedName" in it, false);
   assert.equal((await db.ref(`${core.BY_STATUS}/new/${PID}`).once()).val(), NOW);
   const [d] = await decisions(db);
   assert.equal(d.action, "regenerate");
@@ -483,15 +496,19 @@ test("reject takes exactly one chip; logs reason + snapshot", async () => {
   assert.equal(d.gen.verdict.failed[0], "fidelity:colour");
   assert.equal(d.by, "junid");
   assert.equal(d.at, NOW + 1);
-  await assert.rejects(na.reject(db, { pid: PID, reason: "blurry" }, "junid", NOW), /it is rejected/);
+  // A second chip on a rejected item re-records Junid's reason; it stays on the New tab.
+  assert.deepEqual(await na.reject(db, { pid: PID, reason: "blurry" }, "junid", NOW + 2), { ok: true });
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/rejection/reason`).once()).val(), "blurry");
+  assert.deepEqual((await na.listTab(db, "new", {})).items.map((i) => i.pid), [PID]);
+  // Never on an item with no photo, nor while a new photo is being generated.
+  await assert.rejects(na.reject(seeded("new"), { pid: PID, reason: "blurry" }, "junid", NOW), /no generated photo/);
+  await assert.rejects(na.reject(seeded("new", { generatedUrl: "g", generateRequest: { at: 1 } }), { pid: PID, reason: "blurry" }, "junid", NOW), /being generated/);
   for (const c of ["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"]) assert.ok(core.REJECT_CHIPS.includes(c));
 });
 
-test("approve anyway: Rejected → approved (only with the flag), logged as approve-anyway; plain approve logged", async () => {
+test("approve: a Rejected item → approved (no flag needed), logged as approve-anyway; a passed photo logs plain approve", async () => {
   const db = seeded("rejected", { generatedUrl: GEN.url, currentGen: "g1", generations: { g1: GEN }, rejection: { code: "junid", reason: "framing", at: 1 } });
-  const no = await na.approve(db, { pids: [PID] }, "junid", NOW);
-  assert.match(no.skipped[0].why, /it is rejected, not ready/);
-  const out = await na.approve(db, { pids: [PID], anyway: true }, "junid", NOW + 2);
+  const out = await na.approve(db, { pids: [PID] }, "junid", NOW + 2);
   assert.deepEqual(out.approved, [PID]);
   const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
   assert.equal(it.status, "approved");
@@ -501,9 +518,12 @@ test("approve anyway: Rejected → approved (only with the flag), logged as appr
   const [d] = await decisions(db);
   assert.equal(d.action, "approve-anyway");
   assert.equal(d.gen.url, GEN.url);
-  const db2 = seeded("ready", { generatedUrl: "g", currentGen: "g1", generations: { g1: GEN } });
+  const db2 = seeded("ready", { generatedUrl: "g", currentGen: "g2", generations: { g2: G2 }, verdict: G2.verdict });
   await na.approve(db2, { pids: [PID] }, "junid", NOW);
   assert.equal((await decisions(db2))[0].action, "approve");
+  // The old bundle's `anyway` flag is still accepted.
+  const db3 = seeded("rejected", { generatedUrl: GEN.url, currentGen: "g1", generations: { g1: GEN } });
+  assert.deepEqual((await na.approve(db3, { pids: [PID], anyway: true }, "junid", NOW)).approved, [PID]);
 });
 
 test("approve anyway still needs a stock price and a generated photo", async () => {
@@ -584,9 +604,9 @@ test("select: a re-check with framing failed sets framingFlag; works from Reject
 });
 
 test("select guards: lane, unknown generation, no url, bad ids, absent item; nothing logged", async () => {
-  for (const s of ["new", "approved", "done", "skipped", "generating"]) {
+  for (const s of ["approved", "done", "skipped", "generating"]) {
     const db = withGens(s);
-    await assert.rejects(na.select(db, { pid: PID, genId: "g1" }, "junid", NOW), new RegExp(`it is ${s}, not ready or rejected`));
+    await assert.rejects(na.select(db, { pid: PID, genId: "g1" }, "junid", NOW), new RegExp(`it is ${s}, not new, ready or rejected`));
     assert.deepEqual(await decisions(db), []);
     assert.equal((await db.ref(`${core.ITEMS}/${PID}/currentGen`).once()).val(), "g2");
   }
@@ -596,7 +616,20 @@ test("select guards: lane, unknown generation, no url, bad ids, absent item; not
   await assert.rejects(na.select(db, { pid: PID, genId: "../x" }, "junid", NOW), /Not a generation id/);
   await assert.rejects(na.select(db, { pid: "-Nx", genId: "g1" }, "junid", NOW), /Not a product id/);
   await assert.rejects(na.select(makeFakeDb({}), { pid: PID, genId: "g1" }, "junid", NOW), /not in the New Arrivals queue/);
+  // While a new photo is being generated, no pick.
+  const pending = withGens("new", { generateRequest: { at: 1, by: "junid", regenerate: true } });
+  await assert.rejects(na.select(pending, { pid: PID, genId: "g1" }, "junid", NOW), /being generated/);
+  assert.equal((await pending.ref(`${core.ITEMS}/${PID}/currentGen`).once()).val(), "g2");
   assert.deepEqual(await decisions(db), []);
+  assert.deepEqual(await decisions(pending), []);
+});
+
+test("select works in lane new too (an item with photos and no pending request)", async () => {
+  const db = withGens("new");
+  assert.deepEqual(await na.select(db, { pid: PID, genId: "g1" }, "junid", NOW + 1), { ok: true });
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "new");
+  assert.equal(it.currentGen, "g1");
 });
 
 test("select of the current generation changes nothing and logs nothing", async () => {
@@ -613,8 +646,10 @@ test("approve and approve anyway use the SELECTED photo (generatedUrl + ledger s
   assert.equal(it.status, "approved");
   assert.equal(it.generatedUrl, GEN.url, "the chain sets the product photo from generatedUrl");
   const ds = (await decisions(db)).sort((a, b) => a.at - b.at);
-  assert.deepEqual(ds.map((d) => [d.action, d.genId]), [["pick", "g1"], ["approve", "g1"]]);
+  // g1's verdict failed: approving it is "approve-anyway", with the checker's rule marked wrong.
+  assert.deepEqual(ds.map((d) => [d.action, d.genId]), [["pick", "g1"], ["approve-anyway", "g1"]]);
   assert.equal(ds[1].gen.url, GEN.url);
+  assert.deepEqual(ds[1].checkerWrong, ["fidelity:colour"]);
 
   const db2 = withGens("rejected", { rejection: { code: "junid", reason: "framing", at: 1 } });
   await na.select(db2, { pid: PID, genId: "g3" }, "junid", NOW + 1);
@@ -640,9 +675,8 @@ test("Approve anyway on ONE generation of a Rejected item approves THAT photo, l
   assert.deepEqual(core.checkerWrongRules({ verdict: { pass: true, failed: [] } }, { rejection: { code: "generation" } }), ["generation"]);
 });
 
-test("Approve anyway with a generation: needs the flag, one item, a real photo, and a stock price", async () => {
+test("Approve with a generation: one item, a real photo, and a stock price", async () => {
   const db = withGens("rejected", { rejection: { code: "junid", reason: "x", at: 1 } });
-  await assert.rejects(na.approve(db, { pids: [PID], genId: "g3" }, "junid", NOW), /one item at a time/);
   await assert.rejects(na.approve(db, { pids: [PID, "p1789999990001"], anyway: true, genId: "g3" }, "junid", NOW), /one item at a time/);
   const nope = await na.approve(db, { pids: [PID], anyway: true, genId: "zz" }, "junid", NOW);
   assert.deepEqual(nope.approved, []);
@@ -743,4 +777,167 @@ test("list gives the card each generation's code and loved flag — never the le
   assert.equal("code" in out.items[0].generations.g2, false, "no code yet → none invented");
   // The item in the database is untouched.
   assert.equal((await db.ref(`${core.ITEMS}/${PID}/generations/g1/promptText`).once()).val(), "FULL PROMPT");
+});
+
+// ── ONE PLACE TO GENERATE AND APPROVE (3 Oct night) ──────────────────────────
+// The New tab merges the lanes new, generating, ready and rejected; within a
+// group the order is photo ready → generating → no photo yet (key order within).
+// pid(i): 0 new no photo · 1 generating · 2 ready · 3 rejected with photo ·
+// 4 rejected without photo · 5 new with currentGen (no request) · 6 new with a
+// pending request (photos kept by Regenerate) · 7 new no photo.
+function mergedLanes() {
+  const spec = [
+    ["new", {}], ["generating", {}], ["ready", { generatedUrl: "u2", currentGen: "g" }],
+    ["rejected", { generatedUrl: "u3", rejection: { code: "junid", reason: "framing", at: 1 } }],
+    ["rejected", { rejection: { code: "source", reason: "retake photo", at: 1 } }],
+    ["new", { generatedUrl: "u5", currentGen: "g" }],
+    ["new", { generatedUrl: "u6", currentGen: "g", generateRequest: { at: 1, by: "junid", regenerate: true } }],
+    ["new", {}],
+  ];
+  const items = {}, by = {}, products = {};
+  spec.forEach(([status, extra], i) => {
+    const k = pid(i);
+    items[k] = { pid: k, status, enqueuedAt: NOW + i, statusAt: NOW, name: `item ${i}`, categoryKey: "sneakers", ...extra };
+    (by[status] = by[status] || {})[k] = NOW + i;
+    products[k] = { name: `item ${i}`, categoryKey: "sneakers", stockPrice: 500, sizes: ["7"] };
+  });
+  return makeFakeDb({ products, new_arrivals: { items, by_status: by, requests: { [pid(6)]: NOW } } });
+}
+const ORDER = [pid(2), pid(3), pid(5), pid(1), pid(6), pid(0), pid(4), pid(7)];
+
+test("merged New tab lists all four lanes, ordered photo → generating → no photo; tabs are New and Done", async () => {
+  const db = mergedLanes();
+  const out = await na.listTab(db, "new", { group: "sneakers" });
+  assert.deepEqual(out.items.map((i) => i.pid), ORDER);
+  assert.deepEqual(new Set(out.items.map((i) => i.status)), new Set(["new", "generating", "ready", "rejected"]));
+  assert.equal(out.total, 8);
+  assert.equal(out.tabCounts.new, 8);
+  assert.equal("ready" in out.tabCounts || "rejected" in out.tabCounts, false);
+  assert.deepEqual(out.groupCounts, { sneakers: 8, clothing: 0 });
+  // Select all never takes an item mid-generation (lane generating).
+  assert.deepEqual(out.matchingPids, ORDER.filter((p) => p !== pid(1)));
+  assert.deepEqual(core.TABS, ["new", "done", "skipped"]);
+  assert.deepEqual(core.NEW_LANES, ["new", "generating", "ready", "rejected"]);
+  // Without a group the same order.
+  assert.deepEqual((await na.listTab(db, "new", {})).items.map((i) => i.pid), ORDER);
+});
+
+test("paging follows the bucket order across buckets; the cursor is the last pid of the page", async () => {
+  const db = mergedLanes();
+  const seen = [];
+  let cursor = null;
+  const cursors = [];
+  do {
+    const page = await na.listTab(db, "new", { group: "sneakers", limit: 3, cursor });
+    seen.push(...page.items.map((i) => i.pid));
+    cursor = page.nextCursor;
+    if (cursor) { cursors.push(cursor); assert.equal(cursor, page.items[page.items.length - 1].pid); }
+  } while (cursor);
+  assert.deepEqual(seen, ORDER, "no item twice, none missed, in order");
+  assert.deepEqual(cursors, [pid(5), pid(0)]);
+  // A cursor whose item has since left the list (approved) is placed by its bucket now.
+  await db.ref(`${core.ITEMS}/${pid(5)}/status`).set("approved");
+  await db.ref(`${core.BY_STATUS}/new/${pid(5)}`).set(null);
+  await db.ref(`${core.BY_STATUS}/approved/${pid(5)}`).set(NOW + 5);
+  const next = await na.listTab(db, "new", { group: "sneakers", limit: 3, cursor: pid(5) });
+  assert.deepEqual(next.items.map((i) => i.pid), [pid(1), pid(6), pid(0)]);
+});
+
+test("bucket reads stay cheap: requests read once; only scalar currentGen (and a rejected item's generatedUrl) per new/rejected pid; never the items node", async () => {
+  const db = mergedLanes();
+  const reads = [];
+  const ref = db.ref.bind(db);
+  db.ref = (path) => { reads.push(path); return ref(path); };
+  const out = await na.listTab(db, "new", { group: "sneakers", limit: 2 });
+  assert.equal(out.items.length, 2);
+  assert.ok(!reads.includes(core.ITEMS) && !reads.includes(`${core.ITEMS}/`), "never the whole items node");
+  assert.equal(reads.filter((p) => p === `${core.ROOT}/requests`).length, 1);
+  const scalar = reads.filter((p) => /\/(currentGen|generatedUrl)$/.test(p)).sort();
+  // new: 0, 5, 7 · rejected: 3, 4 (+ generatedUrl for both, they have no currentGen).
+  assert.deepEqual(scalar, [
+    `${core.ITEMS}/${pid(0)}/currentGen`, `${core.ITEMS}/${pid(3)}/currentGen`, `${core.ITEMS}/${pid(3)}/generatedUrl`,
+    `${core.ITEMS}/${pid(4)}/currentGen`, `${core.ITEMS}/${pid(4)}/generatedUrl`, `${core.ITEMS}/${pid(5)}/currentGen`, `${core.ITEMS}/${pid(7)}/currentGen`,
+  ].sort());
+  // Whole items are read only for the page.
+  assert.deepEqual(reads.filter((p) => /^new_arrivals\/items\/p\d+$/.test(p)).sort(), [pid(2), pid(3)].map((k) => `${core.ITEMS}/${k}`).sort());
+});
+
+test("photoBucket: the spec's three buckets; a pending request wins", () => {
+  assert.equal(core.photoBucket({ lane: "ready" }), "photo");
+  assert.equal(core.photoBucket({ lane: "rejected", generatedUrl: "u" }), "photo");
+  assert.equal(core.photoBucket({ lane: "rejected" }), "none");
+  assert.equal(core.photoBucket({ lane: "new", currentGen: "g" }), "photo");
+  assert.equal(core.photoBucket({ lane: "new", currentGen: "g", requested: true }), "generating");
+  assert.equal(core.photoBucket({ lane: "generating" }), "generating");
+  assert.equal(core.photoBucket({ lane: "new" }), "none");
+});
+
+test("an old bundle's Ready / Rejected tab requests map to New rather than erroring", async () => {
+  const db = mergedLanes();
+  for (const t of ["ready", "rejected"]) {
+    const out = await na.listTab(db, t, { group: "sneakers" });
+    assert.equal(out.tab, "new");
+    assert.deepEqual(out.items.map((i) => i.pid), ORDER);
+  }
+  assert.equal(core.normalizeTab("ready"), "new");
+  assert.equal(core.normalizeTab("done"), "done");
+  assert.equal(core.normalizeTab("bogus"), null);
+});
+
+test("Approve on a new-lane item with a photo (no pending request); passed verdict → 'approve'", async () => {
+  const db = withGens("new");
+  const out = await na.approve(db, { pids: [PID] }, "junid", NOW + 3);
+  assert.deepEqual(out, { approved: [PID], skipped: [] });
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "approved");
+  assert.equal(it.generatedUrl, G2.url);
+  assert.equal((await db.ref(`${core.BY_STATUS}/new/${PID}`).once()).val(), null);
+  const [d] = await decisions(db);
+  assert.equal(d.action, "approve");
+  assert.equal(d.genId, "g2");
+  assert.equal(d.checkerWrong, undefined);
+  // A failed current verdict → approve-anyway with checkerWrong, from any lane.
+  const db2 = withGens("ready", { currentGen: "g1", generatedUrl: GEN.url, verdict: GEN.verdict });
+  await na.approve(db2, { pids: [PID] }, "junid", NOW);
+  const [d2] = await decisions(db2);
+  assert.equal(d2.action, "approve-anyway");
+  assert.deepEqual(d2.checkerWrong, ["fidelity:colour"]);
+});
+
+test("approve is refused while a generate request is pending; nothing logged", async () => {
+  const db = withGens("ready");
+  await na.generate(db, { pids: [PID], regenerate: true }, "junid", NOW + 1);
+  const out = await na.approve(db, { pids: [PID] }, "junid", NOW + 2);
+  assert.deepEqual(out.approved, []);
+  assert.match(out.skipped[0].why, /being generated/);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "new");
+  assert.deepEqual((await decisions(db)).map((d) => d.action), ["regenerate"]);
+  await assert.rejects(na.approve(db, { pids: [PID], genId: "g1" }, "junid", NOW + 2).then((r) => { if (!r.approved.length) throw new Error(r.skipped[0].why); }), /being generated/);
+});
+
+test("regenerate keeps generatedUrl / currentGen / verdict / framingFlag; clears approval, chain, names, destinations", async () => {
+  const db = withGens("rejected", { framingFlag: true, approvedAt: 5, approvedBy: "j", chain: { photo: { at: 1 } }, suggestedName: "Old",
+    destinations: { shopify: { at: 3 } }, rejection: { code: "junid", reason: "framing", at: 1 } });
+  const out = await na.generate(db, { pids: [PID], regenerate: true }, "junid", NOW + 4);
+  assert.deepEqual(out.requested, [PID]);
+  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.status, "new");
+  assert.equal(it.generatedUrl, G2.url);
+  assert.equal(it.generatedPath, G2.path);
+  assert.equal(it.currentGen, "g2");
+  assert.equal(it.framingFlag, true);
+  assert.equal(it.verdict.pass, true);
+  assert.equal(it.generateRequest.regenerate, true);
+  for (const k of ["approvedAt", "approvedBy", "chain", "suggestedName", "destinations", "rejection"]) assert.equal(k in it, false, k);
+  assert.equal(it.lastRejection.reason, "framing");
+  // Listed as "generating" on the New tab, photos kept.
+  const [row] = (await na.listTab(db, "new", {})).items;
+  assert.equal(row.generatedUrl, G2.url);
+  // A second Regenerate while pending is refused ("already requested").
+  assert.match((await na.generate(db, { pids: [PID], regenerate: true }, "junid", NOW + 5)).skipped[0].why, /already requested/);
+  // Regenerate from lane new of an item with photos is logged "regenerate" and marked so.
+  const db2 = withGens("new");
+  await na.generate(db2, { pids: [PID], regenerate: true }, "junid", NOW);
+  assert.equal((await decisions(db2))[0].action, "regenerate");
+  assert.equal((await db2.ref(`${core.ITEMS}/${PID}/generateRequest/regenerate`).once()).val(), true);
 });

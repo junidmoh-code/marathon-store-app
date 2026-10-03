@@ -9,10 +9,13 @@ import { saveProductPrices } from "../admin/productPriceSave";
 const call = (name) => async (data) => (await httpsCallable(functions, name)(data)).data;
 
 export const newArrivalsApi = {
-  // One page of a tab, within one group (Sneakers / Clothing) on New, Ready
-  // and Rejected: { items, total, nextCursor, tabCounts, groupCounts, stats, modes, matchingPids? }.
+  // One page of a tab (New or Done), within one group (Sneakers / Clothing)
+  // on New — ordered photo ready → generating → no photo yet by the server:
+  // { items, total, nextCursor, tabCounts, groupCounts, stats, modes, matchingPids? }.
   list: (tab, { cursor = null, limit = 30, group = null } = {}) =>
     call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(group ? { group } : {}) }),
+  // Approve the main / selected photo of each pid (any item with a photo; the
+  // server logs approve-anyway when its verdict failed). `anyway` is legacy.
   approve: (pids, { anyway = false, genId = null } = {}) => call("newArrivalsApprove")({ pids, ...(anyway ? { anyway: true } : {}), ...(genId ? { genId } : {}) }),
   approveAll: () => call("newArrivalsApprove")({ all: true }),
   retry: (pid) => call("newArrivalsRetry")({ pid }),
