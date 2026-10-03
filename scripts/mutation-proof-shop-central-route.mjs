@@ -68,7 +68,7 @@ const MUTATIONS = [
   { id: "M-ENG-LOCATIONS", guard: "the engine hands the registry to the rule", file: ENGINE,
     from: `          dest, pid, entry, rr, inFlight, routes, locations,`, to: `          dest, pid, entry, rr, inFlight, routes, locations: null,`, nodeTests: RULE_TESTS },
   { id: "M-ENG-MOVED", guard: "a movement linked to an untouched request is a pick in flight — for every close", file: ENGINE,
-    from: `        const inFlight = inFlightPlanGen || inFlightLedger || inFlightMidWrite;`, to: `        const inFlight = inFlightPlanGen || inFlightLedger;`, nodeTests: RULE_TESTS },
+    from: `        const inFlight = inFlightPlanGen || inFlightLedger || inFlightMidWrite || inFlightPicking;`, to: `        const inFlight = inFlightPlanGen || inFlightLedger || inFlightPicking;`, nodeTests: RULE_TESTS },
   { id: "M-ENG-LOCKLESS-WD", guard: "a lock-less shop ← Central row is withdrawn when the hub held it", file: ENGINE,
     from: `        if (hubServes) {\n          satisfiedClosures.push({`, to: `        if (false) {\n          satisfiedClosures.push({`, nodeTests: RULE_TESTS },
   { id: "M-ENG-LOCKLESS-INBOUND", guard: "a lock-less shop ← Central row is inbound (nothing asks beside it)", file: ENGINE,
