@@ -174,6 +174,17 @@ test("a location something else routes TO is a hub, whatever the registry says �
   assert.equal(rule.isShopLoc("marathon-pe", { routes: { ...CONFIG.routes, trophy: "marathon-pe", "marathon-pe": "central" }, locations: LOCATIONS }), false);
 });
 
+test("the reconcile asks the REGISTRY: a shop whose hub has no upstream route (shape says 'not a shop') is still held to the rule", () => {
+  const cat = CATEGORIES.find((c) => c.key === "t-shirts");
+  const { snap } = scenario({ shop: "trophy", cat, held: "units" });
+  const routes = { hub1: "central", trophy: "hub2", "marathon-pe": "hub2" };   // hub2's own route missing
+  snap.config = { ...CONFIG, routes };
+  assert.equal(rule.isShopLoc("trophy", { routes, locations: null }), false, "the shape alone cannot see it");
+  const w = withdrawalOf(computeRefillPlan(snap));
+  assert.ok(w, "the registry says Trophy is a store, so Hub 2 holding the product withdraws its Central request");
+  assert.equal(w.hub, "hub2");
+});
+
 // ── list changes must not break the mapping ──────────────────────────────────
 test("ADDING A SHOP: a Section 1 shop routed via Hub 3 gets the same rule, judged at ITS hub (never 'any hub')", () => {
   const routes = { ...CONFIG.routes, hub3: "central", "marathon-pine": "hub3", concrete: "hub3" };
