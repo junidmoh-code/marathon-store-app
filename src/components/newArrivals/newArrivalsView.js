@@ -16,33 +16,36 @@ export const TABS = [
 // the ledger records (calibration contract). One tap, no typing.
 export const REJECT_CHIPS = ["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"];
 
-// The New tab's one-tap filters → the callable's filter object.
-// Category chips map onto the plate classes (core.cjs filterClassOf):
-// sneakers = footwear except slides/sandals · slides = slides + sandals ·
-// clothing = single garments · two-piece = tracksuits.
-export const FILTER_CHIPS = [
-  { key: "oneSize", label: "1 size only" },
-  { key: "sneakers", label: "Sneakers", cls: true },
-  { key: "slides", label: "Slides", cls: true },
-  { key: "clothing", label: "Clothing", cls: true },
-  { key: "twopiece", label: "Two-piece", cls: true },
-  { key: "noStockPrice", label: "No stock price" },
+// ONE switcher bar instead of filter chips (owner, 3 Oct): exactly TWO groups,
+// decided server-side from the category (functions/newArrivals/core.cjs
+// groupOf): Sneakers = all footwear; Clothing = everything else, and anything
+// uncategorised unless it is clearly footwear. New, Ready and Rejected are
+// grouped (the tabs Junid acts in); Done is the whole history, ungrouped.
+export const GROUPS = [
+  { key: "sneakers", label: "Sneakers" },
+  { key: "clothing", label: "Clothing" },
 ];
-/** Toggle a chip in the filter; the category chips are exclusive. Pure. */
-export function toggleFilter(filter, key) {
-  const f = { ...(filter || {}) };
-  const chip = FILTER_CHIPS.find((c) => c.key === key);
-  if (!chip) return f;
-  if (chip.cls) {
-    if (f.cls === key) delete f.cls; else f.cls = key;
-  } else if (f[key]) delete f[key]; else f[key] = true;
-  return f;
+export const GROUP_TABS = ["new", "ready", "rejected"];
+export const DEFAULT_GROUP = "sneakers";
+export const GROUP_STORAGE_KEY = "newArrivals.group";
+export const isGroupTab = (tab) => GROUP_TABS.includes(tab);
+export const groupLabel = (key) => (GROUPS.find((g) => g.key === key) || GROUPS[0]).label;
+/** The group one step left (-1) or right (+1), or null at an end. Pure. */
+export function stepGroup(key, dir) {
+  const i = GROUPS.findIndex((g) => g.key === key);
+  const j = (i < 0 ? 0 : i) + dir;
+  return j >= 0 && j < GROUPS.length ? GROUPS[j].key : null;
 }
-export const chipOn = (filter, key) => {
-  const chip = FILTER_CHIPS.find((c) => c.key === key);
-  return chip?.cls ? filter?.cls === key : !!filter?.[key];
-};
-export const filterActive = (filter) => !!filter && Object.keys(filter).length > 0;
+/** The last group on this device; Sneakers when none (or storage throws). */
+export function rememberedGroup(storage) {
+  try {
+    const g = storage ? storage.getItem(GROUP_STORAGE_KEY) : null;
+    return GROUPS.some((x) => x.key === g) ? g : DEFAULT_GROUP;
+  } catch { return DEFAULT_GROUP; }
+}
+export function rememberGroup(storage, key) {
+  try { if (storage) storage.setItem(GROUP_STORAGE_KEY, key); } catch { /* private mode: not remembered */ }
+}
 
 export const CLASS_LABELS = { footwear: "Footwear", single: "Clothing", twopiece: "Two-piece" };
 /** "83%" or "—" for one class, from new_arrivals/stats. Pure. */

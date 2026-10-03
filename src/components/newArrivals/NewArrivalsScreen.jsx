@@ -11,16 +11,20 @@
 // set condition Excellent, approve on the Shopify publisher, and the next
 // 10:00 / 15:00 window posts to the groups.
 //
-// PAGED: every tab loads 30 at a time through the indexed list callable, with
+// GROUPS: New, Ready and Rejected show ONE group at a time — Sneakers or
+// Clothing — flipped with the switcher bar (‹ › or a swipe); the last group is
+// remembered on the device (default Sneakers). Done is the whole history.
+//
+// PAGED: every list loads 30 at a time through the indexed list callable, with
 // "Load more" and "Showing n of total". Reads and writes ONLY through `api`
 // (newArrivalsApi.js → callables), so this file has no Firebase import and
 // renders in tests with a fake api.
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
 import {
-  TABS, REJECT_CHIPS, FILTER_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
+  TABS, REJECT_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
   shopifyNameLine, needsStockPrice, generationsOf, costText, totalCostZar, verdictText, stockText, agreementText, rejectRateText,
-  toggleFilter, chipOn, filterActive,
+  isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup,
 } from "./newArrivalsView";
 
 const REFRESH_MS = 30_000;
@@ -140,70 +144,112 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h }) {
   );
 }
 
-const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, stats: null, modes: {}, matchingPids: null };
+// The switcher bar: a full-width dark pill, a circular ‹ on the left and › on
+// the right, the group's name and count centred. An arrow with nowhere further
+// to go is dimmed (and disabled). A horizontal swipe on the bar flips too.
+const SWIPE_PX = 40;
+function GroupSwitcher({ group, count, onStep }) {
+  const startX = useRef(null);
+  const canPrev = stepGroup(group, -1) !== null;
+  const canNext = stepGroup(group, 1) !== null;
+  const circle = (on) => ({
+    width: 40, height: 40, flex: "0 0 40px", borderRadius: "50%", border: "1px solid rgba(255,255,255,.18)",
+    background: "rgba(255,255,255,.08)", color: "#fff", fontSize: 22, lineHeight: "36px", padding: 0, fontFamily: FONT,
+    cursor: on ? "pointer" : "default", opacity: on ? 1 : 0.25,
+  });
+  return (
+    <div data-testid="group-switcher"
+      onTouchStart={(e) => { startX.current = e.touches?.[0]?.clientX ?? null; }}
+      onTouchEnd={(e) => {
+        const x0 = startX.current; startX.current = null;
+        const x1 = e.changedTouches?.[0]?.clientX;
+        if (x0 == null || x1 == null) return;
+        if (x1 - x0 <= -SWIPE_PX) onStep(1); else if (x1 - x0 >= SWIPE_PX) onStep(-1);
+      }}
+      style={{ ...GLASS, borderRadius: 999, display: "flex", alignItems: "center", gap: 8, width: "100%", boxSizing: "border-box",
+        padding: 6, marginBottom: 12, touchAction: "pan-y", userSelect: "none" }}>
+      <button aria-label="Previous group" disabled={!canPrev} onClick={() => onStep(-1)} style={circle(canPrev)}>‹</button>
+      <div data-testid="group-name" aria-live="polite" style={{ flex: 1, textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 15 }}>
+        {`${groupLabel(group)} · ${Number.isFinite(count) ? count : "…"}`}
+      </div>
+      <button aria-label="Next group" disabled={!canNext} onClick={() => onStep(1)} style={circle(canNext)}>›</button>
+    </div>
+  );
+}
+
+const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null, modes: {}, matchingPids: null };
+// localStorage, or null where it is absent or its accessor throws.
+const deviceStorage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 const chunks = (xs, n) => { const out = []; for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n)); return out; };
 
-export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" }) {
+export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", storage = deviceStorage() }) {
   const [tab, setTab] = useState(initialTab);
-  const [filter, setFilter] = useState({});
+  const [group, setGroup] = useState(() => rememberedGroup(storage));
+  const onStepGroup = (dir) => {
+    const next = stepGroup(group, dir);
+    if (!next) return;
+    setGroup(next);
+    rememberGroup(storage, next);
+  };
   const [data, setData] = useState(EMPTY);
   const [selected, setSelected] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
 
-  // A response for a view (tab + filter) no longer shown, or overtaken by a
-  // newer request, is dropped — it must never paint the wrong tab's items.
-  const viewKey = (t, f) => `${t}|${t === "new" ? JSON.stringify(f || {}) : ""}`;
+  // A response for a view (tab + group) no longer shown, or overtaken by a
+  // newer request, is dropped — it must never paint the wrong list's items.
+  const groupFor = (t, g) => (isGroupTab(t) ? g : null);
+  const viewKey = (t, g) => `${t}|${groupFor(t, g) || ""}`;
   const loadSeq = useRef(0);
-  const activeView = useRef(viewKey(tab, filter));
+  const activeView = useRef(viewKey(tab, group));
   const loaded = useRef(0);
   // Track the view whose render COMMITTED (not one merely being rendered).
-  useLayoutEffect(() => { activeView.current = viewKey(tab, filter); }, [tab, filter]);
+  useLayoutEffect(() => { activeView.current = viewKey(tab, group); }, [tab, group]);
   useLayoutEffect(() => { loaded.current = data.items ? data.items.length : 0; }, [data.items]);
 
-  const filterFor = (t, f) => (t === "new" && filterActive(f) ? f : null);
-
   // (Re)load from the top, as many items as are on screen now (at least a page).
-  const load = useCallback(async (which = tab, f = filter) => {
+  const load = useCallback(async (which = tab, g = group) => {
     const seq = ++loadSeq.current;
-    const key = viewKey(which, f);
+    const key = viewKey(which, g);
     const stale = () => seq !== loadSeq.current || key !== activeView.current;
     const wanted = Math.max(PAGE, loaded.current);
     try {
       let res = null, cursor = null;
       const acc = [];
       do {
-        res = await api.list(which, { cursor, limit: Math.min(RELOAD_CHUNK, Math.max(PAGE, wanted - acc.length)), filter: filterFor(which, f) });
+        res = await api.list(which, { cursor, limit: Math.min(RELOAD_CHUNK, Math.max(PAGE, wanted - acc.length)), group: groupFor(which, g) });
         if (stale()) return;
         acc.push(...(res.items || []));
         cursor = res.nextCursor || null;
       } while (cursor && acc.length < wanted);
       setData({
         items: acc, total: Number.isFinite(res.total) ? res.total : acc.length, nextCursor: cursor,
-        tabCounts: res.tabCounts || {}, stats: res.stats || null, modes: res.modes || {}, matchingPids: res.matchingPids || null,
+        tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null, modes: res.modes || {},
+        matchingPids: res.matchingPids || null,
       });
     } catch (e) {
       if (stale()) return;
       setMsg(`Couldn't load: ${e?.message || e}`);
       setData((d) => ({ ...d, items: d.items || [] }));
     }
-  }, [api, tab, filter]);
+  }, [api, tab, group]);
 
   const [loadingMore, setLoadingMore] = useState(false);
   const loadMore = async () => {
     if (!data.nextCursor || loadingMore) return;
     const seq = ++loadSeq.current;
-    const key = viewKey(tab, filter);
+    const key = viewKey(tab, group);
     setLoadingMore(true);
     try {
-      const res = await api.list(tab, { cursor: data.nextCursor, limit: PAGE, filter: filterFor(tab, filter) });
+      const res = await api.list(tab, { cursor: data.nextCursor, limit: PAGE, group: groupFor(tab, group) });
       if (seq !== loadSeq.current || key !== activeView.current) return;
       setData((d) => {
         const have = new Set((d.items || []).map((i) => i.pid));
         return {
           ...d, items: [...(d.items || []), ...(res.items || []).filter((i) => !have.has(i.pid))],
           total: Number.isFinite(res.total) ? res.total : d.total, nextCursor: res.nextCursor || null,
-          tabCounts: res.tabCounts || d.tabCounts, stats: res.stats || d.stats, matchingPids: res.matchingPids || d.matchingPids,
+          tabCounts: res.tabCounts || d.tabCounts, groupCounts: res.groupCounts || d.groupCounts, stats: res.stats || d.stats,
+          matchingPids: res.matchingPids || d.matchingPids,
         };
       });
     } catch (e) {
@@ -213,12 +259,12 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
 
   useEffect(() => {
     loaded.current = 0;
-    setData((d) => ({ ...d, items: null, total: null, nextCursor: null, matchingPids: null }));
+    setData((d) => ({ ...d, items: null, total: null, nextCursor: null, groupCounts: null, matchingPids: null }));
     setSelected(new Set());
-    load(tab, filter);
-    const t = setInterval(() => load(tab, filter), REFRESH_MS);
+    load(tab, group);
+    const t = setInterval(() => load(tab, group), REFRESH_MS);
     return () => clearInterval(t);
-  }, [tab, filter, load]);
+  }, [tab, group, load]);
 
   const items = data.items;
   const run = async (fn, okText, notWord = "done") => {
@@ -228,7 +274,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
       const refused = res?.skipped?.length ? ` · ${res.skipped.length} not ${notWord} (${[...new Set(res.skipped.map((s) => s.why))].join("; ")})` : "";
       setMsg(okText(res) + refused);
       setSelected(new Set());
-      await load(tab, filter);
+      await load(tab, group);
     } catch (e) {
       setMsg(`Not done: ${e?.message || e}`);
     } finally { setBusy(false); }
@@ -273,7 +319,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
         res = await api.savePrice(item.pid, item.product || {}, cost, { confirmed: true });
       }
       setMsg(res.ok ? "Stock price saved — Approve is now open." : `Price not saved: ${res.error}`);
-      if (res.ok) await load(tab, filter);
+      if (res.ok) await load(tab, group);
     } catch (e) {
       setMsg(`Price not saved: ${e?.message || e}`);
     } finally { setBusy(false); }
@@ -281,7 +327,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
 
   const selectable = tab === "new" || tab === "skipped";
   const toggle = (pid) => setSelected((s) => { const x = new Set(s); if (x.has(pid)) x.delete(pid); else x.add(pid); return x; });
-  // "Select all" = every item the (filtered) tab holds, across pages — the
+  // "Select all" = every item the tab holds IN THIS GROUP, across pages — the
   // server's list, not just what is loaded.
   const allPids = data.matchingPids || (items || []).map((i) => i.pid);
   const sel = [...selected];
@@ -304,13 +350,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready" })
           </button>
         ))}
       </div>
-      {tab === "new" && (
-        <div data-testid="filters" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-          {FILTER_CHIPS.map((c) => (
-            <button key={c.key} aria-pressed={chipOn(filter, c.key)} onClick={() => setFilter((f) => toggleFilter(f, c.key))}
-              style={{ ...(chipOn(filter, c.key) ? tabOn : tabOff), padding: "6px 10px", fontSize: 12 }}>{c.label}</button>
-          ))}
-        </div>
+      {isGroupTab(tab) && (
+        <GroupSwitcher group={group} onStep={onStepGroup}
+          count={data.groupCounts ? data.groupCounts[group] : (data.items ? data.total : null)} />
       )}
       {selectable && items && allPids.length > 0 && (
         <div data-testid="bulk" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>

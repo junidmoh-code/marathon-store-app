@@ -113,9 +113,18 @@ const text = (tree) => {
   const walk = (n) => (n == null || n === false ? "" : Array.isArray(n) ? n.map(walk).join("") : typeof n === "object" ? walk(n.children) : String(n));
   return walk(tree.toJSON());
 };
-const render = async (api, initialTab = "ready") => {
+// A device's localStorage, in memory (throwOn: its accessor throws, as in private mode).
+const memStorage = (init = {}, { throwOn = false } = {}) => {
+  const m = new Map(Object.entries(init));
+  return {
+    getItem: vi.fn((k) => { if (throwOn) throw new Error("denied"); return m.has(k) ? m.get(k) : null; }),
+    setItem: vi.fn((k, v) => { if (throwOn) throw new Error("denied"); m.set(k, String(v)); }),
+    map: m,
+  };
+};
+const render = async (api, initialTab = "ready", storage = memStorage()) => {
   let tree;
-  await act(async () => { tree = TestRenderer.create(<NewArrivalsScreen api={api} onExit={() => {}} initialTab={initialTab} />); });
+  await act(async () => { tree = TestRenderer.create(<NewArrivalsScreen api={api} onExit={() => {}} initialTab={initialTab} storage={storage} />); });
   return tree;
 };
 // Exact label match: "Approve" must not find "Approve all 1".
@@ -288,15 +297,18 @@ const newItem = (i, over = {}) => ({
   availableSizes: ["7"], totalUnits: 2, stockKnown: true,
   product: { name: `Item ${i}`, stockPrice: 500, sizes: ["7", "8"] }, ...over,
 });
-// A paged fake server over `all`: 30 a page, cursor = last pid, filter echoed.
+// A paged fake server over `all`: 30 a page, cursor = last pid, by group
+// (an item's `grp`, default sneakers) — as the callable pages within a group.
+const grpOf = (i) => i.grp || "sneakers";
 const pagedApi = (all, over = {}) => fakeApi([], {
-  list: vi.fn(async (tab, { cursor = null, limit = 30, filter = null } = {}) => {
-    const pool = filter?.oneSize ? all.filter((i) => i.availableSizes.length === 1) : all;
+  list: vi.fn(async (tab, { cursor = null, limit = 30, group = null } = {}) => {
+    const pool = group ? all.filter((i) => grpOf(i) === group) : all;
     const from = cursor ? pool.findIndex((i) => i.pid === cursor) + 1 : 0;
     const page = pool.slice(from, from + limit);
     const more = from + limit < pool.length;
+    const groupCounts = group ? { sneakers: all.filter((i) => grpOf(i) === "sneakers").length, clothing: all.filter((i) => grpOf(i) === "clothing").length } : null;
     return { tab, items: page, total: pool.length, nextCursor: more ? page[page.length - 1].pid : null,
-      tabCounts: { new: all.length }, stats: null, modes: {}, matchingPids: pool.map((i) => i.pid) };
+      tabCounts: { new: all.length }, groupCounts, stats: null, modes: {}, matchingPids: pool.map((i) => i.pid) };
   }),
   ...over,
 });
@@ -308,9 +320,9 @@ describe("paging", () => {
     const api = pagedApi(all);
     const tree = await render(api, "new");
     expect(text(tree)).toContain("Showing 30 of 75");
-    expect(api.list).toHaveBeenCalledWith("new", { cursor: null, limit: 30, filter: null });
+    expect(api.list).toHaveBeenCalledWith("new", { cursor: null, limit: 30, group: "sneakers" });
     await act(async () => { button(tree, "Load more (30 of 75 loaded)").props.onClick(); });
-    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: P(29), limit: 30, filter: null });
+    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: P(29), limit: 30, group: "sneakers" });
     expect(text(tree)).toContain("Showing 60 of 75");
     await act(async () => { button(tree, "Load more (60 of 75 loaded)").props.onClick(); });
     expect(text(tree)).toContain("Showing 75 of 75");
@@ -325,36 +337,108 @@ describe("paging", () => {
     await act(async () => { button(tree, "Load more (30 of 45 loaded)").props.onClick(); });
     await act(async () => { tree.root.findAll((n) => n.type === "button" && label(n) === "Generate")[0].props.onClick(); });
     expect(api.generate).toHaveBeenCalledWith([P(0)]);
-    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 45, filter: null });
+    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 45, group: "sneakers" });
     expect(text(tree)).toContain("Showing 45 of 45");
   });
 });
 
-describe("New tab: filters, multi-select, Generate, Skip", () => {
-  it("'1 size only' sends the filter; Select all picks every match across pages; Skip selected sends them all", async () => {
-    const all = Array.from({ length: 40 }, (_, i) => newItem(i, { availableSizes: i % 2 ? ["7", "8"] : ["7"] }));
-    const api = pagedApi(all);
+describe("New tab: the group switcher, multi-select, Generate, Skip", () => {
+  const mixed = () => [0, 1, 2, 3, 4].map((i) => newItem(i, { grp: i % 2 ? "clothing" : "sneakers" }));
+  const sw = (tree) => testid(tree, "group-switcher")[0];
+  const swName = (tree) => text({ toJSON: () => testid(tree, "group-name")[0].children });
+  const arrow = (tree, l) => tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === l)[0];
+
+  it("no filter chips: ONE switcher bar, default Sneakers with its count", async () => {
+    const api = pagedApi(mixed());
     const tree = await render(api, "new");
-    await act(async () => { button(tree, "1 size only").props.onClick(); });
-    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 30, filter: { oneSize: true } });
-    expect(text(tree)).toContain("Showing 20 of 20");
-    await act(async () => { button(tree, "Select all 20").props.onClick(); });
-    await act(async () => { button(tree, "Skip selected (20)").props.onClick(); });
-    expect(api.skip).toHaveBeenCalledTimes(1);
-    expect(api.skip.mock.calls[0][0]).toHaveLength(20);
-    expect(api.skip.mock.calls[0][0].every((p) => Number(p.slice(-5)) % 2 === 0)).toBe(true);
-    expect(text(tree)).toContain("20 skipped");
+    expect(testid(tree, "filters")).toHaveLength(0);
+    for (const l of ["1 size only", "No stock price", "Slides", "Two-piece"]) expect(button(tree, l)).toBeUndefined();
+    expect(testid(tree, "group-switcher")).toHaveLength(1);
+    expect(swName(tree)).toBe("Sneakers · 3");
+    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 30, group: "sneakers" });
+    expect(text(tree)).toContain("Showing 3 of 3");
   });
 
-  it("category chips are exclusive; no stock price combines", async () => {
-    const api = pagedApi([newItem(0)]);
+  it("arrows flip groups; the arrow with nowhere further to go is dimmed and disabled; the group is remembered", async () => {
+    const storage = memStorage();
+    const api = pagedApi(mixed());
+    const tree = await render(api, "new", storage);
+    expect(arrow(tree, "Previous group").props.disabled).toBe(true);
+    expect(arrow(tree, "Previous group").props.style.opacity).toBeLessThan(1);
+    expect(arrow(tree, "Next group").props.disabled).toBe(false);
+    expect(arrow(tree, "Next group").props.style.opacity).toBe(1);
+    await act(async () => { arrow(tree, "Next group").props.onClick(); });
+    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 30, group: "clothing" });
+    expect(swName(tree)).toBe("Clothing · 2");
+    expect(storage.map.get("newArrivals.group")).toBe("clothing");
+    expect(arrow(tree, "Next group").props.disabled).toBe(true);
+    expect(arrow(tree, "Previous group").props.disabled).toBe(false);
+    const calls = api.list.mock.calls.length;
+    await act(async () => { arrow(tree, "Next group").props.onClick(); }); // at the end: nothing
+    expect(api.list.mock.calls.length).toBe(calls);
+    await act(async () => { arrow(tree, "Previous group").props.onClick(); });
+    expect(swName(tree)).toBe("Sneakers · 3");
+    expect(storage.map.get("newArrivals.group")).toBe("sneakers");
+  });
+
+  it("a horizontal swipe on the bar flips: left → next, right → previous; a short drag does nothing", async () => {
+    const api = pagedApi(mixed());
     const tree = await render(api, "new");
-    await act(async () => { button(tree, "Slides").props.onClick(); });
-    await act(async () => { button(tree, "Two-piece").props.onClick(); });
-    await act(async () => { button(tree, "No stock price").props.onClick(); });
-    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: null, limit: 30, filter: { cls: "twopiece", noStockPrice: true } });
-    expect(view.toggleFilter({ cls: "sneakers" }, "sneakers")).toEqual({});
-    expect(view.FILTER_CHIPS.map((c) => c.label)).toEqual(["1 size only", "Sneakers", "Slides", "Clothing", "Two-piece", "No stock price"]);
+    const swipe = async (x0, x1) => act(async () => {
+      sw(tree).props.onTouchStart({ touches: [{ clientX: x0 }] });
+      sw(tree).props.onTouchEnd({ changedTouches: [{ clientX: x1 }] });
+    });
+    await swipe(200, 180);
+    expect(swName(tree)).toBe("Sneakers · 3");
+    await swipe(200, 100);
+    expect(swName(tree)).toBe("Clothing · 2");
+    await swipe(100, 200);
+    expect(swName(tree)).toBe("Sneakers · 3");
+    await swipe(100, 200); // already first: stays
+    expect(swName(tree)).toBe("Sneakers · 3");
+  });
+
+  it("the remembered group opens; junk or a throwing storage falls back to Sneakers", async () => {
+    let tree = await render(pagedApi(mixed()), "new", memStorage({ "newArrivals.group": "clothing" }));
+    expect(swName(tree)).toBe("Clothing · 2");
+    tree = await render(pagedApi(mixed()), "new", memStorage({ "newArrivals.group": "slides" }));
+    expect(swName(tree)).toBe("Sneakers · 3");
+    const broken = memStorage({}, { throwOn: true });
+    tree = await render(pagedApi(mixed()), "new", broken);
+    expect(swName(tree)).toBe("Sneakers · 3");
+    await act(async () => { tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Next group")[0].props.onClick(); });
+    expect(swName(tree)).toBe("Clothing · 2"); // flips even though it cannot be remembered
+    expect(view.rememberedGroup(null)).toBe("sneakers");
+    expect(view.stepGroup("sneakers", -1)).toBeNull();
+    expect(view.stepGroup("sneakers", 1)).toBe("clothing");
+    expect(view.GROUPS.map((g) => g.label)).toEqual(["Sneakers", "Clothing"]);
+  });
+
+  it("pages 30 at a time WITHIN the group; Select all + Skip selected act on the whole group only", async () => {
+    const all = Array.from({ length: 80 }, (_, i) => newItem(i, { grp: i < 45 ? "sneakers" : "clothing" }));
+    const api = pagedApi(all);
+    const tree = await render(api, "new");
+    expect(swName(tree)).toBe("Sneakers · 45");
+    expect(text(tree)).toContain("Showing 30 of 45");
+    await act(async () => { button(tree, "Load more (30 of 45 loaded)").props.onClick(); });
+    expect(api.list).toHaveBeenLastCalledWith("new", { cursor: P(29), limit: 30, group: "sneakers" });
+    expect(text(tree)).toContain("Showing 45 of 45");
+    await act(async () => { button(tree, "Select all 45").props.onClick(); });
+    await act(async () => { button(tree, "Skip selected (45)").props.onClick(); });
+    expect(api.skip).toHaveBeenCalledTimes(1);
+    expect(api.skip.mock.calls[0][0]).toEqual(all.slice(0, 45).map((i) => i.pid));
+  });
+
+  it("Ready and Rejected are grouped too; Done is not", async () => {
+    const api = pagedApi([ready()]);
+    let tree = await render(api, "ready");
+    expect(testid(tree, "group-switcher")).toHaveLength(1);
+    expect(api.list).toHaveBeenLastCalledWith("ready", { cursor: null, limit: 30, group: "sneakers" });
+    tree = await render(api, "rejected");
+    expect(testid(tree, "group-switcher")).toHaveLength(1);
+    tree = await render(api, "done");
+    expect(testid(tree, "group-switcher")).toHaveLength(0);
+    expect(api.list).toHaveBeenLastCalledWith("done", { cursor: null, limit: 30, group: null });
   });
 
   it("Select all is selection-aware: a checked item + Generate selected", async () => {

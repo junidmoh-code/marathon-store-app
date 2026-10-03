@@ -223,6 +223,27 @@ function normalizeFilter(f) {
   return Object.keys(out).length ? out : null;
 }
 
+// ── THE CARD'S TWO GROUPS (owner, 3 Oct) ─────────────────────────────────────
+// The New / Ready / Rejected lists are split into exactly TWO groups, flipped
+// with the switcher bar:
+//   sneakers = all footwear (sneakers, slides, sandals, boots, …): a categoryKey
+//              in FOOTWEAR_KEYS, or — with no known categoryKey — the legacy
+//              category "Footwear"
+//   clothing = everything else (garments, tracksuits/sets, accessories, caps,
+//              bags, perfume) AND anything uncategorised: an item goes to
+//              Sneakers only when it is CLEARLY footwear.
+const GROUPS = Object.freeze(["sneakers", "clothing"]);
+const GROUP_TABS = Object.freeze(["new", "ready", "rejected"]);
+const KNOWN_KEYS = new Set([...FOOTWEAR_KEYS, ...TWOPIECE_KEYS, ...SINGLE_KEYS]);
+/** "sneakers" | "clothing" from a product's { categoryKey, category }. Pure. */
+function groupOf(p) {
+  const k = String((p && p.categoryKey) || "").trim();
+  if (FOOTWEAR_KEYS.includes(k)) return "sneakers";
+  if (KNOWN_KEYS.has(k)) return "clothing";
+  return p && p.category === "Footwear" ? "sneakers" : "clothing";
+}
+const normalizeGroup = (g) => (GROUPS.includes(g) ? g : null);
+
 /**
  * Sizes in stock and units, for ONE product, from { loc: { sizeKey: cell } }
  * read per pid (stock/{loc}/{pid}, keyed — never the /stock node).
@@ -320,6 +341,6 @@ module.exports = {
   enqueueDecision, buildItem, moveMutator, moved, indexMove, indexRepair,
   listLimit, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, productSummary,
   FOOTWEAR_KEYS, TWOPIECE_KEYS, SINGLE_KEYS, SLIDE_KEYS, CLASSES, CLASS_OF,
-  FILTER_CLASSES, filterClassOf, normalizeFilter, stockSummary, matchesFilter,
+  FILTER_CLASSES, filterClassOf, normalizeFilter, GROUPS, GROUP_TABS, groupOf, normalizeGroup, stockSummary, matchesFilter,
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
 };

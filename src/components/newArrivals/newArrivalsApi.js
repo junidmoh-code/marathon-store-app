@@ -9,9 +9,10 @@ import { saveMissingPrice } from "../admin/missingPriceSave";
 const call = (name) => async (data) => (await httpsCallable(functions, name)(data)).data;
 
 export const newArrivalsApi = {
-  // One page of a tab: { items, total, nextCursor, tabCounts, stats, modes, matchingPids? }.
-  list: (tab, { cursor = null, limit = 30, filter = null } = {}) =>
-    call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(filter ? { filter } : {}) }),
+  // One page of a tab, within one group (Sneakers / Clothing) on New, Ready
+  // and Rejected: { items, total, nextCursor, tabCounts, groupCounts, stats, modes, matchingPids? }.
+  list: (tab, { cursor = null, limit = 30, group = null } = {}) =>
+    call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(group ? { group } : {}) }),
   approve: (pids, { anyway = false } = {}) => call("newArrivalsApprove")({ pids, ...(anyway ? { anyway: true } : {}) }),
   approveAll: () => call("newArrivalsApprove")({ all: true }),
   retry: (pid) => call("newArrivalsRetry")({ pid }),
