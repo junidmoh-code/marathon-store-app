@@ -18,18 +18,32 @@
 //   ready                      → Ready     (a generated photo passed the checker)
 //   rejected                   → Rejected  (reason in plain words; Retry = fresh generation)
 //   approved, chaining, done   → Done      (Junid tapped Approve; where it went, and when)
+//   skipped                    → Skipped   (Junid: "don't advertise" — never generated,
+//                                            posted or published; only Restore brings it back)
+//
+// CALIBRATION (owner, 3 Oct; contract ~/.marathon-group-poster/work/calibration-contract.md):
+// nothing is generated automatically. Junid taps Generate on the card, which
+// sets items/{pid}.generateRequest; the poster takes it, generates ONCE and
+// puts the result in Ready with the checker's verdict as a LABEL only. Every
+// action Junid takes is logged to new_arrivals/decisions/{push} by the
+// callables here (decisionRecord), with a snapshot of the generation it was
+// taken on.
 "use strict";
+
+const { availableUnits, stockSizeKey, ONLINE_EXCLUDED_LOCATIONS } = require("../lib/social-select.cjs");
 
 const ROOT = "new_arrivals";
 const ITEMS = `${ROOT}/items`;
 const BY_STATUS = `${ROOT}/by_status`;
 
-const STATUSES = Object.freeze(["new", "generating", "ready", "rejected", "approved", "chaining", "done"]);
+const DECISIONS = `${ROOT}/decisions`;
+
+const STATUSES = Object.freeze(["new", "generating", "ready", "rejected", "approved", "chaining", "done", "skipped"]);
 const TAB_OF = Object.freeze({
   new: "new", generating: "new", ready: "ready", rejected: "rejected",
-  approved: "done", chaining: "done", done: "done",
+  approved: "done", chaining: "done", done: "done", skipped: "skipped",
 });
-const TABS = Object.freeze(["new", "ready", "rejected", "done"]);
+const TABS = Object.freeze(["new", "ready", "rejected", "done", "skipped"]);
 const STATUSES_IN_TAB = Object.freeze(TABS.reduce((acc, t) => {
   acc[t] = STATUSES.filter((s) => TAB_OF[s] === t);
   return acc;
@@ -132,9 +146,9 @@ function indexRepair(pid, listedUnder, item) {
   return indexMove(pid, listedUnder, item.status, item.enqueuedAt);
 }
 
-// The Done tab grows for ever; its reads are bounded to the most recent.
-const LIST_LIMIT_DEFAULT = 60;
-const LIST_LIMIT_MAX = 200;
+// One page of a tab. The card loads 30 at a time ("Load more" for the next).
+const LIST_LIMIT_DEFAULT = 30;
+const LIST_LIMIT_MAX = 100;
 function listLimit(n) {
   const v = Math.floor(Number(n));
   if (!Number.isFinite(v) || v <= 0) return LIST_LIMIT_DEFAULT;
@@ -160,9 +174,148 @@ function productSummary(p) {
   };
 }
 
+// ── CLASSES ──────────────────────────────────────────────────────────────────
+// Mirror of the poster's src/plates.mjs key lists (kindFor). The plate class
+// is what calibration, agreement % and modes are kept per.
+const FOOTWEAR_KEYS = Object.freeze(["sneakers", "running-shoes", "boots", "soccer-boots", "slides", "loafers", "kids-shoes", "designer-shoes", "sandals"]);
+const TWOPIECE_KEYS = Object.freeze(["tracksuits"]);
+const SINGLE_KEYS = Object.freeze(["t-shirts", "golf-t-shirts", "hoodies", "sweaters", "jackets", "pants", "jeans", "shorts",
+  "cargo-pants", "basketball-vests", "baseball-shirts", "soccer-jerseys", "dresses", "underwear"]);
+const CLASSES = Object.freeze(["footwear", "single", "twopiece"]);
+
+/** "footwear" | "single" | "twopiece" | null, from a categoryKey. Pure. */
+function CLASS_OF(categoryKey) {
+  const k = String(categoryKey || "").trim();
+  if (!k) return null;
+  if (FOOTWEAR_KEYS.includes(k)) return "footwear";
+  if (TWOPIECE_KEYS.includes(k)) return "twopiece";
+  if (SINGLE_KEYS.includes(k)) return "single";
+  return null;
+}
+
+// ── THE NEW TAB'S CATEGORY FILTER ────────────────────────────────────────────
+// Junid's four chips, mapped onto the plate classes:
+//   sneakers  = every footwear key EXCEPT slides and sandals (running shoes,
+//               boots, soccer boots, loafers, kids' and designer shoes too —
+//               they are all shot on the footwear plate as "a shoe")
+//   slides    = slides + sandals
+//   clothing  = the single-garment class (t-shirts … underwear)
+//   twopiece  = the two-piece class (tracksuits)
+// A key in none of the lists matches no chip (it still shows unfiltered).
+const SLIDE_KEYS = Object.freeze(["slides", "sandals"]);
+const FILTER_CLASSES = Object.freeze(["sneakers", "slides", "clothing", "twopiece"]);
+function filterClassOf(categoryKey) {
+  const k = String(categoryKey || "").trim();
+  const cls = CLASS_OF(k);
+  if (cls === "footwear") return SLIDE_KEYS.includes(k) ? "slides" : "sneakers";
+  if (cls === "single") return "clothing";
+  if (cls === "twopiece") return "twopiece";
+  return null;
+}
+
+/** The filter the card sent, cleaned; null when it filters nothing. Pure. */
+function normalizeFilter(f) {
+  if (!f || typeof f !== "object") return null;
+  const out = {};
+  if (f.oneSize === true) out.oneSize = true;
+  if (f.noStockPrice === true) out.noStockPrice = true;
+  if (FILTER_CLASSES.includes(f.cls)) out.cls = f.cls;
+  return Object.keys(out).length ? out : null;
+}
+
+/**
+ * Sizes in stock and units, for ONE product, from { loc: { sizeKey: cell } }
+ * read per pid (stock/{loc}/{pid}, keyed — never the /stock node).
+ *
+ * Counted exactly as social-select availableUnits counts (the Shopify push's
+ * rule): only the record's own sizes, and never the ONLINE_EXCLUDED_LOCATIONS
+ * (in_transit, and the untrusted hub3 / marathon-pine). totalUnits IS
+ * availableUnits — one answer, not a second source of truth.
+ * stockKnown: any counted location holds a cell node for this product.
+ */
+function stockSummary(sizes, stockByLocation) {
+  const list = (Array.isArray(sizes) ? sizes : []).map(String);
+  const perKey = {};
+  for (const s of list) perKey[stockSizeKey(s)] = 0;
+  let stockKnown = false;
+  for (const [loc, cells] of Object.entries(stockByLocation || {})) {
+    if (ONLINE_EXCLUDED_LOCATIONS.has(loc)) continue;
+    if (!cells || typeof cells !== "object") continue;
+    stockKnown = true;
+    for (const [key, cell] of Object.entries(cells)) {
+      if (!(key in perKey)) continue;
+      const qty = cell !== null && typeof cell === "object" ? cell.qty : cell;
+      perKey[key] += Math.max(0, Number(qty) || 0);
+    }
+  }
+  const seen = new Set();
+  const availableSizes = list.filter((s) => {
+    const k = stockSizeKey(s);
+    if (seen.has(k) || !(perKey[k] > 0)) return false;
+    seen.add(k);
+    return true;
+  });
+  return { availableSizes, totalUnits: availableUnits(stockByLocation, list), stockKnown };
+}
+
+/**
+ * Does one item (product summary + stock summary) pass the New tab filter? Pure.
+ * oneSize: exactly ONE size with stock > 0; when no stock is known for the
+ * product at all, exactly one catalogue size.
+ */
+function matchesFilter(summary, stock, filter) {
+  const f = normalizeFilter(filter);
+  if (!f) return true;
+  const p = summary || {};
+  if (f.noStockPrice && Number(p.stockPrice) > 0) return false;
+  if (f.cls && filterClassOf(p.categoryKey) !== f.cls) return false;
+  if (f.oneSize) {
+    const n = stock && stock.stockKnown ? (stock.availableSizes || []).length : (p.sizes || []).length;
+    if (n !== 1) return false;
+  }
+  return true;
+}
+
+// ── DECISIONS ────────────────────────────────────────────────────────────────
+const REJECT_CHIPS = Object.freeze(["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"]);
+const DECISION_ACTIONS = Object.freeze(["approve", "approve-anyway", "regenerate", "reject", "skip", "restore", "generate"]);
+
+/**
+ * The ledger row for one of Junid's actions (decisions/{push}). `item` is the
+ * item as it was when he acted; the generation snapshot is taken from it, so
+ * the row records what he actually looked at. Never carries undefined. Pure.
+ */
+function decisionRecord({ pid, at, by, action, reason = null, item, categoryKey = null }) {
+  if (!DECISION_ACTIONS.includes(action)) throw new Error(`unknown decision action ${action}`);
+  const key = (item && item.categoryKey) || categoryKey || null;
+  const genId = (item && item.currentGen) || null;
+  const gen = genId && item.generations && item.generations[genId] ? item.generations[genId] : null;
+  return {
+    pid, at, by: by || "unknown", action,
+    reason: reason || null,
+    class: CLASS_OF(key),
+    categoryKey: key ? String(key) : null,
+    genId: gen ? genId : null,
+    gen: gen ? JSON.parse(JSON.stringify(gen)) : null,
+  };
+}
+
+// RTDB's key order (integer-like keys first, numerically; then strings).
+// Mirror of the fake's rtdbKeyCmp — the cursor walks exactly this order.
+function keyCmp(a, b) {
+  const na = /^\d+$/.test(a), nb = /^\d+$/.test(b);
+  if (na && nb) return Number(a) - Number(b);
+  if (na) return -1;
+  if (nb) return 1;
+  return a < b ? -1 : a > b ? 1 : 0;
+}
+
 module.exports = {
-  ROOT, ITEMS, BY_STATUS, STATUSES, TABS, TAB_OF, STATUSES_IN_TAB,
+  ROOT, ITEMS, BY_STATUS, DECISIONS, STATUSES, TABS, TAB_OF, STATUSES_IN_TAB,
   ENQUEUE_WINDOW_MS, ENQUEUE_SKEW_MS, PID_RE,
   enqueueDecision, buildItem, moveMutator, moved, indexMove, indexRepair,
   listLimit, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, productSummary,
+  FOOTWEAR_KEYS, TWOPIECE_KEYS, SINGLE_KEYS, SLIDE_KEYS, CLASSES, CLASS_OF,
+  FILTER_CLASSES, filterClassOf, normalizeFilter, stockSummary, matchesFilter,
+  REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
 };
