@@ -5652,7 +5652,7 @@ exports.insightsRollupSweep = onSchedule(
 // upload form's own createdBy stamp); the card reads and writes only through
 // the three callables, so /new_arrivals needs no client rule. Contract and
 // statuses: functions/newArrivals/core.cjs and docs/NEW-ARRIVALS.md.
-//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject,functions:newArrivalsSelect,functions:newArrivalsLove
+//   firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry,functions:newArrivalsGenerate,functions:newArrivalsSkip,functions:newArrivalsRestore,functions:newArrivalsReject,functions:newArrivalsSelect,functions:newArrivalsLove,functions:newArrivalsHow,functions:newArrivalsMethod
 {
   const na = require("./newArrivals/newArrivals.js");
   exports.newArrivalsEnqueue = na.newArrivalsEnqueue;
@@ -5665,4 +5665,6 @@ exports.insightsRollupSweep = onSchedule(
   exports.newArrivalsReject = na.newArrivalsReject;
   exports.newArrivalsSelect = na.newArrivalsSelect;
   exports.newArrivalsLove = na.newArrivalsLove;
+  exports.newArrivalsHow = na.newArrivalsHow;
+  exports.newArrivalsMethod = na.newArrivalsMethod;
 }

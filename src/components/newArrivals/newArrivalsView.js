@@ -182,6 +182,28 @@ export function genCode(gen) {
   const c = typeof gen?.code === "string" ? gen.code.trim() : "";
   return c || null;
 }
+// HOW GEMINI DID IT (3 Oct): every coded generation has a toggle that loads,
+// on open only, Gemini's own summary of its thinking (verbatim) and its drafts
+// (functions/newArrivals/core.cjs howView). The label is shown with it, always.
+export const THOUGHTS_LABEL = "Gemini's own account — not proof";
+export const HOW_NONE_TEXT = "Nothing was recorded for this photo.";
+/** Does this generation carry the "How Gemini did it" toggle? Pure. */
+export const canHow = (gen) => genCode(gen) !== null;
+
+// THE METHOD (3 Oct): "split" = Gemini makes the product only, code places it
+// on the real plate; "full" = Gemini makes the whole photo (the old method).
+// The poster's default is its config; the card only sets the per-item override.
+/** Is this item set to "Full Gemini"? Pure. */
+export const isFullGemini = (item) => item?.method === "full";
+/** How one photo was made, as a small label, or null. Pure. */
+export function methodMadeText(gen) {
+  if (gen?.method === "split") return "made: product by Gemini, placed by code";
+  if (gen?.method === "full") return "made: full Gemini";
+  return null;
+}
+/** The tabs whose cards carry the "Full Gemini" control. */
+export const METHOD_TABS = ["new"];
+
 /** The tabs whose generations carry the ❤ Love toggle. */
 export const LOVE_TABS = ["new", "done"];
 /** Can Junid ❤ this generation here? Pure. */

@@ -16,7 +16,11 @@
 // (metered, or "~R… (estimated)" — never unknown); any of them can be made the
 // main photo with "Use this one" (logged as a pick). LEARNING LOG: each
 // generation's permanent code (G-0042) is printed under its image, and every
-// generation on New and Done has a ❤ Love toggle (logged too).
+// generation on New and Done has a ❤ Love toggle (logged too). Every coded
+// generation has a "How Gemini did it" toggle: on open (only) it loads Gemini's
+// own summary, verbatim, labelled "Gemini's own account — not proof", and its
+// drafts. Each New card has a "Full Gemini" switch (the per-item method; off =
+// the poster's default) and says how its main photo was made.
 //
 // PRICES: every New card has "Stock price (R)" and "Retail
 // price (R)", pre-filled, one Save — through the admin price save
@@ -45,6 +49,7 @@ import {
   shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, verdictText, stockText, agreementText, rejectRateText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
   normalizeTab, photoBucket, pickEnabled, rejectionLabel, hasPhoto,
+  canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, isFullGemini, methodMadeText, METHOD_TABS, isGenerating,
 } from "./newArrivalsView";
 
 const REFRESH_MS = 30_000;
@@ -56,6 +61,57 @@ const BULK_CHUNK = 200;     // the callables take at most 300 pids a call
 function GenCode({ gen, small = false }) {
   const code = genCode(gen);
   return code ? <div data-testid="gen-code" style={{ color: "#dfe7ff", fontSize: small ? 9 : 11, fontWeight: 700, marginTop: 2, textAlign: "center", letterSpacing: 0.3 }}>{code}</div> : null;
+}
+
+// "How Gemini did it" — a small toggle under every coded generation. Nothing
+// is loaded until it is opened (HowPanel).
+function HowToggle({ gen, open, onToggle, small = false }) {
+  return (
+    <button data-testid="how-toggle" aria-expanded={open} onClick={() => onToggle(gen.genId)}
+      style={{ ...bGray, width: small ? "100%" : undefined, padding: small ? "3px 4px" : "4px 10px", fontSize: small ? 9 : 11, marginTop: 3 }}>
+      {open ? "Hide how Gemini did it" : "How Gemini did it"}
+    </button>
+  );
+}
+
+// One generation's genlog, loaded ONCE when opened (loadHow caches per
+// generation): the label first, prominently — it is Gemini's own account, not
+// proof — then its summary verbatim, then the drafts it made on the way.
+function HowPanel({ pid, gen, loadHow }) {
+  const [state, setState] = useState({ data: null, error: null });
+  useEffect(() => {
+    let live = true;
+    loadHow(pid, gen.genId).then((data) => { if (live) setState({ data, error: null }); }, (e) => { if (live) setState({ data: null, error: e?.message || String(e) }); });
+    return () => { live = false; };
+  }, [pid, gen.genId, loadHow]);
+  const { data, error } = state;
+  const drafts = data && Array.isArray(data.drafts) ? data.drafts.filter((d) => d?.url) : [];
+  return (
+    <div data-testid="how-panel" style={{ ...GLASS, padding: 10, marginTop: 8, fontSize: 12 }}>
+      <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>How Gemini did it · {genCode(gen)}</div>
+      {!data && !error && <div style={{ color: GRAY }}>Loading…</div>}
+      {error && <div style={{ color: RED }}>Couldn't load: {error}</div>}
+      {data?.none && <div data-testid="how-none" style={{ color: GRAY }}>{HOW_NONE_TEXT}</div>}
+      {data && !data.none && (
+        <>
+          <div data-testid="how-label" style={{ color: AMBER, fontWeight: 800, fontSize: 13, marginBottom: 6 }}>{data.thoughtsLabel || THOUGHTS_LABEL}</div>
+          {data.thoughts
+            ? <div data-testid="how-thoughts" style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflowY: "auto", color: "#dfe7ff", lineHeight: 1.4, background: "rgba(0,0,0,.25)", borderRadius: 8, padding: 8 }}>{data.thoughts}</div>
+            : <div style={{ color: GRAY }}>No summary was recorded.</div>}
+          {drafts.length > 0 && (
+            <div data-testid="how-drafts" style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 8 }}>
+              {drafts.map((d, i) => (
+                <a key={d.url} href={d.url} target="_blank" rel="noreferrer">
+                  <img src={d.url} alt={`Draft ${i + 1}`} loading="lazy" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, display: "block", background: "#111" }} />
+                </a>
+              ))}
+            </div>
+          )}
+          {(data.method || data.model) && <div style={{ color: GRAY, fontSize: 10, marginTop: 6 }}>{[methodMadeText(data), data.model].filter(Boolean).join(" · ")}</div>}
+        </>
+      )}
+    </div>
+  );
 }
 
 // ❤ Love — separate from Approve; tapping a loved generation un-loves it.
@@ -115,8 +171,12 @@ function PriceFields({ item, busy, onSavePrices, needNote }) {
 // label. On New every thumbnail (checker-failed ones and re-checks too) has
 // "Use this one", which makes it the main photo — the ONE Approve then uses
 // it. While a new photo is being generated, Use this one waits ("generating…").
-function Generations({ item, tab, stats, busy, onPick, onLove = null }) {
+function Generations({ item, tab, stats, busy, onPick, onLove = null, loadHow = null }) {
   const gens = generationsOf(item);
+  // The one generation whose "How Gemini did it" is open on this card (or null).
+  const [howOpen, setHowOpen] = useState(null);
+  const toggleHow = (genId) => setHowOpen((cur) => (cur === genId ? null : genId));
+  const howGen = howOpen ? gens.find((g) => g.genId === howOpen) : null;
   const mainId = currentGenId(item);
   const main = gens.find((g) => g.genId === mainId) || null;
   const mainUrl = main?.url || item.generatedUrl || (tab === "done" ? item.product?.photoUrl : null);
@@ -130,9 +190,11 @@ function Generations({ item, tab, stats, busy, onPick, onLove = null }) {
         <Photo url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
         {(mainUrl || tab !== "new" || gens.length > 0 || generatingFirst) && <Photo url={mainUrl} label={main ? `Generated${earlier.length ? " · Main photo" : ""} · ${costText(main, stats)}` : generatingFirst ? "Generating…" : "Generated"}>
           {main && <GenCode gen={main} />}
+          {main && loadHow && canHow(main) && <div style={{ textAlign: "center" }}><HowToggle gen={main} open={howOpen === main.genId} onToggle={toggleHow} /></div>}
           {main && onLove && canLove(tab, main) && <div style={{ textAlign: "center" }}><LoveButton item={item} gen={main} busy={busy} onLove={onLove} /></div>}
         </Photo>}
       </div>
+      {howGen && howGen === main && <HowPanel pid={item.pid} gen={howGen} loadHow={loadHow} />}
       {earlier.length > 0 && (
         <div data-testid="earlier-generations" style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 8 }}>
           {earlier.map((g) => (
@@ -141,6 +203,7 @@ function Generations({ item, tab, stats, busy, onPick, onLove = null }) {
                 <img src={g.url} alt={`Earlier attempt ${whenText(g.at)}`} loading="lazy" style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, display: "block", background: "#111" }} />
               </a>
               <GenCode gen={g} small />
+              {loadHow && canHow(g) && <HowToggle gen={g} open={howOpen === g.genId} onToggle={toggleHow} small />}
               <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g, stats)}{g.verdict ? ` · ${g.verdict.pass ? "pass" : "failed"}` : ""}</div>
               {onLove && canLove(tab, g) && <LoveButton item={item} gen={g} busy={busy} onLove={onLove} small />}
               {onPick && canPick(item, g) && (
@@ -152,6 +215,7 @@ function Generations({ item, tab, stats, busy, onPick, onLove = null }) {
           ))}
         </div>
       )}
+      {howGen && howGen !== main && <HowPanel pid={item.pid} gen={howGen} loadHow={loadHow} />}
       {gens.length > 0 && (
         <div data-testid="gen-total" style={{ color: GRAY, fontSize: 11, marginTop: 6 }}>
           {gens.length} {gens.length === 1 ? "generation" : "generations"}{total ? ` · ${total}` : ""}
@@ -170,6 +234,9 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
   const verdict = verdictText(item.verdict);
   const rejected = rejectionLabel(item);
   const dim = { opacity: busy ? 0.5 : 1 };
+  // How the main photo was made (the poster records it per generation).
+  const mainGenId = currentGenId(item);
+  const made = methodMadeText(mainGenId ? item.generations[mainGenId] : null);
   const chip = { ...bGray, padding: "6px 10px", fontSize: 12, ...dim };
   return (
     <div data-pid={item.pid} style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
@@ -179,7 +246,7 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
           Select
         </label>
       )}
-      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={tab === "new" ? h.onPick : null} onLove={h.onLove} />
+      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={tab === "new" ? h.onPick : null} onLove={h.onLove} loadHow={h.loadHow} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
       {shopifyNameLine(item) && (
         <div style={{ color: item.suggestedName ? BLUE_L : GRAY, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>
@@ -208,6 +275,18 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
         {acts.regenerate && <button disabled={busy} onClick={() => h.onRegenerate(item.pid)} style={{ ...bBlue, flex: 1, ...dim }}>Regenerate</button>}
         {acts.skip && <button disabled={busy} onClick={() => h.onSkip([item.pid])} style={{ ...bGray, flex: 1, ...dim }}>Skip — don't advertise</button>}
       </div>
+      {((METHOD_TABS.includes(tab) && h.onMethod) || made) && (
+        <div data-testid="method" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 11, color: GRAY }}>
+          {METHOD_TABS.includes(tab) && h.onMethod && (
+            <label title="Off = the poster's default method" style={{ display: "flex", alignItems: "center", gap: 5, color: "#dfe7ff", opacity: busy || isGenerating(item) ? 0.5 : 1 }}>
+              <input type="checkbox" aria-label="Full Gemini" checked={isFullGemini(item)} disabled={busy || isGenerating(item)}
+                onChange={() => h.onMethod(item.pid, isFullGemini(item) ? null : "full")} />
+              Full Gemini
+            </label>
+          )}
+          {made && <span data-testid="method-made">{made}</span>}
+        </div>
+      )}
       {acts.reject && (
         <div data-testid="reject-chips" style={{ marginTop: 8 }}>
           <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>Reject — tap the reason:</div>
@@ -404,6 +483,19 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     run(bulk((p) => api.restore(p), pids), (r) => `Skip undone — ${n(r, "restored")} back.`, "restored");
   };
 
+  // "How Gemini did it" — each generation's record is fetched at most once on
+  // this screen (a failed load is forgotten, so reopening retries).
+  const howCache = useRef(new Map());
+  const loadHow = useCallback((pid, genId) => {
+    const k = `${pid}/${genId}`;
+    let p = howCache.current.get(k);
+    if (!p) {
+      p = api.how(pid, genId).catch((e) => { howCache.current.delete(k); throw e; });
+      howCache.current.set(k, p);
+    }
+    return p;
+  }, [api]);
+
   const h = {
     // ONE Approve: the main / selected photo (the server logs approve-anyway when its verdict failed).
     onApprove: (pid) => run(() => api.approve([pid]), (r) => (n(r, "approved") ? "Approved — publishing has started. Its progress shows under Done." : "Nothing approved."), "approved"),
@@ -416,6 +508,11 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     onLove: api.love ? (pid, genId, loved) => run(() => api.love(pid, genId, loved),
       (r) => (r?.unchanged ? (loved ? "Already loved." : "Not loved.") : loved ? "Loved — remembered for the learning log." : "Love removed.")) : null,
     onSkip,
+    // "How Gemini did it": one generation's genlog, loaded once (cached per generation).
+    loadHow: api.how ? loadHow : null,
+    // The per-item method: "full", or null for the poster's default. A setting — never logged.
+    onMethod: api.method ? (pid, method) => run(() => api.method(pid, method),
+      (r) => (r?.unchanged ? "No change." : method === "full" ? "Full Gemini for this item — from its next photo." : "Back to the default method — from its next photo.")) : null,
   };
 
   // Approve all = every item ON THIS SCREEN whose photo the checker passed

@@ -960,3 +960,105 @@ describe("ONE PLACE TO GENERATE AND APPROVE (3 Oct night)", () => {
     expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
   });
 });
+
+describe("How Gemini did it + the per-item method (3 Oct)", () => {
+  const THOUGHTS = "First I isolated the shoe.\n\n  Then I kept the laces exactly.";
+  const HOW = { code: "G-0042", method: "split", thoughts: THOUGHTS, thoughtsLabel: "Gemini's own account — not proof",
+    drafts: [{ url: "https://x/d1.jpg" }, { url: "https://x/d2.jpg" }], model: "gemini-3-pro-image" };
+  const coded = (over = {}) => ready({
+    status: "ready", generatedUrl: "https://x/g2.jpg", currentGen: "g2",
+    generations: {
+      g1: GEN("g1", NOW - 2000, { code: "G-0041" }), // older: nothing recorded
+      g2: GEN("g2", NOW - 1000, { code: "G-0042", how: { code: "G-0042", draftCount: 2 }, method: "split" }),
+      g3: GEN("g3", NOW, {}), // no code → no toggle
+    }, ...over,
+  });
+  const howApi = (item = coded(), over = {}) => fakeApi([item], {
+    how: vi.fn(async (pid, genId) => (genId === "g2" ? HOW : { code: "G-0041", none: true })),
+    method: vi.fn(async (pid, method) => ({ ok: true, method })), ...over,
+  });
+  const toggles = (tree) => testid(tree, "how-toggle");
+
+  it("a toggle under every coded generation (main and thumbnails); nothing loads until opened", async () => {
+    const api = howApi();
+    const tree = await render(api);
+    expect(toggles(tree)).toHaveLength(2); // g2 (main), g1 — g3 has no code
+    expect(api.how).not.toHaveBeenCalled();
+    expect(testid(tree, "how-panel")).toHaveLength(0);
+  });
+
+  it("opening loads ONCE per generation; the label is prominent, the thoughts verbatim (pre-wrap, scrollable), drafts link to full size", async () => {
+    const api = howApi();
+    const tree = await render(api);
+    await act(async () => { toggles(tree)[0].props.onClick(); });
+    expect(api.how).toHaveBeenCalledTimes(1);
+    expect(api.how).toHaveBeenCalledWith("p1789999990000", "g2");
+    expect(text({ toJSON: () => testid(tree, "how-label")[0].children })).toBe("Gemini's own account — not proof");
+    const th = testid(tree, "how-thoughts")[0];
+    expect(th.props.children).toBe(THOUGHTS);
+    expect(th.props.style).toMatchObject({ whiteSpace: "pre-wrap", overflowY: "auto" });
+    expect(th.props.style.maxHeight).toBeGreaterThan(0);
+    const links = testid(tree, "how-drafts")[0].findAll((n) => n.type === "a").map((a) => a.props.href);
+    expect(links).toEqual(["https://x/d1.jpg", "https://x/d2.jpg"]);
+    const imgs = testid(tree, "how-drafts")[0].findAll((n) => n.type === "img").map((a) => a.props.src);
+    expect(imgs).toEqual(["https://x/d1.jpg", "https://x/d2.jpg"]);
+    // Close and reopen: no second call (cached per generation); a 30s refresh keeps it too.
+    await act(async () => { toggles(tree)[0].props.onClick(); });
+    expect(testid(tree, "how-panel")).toHaveLength(0);
+    await act(async () => { toggles(tree)[0].props.onClick(); });
+    expect(api.how).toHaveBeenCalledTimes(1);
+    expect(testid(tree, "how-thoughts")).toHaveLength(1);
+  });
+
+  it("an older generation says 'Nothing was recorded for this photo.'", async () => {
+    const api = howApi();
+    const tree = await render(api);
+    await act(async () => { toggles(tree)[1].props.onClick(); });
+    expect(api.how).toHaveBeenCalledWith("p1789999990000", "g1");
+    expect(text({ toJSON: () => testid(tree, "how-none")[0].children })).toBe("Nothing was recorded for this photo.");
+    expect(testid(tree, "how-label")).toHaveLength(0);
+  });
+
+  it("a failed load says so and is retried on reopen", async () => {
+    let n = 0;
+    const api = howApi(coded(), { how: vi.fn(async () => { n += 1; if (n === 1) throw new Error("offline"); return HOW; }) });
+    const tree = await render(api);
+    await act(async () => { toggles(tree)[0].props.onClick(); });
+    expect(text(tree)).toContain("Couldn't load: offline");
+    await act(async () => { toggles(tree)[0].props.onClick(); });
+    await act(async () => { toggles(tree)[0].props.onClick(); });
+    expect(api.how).toHaveBeenCalledTimes(2);
+    expect(testid(tree, "how-thoughts")).toHaveLength(1);
+  });
+
+  it("'Full Gemini' on each New card: checked from item.method; toggling calls the api (full / null); the main photo's method is labelled", async () => {
+    const api = howApi();
+    const tree = await render(api);
+    const box = () => tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")[0];
+    expect(box().props.checked).toBe(false);
+    expect(text({ toJSON: () => testid(tree, "method-made")[0].children })).toBe("made: product by Gemini, placed by code");
+    await act(async () => { box().props.onChange(); });
+    expect(api.method).toHaveBeenLastCalledWith("p1789999990000", "full");
+    expect(text(tree)).toContain("Full Gemini for this item");
+
+    const api2 = howApi(coded({ method: "full", generations: { g2: GEN("g2", NOW, { code: "G-0042", method: "full" }) } }));
+    const t2 = await render(api2);
+    const box2 = t2.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")[0];
+    expect(box2.props.checked).toBe(true);
+    expect(text({ toJSON: () => testid(t2, "method-made")[0].children })).toBe("made: full Gemini");
+    await act(async () => { box2.props.onChange(); });
+    expect(api2.method).toHaveBeenLastCalledWith("p1789999990000", null);
+    expect(api2.approve).not.toHaveBeenCalled();
+  });
+
+  it("the method switch waits while a photo is being generated, and is not on Done", async () => {
+    const tree = await render(howApi(coded({ status: "new", generateRequest: { at: NOW, by: "junid" } })));
+    expect(tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")[0].props.disabled).toBe(true);
+    const api = howApi(coded({ status: "done" }), { list: vi.fn(async () => ({ items: [coded({ status: "done" })], tabCounts: {} })) });
+    const t2 = await render(api, "done");
+    expect(t2.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")).toHaveLength(0);
+    expect(toggles(t2)).toHaveLength(2);
+    expect(view.methodMadeText({})).toBeNull();
+    expect(view.isFullGemini({ method: "split" })).toBe(false);
+  });
+});

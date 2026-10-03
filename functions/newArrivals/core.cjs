@@ -485,6 +485,52 @@ function cardItem(item) {
   return { ...item, generations };
 }
 
+// ── HOW GEMINI DID IT (3 Oct, learning log) ──────────────────────────────────
+// The poster keeps, per generation code, new_arrivals/genlog/{code}: Gemini's
+// own summary of its thinking (verbatim, "Gemini's own account — not proof")
+// and the drafts it made on the way. The card opens it on demand, one
+// generation at a time, through newArrivalsHow — never in the list.
+const GENLOG = `${ROOT}/genlog`;
+const THOUGHTS_LABEL = "Gemini's own account — not proof";
+// A code is a path key (genlog/{code}): the same safe charset as a generation id.
+const CODE_RE = GEN_ID_RE;
+
+/**
+ * What the card may see of one genlog record — ONLY code, method, thoughts,
+ * thoughtsLabel, drafts [{url}] and model; never promptText or anything else.
+ * { code, none: true } when nothing was recorded. Pure.
+ */
+function howView(code, rec) {
+  if (!rec || typeof rec !== "object") return { code, none: true };
+  const list = Array.isArray(rec.drafts) ? rec.drafts : Object.values(rec.drafts || {});
+  const drafts = list.filter((d) => d && typeof d === "object" && typeof d.url === "string" && d.url).map((d) => ({ url: d.url }));
+  const thoughts = typeof rec.thoughts === "string" ? rec.thoughts : null;
+  if (!thoughts && !drafts.length) return { code, none: true };
+  return {
+    code,
+    method: METHODS.includes(rec.method) ? rec.method : null,
+    thoughts,
+    thoughtsLabel: typeof rec.thoughtsLabel === "string" && rec.thoughtsLabel ? rec.thoughtsLabel : THOUGHTS_LABEL,
+    drafts,
+    model: typeof rec.model === "string" ? rec.model : null,
+  };
+}
+
+// ── PER-ITEM METHOD (3 Oct) ──────────────────────────────────────────────────
+// "split" = Gemini makes the product only, code places it on the real plate;
+// "full" = the old method, Gemini makes the whole photo. The poster's default
+// comes from its config; items/{pid}/method overrides it for one item (absent
+// = the default). A setting, not a decision: nothing is logged.
+const METHODS = Object.freeze(["full", "split"]);
+
+/** Why the method of `item` cannot be changed now, or null. Pure. */
+function methodRefusal(item) {
+  if (!item) return "not in the New Arrivals queue";
+  if (!SELECT_LANES.includes(item.status)) return `it is ${item.status}, not new, ready or rejected`;
+  if (item.generateRequest) return "a new photo is being generated — change it when it lands";
+  return null;
+}
+
 // RTDB's key order (integer-like keys first, numerically; then strings).
 // Mirror of the fake's rtdbKeyCmp — the cursor walks exactly this order.
 function keyCmp(a, b) {
@@ -513,4 +559,5 @@ module.exports = {
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
   SELECT_LANES, GEN_ID_RE, selectRefusal, selectFields,
   loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem,
+  GENLOG, THOUGHTS_LABEL, CODE_RE, howView, METHODS, methodRefusal,
 };
