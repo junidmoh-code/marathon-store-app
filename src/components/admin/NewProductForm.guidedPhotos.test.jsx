@@ -1,4 +1,4 @@
-// ─── FOOTWEAR CANNOT BE SAVED WITHOUT THE SHOE; ITS BOX IS OPTIONAL ─────────
+// ─── FOOTWEAR CANNOT BE SAVED WITHOUT THE SHOE AND ITS BOX ───────────────────
 // Owner spec 2026-10-02. The form half of the gate (App's addProductOnce
 // re-checks the same pure missingPhotoSteps):
 //   • footwear: two guided steps; Save stays disabled until BOTH are taken,
@@ -60,23 +60,22 @@ async function mount(props = {}) {
   return r;
 }
 
-describe("footwear: shoe required, box optional", () => {
+describe("footwear: shoe + box, both required", () => {
   it("renders the two guided steps in order", async () => {
     const r = await mount();
     expect(r.root.findAllByType(GuidedPhotoStep).map((s) => s.props.step.id)).toEqual(["shoe", "box"]);
   });
 
-  it("refuses to save with no photos, and says the shoe photo is needed", async () => {
+  it("refuses to save with no photos, and says both are needed", async () => {
     const r = await mount();
     expect(saveBtn(r).props.disabled).toBe(true);
-    expect(allText(r)).toMatch(/Still needed before saving: shoe photo/);
-    expect(allText(r)).not.toMatch(/box photo(?! \(optional)/i);
+    expect(allText(r)).toMatch(/Still needed before saving: shoe photo and box photo/);
   });
 
-  it("saves with the shoe and WITHOUT the box photo", async () => {
+  it("refuses to save with the shoe but WITHOUT the box photo", async () => {
     const r = await mount({ form: { ...shoeForm, photoBlob: {}, photoUrl: "data:x" } });
-    expect(saveBtn(r).props.disabled).toBe(false);
-    expect(allText(r)).not.toMatch(/Still needed/);
+    expect(saveBtn(r).props.disabled).toBe(true);
+    expect(allText(r)).toMatch(/Still needed before saving: box photo/);
   });
 
   it("allows the save once both are taken", async () => {
@@ -85,11 +84,11 @@ describe("footwear: shoe required, box optional", () => {
     expect(allText(r)).not.toMatch(/Still needed/);
   });
 
-  it("a blocked save paints the missing shoe step red, never the optional box", async () => {
-    const r = await mount({ form: { ...shoeForm, boxBlob: {} }, saveAttempted: true });
+  it("a blocked save paints the missing step red", async () => {
+    const r = await mount({ form: { ...shoeForm, photoBlob: {} }, saveAttempted: true });
     const [shoe, box] = r.root.findAllByType(GuidedPhotoStep);
-    expect(shoe.props.invalid).toBe(true);
-    expect(box.props.invalid).toBe(false);
+    expect(shoe.props.invalid).toBe(false);
+    expect(box.props.invalid).toBe(true);
   });
 
   it("a step's capture goes to onGuidedPhoto with its step", async () => {

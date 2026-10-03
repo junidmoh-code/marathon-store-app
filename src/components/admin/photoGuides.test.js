@@ -1,11 +1,10 @@
 // ─── GUIDED PRODUCT PHOTOS — who gets which guide, and what blocks the save ──
 // Owner spec 2026-10-02. Pinned here, pure:
-//   • footwear (by CATALOGUE KEY) → shoe (REQUIRED) + box (OPTIONAL — Junid 2 Oct:
-//     a same-brand library box is used when there is none)
+//   • footwear (by CATALOGUE KEY) → shoe + box, both REQUIRED
 //   • clothing → one OPTIONAL garment step
 //   • everything else → no guide at all (the form is unchanged)
 //   • the copy says which way the toe points — the direction is the point
-//   • the footwear form cannot be saved without the shoe photo; the box never blocks
+//   • the footwear form cannot be saved without the box photo
 
 import { describe, it, expect } from "vitest";
 import {
@@ -15,11 +14,11 @@ import {
 import { FOOTWEAR_CATEGORY_KEYS } from "../../utils/footwearLine.js";
 
 describe("guideFor", () => {
-  it.each(FOOTWEAR_CATEGORY_KEYS)("footwear key %s → shoe (required) then box (optional)", (key) => {
+  it.each(FOOTWEAR_CATEGORY_KEYS)("footwear key %s → shoe then box, both required", (key) => {
     const g = guideFor({ categoryKey: key });
     expect(g.kind).toBe("footwear");
     expect(g.steps.map((s) => s.id)).toEqual(["shoe", "box"]);
-    expect(g.steps.map((s) => s.required)).toEqual([true, false]);
+    expect(g.steps.every((s) => s.required)).toBe(true);
   });
 
   it("an explicit isFootwear flag also gets the footwear guide", () => {
@@ -54,7 +53,6 @@ describe("the copy", () => {
   });
   it("the box step asks for the shoe's own box, front panel", () => {
     expect(BOX_STEP.instruction).toMatch(/own box/);
-    expect(BOX_STEP.required).toBe(false);
     expect(BOX_STEP.instruction).toMatch(/front panel/);
   });
   it("the garment step asks for the front, on a hanger, whole garment", () => {
@@ -64,13 +62,13 @@ describe("the copy", () => {
   });
 });
 
-describe("missingPhotoSteps — the footwear form needs the shoe; the box is optional", () => {
+describe("missingPhotoSteps — the footwear form refuses to save without both", () => {
   const shoes = guideFor({ categoryKey: "sneakers" });
-  it("nothing taken → only the shoe is missing", () => {
-    expect(missingPhotoSteps(shoes, {}).map((s) => s.id)).toEqual(["shoe"]);
+  it("nothing taken → both missing", () => {
+    expect(missingPhotoSteps(shoes, {}).map((s) => s.id)).toEqual(["shoe", "box"]);
   });
-  it("shoe taken, NO box → nothing missing (the box is optional)", () => {
-    expect(missingPhotoSteps(shoes, { photoBlob: {} })).toEqual([]);
+  it("shoe taken, NO box → the box is still missing (save refused)", () => {
+    expect(missingPhotoSteps(shoes, { photoBlob: {} }).map((s) => s.id)).toEqual(["box"]);
   });
   it("box taken, no shoe → the shoe is missing", () => {
     expect(missingPhotoSteps(shoes, { boxBlob: {} }).map((s) => s.id)).toEqual(["shoe"]);
