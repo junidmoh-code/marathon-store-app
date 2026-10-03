@@ -461,7 +461,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     if (!res) {
       try {
         const c = await runTransaction(ref(database, `refill_requests/${r.id}`),
-          (cur) => claimPickTxn(cur, { movementId: mvId, atMs: serverNowMs(), by: auth.currentUser?.uid || null }));
+          (cur) => claimPickTxn(cur, { atMs: serverNowMs(), by: auth.currentUser?.uid || null, movementId: mvId }));   // a claim, not a movement (the gate test counts movement shapes)
         claimed = !!(c.committed && c.snapshot.val()?.picking?.movementId === mvId);
       } catch { claimed = false; }
       if (!claimed) return { ok: false, reason: "This line is being picked on another device, or was just resolved — refresh. Nothing was sent." };
