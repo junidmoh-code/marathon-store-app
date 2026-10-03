@@ -3784,7 +3784,6 @@ function AdminReviewPhotosTab({ products = [] }) {
   // stays selected after a send.
   const [regenFor, setRegenFor] = useState(null);
   const [bulkBusy, setBulkBusy] = useState(false);
-  const [runN, setRunN]       = useState(12);
   const [quality, setQuality] = useState("medium");
   // Engine: "auto" = route by category (Footwear→Gemini, else OpenAI); or force one
   // to compare. Only sent when not "auto"; the function auto-routes otherwise.
@@ -3999,17 +3998,6 @@ function AdminReviewPhotosTab({ products = [] }) {
     try { for (const r of pending) { (await approve(r)) ? okN++ : failN++; } }
     finally { setBulkBusy(false); setRunMsg(`Approved ${okN}${failN ? `, ${failN} failed (see above)` : ""}.`); }
   };
-  const runAI = async () => {
-    setRunBusy(true); setRunMsg(`Generating ${runN} clothing photos${house ? " in house style" : ""}… (slow — image generation)`);
-    try {
-      const res = await httpsCallable(functions, "generateProductPhotos")({ limit: Number(runN) || 12, category: "clothing", quality, ...engineArg, ...styleArg });
-      const d = res?.data || {};
-      setRunMsg(`Done — ${d.processed} generated, ${d.failed} failed (≈ $${Number(d.estCostUSD || 0).toFixed(4)} est)${costByEngineStr(d.costByEngine)}${photoFailureSuffix(d.failures)}.`);
-    } catch (e) {
-      const m = String(e?.message || e);
-      setRunMsg(`Couldn't run: ${m}${m.toLowerCase().includes("internal") || m.toLowerCase().includes("not-found") ? " — is generateProductPhotos deployed?" : ""}`);
-    } finally { setRunBusy(false); }
-  };
   // Re-shoot THIS one product. opts from the Regenerate popup: { note, engine }.
   // The popup's choices win; "auto"/empty fall back to the studio-level engine.
   const regenerate = async (row, opts = {}) => {
@@ -4044,9 +4032,7 @@ function AdminReviewPhotosTab({ products = [] }) {
         <span style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.12)", color:"rgba(255,255,255,.6)", fontSize:11.5, fontWeight:600, padding:"3px 10px", borderRadius:999 }}>{pending.length} to review</span>
       </div>
       <div style={{ display:"flex", alignItems:"center", gap:8, flexWrap:"wrap", marginBottom:10 }}>
-        <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Generate</span>
-        <input type="number" min={1} max={200} value={runN} onChange={e => setRunN(e.target.value)}
-               style={{ width:60, background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}/>
+        <span style={{ fontSize:12, color:"rgba(255,255,255,.6)" }}>Quality</span>
         <select value={quality} onChange={e => setQuality(e.target.value)} title="OpenAI image quality (cost rises with quality; Gemini ignores it)"
                 style={{ background:"rgba(255,255,255,.06)", border:"1px solid rgba(255,255,255,.15)", borderRadius:8, color:"#fff", padding:"7px 9px", fontSize:13 }}>
           <option value="low">low (~$0.01)</option>
@@ -4075,10 +4061,11 @@ function AdminReviewPhotosTab({ products = [] }) {
             );
           })}
         </div>
-        <button onClick={selectedIds.size ? generateSelected : runAI} disabled={runBusy}
-                title={selectedIds.size ? "Generate the products you picked" : "Auto-generate the next clothing items missing a photo"}
-                style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : "pointer", opacity: runBusy ? .6 : 1 }}>
-          {runBusy ? "Generating…" : selectedIds.size ? `Generate ${selectedIds.size} picked (${quality})` : "Generate next clothing"}
+        {/* Photos are made ONLY for products Junid picked (3 Oct) — no "generate the next N" sweep. */}
+        <button onClick={generateSelected} disabled={runBusy || !selectedIds.size}
+                title={selectedIds.size ? "Generate the products you picked — one photo each" : "Pick the products to generate first"}
+                style={{ background:"#4A7FFF", color:"#fff", border:"none", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor: runBusy ? "wait" : selectedIds.size ? "pointer" : "not-allowed", opacity: runBusy || !selectedIds.size ? .6 : 1 }}>
+          {runBusy ? "Generating…" : selectedIds.size ? `Generate ${selectedIds.size} picked (${quality})` : "Pick products to generate"}
         </button>
         <button onClick={() => setPicking(v => !v)}
                 style={{ background: picking ? "#4A7FFF" : "rgba(74,127,255,.14)", color: picking ? "#fff" : "#7AA7FF", border:"1px solid rgba(74,127,255,.4)", borderRadius:9, padding:"8px 14px", fontSize:12.5, fontWeight:700, cursor:"pointer" }}>
@@ -4215,7 +4202,7 @@ function AdminReviewPhotosTab({ products = [] }) {
 
       {pending.length === 0 && !picking && (
         <div style={{ textAlign:"center", color:"#555", padding:"2.5rem 1rem", fontSize:"0.9rem" }}>
-          No photo proposals to review. Use “Generate next clothing” or “Choose products…” to re-shoot on a white background.
+          No photo proposals to review. Pick products with “Choose products…” to re-shoot them on a white background — one photo each.
         </div>
       )}
 
