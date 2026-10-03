@@ -195,6 +195,11 @@ export const canHow = (gen) => genCode(gen) !== null;
 // The poster's default is its config; the card only sets the per-item override.
 /** Is this item set to "Full Gemini"? Pure. */
 export const isFullGemini = (item) => item?.method === "full";
+/** The method this item's NEXT photo will use: its own choice, else the poster's default. Pure. */
+export const effectiveMethod = (item, defaultMethod = "full") => (item?.method === "full" || item?.method === "split" ? item.method : defaultMethod === "split" ? "split" : "full");
+/** What a tap on `choice` writes: the default clears the override (null), anything else is set. Pure. */
+export const methodToSet = (choice, defaultMethod = "full") => (choice === (defaultMethod === "split" ? "split" : "full") ? null : choice);
+export const METHOD_CHOICES = Object.freeze([{ key: "split", label: "Split" }, { key: "full", label: "Full Gemini" }]);
 /** How one photo was made, as a small label, or null. Pure. */
 export function methodMadeText(gen) {
   if (gen?.method === "split") return "made: product by Gemini, placed by code";

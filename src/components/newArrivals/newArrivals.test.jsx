@@ -1031,34 +1031,38 @@ describe("How Gemini did it + the per-item method (3 Oct)", () => {
     expect(testid(tree, "how-thoughts")).toHaveLength(1);
   });
 
-  it("'Full Gemini' on each New card: checked from item.method; toggling calls the api (full / null); the main photo's method is labelled", async () => {
+  it("method on each New card: 'Next photo: Split | Full Gemini' always shows the method in use; tapping sets it (the default clears the override)", async () => {
+    const radios = (tree) => tree.root.findAll((n) => n.type === "button" && n.props.role === "radio");
+    const on = (tree) => radios(tree).find((b) => b.props["aria-checked"]);
+    // Default "full" (no override): Full Gemini is the one in use, marked (default).
     const api = howApi();
     const tree = await render(api);
-    const box = () => tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")[0];
-    expect(box().props.checked).toBe(false);
+    expect(label(on(tree))).toBe("Full Gemini (default)");
     expect(text({ toJSON: () => testid(tree, "method-made")[0].children })).toBe("made: product by Gemini, placed by code");
-    await act(async () => { box().props.onChange(); });
-    expect(api.method).toHaveBeenLastCalledWith("p1789999990000", "full");
-    expect(text(tree)).toContain("Full Gemini for this item");
-
-    const api2 = howApi(coded({ method: "full", generations: { g2: GEN("g2", NOW, { code: "G-0042", method: "full" }) } }));
+    await act(async () => { radios(tree).find((b) => label(b) === "Split").props.onClick(); });
+    expect(api.method).toHaveBeenLastCalledWith("p1789999990000", "split");
+    expect(text(tree)).toContain("Split method for this item");
+    // An item set to split: tapping the default (Full Gemini) clears the override.
+    const api2 = howApi(coded({ method: "split" }));
     const t2 = await render(api2);
-    const box2 = t2.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")[0];
-    expect(box2.props.checked).toBe(true);
-    expect(text({ toJSON: () => testid(t2, "method-made")[0].children })).toBe("made: full Gemini");
-    await act(async () => { box2.props.onChange(); });
+    expect(label(on(t2))).toBe("Split");
+    await act(async () => { radios(t2).find((b) => label(b) === "Full Gemini (default)").props.onClick(); });
     expect(api2.method).toHaveBeenLastCalledWith("p1789999990000", null);
     expect(api2.approve).not.toHaveBeenCalled();
+    // After Junid makes split the default: an item with no override shows Split (default).
+    expect(view.effectiveMethod({}, "split")).toBe("split");
+    expect(view.methodToSet("full", "split")).toBe("full");
+    expect(view.methodToSet("split", "split")).toBe(null);
   });
 
-  it("the method switch waits while a photo is being generated, and is not on Done", async () => {
+  it("the method choice waits while a photo is being generated, and is not on Done", async () => {
+    const radios = (tree) => tree.root.findAll((n) => n.type === "button" && n.props.role === "radio");
     const tree = await render(howApi(coded({ status: "new", generateRequest: { at: NOW, by: "junid" } })));
-    expect(tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")[0].props.disabled).toBe(true);
+    expect(radios(tree).every((b) => b.props.disabled)).toBe(true);
     const api = howApi(coded({ status: "done" }), { list: vi.fn(async () => ({ items: [coded({ status: "done" })], tabCounts: {} })) });
     const t2 = await render(api, "done");
-    expect(t2.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Full Gemini")).toHaveLength(0);
+    expect(radios(t2)).toHaveLength(0);
     expect(toggles(t2)).toHaveLength(2);
     expect(view.methodMadeText({})).toBeNull();
-    expect(view.isFullGemini({ method: "split" })).toBe(false);
   });
 });

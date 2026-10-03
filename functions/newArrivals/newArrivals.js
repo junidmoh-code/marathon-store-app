@@ -271,10 +271,12 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
     return { ...core.cardItem(item), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
   })).filter(Boolean);
 
-  const [stats, modes] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`)]);
+  const [stats, modes, defaultMethod] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`), val(db, `${core.ROOT}/config/defaultMethod`)]);
   const out = {
     tab, items, total, nextCursor: cursorOut || (more && pageKeys.length ? pageKeys[pageKeys.length - 1] : null),
     tabCounts, stats: stats || null, modes: modes || {}, filter: f, group: g, groupCounts,
+    // The poster's default method (it publishes its config here): what an item with no override gets.
+    defaultMethod: core.METHODS.includes(defaultMethod) ? defaultMethod : "full",
   };
   // Every pid the tab's multi-select can act on — the whole group (or
   // filtered lane), not just the loaded page ("Select all" then "Skip selected").

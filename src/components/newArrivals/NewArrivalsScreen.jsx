@@ -49,7 +49,7 @@ import {
   shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, verdictText, stockText, agreementText, rejectRateText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
   normalizeTab, photoBucket, pickEnabled, rejectionLabel, hasPhoto,
-  canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, isFullGemini, methodMadeText, METHOD_TABS, isGenerating,
+  canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, isFullGemini, methodMadeText, METHOD_TABS, isGenerating, effectiveMethod, methodToSet, METHOD_CHOICES,
 } from "./newArrivalsView";
 
 const REFRESH_MS = 30_000;
@@ -278,11 +278,20 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
       {((METHOD_TABS.includes(tab) && h.onMethod) || made) && (
         <div data-testid="method" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 11, color: GRAY }}>
           {METHOD_TABS.includes(tab) && h.onMethod && (
-            <label title="Off = the poster's default method" style={{ display: "flex", alignItems: "center", gap: 5, color: "#dfe7ff", opacity: busy || isGenerating(item) ? 0.5 : 1 }}>
-              <input type="checkbox" aria-label="Full Gemini" checked={isFullGemini(item)} disabled={busy || isGenerating(item)}
-                onChange={() => h.onMethod(item.pid, isFullGemini(item) ? null : "full")} />
-              Full Gemini
-            </label>
+            // The method the NEXT photo will use — always the truth, never a switch that reads "off" while full runs.
+            <span role="radiogroup" aria-label="Method for the next photo" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              Next photo:
+              {METHOD_CHOICES.map((m) => {
+                const on = effectiveMethod(item, h.defaultMethod) === m.key;
+                return (
+                  <button key={m.key} role="radio" aria-checked={on} disabled={busy || isGenerating(item) || on}
+                    onClick={() => h.onMethod(item.pid, methodToSet(m.key, h.defaultMethod))}
+                    style={{ ...(on ? bBlue : bGray), padding: "3px 8px", fontSize: 11, opacity: busy || isGenerating(item) ? 0.5 : 1 }}>
+                    {m.label}{m.key === h.defaultMethod ? " (default)" : ""}
+                  </button>
+                );
+              })}
+            </span>
           )}
           {made && <span data-testid="method-made">{made}</span>}
         </div>
@@ -382,7 +391,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
       } while (cursor && acc.length < wanted);
       setData({
         items: acc, total: Number.isFinite(res.total) ? res.total : acc.length, nextCursor: cursor,
-        tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null, modes: res.modes || {},
+        tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null, modes: res.modes || {}, defaultMethod: res.defaultMethod || "full",
         matchingPids: res.matchingPids || null,
       });
     } catch (e) {
@@ -512,7 +521,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     loadHow: api.how ? loadHow : null,
     // The per-item method: "full", or null for the poster's default. A setting — never logged.
     onMethod: api.method ? (pid, method) => run(() => api.method(pid, method),
-      (r) => (r?.unchanged ? "No change." : method === "full" ? "Full Gemini for this item — from its next photo." : "Back to the default method — from its next photo.")) : null,
+      (r) => (r?.unchanged ? "No change." : method === "full" ? "Full Gemini for this item — from its next photo." : method === "split" ? "Split method for this item — from its next photo." : "Back to the default method — from its next photo.")) : null,
+    defaultMethod: data.defaultMethod || "full",
   };
 
   // Approve all = every item ON THIS SCREEN whose photo the checker passed

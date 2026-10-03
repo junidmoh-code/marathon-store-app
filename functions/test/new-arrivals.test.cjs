@@ -149,6 +149,15 @@ test("paging: an item regenerated at the page boundary never makes the rest of i
   assert.deepEqual(p2.items.map((i) => i.pid), ["p1789999900002", "p1789999900003"], "the rest of the photo-ready bucket is still there");
 });
 
+test("list carries the poster's default method (full unless the poster published split)", async () => {
+  const db = seeded("new");
+  assert.equal((await na.listTab(db, "new")).defaultMethod, "full");
+  await db.ref("new_arrivals/config/defaultMethod").set("split");
+  assert.equal((await na.listTab(db, "new")).defaultMethod, "split");
+  await db.ref("new_arrivals/config/defaultMethod").set("bogus");
+  assert.equal((await na.listTab(db, "new")).defaultMethod, "full");
+});
+
 test("a redelivered enqueue repairs a missing index entry", async () => {
   const db = makeFakeDb({ new_arrivals: { items: { [PID]: { pid: PID, status: "ready", enqueuedAt: 7 } } } });
   // Even a delivery far outside the window repairs it.
