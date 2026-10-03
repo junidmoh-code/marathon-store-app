@@ -214,7 +214,7 @@ const newArrivalsList = onCall(callableOpts, async (request) => {
  * Returns { item, prev } or { refusal }. `prev` is the item as Junid acted on
  * it — the decision row's generation snapshot comes from it.
  */
-async function moveOne(db, pid, { from, to, at, fields = () => ({}), guard = null }) {
+async function moveOne(db, pid, { from, to, at, fields = () => ({}), guard = null, decision = null, extra = null, uid = null }) {
   const allowed = Array.isArray(from) ? from : [from];
   const out = {};
   let prev = null;
@@ -228,20 +228,21 @@ async function moveOne(db, pid, { from, to, at, fields = () => ({}), guard = nul
   });
   const item = core.moved(res, to);
   if (!item) return { refusal: out.refusal || "not saved" };
-  await db.ref(core.ROOT).update(core.indexMove(pid, out.from, to, item.enqueuedAt));
+  // ONE atomic multi-path write after the move: the index entry, Junid's
+  // decision row and any request entry land together or not at all — and a
+  // retry writes the very same paths (the decision key is fixed first).
+  const paths = { ...core.indexMove(pid, out.from, to, item.enqueuedAt), ...(extra ? extra(prev) : {}) };
+  if (decision) {
+    const dsc = decision(prev);
+    let categoryKey = prev && prev.categoryKey;
+    if (!categoryKey) categoryKey = await val(db, `products/${pid}/categoryKey`);
+    const key = db.ref(core.DECISIONS).push().key;
+    paths[`decisions/${key}`] = core.decisionRecord({ pid, at, by: uid, action: dsc.action, reason: dsc.reason || null, item: prev, categoryKey });
+  }
+  try { await db.ref(core.ROOT).update(paths); } catch { await db.ref(core.ROOT).update(paths); }
   return { item, prev };
 }
 
-/** Write decisions/{push} — one row per action Junid took. */
-async function logDecision(db, { pid, action, reason = null, prev, uid, nowMs }) {
-  let categoryKey = prev && prev.categoryKey;
-  if (!categoryKey) categoryKey = await val(db, `products/${pid}/categoryKey`);
-  const rec = core.decisionRecord({ pid, at: nowMs, by: uid, action, reason, item: prev, categoryKey });
-  const ref = db.ref(core.DECISIONS).push();
-  // The item already moved: its decision must not be lost to one blip.
-  try { await ref.set(rec); } catch { await ref.set(rec); }
-  return rec;
-}
 
 const MAX_PIDS = 300;
 function pidList(pids) {
@@ -276,7 +277,8 @@ async function approve(db, { pids, all, anyway }, uid, nowMs) {
       if (!(price > 0)) { skipped.push({ pid, why: "no stock price yet — enter it on the card, then approve" }); continue; }
     }
     const r = await moveOne(db, pid, {
-      from, to: "approved", at: nowMs,
+      from, to: "approved", at: nowMs, uid,
+      decision: (prev) => ({ action: prev.status === "rejected" ? "approve-anyway" : "approve" }),
       // Approve only what has a generated photo — never an original.
       guard: (cur) => (cur.generatedUrl ? null : "it has no generated photo"),
       fields: (cur) => ({
@@ -285,7 +287,6 @@ async function approve(db, { pids, all, anyway }, uid, nowMs) {
       }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); continue; }
-    await logDecision(db, { pid, action: r.prev.status === "rejected" ? "approve-anyway" : "approve", prev: r.prev, uid, nowMs });
     approved.push(pid);
   }
   return { approved, skipped };
@@ -314,7 +315,13 @@ async function generate(db, { pids, regenerate }, uid, nowMs) {
   const skipped = [];
   await inBatches(list, 10, async (pid) => {
     const r = await moveOne(db, pid, {
-      from, to: "new", at: nowMs,
+      from, to: "new", at: nowMs, uid,
+      decision: (prev) => ({ action: prev.status === "new" ? "generate" : "regenerate" }),
+      // The poster reads ONLY this small index each minute (never a scan of New).
+      // A stray entry (e.g. Skip racing Generate) is harmless: the poster takes a
+      // request only for an item still in New WITH generateRequest, and clears
+      // any other entry it finds.
+      extra: () => ({ [`requests/${pid}`]: nowMs }),
       guard: (cur) => (cur.status === "new" && cur.generateRequest ? "already requested — the generator will take it" : null),
       fields: (cur) => ({
         generateRequest: { at: nowMs, by: uid || "unknown", ...(cur.status === "new" ? {} : { regenerate: true }) },
@@ -322,9 +329,6 @@ async function generate(db, { pids, regenerate }, uid, nowMs) {
       }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
-    // The poster reads ONLY this small index each minute (never a scan of New).
-    await db.ref(`${core.ROOT}/requests/${pid}`).set(nowMs);
-    await logDecision(db, { pid, action: r.prev.status === "new" ? "generate" : "regenerate", prev: r.prev, uid, nowMs });
     requested.push(pid);
   });
   return { requested, skipped };
@@ -345,12 +349,12 @@ async function skip(db, { pids }, uid, nowMs) {
   const skipped = [];
   await inBatches(list, 10, async (pid) => {
     const r = await moveOne(db, pid, {
-      from: ["new", "rejected"], to: "skipped", at: nowMs,
+      from: ["new", "rejected"], to: "skipped", at: nowMs, uid,
+      decision: () => ({ action: "skip" }),
+      extra: () => ({ [`requests/${pid}`]: null }),
       fields: () => ({ skippedAt: nowMs, skippedBy: uid || "unknown", generateRequest: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
-    await db.ref(`${core.ROOT}/requests/${pid}`).set(null);
-    await logDecision(db, { pid, action: "skip", prev: r.prev, uid, nowMs });
     done.push(pid);
   });
   return { skippedPids: done, skipped };
@@ -362,11 +366,11 @@ async function restore(db, { pids }, uid, nowMs) {
   const skipped = [];
   await inBatches(list, 10, async (pid) => {
     const r = await moveOne(db, pid, {
-      from: "skipped", to: "new", at: nowMs,
+      from: "skipped", to: "new", at: nowMs, uid,
+      decision: () => ({ action: "restore" }),
       fields: () => ({ skippedAt: null, skippedBy: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
-    await logDecision(db, { pid, action: "restore", prev: r.prev, uid, nowMs });
     done.push(pid);
   });
   return { restored: done, skipped };
@@ -387,11 +391,11 @@ async function reject(db, { pid, reason }, uid, nowMs) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (!core.REJECT_CHIPS.includes(reason)) throw new HttpsError("invalid-argument", "Pick one of the reasons.");
   const r = await moveOne(db, String(pid), {
-    from: "ready", to: "rejected", at: nowMs,
+    from: "ready", to: "rejected", at: nowMs, uid,
+    decision: () => ({ action: "reject", reason }),
     fields: () => ({ rejection: { code: "junid", reason, at: nowMs } }),
   });
   if (!r.item) throw new HttpsError("failed-precondition", `Can't reject — ${r.refusal}.`);
-  await logDecision(db, { pid: String(pid), action: "reject", reason, prev: r.prev, uid, nowMs });
   return { ok: true };
 }
 
