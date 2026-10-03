@@ -5071,8 +5071,8 @@ import { needsCost, needsRetail, needsAny, typeOf, createdAt, updatedAt, buildUp
 // specials interlock + restore-by-batchId) — never a bare update() on
 // products/{id}/stockPrice|retailPrice. See priceStore.js.
 import { applyPriceBatch, restorePriceBatch } from "./components/admin/priceStore";
-import { asStoredPrice } from "./utils/priceBatch";
 import { saveMissingPrice } from "./components/admin/missingPriceSave";
+import { saveProductPrices, planProductPriceEdit } from "./components/admin/productPriceSave";
 import { buildBulkFillPlan } from "./utils/bulkPricing";
 import BulkPricePreview from "./components/admin/BulkPricePreview";
 import BulkPricingTab from "./components/admin/BulkPricingTab";
@@ -5155,8 +5155,9 @@ function MissingPricesTab({ products = [] }) {
 
   const savePrice = async () => {
     if (saving) return;
-    // The ONE missing-prices save (missingPriceSave.js) — also used by the New
-    // Arrivals Ready card. Asks before saving a retail price below cost.
+    // The missing-prices save (missingPriceSave.js), which writes through THE
+    // product price save (productPriceSave.js). Asks before saving a retail
+    // price below cost.
     let confirmed = false;
     const first = validatePrices(editProduct, costDraft, retailDraft);
     if (!first.ok) {
@@ -7558,31 +7559,32 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
   // interleaved saves could each record a stale `from` and land out of order.
   // Both inputs are disabled while a save runs.
   const [priceSaving, setPriceSaving] = useState(false);
-  const savePrice = (field, draft) => {
-    const trimmed = String(draft).trim();
-    const num = trimmed === "" ? null : Number(trimmed);
-    // Reject 0 (and negatives / NaN) — matching the create flow's `> 0` rule.
-    // The POS contract is that prices are unset/null, never `0` (a free price
-    // would mis-ring at checkout). Restore the previous value from RTDB.
-    if (num !== null && (!Number.isFinite(num) || num <= 0)) { revertPriceDraft(field); return; }
-    const from = asStoredPrice(product[field]);
-    if (num === from) return; // unchanged — nothing to write or record
+  // THE product price save (productPriceSave.saveProductPrices) — the one
+  // copy shared with the Marketing card, Missing prices and the New Arrivals
+  // card: through the guarded batch path, audited under a batchId, refused if
+  // the product is on special (its retailPrice IS the special price; end the
+  // special first so wasPrice can't go stale). 0, negatives and junk are
+  // reverted (the POS contract: a price is unset/null, never 0). Retail below
+  // the stock price asks first.
+  const savePrice = async (field, draft) => {
+    const plan = planProductPriceEdit(product, { [field]: draft });
+    if (!plan.ok) { revertPriceDraft(field); return; }
+    if (!Object.keys(plan.to).length) return; // unchanged — nothing to write or record
     if (priceSaving) { revertPriceDraft(field); return; } // one save at a time
     setPriceSaving(true);
-    // Through the guarded batch path: audited under a batchId, and refused if
-    // the product is on special (its retailPrice IS the special price; end the
-    // special first so wasPrice can't go stale).
-    applyPriceBatch({
-      action: "single_edit",
-      label: `Edit: ${product.name || product.id}`,
-      lines: { [product.id]: { name: product.name || "", from: { [field]: from }, to: { [field]: num } } },
-    }).then((res) => {
+    try {
+      const label = `Edit: ${product.name || product.id}`;
+      let res = await saveProductPrices(product, { [field]: draft }, { label });
+      if (!res.ok && res.needsConfirm) {
+        if (!window.confirm(res.error)) { revertPriceDraft(field); return; }
+        res = await saveProductPrices(product, { [field]: draft }, { label, confirmed: true });
+      }
       if (!res.ok) {
         revertPriceDraft(field);
-        if (res.code === "on_special") alert(res.message);
-        else setSaveError(`Could not save the ${field === "stockPrice" ? "stock price" : "retail price"}: ${res.message}`);
+        if (res.code === "on_special") alert(res.error);
+        else setSaveError(`Could not save the ${field === "stockPrice" ? "stock price" : "retail price"}: ${res.error}`);
       }
-    }).finally(() => setPriceSaving(false));
+    } finally { setPriceSaving(false); }
   };
   const toggleShoebox = () => {
     if (isClothing) return; // clothing never has a shoebox

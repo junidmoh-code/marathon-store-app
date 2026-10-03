@@ -9,8 +9,11 @@ export const TABS = [
   { key: "ready", label: "Ready" },
   { key: "rejected", label: "Rejected" },
   { key: "done", label: "Done" },
-  { key: "skipped", label: "Skipped" },
 ];
+// No Skipped tab (owner, 3 Oct): "Skip — don't advertise" is one tap with an
+// 8-second Undo. A skipped item stays in the data (status "skipped") — the
+// generator, the chain and the posters all leave it alone.
+export const UNDO_MS = 8000;
 
 // Mirror of functions/newArrivals/core.cjs REJECT_CHIPS — the exact strings
 // the ledger records (calibration contract). One tap, no typing.
@@ -132,7 +135,7 @@ export function statusLine(item) {
   const s = item?.status;
   // Generation is Junid's call (calibration): nothing is generated until he taps Generate.
   if (s === "new") return item?.generateRequest ? "Generate requested — the generator will take it shortly" : "Waiting — tap Generate when you want its photo";
-  if (s === "skipped") return "Skipped — not advertised (Restore brings it back to New)";
+  if (s === "skipped") return "Skipped — not advertised";
   if (s === "generating") return "Generating the photo now…";
   if (s === "ready") return Number(item?.product?.stockPrice) > 0
     ? "Photo checked — waiting for your Approve"
@@ -200,19 +203,33 @@ export function needsStockPrice(product) {
 }
 
 /**
- * Which buttons an item shows. Approve (and Approve anyway) need a generated
- * photo and a stock price; the checker's verdict never gates anything.
+ * Which buttons an item shows. Approve is ALWAYS shown on Ready (owner, 3 Oct)
+ * but only ENABLED with a generated photo and a stock price (approveEnabled);
+ * Approve anyway (Rejected) likewise needs both. The checker's verdict never
+ * gates anything.
  */
 export function actionsFor(item) {
   const s = item?.status;
   const priced = Number(item?.product?.stockPrice) > 0;
   return {
-    approve: s === "ready" && !!item?.generatedUrl && priced,
+    approve: s === "ready",
+    approveEnabled: s === "ready" && !!item?.generatedUrl && priced,
     approveAnyway: s === "rejected" && !!item?.generatedUrl && priced,
     generate: s === "new" && !item?.generateRequest,
     regenerate: s === "ready" || s === "rejected",
     reject: s === "ready",
     skip: s === "new" || s === "rejected",
-    restore: s === "skipped",
   };
+}
+
+/** The tabs whose cards carry the two price fields (Done is history). */
+export const PRICE_TABS = ["new", "ready", "rejected"];
+/** A price as the field shows it: the stored number, or empty. Pure. */
+export const priceField = (v) => (Number(v) > 0 ? String(Number(v)) : "");
+/** Only the fields Junid changed from what the card showed: { stockPrice?, retailPrice? }. Pure. */
+export function changedPrices(product, stockDraft, retailDraft) {
+  const out = {};
+  if (String(stockDraft ?? "").trim() !== priceField(product?.stockPrice)) out.stockPrice = String(stockDraft ?? "").trim();
+  if (String(retailDraft ?? "").trim() !== priceField(product?.retailPrice)) out.retailPrice = String(retailDraft ?? "").trim();
+  return out;
 }

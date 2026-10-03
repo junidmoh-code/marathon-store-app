@@ -4,8 +4,8 @@
 // newArrivalsApprove  Junid's tap — Ready → approved (one pid, or all Ready).
 // newArrivalsRetry    (legacy, card no longer calls it) Rejected → New.
 // newArrivalsGenerate Generate / Generate selected / Regenerate → generateRequest.
-// newArrivalsSkip     Skip — don't advertise (New/Rejected → Skipped).
-// newArrivalsRestore  Skipped → New.
+// newArrivalsSkip     Skip — don't advertise (New/Rejected → skipped; marked, never deleted).
+// newArrivalsRestore  the card's Undo: skipped → back to New or Rejected (skippedFrom).
 // newArrivalsReject   Ready → Rejected with one reason chip.
 // Every action Junid takes writes new_arrivals/decisions/{push}.
 //
@@ -374,8 +374,12 @@ const newArrivalsGenerate = onCall(callableOpts, async (request) => {
 
 // ── skip / restore ───────────────────────────────────────────────────────────
 // Skip — don't advertise: New or Rejected → skipped. Never generated, posted
-// or published; nothing moves it back but Restore (enqueue only repairs the
-// index of an item already queued, whatever its status).
+// or published; marked in the data (status "skipped", skippedFrom), never
+// deleted. The card has no Skipped tab any more: Restore is its 8-second Undo,
+// which puts the item back where it was (skippedFrom: New or Rejected), in its
+// place (the index value is its enqueuedAt; the order is the pid key).
+// Nothing else moves it back (enqueue only repairs the index of an item
+// already queued, whatever its status).
 async function skip(db, { pids }, uid, nowMs) {
   const list = pidList(pids);
   const done = [];
@@ -385,7 +389,7 @@ async function skip(db, { pids }, uid, nowMs) {
       from: ["new", "rejected"], to: "skipped", at: nowMs, uid,
       decision: () => ({ action: "skip" }),
       extra: () => ({ [`requests/${pid}`]: null }),
-      fields: () => ({ skippedAt: nowMs, skippedBy: uid || "unknown", generateRequest: null }),
+      fields: (cur) => ({ skippedAt: nowMs, skippedBy: uid || "unknown", skippedFrom: cur.status, generateRequest: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
     done.push(pid);
@@ -398,10 +402,13 @@ async function restore(db, { pids }, uid, nowMs) {
   const done = [];
   const skipped = [];
   await inBatches(list, 10, async (pid) => {
+    // Back to the lane it was skipped from (an older skip, with no
+    // skippedFrom, came from New). The move itself still checks "skipped".
+    const was = await val(db, `${core.ITEMS}/${pid}/skippedFrom`);
     const r = await moveOne(db, pid, {
-      from: "skipped", to: "new", at: nowMs, uid,
+      from: "skipped", to: was === "rejected" ? "rejected" : "new", at: nowMs, uid,
       decision: () => ({ action: "restore" }),
-      fields: () => ({ skippedAt: null, skippedBy: null }),
+      fields: () => ({ skippedAt: null, skippedBy: null, skippedFrom: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
     done.push(pid);

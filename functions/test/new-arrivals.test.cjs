@@ -365,6 +365,7 @@ test("skip: New/Rejected → Skipped with a decision; restore brings it back; en
   const it = (await db.ref(`${core.ITEMS}/${pid(0)}`).once()).val();
   assert.equal(it.status, "skipped");
   assert.equal(it.skippedBy, "junid");
+  assert.equal(it.skippedFrom, "new");
   assert.equal("generateRequest" in it, false, "a skipped item is never generated");
   assert.equal((await db.ref(`${core.BY_STATUS}/skipped/${pid(0)}`).once()).val(), NOW);
   assert.equal((await db.ref(`${core.BY_STATUS}/new/${pid(0)}`).once()).val(), null);
@@ -385,6 +386,31 @@ test("skip: New/Rejected → Skipped with a decision; restore brings it back; en
   assert.equal(d[0].class, "footwear");
   assert.equal(d[0].categoryKey, "sneakers");
   assert.equal(d[0].gen, undefined, "no generation → no snapshot (null is dropped)");
+});
+
+test("skip marks (never deletes) and records where from; the Undo (restore) puts a Rejected item back in Rejected, in its place", async () => {
+  const db = lane(3, { status: "rejected", item: () => ({ rejection: { code: "junid", reason: "framing", at: 1 }, generatedUrl: "https://x/g.jpg" }) });
+  const out = await na.skip(db, { pids: [pid(1)] }, "junid", NOW + 50);
+  assert.deepEqual(out.skippedPids, [pid(1)]);
+  const it = (await db.ref(`${core.ITEMS}/${pid(1)}`).once()).val();
+  assert.equal(it.status, "skipped");
+  assert.equal(it.skippedFrom, "rejected");
+  assert.equal(it.name, "item 1", "the record is kept whole");
+  assert.equal((await na.listTab(db, "rejected", {})).total, 2);
+  const r = await na.restore(db, { pids: [pid(1)] }, "junid", NOW + 55);
+  assert.deepEqual(r.restored, [pid(1)]);
+  const back = (await db.ref(`${core.ITEMS}/${pid(1)}`).once()).val();
+  assert.equal(back.status, "rejected");
+  assert.equal(back.rejection.reason, "framing");
+  assert.equal("skippedFrom" in back, false);
+  assert.equal((await db.ref(`${core.BY_STATUS}/rejected/${pid(1)}`).once()).val(), NOW + 1, "index value = its enqueuedAt");
+  assert.deepEqual((await na.listTab(db, "rejected", {})).items.map((i) => i.pid), [pid(0), pid(1), pid(2)], "back in its place");
+  // An older skip (no skippedFrom) goes back to New.
+  await db.ref(`${core.ITEMS}/${pid(2)}`).update({ status: "skipped" });
+  await db.ref(`${core.BY_STATUS}/rejected/${pid(2)}`).set(null);
+  await db.ref(`${core.BY_STATUS}/skipped/${pid(2)}`).set(NOW + 2);
+  await na.restore(db, { pids: [pid(2)] }, "junid", NOW + 56);
+  assert.equal((await db.ref(`${core.ITEMS}/${pid(2)}/status`).once()).val(), "new");
 });
 
 test("skip refuses Ready and Generating", async () => {

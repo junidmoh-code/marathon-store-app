@@ -44,26 +44,29 @@ describe("view helpers", () => {
   it("Approve only with a generated photo — never on an original", () => {
     expect(actionsFor(ready()).approve).toBe(true);
     expect(statusLine(ready())).toBe("Photo checked — waiting for your Approve");
-    expect(actionsFor(ready({ generatedUrl: undefined })).approve).toBe(false);
-    // No stock price → no Approve; the status line says what to do.
+    expect(actionsFor(ready()).approveEnabled).toBe(true);
+    expect(actionsFor(ready({ generatedUrl: undefined })).approveEnabled).toBe(false);
+    // No stock price → Approve still SHOWN on Ready, but disabled; the status line says what to do.
     const noPrice = ready({ product: { name: "x", sizes: ["6"] } });
-    expect(actionsFor(noPrice).approve).toBe(false);
+    expect(actionsFor(noPrice).approve).toBe(true);
+    expect(actionsFor(noPrice).approveEnabled).toBe(false);
     expect(statusLine(noPrice)).toBe("Photo checked — needs a stock price before approving");
     expect(actionsFor({ status: "rejected" })).toMatchObject({ approve: false, approveAnyway: false, regenerate: true, skip: true, reject: false });
     expect(actionsFor({ status: "new" })).toMatchObject({ approve: false, generate: true, skip: true, regenerate: false });
     expect(actionsFor({ status: "new", generateRequest: { at: 1 } }).generate).toBe(false);
-    expect(actionsFor({ status: "skipped" })).toMatchObject({ restore: true, skip: false, generate: false });
+    expect(actionsFor({ status: "skipped" })).toMatchObject({ approve: false, skip: false, generate: false, regenerate: false });
+    expect("restore" in actionsFor({ status: "skipped" })).toBe(false); // no Skipped tab: Undo is the toast
   });
 
   it("the stock price gates Approve; the retail price is irrelevant", () => {
     const noRetail = ready({ product: { name: "x", stockPrice: 550, retailPrice: null, sizes: ["6"] } });
-    expect(actionsFor(noRetail).approve).toBe(true);
+    expect(actionsFor(noRetail).approveEnabled).toBe(true);
     expect(statusLine(noRetail)).toBe("Photo checked — waiting for your Approve");
     const retailOnly = ready({ product: { name: "x", stockPrice: 0, retailPrice: 650, sizes: ["6"] } });
-    expect(actionsFor(retailOnly).approve).toBe(false);
+    expect(actionsFor(retailOnly).approveEnabled).toBe(false);
     expect(statusLine(retailOnly)).toMatch(/needs a stock price/);
-    expect(actionsFor(ready({ product: { stockPrice: "550" } })).approve).toBe(true);
-    expect(actionsFor(ready({ product: { stockPrice: -5 } })).approve).toBe(false);
+    expect(actionsFor(ready({ product: { stockPrice: "550" } })).approveEnabled).toBe(true);
+    expect(actionsFor(ready({ product: { stockPrice: -5 } })).approveEnabled).toBe(false);
   });
 
   it("needsStockPrice: absent, empty, zero, negative or junk → needs one", () => {
@@ -144,7 +147,7 @@ describe("NewArrivalsScreen", () => {
     expect(t).toContain("Approve all 1");
     expect(t).not.toContain("priced");
     expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "unpriced-flag")).toHaveLength(0);
-    expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "price-entry")).toHaveLength(0);
+    expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "approve-note")).toHaveLength(0);
     const imgs = tree.root.findAll((n) => n.type === "img").map((i) => i.props.src);
     expect(imgs).toEqual(["https://x/orig.jpg", "https://x/gen.jpg"]);
   });
@@ -211,81 +214,105 @@ describe("NewArrivalsScreen", () => {
   });
 });
 
-describe("Ready: a missing STOCK price is set on the card, through the Missing prices save", () => {
+describe("PRICES: Stock price (R) + Retail price (R), pre-filled, one Save — the admin price save", () => {
   const priced = () => ready();
   const unpriced = (o = {}) => ({ ...ready(), pid: "p1789999990001", product: { ...ready().product, stockPrice: null }, ...o });
-  const testid = (tree, id) => tree.root.findAll((n) => n.props && n.props["data-testid"] === id);
-  const inputs = (tree) => tree.root.findAll((n) => n.type === "input").map((i) => i.props["aria-label"]);
+  const testid = (tree, id) => tree.root.findAll((n) => n.props && n.props["data-testid"] === id && typeof n.type === "string");
+  const field = (tree, l) => tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === l)[0];
+  const type = async (tree, l, v) => act(async () => { field(tree, l).props.onChange({ target: { value: v } }); });
 
-  it("an item without a stock price shows ONLY a Stock price input, no Approve, and the flag", async () => {
-    const tree = await render(fakeApi([unpriced()], { savePrice: vi.fn() }));
-    expect(testid(tree, "price-entry")).toHaveLength(1);
-    expect(inputs(tree)).toEqual(["Stock price"]);
-    expect(button(tree, "Approve")).toBeUndefined();
-    expect(text(tree)).toContain("No stock price · Sizes 6 · 7");
-    expect(text(tree)).not.toContain("R650"); // retail is never shown for the groups
-    expect(text(tree)).toContain("needs a stock price before approving");
-    expect(testid(tree, "unpriced-flag").filter((n) => n.type === "div")).toHaveLength(1);
-    expect(text(tree)).toContain("1 item has no stock price — enter it on the card to approve.");
+  it("both fields on every Ready card, pre-filled with the current prices", async () => {
+    const tree = await render(fakeApi([priced()], { savePrices: vi.fn() }));
+    expect(field(tree, "Stock price (R)").props.value).toBe("550");
+    expect(field(tree, "Retail price (R)").props.value).toBe("650");
+    expect(text(tree)).toContain("Stock price posts to the WhatsApp groups");
+    // Nothing changed yet: Save is off.
+    expect(button(tree, "Save").props.disabled).toBe(true);
+  });
+
+  it("no stock price: Approve is SHOWN but disabled, with 'add stock price first' by the fields — never hidden", async () => {
+    const tree = await render(fakeApi([unpriced()], { savePrices: vi.fn() }));
+    expect(field(tree, "Stock price (R)").props.value).toBe("");
+    expect(field(tree, "Retail price (R)").props.value).toBe("650");
+    const approve = button(tree, "Approve");
+    expect(approve).toBeTruthy();
+    expect(approve.props.disabled).toBe(true);
+    expect(testid(tree, "approve-note")).toHaveLength(1);
+    expect(text(tree)).toContain("add stock price first");
+    expect(testid(tree, "price-fields")[0].findAll((n) => n.props?.["data-testid"] === "approve-note")).toHaveLength(1);
+    expect(text(tree)).toContain("1 item has no stock price — add it on the card to approve.");
     expect(text(tree)).not.toContain("Approve all");
   });
 
-  it("a missing retail price is not asked for — stock price set → Approve, no price entry", async () => {
-    const noRetail = ready({ product: { ...ready().product, retailPrice: null } });
-    const tree = await render(fakeApi([noRetail], { savePrice: vi.fn() }));
-    expect(testid(tree, "price-entry")).toHaveLength(0);
-    expect(inputs(tree)).toEqual([]);
-    expect(button(tree, "Approve")).toBeTruthy();
-    expect(testid(tree, "unpriced-flag")).toHaveLength(0);
+  it("a priced item: Approve enabled, no note", async () => {
+    const tree = await render(fakeApi([priced()], { savePrices: vi.fn() }));
+    expect(button(tree, "Approve").props.disabled).toBe(false);
+    expect(testid(tree, "approve-note")).toHaveLength(0);
   });
 
-  it("Approve all excludes the unpriced item; the flag counts it", async () => {
-    const api = fakeApi([priced(), unpriced(), unpriced({ pid: "p1789999990002" })], { savePrice: vi.fn() });
+  it("ONE Save sends BOTH changes (changing an existing price, too) to the admin save, then reloads", async () => {
+    const savePrices = vi.fn(async () => ({ ok: true, count: 1 }));
+    const api = fakeApi([priced()], { savePrices });
     const tree = await render(api);
-    expect(testid(tree, "price-entry")).toHaveLength(2);
-    expect(tree.root.findAll((n) => n.type === "button" && label(n) === "Approve")).toHaveLength(1);
-    expect(text(tree)).toContain("2 items have no stock price — enter it on the card to approve.");
+    await type(tree, "Stock price (R)", "500");
+    await type(tree, "Retail price (R)", "799");
+    await act(async () => { button(tree, "Save").props.onClick(); });
+    expect(savePrices).toHaveBeenCalledTimes(1);
+    expect(savePrices.mock.calls[0]).toEqual(["p1789999990000", expect.objectContaining({ stockPrice: 550, retailPrice: 650 }), { stockPrice: "500", retailPrice: "799" }]);
+    expect(api.list).toHaveBeenCalledTimes(2);
+    expect(text(tree)).toContain("Prices saved.");
+  });
+
+  it("only the field changed is sent", async () => {
+    const savePrices = vi.fn(async () => ({ ok: true, count: 1 }));
+    const tree = await render(fakeApi([unpriced()], { savePrices }));
+    await type(tree, "Stock price (R)", "400");
+    await act(async () => { button(tree, "Save").props.onClick(); });
+    expect(savePrices.mock.calls[0][2]).toEqual({ stockPrice: "400" });
+  });
+
+  it("New and Rejected cards carry the fields too; Done does not", async () => {
+    const rej = { ...priced(), status: "rejected", rejection: { code: "junid", reason: "framing" } };
+    let tree = await render(pagedApi([newItem(0)], { savePrices: vi.fn() }), "new");
+    expect(testid(tree, "price-fields")).toHaveLength(1);
+    tree = await render(fakeApi([], { savePrices: vi.fn(), list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) }), "rejected");
+    expect(testid(tree, "price-fields")).toHaveLength(1);
+    tree = await render(fakeApi([], { savePrices: vi.fn(), list: vi.fn(async () => ({ items: [{ ...priced(), status: "done" }], tabCounts: {} })) }), "done");
+    expect(testid(tree, "price-fields")).toHaveLength(0);
+  });
+
+  it("Approve all excludes the unpriced item", async () => {
+    const api = fakeApi([priced(), unpriced(), unpriced({ pid: "p1789999990002" })], { savePrices: vi.fn() });
+    const tree = await render(api);
+    expect(tree.root.findAll((n) => n.type === "button" && label(n) === "Approve")).toHaveLength(3);
+    expect(text(tree)).toContain("2 items have no stock price");
     globalThis.window = { confirm: vi.fn(() => true) };
     await act(async () => { button(tree, "Approve all 1").props.onClick(); });
     expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
     delete globalThis.window;
   });
 
-  it("Save price calls api.savePrice(pid, product, cost) — stock price only — then reloads", async () => {
-    const savePrice = vi.fn(async () => ({ ok: true, count: 1 }));
-    const api = fakeApi([unpriced()], { savePrice });
-    const tree = await render(api);
-    const [cost] = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Stock price");
-    await act(async () => { cost.props.onChange({ target: { value: "400" } }); });
-    await act(async () => { button(tree, "Save price").props.onClick(); });
-    expect(savePrice).toHaveBeenCalledTimes(1);
-    expect(savePrice.mock.calls[0]).toEqual(["p1789999990001", expect.objectContaining({ stockPrice: null }), "400"]);
-    expect(api.list).toHaveBeenCalledTimes(2);
-    expect(text(tree)).toContain("Stock price saved — Approve is now open.");
-  });
-
-  it("retail below the new cost: asks, and retries with { confirmed: true }", async () => {
-    const savePrice = vi.fn()
-      .mockResolvedValueOnce({ ok: false, needsConfirm: true, error: "Retail is below cost. Save anyway?" })
+  it("retail below cost: asks (the admin editor's question), and retries with { confirmed: true }", async () => {
+    const savePrices = vi.fn()
+      .mockResolvedValueOnce({ ok: false, needsConfirm: true, error: "Retail Price (R650) is lower than Stock Price (R700). Continue?" })
       .mockResolvedValueOnce({ ok: true, count: 1 });
-    const api = fakeApi([unpriced()], { savePrice });
-    const tree = await render(api);
-    const [cost] = tree.root.findAll((n) => n.type === "input" && n.props["aria-label"] === "Stock price");
-    await act(async () => { cost.props.onChange({ target: { value: "700" } }); });
+    const tree = await render(fakeApi([unpriced()], { savePrices }));
+    await type(tree, "Stock price (R)", "700");
     const confirm = vi.fn(() => true);
     globalThis.window = { confirm };
-    await act(async () => { button(tree, "Save price").props.onClick(); });
+    await act(async () => { button(tree, "Save").props.onClick(); });
     delete globalThis.window;
-    expect(confirm).toHaveBeenCalledWith("Retail is below cost. Save anyway?");
-    expect(savePrice.mock.calls[1]).toEqual(["p1789999990001", expect.any(Object), "700", { confirmed: true }]);
-    expect(text(tree)).toContain("Stock price saved");
+    expect(confirm).toHaveBeenCalledWith("Retail Price (R650) is lower than Stock Price (R700). Continue?");
+    expect(savePrices.mock.calls[1]).toEqual(["p1789999990001", expect.any(Object), { stockPrice: "700" }, { confirmed: true }]);
+    expect(text(tree)).toContain("Prices saved.");
   });
 
-  it("a refused save says why and changes nothing", async () => {
-    const api = fakeApi([unpriced()], { savePrice: vi.fn(async () => ({ ok: false, error: "Enter a valid Stock Price greater than 0." })) });
+  it("a refused save says why and reloads nothing", async () => {
+    const api = fakeApi([unpriced()], { savePrices: vi.fn(async () => ({ ok: false, error: "Stock price must be a number above 0 (or empty to clear)." })) });
     const tree = await render(api);
-    await act(async () => { button(tree, "Save price").props.onClick(); });
-    expect(text(tree)).toContain("Price not saved: Enter a valid Stock Price");
+    await type(tree, "Stock price (R)", "0");
+    await act(async () => { button(tree, "Save").props.onClick(); });
+    expect(text(tree)).toContain("Prices not saved: Stock price must be a number above 0");
     expect(api.list).toHaveBeenCalledTimes(1);
   });
 });
@@ -521,19 +548,65 @@ describe("Ready / Rejected: every generation, verdict label, chips, Approve anyw
   });
 });
 
-describe("Skipped tab", () => {
-  it("lists skipped items with Restore to New; Select all + Restore selected", async () => {
-    const sk = [0, 1, 2].map((i) => newItem(i, { status: "skipped", skippedAt: NOW }));
-    const api = pagedApi(sk);
-    const tree = await render(api, "skipped");
-    expect(text(tree)).toContain("Skipped — not advertised");
-    expect(text(tree)).toContain("Showing 3 of 3");
-    await act(async () => { tree.root.findAll((n) => n.type === "button" && label(n) === "Restore to New")[0].props.onClick(); });
+describe("Skip — one tap, an 8-second Undo, no Skipped tab", () => {
+  it("there is no Skipped tab", async () => {
+    const tree = await render(pagedApi([newItem(0)]), "new");
+    expect(tree.root.findAll((n) => n.props?.role === "tab").map((t) => label(t).replace(/[\d\s]+$/, ""))).toEqual(["New", "Ready", "Rejected", "Done"]);
+    expect(view.TABS.map((t) => t.key)).not.toContain("skipped");
+    expect(view.UNDO_MS).toBe(8000);
+  });
+
+  it("Skip shows a toast with Undo; Undo calls Restore with that pid and reloads", async () => {
+    const api = pagedApi([newItem(0), newItem(1)]);
+    const tree = await render(api, "new");
+    await act(async () => { tree.root.findAll((n) => n.type === "button" && label(n) === "Skip — don't advertise")[0].props.onClick(); });
+    expect(api.skip).toHaveBeenCalledWith([P(0)]);
+    expect(testid(tree, "undo-toast")).toHaveLength(1);
+    expect(text(tree)).toContain("1 skipped — not advertised.");
+    const calls = api.list.mock.calls.length;
+    await act(async () => { button(tree, "Undo").props.onClick(); });
     expect(api.restore).toHaveBeenCalledWith([P(0)]);
+    expect(api.list.mock.calls.length).toBe(calls + 1);
+    expect(testid(tree, "undo-toast")).toHaveLength(0);
+    expect(text(tree)).toContain("Skip undone — 1 back.");
+  });
+
+  it("the toast goes after 8 seconds and the skip stands", async () => {
+    vi.useFakeTimers();
+    try {
+      const api = pagedApi([newItem(0)]);
+      const tree = await render(api, "new");
+      await act(async () => { tree.root.findAll((n) => n.type === "button" && label(n) === "Skip — don't advertise")[0].props.onClick(); });
+      await act(async () => { vi.advanceTimersByTime(7900); });
+      expect(testid(tree, "undo-toast")).toHaveLength(1);
+      await act(async () => { vi.advanceTimersByTime(200); });
+      expect(testid(tree, "undo-toast")).toHaveLength(0);
+      expect(api.restore).not.toHaveBeenCalled();
+    } finally { vi.useRealTimers(); }
+  });
+
+  it("Skip selected: ONE toast, and Undo restores them all", async () => {
+    const api = pagedApi([0, 1, 2].map((i) => newItem(i)));
+    const tree = await render(api, "new");
     await act(async () => { button(tree, "Select all 3").props.onClick(); });
-    await act(async () => { button(tree, "Restore selected (3)").props.onClick(); });
-    expect(api.restore).toHaveBeenLastCalledWith([P(0), P(1), P(2)]);
-    expect(tree.root.findAll((n) => n.props?.role === "tab").map((t) => label(t).trim())).toContain("Skipped");
+    await act(async () => { button(tree, "Skip selected (3)").props.onClick(); });
+    expect(testid(tree, "undo-toast")).toHaveLength(1);
+    expect(text(tree)).toContain("3 skipped — not advertised.");
+    await act(async () => { button(tree, "Undo").props.onClick(); });
+    expect(api.restore).toHaveBeenCalledTimes(1);
+    expect(api.restore).toHaveBeenCalledWith([P(0), P(1), P(2)]);
+  });
+
+  it("Skip on a Rejected item gets the toast too; a refused skip is reported", async () => {
+    const rej = { ...newItem(0), status: "rejected", rejection: { code: "junid", reason: "framing" } };
+    const api = fakeApi([], {
+      list: vi.fn(async () => ({ items: [rej], tabCounts: {} })),
+      skip: vi.fn(async () => ({ skippedPids: [], skipped: [{ pid: P(0), why: "it is ready, not new or rejected" }] })),
+    });
+    const tree = await render(api, "rejected");
+    await act(async () => { button(tree, "Skip — don't advertise").props.onClick(); });
+    expect(testid(tree, "undo-toast")).toHaveLength(0);
+    expect(text(tree)).toContain("1 not skipped (it is ready, not new or rejected)");
   });
 });
 

@@ -1,12 +1,12 @@
-// ── THE MISSING-PRICES SAVE — one path for every screen that fills a price ──
-// Used by Admin › Missing prices AND the New Arrivals Ready card (Junid, 3 Oct:
-// "the SAME code path, no new write path"). Validates exactly as the Missing
-// prices editor does, writes only the fields that are missing, through
-// applyPriceBatch (who/when/from/to recorded under a batchId; a retail price on
+// ── THE MISSING-PRICES SAVE ──────────────────────────────────────────────────
+// Admin › Missing prices. Validates exactly as the Missing prices editor does
+// and picks only the fields that are missing; the WRITE is the one product
+// price save (productPriceSave.saveProductPrices → applyPriceBatch
+// "single_edit": who/when/from/to recorded under a batchId; a retail price on
 // special is refused). Once both prices exist the product leaves Missing prices.
 import { buildUpdates, validatePrices, needsCost, needsRetail } from "../../utils/missingPrices";
-import { asStoredPrice } from "../../utils/priceBatch";
 import { applyPriceBatch } from "./priceStore";
+import { saveProductPrices } from "./productPriceSave";
 
 /**
  * → { ok: true, count } | { ok: false, error, needsConfirm? }.
@@ -17,19 +17,15 @@ export async function saveMissingPrice(product, costDraft, retailDraft, { label,
   // Missing prices editor pre-fills it — so "retail below cost" is still asked.
   const cd = String(costDraft ?? "").trim() === "" && !needsCost(product) ? String(product.stockPrice) : costDraft;
   const rd = String(retailDraft ?? "").trim() === "" && !needsRetail(product) ? String(product.retailPrice) : retailDraft;
-  // costOnly (New Arrivals): only the stock price is set; a missing retail
+  // costOnly: only the stock price is set; a missing retail
   // price is not asked for and never written.
   // (An EXISTING retail price still takes part in the "retail below cost" check.)
   const v = validatePrices(product, cd, rd, { costOnly });
   if (!v.ok && !(v.needsConfirm && confirmed)) return { ok: false, error: v.error, needsConfirm: !!v.needsConfirm };
   const updates = buildUpdates(product, cd, costOnly ? "" : rd); // only the MISSING fields
   if (!Object.keys(updates).length) return { ok: true, count: 0 };
-  const from = {}, to = {};
-  for (const field of Object.keys(updates)) { from[field] = asStoredPrice(product[field]); to[field] = updates[field]; }
-  const res = await apply({
-    action: "single_edit",
-    label: label || `Missing Prices: ${product.name || product.id}`,
-    lines: { [product.id]: { name: product.name || "", from, to } },
-  });
-  return res.ok ? { ok: true, count: res.count } : { ok: false, error: res.message || "Save failed" };
+  const drafts = Object.fromEntries(Object.entries(updates).map(([field, v]) => [field, String(v)]));
+  // Already validated (and any "retail below cost" answered) above.
+  const res = await saveProductPrices(product, drafts, { label: label || `Missing Prices: ${product.name || product.id}`, confirmed: true, apply });
+  return res.ok ? { ok: true, count: res.count } : { ok: false, error: res.error };
 }
