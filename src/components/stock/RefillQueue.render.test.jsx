@@ -235,6 +235,49 @@ describe("2 · one list, one design — identical rows, identical actions, ident
     expect(patch["refill_requests/bootreq/resolvedBy"]).toBe("u1");
   });
 
+  it("Fulfil CLAIMS the request before it moves stock, and the fulfil write ends the claim (a scan between the two cannot touch it)", async () => {
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    const claimIdx = txnMock.mock.calls.findIndex(([r]) => r.path === "refill_requests/bootreq");
+    expect(claimIdx, "a claim transaction on the request").toBeGreaterThanOrEqual(0);
+    const claimWrite = txnWrites.find((w) => w.path === "refill_requests/bootreq" && w.value?.picking);
+    expect(claimWrite.value.picking).toEqual({ atMs: NOW, movementId: "rrf_bootreq", by: "u1" });
+    expect(txnMock.mock.invocationCallOrder[claimIdx]).toBeLessThan(applyMovementMock.mock.invocationCallOrder[0]);
+    const patch = updateMock.mock.calls.at(-1)[1];
+    expect(patch["refill_requests/bootreq/status"]).toBe("fulfilled");
+    expect(patch).toHaveProperty("refill_requests/bootreq/picking", null);
+  });
+
+  it("another device's fresh claim stops Fulfil before any stock moves", async () => {
+    paths["refill_requests"].bootreq = { ...paths["refill_requests"].bootreq, picking: { atMs: NOW - 1000, movementId: "rrf_bootreq_9", by: "u2" } };
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    expect(applyMovementMock).not.toHaveBeenCalled();
+    expect(textOf(tree.root.children)).toMatch(/being picked on another device/);
+    tree.unmount();
+  });
+
+  it("a failed movement releases the claim it took", async () => {
+    applyMovementMock.mockImplementationOnce(() => Promise.resolve({ ok: false, reason: "boom" }));
+    const tree = renderQueue();
+    const fulfilBtn = lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil");
+    await act(async () => { fulfilBtn.props.onClick(); });
+    await act(async () => {});
+    const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+    await act(async () => { await confirm.props.onClick(); });
+    tree.unmount();
+    expect(txnMock.mock.calls.some(([r]) => r.path === "refill_requests/bootreq/picking")).toBe(true);
+  });
+
   it("Fulfil on a SALE row keeps the Source contract (picked warehouse, source_refill, seeded id)", async () => {
     const onSaleProgress = vi.fn();
     const tree = renderQueue({ onSaleProgress });

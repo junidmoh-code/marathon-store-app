@@ -31,7 +31,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
-const { requestUntouched } = require("./lib/shop-source-rule.cjs");
+const { requestUntouched, pickInProgress } = require("./lib/shop-source-rule.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
 
 const LOCK_STEAL_MS = 10 * 60e3;
@@ -220,6 +220,7 @@ async function applyResizes({ db, resizes, startedAt, setFn }) {
         const r2 = await db.ref(`refill_requests/${rz.refillId}`).transaction((cur) => {
           if (cur === null) return null;                                 // probe
           if (cur.status !== "open") return;
+          if (pickInProgress(cur)) return;                               // never resized mid-pick
           return { ...cur, qty: rz.to, resizedAt: startedAt, resizedFrom: cur.qty ?? rz.from };
         });
         ok = r2.committed && r2.snapshot.exists() && r2.snapshot.val()?.qty === rz.to;
@@ -329,6 +330,7 @@ async function applySatisfied({ db, closures, startedAt, deadlineMs = Infinity }
         // silently lost. Returning null re-probes; a missing node no-ops.
         if (cur === null) return null;
         if (cur.status && cur.status !== "open") return;      // resolved meanwhile — leave it
+        if (pickInProgress(cur)) return;                      // claimed by a picker — never withdrawn mid-pick
         if (s.requireUntouched && !requestUntouched(cur)) return;   // a pick landed in the gap — it wins
         return {
           ...cur,
@@ -461,6 +463,9 @@ function closeRequestTxn(cur, c, startedAt) {
   // re-runs with true data; a genuinely-missing node no-ops.
   if (cur === null) return null;
   if (cur.status && cur.status !== "open") return;             // resolved meanwhile — leave it
+  // A picker has claimed it (RefillQueue writes the marker BEFORE moving
+  // stock): no close of any kind lands mid-pick. The caller keeps the lock.
+  if (pickInProgress(cur)) return;
   // A shop ← Central withdrawal (lib/shop-source-rule.cjs) is for an UNTOUCHED
   // request only: a pick that landed in the snapshot gap wins, always.
   if (c.requireUntouched && !requestUntouched(cur)) return;
@@ -640,6 +645,10 @@ async function runScan() {
             // Only a request still OPEN was refused (a pick won); one resolved
             // elsewhere just keeps its lock for the normal close next scan.
             if (c.requireUntouched && !(res && res.committed)) { if (res?.snapshot?.val()?.status === "open") refusedHubPresent.push(c); continue; }
+            // ANY close the request refused while still OPEN (a pick in
+            // progress) keeps its lock: the lock is the engine's record that
+            // units are coming. Only a request resolved elsewhere loses it.
+            if (!(res && res.committed) && res?.snapshot?.val()?.status === "open") continue;
             // The plan said "human reject", but the LIVE request resolved as
             // fulfilled in the snapshot gap (contradictory human actions in one
             // window): the fulfilment wins — never record a strike against a

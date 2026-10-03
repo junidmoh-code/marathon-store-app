@@ -39,6 +39,7 @@
 // allowed, and the sentQty already recorded survives the write (the
 // transaction keeps every field it does not set). Pure — no Firebase here.
 
+import { pickInProgress } from "./pickMarker";
 export function alreadySent(rr) {
   if (!rr || typeof rr !== "object") return false;
   return rr.status === "fulfilled" || !!(rr.fulfilledBy && typeof rr.fulfilledBy === "object");
@@ -73,7 +74,7 @@ export function trancheMovementId(id, sentQty) {
  *                AND still in flight (sendInFlight); null otherwise
  * → the next node, null (probe: see below), or undefined (blocked — abort).
  */
-export function refusalTxn(cur, fields, { sendingAt = null } = {}) {
+export function refusalTxn(cur, fields, { sendingAt = null, nowMs = Date.now() } = {}) {
   // NULL-TOLERANT (the #199 lesson — refill-scan.cjs has the long form): the
   // first pass can run against a cold local cache and see null for a node
   // that exists. Returning undefined would abort for good; returning null
@@ -83,6 +84,9 @@ export function refusalTxn(cur, fields, { sendingAt = null } = {}) {
   if (typeof cur !== "object") return undefined;
   if (alreadySent(cur) || cur.status !== "open") return undefined;
   if (sendingAt !== null && sentOf(cur) === Number(sendingAt)) return undefined;
+  // Another device has CLAIMED this line and may be moving stock right now
+  // (pickMarker.js): Out of Stock waits, exactly as for a send in flight.
+  if (pickInProgress(cur, nowMs)) return undefined;
   const next = { ...cur };
   for (const [k, v] of Object.entries(fields || {})) {
     if (v === null || v === undefined) delete next[k];

@@ -104,11 +104,35 @@ function hubPresenceSignals({ hubNode, hubLocks, hubOpenRequests, heldLines, sin
   return signals;
 }
 
+// ── A PICK IN PROGRESS (2026-10-03) ─────────────────────────────────────────
+// Central's fulfil (src/components/stock/RefillQueue.jsx) moves stock with
+// applyMovement — its own transactional writer — and records sentQty /
+// fulfilled in a SECOND write. A scan landing between the two used to see an
+// open, untouched request whose units had already left. The picker now CLAIMS
+// the request first, by transaction, with `picking: { atMs, movementId, by }`
+// (atMs = serverNowMs), moves stock, and clears the marker in the same write
+// as sentQty / fulfilled. A FRESH marker means "mid-pick": no close, resize or
+// withdrawal may touch the request. A marker older than PICK_MARKER_TTL_MS is
+// a picker that crashed or gave up before moving anything (a pick that DID
+// move stock is caught after that by its linked movement), so it stops
+// blocking: a stale marker must never freeze a request forever.
+// Client twin: src/components/stock/pickMarker.js (pinned equal by test).
+const PICK_MARKER_TTL_MS = 30 * 60e3;
+function pickInProgress(rr, nowMs = Date.now()) {
+  const p = rr && rr.picking;
+  if (!p || typeof p !== "object") return false;
+  const at = Number(p.atMs);
+  if (!Number.isFinite(at)) return true;            // a marker we cannot date blocks (fail safe)
+  return nowMs - at < PICK_MARKER_TTL_MS;
+}
+
 // "Untouched" must be CERTAIN before a request is withdrawn: any sentQty that
 // is not the number 0 / absent counts as touched (PR #609 — a string "1"
-// reads as 0 to Number-coercion and would cancel over stock that moved).
-function requestUntouched(rr) {
+// reads as 0 to Number-coercion and would cancel over stock that moved), and
+// so does a pick in progress.
+function requestUntouched(rr, nowMs = Date.now()) {
   if (!rr) return false;
+  if (pickInProgress(rr, nowMs)) return false;
   if (rr.sentQty == null) return true;
   return typeof rr.sentQty === "number" && !(rr.sentQty > 0);
 }
@@ -125,7 +149,7 @@ function requestUntouched(rr) {
 //     the picker;
 //   • the shop's hub shows presence for the product.
 // `snapshot` is the engine's: { stock, openIndex, heldLines, refillRequests }.
-function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locations, snapshot = {} } = {}) {
+function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locations, snapshot = {}, nowMs = Date.now() } = {}) {
   if (!entry || !rr) return null;
   // No createdAt → "prior" cannot be judged: every seed and lock would read as
   // before the request and a legitimate first batch would be withdrawn. Leave
@@ -133,7 +157,7 @@ function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locatio
   if (!rr.createdAt || !Number.isFinite(Date.parse(rr.createdAt))) return null;
   const source = entry.source || (routes || {})[dest];
   if (!forbiddenShopSource({ dest, source, routes, locations })) return null;
-  if (rr.status !== "open" || !requestUntouched(rr) || inFlight) return null;
+  if (rr.status !== "open" || !requestUntouched(rr, nowMs) || inFlight) return null;
   const hub = shopHubFor(dest, { routes, locations });
   if (!hub) return null;   // a shop with no hub has nowhere else to go — the route itself is refused at intent time
   const { stock = {}, openIndex = {}, heldLines = {}, refillRequests = {} } = snapshot;
@@ -167,5 +191,7 @@ module.exports = {
   forbiddenShopSource,
   hubPresenceSignals,
   requestUntouched,
+  pickInProgress,
+  PICK_MARKER_TTL_MS,
   shopCentralWithdrawal,
 };

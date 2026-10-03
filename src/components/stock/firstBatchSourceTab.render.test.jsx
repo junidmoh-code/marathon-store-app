@@ -158,7 +158,7 @@ describe("Fulfil moves Central → the shop through the existing path", () => {
     expect(stampKeys).toHaveLength(1);                 // who sent it (src/device/deviceStamp.js)
     expect(patch[stampKeys[0]]).toMatchObject({ action: "send-part" });
     const { [stampKeys[0]]: _stamp, ...rest } = patch;
-    expect(rest).toEqual({ "refill_requests/tro1/qty": 1, "refill_requests/tro1/sentQty": 1 });
+    expect(rest).toEqual({ "refill_requests/tro1/qty": 1, "refill_requests/tro1/picking": null, "refill_requests/tro1/sentQty": 1 });
   });
   it("Out of Stock on the SHOP's batch: cancelled WITH first_batch_central_declined, in the same write — the third cue, never a shop-level rejection", async () => {
     const tree = renderQueue("trophy");

@@ -69,6 +69,7 @@ import { refusalTxn, trancheMovementId, sendInFlight } from "./refusalGuard";
 import { deviceStamp, stampAt, stampPatch, stampTxn } from "../../device/deviceStamp";
 import { countReject, thisDevicePaused } from "../../device/rejectCount";
 import { PAUSED_MESSAGE } from "../../device/deviceRejects";
+import { claimPickTxn } from "./pickMarker";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -448,6 +449,33 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         wentToTransit = prior.to === IN_TRANSIT;
       } else res = null;
     } catch { res = null; }
+    // CLAIM BEFORE MOVING (2026-10-03, pickMarker.js). applyMovement and the
+    // sentQty / fulfilled write below are two writes; the refill scan could
+    // land between them and close, resize or withdraw a request whose units
+    // had already left. The claim — a transaction on the request itself,
+    // server-stamped — lands FIRST, and every server close, resize and
+    // withdrawal refuses a request carrying a fresh one. Cleared in the same
+    // write as sentQty / fulfilled. Only when a movement is about to be
+    // written: an idempotent replay moves nothing.
+    let claimed = false;
+    if (!res) {
+      try {
+        const c = await runTransaction(ref(database, `refill_requests/${r.id}`),
+          (cur) => claimPickTxn(cur, { movementId: mvId, atMs: serverNowMs(), by: auth.currentUser?.uid || null }));
+        claimed = !!(c.committed && c.snapshot.val()?.picking?.movementId === mvId);
+      } catch { claimed = false; }
+      if (!claimed) return { ok: false, reason: "This line is being picked on another device, or was just resolved — refresh. Nothing was sent." };
+    }
+    // Releasing OUR claim when nothing moved (the movement failed): only while
+    // it still names this tranche. Best effort — a stale claim stops blocking
+    // on its own after PICK_MARKER_TTL_MS.
+    const releaseClaim = async () => {
+      if (!claimed) return;
+      try {
+        await runTransaction(ref(database, `refill_requests/${r.id}/picking`),
+          (cur) => (cur === null ? null : (cur && cur.movementId === mvId ? null : undefined)));
+      } catch { /* the TTL releases it */ }
+    };
     try {
       if (!res) {
         res = await applyMovement(counted ? {
@@ -474,7 +502,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         }
       }
     } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
-    if (!res.ok) return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"} — retry.` };
+    if (!res.ok) { await releaseClaim(); return { ok: false, reason: `Transfer failed: ${res.reason || "unknown"} — retry.` }; }
     // The shipment line — what the release card releases and what the engine
     // reads as INBOUND. Written create-once under the movement id BEFORE the
     // request bookkeeping: if it fails, the whole fulfil reports as retryable
@@ -512,6 +540,8 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         const partial = {
           [`refill_requests/${r.id}/qty`]: remaining,
           [`refill_requests/${r.id}/sentQty`]: already + appliedQty,
+          // The claim ends in the SAME write that records the tranche.
+          [`refill_requests/${r.id}/picking`]: null,
           ...stampAt(`refill_requests/${r.id}`, "send-part"),
         };
         await update(ref(database), partial);
@@ -531,6 +561,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         // A withdrawal landing between the re-read and this write must not
         // leave its stale reason on a row now marked fulfilled (Kimi, #332).
         [`refill_requests/${r.id}/cancelReason`]: null,
+        [`refill_requests/${r.id}/picking`]: null,             // the claim ends with the fulfil
         ...(auth.currentUser?.uid ? { [`refill_requests/${r.id}/resolvedBy`]: auth.currentUser.uid } : {}),
         ...stampAt(`refill_requests/${r.id}`, "fulfil"),
     };

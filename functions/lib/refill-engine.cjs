@@ -28,7 +28,7 @@
 const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 // The owner's shop-source rule (a shop never refills from Central once its hub
 // has held the product) — a leaf module, stated once. See shop-source-rule.cjs.
-const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
+const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -953,8 +953,11 @@ function computeRefillPlan(snapshot) {
         // flight for EVERY close and resize below, not only the shop-source
         // withdrawal (CodeRabbit, PR #673). A request whose sentQty is recorded
         // is judged as before.
-        const inFlightMidWrite = !!rr && rr.status === "open" && requestUntouched(rr) && movedRefillIds.has(String(entry.refillId));
-        const inFlight = inFlightPlanGen || inFlightLedger || inFlightMidWrite;
+        const inFlightMidWrite = !!rr && rr.status === "open" && requestUntouched(rr, nowMs) && movedRefillIds.has(String(entry.refillId));
+        // …and a request a picker has CLAIMED (shop-source-rule.cjs
+        // pickInProgress): stock may be leaving right now.
+        const inFlightPicking = !!rr && rr.status === "open" && pickInProgress(rr, nowMs);
+        const inFlight = inFlightPlanGen || inFlightLedger || inFlightMidWrite || inFlightPicking;
         // ── A SHOP NEVER REFILLS FROM CENTRAL ONCE ITS HUB HELD IT (owner rule
         // 2026-09-17, enforced here since 2026-10-03). The only shop ← Central
         // lock is a first-batch one, judged legitimate when it was created (its
@@ -966,7 +969,7 @@ function computeRefillPlan(snapshot) {
         // lock-less pass below (satisfiedClosures).
         const hubServes = shopCentralWithdrawal({
           dest, pid, entry, rr, inFlight, routes, locations,
-          snapshot: { stock, openIndex, heldLines, refillRequests },
+          snapshot: { stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
           closes.push({
@@ -981,7 +984,10 @@ function computeRefillPlan(snapshot) {
         const sourceLoc = entry.source || routes[dest];
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
-        if (needGone || unfillable || sourceEmpty) {
+        // A claimed request (a pick in progress) is never planned for
+        // withdrawal — needGone and unfillable included; the apply re-checks
+        // inside the transaction as well (refill-scan.cjs closeRequestTxn).
+        if ((needGone || unfillable || sourceEmpty) && !inFlightPicking) {
           const why = needGone ? "no_longer_needed" : unfillable ? "unfillable" : "awaiting_upstream";
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId,
@@ -1198,7 +1204,7 @@ function computeRefillPlan(snapshot) {
         const hubServes = shopCentralWithdrawal({
           dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,
           inFlight: movedRefillIds.has(String(id)), routes, locations,
-          snapshot: { stock, openIndex, heldLines, refillRequests },
+          snapshot: { stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
           satisfiedClosures.push({
