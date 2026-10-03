@@ -117,6 +117,11 @@ obeyed the rule.
    than the trigger cancelled a first-batch row with a reason, the trigger raised
    Hub 2's leg as if the shop's request had been served.
 
-The fix (commit 2) is one rule module, `functions/lib/shop-source-rule.cjs`,
+4. **A first batch whose shop-lock claim was lost had no engine lock at all.**
+   The engine's reconcile walks locks, so it never saw that row. Worse, the
+   engine counted no inbound for it, so the deficit loop could raise the
+   shop's need again beside it (found by the adversarial review).
+
+The fix (commit 2, completed by the review fixes) is one rule module, `functions/lib/shop-source-rule.cjs`,
 applied where every engine source is chosen and where every open shop request is
 reconciled. The details are in the PR.
