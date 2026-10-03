@@ -1036,7 +1036,14 @@ export default function ShopifyPublishView({ products = [], onExit }) {
 
   useEffect(() => {
     if (typeof window === "undefined") return undefined;
-    const onFocus = () => refreshNodes(pendingPidsRef.current);
+    const onFocus = () => {
+      refreshNodes(pendingPidsRef.current);
+      // The mini re-judges stock every tick, so a page left open picks up
+      // hides and restocks on return (cached 60 s, keys only). The state
+      // changes only when the set did, so the window does not churn.
+      loadReviewHidden().then((h) => setReviewHidden((prev) =>
+        prev.size === h.size && [...h].every((p) => prev.has(p)) ? prev : h));
+    };
     window.addEventListener("focus", onFocus);
     return () => window.removeEventListener("focus", onFocus);
   }, [refreshNodes]);
