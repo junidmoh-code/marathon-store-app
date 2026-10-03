@@ -36,7 +36,7 @@ import { detectPlatform, narrowBreakpointFor } from "./device/platform";
 import UpdateBanner from "./update/UpdateBanner";
 import { setUpdateBusy } from "./update/updateChecker";
 import ClockWarningBanner from "./components/ClockWarningBanner";
-import { categorize, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
+import { categorize, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPerfume } from "./utils/productCategory";
 import { uploadBroadcastMedia } from "./broadcastStorage";
 import AuthGate from "./components/AuthGate";
 import { usePermissions } from "./components/PermissionsContext";
@@ -6315,7 +6315,8 @@ function AdminView({ products, orders, onExit }) {
       const newProduct = buildNewProduct(taxonomy, form, {
         id,
         photoUrl: photoUrl ?? null,
-        brand: brandOf(form.name),
+        brand: brandInfo(form.name).brand,
+        brandFlag: brandInfo(form.name).flag,
         // The style code carried through from the gate. Absent for any product
         // added without one — the field is omitted, never nulled.
         styleCode: intake ? intake.styleCode : null,

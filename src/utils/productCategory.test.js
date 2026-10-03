@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { categorize, sizeClass, brandOf, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPriceRecord, PRICE_RECORD_CATEGORY } from "./productCategory.js";
+import { categorize, sizeClass, brandOf, brandInfo, CATEGORY_TREE, TOP_CATEGORIES, UNCATEGORIZED, UNCATEGORIZED_TOP, topCategory, isPriceRecord, PRICE_RECORD_CATEGORY } from "./productCategory.js";
 
 const SHOE = ["6", "7", "8", "9", "10", "11"];
 const CLOTHES = ["S", "M", "L", "XL", "XXL"];
@@ -22,7 +22,47 @@ describe("brandOf", () => {
     expect(brandOf("New Balance 550")).toBe("New Balance");
     expect(brandOf("Fear of God Essentials Tee")).toBe("Fear of God");
   });
-  it("first token otherwise", () => expect(brandOf("Lacoste Polo White")).toBe("Lacoste"));
+  it("known brands anywhere in the name", () => {
+    expect(brandOf("Lacoste Polo White")).toBe("Lacoste");
+    expect(brandOf("T-shirt white Karl Lagerfeld w700#")).toBe("Karl Lagerfeld");
+    expect(brandOf("Furry slide BALENCIAGA brown")).toBe("Balenciaga");
+  });
+  it("NEVER the first word: first names, garment, colour and material words get no brand", () => {
+    for (const n of ["T-shirt white GLFS T1024#1", "Denim pant black N9030#", "Black Striped T-Shirt", "Golf t-shirt cream white BC #1",
+      "Sweater hoodie cream white", "Leather Jacket Brown", "Jerseys purple"]) expect(brandOf(n), n).toBeNull();
+  });
+  it("split first names resolve to the full brand", () => {
+    expect(brandOf("Christian Louboutin Louis Junior Spikes Black")).toBe("Christian Louboutin");
+    expect(brandOf("Christian loubiton Paris Black")).toBe("Christian Louboutin");
+    expect(brandOf("CHRISTINA LOUBOUTIN LOUIS BROWN")).toBe("Christian Louboutin");
+    expect(brandOf("Christians LOUBOUTIN LOUIS white")).toBe("Christian Louboutin");
+    expect(brandOf("ALEXANDER MC QUEEN FULL BLACK")).toBe("Alexander McQueen");
+    expect(brandOf("Alexandra maqueen")).toBe("Alexander McQueen");
+    expect(brandOf("Daniel wellington watch gold")).toBe("Daniel Wellington");
+    expect(brandOf("Dr. Martens Carlson Black Suede")).toBe("Dr. Martens");
+    expect(brandOf("Christian Dior Saddle")).toBe("Dior");
+  });
+  it("staff typos of known brands", () => {
+    expect(brandOf("Lacoster golf polo white")).toBe("Lacoste");
+    expect(brandOf("Guccl bag black")).toBe("Gucci");
+    expect(brandOf("Timbalend motion creem")).toBe("Timberland");
+  });
+  it("Air Jordan stays Jordan even after 'Nike'; collabs take the first brand named", () => {
+    expect(brandOf("Nike Air Jordan 1 Low")).toBe("Jordan");
+    expect(brandOf("Air Nike tracksuit red and black")).toBe("Nike");
+    expect(brandOf("Supreme x Nike air force 1 purple")).toBe("Supreme");
+  });
+  it("word-brands only count as the first word", () => {
+    expect(brandOf("On cloud brown")).toBe("On");
+    expect(brandOf("Slide on black")).toBeNull();
+    expect(brandOf("Alo bag green")).toBe("Alo");
+  });
+  it("brandInfo flags an unrecognised name; supplier labels and codes are unbranded, not flagged", () => {
+    expect(brandInfo("Sweater hoodie cream white")).toEqual({ brand: null, flag: "unrecognised" });
+    expect(brandInfo("Shambeen long sleeve green 9536")).toEqual({ brand: null, flag: null });
+    expect(brandInfo("Bs-8022 Grey")).toEqual({ brand: null, flag: null });
+    expect(brandInfo("Nike Air Max")).toEqual({ brand: "Nike", flag: null });
+  });
   it("null for code-only / unbranded", () => {
     expect(brandOf("Lx:1222")).toBeNull();
     expect(brandOf("8290 Barley")).toBeNull();
