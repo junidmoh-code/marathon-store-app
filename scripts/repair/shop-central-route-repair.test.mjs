@@ -100,6 +100,19 @@ describe("shop ← Central repair", () => {
     expect(db.state.root.refill_engine.open.trophy.p1.M.refillId).toBe("other");
   });
 
+  it("a row deleted between plan and apply is never re-created, and a row carrying an order is never this script's to cancel", async () => {
+    const db = world();
+    db.state.root.refill_requests.g = fb("p3", "M", "marathon-pe", { createdFrom: { engine: true, source: "central", orderId: "R001-1" } });
+    const { plan } = await buildPlan(db, { readOpen, readSince });
+    const g = plan.find((p) => p.id === "g");
+    expect(g.withdraw).toBe(false);
+    expect(g.inFlight).toBe(true);
+    delete db.state.root.refill_requests.a;
+    expect(await applyPlan(db, plan, NOW)).toEqual({ withdrawn: 0, refused: 1, locksReleased: 0 });
+    expect(db.state.root.refill_requests.a).toBeUndefined();
+    expect(db.state.root.refill_requests.g.status).toBe("open");
+  });
+
   it("Section 1 has the same rule: Pine ← Central is withdrawn when Hub 3 held the product (once Pine is routed via Hub 3)", () => {
     const routes = { ...ROUTES, hub3: "central", "marathon-pine": "hub3" };
     const row = fb("p1", "M", "marathon-pine", { createdFrom: { firstBatch: true, source: "central" } });

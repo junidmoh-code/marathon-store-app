@@ -77,7 +77,11 @@ const MUTATIONS = [
   { id: "M-REP-UNTOUCHED", guard: "the repair never withdraws a sent row", file: REPAIR,
     from: `  const withdraw = !!hub && untouched && !midPick && presence.length > 0;`, to: `  const withdraw = !!hub && presence.length > 0;`, tests: REPAIR_TESTS },
   { id: "M-REP-CAS", guard: "the repair's CAS refuses a row picked in the gap", file: REPAIR,
-    from: `      if (!cur || cur.status !== "open" || !rule.requestUntouched(cur) || cur.cancelReason) return undefined;`, to: `      if (!cur) return undefined;`, tests: REPAIR_TESTS },
+    from: `      if (cur.status !== "open" || !rule.requestUntouched(cur) || cur.cancelReason) return undefined;`, to: `      if (cur.status !== "open") return undefined;`, tests: REPAIR_TESTS },
+  { id: "M-REP-NO-RECREATE", guard: "a deleted row is never re-created from the plan", file: REPAIR,
+    from: `      if (cur === null || cur === undefined) return null;`, to: `      if (cur === null || cur === undefined) cur = p.row;`, tests: REPAIR_TESTS },
+  { id: "M-REP-ORDER", guard: "a row carrying an order is left to the engine", file: REPAIR,
+    from: `  const midPick = !!(order || row.createdFrom?.orderId || row.orderId);`, to: `  const midPick = !!(order && order.clothingPlanGen != null);`, tests: REPAIR_TESTS },
   { id: "M-REP-LOCK-OWN", guard: "the repair releases only the lock naming its row", file: REPAIR,
     from: `      return cur && cur.refillId === p.id ? null : undefined;`, to: `      return null;`, tests: REPAIR_TESTS },
 ];

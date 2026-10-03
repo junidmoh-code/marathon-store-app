@@ -43,9 +43,13 @@ export const isShopCentral = (r, { routes, locations }) =>
 export function decideRow({ row, routes, locations, hubNode, hubLocks, heldLines, openRows, order }) {
   const hub = rule.shopHubFor(row.requestingLocation, { routes, locations });
   const untouched = row.status === "open" && rule.requestUntouched(row);
-  // Mid-pick evidence the engine also honours: an order whose fulfil locked
-  // its split. (First-batch rows carry no order; engine store legs do.)
-  const midPick = !!(order && order.clothingPlanGen != null);
+  // A row that carries an ORDER (an engine store leg) is never this script's
+  // to cancel: its mid-pick state lives on the order (clothingPlanGen), which
+  // can change between this plan and the apply, and no request-level CAS can
+  // see it. The engine's reconcile owns those, with its own order-first
+  // transaction (refill-scan.cjs). First-batch rows carry no order. (CodeRabbit,
+  // PR #673.)
+  const midPick = !!(order || row.createdFrom?.orderId || row.orderId);
   const hubOpenRequests = (openRows || [])
     .filter((r) => r && r.status === "open" && r.productId === row.productId && r.requestingLocation === hub && !r.shadow)
     .map((r) => ({ createdAt: r.createdAt }));
@@ -96,18 +100,21 @@ export async function applyPlan(db, plan, nowIso) {
   let withdrawn = 0, refused = 0, locksReleased = 0;
   for (const p of plan) {
     if (!p.withdraw) continue;
-    // COLD-NULL TRAP: judge a null first callback against the row the plan
-    // read; the proposal then CASes against the server value.
-    const res = await db.ref(`refill_requests/${p.id}`).transaction((raw) => {
-      const cur = raw === null || raw === undefined ? p.row : raw;
-      if (!cur || cur.status !== "open" || !rule.requestUntouched(cur) || cur.cancelReason) return undefined;
+    // COLD-NULL: the first callback can see null for a row that exists.
+    // Returning null PROBES — a present row fails the compare and the callback
+    // re-runs with the server value; a row truly gone commits null onto
+    // nothing (a no-op). Never the plan's snapshot: that would re-create a
+    // deleted request as a cancelled copy. (CodeRabbit, PR #673.)
+    const res = await db.ref(`refill_requests/${p.id}`).transaction((cur) => {
+      if (cur === null || cur === undefined) return null;
+      if (cur.status !== "open" || !rule.requestUntouched(cur) || cur.cancelReason) return undefined;
       const next = { ...cur, status: "cancelled", cancelReason: REPAIR_REASON, resolvedAt: nowIso };
       // The first-batch trigger's "done" marker in the same write, so the
       // re-fire this cancel causes raises no Hub 2 leg from it.
       if (cur.createdFrom?.firstBatch === true) next.firstBatch = { ...(cur.firstBatch || {}), hub2Leg: { none: "hub2_present", at: nowIso } };
       return next;
     });
-    if (!res.committed) { refused++; continue; }
+    if (!res.committed || res.snapshot.val()?.cancelReason !== REPAIR_REASON) { refused++; continue; }
     withdrawn++;
     const lockRef = db.ref(`refill_engine/open/${p.store}/${p.pid}/${encodeSizeKey(String(p.size ?? ""))}`);
     const held = (await lockRef.once("value")).val();
