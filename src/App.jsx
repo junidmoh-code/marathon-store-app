@@ -17,7 +17,7 @@ import { SEARCH_IDENTITY_PATH, buildRecordIdentity, shouldReplaceIdentity } from
 import { filterMergedProducts, followMerge, isMergedAway } from "./utils/mergedProducts";
 import { stockCellPath, decodedCellKey, encodeSizeKey, decodeSizeKey, assertSafeSegment } from "./utils/sizeKey";
 import { productPhotoObjectPath } from "./utils/productPhotoPaths";
-import { dataURLToBlob, loadImageFile, encodeCompressed, prepareProductPhoto, prepareBoxPhoto } from "./utils/productPhotoEncode";
+import { dataURLToBlob, loadImageFile, encodeCompressed, prepareProductPhoto } from "./utils/productPhotoEncode";
 import { guideFor, missingPhotoSteps } from "./components/admin/photoGuides.js";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
@@ -278,7 +278,7 @@ async function uploadBoxPhoto(productId, file) {
   // replaced, so cap staleness at 7 days rather than risk a year-stale copy.
   await uploadBytes(sRef, blob, { contentType: "image/jpeg", cacheControl: "public, max-age=604800" });
   const url = await getDownloadURL(sRef);
-  // A real box photo supersedes an earlier "No box" (boxSkipped removed).
+  // (boxSkipped: a marker from the short-lived "No box" option — cleared here.)
   await update(ref(database, `products/${productId}`), { photoBoxUrl: url, boxPhotoUpdatedAt: serverNowMs(), boxSkipped: null });
   return url;
 }
@@ -5940,12 +5940,12 @@ function AdminView({ products, orders, onExit }) {
   // <input type="number"> strings here and parsed on save — an empty field
   // round-trips to "not set" instead of 0. `shoeboxTouched` tracks a manual
   // toggle; once true we stop auto-syncing it from the category.
-  // Guided photos (2026-10-02): photoSourceBlob is the ≤2400px AI source copy
-  // of the product photo; boxBlob / boxPreviewUrl the footwear box photo. See
-  // photoGuides.js and handleGuidedPhoto below.
+  // Guided photos: photoSourceBlob is the ≤2400px AI source copy of the
+  // product photo — for footwear ONE photo of the shoe with its box (3 Oct).
+  // See photoGuides.js and handleGuidedPhoto below.
   // sku + barcode are NOT in form state — they auto-generate at save time via
   // reserveNextSkuAndBarcode() so the sequence stays tight and gap-free.
-  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, boxBlob:null, boxPreviewUrl:null, boxSkipped:false, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
+  const [form, setForm] = useState({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
   const [shoeboxTouched, setShoeboxTouched] = useState(false);
   // ── STYLE CODE INTAKE (step 1) ──────────────────────────────────────────
   // While null, "Add Product" shows the style-code gate instead of the create
@@ -6150,7 +6150,7 @@ function AdminView({ products, orders, onExit }) {
       alert("Photograph the barcode printed on the box — or tap “generate a shop barcode instead” if it will not read.");
       return;
     }
-    // ── GUIDED PHOTOS: footwear needs the shoe AND its box ──────────────────
+    // ── GUIDED PHOTOS: footwear needs its one photo (the shoe with its box) ──
     // The same rule the form's Save button applies (missingPhotoSteps, pure, in
     // photoGuides.js), re-checked here because this handler is the gate and the
     // button is only its visible half. Clothing's garment step is optional and
@@ -6158,7 +6158,7 @@ function AdminView({ products, orders, onExit }) {
     const photoGuide = guideFor({ categoryKey: form.categoryKey, isClothing: formIsClothing });
     const photoMissing = missingPhotoSteps(photoGuide, form);
     if (photoMissing.length) {
-      alert(`Before saving: ${photoMissing.map((st) => (st.skippable ? `take the ${st.title.toLowerCase()} or tap "${st.skipLabel}"` : `take the ${st.title.toLowerCase()}`)).join(", and ")}.`);
+      alert(`Before saving: take the ${photoMissing.map((st) => st.title.toLowerCase()).join(" and ")}.`);
       return;
     }
     // ── A SECOND RECORD FOR A CODE WE ALREADY HOLD IS A DELIBERATE ACT ──────
@@ -6247,11 +6247,10 @@ function AdminView({ products, orders, onExit }) {
       // photo.jpg above is the 800px app copy and stays exactly what it was.
       // These are the high-resolution originals (≤2400px, q0.9) the AI Studio
       // pipeline works from, at deterministic paths beside it:
-      //   • source_photo.jpg → photoSourceUrl
-      //   • source_box.jpg   → photoBoxUrl + boxPhotoUpdatedAt — EXACTLY the
-      //     convention uploadBoxPhoto uses, so house-style sneaker generations
-      //     attach this box the same way they attach one added later from the
-      //     product page.
+      //   • source_photo.jpg → photoSourceUrl — for footwear the ONE photo of
+      //     the shoe WITH its box (3 Oct); the New Arrivals generator takes both
+      //     from it. A separate box photo is only ever added from the product
+      //     page (uploadBoxPhoto → photoBoxUrl).
       // Uploaded BEFORE the record write so all of it lands in the ONE set()
       // below — no follow-up update that could fail and leave a shoe without
       // the box its own form refused to save without. Bounded cache (NOT
@@ -6272,12 +6271,6 @@ function AdminView({ products, orders, onExit }) {
           if (needsSources) throw srcErr;
           console.warn("source photo upload failed (product save continues):", srcErr);
         }
-      }
-      let photoBoxUrl = null;
-      if (needsSources && form.boxBlob) {
-        const boxRef = storageRef(storage, `products/${id}/source_box.jpg`);
-        await uploadBytes(boxRef, form.boxBlob, { contentType: "image/jpeg", cacheControl: "no-cache" });
-        photoBoxUrl = await getDownloadURL(boxRef);
       }
 
       // ── LABEL PHOTO ─────────────────────────────────────────────────────
@@ -6387,13 +6380,6 @@ function AdminView({ products, orders, onExit }) {
       // The AI source copies uploaded above. Set only when present — the
       // record never carries a null for a photo it was not given.
       if (photoSourceUrl) newProduct.photoSourceUrl = photoSourceUrl;
-      if (photoBoxUrl) {
-        newProduct.photoBoxUrl = photoBoxUrl;
-        newProduct.boxPhotoUpdatedAt = serverNowMs();
-      } else if (needsSources && form.boxSkipped) {
-        // Recorded so nobody chases a missing box photo: staff said "No box".
-        newProduct.boxSkipped = true;
-      }
       // ── STYLE CODE PROVENANCE ───────────────────────────────────────────
       // Where the suggested data came from and who accepted it. Recorded so a
       // wrong catalogue match can be traced back later — "who confirmed this,
@@ -6672,8 +6658,8 @@ function AdminView({ products, orders, onExit }) {
       }
 
       // Any photo still being prepared belongs to the product just saved.
-      photoPrepSeq.current.photo += 1; photoPrepSeq.current.box += 1;
-      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, boxBlob:null, boxPreviewUrl:null, boxSkipped:false, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
+      photoPrepSeq.current.photo += 1;
+      setForm({ name:"", categoryKey:"", sizeRun:[], photo:"", photoUrl:null, photoBlob:null, photoSourceBlob:null, hubs:["hub1"], stockPrice:"", retailPrice:"", hasShoeBoxOption:true, printedBarcode:null, printedBarcodeAuto:false });
       setShoeboxTouched(false);
       setRecvQtys({});
       setSaveAttempted(false);
@@ -6788,7 +6774,7 @@ function AdminView({ products, orders, onExit }) {
   // pick of the same slot, or the form being saved and reset, makes an older
   // one stale — its result must never land (it would put the last product's
   // photo on the next one). Each slot has its own counter; a reset bumps both.
-  const photoPrepSeq = useRef({ photo: 0, box: 0 });
+  const photoPrepSeq = useRef({ photo: 0 });
   const applyProductPhotoFile = (file) => {
     if (!file) return;
     const seq = ++photoPrepSeq.current.photo;
@@ -6797,24 +6783,11 @@ function AdminView({ products, orders, onExit }) {
       .catch((err) => { if (seq !== photoPrepSeq.current.photo) return; console.warn("product photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
   };
   const handleImageUpload = e => applyProductPhotoFile(e.target.files[0]);
-  // A guided step's capture (photoGuides.js): the shoe / garment step fills the
-  // product photo; the box step fills boxBlob (≤2400px q0.9, uploaded on save
-  // to source_box.jpg) plus a small preview for the form's thumbnail.
+  // A guided step's capture (photoGuides.js) fills the product photo — for
+  // footwear the one photo of the shoe with its box.
   const handleGuidedPhoto = (step, file) => {
     if (!file) return;
-    if (step.formField !== "box") { applyProductPhotoFile(file); return; }
-    const seq = ++photoPrepSeq.current.box;
-    prepareBoxPhoto(file)
-      // A real box photo replaces an earlier "No box".
-      .then((b) => { if (seq === photoPrepSeq.current.box) setForm(f => ({ ...f, boxBlob: b.boxBlob, boxPreviewUrl: b.boxPreviewUrl, boxSkipped: false })); })
-      .catch((err) => { if (seq !== photoPrepSeq.current.box) return; console.warn("box photo prepare failed:", err); alert(err?.message || "Could not read that photo. Try another one."); });
-  };
-
-  // "No box" — one tap answers the box step; no box is uploaded and the poster
-  // uses the brand's library box. Tapping again (Undo) asks for the box again.
-  const handleSkipBox = (skip) => {
-    ++photoPrepSeq.current.box; // a box photo still being prepared must not land after "No box"
-    setForm(f => (skip ? { ...f, boxSkipped: true, boxBlob: null, boxPreviewUrl: null } : { ...f, boxSkipped: false }));
+    applyProductPhotoFile(file);
   };
 
   // Detail page: which product, and stale-hash guard. If the hash points
@@ -6985,7 +6958,7 @@ function AdminView({ products, orders, onExit }) {
           selectCategory={selectCategory} toggleHub={toggleHub} toggleShoebox={toggleShoebox}
           recvQtys={recvQtys} setRecvQtys={setRecvQtys}
           recvLoc={recvLoc} setRecvLoc={setRecvLoc} recvRegistry={recvRegistry}
-          fileInputRef={fileInputRef} handleImageUpload={handleImageUpload} onGuidedPhoto={handleGuidedPhoto} onSkipBox={handleSkipBox}
+          fileInputRef={fileInputRef} handleImageUpload={handleImageUpload} onGuidedPhoto={handleGuidedPhoto}
           products={products}
           isPerfume={formIsPerfume}
           nameSuggestions={

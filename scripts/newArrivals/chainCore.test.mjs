@@ -110,11 +110,38 @@ describe("refusals go to Rejected in plain words — never forced", () => {
     expect((await read(db, `shopify_publish/${PID}`)).cleanName).toBeUndefined();
   });
 
-  it("no retail price → rejected before anything is written", async () => {
-    const db = world({ product: { retailPrice: null } });
-    const r = await advance(PID, deps(db).d);
-    expect(r.reason).toMatch(/no retail price/);
-    expect((await read(db, `products/${PID}`)).photoUrl).toBe(ORIG);
+  it("no retail price → photo, name and condition still done; Shopify WAITS (not rejected), and resumes once retail exists", async () => {
+    const db = world({ product: { retailPrice: null, stockPrice: 550 } });
+    let claimed = 0;
+    const r = await advance(PID, deps(db, { claimPublish: () => { claimed++; return true; } }).d);
+    expect(r).toEqual({ pid: PID, outcome: "waiting", step: "retail-price" });
+    // (a)–(c) ran without a retail price.
+    expect((await read(db, `products/${PID}`)).photoUrl).toBe(GEN);
+    const n = await read(db, `shopify_publish/${PID}`);
+    expect(n.photos).toEqual([GEN]);
+    expect(n.cleanName).toBe("Low-top football boot in lilac");
+    expect(n.condition).toBe(EXCELLENT);
+    // (d) never attempted: not claimed, not switched on.
+    expect(claimed).toBe(0);
+    expect(n.desiredState).not.toBe("on");
+    const it2 = await read(db, `new_arrivals/items/${PID}`);
+    expect(Object.keys(it2.chain).sort()).toEqual(["condition", "name", "photo", "waiting"]);
+    expect(it2.chain.waiting.for).toBe("retail price");
+    expect(it2.status).not.toBe("rejected");
+    expect(it2.rejection).toBeFalsy();
+    // Retail price set → the next pass publishes and clears the wait.
+    await db.ref(`products/${PID}/retailPrice`).set(650);
+    await advance(PID, deps(db, { claimPublish: () => { claimed++; return true; } }).d);
+    expect(claimed).toBe(1);
+    expect((await read(db, `new_arrivals/items/${PID}`)).chain.waiting).toBeFalsy();
+  });
+
+  it("a zero or junk retail price waits the same way", async () => {
+    for (const retailPrice of [0, "abc"]) {
+      const db = world({ product: { retailPrice } });
+      const r = await advance(PID, deps(db).d);
+      expect(r).toMatchObject({ outcome: "waiting", step: "retail-price" });
+    }
   });
 
   it("a listing already ON refuses the photo change", async () => {

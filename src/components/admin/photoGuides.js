@@ -45,12 +45,16 @@ const SHOE = {
   marks: ["M 7 72 L 196 72", "M 150 2 L 186 2 M 178 -4 L 186 2 L 178 8"],
 };
 
-// The box's FRONT / end panel, square on: a wide rectangle with the lid's
-// lower edge drawn across the top.
-const BOX = {
-  w: 170, h: 100,
-  outline: "M 0 0 H 170 V 100 H 0 Z",
-  marks: ["M 0 22 H 170"],
+// Shift every coordinate pair of an SVG path (M/L/Q with absolute x y pairs).
+const shiftPath = (d, dx, dy) => d.replace(/(-?\d+(?:\.\d+)?) (-?\d+(?:\.\d+)?)/g, (_, x, y) => `${Number(x) + dx} ${Number(y) + dy}`);
+
+// ONE PHOTO PER SHOE (Junid, 3 Oct): the shoe AND its box in the same shot.
+// The box stands behind, its FRONT / end panel square on (lid edge across the
+// top); the RIGHT shoe in front of it on the floor, outer side, toe RIGHT.
+const SHOE_WITH_BOX = {
+  w: 200, h: 156,
+  outline: "M 34 0 H 166 V 78 H 34 Z " + shiftPath(SHOE.outline, 0, 66),
+  marks: ["M 34 16 H 166", shiftPath(SHOE.marks[0], 0, 66), shiftPath(SHOE.marks[1], 0, 86)], // arrow between box and toe
 };
 
 // A garment on a hanger, FRONT facing, FULL LENGTH, centred: hook, hanger
@@ -63,27 +67,17 @@ const GARMENT = {
   marks: ["M 60 14 Q 60 4 66 4 Q 72 4 72 10", "M 60 14 L 22 36 M 60 14 L 98 36"],
 };
 
-// formField: which form slot a capture fills. "photo" is the product's own
-// photo (photoUrl / photoBlob / photoSourceBlob); "box" is the box photo
-// (boxBlob / boxPreviewUrl).
+// formField: which form slot a capture fills — "photo", the product's own
+// photo (photoUrl / photoBlob / photoSourceBlob). Footwear is ONE photo: the
+// shoe with its box in the same shot. (The separate box step and "No box" are
+// gone; a shoe photographed without its box gets the brand's library box.)
 export const SHOE_STEP = Object.freeze({
   id: "shoe", formField: "photo", required: true,
-  title: "Shoe photo",
-  instruction: "Right shoe · outer side · toe pointing right · whole shoe in the outline",
-  shape: SHOE,
-  // Low-centre: the shoe sits on the lower part of the frame, as it sits on a floor.
-  place: { cx: 0.5, cy: 0.62, maxW: 0.86, maxH: 0.5 },
-});
-
-// REQUIRED as a DECISION for every new footwear upload — the box photo, or one
-// tap on "No box" (Junid, 3 Oct: the box step must never block an upload). A
-// shoe with no box photo gets a box of its brand from the poster's box library.
-export const BOX_STEP = Object.freeze({
-  id: "box", formField: "box", required: true, skippable: true, skipLabel: "No box",
-  title: "Box photo",
-  instruction: "The shoe's own box · front panel facing you · whole box in the outline",
-  shape: BOX,
-  place: { cx: 0.5, cy: 0.55, maxW: 0.84, maxH: 0.55 },
+  title: "Shoe + box photo",
+  instruction: "One photo: the shoe AND its box · right shoe, outer side, toe pointing right · box behind it, front panel facing you",
+  shape: SHOE_WITH_BOX,
+  // Low-centre: shoe on the floor, its box standing behind it.
+  place: { cx: 0.5, cy: 0.56, maxW: 0.86, maxH: 0.7 },
 });
 
 export const GARMENT_STEP = Object.freeze({
@@ -108,7 +102,7 @@ export const BOX_PHOTO_KEYS = Object.freeze([...new Set([...FOOTWEAR_CATEGORY_KE
 export function guideFor({ categoryKey, isFootwear, isClothing } = {}) {
   const key = typeof categoryKey === "string" ? categoryKey.trim() : "";
   if (isFootwear === true || (key && BOX_PHOTO_KEYS.includes(key))) {
-    return { kind: "footwear", steps: [SHOE_STEP, BOX_STEP] };
+    return { kind: "footwear", steps: [SHOE_STEP] };
   }
   if (isClothing === true) return { kind: "clothing", steps: [GARMENT_STEP] };
   return null;
@@ -117,8 +111,6 @@ export function guideFor({ categoryKey, isFootwear, isClothing } = {}) {
 /** Has the form got the capture this step asks for? */
 export function stepFilled(step, form) {
   if (!step || !form) return false;
-  // "No box" (one tap) answers the box step as fully as a photo does.
-  if (step.formField === "box") return !!form.boxBlob || form.boxSkipped === true;
   return !!form.photoBlob;
 }
 

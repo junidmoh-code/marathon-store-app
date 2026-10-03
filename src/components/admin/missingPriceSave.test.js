@@ -37,3 +37,42 @@ describe("saveMissingPrice — the one Missing-prices save", () => {
     expect(await saveMissingPrice(P, "400", "650", { apply })).toEqual({ ok: false, error: "on special" });
   });
 });
+
+describe("saveMissingPrice — costOnly (the New Arrivals card: the stock price only)", () => {
+  it("writes ONLY the stock price; a missing retail is not demanded and never written", async () => {
+    const apply = vi.fn(async () => ({ ok: true, count: 1 }));
+    const r = await saveMissingPrice(P, "400", "", { apply, costOnly: true, label: "New Arrivals: x" });
+    expect(r).toEqual({ ok: true, count: 1 });
+    const line = apply.mock.calls[0][0].lines.p1;
+    expect(line.to).toEqual({ stockPrice: 400 });
+    expect(line.from).toEqual({ stockPrice: null });
+  });
+  it("a retail draft passed anyway is ignored under costOnly", async () => {
+    const apply = vi.fn(async () => ({ ok: true, count: 1 }));
+    await saveMissingPrice(P, "400", "650", { apply, costOnly: true });
+    expect(apply.mock.calls[0][0].lines.p1.to).toEqual({ stockPrice: 400 });
+  });
+  it("still demands a valid stock price", async () => {
+    const apply = vi.fn();
+    expect((await saveMissingPrice(P, "", "", { apply, costOnly: true })).error).toMatch(/Stock Price/);
+    expect((await saveMissingPrice(P, "0", "", { apply, costOnly: true })).error).toMatch(/Stock Price/);
+    expect(apply).not.toHaveBeenCalled();
+  });
+  it("a stock price that already exists is never overwritten (nothing to write)", async () => {
+    const apply = vi.fn();
+    expect(await saveMissingPrice({ ...P, stockPrice: 300 }, "400", "", { apply, costOnly: true })).toEqual({ ok: true, count: 0 });
+    expect(apply).not.toHaveBeenCalled();
+  });
+});
+
+describe("costOnly keeps the existing-retail check (CodeRabbit)", () => {
+  it("a new stock price above an EXISTING retail price asks first", async () => {
+    const apply = vi.fn(async () => ({ ok: true, count: 1 }));
+    const r = await saveMissingPrice({ id: "p1", name: "x", stockPrice: null, retailPrice: 500 }, "650", "", { apply, costOnly: true });
+    expect(r).toMatchObject({ ok: false, needsConfirm: true });
+    expect(apply).not.toHaveBeenCalled();
+    const ok = await saveMissingPrice({ id: "p1", name: "x", stockPrice: null, retailPrice: 500 }, "650", "", { apply, costOnly: true, confirmed: true });
+    expect(ok.ok).toBe(true);
+    expect(apply.mock.calls[0][0].lines.p1.to).toEqual({ stockPrice: 650 });
+  });
+});

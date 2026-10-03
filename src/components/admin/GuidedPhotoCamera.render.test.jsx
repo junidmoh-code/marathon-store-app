@@ -10,7 +10,7 @@ import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import GuidedPhotoCamera, { GuidedPhotoStep, GuideOutline } from "./GuidedPhotoCamera.jsx";
-import { SHOE_STEP, BOX_STEP } from "./photoGuides.js";
+import { SHOE_STEP } from "./photoGuides.js";
 
 const textIn = (inst) => (typeof inst === "string" ? inst : (inst.children || []).map(textIn).join(" "));
 const textOf = (tr) => JSON.stringify(tr.toJSON());
@@ -85,10 +85,11 @@ describe("with a camera stream", () => {
     expect(stopped).toBeGreaterThan(0);
   });
 
-  it("the box step draws the box outline and its copy", async () => {
+  it("the one footwear step draws the shoe-with-box outline and asks for both in one shot", async () => {
     setNavigator({ mediaDevices: { getUserMedia } });
-    const tr = await mount(<GuidedPhotoCamera step={BOX_STEP} onCapture={vi.fn()} onFallback={vi.fn()} onClose={vi.fn()} />);
-    expect(tr.root.find((n) => n.type === "g").props["data-guide"]).toBe("box");
+    const tr = await mount(<GuidedPhotoCamera step={SHOE_STEP} onCapture={vi.fn()} onFallback={vi.fn()} onClose={vi.fn()} />);
+    expect(tr.root.find((n) => n.type === "g").props["data-guide"]).toBe("shoe");
+    expect(textOf(tr)).toContain("the shoe AND its box");
     expect(textOf(tr)).toContain("front panel facing you");
   });
 
@@ -105,15 +106,15 @@ describe("the form's step card", () => {
     setNavigator({ mediaDevices: { getUserMedia } });
     const tr = await mount(<GuidedPhotoStep step={SHOE_STEP} filled={false} previewUrl={null} onFile={vi.fn()} />);
     expect(tr.root.findAllByType(GuidedPhotoCamera)).toHaveLength(0);
-    await act(async () => { buttonWith(tr, "Take shoe photo").props.onClick(); });
+    await act(async () => { buttonWith(tr, "Take shoe + box photo").props.onClick(); });
     expect(tr.root.findAllByType(GuidedPhotoCamera)).toHaveLength(1);
   });
 
   it("a capture is handed to onFile and the camera closes", async () => {
     setNavigator({ mediaDevices: { getUserMedia } });
     const onFile = vi.fn();
-    const tr = await mount(<GuidedPhotoStep step={BOX_STEP} filled={false} previewUrl={null} onFile={onFile} />);
-    await act(async () => { buttonWith(tr, "Take box photo").props.onClick(); });
+    const tr = await mount(<GuidedPhotoStep step={SHOE_STEP} filled={false} previewUrl={null} onFile={onFile} />);
+    await act(async () => { buttonWith(tr, "Take shoe + box photo").props.onClick(); });
     const blob = { size: 1 };
     await act(async () => { tr.root.findByType(GuidedPhotoCamera).props.onCapture(blob); });
     expect(onFile).toHaveBeenCalledWith(blob);
@@ -128,26 +129,22 @@ describe("the form's step card", () => {
       tr = TestRenderer.create(<GuidedPhotoStep step={SHOE_STEP} filled={false} previewUrl={null} onFile={vi.fn()} />,
         { createNodeMock: (el) => (el.type === "input" ? { click } : {}) });
     });
-    await act(async () => { buttonWith(tr, "Take shoe photo").props.onClick(); });
+    await act(async () => { buttonWith(tr, "Take shoe + box photo").props.onClick(); });
     expect(click).toHaveBeenCalledTimes(1);
     expect(tr.root.findAllByType(GuidedPhotoCamera)).toHaveLength(0);
   });
 });
 
-describe("GuidedPhotoStep — No box", () => {
-  it("shows a one-tap No box button that toggles, and a skipped badge", async () => {
-    const onSkip = vi.fn();
-    const tr = await mount(<GuidedPhotoStep step={BOX_STEP} filled={false} previewUrl={null} onFile={vi.fn()} onSkip={onSkip} />);
-    await act(async () => { buttonWith(tr, "No box").props.onClick(); });
-    expect(onSkip).toHaveBeenCalledWith(true);
-    const tr2 = await mount(<GuidedPhotoStep step={BOX_STEP} filled skipped previewUrl={null} onFile={vi.fn()} onSkip={onSkip} />);
-    expect(tr2.root.findAll((n) => n.props && n.props["data-testid"] === "skipped").length).toBe(1);
-    await act(async () => { buttonWith(tr2, "Undo").props.onClick(); });
-    expect(onSkip).toHaveBeenLastCalledWith(false);
+describe("GuidedPhotoStep — one photo, no No box", () => {
+  const hasButton = (tr, needle) => tr.root.findAll((n) => n.type === "button").some((b) => textIn(b).includes(needle));
+  it("never offers a No box button, even if an old onSkip is passed", async () => {
+    expect(hasButton(await mount(<GuidedPhotoStep step={SHOE_STEP} filled={false} previewUrl={null} onFile={vi.fn()} />), "No box")).toBe(false);
+    expect(hasButton(await mount(<GuidedPhotoStep step={SHOE_STEP} filled={false} previewUrl={null} onFile={vi.fn()} onSkip={vi.fn()} />), "No box")).toBe(false);
   });
-  it("no No box button without a handler, or on the shoe step", async () => {
-    const hasNoBox = (tr) => tr.root.findAll((n) => n.type === "button").some((b) => [].concat(b.props.children).join("").includes("No box"));
-    expect(hasNoBox(await mount(<GuidedPhotoStep step={BOX_STEP} filled={false} previewUrl={null} onFile={vi.fn()} />))).toBe(false);
-    expect(hasNoBox(await mount(<GuidedPhotoStep step={SHOE_STEP} filled={false} previewUrl={null} onFile={vi.fn()} onSkip={vi.fn()} />))).toBe(false);
+  it("filled → TAKEN and Retake; no skipped badge", async () => {
+    const tr = await mount(<GuidedPhotoStep step={SHOE_STEP} filled previewUrl={null} onFile={vi.fn()} />);
+    expect(textOf(tr)).toContain("TAKEN");
+    expect(hasButton(tr, "Retake")).toBe(true);
+    expect(tr.root.findAll((n) => n.props && n.props["data-testid"] === "skipped")).toHaveLength(0);
   });
 });

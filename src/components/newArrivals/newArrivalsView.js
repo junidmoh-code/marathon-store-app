@@ -36,10 +36,11 @@ export function statusLine(item) {
   const tries = Number(item?.attemptsSinceRetry) || 0;
   if (s === "new") return tries ? `Waiting for a fresh attempt (${tries} of ${MAX_ATTEMPTS} used)` : "Waiting for its photo to be generated";
   if (s === "generating") return "Generating the photo now…";
-  if (s === "ready") return Number(item?.product?.retailPrice) > 0
+  if (s === "ready") return Number(item?.product?.stockPrice) > 0
     ? "Photo checked — waiting for your Approve"
-    : "Photo checked — set a retail price in the app before approving";
+    : "Photo checked — needs a stock price before approving";
   if (s === "approved") return "Approved — publishing will start in a minute";
+  if (s === "chaining" && item?.chain?.waiting?.for === "retail price") return "Shopify waits for a retail price — the groups are posted at the stock price meanwhile";
   if (s === "chaining") return chainProgress(item);
   if (s === "done") return item?.soldOutBeforePosting ? "Sold out before posting" : "Done";
   if (s === "rejected") return rejectionText(item);
@@ -95,17 +96,18 @@ export function destinationLines(item) {
   return out;
 }
 
-/** Which prices the Ready card asks for (the same rule as Missing prices). Pure. */
-export function missingPricesOf(product) {
-  const p = product || {};
-  const none = (v) => v == null || v === "" || Number(v) === 0;
-  return { retail: none(p.retailPrice), cost: none(p.stockPrice) };
+// THE GROUPS' PRICE IS THE STOCK PRICE (Junid, 3 Oct: he sells to traders).
+// Retail is Shopify's business only and is never shown for the groups.
+/** Does this item still need a stock price (the only price the card asks for)? Pure. */
+export function needsStockPrice(product) {
+  const v = product?.stockPrice;
+  return v == null || v === "" || !(Number(v) > 0);
 }
 
-/** Which buttons an item shows. Approve only with a checked, generated photo. */
+/** Which buttons an item shows. Approve with a checked, generated photo and a stock price. */
 export function actionsFor(item) {
   return {
-    approve: item?.status === "ready" && !!item?.generatedUrl && Number(item?.product?.retailPrice) > 0,
+    approve: item?.status === "ready" && !!item?.generatedUrl && Number(item?.product?.stockPrice) > 0,
     retry: item?.status === "rejected",
   };
 }

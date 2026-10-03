@@ -127,3 +127,13 @@ test("needsCost/needsRetail: negative, NaN, and string prices count as present",
   assert.equal(needsRetail(p({ retailPrice: -5 })), false);
   assert.equal(needsRetail(p({ retailPrice: NaN })), false);
 });
+
+test("validatePrices costOnly: a missing retail is not demanded; the stock price still is", () => {
+  const v = validatePrices(p({ stockPrice: null, retailPrice: null }), "100", "", { costOnly: true });
+  assert.strictEqual(v.ok, true);
+  const bad = validatePrices(p({ stockPrice: null, retailPrice: null }), "", "", { costOnly: true });
+  assert.strictEqual(bad.ok, false);
+  assert.match(bad.error, /Stock Price/);
+  // without costOnly the retail requirement stands
+  assert.strictEqual(validatePrices(p({ stockPrice: null, retailPrice: null }), "100", "").ok, false);
+});

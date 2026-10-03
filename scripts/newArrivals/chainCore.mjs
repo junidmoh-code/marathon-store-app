@@ -115,7 +115,6 @@ export async function advance(pid, deps) {
 
   // (a) the photo
   if (!chain.photo) {
-    if (!(Number(product.retailPrice) > 0)) return reject("photo", "no retail price — set the price in the app, then Retry");
     // The publisher card's photo strip FIRST: it is the step that can refuse
     // (a listing already ON), and a refusal must leave the app photo untouched.
     // The button's own argument check first, exactly as setPublishPhotos does.
@@ -176,6 +175,16 @@ export async function advance(pid, deps) {
 
   // (d) approve on the publisher card — once, ever (ledger claim + the mutator's own isOn gate)
   if (!chain.publish) {
+    // Shopify keeps its own price logic: it needs a RETAIL price (the groups
+    // are priced at the stock price and are posted regardless). The photo,
+    // name and condition above are set either way; only Shopify waits.
+    // A WAIT, not a rejection: the item stays in the chain and resumes by itself
+    // once a retail price exists — no Retry, no regeneration, no second post.
+    if (!(Number(product.retailPrice) > 0)) {
+      if (!item.chain?.waiting) await db.ref(`${ITEMS}/${pid}/chain/waiting`).set({ for: "retail price", at: await deps.now() });
+      return { pid, outcome: "waiting", step: "retail-price" };
+    }
+    if (item.chain?.waiting) await db.ref(`${ITEMS}/${pid}/chain/waiting`).set(null);
     if (deps.claimPublish && !deps.claimPublish(pid)) {
       // Claimed by an earlier run that died before stamping. Only proceed if
       // the intent is visibly there; otherwise stop rather than risk a double.
