@@ -775,3 +775,58 @@ describe("costs — never unknown", () => {
     expect(text({ toJSON: () => testid(tree2, "spent")[0].children })).toBe("Spent so far —");
   });
 });
+
+describe("learning log — codes under every generation, ❤ Love", () => {
+  const coded = (over = {}) => ready({
+    generatedUrl: "https://x/g2.jpg", currentGen: "g2",
+    generations: {
+      g1: GEN("g1", NOW - 2000, { code: "G-0041", loved: true, lovedAt: NOW - 100 }),
+      g2: GEN("g2", NOW - 1000, { code: "G-0042" }),
+      g3: GEN("g3", NOW, {}), // no code yet
+    }, ...over,
+  });
+  const loves = (tree) => testid(tree, "love");
+  const codes = (tree) => testid(tree, "gen-code").map((n) => text({ toJSON: () => n.children }));
+  const listOf = (item) => vi.fn(async () => ({ items: [item], tabCounts: {} }));
+
+  it("prints the code under the main photo and every thumbnail; no code → nothing (no placeholder)", async () => {
+    for (const [tab, status] of [["ready", "ready"], ["rejected", "rejected"], ["done", "done"]]) {
+      const tree = await render(fakeApi([], { love: vi.fn(), list: listOf(coded({ status })) }), tab);
+      expect(codes(tree)).toEqual(["G-0042", "G-0041"]); // main first, then earlier (newest first: g3 has none)
+      const t = text(tree);
+      expect(t).not.toMatch(/unknown|G-\?|undefined/);
+    }
+    expect(view.genCode({ code: " G-0007 " })).toBe("G-0007");
+    expect(view.genCode({})).toBeNull();
+    expect(view.genCode({ code: "" })).toBeNull();
+    expect(view.genCode(null)).toBeNull();
+  });
+
+  it("❤ on every generation in Ready, Rejected and Done; loved shows filled; taps call the api with loved true/false", async () => {
+    const api = fakeApi([coded()], { love: vi.fn(async () => ({ ok: true })) });
+    const tree = await render(api);
+    expect(loves(tree)).toHaveLength(3);
+    const byLabel = (l) => loves(tree).filter((n) => n.props["aria-label"] === l);
+    expect(byLabel("Unlove")).toHaveLength(1); // g1
+    expect(text({ toJSON: () => byLabel("Unlove")[0].children })).toBe("❤");
+    expect(byLabel("Unlove")[0].props["aria-pressed"]).toBe(true);
+    expect(byLabel("Love")).toHaveLength(2);
+    // Main photo (g2) — love it.
+    await act(async () => { byLabel("Love")[0].props.onClick(); });
+    expect(api.love).toHaveBeenLastCalledWith("p1789999990000", "g2", true);
+    expect(text(tree)).toContain("Loved — remembered for the learning log.");
+    // The loved one (g1) — un-love it.
+    await act(async () => { byLabel("Unlove")[0].props.onClick(); });
+    expect(api.love).toHaveBeenLastCalledWith("p1789999990000", "g1", false);
+    expect(api.approve).not.toHaveBeenCalled();
+    expect(api.select).not.toHaveBeenCalled();
+
+    for (const [tab, status] of [["rejected", "rejected"], ["done", "done"]]) {
+      const t2 = await render(fakeApi([], { love: vi.fn(), list: listOf(coded({ status })) }), tab);
+      expect(loves(t2)).toHaveLength(3);
+    }
+    expect(view.canLove("new", { url: "u" })).toBe(false);
+    expect(view.canLove("ready", { url: null })).toBe(false);
+    expect(view.isLoved({ loved: "true" })).toBe(false);
+  });
+});

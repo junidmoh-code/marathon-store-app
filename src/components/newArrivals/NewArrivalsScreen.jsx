@@ -9,7 +9,9 @@
 // Undo toast can bring it back. There is no Skipped tab. Every action is
 // logged to the ledger by the callables. Every generation is shown, with its cost
 // (metered, or "~R… (estimated)" — never unknown); any of them can be made the
-// main photo with "Use this one" (logged as a pick).
+// main photo with "Use this one" (logged as a pick). LEARNING LOG: each
+// generation's permanent code (G-0042) is printed under its image, and every
+// generation on Ready, Rejected and Done has a ❤ Love toggle (logged too).
 //
 // PRICES: every New / Ready / Rejected card has "Stock price (R)" and "Retail
 // price (R)", pre-filled, one Save — through the admin price save
@@ -35,7 +37,7 @@ import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue,
 import {
   TABS, REJECT_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
   shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, verdictText, stockText, agreementText, rejectRateText,
-  isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup,
+  isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
 } from "./newArrivalsView";
 
 const REFRESH_MS = 30_000;
@@ -43,13 +45,31 @@ const PAGE = 30;
 const RELOAD_CHUNK = 100;   // the callable's page ceiling
 const BULK_CHUNK = 200;     // the callables take at most 300 pids a call
 
-function Photo({ url, label }) {
+// The generation's permanent code under its image (nothing when it has none yet).
+function GenCode({ gen, small = false }) {
+  const code = genCode(gen);
+  return code ? <div data-testid="gen-code" style={{ color: "#dfe7ff", fontSize: small ? 9 : 11, fontWeight: 700, marginTop: 2, textAlign: "center", letterSpacing: 0.3 }}>{code}</div> : null;
+}
+
+// ❤ Love — separate from Approve; tapping a loved generation un-loves it.
+function LoveButton({ item, gen, busy, onLove, small = false }) {
+  const loved = isLoved(gen);
+  return (
+    <button data-testid="love" aria-label={loved ? "Unlove" : "Love"} aria-pressed={loved} disabled={busy}
+      onClick={() => onLove(item.pid, gen.genId, !loved)}
+      style={{ ...bGray, width: small ? "100%" : undefined, padding: small ? "4px 4px" : "6px 12px", fontSize: small ? 12 : 14, marginTop: 3,
+        color: loved ? RED : "#fff", opacity: busy ? 0.5 : 1 }}>{loved ? "❤" : "♡"}{small ? "" : loved ? " Loved" : " Love"}</button>
+  );
+}
+
+function Photo({ url, label, children = null }) {
   return (
     <figure style={{ margin: 0, flex: 1, minWidth: 0 }}>
       {url
         ? <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={label} loading="lazy" style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 12, display: "block", background: "#111" }} /></a>
         : <div style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 12, background: "#111", color: GRAY, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>No photo</div>}
       <figcaption style={{ color: GRAY, fontSize: 11, marginTop: 4, textAlign: "center" }}>{label}</figcaption>
+      {children}
     </figure>
   );
 }
@@ -87,7 +107,7 @@ function PriceFields({ item, busy, onSavePrices, needNote }) {
 // each with its cost and the checker's label. On Ready and Rejected every
 // thumbnail (checker-failed ones and re-checks too) has "Use this one", which
 // makes it the main photo — Approve then uses it.
-function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, approveEnabled = false }) {
+function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, approveEnabled = false, onLove = null }) {
   const gens = generationsOf(item);
   const mainId = currentGenId(item);
   const main = gens.find((g) => g.genId === mainId) || null;
@@ -98,7 +118,10 @@ function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, appr
     <>
       <div style={{ display: "flex", gap: 8 }}>
         <Photo url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
-        {(mainUrl || tab !== "new" || gens.length > 0) && <Photo url={mainUrl} label={main ? `Generated${earlier.length ? " · Main photo" : ""} · ${costText(main, stats)}` : "Generated"} />}
+        {(mainUrl || tab !== "new" || gens.length > 0) && <Photo url={mainUrl} label={main ? `Generated${earlier.length ? " · Main photo" : ""} · ${costText(main, stats)}` : "Generated"}>
+          {main && <GenCode gen={main} />}
+          {main && onLove && canLove(tab, main) && <div style={{ textAlign: "center" }}><LoveButton item={item} gen={main} busy={busy} onLove={onLove} /></div>}
+        </Photo>}
       </div>
       {earlier.length > 0 && (
         <div data-testid="earlier-generations" style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 8 }}>
@@ -107,7 +130,9 @@ function Generations({ item, tab, stats, busy, onPick, onApproveGen = null, appr
               <a href={g.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
                 <img src={g.url} alt={`Earlier attempt ${whenText(g.at)}`} loading="lazy" style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, display: "block", background: "#111" }} />
               </a>
+              <GenCode gen={g} small />
               <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g, stats)}{g.verdict ? ` · ${g.verdict.pass ? "pass" : "failed"}` : ""}</div>
+              {onLove && canLove(tab, g) && <LoveButton item={item} gen={g} busy={busy} onLove={onLove} small />}
               {onPick && canPick(item, g) && (
                 <button disabled={busy} onClick={() => onPick(item.pid, g.genId)}
                   style={{ ...bBlue, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy ? 0.5 : 1 }}>Use this one</button>
@@ -146,7 +171,7 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
         </label>
       )}
       <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={(tab === "ready" || tab === "rejected") ? h.onPick : null}
-        onApproveGen={tab === "rejected" ? h.onApproveGen : null} approveEnabled={acts.approveAnywayEnabled} />
+        onApproveGen={tab === "rejected" ? h.onApproveGen : null} approveEnabled={acts.approveAnywayEnabled} onLove={h.onLove} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
       {shopifyNameLine(item) && (
         <div style={{ color: item.suggestedName ? BLUE_L : GRAY, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>
@@ -382,6 +407,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "ready", s
     onReject: (pid, reason) => run(() => api.reject(pid, reason), () => `Rejected: ${reason}.`),
     // "Use this one": that generation becomes the main photo; Approve then uses it.
     onPick: api.select ? (pid, genId) => run(() => api.select(pid, genId), (r) => (r?.unchanged ? "That photo is already the main one." : "Main photo changed — Approve uses this one.")) : null,
+    // ❤ Love / un-love one generation — never moves or approves the item.
+    onLove: api.love ? (pid, genId, loved) => run(() => api.love(pid, genId, loved),
+      (r) => (r?.unchanged ? (loved ? "Already loved." : "Not loved.") : loved ? "Loved — remembered for the learning log." : "Love removed.")) : null,
     onSkip,
   };
 

@@ -143,6 +143,23 @@ export function spentText(stats) {
 export function canPick(item, gen) {
   return (item?.status === "ready" || item?.status === "rejected") && !!gen?.url && gen.genId !== currentGenId(item);
 }
+// LEARNING LOG (3 Oct evening): every generation has a permanent code
+// ("G-0042", set by the poster) printed under its image; one with no code yet
+// shows nothing — never a placeholder.
+/** The generation's permanent code, or null. Pure. */
+export function genCode(gen) {
+  const c = typeof gen?.code === "string" ? gen.code.trim() : "";
+  return c || null;
+}
+/** The tabs whose generations carry the ❤ Love toggle. */
+export const LOVE_TABS = ["ready", "rejected", "done"];
+/** Can Junid ❤ this generation here? Pure. */
+export function canLove(tab, gen) {
+  return LOVE_TABS.includes(tab) && !!gen?.url;
+}
+/** Is this generation loved? Pure. */
+export const isLoved = (gen) => gen?.loved === true;
+
 /** The generation shown big: currentGen, else the newest. Pure. */
 export function currentGenId(item) {
   const gens = generationsOf(item);

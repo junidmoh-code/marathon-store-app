@@ -301,7 +301,9 @@ function matchesFilter(summary, stock, filter) {
 const REJECT_CHIPS = Object.freeze(["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"]);
 // "pick" (3 Oct card fixes): Junid made an earlier generation the main photo —
 // calibration counts it as an approval of THAT generation.
-const DECISION_ACTIONS = Object.freeze(["approve", "approve-anyway", "regenerate", "reject", "skip", "restore", "generate", "pick"]);
+// "love" / "unlove" (3 Oct evening, learning log): Junid's ❤ on one generation —
+// the strongest positive for calibration; an unlove cancels it.
+const DECISION_ACTIONS = Object.freeze(["approve", "approve-anyway", "regenerate", "reject", "skip", "restore", "generate", "pick", "love", "unlove"]);
 
 /**
  * The ledger row for one of Junid's actions (decisions/{push}). `item` is the
@@ -374,6 +376,50 @@ function selectFields(gen, genId, at, item = null) {
   };
 }
 
+// ── LOVE ONE GENERATION ──────────────────────────────────────────────────────
+// Junid's ❤ on any generation, in any lane (learning log, 3 Oct evening). It
+// sets generations/{genId}/loved + lovedAt; un-love removes both. It never
+// moves the item, never changes the main photo and never approves anything.
+
+/** Why `genId` cannot be loved on `item`, or null. Pure. */
+function loveRefusal(item, genId) {
+  if (!item) return "not in the New Arrivals queue";
+  const gen = item.generations && item.generations[genId];
+  if (!gen || typeof gen !== "object") return "that generation is not on this item";
+  if (!gen.url) return "that generation has no photo";
+  return null;
+}
+
+/**
+ * The item after a love / un-love of `genId`, or null when it already is in
+ * that state (nothing to write, nothing to log). Only that generation's
+ * loved / lovedAt change. Pure.
+ */
+function lovedItem(item, genId, loved, at) {
+  const gen = item.generations[genId];
+  if ((gen.loved === true) === (loved === true)) return null;
+  const nextGen = { ...gen };
+  if (loved === true) { nextGen.loved = true; nextGen.lovedAt = at; } else { delete nextGen.loved; delete nextGen.lovedAt; }
+  return { ...item, generations: { ...item.generations, [genId]: nextGen } };
+}
+
+// THE CARD NEVER RECEIVES THE LEARNING LOG. The poster keeps the full record
+// in genlog (RTDB index + ledger); should any of its heavy fields ever be
+// written onto a generation, the list strips them before they reach the card.
+const CARD_GEN_OMIT = Object.freeze(["promptText", "promptSha", "thoughts", "thoughtsLabel", "thoughtsUnsupported", "genlog", "inputs", "request", "usage", "timing", "errors503"]);
+/** The item as the card gets it: every generation without the log's heavy fields. Pure. */
+function cardItem(item) {
+  if (!item || !item.generations || typeof item.generations !== "object") return item;
+  const generations = {};
+  for (const [id, g] of Object.entries(item.generations)) {
+    if (!g || typeof g !== "object") continue;
+    const out = { ...g };
+    for (const k of CARD_GEN_OMIT) delete out[k];
+    generations[id] = out;
+  }
+  return { ...item, generations };
+}
+
 // RTDB's key order (integer-like keys first, numerically; then strings).
 // Mirror of the fake's rtdbKeyCmp — the cursor walks exactly this order.
 function keyCmp(a, b) {
@@ -398,4 +444,5 @@ module.exports = {
   FILTER_CLASSES, filterClassOf, normalizeFilter, GROUPS, GROUP_TABS, groupOf, normalizeGroup, stockSummary, matchesFilter,
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
   SELECT_LANES, GEN_ID_RE, selectRefusal, selectFields,
+  loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem,
 };

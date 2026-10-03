@@ -661,3 +661,83 @@ test("pick is a ledger action; newArrivalsSelect is exported from index", () => 
   const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "index.js"), "utf8");
   assert.match(src, /exports\.newArrivalsSelect = na\.newArrivalsSelect;/);
 });
+
+// ── love one generation (newArrivalsLove — learning log, 3 Oct evening) ──────
+test("love: sets loved + lovedAt on that generation only; lane, main photo and status kept; one atomic write logs 'love'", async () => {
+  for (const lane of ["ready", "rejected", "done"]) {
+    const db = withGens(lane);
+    const writes = spyRoot(db);
+    assert.deepEqual(await na.love(db, { pid: PID, genId: "g1", loved: true }, "junid", NOW + 7), { ok: true });
+    const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+    assert.equal(it.status, lane, "never moves");
+    assert.equal(it.statusAt, NOW);
+    assert.equal(it.currentGen, "g2", "never changes the main photo");
+    assert.equal(it.generatedUrl, G2.url);
+    assert.equal("approvedAt" in it, false, "never approves");
+    assert.equal(it.generations.g1.loved, true);
+    assert.equal(it.generations.g1.lovedAt, NOW + 7);
+    assert.equal("loved" in it.generations.g2, false);
+    assert.equal(writes.length, 1, "one multi-path write");
+    const keys = Object.keys(writes[0]);
+    assert.ok(keys.includes(`by_status/${lane}/${PID}`));
+    const d = writes[0][keys.find((k) => k.startsWith("decisions/"))];
+    assert.equal(d.action, "love");
+    assert.equal(d.genId, "g1");
+    assert.equal(d.gen.url, GEN.url);
+    assert.equal(d.by, "junid");
+    assert.equal(d.at, NOW + 7);
+    assert.equal(d.class, "footwear");
+  }
+});
+
+test("unlove removes loved + lovedAt and logs 'unlove'; love/unlove are idempotent (nothing written, nothing logged)", async () => {
+  const db = withGens("ready");
+  await na.love(db, { pid: PID, genId: "g2", loved: true }, "junid", NOW + 1);
+  assert.deepEqual(await na.love(db, { pid: PID, genId: "g2", loved: true }, "junid", NOW + 2), { ok: true, unchanged: true });
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/generations/g2/lovedAt`).once()).val(), NOW + 1, "the first love's time stands");
+  assert.deepEqual(await na.love(db, { pid: PID, genId: "g2", loved: false }, "junid", NOW + 3), { ok: true });
+  const g2 = (await db.ref(`${core.ITEMS}/${PID}/generations/g2`).once()).val();
+  assert.equal("loved" in g2, false);
+  assert.equal("lovedAt" in g2, false);
+  assert.equal(g2.url, G2.url);
+  assert.deepEqual(await na.love(db, { pid: PID, genId: "g2", loved: false }, "junid", NOW + 4), { ok: true, unchanged: true });
+  assert.deepEqual(await na.love(db, { pid: PID, genId: "g1", loved: false }, "junid", NOW + 4), { ok: true, unchanged: true });
+  const ds = (await decisions(db)).sort((a, b) => a.at - b.at);
+  assert.deepEqual(ds.map((d) => [d.action, d.genId]), [["love", "g2"], ["unlove", "g2"]]);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
+});
+
+test("love refuses an unknown generation, one without a photo, bad ids, a non-boolean, an absent item; nothing logged", async () => {
+  const db = withGens("ready", { generations: { g1: { ...GEN, url: null }, g2: G2 } });
+  await assert.rejects(na.love(db, { pid: PID, genId: "g9", loved: true }, "junid", NOW), /not on this item/);
+  await assert.rejects(na.love(db, { pid: PID, genId: "g1", loved: true }, "junid", NOW), /no photo/);
+  await assert.rejects(na.love(db, { pid: PID, genId: "../x", loved: true }, "junid", NOW), /Not a generation id/);
+  await assert.rejects(na.love(db, { pid: "-Nx", genId: "g2", loved: true }, "junid", NOW), /Not a product id/);
+  await assert.rejects(na.love(db, { pid: PID, genId: "g2", loved: "yes" }, "junid", NOW), /loved: true or false/);
+  await assert.rejects(na.love(makeFakeDb({}), { pid: PID, genId: "g2", loved: true }, "junid", NOW), /not in the New Arrivals queue/);
+  assert.deepEqual(await decisions(db), []);
+  assert.equal("loved" in (await db.ref(`${core.ITEMS}/${PID}/generations/g2`).once()).val(), false);
+});
+
+test("love/unlove are ledger actions; newArrivalsLove is exported from index and in the deploy-by-name list", () => {
+  assert.ok(core.DECISION_ACTIONS.includes("love"));
+  assert.ok(core.DECISION_ACTIONS.includes("unlove"));
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "..", "index.js"), "utf8");
+  assert.match(src, /exports\.newArrivalsLove = na\.newArrivalsLove;/);
+  assert.match(src, /functions:newArrivalsSelect,functions:newArrivalsLove/);
+});
+
+test("list gives the card each generation's code and loved flag — never the learning log's heavy fields", async () => {
+  const heavy = { ...GEN, code: "G-0042", loved: true, lovedAt: NOW, measurements: { sharpness: 120 }, promptText: "FULL PROMPT", promptSha: "abc", thoughts: "I think", inputs: [{ role: "source" }], request: { x: 1 }, usage: { t: 1 }, genlog: { a: 1 } };
+  const db = withGens("ready", { generations: { g1: heavy, g2: G2 } });
+  const out = await na.listTab(db, "ready", { group: "sneakers" });
+  const g1 = out.items[0].generations.g1;
+  assert.equal(g1.code, "G-0042");
+  assert.equal(g1.loved, true);
+  assert.equal(g1.url, GEN.url);
+  assert.deepEqual(g1.measurements, { sharpness: 120 });
+  for (const k of ["promptText", "promptSha", "thoughts", "inputs", "request", "usage", "genlog"]) assert.equal(k in g1, false, k);
+  assert.equal("code" in out.items[0].generations.g2, false, "no code yet → none invented");
+  // The item in the database is untouched.
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/generations/g1/promptText`).once()).val(), "FULL PROMPT");
+});
