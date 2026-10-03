@@ -39,17 +39,22 @@ plutil -lint "$PLIST" >/dev/null
 # Re-run safe: bootout is asynchronous, so retry the bootstrap briefly.
 launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
 for i in 1 2 3 4 5; do
-  launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null && break
-  [ "$i" = 5 ] && { echo "Could not register the login item (launchctl bootstrap)."; exit 1; }
+  ERR="$(launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>&1)" && break
+  [ "$i" = 5 ] && { echo "Could not register the login item: $ERR"; exit 1; }
   sleep 1
 done
 
 # Default printer + label size for the OS print route (skipped if no queue found).
-QUEUE="$(lpstat -e 2>/dev/null | grep -i -m1 -E 'xp[-_ ]?350([^0-9]|$)' || true)"
-# A raw/generic queue has no driver options and would print Chrome's PDF as junk.
-if [ -n "$QUEUE" ] && [ -z "$(lpoptions -p "$QUEUE" -l 2>/dev/null)" ]; then
-  echo "The $QUEUE print queue has no printer driver (raw queue) — re-add the XP-350B with its driver (see README)."
-  QUEUE=""
+# The first XP-350 queue that has a driver: a raw/generic queue has no driver
+# options and would print Chrome's PDF as junk (macOS may hold two queues for it).
+QUEUE=""
+RAW_SEEN=""
+for Q in $(lpstat -e 2>/dev/null | grep -i -E 'xp[-_ ]?350([^0-9]|$)' || true); do
+  if [ -n "$(lpoptions -p "$Q" -l 2>/dev/null)" ]; then QUEUE="$Q"; break; fi
+  RAW_SEEN="$Q"
+done
+if [ -z "$QUEUE" ] && [ -n "$RAW_SEEN" ]; then
+  echo "The $RAW_SEEN print queue has no printer driver (raw queue) — re-add the XP-350B with its driver (see README)."
 elif [ -n "$QUEUE" ]; then
   lpoptions -d "$QUEUE" >/dev/null
   lpoptions -p "$QUEUE" -o media=Custom.40x30mm >/dev/null

@@ -226,6 +226,23 @@ describe("the OS print route", () => {
     expect(res.error).toContain("OUT endpoint 1");
   });
 
+  it("a stale handle (printer slept, no disconnect event) is re-found once and the batch prints over USB", async () => {
+    const dev = fakeDevice();
+    usb.devices = [dev];
+    const m = await load();
+    const conn = await m.connectTransport("xprinter");
+    const transferOut = dev.transferOut;
+    let dead = true;
+    dev.transferOut = async (e, d) => {
+      if (dead && d.length) { dead = false; const x = new Error("The device was disconnected."); x.name = "NetworkError"; throw x; }
+      return transferOut(e, d);
+    };
+    const res = await m.printLabels({ items: [ITEM], transport: "xprinter", conn });
+    expect(res).toMatchObject({ ok: true, route: "usb" });
+    expect(doc.printed).toHaveLength(0);
+    expect(dev.written).toHaveLength(1);
+  });
+
   it("bytes of the FIRST label that reached the printer still block the OS fallback", async () => {
     const dev = fakeDevice();
     usb.devices = [dev];
@@ -379,6 +396,16 @@ describe("the OS route never claims a print it can't see", () => {
 });
 
 describe("command language", () => {
+  it("gives up on a printer that never answers GET_DEVICE_ID", async () => {
+    vi.useFakeTimers();
+    const { readIeee1284Id, ID_TIMEOUT_MS } = await import("./usbDiscovery");
+    const dev = { controlTransferIn: () => new Promise(() => {}) };
+    const p = readIeee1284Id(dev, { interfaceNumber: 0, alternateSetting: 0 });
+    await vi.advanceTimersByTimeAsync(ID_TIMEOUT_MS + 1);
+    expect(await p).toBe(null);
+    vi.useRealTimers();
+  });
+
   it("asks GET_DEVICE_ID in the class-spec form first, then the interface number", async () => {
     const { readIeee1284Id } = await import("./usbDiscovery");
     const asked = [];

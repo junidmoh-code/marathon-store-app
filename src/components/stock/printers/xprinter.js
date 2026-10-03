@@ -275,7 +275,8 @@ export function startUsbPrinterWatch() {
   // there is no working connection already. Debounced — a replug fires in bursts.
   let timer = null;
   const later = () => { clearTimeout(timer); timer = setTimeout(() => { findUsbPrinter(); }, 400); };
-  const relevant = (d) => !d || isPrinterLike(d) || deviceMatch(d, loadRemembered()) > 0;
+  // Before any device has ever worked here, any device might be the printer.
+  const relevant = (d) => { const r = loadRemembered(); return !d || !r || isPrinterLike(d) || deviceMatch(d, r) > 0; };
   usb.addEventListener("connect", (e) => { if (!cached && relevant(e?.device)) later(); });
   usb.addEventListener("disconnect", (e) => {
     if (cached && e?.device === cached.device) {
@@ -303,7 +304,7 @@ export function printXprinter(items, conn = null) {
   return exclusive(() => sendBatch(items, conn));
 }
 
-async function sendBatch(items, conn) {
+async function sendBatch(items, conn, retried = false) {
   // A handle from connectXprinter is only good while it is still THE connection
   // (an unplug in between clears it); otherwise find the printer again.
   const live = conn?.route === "usb" && cached && cached.device === conn.device;
@@ -327,6 +328,10 @@ async function sendBatch(items, conn) {
     // Bytes of the failing label that did reach the printer count as sent — the
     // caller must not then print the batch again through the OS.
     if (typeof err?.sentBytes === "number") sentBytes += err.sentBytes;
+    // Nothing went out: the handle was probably stale (the printer slept or was
+    // re-enumerated without a disconnect event). Re-discover once and try again
+    // before giving up on USB.
+    if (sentBytes === 0 && !retried) return sendBatch(items, null, true);
     const line = `${c.name} · interface ${c.interfaceNumber} · OUT endpoint ${c.endpointNumber} · ${String(err?.message || err)}`;
     lastDiag = { ...(lastDiag || {}), attempts: [line] };
     setPrinterStatus({ state: "none", route: null, name: c.name, detail: "USB transfer failed — the next print looks for the printer again", lines: [line] });

@@ -25,6 +25,7 @@
 export const PRINTER_CLASS = 0x07;      // USB printer class (bInterfaceClass)
 export const TX_CHUNK = 8192;           // transferOut chunk so big batches don't choke
 export const CLAIM_RETRY_MS = 300;      // macOS interface-release grace period
+export const ID_TIMEOUT_MS = 3000;      // IEEE 1284 GET_DEVICE_ID — give up after this
 
 export const NO_BULK_OUT =
   "No bulk OUT endpoint found on the selected USB device — is this the label printer?";
@@ -507,7 +508,11 @@ export async function readIeee1284Id(device, conn) {
   const spec = ((conn.interfaceNumber & 0xff) << 8) | (conn.alternateSetting & 0xff);
   for (const index of [...new Set([spec, conn.interfaceNumber])]) {
     try {
-      const res = await device.controlTransferIn({ requestType: "class", recipient: "interface", request: 0, value: 0, index }, 1024);
+      // Bounded: a device that never answers must not hold the USB lock.
+      const res = await Promise.race([
+        device.controlTransferIn({ requestType: "class", recipient: "interface", request: 0, value: 0, index }, 1024),
+        wait(ID_TIMEOUT_MS).then(() => null),
+      ]);
       const view = res?.data;
       if (res?.status !== "ok" || !view || view.byteLength < 3) continue;
       const bytes = new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
