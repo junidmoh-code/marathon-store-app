@@ -447,12 +447,15 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
       // never while a new photo is being generated (it would replace this one).
       guard: (cur) => {
         if (cur.generateRequest) return "a new photo is being generated — approve when it lands";
-        if (!pickGen) return cur.generatedUrl ? null : "it has no generated photo";
+        // No named generation: the main photo — generatedUrl, or (an older item
+        // whose URL was cleared) its current generation's photo.
+        if (!pickGen) return cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo";
         const g = cur.generations && cur.generations[pickGen];
         return g && typeof g === "object" && g.url ? null : "that generation has no photo on this item";
       },
       fields: (cur) => ({
         ...(pickGen && cur.currentGen !== pickGen ? core.selectFields(cur.generations[pickGen], pickGen, nowMs) : {}),
+        ...(!pickGen && !cur.generatedUrl && core.currentGenUrl(cur) ? core.selectFields(cur.generations[cur.currentGen], cur.currentGen, nowMs) : {}),
         approvedAt: nowMs, approvedBy: uid || "unknown",
         ...(cur.status === "rejected" ? { lastRejection: cur.rejection || null, rejection: null } : {}),
       }),
@@ -591,27 +594,13 @@ const newArrivalsReject = onCall(callableOpts, async (request) => {
 });
 
 // ── retry ────────────────────────────────────────────────────────────────────
-async function retry(db, pid, uid, nowMs) {
+// RETIRED (Junid, 3 Oct): "Retry" cleared the photo and reset the item to New;
+// nothing may reset a generated item. Regenerate keeps the photos and makes
+// one more. The callable stays exported (an old card bundle may call it) and
+// says so instead of acting.
+async function retry(db, pid) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
-  const out = {};
-  const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => core.moveMutator({
-    from: "rejected", to: "new", at: nowMs,
-    // A FRESH generation: the next run starts from the original photo again,
-    // with a new automatic-attempt budget. The rejection is kept as history.
-    fields: {
-      attemptsSinceRetry: 0, retryRequestedAt: nowMs, retryRequestedBy: uid || "unknown",
-      lastRejection: cur && cur.rejection ? cur.rejection : null, rejection: null,
-      generatedUrl: null, generatedPath: null, checker: null, namePending: null,
-      // A retry is a NEW lap: the previous lap's chain stamps, name and
-      // destinations must not let the chain skip steps with stale values.
-      chain: null, suggestedName: null, suggestedNameSource: null, nameProposedAt: null,
-      destinations: null, approvedAt: null, approvedBy: null,
-    },
-  }, out)(cur));
-  const item = core.moved(res, "new");
-  if (!item) throw new HttpsError("failed-precondition", `Can't retry — ${out.refusal || "not saved"}.`);
-  await db.ref(core.ROOT).update(core.indexMove(pid, "rejected", "new", item.enqueuedAt));
-  return { ok: true };
+  throw new HttpsError("failed-precondition", "Retry is retired — tap Regenerate (the photos are kept).");
 }
 
 const newArrivalsRetry = onCall(callableOpts, async (request) => {

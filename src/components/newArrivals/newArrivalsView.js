@@ -156,7 +156,9 @@ export function isGenerating(item) {
 }
 /** Does this New-tab item have a finished photo to approve? Pure. */
 export function hasPhoto(item) {
-  return NEW_LANES.includes(item?.status) && !!item?.generatedUrl;
+  // The main photo, or (an older item whose URL was cleared) its current generation's — as the server sorts it.
+  const cur = item?.currentGen && item?.generations?.[item.currentGen];
+  return NEW_LANES.includes(item?.status) && !!(item?.generatedUrl || cur?.url);
 }
 /** "photo" | "generating" | "none" — the New tab's three buckets (server orders by them). Pure. */
 export function photoBucket(item) {

@@ -400,6 +400,12 @@ const GEN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const failedList = (v) => (Array.isArray(v && v.failed) ? v.failed : Object.values((v && v.failed) || {}));
 
 /** Why `genId` cannot be picked on `item`, or null. Pure. */
+/** The current generation's photo URL, or null. Pure. */
+function currentGenUrl(item) {
+  const g = item && item.currentGen && item.generations && item.generations[item.currentGen];
+  return g && typeof g === "object" && g.url ? String(g.url) : null;
+}
+
 function selectRefusal(item, genId) {
   if (!item) return "not in the New Arrivals queue";
   if (!SELECT_LANES.includes(item.status)) return `it is ${item.status}, not new, ready or rejected`;
@@ -487,6 +493,7 @@ function keyCmp(a, b) {
 const INDEX_CEILING = 2000;
 
 module.exports = {
+  currentGenUrl,
   checkerWrongRules, approveAction,
   INDEX_CEILING,
   ROOT, ITEMS, BY_STATUS, DECISIONS, STATUSES, TABS, TAB_OF, STATUSES_IN_TAB,

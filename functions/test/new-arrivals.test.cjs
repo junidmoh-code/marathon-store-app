@@ -115,26 +115,19 @@ test("approve all takes exactly the Ready index", async () => {
   assert.deepEqual(out.approved, [PID]);
 });
 
-test("retry: Rejected → New with a fresh budget; the rejection becomes history", async () => {
-  const db = seeded("rejected", { generatedUrl: "g", rejection: { code: "checker", reason: "box changed", at: NOW }, checker: { pass: false } });
-  assert.deepEqual(await na.retry(db, PID, "junid", NOW + 9), { ok: true });
+test("retry is RETIRED: it refuses and never touches the item (nothing resets a generated item)", async () => {
+  const db = seeded("rejected", { generatedUrl: "https://x/g.jpg", rejection: { code: "checker", reason: "x", at: 1 } });
+  await assert.rejects(na.retry(db, PID, "junid", NOW), /Retry is retired/);
   const item = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
-  assert.equal(item.status, "new");
-  assert.equal(item.attemptsSinceRetry, 0);
-  assert.equal(item.attempts, 1, "total attempts are kept for the record");
-  assert.equal(item.lastRejection.reason, "box changed");
-  assert.equal("rejection" in item, false);
-  assert.equal("generatedUrl" in item, false, "a retry never reuses the previous generation");
-  assert.equal("checker" in item, false);
-  assert.equal((await db.ref(`${core.BY_STATUS}/rejected`).once()).val(), null);
+  assert.equal(item.status, "rejected");
+  assert.equal(item.generatedUrl, "https://x/g.jpg");
 });
 
-test("retry after a chain refusal clears the old lap (chain stamps, name, destinations)", async () => {
-  const db = seeded("rejected", { generatedUrl: "g-old", suggestedName: "Old", nameProposedAt: 5,
-    chain: { photo: { at: 1 }, publish: { at: 2 } }, destinations: { shopify: { at: 3 } }, rejection: { code: "chain", reason: "x", at: 4 } });
-  await na.retry(db, PID, "junid", NOW);
-  const item = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
-  for (const k of ["chain", "suggestedName", "nameProposedAt", "destinations", "generatedUrl"]) assert.equal(k in item, false, k);
+test("approve with no generatedUrl uses the current generation's photo (older items)", async () => {
+  const db = seeded("rejected", { currentGen: "g1", generations: { g1: { url: "https://x/g1.jpg", path: "na/g1.jpg", at: 1, verdict: { pass: false, failed: ["framing"], label: "framing" } } }, rejection: { code: "checker", reason: "framing", at: 1 } });
+  const out = await na.approve(db, { pids: [PID] }, "junid", NOW);
+  assert.deepEqual(out.approved, [PID]);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/generatedUrl`).once()).val(), "https://x/g1.jpg");
 });
 
 test("a redelivered enqueue repairs a missing index entry", async () => {
@@ -142,11 +135,6 @@ test("a redelivered enqueue repairs a missing index entry", async () => {
   // Even a delivery far outside the window repairs it.
   assert.equal((await na.enqueue(db, PID, upload({ createdBy: { at: 1 } }), NOW)).enqueued, false);
   assert.equal((await db.ref(`${core.BY_STATUS}/ready/${PID}`).once()).val(), 7);
-});
-
-test("retry refuses anything not Rejected", async () => {
-  const db = seeded("ready", { generatedUrl: "g" });
-  await assert.rejects(na.retry(db, PID, "junid", NOW), /it is ready/);
 });
 
 test("listTab joins live product price/sizes and repairs a stale index entry", async () => {
