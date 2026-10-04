@@ -73,6 +73,13 @@ export function blockedReasonText(blockedReason) {
  *         removeObject(path), encodeThumb(buf) → Buffer, claimPublish(pid) → bool, log }
  * Returns { pid, outcome: "done"|"rejected"|"waiting"|"skipped", reason?, step? }.
  */
+/** No name proposal the chain can apply (and the namer is not already on it, nor has it failed). Pure. */
+export function needsName(item) {
+  const n = item?.naming;
+  if (n?.status === "pending" || n?.status === "failed") return false;
+  return item?.nameProposedAt == null;
+}
+
 export async function advance(pid, deps) {
   const { db, log = () => {} } = deps;
   let item = (await db.ref(`${ITEMS}/${pid}`).once("value")).val();
@@ -81,6 +88,16 @@ export async function advance(pid, deps) {
   // retrying step; an approved item whose name is still pending is not started
   // — nothing is written — and the other legs (WhatsApp, socials) carry on.
   if (item.status === "approved" && item.naming?.status === "pending") {
+    return { pid, outcome: "waiting", step: "name-pending" };
+  }
+  // NAMING AFTER APPROVE (Junid, 4 Oct): an approved item with no usable name
+  // (approved from a card that never named it) asks the namer for one and
+  // waits — it is never refused for it.
+  if ((item.status === "approved" || item.status === "chaining") && needsName(item) && !item.chain?.name) {
+    await db.ref(`${ITEMS}/${pid}/naming`).set({ status: "pending", since: await deps.now(), tries: 0, overloads: 0 });
+    return { pid, outcome: "waiting", step: "name-pending" };
+  }
+  if (item.status === "chaining" && item.naming?.status === "pending" && !item.chain?.name) {
     return { pid, outcome: "waiting", step: "name-pending" };
   }
   if (item.status === "approved") {
@@ -94,15 +111,21 @@ export async function advance(pid, deps) {
     for (const k of Object.keys(chain)) delete chain[k];
     await db.ref(`${ITEMS}/${pid}/chain`).set(null);
   }
+  // JUNID'S APPROVE IS FINAL (4 Oct): a step that cannot go on NEVER moves the
+  // item back. It stays in the chain (the Done tab) with a plain note of the
+  // step and why; the next run tries again, and the note clears when it goes.
   const reject = async (step, reason) => {
-    await move(db, pid, "chaining", "rejected", { rejection: { code: "chain", step, reason, at: await deps.now() } }, await deps.now());
-    log(`${pid}: REJECTED at ${step} — ${reason}`);
-    return { pid, outcome: "rejected", step, reason };
+    const first = !(item.chain?.stuck && item.chain.stuck.step === step && item.chain.stuck.reason === reason);
+    if (first) await db.ref(`${ITEMS}/${pid}/chain/stuck`).set({ step, reason, at: await deps.now() });
+    log(`${pid}: stuck at ${step} — ${reason}`);
+    return { pid, outcome: "stuck", step, reason, first };
   };
   const stampStep = async (step, extra = {}) => {
     const at = await deps.now();
     await db.ref(`${ITEMS}/${pid}/chain/${step}`).set({ at, ...extra });
     chain[step] = { at, ...extra };
+    // A step went through: any "stuck" note is history.
+    if (chain.stuck) { await db.ref(`${ITEMS}/${pid}/chain/stuck`).set(null); delete chain.stuck; }
   };
   const ctx = async () => ({ now: await deps.now(), uid: AGENT_UID });
   // A FAILED name refuses the Shopify leg here — through the one reject path,
