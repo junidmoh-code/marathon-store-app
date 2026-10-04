@@ -141,6 +141,18 @@ test("GENERATE uses the product's current photo — not the item's old copy — 
   assert.equal(item.originalUrl, OLD, "the old copy is neither used nor re-written");
   assert.equal(out.item.sourceUrl, NEW, "the card gets the current photo back with the result");
   assert.equal(out.item.sourceChanged, undefined);
+  // An item with NO copy (every item queued from now on) gets none from a Generate either.
+  const clean = world({ product: { photoUrl: NEW, categoryKey: "hoodies", category: "Clothing" }, item: { categoryKey: "hoodies", originalUrl: undefined } });
+  await studio.studioGenerate(clean, { pid: PID }, "junid", await studioDeps([]));
+  assert.equal((await clean.ref(`new_arrivals/items/${PID}/originalUrl`).once()).val(), null);
+});
+
+test("a GENERATED photo is never taken for the source — not from the product's photo, its kept original, nor the item's copy", () => {
+  assert.equal(sp.isGeneratedPhoto(generated(3)), true);
+  assert.equal(sp.isGeneratedPhoto(OLD), false);
+  assert.equal(sp.currentSourceUrl(PID, { photoUrl: generated(3) }, { originalUrl: OLD }), OLD);
+  assert.equal(sp.currentSourceUrl(PID, { photoUrl: generated(3) }, { originalUrl: generated(2) }), null);
+  assert.equal(sp.currentSourceUrl(PID, { photoUrl: generated(3), photoUrlOriginal: generated(2) }, null), null);
 });
 
 test("REGENERATE after an approval made a generated photo the product's photo: it starts from the kept staff original, never from the generated photo", async () => {

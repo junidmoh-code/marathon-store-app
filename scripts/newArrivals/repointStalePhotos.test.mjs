@@ -18,7 +18,7 @@ const world = () => makeFakeDb({
   },
   new_arrivals: {
     items: {
-      [A]: { pid: A, status: "new", originalUrl: staff(A, "old") },
+      [A]: { pid: A, status: "new", originalUrl: staff(A, "old"), generations: { g1: { url: "https://x/a-g1.jpg", at: 10 }, g2: { url: "https://x/a-g2.jpg", at: 20, sourceUrl: "https://x/already-recorded.jpg" } } },
       [B]: { pid: B, status: "ready", originalUrl: staff(B, "same"), generatedUrl: "https://x/b-gen.jpg" },
       [C]: { pid: C, status: "rejected", originalUrl: staff(C, "old") },
       [D]: { pid: D, status: "ready", originalUrl: staff(D, "kept"), generatedUrl: GEN },
@@ -41,7 +41,8 @@ describe("re-point stuck New items at the product's current photo", () => {
   it("a dry run counts and writes NOTHING", async () => {
     const db = world();
     const out = await run({ db, dryRun: true });
-    expect(out).toMatchObject({ checked: 4, corrected: 2 });
+    expect(out).toMatchObject({ checked: 4, corrected: 2, photosMarked: 1, reshot: 2 });
+    expect(await read(db, `new_arrivals/items/${A}/generations/g1/sourceUrl`)).toBeNull();
     expect(await read(db, `new_arrivals/items/${A}/originalUrl`)).toBe(staff(A, "old"));
     expect(await read(db, `new_arrivals/fixes`)).toBeNull();
   });
@@ -53,7 +54,13 @@ describe("re-point stuck New items at the product's current photo", () => {
     expect(out.pids.sort()).toEqual([A, C]);
     expect(await read(db, `new_arrivals/items/${A}/originalUrl`)).toBe(staff(A, "new"));
     expect(await read(db, `new_arrivals/items/${C}/originalUrl`)).toBe(staff(C, "new"));
-    expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}`)).toEqual({ was: staff(A, "old"), now: staff(A, "new"), at: 777, lane: "new" });
+    expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}`)).toEqual({ was: staff(A, "old"), now: staff(A, "new"), at: 777, lane: "new", stamped: ["g1"] });
+    // The photos ALREADY generated for it were made from the old copy: each says so now (so the card flags
+    // them and Approve waits for a Regenerate). One that already recorded its source is left as it is.
+    expect(await read(db, `new_arrivals/items/${A}/generations/g1/sourceUrl`)).toBe(staff(A, "old"));
+    expect(await read(db, `new_arrivals/items/${A}/generations/g2/sourceUrl`)).toBe("https://x/already-recorded.jpg");
+    expect(out.photosMarked).toBe(1);
+    expect(out.reshot).toBe(2);
     // Untouched: the unchanged item, the approved-generated one, the already-approved one, every generated photo, every product.
     expect(await read(db, `new_arrivals/items/${B}`)).toEqual({ pid: B, status: "ready", originalUrl: staff(B, "same"), generatedUrl: "https://x/b-gen.jpg" });
     expect(await read(db, `new_arrivals/items/${D}/originalUrl`)).toBe(staff(D, "kept"));
@@ -65,7 +72,7 @@ describe("re-point stuck New items at the product's current photo", () => {
     // Re-shot AGAIN, run again: the record still remembers what the item FIRST pointed at (so --revert goes all the way back).
     await db.ref(`products/${A}/photoUrl`).set(staff(A, "newer"));
     expect((await run({ db, now: () => 999 })).corrected).toBe(1);
-    expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}`)).toEqual({ was: staff(A, "old"), now: staff(A, "newer"), at: 999, lane: "new" });
+    expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}`)).toEqual({ was: staff(A, "old"), now: staff(A, "newer"), at: 999, lane: "new", stamped: ["g1"] });
   });
 
   it("--revert puts every corrected copy back — except one that changed since, which is left alone and named", async () => {
@@ -76,6 +83,9 @@ describe("re-point stuck New items at the product's current photo", () => {
     expect(out.reverted).toBe(1);
     expect(out.skipped).toEqual([{ pid: C, why: "changed since the correction — left alone" }]);
     expect(await read(db, `new_arrivals/items/${A}/originalUrl`)).toBe(staff(A, "old"));
+    // …and the mark this step put on its generated photo goes too; one it did not put stays.
+    expect(await read(db, `new_arrivals/items/${A}/generations/g1`)).toEqual({ url: "https://x/a-g1.jpg", at: 10 });
+    expect(await read(db, `new_arrivals/items/${A}/generations/g2/sourceUrl`)).toBe("https://x/already-recorded.jpg");
     expect(await read(db, `new_arrivals/items/${C}/originalUrl`)).toBe("https://x/changed-by-hand.jpg");
     expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}/reverted`)).toBe(888);
     // Reverting twice does nothing more.

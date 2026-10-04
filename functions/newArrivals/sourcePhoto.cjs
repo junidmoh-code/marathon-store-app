@@ -40,9 +40,16 @@ function isStaffPhoto(pid, url) {
 function currentSourceUrl(pid, product, item = null) {
   const p = product || {};
   if (isStaffPhoto(pid, p.photoUrl)) return String(p.photoUrl);
-  if (p.photoUrlOriginal) return String(p.photoUrlOriginal);
-  if (p.photoUrl) return String(p.photoUrl);
-  return item && item.originalUrl ? String(item.originalUrl) : null;
+  if (p.photoUrlOriginal && !isGeneratedPhoto(p.photoUrlOriginal)) return String(p.photoUrlOriginal);
+  // An older record's photo, stored elsewhere — but NEVER a generated photo: that is not a source.
+  if (p.photoUrl && !isGeneratedPhoto(p.photoUrl)) return String(p.photoUrl);
+  return item && item.originalUrl && !isGeneratedPhoto(item.originalUrl) ? String(item.originalUrl) : null;
+}
+
+/** Is this URL one of the New Arrivals GENERATED photos (products/{pid}/new_arrivals/…)? Pure. */
+function isGeneratedPhoto(url) {
+  const p = objectPath(url);
+  return !!p && /^products\/[^/]+\/new_arrivals\//.test(p);
 }
 
 /**
@@ -60,4 +67,4 @@ function generationIsStale(gen, { sourceUrl = null, photoUpdatedAt = null } = {}
   return at > 0 && changed > at;
 }
 
-module.exports = { objectPath, isStaffPhoto, currentSourceUrl, generationIsStale };
+module.exports = { objectPath, isStaffPhoto, isGeneratedPhoto, currentSourceUrl, generationIsStale };

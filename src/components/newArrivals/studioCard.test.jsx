@@ -794,6 +794,27 @@ describe("paging and refresh", () => {
     expect(btn(tree.root, "Load more (75 of 75 shown)")).toBeUndefined();
   });
 
+  it("the quiet refresh re-reads EVERYTHING on screen — after Load more too — so a photo changed in admin shows on a card far down the list", async () => {
+    vi.useFakeTimers();
+    let changed = false;
+    const api = paged(75);
+    const inner = api.list.getMockImplementation();
+    api.list.mockImplementation(async (tab, opts = {}) => {
+      const res = await inner(tab, opts);
+      return { ...res, items: res.items.map((i) => (i.pid === P(45) ? { ...i, sourceUrl: changed ? "https://x/new45.jpg" : "https://x/old45.jpg" } : i)) };
+    });
+    const tree = await render(api);
+    await tap(btn(tree.root, "Load more (30 of 75 shown)"));
+    const src45 = () => byId(card(tree, P(45)), "original-photo")[0].findAll((n) => n.type === "img")[0].props.src;
+    expect(src45()).toBe("https://x/old45.jpg");
+    changed = true;                                                        // staff replace the photo of item 45
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(cards(tree)).toHaveLength(60);
+    expect(src45()).toBe("https://x/new45.jpg");
+    // 60 items were on screen: ONE call asked for them all (the callable serves up to 100).
+    expect(api.list).toHaveBeenLastCalledWith("new", { limit: 60, group: "sneakers" });
+  });
+
   it("the quiet refresh never replaces pages that Load more added while it was on its way", async () => {
     vi.useFakeTimers();
     const slow = deferred();

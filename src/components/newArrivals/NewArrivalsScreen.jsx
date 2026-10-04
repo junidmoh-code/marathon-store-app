@@ -39,7 +39,8 @@ import {
   revertPick, revertLove, revertPrices, revertMethod, afterGenerated, named, sourceUrlOf,
 } from "./newArrivalsView";
 
-const REFRESH_MS = 60_000;   // the quiet refresh of the first page
+const REFRESH_MS = 60_000;   // the quiet refresh of everything on screen
+const RELOAD_CHUNK = 100;    // the list callable's page ceiling
 const PAGE = 30;
 const TOAST_MS = 6000;
 const TOASTS_MAX = 3;
@@ -202,7 +203,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
       <div style={{ display: "flex", gap: 8 }}>
         {/* The product's CURRENT photo, as the server read it just now (sourceUrl) — never a copy kept on the item. */}
         <Tile testid="original-photo" url={sourceUrlOf(item)} label="Original" />
-        {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={main ? "Current photo" : mainUrl ? "Photo" : "No photo yet"} />}
+        {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={main ? (tab === "done" ? "Approved photo" : "Current photo") : mainUrl ? "Photo" : "No photo yet"} />}
       </div>
       {live && <LiveThoughts live={live} />}
       {!live && main && (
@@ -432,9 +433,20 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         }
         const seq = ++loadSeq.current;
         const tapsAtStart = taps.current, clockAtStart = clock.current;
-        let res;
+        // Everything on screen is re-read (a quiet refresh covers the pages "Load more" added, too),
+        // so a photo or price changed elsewhere shows within a minute however long the list is.
+        const wanted = quiet ? Math.max(PAGE, (dataRef.current.items || []).length) : PAGE;
+        let res, cursor = null;
+        const all = [];
         try {
-          res = await api.list(which, { limit: PAGE, group: groupFor(which, g) });
+          do {
+            res = await api.list(which, { ...(cursor ? { cursor } : {}), limit: Math.min(RELOAD_CHUNK, Math.max(PAGE, wanted - all.length)), group: groupFor(which, g) });
+            if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
+            const have = new Set(all.map((i) => i.pid));
+            all.push(...(res.items || []).filter((i) => !have.has(i.pid)));
+            cursor = res.nextCursor || null;
+          } while (cursor && all.length < wanted);
+          res = { ...res, items: all, nextCursor: cursor };
         } catch (e) {
           if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
           if (!quiet) { say(null, `Couldn't load: ${e?.message || e}`); setData((d) => ({ ...d, items: d.items || [] })); }
@@ -444,7 +456,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         // The list was read BEFORE a tap or a finished write: it must not paint over it.
         const overtaken = taps.current !== tapsAtStart || writes.current.size > 0;
         // …nor replace pages that "Load more" added while it was on its way.
-        if (quiet && (overtaken || Object.keys(liveRef.current).length > 0 || (dataRef.current.items || []).length > PAGE)) return;
+        if (quiet && (overtaken || Object.keys(liveRef.current).length > 0 || (dataRef.current.items || []).length > wanted)) return;
         // With a list already on screen, an overtaken read is read again, and after
         // a few tries given up on (the screen is newer than it). With nothing on
         // screen yet — a list just opened — it is shown at once.
@@ -494,8 +506,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     undoPids.current.clear();
     setUndo(null);
     load(tab, group);
-    // The quiet refresh covers the first page (a longer list is refreshed by reopening it).
-    const t = setInterval(() => { if ((dataRef.current.items || []).length <= PAGE) load(tab, group, { quiet: true }); }, REFRESH_MS);
+    const t = setInterval(() => load(tab, group, { quiet: true }), REFRESH_MS);
     return () => clearInterval(t);
   }, [tab, group, load]);
 
