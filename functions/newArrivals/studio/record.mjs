@@ -121,7 +121,7 @@ export function genlogRecord({ code, pid, genId, gen, trace = null, totalMs = nu
     usage: t.usage || null,
     costUsd: gen.costUsd ?? null, costZar: gen.costZar ?? null, usdZar: gen.usdZar ?? null, costEstimated: !!gen.costEstimated,
     ...(gen.usdZarFallback ? { usdZarFallback: true } : {}),
-    ...(t.streamCutShort ? { streamCutShort: t.streamCutShort } : {}), ...(t.finishNote ? { finishNote: t.finishNote } : {}),
+    ...(t.streamCutShort ? { streamCutShort: t.streamCutShort } : {}), ...(t.finishNote ? { finishNote: t.finishNote } : {}), ...(t.boxNote ? { boxNote: t.boxNote } : {}),
     timing: { requestMs: t.requestMs ?? null, totalMs },
     thoughts: t.thoughts ?? null, thoughtImages: t.thoughtImages || 0,
     drafts: (t.draftFiles || []).map((d) => ({ url: d.url, path: d.path || null })),

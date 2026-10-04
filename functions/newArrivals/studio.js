@@ -142,7 +142,9 @@ async function claim(db, pid, uid, nowMs, product) {
     // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
     if (!cur) { out.refusal = "it is not in the New Arrivals queue"; return null; }
     if (!core.SELECT_LANES.includes(cur.status)) { out.refusal = `it is ${cur.status}, not on the New tab`; return undefined; }
-    if (core.requestPending(cur, nowMs)) { out.refusal = "a photo is already being made for it"; return undefined; }
+    // Only the studio's own live claim blocks. A request left for the retired
+    // Mac mini queue is served by nobody: this tap takes it over.
+    if (cur.generateRequest && cur.generateRequest.studio === true && core.requestPending(cur, nowMs)) { out.refusal = "a photo is already being made for it"; return undefined; }
     out.refusal = null;
     prev = cur;
     const fresh = cur.status === "new" && !cur.currentGen;
@@ -250,6 +252,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
         image: deps.image || ((model, parts, imageConfig, opts) => gemini.streamImage(model, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
         upload: (p, buf, mime) => uploadImmutable(bucket, p, buf, mime),
         now,
+        log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`),
         ...(deps.split ? { split: deps.split } : {}),
       },
     });
@@ -268,9 +271,8 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     // the whole image when it was made and lost (paid), else its prompt tokens.
     if (e.paid || e.usage) {
       const fx = await fxOf(now());
-      const zar = e.paid ? record.generationCost({ model: generation.imageModel, usage: e.usage, prices, fx }).zar
-        : record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx });
-      await addSpend(db, zar);
+      const lost = e.paid ? record.generationCost({ model: generation.imageModel, usage: e.usage, prices, fx }) : null;
+      await addSpend(db, lost ? lost.zar : record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx }), { estimated: !!lost?.estimated });
     }
     throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
@@ -293,7 +295,9 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   try {
     const done = await studio.withRetries(() => db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
       if (!cur) return null;
-      // Already landed by an earlier try: nothing more to write.
+      // Already landed by an earlier try: nothing more to write. (It was this
+      // run's photo if it is still the card's — a second Generate cannot have
+      // started in the few hundred ms between tries: the claim was still held.)
       if (cur.generations && cur.generations[genId]) { out.mine = cur.currentGen === genId; return cur; }
       const l = landed(cur, { genId, gen, res, at, claimAt: t0 });
       out.mine = l.mine;

@@ -368,8 +368,8 @@ test("the photo could not be put on the item at all: a rescue row names it, the 
     // The claim goes through; every landing try fails; the release goes through.
     r.transaction = async (fn) => {
       if (!claimed) { claimed = true; return transaction(fn); }
-      const probe = fn({ status: "new", generateRequest: { at: -1 } });
-      if (probe && probe.lastAttempt) return transaction(fn);
+      const probe = fn((await r.once()).val());
+      if (probe && probe.lastAttempt && probe.lastAttempt.failed) return transaction(fn);
       throw new Error("database unavailable");
     };
     return r;
@@ -380,6 +380,30 @@ test("the photo could not be put on the item at all: a rescue row names it, the 
   assert.match(Object.values(rescue)[0].gen.url, /gen_\d+\.jpg/);
   assert.deepEqual((await w.db.ref(`${STATS}/totalSpentZar`).once()).val(), { ".sv": { increment: 2.75 } });
   assert.equal(w.calls.filter((c) => c[0] === "image").length, 1);
+  // Given back: the next tap is not refused, and the card says what happened.
+  const item = await itemOf(w.db);
+  assert.equal(item.generateRequest, undefined);
+  assert.equal(item.lastAttempt.failed, true);
+  assert.match(item.lastAttempt.reason, /it is kept/);
+});
+
+test("a paid failure with no usage reported: the estimate is counted AND marked as estimated", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  w.deps.image = async (...a) => ({ ...(await image(...a)), usage: null });
+  const file = w.deps.bucket.file;
+  w.deps.bucket.file = (p) => (/\/gen_\d+\.jpg$/.test(p) ? { save: async () => { throw new Error("503"); } } : file(p));
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /it was charged/);
+  const stats = (await w.db.ref(STATS).once()).val();
+  assert.deepEqual(stats.estimatedPartZar, stats.totalSpentZar);
+  assert.ok(stats.totalSpentZar[".sv"].increment > 2);
+});
+
+test("a request left for the retired Mac mini queue is taken over by a tap (nobody else will serve it)", async () => {
+  const w = await world({ item: { generateRequest: { at: 1, by: "junid" } } });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal(out.ok, true);
+  assert.equal((await itemOf(w.db)).generateRequest, undefined);
 });
 
 test("a late photo (the item was approved meanwhile) writes no decision row for Junid", async () => {
@@ -406,4 +430,10 @@ test("a shoe whose own box photo cannot be read is still generated — never hel
   const item = await itemOf(w.db);
   assert.equal(item.boxUsed.mode, "none");
   assert.ok(item.generations[out.genId].url);
+  // It is said on the record, not hidden.
+  assert.match((await w.db.ref(`${core.GENLOG}/${out.code}/boxNote`).once()).val(), /own box photo could not be read/);
+  // The SHOE photo failing is never swallowed.
+  const w2 = await world({ product: { categoryKey: "sneakers" }, item: { categoryKey: "sneakers" } });
+  w2.deps.fetchBytes = async () => { throw new Error("fetch 500 for the photo"); };
+  await assert.rejects(studio.studioGenerate(w2.db, { pid: PID }, "junid", w2.deps), /could not be made/);
 });

@@ -47,7 +47,7 @@ const draftJpeg = (buf) => sharp(buf).rotate().resize(1280, 1280, { fit: "inside
  *   fetchBytes(url) → { buffer }, loadPlate(kind), loadReference(kind) → { buffer, width, height, file } | null,
  *   libraryBox(brandKey) → { buffer, kind } | null, spec, generation ({ imageModel, imageSize, layers }),
  *   conditionClause, image(model, parts, imageConfig, { onEvent }) (gemini-stream.streamImage with the key bound),
- *   upload(path, buffer, mime) → { path, url }, now(), split? (commit 4: the split method)
+ *   upload(path, buffer, mime) → { path, url }, now(), log?(text), split? (the split method)
  * }
  * emit({ type, … }) — progress for the card; never throws.
  * → { generated, kind, method, promptVersion, layersUsed, box, trace, draftFiles, usage }
@@ -68,16 +68,19 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const orig = await forModel((await deps.fetchBytes(originalUrl)).buffer);
 
   // The box (footwear): its own box photo, else the brand's library box, else none.
-  let box = null, boxMode = "none", boxSource = null, boxFrom = null;
+  let box = null, boxMode = "none", boxSource = null, boxFrom = null, boxNote = null;
   const brand = kind === "footwear" ? brandKey(product?.brand) : null;
   if (kind === "footwear") {
     if (product?.photoBoxUrl) {
       try {
-        box = await forModel((await deps.fetchBytes(product.photoBoxUrl)).buffer);
+        // A blip is tried again; a box photo that still cannot be read (gone,
+        // not in the app's storage, too large) gives way to the brand library —
+        // the shoe is never held back for its box. Said in the log and on the record.
+        box = await forModel((await withRetries(() => deps.fetchBytes(product.photoBoxUrl), { tries: 2 })).buffer);
         boxMode = "own"; boxSource = "own"; boxFrom = { url: product.photoBoxUrl };
-      } catch {
-        // A box photo that cannot be read (gone, not in the app's storage, too
-        // large): the brand library takes over — the shoe is never held back for its box.
+      } catch (e) {
+        boxNote = `its own box photo could not be read (${String(e.message).slice(0, 80)})`;
+        deps.log?.(boxNote);
       }
     }
     if (!box && layers.footwearBox && deps.libraryBox) {
@@ -165,7 +168,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
       request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null,
       thoughts: gen.thoughts ?? null, thoughtImages: gen.thoughtImages || 0, thoughtsUnsupported: gen.thoughtsUnsupported || null,
       draftFiles: kept, resolution: gm.width ? { width: gm.width, height: gm.height } : null,
-      ...(gen.cutShort ? { streamCutShort: gen.cutShort } : {}), ...(finishNote ? { finishNote } : {}),
+      ...(gen.cutShort ? { streamCutShort: gen.cutShort } : {}), ...(finishNote ? { finishNote } : {}), ...(boxNote ? { boxNote } : {}),
     },
   };
 }
