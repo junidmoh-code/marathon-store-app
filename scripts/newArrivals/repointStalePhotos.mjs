@@ -80,7 +80,7 @@ export async function run({ db, now = () => Date.now(), dryRun = false, revert =
     }
     return out;
   }
-  const out = { checked: 0, corrected: 0, photosMarked: 0, reshot: 0, pids: [] };
+  const out = { checked: 0, corrected: 0, photosMarked: 0, reshot: 0, unmarkable: [], pids: [] };
   for (const lane of NEW_LANES) {
     const keys = Object.keys((await val(db, `${ROOT}/by_status/${lane}`)) || {});
     for (const pid of keys) {
@@ -90,13 +90,19 @@ export async function run({ db, now = () => Date.now(), dryRun = false, revert =
       ]);
       const c = correction(pid, originalUrl, { photoUrl, photoUrlOriginal });
       if (!c) continue;
+      // Same storage object, new address = staff replaced the photo (the bug). Only then are the item's
+      // existing photos known to be of the OLD picture; a copy that differs for another reason says nothing about them.
+      const reshot = !!sourcePhoto.objectPath(c.was) && sourcePhoto.objectPath(c.was) === sourcePhoto.objectPath(c.now);
       // Only a stuck item's generations are read (keyed, one item).
-      const stamped = gensToStamp(await val(db, `${ROOT}/items/${pid}/generations`));
+      const generations = reshot ? await val(db, `${ROOT}/items/${pid}/generations`) : null;
+      const stamped = gensToStamp(generations);
+      // An older item with a generated photo but no generation record cannot be marked: counted, and named.
+      if (reshot && !Object.keys(generations || {}).length && await val(db, `${ROOT}/items/${pid}/generatedUrl`)) { out.unmarkable.push(pid); }
       // A second run never loses what the item FIRST pointed at: an existing record keeps its `was`.
       const earlier = dryRun ? null : await val(db, `${ROOT}/fixes/${FIX_ID}/${pid}`);
       const keep = earlier && earlier.was && !earlier.reverted ? earlier : null;
       const paths = {
-        [`fixes/${FIX_ID}/${pid}`]: { was: keep ? keep.was : c.was, now: c.now, at: now(), lane, ...([...(keep ? Object.values(keep.stamped || {}) : []), ...stamped].length ? { stamped: [...new Set([...(keep ? Object.values(keep.stamped || {}) : []), ...stamped])] } : {}) },
+        [`fixes/${FIX_ID}/${pid}`]: { was: keep ? keep.was : c.was, now: c.now, at: now(), ...(keep ? { firstAt: keep.firstAt || keep.at } : {}), lane, ...([...(keep ? Object.values(keep.stamped || {}) : []), ...stamped].length ? { stamped: [...new Set([...(keep ? Object.values(keep.stamped || {}) : []), ...stamped])] } : {}) },
         [`items/${pid}/originalUrl`]: c.now,
       };
       // Its existing photos were made from the old copy: say so on each, so the card flags them and Approve waits for a Regenerate.
@@ -105,8 +111,7 @@ export async function run({ db, now = () => Date.now(), dryRun = false, revert =
       if (!dryRun) await db.ref(ROOT).update(paths);
       out.corrected += 1;
       out.photosMarked += stamped.length;
-      // Same storage object, new address = staff replaced the photo (the bug). Anything else is named apart.
-      if (sourcePhoto.objectPath(c.was) === sourcePhoto.objectPath(c.now)) out.reshot += 1;
+      if (reshot) out.reshot += 1;
       out.pids.push(pid);
       log(`${pid} (${lane}): re-pointed at the product's current photo${stamped.length ? `; ${stamped.length} generated photo${stamped.length === 1 ? "" : "s"} marked as made from the old one` : ""}`);
     }
@@ -122,6 +127,6 @@ if (invoked === import.meta.url) {
   const out = await run({ db: fb().db, dryRun, revert, log: (m) => console.log(m) });
   console.log(revert
     ? `${dryRun ? "WOULD put back" : "Put back"} ${out.reverted} of ${out.checked} corrected items${out.skipped.length ? `; ${out.skipped.length} left alone (${[...new Set(out.skipped.map((s) => s.why))].join("; ")})` : ""}.`
-    : `${dryRun ? "WOULD correct" : "Corrected"} ${out.corrected} of ${out.checked} items on the New tab (${out.reshot} where staff replaced the photo, ${out.corrected - out.reshot} other); ${out.photosMarked} already-generated photo${out.photosMarked === 1 ? "" : "s"} marked as made from the old photo${dryRun ? " (dry run: nothing written)" : ` — undo with --revert (record: new_arrivals/fixes/${FIX_ID})`}.`);
+    : `${dryRun ? "WOULD correct" : "Corrected"} ${out.corrected} of ${out.checked} items on the New tab (${out.reshot} where staff replaced the photo, ${out.corrected - out.reshot} other); ${out.photosMarked} already-generated photo${out.photosMarked === 1 ? "" : "s"} marked as made from the old photo${out.unmarkable.length ? `; ${out.unmarkable.length} older item(s) have a generated photo with no record to mark: ${out.unmarkable.join(", ")}` : ""}${dryRun ? " (dry run: nothing written)" : ` — undo with --revert (record: new_arrivals/fixes/${FIX_ID})`}.`);
   process.exit(0);
 }

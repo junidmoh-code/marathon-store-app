@@ -41,6 +41,7 @@ import {
 
 const REFRESH_MS = 60_000;   // the quiet refresh of everything on screen
 const RELOAD_CHUNK = 100;    // the list callable's page ceiling
+const LONG_LIST_EVERY = 5;   // a list longer than one page: re-read every 5th minute
 const PAGE = 30;
 const TOAST_MS = 6000;
 const TOASTS_MAX = 3;
@@ -235,7 +236,10 @@ function Photos({ item, tab, stats, live, busy, h }) {
                 {h.onLove && canLove(tab, g) && <LoveButton item={item} gen={g} onLove={h.onLove} disabled={busy} />}
               </div>
               {tab === "new" && h.onPick && canPick(item, g) && (
-                <button disabled={busy} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: busy ? 0.4 : 1 }}>Use this one</button>
+                // A photo made from a product photo that has since been replaced cannot become the main one (it could not be approved).
+                (item.staleGens || []).includes(g.genId)
+                  ? <div data-testid="stale-gen" style={{ color: GRAY, fontSize: 10, marginTop: 4, minHeight: 40 }}>made from the old product photo</div>
+                  : <button disabled={busy} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: busy ? 0.4 : 1 }}>Use this one</button>
               )}
               {how(g, true)}
             </div>
@@ -506,7 +510,16 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     undoPids.current.clear();
     setUndo(null);
     load(tab, group);
-    const t = setInterval(() => load(tab, group, { quiet: true }), REFRESH_MS);
+    // The quiet refresh: every minute for a short list; a list longer than one page is re-read whole
+    // only every LONG_LIST_EVERY minutes (each re-read costs the server a read per item) — and never
+    // while the screen is not being looked at.
+    let tick = 0;
+    const t = setInterval(() => {
+      tick += 1;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if ((dataRef.current.items || []).length > PAGE && tick % LONG_LIST_EVERY !== 0) return;
+      load(tab, group, { quiet: true });
+    }, REFRESH_MS);
     return () => clearInterval(t);
   }, [tab, group, load]);
 

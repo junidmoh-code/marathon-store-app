@@ -37,10 +37,13 @@ test("currentSourceUrl: the staff photo when that is the product's photo; the ke
 test("generationIsStale: by the source it recorded, else by when the photo was replaced", () => {
   assert.equal(sp.generationIsStale({ at: 10, sourceUrl: OLD }, { sourceUrl: NEW }), true);
   // An overwrite can keep the same address: the replacement's time still says so.
-  assert.equal(sp.generationIsStale({ at: 10, sourceUrl: NEW }, { sourceUrl: NEW, photoUpdatedAt: 99 }), true);
+  assert.equal(sp.generationIsStale({ at: 10, sourceUrl: NEW }, { sourceUrl: NEW, photoUpdatedAt: 10 + sp.CLOCK_SLACK_MS + 1 }), true);
   assert.equal(sp.generationIsStale({ at: 100, sourceUrl: NEW }, { sourceUrl: NEW, photoUpdatedAt: 99 }), false);
-  assert.equal(sp.generationIsStale({ at: 10 }, { sourceUrl: NEW, photoUpdatedAt: 99 }), true);
+  assert.equal(sp.generationIsStale({ at: 10 }, { sourceUrl: NEW, photoUpdatedAt: 10 + sp.CLOCK_SLACK_MS + 1 }), true);
   assert.equal(sp.generationIsStale({ at: 100 }, { sourceUrl: NEW, photoUpdatedAt: 99 }), false);
+  // Two clocks stamp these: a stamp only seconds "after" the generation is clock skew, not a re-shoot.
+  assert.equal(sp.generationIsStale({ at: 1_000_000 }, { sourceUrl: NEW, photoUpdatedAt: 1_030_000 }), false);
+  assert.equal(sp.generationIsStale({ at: 1_000_000, sourceUrl: NEW }, { sourceUrl: NEW, photoUpdatedAt: 1_000_000 + sp.CLOCK_SLACK_MS }), false);
   assert.equal(sp.generationIsStale({ at: 10 }, { sourceUrl: NEW }), false);
   assert.equal(sp.generationIsStale(null, { sourceUrl: NEW }), false);
 });
@@ -109,8 +112,11 @@ test("a photo generated from the OLD product photo is flagged once the product's
   await withSource.ref(`products/${PID}`).update({ photoUrl: NEW, photoUpdatedAt: NOW });
   assert.equal((await listed(withSource)).sourceChanged, true);
   // An older generation (no recorded source): the photo's replacement time decides.
-  const older = world({ product: { photoUrl: NEW, photoUpdatedAt: 50 }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10 } } } });
-  assert.equal((await listed(older)).sourceChanged, true);
+  const older = world({ product: { photoUrl: NEW, photoUpdatedAt: NOW }, item: { status: "ready", currentGen: "g2", generatedUrl: generated(2), generations: { g1: { url: generated(1), at: 10 }, g2: { url: generated(2), at: 20 } } } });
+  const o = await listed(older);
+  assert.equal(o.sourceChanged, true);
+  // Every out-of-date generation is named, so the card can refuse "Use this one" on each.
+  assert.deepEqual(o.staleGens.sort(), ["g1", "g2"]);
   const fresh = world({ product: { photoUrl: NEW, photoUpdatedAt: 50 }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 60 } } } });
   assert.equal((await listed(fresh)).sourceChanged, undefined);
 });
@@ -175,7 +181,7 @@ test("a photo made from the OLD product photo cannot be approved once the produc
   assert.equal((await db.ref(`new_arrivals/items/${PID}/status`).once()).val(), "ready");
   assert.equal((await db.ref(core.DECISIONS).once()).val(), null);
   // The same photo kept at the same address but replaced later (photoUpdatedAt) is refused too.
-  const same = world({ product: { photoUpdatedAt: 50 }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10, sourceUrl: OLD } } } });
+  const same = world({ product: { photoUpdatedAt: NOW }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10, sourceUrl: OLD } } } });
   assert.deepEqual((await na.approve(same, { pids: [PID] }, "junid", NOW)).approved, []);
   // A photo made from the CURRENT product photo is approved as before.
   const ok = world({ product: { photoUrl: NEW, photoUpdatedAt: 5 }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10, sourceUrl: NEW } } } });

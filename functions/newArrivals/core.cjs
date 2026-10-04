@@ -495,14 +495,18 @@ function lovedItem(item, genId, loved, at) {
 const CARD_GEN_OMIT = Object.freeze(["promptText", "promptSha", "thoughts", "thoughtsLabel", "thoughtsUnsupported", "genlog", "inputs", "request", "usage", "timing", "errors503"]);
 /**
  * What the card needs to show the product's CURRENT photo: `sourceUrl` (the
- * live source photo — never the item's old pin) and `sourceChanged` (the
- * photo on the card was made from a photo the product no longer shows). Pure.
+ * live source photo — never the item's old pin), `staleGens` (the generations
+ * made from a photo the product no longer shows) and `sourceChanged` (the
+ * photo on the card is one of them). Pure.
  */
 function sourceFields(pid, item, product) {
   const sourceUrl = sourcePhoto.currentSourceUrl(pid, product, item);
-  const cur = item && item.currentGen && item.generations && item.generations[item.currentGen];
-  const stale = !!cur && sourcePhoto.generationIsStale(cur, { sourceUrl, photoUpdatedAt: product && product.photoUpdatedAt });
-  return { sourceUrl, ...(stale ? { sourceChanged: true } : {}) };
+  // EVERY generation made from a photo the product no longer shows (so the card
+  // can refuse "Use this one" on those too, not only flag the current one).
+  const staleGens = Object.entries((item && item.generations) || {})
+    .filter(([, g]) => sourcePhoto.generationIsStale(g, { sourceUrl, photoUpdatedAt: product && product.photoUpdatedAt })).map(([id]) => id);
+  const stale = !!(item && item.currentGen && staleGens.includes(item.currentGen));
+  return { sourceUrl, ...(staleGens.length ? { staleGens } : {}), ...(stale ? { sourceChanged: true } : {}) };
 }
 
 /** Was generation `genId` of this item made from a photo the product no longer shows? Pure. */

@@ -19,6 +19,8 @@
 // (the approval chain on the Mac mini).
 "use strict";
 
+const CLOCK_SLACK_MS = 60_000;
+
 /** The Storage object path inside a Firebase download URL, or null. Pure. */
 function objectPath(url) {
   try {
@@ -63,8 +65,11 @@ function generationIsStale(gen, { sourceUrl = null, photoUpdatedAt = null } = {}
   // EITHER sign is enough: a different source address, or a replacement stamped
   // after it was made (an overwrite can keep the same address).
   if (gen.sourceUrl && sourceUrl && String(gen.sourceUrl) !== String(sourceUrl)) return true;
+  // A minute's slack: the two stamps come from different clocks (the function's
+  // and the uploading device's estimate of server time) — the same slack the
+  // generator's own freshness rule uses. A real replacement comes minutes later.
   const at = Number(gen.at) || 0, changed = Number(photoUpdatedAt) || 0;
-  return at > 0 && changed > at;
+  return at > 0 && changed > at + CLOCK_SLACK_MS;
 }
 
-module.exports = { objectPath, isStaffPhoto, isGeneratedPhoto, currentSourceUrl, generationIsStale };
+module.exports = { CLOCK_SLACK_MS, objectPath, isStaffPhoto, isGeneratedPhoto, currentSourceUrl, generationIsStale };

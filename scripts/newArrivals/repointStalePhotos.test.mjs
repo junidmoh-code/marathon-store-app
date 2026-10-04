@@ -72,7 +72,7 @@ describe("re-point stuck New items at the product's current photo", () => {
     // Re-shot AGAIN, run again: the record still remembers what the item FIRST pointed at (so --revert goes all the way back).
     await db.ref(`products/${A}/photoUrl`).set(staff(A, "newer"));
     expect((await run({ db, now: () => 999 })).corrected).toBe(1);
-    expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}`)).toEqual({ was: staff(A, "old"), now: staff(A, "newer"), at: 999, lane: "new", stamped: ["g1"] });
+    expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}`)).toEqual({ was: staff(A, "old"), now: staff(A, "newer"), at: 999, firstAt: 777, lane: "new", stamped: ["g1"] });
   });
 
   it("--revert puts every corrected copy back — except one that changed since, which is left alone and named", async () => {
@@ -91,5 +91,24 @@ describe("re-point stuck New items at the product's current photo", () => {
     // Reverting twice does nothing more.
     expect((await run({ db, revert: true })).reverted).toBe(0);
     expect(undo({ was: "a", now: "b", reverted: 1 }, "b")).toEqual({ skip: "already put back" });
+  });
+});
+
+describe("only a staff re-shoot says the existing photos are of the old picture", () => {
+  it("a copy that differs for another reason is corrected but its photos are NOT marked; an older item with no generation record is named", async () => {
+    const X = "p1790000000009", Y = "p1790000000010";
+    const db = makeFakeDb({
+      products: { [X]: { photoUrl: staff(X, "now") }, [Y]: { photoUrl: staff(Y, "new") } },
+      new_arrivals: {
+        items: {
+          [X]: { pid: X, status: "ready", originalUrl: "https://x/elsewhere.jpg", generations: { g1: { url: "https://x/g.jpg", at: 1 } } },
+          [Y]: { pid: Y, status: "ready", originalUrl: staff(Y, "old"), generatedUrl: "https://x/y-gen.jpg" },
+        },
+        by_status: { ready: { [X]: 1, [Y]: 1 } },
+      },
+    });
+    const out = await run({ db });
+    expect(out).toMatchObject({ corrected: 2, reshot: 1, photosMarked: 0, unmarkable: [Y] });
+    expect(await read(db, `new_arrivals/items/${X}/generations/g1/sourceUrl`)).toBeNull();
   });
 });

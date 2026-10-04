@@ -808,11 +808,28 @@ describe("paging and refresh", () => {
     const src45 = () => byId(card(tree, P(45)), "original-photo")[0].findAll((n) => n.type === "img")[0].props.src;
     expect(src45()).toBe("https://x/old45.jpg");
     changed = true;                                                        // staff replace the photo of item 45
-    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    await act(async () => { await vi.advanceTimersByTimeAsync(5 * 60_000); });
     expect(cards(tree)).toHaveLength(60);
     expect(src45()).toBe("https://x/new45.jpg");
     // 60 items were on screen: ONE call asked for them all (the callable serves up to 100).
     expect(api.list).toHaveBeenLastCalledWith("new", { limit: 60, group: "sneakers" });
+  });
+
+  it("a long list is re-read every fifth minute, a short one every minute, and never while the screen is hidden", async () => {
+    vi.useFakeTimers();
+    const api = paged(75);
+    const tree = await render(api);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(api.list).toHaveBeenCalledTimes(2);                                   // one page on screen: refreshed
+    await tap(btn(tree.root, "Load more (30 of 75 shown)"));
+    const after = api.list.mock.calls.length;
+    await act(async () => { await vi.advanceTimersByTimeAsync(3 * 60_000); });   // minutes 2, 3, 4: skipped
+    expect(api.list.mock.calls.length).toBe(after);
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });       // minute 5: the whole list
+    expect(api.list.mock.calls.length).toBe(after + 1);
+    vi.stubGlobal("document", { visibilityState: "hidden" });
+    await act(async () => { await vi.advanceTimersByTimeAsync(10 * 60_000); });
+    expect(api.list.mock.calls.length).toBe(after + 1);
   });
 
   it("the quiet refresh never replaces pages that Load more added while it was on its way", async () => {
@@ -1048,6 +1065,15 @@ describe("the Original shown is the product's current photo — never the item's
     expect(btn(card(tree, P(2)), "Approve").props.disabled).toBe(false);
     await tap(btn(card(tree, P(1)), "Approve"));
     expect(cards(tree)).toContain(P(1));
+  });
+
+  it("an earlier photo made from the old product photo cannot be made the main one: no 'Use this one', said in words", async () => {
+    const tree = await render(fakeApi([withPhoto(1, { sourceUrl: NEW, staleGens: ["g1"] })]));
+    const strip = byId(card(tree, P(1)), "earlier-generations")[0];
+    expect(btn(strip, "Use this one")).toBeUndefined();
+    expect(label(byId(strip, "stale-gen")[0])).toBe("made from the old product photo");
+    // The current photo (g2) is fine: it can be approved.
+    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(false);
   });
 
   it("an APPROVED generated photo is untouched: on Done the photo shown is the generated one and the Original is the staff photo it replaced", async () => {
