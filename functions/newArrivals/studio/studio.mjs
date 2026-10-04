@@ -18,6 +18,15 @@ import { correctFootwear } from "./correct.mjs";
 import sourcePhoto from "../sourcePhoto.cjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
+export const PROVIDERS = Object.freeze(["gemini", "openai"]);
+const PROVIDER_NAME = { gemini: "Gemini", openai: "OpenAI" };
+
+/** The engine for this generation: the tap's choice, else the item's, else the default (Gemini). Pure. */
+export function providerFor(item, { asked = null, defaultProvider = "gemini" } = {}) {
+  if (PROVIDERS.includes(asked)) return asked;
+  if (PROVIDERS.includes(item?.provider)) return item.provider;
+  return PROVIDERS.includes(defaultProvider) ? defaultProvider : "gemini";
+}
 
 /** The method for this generation: the tap's choice, else the item's, else the default. Pure. */
 export function methodFor(item, { asked = null, defaultMethod = "full" } = {}) {
@@ -63,7 +72,10 @@ const draftJpeg = (buf) => sharp(buf).rotate().resize(1280, 1280, { fit: "inside
  * emit({ type, … }) — progress for the card; never throws.
  * → { generated, kind, method, promptVersion, layersUsed, box, trace, draftFiles, usage }
  */
-export async function generateOne({ item, product, genId, method = "full", deps, emit = () => {} }) {
+export async function generateOne({ item, product, genId, method = "full", provider = "gemini", deps, emit = () => {} }) {
+  // The engine: its model and its name for the card's progress line. Everything else is the same for both.
+  const model = provider === "openai" ? deps.generation.openaiModel : deps.generation.imageModel;
+  const engine = PROVIDER_NAME[provider] || "Gemini";
   const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
   let kind = kindFor(product || { categoryKey: item.categoryKey });
   // A clothing item with no category key: one garment on the single fence (a set has its own category).
@@ -108,7 +120,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
 
   if (method === "split") {
     if (!deps.split) throw new StudioRefusal("the split method is not installed");
-    return deps.split({ item, product, genId, kind, categoryKey, orig, originalUrl, box, boxMode, boxSource, boxFrom, brand, libraryBoxPng, deps, say });
+    return deps.split({ item, product, genId, kind, categoryKey, orig, originalUrl, box, boxMode, boxSource, boxFrom, brand, libraryBoxPng, provider, model, engine, deps, say });
   }
 
   const plate = await deps.loadPlate(kind), ref = await deps.loadReference(kind);
@@ -152,10 +164,10 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   ];
   const imageConfig = { aspectRatio: aspect, imageSize: generation.imageSize };
 
-  say({ type: "status", text: "Gemini is working…" });
+  say({ type: "status", text: `${engine} is working…` });
   const draftFiles = [];
   const draftJobs = [];
-  const gen = await deps.image(generation.imageModel, parts, imageConfig, {
+  const gen = await deps.image(model, parts, imageConfig, {
     onEvent: (ev) => {
       if (ev.type === "thought") say({ type: "thought", text: ev.text });
       // A draft is shown as soon as it is stored; a failed upload never costs the photo.
@@ -235,7 +247,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   return {
-    generated, kind, method: "full",
+    generated, kind, method: "full", provider, model,
     ...(uncorrected ? { uncorrected } : {}), ...(correction ? { corrected: correction.applied } : {}), ...(note ? { note } : {}),
     // The product photo this was made from: a later re-shoot makes the generation out of date.
     // (Always the product's photo address — the same one the list compares with — even when the

@@ -633,4 +633,62 @@ test("an answer that is not a readable image is never stored or shown as a photo
   assert.equal(Object.keys(it.generations || {}).length, 0);
   assert.notEqual(it.status, "ready");
   assert.equal(w.uploads.filter((u) => /gen_\d+/.test(u.path)).length, 0);
+// ── THE SECOND ENGINE: OpenAI's gpt-image-1, behind the same interface ───────
+test("Full OpenAI on a tap: the SAME prompt and images go to gpt-image-1; the record says which engine made it; nothing else differs", async () => {
+  const gemini = await world();
+  const a = await studio.studioGenerate(gemini.db, { pid: PID }, "junid", gemini.deps);
+  const openai = await world();
+  const b = await studio.studioGenerate(openai.db, { pid: PID, provider: "openai" }, "junid", openai.deps);
+  const ga = gemini.calls.find((c) => c[0] === "image"), gb = openai.calls.find((c) => c[0] === "image");
+  assert.equal(ga[1], "gemini-3-pro-image");
+  assert.equal(gb[1], "gpt-image-1");
+  // Same prompt, same parts, same image config — only the engine differs.
+  assert.deepEqual(gb[3], ga[3]);
+  assert.deepEqual(gb[2], ga[2]);
+  const ia = await itemOf(gemini.db), ib = await itemOf(openai.db);
+  assert.equal(ia.generations[a.genId].provider, "gemini");
+  assert.equal(ib.generations[b.genId].provider, "openai");
+  assert.equal(ib.generations[b.genId].model, "gpt-image-1");
+  assert.equal(ib.generations[b.genId].promptVersion, ia.generations[a.genId].promptVersion);
+  assert.equal(ib.status, "ready");
+  assert.equal(ib.naming.status, "pending", "approval, naming and posting do not care which engine made it");
+  assert.equal((await openai.db.ref(`${core.GENLOG}/${b.code}/provider`).once()).val(), "openai");
+});
+
+test("the item's own provider is used when the tap names none; with neither, Gemini", async () => {
+  const w = await world({ item: { provider: "openai" } });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal((await itemOf(w.db)).generations[out.genId].provider, "openai");
+  const d = await world();
+  const o2 = await studio.studioGenerate(d.db, { pid: PID }, "junid", d.deps);
+  assert.equal((await itemOf(d.db)).generations[o2.genId].provider, "gemini");
+  await assert.rejects(studio.studioGenerate(d.db, { pid: PID, provider: "midjourney" }, "junid", d.deps), /Provider is gemini or openai/);
+});
+
+test("Split (OpenAI) that cannot be cut out keeps OpenAI's own photo and says so — naming OpenAI, as the Gemini split names Gemini", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  w.deps.image = async (model, parts, cfg, opts) => ({ ...(await image(model, parts, cfg, opts)), buffer: await garmentOnGrey("#DEDEDE"), mime: "image/png" });
+  const out = await studio.studioGenerate(w.db, { pid: PID, method: "split", provider: "openai" }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.method, "split");
+  assert.equal(gen.provider, "openai");
+  assert.match(gen.note, /^Split could not place this one — .* The photo shown is OpenAI's own, on grey; try Full OpenAI for this item\.$/);
+  assert.match(gen.url, /-product\.jpg/);
+});
+
+test("OpenAI's errors are said in the same plain way: declined, out of credit, a refused key, too slow", async () => {
+  const say = async (err) => {
+    const w = await world();
+    w.deps.image = async () => { throw err; };
+    let msg = null;
+    await studio.studioGenerate(w.db, { pid: PID, provider: "openai" }, "junid", w.deps).catch((e) => { msg = e.message; });
+    assert.equal((await itemOf(w.db)).generateRequest, undefined, "the item is given back");
+    return msg;
+  };
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 400: rejected by the safety system"), { status: 400, refusal: true })), "No photo — OpenAI declined to make this photo.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 429: You exceeded your current quota, please check your plan and billing details"), { status: 429 })), "No photo — the OpenAI credit has run out — top it up on the OpenAI platform, then tap Generate again.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 429: Rate limit reached"), { status: 429 })), "No photo — the photo service is busy — tap Generate again.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 401: Incorrect API key"), { status: 401 })), "No photo — the OpenAI key was refused — it needs replacing in Secret Manager.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 gave no photo within 300s"), { status: 504 })), "No photo — OpenAI took too long and the connection was closed — it may still have been charged; tap Generate to try again.");
 });

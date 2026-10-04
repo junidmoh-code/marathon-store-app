@@ -26,6 +26,12 @@ const r2 = (x) => Math.round(x * 100) / 100;
 /** One call's usageMetadata as a priced row (image output tokens apart). Pure. */
 export function usageRow(model, usage) {
   if (!usage) return null;
+  // OpenAI's shape (gpt-image-1): input split into text and image tokens; the output is the image.
+  if ("input_tokens" in usage || "output_tokens" in usage) {
+    const d = usage.input_tokens_details || {};
+    const imageIn = d.image_tokens || 0;
+    return { model, prompt: d.text_tokens ?? Math.max(0, (usage.input_tokens || 0) - imageIn), imageIn, output: 0, imageOut: usage.output_tokens || 0, thoughts: 0 };
+  }
   const imageOut = (usage.candidatesTokensDetails || []).filter((d) => d.modality === "IMAGE").reduce((n, d) => n + (d.tokenCount || 0), 0);
   return { model, prompt: usage.promptTokenCount || 0, output: Math.max(0, (usage.candidatesTokenCount || 0) - imageOut), imageOut, thoughts: usage.thoughtsTokenCount || 0 };
 }
@@ -36,7 +42,7 @@ export function costOf(rows, prices, usdZar = null) {
   const unpriced = new Set();
   for (const r of rows) {
     const p = prices.models[r.model] || (unpriced.add(r.model), prices.models.default);
-    usd += (r.prompt * p.input + (r.output + r.thoughts) * p.output + r.imageOut * (p.imageOutput ?? p.output)) / 1e6;
+    usd += (r.prompt * p.input + (r.imageIn || 0) * (p.imageInput ?? p.input) + (r.output + r.thoughts) * p.output + r.imageOut * (p.imageOutput ?? p.output)) / 1e6;
   }
   return { usd, zar: usd * (usdZar ?? prices.usdToZar), calls: rows.length, unpriced: [...unpriced] };
 }
@@ -89,6 +95,8 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     ...(res.sourceUrl ? { sourceUrl: res.sourceUrl } : {}),
     promptVersion: res.promptVersion,
     method,
+    // Which engine made it: "gemini" or "openai" (older generations have none: Gemini).
+    provider: res.provider === "openai" ? "openai" : "gemini",
     ...(method === "split" ? (res.packaging ? { packaging: res.packaging } : {}) : { layers: Object.fromEntries((res.layersUsed || []).map((k) => [k, true])) }),
     how: { code: code || null, draftCount: Number(draftCount) || 0 },
     plate: res.kind ? `junid-${res.kind}` : null, kind: res.kind || null,
@@ -132,14 +140,14 @@ export function genlogRecord({ code, pid, genId, gen, trace = null, totalMs = nu
     timing: { requestMs: t.requestMs ?? null, totalMs },
     thoughts: t.thoughts ?? null, thoughtImages: t.thoughtImages || 0,
     drafts: (t.draftFiles || []).map((d) => ({ url: d.url, path: d.path || null })),
-    method: gen.method || "full",
+    method: gen.method || "full", provider: gen.provider || "gemini",
     ...(t.split ? { split: t.split } : {}),
     // Footwear: what the correction found and where it placed it (or why it could not).
     ...(t.correction ? { correction: t.correction } : {}),
     ...(t.thoughtsUnsupported ? { thoughtsUnsupported: t.thoughtsUnsupported } : {}),
     thoughtsLabel: THOUGHTS_LABEL,
     measurements: gen.measurements || null,
-    transport: "streamGenerateContent (Cloud Function)",
+    transport: gen.provider === "openai" ? "images/edits (Cloud Function)" : "streamGenerateContent (Cloud Function)",
   });
 }
 

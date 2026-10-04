@@ -43,6 +43,7 @@ const r3 = (x) => Math.round(x * 1000) / 1000;
  */
 export async function splitGenerate(ctx) {
   const { item, product, genId, kind, orig, originalUrl, box, boxMode, boxFrom, brand, deps, say } = ctx;
+  const provider = ctx.provider || "gemini", engine = ctx.engine || "Gemini";
   const { generation } = deps;
   const plate = await deps.loadPlate(kind);
   const spec = deps.spec?.[kind];
@@ -59,10 +60,10 @@ export async function splitGenerate(ctx) {
   const inputs = await Promise.all([inputOf("source", orig, { url: originalUrl }), ...(ownBox ? [inputOf("box", ownBox, boxFrom || {})] : [])]);
   const imageConfig = { aspectRatio: SPLIT_ASPECT[kind], imageSize: generation.imageSize };
 
-  say({ type: "status", text: "Gemini is making the product…" });
+  say({ type: "status", text: `${engine} is making the product…` });
   const draftFiles = [];
   const draftJobs = [];
-  const gen = await deps.image(generation.imageModel, parts, imageConfig, {
+  const gen = await deps.image(ctx.model || generation.imageModel, parts, imageConfig, {
     onEvent: (ev) => {
       if (ev.type === "thought") say({ type: "thought", text: ev.text });
       if (ev.type === "draft") draftJobs.push(keepDraft({ deps, pid: item.pid, genId, n: ev.n, draft: ev.draft, draftFiles, say }));
@@ -112,12 +113,12 @@ export async function splitGenerate(ctx) {
     if (libraryPlaced) inputs.push(await inputOf("box (brand library, placed by code)", ctx.libraryBoxPng, { file: `brand library box (${brand})` }));
   } catch { /* recorded without them */ }
   return {
-    generated, kind, method: "split",
+    generated, kind, method: "split", provider, model: ctx.model || generation.imageModel,
     sourceUrl: sourcePhoto.currentSourceUrl(item.pid, product, item),
     promptVersion: `${SPLIT_PROMPT_VERSION} (split)`, layersUsed: [],
     packaging: split.packaging || null,
     // What Junid needs to know when the product could not be placed: the photo shown is Gemini's own, on grey.
-    ...(split.notPlaced ? { note: `Split could not place this one — ${split.notPlaced}. The photo shown is Gemini's product on grey; try Full Gemini for this item.` } : {}),
+    ...(split.notPlaced ? { note: `Split could not place this one — ${split.notPlaced}. The photo shown is ${engine}'s own, on grey; try Full ${engine} for this item.` } : {}),
     box: kind === "footwear" ? { mode: split.box === "own" ? "own" : libraryPlaced ? "library" : "none", brand, source: split.box || null } : null,
     draftFiles: kept, usage: gen.usage || null, measurements,
     trace: {

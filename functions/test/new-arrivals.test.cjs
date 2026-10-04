@@ -1020,3 +1020,19 @@ test("the old queue Generate is retired: it refuses and says to reload (a reques
   assert.equal((await db.ref(`${core.ITEMS}/${PID}/generateRequest`).once()).val(), null);
   assert.equal((await db.ref(`${core.ROOT}/requests`).once()).val(), null);
 });
+
+test("the provider is set beside the method: openai / gemini / null (default); an older card that sends only the method leaves it alone", async () => {
+  const db = withGens("ready");
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "split", provider: "openai" }, NOW), { ok: true, method: "split", provider: "openai" });
+  let it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.method, "split"); assert.equal(it.provider, "openai");
+  // An older bundle: method only — the provider stays.
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }, NOW), { ok: true, method: "full" });
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/provider`).once()).val(), "openai");
+  // Back to the default (Full Gemini): both cleared.
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: null, provider: null }, NOW), { ok: true, method: null, provider: null });
+  it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
+  assert.equal(it.method, undefined); assert.equal(it.provider, undefined);
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: null, provider: null }, NOW), { ok: true, method: null, provider: null, unchanged: true });
+  await assert.rejects(na.setMethod(db, { pid: PID, method: "full", provider: "dalle" }, NOW), /gemini, openai or null/);
+});

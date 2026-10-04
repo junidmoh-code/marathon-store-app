@@ -10,7 +10,7 @@
 // newArrivalsSelect   "Use this one" — any generation becomes the main photo (lane kept).
 // newArrivalsLove     ❤ / un-❤ one generation (any lane; never moves or approves).
 // newArrivalsHow      "How Gemini did it" — one generation's genlog (thoughts + drafts), on demand.
-// newArrivalsMethod   per-item "Full Gemini" override (items/{pid}/method; a setting, not logged).
+// newArrivalsMethod   per-item method + provider (items/{pid}/method, /provider; a setting, not logged).
 // Every action Junid takes writes new_arrivals/decisions/{push}.
 //
 // The card never reads or writes /new_arrivals directly, so no database rule
@@ -440,11 +440,15 @@ const newArrivalsHow = onCall(callableOpts, async (request) => {
 // is refused while a new photo is being generated (core.methodRefusal) and a
 // concurrent Generate is never overwritten. Only the method field changes; it
 // is a setting, so nothing is logged to decisions.
-async function setMethod(db, { pid, method }, nowMs = Date.now()) {
+async function setMethod(db, { pid, method, provider }, nowMs = Date.now()) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== null && method !== undefined && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full, split or null.");
+  if (provider !== null && provider !== undefined && !core.PROVIDERS.includes(provider)) throw new HttpsError("invalid-argument", "Provider is gemini, openai or null.");
   pid = String(pid);
   const want = method || null;
+  // The provider is changed only when the call names it (an older card bundle sends the method alone).
+  const setProvider = provider !== undefined;
+  const wantProvider = provider || null;
   const out = {};
   const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
     out.same = false;
@@ -453,15 +457,17 @@ async function setMethod(db, { pid, method }, nowMs = Date.now()) {
     const why = core.methodRefusal(cur, nowMs);
     if (why) { out.refusal = why; return undefined; }
     out.refusal = null;
-    if ((cur.method || null) === want) { out.same = true; return undefined; }
-    const next = { ...cur, method: want };
+    if ((cur.method || null) === want && (!setProvider || (cur.provider || null) === wantProvider)) { out.same = true; return undefined; }
+    const next = { ...cur, method: want, ...(setProvider ? { provider: wantProvider } : {}) };
     if (!want) delete next.method;
+    if (setProvider && !wantProvider) delete next.provider;
     return next;
   });
-  if (out.same) return { ok: true, method: want, unchanged: true };
+  const answer = { ok: true, method: want, ...(setProvider ? { provider: wantProvider } : {}) };
+  if (out.same) return { ...answer, unchanged: true };
   const item = res && res.committed && res.snapshot && res.snapshot.val();
-  if (!item || out.refusal || (item.method || null) !== want) throw new HttpsError("failed-precondition", `Can't change the method — ${out.refusal || "not saved"}.`);
-  return { ok: true, method: want };
+  if (!item || out.refusal || (item.method || null) !== want || (setProvider && (item.provider || null) !== wantProvider)) throw new HttpsError("failed-precondition", `Can't change the method — ${out.refusal || "not saved"}.`);
+  return answer;
 }
 
 const newArrivalsMethod = onCall(callableOpts, async (request) => {

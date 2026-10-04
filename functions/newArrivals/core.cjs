@@ -554,6 +554,8 @@ function howView(code, rec) {
   return {
     code,
     method: METHODS.includes(rec.method) ? rec.method : null,
+    // Which engine made it — only when recorded (older photos have none: Gemini).
+    ...(PROVIDERS.includes(rec.provider) ? { provider: rec.provider } : {}),
     thoughts,
     thoughtsLabel: typeof rec.thoughtsLabel === "string" && rec.thoughtsLabel ? rec.thoughtsLabel : THOUGHTS_LABEL,
     drafts,
@@ -567,6 +569,12 @@ function howView(code, rec) {
 // comes from its config; items/{pid}/method overrides it for one item (absent
 // = the default). A setting, not a decision: nothing is logged.
 const METHODS = Object.freeze(["full", "split"]);
+// THE PROVIDER (4 Oct): which engine makes the photo — Gemini (the default) or
+// OpenAI's gpt-image-1. Chosen per item beside the method; the prompt and the
+// process are the same for both. items/{pid}/provider overrides the default
+// (absent = Gemini). Never blended: one photo, one engine.
+const PROVIDERS = Object.freeze(["gemini", "openai"]);
+const PROVIDER_LABEL = Object.freeze({ gemini: "Gemini", openai: "OpenAI" });
 
 /** Why the method of `item` cannot be changed now, or null. Pure. */
 function methodRefusal(item, nowMs = NaN) {
@@ -604,5 +612,5 @@ module.exports = {
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
   SELECT_LANES, GEN_ID_RE, selectRefusal, selectFields,
   loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem, sourceFields, staleGeneration,
-  GENLOG, THOUGHTS_LABEL, CODE_RE, howView, METHODS, methodRefusal,
+  GENLOG, THOUGHTS_LABEL, CODE_RE, howView, METHODS, PROVIDERS, PROVIDER_LABEL, methodRefusal,
 };

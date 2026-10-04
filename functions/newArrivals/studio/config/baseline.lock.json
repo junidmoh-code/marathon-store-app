@@ -71,5 +71,12 @@
     "reference": "footwear-reference-g0102.jpg",
     "referenceSha256": "5275e68721bdaea714182bd226b5f276f24c5a3a272f96fcd3be4c19620887fe",
     "changes": "the footwear placement text (so the footwear prompt's fingerprint), the footwear reference image, the footwear layout numbers. The baseline prompt text itself, the clothing prompts and every plate are unchanged."
+  },
+  "openaiModel": "gpt-image-1",
+  "openaiApproval": {
+    "requestedBy": "Junid",
+    "requestedAt": "2026-10-04",
+    "for": "gpt-image-1 as a second provider alongside Gemini, picked per item; default stays Full Gemini",
+    "source": "his brief of 4 Oct 2026 (OpenAI provider)"
   }
 }
