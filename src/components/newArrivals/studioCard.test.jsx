@@ -958,3 +958,85 @@ describe("studioStream: the streaming callable over fetch", () => {
     expect(sseSplit("data: 1\n\ndata: {\"a\"")).toEqual({ payloads: ["1"], rest: "data: {\"a\"" });
   });
 });
+
+// ── THE CARD SHOWS THE PRODUCT'S CURRENT PHOTO ───────────────────────────────
+// Until 4 Oct the card showed a copy of the photo kept on the queue item
+// (item.originalUrl), made when the item entered New. A photo replaced in admin
+// was never shown, and Junid could approve against an out-of-date picture.
+describe("the Original shown is the product's current photo — never the item's old copy", () => {
+  const OLD = "https://s/o/products%2Fp1%2Fphoto.jpg?token=old", NEW = "https://s/o/products%2Fp1%2Fphoto.jpg?token=new";
+  const originalSrc = (tree, pid) => byId(card(tree, pid), "original-photo")[0].findAll((n) => n.type === "img")[0].props.src;
+
+  it("the server's sourceUrl is shown even when the item still carries the old copy", async () => {
+    const tree = await render(fakeApi([bare(1, { originalUrl: OLD, sourceUrl: NEW, product: { name: "Item 1", stockPrice: 300, photoUrl: NEW } })]));
+    expect(originalSrc(tree, P(1))).toBe(NEW);
+  });
+
+  it("the photo is changed in admin → the next refresh shows the new one", async () => {
+    vi.useFakeTimers();
+    let photo = OLD;
+    const api = fakeApi([], { list: vi.fn(async (tab) => ({ tab, items: [bare(1, { originalUrl: OLD, sourceUrl: photo, product: { name: "Item 1", stockPrice: 300, photoUrl: photo } })], total: 1, tabCounts: { new: 1, done: 0 }, groupCounts: { sneakers: 1, clothing: 0 } })) });
+    const tree = await render(api);
+    expect(originalSrc(tree, P(1))).toBe(OLD);
+    photo = NEW;                                                   // staff replace the photo in admin
+    await act(async () => { await vi.advanceTimersByTimeAsync(60_000); });
+    expect(originalSrc(tree, P(1))).toBe(NEW);
+  });
+
+  it("saving a price never puts an old photo back: the Original stays the current one before and after the write", async () => {
+    const d = deferred();
+    const api = fakeApi([withPhoto(1, { originalUrl: OLD, sourceUrl: NEW })], { savePrices: vi.fn(() => d.promise) });
+    const tree = await render(api);
+    const input = card(tree, P(1)).findAll((n) => n.type === "input" && n.props["aria-label"] === "Retail price (R)")[0];
+    await act(async () => { input.props.onChange({ target: { value: "450" } }); });
+    await tap(btn(card(tree, P(1)), "Save"));
+    expect(originalSrc(tree, P(1))).toBe(NEW);
+    await settle(() => d.resolve({ ok: true, count: 1 }));
+    expect(originalSrc(tree, P(1))).toBe(NEW);
+    // …and a refused save (rollback) does not either.
+    const api2 = fakeApi([withPhoto(1, { originalUrl: OLD, sourceUrl: NEW })], { savePrices: vi.fn(async () => ({ ok: false, error: "refused" })) });
+    const tree2 = await render(api2);
+    const input2 = card(tree2, P(1)).findAll((n) => n.type === "input" && n.props["aria-label"] === "Retail price (R)")[0];
+    await act(async () => { input2.props.onChange({ target: { value: "450" } }); });
+    await tap(btn(card(tree2, P(1)), "Save"));
+    await settle(() => {});
+    expect(originalSrc(tree2, P(1))).toBe(NEW);
+  });
+
+  it("Use this one, ❤ and a finished generation leave the Original on the current photo", async () => {
+    const landed = { pid: P(1), status: "ready", enqueuedAt: 1, name: "Item 1", originalUrl: OLD, sourceUrl: NEW, currentGen: "g9", generatedUrl: "https://x/g9.jpg", generations: { g9: GEN("g9", 9) } };
+    const api = fakeApi([withPhoto(1, { originalUrl: OLD, sourceUrl: NEW })], { generate: vi.fn(async (pid) => ({ ok: true, pid, seconds: 30, costZar: 2.3, item: landed })) });
+    const tree = await render(api);
+    await tap(btn(byId(card(tree, P(1)), "earlier-generations")[0], "Use this one"));
+    await tap(byId(byId(card(tree, P(1)), "main-meta")[0], "love")[0]);
+    await settle(() => {});
+    expect(originalSrc(tree, P(1))).toBe(NEW);
+    await tap(btn(card(tree, P(1)), "Regenerate"));
+    await settle(() => {}); await settle(() => {});
+    expect(originalSrc(tree, P(1))).toBe(NEW);
+    expect(byId(card(tree, P(1)), "main-photo")[0].findAll((n) => n.type === "img")[0].props.src).toBe("https://x/g9.jpg");
+  });
+
+  it("a photo made from the OLD product photo says so on the card, in plain words — Junid never approves it without knowing", async () => {
+    const tree = await render(fakeApi([withPhoto(1, { sourceUrl: NEW, sourceChanged: true }), withPhoto(2, { sourceUrl: NEW })]));
+    expect(label(byId(card(tree, P(1)), "source-changed")[0]).trim()).toBe("The product's photo was changed after this photo was made — tap Regenerate to make one from the new photo.");
+    expect(byId(card(tree, P(2)), "source-changed")).toHaveLength(0);
+  });
+
+  it("an APPROVED generated photo is untouched: on Done the photo shown is the generated one and the Original is the staff photo it replaced", async () => {
+    const done = withPhoto(1, { status: "done", approvedAt: 5, originalUrl: OLD, sourceUrl: OLD, generatedUrl: "https://x/g2.jpg", product: { name: "Item 1", stockPrice: 300, photoUrl: "https://x/g2.jpg", photoUrlOriginal: OLD }, sourceChanged: true });
+    const tree = await render(fakeApi([], { list: vi.fn(async (tab) => ({ tab, items: tab === "done" ? [done] : [], tabCounts: { new: 0, done: 1 } })) }), "done");
+    expect(originalSrc(tree, P(1))).toBe(OLD);
+    expect(byId(card(tree, P(1)), "main-photo")[0].findAll((n) => n.type === "img")[0].props.src).toBe("https://x/g2.jpg");
+    // The "changed since" note is for the New tab only: what is approved is approved.
+    expect(byId(card(tree, P(1)), "source-changed")).toHaveLength(0);
+  });
+
+  it("sourceUrlOf: the item's old copy comes LAST (only when an older server sent nothing else)", () => {
+    expect(view.sourceUrlOf({ originalUrl: OLD, sourceUrl: NEW })).toBe(NEW);
+    expect(view.sourceUrlOf({ originalUrl: OLD, product: { photoUrl: NEW } })).toBe(NEW);
+    expect(view.sourceUrlOf({ originalUrl: OLD, product: { photoUrl: "https://x/gen.jpg", photoUrlOriginal: NEW } })).toBe(NEW);
+    expect(view.sourceUrlOf({ originalUrl: OLD })).toBe(OLD);
+    expect(view.sourceUrlOf({})).toBeNull();
+  });
+});
