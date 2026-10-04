@@ -1079,3 +1079,21 @@ test("a generate request older than 10 minutes is a run that died: it blocks not
   await db.ref(`products/${PID}/stockPrice`).set(550);
   assert.deepEqual((await na.approve(db, { pids: [PID] }, "junid", NOW)).approved, [PID]);
 });
+
+test("an old Mac mini queue request (no studio stamp) blocks until it is cleared, however old", () => {
+  assert.equal(core.requestPending({ generateRequest: { at: 1, by: "junid" } }, NOW), true);
+  assert.equal(core.requestPending({ generateRequest: { at: 1, by: "junid", studio: true } }, NOW), false);
+});
+
+test("Skip waits while the photo studio is making the item's photo; an old queue request is dropped with the skip", async () => {
+  const making = seeded("new", { generateRequest: { at: NOW - 1000, by: "junid", studio: true } });
+  const r = await na.skip(making, { pids: [PID] }, "junid", NOW);
+  assert.deepEqual(r.skippedPids, []);
+  assert.match(r.skipped[0].why, /its photo is being made/);
+  assert.equal((await making.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "new");
+  const queued = seeded("new", { generateRequest: { at: NOW - 1000, by: "junid" } });
+  assert.deepEqual((await na.skip(queued, { pids: [PID] }, "junid", NOW)).skippedPids, [PID]);
+  // A studio run that died no longer holds the Skip back.
+  const dead = seeded("new", { generateRequest: { at: NOW - core.REQUEST_STALE_MS - 1, by: "junid", studio: true } });
+  assert.deepEqual((await na.skip(dead, { pids: [PID] }, "junid", NOW)).skippedPids, [PID]);
+});

@@ -171,3 +171,138 @@ test("a category with no plate is refused before any Gemini call", async () => {
   assert.equal(w.calls.filter((c) => c[0] === "image").length, 0);
   assert.equal((await itemOf(w.db)).generateRequest, undefined);
 });
+
+// ── A PAID PHOTO IS NEVER LOST; A LATE ONE NEVER CHANGES WHAT JUNID DECIDED ──
+const STATS = `${core.ROOT}/stats`;
+
+test("the spend is counted with the photo: real rand added to the total, nothing to the estimated part", async () => {
+  const w = await world();
+  await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const stats = (await w.db.ref(STATS).once()).val();
+  assert.deepEqual(stats.totalSpentZar, { ".sv": { increment: 2.75 } });
+  assert.deepEqual(stats.generations, { ".sv": { increment: 1 } });
+  assert.equal(stats.estimatedPartZar, undefined);
+});
+
+test("usage without the image's own token count is NOT priced as real (it would be ten times too low)", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  w.deps.image = async (...a) => ({ ...(await image(...a)), usage: { promptTokenCount: 9000, candidatesTokenCount: 1200 } });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.costEstimated, true);
+  assert.ok(gen.costZar > 2, "the list-price estimate of a 2K image");
+  assert.deepEqual((await w.db.ref(`${STATS}/estimatedPartZar`).once()).val(), { ".sv": { increment: gen.costZar } });
+});
+
+test("the day's rate could not be read: the configured rate is used and the photo says so", async () => {
+  const w = await world();
+  w.deps.fx = async () => { throw new Error("offline"); };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.usdZarFallback, true);
+  assert.equal(gen.usdZar, 18);
+});
+
+test("a storage hiccup after Gemini answered is retried — the paid photo lands", async () => {
+  const w = await world();
+  let fails = 2;
+  const file = w.deps.bucket.file;
+  w.deps.bucket.file = (p) => {
+    const f = file(p);
+    return { save: async (...a) => { if (/\/gen_\d+\.jpg$/.test(p) && fails-- > 0) throw new Error("503 backend error"); return f.save(...a); } };
+  };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal(out.ok, true);
+  assert.equal(w.calls.filter((c) => c[0] === "image").length, 1, "Gemini is never called again for it");
+  assert.equal((await itemOf(w.db)).currentGen, out.genId);
+});
+
+test("storage down for good after Gemini answered: Junid is told it was charged, the item is given back, Gemini was called once", async () => {
+  const w = await world();
+  const file = w.deps.bucket.file;
+  w.deps.bucket.file = (p) => (/\/gen_\d+\.jpg$/.test(p) ? { save: async () => { throw new Error("503 backend error"); } } : file(p));
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /made but could not be stored — it was charged/);
+  assert.equal(w.calls.filter((c) => c[0] === "image").length, 1);
+  const item = await itemOf(w.db);
+  assert.equal(item.generateRequest, undefined);
+  assert.match(item.lastAttempt.reason, /charged/);
+});
+
+test("a failed regenerate leaves the item EXACTLY as it was: name, approval lap and rejection untouched", async () => {
+  const before = { status: "rejected", currentGen: "g1", generatedUrl: "https://x/g1.jpg", generations: { g1: { url: "https://x/g1.jpg", at: 1 } },
+    suggestedName: "Fleece hoodie in grey", rejection: { code: "junid", reason: "colour off" }, destinations: { shopify: { at: 3 } } };
+  const w = await world({ item: before });
+  w.deps.image = async () => { const e = new Error("Gemini gemini-3-pro-image 500: internal"); e.status = 500; throw e; };
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /could not be made — tap Generate again/);
+  const item = await itemOf(w.db);
+  for (const k of Object.keys(before)) assert.deepEqual(item[k], before[k], k);
+  assert.equal(item.lastAttempt.reason, "the photo could not be made — tap Generate again", "a fixed sentence: no upstream text reaches the card");
+});
+
+test("skipped while its photo was being made: the photo is only ADDED — the item stays skipped, nothing is named or shown", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  w.deps.image = async (...a) => {
+    const cur = await itemOf(w.db);
+    const next = { ...cur, status: "skipped", skippedFrom: "new" };
+    delete next.generateRequest;
+    await w.db.ref(`${core.ITEMS}/${PID}`).set(next);
+    return image(...a);
+  };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal(out.addedOnly, true);
+  const item = await itemOf(w.db);
+  assert.equal(item.status, "skipped");
+  assert.ok(item.generations[out.genId].url, "the paid photo is kept");
+  assert.equal(item.currentGen, undefined);
+  assert.equal(item.generatedUrl, undefined);
+  assert.equal(item.naming, undefined);
+});
+
+test("JUNID'S APPROVE IS FINAL: a run that outlives its claim never replaces the photo he approved", async () => {
+  const w = await world({ item: { status: "ready", currentGen: "g1", generatedUrl: "https://x/g1.jpg", generations: { g1: { url: "https://x/g1.jpg", at: 1 } }, suggestedName: "Approved name" } });
+  const image = w.deps.image;
+  w.deps.image = async (...a) => {
+    // Meanwhile (the claim went stale) Junid approved the photo he was looking at.
+    const cur = await itemOf(w.db);
+    const next = { ...cur, status: "approved", approvedAt: NOW + 5, approvedBy: "junid" };
+    delete next.generateRequest;
+    await w.db.ref(`${core.ITEMS}/${PID}`).set(next);
+    return image(...a);
+  };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const item = await itemOf(w.db);
+  assert.equal(item.status, "approved");
+  assert.equal(item.approvedAt, NOW + 5);
+  assert.equal(item.currentGen, "g1");
+  assert.equal(item.generatedUrl, "https://x/g1.jpg", "the chain publishes generatedUrl: it is still the approved photo");
+  assert.equal(item.suggestedName, "Approved name");
+  assert.ok(item.generations[out.genId].url);
+  assert.equal(out.addedOnly, true);
+});
+
+test("a second run's claim is never cleared by the first run landing", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  const other = { at: NOW + 999_999, by: "junid", studio: true };
+  w.deps.image = async (...a) => { await w.db.ref(`${core.ITEMS}/${PID}/generateRequest`).set(other); return image(...a); };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const item = await itemOf(w.db);
+  assert.deepEqual(item.generateRequest, other);
+  assert.ok(item.generations[out.genId].url);
+  assert.equal(item.currentGen, undefined);
+});
+
+test("photos are fetched only from the app's own storage, over https, with no redirect followed", async () => {
+  const seen = [];
+  const fetchImpl = async (u, init) => { seen.push([String(u), init.redirect]); return { ok: true, headers: { get: () => "10" }, arrayBuffer: async () => new ArrayBuffer(10) }; };
+  await assert.rejects(studio.fetchBytes("http://firebasestorage.googleapis.com/a", { fetchImpl }), /own storage/);
+  await assert.rejects(studio.fetchBytes("https://169.254.169.254/computeMetadata/v1/", { fetchImpl }), /own storage/);
+  await assert.rejects(studio.fetchBytes("https://evil.example/firebasestorage.googleapis.com/a", { fetchImpl }), /own storage/);
+  await assert.rejects(studio.fetchBytes("not a url", { fetchImpl }), /not a web address/);
+  assert.equal(seen.length, 0);
+  assert.equal((await studio.fetchBytes("https://firebasestorage.googleapis.com/v0/b/x/o/p.jpg?alt=media", { fetchImpl })).buffer.length, 10);
+  assert.deepEqual(seen.map((s) => s[1]), ["error"]);
+  await assert.rejects(studio.fetchBytes("https://storage.googleapis.com/x", { fetchImpl: async () => ({ ok: true, headers: { get: () => String(41 * 1024 * 1024) }, arrayBuffer: async () => new ArrayBuffer(1) }) }), /too large/);
+});

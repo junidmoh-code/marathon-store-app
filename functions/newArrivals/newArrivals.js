@@ -608,6 +608,10 @@ async function skip(db, { pids }, uid, nowMs) {
       from: ["new", "ready", "rejected"], to: "skipped", at: nowMs, uid,
       decision: () => ({ action: "skip" }),
       extra: () => ({ [`requests/${pid}`]: null }),
+      // While the photo studio is making its photo the item waits (a Skip would
+      // let a second Generate start beside the first); an old queue request is
+      // simply dropped with the skip, as before.
+      guard: (cur) => (cur.generateRequest && cur.generateRequest.studio === true && core.requestPending(cur, nowMs) ? "its photo is being made — skip it when it lands" : null),
       fields: (cur) => ({ skippedAt: nowMs, skippedBy: uid || "unknown", skippedFrom: cur.status, generateRequest: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }

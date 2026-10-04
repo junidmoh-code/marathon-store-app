@@ -4,7 +4,7 @@
 // brand → box key, the placement sentence, the layout diagram, the request's
 // image preparation and the packaging layer. They decide what Gemini is sent,
 // so they stay as they were; functions/test/studio-baseline.test.mjs pins the
-// prompt they build. New rules go in layers.mjs, never here.
+// prompt they build. New rules go in prompt.mjs (layers), never here.
 import sharp from "sharp";
 import crypto from "node:crypto";
 

@@ -81,7 +81,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
       }
     }
     if (!box && layers.footwearBox && deps.libraryBox) {
-      const lib = await deps.libraryBox(brand);
+      const lib = await deps.libraryBox(brand).catch(() => null);
       if (lib?.buffer) { box = await forModel(lib.buffer); boxMode = "library"; boxSource = lib.kind || "library"; boxFrom = { file: `brand library box (${brand}, ${lib.kind || "?"})` }; }
     }
   }
@@ -135,10 +135,21 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   });
   await Promise.all(draftJobs);
 
+  // ── THE PHOTO IS PAID FOR. From here nothing may lose it: every step is
+  // retried, and if the finishing step itself fails the photo is kept exactly
+  // as Gemini made it. A failure below is marked `paid` for the caller.
   say({ type: "status", text: "Finishing the photo…" });
-  const gm = await sharp(gen.buffer).metadata().catch(() => ({}));
-  const out = await toCanvas(gen.buffer, plate);
-  const generated = await deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.jpg`, out, "image/jpeg");
+  let generated, gm = {}, finishNote = null;
+  try {
+    gm = await sharp(gen.buffer).metadata().catch(() => ({}));
+    let out, mime = "image/jpeg";
+    try { out = await toCanvas(gen.buffer, plate); }
+    catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
+    generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime));
+  } catch (e) {
+    e.paid = true;
+    throw e;
+  }
   // The final image is never also listed as a draft.
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
@@ -152,8 +163,18 @@ export async function generateOne({ item, product, genId, method = "full", deps,
       request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null,
       thoughts: gen.thoughts ?? null, thoughtImages: gen.thoughtImages || 0, thoughtsUnsupported: gen.thoughtsUnsupported || null,
       draftFiles: kept, resolution: gm.width ? { width: gm.width, height: gm.height } : null,
+      ...(gen.cutShort ? { streamCutShort: gen.cutShort } : {}), ...(finishNote ? { finishNote } : {}),
     },
   };
+}
+
+/** Run fn up to `tries` times, a little longer apart each time; the last error is thrown. */
+export async function withRetries(fn, { tries = 3, waitMs = 400, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {
+  let last;
+  for (let i = 0; i < tries; i++) {
+    try { return await fn(); } catch (e) { last = e; if (i < tries - 1) await sleep(waitMs * (i + 1)); }
+  }
+  throw last;
 }
 
 /** Store one interim draft beside the generation and show it on the card. Never throws. */

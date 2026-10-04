@@ -37,6 +37,8 @@ const inline = (p) => p.inlineData || p.inline_data;
  */
 export function foldChunk(state, json) {
   const events = [];
+  // An error sent inside the stream (the model failed part-way).
+  if (json?.error) state.error = { status: Number(json.error.code) || 500, message: String(json.error.message || "no detail") };
   if (json?.usageMetadata) state.usage = json.usageMetadata;
   if (json?.promptFeedback?.blockReason) state.blockReason = json.promptFeedback.blockReason;
   const cand = json?.candidates?.[0];
@@ -60,7 +62,7 @@ export function foldChunk(state, json) {
   return events;
 }
 
-export const newState = () => ({ thoughts: "", drafts: [], image: null, text: "", usage: null, finishReason: null, blockReason: null });
+export const newState = () => ({ thoughts: "", drafts: [], image: null, text: "", usage: null, finishReason: null, blockReason: null, error: null, unread: 0, cutShort: null });
 
 /** Split a growing SSE buffer into complete `data:` payloads + the unfinished tail. Pure. */
 export function sseSplit(buffer) {
@@ -97,17 +99,28 @@ async function once(model, body, { apiKey, fetchImpl, timeoutMs, onEvent }) {
     const take = async (payloads) => {
       for (const body of payloads) {
         let json;
-        try { json = JSON.parse(body); } catch { continue; }
+        // A line that cannot be read is counted: with no image at the end it is a broken stream, not a refusal.
+        try { json = JSON.parse(body); } catch { state.unread += 1; continue; }
         for (const ev of foldChunk(state, json)) { try { await onEvent?.(ev); } catch { /* the card's view never affects the generation */ } }
       }
     };
-    for await (const chunk of res.body) {
-      buffer += decoder.decode(chunk, { stream: true });
-      const { payloads, rest } = sseSplit(buffer);
-      buffer = rest;
-      await take(payloads);
+    try {
+      for await (const chunk of res.body) {
+        const piece = decoder.decode(chunk, { stream: true });
+        buffer += piece;
+        // Only a chunk that ends a line is worth splitting (the image is ONE multi-megabyte line).
+        if (!piece.includes("\n")) continue;
+        const { payloads, rest } = sseSplit(buffer);
+        buffer = rest;
+        await take(payloads);
+      }
+      await take(sseSplit(`${buffer}\n`).payloads);
+    } catch (e) {
+      // THE IMAGE IS PAID FOR once it has arrived: a connection that breaks (or
+      // times out) after it is kept, never thrown away.
+      if (!state.image) throw e;
+      state.cutShort = String(e?.message || e).slice(0, 120);
     }
-    await take(sseSplit(`${buffer}\n`).payloads);
     return state;
   } finally { clearTimeout(timer); }
 }
@@ -142,7 +155,15 @@ export async function streamImage(model, parts, imageConfig, opts = {}) {
   }
   const requestMs = Date.now() - t0;
   if (!state.image) {
-    const why = state.finishReason || state.blockReason || "no image returned";
+    // The stream itself failed (an error inside it, an unreadable line, or it
+    // simply stopped): infrastructure — never reported as Gemini declining.
+    if (state.error || state.unread || (!state.finishReason && !state.blockReason)) {
+      const err = new Error(state.error ? `Gemini ${model} ${state.error.status}: ${state.error.message}`.slice(0, 300) : `the connection to Gemini ${model} broke before the photo arrived`);
+      err.status = state.error ? state.error.status : 502;
+      err.usage = state.usage;
+      throw err;
+    }
+    const why = state.finishReason || state.blockReason;
     const err = new Error(`generation returned no image (${why})${state.text ? `: ${state.text.trim().slice(0, 200)}` : ""}`);
     err.refusal = true;
     err.usage = state.usage;
@@ -155,5 +176,6 @@ export async function streamImage(model, parts, imageConfig, opts = {}) {
     buffer: Buffer.from(state.image.data, "base64"), mime: state.image.mime, text: state.text.trim(),
     thoughts: state.thoughts.trim() || null, thoughtImages: state.drafts.length, drafts,
     request: body.generationConfig, usage: state.usage, requestMs, thoughtsUnsupported,
+    ...(state.cutShort ? { cutShort: state.cutShort } : {}),
   };
 }

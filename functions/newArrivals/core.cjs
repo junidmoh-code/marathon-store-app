@@ -405,13 +405,17 @@ const SELECT_LANES = Object.freeze(["new", "ready", "rejected"]);
 const GEN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const failedList = (v) => (Array.isArray(v && v.failed) ? v.failed : Object.values((v && v.failed) || {}));
 
-// A generate request older than this is a run that died (the function timed
-// out or crashed): it no longer blocks Approve, Use this one or a new Generate.
+// A STUDIO request (the Cloud Function's own claim, stamped studio: true) older
+// than this is a run that died — the function timed out or crashed: it no
+// longer blocks Approve, Skip, Use this one or a new Generate. Ten minutes is
+// past the function's own 9-minute limit. An older-style request (the retired
+// Mac mini queue) carries no such stamp and blocks until it is cleared.
 const REQUEST_STALE_MS = 10 * 60 * 1000;
 /** Is a photo being made for this item right now? Pure. */
 function requestPending(item, nowMs) {
   const r = item && item.generateRequest;
   if (!r) return false;
+  if (r.studio !== true) return true;
   const at = Number(r.at) || 0;
   return !(Number.isFinite(nowMs) && at > 0 && nowMs - at > REQUEST_STALE_MS);
 }

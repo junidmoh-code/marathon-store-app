@@ -85,3 +85,47 @@ test("an answer with no image is a refusal, with Gemini's words", async () => {
 test("no key, no call", async () => {
   await assert.rejects(streamImage("m", [], {}, { fetchImpl: async () => { throw new Error("called"); } }), /no Gemini key/);
 });
+
+// ── a paid image is never thrown away; a broken stream is not "Gemini declined" ──
+function breakingResponse(text, { failAfter }) {
+  const bytes = Buffer.from(text);
+  return { ok: true, status: 200, body: (async function* () { yield bytes.subarray(0, failAfter); throw new Error("socket hang up"); })() };
+}
+
+test("the connection breaks AFTER the image arrived: the image is kept", async () => {
+  const text = event([{ inlineData: { mimeType: "image/jpeg", data: b64("FINAL") } }]) + event([{ text: "trailing" }]);
+  const cutAt = text.indexOf("\n\n") + 2;
+  const out = await streamImage("m", [], {}, { apiKey: "k", fetchImpl: async () => breakingResponse(text, { failAfter: cutAt }) });
+  assert.equal(out.buffer.toString(), "FINAL");
+  assert.match(out.cutShort, /socket hang up/);
+});
+
+test("the connection breaks BEFORE any image: an error, not a refusal", async () => {
+  const text = event([{ thought: true, text: "thinking" }]) + event([{ inlineData: { mimeType: "image/jpeg", data: b64("FINAL") } }]);
+  await assert.rejects(streamImage("m", [], {}, { apiKey: "k", fetchImpl: async () => breakingResponse(text, { failAfter: 20 }) }), (e) => !e.refusal && /socket hang up/.test(e.message));
+});
+
+test("an error sent inside the stream is that error — never 'Gemini declined'", async () => {
+  const text = `${event([{ thought: true, text: "thinking" }])}data: ${JSON.stringify({ error: { code: 503, message: "The model is overloaded" } })}\n\n`;
+  await assert.rejects(streamImage("m", [], {}, { apiKey: "k", fetchImpl: async () => sseResponse(text) }), (e) => e.status === 503 && !e.refusal && /overloaded/.test(e.message));
+});
+
+test("a stream that simply stops, with no image and no finish reason, is a broken connection (502), not a refusal", async () => {
+  await assert.rejects(streamImage("m", [], {}, { apiKey: "k", fetchImpl: async () => sseResponse(event([{ thought: true, text: "thinking" }])) }), (e) => e.status === 502 && !e.refusal);
+});
+
+test("one multi-megabyte image line split over many chunks, with multi-byte text beside it, arrives whole", async () => {
+  const big = Buffer.alloc(3 * 1024 * 1024, 7).toString("base64");
+  const text = event([{ thought: true, text: "Je réfléchis — 思考中 ✓" }]) + event([{ inlineData: { mimeType: "image/png", data: big } }], { usageMetadata: { promptTokenCount: 1 } });
+  const out = await streamImage("m", [], {}, { apiKey: "k", fetchImpl: async () => sseResponse(text, { cut: 65_537 }) });
+  assert.equal(out.buffer.length, 3 * 1024 * 1024);
+  assert.equal(out.thoughts, "Je réfléchis — 思考中 ✓");
+  // And cut inside a multi-byte character.
+  const out2 = await streamImage("m", [], {}, { apiKey: "k", fetchImpl: async () => sseResponse(text, { cut: 31 }) });
+  assert.equal(out2.thoughts, "Je réfléchis — 思考中 ✓");
+});
+
+test("a timeout before any image is reported as taking too long (504)", async () => {
+  const fetchImpl = (url, init) => new Promise((_, reject) => { init.signal.addEventListener("abort", () => { const e = new Error("aborted"); e.name = "AbortError"; reject(e); }); });
+  await assert.rejects(streamImage("m", [], {}, { apiKey: "k", fetchImpl, timeoutMs: 20 }), (e) => e.status === 504 && /no photo within/.test(e.message));
+});

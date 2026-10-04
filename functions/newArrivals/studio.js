@@ -8,8 +8,9 @@
 // once per tap. No checker, no verdict, no retry, no automatic anything.
 //
 // The generation code is studio/*.mjs (ES modules, loaded on first use). The
-// plates, references and brand boxes are Junid's own photos, read from Storage
-// (new_arrivals/assets/…) and verified against studio/config/plates.lock.json.
+// plates and references are Junid's own photos, read from Storage
+// (new_arrivals/assets/plates) and verified against studio/config/plates.lock.json;
+// the brand box library is read from new_arrivals/assets/boxes by its index.
 //
 // Deploy BY NAME, never a bare --only functions:
 //   firebase deploy --only functions:newArrivalsStudio --project=marathon-club
@@ -36,7 +37,8 @@ const platesLock = require("./studio/config/plates.lock.json");
 let modsP = null;
 const mods = () => (modsP ||= Promise.all([
   import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"),
-]).then(([studio, gemini, record, compose]) => ({ studio, gemini, record, compose })));
+]).then(([studio, gemini, record, compose]) => ({ studio, gemini, record, compose }))
+  .catch((e) => { modsP = null; throw e; }));
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
 const sha256 = (buf) => crypto.createHash("sha256").update(buf).digest("hex");
@@ -56,10 +58,21 @@ async function uploadImmutable(bucket, objectPath, buffer, contentType) {
   return { path: objectPath, url: downloadUrl(bucket.name, objectPath, token) };
 }
 
-async function fetchBytes(url, { timeoutMs = 60_000 } = {}) {
-  const res = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
-  if (!res.ok) throw new Error(`fetch ${res.status} for ${String(url).slice(0, 80)}`);
-  return { buffer: Buffer.from(await res.arrayBuffer()) };
+// A product's photo lives in the app's own Storage. Only those hosts are
+// fetched, over https, with no redirect followed and a size ceiling — a photo
+// URL on a product record can never make this function call anything else.
+const PHOTO_HOSTS = new Set(["firebasestorage.googleapis.com", "storage.googleapis.com"]);
+const PHOTO_MAX_BYTES = 40 * 1024 * 1024;
+async function fetchBytes(url, { timeoutMs = 60_000, fetchImpl = fetch } = {}) {
+  let u;
+  try { u = new URL(String(url)); } catch { throw new Error("the photo's address is not a web address"); }
+  if (u.protocol !== "https:" || !PHOTO_HOSTS.has(u.hostname)) throw new Error("the photo is not stored in the app's own storage");
+  const res = await fetchImpl(u, { signal: AbortSignal.timeout(timeoutMs), redirect: "error" });
+  if (!res.ok) throw new Error(`fetch ${res.status} for the photo`);
+  if (Number(res.headers.get("content-length")) > PHOTO_MAX_BYTES) throw new Error("the photo is too large");
+  const buffer = Buffer.from(await res.arrayBuffer());
+  if (buffer.length > PHOTO_MAX_BYTES) throw new Error("the photo is too large");
+  return { buffer };
 }
 
 // Junid's plates and references: read once per instance, verified against the
@@ -119,9 +132,10 @@ async function usdZarToday(db, nowMs, fetchImpl = fetch) {
 
 // ── the claim ────────────────────────────────────────────────────────────────
 // Marks the item "a photo is being made" (generateRequest, stamped studio) so
-// Approve and Use-this-one wait and a second tap is refused. The item keeps
-// its lane and every photo it has.
-async function claim(db, pid, uid, nowMs) {
+// Approve, Skip and Use-this-one wait and a second tap is refused. NOTHING
+// else on the item changes until a photo has actually landed: a failed
+// generation leaves the item exactly as it was.
+async function claim(db, pid, uid, nowMs, product) {
   const out = {};
   let prev = null;
   const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
@@ -132,12 +146,10 @@ async function claim(db, pid, uid, nowMs) {
     out.refusal = null;
     prev = cur;
     const fresh = cur.status === "new" && !cur.currentGen;
-    const next = {
-      ...cur,
-      generateRequest: { at: nowMs, by: uid || "unknown", studio: true, ...(fresh ? {} : { regenerate: true }) },
-      ...(fresh ? {} : { ...na._internals.NEW_LAP, rejection: cur.rejection || null, lastRejection: cur.rejection || cur.lastRejection || null }),
-    };
-    for (const [k, v] of Object.entries(next)) if (v === null || v === undefined) delete next[k];
+    const next = { ...cur, generateRequest: { at: nowMs, by: uid || "unknown", studio: true, ...(fresh ? {} : { regenerate: true }) } };
+    // The original is pinned once: a later approval replaces the product's photo.
+    const original = cur.originalUrl || product?.photoUrlOriginal || product?.photoUrl || null;
+    if (original) next.originalUrl = original;
     return next;
   });
   const item = res && res.committed && res.snapshot && res.snapshot.val();
@@ -147,7 +159,7 @@ async function claim(db, pid, uid, nowMs) {
   return { item, prev };
 }
 
-/** Give the item back after a failed generation: the request cleared, a plain note left. Never throws. */
+/** Give the item back: this run's request cleared, a plain note left. Never throws. */
 async function release(db, pid, claimAt, nowMs, reason) {
   try {
     await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
@@ -160,25 +172,40 @@ async function release(db, pid, claimAt, nowMs, reason) {
   } catch (e) { console.error(`newArrivalsStudio: ${pid} not released — ${e.message}`); }
 }
 
-/** The fields a finished photo sets (the Mac mini worker's readyFields + generation). Pure. */
-function landedFields(cur, { genId, gen, res, at }) {
+/**
+ * The item after a finished photo. Pure.
+ * THE CLAIM DECIDES: only while the item still carries THIS run's request, on
+ * the New tab, does the photo become its main photo (and start a new lap: the
+ * old approval, chain and names are cleared — the new photo needs its own
+ * Approve). Otherwise — Junid skipped it, or the run outlived its claim and he
+ * has moved on — the photo is only ADDED to the item's generations: the main
+ * photo, the lane, an approval and anyone else's request are left alone.
+ * → { next, mine }
+ */
+function landed(cur, { genId, gen, res, at, claimAt }) {
+  const generations = { ...(cur.generations || {}), [genId]: gen };
+  const mine = !!cur.generateRequest && cur.generateRequest.at === claimAt && core.SELECT_LANES.includes(cur.status);
+  if (!mine) return { next: { ...cur, generations }, mine: false };
   const n = (Number(cur.attempts) || 0) + 1;
-  return {
-    generations: { ...(cur.generations || {}), [genId]: gen },
+  const next = {
+    ...cur, ...na._internals.NEW_LAP,
+    generations,
     currentGen: genId,
     generatedUrl: res.generated.url, generatedPath: res.generated.path || null,
     plateId: `junid-${res.kind}`,
     boxInOriginal: res.box ? res.box.mode === "own" : false,
     boxUsed: res.box ? { mode: res.box.mode, source: res.box.source || null, brand: res.box.brand || null } : null,
-    verdict: null, framingFlag: null, checker: null, layoutCheck: null, colourCheck: null,
-    rejection: null,
+    verdict: null, framingFlag: null, layoutCheck: null, colourCheck: null,
+    lastRejection: cur.rejection || cur.lastRejection || null,
     // The name suggester runs after Approve (the mini's naming job reads this).
     naming: { status: "pending", since: at, tries: 0, overloads: 0 },
-    namePending: null, suggestedName: null, suggestedNameSource: null, nameProposedAt: null,
     attempts: n, attemptsSinceRetry: 0, infraErrors: null, busyAnswers: null,
     lastAttempt: { at, n, generatedUrl: res.generated.url },
     generateRequest: null,
+    status: "ready", statusAt: at,
   };
+  for (const [k, v] of Object.entries(next)) if (v === null || v === undefined) delete next[k];
+  return { next, mine: true };
 }
 
 // ── one generation ───────────────────────────────────────────────────────────
@@ -196,10 +223,11 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   const t0 = now();
   const product = await val(db, `products/${pid}`);
   if (!product) throw new HttpsError("failed-precondition", "Can't generate — the product record no longer exists.");
-  const { item, prev } = await claim(db, pid, uid, t0);
+  const { item, prev } = await claim(db, pid, uid, t0, product);
   const genId = `g${t0}`;
   const how = studio.methodFor(item, { asked: method || null, defaultMethod: generation.defaultMethod });
   const bucket = deps.bucket;
+  const fxOf = (at) => (deps.fx ? deps.fx(at) : usdZarToday(db, at)).catch(() => ({ rate: prices.usdToZar, fallback: true }));
   let res;
   try {
     res = await studio.generateOne({
@@ -218,43 +246,53 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
       },
     });
   } catch (e) {
-    const busy = /\b(503|429|high demand|overloaded)\b/i.test(String(e.message));
-    const reason = e.studioRefusal ? e.message
-      : e.refusal ? `Gemini declined to make this photo (${String(e.message).slice(0, 140)})`
-      : busy ? "the photo service is busy — tap Generate again"
-      : `the photo could not be made (${String(e.message).slice(0, 140)}) — tap Generate again`;
+    // What Junid is told is one of a few fixed sentences; the detail goes to the log only.
+    const status = Number(e.status) || 0;
+    const reason = e.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
+      : e.studioRefusal ? e.message
+      : e.refusal ? "Gemini declined to make this photo"
+      : status === 429 || status === 503 ? "the photo service is busy — tap Generate again"
+      : status === 504 ? "Gemini took too long and the connection was closed — it may still have been charged; tap Generate to try again"
+      : "the photo could not be made — tap Generate again";
     await release(db, pid, t0, now(), reason);
-    console.error(`newArrivalsStudio: ${pid} failed — ${e.message}`);
-    throw new HttpsError(e.studioRefusal ? "failed-precondition" : busy ? "unavailable" : "internal", `No photo — ${reason}.`);
+    console.error(`newArrivalsStudio: ${pid} failed${e.paid ? " AFTER the image was made" : ""} — ${e.message}`);
+    // A call that made no image still cost its prompt tokens: counted in the spend.
+    if (e.usage) {
+      const zar = record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx: await fxOf(now()) });
+      if (zar > 0) await db.ref(`${core.ROOT}/stats/totalSpentZar`).set(admin.database.ServerValue.increment(zar)).catch(() => {});
+    }
+    throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
 
-  // The photo exists and is paid for: from here nothing may lose it.
+  // The photo exists, is stored and is paid for: from here every step is retried.
   const at = now();
-  const fx = await (deps.fx ? deps.fx(at) : usdZarToday(db, at)).catch(() => ({ rate: prices.usdToZar, fallback: true }));
-  const cost = record.generationCost({ model: generation.imageModel, usage: res.usage, prices, fx });
+  const cost = record.generationCost({ model: generation.imageModel, usage: res.usage, prices, fx: await fxOf(at) });
   let code = null;
   try {
-    const seq = await db.ref(record.GENSEQ).transaction((cur) => (Number(cur) || 0) + 1);
+    const seq = await studio.withRetries(() => db.ref(record.GENSEQ).transaction((cur) => (Number(cur) || 0) + 1));
     if (seq && seq.committed) code = record.formatCode(Number(seq.snapshot.val()));
-  } catch (e) { console.error(`newArrivalsStudio: ${pid} has no code yet — ${e.message}`); }
+  } catch (e) { console.error(`newArrivalsStudio: ${pid} has no code — ${e.message}`); }
   const reason = item.generateRequest.regenerate ? "regenerate" : "requested";
   const gen = record.generationEntry(res, { at, cost, model: generation.imageModel, reason, code, draftCount: res.draftFiles.length });
 
   const out = {};
-  const landed = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
-    if (!cur) return null;
-    out.from = cur.status;
-    // Skipped while it was being made: the photo is kept on the item, the item stays skipped.
-    const to = core.SELECT_LANES.includes(cur.status) ? "ready" : cur.status;
-    const next = { ...cur, ...landedFields(cur, { genId, gen, res, at }), status: to, ...(to !== cur.status ? { statusAt: at } : {}) };
-    if (cur.status === "rejected" && cur.rejection) next.lastRejection = cur.rejection;
-    for (const [k, v] of Object.entries(next)) if (v === null || v === undefined) delete next[k];
-    return next;
-  });
-  const final = landed && landed.committed && landed.snapshot && landed.snapshot.val();
+  let final = null;
+  try {
+    const done = await studio.withRetries(() => db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
+      if (!cur) return null;
+      out.from = cur.status;
+      const l = landed(cur, { genId, gen, res, at, claimAt: t0 });
+      out.mine = l.mine;
+      return l.next;
+    }));
+    final = done && done.committed && done.snapshot && done.snapshot.val();
+  } catch (e) { console.error(`newArrivalsStudio: ${pid} landing failed — ${e.message}`); }
   if (!final || !final.generations || !final.generations[genId]) {
+    // Stored but not on the item: a rescue row names the file, and the item is given back.
     console.error(`newArrivalsStudio: ${pid} photo ${res.generated.path} made but not saved on the item`);
-    throw new HttpsError("internal", "The photo was made but could not be saved on the item — tap Generate again.");
+    await db.ref(`${core.ROOT}/rescue/${pid}/${genId}`).set({ gen, at }).catch(() => {});
+    await release(db, pid, t0, now(), "the photo was made but could not be put on the card — it is kept; tap Generate to make another");
+    throw new HttpsError("internal", "No photo — the photo was made but could not be put on the card. It is kept and was charged; tap Generate to make another.");
   }
 
   // ONE multi-path write: the lane index, Junid's ledger row, the learning log, the spend.
@@ -262,25 +300,33 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   const paths = {
     ...core.indexMove(pid, out.from, final.status, final.enqueuedAt),
     ...await na._internals.decisionPaths(db, pid, { at: t0, uid, item: prev, action: prev.status === "new" && !prev.currentGen ? "generate" : "regenerate" }),
-    ...(code ? { [`genlog/${code}`]: record.rtdbGenlog(full) } : {}),
-    "stats/totalSpentZar": admin.database.ServerValue.increment(cost.zar),
+    // With no code (the counter could not be read) the record is still kept, under its item and generation.
+    [`genlog/${code || `${pid}_${genId}`}`]: record.rtdbGenlog(full),
     "stats/generations": admin.database.ServerValue.increment(1),
-    ...(cost.estimated ? { "stats/estimatedPartZar": admin.database.ServerValue.increment(cost.zar) } : {}),
     "stats/updatedAt": at,
   };
-  try { await db.ref(core.ROOT).update(paths); }
-  catch (e) { console.error(`newArrivalsStudio: ${pid} bookkeeping write failed — ${e.message}`); }
+  if (Number.isFinite(cost.zar) && cost.zar > 0) {
+    paths["stats/totalSpentZar"] = admin.database.ServerValue.increment(cost.zar);
+    if (cost.estimated) paths["stats/estimatedPartZar"] = admin.database.ServerValue.increment(cost.zar);
+  }
+  try { await studio.withRetries(() => db.ref(core.ROOT).update(paths)); }
+  catch (e) { console.error(`newArrivalsStudio: ${pid} bookkeeping write failed (lane index, ledger row, learning log, spend) — ${e.message}`); }
   // The FULL record, prompt text included, kept beside the photo (never read by the card).
   try {
-    await bucket.file(`products/${pid}/new_arrivals/${genId}.genlog.json`).save(Buffer.from(JSON.stringify(full, null, 1)), { resumable: false, metadata: { contentType: "application/json" } });
+    await studio.withRetries(() => bucket.file(`products/${pid}/new_arrivals/${genId}.genlog.json`).save(Buffer.from(JSON.stringify(full, null, 1)), { resumable: false, metadata: { contentType: "application/json" } }));
   } catch (e) { console.error(`newArrivalsStudio: ${pid} full record not stored — ${e.message}`); }
 
-  return { ok: true, pid, genId, code, seconds: Math.round((now() - t0) / 100) / 10, costZar: cost.zar, costEstimated: cost.estimated, item: core.cardItem(final) };
+  return {
+    ok: true, pid, genId, code, seconds: Math.round((now() - t0) / 100) / 10, costZar: cost.zar, costEstimated: cost.estimated,
+    // Not this run's item any more (skipped, or Junid moved on): the photo was added to it, nothing else changed.
+    ...(out.mine ? {} : { addedOnly: true }),
+    item: core.cardItem(final),
+  };
 }
 
 const newArrivalsStudio = onCall(
   // 2 vCPU for sharp; one generation holds ~200 MB of images. Not retried, not scheduled.
-  { region: "europe-west1", memory: "2GiB", cpu: 2, timeoutSeconds: 540, concurrency: 4, maxInstances: 5, secrets: [geminiApiKey] },
+  { region: "europe-west1", memory: "2GiB", cpu: 2, timeoutSeconds: 540, concurrency: 3, maxInstances: 4, secrets: [geminiApiKey] },
   async (request, response) => {
     await na._internals.assertNewArrivalsAccess(request);
     const emit = request.acceptsStreaming && response ? (ev) => { response.sendChunk(ev); } : () => {};
@@ -293,5 +339,5 @@ const newArrivalsStudio = onCall(
 module.exports = {
   newArrivalsStudio,
   // for tests
-  _internals: { studioGenerate, claim, release, landedFields, usdZarToday, uploadImmutable, mods },
+  _internals: { studioGenerate, claim, release, landed, usdZarToday, uploadImmutable, fetchBytes, mods },
 };

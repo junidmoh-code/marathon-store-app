@@ -2,8 +2,9 @@
 // The generation entry on the item (items/{pid}/generations/{genId}), the
 // learning-log record (genlog/{code}) and the real cost, from the API's own
 // token counts. The shapes are the Mac mini pipeline's (worker.generationEntry,
-// genlog.genlogRecord, cost.costOf), so every earlier generation and every
-// reader of them — the card, the chain, the weekly report — sees one format.
+// genlog.genlogRecord, cost.costOf) for every field the card and the chain
+// read. Not carried over: the checker's verdict and measurements (everything
+// is manual), and the busy-tap list.
 import crypto from "node:crypto";
 
 export const GENSEQ = "new_arrivals/genSeq";
@@ -49,17 +50,29 @@ export function generationEstimateUsd(prices, model = "gemini-3-pro-image") {
 /**
  * The cost of one generation: REAL when the API reported usage (the day's
  * USD/ZAR rate), else the marked estimate. Pure.
- * → { usd, zar, usdZar, estimated }
+ * → { usd, zar, usdZar, usdZarFallback?, estimated }
  */
 export function generationCost({ model, usage, prices, fx }) {
+  const live = Number(fx?.rate) > 0 && !fx.fallback;
   const usdZar = Number(fx?.rate) > 0 ? Number(fx.rate) : prices.usdToZar;
+  const rate = { usdZar, ...(live ? {} : { usdZarFallback: true }) };
   const row = usageRow(model, usage);
-  if (row && (row.prompt || row.imageOut || row.output)) {
+  // Real only when the API counted the IMAGE's own tokens: without that split
+  // an image would be priced as text, ten times too low.
+  if (row && row.imageOut > 0) {
     const c = costOf([row], prices, usdZar);
-    return { usd: r3(c.usd), zar: r2(c.zar), usdZar, estimated: false };
+    if (Number.isFinite(c.zar) && c.zar > 0) return { usd: r3(c.usd), zar: r2(c.zar), ...rate, estimated: false };
   }
   const usd = generationEstimateUsd(prices, model);
-  return { usd: r3(usd), zar: r2(usd * usdZar), usdZar, estimated: true };
+  return { usd: r3(usd), zar: r2(usd * usdZar), ...rate, estimated: true };
+}
+
+/** What a call that made NO image still cost (its prompt and thinking tokens), in rand; 0 when unknown. Pure. */
+export function failedCallZar({ model, usage, prices, fx }) {
+  const row = usageRow(model, usage);
+  if (!row) return 0;
+  const zar = costOf([row], prices, Number(fx?.rate) > 0 ? Number(fx.rate) : prices.usdToZar).zar;
+  return Number.isFinite(zar) && zar > 0 ? r2(zar) : 0;
 }
 
 // ── the generation entry ─────────────────────────────────────────────────────
@@ -78,6 +91,8 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     how: { code: code || null, draftCount: Number(draftCount) || 0 },
     plate: res.kind ? `junid-${res.kind}` : null, kind: res.kind || null,
     costUsd: cost.usd, costZar: cost.zar, costEstimated: !!cost.estimated, usdZar: cost.usdZar,
+    // The day's rate could not be looked up: the configured rate was used.
+    ...(cost.usdZarFallback ? { usdZarFallback: true } : {}),
     reason,
     // EVERYTHING IS MANUAL: a photo carries no verdict at all.
     verdict: null,
@@ -105,6 +120,8 @@ export function genlogRecord({ code, pid, genId, gen, trace = null, totalMs = nu
     retries: 0, thoughtsResent: !!t.thoughtsUnsupported,
     usage: t.usage || null,
     costUsd: gen.costUsd ?? null, costZar: gen.costZar ?? null, usdZar: gen.usdZar ?? null, costEstimated: !!gen.costEstimated,
+    ...(gen.usdZarFallback ? { usdZarFallback: true } : {}),
+    ...(t.streamCutShort ? { streamCutShort: t.streamCutShort } : {}), ...(t.finishNote ? { finishNote: t.finishNote } : {}),
     timing: { requestMs: t.requestMs ?? null, totalMs },
     thoughts: t.thoughts ?? null, thoughtImages: t.thoughtImages || 0,
     drafts: (t.draftFiles || []).map((d) => ({ url: d.url, path: d.path || null })),
