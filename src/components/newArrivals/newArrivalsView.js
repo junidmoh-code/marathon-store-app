@@ -275,6 +275,9 @@ export function statusLine(item) {
   if (s === "skipped") return "Skipped — not advertised";
   if (s === "approved") return "Approved — publishing will start in a minute";
   if (s === "chaining" && item?.chain?.waiting?.for === "retail price") return "Shopify waits for a retail price — the groups are posted at the stock price meanwhile";
+  // A step that cannot go on is NOTED — Junid's approval stands (4 Oct).
+  if (s === "chaining" && item?.chain?.stuck) return `Approved — waiting at "${item.chain.stuck.step}": ${item.chain.stuck.reason}`;
+  if ((s === "approved" || s === "chaining") && item?.naming?.status === "pending" && !item?.chain?.name) return "Approved — the Shopify name is being made";
   if (s === "chaining") return chainProgress(item);
   if (s === "done") return item?.soldOutBeforePosting ? "Sold out before posting" : "Done";
   return "";

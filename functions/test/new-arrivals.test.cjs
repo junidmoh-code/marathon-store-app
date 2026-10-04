@@ -132,8 +132,8 @@ test("approve with no generatedUrl uses the current generation's photo (older it
 
 test("reject accepts an older item whose photo is only on its current generation (CodeRabbit)", async () => {
   const db = seeded("ready", { currentGen: "g1", generations: { g1: { url: "https://x/g1.jpg", at: 1, verdict: { pass: true, failed: [] } } } });
-  await na.reject(db, { pid: PID, reason: core.REJECT_CHIPS[0] }, "junid", NOW);
-  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "rejected");
+  assert.deepEqual(await na.reject(db, { pid: PID, reason: core.REJECT_CHIPS[0] }, "junid", NOW), { ok: true, noted: true });
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready", "reject only logs; the item does not move");
 });
 
 test("paging: an item regenerated at the page boundary never makes the rest of its bucket vanish (CodeRabbit)", async () => {
@@ -498,13 +498,13 @@ test("regenerate: Ready/Rejected → lane new with a request; the photos stay vi
   assert.equal(d.gen.costZar, 0.75);
 });
 
-test("reject takes exactly one chip; logs reason + snapshot", async () => {
+test("reject takes exactly one chip; only LOGS reason + snapshot, never moves the item", async () => {
   const db = seeded("ready", { generatedUrl: GEN.url, currentGen: "g1", generations: { g1: GEN } });
   await assert.rejects(na.reject(db, { pid: PID, reason: "meh" }, "junid", NOW), /Pick one/);
-  assert.deepEqual(await na.reject(db, { pid: PID, reason: "looks fake/CGI" }, "junid", NOW + 1), { ok: true });
+  assert.deepEqual(await na.reject(db, { pid: PID, reason: "looks fake/CGI" }, "junid", NOW + 1), { ok: true, noted: true });
   const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
-  assert.equal(it.status, "rejected");
-  assert.deepEqual(it.rejection, { code: "junid", reason: "looks fake/CGI", at: NOW + 1 });
+  assert.equal(it.status, "ready", "status unchanged");
+  assert.equal("rejection" in it, false, "no rejection marker written on the item");
   assert.equal(it.generations.g1.costZar, 0.75);
   const [d] = await decisions(db);
   assert.equal(d.action, "reject");
@@ -512,9 +512,10 @@ test("reject takes exactly one chip; logs reason + snapshot", async () => {
   assert.equal(d.gen.verdict.failed[0], "fidelity:colour");
   assert.equal(d.by, "junid");
   assert.equal(d.at, NOW + 1);
-  // A second chip on a rejected item re-records Junid's reason; it stays on the New tab.
-  assert.deepEqual(await na.reject(db, { pid: PID, reason: "blurry" }, "junid", NOW + 2), { ok: true });
-  assert.equal((await db.ref(`${core.ITEMS}/${PID}/rejection/reason`).once()).val(), "blurry");
+  // A second chip just logs another decision row; the item stays where it is on the New tab.
+  assert.deepEqual(await na.reject(db, { pid: PID, reason: "blurry" }, "junid", NOW + 2), { ok: true, noted: true });
+  assert.equal((await decisions(db)).length, 2);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
   assert.deepEqual((await na.listTab(db, "new", {})).items.map((i) => i.pid), [PID]);
   // Never on an item with no photo, nor while a new photo is being generated.
   await assert.rejects(na.reject(seeded("new"), { pid: PID, reason: "blurry" }, "junid", NOW), /no generated photo/);

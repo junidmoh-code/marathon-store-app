@@ -79,7 +79,7 @@ describe("advance — the happy path, step by step", () => {
   });
 });
 
-describe("refusals go to Rejected in plain words — never forced", () => {
+describe("refusals are noted in plain words, never forced — and NEVER move an approved item back (4 Oct)", () => {
   it("the reconciler's duplicate title/handle block", async () => {
     const db = world();
     const { d } = deps(db);
@@ -87,10 +87,11 @@ describe("refusals go to Rejected in plain words — never forced", () => {
     await db.ref(`shopify_publish/${PID}`).update({ state: "blocked", desiredState: "off",
       blockedReason: 'the web address this name would use ("sneaker-black") already belongs to another listing on the shop: "Sneaker Black"' });
     const r = await advance(PID, d);
-    expect(r).toMatchObject({ outcome: "rejected", step: "shopify", reason: DUPLICATE });
+    expect(r).toMatchObject({ outcome: "stuck", step: "shopify", reason: DUPLICATE });
     const it2 = await read(db, `new_arrivals/items/${PID}`);
-    expect(it2.status).toBe("rejected");
-    expect(it2.rejection).toMatchObject({ code: "chain", step: "shopify", reason: DUPLICATE });
+    // JUNID'S APPROVE IS FINAL (4 Oct): never moved back — noted in the chain.
+    expect(it2.status).toBe("chaining");
+    expect(it2.chain.stuck).toMatchObject({ step: "shopify", reason: DUPLICATE });
     // Nothing renamed, nothing suffixed: the name is exactly the proposal.
     expect((await read(db, `shopify_publish/${PID}`)).cleanName).toBe("Low-top football boot in lilac");
   });
@@ -98,15 +99,18 @@ describe("refusals go to Rejected in plain words — never forced", () => {
   it("a newer name suggestion than the one Junid saw", async () => {
     const db = world({ node: { nameProposal: { status: "pending", name: "Something else", proposedAt: 222 } } });
     const r = await advance(PID, deps(db).d);
-    expect(r).toMatchObject({ outcome: "rejected", step: "name" });
+    expect(r).toMatchObject({ outcome: "stuck", step: "name" });
     expect(r.reason).toMatch(/newer suggestion arrived/);
     expect((await read(db, `shopify_publish/${PID}`)).cleanName).toBeUndefined();
   });
 
-  it("no record of the name Junid saw → refused, never applied blind", async () => {
+  it("no name yet (approved from a card that never named it) → the namer is asked, never applied blind, never refused", async () => {
     const db = world({ item: { nameProposedAt: null } });
     const r = await advance(PID, deps(db).d);
-    expect(r).toMatchObject({ outcome: "rejected", step: "name" });
+    expect(r).toEqual({ pid: PID, outcome: "waiting", step: "name-pending" });
+    const it2 = await read(db, `new_arrivals/items/${PID}`);
+    expect(it2.status).toBe("approved");
+    expect(it2.naming.status).toBe("pending");
     expect((await read(db, `shopify_publish/${PID}`)).cleanName).toBeUndefined();
   });
 
@@ -147,7 +151,7 @@ describe("refusals go to Rejected in plain words — never forced", () => {
   it("a listing already ON refuses the photo change", async () => {
     const db = world({ node: { state: "live", liveState: "on", condition: EXCELLENT } });
     const r = await advance(PID, deps(db).d);
-    expect(r).toMatchObject({ outcome: "rejected", step: "photo" });
+    expect(r).toMatchObject({ outcome: "stuck", step: "photo" });
     expect(r.reason).toMatch(/Listing is ON the storefront/);
     expect((await read(db, `products/${PID}`)).photoUrl).toBe(ORIG); // app photo untouched by a refused step
   });
@@ -175,7 +179,7 @@ describe("the original photo, resume, and publish-once", () => {
   it("a lost publish claim stops unless the intent is visibly there", async () => {
     const db = world();
     const r = await advance(PID, deps(db, { claimPublish: () => false }).d);
-    expect(r).toMatchObject({ outcome: "rejected", step: "publish" });
+    expect(r).toMatchObject({ outcome: "stuck", step: "publish" });
     const db2 = world({ item: { status: "chaining", chain: { photo: { at: 1 }, name: { at: 1 }, condition: { at: 1 } } },
       node: { desiredState: "on", condition: EXCELLENT, cleanName: "x" } });
     expect((await advance(PID, deps(db2, { claimPublish: () => false }).d)).outcome).toBe("waiting");
@@ -200,7 +204,7 @@ describe("the original photo, resume, and publish-once", () => {
       node: { condition: EXCELLENT, cleanName: "9" } });
     const released = [];
     const r = await advance(PID, deps(db, { releasePublish: (p) => released.push(p) }).d);
-    expect(r).toMatchObject({ outcome: "rejected", step: "publish" });
+    expect(r).toMatchObject({ outcome: "stuck", step: "publish" });
     expect(released).toEqual([PID]);
     expect((await read(db, `shopify_publish/${PID}`)).desiredState).toBeUndefined();
   });
@@ -223,11 +227,13 @@ describe("the original photo, resume, and publish-once", () => {
   it("a failed name refuses the Shopify leg in the namer's words", async () => {
     const db = world({ item: { naming: { status: "failed", reason: "duplicate name — needs a distinct name" } } });
     const r = await advance(PID, deps(db).d);
-    expect(r).toMatchObject({ outcome: "rejected", step: "name", reason: "duplicate name — needs a distinct name" });
+    expect(r).toMatchObject({ outcome: "stuck", step: "name", reason: "duplicate name — needs a distinct name" });
     // Nothing of the Shopify leg was written.
     expect((await read(db, `products/${PID}`)).photoUrl).toBe(ORIG);
     expect((await read(db, `shopify_publish/${PID}`)).photos).toBeUndefined();
-    expect((await read(db, `new_arrivals/items/${PID}`)).status).toBe("rejected");
+    const it2 = await read(db, `new_arrivals/items/${PID}`);
+    expect(it2.status).toBe("chaining");
+    expect(it2.chain.stuck).toMatchObject({ step: "name" });
   });
 
   it("an item that is not approved/chaining is left alone", async () => {

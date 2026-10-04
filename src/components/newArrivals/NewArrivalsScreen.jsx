@@ -5,7 +5,8 @@
 // Done. A generation lands ON THE SAME CARD in New — original and generated
 // side by side, every generation as a thumbnail with "Use this one", ❤ and its
 // code — with ONE Approve (the main / selected photo), Regenerate and Skip.
-// The checker's verdict (pass / failed + reasons) and any rejection are LABELS
+// EVERYTHING IS MANUAL (Junid, 4 Oct): no checker verdicts or rejection labels at all.
+// (Formerly: the checker's verdict (pass / failed + reasons) and any rejection were LABELS
 // only: they never move or hide an item. Within each group the list is
 // ordered photo ready → generating… → no photo yet (by the server). The
 // reject chips stay on items with a photo as Junid's reject-reason signal.
@@ -46,9 +47,9 @@ import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from
 import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
 import {
   TABS, REJECT_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
-  shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, verdictText, stockText, agreementText, rejectRateText,
+  shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, stockText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
-  normalizeTab, photoBucket, pickEnabled, rejectionLabel, hasPhoto,
+  normalizeTab, photoBucket, pickEnabled, hasPhoto,
   canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, isFullGemini, methodMadeText, METHOD_TABS, isGenerating, effectiveMethod, methodToSet, METHOD_CHOICES,
 } from "./newArrivalsView";
 
@@ -204,7 +205,7 @@ function Generations({ item, tab, stats, busy, onPick, onLove = null, loadHow = 
               </a>
               <GenCode gen={g} small />
               {loadHow && canHow(g) && <HowToggle gen={g} open={howOpen === g.genId} onToggle={toggleHow} small />}
-              <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g, stats)}{g.verdict ? ` · ${g.verdict.pass ? "pass" : "failed"}` : ""}</div>
+              <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g, stats)}</div>
               {onLove && canLove(tab, g) && <LoveButton item={item} gen={g} busy={busy} onLove={onLove} small />}
               {onPick && canPick(item, g) && (
                 <button disabled={busy || !pickEnabled(item)} onClick={() => onPick(item.pid, g.genId)}
@@ -231,8 +232,6 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
   // New: green = photo ready, amber = generating, grey = no photo yet.
   const bucket = tab === "new" ? photoBucket(item) : null;
   const statusColour = bucket ? (bucket === "photo" ? GREEN : bucket === "generating" ? AMBER : GRAY) : item.status === "done" ? GREEN : AMBER;
-  const verdict = verdictText(item.verdict);
-  const rejected = rejectionLabel(item);
   const dim = { opacity: busy ? 0.5 : 1 };
   // How the main photo was made (the poster records it per generation).
   const mainGenId = currentGenId(item);
@@ -255,9 +254,7 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
         {needsStockPrice(p) ? "No stock price" : `${priceText(p.stockPrice)} for the groups`} · Sizes {sizesText(p.sizes)}
       </div>
       <div data-testid="stock" style={{ color: "#dfe7ff", fontSize: 13, marginTop: 2 }}>{stockText(item)}</div>
-      {verdict && <div data-testid="verdict" style={{ color: item.verdict?.pass ? GREEN : AMBER, fontSize: 12, marginTop: 4 }}>{verdict}</div>}
-      {rejected && <div data-testid="rejection" style={{ color: RED, fontSize: 12, marginTop: 2 }}>{rejected}</div>}
-      {item.framingFlag === true && <div style={{ color: AMBER, fontSize: 12, marginTop: 2 }}>Framing still off after the automatic correction</div>}
+      {/* EVERYTHING IS MANUAL (Junid, 4 Oct): no checker, layout-spec or rejection lines on the card. */}
       <div data-testid="status" style={{ color: statusColour, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
       {PRICE_TABS.includes(tab) && h.onSavePrices && (
         <PriceFields item={item} busy={busy} onSavePrices={h.onSavePrices} needNote={acts.approve && needsStockPrice(p)} />
@@ -529,7 +526,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   // (lane ready) and that has a stock price — never items Junid has not seen,
   // never a checker-failed photo without its own tap.
   // Approve all: checker-PASSED photos only — a failed one (even picked onto a ready card) needs its own tap.
-  const approveAllable = (it) => it.status === "ready" && it.verdict?.pass === true && actionsFor(it).approveEnabled;
+  // Approve all: every photo shown that can be approved (a photo, a stock price) — Junid's own bulk tap.
+  const approveAllable = (it) => actionsFor(it).approve && actionsFor(it).approveEnabled;
   const onApproveAll = () => {
     const pids = (data.items || []).filter(approveAllable).map((it) => it.pid);
     if (!pids.length) return;
@@ -568,10 +566,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         <button onClick={onExit} style={{ ...bGray, padding: "8px 12px" }} aria-label="Back">←</button>
         <div style={{ fontSize: 20, fontWeight: 800 }}>New Arrivals</div>
       </div>
-      <div data-testid="agreement" style={{ color: GRAY, fontSize: 12, marginBottom: 12 }}>
-        Agreement with you: {Object.entries(CLASS_LABELS).map(([cls, l]) => `${l} ${agreementText(stats, cls)}${data.modes?.[cls] === "auto" ? " (auto)" : ""}`).join(" · ")}
-        <div data-testid="reject-rate" style={{ marginTop: 2 }}>{rejectRateText(stats)}</div>
-        <div data-testid="spent" style={{ marginTop: 2 }}>{spentText(stats)}</div>
+      <div data-testid="header-spend" style={{ color: GRAY, fontSize: 12, marginBottom: 12 }}>
+        <div data-testid="spent">{spentText(stats)}</div>
       </div>
       <div role="tablist" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
         {TABS.map((t) => (

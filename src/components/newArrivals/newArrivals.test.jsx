@@ -215,11 +215,12 @@ describe("NewArrivalsScreen", () => {
     expect(text(tree)).toContain("Couldn't load: permission-denied");
   });
 
-  it("a rejected item with no photo stays on New: rejection as a label, Generate (regenerate flag) and Skip, no Approve", async () => {
+  it("a rejected-lane item with no photo stays on New: no rejection line, Generate (regenerate flag) and Skip, no Approve", async () => {
     const rej = { pid: "p1789999990001", status: "rejected", rejection: { code: "source", reason: "retake photo" }, product: {} };
     const api = fakeApi([], { list: vi.fn(async () => ({ items: [rej], tabCounts: {} })) });
     const tree = await render(api, "new");
-    expect(text({ toJSON: () => testid(tree, "rejection")[0].children })).toBe("retake photo");
+    expectNoCheckerLines(tree);
+    expect(text(tree)).not.toContain("retake photo");
     expect(text({ toJSON: () => testid(tree, "status")[0].children })).toBe("Waiting — tap Generate when you want its photo");
     await act(async () => { button(tree, "Generate").props.onClick(); });
     expect(api.generate).toHaveBeenCalledWith(["p1789999990001"], { regenerate: true });
@@ -228,6 +229,14 @@ describe("NewArrivalsScreen", () => {
     expect(button(tree, "Skip — don't advertise")).toBeTruthy();
   });
 });
+
+// EVERYTHING IS MANUAL (4 Oct): none of these lines may ever render on the card or header.
+// ("agreement" is only the header's wrapper testid now — its text is checked below.)
+const NO_CHECKER_LINES = ["verdict", "rejection", "reject-rate"];
+const expectNoCheckerLines = (tree) => {
+  for (const id of NO_CHECKER_LINES) expect(testid(tree, id)).toHaveLength(0);
+  expect(text(tree)).not.toMatch(/Agreement with you|Rejected \d+%|Checker:/);
+};
 
 describe("PRICES: Stock price (R) + Retail price (R), pre-filled, one Save — the admin price save", () => {
   const priced = () => ready();
@@ -510,23 +519,26 @@ describe("New tab: the group switcher, multi-select, Generate, Skip", () => {
 const GEN = (id, at, over = {}) => ({ url: `https://x/${id}.jpg`, at, model: "m", promptVersion: "v3", plate: "footwear-plate.png", kind: "footwear",
   costUsd: 0.04, costZar: 0.75, verdict: { pass: true, failed: [] }, reason: "requested", ...over });
 
-describe("ONE card on New: every generation, verdict label, chips, ONE Approve", () => {
+describe("ONE card on New: every generation, chips, ONE Approve (no checker lines)", () => {
   const withGens = (over = {}) => ready({
     generatedUrl: "https://x/g2.jpg", currentGen: "g2",
     generations: { g1: GEN("g1", NOW - 1000, { costZar: 0.5, verdict: { pass: false, failed: ["fidelity:colour"], label: "colour off" } }), g2: GEN("g2", NOW) },
     verdict: { pass: false, failed: ["background"], label: "background" }, ...over,
   });
 
-  it("shows the latest big and the earlier one, each with its cost; the verdict is a label only", async () => {
+  it("shows the latest big and the earlier one, each with its cost only (no pass/failed, no verdict line)", async () => {
     const tree = await render(fakeApi([withGens()]));
     const imgs = tree.root.findAll((n) => n.type === "img").map((i) => i.props.src);
     expect(imgs).toEqual(["https://x/orig.jpg", "https://x/g2.jpg", "https://x/g1.jpg"]);
     const t = text(tree);
     expect(t).toContain("Generated · Main photo · R0.75");
-    expect(t).toContain("R0.50 · failed");
+    expect(t).toContain("R0.50");
+    expect(t).not.toMatch(/R0\.50 · (failed|pass)/);
+    expect(t).not.toContain("failed");
     expect(t).toContain("2 generations · R1.25 total");
-    expect(t).toContain("Checker: failed — background");
-    expect(button(tree, "Approve")).toBeTruthy(); // the failed verdict never blocks
+    expect(t).not.toContain("Checker:");
+    expectNoCheckerLines(tree);
+    expect(button(tree, "Approve")).toBeTruthy(); // a stored verdict never blocks
   });
 
   it("Reject is one tap on a chip — exactly the contract's strings", async () => {
@@ -546,12 +558,13 @@ describe("ONE card on New: every generation, verdict label, chips, ONE Approve",
     expect(api.generate).toHaveBeenCalledWith(["p1789999990000"], { regenerate: true });
   });
 
-  it("a rejected-lane item with photos stays on New: every generation, the rejection as a label, ONE Approve (no per-thumbnail Approve anyway)", async () => {
+  it("a rejected-lane item with photos stays on New: every generation, no rejection line, ONE Approve (no per-thumbnail Approve anyway)", async () => {
     const rej = withGens({ status: "rejected", rejection: { code: "junid", reason: "framing", at: NOW } });
     const api = fakeApi([rej]);
     const tree = await render(api, "new");
     expect(tree.root.findAll((n) => n.type === "img")).toHaveLength(3);
-    expect(text({ toJSON: () => testid(tree, "rejection")[0].children })).toBe("You rejected it: framing");
+    expectNoCheckerLines(tree);
+    expect(text(tree)).not.toContain("You rejected it");
     expect(text({ toJSON: () => testid(tree, "status")[0].children })).toBe("Photo ready — approve");
     expect(tree.root.findAll((n) => n.type === "button" && label(n) === "Approve anyway")).toHaveLength(0);
     expect(testid(tree, "approve-gen")).toHaveLength(0);
@@ -563,8 +576,8 @@ describe("ONE card on New: every generation, verdict label, chips, ONE Approve",
     // Reject chips stay as Junid's reject-reason signal; Use this one on the earlier generation.
     expect(testid(tree, "reject-chips")).toHaveLength(1);
     expect(tree.root.findAll((n) => n.type === "button" && label(n) === "Use this one")).toHaveLength(1);
-    // Rejected items are not part of "Approve all" (only checker-passed photos are).
-    expect(text(tree)).not.toContain("Approve all");
+    // Approve all is Junid's bulk tap over every approvable photo shown, whatever the lane/verdict.
+    expect(text(tree)).toContain("Approve all 1");
   });
 
   it("no stock price: the ONE Approve is SHOWN but disabled, with 'add stock price first'", async () => {
@@ -662,14 +675,14 @@ describe("Skip — one tap, an 8-second Undo, no Skipped tab", () => {
   });
 });
 
-describe("header agreement %", () => {
-  it("per class from stats; absent → —; auto mode marked", async () => {
-    const stats = { agreement: { footwear: { pct: 83.4, n: 30, window: 30 }, single: { pct: null, n: 2 } } };
+describe("header: spend line only", () => {
+  it("no agreement %, no reject rate — even when stats carry them; auto mode is not marked", async () => {
+    const stats = { agreement: { footwear: { pct: 83.4, n: 30, window: 30 } }, rejectRate: { pct: 20, n: 25, byReason: {} }, totalSpentZar: 5 };
     const api = fakeApi([ready()], { list: vi.fn(async () => ({ items: [ready()], tabCounts: {}, stats, modes: { footwear: "auto" } })) });
     const tree = await render(api);
-    expect(testid(tree, "agreement").map((n) => text({ toJSON: () => n.children }))[0])
-      .toMatch(/^Agreement with you: Footwear 83% \(auto\) · Clothing — · Two-piece —/);
-    expect(view.agreementText(null, "footwear")).toBe("—");
+    expectNoCheckerLines(tree);
+    expect(text(tree)).not.toMatch(/Agreement with you|Rejected \d+%|\(auto\)/);
+    expect(text({ toJSON: () => testid(tree, "spent")[0].children })).toBe("Spent so far R5.00");
   });
 });
 
@@ -721,8 +734,9 @@ describe("pick any generation — Use this one", () => {
     expect(useButtons(tree)).toHaveLength(2);
     const t = text(tree);
     expect(t).toContain("Generated · Main photo · ~R2.41 (estimated)");
-    expect(t).toContain("re-check, no new generation · R0.19 · failed");
-    expect(t).toContain("R2.38 · failed");
+    expect(t).toContain("re-check, no new generation · R0.19");
+    expect(t).toContain("R2.38");
+    expect(t).not.toContain("failed");
     expect(t).not.toContain("unknown");
     // Newest first: g3 (re-check) then g1.
     await act(async () => { useButtons(tree)[1].props.onClick(); });
@@ -785,10 +799,11 @@ describe("costs — never unknown", () => {
     expect(view.spentText({ totalSpentZar: 9 })).toBe("Spent so far R9.00");
     const stats = { totalSpentZar: 41.2, estimatedPartZar: 12.05, rejectRate: { pct: 20, n: 25, byReason: {} }, costPerFinishedZar: 4.5 };
     const tree = await render(fakeApi([ready()], { list: vi.fn(async () => ({ items: [ready()], tabCounts: {}, stats })) }));
-    const header = text({ toJSON: () => testid(tree, "agreement")[0].children });
-    expect(header).toContain("Spent so far R41.20 (incl. ~R12.05 estimated)");
-    expect(header).toContain("Rejected 20% of 25");
-    expect(header).toContain("Agreement with you:");
+    const header = text({ toJSON: () => testid(tree, "spent")[0].children });
+    expect(header).toBe("Spent so far R41.20 (incl. ~R12.05 estimated)");
+    expect(text(tree)).not.toContain("Rejected 20% of 25");
+    expect(text(tree)).not.toContain("Agreement with you");
+    expectNoCheckerLines(tree);
     const tree2 = await render(fakeApi());
     expect(text({ toJSON: () => testid(tree2, "spent")[0].children })).toBe("Spent so far —");
   });
@@ -849,10 +864,10 @@ describe("learning log — codes under every generation, ❤ Love", () => {
   });
 });
 
-it("Approve all skips a ready card whose picked photo FAILED the checker (CodeRabbit)", async () => {
+it("Approve all takes a ready card whatever its stored verdict (everything is manual)", async () => {
   const api = fakeApi([ready(), ready({ pid: "p1789999990001", verdict: { pass: false, failed: ["framing"], label: "✗ framing off" } })]);
   const tree = await render(api);
-  expect(text(tree)).toContain("Approve all 1");
+  expect(text(tree)).toContain("Approve all 2");
 });
 
 describe("ONE PLACE TO GENERATE AND APPROVE (3 Oct night)", () => {
@@ -950,14 +965,16 @@ describe("ONE PLACE TO GENERATE AND APPROVE (3 Oct night)", () => {
     expect(statuses).toEqual(["Photo ready — approve", "Generating…", "Waiting — tap Generate when you want its photo"]);
   });
 
-  it("Approve all takes only checker-passed photos shown (lane ready), never rejected or new-lane ones", async () => {
-    const api = fakeApi([gens({ status: "ready" }), gens({ pid: P(5), status: "rejected" }), gens({ pid: P(6), status: "new" })]);
+  it("Approve all takes every shown photo with a stock price, whatever its lane, but not a card with no photo or still generating", async () => {
+    const api = fakeApi([gens({ status: "ready" }), gens({ pid: P(5), status: "rejected" }), gens({ pid: P(6), status: "new" }),
+      gens({ pid: P(7), status: "ready", product: { ...ready().product, stockPrice: null } }), newItem(1)]);
     const tree = await render(api, "new");
-    expect(btns(tree, "Approve")).toHaveLength(3);
+    expect(btns(tree, "Approve")).toHaveLength(4);
     globalThis.window = { confirm: vi.fn(() => true) };
-    await act(async () => { button(tree, "Approve all 1").props.onClick(); });
+    await act(async () => { button(tree, "Approve all 3").props.onClick(); });
     delete globalThis.window;
-    expect(api.approve).toHaveBeenCalledWith(["p1789999990000"]);
+    // No-stock-price and no-photo cards are left out; lane and verdict do not matter.
+    expect(api.approve).toHaveBeenCalledWith(["p1789999990000", P(5), P(6)]);
   });
 });
 

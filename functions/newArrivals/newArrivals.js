@@ -651,14 +651,16 @@ const newArrivalsRestore = onCall(callableOpts, async (request) => {
 async function reject(db, { pid, reason }, uid, nowMs) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (!core.REJECT_CHIPS.includes(reason)) throw new HttpsError("invalid-argument", "Pick one of the reasons.");
-  const r = await moveOne(db, String(pid), {
-    from: ["new", "ready", "rejected"], to: "rejected", at: nowMs, uid,
-    guard: (cur) => (cur.generateRequest ? "a new photo is being generated" : cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo"),
-    decision: () => ({ action: "reject", reason }),
-    fields: () => ({ rejection: { code: "junid", reason, at: nowMs } }),
-  });
-  if (!r.item) throw new HttpsError("failed-precondition", `Can't reject — ${r.refusal}.`);
-  return { ok: true };
+  // JUNID'S FEEDBACK ONLY (4 Oct): a reject chip is LOGGED against the photo
+  // shown (the learning report reads it) — the item does not move, nothing is
+  // hidden, and no generation follows. Regenerate / Skip / Approve are his moves.
+  pid = String(pid);
+  const item = await val(db, `${core.ITEMS}/${pid}`);
+  if (!item || !core.NEW_LANES.includes(item.status)) throw new HttpsError("failed-precondition", "Can't note that — the item is not on the New tab.");
+  if (item.generateRequest) throw new HttpsError("failed-precondition", "Can't note that — a new photo is being generated.");
+  if (!(item.generatedUrl || core.currentGenUrl(item))) throw new HttpsError("failed-precondition", "Can't note that — it has no generated photo.");
+  await writeRoot(db, await decisionPaths(db, pid, { at: nowMs, uid, item, action: "reject", reason }));
+  return { ok: true, noted: true };
 }
 
 const newArrivalsReject = onCall(callableOpts, async (request) => {
