@@ -60,6 +60,15 @@ export function joinRows(decisions, genlogs) {
 }
 
 const M = (r) => r.log?.measurements || r.gen?.measurements || null;
+const methodOf = (r) => r.log?.method || r.gen?.method || null;
+/** The prompt setup in plain words: "the standard instructions" + what was added. Pure. */
+export function setupWords(version) {
+  const v = String(version || "").split(" ")[0];
+  if (!v) return null;
+  if (v.startsWith("split-")) return "the product-only instructions";
+  const extras = v.split("+").slice(1).map((x) => ({ steam: "steaming", footwearBox: "the box rule", footwearPose: "the pedestal rule", footwearExamples: "your example photos", packaging: "the keep-the-box rule" }[x] || x));
+  return extras.length ? `the standard instructions plus ${extras.join(", ")}` : "the standard instructions";
+}
 const kindOf = (r) => r.log?.kind || r.gen?.kind || r.class || null;
 // A side of a comparison needs this many photos; under SMALL_SAMPLE the finding is called a hint.
 export const MIN_SIDE = 3;
@@ -69,22 +78,23 @@ export const FIELDS = [
   { key: "sharpness", measured: true, label: "sharpness", unit: "(a higher number is sharper)", num: true, better: "higher", get: (r) => M(r)?.sharpness?.laplacianVar ?? null },
   { key: "noise", measured: true, label: "background noise", unit: "(a lower number is cleaner)", num: true, better: "lower", get: (r) => M(r)?.noise?.highpassStd ?? null },
   { key: "crease", measured: true, label: "creasing left in the garment", unit: "(a lower number is smoother)", num: true, better: "lower", get: (r) => M(r)?.crease?.delta ?? null },
-  { key: "background", measured: true, label: "difference from your backdrop photo", unit: "(0 is identical)", num: true, better: "lower", get: (r) => M(r)?.background?.mad ?? null },
+  // Full Gemini only: in Split the backdrop IS your photo, so the number says nothing about quality there.
+  { key: "background", measured: true, label: "difference from your backdrop photo", unit: "(0 is identical)", num: true, better: "lower", get: (r) => (methodOf(r) === "split" ? null : M(r)?.background?.mad ?? null) },
   { key: "requestMs", label: "seconds Gemini took", unit: "", num: true, get: (r) => (r.log?.timing?.requestMs != null ? r.log.timing.requestMs / 1000 : null) },
   { key: "costZar", label: "cost", unit: "(rand)", num: true, get: (r) => { const c = Number(r.log?.costZar ?? r.gen?.costZar); return Number.isFinite(c) && c > 0 ? c : null; } },
-  { key: "method", label: "method", get: (r) => (r.log?.method || r.gen?.method) === "split" ? "Split" : (r.log?.method || r.gen?.method) === "full" ? "Full Gemini" : null },
-  { key: "setup", label: "prompt setup", get: (r) => String(r.log?.promptVersion || r.gen?.promptVersion || "").split(" ")[0] || null },
-  { key: "box", label: "box photo sent", get: (r) => ((r.log?.kind || r.gen?.kind) === "footwear" && r.log ? ((r.log.inputs || []).some((i) => i.role === "box") ? "yes" : "no") : null) },
+  { key: "method", label: "made by", get: (r) => (methodOf(r) === "split" ? "Split" : methodOf(r) === "full" ? "Full Gemini" : null) },
+  { key: "setup", label: "made with", get: (r) => setupWords(r.log?.promptVersion || r.gen?.promptVersion) },
+  { key: "box", label: "shown with a box", get: (r) => ((r.log?.kind || r.gen?.kind) === "footwear" && r.log ? ((r.log.inputs || []).some((i) => String(i.role).startsWith("box")) ? "yes" : "no") : null) },
 ];
 
 // What a finding suggests for the prompt — PROPOSED only.
 export const PROPOSALS = {
-  sharpness: "Add to the studio brief: \"tack-sharp across the whole product — every stitch and texture crisp\".",
-  noise: "Add to the studio brief: \"a clean, noise-free exposure — no grain in the background\".",
-  crease: "Strengthen the steam layer for the garment types that still come out creased (or switch those items to Split, whose prompt asks for steamed and pressed).",
-  background: "Use Split for these items (code places the product on your real backdrop, so the background cannot drift), or repeat \"use the BACKGROUND PLATE exactly\" at the end of the prompt.",
+  sharpness: "Add to the instructions: \"tack-sharp across the whole product — every stitch and texture crisp\".",
+  noise: "Add to the instructions: \"a clean, noise-free exposure — no grain in the background\".",
+  crease: "Make the steaming instruction stronger for the garment types that still come out creased (or try Split on those items).",
+  background: "Try Split on these items: it puts the product on your real backdrop photo, so the background cannot change.",
   method: "Make the method that produced more loved photos the default for that group.",
-  setup: "Keep the prompt setup that produced more loved photos; retire the other.",
+  setup: "Keep the instructions that produced more loved photos; drop the others.",
   box: "Photograph the shoe's own box with it (or add the brand's box to the library) — photos sent with a box photo were loved more often.",
 };
 // Reject chips → what they suggest.
@@ -131,7 +141,7 @@ export function findings(rows) {
       if (Math.abs(effect) < 0.1) continue;
       const goodIsBetter = f.better === "higher" ? mg > mb : mg < mb;
       cands.push({ key: f.key, effect: Math.abs(effect), goodIsBetter,
-        text: `${Who} photos had ${f.label} ${fmt(mg)} (the middle of ${good.length}) against ${fmt(mb)} for the ones you marked not right (the middle of ${bad.length}) ${f.unit}${goodIsBetter ? "" : " — the opposite of what was expected, so this number does not explain your choice"}.${small}` });
+        text: `${Who} photos had ${f.label} ${fmt(mg)} (typical of ${good.length}) against ${fmt(mb)} for the ones you marked not right (typical of ${bad.length}) ${f.unit}${goodIsBetter ? "" : " — the opposite of what was expected, so this number does not explain your choice"}.${small}` });
     } else {
       const counts = {};
       for (const v of good) counts[v] = (counts[v] || 0) + 1;
@@ -196,7 +206,7 @@ export function learningReport({ decisions, genlogs, now = Date.now(), imagesPer
   L.push(spend.n
     ? `Gemini made ${spend.n} photo${spend.n === 1 ? "" : "s"} this week for ${zar(spend.zar)}${spend.estimatedZar > 0 ? ` (of which ~${zar(spend.estimatedZar)} is an estimate)` : ""} — ${zar(spend.perPhoto)} a photo${spend.seconds != null ? `, about ${Math.round(spend.seconds)} seconds each` : ""}.`
     : "Gemini made no photos this week.");
-  L.push("", "THREE FINDINGS");
+  L.push("", "WHAT STANDS OUT (up to three things)");
   found.forEach((f, i) => L.push(`${i + 1}. ${f.text}`));
   L.push("");
 
@@ -207,7 +217,7 @@ export function learningReport({ decisions, genlogs, now = Date.now(), imagesPer
     L.push(`${t === "loved" ? "LOVED ❤" : "MARKED NOT RIGHT"} — the ${list.length} most recent (attached, named by their code)`);
     if (!list.length) L.push("  none yet");
     for (const r of list) {
-      const how = [FIELDS.find((f) => f.key === "method").get(r), FIELDS.find((f) => f.key === "setup").get(r)].filter(Boolean).join(", ");
+      const how = [FIELDS.find((f) => f.key === "method").get(r), FIELDS.find((f) => f.key === "setup").get(r)].filter(Boolean).join(", with ");
       L.push(`  ${r.code || "(no code)"}${how ? ` — ${how}` : ""}${r.reasons.length ? ` — you said: ${[...new Set(r.reasons)].join(", ")}` : ""}`);
       if (r.log?.thoughts) L.push(`     Gemini said (${THOUGHTS_LABEL.toLowerCase()}): "${String(r.log.thoughts).replace(/\s+/g, " ").slice(0, 220)}${r.log.thoughts.length > 220 ? "…" : ""}"`);
       if (r.gen?.url) images.push({ code: r.code || `${r.pid}-${r.genId}`, url: r.gen.url, tier: t });
@@ -220,7 +230,7 @@ export function learningReport({ decisions, genlogs, now = Date.now(), imagesPer
   for (const [chip, n] of chips) L.push(`  ${chip}: ${n}`);
   L.push("");
 
-  L.push("PROPOSED PROMPT CHANGES — NOT APPLIED. Nothing changes unless you say yes, and each is tried on a test photo first.");
+  L.push("PROPOSED CHANGES TO THE INSTRUCTIONS GEMINI GETS — NOT APPLIED. Nothing changes unless you say yes.");
   if (!props.length) L.push("  none this week — nothing separates the loved photos from the others clearly enough yet");
   for (const p of props) L.push(`  • ${p.change}`, `    because: ${p.because}`);
 

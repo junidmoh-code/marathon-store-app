@@ -76,7 +76,7 @@ export async function splitGenerate(ctx) {
     const stamp = deps.now();
     // Gemini's own product photo is kept too: the record shows what code started from.
     const productJpeg = await sharp(gen.buffer).jpeg({ quality: 92 }).toBuffer();
-    const productImage = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}-product.jpg`, productJpeg, "image/jpeg"));
+    const productImage = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}-product.jpg`, productJpeg, "image/jpeg"));
     split.productImage = { url: productImage.url, path: productImage.path || null };
     generated = productImage;
     say({ type: "status", text: "Placing it on your backdrop…" });
@@ -101,6 +101,9 @@ export async function splitGenerate(ctx) {
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   const libraryPlaced = split.box === "library";
+  // What code itself put in the photo is on the record too.
+  inputs.push(await inputOf("plate (placed by code)", plate.forModel || plate.buffer, { file: plate.file || null }));
+  if (libraryPlaced) inputs.push(await inputOf("box (brand library, placed by code)", ctx.libraryBoxPng, { file: `brand library box (${brand})` }));
   return {
     generated, kind, method: "split",
     promptVersion: `${SPLIT_PROMPT_VERSION} (split)`, layersUsed: [],

@@ -37,7 +37,7 @@ export function originalUrlOf(item, product) {
 }
 
 // What the extra example photos are — and are not — to the model.
-export const EXAMPLES_LABEL = "MORE EXAMPLES OF THE SAME COMPOSITION — finished photos of OTHER shoes on this same backdrop: one shoe side-on on the white pedestal, toe to the right, its box on the middle rail above. Copy the composition only. Their shoes, boxes and logos are different products and must never appear in the result:";
+export const EXAMPLES_LABEL = "MORE EXAMPLES OF THE SAME COMPOSITION — finished photos of OTHER products on this same backdrop: one shoe side-on on the white pedestal, toe to the right. Take nothing from them but the layout: the shoe in the result comes only from the SHOE PHOTO, and a box only as THE BOX rule above says — never a shoe, box or logo copied from these examples:";
 
 /** A plain-words refusal: nothing was generated, nothing was paid. */
 export class StudioRefusal extends Error {
@@ -108,7 +108,8 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const spec = deps.spec?.[kind];
   if (!spec) throw new Error(`no layout spec for ${kind}`);
   // With no box, the box leaves the spec too: nothing is placed on the rail.
-  const effSpec = kind === "footwear" && boxMode === "none" && !layers.footwearBox ? { ...spec, box: undefined } : spec;
+  // (The box rule may still mount the box standing in the shoe photo: the prompt says where — on the middle rail.)
+  const effSpec = kind === "footwear" && boxMode === "none" ? { ...spec, box: undefined } : spec;
   const prompt = studioPrompt({ kind, categoryKey, productName: product?.name || item.name, conditionClause: deps.conditionClause,
     placement: placementText(kind, effSpec), layers, boxMode });
   const plateJ = plate.forModel || await forModel(plate.buffer);
@@ -121,7 +122,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   // (other shoes, other boxes) — so the layout is learnt, not the one reference's shoe.
   // If they cannot be loaded the photo is still made, without them — said in the log and on the record.
   const examples = kind === "footwear" && layers.footwearExamples && deps.loadExamples
-    ? await deps.loadExamples(kind).catch((e) => { deps.log?.(`the example photos could not be loaded (${String(e.message).slice(0, 80)}) — generating without them`); return []; }) : [];
+    ? await deps.loadExamples(kind, { brand }).catch((e) => { deps.log?.(`the example photos could not be loaded (${String(e.message).slice(0, 80)}) — generating without them`); return []; }) : [];
   const layersUsed = [...prompt.layers, ...(examples.length ? ["footwearExamples"] : [])];
   const inputs = await Promise.all([
     inputOf("plate", plateJ, { file: plate.file || null }),

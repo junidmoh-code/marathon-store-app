@@ -2,7 +2,7 @@
 // learning log. Three findings that cite their numbers — never padded — and
 // prompt changes that are only ever PROPOSED.
 import { describe, it, expect } from "vitest";
-import { tiers, joinRows, findings, chipCounts, proposals, weekSpend, learningReport, PROPOSALS } from "./learningCore.mjs";
+import { tiers, joinRows, findings, chipCounts, proposals, weekSpend, learningReport, PROPOSALS, setupWords } from "./learningCore.mjs";
 import { run } from "./learningReport.mjs";
 
 const NOW = Date.UTC(2026, 9, 5, 6, 0);
@@ -47,9 +47,15 @@ describe("findings", () => {
     const f = findings(rows);
     expect(f).toHaveLength(3);
     const sharp = f.find((x) => x.key === "sharpness");
-    expect(sharp.text).toBe("Clothing — loved photos had sharpness 800 (the middle of 3) against 250 for the ones you marked not right (the middle of 3) (a higher number is sharper). Only a few photos so far — a hint, not a rule.");
+    expect(sharp.text).toBe("Clothing — loved photos had sharpness 800 (typical of 3) against 250 for the ones you marked not right (typical of 3) (a higher number is sharper). Only a few photos so far — a hint, not a rule.");
     expect(sharp.goodIsBetter).toBe(true);
-    expect(f.find((x) => x.key === "method").text).toBe('Loved photos: 3 of 3 were method "Full Gemini", against 0 of 3 of the ones you marked not right. Only a few photos so far — a hint, not a rule.');
+    expect(f.find((x) => x.key === "method").text).toBe('Loved photos: 3 of 3 were made by "Full Gemini", against 0 of 3 of the ones you marked not right. Only a few photos so far — a hint, not a rule.');
+    // The backdrop number is never held against Split (there the backdrop IS the photo): it is not compared across methods.
+    expect(f.find((x) => x.key === "background")).toBeUndefined();
+    // Plain words, no internal names.
+    expect(setupWords("baseline-2026-10-02+footwearBox+footwearPose+footwearExamples (studio-2026-10-04.1)")).toBe("the standard instructions plus the box rule, the pedestal rule, your example photos");
+    expect(setupWords("split-product-2026-10-04.1 (split)")).toBe("the product-only instructions");
+    expect(setupWords("baseline-2026-10-02 (x)")).toBe("the standard instructions");
   });
 
   it("shoes are never compared with clothing on a photo measurement", () => {
@@ -100,9 +106,10 @@ describe("the report", () => {
     expect(r.body).toContain("Your photos this week: 1 loved ❤, 0 approved, 1 marked not right.");
     expect(r.body).toContain("So far: 1 loved, 1 approved, 1 marked not right.");
     expect(r.body).toContain("Gemini made 2 photos this week for R5.15 (of which ~R2.40 is an estimate) — R2.58 a photo, about 40 seconds each.");
-    expect(r.body).toContain("G-a — Full Gemini, baseline-2026-10-02+steam");
-    expect(r.body).toContain("G-b — Full Gemini, baseline-2026-10-02+steam — you said: colour off");
-    expect(r.body).toContain("PROPOSED PROMPT CHANGES — NOT APPLIED. Nothing changes unless you say yes");
+    expect(r.body).toContain("G-a — Full Gemini, with the standard instructions plus steaming");
+    expect(r.body).toContain("G-b — Full Gemini, with the standard instructions plus steaming — you said: colour off");
+    expect(r.body).toContain("PROPOSED CHANGES TO THE INSTRUCTIONS GEMINI GETS — NOT APPLIED. Nothing changes unless you say yes.");
+    expect(r.body).not.toMatch(/baseline-20|studio-20|layer|median|laplacian/i);
     expect(r.body).toContain("Gemini said (gemini's own account — not proof)");
     expect(r.images).toEqual([{ code: "G-a", url: "https://s/a.jpg", tier: "loved" }, { code: "G-b", url: "https://s/b.jpg", tier: "rejected" }]);
     // No checker language anywhere.

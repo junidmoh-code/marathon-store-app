@@ -458,7 +458,8 @@ test("Split on a tap: Gemini makes the product only, code places it; the record 
   assert.equal(log.method, "split");
   assert.match(log.split.productImage.path, /-product\.jpg$/);
   assert.ok(log.split.placed.garment);
-  assert.equal(log.inputs.map((i) => i.role).join(","), "source");
+  // What Gemini was sent, and what code itself put in the photo.
+  assert.equal(log.inputs.map((i) => i.role).join(","), "source,plate (placed by code)");
 });
 
 test("Split that cannot place the product: Gemini's photo is the generation, with a plain note on it for the card", async () => {
@@ -515,6 +516,7 @@ test("a sneaker with no box photo: the brand's library box and two example photo
   const parts = w.calls.find((c) => c[0] === "image")[3];
   const labels = parts.filter((p) => p.text).map((p) => p.text.split(" — ")[0]);
   assert.deepEqual(labels.slice(1), ["BACKGROUND PLATE", "REFERENCE", "MORE EXAMPLES OF THE SAME COMPOSITION", "LAYOUT DIAGRAM", "SHOE PHOTO", "BOX PHOTO"]);
+  assert.match(parts[0].text, /the sentence above calling it "this product's own box" does not apply/);
   assert.match(parts.find((p) => p.text && p.text.startsWith("BOX PHOTO")).text, /a box of this shoe's brand/);
   assert.match(parts[0].text, /Only if the SHOE PHOTO shows no box, use the brand's box/);
   const item = await itemOf(w.db);

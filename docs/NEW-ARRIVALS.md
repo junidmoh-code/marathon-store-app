@@ -96,9 +96,18 @@ changed.**
   | `steam` | clothing, except t-shirts | steamed and pressed: creases, fold lines and squashing out; fabric full; studio light; true colour |
   | `footwearBox` | all footwear | ONE box on the rail: its own box photo, else the box in the shoe photo, else the brand's library box; never invented |
   | `footwearPose` | all footwear | one shoe, whole sole on the pedestal |
-  | `footwearExamples` | all footwear | two of Junid's own finished photos, shown as "composition only" |
+  | `footwearExamples` | all footwear | two of Junid's five finished photos — never one of the product's own brand — shown for the layout only |
 
-  T-shirts get no layer: their prompt is the bare baseline, byte for byte.
+  T-shirts (and the jersey tops cut like them: golf shirts, basketball vests,
+  baseball shirts, soccer jerseys) get no layer on Full Gemini: their prompt
+  is the bare baseline, byte for byte.
+
+  **These four layers are PROVISIONAL** (`baseline.lock.json`): Junid asked
+  for them in his brief of 4 Oct, but the wording is the developer's and he had
+  not seen a photo made with them when they were switched on (Gemini's credit
+  ran out before a test generation). Each layer's exact text is pinned by
+  sha256; to switch one off, set it to `false` in `generation.json` and
+  `baseline.lock.json` and deploy `newArrivalsStudio`.
 - **Two methods per item** (the card's Full Gemini / Split):
   - **Full Gemini** (default): Gemini composes the product onto the plate.
   - **Split** (`studio/split.mjs`): Gemini makes the product only, on plain
@@ -107,6 +116,15 @@ changed.**
     plate at the measured layout and adds a soft shadow (`place.mjs`). A
     product too close to the grey in colour cannot be cut out: Gemini's photo
     is kept and the card says to use Full Gemini for that item.
+    **Known limits of the cut-out.** The Mac mini used a trained background
+    remover; a Cloud Function shared by 86 functions should not carry one, so
+    this is a colour flood. It is exact on coloured, dark and white products.
+    It can nibble a light-grey or silver part that touches the background (a
+    grey sole, a silver logo at the edge), and it keeps a hard dark shadow as
+    part of the product. Junid sees every photo before it goes anywhere; for
+    such a product, Full Gemini is the method.
+    Split's prompt asks for "steamed and pressed" on every garment, t-shirts
+    included — tees are only guaranteed the unchanged baseline on Full Gemini.
 - **Plates, references, examples, boxes**: Storage `new_arrivals/assets/plates`
   (plates verified against `plates.lock.json`, examples against
   `examples.lock.json`) and `new_arrivals/assets/boxes`.
@@ -120,7 +138,9 @@ changed.**
 ## The weekly learning report
 
 `scripts/newArrivals/learningCore.mjs` (pure) + `learningReport.mjs` (runner).
-Every Monday 08:00 the Mac mini (`com.marathon.newarrivals.learning`) reads the
+The Mac mini's LaunchAgent `com.marathon.newarrivals.learning` (installed by
+hand at deploy — it is not in this repo; it runs the script from `~/msa-runtime`,
+which must be at a commit that has it) runs it every Monday 08:00. It reads the
 last decisions and learning-log rows, compares the photos Junid loved with the
 ones he marked not right, gives up to three findings that cite their numbers,
 and PROPOSES prompt changes — it never applies one. The email goes from the
@@ -136,7 +156,7 @@ PAUSED.
 ## Deploy (by name, never a bare `--only functions`)
 
 ```
-firebase deploy --only functions:newArrivalsStudio --project=marathon-club
+firebase deploy --only functions:newArrivalsStudio,functions:newArrivalsList --project=marathon-club
 ```
 
 The card ships with hosting. Run the drift check in `DEPLOY.md` first.

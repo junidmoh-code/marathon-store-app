@@ -93,9 +93,14 @@ function loadRoleFile(bucket, file, forModel) {
 }
 
 // Junid's own finished photos, shown as more examples of the footwear
-// composition (the ones marked `use` in examples.lock.json), sha-verified.
-function loadExamples(bucket, forModel) {
-  const files = Object.entries(examplesLock).filter(([, e]) => e.use === true).map(([f]) => f);
+// composition (examples.lock.json, in its order), sha-verified.
+const EXAMPLES_SENT = 2;
+/** Which examples a product is shown: the first two in the lock's order that are NOT its own brand (so their box can never be mistaken for its box). Pure. */
+function exampleFiles(brand) {
+  return Object.entries(examplesLock).filter(([, e]) => !brand || e.brand !== brand).map(([f]) => f).slice(0, EXAMPLES_SENT);
+}
+function loadExamples(bucket, forModel, brand = null) {
+  const files = exampleFiles(brand);
   return Promise.all(files.map((file) => {
     const k = `example:${file}`;
     if (!assetCache.has(k)) {
@@ -265,7 +270,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
         loadPlate: (kind) => loadRoleFile(bucket, compose.ROLES[kind].plate, compose.forModel),
         loadReference: (kind) => (compose.ROLES[kind].reference ? loadRoleFile(bucket, compose.ROLES[kind].reference, compose.forModel) : null),
         libraryBox: (key) => libraryBox(bucket, key),
-        loadExamples: () => loadExamples(bucket, compose.forModel),
+        loadExamples: (kind, { brand = null } = {}) => loadExamples(bucket, compose.forModel, brand),
         ...(deps.assets || {}),
         spec, generation, conditionClause: CONDITION_CLAUSE,
         image: deps.image || ((model, parts, imageConfig, opts) => gemini.streamImage(model, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
@@ -382,5 +387,5 @@ const newArrivalsStudio = onCall(
 module.exports = {
   newArrivalsStudio,
   // for tests
-  _internals: { studioGenerate, claim, release, landed, usdZarToday, uploadImmutable, fetchBytes, mods },
+  _internals: { exampleFiles, studioGenerate, claim, release, landed, usdZarToday, uploadImmutable, fetchBytes, mods },
 };
