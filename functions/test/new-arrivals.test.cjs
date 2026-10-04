@@ -457,56 +457,6 @@ test("skip takes a Ready item too (Undo puts it back in Ready); refuses Generati
 const GEN = { url: "https://x/g1.jpg", path: "na/g1.jpg", at: NOW, model: "m", promptVersion: "v3", plate: "footwear-plate.png", kind: "footwear",
   costUsd: 0.04, costZar: 0.75, verdict: { pass: false, failed: ["fidelity:colour"], label: "colour off" }, layout: { deviations: [], tol: 0.02, corrected: null }, reason: "requested" };
 
-test("generate: New → generateRequest set, once; a decision is logged", async () => {
-  const db = lane(2);
-  const out = await na.generate(db, { pids: [pid(0), pid(1)] }, "junid", NOW + 7);
-  assert.equal(out.requested.length, 2);
-  const it = (await db.ref(`${core.ITEMS}/${pid(0)}`).once()).val();
-  assert.deepEqual(it.generateRequest, { at: NOW + 7, by: "junid" });
-  assert.equal(it.status, "new");
-  const again = await na.generate(db, { pids: [pid(0)] }, "junid", NOW + 8);
-  assert.match(again.skipped[0].why, /already requested/);
-  assert.deepEqual((await decisions(db)).map((d) => d.action), ["generate", "generate"]);
-  // The poster's small index: one entry per request; Skip removes it.
-  assert.equal((await db.ref(`${core.ROOT}/requests/${pid(0)}`).once()).val(), NOW + 7);
-  await na.skip(db, { pids: [pid(0)] }, "junid", NOW + 9);
-  assert.equal((await db.ref(`${core.ROOT}/requests/${pid(0)}`).once()).val(), null);
-});
-
-test("regenerate marks its request as a regeneration (logged with its reason and cost by the generator)", async () => {
-  const db = lane(1);
-  await db.ref(`${core.ITEMS}/${pid(0)}`).update({ status: "ready", generatedUrl: "https://x/g.jpg" });
-  await db.ref(`${core.BY_STATUS}/new/${pid(0)}`).set(null);
-  await db.ref(`${core.BY_STATUS}/ready/${pid(0)}`).set(1);
-  await na.generate(db, { pids: [pid(0)], regenerate: true }, "junid", NOW + 7);
-  const it = (await db.ref(`${core.ITEMS}/${pid(0)}`).once()).val();
-  assert.equal(it.generateRequest.regenerate, true);
-});
-
-test("regenerate: Ready/Rejected → lane new with a request; the photos stay visible; Ready refused without the flag", async () => {
-  const db = seeded("ready", { generatedUrl: GEN.url, currentGen: "g1", generations: { g1: GEN }, verdict: GEN.verdict, suggestedName: "Old" });
-  const no = await na.generate(db, { pids: [PID] }, "junid", NOW);
-  assert.match(no.skipped[0].why, /it is ready, not new/);
-  const out = await na.generate(db, { pids: [PID], regenerate: true }, "junid", NOW + 3);
-  assert.deepEqual(out.requested, [PID]);
-  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
-  assert.equal(it.status, "new");
-  assert.equal(it.generations.g1.url, GEN.url, "every generation is kept");
-  // REGENERATE KEEPS THE PHOTOS VISIBLE: the main photo, its generation and verdict stay.
-  assert.equal(it.generatedUrl, GEN.url);
-  assert.equal(it.currentGen, "g1");
-  assert.deepEqual(it.verdict, GEN.verdict);
-  // The approval, chain, names and destinations of the old lap are cleared.
-  assert.equal("suggestedName" in it, false);
-  assert.equal((await db.ref(`${core.BY_STATUS}/new/${PID}`).once()).val(), NOW);
-  const [d] = await decisions(db);
-  assert.equal(d.action, "regenerate");
-  assert.equal(d.genId, "g1");
-  // As stored (RTDB drops the empty deviations list and the null).
-  assert.deepEqual(d.gen, it.generations.g1, "the snapshot is the generation Junid looked at");
-  assert.equal(d.gen.costZar, 0.75);
-});
-
 test("reject takes exactly one chip; only LOGS reason + snapshot, never moves the item", async () => {
   const db = seeded("ready", { generatedUrl: GEN.url, currentGen: "g1", generations: { g1: GEN } });
   await assert.rejects(na.reject(db, { pid: PID, reason: "meh" }, "junid", NOW), /Pick one/);
@@ -931,41 +881,13 @@ test("Approve on a new-lane item with a photo (no pending request); passed verdi
 });
 
 test("approve is refused while a generate request is pending; nothing logged", async () => {
-  const db = withGens("ready");
-  await na.generate(db, { pids: [PID], regenerate: true }, "junid", NOW + 1);
+  const db = withGens("ready", { generateRequest: { at: NOW + 1, by: "junid", studio: true, regenerate: true } });
   const out = await na.approve(db, { pids: [PID] }, "junid", NOW + 2);
   assert.deepEqual(out.approved, []);
   assert.match(out.skipped[0].why, /being generated/);
-  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "new");
-  assert.deepEqual((await decisions(db)).map((d) => d.action), ["regenerate"]);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
+  assert.deepEqual(await decisions(db), []);
   await assert.rejects(na.approve(db, { pids: [PID], genId: "g1" }, "junid", NOW + 2).then((r) => { if (!r.approved.length) throw new Error(r.skipped[0].why); }), /being generated/);
-});
-
-test("regenerate keeps generatedUrl / currentGen / verdict / framingFlag; clears approval, chain, names, destinations", async () => {
-  const db = withGens("rejected", { framingFlag: true, approvedAt: 5, approvedBy: "j", chain: { photo: { at: 1 } }, suggestedName: "Old",
-    destinations: { shopify: { at: 3 } }, rejection: { code: "junid", reason: "framing", at: 1 } });
-  const out = await na.generate(db, { pids: [PID], regenerate: true }, "junid", NOW + 4);
-  assert.deepEqual(out.requested, [PID]);
-  const it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
-  assert.equal(it.status, "new");
-  assert.equal(it.generatedUrl, G2.url);
-  assert.equal(it.generatedPath, G2.path);
-  assert.equal(it.currentGen, "g2");
-  assert.equal(it.framingFlag, true);
-  assert.equal(it.verdict.pass, true);
-  assert.equal(it.generateRequest.regenerate, true);
-  for (const k of ["approvedAt", "approvedBy", "chain", "suggestedName", "destinations", "rejection"]) assert.equal(k in it, false, k);
-  assert.equal(it.lastRejection.reason, "framing");
-  // Listed as "generating" on the New tab, photos kept.
-  const [row] = (await na.listTab(db, "new", {})).items;
-  assert.equal(row.generatedUrl, G2.url);
-  // A second Regenerate while pending is refused ("already requested").
-  assert.match((await na.generate(db, { pids: [PID], regenerate: true }, "junid", NOW + 5)).skipped[0].why, /already requested/);
-  // Regenerate from lane new of an item with photos is logged "regenerate" and marked so.
-  const db2 = withGens("new");
-  await na.generate(db2, { pids: [PID], regenerate: true }, "junid", NOW);
-  assert.equal((await decisions(db2))[0].action, "regenerate");
-  assert.equal((await db2.ref(`${core.ITEMS}/${PID}/generateRequest/regenerate`).once()).val(), true);
 });
 
 // ── how Gemini did it (newArrivalsHow) + per-item method (newArrivalsMethod) ──
@@ -1096,4 +1018,11 @@ test("Skip waits while the photo studio is making the item's photo; an old queue
   // A studio run that died no longer holds the Skip back.
   const dead = seeded("new", { generateRequest: { at: NOW - core.REQUEST_STALE_MS - 1, by: "junid", studio: true } });
   assert.deepEqual((await na.skip(dead, { pids: [PID] }, "junid", NOW)).skippedPids, [PID]);
+});
+
+test("the old queue Generate is retired: it refuses and says to reload (a request nobody serves must never be written)", async () => {
+  const db = seeded("new");
+  await assert.rejects(na.generate(db, { pids: [PID] }, "junid", NOW), /Generate has moved — reload this page/);
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/generateRequest`).once()).val(), null);
+  assert.equal((await db.ref(`${core.ROOT}/requests`).once()).val(), null);
 });

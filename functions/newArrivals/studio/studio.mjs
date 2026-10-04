@@ -75,9 +75,9 @@ export async function generateOne({ item, product, genId, method = "full", deps,
       try {
         box = await forModel((await deps.fetchBytes(product.photoBoxUrl)).buffer);
         boxMode = "own"; boxSource = "own"; boxFrom = { url: product.photoBoxUrl };
-      } catch (e) {
-        // A box photo that no longer exists: the brand library takes over.
-        if (!/\b(403|404)\b/.test(String(e.message))) throw e;
+      } catch {
+        // A box photo that cannot be read (gone, not in the app's storage, too
+        // large): the brand library takes over — the shoe is never held back for its box.
       }
     }
     if (!box && layers.footwearBox && deps.libraryBox) {
@@ -147,7 +147,9 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
     generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime));
   } catch (e) {
+    // The caller still counts what Gemini charged for it.
     e.paid = true;
+    e.usage = gen.usage || null;
     throw e;
   }
   // The final image is never also listed as a draft.

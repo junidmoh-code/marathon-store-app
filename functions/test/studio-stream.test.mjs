@@ -129,3 +129,9 @@ test("a timeout before any image is reported as taking too long (504)", async ()
   const fetchImpl = (url, init) => new Promise((_, reject) => { init.signal.addEventListener("abort", () => { const e = new Error("aborted"); e.name = "AbortError"; reject(e); }); });
   await assert.rejects(streamImage("m", [], {}, { apiKey: "k", fetchImpl, timeoutMs: 20 }), (e) => e.status === 504 && /no photo within/.test(e.message));
 });
+
+test("a last payload with no trailing newline is still read", async () => {
+  const text = `${event([{ thought: true, text: "t" }])}data: ${JSON.stringify({ candidates: [{ content: { parts: [{ inlineData: { mimeType: "image/jpeg", data: b64("FINAL") } }] } }] })}`;
+  const out = await streamImage("m", [], {}, { apiKey: "k", fetchImpl: async () => sseResponse(text, { cut: 4096 }) });
+  assert.equal(out.buffer.toString(), "FINAL");
+});

@@ -316,3 +316,94 @@ test("a failing run never clears a request that is not its own", async () => {
   assert.deepEqual(item.generateRequest, other);
   assert.equal(item.lastAttempt, undefined, "the other run's item is not marked failed");
 });
+
+test("storage down after Gemini answered: what the image cost is still counted in the spend", async () => {
+  const w = await world();
+  const file = w.deps.bucket.file;
+  w.deps.bucket.file = (p) => (/\/gen_\d+\.jpg$/.test(p) ? { save: async () => { throw new Error("503 backend error"); } } : file(p));
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /it was charged/);
+  assert.deepEqual((await w.db.ref(`${STATS}/totalSpentZar`).once()).val(), { ".sv": { increment: 2.75 } });
+});
+
+// The landing write commits on the server, but its answer is lost: the retry
+// must see it already landed — the lane index still moves, the photo is still "mine".
+function loseFirstLandingAnswer(db) {
+  const ref = db.ref.bind(db);
+  let lost = false;
+  db.ref = (path) => {
+    const r = ref(path);
+    if (path !== `${core.ITEMS}/${PID}`) return r;
+    const transaction = r.transaction.bind(r);
+    r.transaction = async (fn) => {
+      const res = await transaction(fn);
+      const v = res && res.snapshot && res.snapshot.val();
+      if (!lost && v && v.currentGen && String(v.currentGen).startsWith("g17")) { lost = true; throw new Error("socket closed"); }
+      return res;
+    };
+    return r;
+  };
+}
+
+test("the landing write is safe to retry: one generation, the lane index moved, the photo is the card's", async () => {
+  const w = await world();
+  loseFirstLandingAnswer(w.db);
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal(out.addedOnly, undefined);
+  const item = await itemOf(w.db);
+  assert.equal(item.status, "ready");
+  assert.deepEqual(Object.keys(item.generations), [out.genId]);
+  assert.equal((await w.db.ref(`${core.BY_STATUS}/ready/${PID}`).once()).val(), 5);
+  assert.equal((await w.db.ref(`${core.BY_STATUS}/new/${PID}`).once()).val(), null);
+  assert.deepEqual(Object.values((await w.db.ref(core.DECISIONS).once()).val()).map((d) => d.action), ["generate"]);
+});
+
+test("the photo could not be put on the item at all: a rescue row names it, the spend is counted, the item is given back", async () => {
+  const w = await world();
+  const ref = w.db.ref.bind(w.db);
+  let claimed = false;
+  w.db.ref = (path) => {
+    const r = ref(path);
+    if (path !== `${core.ITEMS}/${PID}`) return r;
+    const transaction = r.transaction.bind(r);
+    // The claim goes through; every landing try fails; the release goes through.
+    r.transaction = async (fn) => {
+      if (!claimed) { claimed = true; return transaction(fn); }
+      const probe = fn({ status: "new", generateRequest: { at: -1 } });
+      if (probe && probe.lastAttempt) return transaction(fn);
+      throw new Error("database unavailable");
+    };
+    return r;
+  };
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /made but could not be put on the card/);
+  const rescue = (await w.db.ref(`${core.ROOT}/rescue/${PID}`).once()).val();
+  assert.equal(Object.keys(rescue).length, 1);
+  assert.match(Object.values(rescue)[0].gen.url, /gen_\d+\.jpg/);
+  assert.deepEqual((await w.db.ref(`${STATS}/totalSpentZar`).once()).val(), { ".sv": { increment: 2.75 } });
+  assert.equal(w.calls.filter((c) => c[0] === "image").length, 1);
+});
+
+test("a late photo (the item was approved meanwhile) writes no decision row for Junid", async () => {
+  const w = await world({ item: { status: "ready", currentGen: "g1", generatedUrl: "https://x/g1.jpg", generations: { g1: { url: "https://x/g1.jpg", at: 1 } } } });
+  const image = w.deps.image;
+  w.deps.image = async (...a) => {
+    const cur = await itemOf(w.db);
+    const next = { ...cur, status: "approved", approvedAt: NOW + 5 };
+    delete next.generateRequest;
+    await w.db.ref(`${core.ITEMS}/${PID}`).set(next);
+    return image(...a);
+  };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal((await w.db.ref(core.DECISIONS).once()).val(), null);
+  // It is still in the learning log and the spend.
+  assert.ok((await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val());
+});
+
+test("a shoe whose own box photo cannot be read is still generated — never held back for its box", async () => {
+  const w = await world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike", photoBoxUrl: "https://cdn.other.example/box.jpg" }, item: { categoryKey: "sneakers" } });
+  const fetchBytes = w.deps.fetchBytes;
+  w.deps.fetchBytes = async (url) => { if (/box\.jpg/.test(url)) throw new Error("the photo is not stored in the app's own storage"); return fetchBytes(url); };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const item = await itemOf(w.db);
+  assert.equal(item.boxUsed.mode, "none");
+  assert.ok(item.generations[out.genId].url);
+});

@@ -3,7 +3,7 @@
 // newArrivalsList     the card's read of one tab + group (bounded, no whole-node read).
 // newArrivalsApprove  Junid's tap — any New-tab item with a photo → approved (one pid, or all Ready).
 // newArrivalsRetry    (legacy, card no longer calls it) Rejected → New.
-// newArrivalsGenerate Generate / Generate selected / Regenerate → generateRequest.
+// newArrivalsGenerate RETIRED — generation is newArrivalsStudio (studio.js); this one says "reload".
 // newArrivalsSkip     Skip — don't advertise (new/ready/rejected → skipped; marked, never deleted).
 // newArrivalsRestore  the card's Undo: skipped → back to the lane it came from (skippedFrom).
 // newArrivalsReject   a photo → lane rejected with one reason chip (still on the New tab).
@@ -545,50 +545,25 @@ const newArrivalsApprove = onCall(callableOpts, async (request) => {
 });
 
 // ── generate / regenerate ────────────────────────────────────────────────────
-// Sets generateRequest; the poster takes it, clears it, generates ONCE and
-// puts the result on the same card (lane ready / rejected). From New
-// (Generate), or — only with `regenerate` — from Ready or Rejected: a FRESH
-// attempt from the original photo, never a fix-up edit. REGENERATE KEEPS THE
-// PHOTOS VISIBLE (3 Oct night): generatedUrl/Path, currentGen, verdict and
-// framingFlag stay (Approve and Use this one wait while the request is
-// pending); the approval, chain, names and destinations are cleared. Every
-// generation stays in `generations` (kept for ever).
+// MOVED (4 Oct): a photo is made by newArrivalsStudio (studio.js), which calls
+// Gemini directly on Junid's tap and answers on the same connection. The old
+// callable wrote a request for the Mac mini queue, which is retired — a
+// request nobody serves would hold the item's Approve back for ever, so it
+// refuses and says what to do. (An older card bundle still calls it.)
+//
+// A NEW LAP: what a fresh photo clears when it lands — the approval, the
+// chain, the names and the destinations belong to the photo before it.
 const NEW_LAP = Object.freeze({
   checker: null, namePending: null, chain: null, suggestedName: null, suggestedNameSource: null,
   nameProposedAt: null, destinations: null, approvedAt: null, approvedBy: null, rejection: null,
 });
-async function generate(db, { pids, regenerate }, uid, nowMs) {
-  const list = pidList(pids);
-  const from = regenerate === true ? ["new", "ready", "rejected"] : ["new"];
-  const requested = [];
-  const skipped = [];
-  await inBatches(list, 10, async (pid) => {
-    const r = await moveOne(db, pid, {
-      from, to: "new", at: nowMs, uid,
-      decision: (prev) => ({ action: prev.status === "new" && !prev.currentGen ? "generate" : "regenerate" }),
-      // The poster reads ONLY this small index each minute (never a scan of New).
-      // A stray entry (e.g. Skip racing Generate) is harmless: the poster takes a
-      // request only for an item still in New WITH generateRequest, and clears
-      // any other entry it finds.
-      extra: () => ({ [`requests/${pid}`]: nowMs }),
-      guard: (cur) => (cur.status === "new" && cur.generateRequest ? "already requested — the generator will take it" : null),
-      fields: (cur) => {
-        const fresh = cur.status === "new" && !cur.currentGen;
-        return {
-          generateRequest: { at: nowMs, by: uid || "unknown", ...(fresh ? {} : { regenerate: true }) },
-          ...(fresh ? {} : { ...NEW_LAP, attemptsSinceRetry: 0, lastRejection: cur.rejection || cur.lastRejection || null }),
-        };
-      },
-    });
-    if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
-    requested.push(pid);
-  });
-  return { requested, skipped };
+async function generate() {
+  throw new HttpsError("failed-precondition", "Generate has moved — reload this page, then tap Generate again.");
 }
 
 const newArrivalsGenerate = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
-  return generate(admin.database(), request.data || {}, request.auth?.uid, Date.now());
+  return generate();
 });
 
 // ── skip / restore ───────────────────────────────────────────────────────────

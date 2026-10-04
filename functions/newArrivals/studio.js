@@ -208,6 +208,14 @@ function landed(cur, { genId, gen, res, at, claimAt }) {
   return { next, mine: true };
 }
 
+/** Add to the spend counters. Never throws; never writes a non-number. */
+async function addSpend(db, zar, { estimated = false } = {}) {
+  if (!(Number.isFinite(zar) && zar > 0)) return;
+  const paths = { "stats/totalSpentZar": admin.database.ServerValue.increment(zar) };
+  if (estimated) paths["stats/estimatedPartZar"] = admin.database.ServerValue.increment(zar);
+  try { await db.ref(core.ROOT).update(paths); } catch (e) { console.error(`newArrivalsStudio: spend of R${zar} not counted — ${e.message}`); }
+}
+
 // ── one generation ───────────────────────────────────────────────────────────
 /**
  * deps (all injectable for tests): { bucket, apiKey, now(), fetchBytes?, image?, fx?, assets? }
@@ -256,10 +264,13 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
       : "the photo could not be made — tap Generate again";
     await release(db, pid, t0, now(), reason);
     console.error(`newArrivalsStudio: ${pid} failed${e.paid ? " AFTER the image was made" : ""} — ${e.message}`);
-    // A call that made no image still cost its prompt tokens: counted in the spend.
-    if (e.usage) {
-      const zar = record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx: await fxOf(now()) });
-      if (zar > 0) await db.ref(`${core.ROOT}/stats/totalSpentZar`).set(admin.database.ServerValue.increment(zar)).catch(() => {});
+    // What the call cost is counted in the spend even though no photo landed:
+    // the whole image when it was made and lost (paid), else its prompt tokens.
+    if (e.paid || e.usage) {
+      const fx = await fxOf(now());
+      const zar = e.paid ? record.generationCost({ model: generation.imageModel, usage: e.usage, prices, fx }).zar
+        : record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx });
+      await addSpend(db, zar);
     }
     throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
@@ -275,14 +286,18 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   const reason = item.generateRequest.regenerate ? "regenerate" : "requested";
   const gen = record.generationEntry(res, { at, cost, model: generation.imageModel, reason, code, draftCount: res.draftFiles.length });
 
-  const out = {};
+  // `from` is the lane the item was claimed in: a retried landing (the first
+  // try committed but its answer was lost) must still move the index from there.
+  const out = { from: item.status };
   let final = null;
   try {
     const done = await studio.withRetries(() => db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
       if (!cur) return null;
-      out.from = cur.status;
+      // Already landed by an earlier try: nothing more to write.
+      if (cur.generations && cur.generations[genId]) { out.mine = cur.currentGen === genId; return cur; }
       const l = landed(cur, { genId, gen, res, at, claimAt: t0 });
       out.mine = l.mine;
+      if (!l.mine) out.from = cur.status;
       return l.next;
     }));
     final = done && done.committed && done.snapshot && done.snapshot.val();
@@ -291,6 +306,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     // Stored but not on the item: a rescue row names the file, and the item is given back.
     console.error(`newArrivalsStudio: ${pid} photo ${res.generated.path} made but not saved on the item`);
     await db.ref(`${core.ROOT}/rescue/${pid}/${genId}`).set({ gen, at }).catch(() => {});
+    await addSpend(db, cost.zar, { estimated: cost.estimated });
     await release(db, pid, t0, now(), "the photo was made but could not be put on the card — it is kept; tap Generate to make another");
     throw new HttpsError("internal", "No photo — the photo was made but could not be put on the card. It is kept and was charged; tap Generate to make another.");
   }
@@ -299,7 +315,8 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   const full = record.genlogRecord({ code, pid, genId, gen, trace: res.trace, totalMs: at - t0 });
   const paths = {
     ...core.indexMove(pid, out.from, final.status, final.enqueuedAt),
-    ...await na._internals.decisionPaths(db, pid, { at: t0, uid, item: prev, action: prev.status === "new" && !prev.currentGen ? "generate" : "regenerate" }),
+    // Junid's ledger row — only for a photo that became the card's photo (a late one is in the log, not a decision).
+    ...(out.mine ? await na._internals.decisionPaths(db, pid, { at: t0, uid, item: prev, action: prev.status === "new" && !prev.currentGen ? "generate" : "regenerate" }) : {}),
     // With no code (the counter could not be read) the record is still kept, under its item and generation.
     [`genlog/${code || `${pid}_${genId}`}`]: record.rtdbGenlog(full),
     "stats/generations": admin.database.ServerValue.increment(1),
