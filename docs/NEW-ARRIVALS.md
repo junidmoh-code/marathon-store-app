@@ -1,10 +1,38 @@
-# New Arrivals — upload to everywhere, one tap
+# New Arrivals — the photo studio
 
 ```
-upload ─▶ New ─▶ (Mac mini: quality gate → generate on plate → check → namer) ─▶ Ready | Rejected
-Ready ─[Junid: Approve]─▶ approved ─▶ chaining (photo → name → Excellent → publish intent) ─▶ reconciler ─▶ done
-done ─▶ next 10:00 / 15:00 window: 14 WhatsApp groups (WhatsApp Desktop) ─▶ one carousel to marathon-social
+upload ─▶ New ─[Junid: Generate]─▶ photo appears on the card ─[Junid: Approve]─▶ Done
+Done ─▶ chaining (photo → name → Excellent → publish intent) ─▶ reconciler ─▶ live on Shopify
+     ─▶ the WhatsApp queue (posting is PAUSED — a separate job)
 ```
+
+**Everything is manual.** Gemini is called only when Junid taps Generate or
+Regenerate (plus the name suggester after an Approve). There is no checker, no
+verdict, no automatic generation, re-check, regeneration or tab move. Junid's
+Approve is final.
+
+How the first version worked, and why it was slow, is in
+`NEW-ARRIVALS-STUDIO-DISCOVERY.md`.
+
+## The card — `src/components/newArrivals/`
+
+| File | What |
+|---|---|
+| `NewArrivalsScreen.jsx` | the card: tabs New / Done, the Sneakers ⇄ Clothing switcher, one card per item |
+| `newArrivalsView.js` | pure rules: which buttons, what each line says, what a tap shows before the server answers |
+| `newArrivalsApi.js` | the only door to the data (callables, the streaming studio call, the admin price save) |
+| `studioStream.js` | reads the studio function's stream with `fetch` (the installed Firebase SDK has no streaming callable) |
+
+- **Generate / Regenerate** calls `newArrivalsStudio` and shows, in the photo's
+  own place, Gemini's drafts and thought summary as they arrive, then the
+  finished photo. Several items can generate at once.
+- **Save price, Approve, Skip, Use this one, ❤, the method choice** change the
+  card at once and write in the background. A failed write puts the card back
+  as it was and says why. No tap reloads the list or locks the screen.
+- **Skip** has an 8-second Undo.
+- **Prices** are the product's real `stockPrice` / `retailPrice`, written by
+  `admin/productPriceSave.js` — the same save the admin price editor uses.
+- **Paging**: 30 at a time through `newArrivalsList` ("Load more").
 
 ## Data — `/new_arrivals`
 
@@ -12,40 +40,72 @@ done ─▶ next 10:00 / 15:00 window: 14 WhatsApp groups (WhatsApp Desktop) ─
 |---|---|
 | `items/{pid}` | the item (truth) |
 | `by_status/{status}/{pid}` | `enqueuedAt` — the index every reader uses; never a whole-node scan |
+| `decisions/{push}` | Junid's ledger: generate, regenerate, approve, pick, love, unlove, reject, skip, restore |
+| `genlog/{code}` | the learning log of one generation (no prompt text; its sha) |
+| `genSeq` | the G-code counter |
+| `stats` | spend so far |
+| `fx/{day}` | the day's USD/ZAR rate |
+| `rescue/{pid}/{genId}` | a photo that was made but could not be put on its item |
 
-The statuses are `new`, `generating`, `ready`, `rejected`, `approved`, `chaining` and `done`. Each move is a transaction on the item that checks the status it moves from, followed by an index update. A reader that finds a stale index entry repairs it (`indexRepair`).
+Statuses: `new`, `ready`, `rejected` (all three are the **New** tab — a lane
+never hides an item), `approved`, `chaining`, `done` (the **Done** tab),
+`skipped`. `generating` is the retired Mac mini queue's lane.
 
-Item fields, by writer:
+A generation is `items/{pid}/generations/{genId}`: `url`, `path`, `at`,
+`code` (G-0042), `model`, `promptVersion`, `method` (`full` | `split`),
+`layers`, `costUsd`, `costZar`, `usdZar`, `costEstimated`, `loved`. The full
+record — prompt text, inputs with their sha256, the request, usage, thought
+summary, drafts — is stored beside the photo as
+`products/{pid}/new_arrivals/{genId}.genlog.json`.
 
-- **Enqueue**: `pid`, `status`, `enqueuedAt`, `statusAt`, `name`, `categoryKey`, `originalUrl`, `attempts`, `attemptsSinceRetry`.
-- **Agents**: `generatedUrl`, `generatedPath`, `plateId`, `checker`, `suggestedName`, `rejection {code, reason, at}`, `lastAttempt`.
-- **Approve**: `approvedAt`, `approvedBy`.
-- **Chain**: `chain {photo, name, condition, publish, shopify}.at`.
-- **Done tab**: `destinations {shopify, groups, social}`, `soldOutBeforePosting`.
+While a photo is being made the item carries
+`generateRequest { at, by, studio: true }`. Approve, Skip and Use this one wait
+for it. A studio request older than 10 minutes is a run that died and blocks
+nothing.
 
-Rejection codes:
+## The functions — `functions/newArrivals/`
 
-| `code` | Meaning | What happens next |
-|---|---|---|
-| `source` | "retake photo" | Waits for a new upload, or for the product photo to be replaced. |
-| `checker` / `generation` | the product or background changed | A fresh attempt runs automatically, up to 3 runs; then it stays. |
-| `name` | "duplicate name — needs a distinct name" | |
-| `chain` | a publisher step refused | The refusal is shown in plain words. |
+| Callable | What |
+|---|---|
+| `newArrivalsStudio` | ONE generation, streamed (`studio.js`, `studio/*.mjs`) |
+| `newArrivalsList` | one page of a tab + group |
+| `newArrivalsApprove` | new / ready / rejected with a photo and a stock price → approved |
+| `newArrivalsSkip` / `newArrivalsRestore` | Skip and its Undo |
+| `newArrivalsSelect` | "Use this one" |
+| `newArrivalsLove` | ❤ |
+| `newArrivalsReject` | a feedback chip, logged against the photo shown |
+| `newArrivalsHow` | "How Gemini did it" for one generation |
+| `newArrivalsMethod` | Full Gemini / Split for one item |
+| `newArrivalsEnqueue` | trigger: an upload lands in New |
 
-**Retry** starts a completely fresh generation from the original, with a new attempt budget.
+All are gated to the super-admin or `permFlags/shopify_publish`. The client
+never reads or writes `/new_arrivals`, so **no database rule is needed or
+changed.**
 
-## Who writes
+### The photo method
 
-- **`newArrivalsEnqueue`** (`onValueCreated products/{pid}`) enqueues records carrying the upload form's marker `newArrivalAt` (written in `addProductOnce`), with no time window. Devices still running an older bundle without the marker are caught by the upload form's own `createdBy.at` stamp from the last 15 minutes. Merges and price records are never queued.
-- **The card** reads and writes only through the callables `newArrivalsList`, `newArrivalsApprove` and `newArrivalsRetry`. These are gated to the super-admin or `permFlags/shopify_publish`.
-- **The Mac mini agents** use the Admin SDK: `marathon-group-poster` for generation, checking and posting, and `scripts/newArrivals/chainCore.mjs` for the post-approval chain.
+- **The locked baseline**: `studio/baseline-prompts.mjs`, `gemini-3-pro-image`
+  at 2K, Junid's plates. Pinned by `functions/test/studio-baseline.test.mjs`
+  against `studio/config/baseline.lock.json`; changing any of it needs Junid's
+  sign-off recorded in that file.
+- **Layers** (`studio/prompt.mjs`) add a paragraph before the baseline's studio
+  brief; `studio/config/generation.json` switches them on.
+- **Plates, references, boxes**: Storage `new_arrivals/assets/plates` (verified
+  against `studio/config/plates.lock.json`) and `new_arrivals/assets/boxes`.
+- **Cost**: from the API's own token counts at `studio/config/prices.json`
+  list prices, in rand at the day's rate.
 
-**No database rule is needed or changed.** The client never touches `/new_arrivals`.
+## After Approve (unchanged, on the Mac mini)
+
+`com.marathon.groupposter.naming` suggests the name; `…chain` runs
+`scripts/newArrivals/chainCore.mjs`: photo → name → condition Excellent →
+publisher approval; the Shopify reconciler publishes. WhatsApp posting is
+PAUSED.
 
 ## Deploy (by name, never a bare `--only functions`)
 
 ```
-firebase deploy --only functions:newArrivalsEnqueue,functions:newArrivalsList,functions:newArrivalsApprove,functions:newArrivalsRetry --project=marathon-club
+firebase deploy --only functions:newArrivalsStudio --project=marathon-club
 ```
 
-The card itself ships with hosting. Run the drift check in `DEPLOY.md` first.
+The card ships with hosting. Run the drift check in `DEPLOY.md` first.

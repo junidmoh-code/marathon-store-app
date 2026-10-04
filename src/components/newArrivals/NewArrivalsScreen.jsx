@@ -1,109 +1,129 @@
-// ─── NEW ARRIVALS — the card ─────────────────────────────────────────────────
-// CALIBRATION (owner, 3 Oct): nothing is generated automatically. Uploads wait
-// in New until Junid taps Generate (per item, or on a selection).
-// ONE PLACE TO GENERATE AND APPROVE (owner, 3 Oct night): two tabs, New and
-// Done. A generation lands ON THE SAME CARD in New — original and generated
-// side by side, every generation as a thumbnail with "Use this one", ❤ and its
-// code — with ONE Approve (the main / selected photo), Regenerate and Skip.
-// EVERYTHING IS MANUAL (Junid, 4 Oct): no checker verdicts or rejection labels at all.
-// (Formerly: the checker's verdict (pass / failed + reasons) and any rejection were LABELS
-// only: they never move or hide an item. Within each group the list is
-// ordered photo ready → generating… → no photo yet (by the server). The
-// reject chips stay on items with a photo as Junid's reject-reason signal.
-// Skip — don't advertise — is one tap: the item leaves the list (marked "skipped" in the
-// data, never deleted, never generated, posted or published) and an 8-second
-// Undo toast can bring it back. There is no Skipped tab. Every action is
-// logged to the ledger by the callables. Every generation is shown, with its cost
-// (metered, or "~R… (estimated)" — never unknown); any of them can be made the
-// main photo with "Use this one" (logged as a pick). LEARNING LOG: each
-// generation's permanent code (G-0042) is printed under its image, and every
-// generation on New and Done has a ❤ Love toggle (logged too). Every coded
-// generation has a "How Gemini did it" toggle: on open (only) it loads Gemini's
-// own summary, verbatim, labelled "Gemini's own account — not proof", and its
-// drafts. Each New card has a "Full Gemini" switch (the per-item method; off =
-// the poster's default) and says how its main photo was made.
+// ─── NEW ARRIVALS — the photo studio card ────────────────────────────────────
+// Tap Generate → the photo appears beside the original → tap Approve → Done.
 //
-// PRICES: every New card has "Stock price (R)" and "Retail
-// price (R)", pre-filled, one Save — through the admin price save
-// (admin/productPriceSave.js), the product's REAL price fields. The stock
-// price is what the WhatsApp groups are posted at; retail is for the shops and
-// the website. Approve is shown on every item with a photo; without a stock
-// price it is disabled, with "add stock price first" by the price fields;
-// while a new photo is being generated it is disabled ("generating…").
+// TWO TABS: New and Done. New shows ONE group at a time — Sneakers (all
+// footwear, slides too) or Clothing (everything else) — flipped with the
+// switcher bar; the last group is remembered on the device.
 //
-// After Approve the Mac mini agents set the photo, accept the suggested name,
-// set condition Excellent, approve on the Shopify publisher, and the next
-// 10:00 / 15:00 window posts to the groups.
+// GENERATE is live: the card calls the photo studio function and shows, in the
+// photo's own place, what Gemini is doing — its drafts as they arrive and its
+// thought summary — then the finished photo. Several items can be generating
+// at once. Nothing is generated unless Junid taps.
 //
-// GROUPS: New shows ONE group at a time — Sneakers or
-// Clothing — flipped with the switcher bar (‹ › or a swipe); the last group is
-// remembered on the device (default Sneakers). Done is the whole history.
+// EVERY OTHER TAP IS INSTANT. Save price, Approve, Skip (with an 8-second
+// Undo), Use this one, ❤ and the method choice change the screen at once and
+// write in the background. If a write fails the card goes back to how it was
+// and a message says why. No tap reloads the list or locks the screen.
 //
-// PAGED: every list loads 30 at a time through the indexed list callable, with
-// "Load more" and "Showing n of total". Reads and writes ONLY through `api`
-// (newArrivalsApi.js → callables), so this file has no Firebase import and
-// renders in tests with a fake api.
+// EVERYTHING IS MANUAL: no checker text, no verdicts, no automatic moves.
+// Approve is shown on every item with a photo; without a stock price it is
+// disabled, with "add stock price first" by the price fields.
+//
+// PRICES are the product's REAL stock and retail price, saved through the
+// admin price save (admin/productPriceSave.js). The stock price is what the
+// WhatsApp groups are posted at; retail is for the shops and the website.
+//
+// PAGED: 30 at a time through the indexed list callable ("Load more"). Reads
+// and writes ONLY through `api` (newArrivalsApi.js), so this file has no
+// Firebase import and renders in tests with a fake api.
 import React, { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import { FONT, BG, GLASS, BLUE_L, GREEN, RED, GRAY, AMBER, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
+import { FONT, BG, GLASS, BLUE_L, GREEN, GRAY, bGreen, bGray, bBlue, tabOn, tabOff } from "../stock/ui";
 import {
-  TABS, REJECT_CHIPS, CLASS_LABELS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
+  TABS, REJECT_CHIPS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
   shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, stockText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
-  normalizeTab, photoBucket, pickEnabled, hasPhoto,
-  canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, isFullGemini, methodMadeText, METHOD_TABS, isGenerating, effectiveMethod, methodToSet, METHOD_CHOICES,
+  normalizeTab, canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, methodMadeText, METHOD_TABS, effectiveMethod, methodToSet, METHOD_CHOICES,
+  foldLive, liveStart, afterPick, afterPrices, afterLove, withoutItem, withItemBack,
 } from "./newArrivalsView";
 
-const REFRESH_MS = 30_000;
+const REFRESH_MS = 60_000;
 const PAGE = 30;
-const RELOAD_CHUNK = 100;   // the callable's page ceiling
-const BULK_CHUNK = 200;     // the callables take at most 300 pids a call
+const TOAST_MS = 5000;
+const INK = "#dfe7ff";
 
-// The generation's permanent code under its image (nothing when it has none yet).
+// ── small pieces ─────────────────────────────────────────────────────────────
 function GenCode({ gen, small = false }) {
   const code = genCode(gen);
-  return code ? <div data-testid="gen-code" style={{ color: "#dfe7ff", fontSize: small ? 9 : 11, fontWeight: 700, marginTop: 2, textAlign: "center", letterSpacing: 0.3 }}>{code}</div> : null;
+  return code ? <span data-testid="gen-code" style={{ color: INK, fontSize: small ? 10 : 12, fontWeight: 700, letterSpacing: 0.3 }}>{code}</span> : null;
 }
 
-// "How Gemini did it" — a small toggle under every coded generation. Nothing
-// is loaded until it is opened (HowPanel).
-function HowToggle({ gen, open, onToggle, small = false }) {
+function Tile({ url, label, children = null, testid = null }) {
   return (
-    <button data-testid="how-toggle" aria-expanded={open} onClick={() => onToggle(gen.genId)}
-      style={{ ...bGray, width: small ? "100%" : undefined, padding: small ? "3px 4px" : "4px 10px", fontSize: small ? 9 : 11, marginTop: 3 }}>
-      {open ? "Hide how Gemini did it" : "How Gemini did it"}
-    </button>
+    <figure data-testid={testid} style={{ margin: 0, flex: 1, minWidth: 0 }}>
+      <div style={{ position: "relative", width: "100%", aspectRatio: "3 / 4", borderRadius: 14, overflow: "hidden", background: "#0b0d12" }}>
+        {url
+          ? <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={label} loading="lazy" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} /></a>
+          : children || <div style={{ position: "absolute", inset: 0, color: GRAY, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>No photo yet</div>}
+        {url && children}
+      </div>
+      <figcaption style={{ color: GRAY, fontSize: 11, marginTop: 4, textAlign: "center" }}>{label}</figcaption>
+    </figure>
   );
 }
 
-// One generation's genlog, loaded ONCE when opened (loadHow caches per
-// generation): the label first, prominently — it is Gemini's own account, not
-// proof — then its summary verbatim, then the drafts it made on the way.
+// Seconds since a generation started, ticking once a second.
+function Elapsed({ since }) {
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
+  return <span data-testid="elapsed">{Math.max(0, Math.round((now - since) / 1000))}s</span>;
+}
+
+// The photo's own place while Gemini works: its latest draft (or a quiet
+// placeholder), the step it is on and the seconds so far.
+function LiveTile({ live }) {
+  const draft = live.drafts[live.drafts.length - 1] || null;
+  return (
+    <Tile testid="live-tile" url={draft} label={draft ? `Draft ${live.drafts.length} — Gemini is still working` : "Generating…"}>
+      <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "18px 10px 8px", fontSize: 12, color: "#fff",
+        background: draft ? "linear-gradient(transparent, rgba(0,0,0,.75))" : "none", display: "flex", justifyContent: "space-between", gap: 8 }}>
+        <span data-testid="live-status">{live.status}</span><Elapsed since={live.startedAt} />
+      </div>
+      {!draft && <div style={{ position: "absolute", inset: 0, display: "flex", alignItems: "center", justifyContent: "center", color: GRAY, fontSize: 12 }}>Working…</div>}
+    </Tile>
+  );
+}
+
+// Gemini's thought summary as it arrives (its own account — not proof).
+function LiveThoughts({ live }) {
+  const box = useRef(null);
+  useEffect(() => { if (box.current) box.current.scrollTop = box.current.scrollHeight; }, [live.thoughts]);
+  if (!live.thoughts) return null;
+  return (
+    <div data-testid="live-thoughts" style={{ marginTop: 8 }}>
+      <div style={{ color: GRAY, fontSize: 11, marginBottom: 3 }}>{THOUGHTS_LABEL}</div>
+      <div ref={box} style={{ whiteSpace: "pre-wrap", maxHeight: 132, overflowY: "auto", color: INK, fontSize: 12, lineHeight: 1.4, background: "rgba(255,255,255,.04)", borderRadius: 10, padding: 8 }}>{live.thoughts}</div>
+    </div>
+  );
+}
+
+// One generation's record, loaded ONCE when opened: the label first — it is
+// Gemini's own account, not proof — then its summary verbatim, then its drafts.
 function HowPanel({ pid, gen, loadHow }) {
   const [state, setState] = useState({ data: null, error: null });
   useEffect(() => {
-    let live = true;
-    loadHow(pid, gen.genId).then((data) => { if (live) setState({ data, error: null }); }, (e) => { if (live) setState({ data: null, error: e?.message || String(e) }); });
-    return () => { live = false; };
+    let on = true;
+    loadHow(pid, gen.genId).then((data) => { if (on) setState({ data, error: null }); }, (e) => { if (on) setState({ data: null, error: e?.message || String(e) }); });
+    return () => { on = false; };
   }, [pid, gen.genId, loadHow]);
   const { data, error } = state;
   const drafts = data && Array.isArray(data.drafts) ? data.drafts.filter((d) => d?.url) : [];
   return (
-    <div data-testid="how-panel" style={{ ...GLASS, padding: 10, marginTop: 8, fontSize: 12 }}>
+    <div data-testid="how-panel" style={{ background: "rgba(255,255,255,.04)", borderRadius: 12, padding: 10, marginTop: 8, fontSize: 12 }}>
       <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>How Gemini did it · {genCode(gen)}</div>
       {!data && !error && <div style={{ color: GRAY }}>Loading…</div>}
-      {error && <div style={{ color: RED }}>Couldn't load: {error}</div>}
+      {error && <div style={{ color: INK }}>Couldn't load: {error}</div>}
       {data?.none && <div data-testid="how-none" style={{ color: GRAY }}>{HOW_NONE_TEXT}</div>}
       {data && !data.none && (
         <>
-          <div data-testid="how-label" style={{ color: AMBER, fontWeight: 800, fontSize: 13, marginBottom: 6 }}>{data.thoughtsLabel || THOUGHTS_LABEL}</div>
+          <div data-testid="how-label" style={{ color: "#fff", fontWeight: 800, fontSize: 13, marginBottom: 6 }}>{data.thoughtsLabel || THOUGHTS_LABEL}</div>
           {data.thoughts
-            ? <div data-testid="how-thoughts" style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflowY: "auto", color: "#dfe7ff", lineHeight: 1.4, background: "rgba(0,0,0,.25)", borderRadius: 8, padding: 8 }}>{data.thoughts}</div>
+            ? <div data-testid="how-thoughts" style={{ whiteSpace: "pre-wrap", maxHeight: 240, overflowY: "auto", color: INK, lineHeight: 1.4 }}>{data.thoughts}</div>
             : <div style={{ color: GRAY }}>No summary was recorded.</div>}
           {drafts.length > 0 && (
             <div data-testid="how-drafts" style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 8 }}>
               {drafts.map((d, i) => (
                 <a key={d.url} href={d.url} target="_blank" rel="noreferrer">
-                  <img src={d.url} alt={`Draft ${i + 1}`} loading="lazy" style={{ width: 64, height: 64, objectFit: "cover", borderRadius: 6, display: "block", background: "#111" }} />
+                  <img src={d.url} alt={`Draft ${i + 1}`} loading="lazy" style={{ width: 66, height: 88, objectFit: "cover", borderRadius: 8, display: "block", background: "#111" }} />
                 </a>
               ))}
             </div>
@@ -115,208 +135,166 @@ function HowPanel({ pid, gen, loadHow }) {
   );
 }
 
-// ❤ Love — separate from Approve; tapping a loved generation un-loves it.
-function LoveButton({ item, gen, busy, onLove, small = false }) {
+const mini = { ...bGray, padding: "5px 8px", fontSize: 11, borderRadius: 9 };
+
+function LoveButton({ item, gen, onLove, small = false }) {
   const loved = isLoved(gen);
   return (
-    <button data-testid="love" aria-label={loved ? "Unlove" : "Love"} aria-pressed={loved} disabled={busy}
-      onClick={() => onLove(item.pid, gen.genId, !loved)}
-      style={{ ...bGray, width: small ? "100%" : undefined, padding: small ? "4px 4px" : "6px 12px", fontSize: small ? 12 : 14, marginTop: 3,
-        color: loved ? RED : "#fff", opacity: busy ? 0.5 : 1 }}>{loved ? "❤" : "♡"}{small ? "" : loved ? " Loved" : " Love"}</button>
-  );
-}
-
-function Photo({ url, label, children = null }) {
-  return (
-    <figure style={{ margin: 0, flex: 1, minWidth: 0 }}>
-      {url
-        ? <a href={url} target="_blank" rel="noreferrer"><img src={url} alt={label} loading="lazy" style={{ width: "100%", aspectRatio: "1 / 1", objectFit: "cover", borderRadius: 12, display: "block", background: "#111" }} /></a>
-        : <div style={{ width: "100%", aspectRatio: "1 / 1", borderRadius: 12, background: "#111", color: GRAY, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12 }}>No photo</div>}
-      <figcaption style={{ color: GRAY, fontSize: 11, marginTop: 4, textAlign: "center" }}>{label}</figcaption>
-      {children}
-    </figure>
+    <button data-testid="love" aria-label={loved ? "Unlove" : "Love"} aria-pressed={loved} onClick={() => onLove(item, gen.genId, !loved)}
+      style={{ ...mini, fontSize: small ? 13 : 14, color: loved ? "#ff7a9c" : "#fff", borderColor: loved ? "rgba(255,122,156,.5)" : mini.border }}>{loved ? "❤" : "♡"}</button>
   );
 }
 
 // The two price fields, pre-filled with the product's prices, one Save. Only
-// the fields changed are sent. On an item with a photo but no stock price, the note
-// "add stock price first" sits here, next to the (disabled) Approve.
-function PriceFields({ item, busy, onSavePrices, needNote }) {
+// the fields changed are sent; the card shows the new price at once.
+function PriceFields({ item, onSavePrices, needNote }) {
   const p = item.product || {};
   const [stock, setStock] = useState(priceField(p.stockPrice));
   const [retail, setRetail] = useState(priceField(p.retailPrice));
-  // A save (or a price set elsewhere) reloads the item: the fields follow.
   useEffect(() => { setStock(priceField(p.stockPrice)); }, [p.stockPrice]);
   useEffect(() => { setRetail(priceField(p.retailPrice)); }, [p.retailPrice]);
   const drafts = changedPrices(p, stock, retail);
   const changed = Object.keys(drafts).length > 0;
-  const input = { width: "100%", padding: "8px 10px", borderRadius: 10, border: "1px solid rgba(255,255,255,.2)", background: "rgba(0,0,0,.3)", color: "#fff", fontSize: 14, boxSizing: "border-box", marginTop: 3 };
+  const field = { width: "100%", padding: "10px 10px", borderRadius: 11, border: "1px solid rgba(255,255,255,.16)", background: "rgba(255,255,255,.05)", color: "#fff", fontSize: 16, boxSizing: "border-box", marginTop: 3, fontFamily: FONT };
   return (
-    <div data-testid="price-fields" style={{ marginTop: 10 }}>
+    <div data-testid="price-fields" style={{ marginTop: 12 }}>
       <div style={{ display: "flex", gap: 8, alignItems: "flex-end" }}>
         <label style={{ flex: 1, color: GRAY, fontSize: 11 }}>Stock price (R)
-          <input aria-label="Stock price (R)" inputMode="decimal" value={stock} disabled={busy} onChange={(e) => setStock(e.target.value)} style={input} /></label>
+          <input aria-label="Stock price (R)" inputMode="decimal" value={stock} onChange={(e) => setStock(e.target.value)} style={field} /></label>
         <label style={{ flex: 1, color: GRAY, fontSize: 11 }}>Retail price (R)
-          <input aria-label="Retail price (R)" inputMode="decimal" value={retail} disabled={busy} onChange={(e) => setRetail(e.target.value)} style={input} /></label>
-        <button disabled={busy || !changed} onClick={() => onSavePrices(item, drafts)} style={{ ...bBlue, opacity: busy || !changed ? 0.5 : 1 }}>Save</button>
+          <input aria-label="Retail price (R)" inputMode="decimal" value={retail} onChange={(e) => setRetail(e.target.value)} style={field} /></label>
+        <button disabled={!changed} onClick={() => onSavePrices(item, drafts)} style={{ ...bBlue, padding: "12px 16px", opacity: changed ? 1 : 0.4 }}>Save</button>
       </div>
       <div style={{ color: GRAY, fontSize: 10, marginTop: 4 }}>Stock price posts to the WhatsApp groups · retail is for the shops and the website</div>
-      {needNote && <div data-testid="approve-note" style={{ color: AMBER, fontSize: 12, marginTop: 4 }}>add stock price first</div>}
+      {needNote && <div data-testid="approve-note" style={{ color: INK, fontSize: 12, marginTop: 4 }}>add stock price first</div>}
     </div>
   );
 }
 
-// EVERY generation, on every tab: the one shown big (currentGen, or the
-// newest) marked "Main photo", side by side with the original, then every
-// earlier attempt as a thumbnail — each with its code, cost and the checker's
-// label. On New every thumbnail (checker-failed ones and re-checks too) has
-// "Use this one", which makes it the main photo — the ONE Approve then uses
-// it. While a new photo is being generated, Use this one waits ("generating…").
-function Generations({ item, tab, stats, busy, onPick, onLove = null, loadHow = null }) {
+// The original beside the current photo (or the live generation), then a strip
+// of every earlier generation: its G-code, ❤, "Use this one", "How Gemini did it".
+function Photos({ item, tab, stats, live, h }) {
   const gens = generationsOf(item);
-  // The one generation whose "How Gemini did it" is open on this card (or null).
   const [howOpen, setHowOpen] = useState(null);
   const toggleHow = (genId) => setHowOpen((cur) => (cur === genId ? null : genId));
-  const howGen = howOpen ? gens.find((g) => g.genId === howOpen) : null;
   const mainId = currentGenId(item);
   const main = gens.find((g) => g.genId === mainId) || null;
   const mainUrl = main?.url || item.generatedUrl || (tab === "done" ? item.product?.photoUrl : null);
   const earlier = gens.filter((g) => g !== main);
+  const howGen = howOpen ? gens.find((g) => g.genId === howOpen) : null;
   const total = totalCostText(item, stats);
-  // The first photo is on its way: its place is held on the card.
-  const generatingFirst = tab === "new" && !mainUrl && photoBucket(item) === "generating";
   return (
     <>
       <div style={{ display: "flex", gap: 8 }}>
-        <Photo url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
-        {(mainUrl || tab !== "new" || gens.length > 0 || generatingFirst) && <Photo url={mainUrl} label={main ? `Generated${earlier.length ? " · Main photo" : ""} · ${costText(main, stats)}` : generatingFirst ? "Generating…" : "Generated"}>
-          {main && <GenCode gen={main} />}
-          {main && loadHow && canHow(main) && <div style={{ textAlign: "center" }}><HowToggle gen={main} open={howOpen === main.genId} onToggle={toggleHow} /></div>}
-          {main && onLove && canLove(tab, main) && <div style={{ textAlign: "center" }}><LoveButton item={item} gen={main} busy={busy} onLove={onLove} /></div>}
-        </Photo>}
+        <Tile url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
+        {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={main ? "Current photo" : mainUrl ? "Photo" : "No photo yet"} />}
       </div>
-      {howGen && howGen === main && <HowPanel pid={item.pid} gen={howGen} loadHow={loadHow} />}
+      {live && <LiveThoughts live={live} />}
+      {!live && main && (
+        <div data-testid="main-meta" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
+          <GenCode gen={main} />
+          <span style={{ color: GRAY, fontSize: 11 }}>{costText(main, stats)}</span>
+          <span style={{ flex: 1 }} />
+          {h.loadHow && canHow(main) && <button data-testid="how-toggle" aria-expanded={howOpen === main.genId} onClick={() => toggleHow(main.genId)} style={mini}>{howOpen === main.genId ? "Hide how Gemini did it" : "How Gemini did it"}</button>}
+          {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} />}
+        </div>
+      )}
+      {howGen && howGen === main && <HowPanel pid={item.pid} gen={howGen} loadHow={h.loadHow} />}
       {earlier.length > 0 && (
-        <div data-testid="earlier-generations" style={{ display: "flex", gap: 6, overflowX: "auto", marginTop: 8 }}>
+        <div data-testid="earlier-generations" style={{ display: "flex", gap: 8, overflowX: "auto", marginTop: 10, paddingBottom: 2 }}>
           {earlier.map((g) => (
-            <div key={g.genId} data-gen={g.genId} style={{ flex: "0 0 84px" }}>
-              <a href={g.url} target="_blank" rel="noreferrer" style={{ textDecoration: "none" }}>
-                <img src={g.url} alt={`Earlier attempt ${whenText(g.at)}`} loading="lazy" style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 8, display: "block", background: "#111" }} />
+            <div key={g.genId} data-gen={g.genId} style={{ flex: "0 0 96px" }}>
+              <a href={g.url} target="_blank" rel="noreferrer">
+                <img src={g.url} alt={`Earlier photo ${genCode(g) || whenText(g.at)}`} loading="lazy" style={{ width: 96, height: 128, objectFit: "cover", borderRadius: 10, display: "block", background: "#111" }} />
               </a>
-              <GenCode gen={g} small />
-              {loadHow && canHow(g) && <HowToggle gen={g} open={howOpen === g.genId} onToggle={toggleHow} small />}
-              <div style={{ color: GRAY, fontSize: 9, marginTop: 2 }}>{costText(g, stats)}</div>
-              {onLove && canLove(tab, g) && <LoveButton item={item} gen={g} busy={busy} onLove={onLove} small />}
-              {onPick && canPick(item, g) && (
-                <button disabled={busy || !pickEnabled(item)} onClick={() => onPick(item.pid, g.genId)}
-                  title={pickEnabled(item) ? undefined : "generating…"}
-                  style={{ ...bBlue, width: "100%", padding: "5px 4px", fontSize: 11, marginTop: 3, opacity: busy || !pickEnabled(item) ? 0.4 : 1 }}>Use this one</button>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 3 }}>
+                <GenCode gen={g} small />
+                {h.onLove && canLove(tab, g) && <LoveButton item={item} gen={g} onLove={h.onLove} small />}
+              </div>
+              {tab === "new" && h.onPick && canPick(item, g) && (
+                <button disabled={!!live} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", padding: "6px 4px", fontSize: 11, marginTop: 3, opacity: live ? 0.4 : 1 }}>Use this one</button>
               )}
+              {h.loadHow && canHow(g) && <button data-testid="how-toggle" aria-expanded={howOpen === g.genId} onClick={() => toggleHow(g.genId)} style={{ ...mini, width: "100%", marginTop: 3, fontSize: 10 }}>{howOpen === g.genId ? "Hide" : "How Gemini did it"}</button>}
             </div>
           ))}
         </div>
       )}
-      {howGen && howGen !== main && <HowPanel pid={item.pid} gen={howGen} loadHow={loadHow} />}
-      {gens.length > 0 && (
-        <div data-testid="gen-total" style={{ color: GRAY, fontSize: 11, marginTop: 6 }}>
-          {gens.length} {gens.length === 1 ? "generation" : "generations"}{total ? ` · ${total}` : ""}
-        </div>
-      )}
+      {howGen && howGen !== main && <HowPanel pid={item.pid} gen={howGen} loadHow={h.loadHow} />}
+      {gens.length > 1 && total && <div data-testid="gen-total" style={{ color: GRAY, fontSize: 11, marginTop: 6 }}>{gens.length} photos · {total}</div>}
     </>
   );
 }
 
-function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats }) {
+function ItemCard({ item, tab, live, h, stats }) {
   const p = item.product || {};
   const acts = actionsFor(item);
-  // New: green = photo ready, amber = generating, grey = no photo yet.
-  const bucket = tab === "new" ? photoBucket(item) : null;
-  const statusColour = bucket ? (bucket === "photo" ? GREEN : bucket === "generating" ? AMBER : GRAY) : item.status === "done" ? GREEN : AMBER;
-  const dim = { opacity: busy ? 0.5 : 1 };
-  // How the main photo was made (the poster records it per generation).
-  const mainGenId = currentGenId(item);
-  const made = methodMadeText(mainGenId ? item.generations[mainGenId] : null);
-  const chip = { ...bGray, padding: "6px 10px", fontSize: 12, ...dim };
+  const [feedback, setFeedback] = useState(false);
+  const big = { padding: "13px 10px", fontSize: 15, flex: 1 };
+  const approveOn = acts.approveEnabled && !live;
+  const hasPhotoNow = acts.approve;
   return (
-    <div data-pid={item.pid} style={{ ...GLASS, padding: 12, marginBottom: 12 }}>
-      {selectable && (
-        <label style={{ display: "flex", alignItems: "center", gap: 8, color: GRAY, fontSize: 12, marginBottom: 8 }}>
-          <input type="checkbox" aria-label={`Select ${p.name || item.name || item.pid}`} checked={!!selected} onChange={() => onToggle(item.pid)} />
-          Select
-        </label>
-      )}
-      <Generations item={item} tab={tab} stats={stats} busy={busy} onPick={tab === "new" ? h.onPick : null} onLove={h.onLove} loadHow={h.loadHow} />
+    <div data-pid={item.pid} style={{ ...GLASS, padding: 12, marginBottom: 14 }}>
+      <Photos item={item} tab={tab} stats={stats} live={live} h={h} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
-      {shopifyNameLine(item) && (
-        <div style={{ color: item.suggestedName ? BLUE_L : GRAY, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>
+      {shopifyNameLine(item) && tab === "done" && <div style={{ color: BLUE_L, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>}
+      <div data-testid="stock" style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>Sizes {sizesText(p.sizes)} · {stockText(item)}</div>
+      {tab === "done" && (
+        <>
+          <div data-testid="status" style={{ color: item.status === "done" ? GREEN : INK, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
+          <div style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>{needsStockPrice(p) ? "No stock price" : `${priceText(p.stockPrice)} for the groups`}</div>
+          {destinationLines(item).map((l) => <div key={l} style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>{l}</div>)}
+        </>
       )}
-      <div style={{ color: "#dfe7ff", fontSize: 13, marginTop: 4 }}>
-        {needsStockPrice(p) ? "No stock price" : `${priceText(p.stockPrice)} for the groups`} · Sizes {sizesText(p.sizes)}
-      </div>
-      <div data-testid="stock" style={{ color: "#dfe7ff", fontSize: 13, marginTop: 2 }}>{stockText(item)}</div>
-      {/* EVERYTHING IS MANUAL (Junid, 4 Oct): no checker, layout-spec or rejection lines on the card. */}
-      <div data-testid="status" style={{ color: statusColour, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
-      {PRICE_TABS.includes(tab) && h.onSavePrices && (
-        <PriceFields item={item} busy={busy} onSavePrices={h.onSavePrices} needNote={acts.approve && needsStockPrice(p)} />
+      {tab === "new" && item.lastAttempt?.failed === true && !live && !hasPhotoNow && (
+        <div data-testid="status" style={{ color: INK, fontSize: 12, marginTop: 6 }}>{statusLine(item)}</div>
       )}
-      {tab === "done" && destinationLines(item).map((l) => (
-        <div key={l} style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>{l}</div>
-      ))}
-      <div style={{ display: "flex", gap: 8, marginTop: 10, flexWrap: "wrap" }}>
-        {acts.approve && (
-          <button disabled={busy || !acts.approveEnabled} onClick={() => h.onApprove(item.pid)}
-            title={acts.approveWhy || undefined}
-            style={{ ...bGreen, flex: 1, opacity: busy || !acts.approveEnabled ? 0.4 : 1 }}>Approve</button>
-        )}
-        {acts.generate && <button disabled={busy} onClick={() => (acts.generateRegenerate ? h.onRegenerate(item.pid) : h.onGenerate([item.pid]))} style={{ ...bBlue, flex: 1, ...dim }}>Generate</button>}
-        {acts.regenerate && <button disabled={busy} onClick={() => h.onRegenerate(item.pid)} style={{ ...bBlue, flex: 1, ...dim }}>Regenerate</button>}
-        {acts.skip && <button disabled={busy} onClick={() => h.onSkip([item.pid])} style={{ ...bGray, flex: 1, ...dim }}>Skip — don't advertise</button>}
-      </div>
-      {((METHOD_TABS.includes(tab) && h.onMethod) || made) && (
-        <div data-testid="method" style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginTop: 6, fontSize: 11, color: GRAY }}>
-          {METHOD_TABS.includes(tab) && h.onMethod && (
-            // The method the NEXT photo will use — always the truth, never a switch that reads "off" while full runs.
-            <span role="radiogroup" aria-label="Method for the next photo" style={{ display: "flex", alignItems: "center", gap: 4 }}>
-              Next photo:
-              {METHOD_CHOICES.map((m) => {
-                const on = effectiveMethod(item, h.defaultMethod) === m.key;
-                return (
-                  <button key={m.key} role="radio" aria-checked={on} disabled={busy || isGenerating(item) || on}
-                    onClick={() => h.onMethod(item.pid, methodToSet(m.key, h.defaultMethod))}
-                    style={{ ...(on ? bBlue : bGray), padding: "3px 8px", fontSize: 11, opacity: busy || isGenerating(item) ? 0.5 : 1 }}>
-                    {m.label}{m.key === h.defaultMethod ? " (default)" : ""}
-                  </button>
-                );
-              })}
-            </span>
+      {PRICE_TABS.includes(tab) && h.onSavePrices && <PriceFields item={item} onSavePrices={h.onSavePrices} needNote={hasPhotoNow && needsStockPrice(p)} />}
+      {tab === "new" && (
+        <div data-testid="actions" style={{ display: "flex", gap: 8, marginTop: 12 }}>
+          <button disabled={!!live} onClick={() => h.onGenerate(item)} style={{ ...bBlue, ...big, opacity: live ? 0.5 : 1 }}>{live ? "Generating…" : hasPhotoNow ? "Regenerate" : "Generate"}</button>
+          {hasPhotoNow && (
+            <button disabled={!approveOn} onClick={() => h.onApprove(item)} title={live ? "generating…" : acts.approveWhy || undefined}
+              style={{ ...bGreen, ...big, opacity: approveOn ? 1 : 0.4 }}>Approve</button>
           )}
-          {made && <span data-testid="method-made">{made}</span>}
+          <button disabled={!!live} onClick={() => h.onSkip(item)} style={{ ...bGray, ...big, flex: "0 0 auto", opacity: live ? 0.5 : 1 }}>Skip</button>
         </div>
       )}
-      {acts.reject && (
-        <div data-testid="reject-chips" style={{ marginTop: 8 }}>
-          <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>Your feedback on this photo (noted, the item stays):</div>
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            {REJECT_CHIPS.map((r) => <button key={r} disabled={busy} onClick={() => h.onReject(item.pid, r)} style={chip}>{r}</button>)}
-          </div>
+      {METHOD_TABS.includes(tab) && h.onMethod && (
+        <div data-testid="method" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 10, fontSize: 11, color: GRAY }}>
+          <span role="radiogroup" aria-label="Method for the next photo" style={{ display: "flex", alignItems: "center", gap: 4 }}>
+            {METHOD_CHOICES.map((m) => {
+              const on = effectiveMethod(item, h.defaultMethod) === m.key;
+              return (
+                <button key={m.key} role="radio" aria-checked={on} disabled={!!live || on} onClick={() => h.onMethod(item, m.key)}
+                  style={{ ...(on ? bBlue : bGray), padding: "5px 10px", fontSize: 11, borderRadius: 999, opacity: live ? 0.5 : 1 }}>{m.label}</button>
+              );
+            })}
+          </span>
+          <span style={{ flex: 1 }} />
+          {hasPhotoNow && !live && h.onReject && (
+            <button data-testid="feedback-toggle" aria-expanded={feedback} onClick={() => setFeedback((v) => !v)} style={{ ...mini, borderRadius: 999 }}>Not right?</button>
+          )}
         </div>
       )}
-      <div style={{ color: "rgba(255,255,255,.3)", fontSize: 10, marginTop: 8 }}>{item.pid} · uploaded {whenText(item.enqueuedAt)}</div>
+      {feedback && hasPhotoNow && !live && (
+        <div data-testid="reject-chips" style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 8 }}>
+          {REJECT_CHIPS.map((r) => <button key={r} onClick={() => { setFeedback(false); h.onReject(item, r); }} style={{ ...mini, borderRadius: 999, padding: "6px 10px", fontSize: 12 }}>{r}</button>)}
+        </div>
+      )}
     </div>
   );
 }
 
-// The switcher bar: a full-width dark pill, a circular ‹ on the left and › on
-// the right, the group's name and count centred. An arrow with nowhere further
-// to go is dimmed (and disabled). A horizontal swipe on the bar flips too.
+// The switcher bar: a full-width rounded pill, a circular ‹ on the left and ›
+// on the right, the group's name and count centred. A swipe on the bar flips too.
 const SWIPE_PX = 40;
 function GroupSwitcher({ group, count, onStep }) {
   const startX = useRef(null);
   const canPrev = stepGroup(group, -1) !== null;
   const canNext = stepGroup(group, 1) !== null;
   const circle = (on) => ({
-    width: 40, height: 40, flex: "0 0 40px", borderRadius: "50%", border: "1px solid rgba(255,255,255,.18)",
-    background: "rgba(255,255,255,.08)", color: "#fff", fontSize: 22, lineHeight: "36px", padding: 0, fontFamily: FONT,
+    width: 42, height: 42, flex: "0 0 42px", borderRadius: "50%", border: "1px solid rgba(255,255,255,.18)",
+    background: "rgba(255,255,255,.08)", color: "#fff", fontSize: 22, lineHeight: "38px", padding: 0, fontFamily: FONT,
     cursor: on ? "pointer" : "default", opacity: on ? 1 : 0.25,
   });
   return (
@@ -329,9 +307,9 @@ function GroupSwitcher({ group, count, onStep }) {
         if (x1 - x0 <= -SWIPE_PX) onStep(1); else if (x1 - x0 >= SWIPE_PX) onStep(-1);
       }}
       style={{ ...GLASS, borderRadius: 999, display: "flex", alignItems: "center", gap: 8, width: "100%", boxSizing: "border-box",
-        padding: 6, marginBottom: 12, touchAction: "pan-y", userSelect: "none" }}>
+        padding: 6, marginBottom: 14, touchAction: "pan-y", userSelect: "none" }}>
       <button aria-label="Previous group" disabled={!canPrev} onClick={() => onStep(-1)} style={circle(canPrev)}>‹</button>
-      <div data-testid="group-name" aria-live="polite" style={{ flex: 1, textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 15 }}>
+      <div data-testid="group-name" aria-live="polite" style={{ flex: 1, textAlign: "center", color: "#fff", fontWeight: 800, fontSize: 16 }}>
         {`${groupLabel(group)} · ${Number.isFinite(count) ? count : "…"}`}
       </div>
       <button aria-label="Next group" disabled={!canNext} onClick={() => onStep(1)} style={circle(canNext)}>›</button>
@@ -339,158 +317,246 @@ function GroupSwitcher({ group, count, onStep }) {
   );
 }
 
-const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null, modes: {}, matchingPids: null };
-// localStorage, or null where it is absent or its accessor throws.
+const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null, defaultMethod: "full" };
 const deviceStorage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
-const chunks = (xs, n) => { const out = []; for (let i = 0; i < xs.length; i += n) out.push(xs.slice(i, i + n)); return out; };
+const ask = (text) => (typeof window !== "undefined" && window.confirm ? window.confirm(text) : true);
 
 export default function NewArrivalsScreen({ api, onExit, initialTab = "new", storage = deviceStorage() }) {
   const [tab, setTab] = useState(() => normalizeTab(initialTab));
   const [group, setGroup] = useState(() => rememberedGroup(storage));
+  const [data, setData] = useState(EMPTY);
+  const [live, setLive] = useState({});       // pid → { status, thoughts, drafts, startedAt }
+  const [toast, setToast] = useState(null);   // { text }
+  const [undo, setUndo] = useState(null);     // { entries: [{ item, index }], text }
+
   const onStepGroup = (dir) => {
     const next = stepGroup(group, dir);
     if (!next) return;
     setGroup(next);
     rememberGroup(storage, next);
   };
-  const [data, setData] = useState(EMPTY);
-  const [selected, setSelected] = useState(() => new Set());
-  const [busy, setBusy] = useState(false);
-  const [msg, setMsg] = useState(null);
 
   // A response for a view (tab + group) no longer shown, or overtaken by a
-  // newer request, is dropped — it must never paint the wrong list's items.
+  // newer request or by one of Junid's taps, is dropped.
   const groupFor = (t, g) => (isGroupTab(t) ? g : null);
   const viewKey = (t, g) => `${t}|${groupFor(t, g) || ""}`;
   const loadSeq = useRef(0);
+  const taps = useRef(0);                      // bumped by every optimistic change
+  const writes = useRef(new Map());            // pid → the tail of its write chain
   const activeView = useRef(viewKey(tab, group));
-  const loaded = useRef(0);
-  // Track the view whose render COMMITTED (not one merely being rendered).
+  const dataRef = useRef(data);
+  const liveRef = useRef(live);
   useLayoutEffect(() => { activeView.current = viewKey(tab, group); }, [tab, group]);
-  useLayoutEffect(() => { loaded.current = data.items ? data.items.length : 0; }, [data.items]);
+  useLayoutEffect(() => { dataRef.current = data; }, [data]);
+  useLayoutEffect(() => { liveRef.current = live; }, [live]);
 
-  // (Re)load from the top, as many items as are on screen now (at least a page).
-  const load = useCallback(async (which = tab, g = group) => {
+  const say = useCallback((text) => setToast({ text, at: Date.now() }), []);
+  useEffect(() => {
+    if (!toast) return undefined;
+    const t = setTimeout(() => setToast(null), TOAST_MS);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const load = useCallback(async (which, g, { quiet = false } = {}) => {
     const seq = ++loadSeq.current;
     const key = viewKey(which, g);
-    const stale = () => seq !== loadSeq.current || key !== activeView.current;
-    const wanted = Math.max(PAGE, loaded.current);
+    const tapsAtStart = taps.current;
     try {
-      let res = null, cursor = null;
-      const acc = [];
-      do {
-        res = await api.list(which, { cursor, limit: Math.min(RELOAD_CHUNK, Math.max(PAGE, wanted - acc.length)), group: groupFor(which, g) });
-        if (stale()) return;
-        // An item can change bucket between pages (photo ready / generating / none): never shown twice.
-        const have = new Set(acc.map((i) => i.pid));
-        acc.push(...(res.items || []).filter((i) => !have.has(i.pid)));
-        cursor = res.nextCursor || null;
-      } while (cursor && acc.length < wanted);
+      const res = await api.list(which, { limit: PAGE, group: groupFor(which, g) });
+      if (seq !== loadSeq.current || key !== activeView.current) return;
+      // A quiet refresh never paints over a tap made (or a write still running) since it started.
+      if (quiet && (taps.current !== tapsAtStart || writes.current.size > 0 || Object.keys(liveRef.current).length > 0)) return;
       setData({
-        items: acc, total: Number.isFinite(res.total) ? res.total : acc.length, nextCursor: cursor,
-        tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null, modes: res.modes || {}, defaultMethod: res.defaultMethod || "full",
-        matchingPids: res.matchingPids || null,
+        items: res.items || [], total: Number.isFinite(res.total) ? res.total : (res.items || []).length, nextCursor: res.nextCursor || null,
+        tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null, defaultMethod: res.defaultMethod || "full",
       });
     } catch (e) {
-      if (stale()) return;
-      setMsg(`Couldn't load: ${e?.message || e}`);
-      setData((d) => ({ ...d, items: d.items || [] }));
+      if (seq !== loadSeq.current || key !== activeView.current) return;
+      if (!quiet) { say(`Couldn't load: ${e?.message || e}`); setData((d) => ({ ...d, items: d.items || [] })); }
     }
-  }, [api, tab, group]);
+  }, [api, say]);
 
   const [loadingMore, setLoadingMore] = useState(false);
   const loadMore = async () => {
     if (!data.nextCursor || loadingMore) return;
-    const seq = ++loadSeq.current;
     const key = viewKey(tab, group);
     setLoadingMore(true);
     try {
       const res = await api.list(tab, { cursor: data.nextCursor, limit: PAGE, group: groupFor(tab, group) });
-      if (seq !== loadSeq.current || key !== activeView.current) return;
+      if (key !== activeView.current) return;
       setData((d) => {
         const have = new Set((d.items || []).map((i) => i.pid));
-        return {
-          ...d, items: [...(d.items || []), ...(res.items || []).filter((i) => !have.has(i.pid))],
-          total: Number.isFinite(res.total) ? res.total : d.total, nextCursor: res.nextCursor || null,
-          tabCounts: res.tabCounts || d.tabCounts, groupCounts: res.groupCounts || d.groupCounts, stats: res.stats || d.stats,
-          matchingPids: res.matchingPids || d.matchingPids,
-        };
+        return { ...d, items: [...(d.items || []), ...(res.items || []).filter((i) => !have.has(i.pid))], nextCursor: res.nextCursor || null };
       });
     } catch (e) {
-      setMsg(`Couldn't load more: ${e?.message || e}`);
+      say(`Couldn't load more: ${e?.message || e}`);
     } finally { setLoadingMore(false); }
   };
 
   useEffect(() => {
-    loaded.current = 0;
-    setData((d) => ({ ...d, items: null, total: null, nextCursor: null, groupCounts: null, matchingPids: null }));
-    setSelected(new Set());
+    setData((d) => ({ ...d, items: null, total: null, nextCursor: null, groupCounts: null }));
     load(tab, group);
-    const t = setInterval(() => load(tab, group), REFRESH_MS);
+    // A quiet refresh while only the first page is shown (it would otherwise drop loaded pages).
+    const t = setInterval(() => { if ((dataRef.current.items || []).length <= PAGE) load(tab, group, { quiet: true }); }, REFRESH_MS);
     return () => clearInterval(t);
   }, [tab, group, load]);
 
-  const items = data.items;
-  const run = async (fn, okText, notWord = "done") => {
-    setBusy(true); setMsg(null);
-    try {
-      const res = await fn();
-      const refused = res?.skipped?.length ? ` · ${res.skipped.length} not ${notWord} (${[...new Set(res.skipped.map((s) => s.why))].join("; ")})` : "";
-      setMsg(okText(res) + refused);
-      setSelected(new Set());
-      await load(tab, group);
-    } catch (e) {
-      setMsg(`Not done: ${e?.message || e}`);
-    } finally { setBusy(false); }
+  // ── instant taps ───────────────────────────────────────────────────────────
+  // One item's writes run one after another (an Undo waits for its Skip).
+  const write = (pid, fn) => {
+    const prev = writes.current.get(pid) || Promise.resolve();
+    const next = prev.then(fn, fn);
+    writes.current.set(pid, next);
+    const clear = () => { if (writes.current.get(pid) === next) writes.current.delete(pid); };
+    next.then(clear, clear);
+    return next;
   };
-  // A bulk action in callable-sized chunks, results merged.
-  const bulk = (fn, pids) => async () => {
-    const merged = {};
-    for (const part of chunks(pids, BULK_CHUNK)) {
-      const r = (await fn(part)) || {};
-      for (const [k, v] of Object.entries(r)) merged[k] = Array.isArray(v) ? [...(merged[k] || []), ...v] : v;
-    }
-    return merged;
-  };
-  const n = (r, k) => r?.[k]?.length || 0;
-  const refusedText = (r, notWord) => (r?.skipped?.length ? `${r.skipped.length} not ${notWord} (${[...new Set(r.skipped.map((s) => s.why))].join("; ")})` : "");
+  const patch = (pid, fn) => { taps.current += 1; setData((d) => ({ ...d, items: (d.items || []).map((i) => (i.pid === pid ? fn(i) : i)) })); };
+  const putBack = (pid, was) => setData((d) => ({ ...d, items: (d.items || []).map((i) => (i.pid === pid ? was : i)) }));
+  const reason = (e) => String(e?.message || e || "not saved").replace(/\.$/, "");
 
-  // SKIP — one tap (or one "Skip selected"), then ONE toast for 8 seconds with
-  // Undo for all of them. Undo = the Restore callable: each item goes back to
-  // the lane it came from, in its place. After the toast the skip stands.
-  const [undo, setUndo] = useState(null); // { pids, text }
+  /** Change the card now; write in the background; on failure put the card back and say why. */
+  const instant = (item, change, send, failed) => {
+    patch(item.pid, change);
+    write(item.pid, async () => {
+      try {
+        const res = await send();
+        if (res && res.ok === false) throw new Error(res.error || "not saved");
+      } catch (e) {
+        putBack(item.pid, item);
+        say(`${failed} — ${reason(e)}. The card is back as it was.`);
+      }
+    });
+  };
+
+  const h = { defaultMethod: data.defaultMethod || "full" };
+
+  // PRICES — the admin price save. "Retail below stock price" asks first, as the admin editor does.
+  h.onSavePrices = api.savePrices ? (item, drafts) => {
+    patch(item.pid, (i) => afterPrices(i, drafts));
+    write(item.pid, async () => {
+      try {
+        let res = await api.savePrices(item.pid, item.product || {}, drafts);
+        if (!res.ok && res.needsConfirm) {
+          if (!ask(res.error)) { putBack(item.pid, item); return; }
+          res = await api.savePrices(item.pid, item.product || {}, drafts, { confirmed: true });
+        }
+        if (!res.ok) throw new Error(res.error || "not saved");
+        say("Prices saved.");
+      } catch (e) {
+        putBack(item.pid, item);
+        say(`Prices not saved — ${reason(e)}. The card is back as it was.`);
+      }
+    });
+  } : null;
+
+  // USE THIS ONE — that generation becomes the main photo; Approve then uses it.
+  h.onPick = api.select ? (item, genId) => instant(item, (i) => afterPick(i, genId), () => api.select(item.pid, genId), "Main photo not changed") : null;
+  // ❤ — never moves or approves the item.
+  h.onLove = api.love ? (item, genId, loved) => instant(item, (i) => afterLove(i, genId, loved, Date.now()), () => api.love(item.pid, genId, loved), loved ? "Not loved" : "Love not removed") : null;
+  // THE METHOD for this item's next photo: Full Gemini or Split.
+  h.onMethod = api.method ? (item, choice) => instant(item, (i) => ({ ...i, method: choice }), () => api.method(item.pid, methodToSet(choice, h.defaultMethod)), "Method not changed") : null;
+  // FEEDBACK — one chip, noted against the photo shown; the item stays.
+  h.onReject = api.reject ? (item, why) => {
+    say(`Noted: ${why}.`);
+    write(item.pid, async () => { try { await api.reject(item.pid, why); } catch (e) { say(`Feedback not saved — ${reason(e)}.`); } });
+  } : null;
+
+  // The item leaves the list at once (Approve, Skip); a refusal brings it back.
+  const leave = (item, toTab) => {
+    taps.current += 1;
+    const index = (dataRef.current.items || []).findIndex((i) => i.pid === item.pid);
+    setData((d) => withoutItem(d, item.pid, { group, toTab }));
+    return { item, index, toTab };
+  };
+  const comeBack = (entry) => setData((d) => withItemBack(d, entry, { group }));
+
+  // APPROVE — Junid's Approve is final. The card goes to Done at once.
+  h.onApprove = (item) => {
+    if (!actionsFor(item).approveEnabled || liveRef.current[item.pid]) return;
+    const entry = leave(item, "done");
+    write(item.pid, async () => {
+      try {
+        const res = await api.approve([item.pid]);
+        if (!(res?.approved || []).includes(item.pid)) throw new Error(res?.skipped?.[0]?.why || "not approved");
+      } catch (e) {
+        comeBack(entry);
+        say(`Not approved — ${reason(e)}. It is back on the list.`);
+      }
+    });
+    say("Approved — publishing has started. It is under Done.");
+  };
+
+  // SKIP — gone at once, with ONE toast for 8 seconds; Undo brings every skipped item back.
   useEffect(() => {
     if (!undo) return undefined;
     const t = setTimeout(() => setUndo(null), UNDO_MS);
     return () => clearTimeout(t);
   }, [undo]);
-  const onSkip = async (pids) => {
-    setBusy(true); setMsg(null);
-    try {
-      const r = await bulk((p) => api.skip(p), pids)();
-      const done = r.skippedPids || [];
-      // A second Skip within the 8 s ADDS to the open toast — Undo restores all.
-      if (done.length) setUndo((cur) => {
-        const pids = [...new Set([...(cur?.pids || []), ...done])];
-        return { pids, text: `${pids.length} skipped — not advertised.` };
-      });
-      const refused = refusedText(r, "skipped");
-      if (refused) setMsg(refused);
-      setSelected(new Set());
-      await load(tab, group);
-    } catch (e) {
-      setMsg(`Not done: ${e?.message || e}`);
-    } finally { setBusy(false); }
+  h.onSkip = (item) => {
+    if (liveRef.current[item.pid]) return;
+    const entry = leave(item, null);
+    setUndo((cur) => {
+      const entries = [...(cur?.entries || []).filter((e) => e.item.pid !== item.pid), entry];
+      return { entries, text: `${entries.length} skipped — not advertised.` };
+    });
+    write(item.pid, async () => {
+      try {
+        const res = await api.skip([item.pid]);
+        if (!(res?.skippedPids || []).includes(item.pid)) throw new Error(res?.skipped?.[0]?.why || "not skipped");
+      } catch (e) {
+        comeBack(entry);
+        setUndo((cur) => {
+          const entries = (cur?.entries || []).filter((x) => x.item.pid !== item.pid);
+          return entries.length ? { entries, text: `${entries.length} skipped — not advertised.` } : null;
+        });
+        say(`Not skipped — ${reason(e)}. It is back on the list.`);
+      }
+    });
   };
   const onUndo = () => {
     if (!undo) return;
-    const { pids } = undo;
+    const { entries } = undo;
     setUndo(null);
-    run(bulk((p) => api.restore(p), pids), (r) => `Skip undone — ${n(r, "restored")} back.`, "restored");
+    // Back in their places at once — last skipped first, so each position is the
+    // one it was taken from — then restored on the server.
+    for (const entry of [...entries].reverse()) {
+      comeBack(entry);
+      write(entry.item.pid, async () => {
+        try {
+          const res = await api.restore([entry.item.pid]);
+          if (!(res?.restored || []).includes(entry.item.pid)) throw new Error(res?.skipped?.[0]?.why || "not restored");
+        } catch (e) {
+          setData((d) => withoutItem(d, entry.item.pid, { group, toTab: null }));
+          say(`Skip not undone — ${reason(e)}.`);
+        }
+      });
+    }
   };
 
-  // "How Gemini did it" — each generation's record is fetched at most once on
-  // this screen (a failed load is forgotten, so reopening retries).
+  // GENERATE / REGENERATE — live, on the card.
+  h.onGenerate = (item) => {
+    const pid = item.pid;
+    if (liveRef.current[pid]) return;
+    taps.current += 1;
+    setLive((l) => ({ ...l, [pid]: liveStart(Date.now()) }));
+    const method = effectiveMethod(item, h.defaultMethod);
+    write(pid, async () => {
+      try {
+        const res = await api.generate(pid, { method, onEvent: (ev) => setLive((l) => (l[pid] ? { ...l, [pid]: foldLive(l[pid], ev) } : l)) });
+        // The server's item (no product or stock on it): those stay as the card has them.
+        if (res?.item) setData((d) => ({ ...d, items: (d.items || []).map((i) => (i.pid === pid ? { ...res.item, product: i.product, availableSizes: i.availableSizes, totalUnits: i.totalUnits, stockKnown: i.stockKnown } : i)) }));
+        say(`Photo ready in ${Math.round(Number(res?.seconds) || 0)}s${Number.isFinite(Number(res?.costZar)) ? ` · ${res.costEstimated ? "~" : ""}R${Number(res.costZar).toFixed(2)}` : ""}.`);
+      } catch (e) {
+        say(`${reason(e)}.`);
+      } finally {
+        taps.current += 1;
+        setLive((l) => { const { [pid]: gone, ...rest } = l; void gone; return rest; });
+      }
+    });
+  };
+
+  // "How Gemini did it" — each generation's record is fetched at most once on this screen.
   const howCache = useRef(new Map());
   const loadHow = useCallback((pid, genId) => {
     const k = `${pid}/${genId}`;
@@ -501,126 +567,48 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     }
     return p;
   }, [api]);
+  h.loadHow = api.how ? loadHow : null;
 
-  const h = {
-    // ONE Approve: the main / selected photo (the server logs approve-anyway when its verdict failed).
-    onApprove: (pid) => run(() => api.approve([pid]), (r) => (n(r, "approved") ? "Approved — publishing has started. Its progress shows under Done." : "Nothing approved."), "approved"),
-    onGenerate: (pids) => run(bulk((p) => api.generate(p), pids), (r) => `${n(r, "requested")} sent to the generator — each photo appears on its card.`),
-    onRegenerate: (pid) => run(() => api.generate([pid], { regenerate: true }), (r) => (n(r, "requested") ? "A fresh attempt is requested — it appears on this card; every photo stays." : "Nothing requested.")),
-    // Feedback only (4 Oct): noted against this photo; the item stays where it is.
-    onReject: (pid, reason) => run(() => api.reject(pid, reason), () => `Noted: ${reason} — your feedback on this photo (the item stays here).`),
-    // "Use this one": that generation becomes the main photo; Approve then uses it.
-    onPick: api.select ? (pid, genId) => run(() => api.select(pid, genId), (r) => (r?.unchanged ? "That photo is already the main one." : "Main photo changed — Approve uses this one.")) : null,
-    // ❤ Love / un-love one generation — never moves or approves the item.
-    onLove: api.love ? (pid, genId, loved) => run(() => api.love(pid, genId, loved),
-      (r) => (r?.unchanged ? (loved ? "Already loved." : "Not loved.") : loved ? "Loved — remembered for the learning log." : "Love removed.")) : null,
-    onSkip,
-    // "How Gemini did it": one generation's genlog, loaded once (cached per generation).
-    loadHow: api.how ? loadHow : null,
-    // The per-item method: "full", or null for the poster's default. A setting — never logged.
-    onMethod: api.method ? (pid, method) => run(() => api.method(pid, method),
-      (r) => (r?.unchanged ? "No change." : method === "full" ? "Full Gemini for this item — from its next photo." : method === "split" ? "Split method for this item — from its next photo." : "Back to the default method — from its next photo.")) : null,
-    defaultMethod: data.defaultMethod || "full",
-  };
-
-  // Approve all = every item ON THIS SCREEN whose photo the checker passed
-  // (lane ready) and that has a stock price — never items Junid has not seen,
-  // never a checker-failed photo without its own tap.
-  // Approve all: checker-PASSED photos only — a failed one (even picked onto a ready card) needs its own tap.
-  // Approve all: every photo shown that can be approved (a photo, a stock price) — Junid's own bulk tap.
-  const approveAllable = (it) => actionsFor(it).approve && actionsFor(it).approveEnabled;
-  const onApproveAll = () => {
-    const pids = (data.items || []).filter(approveAllable).map((it) => it.pid);
-    if (!pids.length) return;
-    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Approve all ${pids.length} items shown? Publishing to Shopify and the groups starts for each.`)) return;
-    run(() => api.approve(pids), (r) => `Approved ${n(r, "approved")}.`, "approved");
-  };
-  const approvable = tab === "new" ? (items || []).filter(approveAllable).length : 0;
-  const unpriced = tab === "new" ? (items || []).filter((it) => hasPhoto(it) && needsStockPrice(it.product)).length : 0;
-  // The two price fields' Save: the admin price save (api.savePrices →
-  // admin/productPriceSave), with its "retail below cost" question.
-  h.onSavePrices = api.savePrices ? async (item, drafts) => {
-    setBusy(true); setMsg(null);
-    try {
-      let res = await api.savePrices(item.pid, item.product || {}, drafts);
-      if (!res.ok && res.needsConfirm && typeof window !== "undefined" && window.confirm && window.confirm(res.error)) {
-        res = await api.savePrices(item.pid, item.product || {}, drafts, { confirmed: true });
-      }
-      setMsg(res.ok ? (res.count ? "Prices saved." : "No price changed.") : `Prices not saved: ${res.error}`);
-      if (res.ok) await load(tab, group);
-    } catch (e) {
-      setMsg(`Prices not saved: ${e?.message || e}`);
-    } finally { setBusy(false); }
-  } : null;
-
-  const selectable = tab === "new";
-  const toggle = (pid) => setSelected((s) => { const x = new Set(s); if (x.has(pid)) x.delete(pid); else x.add(pid); return x; });
-  // "Select all" = every item the tab holds IN THIS GROUP, across pages — the
-  // server's list, not just what is loaded.
-  const allPids = data.matchingPids || (items || []).map((i) => i.pid);
-  const sel = [...selected];
+  const items = data.items;
   const stats = data.stats;
-
   return (
-    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "16px 16px 80px" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
-        <button onClick={onExit} style={{ ...bGray, padding: "8px 12px" }} aria-label="Back">←</button>
-        <div style={{ fontSize: 20, fontWeight: 800 }}>New Arrivals</div>
-      </div>
-      <div data-testid="header-spend" style={{ color: GRAY, fontSize: 12, marginBottom: 12 }}>
-        <div data-testid="spent">{spentText(stats)}</div>
-      </div>
-      <div role="tablist" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-        {TABS.map((t) => (
-          <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)} style={tab === t.key ? tabOn : tabOff}>
-            {t.label}{Number.isFinite(data.tabCounts[t.key]) ? ` ${data.tabCounts[t.key]}` : ""}
+    <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT, padding: "14px 14px 96px" }}>
+      <div style={{ maxWidth: 560, margin: "0 auto" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <button onClick={onExit} style={{ ...bGray, padding: "8px 12px" }} aria-label="Back">←</button>
+          <div style={{ fontSize: 20, fontWeight: 800, flex: 1 }}>New Arrivals</div>
+          <div data-testid="spent" style={{ color: GRAY, fontSize: 11 }}>{spentText(stats)}</div>
+        </div>
+        <div role="tablist" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+          {TABS.map((t) => (
+            <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)} style={{ ...(tab === t.key ? tabOn : tabOff), flex: 1, padding: "9px 14px" }}>
+              {t.label}{Number.isFinite(data.tabCounts[t.key]) ? ` ${data.tabCounts[t.key]}` : ""}
+            </button>
+          ))}
+        </div>
+        {isGroupTab(tab) && (
+          <GroupSwitcher group={group} onStep={onStepGroup} count={data.groupCounts ? data.groupCounts[group] : (data.items ? data.total : null)} />
+        )}
+        {items === null && <div style={{ color: GRAY }}>Loading…</div>}
+        {items && items.length === 0 && <div style={{ color: GRAY }}>Nothing here.</div>}
+        {items && items.map((it) => <ItemCard key={it.pid} item={it} tab={tab} live={live[it.pid] || null} h={h} stats={stats} />)}
+        {items && data.nextCursor && (
+          <button disabled={loadingMore} onClick={loadMore} style={{ ...bGray, width: "100%", opacity: loadingMore ? 0.5 : 1 }}>
+            {loadingMore ? "Loading…" : `Load more (${items.length} of ${data.total ?? "?"} shown)`}
           </button>
-        ))}
+        )}
       </div>
-      {isGroupTab(tab) && (
-        <GroupSwitcher group={group} onStep={onStepGroup}
-          count={data.groupCounts ? data.groupCounts[group] : (data.items ? data.total : null)} />
-      )}
-      {selectable && items && allPids.length > 0 && (
-        <div data-testid="bulk" style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
-          <button disabled={busy} onClick={() => setSelected(new Set(allPids))} style={{ ...bGray, ...{ opacity: busy ? 0.5 : 1 } }}>Select all {allPids.length}</button>
-          {sel.length > 0 && <button onClick={() => setSelected(new Set())} style={bGray}>Clear selection</button>}
-          {tab === "new" && sel.length > 0 && <button disabled={busy} onClick={() => h.onGenerate(sel)} style={{ ...bBlue, opacity: busy ? 0.5 : 1 }}>Generate selected ({sel.length})</button>}
-          {tab === "new" && sel.length > 0 && <button disabled={busy} onClick={() => h.onSkip(sel)} style={{ ...bGray, opacity: busy ? 0.5 : 1 }}>Skip selected ({sel.length})</button>}
-        </div>
-      )}
-      {tab === "new" && approvable > 0 && (
-        <button disabled={busy} onClick={onApproveAll} style={{ ...bGreen, width: "100%", marginBottom: 12, opacity: busy ? 0.5 : 1 }}>
-          Approve all {approvable}
-        </button>
-      )}
-      {unpriced > 0 && (
-        <div data-testid="unpriced-flag" style={{ ...GLASS, padding: 10, marginBottom: 12, fontSize: 13, color: AMBER }}>
-          {unpriced} {unpriced === 1 ? "item has" : "items have"} no stock price — add it on the card to approve.
-        </div>
-      )}
-      {msg && <div role="status" style={{ ...GLASS, padding: 10, marginBottom: 12, fontSize: 13 }}>{msg}</div>}
-      {items === null && <div style={{ color: GRAY }}>Loading…</div>}
-      {items && items.length === 0 && <div style={{ color: GRAY }}>Nothing here.</div>}
-      {items && items.length > 0 && (
-        <div data-testid="count" style={{ color: GRAY, fontSize: 12, marginBottom: 8 }}>
-          Showing {items.length} of {Number.isFinite(data.total) ? data.total : items.length}{sel.length ? ` · ${sel.length} selected` : ""}
-        </div>
-      )}
-      {items && items.map((it) => (
-        <ItemCard key={it.pid} item={it} tab={tab} busy={busy} selectable={selectable} selected={selected.has(it.pid)} onToggle={toggle} h={h} stats={stats} />
-      ))}
-      {items && data.nextCursor && (
-        <button disabled={loadingMore} onClick={loadMore} style={{ ...bGray, width: "100%", opacity: loadingMore ? 0.5 : 1 }}>
-          {loadingMore ? "Loading…" : `Load more (${items.length} of ${data.total ?? "?"} loaded)`}
-        </button>
-      )}
-      {undo && (
-        <div data-testid="undo-toast" role="status"
-          style={{ ...GLASS, background: "#0a0e18", position: "fixed", left: 16, right: 16, bottom: 16, zIndex: 50, padding: "10px 12px",
-            display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "#fff" }}>
-          <div style={{ flex: 1 }}>{undo.text}</div>
-          <button onClick={onUndo} disabled={busy} style={{ ...bBlue, padding: "8px 14px", opacity: busy ? 0.5 : 1 }}>Undo</button>
+      {(undo || toast) && (
+        <div style={{ position: "fixed", left: 14, right: 14, bottom: 14, zIndex: 50, display: "flex", flexDirection: "column", gap: 8, alignItems: "center" }}>
+          {toast && (
+            <div data-testid="toast" role="status" style={{ ...GLASS, background: "#0a0e18", maxWidth: 532, width: "100%", boxSizing: "border-box", padding: "11px 12px", fontSize: 14, color: "#fff" }}>{toast.text}</div>
+          )}
+          {undo && (
+            <div data-testid="undo-toast" role="status" style={{ ...GLASS, background: "#0a0e18", maxWidth: 532, width: "100%", boxSizing: "border-box", padding: "9px 12px", display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: "#fff" }}>
+              <div style={{ flex: 1 }}>{undo.text}</div>
+              <button onClick={onUndo} style={{ ...bBlue, padding: "8px 14px" }}>Undo</button>
+            </div>
+          )}
         </div>
       )}
     </div>

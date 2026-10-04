@@ -150,9 +150,16 @@ export function spentText(stats) {
   return `Spent so far R${total.toFixed(2)}${Number.isFinite(est) && est > 0 ? ` (incl. ~R${est.toFixed(2)} estimated)` : ""}`;
 }
 
-/** Is a new photo being generated for this item (lane generating, or a pending request)? Pure. */
-export function isGenerating(item) {
-  return item?.status === "generating" || (NEW_LANES.includes(item?.status) && !!item?.generateRequest);
+// A request older than this is a run that died (mirror of core.cjs
+// REQUEST_STALE_MS): it no longer holds Approve or Generate back.
+export const REQUEST_STALE_MS = 10 * 60 * 1000;
+/** Is a new photo being generated for this item (lane generating, or a live request)? Pure. */
+export function isGenerating(item, nowMs = Date.now()) {
+  if (item?.status === "generating") return true;
+  const r = item?.generateRequest;
+  if (!NEW_LANES.includes(item?.status) || !r) return false;
+  const at = Number(r?.at) || 0;
+  return !(at > 0 && nowMs - at > REQUEST_STALE_MS);
 }
 /** Does this New-tab item have a finished photo to approve? Pure. */
 export function hasPhoto(item) {
@@ -380,4 +387,78 @@ export function changedPrices(product, stockDraft, retailDraft) {
   if (String(stockDraft ?? "").trim() !== priceField(product?.stockPrice)) out.stockPrice = String(stockDraft ?? "").trim();
   if (String(retailDraft ?? "").trim() !== priceField(product?.retailPrice)) out.retailPrice = String(retailDraft ?? "").trim();
   return out;
+}
+
+// ── THE CARD'S OWN STATE: what a tap shows before the server has answered ────
+// Every tap changes the card at once; these say how. Each is the same change
+// the server makes (functions/newArrivals: selectFields, lovedItem, the admin
+// price save), so the screen does not jump when the write lands.
+
+/** A generation that has just started, as the card shows it. Pure. */
+export const liveStart = (at) => ({ status: "Starting…", thoughts: "", drafts: [], startedAt: at });
+
+/** One progress event from the photo studio folded into the live view. Pure. */
+export function foldLive(live, ev) {
+  if (!ev || typeof ev !== "object") return live;
+  if (ev.type === "status" && ev.text) return { ...live, status: String(ev.text) };
+  if (ev.type === "thought" && ev.text) return { ...live, status: "Gemini is thinking…", thoughts: live.thoughts + String(ev.text) };
+  if (ev.type === "draft" && ev.url) return live.drafts.includes(ev.url) ? live : { ...live, status: "Gemini is drawing…", drafts: [...live.drafts, String(ev.url)] };
+  return live;
+}
+
+/** The item after "Use this one" on `genId`. Pure. */
+export function afterPick(item, genId) {
+  const gen = item?.generations?.[genId];
+  if (!gen?.url) return item;
+  const next = { ...item, currentGen: genId, generatedUrl: gen.url, generatedPath: gen.path || null };
+  delete next.verdict;
+  return next;
+}
+
+/** The item after a ❤ / un-❤ of `genId`. Pure. */
+export function afterLove(item, genId, loved, at) {
+  const gen = item?.generations?.[genId];
+  if (!gen) return item;
+  const g = { ...gen };
+  if (loved) { g.loved = true; g.lovedAt = at; } else { delete g.loved; delete g.lovedAt; }
+  return { ...item, generations: { ...item.generations, [genId]: g } };
+}
+
+/** The item after a price save of `drafts` (text; an empty field is left alone). Pure. */
+export function afterPrices(item, drafts) {
+  const product = { ...(item?.product || {}) };
+  for (const f of ["stockPrice", "retailPrice"]) {
+    const t = String(drafts?.[f] ?? "").trim();
+    if (t !== "" && Number(t) > 0) product[f] = Number(t);
+  }
+  return { ...item, product };
+}
+
+const less = (n) => (Number.isFinite(n) ? Math.max(0, n - 1) : n);
+const more = (n) => (Number.isFinite(n) ? n + 1 : n);
+/**
+ * The list after an item leaves the New tab (Approve → `toTab` "done"; Skip →
+ * null): the item gone, the counts moved with it. Pure.
+ */
+export function withoutItem(data, pid, { group = null, toTab = null } = {}) {
+  const items = data.items || [];
+  if (!items.some((i) => i.pid === pid)) return data;
+  const tabCounts = { ...(data.tabCounts || {}), new: less(data.tabCounts?.new) };
+  if (toTab) tabCounts[toTab] = more(data.tabCounts?.[toTab]);
+  return {
+    ...data, items: items.filter((i) => i.pid !== pid), total: less(data.total), tabCounts,
+    groupCounts: data.groupCounts && group ? { ...data.groupCounts, [group]: less(data.groupCounts[group]) } : data.groupCounts,
+  };
+}
+/** The list with a departed item back in its place, and the counts with it. Pure. */
+export function withItemBack(data, { item, index, toTab = null }, { group = null } = {}) {
+  const items = data.items || [];
+  if (items.some((i) => i.pid === item.pid)) return data;
+  const at = Math.max(0, Math.min(Number.isFinite(index) && index >= 0 ? index : 0, items.length));
+  const tabCounts = { ...(data.tabCounts || {}), new: more(data.tabCounts?.new) };
+  if (toTab) tabCounts[toTab] = less(data.tabCounts?.[toTab]);
+  return {
+    ...data, items: [...items.slice(0, at), item, ...items.slice(at)], total: more(data.total), tabCounts,
+    groupCounts: data.groupCounts && group ? { ...data.groupCounts, [group]: more(data.groupCounts[group]) } : data.groupCounts,
+  };
 }
