@@ -118,7 +118,7 @@ import { productOnlyPrompt, SPLIT_PROMPT_VERSION } from "../newArrivals/studio/s
 
 test("the layers in force are exactly the signed-off ones, each with its approval on record", () => {
   assert.deepEqual(gen.layers, { boxRules: false, reshootBrief: false, socialsRequest: false, framingCorrection: false, packaging: false,
-    steam: true, footwearBox: true, footwearPose: true, footwearExamples: true });
+    steam: true, footwearBox: true, footwearPose: true, footwearExamples: false });
   // Each layer in force is on record as Junid's — approved, or requested by him and marked
   // provisional until he has seen a photo made with it — and its exact wording is pinned.
   const texts = { steam: STEAM_LAYER, footwearBox: ["own", "library", "none"].map(footwearBoxLayer).join("\n"), footwearPose: FOOTWEAR_POSE_LAYER, footwearExamples: EXAMPLES_LABEL };
