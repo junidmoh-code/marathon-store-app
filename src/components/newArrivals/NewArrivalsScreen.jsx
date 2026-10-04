@@ -44,6 +44,7 @@ const PAGE = 30;
 const TOAST_MS = 6000;
 const TOASTS_MAX = 3;
 const WRITES_WAIT_MS = 10_000;
+const FULL_LOAD_ROUNDS = 4;
 const INK = "#dfe7ff";
 
 // ── small pieces ─────────────────────────────────────────────────────────────
@@ -387,6 +388,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   const writes = useRef(new Map());            // pid → the tail of its write chain
   const gone = useRef(new Map());              // pid → the entry of a card that has left the list (Approve, Skip)
   const undoPids = useRef(new Set());          // the skipped cards the Undo bar can still bring back
+  const clock = useRef(0);                     // ticks each time a write finishes
+  const fullLoads = useRef(0);                 // full list loads on their way
   const alive = useRef(true);
   const activeView = useRef(viewKey(tab, group));
   const viewRef = useRef({ tab, group });
@@ -406,31 +409,49 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     setTimeout(() => { if (alive.current) setToasts((ts) => ts.filter((t) => t.id !== id)); }, TOAST_MS);
   }, []);
 
-  const load = useCallback(async (which, g, { quiet = false, again = true } = {}) => {
+  const load = useCallback(async (which, g, { quiet = false } = {}) => {
     const key = viewKey(which, g);
-    // A full load waits (up to 10 s) for the writes still on their way: the list it reads must include them.
-    if (!quiet) await Promise.race([Promise.allSettled([...writes.current.values()]), new Promise((r) => setTimeout(r, WRITES_WAIT_MS))]);
-    const seq = ++loadSeq.current;
-    const tapsAtStart = taps.current;
+    // The quiet refresh never competes with a full load.
+    if (quiet && fullLoads.current > 0) return;
+    if (!quiet) fullLoads.current += 1;
     try {
-      const res = await api.list(which, { limit: PAGE, group: groupFor(which, g) });
-      if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
-      // The list was read BEFORE a tap or a finished write: it must not paint over it.
-      const overtaken = taps.current !== tapsAtStart || writes.current.size > 0;
-      if (quiet && (overtaken || Object.keys(liveRef.current).length > 0)) return;
-      // A full load that was overtaken reads once more (then paints whatever it has, without the cards that have left).
-      if (!quiet && overtaken && again) { load(which, g, { again: false }); return; }
-      // Cards that left and whose write has finished are forgotten: the list now says where they are.
-      for (const pid of [...gone.current.keys()]) if (!writes.current.has(pid) && !undoPids.current.has(pid)) gone.current.delete(pid);
-      const items = (res.items || []).filter((i) => !gone.current.has(i.pid));
-      setData({
-        items, total: Number.isFinite(res.total) ? res.total : items.length, nextCursor: res.nextCursor || null,
-        tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null,
-      });
-    } catch (e) {
-      if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
-      if (!quiet) { say(null, `Couldn't load: ${e?.message || e}`); setData((d) => ({ ...d, items: d.items || [] })); }
-    }
+      for (let round = 0; round < (quiet ? 1 : FULL_LOAD_ROUNDS); round++) {
+        // A full load waits (up to 10 s) for the writes still on their way: the list it reads must include them.
+        if (!quiet && writes.current.size > 0) {
+          let timer;
+          await Promise.race([Promise.allSettled([...writes.current.values()]), new Promise((r) => { timer = setTimeout(r, WRITES_WAIT_MS); })]);
+          clearTimeout(timer);
+        }
+        const seq = ++loadSeq.current;
+        const tapsAtStart = taps.current, clockAtStart = clock.current;
+        let res;
+        try {
+          res = await api.list(which, { limit: PAGE, group: groupFor(which, g) });
+        } catch (e) {
+          if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
+          if (!quiet) { say(null, `Couldn't load: ${e?.message || e}`); setData((d) => ({ ...d, items: d.items || [] })); }
+          return;
+        }
+        if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
+        // The list was read BEFORE a tap or a finished write: it must not paint over it.
+        const overtaken = taps.current !== tapsAtStart || writes.current.size > 0;
+        if (quiet && (overtaken || Object.keys(liveRef.current).length > 0)) return;
+        if (!quiet && overtaken) {
+          if (round < FULL_LOAD_ROUNDS - 1) continue;   // read again
+          if (dataRef.current.items) return;            // still overtaken: what is on screen is newer than this list
+        }
+        // A card that left is forgotten only once a list read AFTER its write finished is in hand
+        // (and the Undo bar no longer holds it); until then it stays off the list, counts and all.
+        for (const [pid, e] of [...gone.current]) if (e.settledAt != null && e.settledAt <= clockAtStart && !undoPids.current.has(pid)) gone.current.delete(pid);
+        let next = {
+          items: res.items || [], total: Number.isFinite(res.total) ? res.total : (res.items || []).length, nextCursor: res.nextCursor || null,
+          tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null,
+        };
+        for (const [pid, e] of gone.current) next = withoutItem(next, pid, { group: e.group, toTab: e.toTab });
+        setData(next);
+        return;
+      }
+    } finally { if (!quiet) fullLoads.current -= 1; }
   }, [api, say]);
   /** Show what the server has now (after an answer that never arrived). */
   const reload = () => load(viewRef.current.tab, viewRef.current.group);
@@ -457,6 +478,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   useEffect(() => {
     setData((d) => ({ ...d, items: null, total: null, nextCursor: null, groupCounts: null }));
     // An Undo belongs to the list it was offered on.
+    undoPids.current.clear();
     setUndo(null);
     load(tab, group);
     // The quiet refresh covers the first page (a longer list is refreshed by reopening it).
@@ -472,7 +494,14 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     const prev = writes.current.get(pid) || Promise.resolve();
     const next = prev.then(fn, fn);
     writes.current.set(pid, next);
-    const settled = () => { taps.current += 1; if (writes.current.get(pid) === next) writes.current.delete(pid); };
+    const settled = () => {
+      taps.current += 1;
+      clock.current += 1;
+      if (writes.current.get(pid) !== next) return;
+      writes.current.delete(pid);
+      const g = gone.current.get(pid);
+      if (g) g.settledAt = clock.current;
+    };
     next.then(settled, settled);
     return next;
   };
@@ -515,7 +544,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         if (!alive.current) return;
         if (definite(e)) res = { ok: false, error: reason(e) };
         else {
-          // No answer: the price may be saved. Show what the server has.
+          // No answer: the price may be saved. The card goes back and the list is re-read to show what the server has.
+          patch(item.pid, revertPrices(item, drafts));
           say(item, "No answer to the price save — the list is being refreshed to show what was saved.");
           reload();
           return;
@@ -569,11 +599,10 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
       const out = await attempt(() => api.approve([item.pid], genId ? { genId } : {}),
         (r) => ((r?.approved || []).includes(item.pid) ? null : r?.skipped?.[0]?.why || "not approved"));
       // "it is approved" = an earlier tap already landed: that is the approval, not a failure.
-      if (out.ok || /^it is (approved|chaining|done)\b/.test(out.refused || "")) { gone.current.delete(item.pid); return; }
+      if (out.ok || /^it is (approved|chaining|done)\b/.test(out.refused || "")) return;
       if (!alive.current) return;
       if (out.refused) { comeBack(entry); say(entry.item, `Not approved — ${out.refused}. It is back on the list.`); return; }
       // No answer: it may well be approved. Never claim it is not — show what the server has.
-      gone.current.delete(item.pid);
       say(item, "No answer to the Approve — the list is being refreshed to show where it is.");
       reload();
     });
@@ -581,12 +610,12 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
 
   // SKIP — gone at once, with ONE bar for 8 seconds; Undo brings every skipped item back.
   useEffect(() => {
-    undoPids.current = new Set((undo?.entries || []).map((e) => e.item.pid));
     if (!undo) return undefined;
-    const t = setTimeout(() => setUndo(null), UNDO_MS);
+    const t = setTimeout(() => { undoPids.current.clear(); setUndo(null); }, UNDO_MS);
     return () => clearTimeout(t);
   }, [undo]);
   const dropUndo = (pid) => setUndo((cur) => {
+    undoPids.current.delete(pid);
     const entries = (cur?.entries || []).filter((x) => x.item.pid !== pid);
     return entries.length ? { entries, text: `${entries.length} skipped — not advertised.` } : null;
   });
@@ -594,6 +623,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     if (liveRef.current[item.pid] || isGenerating(item)) return;
     const entry = leave(item, null);
     entry.skip = "pending";
+    undoPids.current.add(item.pid);
     setUndo((cur) => {
       const entries = [...(cur?.entries || []).filter((e) => e.item.pid !== item.pid), entry];
       return { entries, text: `${entries.length} skipped — not advertised.` };
@@ -605,7 +635,6 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
       if (!alive.current) return;
       dropUndo(item.pid);
       if (out.refused) { if (gone.current.get(item.pid) === entry) comeBack(entry); say(entry.item, `Not skipped — ${out.refused}. It is back on the list.`); return; }
-      gone.current.delete(item.pid);
       say(item, "No answer to the Skip — the list is being refreshed to show where it is.");
       reload();
     });
@@ -613,6 +642,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   const onUndo = () => {
     if (!undo) return;
     const { entries } = undo;
+    undoPids.current.clear();
     setUndo(null);
     // Back in their places at once — last skipped first, so each position is the
     // one it was taken from — then restored on the server.
@@ -646,36 +676,42 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     // The item's OWN choice is sent; with none the function uses its default (Full Gemini).
     const method = item.method === "full" || item.method === "split" ? item.method : null;
     (async () => {
+      // The list is re-read AFTER the card has left its "generating" state (never during).
+      let reread = false;
       try {
         const res = await api.generate(pid, { method, onEvent: (ev) => { if (alive.current) setLive((l) => (l[pid] ? { ...l, [pid]: foldLive(l[pid], ev) } : l)); } });
         if (!alive.current) return;
         if (res?.addedOnly) {
           // The item had moved on while its photo was made (skipped or approved elsewhere).
           say(item, "The photo was made, but this item had moved on — it is kept in its history.");
-          reload();
+          reread = true;
         } else if (res?.item) {
           const zar = Number(res.costZar);
           setData((d) => ({
             ...d, items: (d.items || []).map((i) => (i.pid === pid ? afterGenerated(i, res.item) : i)),
             stats: Number.isFinite(zar) && d.stats && Number.isFinite(Number(d.stats.totalSpentZar)) ? { ...d.stats, totalSpentZar: Number(d.stats.totalSpentZar) + zar } : d.stats,
           }));
-          say(item, `${res.note ? `${res.note} ` : ""}Photo ready in ${Math.round(Number(res.seconds) || 0)}s${Number.isFinite(zar) ? ` · ${res.costEstimated ? "~" : ""}R${zar.toFixed(2)}` : ""}.`);
+          say(item, `${res.item.generations?.[res.genId]?.note ? `${res.item.generations[res.genId].note} ` : ""}Photo ready in ${Math.round(Number(res.seconds) || 0)}s${Number.isFinite(zar) ? ` · ${res.costEstimated ? "~" : ""}R${zar.toFixed(2)}` : ""}.`);
         }
       } catch (e) {
         if (!alive.current) return;
         if (definite(e) || /^No photo/.test(reason(e))) {
           say(item, `${reason(e)}.`);
           // Anything but "busy — tap again" means the item is not as the card shows it.
-          if (!/busy — tap Generate again/.test(reason(e))) reload();
+          reread = !/busy — tap Generate again/.test(reason(e));
         } else {
           // The connection dropped: the photo may still land. Never invite a second paid tap blind.
           say(item, "The connection dropped while the photo was being made — it may still arrive. The list is being refreshed.");
-          reload();
+          reread = true;
         }
       } finally {
         taps.current += 1;
-        if (alive.current) setLive((l) => { const { [pid]: over, ...rest } = l; void over; return rest; });
+        if (alive.current) {
+          liveRef.current = (({ [pid]: over, ...rest }) => rest)(liveRef.current);
+          setLive((l) => { const { [pid]: over, ...rest } = l; void over; return rest; });
+        }
       }
+      if (reread && alive.current) reload();
     })();
   };
 

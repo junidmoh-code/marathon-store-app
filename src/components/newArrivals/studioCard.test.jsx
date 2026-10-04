@@ -564,6 +564,60 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     await settle(() => {}); await settle(() => {});
     expect(api.list).toHaveBeenCalledTimes(3);
     expect(cards(tree)).not.toContain(P(3));
+    // The count on the tab went with the hidden card.
+    expect(tabLabels(tree)[0]).toBe("New 2");
+  });
+
+  it("an approved card never comes back because a list read before its write landed arrives late", async () => {
+    const stale = deferred();
+    const items = [withPhoto(1), withPhoto(2), bare(3)];
+    let calls = 0;
+    const api = fakeApi(items, {
+      approve: vi.fn(async (pids) => (pids[0] === P(1) ? Promise.reject(new TypeError("Load failed")) : { approved: pids, skipped: [] })),
+      list: vi.fn(async (tab) => {
+        calls += 1;
+        // Call 2 was read BEFORE P2's approval landed and answers after it: it still carries P2.
+        // A list read after the approval (call 3 on) no longer has it.
+        const now = calls >= 3 ? items.filter((i) => i.pid !== P(2)) : items;
+        const res = { tab, items: now, total: now.length, tabCounts: { new: now.length, done: 5 }, groupCounts: { sneakers: now.length, clothing: 0 } };
+        return calls === 2 ? stale.promise.then(() => res) : res;
+      }),
+    });
+    const tree = await render(api);
+    await tap(btn(card(tree, P(1)), "Approve"));     // no answer → a re-read starts
+    await settle(() => {}); await settle(() => {});
+    await tap(btn(card(tree, P(2)), "Approve"));     // approved (and its write finishes) while that re-read is on its way
+    await settle(() => {});
+    await settle(() => stale.resolve());
+    await settle(() => {}); await settle(() => {});
+    expect(cards(tree)).not.toContain(P(2));
+    // The stale list was thrown away and the list read again.
+    expect(api.list).toHaveBeenCalledTimes(3);
+  });
+
+  it("a re-read never paints an old list over a ❤ tapped while it was on its way", async () => {
+    const stale = deferred();
+    const items = [withPhoto(1), withPhoto(2)];
+    let calls = 0;
+    const loveD = deferred();
+    const api = fakeApi(items, {
+      skip: vi.fn(async () => { throw new TypeError("Load failed"); }),
+      love: vi.fn(() => loveD.promise),
+      list: vi.fn(async (tab) => {
+        calls += 1;
+        const res = { tab, items, total: 2, tabCounts: { new: 2, done: 5 }, groupCounts: { sneakers: 2, clothing: 0 } };
+        return calls === 2 ? stale.promise.then(() => res) : res;
+      }),
+    });
+    const tree = await render(api);
+    await tap(btn(card(tree, P(1)), "Skip"));        // no answer → a re-read starts
+    await settle(() => {}); await settle(() => {});
+    const heart = () => byId(byId(card(tree, P(2)), "main-meta")[0], "love")[0];
+    await tap(heart());                               // ❤ while the re-read is on its way; its write is still pending
+    expect(heart().props["aria-pressed"]).toBe(true);
+    await settle(() => stale.resolve());              // the old list (no ❤) arrives
+    await settle(() => {});
+    expect(heart().props["aria-pressed"]).toBe(true);
   });
 
   it("a generation the server refuses (the item moved on) re-reads the list; 'busy' does not", async () => {
