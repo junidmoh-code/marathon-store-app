@@ -498,7 +498,15 @@ export const revertPrices = (was, drafts) => (cur) => {
 export const revertMethod = (was, choice) => (cur) => (cur?.method === choice ? copyFrom(cur, was, ["method"]) : cur);
 
 /** The server's item after a generation, merged onto the card: the card keeps its product and stock lines. Pure. */
-export const afterGenerated = (cur, item) => ({ ...item, product: cur.product, availableSizes: cur.availableSizes, totalUnits: cur.totalUnits, stockKnown: cur.stockKnown });
+export const afterGenerated = (cur, item) => ({ sourceUrl: cur.sourceUrl, ...item, product: cur.product, availableSizes: cur.availableSizes, totalUnits: cur.totalUnits, stockKnown: cur.stockKnown });
+
+/**
+ * The photo shown as "Original": the product's CURRENT source photo as the
+ * server read it (`sourceUrl`). Only an answer from an older server (no
+ * sourceUrl) falls back to the product's own fields — and the item's old pin
+ * (`originalUrl`) comes LAST: it is the copy that went stale. Pure.
+ */
+export const sourceUrlOf = (item) => item?.sourceUrl || item?.product?.photoUrlOriginal || item?.product?.photoUrl || item?.originalUrl || null;
 
 /** "Nike AF1: …" — every message names its item (several can be at work at once). Pure. */
 export const named = (item, text) => {

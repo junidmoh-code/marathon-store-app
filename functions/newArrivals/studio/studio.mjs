@@ -14,6 +14,7 @@ import {
 import { studioPrompt, setupName } from "./prompt.mjs";
 import { imagePart, textPart } from "./gemini-stream.mjs";
 import { objectiveMeasurements } from "./measure.mjs";
+import sourcePhoto from "../sourcePhoto.cjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
 
@@ -31,9 +32,13 @@ export function sourceFresh(product) {
   return !(Number(product.photoUpdatedAt) > made + 60_000);
 }
 
-/** The ORIGINAL to generate from — never a generated photo. Pure. */
+/**
+ * The photo to generate from: the product's CURRENT staff photo (its hi-res
+ * upload copy while that is still the photo staff took) — read from the
+ * product now, never a copy pinned on the item, never a generated photo. Pure.
+ */
 export function originalUrlOf(item, product) {
-  return (sourceFresh(product) && product.photoSourceUrl) || item?.originalUrl || product?.photoUrlOriginal || product?.photoUrl || null;
+  return (sourceFresh(product) && product.photoSourceUrl) || sourcePhoto.currentSourceUrl(item?.pid, product, item);
 }
 
 // What the extra example photos are — and are not — to the model.
@@ -186,6 +191,8 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   return {
     generated, kind, method: "full",
+    // The product photo this was made from: a later re-shoot makes the generation out of date.
+    sourceUrl: sourcePhoto.currentSourceUrl(item.pid, product, item),
     promptVersion: `${setupName(layersUsed)} (${prompt.version})`, layersUsed,
     box: kind === "footwear" ? { mode: boxMode, brand, source: boxSource } : null,
     draftFiles: kept, usage: gen.usage || null, measurements,

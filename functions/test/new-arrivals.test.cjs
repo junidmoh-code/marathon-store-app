@@ -34,7 +34,8 @@ test("enqueue writes the item and the New index, and is idempotent", async () =>
   assert.deepEqual(await na.enqueue(db, PID, upload(), NOW), { enqueued: true });
   const item = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
   assert.equal(item.status, "new");
-  assert.equal(item.originalUrl, "https://x/photo.jpg");
+  // No photo is copied onto the item: the product's photo is read live at every use.
+  assert.equal(item.originalUrl, undefined);
   assert.equal((await db.ref(`${core.BY_STATUS}/new/${PID}`).once()).val(), NOW);
   // Redelivery never overwrites (the item may have moved on since).
   await db.ref(`${core.ITEMS}/${PID}/status`).set("ready");

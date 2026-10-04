@@ -158,7 +158,7 @@ async function usdZarToday(db, nowMs, fetchImpl = fetch) {
 // Approve, Skip and Use-this-one wait and a second tap is refused. NOTHING
 // else on the item changes until a photo has actually landed: a failed
 // generation leaves the item exactly as it was.
-async function claim(db, pid, uid, nowMs, product) {
+async function claim(db, pid, uid, nowMs) {
   const out = {};
   let prev = null;
   const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {
@@ -171,11 +171,8 @@ async function claim(db, pid, uid, nowMs, product) {
     out.refusal = null;
     prev = cur;
     const fresh = cur.status === "new" && !cur.currentGen;
-    const next = { ...cur, generateRequest: { at: nowMs, by: uid || "unknown", studio: true, ...(fresh ? {} : { regenerate: true }) } };
-    // The original is pinned once: a later approval replaces the product's photo.
-    const original = cur.originalUrl || product?.photoUrlOriginal || product?.photoUrl || null;
-    if (original) next.originalUrl = original;
-    return next;
+    // Nothing else: no photo is pinned on the item (the product's current photo is read at every use).
+    return { ...cur, generateRequest: { at: nowMs, by: uid || "unknown", studio: true, ...(fresh ? {} : { regenerate: true }) } };
   });
   const item = res && res.committed && res.snapshot && res.snapshot.val();
   if (!item || out.refusal || !item.generateRequest || item.generateRequest.at !== nowMs) {
@@ -256,7 +253,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   const t0 = now();
   const product = await val(db, `products/${pid}`);
   if (!product) throw new HttpsError("failed-precondition", "Can't generate — the product record no longer exists.");
-  const { item, prev } = await claim(db, pid, uid, t0, product);
+  const { item, prev } = await claim(db, pid, uid, t0);
   const genId = `g${t0}`;
   const how = studio.methodFor(item, { asked: method || null, defaultMethod: generation.defaultMethod });
   const bucket = deps.bucket;
@@ -368,7 +365,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     ok: true, pid, genId, code, seconds: Math.round((now() - t0) / 100) / 10, costZar: cost.zar, costEstimated: cost.estimated,
     // Not this run's item any more (skipped, or Junid moved on): the photo was added to it, nothing else changed.
     ...(out.mine ? {} : { addedOnly: true }),
-    item: core.cardItem(final),
+    item: { ...core.cardItem(final), ...core.sourceFields(pid, final, product) },
   };
 }
 

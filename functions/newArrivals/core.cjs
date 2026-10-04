@@ -35,6 +35,7 @@
 "use strict";
 
 const { availableUnits, stockSizeKey, ONLINE_EXCLUDED_LOCATIONS } = require("../lib/social-select.cjs");
+const sourcePhoto = require("./sourcePhoto.cjs");
 
 const ROOT = "new_arrivals";
 const ITEMS = `${ROOT}/items`;
@@ -133,7 +134,10 @@ function buildItem(pid, product, at) {
   // Optional fields are OMITTED, never written as undefined (the SDK throws on
   // undefined, and null would just be dropped).
   if (product.categoryKey) item.categoryKey = String(product.categoryKey);
-  if (product.photoUrl) item.originalUrl = String(product.photoUrl);
+  // NO photo is copied onto the item: the product's photo is read live every
+  // time (sourcePhoto.cjs). A copy made here went stale the moment the photo
+  // was replaced in admin — the card, the generator and the chain all kept
+  // using the old one.
   return item;
 }
 
@@ -212,6 +216,8 @@ function productSummary(p) {
     sizes: sizes.map(String),
     photoUrl: p.photoUrl || null,
     photoUrlOriginal: p.photoUrlOriginal || null,
+    // When staff last replaced the photo (human uploads only): a generation older than this was made from the photo before.
+    photoUpdatedAt: Number.isFinite(Number(p.photoUpdatedAt)) && Number(p.photoUpdatedAt) > 0 ? Number(p.photoUpdatedAt) : null,
     categoryKey: p.categoryKey || null,
   };
 }
@@ -487,6 +493,18 @@ function lovedItem(item, genId, loved, at) {
 // in genlog (RTDB index + ledger); should any of its heavy fields ever be
 // written onto a generation, the list strips them before they reach the card.
 const CARD_GEN_OMIT = Object.freeze(["promptText", "promptSha", "thoughts", "thoughtsLabel", "thoughtsUnsupported", "genlog", "inputs", "request", "usage", "timing", "errors503"]);
+/**
+ * What the card needs to show the product's CURRENT photo: `sourceUrl` (the
+ * live source photo — never the item's old pin) and `sourceChanged` (the
+ * photo on the card was made from a photo the product no longer shows). Pure.
+ */
+function sourceFields(pid, item, product) {
+  const sourceUrl = sourcePhoto.currentSourceUrl(pid, product, item);
+  const cur = item && item.currentGen && item.generations && item.generations[item.currentGen];
+  const stale = !!cur && sourcePhoto.generationIsStale(cur, { sourceUrl, photoUpdatedAt: product && product.photoUpdatedAt });
+  return { sourceUrl, ...(stale ? { sourceChanged: true } : {}) };
+}
+
 /** The item as the card gets it: every generation without the log's heavy fields. Pure. */
 function cardItem(item) {
   if (!item || !item.generations || typeof item.generations !== "object") return item;
@@ -575,6 +593,6 @@ module.exports = {
   FILTER_CLASSES, filterClassOf, normalizeFilter, GROUPS, GROUP_TABS, groupOf, normalizeGroup, stockSummary, matchesFilter,
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
   SELECT_LANES, GEN_ID_RE, selectRefusal, selectFields,
-  loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem,
+  loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem, sourceFields,
   GENLOG, THOUGHTS_LABEL, CODE_RE, howView, METHODS, methodRefusal,
 };

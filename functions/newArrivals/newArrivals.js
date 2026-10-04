@@ -118,12 +118,13 @@ async function productDetail(db, pid, locations, { withStock = true } = {}) {
     val(db, `products/${pid}`),
     ...(withStock ? locations : []).map((loc) => val(db, `stock/${loc}/${pid}`)),
   ]);
-  if (!withStock) return { summary: core.productSummary(product), stock: null };
+  // (`raw` is the product record itself: the live photo fields are read from it, never from the item.)
+  if (!withStock) return { summary: core.productSummary(product), stock: null, raw: product };
   const summary = core.productSummary(product);
   const tree = {};
   locations.forEach((loc, j) => { if (cells[j]) tree[loc] = cells[j]; });
   const stock = core.stockSummary(summary ? summary.sizes : [], tree);
-  return { summary, stock };
+  return { summary, stock, raw: product };
 }
 
 // ── list ─────────────────────────────────────────────────────────────────────
@@ -269,7 +270,8 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
     if (repair) await db.ref(core.ROOT).update(repair);
     if (!item || core.TAB_OF[item.status] !== tab) return null;
     const d = details.get(pid) || await productDetail(db, pid, locations);
-    return { ...core.cardItem(item), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
+    // The photo shown as "Original" is the product's CURRENT one, read now — never a copy kept on the item.
+    return { ...core.cardItem(item), ...core.sourceFields(pid, item, d.raw), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
   })).filter(Boolean);
 
   const stats = await val(db, `${core.ROOT}/stats`);

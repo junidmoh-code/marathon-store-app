@@ -17,6 +17,7 @@ import { inputOf } from "./compose.mjs";
 import { imagePart, textPart } from "./gemini-stream.mjs";
 import { withRetries, keepDraft, expectedBox, SOURCE_BOX } from "./studio.mjs";
 import { objectiveMeasurements } from "./measure.mjs";
+import sourcePhoto from "../sourcePhoto.cjs";
 
 // A cut-out that keeps almost nothing, or almost everything, did not find the
 // product's edge (a pale-grey product on the grey, or a background that was
@@ -111,6 +112,7 @@ export async function splitGenerate(ctx) {
   } catch { /* recorded without them */ }
   return {
     generated, kind, method: "split",
+    sourceUrl: sourcePhoto.currentSourceUrl(item.pid, product, item),
     promptVersion: `${SPLIT_PROMPT_VERSION} (split)`, layersUsed: [],
     packaging: split.packaging || null,
     // What Junid needs to know when the product could not be placed: the photo shown is Gemini's own, on grey.

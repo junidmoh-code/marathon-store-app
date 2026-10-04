@@ -36,7 +36,7 @@ import {
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
   normalizeTab, canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, methodMadeText, METHOD_TABS, effectiveMethod, methodToSet, METHOD_CHOICES,
   foldLive, liveStart, afterPick, afterPrices, afterLove, withoutItem, withItemBack, isGenerating,
-  revertPick, revertLove, revertPrices, revertMethod, afterGenerated, named,
+  revertPick, revertLove, revertPrices, revertMethod, afterGenerated, named, sourceUrlOf,
 } from "./newArrivalsView";
 
 const REFRESH_MS = 60_000;   // the quiet refresh of the first page
@@ -200,7 +200,8 @@ function Photos({ item, tab, stats, live, busy, h }) {
   return (
     <>
       <div style={{ display: "flex", gap: 8 }}>
-        <Tile url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
+        {/* The product's CURRENT photo, as the server read it just now (sourceUrl) — never a copy kept on the item. */}
+        <Tile testid="original-photo" url={sourceUrlOf(item)} label="Original" />
         {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={main ? "Current photo" : mainUrl ? "Photo" : "No photo yet"} />}
       </div>
       {live && <LiveThoughts live={live} />}
@@ -211,6 +212,11 @@ function Photos({ item, tab, stats, live, busy, h }) {
           <span style={{ flex: 1 }} />
           {how(main, false)}
           {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} disabled={busy} />}
+        </div>
+      )}
+      {!live && main && item.sourceChanged && tab === "new" && (
+        <div data-testid="source-changed" style={{ color: "#fff", fontSize: 12, marginTop: 6, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.08)" }}>
+          The product's photo was changed after this photo was made — tap Regenerate to make one from the new photo.
         </div>
       )}
       {/* What Junid must know about this photo (e.g. Split could not place it): it stays on the card, not only in a passing message. */}
