@@ -23,12 +23,29 @@ const sse = (events, { status = 200 } = {}) => {
 const json = (body, status = 200) => ({ ok: status === 200, status, headers: { get: () => "application/json" }, json: async () => body });
 const USAGE = { input_tokens: 2400, output_tokens: 6240, input_tokens_details: { text_tokens: 900, image_tokens: 1500 } };
 
-test("the SAME parts become one prompt and the images in order — every image named by the sentence that introduced it", () => {
+test("the SAME parts become one prompt; every image is named by the sentence that introduced it; the REAL product photo goes first", () => {
   const { prompt, images } = toPromptAndImages(PARTS);
-  assert.equal(prompt, "THE PROMPT — make one studio photo.\n\nTHE IMAGES GIVEN, IN ORDER:\nIMAGE 1 — BACKGROUND PLATE — use exactly\nIMAGE 2 — GARMENT PHOTO — the real garment(s)");
-  assert.deepEqual(images.map((i) => [i.buffer.toString(), i.mime]), [["plate", "image/jpeg"], ["garment", "image/png"]]);
+  assert.equal(prompt, "THE PROMPT — make one studio photo.\n\nTHE IMAGES GIVEN, IN ORDER:\nIMAGE 1 — GARMENT PHOTO — the real garment(s)\nIMAGE 2 — BACKGROUND PLATE — use exactly");
+  assert.deepEqual(images.map((i) => [i.buffer.toString(), i.mime]), [["garment", "image/png"], ["plate", "image/jpeg"]]);
   // The prompt itself is untouched: it is the first thing in the request, word for word.
   assert.ok(prompt.startsWith(PARTS[0].text));
+});
+
+test("a shoe: the shoe photo first, its box second, then plate, reference and BOTH example photos under their one label, then the diagram", () => {
+  const parts = [
+    textPart("P"), textPart("BACKGROUND PLATE — use exactly:"), imagePart(Buffer.from("plate")),
+    textPart("REFERENCE — the target composition and look:"), imagePart(Buffer.from("ref")),
+    textPart("MORE EXAMPLES OF THE SAME COMPOSITION:"), imagePart(Buffer.from("ex1")), imagePart(Buffer.from("ex2")),
+    textPart("LAYOUT DIAGRAM — NOT part of the photo:"), imagePart(Buffer.from("diagram")),
+    textPart("SHOE PHOTO — the real shoe:"), imagePart(Buffer.from("shoe")),
+    textPart("BOX PHOTO — a box of this shoe's brand:"), imagePart(Buffer.from("box")),
+  ];
+  const { prompt, images } = toPromptAndImages(parts);
+  assert.deepEqual(images.map((i) => i.buffer.toString()), ["shoe", "box", "plate", "ref", "ex1", "ex2", "diagram"]);
+  assert.deepEqual(prompt.split("\n").slice(3), [
+    "IMAGE 1 — SHOE PHOTO — the real shoe", "IMAGE 2 — BOX PHOTO — a box of this shoe's brand", "IMAGE 3 — BACKGROUND PLATE — use exactly",
+    "IMAGE 4 — REFERENCE — the target composition and look", "IMAGE 5 — MORE EXAMPLES OF THE SAME COMPOSITION", "IMAGE 6 — MORE EXAMPLES OF THE SAME COMPOSITION", "IMAGE 7 — LAYOUT DIAGRAM — NOT part of the photo",
+  ]);
 });
 
 test("the size is the one nearest the aspect the layout asks for", () => {

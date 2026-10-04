@@ -30,27 +30,33 @@ export function sizeFor(aspectRatio) {
   return w < h ? SIZES.portrait : SIZES.landscape;
 }
 
+// gpt-image-1 keeps the FIRST input image most faithfully (input_fidelity
+// high). So the real product photo goes first, then its box, then the backdrop,
+// reference and diagram — every image still named by its own sentence, so the
+// prompt and the process are the same as Gemini's; only the order of the
+// attachments differs.
+const rank = (label) => (/^(SHOE|GARMENT) PHOTO/.test(label) ? 0 : /^BOX PHOTO/.test(label) ? 1 : 2);
+
 /**
- * Gemini-style parts → ONE prompt + the images in order. The first text part
- * is the prompt; every later text part is the label of the image(s) that
- * follow it. Pure.
- * → { prompt, images: [{ buffer, mime }] }
+ * Gemini-style parts → ONE prompt + the images. The first text part is the
+ * prompt; every later text part is the label of the image(s) that follow it.
+ * Pure. → { prompt, images: [{ buffer, mime, label }] }
  */
 export function toPromptAndImages(parts) {
-  const texts = [], images = [], lines = [];
-  let label = null;
+  let prompt = "", label = null;
+  const found = [];
   for (const p of parts || []) {
     const inline = p && (p.inline_data || p.inlineData);
     if (inline) {
-      images.push({ buffer: Buffer.from(inline.data, "base64"), mime: inline.mime_type || inline.mimeType || "image/jpeg" });
-      lines.push(`IMAGE ${images.length} — ${label || "another image for the label above"}`);
-      label = null;
+      found.push({ buffer: Buffer.from(inline.data, "base64"), mime: inline.mime_type || inline.mimeType || "image/jpeg", label: label || "an image for this photo" });
     } else if (p && p.text) {
-      if (!texts.length && !images.length) texts.push(String(p.text)); else label = String(p.text).replace(/:\s*$/, "");
+      if (!prompt && !found.length) prompt = String(p.text); else label = String(p.text).replace(/:\s*$/, "");
     }
   }
-  const prompt = images.length ? `${texts[0] || ""}\n\nTHE IMAGES GIVEN, IN ORDER:\n${lines.join("\n")}` : texts[0] || "";
-  return { prompt, images };
+  // A stable sort: product first, box second, the rest in the order given.
+  const images = found.map((im, i) => ({ im, i })).sort((x, y) => rank(x.im.label) - rank(y.im.label) || x.i - y.i).map((x) => x.im);
+  if (!images.length) return { prompt, images };
+  return { prompt: `${prompt}\n\nTHE IMAGES GIVEN, IN ORDER:\n${images.map((im, i) => `IMAGE ${i + 1} — ${im.label}`).join("\n")}`, images };
 }
 
 const ext = (mime) => (/png/.test(mime) ? "png" : /webp/.test(mime) ? "webp" : "jpg");

@@ -6,7 +6,8 @@ Done ─▶ chaining (photo → name → Excellent → publish intent) ─▶ re
      ─▶ the WhatsApp queue (posting is PAUSED — a separate job)
 ```
 
-**Everything is manual.** Gemini is called only when Junid taps Generate or
+**Everything is manual.** An image model (Gemini, or OpenAI's gpt-image-1 —
+Junid picks per item) is called only when Junid taps Generate or
 Regenerate (plus the name suggester after an Approve). There is no checker, no
 verdict, no automatic generation, re-check, regeneration or tab move. Junid's
 Approve is final.
@@ -75,7 +76,7 @@ nothing.
 | `newArrivalsLove` | ❤ |
 | `newArrivalsReject` | a feedback chip, logged against the photo shown |
 | `newArrivalsHow` | "How Gemini did it" for one generation |
-| `newArrivalsMethod` | Full Gemini / Split for one item |
+| `newArrivalsMethod` | the next photo's engine + method for one item (`items/{pid}/method`, `/provider`) |
 | `newArrivalsEnqueue` | trigger: an upload lands in New |
 
 All are gated to the super-admin or `permFlags/shopify_publish`. The client
@@ -108,6 +109,24 @@ changed.**
   ran out before a test generation). Each layer's exact text is pinned by
   sha256; to switch one off, set it to `false` in `generation.json` and
   `baseline.lock.json` and deploy `newArrivalsStudio`.
+- **Two engines, one interface** (4 Oct — Gemini kept refusing with "high
+  demand"): `studio/gemini-stream.mjs` `streamImage` and
+  `studio/openai-image.mjs` `openaiImage` take the same
+  `(model, parts, imageConfig, opts)` and return the same shape. The card has
+  FOUR buttons — Full Gemini (default), Split (Gemini), Full OpenAI,
+  Split (OpenAI) — never blended. The prompt, the layers, the box rule, the
+  references, the split cut-out, the source-photo rule, approval and posting
+  are identical for both. Differences that are OpenAI's own:
+  - it takes ONE prompt, so each image's introducing sentence becomes a
+    numbered line of the prompt ("IMAGE 1 — SHOE PHOTO — the real shoe");
+  - the real product photo is attached FIRST, its box second (gpt-image-1
+    keeps the first image most faithfully; `input_fidelity: high`);
+  - sizes are 1024×1536 / 1536×1024 / 1024×1024 (not 2K), quality `high`;
+  - no thought summary — "How it was made" shows its drafts only;
+  - the key is the `OPENAI_API_KEY` secret (shared with the older AI Studio);
+    cost from its own token counts (text in $5, image in $10, image out $40
+    per 1M) — roughly three times a Gemini photo.
+  Each generation records `provider` (`gemini` | `openai`; absent = Gemini).
 - **The footwear plate lock** (Junid, 5 Oct — `studio/correct.mjs`,
   `studio/lift.mjs`; `generation.json` `footwearCorrection`): in the final
   footwear photo EVERYTHING except the shoe and its box comes from the one

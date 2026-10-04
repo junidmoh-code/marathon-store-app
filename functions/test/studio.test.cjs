@@ -692,3 +692,31 @@ test("OpenAI's errors are said in the same plain way: declined, out of credit, a
   assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 401: Incorrect API key"), { status: 401 })), "No photo — the OpenAI key was refused — it needs replacing in Secret Manager.");
   assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 gave no photo within 300s"), { status: 504 })), "No photo — OpenAI took too long and the connection was closed — it may still have been charged; tap Generate to try again.");
 });
+
+test("OpenAI gets the SAME steam layer on a hoodie and the SAME box rule + shoe references on a sneaker — and its request puts the real product first", async () => {
+  const { toPromptAndImages } = await import("../newArrivals/studio/openai-image.mjs");
+  const { STEAM_LAYER, footwearBoxLayer, FOOTWEAR_POSE_LAYER } = await import("../newArrivals/studio/prompt.mjs");
+  // Clothing: the steam layer, word for word, in the prompt OpenAI is sent.
+  const h = await world();
+  const ho = await studio.studioGenerate(h.db, { pid: PID, provider: "openai" }, "junid", h.deps);
+  const hParts = h.calls.find((c) => c[0] === "image")[3];
+  assert.ok(toPromptAndImages(hParts).prompt.includes(STEAM_LAYER));
+  assert.deepEqual((await itemOf(h.db)).generations[ho.genId].layers, { steam: true });
+  // Footwear: no box photo of its own → the brand's library box, never an invented one; the reference photo goes too.
+  const s = await world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
+  const lib = await sharp({ create: { width: 300, height: 200, channels: 4, background: "#e85d04" } }).png().toBuffer();
+  s.deps.assets = { ...s.deps.assets, libraryBox: async (key) => (key === "nike" ? { buffer: lib, kind: "stand-in" } : null), loadReference: async () => ({ buffer: await jpeg(300, 400, "#444"), file: "footwear-reference.png" }) };
+  const so = await studio.studioGenerate(s.db, { pid: PID, provider: "openai" }, "junid", s.deps);
+  const call = s.calls.find((c) => c[0] === "image");
+  assert.equal(call[1], "gpt-image-1");
+  const sent = toPromptAndImages(call[3]);
+  assert.ok(sent.prompt.includes(footwearBoxLayer("library")));
+  assert.ok(sent.prompt.includes(FOOTWEAR_POSE_LAYER));
+  assert.ok(sent.prompt.includes("Never invent a box") || sent.prompt.includes("a box's logo is never invented"));
+  const order = sent.images.map((i) => i.label.split(" — ")[0]);
+  assert.deepEqual(order.slice(0, 2), ["SHOE PHOTO", "BOX PHOTO"], "the real shoe, then its box, are the first images OpenAI sees");
+  assert.ok(order.includes("REFERENCE") && order.includes("BACKGROUND PLATE") && order.includes("LAYOUT DIAGRAM"));
+  const gen = (await itemOf(s.db)).generations[so.genId];
+  assert.equal(gen.provider, "openai");
+  assert.equal(gen.layers.footwearBox, true); assert.equal(gen.layers.footwearPose, true);
+});
