@@ -51,7 +51,7 @@ export async function streamCallable({ url, data, getToken, fetchImpl = fetch, o
   } finally {
     if (timer) clearTimeout(timer);
     // Whatever ended the read (an error line, a thrown error), the connection is let go.
-    try { reader?.cancel?.(); } catch { /* already closed */ }
+    try { Promise.resolve(reader?.cancel?.()).catch(() => {}); } catch { /* already closed */ }
   }
 }
 

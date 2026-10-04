@@ -43,6 +43,7 @@ const REFRESH_MS = 60_000;   // the quiet refresh of the first page
 const PAGE = 30;
 const TOAST_MS = 6000;
 const TOASTS_MAX = 3;
+const WRITES_WAIT_MS = 10_000;
 const INK = "#dfe7ff";
 
 // ── small pieces ─────────────────────────────────────────────────────────────
@@ -106,7 +107,7 @@ function HowPanel({ pid, gen, loadHow }) {
   const [state, setState] = useState({ data: null, error: null });
   useEffect(() => {
     let on = true;
-    loadHow(pid, gen.genId).then((data) => { if (on) setState({ data, error: null }); }, (e) => { if (on) setState({ data: null, error: e?.message || String(e) }); });
+    loadHow(pid, gen.genId).then((data) => { if (on) setState({ data: data || { none: true }, error: null }); }, (e) => { if (on) setState({ data: null, error: e?.message || String(e) }); });
     return () => { on = false; };
   }, [pid, gen.genId, loadHow]);
   const { data, error } = state;
@@ -178,7 +179,7 @@ function PriceFields({ item, onSavePrices, needNote }) {
 
 // The original beside the current photo (or the live generation), then a strip
 // of every earlier generation: its G-code, ❤, "Use this one", "How Gemini did it".
-function Photos({ item, tab, stats, live, h }) {
+function Photos({ item, tab, stats, live, busy, h }) {
   const gens = generationsOf(item);
   const [howOpen, setHowOpen] = useState(null);
   const toggleHow = (genId) => setHowOpen((cur) => (cur === genId ? null : genId));
@@ -208,7 +209,7 @@ function Photos({ item, tab, stats, live, h }) {
           <span style={{ color: GRAY, fontSize: 11 }}>{[methodTag(main), costText(main, stats)].filter(Boolean).join(" · ")}</span>
           <span style={{ flex: 1 }} />
           {how(main, false)}
-          {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} />}
+          {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} disabled={busy} />}
         </div>
       )}
       {howGen && howGen === main && !live && <HowPanel pid={item.pid} gen={howGen} loadHow={h.loadHow} />}
@@ -221,10 +222,10 @@ function Photos({ item, tab, stats, live, h }) {
               </a>
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 4, minHeight: 40 }}>
                 <GenCode gen={g} small />
-                {h.onLove && canLove(tab, g) && <LoveButton item={item} gen={g} onLove={h.onLove} disabled={!!live} />}
+                {h.onLove && canLove(tab, g) && <LoveButton item={item} gen={g} onLove={h.onLove} disabled={busy} />}
               </div>
               {tab === "new" && h.onPick && canPick(item, g) && (
-                <button disabled={!!live} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: live ? 0.4 : 1 }}>Use this one</button>
+                <button disabled={busy} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: busy ? 0.4 : 1 }}>Use this one</button>
               )}
               {how(g, true)}
             </div>
@@ -253,7 +254,7 @@ function ItemCard({ item, tab, live, h, stats }) {
   const approveOn = acts.approveEnabled && !working;
   return (
     <div data-pid={item.pid} style={{ ...GLASS, padding: 12, marginBottom: 14 }}>
-      <Photos item={item} tab={tab} stats={stats} live={live} h={h} />
+      <Photos item={item} tab={tab} stats={stats} live={live} busy={working} h={h} />
       <div style={{ marginTop: 10, color: "#fff", fontWeight: 700, fontSize: 15 }}>{p.name || item.name}</div>
       {shopifyNameLine(item) && tab === "done" && <div style={{ color: BLUE_L, fontSize: 13, marginTop: 2 }}>{shopifyNameLine(item)}</div>}
       <div data-testid="stock" style={{ color: GRAY, fontSize: 12, marginTop: 3 }}>Sizes {sizesText(p.sizes)} · {stockText(item)}</div>
@@ -285,7 +286,7 @@ function ItemCard({ item, tab, live, h, stats }) {
             {METHOD_CHOICES.map((m) => {
               const on = effectiveMethod(item, h.defaultMethod) === m.key;
               return (
-                <button key={m.key} role="radio" aria-checked={on} aria-disabled={working || on} onClick={() => { if (!working && !on) h.onMethod(item, m.key); }}
+                <button key={m.key} role="radio" aria-checked={on} aria-disabled={working} onClick={() => { if (!working && !on) h.onMethod(item, m.key); }}
                   style={{ ...(on ? bBlue : bGray), minHeight: 40, padding: "0 14px", fontSize: 12, borderRadius: 999, opacity: working ? 0.5 : 1 }}>{m.label}</button>
               );
             })}
@@ -385,6 +386,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   const taps = useRef(0);                      // bumped by every local change AND every write that finishes
   const writes = useRef(new Map());            // pid → the tail of its write chain
   const gone = useRef(new Map());              // pid → the entry of a card that has left the list (Approve, Skip)
+  const undoPids = useRef(new Set());          // the skipped cards the Undo bar can still bring back
   const alive = useRef(true);
   const activeView = useRef(viewKey(tab, group));
   const viewRef = useRef({ tab, group });
@@ -404,20 +406,25 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     setTimeout(() => { if (alive.current) setToasts((ts) => ts.filter((t) => t.id !== id)); }, TOAST_MS);
   }, []);
 
-  const load = useCallback(async (which, g, { quiet = false } = {}) => {
+  const load = useCallback(async (which, g, { quiet = false, again = true } = {}) => {
     const key = viewKey(which, g);
-    // A full load waits for the writes still on their way: the list it reads must include them.
-    if (!quiet) await Promise.allSettled([...writes.current.values()]);
+    // A full load waits (up to 10 s) for the writes still on their way: the list it reads must include them.
+    if (!quiet) await Promise.race([Promise.allSettled([...writes.current.values()]), new Promise((r) => setTimeout(r, WRITES_WAIT_MS))]);
     const seq = ++loadSeq.current;
     const tapsAtStart = taps.current;
     try {
       const res = await api.list(which, { limit: PAGE, group: groupFor(which, g) });
       if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
-      // A quiet refresh never paints over a tap or a write that happened since it
-      // started (a write finishing counts — the list was read before it landed).
-      if (quiet && (taps.current !== tapsAtStart || writes.current.size > 0 || Object.keys(liveRef.current).length > 0)) return;
+      // The list was read BEFORE a tap or a finished write: it must not paint over it.
+      const overtaken = taps.current !== tapsAtStart || writes.current.size > 0;
+      if (quiet && (overtaken || Object.keys(liveRef.current).length > 0)) return;
+      // A full load that was overtaken reads once more (then paints whatever it has, without the cards that have left).
+      if (!quiet && overtaken && again) { load(which, g, { again: false }); return; }
+      // Cards that left and whose write has finished are forgotten: the list now says where they are.
+      for (const pid of [...gone.current.keys()]) if (!writes.current.has(pid) && !undoPids.current.has(pid)) gone.current.delete(pid);
+      const items = (res.items || []).filter((i) => !gone.current.has(i.pid));
       setData({
-        items: res.items || [], total: Number.isFinite(res.total) ? res.total : (res.items || []).length, nextCursor: res.nextCursor || null,
+        items, total: Number.isFinite(res.total) ? res.total : items.length, nextCursor: res.nextCursor || null,
         tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null,
       });
     } catch (e) {
@@ -484,7 +491,10 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
       const out = await attempt(send, (r) => (r && r.ok === false ? r.error || "not saved" : null));
       if (out.ok || !alive.current) return;
       patch(item.pid, revert);
-      say(item, `${failed} — ${out.refused || "the server did not answer"}.`);
+      if (out.refused) { say(item, `${failed} — ${out.refused}.`); return; }
+      // No answer: it may have landed. The card is re-read rather than left guessing.
+      say(item, `${failed}? No answer — the list is being refreshed to show what was saved.`);
+      reload();
     });
   };
 
@@ -501,7 +511,16 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
           if (!ask(res.error)) { patch(item.pid, revertPrices(item, drafts)); return; }
           res = await api.savePrices(item.pid, item.product || {}, drafts, { confirmed: true });
         }
-      } catch (e) { res = { ok: false, error: reason(e) }; }
+      } catch (e) {
+        if (!alive.current) return;
+        if (definite(e)) res = { ok: false, error: reason(e) };
+        else {
+          // No answer: the price may be saved. Show what the server has.
+          say(item, "No answer to the price save — the list is being refreshed to show what was saved.");
+          reload();
+          return;
+        }
+      }
       if (!alive.current) return;
       if (!res.ok) { patch(item.pid, revertPrices(item, drafts)); say(item, `Prices not saved — ${reason({ message: res.error })}.`); return; }
       say(item, !res.count ? "No price changed." : res.specialsCheckSkipped ? "Prices saved (the specials check could not run)." : "Prices saved.");
@@ -562,6 +581,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
 
   // SKIP — gone at once, with ONE bar for 8 seconds; Undo brings every skipped item back.
   useEffect(() => {
+    undoPids.current = new Set((undo?.entries || []).map((e) => e.item.pid));
     if (!undo) return undefined;
     const t = setTimeout(() => setUndo(null), UNDO_MS);
     return () => clearTimeout(t);
@@ -602,10 +622,16 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         // The skip never landed: there is nothing to restore, and the card is already back.
         if (entry.skip !== "done") return;
         const out = await attempt(() => api.restore([entry.item.pid]), (r) => ((r?.restored || []).includes(entry.item.pid) ? null : r?.skipped?.[0]?.why || "not restored"));
-        if (out.ok || !alive.current) return;
-        // It IS skipped on the server: the card must not pretend otherwise.
-        setData((d) => withoutItem(d, entry.item.pid, { group: entry.group, toTab: null }));
-        say(entry.item, `Skip not undone — ${out.refused || "the server did not answer"}. It stays skipped.`);
+        // "it is new" = it is already back (restored from elsewhere): that is the Undo, done.
+        if (out.ok || !alive.current || /^it is (new|ready|rejected)\b/.test(out.refused || "")) return;
+        if (out.refused) {
+          // It IS skipped on the server: the card must not pretend otherwise.
+          setData((d) => withoutItem(d, entry.item.pid, { group: entry.group, toTab: null }));
+          say(entry.item, `Skip not undone — ${out.refused}. It stays skipped.`);
+          return;
+        }
+        say(entry.item, "No answer to the Undo — the list is being refreshed to show where it is.");
+        reload();
       });
     }
   };
@@ -637,8 +663,11 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         }
       } catch (e) {
         if (!alive.current) return;
-        if (definite(e) || /^No photo/.test(reason(e))) say(item, `${reason(e)}.`);
-        else {
+        if (definite(e) || /^No photo/.test(reason(e))) {
+          say(item, `${reason(e)}.`);
+          // Anything but "busy — tap again" means the item is not as the card shows it.
+          if (!/busy — tap Generate again/.test(reason(e))) reload();
+        } else {
           // The connection dropped: the photo may still land. Never invite a second paid tap blind.
           say(item, "The connection dropped while the photo was being made — it may still arrive. The list is being refreshed.");
           reload();

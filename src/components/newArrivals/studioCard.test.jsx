@@ -492,6 +492,94 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     expect(lastToast(tree)).toMatch(/^Item 1: Not approved — no stock price yet/);
   });
 
+  it("no answer to a Skip is never 'not skipped': the list is re-read", async () => {
+    const api = fakeApi([bare(1), bare(2)], { skip: vi.fn(async () => { throw new TypeError("Load failed"); }) });
+    const tree = await render(api);
+    await tap(btn(card(tree, P(1)), "Skip"));
+    await settle(() => {}); await settle(() => {});
+    expect(text(tree)).not.toMatch(/Not skipped/);
+    expect(text(tree)).toContain("Item 1: No answer to the Skip — the list is being refreshed to show where it is.");
+    expect(byId(tree.root, "undo-toast")).toHaveLength(0);
+    expect(api.list).toHaveBeenCalledTimes(2);
+  });
+
+  it("no answer to an Undo is never 'it stays skipped' (the card is not yanked); 'it is new' means it is already back", async () => {
+    const api = fakeApi([bare(1)], { restore: vi.fn(async () => { throw new TypeError("Load failed"); }) });
+    const tree = await render(api);
+    await tap(btn(card(tree, P(1)), "Skip"));
+    await settle(() => {});
+    await tap(btn(byId(tree.root, "undo-toast")[0], "Undo"));
+    await settle(() => {}); await settle(() => {});
+    expect(text(tree)).not.toMatch(/stays skipped/);
+    expect(text(tree)).toContain("Item 1: No answer to the Undo — the list is being refreshed to show where it is.");
+    expect(api.list).toHaveBeenCalledTimes(2);
+
+    const api2 = fakeApi([bare(1)], { restore: vi.fn(async () => ({ restored: [], skipped: [{ pid: P(1), why: "it is new, not skipped" }] })) });
+    const tree2 = await render(api2);
+    await tap(btn(card(tree2, P(1)), "Skip"));
+    await settle(() => {});
+    await tap(btn(byId(tree2.root, "undo-toast")[0], "Undo"));
+    await settle(() => {}); await settle(() => {});
+    expect(cards(tree2)).toEqual([P(1)]);
+    expect(byId(tree2.root, "toast")).toHaveLength(0);
+  });
+
+  it("no answer to 'Use this one' / ❤ / a price save: the list is re-read — never a claim that it was not saved", async () => {
+    const api = fakeApi([withPhoto(1)], {
+      select: vi.fn(async () => { throw Object.assign(new Error("internal"), { code: "functions/internal" }); }),
+      savePrices: vi.fn(async () => { throw new TypeError("Load failed"); }),
+    });
+    const tree = await render(api);
+    await tap(btn(byId(card(tree, P(1)), "earlier-generations")[0], "Use this one"));
+    await settle(() => {}); await settle(() => {});
+    expect(lastToast(tree)).toBe("Item 1: Main photo not changed? No answer — the list is being refreshed to show what was saved.");
+    expect(api.list).toHaveBeenCalledTimes(2);
+    await act(async () => { input(tree, P(1), "Retail price (R)").props.onChange({ target: { value: "450" } }); });
+    await tap(btn(card(tree, P(1)), "Save"));
+    await settle(() => {}); await settle(() => {});
+    expect(lastToast(tree)).toBe("Item 1: No answer to the price save — the list is being refreshed to show what was saved.");
+    expect(text(tree)).not.toMatch(/Prices not saved/);
+    expect(api.list).toHaveBeenCalledTimes(3);
+  });
+
+  it("a re-read that was overtaken by a tap does not paint over it: it reads once more, and a card that has left stays gone", async () => {
+    const first = deferred();
+    const items = [withPhoto(1), bare(2), bare(3)];
+    let calls = 0;
+    const api = fakeApi(items, {
+      approve: vi.fn(async () => { throw new TypeError("Load failed"); }),
+      list: vi.fn(async (tab) => {
+        calls += 1;
+        const res = { tab, items, total: 3, tabCounts: { new: 3, done: 5 }, groupCounts: { sneakers: 3, clothing: 0 } };
+        return calls === 2 ? first.promise.then(() => res) : res;
+      }),
+    });
+    const tree = await render(api);
+    await tap(btn(card(tree, P(1)), "Approve"));     // no answer → a re-read starts (call 2, slow)
+    await settle(() => {}); await settle(() => {});
+    expect(api.list).toHaveBeenCalledTimes(2);
+    await tap(btn(card(tree, P(3)), "Skip"));        // a tap while that re-read is on its way
+    expect(cards(tree)).toEqual([P(2)]);
+    await settle(() => first.resolve());             // the stale list arrives: it must not bring the skipped card back
+    await settle(() => {}); await settle(() => {});
+    expect(api.list).toHaveBeenCalledTimes(3);
+    expect(cards(tree)).not.toContain(P(3));
+  });
+
+  it("a generation the server refuses (the item moved on) re-reads the list; 'busy' does not", async () => {
+    const api = fakeApi([bare(1)], { generate: vi.fn(async () => { throw refusal("Can't generate — it is skipped, not on the New tab.", "FAILED_PRECONDITION"); }) });
+    const tree = await render(api);
+    await tap(btn(card(tree, P(1)), "Generate"));
+    await settle(() => {}); await settle(() => {});
+    expect(lastToast(tree)).toBe("Item 1: Can't generate — it is skipped, not on the New tab.");
+    expect(api.list).toHaveBeenCalledTimes(2);
+    const busy = fakeApi([bare(1)], { generate: vi.fn(async () => { throw refusal("No photo — the photo service is busy — tap Generate again.", "UNAVAILABLE"); }) });
+    const tree2 = await render(busy);
+    await tap(btn(card(tree2, P(1)), "Generate"));
+    await settle(() => {}); await settle(() => {});
+    expect(busy.list).toHaveBeenCalledTimes(1);
+  });
+
   it("the Undo bar belongs to the list it was offered on: switching lists removes it", async () => {
     const api = fakeApi([bare(1)]);
     const tree = await render(api);
@@ -733,10 +821,17 @@ describe("studioStream: the streaming callable over fetch", () => {
 
   it("a stalled connection is ended by the timeout, and the reader is let go whatever ended the read", async () => {
     let cancelled = 0;
-    const stalled = { status: 200, headers: { get: () => "text/event-stream" }, body: { getReader: () => ({ read: () => new Promise(() => {}), cancel: () => { cancelled += 1; } }) } };
-    const fetchImpl = (url, init) => new Promise((resolve, reject) => { init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); });
+    // The headers arrived, then the body stalls: the timeout aborts the read and the reader is cancelled.
+    const fetchImpl = async (url, init) => ({
+      status: 200, headers: { get: () => "text/event-stream" },
+      body: { getReader: () => ({
+        read: () => new Promise((resolve, reject) => { init.signal.addEventListener("abort", () => reject(Object.assign(new Error("aborted"), { name: "AbortError" }))); }),
+        cancel: () => { cancelled += 1; return Promise.reject(new Error("already errored")); },
+      }) },
+    });
     await expect(streamCallable({ url: "u", data: {}, getToken: async () => "t", fetchImpl, timeoutMs: 15 })).rejects.toThrow("aborted");
-    void stalled;
+    expect(cancelled).toBe(1);
+    cancelled = 0;
     const errorLine = { ...sse(line({ message: 1 }) + line({ error: { message: "boom", status: "INTERNAL" } }) + line({ result: 1 })) };
     const reader = errorLine.body.getReader();
     errorLine.body.getReader = () => ({ read: reader.read, cancel: () => { cancelled += 1; } });
