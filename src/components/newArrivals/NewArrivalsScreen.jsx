@@ -436,9 +436,12 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         // The list was read BEFORE a tap or a finished write: it must not paint over it.
         const overtaken = taps.current !== tapsAtStart || writes.current.size > 0;
         if (quiet && (overtaken || Object.keys(liveRef.current).length > 0)) return;
-        if (!quiet && overtaken) {
-          if (round < FULL_LOAD_ROUNDS - 1) continue;   // read again
-          if (dataRef.current.items) return;            // still overtaken: what is on screen is newer than this list
+        // With a list already on screen, an overtaken read is read again, and after
+        // a few tries given up on (the screen is newer than it). With nothing on
+        // screen yet — a list just opened — it is shown at once.
+        if (!quiet && overtaken && dataRef.current.items) {
+          if (round < FULL_LOAD_ROUNDS - 1) continue;
+          return;
         }
         // A card that left is forgotten only once a list read AFTER its write finished is in hand
         // (and the Undo bar no longer holds it); until then it stays off the list, counts and all.

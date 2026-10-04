@@ -474,7 +474,8 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     expect(lastToast(tree)).toBe("Item 1: Skip not undone — not saved. It stays skipped.");
   });
 
-  it("a refusal that arrives after the list was switched never puts the card into the other list", async () => {
+  it("a refusal that arrives after the other list is on screen never puts the card into it", async () => {
+    vi.useFakeTimers();
     const d = deferred();
     const clothing = [bare(7)];
     const api = fakeApi([withPhoto(1)], {
@@ -483,14 +484,41 @@ describe("taps that overlap, answers that never come, lists that change", () => 
     });
     const tree = await render(api);
     await tap(btn(card(tree, P(1)), "Approve"));
-    // Flip to Clothing while the Approve is on its way (the switch itself waits for the write).
+    // Flip to Clothing while the Approve is on its way; the switch waits for it — at most 10 s — then shows Clothing.
     await tap(tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === "Next group")[0]);
-    await settle(() => d.resolve({ approved: [], skipped: [{ pid: P(1), why: "no stock price yet" }] }));
-    await settle(() => {}); await settle(() => {});
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(cards(tree)).toEqual([P(7)]);
+    // Now the refusal arrives: the sneaker must not land in the Clothing list.
+    await act(async () => { d.resolve({ approved: [], skipped: [{ pid: P(1), why: "no stock price yet" }] }); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
     expect(cards(tree)).toEqual([P(7)]);
     expect(label(byId(tree.root, "group-name")[0])).toBe("Clothing · 1");
     expect(lastToast(tree)).toMatch(/^Item 1: Not approved — no stock price yet/);
   });
+
+  it("when taps keep overtaking a re-read, the old list is given up on — it never paints over what was tapped", async () => {
+    const items = [withPhoto(1), withPhoto(2), bare(3)];
+    let calls = 0;
+    let onRead = () => {};
+    const api = fakeApi(items, {
+      skip: vi.fn(async () => { throw new TypeError("Load failed"); }),
+      list: vi.fn(async (tab) => {
+        calls += 1;
+        if (calls >= 2) onRead(calls);   // a tap lands while every re-read is on its way
+        return { tab, items, total: 3, tabCounts: { new: 3, done: 5 }, groupCounts: { sneakers: 3, clothing: 0 } };
+      }),
+    });
+    const tree = await render(api);
+    const heart = (pid) => byId(byId(card(tree, pid), "main-meta")[0], "love")[0];
+    // Reads 2, 3, 4: ❤ P2 (loved, unloved, loved); read 5: ❤ P1 — so the last read is overtaken too.
+    onRead = (n) => { (n === 5 ? heart(P(1)) : heart(P(2))).props.onClick(); };
+    await tap(btn(card(tree, P(3)), "Skip"));        // no answer → the re-read begins
+    for (let i = 0; i < 12; i++) await settle(() => {});
+    expect(api.list).toHaveBeenCalledTimes(5);
+    // The stale lists carry no ❤ at all; the screen keeps what was tapped.
+    expect(heart(P(2)).props["aria-pressed"]).toBe(true);
+    expect(heart(P(1)).props["aria-pressed"]).toBe(true);
+  });
+
 
   it("no answer to a Skip is never 'not skipped': the list is re-read", async () => {
     const api = fakeApi([bare(1), bare(2)], { skip: vi.fn(async () => { throw new TypeError("Load failed"); }) });
