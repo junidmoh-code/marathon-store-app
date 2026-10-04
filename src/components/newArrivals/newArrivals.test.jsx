@@ -148,6 +148,14 @@ const render = async (api, initialTab = "new", storage = memStorage()) => {
 const label = (n) => [].concat(n.props.children).filter((c) => typeof c === "string" || typeof c === "number").join("");
 const button = (tree, l) => tree.root.findAll((n) => n.type === "button").find((b) => label(b) === l);
 
+describe("status for an approved item still being named (CodeRabbit)", () => {
+  it("says the Shopify name is being made — before the generic approved line", () => {
+    expect(statusLine({ status: "approved", naming: { status: "pending" } })).toBe("Approved — the Shopify name is being made");
+    expect(statusLine({ status: "approved", naming: { status: "done" } })).toBe("Approved — publishing will start in a minute");
+    expect(statusLine({ status: "chaining", chain: { stuck: { step: "shopify", reason: "duplicate name" } } })).toBe('Approved — waiting at "shopify": duplicate name');
+  });
+});
+
 describe("NewArrivalsScreen", () => {
   it("Ready shows original + generated, price, sizes, suggested name and Approve", async () => {
     const tree = await render(fakeApi());
@@ -548,7 +556,7 @@ describe("ONE card on New: every generation, chips, ONE Approve (no checker line
     expect(chips).toEqual(["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"]);
     await act(async () => { button(tree, "looks fake/CGI").props.onClick(); });
     expect(api.reject).toHaveBeenCalledWith("p1789999990000", "looks fake/CGI");
-    expect(text(tree)).toContain("Rejected: looks fake/CGI.");
+    expect(text(tree)).toContain("Noted: looks fake/CGI — your feedback on this photo (the item stays here).");
   });
 
   it("Regenerate on Ready asks for a fresh attempt", async () => {

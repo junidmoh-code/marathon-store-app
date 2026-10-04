@@ -659,7 +659,11 @@ async function reject(db, { pid, reason }, uid, nowMs) {
   if (!item || !core.NEW_LANES.includes(item.status)) throw new HttpsError("failed-precondition", "Can't note that — the item is not on the New tab.");
   if (item.generateRequest) throw new HttpsError("failed-precondition", "Can't note that — a new photo is being generated.");
   if (!(item.generatedUrl || core.currentGenUrl(item))) throw new HttpsError("failed-precondition", "Can't note that — it has no generated photo.");
-  await writeRoot(db, await decisionPaths(db, pid, { at: nowMs, uid, item, action: "reject", reason }));
+  // The row names the photo the chip was given on — an older item with only a
+  // main photo URL gets a snapshot of that URL (CodeRabbit).
+  const shown = core.currentGenUrl(item) ? item
+    : { ...item, currentGen: "main", generations: { ...(item.generations || {}), main: { url: String(item.generatedUrl), path: item.generatedPath || null } } };
+  await writeRoot(db, await decisionPaths(db, pid, { at: nowMs, uid, item: shown, action: "reject", reason }));
   return { ok: true, noted: true };
 }
 

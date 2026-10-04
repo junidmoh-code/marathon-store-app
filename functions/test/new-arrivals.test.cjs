@@ -130,6 +130,15 @@ test("approve with no generatedUrl uses the current generation's photo (older it
   assert.equal((await db.ref(`${core.ITEMS}/${PID}/generatedUrl`).once()).val(), "https://x/g1.jpg");
 });
 
+test("reject feedback on an item with only a main photo URL still names that photo in its row (CodeRabbit)", async () => {
+  const db = seeded("ready", { generatedUrl: "https://x/main.jpg", generatedPath: "na/main.jpg" });
+  await na.reject(db, { pid: PID, reason: core.REJECT_CHIPS[0] }, "junid", NOW);
+  const rows = Object.values((await db.ref("new_arrivals/decisions").once()).val() || {});
+  const d = rows.find((r) => r.action === "reject");
+  assert.equal(d.gen.url, "https://x/main.jpg");
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/status`).once()).val(), "ready");
+});
+
 test("reject accepts an older item whose photo is only on its current generation (CodeRabbit)", async () => {
   const db = seeded("ready", { currentGen: "g1", generations: { g1: { url: "https://x/g1.jpg", at: 1, verdict: { pass: true, failed: [] } } } });
   assert.deepEqual(await na.reject(db, { pid: PID, reason: core.REJECT_CHIPS[0] }, "junid", NOW), { ok: true, noted: true });

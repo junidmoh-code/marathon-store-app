@@ -295,7 +295,7 @@ function ItemCard({ item, tab, busy, selectable, selected, onToggle, h, stats })
       )}
       {acts.reject && (
         <div data-testid="reject-chips" style={{ marginTop: 8 }}>
-          <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>Reject — tap the reason:</div>
+          <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>Your feedback on this photo (noted, the item stays):</div>
           <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
             {REJECT_CHIPS.map((r) => <button key={r} disabled={busy} onClick={() => h.onReject(item.pid, r)} style={chip}>{r}</button>)}
           </div>
@@ -507,7 +507,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     onApprove: (pid) => run(() => api.approve([pid]), (r) => (n(r, "approved") ? "Approved — publishing has started. Its progress shows under Done." : "Nothing approved."), "approved"),
     onGenerate: (pids) => run(bulk((p) => api.generate(p), pids), (r) => `${n(r, "requested")} sent to the generator — each photo appears on its card.`),
     onRegenerate: (pid) => run(() => api.generate([pid], { regenerate: true }), (r) => (n(r, "requested") ? "A fresh attempt is requested — it appears on this card; every photo stays." : "Nothing requested.")),
-    onReject: (pid, reason) => run(() => api.reject(pid, reason), () => `Rejected: ${reason}.`),
+    // Feedback only (4 Oct): noted against this photo; the item stays where it is.
+    onReject: (pid, reason) => run(() => api.reject(pid, reason), () => `Noted: ${reason} — your feedback on this photo (the item stays here).`),
     // "Use this one": that generation becomes the main photo; Approve then uses it.
     onPick: api.select ? (pid, genId) => run(() => api.select(pid, genId), (r) => (r?.unchanged ? "That photo is already the main one." : "Main photo changed — Approve uses this one.")) : null,
     // ❤ Love / un-love one generation — never moves or approves the item.
