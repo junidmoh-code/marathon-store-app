@@ -120,7 +120,9 @@ changed.**
     remover; a Cloud Function shared by 86 functions should not carry one, so
     this is a colour flood. It is exact on coloured, dark and white products.
     It can nibble a light-grey or silver part that touches the background (a
-    grey sole, a silver logo at the edge), and it keeps a hard dark shadow as
+    grey sole, a silver logo at the edge), it treats a patch inside the product
+    that is exactly the background's grey as a gap (so a panel of that very
+    grey would show the backdrop through), and it keeps a hard dark shadow as
     part of the product. Junid sees every photo before it goes anywhere; for
     such a product, Full Gemini is the method.
     Split's prompt asks for "steamed and pressed" on every garment, t-shirts

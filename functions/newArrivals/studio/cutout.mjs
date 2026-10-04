@@ -157,7 +157,7 @@ export function toeDirection(piece) {
  * Grey enclosed by the product (`hole`) is removed in a second pass.
  * → RGBA PNG of the same size.
  */
-export async function greyMatte(buf, { step = 5, wide = 80, chroma = 14, hole = 12 } = {}) {
+export async function greyMatte(buf, { step = 5, wide = 80, chroma = 14, hole = 7 } = {}) {
   const { data, info } = await sharp(buf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const w = info.width, h = info.height, ch = info.channels;
   const bg = borderColour(data, w, h, ch);

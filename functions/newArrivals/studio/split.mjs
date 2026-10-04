@@ -95,15 +95,19 @@ export async function splitGenerate(ctx) {
   }
   let measurements = null;
   if (measuredBuf) {
-    try { measurements = await objectiveMeasurements({ kind, out: measuredBuf, outBox: expectedBox(kind, spec), exclude: [], plate: plate.buffer, src: orig, srcBox: SOURCE_BOX, checker: null }); }
+    // Measured where the product was actually put (a tall shoe is fitted narrower than the layout).
+    try { measurements = await objectiveMeasurements({ kind, out: measuredBuf, outBox: expectedBox(kind, split.fittedSpec || spec), exclude: [], plate: plate.buffer, src: orig, srcBox: SOURCE_BOX, checker: null }); }
     catch { /* no numbers for this one */ }
   }
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   const libraryPlaced = split.box === "library";
   // What code itself put in the photo is on the record too.
-  inputs.push(await inputOf("plate (placed by code)", plate.forModel || plate.buffer, { file: plate.file || null }));
-  if (libraryPlaced) inputs.push(await inputOf("box (brand library, placed by code)", ctx.libraryBoxPng, { file: `brand library box (${brand})` }));
+  // (Bookkeeping only: it can never cost the paid photo.)
+  try {
+    inputs.push(await inputOf("plate (placed by code)", plate.forModel || plate.buffer, { file: plate.file || null }));
+    if (libraryPlaced) inputs.push(await inputOf("box (brand library, placed by code)", ctx.libraryBoxPng, { file: `brand library box (${brand})` }));
+  } catch { /* recorded without them */ }
   return {
     generated, kind, method: "split",
     promptVersion: `${SPLIT_PROMPT_VERSION} (split)`, layersUsed: [],
@@ -113,7 +117,7 @@ export async function splitGenerate(ctx) {
     box: kind === "footwear" ? { mode: split.box === "own" ? "own" : libraryPlaced ? "library" : "none", brand, source: split.box || null } : null,
     draftFiles: kept, usage: gen.usage || null, measurements,
     trace: {
-      promptText: prompt, inputs, layers: {}, split,
+      promptText: prompt, inputs, layers: {}, split: (({ fittedSpec, ...kept }) => kept)(split),
       request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null,
       thoughts: gen.thoughts ?? null, thoughtImages: gen.thoughtImages || 0, thoughtsUnsupported: gen.thoughtsUnsupported || null,
       draftFiles: kept, resolution: gm.width ? { width: gm.width, height: gm.height } : null,
@@ -133,7 +137,7 @@ export function fitShoe(spec, size, canvas, withBox) {
   const heightPx = widthPx * (size.height / size.width);
   const ceiling = withBox && spec.box ? spec.box.bottom + 0.03 : 0.04;
   const maxPx = (s.soleY - ceiling) * canvas.height;
-  if (heightPx <= maxPx) return spec;
+  if (heightPx <= maxPx || maxPx <= 0) return spec;
   const half = (maxPx * (size.width / size.height)) / canvas.width / 2;
   const centre = (s.heelX + s.toeX) / 2;
   return { ...spec, shoe: { ...s, heelX: centre - half, toeX: centre + half, fitted: "by height" } };
@@ -167,7 +171,7 @@ async function place({ kind, gen, plate, spec: layout, boxMode, ctx, split }) {
     // on the pedestal, its sole on the same line.
     const m = await sharp(shoePng).metadata();
     spec = fitShoe(spec, { width: m.width, height: m.height }, { width: plate.width, height: plate.height }, !!boxPng);
-    if (spec.shoe.fitted) split.shoeFitted = spec.shoe.fitted;
+    if (spec.shoe.fitted) { split.shoeFitted = spec.shoe.fitted; split.fittedSpec = spec; }
   } else if (kind === "twopiece" && cut.pieces.length >= 2) {
     // The top on the left, as asked.
     parts = { pieces: await Promise.all(cut.pieces.slice(0, 2).sort((a, b) => a.left - b.left).map(trimPng)) };
@@ -176,7 +180,7 @@ async function place({ kind, gen, plate, spec: layout, boxMode, ctx, split }) {
   }
   const composed = await composeOnPlate({ kind, plate, spec, packagingAt: "rail", parts });
   // Nothing may hang off the canvas: a product that does is not shown as finished.
-  for (const r of [composed.placed.shoe, composed.placed.garment, composed.placed.box, ...(composed.placed.pieces || [])].filter(Boolean)) {
+  for (const r of [composed.placed.shoe, composed.placed.garment, composed.placed.box, composed.placed.packaging, ...(composed.placed.pieces || [])].filter(Boolean)) {
     if (r.left < -0.002 || r.top < -0.002 || r.right > 1.002 || r.bottom > 1.002) { split.notPlaced = "the product does not fit the backdrop at the measured layout"; return null; }
   }
   split.placed = composed.placed;
