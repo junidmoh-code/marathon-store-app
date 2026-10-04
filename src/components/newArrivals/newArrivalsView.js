@@ -1,8 +1,8 @@
 // ─── NEW ARRIVALS CARD — pure presentation helpers ───────────────────────────
 // No Firebase, no React: what each item SAYS, decided here and unit-tested.
-// The shapes come from functions/newArrivals/core.cjs (queue) and the Mac mini
-// agents (generation, chain, posting). Any field may be absent — RTDB drops
-// empty arrays and objects — so every reader here tolerates absence.
+// The shapes come from functions/newArrivals/core.cjs (queue), the photo studio
+// function (generation) and the Mac mini's chain. Any field may be absent —
+// RTDB drops empty arrays and objects — so every reader here tolerates absence.
 
 // ONE PLACE TO GENERATE AND APPROVE (owner, 3 Oct night): two tabs. New
 // holds every item not yet approved (the lanes new, generating, ready and
@@ -150,9 +150,18 @@ export function spentText(stats) {
   return `Spent so far R${total.toFixed(2)}${Number.isFinite(est) && est > 0 ? ` (incl. ~R${est.toFixed(2)} estimated)` : ""}`;
 }
 
-/** Is a new photo being generated for this item (lane generating, or a pending request)? Pure. */
-export function isGenerating(item) {
-  return item?.status === "generating" || (NEW_LANES.includes(item?.status) && !!item?.generateRequest);
+// Mirror of core.cjs requestPending: the photo studio's own request (stamped
+// studio) older than this is a run that died and holds nothing back; any other
+// request counts as pending until it is cleared.
+export const REQUEST_STALE_MS = 10 * 60 * 1000;
+/** Is a new photo being generated for this item (lane generating, or a live request)? Pure. */
+export function isGenerating(item, nowMs = Date.now()) {
+  if (item?.status === "generating") return true;
+  const r = item?.generateRequest;
+  if (!NEW_LANES.includes(item?.status) || !r) return false;
+  if (r.studio !== true) return true;
+  const at = Number(r.at) || 0;
+  return !(at > 0 && nowMs - at > REQUEST_STALE_MS);
 }
 /** Does this New-tab item have a finished photo to approve? Pure. */
 export function hasPhoto(item) {
@@ -374,10 +383,125 @@ export function actionsFor(item) {
 export const PRICE_TABS = ["new"];
 /** A price as the field shows it: the stored number, or empty. Pure. */
 export const priceField = (v) => (Number(v) > 0 ? String(Number(v)) : "");
-/** Only the fields Junid changed from what the card showed: { stockPrice?, retailPrice? }. Pure. */
+/**
+ * Only the fields Junid changed from what the card showed: { stockPrice?, retailPrice? }.
+ * An emptied field is NOT a change — on this card an empty field means "leave
+ * it", never "clear the real price" (the admin price editor clears). Pure.
+ */
 export function changedPrices(product, stockDraft, retailDraft) {
   const out = {};
-  if (String(stockDraft ?? "").trim() !== priceField(product?.stockPrice)) out.stockPrice = String(stockDraft ?? "").trim();
-  if (String(retailDraft ?? "").trim() !== priceField(product?.retailPrice)) out.retailPrice = String(retailDraft ?? "").trim();
+  const stock = String(stockDraft ?? "").trim(), retail = String(retailDraft ?? "").trim();
+  if (stock !== "" && stock !== priceField(product?.stockPrice)) out.stockPrice = stock;
+  if (retail !== "" && retail !== priceField(product?.retailPrice)) out.retailPrice = retail;
   return out;
 }
+
+// ── THE CARD'S OWN STATE: what a tap shows before the server has answered ────
+// Every tap changes the card at once; these say how — the part of the server's
+// change the card shows (functions/newArrivals: selectFields, lovedItem, the
+// admin price save). Each has a REVERT that undoes only what that tap changed,
+// on the item as it is by then: a failed write never wipes a later tap.
+const copyFrom = (cur, was, keys) => {
+  const next = { ...cur };
+  for (const k of keys) { if (was?.[k] === undefined) delete next[k]; else next[k] = was[k]; }
+  return next;
+};
+
+/** A generation that has just started, as the card shows it. Pure. */
+export const liveStart = (at) => ({ status: "Starting…", thoughts: "", drafts: [], startedAt: at });
+
+/** One progress event from the photo studio folded into the live view. Pure. */
+export function foldLive(live, ev) {
+  if (!ev || typeof ev !== "object") return live;
+  if (ev.type === "status" && ev.text) return { ...live, status: String(ev.text) };
+  if (ev.type === "thought" && ev.text) return { ...live, status: "Gemini is thinking…", thoughts: live.thoughts + String(ev.text) };
+  if (ev.type === "draft" && ev.url) return live.drafts.includes(ev.url) ? live : { ...live, status: "Gemini is drawing…", drafts: [...live.drafts, String(ev.url)] };
+  return live;
+}
+
+/** The item after "Use this one" on `genId`. Pure. */
+export function afterPick(item, genId) {
+  const gen = item?.generations?.[genId];
+  if (!gen?.url) return item;
+  const next = { ...item, currentGen: genId, generatedUrl: gen.url, generatedPath: gen.path || null };
+  delete next.verdict;
+  return next;
+}
+
+/** The item after a ❤ / un-❤ of `genId`. Pure. */
+export function afterLove(item, genId, loved, at) {
+  const gen = item?.generations?.[genId];
+  if (!gen) return item;
+  const g = { ...gen };
+  if (loved) { g.loved = true; g.lovedAt = at; } else { delete g.loved; delete g.lovedAt; }
+  return { ...item, generations: { ...item.generations, [genId]: g } };
+}
+
+/** The item after a price save of `drafts` (text; an empty field is left alone). Pure. */
+export function afterPrices(item, drafts) {
+  const product = { ...(item?.product || {}) };
+  for (const f of ["stockPrice", "retailPrice"]) {
+    const t = String(drafts?.[f] ?? "").trim();
+    if (t !== "" && Number(t) > 0) product[f] = Number(t);
+  }
+  return { ...item, product };
+}
+
+const less = (n) => (Number.isFinite(n) ? Math.max(0, n - 1) : n);
+const more = (n) => (Number.isFinite(n) ? n + 1 : n);
+/**
+ * The list after an item leaves the New tab (Approve → `toTab` "done"; Skip →
+ * null): the item gone, the counts moved with it. Pure.
+ */
+export function withoutItem(data, pid, { group = null, toTab = null } = {}) {
+  const items = data.items || [];
+  if (!items.some((i) => i.pid === pid)) return data;
+  const tabCounts = { ...(data.tabCounts || {}), new: less(data.tabCounts?.new) };
+  if (toTab) tabCounts[toTab] = more(data.tabCounts?.[toTab]);
+  return {
+    ...data, items: items.filter((i) => i.pid !== pid), total: less(data.total), tabCounts,
+    groupCounts: data.groupCounts && group ? { ...data.groupCounts, [group]: less(data.groupCounts[group]) } : data.groupCounts,
+  };
+}
+/** The list with a departed item back in its place, and the counts with it. Pure. */
+export function withItemBack(data, { item, index, toTab = null }, { group = null } = {}) {
+  const items = data.items || [];
+  if (items.some((i) => i.pid === item.pid)) return data;
+  const at = Math.max(0, Math.min(Number.isFinite(index) && index >= 0 ? index : 0, items.length));
+  const tabCounts = { ...(data.tabCounts || {}), new: more(data.tabCounts?.new) };
+  if (toTab) tabCounts[toTab] = less(data.tabCounts?.[toTab]);
+  return {
+    ...data, items: [...items.slice(0, at), item, ...items.slice(at)], total: more(data.total), tabCounts,
+    groupCounts: data.groupCounts && group ? { ...data.groupCounts, [group]: more(data.groupCounts[group]) } : data.groupCounts,
+  };
+}
+
+/** Undo a "Use this one" of `genId` — only if that photo is still the card's. Pure. */
+export const revertPick = (was, genId) => (cur) => (cur?.currentGen === genId ? copyFrom(cur, was, ["currentGen", "generatedUrl", "generatedPath", "verdict"]) : cur);
+/** Undo a ❤ / un-❤ of `genId` — back to how that generation was. Pure. */
+export const revertLove = (was, genId) => (cur) => {
+  const gen = cur?.generations?.[genId];
+  if (!gen) return cur;
+  return { ...cur, generations: { ...cur.generations, [genId]: copyFrom(gen, was?.generations?.[genId], ["loved", "lovedAt"]) } };
+};
+/** Undo a price save of `drafts` — only the fields still showing what that save put there. Pure. */
+export const revertPrices = (was, drafts) => (cur) => {
+  const product = { ...(cur?.product || {}) };
+  for (const f of ["stockPrice", "retailPrice"]) {
+    const t = String(drafts?.[f] ?? "").trim();
+    if (t === "" || product[f] !== Number(t)) continue;
+    if (was?.product?.[f] === undefined) delete product[f]; else product[f] = was.product[f];
+  }
+  return { ...cur, product };
+};
+/** Undo a method choice — only if it is still the one chosen. Pure. */
+export const revertMethod = (was, choice) => (cur) => (cur?.method === choice ? copyFrom(cur, was, ["method"]) : cur);
+
+/** The server's item after a generation, merged onto the card: the card keeps its product and stock lines. Pure. */
+export const afterGenerated = (cur, item) => ({ ...item, product: cur.product, availableSizes: cur.availableSizes, totalUnits: cur.totalUnits, stockKnown: cur.stockKnown });
+
+/** "Nike AF1: …" — every message names its item (several can be at work at once). Pure. */
+export const named = (item, text) => {
+  const name = String(item?.product?.name || item?.name || "").trim();
+  return name ? `${name.length > 34 ? `${name.slice(0, 33)}…` : name}: ${text}` : text;
+};
