@@ -306,3 +306,13 @@ test("photos are fetched only from the app's own storage, over https, with no re
   assert.deepEqual(seen.map((s) => s[1]), ["error"]);
   await assert.rejects(studio.fetchBytes("https://storage.googleapis.com/x", { fetchImpl: async () => ({ ok: true, headers: { get: () => String(41 * 1024 * 1024) }, arrayBuffer: async () => new ArrayBuffer(1) }) }), /too large/);
 });
+
+test("a failing run never clears a request that is not its own", async () => {
+  const w = await world();
+  const other = { at: NOW + 999_999, by: "junid", studio: true };
+  w.deps.image = async () => { await w.db.ref(`${core.ITEMS}/${PID}/generateRequest`).set(other); const e = new Error("500"); e.status = 500; throw e; };
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /could not be made/);
+  const item = await itemOf(w.db);
+  assert.deepEqual(item.generateRequest, other);
+  assert.equal(item.lastAttempt, undefined, "the other run's item is not marked failed");
+});
