@@ -1,0 +1,16 @@
+{
+  "note": "LOCKED GENERATION SETUP (Junid, 3 Oct). Baseline = the exact 2 Oct (c16080e) model, request and prompt that made the cream knit vest. A layer is switched on here ONLY after a test generation proved it does not degrade quality, and only with Junid's sign-off recorded below. Never a cheaper or fallback image model: if the model is overloaded, wait and retry.",
+  "imageModel": "gemini-3-pro-image",
+  "imageSize": "2K",
+  "layers": {
+    "boxRules": false,
+    "reshootBrief": false,
+    "socialsRequest": false,
+    "framingCorrection": false,
+    "packaging": true
+  },
+  "defaultMethod": "full",
+  "methodNote": "THE METHOD (Junid, 3 Oct): \"full\" = the locked baseline (Gemini composes the product onto the plate); \"split\" = Gemini makes the product only on light grey, code cuts it out and places it on the plate at the spec position. An item may override with new_arrivals/items/{pid}/method. Stays \"full\" until Junid chooses split.",
+  "approvedBy": "Junid",
+  "approvedFor": "baseline restored 2026-10-03 (layers off pending test generations); layer packaging switched on 2026-10-04 by Junid (keep the shoe's own branded box/bag from the shoe photo, staged with the shoe)"
+}

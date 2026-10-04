@@ -528,7 +528,7 @@ test("reject takes exactly one chip; only LOGS reason + snapshot, never moves th
   assert.deepEqual((await na.listTab(db, "new", {})).items.map((i) => i.pid), [PID]);
   // Never on an item with no photo, nor while a new photo is being generated.
   await assert.rejects(na.reject(seeded("new"), { pid: PID, reason: "blurry" }, "junid", NOW), /no generated photo/);
-  await assert.rejects(na.reject(seeded("new", { generatedUrl: "g", generateRequest: { at: 1 } }), { pid: PID, reason: "blurry" }, "junid", NOW), /being generated/);
+  await assert.rejects(na.reject(seeded("new", { generatedUrl: "g", generateRequest: { at: NOW - 1000 } }), { pid: PID, reason: "blurry" }, "junid", NOW), /being generated/);
   for (const c of ["background wrong", "colour off", "detail changed", "looks fake/CGI", "framing", "box wrong", "blurry"]) assert.ok(core.REJECT_CHIPS.includes(c));
 });
 
@@ -643,7 +643,7 @@ test("select guards: lane, unknown generation, no url, bad ids, absent item; not
   await assert.rejects(na.select(db, { pid: "-Nx", genId: "g1" }, "junid", NOW), /Not a product id/);
   await assert.rejects(na.select(makeFakeDb({}), { pid: PID, genId: "g1" }, "junid", NOW), /not in the New Arrivals queue/);
   // While a new photo is being generated, no pick.
-  const pending = withGens("new", { generateRequest: { at: 1, by: "junid", regenerate: true } });
+  const pending = withGens("new", { generateRequest: { at: NOW - 1000, by: "junid", regenerate: true } });
   await assert.rejects(na.select(pending, { pid: PID, genId: "g1" }, "junid", NOW), /being generated/);
   assert.equal((await pending.ref(`${core.ITEMS}/${PID}/currentGen`).once()).val(), "g2");
   assert.deepEqual(await decisions(db), []);
@@ -817,7 +817,7 @@ function mergedLanes() {
     ["rejected", { generatedUrl: "u3", rejection: { code: "junid", reason: "framing", at: 1 } }],
     ["rejected", { rejection: { code: "source", reason: "retake photo", at: 1 } }],
     ["new", { generatedUrl: "u5", currentGen: "g" }],
-    ["new", { generatedUrl: "u6", currentGen: "g", generateRequest: { at: 1, by: "junid", regenerate: true } }],
+    ["new", { generatedUrl: "u6", currentGen: "g", generateRequest: { at: NOW - 1000, by: "junid", regenerate: true } }],
     ["new", {}],
   ];
   const items = {}, by = {}, products = {};
@@ -1040,7 +1040,7 @@ test("method: set full / split, clear with null; only the method field changes; 
 
 test("method is refused while a request is pending or generating, outside New, for bad input; nothing written", async () => {
   const pending = withGens("new", { generateRequest: { at: NOW, by: "junid" } });
-  await assert.rejects(na.setMethod(pending, { pid: PID, method: "full" }), /being generated/);
+  await assert.rejects(na.setMethod(pending, { pid: PID, method: "full" }, NOW), /being generated/);
   assert.equal((await pending.ref(`${core.ITEMS}/${PID}/method`).once()).val(), null);
   await assert.rejects(na.setMethod(withGens("generating"), { pid: PID, method: "full" }), /not new, ready or rejected/);
   await assert.rejects(na.setMethod(withGens("approved"), { pid: PID, method: "full" }), /not new, ready or rejected/);
@@ -1066,4 +1066,16 @@ test("newArrivalsHow and newArrivalsMethod are exported from index and in the de
   assert.match(src, /exports\.newArrivalsHow = na\.newArrivalsHow;/);
   assert.match(src, /exports\.newArrivalsMethod = na\.newArrivalsMethod;/);
   assert.match(src, /functions:newArrivalsLove,functions:newArrivalsHow,functions:newArrivalsMethod/);
+});
+
+test("a generate request older than 10 minutes is a run that died: it blocks nothing", async () => {
+  const stale = { at: NOW - core.REQUEST_STALE_MS - 1, by: "junid", studio: true };
+  assert.equal(core.requestPending({ generateRequest: stale }, NOW), false);
+  assert.equal(core.requestPending({ generateRequest: { ...stale, at: NOW - core.REQUEST_STALE_MS + 1 } }, NOW), true);
+  assert.equal(core.requestPending({}, NOW), false);
+  // With no clock given, any request counts as pending (the safe side).
+  assert.equal(core.requestPending({ generateRequest: stale }), true);
+  const db = seeded("ready", { generatedUrl: "g", generateRequest: stale });
+  await db.ref(`products/${PID}/stockPrice`).set(550);
+  assert.deepEqual((await na.approve(db, { pids: [PID] }, "junid", NOW)).approved, [PID]);
 });

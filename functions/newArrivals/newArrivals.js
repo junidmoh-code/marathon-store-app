@@ -352,7 +352,7 @@ async function select(db, { pid, genId }, uid, nowMs) {
     out.same = false;
     // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
     if (!cur) { out.refusal = "not in the New Arrivals queue"; return null; }
-    const why = core.selectRefusal(cur, genId);
+    const why = core.selectRefusal(cur, genId, nowMs);
     if (why) { out.refusal = why; return undefined; }
     out.refusal = null;
     prev = cur;
@@ -441,7 +441,7 @@ const newArrivalsHow = onCall(callableOpts, async (request) => {
 // is refused while a new photo is being generated (core.methodRefusal) and a
 // concurrent Generate is never overwritten. Only the method field changes; it
 // is a setting, so nothing is logged to decisions.
-async function setMethod(db, { pid, method }) {
+async function setMethod(db, { pid, method }, nowMs = Date.now()) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== null && method !== undefined && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full, split or null.");
   pid = String(pid);
@@ -451,7 +451,7 @@ async function setMethod(db, { pid, method }) {
     out.same = false;
     // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
     if (!cur) { out.refusal = "not in the New Arrivals queue"; return null; }
-    const why = core.methodRefusal(cur);
+    const why = core.methodRefusal(cur, nowMs);
     if (why) { out.refusal = why; return undefined; }
     out.refusal = null;
     if ((cur.method || null) === want) { out.same = true; return undefined; }
@@ -519,7 +519,7 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
       // Approve only what has a generated photo — never an original — and
       // never while a new photo is being generated (it would replace this one).
       guard: (cur) => {
-        if (cur.generateRequest) return "a new photo is being generated — approve when it lands";
+        if (core.requestPending(cur, nowMs)) return "a new photo is being generated — approve when it lands";
         // No named generation: the main photo — generatedUrl, or (an older item
         // whose URL was cleared) its current generation's photo.
         if (!pickGen) return cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo";
@@ -657,7 +657,7 @@ async function reject(db, { pid, reason }, uid, nowMs) {
   pid = String(pid);
   const item = await val(db, `${core.ITEMS}/${pid}`);
   if (!item || !core.NEW_LANES.includes(item.status)) throw new HttpsError("failed-precondition", "Can't note that — the item is not on the New tab.");
-  if (item.generateRequest) throw new HttpsError("failed-precondition", "Can't note that — a new photo is being generated.");
+  if (core.requestPending(item, nowMs)) throw new HttpsError("failed-precondition", "Can't note that — a new photo is being generated.");
   if (!(item.generatedUrl || core.currentGenUrl(item))) throw new HttpsError("failed-precondition", "Can't note that — it has no generated photo.");
   // The row names the photo the chip was given on — an older item with only a
   // main photo URL gets a snapshot of that URL (CodeRabbit).
@@ -692,5 +692,5 @@ module.exports = {
   newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect, newArrivalsLove,
   newArrivalsHow, newArrivalsMethod,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, assertNewArrivalsAccess },
+  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
 };

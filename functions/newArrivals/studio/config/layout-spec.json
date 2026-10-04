@@ -1,0 +1,224 @@
+{
+  "measuredAt": "2026-10-02T18:56:52.805Z",
+  "tolerance": 0.02,
+  "measureModel": "gemini-3.1-pro-preview",
+  "footwear": {
+    "canvas": {
+      "width": 1086,
+      "height": 1448
+    },
+    "plateSha": "ab1ab227232e94c44f073714ed02406f8f917f5d5afcfbf3ec682a2bb297479b",
+    "toe": "right",
+    "outerSideFacing": true,
+    "shoe": {
+      "heelX": 0.178,
+      "toeX": 0.838,
+      "topY": 0.493,
+      "soleY": 0.743,
+      "widthToHeight": 1.98,
+      "width": 0.66
+    },
+    "box": {
+      "left": 0.314,
+      "right": 0.692,
+      "top": 0.129,
+      "bottom": 0.338,
+      "centreX": 0.503,
+      "centreMinusRailX": -0.001
+    },
+    "pedestal": {
+      "topY": 0.661,
+      "left": 0.091,
+      "right": 0.903,
+      "frontEdgeY": 0.763
+    },
+    "gaps": {
+      "heelToPedestalLeft": 0.087,
+      "toeToPedestalRight": 0.065,
+      "soleToPedestalFront": 0.02
+    },
+    "rail": {
+      "centreX": 0.504
+    },
+    "boxFromReference": {
+      "left": 0.293,
+      "right": 0.65,
+      "top": 0.128,
+      "bottom": 0.327,
+      "centreX": 0.472,
+      "centreMinusRailX": -0.033
+    },
+    "source": {
+      "shoe": "footwear-reference.png",
+      "box": "footwear-layout-box.png"
+    },
+    "plain": [
+      "Shoe: 66% of the frame wide \u2014 heel at 18% from the left, toe at 84%; sole on the pedestal at 74% down; length:height 1.98:1.",
+      "Gaps on the pedestal: 9% behind the heel, 7% in front of the toe, 2% from the sole to the pedestal's front edge.",
+      "Box: 31%\u201369% across, 13%\u201334% down, centred on the middle rail.",
+      "Pedestal top surface at 66% down, 9%\u201390% across."
+    ]
+  },
+  "twopiece": {
+    "canvas": {
+      "width": 1032,
+      "height": 1170
+    },
+    "plateSha": "18aee916119c523ac9f1b147335b35bf99ffb8d1199a32bce3c4cd1d665030e9",
+    "pieces": 2,
+    "garment": {
+      "topY": 0.142,
+      "hemY": 0.904,
+      "left": 0.061,
+      "right": 0.946,
+      "centreX": 0.503,
+      "centreY": 0.523,
+      "width": 0.885,
+      "widthToHeight": 1.024
+    },
+    "items": [
+      {
+        "left": 0.061,
+        "right": 0.584,
+        "top": 0.142,
+        "bottom": 0.668,
+        "centreX": 0.323
+      },
+      {
+        "left": 0.51,
+        "right": 0.946,
+        "top": 0.303,
+        "bottom": 0.904,
+        "centreX": 0.728
+      }
+    ],
+    "spacing": -0.074,
+    "source": {
+      "reference": "twopiece-reference.png"
+    },
+    "plain": [
+      "Garment: hanger top at 14% down, hem at 90%; 6%\u201395% across, centred at 50%.",
+      "Two-piece sets: -7% between the pieces."
+    ],
+    "hangerTopY": 0.142,
+    "box": {
+      "left": 0.061,
+      "right": 0.946,
+      "top": 0.142,
+      "bottom": 0.904,
+      "note": "FIT-TO-BOX: hanger hooks to hem, from twopiece-reference.png."
+    }
+  },
+  "single": {
+    "canvas": {
+      "width": 1086,
+      "height": 1448
+    },
+    "plateSha": "a19abfbc34b7d55b92c3d3bc697c02abf4897ac8b084023896cd7a0c8696dc76",
+    "pieces": 1,
+    "garment": {
+      "topY": 0.17,
+      "hemY": 0.83,
+      "left": 0.04,
+      "right": 0.964,
+      "centreX": 0.502,
+      "centreY": 0.5,
+      "width": 0.924,
+      "widthToHeight": 1.049
+    },
+    "source": {
+      "socialTees": [
+        "-P0u1OJnTzU7_H5fkv7j.jpg",
+        "-P0zAlWH5Qcq6TvRp_Kz.jpg",
+        "-P0zB-X0orFyF1CEitKe.jpg",
+        "-P13Kffd3Qo4ab28gXCD.jpg",
+        "-P13Ko6YLAdy-ZynE3aj.jpg",
+        "-P1ImGnu7EAFaWhjKcF_.jpg"
+      ],
+      "measured": [
+        {
+          "f": "-P0u1OJnTzU7_H5fkv7j.jpg",
+          "topY": 0.252,
+          "hemY": 0.748,
+          "left": 0.028,
+          "right": 0.975,
+          "centreX": 0.501,
+          "centreY": 0.5,
+          "width": 0.947,
+          "widthToHeight": 1.066,
+          "frame": "1072x1920"
+        },
+        {
+          "f": "-P0zAlWH5Qcq6TvRp_Kz.jpg",
+          "topY": 0.261,
+          "hemY": 0.753,
+          "left": 0.035,
+          "right": 0.959,
+          "centreX": 0.497,
+          "centreY": 0.507,
+          "width": 0.924,
+          "widthToHeight": 1.049,
+          "frame": "1072x1920"
+        },
+        {
+          "f": "-P0zB-X0orFyF1CEitKe.jpg",
+          "topY": 0.147,
+          "hemY": 0.808,
+          "left": 0.055,
+          "right": 0.96,
+          "centreX": 0.507,
+          "centreY": 0.478,
+          "width": 0.905,
+          "widthToHeight": 0.764,
+          "frame": "1072x1920"
+        },
+        {
+          "f": "-P13Kffd3Qo4ab28gXCD.jpg",
+          "topY": 0.236,
+          "hemY": 0.754,
+          "left": 0.02,
+          "right": 0.977,
+          "centreX": 0.499,
+          "centreY": 0.495,
+          "width": 0.957,
+          "widthToHeight": 1.032,
+          "frame": "1072x1920"
+        },
+        {
+          "f": "-P13Ko6YLAdy-ZynE3aj.jpg",
+          "topY": 0.24,
+          "hemY": 0.752,
+          "left": 0.048,
+          "right": 0.956,
+          "centreX": 0.502,
+          "centreY": 0.496,
+          "width": 0.908,
+          "widthToHeight": 0.99,
+          "frame": "1072x1920"
+        },
+        {
+          "f": "-P1ImGnu7EAFaWhjKcF_.jpg",
+          "topY": 0.279,
+          "hemY": 0.731,
+          "left": 0.045,
+          "right": 0.961,
+          "centreX": 0.503,
+          "centreY": 0.505,
+          "width": 0.916,
+          "widthToHeight": 1.131,
+          "frame": "1072x1920"
+        }
+      ]
+    },
+    "plain": [
+      "Garment: hanger top at 17% down, hem at 83%; 4%\u201396% across, centred at 50%."
+    ],
+    "box": {
+      "left": 0.04,
+      "right": 0.964,
+      "top": 0.043,
+      "bottom": 0.83,
+      "note": "FIT-TO-BOX (Junid 3 Oct): hanger top at box.top. Width/centre/hem from the social tees; hanger height 0.127 = median hanger-to-fabric offset on the 3 Ready single generations."
+    }
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "baselinePromptSha256": "5046bbe1f2bc7c790037d3826217bd706a1f62fdc0cf6a1449bbb2b94d3e36ad",
+  "imageModel": "gemini-3-pro-image",
+  "imageSize": "2K",
+  "layers": {
+    "boxRules": false,
+    "reshootBrief": false,
+    "socialsRequest": false,
+    "framingCorrection": false,
+    "packaging": true
+  },
+  "approvedBy": "Junid",
+  "approvedAt": "2026-10-03",
+  "note": "Change ONLY with Junid sign-off: update this file in the same PR that changes src/baseline-prompts.mjs, config/generation.json model/size or layers, and say so in the PR.",
+  "conditionClauseSha256": "0c60e00a7f88fc89338202179b367875dfb00741e6e12374617c364886ad3175",
+  "layerApprovals": {
+    "packaging": {
+      "approvedBy": "Junid",
+      "approvedAt": "2026-10-04",
+      "layerTextSha256": "6715741b5eb57414fce816062c358c16cf090167321c492367f8277173b6c5e6",
+      "for": "Keep the shoe's own branded box/bag from the SHOE PHOTO, staged with the shoe on the mesh-fence backdrop; never invent one (PACKAGING_LAYER in src/generate.mjs). The baseline text is unchanged."
+    }
+  }
+}
