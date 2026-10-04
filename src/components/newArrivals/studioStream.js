@@ -20,6 +20,9 @@ export function sseSplit(buffer) {
   return { payloads, rest };
 }
 
+// Past the function's own 540 s limit.
+export const STREAM_TIMEOUT_MS = 570_000;
+
 const fail = (error) => {
   const e = new Error(error?.message || "The photo service did not answer.");
   e.code = error?.status || "unknown";
@@ -31,14 +34,28 @@ const fail = (error) => {
  * result; rejects with the server's own message.
  *   { url, data, getToken(), fetchImpl, onChunk }
  */
-export async function streamCallable({ url, data, getToken, fetchImpl = fetch, onChunk = null }) {
+export async function streamCallable({ url, data, getToken, fetchImpl = fetch, onChunk = null, timeoutMs = STREAM_TIMEOUT_MS }) {
   const token = await getToken();
   if (!token) throw fail({ message: "Sign in required.", status: "UNAUTHENTICATED" });
-  const res = await fetchImpl(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${token}` },
-    body: JSON.stringify({ data }),
-  });
+  // A connection that stalls (phone locked, signal lost) is ended here — a
+  // little after the function's own 9-minute limit — so the card never waits for ever.
+  const ctl = typeof AbortController !== "undefined" ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), timeoutMs) : null;
+  let reader = null;
+  try {
+    return await read(await fetchImpl(url, {
+      method: "POST", ...(ctl ? { signal: ctl.signal } : {}),
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream", Authorization: `Bearer ${token}` },
+      body: JSON.stringify({ data }),
+    }), onChunk, (r) => { reader = r; });
+  } finally {
+    if (timer) clearTimeout(timer);
+    // Whatever ended the read (an error line, a thrown error), the connection is let go.
+    try { reader?.cancel?.(); } catch { /* already closed */ }
+  }
+}
+
+async function read(res, onChunk, holdReader) {
   // The answer is read as it arrives, whatever content type it is labelled
   // with (a refusal sent before the stream starts comes as SSE lines under a
   // plain content type). An answer with no `data:` line at all is one JSON body.
@@ -50,6 +67,7 @@ export async function streamCallable({ url, data, getToken, fetchImpl = fetch, o
     for (const body of payloads) {
       let msg;
       try { msg = JSON.parse(body); } catch { continue; }
+      if (!msg || typeof msg !== "object") continue;
       sawLine = true;
       if (msg.error) throw fail(msg.error);
       if ("result" in msg) { result = msg.result; done = true; }
@@ -68,6 +86,7 @@ export async function streamCallable({ url, data, getToken, fetchImpl = fetch, o
     return done ? result : whole(text);
   }
   const reader = res.body.getReader();
+  holdReader(reader);
   const decoder = new TextDecoder();
   let buffer = "";
   for (;;) {

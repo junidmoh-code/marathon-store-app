@@ -315,7 +315,8 @@ describe("ONE card on New: every generation, chips, ONE Approve (no checker line
     const approves = tree.root.findAll((n) => n.type === "button" && label(n) === "Approve");
     expect(approves).toHaveLength(1);
     expect(approves[0].props.disabled).toBe(true);
-    expect(approves[0].props.title).toBe("add stock price first");
+    // The reason is in words on the card (a phone shows no tooltip).
+    expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "approve-note" && typeof n.type === "string")).toHaveLength(1);
     expect(text(tree)).toContain("add stock price first");
   });
 
@@ -499,7 +500,7 @@ describe("ONE PLACE TO GENERATE AND APPROVE (3 Oct night)", () => {
       const tree = await render(fakeApi([it0], { savePrices: vi.fn() }), "new");
       const [a] = btns(tree, "Approve");
       expect(a.props.disabled).toBe(true);
-      expect(a.props.title).toBe("add stock price first");
+      expect(tree.root.findAll((n) => n.props && n.props["data-testid"] === "approve-note" && typeof n.type === "string").length).toBeGreaterThan(0);
       expect(testid(tree, "approve-note")).toHaveLength(1);
     }
   });

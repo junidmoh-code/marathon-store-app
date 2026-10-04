@@ -1,8 +1,8 @@
 // ─── NEW ARRIVALS CARD — pure presentation helpers ───────────────────────────
 // No Firebase, no React: what each item SAYS, decided here and unit-tested.
-// The shapes come from functions/newArrivals/core.cjs (queue) and the Mac mini
-// agents (generation, chain, posting). Any field may be absent — RTDB drops
-// empty arrays and objects — so every reader here tolerates absence.
+// The shapes come from functions/newArrivals/core.cjs (queue), the photo studio
+// function (generation) and the Mac mini's chain. Any field may be absent —
+// RTDB drops empty arrays and objects — so every reader here tolerates absence.
 
 // ONE PLACE TO GENERATE AND APPROVE (owner, 3 Oct night): two tabs. New
 // holds every item not yet approved (the lanes new, generating, ready and
@@ -150,15 +150,17 @@ export function spentText(stats) {
   return `Spent so far R${total.toFixed(2)}${Number.isFinite(est) && est > 0 ? ` (incl. ~R${est.toFixed(2)} estimated)` : ""}`;
 }
 
-// A request older than this is a run that died (mirror of core.cjs
-// REQUEST_STALE_MS): it no longer holds Approve or Generate back.
+// Mirror of core.cjs requestPending: the photo studio's own request (stamped
+// studio) older than this is a run that died and holds nothing back; any other
+// request counts as pending until it is cleared.
 export const REQUEST_STALE_MS = 10 * 60 * 1000;
 /** Is a new photo being generated for this item (lane generating, or a live request)? Pure. */
 export function isGenerating(item, nowMs = Date.now()) {
   if (item?.status === "generating") return true;
   const r = item?.generateRequest;
   if (!NEW_LANES.includes(item?.status) || !r) return false;
-  const at = Number(r?.at) || 0;
+  if (r.studio !== true) return true;
+  const at = Number(r.at) || 0;
   return !(at > 0 && nowMs - at > REQUEST_STALE_MS);
 }
 /** Does this New-tab item have a finished photo to approve? Pure. */
@@ -381,18 +383,29 @@ export function actionsFor(item) {
 export const PRICE_TABS = ["new"];
 /** A price as the field shows it: the stored number, or empty. Pure. */
 export const priceField = (v) => (Number(v) > 0 ? String(Number(v)) : "");
-/** Only the fields Junid changed from what the card showed: { stockPrice?, retailPrice? }. Pure. */
+/**
+ * Only the fields Junid changed from what the card showed: { stockPrice?, retailPrice? }.
+ * An emptied field is NOT a change — on this card an empty field means "leave
+ * it", never "clear the real price" (the admin price editor clears). Pure.
+ */
 export function changedPrices(product, stockDraft, retailDraft) {
   const out = {};
-  if (String(stockDraft ?? "").trim() !== priceField(product?.stockPrice)) out.stockPrice = String(stockDraft ?? "").trim();
-  if (String(retailDraft ?? "").trim() !== priceField(product?.retailPrice)) out.retailPrice = String(retailDraft ?? "").trim();
+  const stock = String(stockDraft ?? "").trim(), retail = String(retailDraft ?? "").trim();
+  if (stock !== "" && stock !== priceField(product?.stockPrice)) out.stockPrice = stock;
+  if (retail !== "" && retail !== priceField(product?.retailPrice)) out.retailPrice = retail;
   return out;
 }
 
 // ── THE CARD'S OWN STATE: what a tap shows before the server has answered ────
-// Every tap changes the card at once; these say how. Each is the same change
-// the server makes (functions/newArrivals: selectFields, lovedItem, the admin
-// price save), so the screen does not jump when the write lands.
+// Every tap changes the card at once; these say how — the part of the server's
+// change the card shows (functions/newArrivals: selectFields, lovedItem, the
+// admin price save). Each has a REVERT that undoes only what that tap changed,
+// on the item as it is by then: a failed write never wipes a later tap.
+const copyFrom = (cur, was, keys) => {
+  const next = { ...cur };
+  for (const k of keys) { if (was?.[k] === undefined) delete next[k]; else next[k] = was[k]; }
+  return next;
+};
 
 /** A generation that has just started, as the card shows it. Pure. */
 export const liveStart = (at) => ({ status: "Starting…", thoughts: "", drafts: [], startedAt: at });
@@ -462,3 +475,33 @@ export function withItemBack(data, { item, index, toTab = null }, { group = null
     groupCounts: data.groupCounts && group ? { ...data.groupCounts, [group]: more(data.groupCounts[group]) } : data.groupCounts,
   };
 }
+
+/** Undo a "Use this one" of `genId` — only if that photo is still the card's. Pure. */
+export const revertPick = (was, genId) => (cur) => (cur?.currentGen === genId ? copyFrom(cur, was, ["currentGen", "generatedUrl", "generatedPath", "verdict"]) : cur);
+/** Undo a ❤ / un-❤ of `genId` — back to how that generation was. Pure. */
+export const revertLove = (was, genId) => (cur) => {
+  const gen = cur?.generations?.[genId];
+  if (!gen) return cur;
+  return { ...cur, generations: { ...cur.generations, [genId]: copyFrom(gen, was?.generations?.[genId], ["loved", "lovedAt"]) } };
+};
+/** Undo a price save of `drafts` — only the fields still showing what that save put there. Pure. */
+export const revertPrices = (was, drafts) => (cur) => {
+  const product = { ...(cur?.product || {}) };
+  for (const f of ["stockPrice", "retailPrice"]) {
+    const t = String(drafts?.[f] ?? "").trim();
+    if (t === "" || product[f] !== Number(t)) continue;
+    if (was?.product?.[f] === undefined) delete product[f]; else product[f] = was.product[f];
+  }
+  return { ...cur, product };
+};
+/** Undo a method choice — only if it is still the one chosen. Pure. */
+export const revertMethod = (was, choice) => (cur) => (cur?.method === choice ? copyFrom(cur, was, ["method"]) : cur);
+
+/** The server's item after a generation, merged onto the card: the card keeps its product and stock lines. Pure. */
+export const afterGenerated = (cur, item) => ({ ...item, product: cur.product, availableSizes: cur.availableSizes, totalUnits: cur.totalUnits, stockKnown: cur.stockKnown });
+
+/** "Nike AF1: …" — every message names its item (several can be at work at once). Pure. */
+export const named = (item, text) => {
+  const name = String(item?.product?.name || item?.name || "").trim();
+  return name ? `${name.length > 34 ? `${name.slice(0, 33)}…` : name}: ${text}` : text;
+};

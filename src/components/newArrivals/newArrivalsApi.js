@@ -15,11 +15,8 @@ export const newArrivalsApi = {
   // { items, total, nextCursor, tabCounts, groupCounts, stats, modes, matchingPids? }.
   list: (tab, { cursor = null, limit = 30, group = null } = {}) =>
     call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(group ? { group } : {}) }),
-  // Approve the main / selected photo of each pid (any item with a photo; the
-  // server logs approve-anyway when its verdict failed). `anyway` is legacy.
+  // Approve one item — with `genId`, exactly that photo (the one the card shows).
   approve: (pids, { anyway = false, genId = null } = {}) => call("newArrivalsApprove")({ pids, ...(anyway ? { anyway: true } : {}), ...(genId ? { genId } : {}) }),
-  approveAll: () => call("newArrivalsApprove")({ all: true }),
-  retry: (pid) => call("newArrivalsRetry")({ pid }),
   // GENERATE / REGENERATE ONE PHOTO — the streaming photo studio function. It
   // calls Gemini directly and answers while it works: onEvent gets
   // { type: "status" | "thought" | "draft", … }; resolves with
@@ -47,8 +44,8 @@ export const newArrivalsApi = {
   // the product page, the Marketing card and Missing prices use): the product's
   // REAL stockPrice / retailPrice through applyPriceBatch "single_edit", so
   // price history, POS and the Shopify price sync behave as for an admin edit.
-  // `drafts` holds only the fields Junid changed. The card's list can be up to
-  // 30s old: the current prices are re-read (two keyed scalars) first, so the
+  // `drafts` holds only the fields Junid changed. The card's list can be a
+  // minute old: the current prices are re-read (two keyed scalars) first, so the
   // audit's `from` is the live value and a field he did not touch is never
   // written. → { ok, count } | { ok: false, error, needsConfirm? }.
   savePrices: async (pid, product, rawDrafts, opts = {}) => {
