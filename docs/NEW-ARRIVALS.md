@@ -88,12 +88,43 @@ changed.**
   at 2K, Junid's plates. Pinned by `functions/test/studio-baseline.test.mjs`
   against `studio/config/baseline.lock.json`; changing any of it needs Junid's
   sign-off recorded in that file.
-- **Layers** (`studio/prompt.mjs`) add a paragraph before the baseline's studio
-  brief; `studio/config/generation.json` switches them on.
-- **Plates, references, boxes**: Storage `new_arrivals/assets/plates` (verified
-  against `studio/config/plates.lock.json`) and `new_arrivals/assets/boxes`.
+- **Layers** (`studio/prompt.mjs`) add ONE paragraph before the baseline's
+  studio brief; `studio/config/generation.json` switches them on. In force:
+
+  | Layer | For | What it adds |
+  |---|---|---|
+  | `steam` | clothing, except t-shirts | steamed and pressed: creases, fold lines and squashing out; fabric full; studio light; true colour |
+  | `footwearBox` | all footwear | ONE box on the rail: its own box photo, else the box in the shoe photo, else the brand's library box; never invented |
+  | `footwearPose` | all footwear | one shoe, whole sole on the pedestal |
+  | `footwearExamples` | all footwear | two of Junid's own finished photos, shown as "composition only" |
+
+  T-shirts get no layer: their prompt is the bare baseline, byte for byte.
+- **Two methods per item** (the card's Full Gemini / Split):
+  - **Full Gemini** (default): Gemini composes the product onto the plate.
+  - **Split** (`studio/split.mjs`): Gemini makes the product only, on plain
+    light grey (`split-prompts.mjs`, its own locked prompt); code floods the
+    grey away from the edges (`cutout.mjs`), places the cut-out on the real
+    plate at the measured layout and adds a soft shadow (`place.mjs`). A
+    product too close to the grey in colour cannot be cut out: Gemini's photo
+    is kept and the card says to use Full Gemini for that item.
+- **Plates, references, examples, boxes**: Storage `new_arrivals/assets/plates`
+  (plates verified against `plates.lock.json`, examples against
+  `examples.lock.json`) and `new_arrivals/assets/boxes`.
 - **Cost**: from the API's own token counts at `studio/config/prices.json`
-  list prices, in rand at the day's rate.
+  list prices, in rand at the day's rate. Real only when the image's own
+  tokens were reported; otherwise the marked estimate.
+- **Measurements** (`studio/measure.mjs`): sharpness, background noise, crease
+  and difference from the plate — pixels only, no model call — kept on every
+  generation for the weekly report.
+
+## The weekly learning report
+
+`scripts/newArrivals/learningCore.mjs` (pure) + `learningReport.mjs` (runner).
+Every Monday 08:00 the Mac mini (`com.marathon.newarrivals.learning`) reads the
+last decisions and learning-log rows, compares the photos Junid loved with the
+ones he marked not right, gives up to three findings that cite their numbers,
+and PROPOSES prompt changes — it never applies one. The email goes from the
+mini because the business's sending mailbox lives there.
 
 ## After Approve (unchanged, on the Mac mini)
 

@@ -283,6 +283,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     const reason = e.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : e.studioRefusal ? e.message
       : e.refusal ? "Gemini declined to make this photo"
+      : status === 402 ? "the Gemini prepaid credit has run out — top it up in Google AI Studio, then tap Generate again"
       : status === 429 || status === 503 ? "the photo service is busy — tap Generate again"
       : status === 504 ? "Gemini took too long and the connection was closed — it may still have been charged; tap Generate to try again"
       : "the photo could not be made — tap Generate again";
@@ -295,7 +296,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
       const lost = e.paid ? record.generationCost({ model: generation.imageModel, usage: e.usage, prices, fx }) : null;
       await addSpend(db, lost ? lost.zar : record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx }), { estimated: !!lost?.estimated });
     }
-    throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
+    throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 402 ? "resource-exhausted" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
 
   // The photo exists, is stored and is paid for: from here every step is retried.

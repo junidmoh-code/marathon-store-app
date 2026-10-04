@@ -118,9 +118,9 @@ export function genCost(gen, stats) {
 const randText = ({ zar, estimated }) => (estimated ? `~R${zar.toFixed(2)} (estimated)` : `R${zar.toFixed(2)}`);
 
 export function costText(gen, stats = null) {
-  // A RE-CHECK (a framing correction of an earlier photo — vision only, no new
+  // An older derived photo (a framing correction of an earlier one, no new
   // generation) is labelled so; its few cents are never read as a photo's cost.
-  const tag = gen?.derivedFrom ? "re-check, no new generation · " : "";
+  const tag = gen?.derivedFrom ? "adjusted copy · " : "";
   return `${tag}${randText(genCost(gen, stats))}`;
 }
 

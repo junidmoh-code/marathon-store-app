@@ -523,3 +523,12 @@ test("a sneaker with no box photo: the brand's library box and two example photo
   const log = (await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val();
   assert.equal(log.inputs.map((i) => i.role).join(","), "plate,reference,example,example,layoutDiagram,source,box");
 });
+
+test("Gemini's prepaid credit has run out (402): said in those words — not 'tap again' — and the item is given back", async () => {
+  const w = await world();
+  w.deps.image = async () => { const e = new Error("Gemini gemini-3-pro-image 402: Your prepayment credits are depleted."); e.status = 402; throw e; };
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /No photo — the Gemini prepaid credit has run out — top it up in Google AI Studio, then tap Generate again\./);
+  const item = await itemOf(w.db);
+  assert.equal(item.generateRequest, undefined);
+  assert.match(item.lastAttempt.reason, /prepaid credit has run out/);
+});

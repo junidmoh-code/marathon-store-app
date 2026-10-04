@@ -375,7 +375,7 @@ describe("header: reject rate and cost per finished photo", () => {
 
 describe("a re-check is never shown as a generation's cost", () => {
   it("labels a derived (re-checked) photo", () => {
-    expect(view.costText({ costZar: 0.21, derivedFrom: "g1" })).toBe("re-check, no new generation · R0.21");
+    expect(view.costText({ costZar: 0.21, derivedFrom: "g1" })).toBe("adjusted copy · R0.21");
     expect(view.costText({ costZar: 2.41 })).toBe("R2.41");
   });
 });
@@ -415,9 +415,9 @@ describe("costs — never unknown", () => {
     expect(view.costText({ costZar: null })).toBe("~R2.41 (estimated)");
     expect(view.costText({ costUsd: 0.1 }, { usdZar: 18.5 })).toBe("~R1.85 (estimated)");
     expect(view.costText({ costUsd: 0.1 })).toBe("~R2.41 (estimated)");
-    expect(view.costText({ costZar: 0.19, derivedFrom: "g1" })).toBe("re-check, no new generation · R0.19");
-    expect(view.costText({ costZar: 0.2, derivedFrom: "g1", costEstimated: true })).toBe("re-check, no new generation · ~R0.20 (estimated)");
-    expect(view.costText({ derivedFrom: "g1" })).toBe("re-check, no new generation · ~R2.41 (estimated)");
+    expect(view.costText({ costZar: 0.19, derivedFrom: "g1" })).toBe("adjusted copy · R0.19");
+    expect(view.costText({ costZar: 0.2, derivedFrom: "g1", costEstimated: true })).toBe("adjusted copy · ~R0.20 (estimated)");
+    expect(view.costText({ derivedFrom: "g1" })).toBe("adjusted copy · ~R2.41 (estimated)");
     for (const g of [{}, null, { costUsd: "x" }, { costZar: "" }]) expect(view.costText(g)).not.toMatch(/unknown|\$/);
   });
 
