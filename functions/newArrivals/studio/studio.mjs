@@ -90,7 +90,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     // No own box photo: the brand's library box (a clean cut-out of that brand's
     // box). Full Gemini is shown it only under the footwearBox rule; Split places
     // it by code, untouched.
-    if (!box && deps.libraryBox) {
+    if (!box && deps.libraryBox && (layers.footwearBox || method === "split")) {
       const lib = await deps.libraryBox(brand).catch(() => null);
       if (lib?.buffer) {
         libraryBoxPng = lib.buffer;
@@ -119,7 +119,10 @@ export async function generateOne({ item, product, genId, method = "full", deps,
 
   // LAYER footwearExamples: more of Junid's own photos of the same composition
   // (other shoes, other boxes) — so the layout is learnt, not the one reference's shoe.
-  const examples = kind === "footwear" && layers.footwearExamples && deps.loadExamples ? await deps.loadExamples(kind).catch(() => []) : [];
+  // If they cannot be loaded the photo is still made, without them — said in the log and on the record.
+  const examples = kind === "footwear" && layers.footwearExamples && deps.loadExamples
+    ? await deps.loadExamples(kind).catch((e) => { deps.log?.(`the example photos could not be loaded (${String(e.message).slice(0, 80)}) — generating without them`); return []; }) : [];
+  const layersUsed = [...prompt.layers, ...(examples.length ? ["footwearExamples"] : [])];
   const inputs = await Promise.all([
     inputOf("plate", plateJ, { file: plate.file || null }),
     ...(refJ ? [inputOf("reference", refJ, { file: ref.file || null })] : []),
@@ -182,11 +185,11 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   return {
     generated, kind, method: "full",
-    promptVersion: `${setupName(prompt.layers)} (${prompt.version})`, layersUsed: prompt.layers,
+    promptVersion: `${setupName(layersUsed)} (${prompt.version})`, layersUsed,
     box: kind === "footwear" ? { mode: boxMode, brand, source: boxSource } : null,
     draftFiles: kept, usage: gen.usage || null, measurements,
     trace: {
-      promptText: prompt.text, inputs, layers: Object.fromEntries(prompt.layers.map((k) => [k, true])),
+      promptText: prompt.text, inputs, layers: Object.fromEntries(layersUsed.map((k) => [k, true])),
       request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null,
       thoughts: gen.thoughts ?? null, thoughtImages: gen.thoughtImages || 0, thoughtsUnsupported: gen.thoughtsUnsupported || null,
       draftFiles: kept, resolution: gm.width ? { width: gm.width, height: gm.height } : null,

@@ -82,9 +82,10 @@ export async function splitGenerate(ctx) {
     say({ type: "status", text: "Placing it on your backdrop…" });
     try {
       const placed = await place({ kind, gen, plate, spec, boxMode, ctx, split });
-      if (placed) measuredBuf = placed;
       if (placed) generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}.jpg`, placed, "image/jpeg"));
+      if (placed) measuredBuf = placed;
     } catch (e) {
+      split.placed = null;
       split.notPlaced = `placing it failed (${String(e.message || e).slice(0, 100)})`;
     }
   } catch (e) {
@@ -118,8 +119,26 @@ export async function splitGenerate(ctx) {
   };
 }
 
+/**
+ * The footwear spec for THIS shoe: unchanged when the shoe fits at the layout's
+ * width; narrower (same centre, same sole line) when it would be too tall —
+ * above the box's bottom edge plus a gap, or the top of the canvas. Pure.
+ */
+export function fitShoe(spec, size, canvas, withBox) {
+  const s = spec.shoe;
+  const widthPx = (s.toeX - s.heelX) * canvas.width;
+  const heightPx = widthPx * (size.height / size.width);
+  const ceiling = withBox && spec.box ? spec.box.bottom + 0.03 : 0.04;
+  const maxPx = (s.soleY - ceiling) * canvas.height;
+  if (heightPx <= maxPx) return spec;
+  const half = (maxPx * (size.width / size.height)) / canvas.width / 2;
+  const centre = (s.heelX + s.toeX) / 2;
+  return { ...spec, shoe: { ...s, heelX: centre - half, toeX: centre + half, fitted: "by height" } };
+}
+
 /** Cut the product out of Gemini's photo and compose it on the plate. → JPEG buffer, or null (split.notPlaced says why). */
-async function place({ kind, gen, plate, spec, boxMode, ctx, split }) {
+async function place({ kind, gen, plate, spec: layout, boxMode, ctx, split }) {
+  let spec = layout;
   const cut = await cutOut(gen.buffer, { pieces: kind === "single" ? 1 : 2, matte: ctx.deps.matte });
   split.coverage = r3(cut.coverage);
   split.pieces = cut.pieces.map((p) => ({ width: p.width, height: p.height, fill: r3(p.fill) }));
@@ -138,7 +157,14 @@ async function place({ kind, gen, plate, spec, boxMode, ctx, split }) {
     let boxPng = c.packaging ? await trimPng(c.packaging) : null;
     split.box = boxPng ? (boxMode === "own" ? "own" : "in the shoe photo") : null;
     if (!boxPng && ctx.libraryBoxPng) { boxPng = await sharp(ctx.libraryBoxPng).ensureAlpha().png().toBuffer(); split.box = "library"; }
-    parts = { shoe: await trimPng(c.shoe), ...(boxPng ? { box: boxPng } : {}) };
+    const shoePng = await trimPng(c.shoe);
+    parts = { shoe: shoePng, ...(boxPng ? { box: boxPng } : {}) };
+    // A TALL shoe (a boot, a high-top) scaled to the layout's width would run up
+    // into the box or off the top: it is fitted by its height instead, centred
+    // on the pedestal, its sole on the same line.
+    const m = await sharp(shoePng).metadata();
+    spec = fitShoe(spec, { width: m.width, height: m.height }, { width: plate.width, height: plate.height }, !!boxPng);
+    if (spec.shoe.fitted) split.shoeFitted = spec.shoe.fitted;
   } else if (kind === "twopiece" && cut.pieces.length >= 2) {
     // The top on the left, as asked.
     parts = { pieces: await Promise.all(cut.pieces.slice(0, 2).sort((a, b) => a.left - b.left).map(trimPng)) };
@@ -146,6 +172,10 @@ async function place({ kind, gen, plate, spec, boxMode, ctx, split }) {
     parts = { garment: await trimPng(kind === "twopiece" ? unionPieces(cut.pieces) : cut.pieces[0]) };
   }
   const composed = await composeOnPlate({ kind, plate, spec, packagingAt: "rail", parts });
+  // Nothing may hang off the canvas: a product that does is not shown as finished.
+  for (const r of [composed.placed.shoe, composed.placed.garment, composed.placed.box, ...(composed.placed.pieces || [])].filter(Boolean)) {
+    if (r.left < -0.002 || r.top < -0.002 || r.right > 1.002 || r.bottom > 1.002) { split.notPlaced = "the product does not fit the backdrop at the measured layout"; return null; }
+  }
   split.placed = composed.placed;
   split.deviations = composed.deviations;
   return composed.buffer;

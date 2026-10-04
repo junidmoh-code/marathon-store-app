@@ -34,7 +34,8 @@ if (!admin.apps.length) {
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com"; // the super-admin, as in functions/index.js
 // The method an item gets with no choice of its own (the studio function reads the same file).
-const DEFAULT_METHOD = core.METHODS.includes(require("./studio/config/generation.json").defaultMethod) ? require("./studio/config/generation.json").defaultMethod : "full";
+const CONFIGURED_METHOD = require("./studio/config/generation.json").defaultMethod;
+const DEFAULT_METHOD = core.METHODS.includes(CONFIGURED_METHOD) ? CONFIGURED_METHOD : "full";
 
 // Junid, or anyone holding the Shopify Publishing grant — Approve ends in a
 // Shopify publish, so it takes the same grant the publishing card does. Read

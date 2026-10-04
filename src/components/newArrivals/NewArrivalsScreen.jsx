@@ -213,6 +213,8 @@ function Photos({ item, tab, stats, live, busy, h }) {
           {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} disabled={busy} />}
         </div>
       )}
+      {/* What Junid must know about this photo (e.g. Split could not place it): it stays on the card, not only in a passing message. */}
+      {!live && main?.note && <div data-testid="gen-note" style={{ color: "#fff", fontSize: 12, marginTop: 6, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.08)" }}>{main.note}</div>}
       {howGen && howGen === main && !live && <HowPanel pid={item.pid} gen={howGen} loadHow={h.loadHow} />}
       {strip.length > 0 && (
         <div data-testid="earlier-generations" style={{ display: "flex", gap: 10, overflowX: "auto", marginTop: 10, paddingBottom: 2 }}>

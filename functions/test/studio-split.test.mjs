@@ -8,7 +8,7 @@ import sharp from "sharp";
 import { createRequire } from "node:module";
 import { cutOut, greyMatte, toeDirection } from "../newArrivals/studio/cutout.mjs";
 import { classifyFootwear, composeOnPlate, trimPng } from "../newArrivals/studio/place.mjs";
-import { splitGenerate, cutProblem, COVERAGE_MIN } from "../newArrivals/studio/split.mjs";
+import { splitGenerate, cutProblem, COVERAGE_MIN, fitShoe } from "../newArrivals/studio/split.mjs";
 import { SPLIT_PROMPT_VERSION } from "../newArrivals/studio/split-prompts.mjs";
 
 const require = createRequire(import.meta.url);
@@ -148,4 +148,47 @@ test("split that cannot place the product keeps Gemini's photo (it is paid for) 
   assert.match(res.generated.path, /-product\.jpg$/);
   assert.match(res.note, /^Split could not place this one — .* try Full Gemini for this item\.$/);
   assert.equal(res.method, "split");
+});
+
+test("grey enclosed by the product (a gap inside a sleeve, between two pieces) is removed too — never placed on the backdrop as a grey patch", async () => {
+  // A blue frame with a grey window in its middle: the window is not reachable from the picture's edges.
+  const buf = await png(900, 900, '<rect x="200" y="200" width="500" height="500" fill="#1d3f8a"/><rect x="350" y="350" width="200" height="200" fill="#DEDEDE"/>');
+  const { data, info } = await sharp(await greyMatte(buf)).raw().toBuffer({ resolveWithObject: true });
+  const alphaAt = (x, y) => data[(y * info.width + x) * 4 + 3];
+  assert.equal(alphaAt(450, 450), 0, "the enclosed grey is transparent");
+  assert.equal(alphaAt(250, 450), 255, "the product around it is kept");
+  // A small grey DETAIL of the product (a button, a logo dot) is not a gap: it stays.
+  const dot = await png(900, 900, '<rect x="200" y="200" width="500" height="500" fill="#1d3f8a"/><rect x="440" y="440" width="8" height="8" fill="#DEDEDE"/>');
+  const d2 = await sharp(await greyMatte(dot)).raw().toBuffer({ resolveWithObject: true });
+  assert.equal(d2.data[(444 * d2.info.width + 444) * 4 + 3], 255);
+});
+
+test("a tall shoe (a boot) is fitted by its height — never cropped off the top, never run into the box", async () => {
+  const canvas = { width: 1086, height: 1448 };
+  const f = spec.footwear;
+  // A low sneaker fits at the layout's width: the spec is untouched.
+  assert.equal(fitShoe(f, { width: 650, height: 210 }, canvas, true), f);
+  // A boot as tall as it is long does not.
+  const boot = fitShoe(f, { width: 600, height: 620 }, canvas, true);
+  assert.equal(boot.shoe.fitted, "by height");
+  const widthPx = (boot.shoe.toeX - boot.shoe.heelX) * canvas.width, heightPx = widthPx * (620 / 600);
+  const top = boot.shoe.soleY - heightPx / canvas.height;
+  assert.ok(top >= f.box.bottom + 0.029, `clear of the box: ${top}`);
+  assert.equal(boot.shoe.soleY, f.shoe.soleY, "the sole stays on the pedestal line");
+  assert.ok(Math.abs((boot.shoe.heelX + boot.shoe.toeX) / 2 - (f.shoe.heelX + f.shoe.toeX) / 2) < 1e-9, "centred where the layout centres it");
+  // End to end: a boot on grey is placed whole.
+  const bootOnGrey = await png(1200, 1200, '<path d="M 350 1000 L 350 300 L 620 300 L 640 760 L 900 860 Q 960 900 960 1000 Z" fill="#7a4a1e"/>');
+  const lib = await sharp({ create: { width: 400, height: 260, channels: 4, background: "#e85d04" } }).png().toBuffer();
+  const { res } = await run({ kind: "footwear", image: bootOnGrey, libraryBoxPng: lib });
+  assert.equal(res.note, undefined);
+  const s = res.trace.split.placed.shoe, b = res.trace.split.placed.box;
+  assert.ok(s.top >= 0 && s.bottom <= 1 && s.left >= 0 && s.right <= 1, JSON.stringify(s));
+  assert.ok(s.top > b.bottom, "the boot stops below the box");
+  assert.equal(res.trace.split.shoeFitted, "by height");
+});
+
+test("the measurements kept are of the photo that is shown: a failed placement leaves none", async () => {
+  const { res } = await run({ kind: "single", image: await garmentOnGrey(GREY) });
+  assert.equal(res.measurements, null);
+  assert.equal(res.trace.split.placed ?? null, null);
 });

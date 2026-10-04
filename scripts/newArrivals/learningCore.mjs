@@ -60,12 +60,16 @@ export function joinRows(decisions, genlogs) {
 }
 
 const M = (r) => r.log?.measurements || r.gen?.measurements || null;
+const kindOf = (r) => r.log?.kind || r.gen?.kind || r.class || null;
+// A side of a comparison needs this many photos; under SMALL_SAMPLE the finding is called a hint.
+export const MIN_SIDE = 3;
+export const SMALL_SAMPLE = 6;
 // What is compared. `better` says which way is good; a field without it is described, never ranked.
 export const FIELDS = [
-  { key: "sharpness", label: "sharpness", unit: "(higher = sharper)", num: true, better: "higher", get: (r) => M(r)?.sharpness?.laplacianVar ?? null },
-  { key: "noise", label: "background noise", unit: "(lower = cleaner)", num: true, better: "lower", get: (r) => M(r)?.noise?.highpassStd ?? null },
-  { key: "crease", label: "creasing left in the garment", unit: "(lower = smoother)", num: true, better: "lower", get: (r) => M(r)?.crease?.delta ?? null },
-  { key: "background", label: "difference from your backdrop photo", unit: "(0 = identical)", num: true, better: "lower", get: (r) => M(r)?.background?.mad ?? null },
+  { key: "sharpness", measured: true, label: "sharpness", unit: "(a higher number is sharper)", num: true, better: "higher", get: (r) => M(r)?.sharpness?.laplacianVar ?? null },
+  { key: "noise", measured: true, label: "background noise", unit: "(a lower number is cleaner)", num: true, better: "lower", get: (r) => M(r)?.noise?.highpassStd ?? null },
+  { key: "crease", measured: true, label: "creasing left in the garment", unit: "(a lower number is smoother)", num: true, better: "lower", get: (r) => M(r)?.crease?.delta ?? null },
+  { key: "background", measured: true, label: "difference from your backdrop photo", unit: "(0 is identical)", num: true, better: "lower", get: (r) => M(r)?.background?.mad ?? null },
   { key: "requestMs", label: "seconds Gemini took", unit: "", num: true, get: (r) => (r.log?.timing?.requestMs != null ? r.log.timing.requestMs / 1000 : null) },
   { key: "costZar", label: "cost", unit: "(rand)", num: true, get: (r) => { const c = Number(r.log?.costZar ?? r.gen?.costZar); return Number.isFinite(c) && c > 0 ? c : null; } },
   { key: "method", label: "method", get: (r) => (r.log?.method || r.gen?.method) === "split" ? "Split" : (r.log?.method || r.gen?.method) === "full" ? "Full Gemini" : null },
@@ -101,15 +105,24 @@ export const CHIP_PROPOSALS = {
  * with the counts. Pure. → [{ key, text, goodIsBetter }]
  */
 export function findings(rows) {
-  const rejected = rows.filter((r) => r.tier === "rejected");
   const cands = [];
-  for (const f of FIELDS) {
-    const lovedVals = rows.filter((r) => r.tier === "loved").map(f.get).filter((v) => v != null);
-    const who = lovedVals.length >= 2 ? "loved" : "loved and approved";
-    const good = lovedVals.length >= 2 ? lovedVals : rows.filter((r) => r.tier !== "rejected").map(f.get).filter((v) => v != null);
+  // Photo measurements differ by nature between shoes and clothing, so those are
+  // compared within each; the rest (method, setup, box) over everything.
+  const groups = [
+    { name: "Shoes", rows: rows.filter((r) => kindOf(r) === "footwear"), fields: FIELDS.filter((f) => f.measured) },
+    { name: "Clothing", rows: rows.filter((r) => kindOf(r) && kindOf(r) !== "footwear"), fields: FIELDS.filter((f) => f.measured) },
+    { name: null, rows, fields: FIELDS.filter((f) => !f.measured) },
+  ];
+  for (const g of groups) for (const f of g.fields) {
+    const rejected = g.rows.filter((r) => r.tier === "rejected");
+    const lovedVals = g.rows.filter((r) => r.tier === "loved").map(f.get).filter((v) => v != null);
+    const who = lovedVals.length >= MIN_SIDE ? "loved" : "loved and approved";
+    const good = lovedVals.length >= MIN_SIDE ? lovedVals : g.rows.filter((r) => r.tier !== "rejected").map(f.get).filter((v) => v != null);
     const bad = rejected.map(f.get).filter((v) => v != null);
-    if (good.length < 2 || bad.length < 2) continue;
-    const Who = `${who[0].toUpperCase()}${who.slice(1)}`;
+    if (good.length < MIN_SIDE || bad.length < MIN_SIDE) continue;
+    const Who = `${g.name ? `${g.name} — ${who}` : `${who[0].toUpperCase()}${who.slice(1)}`}`;
+    // Few photos on either side: a hint, said as one.
+    const small = Math.min(good.length, bad.length) < SMALL_SAMPLE ? " Only a few photos so far — a hint, not a rule." : "";
     if (f.num) {
       if (!f.better) continue;
       const mg = median(good.map(Number)), mb = median(bad.map(Number));
@@ -118,7 +131,7 @@ export function findings(rows) {
       if (Math.abs(effect) < 0.1) continue;
       const goodIsBetter = f.better === "higher" ? mg > mb : mg < mb;
       cands.push({ key: f.key, effect: Math.abs(effect), goodIsBetter,
-        text: `${Who} photos had ${f.label} ${fmt(mg)} (the middle of ${good.length}) against ${fmt(mb)} for the ones you marked not right (the middle of ${bad.length}) ${f.unit}${goodIsBetter ? "" : " — the opposite of what was expected, so this number does not explain your choice"}.` });
+        text: `${Who} photos had ${f.label} ${fmt(mg)} (the middle of ${good.length}) against ${fmt(mb)} for the ones you marked not right (the middle of ${bad.length}) ${f.unit}${goodIsBetter ? "" : " — the opposite of what was expected, so this number does not explain your choice"}.${small}` });
     } else {
       const counts = {};
       for (const v of good) counts[v] = (counts[v] || 0) + 1;
@@ -127,14 +140,14 @@ export function findings(rows) {
       const sg = share(good), sb = share(bad);
       if (Math.abs(sg - sb) < 0.25) continue;
       cands.push({ key: f.key, effect: Math.abs(sg - sb), goodIsBetter: sg > sb,
-        text: `${Who} photos: ${Math.round(sg * good.length)} of ${good.length} were ${f.label} "${top[0]}", against ${Math.round(sb * bad.length)} of ${bad.length} of the ones you marked not right.` });
+        text: `${Who} photos: ${Math.round(sg * good.length)} of ${good.length} were ${f.label} "${top[0]}", against ${Math.round(sb * bad.length)} of ${bad.length} of the ones you marked not right.${small}` });
     }
   }
   const out = cands.sort((a, b) => b.effect - a.effect).slice(0, 3).map(({ key, text, goodIsBetter }) => ({ key, text, goodIsBetter }));
   const n = (t) => rows.filter((r) => r.tier === t).length;
   if (out.length < 3) {
     out.push({ key: null, goodIsBetter: false,
-      text: `${out.length ? "No further clear difference" : "Not enough to compare yet"}: ${n("loved")} loved, ${n("approved")} approved and ${n("rejected")} marked not right so far — a finding needs at least 2 good and 2 not-right photos that differ on something measured.` });
+      text: `${out.length ? "No further clear difference" : "Not enough to compare yet"}: ${n("loved")} loved, ${n("approved")} approved and ${n("rejected")} marked not right so far — a finding needs at least ${MIN_SIDE} good and ${MIN_SIDE} not-right photos of the same kind that differ on something measured.` });
   }
   return out;
 }
@@ -142,7 +155,8 @@ export function findings(rows) {
 /** The reject chips, most used first: [[chip, count]]. Pure. */
 export function chipCounts(rows) {
   const counts = {};
-  for (const r of rows) for (const c of r.reasons || []) counts[c] = (counts[c] || 0) + 1;
+  // Only photos whose final word is "not right": a chip on a photo he later loved or approved is not a complaint about it.
+  for (const r of rows) if (r.tier === "rejected") for (const c of r.reasons || []) counts[c] = (counts[c] || 0) + 1;
   return Object.entries(counts).sort((a, b) => b[1] - a[1]);
 }
 
@@ -178,7 +192,7 @@ export function learningReport({ decisions, genlogs, now = Date.now(), imagesPer
   const week = now - WEEK_MS;
   const L = ["Junid,", ""];
   L.push(`Your photos this week: ${count("loved", week)} loved ❤, ${count("approved", week)} approved, ${count("rejected", week)} marked not right.`);
-  L.push(`Since the start: ${count("loved")} loved, ${count("approved")} approved, ${count("rejected")} marked not right.`);
+  L.push(`So far: ${count("loved")} loved, ${count("approved")} approved, ${count("rejected")} marked not right.`);
   L.push(spend.n
     ? `Gemini made ${spend.n} photo${spend.n === 1 ? "" : "s"} this week for ${zar(spend.zar)}${spend.estimatedZar > 0 ? ` (of which ~${zar(spend.estimatedZar)} is an estimate)` : ""} — ${zar(spend.perPhoto)} a photo${spend.seconds != null ? `, about ${Math.round(spend.seconds)} seconds each` : ""}.`
     : "Gemini made no photos this week.");

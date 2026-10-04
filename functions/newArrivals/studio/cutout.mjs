@@ -154,9 +154,10 @@ export function toeDirection(piece) {
  * A pixel joins the background when it is close to the pixel it was reached
  * from (`step` — a gentle change), still near the background's own colour
  * (`wide`) and as neutral as it (`chroma` — a coloured product never floods).
+ * Grey enclosed by the product (`hole`) is removed in a second pass.
  * → RGBA PNG of the same size.
  */
-export async function greyMatte(buf, { step = 5, wide = 80, chroma = 14 } = {}) {
+export async function greyMatte(buf, { step = 5, wide = 80, chroma = 14, hole = 12 } = {}) {
   const { data, info } = await sharp(buf).removeAlpha().raw().toBuffer({ resolveWithObject: true });
   const w = info.width, h = info.height, ch = info.channels;
   const bg = borderColour(data, w, h, ch);
@@ -186,6 +187,27 @@ export async function greyMatte(buf, { step = 5, wide = 80, chroma = 14 } = {}) 
     if (x < w - 1) reach(i, i + 1);
     if (y > 0) reach(i, i - w);
     if (y < h - 1) reach(i, i + w);
+  }
+  // ENCLOSED GREY — a gap inside a sleeve, a lace loop, between the pieces of a
+  // set — is not reachable from the edges. Any patch of pixels that are the
+  // background's own colour (tightly: `hole`) and big enough to be a gap, not a
+  // speck of the product, is background too.
+  const holeMin = Math.max(150, Math.round(w * h * 0.0002));
+  const seen = new Uint8Array(w * h);
+  const isHole = (i) => !background[i] && off(i) <= hole && near(i);
+  for (let start = 0; start < w * h; start++) {
+    if (seen[start] || !isHole(start)) continue;
+    let n = 0; top = 0;
+    stack[top++] = start; seen[start] = 1;
+    const members = [];
+    while (top > 0) {
+      const i = stack[--top], x = i % w, y = (i - x) / w;
+      members.push(i); n += 1;
+      for (const j of [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, y > 0 ? i - w : -1, y < h - 1 ? i + w : -1]) {
+        if (j >= 0 && !seen[j] && isHole(j)) { seen[j] = 1; stack[top++] = j; }
+      }
+    }
+    if (n >= holeMin) for (const i of members) background[i] = 1;
   }
   // A one-pixel soft edge: the alpha is blurred slightly, then never raised above solid.
   const alpha = Buffer.alloc(w * h);

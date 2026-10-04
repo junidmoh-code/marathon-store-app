@@ -519,7 +519,8 @@ test("a sneaker with no box photo: the brand's library box and two example photo
   assert.match(parts[0].text, /Only if the SHOE PHOTO shows no box, use the brand's box/);
   const item = await itemOf(w.db);
   assert.deepEqual(item.boxUsed, { mode: "library", source: "stand-in", brand: "nike" });
-  assert.deepEqual(item.generations[out.genId].layers, { footwearBox: true, footwearPose: true });
+  assert.deepEqual(item.generations[out.genId].layers, { footwearBox: true, footwearPose: true, footwearExamples: true });
+  assert.equal(item.generations[out.genId].promptVersion, "baseline-2026-10-02+footwearBox+footwearPose+footwearExamples (studio-2026-10-04.1)");
   const log = (await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val();
   assert.equal(log.inputs.map((i) => i.role).join(","), "plate,reference,example,example,layoutDiagram,source,box");
 });
@@ -531,4 +532,14 @@ test("Gemini's prepaid credit has run out (402): said in those words — not 'ta
   const item = await itemOf(w.db);
   assert.equal(item.generateRequest, undefined);
   assert.match(item.lastAttempt.reason, /prepaid credit has run out/);
+});
+
+test("the example photos cannot be loaded: the shoe is still generated, without them — and the record does not claim them", async () => {
+  const w = await world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
+  w.deps.assets = { ...w.deps.assets, loadExamples: async () => { throw new Error("footwear-example-x.jpg in Storage is not the locked example — refusing to use it"); } };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.deepEqual(gen.layers, { footwearBox: true, footwearPose: true });
+  const labels = w.calls.find((c) => c[0] === "image")[3].filter((p) => p.text).map((p) => p.text.split(" — ")[0]);
+  assert.ok(!labels.includes("MORE EXAMPLES OF THE SAME COMPOSITION"));
 });
