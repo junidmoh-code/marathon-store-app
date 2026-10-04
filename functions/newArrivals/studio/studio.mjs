@@ -13,6 +13,7 @@ import {
 } from "./compose.mjs";
 import { studioPrompt, setupName } from "./prompt.mjs";
 import { imagePart, textPart } from "./gemini-stream.mjs";
+import { objectiveMeasurements } from "./measure.mjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
 
@@ -34,6 +35,9 @@ export function sourceFresh(product) {
 export function originalUrlOf(item, product) {
   return (sourceFresh(product) && product.photoSourceUrl) || item?.originalUrl || product?.photoUrlOriginal || product?.photoUrl || null;
 }
+
+// What the extra example photos are — and are not — to the model.
+export const EXAMPLES_LABEL = "MORE EXAMPLES OF THE SAME COMPOSITION — finished photos of OTHER shoes on this same backdrop: one shoe side-on on the white pedestal, toe to the right, its box on the middle rail above. Copy the composition only. Their shoes, boxes and logos are different products and must never appear in the result:";
 
 /** A plain-words refusal: nothing was generated, nothing was paid. */
 export class StudioRefusal extends Error {
@@ -68,7 +72,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const orig = await forModel((await deps.fetchBytes(originalUrl)).buffer);
 
   // The box (footwear): its own box photo, else the brand's library box, else none.
-  let box = null, boxMode = "none", boxSource = null, boxFrom = null, boxNote = null;
+  let box = null, boxMode = "none", boxSource = null, boxFrom = null, boxNote = null, libraryBoxPng = null;
   const brand = kind === "footwear" ? brandKey(product?.brand) : null;
   if (kind === "footwear") {
     if (product?.photoBoxUrl) {
@@ -83,15 +87,21 @@ export async function generateOne({ item, product, genId, method = "full", deps,
         deps.log?.(boxNote);
       }
     }
-    if (!box && layers.footwearBox && deps.libraryBox) {
+    // No own box photo: the brand's library box (a clean cut-out of that brand's
+    // box). Full Gemini is shown it only under the footwearBox rule; Split places
+    // it by code, untouched.
+    if (!box && deps.libraryBox) {
       const lib = await deps.libraryBox(brand).catch(() => null);
-      if (lib?.buffer) { box = await forModel(lib.buffer); boxMode = "library"; boxSource = lib.kind || "library"; boxFrom = { file: `brand library box (${brand}, ${lib.kind || "?"})` }; }
+      if (lib?.buffer) {
+        libraryBoxPng = lib.buffer;
+        if (layers.footwearBox) { box = await forModel(lib.buffer); boxMode = "library"; boxSource = lib.kind || "library"; boxFrom = { file: `brand library box (${brand}, ${lib.kind || "?"})` }; }
+      }
     }
   }
 
   if (method === "split") {
     if (!deps.split) throw new StudioRefusal("the split method is not installed");
-    return deps.split({ item, product, genId, kind, categoryKey, orig, originalUrl, box, boxMode, boxSource, boxFrom, brand, deps, say });
+    return deps.split({ item, product, genId, kind, categoryKey, orig, originalUrl, box, boxMode, boxSource, boxFrom, brand, libraryBoxPng, deps, say });
   }
 
   const plate = await deps.loadPlate(kind), ref = await deps.loadReference(kind);
@@ -107,9 +117,13 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const frame = genFrameOf(plate.width, plate.height, RATIOS[aspect]);
   const guideJ = await forModel(await layoutGuideImage(kind, effSpec, plate.buffer, frame));
 
+  // LAYER footwearExamples: more of Junid's own photos of the same composition
+  // (other shoes, other boxes) — so the layout is learnt, not the one reference's shoe.
+  const examples = kind === "footwear" && layers.footwearExamples && deps.loadExamples ? await deps.loadExamples(kind).catch(() => []) : [];
   const inputs = await Promise.all([
     inputOf("plate", plateJ, { file: plate.file || null }),
     ...(refJ ? [inputOf("reference", refJ, { file: ref.file || null })] : []),
+    ...examples.map((e) => inputOf("example", e.forModel, { file: e.file })),
     inputOf("layoutDiagram", guideJ, { file: "drawn from config/layout-spec.json" }),
     inputOf("source", orig, { url: originalUrl }),
     ...(box ? [inputOf("box", box, boxFrom || {})] : []),
@@ -120,6 +134,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     textPart(prompt.text),
     textPart("BACKGROUND PLATE — use exactly:"), imagePart(plateJ),
     ...(refJ ? [textPart("REFERENCE — the target composition and look:"), imagePart(refJ)] : []),
+    ...(examples.length ? [textPart(EXAMPLES_LABEL), ...examples.map((e) => imagePart(e.forModel))] : []),
     textPart("LAYOUT DIAGRAM — NOT part of the photo: the dashed box(es) on this grey diagram show where and how large the product goes on the canvas. Never draw boxes, outlines, labels or grey into the result. FIDELITY COMES FIRST: never change the product in any way to make it fit the box — only move it and scale it uniformly:"), imagePart(guideJ),
     textPart(kind === "footwear" ? "SHOE PHOTO — the real shoe:" : "GARMENT PHOTO — the real garment(s):"), imagePart(orig),
     ...(box ? [textPart(boxMode === "own" ? "BOX PHOTO — this shoe's own box:" : "BOX PHOTO — a box of this shoe's brand:"), imagePart(box)] : []),
@@ -142,12 +157,13 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   // retried, and if the finishing step itself fails the photo is kept exactly
   // as Gemini made it. A failure below is marked `paid` for the caller.
   say({ type: "status", text: "Finishing the photo…" });
-  let generated, gm = {}, finishNote = null;
+  let generated, gm = {}, finishNote = null, measured = gen.buffer;
   try {
     gm = await sharp(gen.buffer).metadata().catch(() => ({}));
     let out, mime = "image/jpeg";
     try { out = await toCanvas(gen.buffer, plate); }
     catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
+    measured = out;
     generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime));
   } catch (e) {
     // The caller still counts what Gemini charged for it.
@@ -155,6 +171,12 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     e.usage = gen.usage || null;
     throw e;
   }
+  // Pixel measurements for the learning log (no model call): the product is
+  // looked for where the layout puts it. Never a reason to lose the photo.
+  let measurements = null;
+  try {
+    measurements = await objectiveMeasurements({ kind, out: measured, outBox: expectedBox(kind, effSpec), exclude: [], plate: plate.buffer, src: orig, srcBox: SOURCE_BOX, checker: null });
+  } catch { /* no numbers for this one */ }
   // The final image is never also listed as a draft.
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
@@ -162,7 +184,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     generated, kind, method: "full",
     promptVersion: `${setupName(prompt.layers)} (${prompt.version})`, layersUsed: prompt.layers,
     box: kind === "footwear" ? { mode: boxMode, brand, source: boxSource } : null,
-    draftFiles: kept, usage: gen.usage || null,
+    draftFiles: kept, usage: gen.usage || null, measurements,
     trace: {
       promptText: prompt.text, inputs, layers: Object.fromEntries(prompt.layers.map((k) => [k, true])),
       request: gen.request || null, usage: gen.usage || null, requestMs: gen.requestMs ?? null,
@@ -172,6 +194,15 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     },
   };
 }
+
+// Where the product is expected (fractions of the canvas): the layout's own box.
+export function expectedBox(kind, spec) {
+  if (kind === "footwear" && spec?.shoe) return { left: spec.shoe.heelX, right: spec.shoe.toeX, top: spec.shoe.topY, bottom: spec.shoe.soleY };
+  if (spec?.garment) return { left: spec.garment.left, right: spec.garment.right, top: spec.garment.topY, bottom: spec.garment.hemY };
+  return null;
+}
+// The staff photo is not measured for position: its middle is taken as the product.
+export const SOURCE_BOX = Object.freeze({ left: 0.15, right: 0.85, top: 0.15, bottom: 0.85 });
 
 /** Run fn up to `tries` times, a little longer apart each time; the last error is thrown. */
 export async function withRetries(fn, { tries = 3, waitMs = 400, sleep = (ms) => new Promise((r) => setTimeout(r, ms)) } = {}) {

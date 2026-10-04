@@ -6,7 +6,7 @@
 // newArrivalsGenerate RETIRED — generation is newArrivalsStudio (studio.js); this one says "reload".
 // newArrivalsSkip     Skip — don't advertise (new/ready/rejected → skipped; marked, never deleted).
 // newArrivalsRestore  the card's Undo: skipped → back to the lane it came from (skippedFrom).
-// newArrivalsReject   a photo → lane rejected with one reason chip (still on the New tab).
+// newArrivalsReject   one feedback chip, LOGGED against the photo shown (the item does not move).
 // newArrivalsSelect   "Use this one" — any generation becomes the main photo (lane kept).
 // newArrivalsLove     ❤ / un-❤ one generation (any lane; never moves or approves).
 // newArrivalsHow      "How Gemini did it" — one generation's genlog (thoughts + drafts), on demand.
@@ -33,6 +33,8 @@ if (!admin.apps.length) {
 }
 
 const ADMIN_EMAIL = "gunidmoh@gmail.com"; // the super-admin, as in functions/index.js
+// The method an item gets with no choice of its own (the studio function reads the same file).
+const DEFAULT_METHOD = core.METHODS.includes(require("./studio/config/generation.json").defaultMethod) ? require("./studio/config/generation.json").defaultMethod : "full";
 
 // Junid, or anyone holding the Shopify Publishing grant — Approve ends in a
 // Shopify publish, so it takes the same grant the publishing card does. Read
@@ -200,8 +202,6 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
   const laneOf = new Map();
   for (const s of statuses) for (const k of index[s]) if (!laneOf.has(k)) laneOf.set(k, s);
   const laneKeys = [...laneOf.keys()].sort(core.keyCmp);
-  // What a "Select all" may act on: never an item mid-generation.
-  const selectable = new Set(statuses.filter((s) => s !== "generating").flatMap((s) => index[s]));
 
   const f = tab === "new" ? core.normalizeFilter(filter) : null;
   const g = !f && core.GROUP_TABS.includes(tab) ? core.normalizeGroup(group) : null;
@@ -271,17 +271,13 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
     return { ...core.cardItem(item), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
   })).filter(Boolean);
 
-  const [stats, modes, defaultMethod] = await Promise.all([val(db, `${core.ROOT}/stats`), val(db, `${core.ROOT}/config/mode`), val(db, `${core.ROOT}/config/defaultMethod`)]);
-  const out = {
+  const stats = await val(db, `${core.ROOT}/stats`);
+  return {
     tab, items, total, nextCursor: cursorOut || (more && pageKeys.length ? pageKeys[pageKeys.length - 1] : null),
-    tabCounts, stats: stats || null, modes: modes || {}, filter: f, group: g, groupCounts,
-    // The poster's default method (it publishes its config here): what an item with no override gets.
-    defaultMethod: core.METHODS.includes(defaultMethod) ? defaultMethod : "full",
+    tabCounts, stats: stats || null, filter: f, group: g, groupCounts,
+    // What an item with no choice of its own gets: the studio function's own default.
+    defaultMethod: DEFAULT_METHOD,
   };
-  // Every pid the tab's multi-select can act on — the whole group (or
-  // filtered lane), not just the loaded page ("Select all" then "Skip selected").
-  if (tab === "new" || tab === "skipped") out.matchingPids = matching.filter((p) => selectable.has(p));
-  return out;
 }
 
 const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 };

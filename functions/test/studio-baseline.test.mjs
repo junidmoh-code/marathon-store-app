@@ -109,3 +109,82 @@ test("the category decides the plate: all footwear (slides too) on the pedestal,
   assert.equal(kindFor({ categoryKey: "hoodies" }), "single");
   assert.equal(kindFor({ categoryKey: "perfume" }), null);
 });
+
+// ── THE LAYERS SWITCHED ON 4 OCT (Junid's rebuild brief, constraint 6) ───────
+import { STEAM_LAYER, footwearBoxLayer, FOOTWEAR_POSE_LAYER } from "../newArrivals/studio/prompt.mjs";
+import { EXAMPLES_LABEL } from "../newArrivals/studio/studio.mjs";
+import { productOnlyPrompt, SPLIT_PROMPT_VERSION } from "../newArrivals/studio/split-prompts.mjs";
+
+test("the layers in force are exactly the signed-off ones, each with its approval on record", () => {
+  assert.deepEqual(gen.layers, { boxRules: false, reshootBrief: false, socialsRequest: false, framingCorrection: false, packaging: false,
+    steam: true, footwearBox: true, footwearPose: true, footwearExamples: true });
+  for (const [name, on] of Object.entries(gen.layers)) {
+    if (on) assert.equal(lock.layerApprovals[name]?.approvedBy, "Junid", `${name} has Junid's approval recorded`);
+  }
+  assert.equal(gen.defaultMethod, "full");
+});
+
+test("a T-SHIRT is still generated on the bare baseline — byte for byte — with every layer on", () => {
+  for (const key of ["t-shirts", "golf-t-shirts"]) {
+    const args = { kind: "single", productName: "Plain Tee", conditionClause: CONDITION_CLAUSE, placement: placementText("single", spec.single) };
+    assert.equal(studioPrompt({ ...args, categoryKey: key, layers: gen.layers }).text, baselinePrompt(args));
+  }
+});
+
+test("CLOTHING (not tees): the steam paragraph sits before the studio brief; nothing else of the baseline moves", () => {
+  const args = { kind: "single", productName: "Fleece Hoodie", conditionClause: CONDITION_CLAUSE, placement: placementText("single", spec.single) };
+  const out = studioPrompt({ ...args, categoryKey: "hoodies", layers: gen.layers });
+  assert.deepEqual(out.layers, ["steam"]);
+  assert.equal(out.text.replace(`${STEAM_LAYER}\n\n`, ""), baselinePrompt(args));
+  assert.ok(out.text.indexOf("STEAMED AND PRESSED") < out.text.indexOf("STUDIO QUALITY"));
+  // Steaming never licenses a change to the garment itself.
+  assert.match(STEAM_LAYER, /every print, logo, label, embroidery, stitch line, seam, pocket, zip and button stays exactly/);
+  assert.match(STEAM_LAYER, /colour stays true/);
+  // A two-piece set gets it too.
+  assert.deepEqual(studioPrompt({ kind: "twopiece", categoryKey: "tracksuits", productName: "Set", conditionClause: CONDITION_CLAUSE, placement: placementText("twopiece", spec.twopiece), layers: gen.layers }).layers, ["steam"]);
+});
+
+test("SNEAKERS: one box on the rail — its own, else the one in the shoe photo, else the brand's; the shoe on the pedestal", () => {
+  const args = { kind: "footwear", categoryKey: "sneakers", productName: "Nike AF1", conditionClause: CONDITION_CLAUSE, placement: placementText("footwear", spec.footwear), layers: gen.layers };
+  for (const boxMode of ["own", "library", "none"]) {
+    const out = studioPrompt({ ...args, boxMode });
+    assert.deepEqual(out.layers, ["footwearBox", "footwearPose"]);
+    assert.equal(out.text.replace(`${footwearBoxLayer(boxMode)}\n\n${FOOTWEAR_POSE_LAYER}\n\n`, ""), baselinePrompt(args), `${boxMode}: the baseline text is untouched`);
+    assert.doesNotMatch(out.text, /PACKAGING:/, "the packaging layer is replaced, not stacked");
+  }
+  assert.match(footwearBoxLayer("own"), /this shoe's own box: use that box/);
+  assert.match(footwearBoxLayer("library"), /If the SHOE PHOTO itself shows this shoe's own box, use THAT very box/);
+  assert.match(footwearBoxLayer("library"), /Only if the SHOE PHOTO shows no box, use the brand's box/);
+  assert.match(footwearBoxLayer("none"), /leave the rail empty: never invent a box/);
+  for (const m of ["own", "library", "none"]) assert.match(footwearBoxLayer(m), /never redrawn, restyled or changed/);
+  // Slides are footwear: the same rules.
+  assert.deepEqual(studioPrompt({ ...args, categoryKey: "slides", boxMode: "none" }).layers, ["footwearBox", "footwearPose"]);
+  // The baseline already says right shoe, outer side, toe right — the pose layer adds the pedestal and "one shoe".
+  assert.match(baselinePrompt(args), /the RIGHT shoe, its OUTER side to the camera, TOE POINTING RIGHT/);
+  assert.match(FOOTWEAR_POSE_LAYER, /ONE shoe only .* whole sole on the\s+white pedestal/s);
+});
+
+test("the example photos are labelled as composition only — never products to copy; two are in use, all five locked", () => {
+  assert.match(EXAMPLES_LABEL, /Copy the composition only\. Their shoes, boxes and logos are different products and must never appear/);
+  const ex = json("config/examples.lock.json");
+  assert.equal(Object.keys(ex).length, 5);
+  assert.equal(Object.values(ex).filter((e) => e.use === true).length, 2);
+  for (const e of Object.values(ex)) assert.match(e.sha256, /^[0-9a-f]{64}$/);
+});
+
+test("NEVER CHANGE the product is in every prompt — full and split — whatever the layers", () => {
+  const never = /NEVER CHANGE THE PRODUCT: its shape, silhouette, proportions, colourway, materials and textures, logos, text,\s+stitching layout/;
+  for (const [kind, categoryKey] of [["footwear", "sneakers"], ["single", "hoodies"], ["single", "t-shirts"], ["twopiece", "tracksuits"]]) {
+    assert.match(studioPrompt({ kind, categoryKey, productName: "X", conditionClause: CONDITION_CLAUSE, placement: placementText(kind, spec[kind]), layers: gen.layers, boxMode: "library" }).text, never);
+    assert.match(productOnlyPrompt({ kind, productName: "X", conditionClause: CONDITION_CLAUSE }), never);
+  }
+});
+
+test("the split prompt is exactly the signed-off one; it asks for steamed, studio-lit product on plain grey", () => {
+  const split = json("config/split.lock.json");
+  assert.equal(sha(fs.readFileSync(at("split-prompts.mjs"))), split.splitPromptSha256);
+  assert.equal(SPLIT_PROMPT_VERSION, split.splitPromptVersion);
+  const p = productOnlyPrompt({ kind: "single", productName: "X", conditionClause: CONDITION_CLAUSE });
+  assert.match(p, /steamed and pressed — no packing creases or fold\s+lines/);
+  assert.match(p, /light-grey studio background/);
+});

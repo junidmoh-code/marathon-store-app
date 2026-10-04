@@ -90,6 +90,8 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     ...(method === "split" ? (res.packaging ? { packaging: res.packaging } : {}) : { layers: Object.fromEntries((res.layersUsed || []).map((k) => [k, true])) }),
     how: { code: code || null, draftCount: Number(draftCount) || 0 },
     plate: res.kind ? `junid-${res.kind}` : null, kind: res.kind || null,
+    // What Junid should know about this one (e.g. Split could not place it).
+    ...(res.note ? { note: res.note } : {}),
     costUsd: cost.usd, costZar: cost.zar, costEstimated: !!cost.estimated, usdZar: cost.usdZar,
     // The day's rate could not be looked up: the configured rate was used.
     ...(cost.usdZarFallback ? { usdZarFallback: true } : {}),

@@ -32,12 +32,13 @@ const generation = require("./studio/config/generation.json");
 const spec = require("./studio/config/layout-spec.json");
 const prices = require("./studio/config/prices.json");
 const platesLock = require("./studio/config/plates.lock.json");
+const examplesLock = require("./studio/config/examples.lock.json");
 
 // The ES modules, loaded once per instance.
 let modsP = null;
 const mods = () => (modsP ||= Promise.all([
-  import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"),
-]).then(([studio, gemini, record, compose]) => ({ studio, gemini, record, compose }))
+  import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"), import("./studio/split.mjs"),
+]).then(([studio, gemini, record, compose, split]) => ({ studio, gemini, record, compose, split }))
   .catch((e) => { modsP = null; throw e; }));
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
@@ -89,6 +90,23 @@ function loadRoleFile(bucket, file, forModel) {
     })().catch((e) => { assetCache.delete(file); throw e; }));
   }
   return assetCache.get(file);
+}
+
+// Junid's own finished photos, shown as more examples of the footwear
+// composition (the ones marked `use` in examples.lock.json), sha-verified.
+function loadExamples(bucket, forModel) {
+  const files = Object.entries(examplesLock).filter(([, e]) => e.use === true).map(([f]) => f);
+  return Promise.all(files.map((file) => {
+    const k = `example:${file}`;
+    if (!assetCache.has(k)) {
+      assetCache.set(k, (async () => {
+        const [buffer] = await bucket.file(`${ASSETS}/plates/examples/${file}`).download();
+        if (sha256(buffer) !== examplesLock[file].sha256) throw new Error(`${file} in Storage is not the locked example — refusing to use it`);
+        return { file, forModel: await forModel(buffer) };
+      })().catch((e) => { assetCache.delete(k); throw e; }));
+    }
+    return assetCache.get(k);
+  }));
 }
 
 // The brand box library: sources.json names each brand's box file.
@@ -228,7 +246,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== undefined && method !== null && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full or split.");
   pid = String(pid);
-  const { studio, gemini, record, compose } = await mods();
+  const { studio, gemini, record, compose, split } = await mods();
   const now = deps.now || (() => Date.now());
   const t0 = now();
   const product = await val(db, `products/${pid}`);
@@ -247,13 +265,16 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
         loadPlate: (kind) => loadRoleFile(bucket, compose.ROLES[kind].plate, compose.forModel),
         loadReference: (kind) => (compose.ROLES[kind].reference ? loadRoleFile(bucket, compose.ROLES[kind].reference, compose.forModel) : null),
         libraryBox: (key) => libraryBox(bucket, key),
+        loadExamples: () => loadExamples(bucket, compose.forModel),
         ...(deps.assets || {}),
         spec, generation, conditionClause: CONDITION_CLAUSE,
         image: deps.image || ((model, parts, imageConfig, opts) => gemini.streamImage(model, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
         upload: (p, buf, mime) => uploadImmutable(bucket, p, buf, mime),
         now,
         log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`),
-        ...(deps.split ? { split: deps.split } : {}),
+        // The split method: Gemini makes the product only; code places it on the plate.
+        split: split.splitGenerate,
+        ...(deps.matte ? { matte: deps.matte } : {}),
       },
     });
   } catch (e) {

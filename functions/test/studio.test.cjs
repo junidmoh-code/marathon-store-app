@@ -437,3 +437,89 @@ test("a shoe whose own box photo cannot be read is still generated — never hel
   w2.deps.fetchBytes = async () => { throw new Error("fetch 500 for the photo"); };
   await assert.rejects(studio.studioGenerate(w2.db, { pid: PID }, "junid", w2.deps), /could not be made/);
 });
+
+// ── the method, the layers in force, the numbers kept ────────────────────────
+const garmentOnGrey = (fill) => sharp(Buffer.from(`<svg width="900" height="1200" xmlns="http://www.w3.org/2000/svg"><rect width="900" height="1200" fill="#DEDEDE"/><path d="M 300 150 L 600 150 L 760 330 L 660 420 L 620 370 L 620 1050 L 280 1050 L 280 370 L 240 420 L 140 330 Z" fill="${fill}"/></svg>`)).png().toBuffer();
+
+test("Split on a tap: Gemini makes the product only, code places it; the record says split and keeps both photos", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  w.deps.image = async (model, parts, cfg, opts) => ({ ...(await image(model, parts, cfg, opts)), buffer: await garmentOnGrey("#1d3f8a"), mime: "image/png" });
+  const out = await studio.studioGenerate(w.db, { pid: PID, method: "split" }, "junid", w.deps);
+  const item = await itemOf(w.db);
+  const gen = item.generations[out.genId];
+  assert.equal(gen.method, "split");
+  assert.match(gen.promptVersion, /^split-product-.* \(split\)$/);
+  assert.equal(gen.note, undefined);
+  // No plate, reference or diagram is sent to Gemini in the split method.
+  const call = w.calls.find((c) => c[0] === "image");
+  assert.equal(call[3].length, 3);
+  const log = (await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val();
+  assert.equal(log.method, "split");
+  assert.match(log.split.productImage.path, /-product\.jpg$/);
+  assert.ok(log.split.placed.garment);
+  assert.equal(log.inputs.map((i) => i.role).join(","), "source");
+});
+
+test("Split that cannot place the product: Gemini's photo is the generation, with a plain note on it for the card", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  w.deps.image = async (model, parts, cfg, opts) => ({ ...(await image(model, parts, cfg, opts)), buffer: await garmentOnGrey("#DEDEDE"), mime: "image/png" });
+  const out = await studio.studioGenerate(w.db, { pid: PID, method: "split" }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.match(gen.url, /-product\.jpg/);
+  assert.match(gen.note, /^Split could not place this one/);
+  assert.equal(out.item.generations[out.genId].note, gen.note);
+});
+
+test("the item's own method is used when the tap names none; with neither, Full Gemini", async () => {
+  const split = await world({ item: { method: "split" } });
+  const image = split.deps.image;
+  split.deps.image = async (model, parts, cfg, opts) => ({ ...(await image(model, parts, cfg, opts)), buffer: await garmentOnGrey("#1d3f8a"), mime: "image/png" });
+  const a = await studio.studioGenerate(split.db, { pid: PID }, "junid", split.deps);
+  assert.equal((await itemOf(split.db)).generations[a.genId].method, "split");
+  const full = await world();
+  const b = await studio.studioGenerate(full.db, { pid: PID }, "junid", full.deps);
+  assert.equal((await itemOf(full.db)).generations[b.genId].method, "full");
+});
+
+test("a hoodie's prompt carries the steam layer; the record names the layers that made the photo, and pixel measurements are kept", async () => {
+  const w = await world();
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.deepEqual(gen.layers, { steam: true });
+  assert.equal(gen.promptVersion, "baseline-2026-10-02+steam (studio-2026-10-04.1)");
+  const call = w.calls.find((c) => c[0] === "image");
+  assert.match(call[3][0].text, /STEAMED AND PRESSED/);
+  const log = (await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val();
+  assert.ok(log.measurements && log.measurements.noise && log.measurements.background, "numbers for the weekly report");
+  assert.ok(gen.measurements);
+});
+
+test("a t-shirt's prompt is the bare baseline: no layer on the record", async () => {
+  const w = await world({ product: { categoryKey: "t-shirts", name: "Plain Tee" }, item: { categoryKey: "t-shirts" } });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.layers, undefined);
+  assert.equal(gen.promptVersion, "baseline-2026-10-02 (studio-2026-10-04.1)");
+  assert.doesNotMatch(w.calls.find((c) => c[0] === "image")[3][0].text, /STEAMED AND PRESSED/);
+});
+
+test("a sneaker with no box photo: the brand's library box and two example photos are sent, each labelled for what it is", async () => {
+  const w = await world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
+  const lib = await sharp({ create: { width: 300, height: 200, channels: 4, background: "#e85d04" } }).png().toBuffer();
+  const ex = await jpeg(300, 400, "#222");
+  w.deps.assets = { ...w.deps.assets, libraryBox: async (key) => (key === "nike" ? { buffer: lib, kind: "stand-in" } : null), loadReference: async () => ({ buffer: await jpeg(300, 400, "#444"), file: "footwear-reference.png" }),
+    loadExamples: async () => [{ file: "a.jpg", forModel: ex }, { file: "b.jpg", forModel: ex }] };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const parts = w.calls.find((c) => c[0] === "image")[3];
+  const labels = parts.filter((p) => p.text).map((p) => p.text.split(" — ")[0]);
+  assert.deepEqual(labels.slice(1), ["BACKGROUND PLATE", "REFERENCE", "MORE EXAMPLES OF THE SAME COMPOSITION", "LAYOUT DIAGRAM", "SHOE PHOTO", "BOX PHOTO"]);
+  assert.match(parts.find((p) => p.text && p.text.startsWith("BOX PHOTO")).text, /a box of this shoe's brand/);
+  assert.match(parts[0].text, /Only if the SHOE PHOTO shows no box, use the brand's box/);
+  const item = await itemOf(w.db);
+  assert.deepEqual(item.boxUsed, { mode: "library", source: "stand-in", brand: "nike" });
+  assert.deepEqual(item.generations[out.genId].layers, { footwearBox: true, footwearPose: true });
+  const log = (await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val();
+  assert.equal(log.inputs.map((i) => i.role).join(","), "plate,reference,example,example,layoutDiagram,source,box");
+});
