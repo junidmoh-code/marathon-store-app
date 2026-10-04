@@ -5667,4 +5667,7 @@ exports.insightsRollupSweep = onSchedule(
   exports.newArrivalsLove = na.newArrivalsLove;
   exports.newArrivalsHow = na.newArrivalsHow;
   exports.newArrivalsMethod = na.newArrivalsMethod;
+  // The photo studio: ONE streaming callable that calls Gemini directly on Junid's tap.
+  //   firebase deploy --only functions:newArrivalsStudio
+  exports.newArrivalsStudio = require("./newArrivals/studio.js").newArrivalsStudio;
 }

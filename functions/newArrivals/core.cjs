@@ -405,17 +405,32 @@ const SELECT_LANES = Object.freeze(["new", "ready", "rejected"]);
 const GEN_ID_RE = /^[A-Za-z0-9_-]{1,64}$/;
 const failedList = (v) => (Array.isArray(v && v.failed) ? v.failed : Object.values((v && v.failed) || {}));
 
-/** Why `genId` cannot be picked on `item`, or null. Pure. */
+// A STUDIO request (the Cloud Function's own claim, stamped studio: true) older
+// than this is a run that died — the function timed out or crashed: it no
+// longer blocks Approve, Skip, Use this one or a new Generate. Ten minutes is
+// past the function's own 9-minute limit. An older-style request (the retired
+// Mac mini queue) carries no such stamp and blocks until it is cleared.
+const REQUEST_STALE_MS = 10 * 60 * 1000;
+/** Is a photo being made for this item right now? Pure. */
+function requestPending(item, nowMs) {
+  const r = item && item.generateRequest;
+  if (!r) return false;
+  if (r.studio !== true) return true;
+  const at = Number(r.at) || 0;
+  return !(Number.isFinite(nowMs) && at > 0 && nowMs - at > REQUEST_STALE_MS);
+}
+
 /** The current generation's photo URL, or null. Pure. */
 function currentGenUrl(item) {
   const g = item && item.currentGen && item.generations && item.generations[item.currentGen];
   return g && typeof g === "object" && g.url ? String(g.url) : null;
 }
 
-function selectRefusal(item, genId) {
+/** Why `genId` cannot be picked on `item`, or null. Pure. */
+function selectRefusal(item, genId, nowMs = NaN) {
   if (!item) return "not in the New Arrivals queue";
   if (!SELECT_LANES.includes(item.status)) return `it is ${item.status}, not new, ready or rejected`;
-  if (item.generateRequest) return "a new photo is being generated — wait for it";
+  if (requestPending(item, nowMs)) return "a new photo is being generated — wait for it";
   const gen = item.generations && item.generations[genId];
   if (!gen || typeof gen !== "object") return "that generation is not on this item";
   if (!gen.url) return "that generation has no photo";
@@ -526,10 +541,10 @@ function howView(code, rec) {
 const METHODS = Object.freeze(["full", "split"]);
 
 /** Why the method of `item` cannot be changed now, or null. Pure. */
-function methodRefusal(item) {
+function methodRefusal(item, nowMs = NaN) {
   if (!item) return "not in the New Arrivals queue";
   if (!SELECT_LANES.includes(item.status)) return `it is ${item.status}, not new, ready or rejected`;
-  if (item.generateRequest) return "a new photo is being generated — change it when it lands";
+  if (requestPending(item, nowMs)) return "a new photo is being generated — change it when it lands";
   return null;
 }
 
@@ -547,7 +562,7 @@ function keyCmp(a, b) {
 const INDEX_CEILING = 2000;
 
 module.exports = {
-  parseBucketCursor, bucketRank,
+  parseBucketCursor, bucketRank, REQUEST_STALE_MS, requestPending,
   currentGenUrl,
   checkerWrongRules, approveAction,
   INDEX_CEILING,

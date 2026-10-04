@@ -1,0 +1,38 @@
+{
+  "footwear-plate.png": {
+    "sha256": "ab1ab227232e94c44f073714ed02406f8f917f5d5afcfbf3ec682a2bb297479b",
+    "width": 1086,
+    "height": 1448,
+    "lockedAt": "2026-10-02T18:18:40.037Z"
+  },
+  "footwear-reference.png": {
+    "sha256": "fc6949f752832f619c95098e18f696358847f51424e0590f9e8dc6aefc53362f",
+    "width": 3024,
+    "height": 4032,
+    "lockedAt": "2026-10-02T18:18:40.044Z"
+  },
+  "footwear-layout-box.png": {
+    "sha256": "fdd9cfe345bd03edb742ceb10a98906ae54096cb5371998a45fd0e1e99878052",
+    "width": 1086,
+    "height": 1448,
+    "lockedAt": "2026-10-02T18:18:40.045Z"
+  },
+  "fence-single.png": {
+    "sha256": "a19abfbc34b7d55b92c3d3bc697c02abf4897ac8b084023896cd7a0c8696dc76",
+    "width": 1086,
+    "height": 1448,
+    "lockedAt": "2026-10-02T18:18:40.046Z"
+  },
+  "fence-twopiece.png": {
+    "sha256": "18aee916119c523ac9f1b147335b35bf99ffb8d1199a32bce3c4cd1d665030e9",
+    "width": 1032,
+    "height": 1170,
+    "lockedAt": "2026-10-02T18:18:40.047Z"
+  },
+  "twopiece-reference.png": {
+    "sha256": "2bbc9fd299e40d611a67ccd46ea86f9b9f9045f4b176189658bb21c3a89abe0c",
+    "width": 1010,
+    "height": 1126,
+    "lockedAt": "2026-10-02T18:18:40.048Z"
+  }
+}

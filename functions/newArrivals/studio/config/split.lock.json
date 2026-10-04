@@ -1,0 +1,8 @@
+{
+  "splitPromptVersion": "split-product-2026-10-04.1",
+  "splitPromptSha256": "69068f6be1c8129a29ff232d3d927fa553983a4cfbf6507763e99a5b54b351cc",
+  "note": "The split method's product-only prompt (src/split-prompts.mjs) — a NEW, separately versioned prompt derived from the locked 2 Oct baseline minus every plate/layout part. Change only with Junid's sign-off: update this file and SPLIT_PROMPT_VERSION in the same PR. The locked baseline (config/baseline.lock.json) is untouched by it.",
+  "approvedBy": "Junid",
+  "approvedAt": "2026-10-04",
+  "change": "4 Oct (Junid): keep the shoe's own branded box or bag when it is in the photo (apart from the shoe, so code can cut them apart); never add one when absent. Its own box or bag is not another object."
+}

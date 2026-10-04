@@ -3,7 +3,7 @@
 // newArrivalsList     the card's read of one tab + group (bounded, no whole-node read).
 // newArrivalsApprove  Junid's tap — any New-tab item with a photo → approved (one pid, or all Ready).
 // newArrivalsRetry    (legacy, card no longer calls it) Rejected → New.
-// newArrivalsGenerate Generate / Generate selected / Regenerate → generateRequest.
+// newArrivalsGenerate RETIRED — generation is newArrivalsStudio (studio.js); this one says "reload".
 // newArrivalsSkip     Skip — don't advertise (new/ready/rejected → skipped; marked, never deleted).
 // newArrivalsRestore  the card's Undo: skipped → back to the lane it came from (skippedFrom).
 // newArrivalsReject   a photo → lane rejected with one reason chip (still on the New tab).
@@ -352,7 +352,7 @@ async function select(db, { pid, genId }, uid, nowMs) {
     out.same = false;
     // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
     if (!cur) { out.refusal = "not in the New Arrivals queue"; return null; }
-    const why = core.selectRefusal(cur, genId);
+    const why = core.selectRefusal(cur, genId, nowMs);
     if (why) { out.refusal = why; return undefined; }
     out.refusal = null;
     prev = cur;
@@ -441,7 +441,7 @@ const newArrivalsHow = onCall(callableOpts, async (request) => {
 // is refused while a new photo is being generated (core.methodRefusal) and a
 // concurrent Generate is never overwritten. Only the method field changes; it
 // is a setting, so nothing is logged to decisions.
-async function setMethod(db, { pid, method }) {
+async function setMethod(db, { pid, method }, nowMs = Date.now()) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== null && method !== undefined && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full, split or null.");
   pid = String(pid);
@@ -451,7 +451,7 @@ async function setMethod(db, { pid, method }) {
     out.same = false;
     // Cold-cache null: commit nothing; the server's compare-and-retry supplies the item.
     if (!cur) { out.refusal = "not in the New Arrivals queue"; return null; }
-    const why = core.methodRefusal(cur);
+    const why = core.methodRefusal(cur, nowMs);
     if (why) { out.refusal = why; return undefined; }
     out.refusal = null;
     if ((cur.method || null) === want) { out.same = true; return undefined; }
@@ -519,7 +519,7 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
       // Approve only what has a generated photo — never an original — and
       // never while a new photo is being generated (it would replace this one).
       guard: (cur) => {
-        if (cur.generateRequest) return "a new photo is being generated — approve when it lands";
+        if (core.requestPending(cur, nowMs)) return "a new photo is being generated — approve when it lands";
         // No named generation: the main photo — generatedUrl, or (an older item
         // whose URL was cleared) its current generation's photo.
         if (!pickGen) return cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo";
@@ -545,50 +545,25 @@ const newArrivalsApprove = onCall(callableOpts, async (request) => {
 });
 
 // ── generate / regenerate ────────────────────────────────────────────────────
-// Sets generateRequest; the poster takes it, clears it, generates ONCE and
-// puts the result on the same card (lane ready / rejected). From New
-// (Generate), or — only with `regenerate` — from Ready or Rejected: a FRESH
-// attempt from the original photo, never a fix-up edit. REGENERATE KEEPS THE
-// PHOTOS VISIBLE (3 Oct night): generatedUrl/Path, currentGen, verdict and
-// framingFlag stay (Approve and Use this one wait while the request is
-// pending); the approval, chain, names and destinations are cleared. Every
-// generation stays in `generations` (kept for ever).
+// MOVED (4 Oct): a photo is made by newArrivalsStudio (studio.js), which calls
+// Gemini directly on Junid's tap and answers on the same connection. The old
+// callable wrote a request for the Mac mini queue, which is retired — a
+// request nobody serves would hold the item's Approve back for ever, so it
+// refuses and says what to do. (An older card bundle still calls it.)
+//
+// A NEW LAP: what a fresh photo clears when it lands — the approval, the
+// chain, the names and the destinations belong to the photo before it.
 const NEW_LAP = Object.freeze({
   checker: null, namePending: null, chain: null, suggestedName: null, suggestedNameSource: null,
   nameProposedAt: null, destinations: null, approvedAt: null, approvedBy: null, rejection: null,
 });
-async function generate(db, { pids, regenerate }, uid, nowMs) {
-  const list = pidList(pids);
-  const from = regenerate === true ? ["new", "ready", "rejected"] : ["new"];
-  const requested = [];
-  const skipped = [];
-  await inBatches(list, 10, async (pid) => {
-    const r = await moveOne(db, pid, {
-      from, to: "new", at: nowMs, uid,
-      decision: (prev) => ({ action: prev.status === "new" && !prev.currentGen ? "generate" : "regenerate" }),
-      // The poster reads ONLY this small index each minute (never a scan of New).
-      // A stray entry (e.g. Skip racing Generate) is harmless: the poster takes a
-      // request only for an item still in New WITH generateRequest, and clears
-      // any other entry it finds.
-      extra: () => ({ [`requests/${pid}`]: nowMs }),
-      guard: (cur) => (cur.status === "new" && cur.generateRequest ? "already requested — the generator will take it" : null),
-      fields: (cur) => {
-        const fresh = cur.status === "new" && !cur.currentGen;
-        return {
-          generateRequest: { at: nowMs, by: uid || "unknown", ...(fresh ? {} : { regenerate: true }) },
-          ...(fresh ? {} : { ...NEW_LAP, attemptsSinceRetry: 0, lastRejection: cur.rejection || cur.lastRejection || null }),
-        };
-      },
-    });
-    if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
-    requested.push(pid);
-  });
-  return { requested, skipped };
+async function generate() {
+  throw new HttpsError("failed-precondition", "Generate has moved — reload this page, then tap Generate again.");
 }
 
 const newArrivalsGenerate = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
-  return generate(admin.database(), request.data || {}, request.auth?.uid, Date.now());
+  return generate();
 });
 
 // ── skip / restore ───────────────────────────────────────────────────────────
@@ -608,6 +583,10 @@ async function skip(db, { pids }, uid, nowMs) {
       from: ["new", "ready", "rejected"], to: "skipped", at: nowMs, uid,
       decision: () => ({ action: "skip" }),
       extra: () => ({ [`requests/${pid}`]: null }),
+      // While the photo studio is making its photo the item waits (a Skip would
+      // let a second Generate start beside the first); an old queue request is
+      // simply dropped with the skip, as before.
+      guard: (cur) => (cur.generateRequest && cur.generateRequest.studio === true && core.requestPending(cur, nowMs) ? "its photo is being made — skip it when it lands" : null),
       fields: (cur) => ({ skippedAt: nowMs, skippedBy: uid || "unknown", skippedFrom: cur.status, generateRequest: null }),
     });
     if (!r.item) { skipped.push({ pid, why: r.refusal }); return; }
@@ -657,7 +636,7 @@ async function reject(db, { pid, reason }, uid, nowMs) {
   pid = String(pid);
   const item = await val(db, `${core.ITEMS}/${pid}`);
   if (!item || !core.NEW_LANES.includes(item.status)) throw new HttpsError("failed-precondition", "Can't note that — the item is not on the New tab.");
-  if (item.generateRequest) throw new HttpsError("failed-precondition", "Can't note that — a new photo is being generated.");
+  if (core.requestPending(item, nowMs)) throw new HttpsError("failed-precondition", "Can't note that — a new photo is being generated.");
   if (!(item.generatedUrl || core.currentGenUrl(item))) throw new HttpsError("failed-precondition", "Can't note that — it has no generated photo.");
   // The row names the photo the chip was given on — an older item with only a
   // main photo URL gets a snapshot of that URL (CodeRabbit).
@@ -692,5 +671,5 @@ module.exports = {
   newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect, newArrivalsLove,
   newArrivalsHow, newArrivalsMethod,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, assertNewArrivalsAccess },
+  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
 };
