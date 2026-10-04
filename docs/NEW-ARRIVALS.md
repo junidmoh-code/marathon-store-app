@@ -96,7 +96,7 @@ changed.**
   | `steam` | clothing, except t-shirts | steamed and pressed: creases, fold lines and squashing out; fabric full; studio light; true colour |
   | `footwearBox` | all footwear | ONE box on the rail: its own box photo, else the box in the shoe photo, else the brand's library box; never invented |
   | `footwearPose` | all footwear | one shoe, whole sole on the pedestal |
-  | `footwearExamples` | all footwear | two of Junid's five finished photos — never one of the product's own brand — shown for the layout only |
+  | `footwearExamples` | **OFF** | two of Junid's five finished photos shown for the layout only. Switched off after the live test of 4 Oct: with them a footwear request (7 images) got no answer from Gemini in 5 minutes, twice |
 
   T-shirts (and the jersey tops cut like them: golf shirts, basketball vests,
   baseball shirts, soccer jerseys) get no layer on Full Gemini: their prompt

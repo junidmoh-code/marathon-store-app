@@ -11,7 +11,7 @@
     "steam": true,
     "footwearBox": true,
     "footwearPose": true,
-    "footwearExamples": true
+    "footwearExamples": false
   },
   "approvedBy": "Junid",
   "approvedAt": "2026-10-03",
@@ -58,7 +58,7 @@
       "requestedBy": "Junid",
       "requestedAt": "2026-10-04",
       "provisional": true,
-      "status": "REQUESTED in Junid's brief of 4 Oct; the wording is the developer's and Junid has not yet seen it or a photo made with it (Gemini's credit ran out before a test generation). Switched on at his instruction to make it work; to be confirmed or switched off on his first photos.",
+      "status": "OFF since the live test of 4 Oct: with the two example photos added, a footwear request (7 images) got no answer from Gemini within 5 minutes, twice (soccer boot p1790584954802). Kept in code, locked, for a later trial with smaller images.",
       "layerTextSha256": "f5a93118c8b4a220dda03cebad2a43da6de3da2d3e1c43117f5a104212eb73a5"
     }
   },

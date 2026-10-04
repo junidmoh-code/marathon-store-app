@@ -515,16 +515,17 @@ test("a sneaker with no box photo: the brand's library box and two example photo
   const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
   const parts = w.calls.find((c) => c[0] === "image")[3];
   const labels = parts.filter((p) => p.text).map((p) => p.text.split(" — ")[0]);
-  assert.deepEqual(labels.slice(1), ["BACKGROUND PLATE", "REFERENCE", "MORE EXAMPLES OF THE SAME COMPOSITION", "LAYOUT DIAGRAM", "SHOE PHOTO", "BOX PHOTO"]);
+  // The example photos are switched off (4 Oct live test: the request got no answer in 5 minutes with them).
+  assert.deepEqual(labels.slice(1), ["BACKGROUND PLATE", "REFERENCE", "LAYOUT DIAGRAM", "SHOE PHOTO", "BOX PHOTO"]);
   assert.match(parts[0].text, /the sentence above calling it "this product's own box" does not apply/);
   assert.match(parts.find((p) => p.text && p.text.startsWith("BOX PHOTO")).text, /a box of this shoe's brand/);
   assert.match(parts[0].text, /Only if the SHOE PHOTO shows no box, use the brand's box/);
   const item = await itemOf(w.db);
   assert.deepEqual(item.boxUsed, { mode: "library", source: "stand-in", brand: "nike" });
-  assert.deepEqual(item.generations[out.genId].layers, { footwearBox: true, footwearPose: true, footwearExamples: true });
-  assert.equal(item.generations[out.genId].promptVersion, "baseline-2026-10-02+footwearBox+footwearPose+footwearExamples (studio-2026-10-04.1)");
+  assert.deepEqual(item.generations[out.genId].layers, { footwearBox: true, footwearPose: true });
+  assert.equal(item.generations[out.genId].promptVersion, "baseline-2026-10-02+footwearBox+footwearPose (studio-2026-10-04.1)");
   const log = (await w.db.ref(`${core.GENLOG}/${out.code}`).once()).val();
-  assert.equal(log.inputs.map((i) => i.role).join(","), "plate,reference,example,example,layoutDiagram,source,box");
+  assert.equal(log.inputs.map((i) => i.role).join(","), "plate,reference,layoutDiagram,source,box");
 });
 
 test("Gemini's prepaid credit has run out (402): said in those words — not 'tap again' — and the item is given back", async () => {
