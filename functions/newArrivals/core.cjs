@@ -505,6 +505,12 @@ function sourceFields(pid, item, product) {
   return { sourceUrl, ...(stale ? { sourceChanged: true } : {}) };
 }
 
+/** Was generation `genId` of this item made from a photo the product no longer shows? Pure. */
+function staleGeneration(pid, item, genId, product) {
+  const gen = item && genId && item.generations && item.generations[genId];
+  return !!gen && sourcePhoto.generationIsStale(gen, { sourceUrl: sourcePhoto.currentSourceUrl(pid, product, item), photoUpdatedAt: product && product.photoUpdatedAt });
+}
+
 /** The item as the card gets it: every generation without the log's heavy fields. Pure. */
 function cardItem(item) {
   if (!item || !item.generations || typeof item.generations !== "object") return item;
@@ -593,6 +599,6 @@ module.exports = {
   FILTER_CLASSES, filterClassOf, normalizeFilter, GROUPS, GROUP_TABS, groupOf, normalizeGroup, stockSummary, matchesFilter,
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
   SELECT_LANES, GEN_ID_RE, selectRefusal, selectFields,
-  loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem, sourceFields,
+  loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem, sourceFields, staleGeneration,
   GENLOG, THOUGHTS_LABEL, CODE_RE, howView, METHODS, methodRefusal,
 };

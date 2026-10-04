@@ -1019,8 +1019,14 @@ describe("the Original shown is the product's current photo — never the item's
 
   it("a photo made from the OLD product photo says so on the card, in plain words — Junid never approves it without knowing", async () => {
     const tree = await render(fakeApi([withPhoto(1, { sourceUrl: NEW, sourceChanged: true }), withPhoto(2, { sourceUrl: NEW })]));
-    expect(label(byId(card(tree, P(1)), "source-changed")[0]).trim()).toBe("The product's photo was changed after this photo was made — tap Regenerate to make one from the new photo.");
+    expect(label(byId(card(tree, P(1)), "source-changed")[0]).trim()).toBe("The product's photo was changed after this photo was made. It cannot be approved — tap Regenerate to make one from the new photo.");
     expect(byId(card(tree, P(2)), "source-changed")).toHaveLength(0);
+    // …and it cannot be approved until it is regenerated; the other card can.
+    expect(btn(card(tree, P(1)), "Approve").props.disabled).toBe(true);
+    expect(btn(card(tree, P(1)), "Regenerate").props.disabled).toBe(false);
+    expect(btn(card(tree, P(2)), "Approve").props.disabled).toBe(false);
+    await tap(btn(card(tree, P(1)), "Approve"));
+    expect(cards(tree)).toContain(P(1));
   });
 
   it("an APPROVED generated photo is untouched: on Done the photo shown is the generated one and the Original is the staff photo it replaced", async () => {

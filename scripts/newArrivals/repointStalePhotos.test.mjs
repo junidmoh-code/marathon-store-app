@@ -62,6 +62,10 @@ describe("re-point stuck New items at the product's current photo", () => {
     expect(await read(db, `products/${A}`)).toEqual({ photoUrl: staff(A, "new") });
     // A second run finds nothing left to do.
     expect((await run({ db })).corrected).toBe(0);
+    // Re-shot AGAIN, run again: the record still remembers what the item FIRST pointed at (so --revert goes all the way back).
+    await db.ref(`products/${A}/photoUrl`).set(staff(A, "newer"));
+    expect((await run({ db, now: () => 999 })).corrected).toBe(1);
+    expect(await read(db, `new_arrivals/fixes/${FIX_ID}/${A}`)).toEqual({ was: staff(A, "old"), now: staff(A, "newer"), at: 999, lane: "new" });
   });
 
   it("--revert puts every corrected copy back — except one that changed since, which is left alone and named", async () => {

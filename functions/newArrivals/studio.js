@@ -361,11 +361,13 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     await studio.withRetries(() => bucket.file(`products/${pid}/new_arrivals/${genId}.genlog.json`).save(Buffer.from(JSON.stringify(full, null, 1)), { resumable: false, metadata: { contentType: "application/json" } }));
   } catch (e) { console.error(`newArrivalsStudio: ${pid} full record not stored — ${e.message}`); }
 
+  // The product's photo as it is NOW (it may have been replaced while the photo was being made).
+  const liveProduct = await val(db, `products/${pid}`).catch(() => product) || product;
   return {
     ok: true, pid, genId, code, seconds: Math.round((now() - t0) / 100) / 10, costZar: cost.zar, costEstimated: cost.estimated,
     // Not this run's item any more (skipped, or Junid moved on): the photo was added to it, nothing else changed.
     ...(out.mine ? {} : { addedOnly: true }),
-    item: { ...core.cardItem(final), ...core.sourceFields(pid, final, product) },
+    item: { ...core.cardItem(final), ...core.sourceFields(pid, final, liveProduct) },
   };
 }
 

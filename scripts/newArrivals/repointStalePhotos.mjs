@@ -73,8 +73,11 @@ export async function run({ db, now = () => Date.now(), dryRun = false, revert =
       ]);
       const c = correction(pid, originalUrl, { photoUrl, photoUrlOriginal });
       if (!c) continue;
-      // The record first, the item second — in ONE atomic write.
-      if (!dryRun) await db.ref(ROOT).update({ [`fixes/${FIX_ID}/${pid}`]: { was: c.was, now: c.now, at: now(), lane }, [`items/${pid}/originalUrl`]: c.now });
+      // A second run never loses what the item FIRST pointed at: an existing record keeps its `was`.
+      const earlier = dryRun ? null : await val(db, `${ROOT}/fixes/${FIX_ID}/${pid}`);
+      const was = earlier && earlier.was && !earlier.reverted ? earlier.was : c.was;
+      // The record and the item — in ONE atomic write.
+      if (!dryRun) await db.ref(ROOT).update({ [`fixes/${FIX_ID}/${pid}`]: { was, now: c.now, at: now(), lane }, [`items/${pid}/originalUrl`]: c.now });
       out.corrected += 1;
       out.pids.push(pid);
       log(`${pid} (${lane}): re-pointed at the product's current photo`);

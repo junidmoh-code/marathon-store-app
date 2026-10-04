@@ -36,7 +36,9 @@ test("currentSourceUrl: the staff photo when that is the product's photo; the ke
 
 test("generationIsStale: by the source it recorded, else by when the photo was replaced", () => {
   assert.equal(sp.generationIsStale({ at: 10, sourceUrl: OLD }, { sourceUrl: NEW }), true);
-  assert.equal(sp.generationIsStale({ at: 10, sourceUrl: NEW }, { sourceUrl: NEW, photoUpdatedAt: 99 }), false, "its own record wins over the clock");
+  // An overwrite can keep the same address: the replacement's time still says so.
+  assert.equal(sp.generationIsStale({ at: 10, sourceUrl: NEW }, { sourceUrl: NEW, photoUpdatedAt: 99 }), true);
+  assert.equal(sp.generationIsStale({ at: 100, sourceUrl: NEW }, { sourceUrl: NEW, photoUpdatedAt: 99 }), false);
   assert.equal(sp.generationIsStale({ at: 10 }, { sourceUrl: NEW, photoUpdatedAt: 99 }), true);
   assert.equal(sp.generationIsStale({ at: 100 }, { sourceUrl: NEW, photoUpdatedAt: 99 }), false);
   assert.equal(sp.generationIsStale({ at: 10 }, { sourceUrl: NEW }), false);
@@ -77,8 +79,8 @@ test("no card action re-pins a photo: approve, select, love, skip, restore, meth
   await na.reject(db, { pid: PID, reason: "blurry" }, "junid", NOW);
   await na.skip(db, { pids: [PID] }, "junid", NOW);
   await na.restore(db, { pids: [PID] }, "junid", NOW);
-  await db.ref(`products/${PID}`).update({ photoUrl: NEW, photoUpdatedAt: NOW });   // re-shot meanwhile
   await na.approve(db, { pids: [PID], genId: "g1" }, "junid", NOW + 1);
+  await db.ref(`products/${PID}`).update({ photoUrl: NEW, photoUpdatedAt: NOW + 5 });   // re-shot after the approval
   const item = (await db.ref(`new_arrivals/items/${PID}`).once()).val();
   assert.equal(item.originalUrl, undefined);
   assert.equal(item.status, "approved");
@@ -149,4 +151,32 @@ test("REGENERATE after an approval made a generated photo the product's photo: i
   const fetched = [];
   await studio.studioGenerate(db, { pid: PID }, "junid", await studioDeps(fetched));
   assert.deepEqual(fetched, [OLD]);
+});
+
+test("a photo made from the OLD product photo cannot be approved once the product's photo has changed — Regenerate first; nothing is logged", async () => {
+  const gens = { g1: { url: generated(1), at: 10, sourceUrl: OLD } };
+  const db = world({ item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: gens } });
+  await db.ref(`products/${PID}`).update({ photoUrl: NEW, photoUpdatedAt: NOW });
+  const out = await na.approve(db, { pids: [PID] }, "junid", NOW + 1);
+  assert.deepEqual(out.approved, []);
+  assert.match(out.skipped[0].why, /the product's photo was changed after this photo was made — tap Regenerate first/);
+  assert.equal((await db.ref(`new_arrivals/items/${PID}/status`).once()).val(), "ready");
+  assert.equal((await db.ref(core.DECISIONS).once()).val(), null);
+  // The same photo kept at the same address but replaced later (photoUpdatedAt) is refused too.
+  const same = world({ product: { photoUpdatedAt: 50 }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10, sourceUrl: OLD } } } });
+  assert.deepEqual((await na.approve(same, { pids: [PID] }, "junid", NOW)).approved, []);
+  // A photo made from the CURRENT product photo is approved as before.
+  const ok = world({ product: { photoUrl: NEW, photoUpdatedAt: 5 }, item: { status: "ready", currentGen: "g1", generatedUrl: generated(1), generations: { g1: { url: generated(1), at: 10, sourceUrl: NEW } } } });
+  assert.deepEqual((await na.approve(ok, { pids: [PID] }, "junid", NOW)).approved, [PID]);
+});
+
+test("the photo was replaced WHILE Gemini was working: the result that comes back already says the photo is out of date", async () => {
+  const db = world({ product: { photoUrl: OLD, categoryKey: "hoodies", category: "Clothing" }, item: { categoryKey: "hoodies" } });
+  const fetched = [];
+  const deps = await studioDeps(fetched);
+  const image = deps.image;
+  deps.image = async (...a) => { await db.ref(`products/${PID}`).update({ photoUrl: NEW, photoUpdatedAt: NOW + 10_000_000 }); return image(...a); };
+  const out = await studio.studioGenerate(db, { pid: PID }, "junid", deps);
+  assert.equal(out.item.sourceUrl, NEW);
+  assert.equal(out.item.sourceChanged, true);
 });

@@ -365,10 +365,12 @@ export function actionsFor(item) {
   const priced = Number(item?.product?.stockPrice) > 0;
   const generating = isGenerating(item);
   const photo = hasPhoto(item);
-  const approveWhy = !photo ? null : generating ? "generating…" : !priced ? "add stock price first" : null;
+  // A photo made from a product photo that has since been replaced is never approved: Regenerate first.
+  const outdated = photo && item?.sourceChanged === true;
+  const approveWhy = !photo ? null : generating ? "generating…" : outdated ? "the product's photo changed — regenerate first" : !priced ? "add stock price first" : null;
   return {
     approve: photo,
-    approveEnabled: photo && !generating && priced,
+    approveEnabled: photo && !generating && priced && !outdated,
     approveWhy,
     generate: lane && !photo && !generating,
     // Lane rejected / ready without a photo: the server needs the regenerate flag.

@@ -508,9 +508,15 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
     // stock price, no approve — said now, in the card. Retail is Shopify's
     // business: the chain lets Shopify wait for it; the groups do not.
     const listed = (await db.ref(`${core.ITEMS}/${pid}/status`).once("value")).val();
+    // What the product's photo is NOW (three keyed scalars): a photo generated
+    // from a product photo that staff have since replaced is never approved —
+    // it would post a picture of the photo before. Junid regenerates first.
+    let live = null;
     if (from.includes(listed)) {
       const price = Number((await db.ref(`products/${pid}/stockPrice`).once("value")).val());
       if (!(price > 0)) { skipped.push({ pid, why: "no stock price yet — enter it on the card, then approve" }); continue; }
+      const [photoUrl, photoUrlOriginal, photoUpdatedAt] = await Promise.all(["photoUrl", "photoUrlOriginal", "photoUpdatedAt"].map((f) => val(db, `products/${pid}/${f}`)));
+      live = { photoUrl, photoUrlOriginal, photoUpdatedAt };
     }
     const r = await moveOne(db, pid, {
       from, to: "approved", at: nowMs, uid,
@@ -519,6 +525,7 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
       // never while a new photo is being generated (it would replace this one).
       guard: (cur) => {
         if (core.requestPending(cur, nowMs)) return "a new photo is being generated — approve when it lands";
+        if (live && core.staleGeneration(pid, cur, pickGen || cur.currentGen, live)) return "the product's photo was changed after this photo was made — tap Regenerate first";
         // No named generation: the main photo — generatedUrl, or (an older item
         // whose URL was cleared) its current generation's photo.
         if (!pickGen) return cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo";

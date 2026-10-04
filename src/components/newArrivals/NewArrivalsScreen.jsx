@@ -216,7 +216,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
       )}
       {!live && main && item.sourceChanged && tab === "new" && (
         <div data-testid="source-changed" style={{ color: "#fff", fontSize: 12, marginTop: 6, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.08)" }}>
-          The product's photo was changed after this photo was made — tap Regenerate to make one from the new photo.
+          The product's photo was changed after this photo was made. It cannot be approved — tap Regenerate to make one from the new photo.
         </div>
       )}
       {/* What Junid must know about this photo (e.g. Split could not place it): it stays on the card, not only in a passing message. */}

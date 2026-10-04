@@ -47,13 +47,15 @@ function currentSourceUrl(pid, product, item = null) {
 
 /**
  * Was this generation made from a photo the product no longer shows?
- * By the source it recorded when it has one; else by time — the product's
- * photo was replaced (photoUpdatedAt, stamped by human uploads only) after the
- * generation was made. Pure.
+ * By the source it recorded (a different address now), or by time — the
+ * product's photo was replaced (photoUpdatedAt, stamped by human uploads
+ * only) after the generation was made. Pure.
  */
 function generationIsStale(gen, { sourceUrl = null, photoUpdatedAt = null } = {}) {
   if (!gen || typeof gen !== "object") return false;
-  if (gen.sourceUrl && sourceUrl) return String(gen.sourceUrl) !== String(sourceUrl);
+  // EITHER sign is enough: a different source address, or a replacement stamped
+  // after it was made (an overwrite can keep the same address).
+  if (gen.sourceUrl && sourceUrl && String(gen.sourceUrl) !== String(sourceUrl)) return true;
   const at = Number(gen.at) || 0, changed = Number(photoUpdatedAt) || 0;
   return at > 0 && changed > at;
 }

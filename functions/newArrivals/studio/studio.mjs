@@ -192,6 +192,8 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   return {
     generated, kind, method: "full",
     // The product photo this was made from: a later re-shoot makes the generation out of date.
+    // (Always the product's photo address — the same one the list compares with — even when the
+    // bytes came from its hi-res upload copy.)
     sourceUrl: sourcePhoto.currentSourceUrl(item.pid, product, item),
     promptVersion: `${setupName(layersUsed)} (${prompt.version})`, layersUsed,
     box: kind === "footwear" ? { mode: boxMode, brand, source: boxSource } : null,
