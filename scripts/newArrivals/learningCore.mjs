@@ -165,8 +165,8 @@ export function findings(rows) {
 /** The reject chips, most used first: [[chip, count]]. Pure. */
 export function chipCounts(rows) {
   const counts = {};
-  // Only photos whose final word is "not right": a chip on a photo he later loved or approved is not a complaint about it.
-  for (const r of rows) if (r.tier === "rejected") for (const c of r.reasons || []) counts[c] = (counts[c] || 0) + 1;
+  // Each chip once per photo, and only photos whose final word is "not right": a chip on a photo he later loved or approved is not a complaint about it.
+  for (const r of rows) if (r.tier === "rejected") for (const c of new Set(r.reasons || [])) counts[c] = (counts[c] || 0) + 1;
   return Object.entries(counts).sort((a, b) => b[1] - a[1]);
 }
 

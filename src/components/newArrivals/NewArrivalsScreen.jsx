@@ -341,11 +341,11 @@ function GroupSwitcher({ group, count, onStep }) {
   );
 }
 
-const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null };
+const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null, defaultMethod: null };
 const deviceStorage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 const ask = (text) => (typeof window !== "undefined" && window.confirm ? window.confirm(text) : true);
 
-// The method every item uses unless it has its own choice: Full Gemini.
+// The method assumed before the list has answered: Full Gemini.
 const DEFAULT_METHOD = "full";
 const reason = (e) => String(e?.message || e || "not saved").replace(/\.$/, "");
 // A refusal the server actually gave (its own words are true) — as against a
@@ -437,7 +437,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
         // The list was read BEFORE a tap or a finished write: it must not paint over it.
         const overtaken = taps.current !== tapsAtStart || writes.current.size > 0;
-        if (quiet && (overtaken || Object.keys(liveRef.current).length > 0)) return;
+        // …nor replace pages that "Load more" added while it was on its way.
+        if (quiet && (overtaken || Object.keys(liveRef.current).length > 0 || (dataRef.current.items || []).length > PAGE)) return;
         // With a list already on screen, an overtaken read is read again, and after
         // a few tries given up on (the screen is newer than it). With nothing on
         // screen yet — a list just opened — it is shown at once.
@@ -451,6 +452,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         let next = {
           items: res.items || [], total: Number.isFinite(res.total) ? res.total : (res.items || []).length, nextCursor: res.nextCursor || null,
           tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null,
+          defaultMethod: res.defaultMethod === "split" ? "split" : res.defaultMethod === "full" ? "full" : dataRef.current.defaultMethod || null,
         };
         for (const [pid, e] of gone.current) next = withoutItem(next, pid, { group: e.group, toTab: e.toTab });
         setData(next);
@@ -532,7 +534,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     });
   };
 
-  const h = { defaultMethod: DEFAULT_METHOD };
+  // The function's own default (it comes with the list); Full Gemini until the list has said.
+  const defaultMethod = data.defaultMethod || DEFAULT_METHOD;
+  const h = { defaultMethod };
 
   // PRICES — the admin price save. "Retail below stock price" asks first, as the admin editor does.
   h.onSavePrices = api.savePrices ? (item, drafts) => {
@@ -567,7 +571,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   // ❤ — never moves or approves the item.
   h.onLove = api.love ? (item, genId, loved) => instant(item, (i) => afterLove(i, genId, loved, Date.now()), revertLove(item, genId), () => api.love(item.pid, genId, loved), loved ? "Not loved" : "Love not removed") : null;
   // THE METHOD for this item's next photo: Full Gemini or Split.
-  h.onMethod = api.method ? (item, choice) => instant(item, (i) => ({ ...i, method: choice }), revertMethod(item, choice), () => api.method(item.pid, methodToSet(choice, DEFAULT_METHOD)), "Method not changed") : null;
+  h.onMethod = api.method ? (item, choice) => instant(item, (i) => ({ ...i, method: choice }), revertMethod(item, choice), () => api.method(item.pid, methodToSet(choice, defaultMethod)), "Method not changed") : null;
   // FEEDBACK — one chip, noted against the photo shown; the item stays.
   h.onReject = api.reject ? (item, why) => {
     say(item, `Noted: ${why}.`);

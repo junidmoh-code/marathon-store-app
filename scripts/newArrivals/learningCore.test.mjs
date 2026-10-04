@@ -93,6 +93,8 @@ describe("findings", () => {
   it("a chip on a photo he later loved or approved is not counted as a complaint", () => {
     const r = joinRows([d("p1", "a", "reject", 1, { reason: "framing" }), d("p1", "a", "approve", 2), d("p2", "b", "reject", 3, { reason: "blurry" })], []);
     expect(chipCounts(r)).toEqual([["blurry", 1]]);
+    // The same chip tapped twice on one photo is one complaint.
+    expect(chipCounts(joinRows([d("p2", "b", "reject", 1, { reason: "blurry" }), d("p2", "b", "reject", 2, { reason: "blurry" })], []))).toEqual([["blurry", 1]]);
   });
 });
 

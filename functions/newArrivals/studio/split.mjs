@@ -86,6 +86,7 @@ export async function splitGenerate(ctx) {
       if (placed) measuredBuf = placed;
     } catch (e) {
       split.placed = null;
+      split.deviations = null;
       split.notPlaced = `placing it failed (${String(e.message || e).slice(0, 100)})`;
     }
   } catch (e) {

@@ -189,6 +189,15 @@ describe("Generate: live on the card", () => {
     expect(api.generate).toHaveBeenCalledWith(P(1), expect.objectContaining({ method: "split" }));
   });
 
+  it("the default method is the function's own (it comes with the list): with Split as the default, Split shows selected and choosing Full Gemini is SENT", async () => {
+    const api = fakeApi([bare(1)], { list: vi.fn(async (tab) => ({ tab, items: [bare(1)], total: 1, tabCounts: { new: 1, done: 0 }, groupCounts: { sneakers: 1, clothing: 0 }, defaultMethod: "split" })) });
+    const tree = await render(api);
+    const radios = () => card(tree, P(1)).findAll((n) => n.props && n.props.role === "radio");
+    expect(radios().map((r) => r.props["aria-checked"])).toEqual([true, false]);
+    await tap(radios()[1]);
+    expect(api.method).toHaveBeenCalledWith(P(1), "full");
+  });
+
   it("choosing the default method clears the item's override on the server", async () => {
     const api = fakeApi([bare(1, { method: "split" })]);
     const tree = await render(api);
@@ -783,6 +792,26 @@ describe("paging and refresh", () => {
     await tap(btn(tree.root, "Load more (60 of 75 shown)"));
     expect(cards(tree)).toHaveLength(75);
     expect(btn(tree.root, "Load more (75 of 75 shown)")).toBeUndefined();
+  });
+
+  it("the quiet refresh never replaces pages that Load more added while it was on its way", async () => {
+    vi.useFakeTimers();
+    const slow = deferred();
+    const api = paged(75);
+    const inner = api.list.getMockImplementation();
+    let quietSeen = false;
+    api.list.mockImplementation(async (tab, opts = {}) => {
+      const res = await inner(tab, opts);
+      // The first page-one read after the initial one is the quiet refresh: hold its answer.
+      if (!opts.cursor && api.list.mock.calls.length > 1 && !quietSeen) { quietSeen = true; await slow.promise; }
+      return res;
+    });
+    const tree = await render(api);
+    await act(async () => { vi.advanceTimersByTime(60_000); });          // the quiet refresh starts
+    await tap(btn(tree.root, "Load more (30 of 75 shown)"));              // …and Load more lands first
+    expect(cards(tree)).toHaveLength(60);
+    await act(async () => { slow.resolve(); await Promise.resolve(); await Promise.resolve(); await Promise.resolve(); });
+    expect(cards(tree)).toHaveLength(60);
   });
 
   it("the quiet refresh never paints over a tap made while it was on its way", async () => {
