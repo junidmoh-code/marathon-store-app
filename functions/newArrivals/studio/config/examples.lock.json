@@ -1,0 +1,32 @@
+{
+  "footwear-example-nike-af1.jpg": {
+    "sha256": "af28bb26fd35afad05033c75f945fea21ba18adb7ff17961f2b99097b96398a0",
+    "width": 1500,
+    "height": 2000,
+    "brand": "nike"
+  },
+  "footwear-example-new-balance-1000.jpg": {
+    "sha256": "de7d9184b36f39a7463d9f7883a9f9964786e7af39f9dedb61a1a26a7e9e0fbf",
+    "width": 1500,
+    "height": 2000,
+    "brand": "new-balance"
+  },
+  "footwear-example-timberland-greenstride.jpg": {
+    "sha256": "d884e6087f2ade332a0e64cdf6d1ed6471e1ffe30b415b0bcd2bab61cfada3c9",
+    "width": 1500,
+    "height": 2000,
+    "brand": "timberland"
+  },
+  "footwear-example-adidas-f50.jpg": {
+    "sha256": "1a121e6168d927a9821bfaf4aad45a744989ba1cbc2a3bb25eb1937dbb21c931",
+    "width": 1500,
+    "height": 2000,
+    "brand": "adidas"
+  },
+  "footwear-example-timberland-field-boot.jpg": {
+    "sha256": "f7563842b3badf7be719f52953cca55efb30390a58c3738e74c7585991d3abcd",
+    "width": 1500,
+    "height": 2000,
+    "brand": "timberland"
+  }
+}

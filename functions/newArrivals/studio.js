@@ -32,12 +32,13 @@ const generation = require("./studio/config/generation.json");
 const spec = require("./studio/config/layout-spec.json");
 const prices = require("./studio/config/prices.json");
 const platesLock = require("./studio/config/plates.lock.json");
+const examplesLock = require("./studio/config/examples.lock.json");
 
 // The ES modules, loaded once per instance.
 let modsP = null;
 const mods = () => (modsP ||= Promise.all([
-  import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"),
-]).then(([studio, gemini, record, compose]) => ({ studio, gemini, record, compose }))
+  import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"), import("./studio/split.mjs"),
+]).then(([studio, gemini, record, compose, split]) => ({ studio, gemini, record, compose, split }))
   .catch((e) => { modsP = null; throw e; }));
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
@@ -89,6 +90,28 @@ function loadRoleFile(bucket, file, forModel) {
     })().catch((e) => { assetCache.delete(file); throw e; }));
   }
   return assetCache.get(file);
+}
+
+// Junid's own finished photos, shown as more examples of the footwear
+// composition (examples.lock.json, in its order), sha-verified.
+const EXAMPLES_SENT = 2;
+/** Which examples a product is shown: the first two in the lock's order that are NOT its own brand (so their box can never be mistaken for its box). Pure. */
+function exampleFiles(brand) {
+  return Object.entries(examplesLock).filter(([, e]) => !brand || e.brand !== brand).map(([f]) => f).slice(0, EXAMPLES_SENT);
+}
+function loadExamples(bucket, forModel, brand = null) {
+  const files = exampleFiles(brand);
+  return Promise.all(files.map((file) => {
+    const k = `example:${file}`;
+    if (!assetCache.has(k)) {
+      assetCache.set(k, (async () => {
+        const [buffer] = await bucket.file(`${ASSETS}/plates/examples/${file}`).download();
+        if (sha256(buffer) !== examplesLock[file].sha256) throw new Error(`${file} in Storage is not the locked example — refusing to use it`);
+        return { file, forModel: await forModel(buffer) };
+      })().catch((e) => { assetCache.delete(k); throw e; }));
+    }
+    return assetCache.get(k);
+  }));
 }
 
 // The brand box library: sources.json names each brand's box file.
@@ -228,7 +251,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== undefined && method !== null && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full or split.");
   pid = String(pid);
-  const { studio, gemini, record, compose } = await mods();
+  const { studio, gemini, record, compose, split } = await mods();
   const now = deps.now || (() => Date.now());
   const t0 = now();
   const product = await val(db, `products/${pid}`);
@@ -247,13 +270,16 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
         loadPlate: (kind) => loadRoleFile(bucket, compose.ROLES[kind].plate, compose.forModel),
         loadReference: (kind) => (compose.ROLES[kind].reference ? loadRoleFile(bucket, compose.ROLES[kind].reference, compose.forModel) : null),
         libraryBox: (key) => libraryBox(bucket, key),
+        loadExamples: (kind, { brand = null } = {}) => loadExamples(bucket, compose.forModel, brand),
         ...(deps.assets || {}),
         spec, generation, conditionClause: CONDITION_CLAUSE,
         image: deps.image || ((model, parts, imageConfig, opts) => gemini.streamImage(model, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
         upload: (p, buf, mime) => uploadImmutable(bucket, p, buf, mime),
         now,
         log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`),
-        ...(deps.split ? { split: deps.split } : {}),
+        // The split method: Gemini makes the product only; code places it on the plate.
+        split: split.splitGenerate,
+        ...(deps.matte ? { matte: deps.matte } : {}),
       },
     });
   } catch (e) {
@@ -262,6 +288,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     const reason = e.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : e.studioRefusal ? e.message
       : e.refusal ? "Gemini declined to make this photo"
+      : status === 402 ? "the Gemini prepaid credit has run out — top it up in Google AI Studio, then tap Generate again"
       : status === 429 || status === 503 ? "the photo service is busy — tap Generate again"
       : status === 504 ? "Gemini took too long and the connection was closed — it may still have been charged; tap Generate to try again"
       : "the photo could not be made — tap Generate again";
@@ -274,7 +301,7 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
       const lost = e.paid ? record.generationCost({ model: generation.imageModel, usage: e.usage, prices, fx }) : null;
       await addSpend(db, lost ? lost.zar : record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx }), { estimated: !!lost?.estimated });
     }
-    throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
+    throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 402 ? "resource-exhausted" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
 
   // The photo exists, is stored and is paid for: from here every step is retried.
@@ -360,5 +387,5 @@ const newArrivalsStudio = onCall(
 module.exports = {
   newArrivalsStudio,
   // for tests
-  _internals: { studioGenerate, claim, release, landed, usdZarToday, uploadImmutable, fetchBytes, mods },
+  _internals: { exampleFiles, studioGenerate, claim, release, landed, usdZarToday, uploadImmutable, fetchBytes, mods },
 };

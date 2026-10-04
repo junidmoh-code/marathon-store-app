@@ -158,12 +158,11 @@ test("paging: an item regenerated at the page boundary never makes the rest of i
   assert.deepEqual(p2.items.map((i) => i.pid), ["p1789999900002", "p1789999900003"], "the rest of the photo-ready bucket is still there");
 });
 
-test("list carries the poster's default method (full unless the poster published split)", async () => {
+test("list carries the default method — Full Gemini, the studio function's own (the retired poster's config is not read)", async () => {
   const db = seeded("new");
   assert.equal((await na.listTab(db, "new")).defaultMethod, "full");
+  // The retired poster's config node is no longer read: the default is the studio function's own.
   await db.ref("new_arrivals/config/defaultMethod").set("split");
-  assert.equal((await na.listTab(db, "new")).defaultMethod, "split");
-  await db.ref("new_arrivals/config/defaultMethod").set("bogus");
   assert.equal((await na.listTab(db, "new")).defaultMethod, "full");
 });
 
@@ -246,7 +245,6 @@ test("list pages 30 at a time by key with a cursor, and reports the total", asyn
   assert.equal(p3.nextCursor, null);
   const all = [...p1.items, ...p2.items, ...p3.items].map((i) => i.pid);
   assert.equal(new Set(all).size, 75, "no item twice, none missed");
-  assert.equal(p1.matchingPids.length, 75, "select-all covers the whole lane, not the page");
 });
 
 test("the New tab merges new + generating (generating before no photo yet); generating is never select-all'd", async () => {
@@ -259,7 +257,6 @@ test("the New tab merges new + generating (generating before no photo yet); gene
   assert.equal(out.total, 3);
   assert.equal(core.parseBucketCursor(out.nextCursor).pid, pid(0));
   assert.deepEqual((await na.listTab(db, "new", { limit: 2, cursor: out.nextCursor })).items.map((i) => i.pid), [pid(2)]);
-  assert.deepEqual(out.matchingPids, [pid(0), pid(2)]);
 });
 
 test("each item carries sizes in stock and units, keyed per location; excluded locations never count", async () => {
@@ -295,7 +292,6 @@ test("filters: one size, category chip, no stock price — total is the filtered
   const one = await na.listTab(db, "new", { filter: { oneSize: true } });
   assert.deepEqual(ids(one), [pid(0), pid(1)]);
   assert.equal(one.total, 2);
-  assert.deepEqual(one.matchingPids, [pid(0), pid(1)]);
   assert.deepEqual(ids(await na.listTab(db, "new", { filter: { cls: "sneakers" } })), [pid(0), pid(5)]);
   assert.deepEqual(ids(await na.listTab(db, "new", { filter: { cls: "slides" } })), [pid(1), pid(4)]);
   assert.deepEqual(ids(await na.listTab(db, "new", { filter: { cls: "clothing" } })), [pid(2)]);
@@ -347,7 +343,6 @@ test("list by group: the page, total and select-all come from the group; groupCo
   assert.deepEqual(ids(sn), [pid(0), pid(2), pid(3), pid(5)]);
   assert.equal(sn.total, 4);
   assert.deepEqual(sn.groupCounts, { sneakers: 4, clothing: 3 });
-  assert.deepEqual(sn.matchingPids, [pid(0), pid(2), pid(3), pid(5)]);
   assert.equal(sn.group, "sneakers");
   const cl = await na.listTab(db, "new", { group: "clothing" });
   assert.deepEqual(ids(cl), [pid(1), pid(4), pid(6)]);
@@ -383,7 +378,6 @@ test("list returns stats and modes for the header", async () => {
   const db = lane(1, { extra: { new_arrivals: { stats, config: { mode: { footwear: "auto" } } } } });
   const out = await na.listTab(db, "new", {});
   assert.equal(out.stats.agreement.footwear.pct, 83);
-  assert.deepEqual(out.modes, { footwear: "auto" });
 });
 
 test("skip: New/Rejected → Skipped with a decision; restore brings it back; enqueue never does", async () => {
@@ -791,7 +785,6 @@ test("merged New tab lists all four lanes, ordered photo → generating → no p
   assert.equal("ready" in out.tabCounts || "rejected" in out.tabCounts, false);
   assert.deepEqual(out.groupCounts, { sneakers: 8, clothing: 0 });
   // Select all never takes an item mid-generation (lane generating).
-  assert.deepEqual(out.matchingPids, ORDER.filter((p) => p !== pid(1)));
   assert.deepEqual(core.TABS, ["new", "done", "skipped"]);
   assert.deepEqual(core.NEW_LANES, ["new", "generating", "ready", "rejected"]);
   // Without a group the same order.

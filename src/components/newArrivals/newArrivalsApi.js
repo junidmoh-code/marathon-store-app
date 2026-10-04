@@ -12,7 +12,7 @@ const call = (name) => async (data) => (await httpsCallable(functions, name)(dat
 export const newArrivalsApi = {
   // One page of a tab (New or Done), within one group (Sneakers / Clothing)
   // on New — ordered photo ready → generating → no photo yet by the server:
-  // { items, total, nextCursor, tabCounts, groupCounts, stats, modes, matchingPids? }.
+  // { items, total, nextCursor, tabCounts, groupCounts, stats, defaultMethod }.
   list: (tab, { cursor = null, limit = 30, group = null } = {}) =>
     call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(group ? { group } : {}) }),
   // Approve one item — with `genId`, exactly that photo (the one the card shows).

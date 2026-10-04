@@ -7,7 +7,11 @@
     "reshootBrief": false,
     "socialsRequest": false,
     "framingCorrection": false,
-    "packaging": true
+    "packaging": false,
+    "steam": true,
+    "footwearBox": true,
+    "footwearPose": true,
+    "footwearExamples": true
   },
   "approvedBy": "Junid",
   "approvedAt": "2026-10-03",
@@ -18,7 +22,45 @@
       "approvedBy": "Junid",
       "approvedAt": "2026-10-04",
       "layerTextSha256": "6715741b5eb57414fce816062c358c16cf090167321c492367f8277173b6c5e6",
-      "for": "Keep the shoe's own branded box/bag from the SHOE PHOTO, staged with the shoe on the mesh-fence backdrop; never invent one (PACKAGING_LAYER in src/generate.mjs). The baseline text is unchanged."
+      "for": "Keep the shoe's own branded box/bag from the SHOE PHOTO, staged with the shoe on the mesh-fence backdrop; never invent one (PACKAGING_LAYER in src/generate.mjs). The baseline text is unchanged.",
+      "supersededBy": "footwearBox (2026-10-04)"
+    },
+    "steam": {
+      "for": "CLOTHING: steaming is the priority — remove creases, squashing and fold lines; the garment pressed and full; studio light; true colour. T-shirts are excluded (they already look good).",
+      "source": "the rebuild brief of 4 Oct 2026, constraint 6",
+      "requestedBy": "Junid",
+      "requestedAt": "2026-10-04",
+      "provisional": true,
+      "status": "REQUESTED in Junid's brief of 4 Oct; the wording is the developer's and Junid has not yet seen it or a photo made with it (Gemini's credit ran out before a test generation). Switched on at his instruction to make it work; to be confirmed or switched off on his first photos.",
+      "layerTextSha256": "8b596d6dbeba2250505e621131c775929caddc3ed549b48cd7f960dcd2086666"
+    },
+    "footwearBox": {
+      "for": "SNEAKERS: with its box — from its own box photo, else the same photo, else the brand library box; one box, on the rail, never invented.",
+      "source": "the rebuild brief of 4 Oct 2026, constraint 6",
+      "requestedBy": "Junid",
+      "requestedAt": "2026-10-04",
+      "provisional": true,
+      "status": "REQUESTED in Junid's brief of 4 Oct; the wording is the developer's and Junid has not yet seen it or a photo made with it (Gemini's credit ran out before a test generation). Switched on at his instruction to make it work; to be confirmed or switched off on his first photos.",
+      "layerTextSha256": "1076fb4f811e9d8913dccac937fdb96560b9b10521d1b82d265ee9905d56658d"
+    },
+    "footwearPose": {
+      "for": "SNEAKERS: the right shoe, outer side, toe right, on the pedestal.",
+      "source": "the rebuild brief of 4 Oct 2026, constraint 6",
+      "requestedBy": "Junid",
+      "requestedAt": "2026-10-04",
+      "provisional": true,
+      "status": "REQUESTED in Junid's brief of 4 Oct; the wording is the developer's and Junid has not yet seen it or a photo made with it (Gemini's credit ran out before a test generation). Switched on at his instruction to make it work; to be confirmed or switched off on his first photos.",
+      "layerTextSha256": "16bfbb1bdf227fc095be172b91bb7e4489d5e7cd92f73797e1fc9c53b1daf544"
+    },
+    "footwearExamples": {
+      "for": "Junid's five pasted sneaker reference photos (4 Oct) — two are shown to the model as more examples of the composition.",
+      "source": "the rebuild brief of 4 Oct 2026, constraint 6",
+      "requestedBy": "Junid",
+      "requestedAt": "2026-10-04",
+      "provisional": true,
+      "status": "REQUESTED in Junid's brief of 4 Oct; the wording is the developer's and Junid has not yet seen it or a photo made with it (Gemini's credit ran out before a test generation). Switched on at his instruction to make it work; to be confirmed or switched off on his first photos.",
+      "layerTextSha256": "f5a93118c8b4a220dda03cebad2a43da6de3da2d3e1c43117f5a104212eb73a5"
     }
-  }
+  },
+  "layersChangedAt": "2026-10-04"
 }
