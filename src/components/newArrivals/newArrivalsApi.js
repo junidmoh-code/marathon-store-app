@@ -21,9 +21,9 @@ export const newArrivalsApi = {
   // calls Gemini directly and answers while it works: onEvent gets
   // { type: "status" | "thought" | "draft", … }; resolves with
   // { ok, pid, genId, code, seconds, costZar, costEstimated, item }.
-  generate: (pid, { method = null, onEvent = null } = {}) => streamCallable({
+  generate: (pid, { method = null, provider = null, onEvent = null } = {}) => streamCallable({
     url: `https://europe-west1-${app.options.projectId}.cloudfunctions.net/newArrivalsStudio`,
-    data: { pid, ...(method === "full" || method === "split" ? { method } : {}) },
+    data: { pid, ...(method === "full" || method === "split" ? { method } : {}), ...(provider === "openai" || provider === "gemini" ? { provider } : {}) },
     getToken: () => auth.currentUser?.getIdToken(),
     onChunk: onEvent,
   }),
@@ -38,8 +38,9 @@ export const newArrivalsApi = {
   // "How Gemini did it" for one generation, loaded only when Junid opens it:
   // { code, method, thoughts, thoughtsLabel, drafts: [{ url }], model } or { code, none: true }.
   how: (pid, genId) => call("newArrivalsHow")({ pid, genId }),
-  // The per-item method override: "full" | "split" | null (null = the poster's default).
-  method: (pid, method) => call("newArrivalsMethod")({ pid, method: method === "full" || method === "split" ? method : null }),
+  // The per-item choice for the next photo: method "full" | "split" | null and provider
+  // "openai" | "gemini" | null (null = the default: Full Gemini).
+  method: (pid, method, provider = null) => call("newArrivalsMethod")({ pid, method: method === "full" || method === "split" ? method : null, provider: provider === "openai" || provider === "gemini" ? provider : null }),
   // THE admin price save (admin/productPriceSave.saveProductPrices — the one
   // the product page, the Marketing card and Missing prices use): the product's
   // REAL stockPrice / retailPrice through applyPriceBatch "single_edit", so
