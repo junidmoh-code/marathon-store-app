@@ -118,12 +118,13 @@ async function productDetail(db, pid, locations, { withStock = true } = {}) {
     val(db, `products/${pid}`),
     ...(withStock ? locations : []).map((loc) => val(db, `stock/${loc}/${pid}`)),
   ]);
-  if (!withStock) return { summary: core.productSummary(product), stock: null };
+  // (`raw` is the product record itself: the live photo fields are read from it, never from the item.)
+  if (!withStock) return { summary: core.productSummary(product), stock: null, raw: product };
   const summary = core.productSummary(product);
   const tree = {};
   locations.forEach((loc, j) => { if (cells[j]) tree[loc] = cells[j]; });
   const stock = core.stockSummary(summary ? summary.sizes : [], tree);
-  return { summary, stock };
+  return { summary, stock, raw: product };
 }
 
 // ── list ─────────────────────────────────────────────────────────────────────
@@ -269,7 +270,8 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
     if (repair) await db.ref(core.ROOT).update(repair);
     if (!item || core.TAB_OF[item.status] !== tab) return null;
     const d = details.get(pid) || await productDetail(db, pid, locations);
-    return { ...core.cardItem(item), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
+    // The photo shown as "Original" is the product's CURRENT one, read now — never a copy kept on the item.
+    return { ...core.cardItem(item), ...core.sourceFields(pid, item, d.raw), product: d.summary, availableSizes: d.stock.availableSizes, totalUnits: d.stock.totalUnits, stockKnown: d.stock.stockKnown };
   })).filter(Boolean);
 
   const stats = await val(db, `${core.ROOT}/stats`);
@@ -506,9 +508,15 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
     // stock price, no approve — said now, in the card. Retail is Shopify's
     // business: the chain lets Shopify wait for it; the groups do not.
     const listed = (await db.ref(`${core.ITEMS}/${pid}/status`).once("value")).val();
+    // What the product's photo is NOW (three keyed scalars): a photo generated
+    // from a product photo that staff have since replaced is never approved —
+    // it would post a picture of the photo before. Junid regenerates first.
+    let live = null;
     if (from.includes(listed)) {
       const price = Number((await db.ref(`products/${pid}/stockPrice`).once("value")).val());
       if (!(price > 0)) { skipped.push({ pid, why: "no stock price yet — enter it on the card, then approve" }); continue; }
+      const [photoUrl, photoUrlOriginal, photoUpdatedAt] = await Promise.all(["photoUrl", "photoUrlOriginal", "photoUpdatedAt"].map((f) => val(db, `products/${pid}/${f}`)));
+      live = { photoUrl, photoUrlOriginal, photoUpdatedAt };
     }
     const r = await moveOne(db, pid, {
       from, to: "approved", at: nowMs, uid,
@@ -517,6 +525,7 @@ async function approve(db, { pids, all, genId }, uid, nowMs) {
       // never while a new photo is being generated (it would replace this one).
       guard: (cur) => {
         if (core.requestPending(cur, nowMs)) return "a new photo is being generated — approve when it lands";
+        if (live && core.staleGeneration(pid, cur, pickGen || cur.currentGen, live)) return "the product's photo was changed after this photo was made — tap Regenerate first";
         // No named generation: the main photo — generatedUrl, or (an older item
         // whose URL was cleared) its current generation's photo.
         if (!pickGen) return cur.generatedUrl || core.currentGenUrl(cur) ? null : "it has no generated photo";

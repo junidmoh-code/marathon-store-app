@@ -36,10 +36,12 @@ import {
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
   normalizeTab, canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, methodMadeText, METHOD_TABS, effectiveMethod, methodToSet, METHOD_CHOICES,
   foldLive, liveStart, afterPick, afterPrices, afterLove, withoutItem, withItemBack, isGenerating,
-  revertPick, revertLove, revertPrices, revertMethod, afterGenerated, named,
+  revertPick, revertLove, revertPrices, revertMethod, afterGenerated, named, sourceUrlOf,
 } from "./newArrivalsView";
 
-const REFRESH_MS = 60_000;   // the quiet refresh of the first page
+const REFRESH_MS = 60_000;   // the quiet refresh of everything on screen
+const RELOAD_CHUNK = 100;    // the list callable's page ceiling
+const LONG_LIST_EVERY = 5;   // a list longer than one page: re-read every 5th minute
 const PAGE = 30;
 const TOAST_MS = 6000;
 const TOASTS_MAX = 3;
@@ -200,8 +202,9 @@ function Photos({ item, tab, stats, live, busy, h }) {
   return (
     <>
       <div style={{ display: "flex", gap: 8 }}>
-        <Tile url={item.originalUrl || item.product?.photoUrlOriginal || item.product?.photoUrl} label="Original" />
-        {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={main ? "Current photo" : mainUrl ? "Photo" : "No photo yet"} />}
+        {/* The product's CURRENT photo, as the server read it just now (sourceUrl) — never a copy kept on the item. */}
+        <Tile testid="original-photo" url={sourceUrlOf(item)} label="Original" />
+        {live ? <LiveTile live={live} /> : <Tile testid="main-photo" url={mainUrl} label={main ? (tab === "done" ? "Approved photo" : "Current photo") : mainUrl ? "Photo" : "No photo yet"} />}
       </div>
       {live && <LiveThoughts live={live} />}
       {!live && main && (
@@ -211,6 +214,11 @@ function Photos({ item, tab, stats, live, busy, h }) {
           <span style={{ flex: 1 }} />
           {how(main, false)}
           {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} disabled={busy} />}
+        </div>
+      )}
+      {!live && main && item.sourceChanged && tab === "new" && (
+        <div data-testid="source-changed" style={{ color: "#fff", fontSize: 12, marginTop: 6, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.08)" }}>
+          The product's photo was changed after this photo was made. It cannot be approved — tap Regenerate to make one from the new photo.
         </div>
       )}
       {/* What Junid must know about this photo (e.g. Split could not place it): it stays on the card, not only in a passing message. */}
@@ -228,7 +236,10 @@ function Photos({ item, tab, stats, live, busy, h }) {
                 {h.onLove && canLove(tab, g) && <LoveButton item={item} gen={g} onLove={h.onLove} disabled={busy} />}
               </div>
               {tab === "new" && h.onPick && canPick(item, g) && (
-                <button disabled={busy} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: busy ? 0.4 : 1 }}>Use this one</button>
+                // A photo made from a product photo that has since been replaced cannot become the main one (it could not be approved).
+                (item.staleGens || []).includes(g.genId)
+                  ? <div data-testid="stale-gen" style={{ color: GRAY, fontSize: 10, marginTop: 4, minHeight: 40 }}>made from the old product photo</div>
+                  : <button disabled={busy} onClick={() => h.onPick(item, g.genId)} style={{ ...bBlue, width: "100%", minHeight: 40, padding: "0 4px", fontSize: 12, marginTop: 4, opacity: busy ? 0.4 : 1 }}>Use this one</button>
               )}
               {how(g, true)}
             </div>
@@ -426,9 +437,20 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         }
         const seq = ++loadSeq.current;
         const tapsAtStart = taps.current, clockAtStart = clock.current;
-        let res;
+        // Everything on screen is re-read (a quiet refresh covers the pages "Load more" added, too),
+        // so a photo or price changed elsewhere shows within a minute however long the list is.
+        const wanted = quiet ? Math.max(PAGE, (dataRef.current.items || []).length) : PAGE;
+        let res, cursor = null;
+        const all = [];
         try {
-          res = await api.list(which, { limit: PAGE, group: groupFor(which, g) });
+          do {
+            res = await api.list(which, { ...(cursor ? { cursor } : {}), limit: Math.min(RELOAD_CHUNK, Math.max(PAGE, wanted - all.length)), group: groupFor(which, g) });
+            if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
+            const have = new Set(all.map((i) => i.pid));
+            all.push(...(res.items || []).filter((i) => !have.has(i.pid)));
+            cursor = res.nextCursor || null;
+          } while (cursor && all.length < wanted);
+          res = { ...res, items: all, nextCursor: cursor };
         } catch (e) {
           if (!alive.current || seq !== loadSeq.current || key !== activeView.current) return;
           if (!quiet) { say(null, `Couldn't load: ${e?.message || e}`); setData((d) => ({ ...d, items: d.items || [] })); }
@@ -438,7 +460,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
         // The list was read BEFORE a tap or a finished write: it must not paint over it.
         const overtaken = taps.current !== tapsAtStart || writes.current.size > 0;
         // …nor replace pages that "Load more" added while it was on its way.
-        if (quiet && (overtaken || Object.keys(liveRef.current).length > 0 || (dataRef.current.items || []).length > PAGE)) return;
+        if (quiet && (overtaken || Object.keys(liveRef.current).length > 0 || (dataRef.current.items || []).length > wanted)) return;
         // With a list already on screen, an overtaken read is read again, and after
         // a few tries given up on (the screen is newer than it). With nothing on
         // screen yet — a list just opened — it is shown at once.
@@ -488,8 +510,16 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     undoPids.current.clear();
     setUndo(null);
     load(tab, group);
-    // The quiet refresh covers the first page (a longer list is refreshed by reopening it).
-    const t = setInterval(() => { if ((dataRef.current.items || []).length <= PAGE) load(tab, group, { quiet: true }); }, REFRESH_MS);
+    // The quiet refresh: every minute for a short list; a list longer than one page is re-read whole
+    // only every LONG_LIST_EVERY minutes (each re-read costs the server a read per item) — and never
+    // while the screen is not being looked at.
+    let tick = 0;
+    const t = setInterval(() => {
+      tick += 1;
+      if (typeof document !== "undefined" && document.visibilityState === "hidden") return;
+      if ((dataRef.current.items || []).length > PAGE && tick % LONG_LIST_EVERY !== 0) return;
+      load(tab, group, { quiet: true });
+    }, REFRESH_MS);
     return () => clearInterval(t);
   }, [tab, group, load]);
 

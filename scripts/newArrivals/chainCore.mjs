@@ -20,6 +20,7 @@ import { applyProposalMutator, conditionMutator, photosMutator, publishMutator, 
   from "../../src/components/shopify/publishMutators.js";
 import { CONDITIONS } from "../../src/components/shopify/publishShared.js";
 import { writeApprovedThumbFromUrl, writeProductThumb } from "../../src/utils/productThumb.js";
+import sourcePhoto from "../../functions/newArrivals/sourcePhoto.cjs";
 
 export const EXCELLENT = CONDITIONS[0];
 export const DUPLICATE = "duplicate name — needs a distinct name";
@@ -146,12 +147,16 @@ export async function advance(pid, deps) {
     const res = await decide(db, pid, node, photosMutator, { photos: [item.generatedUrl], basisPhotos: node?.photos }, await ctx());
     if (!res.ok) return reject("photo", res.message);
     node = res.node;
-    // AI Studio approve path: photoUrl ← generated; photoUrlOriginal keeps the
-    // FIRST original for ever (never overwritten by a later approval).
-    const original = product.photoUrlOriginal || item.originalUrl || product.photoUrl;
+    // AI Studio approve path: photoUrl ← generated; photoUrlOriginal ← the staff
+    // photo it replaces. That is the product's CURRENT staff photo, read now
+    // (sourcePhoto.cjs) — never a copy pinned on the item. An original already
+    // kept is never overwritten by a later approval of another GENERATED photo;
+    // it IS replaced when staff re-shot the product since (the product's photo
+    // is a staff photo again: the old original is no longer the product).
+    const original = sourcePhoto.currentSourceUrl(pid, product, item);
     // Exactly the AI Studio approve write (App.jsx): photoUrl + photoUrlOriginal.
     const update = { photoUrl: item.generatedUrl };
-    if (!product.photoUrlOriginal) update.photoUrlOriginal = original;
+    if (original && (!product.photoUrlOriginal || sourcePhoto.isStaffPhoto(pid, product.photoUrl))) update.photoUrlOriginal = original;
     await db.ref(`products/${pid}`).update(update);
     // The till thumbnail, by the same helper the AI Studio approve uses. The
     // browser encodes with a canvas; here the encoder is injected (sharp), and

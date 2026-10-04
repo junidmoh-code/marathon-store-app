@@ -85,6 +85,8 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
   return clean({
     ...(code ? { code } : {}),
     url: res.generated.url, path: res.generated.path || null, at, model,
+    // The product photo it was made from (the card says so when the product's photo has changed since).
+    ...(res.sourceUrl ? { sourceUrl: res.sourceUrl } : {}),
     promptVersion: res.promptVersion,
     method,
     ...(method === "split" ? (res.packaging ? { packaging: res.packaging } : {}) : { layers: Object.fromEntries((res.layersUsed || []).map((k) => [k, true])) }),

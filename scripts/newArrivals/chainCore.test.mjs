@@ -241,3 +241,32 @@ describe("the original photo, resume, and publish-once", () => {
     expect((await advance(PID, deps(db).d)).outcome).toBe("skipped");
   });
 });
+
+// ── THE ORIGINAL THE CHAIN KEEPS IS THE PRODUCT'S CURRENT STAFF PHOTO ────────
+describe("the original kept at approval is the product's current photo — never the item's old copy", () => {
+  const staff = (token) => `https://firebasestorage.googleapis.com/v0/b/b/o/products%2F${PID}%2Fphoto.jpg?alt=media&token=${token}`;
+
+  it("staff re-shot the photo after the item entered New: the NEW photo is kept as the original; the generated one becomes the product photo", async () => {
+    const db = world({ product: { photoUrl: staff("new") }, item: { originalUrl: staff("old") } });
+    await advance(PID, deps(db).d);
+    const p = await read(db, `products/${PID}`);
+    expect(p.photoUrl).toBe(GEN);
+    expect(p.photoUrlOriginal).toBe(staff("new"));
+  });
+
+  it("staff re-shot AFTER an earlier approval: the stale kept original is replaced by the photo the product shows now", async () => {
+    const db = world({ product: { photoUrl: staff("new"), photoUrlOriginal: staff("old") } });
+    await advance(PID, deps(db).d);
+    const p = await read(db, `products/${PID}`);
+    expect(p.photoUrl).toBe(GEN);
+    expect(p.photoUrlOriginal).toBe(staff("new"));
+  });
+
+  it("the product's photo is an earlier approved generated one: the original it replaced is kept (a generated photo never becomes 'the original')", async () => {
+    const db = world({ product: { photoUrl: "https://x/ai-earlier.jpg", photoUrlOriginal: staff("first") }, item: { originalUrl: staff("stale-copy") } });
+    await advance(PID, deps(db).d);
+    const p = await read(db, `products/${PID}`);
+    expect(p.photoUrl).toBe(GEN);
+    expect(p.photoUrlOriginal).toBe(staff("first"));
+  });
+});

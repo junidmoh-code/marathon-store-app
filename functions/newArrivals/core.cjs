@@ -35,6 +35,7 @@
 "use strict";
 
 const { availableUnits, stockSizeKey, ONLINE_EXCLUDED_LOCATIONS } = require("../lib/social-select.cjs");
+const sourcePhoto = require("./sourcePhoto.cjs");
 
 const ROOT = "new_arrivals";
 const ITEMS = `${ROOT}/items`;
@@ -133,7 +134,10 @@ function buildItem(pid, product, at) {
   // Optional fields are OMITTED, never written as undefined (the SDK throws on
   // undefined, and null would just be dropped).
   if (product.categoryKey) item.categoryKey = String(product.categoryKey);
-  if (product.photoUrl) item.originalUrl = String(product.photoUrl);
+  // NO photo is copied onto the item: the product's photo is read live every
+  // time (sourcePhoto.cjs). A copy made here went stale the moment the photo
+  // was replaced in admin — the card, the generator and the chain all kept
+  // using the old one.
   return item;
 }
 
@@ -212,6 +216,8 @@ function productSummary(p) {
     sizes: sizes.map(String),
     photoUrl: p.photoUrl || null,
     photoUrlOriginal: p.photoUrlOriginal || null,
+    // When staff last replaced the photo (human uploads only): a generation older than this was made from the photo before.
+    photoUpdatedAt: Number.isFinite(Number(p.photoUpdatedAt)) && Number(p.photoUpdatedAt) > 0 ? Number(p.photoUpdatedAt) : null,
     categoryKey: p.categoryKey || null,
   };
 }
@@ -487,6 +493,28 @@ function lovedItem(item, genId, loved, at) {
 // in genlog (RTDB index + ledger); should any of its heavy fields ever be
 // written onto a generation, the list strips them before they reach the card.
 const CARD_GEN_OMIT = Object.freeze(["promptText", "promptSha", "thoughts", "thoughtsLabel", "thoughtsUnsupported", "genlog", "inputs", "request", "usage", "timing", "errors503"]);
+/**
+ * What the card needs to show the product's CURRENT photo: `sourceUrl` (the
+ * live source photo — never the item's old pin), `staleGens` (the generations
+ * made from a photo the product no longer shows) and `sourceChanged` (the
+ * photo on the card is one of them). Pure.
+ */
+function sourceFields(pid, item, product) {
+  const sourceUrl = sourcePhoto.currentSourceUrl(pid, product, item);
+  // EVERY generation made from a photo the product no longer shows (so the card
+  // can refuse "Use this one" on those too, not only flag the current one).
+  const staleGens = Object.entries((item && item.generations) || {})
+    .filter(([, g]) => sourcePhoto.generationIsStale(g, { sourceUrl, photoUpdatedAt: product && product.photoUpdatedAt })).map(([id]) => id);
+  const stale = !!(item && item.currentGen && staleGens.includes(item.currentGen));
+  return { sourceUrl, ...(staleGens.length ? { staleGens } : {}), ...(stale ? { sourceChanged: true } : {}) };
+}
+
+/** Was generation `genId` of this item made from a photo the product no longer shows? Pure. */
+function staleGeneration(pid, item, genId, product) {
+  const gen = item && genId && item.generations && item.generations[genId];
+  return !!gen && sourcePhoto.generationIsStale(gen, { sourceUrl: sourcePhoto.currentSourceUrl(pid, product, item), photoUpdatedAt: product && product.photoUpdatedAt });
+}
+
 /** The item as the card gets it: every generation without the log's heavy fields. Pure. */
 function cardItem(item) {
   if (!item || !item.generations || typeof item.generations !== "object") return item;
@@ -575,6 +603,6 @@ module.exports = {
   FILTER_CLASSES, filterClassOf, normalizeFilter, GROUPS, GROUP_TABS, groupOf, normalizeGroup, stockSummary, matchesFilter,
   REJECT_CHIPS, DECISION_ACTIONS, decisionRecord, keyCmp,
   SELECT_LANES, GEN_ID_RE, selectRefusal, selectFields,
-  loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem,
+  loveRefusal, lovedItem, CARD_GEN_OMIT, cardItem, sourceFields, staleGeneration,
   GENLOG, THOUGHTS_LABEL, CODE_RE, howView, METHODS, methodRefusal,
 };
