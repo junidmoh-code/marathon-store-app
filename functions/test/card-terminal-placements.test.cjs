@@ -89,6 +89,17 @@ test("an in-place till edit on a row that keeps placements adds one, so the hist
   assert.equal(legacy.row.placements, undefined);
 });
 
+test("review fixes (#695): a first move at/before the seed is refused; an edit never carries a cross-store machine home; a slightly-ahead move still names the card", () => {
+  const m = planMove({ tid: "0000HP1X", storeId: "pe", tillId: "till-3", label: "Marathon Till 3", effectiveFrom: HP1X.tillChangedAt }, HP1X, { ...ctx, nowMs: HP1X.tillChangedAt + 3600e3 });
+  assert.match(m.reason, /first move must be after it/);
+  const moved = planMove({ tid: "67325636", storeId: "trophy", tillId: "till-1", label: "Trophy Till 1", effectiveFrom: SWAP }, A, ctx).row;
+  const e = planEdit({ tid: "67325636", storeId: "pe", tillId: "till-2", label: "Trophy Till 1", mid: A.mid, capture: "both" }, moved, ctx);
+  assert.match(e.reason, /another store now\. Use Moved/);
+  const ahead = planMove({ tid: "67325636", storeId: "trophy", tillId: "till-1", label: "Trophy Till 1", effectiveFrom: NOW_MS + 5 * 60e3 }, A, ctx);
+  assert.equal(ahead.ok, true, ahead.reason);
+  assert.equal(ahead.row.label, "Trophy Till 1");
+});
+
 // ── the callable, end to end against an in-memory RTDB (null-first transactions) ──
 function fakeDb(data) {
   const at = (path) => path.split("/").filter(Boolean).reduce((o, k) => (o == null ? undefined : o[k]), data);

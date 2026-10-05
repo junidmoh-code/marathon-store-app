@@ -47,7 +47,7 @@ const CAPTURE_LABEL = { email: "Email", photo: "Photo", typed: "Typed", both: "B
 // SAST is UTC+2 all year. The time typed is SAST whatever the phone is set to.
 const SAST_MS = 2 * 60 * 60 * 1000;
 export const sastInputValue = (ms) => new Date(ms + SAST_MS).toISOString().slice(0, 16);
-export const sastInputMs = (v) => (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}$/.test(v || "") ? Date.parse(`${v}:00+02:00`) : NaN);
+export const sastInputMs = (v) => (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(v || "") ? Date.parse(`${v.slice(0, 16)}:00+02:00`) : NaN);
 const sastWhen = (ms) => new Date(ms + SAST_MS).toISOString().slice(0, 16).replace("T", " ");
 
 /** A row's placements, oldest first (mirror of functions/lib/card-terminal-placements.cjs). */
@@ -55,6 +55,10 @@ function placementsOf(row) {
   return Object.values(row?.placements || {})
     .filter((p) => p && p.storeId && p.tillId && Number.isFinite(Number(p.effectiveFrom)))
     .sort((a, b) => Number(a.effectiveFrom) - Number(b.effectiveFrom));
+}
+const placementEntries = (row) => {
+  const keyOf = new Map(Object.entries(row?.placements || {}).map(([k, p]) => [p, k]));
+  return placementsOf(row).map((p) => ({ ...p, key: keyOf.get(p) }));
 }
 
 /**
@@ -65,6 +69,7 @@ function MoveForm({ base, stores, busy, onSubmit, onCancel }) {
   const [storeId, setStoreId] = useState("");
   const [tillId, setTillId] = useState("");
   const [label, setLabel] = useState("");
+  const [labelTyped, setLabelTyped] = useState(false);
   const [when, setWhen] = useState(() => sastInputValue(serverNowMs()));
   const store = stores.find((s) => s.storeId === storeId);
   const tills = store ? store.tills : [];
@@ -73,14 +78,15 @@ function MoveForm({ base, stores, busy, onSubmit, onCancel }) {
   const pickTill = (id) => {
     setTillId(id);
     const name = tills.find((t) => t.tillId === id)?.name;
-    if (name && !label.trim()) setLabel(`${storeId === "pe" ? "Marathon" : store.label} ${name}`.slice(0, 40));
+    // Suggested from the till picked, until the owner types their own.
+    if (!labelTyped) setLabel(name ? `${storeId === "pe" ? "Marathon" : store.label} ${name}`.slice(0, 40) : "");
   };
   return (
     <form style={U.form} onSubmit={(e) => { e.preventDefault(); if (ready && !busy) onSubmit({ tid: base.tid, storeId, tillId, label: label.trim(), effectiveFrom: atMs }); }}>
       <div style={{ ...U.name, fontSize: 15 }}>{`Moved ${base.label || base.tid} (${base.tid})`}</div>
       <div style={U.note}>The machine itself went to another till. Its batches stay filed where they are; card recon puts each transaction on the till it was on at that moment.</div>
       <label style={U.label} htmlFor="tm-store">Now in store</label>
-      <select id="tm-store" style={U.input} value={storeId} onChange={(e) => { setStoreId(e.target.value); setTillId(""); }}>
+      <select id="tm-store" style={U.input} value={storeId} onChange={(e) => { setStoreId(e.target.value); setTillId(""); if (!labelTyped) setLabel(""); }}>
         <option value="">Pick the store…</option>
         {stores.map((s) => <option key={s.storeId} value={s.storeId}>{s.label}</option>)}
       </select>
@@ -92,7 +98,7 @@ function MoveForm({ base, stores, busy, onSubmit, onCancel }) {
       <label style={U.label} htmlFor="tm-when">Moved at (SAST)</label>
       <input id="tm-when" type="datetime-local" style={U.input} value={when} onChange={(e) => setWhen(e.target.value)} />
       <label style={U.label} htmlFor="tm-label">Label from then</label>
-      <input id="tm-label" style={U.input} value={label} maxLength={40} placeholder="e.g. Trophy Till 1" onChange={(e) => setLabel(e.target.value)} />
+      <input id="tm-label" style={U.input} value={label} maxLength={40} placeholder="e.g. Trophy Till 1" onChange={(e) => { setLabel(e.target.value); setLabelTyped(true); }} />
       <button type="submit" style={{ ...U.primary, opacity: ready && !busy ? 1 : 0.45 }} disabled={!ready || busy}>{busy ? "Saving…" : "Save the move"}</button>
       <button type="button" style={{ ...U.chip, width: "100%", marginTop: 8 }} onClick={onCancel} disabled={busy}>Cancel</button>
     </form>
@@ -337,8 +343,8 @@ export default function TerminalSettings({ terminals, onClose }) {
             </div>
             {placementsOf(r).length > 1 && (
               <div style={U.meta} data-testid={`ts-placements-${r.tid}`}>
-                {placementsOf(r).slice(1).map((p) => (
-                  <div key={p.effectiveFrom}>Moved {sastWhen(Number(p.effectiveFrom))} SAST → {storeName(stores, p.storeId)} · {tillName(stores, p.storeId, p.tillId)}</div>
+                {placementEntries(r).slice(1).map((p) => (
+                  <div key={p.key}>Moved {sastWhen(Number(p.effectiveFrom))} SAST → {storeName(stores, p.storeId)} · {tillName(stores, p.storeId, p.tillId)}</div>
                 ))}
               </div>
             )}

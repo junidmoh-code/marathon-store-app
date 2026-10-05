@@ -152,6 +152,14 @@ function planEdit(input, current, { stores, now, nowMs }) {
   }
   const c = readCommon(input, stores);
   if (!c.ok) return c;
+  // A machine standing in ANOTHER store (a placement) is not moved by an edit
+  // of its filing till — that would quietly carry it back (Sonnet, #695).
+  if (Number.isFinite(nowMs) && current.tillId !== c.tillId) {
+    const here = tillAt(current, nowMs);
+    if (here.storeId !== current.storeId) {
+      return { ok: false, reason: `${current.label || tid} stands in another store now. Use Moved to change where it is.` };
+    }
+  }
   const row = { ...current, label: c.label, tillId: c.tillId, capture: c.capture };
   if (c.mid) row.mid = c.mid; else delete row.mid;
   // THE ONE EDIT THAT CAN MAKE A FIGURE WRONG — see tillMoveWarning.
@@ -279,7 +287,15 @@ function planMove(input, current, { stores, now, nowMs, by }) {
     return { ok: false, reason: `${tid} already has a move at exactly that time. Pick another minute.` };
   }
   const placements = { ...(current.placements || {}) };
-  if (!terminalPlacements(current).length) placements[placementKey(seedPlacement(current).effectiveFrom)] = { ...seedPlacement(current), setAt: now };
+  if (!terminalPlacements(current).length) {
+    // The first move writes where the machine stood before it. A move dated at
+    // or before that seed would be overridden by it (or share its key).
+    const seed = seedPlacement(current);
+    if (at <= seed.effectiveFrom) {
+      return { ok: false, reason: `${tid}'s last recorded till change is ${new Date(seed.effectiveFrom).toISOString().slice(0, 16).replace("T", " ")} UTC; a first move must be after it.` };
+    }
+    placements[placementKey(seed.effectiveFrom)] = { ...seed, setAt: now };
+  }
   const note = typeof input.note === "string" ? input.note.replace(/\s+/g, " ").trim().slice(0, 200) : "";
   placements[key] = {
     storeId: input.storeId, tillId: input.tillId, effectiveFrom: at, label: label.label, setAt: now,
@@ -287,7 +303,8 @@ function planMove(input, current, { stores, now, nowMs, by }) {
   };
   const row = { ...current, placements };
   // What the row says NOW follows the placement in force now.
-  const here = placementAt(row, nowMs) || { storeId: current.storeId, tillId: current.tillId, label: current.label };
+  // A move dated a few minutes ahead (phone clock) still sets the card's name.
+  const here = placementAt(row, Math.max(nowMs, at)) || { storeId: current.storeId, tillId: current.tillId, label: current.label };
   if (here.label) row.label = here.label;
   if (here.storeId === current.storeId && here.tillId !== current.tillId) {
     row.tillId = here.tillId;
