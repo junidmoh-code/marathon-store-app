@@ -788,7 +788,9 @@ export function eftPoolRecord({ message, verdict, parsed, account, timing, reade
       bankRef: clip(parsed.bankRef, 60) || null,
       paymentType: clip(parsed.paymentType, 60) || null,
       needsSample: timing?.needsSample === true,
-      reason: clip(timing?.reason || "Whether this was an immediate payment was never checked — refused rather than assumed.", 400),
+      // The reason quotes the bank-printed payment-type field; redact any
+      // account digits that field might carry, as the account/parse reasons do.
+      reason: clip(redactAccountDigits(timing?.reason || "Whether this was an immediate payment was never checked — refused rather than assumed."), 400),
     };
   }
   return {
