@@ -421,3 +421,16 @@ only ever saw orders 001–009:
 (`scripts/census-hub1-promised.mjs:25` has the sentinel and is fine.) Any figure
 those two produced about customer orders is low. They are already-run one-offs,
 not live surfaces — re-run them with the sentinel before trusting an old number.
+
+---
+
+## A terminal's FILING store and where it STANDS are different things (5 Oct 2026, #695)
+
+**What's true:** `/config/cardTerminals/{TID}.storeId` is where that terminal's batches are **filed** (`/card_batches/{storeId}/{tid}`). It never changes, even when the machine is carried to another shop. Where the machine **stands** is `placements/at-{ms}` → `{ storeId, tillId, effectiveFrom, label }`, and the latest row not after a moment wins. The owner's Card Recon (marathon-pos-app `placements.js` / `dayRows.placeSegments`) reconciles each transaction on the till its machine stood on at that moment.
+
+**Live since 5 Oct 2026, 12:46 SAST:** 67325636 is filed under `pe` and stands at trophy/till-1. 67377843 is filed under `trophy` and stands at pe/till-1. All six terminals carry seeded placements.
+
+**What a change must respect:**
+- Never "fix" a filing `storeId` to match a placement. That strands every batch filed under the old one.
+- The batch record's capture-time `expected` / `varianceCents` still join the row's filing till. No screen reads them. If anything ever does (a nightly email, an alarm), compute them by placement first.
+- Enter moves from Card machines → ⚙ → **Moved** (`cardTerminalAdmin` action `move`, deployed by name). An Edit of a machine standing in another store is refused on purpose.
