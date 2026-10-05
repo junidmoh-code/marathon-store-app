@@ -539,6 +539,99 @@ export function accountVerdict({ accountMask, allowedTails, configured }) {
   return { ok: true, tail };
 }
 
+// ─── FIX 7a: PAID INTO JUNID'S OWN FNB ACCOUNT ───────────────────────────────
+// accountVerdict above compares only the LAST FOUR digits and never looks at
+// the bank: a proof of payment to a Capitec or Absa account that happens to
+// end in the same four digits passed. destinationVerdict replaces it in the
+// poller and checks BOTH things every reader already parses from the real
+// documents (eftBanks.mjs): the destination BANK, which must be FNB by its own
+// printed name, and the destination ACCOUNT, which must agree with one of the
+// configured FULL account numbers on EVERY digit the document shows — all
+// eleven when Capitec or Absa print it whole, seven when FNB shows "..3456625",
+// four when Standard Bank masks it. Fewer than four visible digits is
+// uncheckable and refuses, as before.
+const FNB_BANK_NAMES = new Set(["FIRSTNATIONALBANK", "FNB"]);
+
+/** "62900004321, 6200-000-9092" → ["62900004321","62000009092"] — full digit
+ *  strings (at least four digits each); never logged. */
+export function parseAllowedAccounts(raw) {
+  return String(raw ?? "")
+    .split(",")
+    .map((s) => s.replace(/\D/g, ""))
+    .filter((digits) => digits.length >= 4);
+}
+
+/**
+ * @returns {{ok:true, tail:string} | {ok:false, reason:string}}
+ */
+export function destinationVerdict({ accountMask, destBankName, allowedAccounts, configured }) {
+  const bank = String(destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
+  if (!FNB_BANK_NAMES.has(bank)) {
+    return { ok: false, reason: destBankName
+      ? `This payment was made to "${clip(destBankName, 60)}", not to First National Bank — the shop is paid only into its own FNB account.`
+      : "The proof of payment does not say which bank the money was paid to, so it cannot be confirmed as paid into the shop's FNB account." };
+  }
+  const visible = String(accountMask ?? "").replace(/\D/g, "");
+  if (visible.length < 4) {
+    return { ok: false, reason: `The destination account prints as "${clip(accountMask, 40)}" — fewer than four visible digits, so it cannot be checked.` };
+  }
+  if (!Array.isArray(allowedAccounts) || !allowedAccounts.length) {
+    return { ok: false, reason: configured
+      ? `${EFT_ACCOUNTS_ENV_VAR} is set but holds no usable account number. Every payment refuses here until it is fixed.`
+      : `No account allowlist is configured — set ${EFT_ACCOUNTS_ENV_VAR} in the .env on the mini (the FULL account number). Until then every payment refuses here, deliberately.` };
+  }
+  const tail = visible.slice(-4);
+  const sameTail = allowedAccounts.filter((a) => a.endsWith(tail));
+  if (!sameTail.length) {
+    return { ok: false, reason: `This payment credits an account ending ${tail}, which is not the shop's own account.` };
+  }
+  if (sameTail.some((a) => a.length >= visible.length && a.endsWith(visible))) return { ok: true, tail };
+  if (sameTail.every((a) => a.length < visible.length)) {
+    return { ok: false, reason: `The document prints ${visible.length} digits of the destination account but ${EFT_ACCOUNTS_ENV_VAR} holds only the last ${Math.max(...sameTail.map((a) => a.length))} — put the shop's full account number there so every printed digit can be checked.` };
+  }
+  return { ok: false, reason: `This payment credits an account ending ${tail} whose other printed digits are not the shop's own account.` };
+}
+
+// ─── FIX 7b: IMMEDIATE PAYMENTS ONLY ─────────────────────────────────────────
+// A notification for a scheduled, future-dated or normal-clearing payment is
+// an INSTRUCTION that may never arrive (it can be cancelled, or bounce at
+// clearing), so only a real-time / immediate EFT becomes a payment. The signal
+// is read from what the real documents print — never guessed:
+//   capitec       "Payment type Immediate Payment"           (reader: immediate)
+//   absa          "Immediate payment:" then "Y" / "N"        (reader: immediate)
+//   fnb, standardbank  NO such field in the real notifications this repo was
+//                 built from — they refuse with `needsSample`, until a real
+//                 immediate-payment sample shows where the bank says it.
+// Whatever a bank prints, a payment dated in the FUTURE of its own
+// notification's arrival is scheduled and refuses.
+export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
+export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa"];
+
+/**
+ * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
+ * @returns {{ok:true} | {ok:false, reason:string, needsSample?:true}}
+ */
+export function immediacyVerdict({ parsed, reader, receivedAt }) {
+  const id = reader ?? parsed?.reader ?? null;
+  if (Number.isInteger(parsed?.bankTs) && Number.isInteger(receivedAt)
+    && parsed.bankTs > receivedAt + FUTURE_DATED_TOLERANCE_MS) {
+    return { ok: false, reason: "The payment is dated after its notification arrived — a scheduled / future-dated payment, not an immediate one." };
+  }
+  if (!IMMEDIATE_SIGNAL_READERS.includes(id)) {
+    return {
+      ok: false, needsSample: true,
+      reason: `The ${id || "unknown"} notification format this pool reads carries no field saying whether the payment was IMMEDIATE. Until a real ${id || "bank"} immediate-payment sample shows where it says so, its payments refuse rather than guess.`,
+    };
+  }
+  if (parsed?.immediate === true) return { ok: true };
+  return {
+    ok: false,
+    reason: parsed?.immediate === false
+      ? `Not an immediate payment (the bank prints "${clip(parsed.paymentType, 60) || "not immediate"}") — a scheduled or normal-clearing payment may not clear, so it cannot settle a sale.`
+      : "The bank's immediate-payment field could not be read from this notification — refused rather than assumed.",
+  };
+}
+
 // ─── IDENTITY AND IDEMPOTENCY ────────────────────────────────────────────────
 /**
  * The pool key for a message — ALSO the record's node name, which is what makes
@@ -621,6 +714,7 @@ export function createOnlyStep(record, capture = () => {}) {
  * One pool record, exactly as stored at /eft_pool/{eftKey}.
  *
  *   outcome   "recorded" | "refused-auth" | "refused-parse" | "refused-account"
+ *             | "refused-not-immediate" (fix 7b)
  *             — separable on purpose: a forgery attempt, a format change and a
  *             payment into somebody else's account are different problems for
  *             different people.
@@ -636,7 +730,7 @@ export function createOnlyStep(record, capture = () => {}) {
  * whenever `parsed.ok`; a parsed payment whose destination was not checked
  * must be impossible to store as recorded.
  */
-export function eftPoolRecord({ message, verdict, parsed, account, reader, rawText, at }) {
+export function eftPoolRecord({ message, verdict, parsed, account, timing, reader, rawText, at }) {
   const base = {
     at,
     receivedAt: Number.isInteger(message.receivedAt) ? message.receivedAt : null,
@@ -677,6 +771,19 @@ export function eftPoolRecord({ message, verdict, parsed, account, reader, rawTe
       ...base, outcome: "refused-account", destination,
       amountCents: parsed.amountCents,
       reason: clip(redactAccountDigits(account?.reason || "The destination account was never checked — refused rather than assumed."), 400),
+    };
+  }
+  // FIX 7b — the timing verdict is REQUIRED like the account verdict: a parsed
+  // payment whose immediacy was never checked must be impossible to record.
+  if (!timing || timing.ok !== true) {
+    return {
+      ...base, outcome: "refused-not-immediate", destination,
+      amountCents: parsed.amountCents,
+      reference: parsed.reference ?? null,
+      bankRef: clip(parsed.bankRef, 60) || null,
+      paymentType: clip(parsed.paymentType, 60) || null,
+      needsSample: timing?.needsSample === true,
+      reason: clip(timing?.reason || "Whether this was an immediate payment was never checked — refused rather than assumed.", 400),
     };
   }
   return {

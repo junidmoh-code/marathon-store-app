@@ -542,7 +542,7 @@ describe("the pool record", () => {
   it("a verified, parsed, ACCOUNT-CHECKED payment: outcome recorded, status unmatched, every field aboard", () => {
     const r = eftPoolRecord({
       message, verdict: passVerdict, parsed: parsedOk,
-      account: { ok: true, tail: "4321" }, reader: "standardbank",
+      account: { ok: true, tail: "4321" }, timing: { ok: true }, reader: "standardbank",
       rawText: "Amount: R 1,234.56\nfrom account 62834519234", at: 99,
     });
     expect(r).toMatchObject({
