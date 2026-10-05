@@ -27,9 +27,9 @@
 import { createRequire } from "module";
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
-const { planMove } = require("../../functions/lib/card-terminal-admin.cjs");
-const { placementKey, seedPlacement, terminalPlacements, placementAt } = require("../../functions/lib/card-terminal-placements.cjs");
-const { posStores, POS_STORES } = require("../../functions/lib/pos-tills.cjs");
+const { planMove } = require("./lib/card-terminal-admin.cjs");
+const { placementKey, seedPlacement, terminalPlacements, placementAt } = require("./lib/card-terminal-placements.cjs");
+const { posStores, POS_STORES } = require("./lib/pos-tills.cjs");
 
 const EXECUTE = process.argv.includes("--execute");
 const SWAP_MS = Date.parse("2026-10-05T10:46:00Z");
