@@ -149,14 +149,14 @@ test("THE LAYOUT is G-0102's, on the real plate — and its numbers are said out
   // The stored figures are the ones the measurement gives (to a rounding step).
   const near = (a, b) => Math.abs(a - b) <= 0.004;
   assert.ok(near(again.measured.shoeLengthOfPedestalWidth, spec.measured.shoeLengthOfPedestalWidth), `${again.measured.shoeLengthOfPedestalWidth}`);
-  assert.ok(near(-again.measured.soleBelowPedestalFrontEdge, spec.measured.soleAbovePedestalFrontEdge));
+  assert.ok(near(again.measured.soleAbovePedestalFrontEdge, spec.measured.soleAbovePedestalFrontEdge));
   assert.ok(near(again.measured.heelFromPedestalLeft, spec.measured.heelFromPedestalLeft) && near(again.measured.toeFromPedestalRight, spec.measured.toeFromPedestalRight));
   assert.ok(near(again.measured.boxWidthOfFrame, spec.measured.boxWidthOfFrame) && near(again.measured.boxHeightOfFrame, spec.measured.boxHeightOfFrame));
   assert.ok(near(again.measured.boxToPedestalGap, spec.measured.boxToPedestalGap) && near(again.measured.boxToShoeGap, spec.measured.boxToShoeGap));
   // The sole stands ON the pedestal's top surface, forward: between its back rim and its front edge, near the front.
   assert.ok(spec.shoe.soleY > spec.pedestal.topY && spec.shoe.soleY < spec.pedestal.frontEdgeY);
   const text = placementText("footwear", spec);
-  for (const said of ["heel at x=20.6%", "toe tip at x=77.2%", "y=72%", "72.4% of the pedestal's width", "8.5% of the frame", "13.1%", "only 2.1% of the frame behind its front edge", "x=49.9%, y=30.1%", "no wider than 34.3%", "no taller than 39.8%", "at least 8.8%"]) assert.ok(text.includes(said), said);
+  for (const said of ["heel at x=20.6%", "toe tip at x=77.2%", "y=72%", "72.4% of the pedestal's width", "8.5% of the frame", "13.1%", "only 2.1% of the frame behind its front edge", "x=49.9%, y=30.1%", "never wider than 34.3%", "never taller than 39.8%", "ends 14.5% of the frame above the pedestal", "never touching it"]) assert.ok(text.includes(said), said);
   // With no box the box sentence is not said.
   assert.ok(!placementText("footwear", { ...spec, box: undefined }).includes("THE BOX"));
 });
@@ -166,4 +166,18 @@ test("G-0102 is the footwear reference, locked; the correction is switched on", 
   assert.match(plates["footwear-reference-g0102.jpg"].sha256, /^[0-9a-f]{64}$/);
   assert.equal(require("../newArrivals/studio/config/baseline.lock.json").footwearLayout.referenceSha256, plates["footwear-reference-g0102.jpg"].sha256);
   assert.equal(gen.footwearCorrection, true);
+});
+
+test("a shoe joined to the box above it is NOT cut as one piece; a shoe too tall for the layout, or one that would run into the box, is refused", async () => {
+  // The boot's top touches the box: one shape, taller than it is long.
+  const joined = await png(scene({ extra: shoe("#c8102e", { x: 330, w: 400, y: 700, h: 330 }) + `<rect x="380" y="520" width="300" height="330" fill="#c8102e"/>` }));
+  assert.match((await correctFootwear({ photoBuf: joined, plate, spec })).problem, /told apart/);
+  // A stand-in lift: a shoe far taller than long cannot be fitted under the box at half the layout's length.
+  const piece = (w, h, fill) => sharp({ create: { width: w, height: h, channels: 4, background: fill } }).png().toBuffer();
+  const tall = async () => ({ shoe: await piece(200, 900, "#c8102e"), box: await piece(300, 200, "#1f4fd8"), found: { shoe: { left: 0.3, top: 0.2, right: 0.5, bottom: 0.7 }, box: { left: 0.3, top: 0.05, right: 0.6, bottom: 0.19 } }, how: "test" });
+  assert.match((await correctFootwear({ photoBuf: plate.buffer, plate, spec, lift: tall })).problem, /too tall/);
+  // With no room at all under the box, the shoe would run into it: refused, never drawn over the box.
+  const squeezed = { ...spec, box: { ...spec.box, top: 0.3, bottom: 0.75 } };
+  const boot = async () => ({ shoe: await piece(600, 500, "#c8102e"), box: await piece(300, 600, "#1f4fd8"), found: { shoe: { left: 0.2, top: 0.4, right: 0.7, bottom: 0.7 }, box: null }, how: "test" });
+  assert.match((await correctFootwear({ photoBuf: plate.buffer, plate, spec: squeezed, lift: boot })).problem, /overlap the box|too tall/);
 });

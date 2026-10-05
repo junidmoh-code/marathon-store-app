@@ -12,14 +12,16 @@
     "outerSideFacing": true,
     "measuredFrom": "G-0102 (Boss slide white, p1790949724027) — Junid, 5 Oct 2026: correct in size and position",
     "measuredAt": "2026-10-05",
-    "measuredBy": "studio/lift.mjs + studio/correct.mjs layoutFrom — pixels only, against the CURRENT plate (junid-footwear). G-0102's repainted pedestal stands within 4 px of the plate's (panel top 1100 vs 1099, sides 128–982 vs 132–980 of 1086), so nothing had to be mapped.",
+    "measuredBy": "scripts/newArrivals/measureFootwearLayout.mjs (studio/lift.mjs liftFromPlate + pedestalIn, studio/correct.mjs layoutFrom) run on G-0102 and the CURRENT plate (junid-footwear) on 5 Oct 2026 — pixels only, no model. G-0102's repainted pedestal stands within 4 px of the plate's (panel top 1100 vs 1099, sides 128–982 vs 132–980 of 1086), so nothing had to be mapped. Figures are rounded to 3 places from pixel values, so sums can differ in the last place.",
     "shoe": {
       "heelX": 0.206,
       "toeX": 0.772,
       "topY": 0.588,
       "soleY": 0.72,
       "width": 0.566,
-      "widthToHeight": 3.215
+      "widthToHeight": 3.215,
+      "guideTopY": 0.508,
+      "note": "heelX / toeX / soleY place EVERY shoe (length and sole line; its height follows its own proportions). topY and widthToHeight are G-0102's own (a low slide) and place nothing; guideTopY is where a typical 2:1 shoe tops out — used only for the layout diagram shown to the model and for where an uncorrected shoe is measured."
     },
     "box": {
       "left": 0.328,
@@ -38,7 +40,7 @@
       "frontEdgeY": 0.741,
       "panelTopY": 0.759,
       "width": 0.78,
-      "note": "The real plate's pedestal: back rim of its top surface, its sides, the front edge of the top surface, the top of the black panel."
+      "note": "The real plate's pedestal: back rim of its top surface (topY), the sides of its BODY read just above the black panel (left / right / width — the brief's 'pedestal top width'; the flat top is very slightly narrower), the front edge of the top surface, the top of the black panel."
     },
     "measured": {
       "shoeLengthOfPedestalWidth": 0.724,
@@ -53,7 +55,8 @@
       "boxCentreX": 0.499,
       "boxCentreY": 0.301,
       "boxToPedestalGap": 0.145,
-      "boxToShoeGap": 0.088
+      "boxToShoeGap": 0.088,
+      "note": "shoeLengthOfPedestalWidth uses pedestal.width (the body's width). shoeHeightOfFrame is G-0102's slide and is NOT asked of other shoes."
     },
     "gaps": {
       "heelToPedestalLeft": 0.085,

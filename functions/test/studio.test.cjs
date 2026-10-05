@@ -596,3 +596,40 @@ test("clothing is never sent to the footwear correction; with the switch off, fo
   const so = await studio.studioGenerate(s.db, { pid: PID }, "junid", s.deps);
   assert.equal((await itemOf(s.db)).generations[so.genId].corrected, undefined);
 });
+
+test("Gemini was given a box but none is found in its photo: the corrected photo is kept and the card SAYS it has no box", async () => {
+  const w = await shoeWorld();
+  const lib = await sharp({ create: { width: 300, height: 200, channels: 4, background: "#e85d04" } }).png().toBuffer();
+  w.deps.assets = { ...w.deps.assets, libraryBox: async () => ({ buffer: lib, kind: "stand-in" }) };
+  w.deps.correct = async () => ({ buffer: await jpeg(300, 400, "#00ff88"), version: "v", how: "against the plate", found: { shoe: {}, box: null }, placed: { shoe: { left: 0.2, top: 0.6, right: 0.77, bottom: 0.72 } } });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.corrected, true);
+  assert.match(gen.note, /^The box could not be found in Gemini's photo, so this photo has none\./);
+  assert.equal((await w.db.ref(`${core.GENLOG}/${out.code}/correction/boxMissing`).once()).val(), true);
+});
+
+test("the corrected photo cannot be stored: Gemini's own (already stored) is shown, and it is said — the paid photo is never lost", async () => {
+  const w = await shoeWorld();
+  w.deps.correct = async () => ({ buffer: await jpeg(300, 400, "#00ff88"), version: "v", how: "against the plate", found: { shoe: {}, box: null }, placed: { shoe: { left: 0.2, top: 0.6, right: 0.77, bottom: 0.72 } } });
+  const file = w.deps.bucket.file.bind(w.deps.bucket);
+  w.deps.bucket.file = (p) => (/gen_\d+\.jpg$/.test(p) ? { save: async () => { throw new Error("storage down"); } } : file(p));
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const it = await itemOf(w.db), gen = it.generations[out.genId];
+  assert.equal(it.status, "ready");
+  assert.match(gen.path, /-uncorrected\.jpg$/);
+  assert.equal(gen.corrected, false);
+  assert.equal(gen.uncorrected, undefined);
+  assert.match(gen.note, /^Not placed on your backdrop — the corrected photo could not be stored\./);
+});
+
+test("a footwear photo the finishing step could not resize is kept as Gemini made it — and the card says it was not placed", async () => {
+  const w = await shoeWorld();
+  const image = w.deps.image;
+  w.deps.image = async (...a) => ({ ...(await image(...a)), buffer: Buffer.from("not an image"), mime: "image/png" });
+  w.deps.correct = async () => { throw new Error("never reached"); };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.corrected, false);
+  assert.match(gen.note, /^Not placed on your backdrop — the finishing step failed\./);
+});

@@ -89,7 +89,7 @@ export function placementText(kind, spec) {
       lines.push(`IT SITS FORWARD: the sole stands at the FRONT of the pedestal's top surface, only ${pc(m.soleAbovePedestalFrontEdge)} of the frame behind its front edge (the front edge is at y=${pc(ped.frontEdgeY)}) — never set back toward the wall.`);
     }
     if (spec.box && spec.box.centreY !== undefined && m) {
-      lines.push(`THE BOX IS SMALL AND CENTRED ABOVE THE SHOE: its centre at x=${pc(spec.box.centreX)}, y=${pc(spec.box.centreY)} on the middle rail; no wider than ${pc(m.boxWidthOfFrame)} of the frame and no taller than ${pc(m.boxHeightOfFrame)}; at least ${pc(m.boxToShoeGap)} of the frame clear between the box and the top of the shoe; front panel square to the camera, scaled uniformly.`);
+      lines.push(`THE BOX IS CENTRED ABOVE THE SHOE, SMALLER THAN THE SHOE IS LONG: its centre at x=${pc(spec.box.centreX)}, y=${pc(spec.box.centreY)} on the middle rail; never wider than ${pc(m.boxWidthOfFrame)} of the frame and never taller than ${pc(m.boxHeightOfFrame)} (a box standing on end, as in the REFERENCE, then ends ${pc(m.boxToPedestalGap)} of the frame above the pedestal; a box lying flat is less tall); always clear of the shoe below it, never touching it; front panel square to the camera, scaled uniformly.`);
     } else if (spec.box) lines.push(`the box centred at x=${pc(spec.box.centreX)}${spec.box.centreMinusRailX !== undefined ? " on the middle rail" : ""}, its bottom edge at y=${pc(spec.box.bottom)}, front panel square to the camera, scaled uniformly.`);
     return lines.join(" ");
   }
@@ -119,7 +119,8 @@ export async function layoutGuideImage(kind, spec, plateBuf, genFrame = null) {
   const r = (b) => `<rect x="${b.left * W}" y="${b.top * H}" width="${(b.right - b.left) * W}" height="${(b.bottom - b.top) * H}" fill="none" stroke="#000" stroke-width="${sw}" stroke-dasharray="${sw * 4} ${sw * 2}"/>`;
   let s = "";
   if (kind === "footwear") {
-    if (spec.shoe) s += r(map({ left: spec.shoe.heelX, right: spec.shoe.toeX, top: spec.shoe.topY, bottom: spec.shoe.soleY }));
+    // The shoe's box is drawn for a typical shoe (guideTopY); the layout's own topY is G-0102's low slide.
+    if (spec.shoe) s += r(map({ left: spec.shoe.heelX, right: spec.shoe.toeX, top: spec.shoe.guideTopY ?? spec.shoe.topY, bottom: spec.shoe.soleY }));
     if (spec.box) s += r(map(spec.box));
   } else if (spec.garment) {
     s += r(map({ left: spec.garment.left, right: spec.garment.right, top: spec.garment.topY, bottom: spec.garment.hemY }));

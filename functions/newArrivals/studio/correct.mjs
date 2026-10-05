@@ -1,8 +1,10 @@
 // ── THE FOOTWEAR CORRECTION: one plate, one layout, every time ───────────────
 // Junid, 5 Oct: in the final footwear photo EVERYTHING except the shoe and its
-// box comes pixel for pixel from the ONE fixed footwear plate — pedestal,
-// fence, rails, lighting, crop. Gemini's pedestal and background are always
-// discarded. So after Gemini has made its photo:
+// box comes from the ONE fixed footwear plate — pedestal, fence, rails,
+// lighting, crop — the same pixels in every corrected photo. Gemini's pedestal
+// and background are discarded. (What is kept of Gemini's photo is the two
+// cut-outs: the shoe and the box, with whatever the cut includes at their
+// edges — see lift.mjs.) So after Gemini has made its photo:
 //   1. the shoe and the box are lifted out of it (lift.mjs — no model call);
 //   2. each is scaled UNIFORMLY to the measured layout (config/layout-spec.json,
 //      measured from G-0102) — never warped, never recoloured;
@@ -14,6 +16,7 @@ import { liftFromPlate, LIFT_METHOD } from "./lift.mjs";
 import { composeOnPlate, placeInBox, fitShoe } from "./place.mjs";
 
 export const CORRECTION_VERSION = "footwear-correction-2026-10-05.1";
+export const MIN_FIT = 0.5;
 const r3 = (x) => Math.round(x * 1000) / 1000;
 
 /**
@@ -36,10 +39,16 @@ export async function correctFootwear({ photoBuf, plate, spec, lift = liftFromPl
   }
   const fitted = fitShoe(shoeSpec, await size(lifted.shoe), canvas, withBox);
   const use = { ...spec, shoe: fitted.shoe };
+  // A shoe that only fits under the box at less than half the layout's length is not this layout's shoe
+  // (the cut-out is wrong, or the box is): Gemini's photo is kept.
+  if ((use.shoe.toeX - use.shoe.heelX) < MIN_FIT * (spec.shoe.toeX - spec.shoe.heelX)) return { problem: "the shoe is too tall to be placed under the box at the measured layout" };
   const composed = await composeOnPlate({ kind: "footwear", plate, spec: use, parts: { shoe: lifted.shoe, ...(lifted.box ? { box: lifted.box } : {}) }, packagingAt: "rail" });
   for (const r of [composed.placed.shoe, composed.placed.box].filter(Boolean)) {
     if (r.left < -0.002 || r.top < -0.002 || r.right > 1.002 || r.bottom > 1.002) return { problem: "the shoe does not fit the backdrop at the measured layout" };
   }
+  // The shoe never runs into the box.
+  const ps = composed.placed.shoe, pb = composed.placed.box;
+  if (pb && ps.top < pb.bottom && ps.left < pb.right && ps.right > pb.left) return { problem: "the shoe would overlap the box at the measured layout" };
   return {
     buffer: composed.buffer, placed: composed.placed, deviations: composed.deviations,
     found: { shoe: mapRect(lifted.found.shoe), box: lifted.found.box ? mapRect(lifted.found.box) : null },
@@ -63,7 +72,7 @@ export function layoutFrom(found, pedestal) {
     measured: {
       shoeLengthOfPedestalWidth: r3((s.right - s.left) / pw),
       shoeHeightOfFrame: r3(s.bottom - s.top),
-      soleBelowPedestalFrontEdge: r3(s.bottom - pedestal.frontEdgeY),
+      soleAbovePedestalFrontEdge: r3(pedestal.frontEdgeY - s.bottom),
       heelFromPedestalLeft: r3(s.left - pedestal.left),
       toeFromPedestalRight: r3(pedestal.right - s.right),
       marginLeft: r3(s.left), marginRight: r3(1 - s.right),

@@ -56,7 +56,7 @@ test("the prompts the baseline photos were made with (pinned fingerprints)", () 
   // Footwear: the baseline + the packaging layer, with the PLACEMENT measured from G-0102 said outright
   // (Junid's footwear-consistency brief of 5 Oct — baseline.lock.json footwearLayout). Until then the
   // fingerprint was 31ad98f1…, as the Mac mini sent it on 4 Oct; only the placement sentence differs.
-  assert.equal(sha(p("footwear", { packaging: true }).text), "74d6fbb2a717bfaf3455cfc32dc8deca4f3017bd972817a7a2dc08389b0b5f73");
+  assert.equal(sha(p("footwear", { packaging: true }).text), "b5e25b848b028aa3a0be2f5fe6a27b1127684cf74d1a91afd5c5178dea627fab");
   assert.equal(lock.footwearLayout.requestedBy, "Junid");
   // The cream knit vest's class (one garment) and the two-piece: the bare baseline.
   assert.equal(sha(p("single", { packaging: true }).text), "42bd6d5ec625f712fa96281fdb6c33e71dc7319dc5306203284da3584a6251aa");

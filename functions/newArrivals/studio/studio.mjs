@@ -176,6 +176,11 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
     measured = out;
     const stamp = deps.now();
+    // (A footwear photo the finishing step could not even resize is kept as Gemini made it — and the card says so.)
+    if (kind === "footwear" && generation.footwearCorrection && finishNote) {
+      correction = { applied: false, problem: "the finishing step failed" };
+      note = "Not placed on your backdrop — the finishing step failed. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.";
+    }
     // THE PLATE LOCK (footwear): everything but the shoe and its box comes from the ONE fixed plate. The shoe
     // and box are lifted out of Gemini's photo, scaled uniformly to the measured layout and placed on the
     // untouched plate; Gemini's pedestal and background are discarded. If they cannot be lifted, Gemini's
@@ -185,19 +190,33 @@ export async function generateOne({ item, product, genId, method = "full", deps,
       let fixed = null;
       try { fixed = await (deps.correct || correctFootwear)({ photoBuf: gen.buffer, plate, spec }); }
       catch (e) { fixed = { problem: `the correction step failed (${String(e.message || e).slice(0, 80)})` }; }
-      if (fixed.buffer) {
+      if (fixed?.buffer) {
         // Gemini's own photo is kept beside it, as a thumbnail on the card and on the record.
         try { const u = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}-uncorrected.jpg`, out, "image/jpeg")); uncorrected = { url: u.url, path: u.path || null }; }
-        catch { /* the corrected photo is still shown */ }
+        catch { /* the corrected photo is still shown; the record says the thumbnail is missing */ }
         out = fixed.buffer; measured = out;
         if (fixed.fittedSpec) placedSpec = fixed.fittedSpec;
-        correction = { applied: true, version: fixed.version, how: fixed.how, found: fixed.found, placed: fixed.placed, deviations: fixed.deviations || null, ...(fixed.fitted ? { fitted: fixed.fitted } : {}) };
+        correction = { applied: true, ...(uncorrected ? {} : { thumbnailMissing: true }), version: fixed.version, how: fixed.how, found: fixed.found, placed: fixed.placed, deviations: fixed.deviations || null, ...(fixed.fitted ? { fitted: fixed.fitted } : {}) };
+        // Gemini was given a box but none could be found in its photo: the corrected photo has no box — said, never silent.
+        if (boxMode !== "none" && !fixed.placed?.box) {
+          correction.boxMissing = true;
+          note = "The box could not be found in Gemini's photo, so this photo has none. Gemini's own photo is the small one below; tap Regenerate to try again.";
+        }
       } else {
-        correction = { applied: false, problem: fixed.problem };
-        note = `Not placed on your backdrop — ${fixed.problem}. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
+        const why = fixed?.problem || "the correction gave no photo";
+        correction = { applied: false, problem: why };
+        note = `Not placed on your backdrop — ${why}. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
       }
     }
-    generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime));
+    try {
+      generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime));
+    } catch (e) {
+      // The corrected photo could not be stored, but Gemini's own already was: that one is shown, and it is said.
+      if (!uncorrected) throw e;
+      generated = uncorrected; uncorrected = null; measured = gen.buffer; placedSpec = null;
+      correction = { applied: false, problem: "the corrected photo could not be stored" };
+      note = "Not placed on your backdrop — the corrected photo could not be stored. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.";
+    }
   } catch (e) {
     // The caller still counts what Gemini charged for it.
     e.paid = true;
@@ -208,7 +227,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   // looked for where the layout puts it. Never a reason to lose the photo.
   let measurements = null;
   try {
-    measurements = await objectiveMeasurements({ kind, out: measured, outBox: expectedBox(kind, placedSpec || effSpec), exclude: [], plate: plate.buffer, src: orig, srcBox: SOURCE_BOX, checker: null });
+    measurements = await objectiveMeasurements({ kind, out: measured, outBox: expectedBox(kind, placedSpec || effSpec, correction?.placed?.shoe || null), exclude: [], plate: plate.buffer, src: orig, srcBox: SOURCE_BOX, checker: null });
   } catch { /* no numbers for this one */ }
   // The final image is never also listed as a draft.
   const finalData = gen.buffer.toString("base64");
@@ -235,8 +254,11 @@ export async function generateOne({ item, product, genId, method = "full", deps,
 }
 
 // Where the product is expected (fractions of the canvas): the layout's own box.
-export function expectedBox(kind, spec) {
-  if (kind === "footwear" && spec?.shoe) return { left: spec.shoe.heelX, right: spec.shoe.toeX, top: spec.shoe.topY, bottom: spec.shoe.soleY };
+export function expectedBox(kind, spec, placedShoe = null) {
+  // A corrected shoe is measured exactly where code put it; otherwise where a typical shoe would stand
+  // (guideTopY — the layout's own topY is G-0102's low slide).
+  if (kind === "footwear" && placedShoe) return { left: placedShoe.left, right: placedShoe.right, top: placedShoe.top, bottom: placedShoe.bottom };
+  if (kind === "footwear" && spec?.shoe) return { left: spec.shoe.heelX, right: spec.shoe.toeX, top: spec.shoe.guideTopY ?? spec.shoe.topY, bottom: spec.shoe.soleY };
   if (spec?.garment) return { left: spec.garment.left, right: spec.garment.right, top: spec.garment.topY, bottom: spec.garment.hemY };
   return null;
 }

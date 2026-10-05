@@ -2,9 +2,11 @@
 // Gemini is given the fixed footwear plate and told to use it exactly, but it
 // repaints it: the pedestal picks up wear, marks and a slightly different shape
 // from one generation to the next (Junid, 5 Oct: G-0102's pedestal against
-// G-0004's). So NOTHING of Gemini's background is kept. This finds what Gemini
-// ADDED to the plate — the shoe and the box — and lifts only those; place.mjs
-// then puts them on the untouched plate.
+// G-0004's). So Gemini's background is not kept. This finds what Gemini ADDED
+// to the plate — the shoe and the box — and lifts only those; place.mjs then
+// puts them on the untouched plate. (A cut-out is a filled outline: what shows
+// THROUGH a shoe — the wall through a strap's opening — and a pixel or two at
+// its edge come along with it, resampled once to the layout's size.)
 //
 // HOW, with no model call: every pixel of Gemini's photo is compared with the
 // plate around the same spot (a few pixels of tolerance, because the repaint
@@ -264,6 +266,7 @@ export function findProducts(ev, W, H, line) {
   // outside in, and stops at anything that is not soft shadow (the dark contact line, the shoe itself).
   m = stripFromOutside(m, ev.shadow, W, H);
   m = dilate(erode(m, W, H, thin), W, H, thin);
+  // (ev.darkPlain: the plate's black rails, or — from the photo alone — the photo's own.)
   // A gap along a row or column is bridged only across a black rail (a dark shoe in front of it leaves no evidence), and only as wide as a rail.
   m = fillHoles(bridgePlain(m, ev.darkPlain, W, H, Math.round(0.06 * W)), W, H);
   m = dilate(erode(m, W, H, thin), W, H, thin);
@@ -289,6 +292,9 @@ export function findProducts(ev, W, H, line) {
   if (shoe.rect.left <= 1 || shoe.rect.left + shoe.rect.width >= W - 1) return { problem: "the shoe runs off the side of the photo" };
   if (shoe.rect.width < 0.2 * W) return { problem: "the shoe found is too small to be the whole shoe" };
   if (shoe.rect.height > 0.6 * H) return { problem: "the shoe could not be told apart from the box or the backdrop" };
+  // A shoe side-on is longer than it is tall (a boot nearly square). Something clearly taller than long is a
+  // shoe joined to the box above it, or to the backdrop: not cut.
+  if (shoe.rect.width < 0.9 * shoe.rect.height) return { problem: "the shoe could not be told apart from the box above it" };
   let box = boxC ? pick(boxC) : null;
   if (box) {
     // A box is a rectangle standing square to the camera: its own outline, row by row, is filled across
@@ -390,7 +396,8 @@ export function colouredShare(photo, W, piece) {
 
 /**
  * The pedestal as it stands in a photo, by its black front panel and the white body around it.
- * → { panelTop, left, right } in pixels, or null.
+ * left / right are the sides of its BODY, read just above the panel (its widest part, a little wider than the
+ * top surface's flat part). → { panelTop, left, right, backRim, frontEdge } in pixels, or null.
  */
 export function pedestalIn(photo, W, H) {
   const line = soleLine(photo, W, H);
@@ -399,7 +406,20 @@ export function pedestalIn(photo, W, H) {
   let left = line.panelLeft, right = line.panelRight;
   while (left > 1 && lum(left - 1) >= line.white - 45) left -= 1;
   while (right < W - 2 && lum(right + 1) >= line.white - 45) right += 1;
-  return { panelTop: line.panelTop, left, right, panelLeft: line.panelLeft, panelRight: line.panelRight };
+  // The top surface: its back rim (where the walk up from the panel meets the wall) and its front edge
+  // (the strongest brightness step between the rim and the panel, across the panel's width).
+  const rims = [];
+  for (let x = line.panelLeft + 20; x < line.panelRight - 20; x++) rims.push(line[x]);
+  rims.sort((a, b) => a - b);
+  const backRim = rims.length ? rims[rims.length >> 1] : null;
+  const at = (x, yy) => 0.299 * photo[3 * (yy * W + x)] + 0.587 * photo[3 * (yy * W + x) + 1] + 0.114 * photo[3 * (yy * W + x) + 2];
+  let best = 0, frontEdge = null;
+  for (let yy = (backRim ?? 0) + 12; backRim !== null && yy < line.panelTop - 10; yy++) {
+    let g = 0;
+    for (let x = line.panelLeft + 20; x < line.panelRight - 20; x += 2) g += at(x, yy - 3) - at(x, yy + 3);
+    if (Math.abs(g) > best) { best = Math.abs(g); frontEdge = yy; }
+  }
+  return { panelTop: line.panelTop, left, right, panelLeft: line.panelLeft, panelRight: line.panelRight, backRim, frontEdge };
 }
 
 async function cutPng(hi, hiW, hiH, piece, W, H) {
@@ -424,7 +444,8 @@ const fracRect = (r, W, H) => ({ left: r.left / W, top: r.top / H, right: (r.lef
  */
 export async function liftFromPlate(photoBuf, plate, { allowColourless = false } = {}) {
   const W = plate.width, H = plate.height;
-  const at = (buf, w, h, blur) => { let s = sharp(buf).resize(w, h, { fit: "cover", position: "centre" }).removeAlpha(); if (blur) s = s.blur(blur); return s.raw().toBuffer(); };
+  const at = (buf, w, h, blur) => { let s = sharp(buf).flatten({ background: "#ffffff" }).toColourspace("srgb").resize(w, h, { fit: "cover", position: "centre" }).removeAlpha(); if (blur) s = s.blur(blur); return s.raw().toBuffer(); };
+  // (flatten: a photo with transparency is read on white, never with undefined colour under it)
   const [photo, plateRaw] = await Promise.all([at(photoBuf, W, H, 1.2), at(plate.buffer, W, H, 1.2)]);
   const line = soleLine(photo, W, H);
   if (!line) return { problem: "Gemini changed the pedestal — its black front panel could not be found" };
