@@ -69,7 +69,8 @@ import {
   EFT_POOL_PATH, eftMessageRoute, authenticationVerdict, htmlToText,
   eftMessageKey, createOnlyStep, eftPoolRecord,
   paymentFingerprint, fingerprintClaimStep, EFT_FINGERPRINT_PATH, applyFingerprintHold, HELD_OUTCOMES,
-  redactAccountDigits, domainOfAddress, parseAllowedAccountTails, accountVerdict,
+  redactAccountDigits, domainOfAddress, parseAllowedAccountTails, parseAllowedAccounts,
+  destinationVerdict, immediacyVerdict,
   looksPaymentShaped, looksLikeStrangerPayment, unknownBankRecord,
 } from "./eftCore.mjs";
 import { selectReader, noReaderReason } from "./eftBanks.mjs";
@@ -223,6 +224,8 @@ function config() {
     // value in a log — at most the count. An empty list refuses every payment
     // as refused-account, deliberately: fail-closed until the owner fills it.
     eftAccountTails: parseAllowedAccountTails(env.EFT_ALLOWED_ACCOUNTS),
+    // FIX 7a: the FULL numbers, so every digit a document prints is checked.
+    eftAccounts: parseAllowedAccounts(env.EFT_ALLOWED_ACCOUNTS),
     eftAccountsConfigured: !!String(env.EFT_ALLOWED_ACCOUNTS ?? "").trim(),
     dryRun: process.argv.includes("--dry-run"),
   };
@@ -459,7 +462,7 @@ async function run() {
   // The EFT reader's own tallies — separable on purpose: a refused slip means a
   // terminal is not reconciling; a refused-auth notification means somebody
   // tried to forge a payment. Different alarms for different people.
-  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftHeld = 0, eftErrors = 0;
+  let eftRecorded = 0, eftRefusedAuth = 0, eftRefusedParse = 0, eftRefusedAccount = 0, eftRefusedTiming = 0, eftHeld = 0, eftErrors = 0;
   let scannedSoFar = 0;
   let windowCount = 0;
   try {
@@ -555,6 +558,7 @@ async function run() {
             eftRefusedAuth += result.eftRefusedAuth || 0;
             eftRefusedParse += result.eftRefusedParse || 0;
             eftRefusedAccount += result.eftRefusedAccount || 0;
+            eftRefusedTiming += result.eftRefusedTiming || 0;
             eftHeld += result.eftHeld || 0;
             eftErrors += result.eftErrors || 0;
           } catch (err) {
@@ -581,7 +585,7 @@ async function run() {
       lastRunAt: serverNowMs(), scanned, window: windowCount, processed, recorded, refused, unrelated,
       // The EFT reader beats on the same heart: counts only, never a figure —
       // this node is readable by every card_recon holder.
-      eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount, eftHeld,
+      eftRecorded, eftRefusedAuth, eftRefusedParse, eftRefusedAccount, eftRefusedTiming, eftHeld,
       // Counted where it happens: noteStrangerPayment hands nothing back (it
       // must not consume the message), so the tally is a run counter rather
       // than a value threaded through six return points.
@@ -601,8 +605,8 @@ async function run() {
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);
   if (refused) console.log("  refused slips are in the Card recon tab under 'Emailed slips' — a terminal is not reconciling");
-  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftHeld || unknownBankThisRun) {
-    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftHeld} HELD (resent copy or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
+  if (eftRecorded || eftRefusedAuth || eftRefusedParse || eftRefusedAccount || eftRefusedTiming || eftHeld || unknownBankThisRun) {
+    console.log(`· EFT: ${eftRecorded} payment(s) recorded, ${eftRefusedAuth} FAILED AUTHENTICATION, ${eftRefusedParse} unreadable, ${eftRefusedAccount} to a DIFFERENT ACCOUNT, ${eftRefusedTiming} NOT IMMEDIATE, ${eftHeld} HELD (resent copy or no bank transaction id), ${unknownBankThisRun} from a bank not set up — see /eft_pool`);
   }
   return 0;
 }
@@ -830,7 +834,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     return null;
   }
 
-  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftHeld: 0 };
+  const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0, eftRecorded: 0, eftRefusedAuth: 0, eftRefusedParse: 0, eftRefusedAccount: 0, eftRefusedTiming: 0, eftHeld: 0 };
   const verdict = authenticationVerdict({ headerLines: parsed.headerLines, fromAddress });
   // The auth verdict is part of the key so a forgery carrying a guessed genuine
   // Message-ID cannot occupy the key the genuine notification will need.
@@ -1006,13 +1010,22 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
       }
       const groups = groupEftPayments(parsedDocs);
       for (const group of groups) {
+        // FIX 7a — paid into the shop's own FNB account: bank AND every
+        // printed digit. FIX 7b — an immediate payment, not a scheduled or
+        // normal-clearing one. Both refuse rather than guess.
         const account = group.parse.ok
-          ? accountVerdict({ accountMask: group.parse.accountMask, allowedTails: cfg.eftAccountTails, configured: cfg.eftAccountsConfigured })
+          ? destinationVerdict({
+            accountMask: group.parse.accountMask, destBankName: group.parse.destBankName,
+            allowedAccounts: cfg.eftAccounts, configured: cfg.eftAccountsConfigured,
+          })
+          : null;
+        const timing = group.parse.ok
+          ? immediacyVerdict({ parsed: group.parse, reader: group.readerId, receivedAt: message.receivedAt })
           : null;
         outcomes.push({
           poolKey: eftPaymentKey(key, group, groups.length),
           record: eftPoolRecord({
-            message, verdict, parsed: group.parse, account,
+            message, verdict, parsed: group.parse, account, timing,
             reader: group.readerId, rawText: group.rawText, at,
           }),
         });
@@ -1110,6 +1123,7 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
     eftRefusedAuth: count("refused-auth"),
     eftRefusedParse: count("refused-parse"),
     eftRefusedAccount: count("refused-account"),
+    eftRefusedTiming: count("refused-not-immediate"),
     eftHeld: written.filter((r) => HELD_OUTCOMES.includes(r.outcome)).length,
   };
 }
