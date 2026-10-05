@@ -23,6 +23,13 @@
 // its till, in one action. A store never changes in place (see
 // lib/card-terminal-admin.cjs for why).
 //
+// A MACHINE CARRIED TO ANOTHER TILL — this shop's or another's — is "Moved":
+// the till it went to and the time it moved (SAST). That writes a placement
+// (lib/card-terminal-placements.cjs); the owner's Card Recon reconciles every
+// transaction on the till its machine stood on at that moment, and a batch
+// that spans the move is split, or combined across the tills when the slip is
+// only a summary. 5 Oct 2026: PE Till 1 ↔ Trophy Till 1, entered as two moves.
+//
 // No window.confirm — a browser dialog blocks the page. Retire asks inline.
 
 import React, { useEffect, useMemo, useState } from "react";
@@ -30,11 +37,73 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT } from "./cardReconStyles";
 import { captureMode, isRetiredTerminal } from "./terminalRegistry";
+import { serverNowMs } from "../../utils/serverTime";
 
 const adminFn = httpsCallable(functions, "cardTerminalAdmin", { timeout: 60000 });
 
 export const TID_PATTERN = /^[A-Z0-9]{4,16}$/;
 const CAPTURE_LABEL = { email: "Email", photo: "Photo", typed: "Typed", both: "Both" };
+
+// SAST is UTC+2 all year. The time typed is SAST whatever the phone is set to.
+const SAST_MS = 2 * 60 * 60 * 1000;
+export const sastInputValue = (ms) => new Date(ms + SAST_MS).toISOString().slice(0, 16);
+export const sastInputMs = (v) => (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2})?$/.test(v || "") ? Date.parse(`${v.slice(0, 16)}:00+02:00`) : NaN);
+const sastWhen = (ms) => new Date(ms + SAST_MS).toISOString().slice(0, 16).replace("T", " ");
+
+/** A row's placements, oldest first (mirror of functions/lib/card-terminal-placements.cjs). */
+function placementsOf(row) {
+  return Object.values(row?.placements || {})
+    .filter((p) => p && p.storeId && p.tillId && Number.isFinite(Number(p.effectiveFrom)))
+    .sort((a, b) => Number(a.effectiveFrom) - Number(b.effectiveFrom));
+}
+const placementEntries = (row) => {
+  const keyOf = new Map(Object.entries(row?.placements || {}).map(([k, p]) => [p, k]));
+  return placementsOf(row).map((p) => ({ ...p, key: keyOf.get(p) }));
+}
+
+/**
+ * MOVED — the machine was carried to another till. Store and till are picked
+ * (any store: the filing store stays as it is), the time is when it moved.
+ */
+function MoveForm({ base, stores, busy, onSubmit, onCancel }) {
+  const [storeId, setStoreId] = useState("");
+  const [tillId, setTillId] = useState("");
+  const [label, setLabel] = useState("");
+  const [labelTyped, setLabelTyped] = useState(false);
+  const [when, setWhen] = useState(() => sastInputValue(serverNowMs()));
+  const store = stores.find((s) => s.storeId === storeId);
+  const tills = store ? store.tills : [];
+  const atMs = sastInputMs(when);
+  const ready = storeId && tills.some((t) => t.tillId === tillId) && label.trim() && Number.isFinite(atMs);
+  const pickTill = (id) => {
+    setTillId(id);
+    const name = tills.find((t) => t.tillId === id)?.name;
+    // Suggested from the till picked, until the owner types their own.
+    if (!labelTyped) setLabel(name ? `${storeId === "pe" ? "Marathon" : store.label} ${name}`.slice(0, 40) : "");
+  };
+  return (
+    <form style={U.form} onSubmit={(e) => { e.preventDefault(); if (ready && !busy) onSubmit({ tid: base.tid, storeId, tillId, label: label.trim(), effectiveFrom: atMs }); }}>
+      <div style={{ ...U.name, fontSize: 15 }}>{`Moved ${base.label || base.tid} (${base.tid})`}</div>
+      <div style={U.note}>The machine itself went to another till. Its batches stay filed where they are; card recon puts each transaction on the till it was on at that moment.</div>
+      <label style={U.label} htmlFor="tm-store">Now in store</label>
+      <select id="tm-store" style={U.input} value={storeId} onChange={(e) => { setStoreId(e.target.value); setTillId(""); if (!labelTyped) setLabel(""); }}>
+        <option value="">Pick the store…</option>
+        {stores.map((s) => <option key={s.storeId} value={s.storeId}>{s.label}</option>)}
+      </select>
+      <label style={U.label} htmlFor="tm-till">Now on till</label>
+      <select id="tm-till" style={U.input} value={tillId} disabled={!store} onChange={(e) => pickTill(e.target.value)}>
+        <option value="">{store ? "Pick the till…" : "Pick the store first"}</option>
+        {tills.map((t) => <option key={t.tillId} value={t.tillId}>{t.name}</option>)}
+      </select>
+      <label style={U.label} htmlFor="tm-when">Moved at (SAST)</label>
+      <input id="tm-when" type="datetime-local" style={U.input} value={when} onChange={(e) => setWhen(e.target.value)} />
+      <label style={U.label} htmlFor="tm-label">Label from then</label>
+      <input id="tm-label" style={U.input} value={label} maxLength={40} placeholder="e.g. Trophy Till 1" onChange={(e) => { setLabel(e.target.value); setLabelTyped(true); }} />
+      <button type="submit" style={{ ...U.primary, opacity: ready && !busy ? 1 : 0.45 }} disabled={!ready || busy}>{busy ? "Saving…" : "Save the move"}</button>
+      <button type="button" style={{ ...U.chip, width: "100%", marginTop: 8 }} onClick={onCancel} disabled={busy}>Cancel</button>
+    </form>
+  );
+}
 
 const U = {
   wrap: { marginTop: 22 },
@@ -242,7 +311,12 @@ export default function TerminalSettings({ terminals, onClose }) {
       {stores && !form && (
         <button style={U.primary} onClick={() => { setMsg(null); setForm({ mode: "add" }); }}>Add a terminal</button>
       )}
-      {stores && form && (
+      {stores && form && form.mode === "move" && base && (
+        <MoveForm key={`move:${form.tid}`} base={base} stores={stores} busy={busy} onCancel={() => setForm(null)}
+          onSubmit={(t) => call({ action: "move", terminal: t },
+            `${t.tid} is on ${storeName(stores, t.storeId)} ${tillName(stores, t.storeId, t.tillId)} from ${sastWhen(t.effectiveFrom)} SAST.`)} />
+      )}
+      {stores && form && form.mode !== "move" && (
         <TerminalForm
           key={`${form.mode}:${form.tid || ""}`}
           mode={form.mode} base={base} stores={stores} busy={busy}
@@ -267,9 +341,17 @@ export default function TerminalSettings({ terminals, onClose }) {
               {r.mid ? ` · MID ${r.mid}` : ""}
               {retired ? ` · retired${r.replacedBy ? `, replaced by ${r.replacedBy}` : ""}` : ""}
             </div>
+            {placementsOf(r).length > 1 && (
+              <div style={U.meta} data-testid={`ts-placements-${r.tid}`}>
+                {placementEntries(r).slice(1).map((p) => (
+                  <div key={p.key}>Moved {sastWhen(Number(p.effectiveFrom))} SAST → {storeName(stores, p.storeId)} · {tillName(stores, p.storeId, p.tillId)}</div>
+                ))}
+              </div>
+            )}
             {!form && (
               <div style={U.actions}>
                 {!retired && <button style={U.chip} disabled={busy} onClick={() => { setMsg(null); setForm({ mode: "edit", tid: r.tid }); }}>Edit</button>}
+                {!retired && <button style={U.chip} disabled={busy} onClick={() => { setMsg(null); setForm({ mode: "move", tid: r.tid }); }}>Moved</button>}
                 {!retired && <button style={U.chip} disabled={busy} onClick={() => { setMsg(null); setForm({ mode: "replace", tid: r.tid }); }}>Replace TID</button>}
                 {!retired && confirmRetire !== r.tid && (
                   <button style={{ ...U.chip, ...U.danger }} disabled={busy} onClick={() => setConfirmRetire(r.tid)}>Retire</button>

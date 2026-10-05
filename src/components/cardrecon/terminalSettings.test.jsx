@@ -121,6 +121,21 @@ describe("the settings sheet", () => {
       tid: "0000HP1X", storeId: "pe", tillId: "till-3", label: "Marathon Till 2", mid: "000000004977890", capture: "both" } });
   });
 
+  it("Moved: any store and till, the time typed in SAST, the label suggested — exactly the move payload", async () => {
+    const tree = await openSettings();
+    await act(async () => { tree.root.findAll((n) => n.type === "button" && n.props.children === "Moved")[0].props.onClick(); });
+    // Defaults to now (the server clock, in SAST).
+    expect(tree.root.find((n) => n.props.id === "tm-when").props.value).toBe("2026-09-21T18:00");
+    await act(async () => { tree.root.find((n) => n.props.id === "tm-store").props.onChange({ target: { value: "trophy" } }); });
+    await act(async () => { tree.root.find((n) => n.props.id === "tm-till").props.onChange({ target: { value: "till-1" } }); });
+    expect(tree.root.find((n) => n.props.id === "tm-label").props.value).toBe("Trophy Till 1");
+    await act(async () => { tree.root.find((n) => n.props.id === "tm-when").props.onChange({ target: { value: "2026-10-05T12:46" } }); });
+    await act(async () => { tree.root.find((n) => n.type === "form").props.onSubmit({ preventDefault() {} }); });
+    await flush();
+    expect(fake.calls.at(-1).payload).toEqual({ action: "move", terminal: {
+      tid: "0000HP1X", storeId: "trophy", tillId: "till-1", label: "Trophy Till 1", effectiveFrom: Date.parse("2026-10-05T10:46:00Z") } });
+  });
+
   it("Replace TID: one action, old TID named, the new TID typed, store and till carried", async () => {
     const tree = await openSettings();
     await act(async () => { tree.root.findAll((n) => n.type === "button" && n.props.children === "Replace TID")[0].props.onClick(); });

@@ -1,5 +1,5 @@
 // ─── cardTerminalAdmin — THE TERMINAL SETTINGS SHEET'S ONLY WRITER ──────────
-// Owner-only. Adds, edits, retires, reinstates and replaces card terminals in
+// Owner-only. Adds, edits, moves, retires, reinstates and replaces card terminals in
 // /config/cardTerminals, through the Admin SDK — the client never writes the
 // registry, so there is no client rule to get wrong and nothing to paste.
 //
@@ -27,7 +27,7 @@ const { randomUUID } = require("node:crypto");
 const admin = require("firebase-admin");
 const { CARD_TERMINALS_PATH } = require("../lib/card-recon.cjs");
 const {
-  planAdd, planEdit, planRetire, planReinstate, planReplace, readTypedTid,
+  planAdd, planEdit, planMove, planRetire, planReinstate, planReplace, readTypedTid,
 } = require("../lib/card-terminal-admin.cjs");
 const { posStores, POS_STORES } = require("../lib/pos-tills.cjs");
 
@@ -109,12 +109,17 @@ async function handle(db, request) {
   const stores = action === "retire" || action === "reinstate" ? [] : await readStores(db);
   const input = data.terminal || {};
 
-  if (action === "add" || action === "edit" || action === "retire" || action === "reinstate") {
+  // The server's own clock, for the one decision that compares times (a
+  // move's effective-from). Never the phone's.
+  const nowMs = Date.now();
+
+  if (action === "add" || action === "edit" || action === "move" || action === "retire" || action === "reinstate") {
     const tid = readTypedTid(input.tid);
     if (!tid) return { ok: false, reason: "A TID is 4 to 16 letters and digits, exactly as printed after TID: on the slip." };
     const plan = {
       add: (cur) => planAdd({ ...input, tid }, cur, { stores, now }),
-      edit: (cur) => planEdit({ ...input, tid }, cur, { stores, now }),
+      edit: (cur) => planEdit({ ...input, tid }, cur, { stores, now, nowMs }),
+      move: (cur) => planMove({ ...input, tid }, cur, { stores, now, nowMs, by: request.auth?.uid }),
       retire: (cur) => planRetire({ tid }, cur, { now }),
       reinstate: (cur) => planReinstate({ tid }, cur),
     }[action];
