@@ -32,6 +32,12 @@
 //     lib/card-terminals.cjs → tillMoveWarning reads it to flag the one batch
 //     whose window straddles the move.
 //
+//   • A MACHINE THAT PHYSICALLY MOVES — to another till, in this shop or
+//     another — is "move" (planMove): a PLACEMENT with the time it moved
+//     (lib/card-terminal-placements.cjs). The filing store never changes; the
+//     owner's report reconciles each transaction on the till the machine
+//     stood on at that moment. 5 Oct 2026: PE Till 1 ↔ Trophy Till 1.
+//
 // PURE: no firebase-admin, no clock. `now` is whatever the caller stamps with
 // (the callable passes ServerValue.TIMESTAMP). Tested in
 // functions/test/card-terminal-admin.test.cjs.
@@ -39,6 +45,7 @@
 "use strict";
 
 const { isRetiredTerminal } = require("./card-terminals.cjs");
+const { placementKey, placementAt, terminalPlacements, tillAt, seedPlacement } = require("./card-terminal-placements.cjs");
 
 /** How a terminal's report reaches us. Absent on a row = "both". */
 // "typed" joined these on 1 Oct 2026 for Trophy Till 2 — a machine that cannot
@@ -133,7 +140,7 @@ function planAdd(input, current, { stores, now }) {
  * EDIT a terminal in place: label, till, MID, capture. Never the TID, never
  * the store (see the header). Unknown fields on the row are kept.
  */
-function planEdit(input, current, { stores, now }) {
+function planEdit(input, current, { stores, now, nowMs }) {
   const tid = readTypedTid(input && input.tid);
   if (!tid || !current) return { ok: false, reason: `${tid || "That TID"} is not registered.` };
   if (isRetiredTerminal(current)) return { ok: false, reason: `${current.label || tid} is retired. Reinstate it before editing it.` };
@@ -148,7 +155,15 @@ function planEdit(input, current, { stores, now }) {
   const row = { ...current, label: c.label, tillId: c.tillId, capture: c.capture };
   if (c.mid) row.mid = c.mid; else delete row.mid;
   // THE ONE EDIT THAT CAN MAKE A FIGURE WRONG — see tillMoveWarning.
-  if (current.tillId && current.tillId !== c.tillId) row.tillChangedAt = now;
+  if (current.tillId && current.tillId !== c.tillId) {
+    row.tillChangedAt = now;
+    // A row that keeps a placement history keeps it true: the till it moved
+    // to is where it stands from now on. (`nowMs` is the callable's clock.)
+    if (terminalPlacements(current).length && Number.isFinite(nowMs)) {
+      row.placements = { ...current.placements,
+        [placementKey(nowMs)]: { storeId: current.storeId, tillId: c.tillId, effectiveFrom: nowMs, label: c.label, setAt: now } };
+    }
+  }
   // `capture` is compared by its MEANING: a row written before the field
   // existed has none, which is "both" — so saving "both" over it is no change
   // and must not write. (Found live on 21 Sept 2026: a no-op save of Pine
@@ -220,7 +235,69 @@ function planReplace(input, oldCurrent, newCurrent, { stores, now }) {
   };
 }
 
+// How far back a move may be dated. A move is entered the day it happens; a
+// month covers a late entry without letting a typo rewrite a season.
+const MOVE_BACKDATE_MS = 31 * 24 * 60 * 60 * 1000;
+// A move dated a little ahead of the server clock is a phone clock, not a plan.
+const MOVE_AHEAD_MS = 10 * 60 * 1000;
+
+/**
+ * MOVE: the machine now stands on another till — in this store or another —
+ * from `effectiveFrom` (ms). Writes a placement; the filing store and the TID
+ * never change. The first move of a row also writes down where it stood
+ * before (seedPlacement), so the history starts at a known till.
+ *
+ * The row's label follows the till it stands on NOW (it is the name on the
+ * capture card); within the filing store its tillId follows too, stamping
+ * tillChangedAt exactly as an edit does. Across stores tillId stays the
+ * filing till — the batch records it stamps are re-placed by the reader.
+ *
+ * @param input  { tid, storeId, tillId, label, effectiveFrom, note? }
+ * @param ctx    { stores, now (server stamp), nowMs (server clock, ms), by? }
+ */
+function planMove(input, current, { stores, now, nowMs, by }) {
+  const tid = readTypedTid(input && input.tid);
+  if (!tid || !current) return { ok: false, reason: `${tid || "That TID"} is not registered.` };
+  if (isRetiredTerminal(current)) return { ok: false, reason: `${current.label || tid} is retired. Reinstate it before moving it.` };
+  const label = readLabel(input.label);
+  if (!label.ok) return label;
+  const placed = checkPlacement(stores, input.storeId, input.tillId);
+  if (!placed.ok) return placed;
+  const at = Number(input.effectiveFrom);
+  if (!Number.isInteger(at) || at <= 0) return { ok: false, reason: "Say when the machine moved." };
+  if (!Number.isFinite(nowMs)) return { ok: false, reason: "The server clock could not be read — nothing was written." };
+  if (at > nowMs + MOVE_AHEAD_MS) return { ok: false, reason: "That time is in the future. Enter a move once the machine has moved." };
+  if (at < nowMs - MOVE_BACKDATE_MS) return { ok: false, reason: "That is more than a month ago. A move that old needs a Claude Code session, not the settings sheet." };
+  const arrived = Number(current.activeFrom);
+  if (Number.isFinite(arrived) && at < arrived) return { ok: false, reason: `${tid} only arrived in the estate after that time.` };
+  const before = tillAt(current, at);
+  if (before.storeId === input.storeId && before.tillId === input.tillId) {
+    return { ok: false, reason: `${tid} was already on that till at that time. Nothing changed.` };
+  }
+  const key = placementKey(at);
+  if (current.placements && current.placements[key]) {
+    return { ok: false, reason: `${tid} already has a move at exactly that time. Pick another minute.` };
+  }
+  const placements = { ...(current.placements || {}) };
+  if (!terminalPlacements(current).length) placements[placementKey(seedPlacement(current).effectiveFrom)] = { ...seedPlacement(current), setAt: now };
+  const note = typeof input.note === "string" ? input.note.replace(/\s+/g, " ").trim().slice(0, 200) : "";
+  placements[key] = {
+    storeId: input.storeId, tillId: input.tillId, effectiveFrom: at, label: label.label, setAt: now,
+    ...(by ? { setBy: by } : {}), ...(note ? { note } : {}),
+  };
+  const row = { ...current, placements };
+  // What the row says NOW follows the placement in force now.
+  const here = placementAt(row, nowMs) || { storeId: current.storeId, tillId: current.tillId, label: current.label };
+  if (here.label) row.label = here.label;
+  if (here.storeId === current.storeId && here.tillId !== current.tillId) {
+    row.tillId = here.tillId;
+    row.tillChangedAt = here.effectiveFrom;
+  }
+  return { ok: true, tid, row, from: before, to: { storeId: input.storeId, tillId: input.tillId } };
+}
+
 module.exports = {
   CAPTURE_MODES, readTypedTid, readMid, readLabel, readCapture, checkPlacement,
-  planAdd, planEdit, planRetire, planReinstate, planReplace,
+  planAdd, planEdit, planRetire, planReinstate, planReplace, planMove,
+  MOVE_BACKDATE_MS, MOVE_AHEAD_MS,
 };

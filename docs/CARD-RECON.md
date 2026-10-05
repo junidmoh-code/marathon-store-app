@@ -101,6 +101,44 @@ variance, on all three paths (photo extract, PDF extract, submit — the last
 recomputed against the registry as it stands at the moment of record). It
 expires by itself: the next batch opens after the stamp.
 
+**A machine carried to another till is a PLACEMENT, with the time it moved**
+(Junid, 17 Sep: "configuration with effective-from dates, not hardcoded";
+built 5 Oct 2026 for the PE Till 1 ↔ Trophy Till 1 swap at 12:46 SAST).
+
+```
+/config/cardTerminals/{TID}/placements/at-{effectiveFrom}
+  → { storeId, tillId, effectiveFrom, label, setAt, setBy?, note? }
+```
+
+The placement whose `effectiveFrom` is the latest one not after a moment is
+where the machine stood then. The row's own `storeId` stays the **filing key**
+— batches keep landing in `/card_batches/{storeId}/{tid}` wherever the machine
+goes, so nothing is stranded and nothing migrates. The owner's Card Recon
+(marathon-pos-app `src/reports/cardrecon/placements.js` + `dayRows.placeSegments`)
+reconciles **each transaction on the till its machine stood on at that
+transaction's time**: a batch that spans a move is split by its own line
+times, and a summary-only batch that spans one is reconciled together with the
+other half of the swap, as one row labelled *terminal swapped mid-batch,
+combined*. Before a terminal's first placement, readers use the till each batch
+record stamped at capture — history reads as it always did.
+
+**Entering a move — no code:** Card machines → ⚙ settings → the terminal →
+**Moved** → store, till, *Moved at (SAST)*, label → Save the move. That is the
+`cardTerminalAdmin` callable's `move` action (`planMove` in
+`lib/card-terminal-admin.cjs`); a swap is two moves at the same minute. The
+first move of a row also writes where it stood before (`seedPlacement`). The
+capture card's label follows the till the machine stands on now. The batch
+record's own `expected`/`varianceCents` are still computed against the row's
+registry till at capture and are NOT what the owner reads — the POS report is.
+
+**Live since 5 Oct 2026** (`scripts/cardrecon/apply-terminal-placements-20261005.mjs`):
+all six terminals seeded with their layout since their last recorded move, and
+
+| TID | until 12:46 SAST 5 Oct | from 12:46 SAST 5 Oct |
+|---|---|---|
+| `67325636` | pe · till-1 (Marathon Till 1) | **trophy · till-1** (Trophy Till 1) |
+| `67377843` | trophy · till-1 (Trophy Till 1) | **pe · till-1** (Marathon Till 1) |
+
 `activeFrom` is when a machine entered **this estate**, which is neither when it
 was made nor batch 1: two of the six arrived second-hand, mid-life, on batches 57
 and 480. It bounds the outstanding-slip report, which would otherwise report a
