@@ -44,7 +44,11 @@ describe("7a — paid into Junid's own FNB account", () => {
   it("AFTER: the destination bank must be FNB — by the bank's own printed name", () => {
     expect(v(OURS, "First National Bank").ok).toBe(true);
     expect(v(OURS, "FNB").ok).toBe(true);
-    for (const bank of ["CAPITEC BANK", "ABSA", "STANDARD BANK", "FIRST NATIONAL BANK OF NAMIBIA", "", null]) {
+    // Absa names FNB's legal entity (real notifications, 5 Oct 2026).
+    expect(v(OURS, "FIRSTRAND").ok).toBe(true);
+    expect(v(OURS, "FirstRand Bank Limited").ok).toBe(true);
+    expect(v("62900014321", "FIRSTRAND").ok).toBe(false); // the account is still checked
+    for (const bank of ["CAPITEC BANK", "ABSA", "STANDARD BANK", "FIRST NATIONAL BANK OF NAMIBIA", "FIRSTRAND NAMIBIA", "", null]) {
       const out = v(OURS, bank);
       expect(out.ok, String(bank)).toBe(false);
     }

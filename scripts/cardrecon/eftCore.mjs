@@ -550,7 +550,12 @@ export function accountVerdict({ accountMask, allowedTails, configured }) {
 // eleven when Capitec or Absa print it whole, seven when FNB shows "..3456625",
 // four when Standard Bank masks it. Fewer than four visible digits is
 // uncheckable and refuses, as before.
-const FNB_BANK_NAMES = new Set(["FIRSTNATIONALBANK", "FNB"]);
+// Absa prints FNB's legal entity instead: "Beneficiary bank name: FIRSTRAND"
+// (real Absa notifications, 5 Oct 2026 — the 1 Sep sample printed "FIRST
+// NATIONAL BANK"). FNB is a division of FirstRand Bank Limited, and the full
+// account number is still checked digit for digit below. Exact names only —
+// "FIRSTRAND NAMIBIA" and the like stay refused.
+const FNB_BANK_NAMES = new Set(["FIRSTNATIONALBANK", "FNB", "FIRSTRAND", "FIRSTRANDBANK", "FIRSTRANDBANKLIMITED"]);
 
 /** "62900004321, 6200-000-9092" → ["62900004321","62000009092"] — full digit
  *  strings (at least four digits each); never logged. */
