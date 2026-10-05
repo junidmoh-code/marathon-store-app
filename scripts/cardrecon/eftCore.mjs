@@ -590,7 +590,16 @@ export function destinationVerdict({ accountMask, destBankName, allowedAccounts,
   if (!sameTail.length) {
     return { ok: false, reason: `This payment credits an account ending ${tail}, which is not the shop's own account.` };
   }
-  if (sameTail.some((a) => a.length >= visible.length && a.endsWith(visible))) return { ok: true, tail };
+  // When the document prints the account IN FULL (no mask placeholder), it must
+  // EQUAL a configured account exactly — a complete printed number must not pass
+  // merely by being the suffix of a longer configured number. Suffix matching is
+  // for a genuinely MASKED number (Standard Bank "XXXX…6625", FNB "..776625"),
+  // where only the trailing digits are shown. (CodeRabbit, this PR.)
+  const masked = /[x*]/i.test(String(accountMask ?? "")) || /\.{2,}/.test(String(accountMask ?? ""));
+  const matches = masked
+    ? sameTail.some((a) => a.length >= visible.length && a.endsWith(visible))
+    : sameTail.some((a) => a === visible);
+  if (matches) return { ok: true, tail };
   if (sameTail.every((a) => a.length < visible.length)) {
     return { ok: false, reason: `The document prints ${visible.length} digits of the destination account but ${EFT_ACCOUNTS_ENV_VAR} holds only the last ${Math.max(...sameTail.map((a) => a.length))} — put the shop's full account number there so every printed digit can be checked.` };
   }

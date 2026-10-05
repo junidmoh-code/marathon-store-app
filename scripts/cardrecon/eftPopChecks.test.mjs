@@ -133,3 +133,20 @@ describe("the poller runs both checks on every parsed payment (source scan)", ()
     expect(src).not.toMatch(/accountVerdict\(/);
   });
 });
+
+describe("7a — a complete printed account must EQUAL ours, not merely be a suffix (CodeRabbit)", () => {
+  // A configured number one digit LONGER than a full printed number must not be
+  // matched by suffix: the printed full number has to be exactly a configured one.
+  const allowed = parseAllowedAccounts("162903776625, 62000009092"); // first is 12 digits
+  const v = (accountMask) => destinationVerdict({ accountMask, destBankName: "FIRST NATIONAL BANK", allowedAccounts: allowed, configured: true });
+  it("full 11-digit print does NOT match a 12-digit configured account by suffix", () => {
+    expect(v("62903776625").ok).toBe(false);
+  });
+  it("full print matches only an exact configured number", () => {
+    expect(destinationVerdict({ accountMask: "62903776625", destBankName: "FNB", allowedAccounts: parseAllowedAccounts("62903776625"), configured: true }).ok).toBe(true);
+  });
+  it("a genuinely masked number still matches by suffix", () => {
+    expect(destinationVerdict({ accountMask: "XXXXXXX6625", destBankName: "FNB", allowedAccounts: parseAllowedAccounts("162903776625"), configured: true }).ok).toBe(true);
+    expect(destinationVerdict({ accountMask: "..776625", destBankName: "FNB", allowedAccounts: parseAllowedAccounts("162903776625"), configured: true }).ok).toBe(true);
+  });
+});
