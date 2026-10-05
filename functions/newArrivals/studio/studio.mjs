@@ -14,6 +14,7 @@ import {
 import { studioPrompt, setupName } from "./prompt.mjs";
 import { imagePart, textPart } from "./gemini-stream.mjs";
 import { objectiveMeasurements } from "./measure.mjs";
+import { correctFootwear } from "./correct.mjs";
 import sourcePhoto from "../sourcePhoto.cjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
@@ -55,6 +56,7 @@ const draftJpeg = (buf) => sharp(buf).rotate().resize(1280, 1280, { fit: "inside
  * deps: {
  *   fetchBytes(url) → { buffer }, loadPlate(kind), loadReference(kind) → { buffer, width, height, file } | null,
  *   libraryBox(brandKey) → { buffer, kind } | null, spec, generation ({ imageModel, imageSize, layers }),
+ *   correct? (the footwear correction — correct.mjs by default),
  *   conditionClause, image(model, parts, imageConfig, { onEvent }) (gemini-stream.streamImage with the key bound),
  *   upload(path, buffer, mime) → { path, url }, now(), log?(text), split? (the split method)
  * }
@@ -166,14 +168,36 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   // retried, and if the finishing step itself fails the photo is kept exactly
   // as Gemini made it. A failure below is marked `paid` for the caller.
   say({ type: "status", text: "Finishing the photo…" });
-  let generated, gm = {}, finishNote = null, measured = gen.buffer;
+  let generated, gm = {}, finishNote = null, measured = gen.buffer, uncorrected = null, correction = null, note = null, placedSpec = null;
   try {
     gm = await sharp(gen.buffer).metadata().catch(() => ({}));
     let out, mime = "image/jpeg";
     try { out = await toCanvas(gen.buffer, plate); }
     catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
     measured = out;
-    generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${deps.now()}.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime));
+    const stamp = deps.now();
+    // THE PLATE LOCK (footwear): everything but the shoe and its box comes from the ONE fixed plate. The shoe
+    // and box are lifted out of Gemini's photo, scaled uniformly to the measured layout and placed on the
+    // untouched plate; Gemini's pedestal and background are discarded. If they cannot be lifted, Gemini's
+    // photo is kept and the card says so. The correction can never cost the paid photo.
+    if (kind === "footwear" && generation.footwearCorrection && !finishNote) {
+      say({ type: "status", text: "Placing it on your backdrop…" });
+      let fixed = null;
+      try { fixed = await (deps.correct || correctFootwear)({ photoBuf: gen.buffer, plate, spec }); }
+      catch (e) { fixed = { problem: `the correction step failed (${String(e.message || e).slice(0, 80)})` }; }
+      if (fixed.buffer) {
+        // Gemini's own photo is kept beside it, as a thumbnail on the card and on the record.
+        try { const u = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}-uncorrected.jpg`, out, "image/jpeg")); uncorrected = { url: u.url, path: u.path || null }; }
+        catch { /* the corrected photo is still shown */ }
+        out = fixed.buffer; measured = out;
+        if (fixed.fittedSpec) placedSpec = fixed.fittedSpec;
+        correction = { applied: true, version: fixed.version, how: fixed.how, found: fixed.found, placed: fixed.placed, deviations: fixed.deviations || null, ...(fixed.fitted ? { fitted: fixed.fitted } : {}) };
+      } else {
+        correction = { applied: false, problem: fixed.problem };
+        note = `Not placed on your backdrop — ${fixed.problem}. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
+      }
+    }
+    generated = await withRetries(() => deps.upload(`products/${item.pid}/new_arrivals/gen_${stamp}.${mime === "image/jpeg" ? "jpg" : "png"}`, out, mime));
   } catch (e) {
     // The caller still counts what Gemini charged for it.
     e.paid = true;
@@ -184,13 +208,14 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   // looked for where the layout puts it. Never a reason to lose the photo.
   let measurements = null;
   try {
-    measurements = await objectiveMeasurements({ kind, out: measured, outBox: expectedBox(kind, effSpec), exclude: [], plate: plate.buffer, src: orig, srcBox: SOURCE_BOX, checker: null });
+    measurements = await objectiveMeasurements({ kind, out: measured, outBox: expectedBox(kind, placedSpec || effSpec), exclude: [], plate: plate.buffer, src: orig, srcBox: SOURCE_BOX, checker: null });
   } catch { /* no numbers for this one */ }
   // The final image is never also listed as a draft.
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   return {
     generated, kind, method: "full",
+    ...(uncorrected ? { uncorrected } : {}), ...(correction ? { corrected: correction.applied } : {}), ...(note ? { note } : {}),
     // The product photo this was made from: a later re-shoot makes the generation out of date.
     // (Always the product's photo address — the same one the list compares with — even when the
     // bytes came from its hi-res upload copy.)
@@ -204,6 +229,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
       thoughts: gen.thoughts ?? null, thoughtImages: gen.thoughtImages || 0, thoughtsUnsupported: gen.thoughtsUnsupported || null,
       draftFiles: kept, resolution: gm.width ? { width: gm.width, height: gm.height } : null,
       ...(gen.cutShort ? { streamCutShort: gen.cutShort } : {}), ...(finishNote ? { finishNote } : {}), ...(boxNote ? { boxNote } : {}),
+      ...(correction ? { correction } : {}),
     },
   };
 }

@@ -546,3 +546,53 @@ test("the example photos cannot be loaded: the shoe is still generated, without 
   const labels = w.calls.find((c) => c[0] === "image")[3].filter((p) => p.text).map((p) => p.text.split(" — ")[0]);
   assert.ok(!labels.includes("MORE EXAMPLES OF THE SAME COMPOSITION"));
 });
+
+// ── THE FOOTWEAR PLATE LOCK (Junid, 5 Oct) ───────────────────────────────────
+const shoeWorld = () => world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
+
+test("a footwear photo is CORRECTED: the photo shown is the one placed on the fixed plate; Gemini's own is kept beside it; the record says what was done", async () => {
+  const w = await shoeWorld();
+  const fixedJpeg = await jpeg(300, 400, "#00ff88");
+  let asked = null;
+  w.deps.correct = async (args) => { asked = args; return { buffer: fixedJpeg, version: "v", how: "against the plate", found: { shoe: { left: 0.2, top: 0.5, right: 0.7, bottom: 0.7 }, box: null }, placed: { shoe: { left: 0.206, top: 0.6, right: 0.772, bottom: 0.72, scale: 1 } }, deviations: null }; };
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.ok(Buffer.isBuffer(asked.photoBuf) && asked.plate && asked.spec.shoe, "the correction is given Gemini's photo, the plate and the layout");
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.corrected, true);
+  assert.match(gen.uncorrected.url, /-uncorrected\.jpg/);
+  assert.equal(gen.note, undefined);
+  const main = w.uploads.find((u) => /gen_\d+\.jpg$/.test(u.path)), before = w.uploads.find((u) => /-uncorrected\.jpg$/.test(u.path));
+  assert.ok(main && before, w.uploads.map((u) => u.path).join(" "));
+  assert.equal(gen.path, main.path);
+  // The corrected bytes are what was stored as the photo; Gemini's own went beside it.
+  assert.equal(main.bytes, fixedJpeg.length);
+  assert.notEqual(before.bytes, fixedJpeg.length);
+  const log = (await w.db.ref(`${core.GENLOG}/${out.code}/correction`).once()).val();
+  assert.equal(log.applied, true); assert.equal(log.how, "against the plate");
+});
+
+test("the shoe cannot be lifted: Gemini's photo is KEPT and the card is told why; a correction that throws costs nothing either", async () => {
+  for (const correct of [async () => ({ problem: "no shoe was found standing on the pedestal" }), async () => { throw new Error("boom"); }]) {
+    const w = await shoeWorld();
+    w.deps.correct = correct;
+    const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+    const it = await itemOf(w.db), gen = it.generations[out.genId];
+    assert.equal(it.status, "ready");
+    assert.equal(gen.corrected, false);
+    assert.equal(gen.uncorrected, undefined);
+    assert.match(gen.note, /^Not placed on your backdrop — .*\. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again\.$/);
+    assert.equal(w.uploads.filter((u) => /-uncorrected/.test(u.path)).length, 0);
+  }
+});
+
+test("clothing is never sent to the footwear correction; with the switch off, footwear is not either", async () => {
+  const c = await world();
+  c.deps.correct = async () => { throw new Error("called for clothing"); };
+  const co = await studio.studioGenerate(c.db, { pid: PID }, "junid", c.deps);
+  assert.equal((await itemOf(c.db)).generations[co.genId].corrected, undefined);
+  const s = await shoeWorld();
+  s.deps.generation = { ...require("../newArrivals/studio/config/generation.json"), footwearCorrection: false };
+  s.deps.correct = async () => { throw new Error("called with the switch off"); };
+  const so = await studio.studioGenerate(s.db, { pid: PID }, "junid", s.deps);
+  assert.equal((await itemOf(s.db)).generations[so.genId].corrected, undefined);
+});

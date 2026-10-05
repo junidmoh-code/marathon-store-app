@@ -108,6 +108,41 @@ changed.**
   ran out before a test generation). Each layer's exact text is pinned by
   sha256; to switch one off, set it to `false` in `generation.json` and
   `baseline.lock.json` and deploy `newArrivalsStudio`.
+- **The footwear plate lock** (Junid, 5 Oct — `studio/correct.mjs`,
+  `studio/lift.mjs`; `generation.json` `footwearCorrection`): in the final
+  footwear photo EVERYTHING except the shoe and its box comes pixel for pixel
+  from the one fixed plate (`footwear-plate.png`) — pedestal, fence, rails,
+  lighting, crop. Gemini repaints the pedestal differently every time (wear,
+  marks, a different size), so its pedestal and background are always
+  discarded. After a Full footwear generation:
+  1. **Lift** — the shoe and the box are found in Gemini's photo with no model
+     call. Where Gemini kept the backdrop, by comparing with the plate (a
+     colour no nearby plate pixel has; smooth where the plate is mesh). Where
+     it redrew the backdrop, from the photo alone (coloured, or smooth and not
+     a rail) — trusted only for a coloured shoe. The pedestal is cut away at
+     the **sole line**, read from the photo's own pedestal (walking up from
+     its black front panel through its white).
+  2. **Scale and place** — each is scaled uniformly to the layout measured
+     from G-0102 (`config/layout-spec.json` → `footwear`) and placed on the
+     untouched plate with code-drawn shadows (`place.mjs`). Never warped,
+     never recoloured. A tall shoe is fitted by height under the box.
+  3. Gemini's own photo is kept as `gen_<n>-uncorrected.jpg`; the card shows
+     it as a thumbnail (`generations/{g}/uncorrected`, `corrected: true`).
+  If the shoe cannot be lifted (Gemini changed the pedestal so its panel is
+  gone; a white / grey / black shoe on a redrawn backdrop; no shoe found),
+  Gemini's photo is kept, `corrected: false`, and the card says so. On the 31
+  footwear photos of 4 Oct, 26 lifted and 5 were kept as made.
+  **Known limits.** A white shoe on the white pedestal is separated by its
+  outline and the dark line where it touches; a faint sliver of pedestal can
+  stay at the heel. A shelf Gemini draws under the box can come with the box.
+  Junid sees every photo — and the thumbnail of what it was made from.
+- **The footwear layout and reference** are G-0102's (Boss slide white): the
+  reference image is G-0102 placed on the untouched plate
+  (`footwear-reference-g0102.jpg`, locked in `plates.lock.json`), and the
+  placement text says its numbers outright — shoe length 72.4% of the
+  pedestal's width, sole 2.1% of the frame behind the pedestal's front edge,
+  box centred above and no larger than 34% × 40% of the frame. Recorded in
+  `baseline.lock.json` → `footwearLayout`.
 - **Two methods per item** (the card's Full Gemini / Split):
   - **Full Gemini** (default): Gemini composes the product onto the plate.
   - **Split** (`studio/split.mjs`): Gemini makes the product only, on plain

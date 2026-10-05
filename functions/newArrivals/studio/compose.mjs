@@ -19,7 +19,8 @@ export const APPAREL_KEYS = Object.freeze([...SINGLE_KEYS, ...TWOPIECE_KEYS]);
 export const UNKNOWN_FRAMING = "unknown framing";
 
 export const ROLES = Object.freeze({
-  footwear: { plate: "footwear-plate.png", reference: "footwear-reference.png", layoutBox: "footwear-layout-box.png" },
+  // The footwear reference is G-0102 on the untouched plate (Junid, 5 Oct): the size and position to match.
+  footwear: { plate: "footwear-plate.png", reference: "footwear-reference-g0102.jpg", layoutBox: "footwear-layout-box.png" },
   single: { plate: "fence-single.png", reference: null },
   twopiece: { plate: "fence-twopiece.png", reference: "twopiece-reference.png" },
 });
@@ -76,12 +77,20 @@ export function brandKey(brand) {
 export function placementText(kind, spec) {
   const pc = (x) => `${Math.round(x * 1000) / 10}%`;
   if (kind === "footwear" && spec.shoe) {
+    const m = spec.measured, ped = spec.pedestal;
     const lines = [
       `PLACEMENT (fractions of the canvas, measured from the reference; x from the left, y from the top):`,
       `the shoe's heel at x=${pc(spec.shoe.heelX)}, its toe tip at x=${pc(spec.shoe.toeX)} (shoe ${pc(spec.shoe.width)} of the frame width), its sole resting on the pedestal top at y=${pc(spec.shoe.soleY)};`,
       `scale the shoe UNIFORMLY to that width — never stretch it; its height follows its own proportions.`,
     ];
-    if (spec.box) lines.push(`the box centred at x=${pc(spec.box.centreX)}${spec.box.centreMinusRailX !== undefined ? " on the middle rail" : ""}, its bottom edge at y=${pc(spec.box.bottom)}, front panel square to the camera, scaled uniformly.`);
+    // The measured layout, said outright (Junid, 5 Oct — from G-0102): how big on the pedestal, how far forward.
+    if (m && ped) {
+      lines.push(`THE SHOE IS LARGE ON THE PEDESTAL: heel to toe it is ${pc(m.shoeLengthOfPedestalWidth)} of the pedestal's width, with ${pc(m.heelFromPedestalLeft)} of the frame between the pedestal's left end and the heel and ${pc(m.toeFromPedestalRight)} between the toe and its right end.`);
+      lines.push(`IT SITS FORWARD: the sole stands at the FRONT of the pedestal's top surface, only ${pc(m.soleAbovePedestalFrontEdge)} of the frame behind its front edge (the front edge is at y=${pc(ped.frontEdgeY)}) — never set back toward the wall.`);
+    }
+    if (spec.box && spec.box.centreY !== undefined && m) {
+      lines.push(`THE BOX IS SMALL AND CENTRED ABOVE THE SHOE: its centre at x=${pc(spec.box.centreX)}, y=${pc(spec.box.centreY)} on the middle rail; no wider than ${pc(m.boxWidthOfFrame)} of the frame and no taller than ${pc(m.boxHeightOfFrame)}; at least ${pc(m.boxToShoeGap)} of the frame clear between the box and the top of the shoe; front panel square to the camera, scaled uniformly.`);
+    } else if (spec.box) lines.push(`the box centred at x=${pc(spec.box.centreX)}${spec.box.centreMinusRailX !== undefined ? " on the middle rail" : ""}, its bottom edge at y=${pc(spec.box.bottom)}, front panel square to the camera, scaled uniformly.`);
     return lines.join(" ");
   }
   if (kind !== "footwear" && spec.garment) {

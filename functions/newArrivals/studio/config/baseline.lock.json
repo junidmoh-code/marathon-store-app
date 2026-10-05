@@ -62,5 +62,14 @@
       "layerTextSha256": "f5a93118c8b4a220dda03cebad2a43da6de3da2d3e1c43117f5a104212eb73a5"
     }
   },
-  "layersChangedAt": "2026-10-04"
+  "layersChangedAt": "2026-10-04",
+  "footwearLayout": {
+    "requestedBy": "Junid",
+    "requestedAt": "2026-10-05",
+    "source": "his FOOTWEAR CONSISTENCY brief of 5 Oct 2026",
+    "for": "G-0102 is the footwear reference image and the measured layout (config/layout-spec.json footwear); its numbers are said outright in the footwear placement text; after generation the shoe and box are lifted, scaled uniformly to that layout and placed on the untouched footwear plate (generation.json footwearCorrection) — Gemini's pedestal and background are always discarded.",
+    "reference": "footwear-reference-g0102.jpg",
+    "referenceSha256": "5275e68721bdaea714182bd226b5f276f24c5a3a272f96fcd3be4c19620887fe",
+    "changes": "the footwear placement text (so the footwear prompt's fingerprint), the footwear reference image, the footwear layout numbers. The baseline prompt text itself, the clothing prompts and every plate are unchanged."
+  }
 }

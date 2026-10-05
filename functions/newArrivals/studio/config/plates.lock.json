@@ -34,5 +34,12 @@
     "width": 1010,
     "height": 1126,
     "lockedAt": "2026-10-02T18:18:40.048Z"
+  },
+  "footwear-reference-g0102.jpg": {
+    "sha256": "5275e68721bdaea714182bd226b5f276f24c5a3a272f96fcd3be4c19620887fe",
+    "width": 1086,
+    "height": 1448,
+    "lockedAt": "2026-10-05T00:00:00.000Z",
+    "note": "G-0102 (Boss slide white), its shoe and box placed by code on the untouched footwear plate at the layout measured from it. The footwear REFERENCE since 5 Oct 2026 (Junid: G-0102 is correct in size and position). footwear-reference.png is the reference it replaces — kept, no longer sent."
   }
 }

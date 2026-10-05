@@ -240,7 +240,7 @@ async function addSpend(db, zar, { estimated = false } = {}) {
 
 // ── one generation ───────────────────────────────────────────────────────────
 /**
- * deps (all injectable for tests): { bucket, apiKey, now(), fetchBytes?, image?, fx?, assets? }
+ * deps (all injectable for tests): { bucket, apiKey, now(), fetchBytes?, image?, fx?, assets?, correct?, generation? }
  * emit(ev): progress chunks for the card.
  * → { ok, pid, genId, code, seconds, item (as the card shows it) }
  */
@@ -269,7 +269,9 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
         libraryBox: (key) => libraryBox(bucket, key),
         loadExamples: (kind, { brand = null } = {}) => loadExamples(bucket, compose.forModel, brand),
         ...(deps.assets || {}),
-        spec, generation, conditionClause: CONDITION_CLAUSE,
+        spec, generation: deps.generation || generation, conditionClause: CONDITION_CLAUSE,
+        // The footwear correction (studio/correct.mjs unless a test supplies its own).
+        ...(deps.correct ? { correct: deps.correct } : {}),
         image: deps.image || ((model, parts, imageConfig, opts) => gemini.streamImage(model, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
         upload: (p, buf, mime) => uploadImmutable(bucket, p, buf, mime),
         now,

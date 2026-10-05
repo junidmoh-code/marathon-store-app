@@ -53,8 +53,11 @@ test("with every layer off the prompt is byte-for-byte the baseline", () => {
 
 test("the prompts the baseline photos were made with (pinned fingerprints)", () => {
   const p = (kind, layers) => studioPrompt({ kind, layers, productName: "Test Product", conditionClause: CONDITION_CLAUSE, placement: placementText(kind, spec[kind]) });
-  // Footwear on the 4 Oct setup: the baseline + the packaging layer, as the Mac mini sent it.
-  assert.equal(sha(p("footwear", { packaging: true }).text), "31ad98f10f79ba412cd76c8061070a866355015d416dd240ed3bcb203e42b402");
+  // Footwear: the baseline + the packaging layer, with the PLACEMENT measured from G-0102 said outright
+  // (Junid's footwear-consistency brief of 5 Oct — baseline.lock.json footwearLayout). Until then the
+  // fingerprint was 31ad98f1…, as the Mac mini sent it on 4 Oct; only the placement sentence differs.
+  assert.equal(sha(p("footwear", { packaging: true }).text), "74d6fbb2a717bfaf3455cfc32dc8deca4f3017bd972817a7a2dc08389b0b5f73");
+  assert.equal(lock.footwearLayout.requestedBy, "Junid");
   // The cream knit vest's class (one garment) and the two-piece: the bare baseline.
   assert.equal(sha(p("single", { packaging: true }).text), "42bd6d5ec625f712fa96281fdb6c33e71dc7319dc5306203284da3584a6251aa");
   assert.equal(sha(p("twopiece", {}).text), "3dbbc9e9a8a38765a16d748bf90133c70619d86ab3fa1e76995f3b8516f309e5");

@@ -221,6 +221,13 @@ function Photos({ item, tab, stats, live, busy, h }) {
           The product's photo was changed after this photo was made. It cannot be approved — tap Regenerate to make one from the new photo.
         </div>
       )}
+      {/* Footwear placed on the fixed backdrop by code: Gemini's own photo, before that, as a thumbnail. */}
+      {!live && main?.uncorrected?.url && (
+        <a data-testid="uncorrected" href={main.uncorrected.url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, color: GRAY, fontSize: 11, textDecoration: "none" }}>
+          <img src={main.uncorrected.url} alt="Before it was placed on your backdrop" loading="lazy" style={{ width: 54, height: 72, objectFit: "cover", borderRadius: 8, background: "#1c1c1e" }} />
+          <span>Shoe and box placed on your fixed backdrop. This is Gemini's photo before that.</span>
+        </a>
+      )}
       {/* What Junid must know about this photo (e.g. Split could not place it): it stays on the card, not only in a passing message. */}
       {!live && main?.note && <div data-testid="gen-note" style={{ color: "#fff", fontSize: 12, marginTop: 6, padding: "8px 10px", borderRadius: 10, background: "rgba(255,255,255,.08)" }}>{main.note}</div>}
       {howGen && howGen === main && !live && <HowPanel pid={item.pid} gen={howGen} loadHow={h.loadHow} />}

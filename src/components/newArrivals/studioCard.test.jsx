@@ -1093,3 +1093,21 @@ describe("the Original shown is the product's current photo — never the item's
     expect(view.sourceUrlOf({})).toBeNull();
   });
 });
+
+describe("footwear placed on the fixed backdrop: Gemini's own photo is kept as a thumbnail", () => {
+  it("a corrected photo shows the thumbnail of what Gemini made before it; a photo that was not corrected shows none, and says why", async () => {
+    const fixed = withPhoto(1, { generations: { g1: GEN("g1", 1, { corrected: true, uncorrected: { url: "https://x/g1-uncorrected.jpg", path: "p/g1-uncorrected.jpg" } }) } });
+    const kept = withPhoto(2, { generations: { g1: GEN("g1", 1, { corrected: false, note: "Not placed on your backdrop — no shoe was found standing on the pedestal. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again." }) } });
+    const tree = await render(fakeApi([fixed, kept, withPhoto(3)]));
+    const thumb = byId(card(tree, P(1)), "uncorrected");
+    expect(thumb).toHaveLength(1);
+    expect(thumb[0].props.href).toBe("https://x/g1-uncorrected.jpg");
+    expect(thumb[0].findAll((n) => n.type === "img")[0].props.src).toBe("https://x/g1-uncorrected.jpg");
+    expect(thumb[0].findAll((n) => n.type === "span")[0].children.join("")).toBe("Shoe and box placed on your fixed backdrop. This is Gemini's photo before that.");
+    expect(byId(card(tree, P(2)), "uncorrected")).toHaveLength(0);
+    expect(label(byId(card(tree, P(2)), "gen-note")[0])).toMatch(/^Not placed on your backdrop — /);
+    // Clothing, and older footwear photos, show neither.
+    expect(byId(card(tree, P(3)), "uncorrected")).toHaveLength(0);
+    expect(byId(card(tree, P(3)), "gen-note")).toHaveLength(0);
+  });
+});
