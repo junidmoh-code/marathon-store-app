@@ -137,7 +137,10 @@ changed.**
   footwear photos of 4 Oct (5 Oct, not a repo fixture): 26 were lifted and 5
   kept as made; the lifted ones were looked at as a contact sheet, not
   measured one by one.
-  **Known limits.** A cut-out is a filled outline: the wall seen through a
+  **Known limits.** A box that TOUCHES the shoe is refused when the pair is
+  taller than long or has a waist; a box resting flat on the shoe with no
+  waist is cut with it — the card then says the box could not be found on
+  its own and to check the photo. A cut-out is a filled outline: the wall seen through a
   strap's opening comes with the shoe. Scaling is uniform to the pixel
   (width and height are rounded separately: under 0.5%). A shoe is placed by
   its length; a tall one (a boot) is fitted by height under the box, so it

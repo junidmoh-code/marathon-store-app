@@ -181,3 +181,15 @@ test("a shoe joined to the box above it is NOT cut as one piece; a shoe too tall
   const boot = async () => ({ shoe: await piece(600, 500, "#c8102e"), box: await piece(300, 600, "#1f4fd8"), found: { shoe: { left: 0.2, top: 0.4, right: 0.7, bottom: 0.7 }, box: null }, how: "test" });
   assert.match((await correctFootwear({ photoBuf: plate.buffer, plate, spec: squeezed, lift: boot })).problem, /overlap the box|too tall/);
 });
+
+test("an HOURGLASS (wide, a waist, wide — a box resting on a shoe's collar) is not a shoe; a shoe or a boot on its own is not an hourglass", async () => {
+  const { hourglass } = await import("../newArrivals/studio/lift.mjs");
+  const piece = (rows) => { const w = Math.max(...rows.map((r) => r[1])), mask = new Uint8Array(w * rows.length); rows.forEach(([from, to], y) => { for (let x = from; x < to; x++) mask[y * w + x] = 1; }); return { mask, rect: { left: 0, top: 0, width: w, height: rows.length } }; };
+  const rows = (n, from, to) => Array.from({ length: n }, () => [from, to]);
+  // box (wide) · the shoe's collar (narrow) · the sole (wide): joined.
+  assert.equal(hourglass(piece([...rows(20, 10, 50), ...rows(10, 20, 36), ...rows(30, 0, 60)])), true);
+  // a shoe on its own: a collar, widening to the sole. A boot: a shaft, then the foot.
+  assert.equal(hourglass(piece([...rows(15, 20, 45), ...rows(15, 10, 55), ...rows(30, 0, 60)])), false);
+  assert.equal(hourglass(piece([...rows(40, 0, 25), ...rows(20, 0, 60)])), false);
+});
+

@@ -295,6 +295,9 @@ export function findProducts(ev, W, H, line) {
   // A shoe side-on is longer than it is tall (a boot nearly square). Something clearly taller than long is a
   // shoe joined to the box above it, or to the backdrop: not cut.
   if (shoe.rect.width < 0.9 * shoe.rect.height) return { problem: "the shoe could not be told apart from the box above it" };
+  // …and so is an HOURGLASS: wide at the top, a waist, wide at the bottom — a box resting on the shoe. A shoe
+  // on its own only widens toward the sole.
+  if (hourglass(shoe)) return { problem: "the shoe could not be told apart from the box above it" };
   let box = boxC ? pick(boxC) : null;
   if (box) {
     // A box is a rectangle standing square to the camera: its own outline, row by row, is filled across
@@ -380,6 +383,18 @@ export function soleLine(photo, W, H) {
     out[x] = v[v.length >> 1];
   }
   return Object.assign(out, { panelTop: top, panelLeft: mid.left, panelRight: mid.right, white });
+}
+
+/** Is the piece wide, then clearly narrower, then wide again, going down? (Its widest row in the top third and in the bottom third, against its narrowest row between them.) */
+export function hourglass(piece) {
+  const { mask, rect } = piece, w = rect.width, h = rect.height, widths = new Int32Array(h);
+  for (let y = 0; y < h; y++) { let n = 0; for (let x = 0; x < w; x++) n += mask[y * w + x]; widths[y] = n; }
+  let a = 0, ay = 0, c = 0, cy = h - 1;
+  for (let y = 0; y < h / 3; y++) if (widths[y] > a) { a = widths[y]; ay = y; }
+  for (let y = Math.ceil((2 * h) / 3); y < h; y++) if (widths[y] > c) { c = widths[y]; cy = y; }
+  let b = Infinity;
+  for (let y = ay; y <= cy; y++) if (widths[y] < b) b = widths[y];
+  return b <= 0.6 * Math.min(a, c);
 }
 
 /** The share of a piece's pixels that are clearly coloured. */

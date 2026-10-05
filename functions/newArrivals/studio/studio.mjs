@@ -171,6 +171,8 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   let generated, gm = {}, finishNote = null, measured = gen.buffer, uncorrected = null, correction = null, note = null, placedSpec = null;
   try {
     gm = await sharp(gen.buffer).metadata().catch(() => ({}));
+    // An answer that is not a readable image is not a photo: it is never stored or shown as one.
+    if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
     let out, mime = "image/jpeg";
     try { out = await toCanvas(gen.buffer, plate); }
     catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
@@ -200,7 +202,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
         // Gemini was given a box but none could be found in its photo: the corrected photo has no box — said, never silent.
         if (boxMode !== "none" && !fixed.placed?.box) {
           correction.boxMissing = true;
-          note = "The box could not be found in Gemini's photo, so this photo has none. Gemini's own photo is the small one below; tap Regenerate to try again.";
+          note = "The box could not be found on its own in Gemini's photo, so it was not placed — check this photo. Gemini's own photo is the small one below; tap Regenerate to try again.";
         }
       } else {
         const why = fixed?.problem || "the correction gave no photo";

@@ -605,7 +605,7 @@ test("Gemini was given a box but none is found in its photo: the corrected photo
   const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
   const gen = (await itemOf(w.db)).generations[out.genId];
   assert.equal(gen.corrected, true);
-  assert.match(gen.note, /^The box could not be found in Gemini's photo, so this photo has none\./);
+  assert.match(gen.note, /^The box could not be found on its own in Gemini's photo, so it was not placed — check this photo\./);
   assert.equal((await w.db.ref(`${core.GENLOG}/${out.code}/correction/boxMissing`).once()).val(), true);
 });
 
@@ -623,13 +623,14 @@ test("the corrected photo cannot be stored: Gemini's own (already stored) is sho
   assert.match(gen.note, /^Not placed on your backdrop — the corrected photo could not be stored\./);
 });
 
-test("a footwear photo the finishing step could not resize is kept as Gemini made it — and the card says it was not placed", async () => {
+test("an answer that is not a readable image is never stored or shown as a photo: the tap fails, the item is given back", async () => {
   const w = await shoeWorld();
   const image = w.deps.image;
   w.deps.image = async (...a) => ({ ...(await image(...a)), buffer: Buffer.from("not an image"), mime: "image/png" });
-  w.deps.correct = async () => { throw new Error("never reached"); };
-  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
-  const gen = (await itemOf(w.db)).generations[out.genId];
-  assert.equal(gen.corrected, false);
-  assert.match(gen.note, /^Not placed on your backdrop — the finishing step failed\./);
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /No photo/);
+  const it = await itemOf(w.db);
+  assert.equal(it.generateRequest, undefined);
+  assert.equal(Object.keys(it.generations || {}).length, 0);
+  assert.notEqual(it.status, "ready");
+  assert.equal(w.uploads.filter((u) => /gen_\d+/.test(u.path)).length, 0);
 });
