@@ -325,6 +325,13 @@ export function findProducts(ev, W, H, line) {
       }
     }
   }
+  // Only something that looks like packaging is placed as the box: big enough, and filling its own outline
+  // (a box or a bag does; a bracket, a shelf or a patch of repainted wall does not). Otherwise no box is placed.
+  if (box) {
+    let on = 0;
+    for (let i = 0; i < box.mask.length; i++) on += box.mask[i];
+    if (on < 0.012 * W * H || on < 0.72 * box.rect.width * box.rect.height) box = null;
+  }
   return { shoe, box };
 }
 

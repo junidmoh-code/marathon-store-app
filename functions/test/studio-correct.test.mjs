@@ -193,3 +193,9 @@ test("an HOURGLASS (wide, a waist, wide — a box resting on a shoe's collar) is
   assert.equal(hourglass(piece([...rows(40, 0, 25), ...rows(20, 0, 60)])), false);
 });
 
+
+test("only something that looks like packaging is placed as the box: a thin bracket on the rail is not", async () => {
+  const bracket = await correctFootwear({ photoBuf: await png(scene({ extra: shoe("#c8102e") + `<path d="M400 300 H700 V330 H560 V420 H540 V330 H400 Z" fill="#1f4fd8"/>` })), plate, spec });
+  assert.equal(bracket.problem, undefined, bracket.problem);
+  assert.equal(bracket.placed.box, undefined, "a T-shaped bracket fills too little of its outline to be a box");
+});
