@@ -94,6 +94,9 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     plate: res.kind ? `junid-${res.kind}` : null, kind: res.kind || null,
     // What Junid should know about this one (e.g. Split could not place it).
     ...(res.note ? { note: res.note } : {}),
+    // Footwear: placed on the fixed plate by code (true) or kept as Gemini made it (false); Gemini's own photo beside it.
+    ...(res.corrected !== undefined ? { corrected: !!res.corrected } : {}),
+    ...(res.uncorrected?.url ? { uncorrected: { url: res.uncorrected.url, path: res.uncorrected.path || null } } : {}),
     costUsd: cost.usd, costZar: cost.zar, costEstimated: !!cost.estimated, usdZar: cost.usdZar,
     // The day's rate could not be looked up: the configured rate was used.
     ...(cost.usdZarFallback ? { usdZarFallback: true } : {}),
@@ -131,6 +134,8 @@ export function genlogRecord({ code, pid, genId, gen, trace = null, totalMs = nu
     drafts: (t.draftFiles || []).map((d) => ({ url: d.url, path: d.path || null })),
     method: gen.method || "full",
     ...(t.split ? { split: t.split } : {}),
+    // Footwear: what the correction found and where it placed it (or why it could not).
+    ...(t.correction ? { correction: t.correction } : {}),
     ...(t.thoughtsUnsupported ? { thoughtsUnsupported: t.thoughtsUnsupported } : {}),
     thoughtsLabel: THOUGHTS_LABEL,
     measurements: gen.measurements || null,

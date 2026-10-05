@@ -60,6 +60,23 @@ export function placeShoe(size, spec, canvas) {
   return { left: s.heelX * W, top: s.soleY * H - height, width, height, scale };
 }
 
+/**
+ * The footwear spec for THIS shoe: unchanged when the shoe fits at the layout's
+ * width; narrower (same centre, same sole line) when it would be too tall —
+ * above the box's bottom edge plus a gap, or the top of the canvas. Pure.
+ */
+export function fitShoe(spec, size, canvas, withBox) {
+  const s = spec.shoe;
+  const widthPx = (s.toeX - s.heelX) * canvas.width;
+  const heightPx = widthPx * (size.height / size.width);
+  const ceiling = withBox && spec.box ? spec.box.bottom + 0.03 : 0.04;
+  const maxPx = (s.soleY - ceiling) * canvas.height;
+  if (heightPx <= maxPx || maxPx <= 0) return spec;
+  const half = (maxPx * (size.width / size.height)) / canvas.width / 2;
+  const centre = (s.heelX + s.toeX) / 2;
+  return { ...spec, shoe: { ...s, heelX: centre - half, toeX: centre + half, fitted: "by height" } };
+}
+
 /** Fit inside a box (fractions): the binding dimension fills it, centred across; top- or centre-aligned. Pure. */
 export function placeInBox(size, box, canvas, { align = "top" } = {}) {
   const W = canvas.width, H = canvas.height;
