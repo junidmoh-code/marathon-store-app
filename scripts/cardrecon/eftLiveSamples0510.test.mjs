@@ -280,12 +280,19 @@ describe("fix 7 on the real 5 Oct notifications", () => {
     expect(timing.ok).toBe(false);
   });
 
-  it("FNB: right account, but no immediate field exists — refused, needs a sample", () => {
+  it("FNB: FNB-to-FNB is intra-bank, so it is immediate — admitted", () => {
     const { parsed, dest, timing } = judge("fnb.co.za", FNB_0510);
     expect(parsed.bankRef).toBe("TRACE001");
+    expect(parsed.destBankName).toMatch(/FIRST NATIONAL BANK/i);
     expect(dest.ok).toBe(true);
+    expect(timing.ok).toBe(true);
+  });
+
+  it("FNB paying OUT to another bank would not count as immediate (intra-bank only)", () => {
+    const outbound = FNB_0510.map((l) => l.replace(/^Bank : FIRST NATIONAL BANK$/i, "Bank : NEDBANK"));
+    const { timing } = judge("fnb.co.za", outbound);
     expect(timing.ok).toBe(false);
-    expect(timing.needsSample).toBe(true);
+    expect(timing.needsSample).toBeUndefined();
   });
 
   it("Standard Bank: right account, but no immediate field exists — refused, needs a sample", () => {

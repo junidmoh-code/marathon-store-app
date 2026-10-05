@@ -85,13 +85,22 @@ describe("7b — immediate payments only", () => {
     expect(n.reason).toMatch(/not an immediate payment/i);
   });
 
-  it("a bank whose document carries NO immediate-payment field refuses and names the sample it needs", () => {
-    for (const reader of ["fnb", "standardbank"]) {
-      const out = iv({ ...base, reader, immediate: null });
-      expect(out.ok).toBe(false);
-      expect(out.needsSample).toBe(true);
-      expect(out.reason).toMatch(/real .* sample/i);
-    }
+  it("Standard Bank's real sample carries NO immediate field — refuses and names the sample it needs", () => {
+    const out = iv({ ...base, reader: "standardbank", immediate: null });
+    expect(out.ok).toBe(false);
+    expect(out.needsSample).toBe(true);
+    expect(out.reason).toMatch(/real .* sample/i);
+  });
+
+  it("FNB has no printed field, but FNB-to-FNB is intra-bank immediate — passes; out to another bank does not", () => {
+    // Destination FNB (the account check requires it anyway): intra-bank, immediate.
+    expect(iv({ ...base, reader: "fnb", immediate: null, destBankName: "FIRST NATIONAL BANK" }).ok).toBe(true);
+    expect(iv({ ...base, reader: "fnb", immediate: null, destBankName: "FNB" }).ok).toBe(true);
+    // An FNB-origin payment OUT to another bank is not intra-bank; not immediate,
+    // and NOT a needs-sample case.
+    const out = iv({ ...base, reader: "fnb", immediate: null, destBankName: "NEDBANK" });
+    expect(out.ok).toBe(false);
+    expect(out.needsSample).toBeUndefined();
   });
 
   it("a payment dated in the FUTURE of its own notification is scheduled — refused, whatever it says", () => {

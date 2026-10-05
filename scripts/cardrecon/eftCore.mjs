@@ -610,7 +610,12 @@ export function destinationVerdict({ accountMask, destBankName, allowedAccounts,
 // Whatever a bank prints, a payment dated in the FUTURE of its own
 // notification's arrival is scheduled and refuses.
 export const FUTURE_DATED_TOLERANCE_MS = 15 * 60 * 1000;
-export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa"];
+// fnb: no printed field, but FNB sends this notification ONLY for a payment
+// from its OWN customer, and the account check (7a) admits only an FNB
+// destination, so a recorded FNB payment is FNB -> FNB: an intra-bank transfer,
+// which clears in real time. Immediate by its nature, not a guess (Junid's
+// rule, 5 Oct 2026). Gated below on the destination bank being FNB.
+export const IMMEDIATE_SIGNAL_READERS = ["capitec", "absa", "fnb"];
 
 /**
  * @param {{parsed:object, reader?:string, receivedAt:number|null}} p
@@ -627,6 +632,14 @@ export function immediacyVerdict({ parsed, reader, receivedAt }) {
       ok: false, needsSample: true,
       reason: `The ${id || "unknown"} notification format this pool reads carries no field saying whether the payment was IMMEDIATE. Until a real ${id || "bank"} immediate-payment sample shows where it says so, its payments refuse rather than guess.`,
     };
+  }
+  if (id === "fnb") {
+    // Intra-bank only: destination must be FNB (the same names 7a accepts).
+    const bank = String(parsed?.destBankName ?? "").toUpperCase().replace(/[^A-Z]/g, "");
+    if (FNB_BANK_NAMES.has(bank)) return { ok: true };
+    return { ok: false, reason: parsed?.destBankName
+      ? `This FNB notification pays "${clip(parsed.destBankName, 60)}", not an FNB account, so it is not an FNB-to-FNB immediate payment.`
+      : "This FNB notification does not name an FNB destination account, so it cannot be confirmed as an FNB-to-FNB immediate payment." };
   }
   if (parsed?.immediate === true) return { ok: true };
   return {
