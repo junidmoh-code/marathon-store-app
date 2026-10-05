@@ -191,6 +191,8 @@ test("an HOURGLASS (wide, a waist, wide — a box resting on a shoe's collar) is
   // a shoe on its own: a collar, widening to the sole. A boot: a shaft, then the foot.
   assert.equal(hourglass(piece([...rows(15, 20, 45), ...rows(15, 10, 55), ...rows(30, 0, 60)])), false);
   assert.equal(hourglass(piece([...rows(40, 0, 25), ...rows(20, 0, 60)])), false);
+  // A boot with a flared top and a narrower ankle is still a boot.
+  assert.equal(hourglass(piece([...rows(20, 0, 42), ...rows(20, 9, 33), ...rows(30, 0, 100)])), false);
 });
 
 

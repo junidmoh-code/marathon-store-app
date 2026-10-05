@@ -296,7 +296,7 @@ export function findProducts(ev, W, H, line) {
   // shoe joined to the box above it, or to the backdrop: not cut.
   if (shoe.rect.width < 0.9 * shoe.rect.height) return { problem: "the shoe could not be told apart from the box above it" };
   // …and so is an HOURGLASS: wide at the top, a waist, wide at the bottom — a box resting on the shoe. A shoe
-  // on its own only widens toward the sole.
+  // on its own mostly widens toward the sole (a boot's shaft narrows a little at the ankle — not by half).
   if (hourglass(shoe)) return { problem: "the shoe could not be told apart from the box above it" };
   let box = boxC ? pick(boxC) : null;
   if (box) {
@@ -330,7 +330,7 @@ export function findProducts(ev, W, H, line) {
   if (box) {
     let on = 0;
     for (let i = 0; i < box.mask.length; i++) on += box.mask[i];
-    if (on < 0.012 * W * H || on < 0.72 * box.rect.width * box.rect.height) box = null;
+    if (on < 0.006 * W * H || on < 0.72 * box.rect.width * box.rect.height) box = null;
   }
   return { shoe, box };
 }
@@ -401,7 +401,7 @@ export function hourglass(piece) {
   for (let y = Math.ceil((2 * h) / 3); y < h; y++) if (widths[y] > c) { c = widths[y]; cy = y; }
   let b = Infinity;
   for (let y = ay; y <= cy; y++) if (widths[y] < b) b = widths[y];
-  return b <= 0.6 * Math.min(a, c);
+  return b <= 0.5 * Math.min(a, c);
 }
 
 /** The share of a piece's pixels that are clearly coloured. */
