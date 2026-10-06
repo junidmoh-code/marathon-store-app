@@ -1,9 +1,9 @@
 // Division names: the two sections are called by the owner's names, stored at
 // /network/sections/{n}/name, seeded "Marathon" (Section 2) and "Concrete"
-// (Section 1). A picker beside store names says "Concrete group".
+// (Section 1). The name is used exactly as stored: no "group", no suffix.
 import { describe, it, expect } from "vitest";
 import {
-  normalizeNetwork, sectionName, sectionLabel, sectionsInOrder, seedPayload, SEED_REGISTRY,
+  normalizeNetwork, sectionName, sectionsInOrder, seedPayload, SEED_REGISTRY,
 } from "./networkRegistry";
 import { sectionNameUpdate, seedUpdate } from "../components/admin/networkSettingsCore";
 
@@ -26,10 +26,10 @@ describe("division names", () => {
     expect(sectionName(normalizeNetwork({ sections: "junk" }), 1)).toBe("Concrete");
   });
 
-  it("disambiguates the division only where it shares a store's name", () => {
-    expect(sectionLabel(SEED_REGISTRY, 1)).toBe("Concrete group");
-    expect(sectionLabel(SEED_REGISTRY, 2)).toBe("Marathon");
-    expect(sectionLabel(normalizeNetwork({ sections: { 1: { name: "Durban" } } }), 1)).toBe("Durban");
+  it("is exactly the stored name — Concrete, never Concrete group", () => {
+    expect(sectionName(SEED_REGISTRY, 1)).toBe("Concrete");
+    expect(sectionName(SEED_REGISTRY, 2)).toBe("Marathon");
+    expect(sectionName(normalizeNetwork({ sections: { 1: { name: "Concrete" } } }), 1)).toBe("Concrete");
   });
 
   it("orders Marathon first", () => {
@@ -50,9 +50,9 @@ describe("division names", () => {
   });
 
   it("a rename writes one small path, trimmed, and refuses nonsense", () => {
-    const r = sectionNameUpdate(1, "  Concrete   group  ", 5, "o");
+    const r = sectionNameUpdate(1, "  Concrete   East  ", 5, "o");
     expect(r.ok).toBe(true);
-    expect(r.updates["network/sections/1/name"]).toBe("Concrete group");
+    expect(r.updates["network/sections/1/name"]).toBe("Concrete East");
     expect(r.updates["network/updatedAt"]).toBe(5);
     expect(sectionNameUpdate(3, "x", 5, "o").ok).toBe(false);
     expect(sectionNameUpdate(1, "   ", 5, "o").ok).toBe(false);

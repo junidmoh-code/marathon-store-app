@@ -29,7 +29,7 @@ import { functions } from "../firebase";
 import { usePermissions } from "../components/PermissionsContext";
 import { useNetwork } from "../utils/useNetwork";
 import { sectionOf } from "../utils/networkRegistry";
-import { sectionLabel as sectionLabelOf } from "../components/sectionAccess";
+import { sectionName } from "../components/sectionAccess";
 
 // The section a new code starts on. The code-maker's own device section if it
 // has one (MC on a Section 1 tablet makes Section 1 codes), else the section of
@@ -82,7 +82,7 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
   const startSection = defaultCodeSection(registry, { deviceSection: deviceIdentity?.section, destShop: permRecord?.destShop });
   const [pickedSection, setPickedSection] = useState(null);
   const section = pickedSection || startSection;
-  const sectionLabel = (n) => (n === 1 || n === 2 ? sectionLabelOf(registry, n) : "Both divisions");
+  const sectionLabel = (n) => (n === 1 || n === 2 ? sectionName(registry, n) : "Both divisions");
   const [busy, setBusy] = useState(null);
   const [made, setMade] = useState(null);
   const [err, setErr] = useState(null);
