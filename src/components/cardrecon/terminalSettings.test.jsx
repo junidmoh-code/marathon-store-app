@@ -108,7 +108,7 @@ describe("the settings sheet", () => {
     // The same three stores, grouped by section — Section 2 first.
     expect(store.findAll((n) => n.type === "option").map((o) => o.props.value)).toEqual(["", "pe", "trophy", "pine"]);
     expect(store.findAll((n) => n.type === "optgroup").map((g) => [g.props.label, g.findAll((n) => n.type === "option").map((o) => o.props.value)]))
-      .toEqual([["Section 2", ["pe", "trophy"]], ["Section 1", ["pine"]]]);
+      .toEqual([["Marathon", ["pe", "trophy"]], ["Concrete", ["pine"]]]);
     await act(async () => { tree.root.find((n) => n.props.id === "ts-tid").props.onChange({ target: { value: "0000cd2e" } }); });
     expect(tree.root.find((n) => n.props.id === "ts-tid").props.value).toBe("0000CD2E");
     await act(async () => { store.props.onChange({ target: { value: "trophy" } }); });
@@ -195,7 +195,7 @@ describe("registering terminals for Concrete and Pine", () => {
     const tree = await openAdd();
     const store = tree.root.find((n) => n.type === "select" && n.props.id === "ts-store");
     expect(store.findAll((n) => n.type === "optgroup").map((g) => [g.props.label, g.findAll((n) => n.type === "option").map((o) => o.props.children)]))
-      .toEqual([["Section 2", ["Marathon PE", "Trophy"]], ["Section 1", ["Marathon Pine", "Concrete"]]]);
+      .toEqual([["Marathon", ["Marathon PE", "Trophy"]], ["Concrete", ["Marathon Pine", "Concrete"]]]);
     await act(async () => { store.props.onChange({ target: { value: "concrete" } }); });
     const till = tree.root.find((n) => n.type === "select" && n.props.id === "ts-till");
     expect(till.findAll((n) => n.type === "option").map((o) => o.props.value)).toEqual(["", "till-1", "till-2"]);

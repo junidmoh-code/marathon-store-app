@@ -41,6 +41,14 @@ these keys is edited in the console later, regenerate before pasting.
     "creditScope": {
       ".validate": "newData.val() === 'shared' || newData.val() === 'section'"
     },
+    "sections": {
+      "$n": {
+        ".validate": "$n === '1' || $n === '2'",
+        "name": {
+          ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 40"
+        }
+      }
+    },
     "updatedAt": {
       ".validate": "newData.isNumber() && newData.val() <= now + 60000"
     },

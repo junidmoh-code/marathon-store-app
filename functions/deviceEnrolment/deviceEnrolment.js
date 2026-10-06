@@ -340,7 +340,7 @@ async function handleAdmin(request, deps) {
     let section = null;
     if (rawSection !== undefined && rawSection !== null) {
       section = E.readSection(rawSection);
-      if (!section) throw new HttpsError("invalid-argument", "Pick the device's section: Section 1 or Section 2.");
+      if (!section) throw new HttpsError("invalid-argument", "Pick the device's division.");
     }
     // A code-maker who is themselves scoped to a section makes codes for THAT
     // section only — otherwise a Section 2 device could mint itself a way into
@@ -348,7 +348,7 @@ async function handleAdmin(request, deps) {
     // pick either.
     if (!who.owner && who.section) {
       if (section && section !== who.section) {
-        throw new HttpsError("permission-denied", `You can only make codes for Section ${who.section}. Junid makes the others.`);
+        throw new HttpsError("permission-denied", "You can only make codes for your own division. Junid makes the others.");
       }
       section = who.section;
     }

@@ -95,7 +95,7 @@ test("the server refuses any section that is not 1 or 2 — and writes nothing",
   const db = fresh();
   for (const bad of [3, 0, "1", "2", "both", true, {}, [1], 1.5]) {
     await assert.rejects(call(OWNER, { action: "createCode", name: `X ${JSON.stringify(bad)}`, section: bad }, db),
-      /Section 1 or Section 2/, JSON.stringify(bad));
+      /Pick the device's division/, JSON.stringify(bad));
   }
   assert.equal(readAt(db.state.root, "device_enrolment/people"), null);
   assert.equal(readAt(db.state.root, "device_enrolment/codes"), null);
@@ -171,7 +171,7 @@ test("a code-maker scoped to Section 2 cannot mint a Section 1 device — and an
   const { db, auth } = await mcWith(2);
   assert.equal((await managerIdentity(db, auth)).section, 2);
   await assert.rejects(call(auth, { action: "createCode", name: "Sneaky", section: 1 }, db, adminDeps(db, [4821])),
-    /only make codes for Section 2/);
+    /only make codes for your own division/);
   assert.equal((await call(auth, { action: "createCode", name: "Fine", section: 2 }, db, adminDeps(db, [4821]))).person.section, 2);
   assert.equal((await call(auth, { action: "createCode", name: "Old bundle" }, db, adminDeps(db, [7305]))).person.section, 2);
 });
@@ -181,5 +181,5 @@ test("the code-maker's section is read from the PERSON RECORD, never trusted fro
   const forged = { ...auth, token: { ...auth.token, section: 1 } };
   assert.equal((await managerIdentity(db, forged)).section, 2);
   await assert.rejects(call(forged, { action: "createCode", name: "Sneaky", section: 1 }, db, adminDeps(db, [4821])),
-    /only make codes for Section 2/);
+    /only make codes for your own division/);
 });

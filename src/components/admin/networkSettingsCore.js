@@ -41,6 +41,19 @@ export function productOverrideUpdate(registry, productId, hub, nowMs, uid) {
   return { ok: true, updates: { [`${NETWORK_PATH}/productOverrides/${SWITCHABLE_STORE}/${productId}`]: hub, ...stamp(nowMs, uid) } };
 }
 
+// A division's name (/network/sections/{n}/name). The number is the section —
+// fixed, it is what the wall and every stamp key on; only the name is the
+// owner's. Trimmed; 1–40 characters.
+export const SECTION_NAME_MAX = 40;
+export function sectionNameUpdate(section, name, nowMs, uid) {
+  const n = Number(section);
+  if (n !== 1 && n !== 2) return fail("There are two divisions.");
+  const clean = typeof name === "string" ? name.trim().replace(/\s+/g, " ") : "";
+  if (!clean) return fail("A division needs a name.");
+  if (clean.length > SECTION_NAME_MAX) return fail(`Keep the name to ${SECTION_NAME_MAX} characters.`);
+  return { ok: true, updates: { [`${NETWORK_PATH}/sections/${n}/name`]: clean, ...stamp(nowMs, uid) } };
+}
+
 // `creditScopeSince` is the moment section scope began. Owed money recorded
 // BEFORE it stays shared after the switch: a debt charged at Pine and paid at
 // Marathon PE while everything was shared must not come back as "owing in
@@ -86,6 +99,7 @@ export function seedUpdate(rawNetwork, stockLocations, nowMs, uid) {
       }
     }
   };
+  fill("sections", raw.sections, seed.sections);
   fill("locations", raw.locations, seed.locations);
   fill("backStock", raw.backStock, seed.backStock);
   fill("posStores", raw.posStores, seed.posStores);

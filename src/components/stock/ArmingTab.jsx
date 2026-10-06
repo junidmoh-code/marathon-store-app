@@ -48,6 +48,7 @@ import { seatingRows } from "./seatingCore";
 import { SeatRow } from "./SeatingTab";
 import { PhotoThumb, PhotoLightbox, Badge } from "./healthWidgets";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGhost, input, tabOn, tabOff } from "./ui";
+import { sectionName } from "../../utils/networkRegistry";
 
 // Hub 2 alone holds over three thousand armed products. Rendering them is ~30
 // DOM nodes each and a locked phone.
@@ -270,7 +271,7 @@ export default function ArmingTab({ products, viewer, flash }) {
           {pairSections.map((s) => (
             <button key={s} onClick={() => { setSectionPick(s); setCtx(null); setOpenPid(""); }} aria-pressed={section === s}
                     style={section === s ? tabOn : tabOff}>
-              {network.sections?.[s]?.name || `Section ${s}`}
+              {sectionName(network, s)}
             </button>
           ))}
         </div>

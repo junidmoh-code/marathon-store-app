@@ -26,20 +26,20 @@ describe("cardsBySection", () => {
 
   it("SECTION 2, AS TODAY: a Section 2 viewer gets ONE group — the Section 2 tills, in label order", () => {
     const groups = cardsBySection(cards, SEED_REGISTRY, [2]);
-    expect(shape(groups)).toEqual([[2, "Section 2", ["Marathon Till 1", "Marathon Till 2", "Trophy Till 1"]]]);
+    expect(shape(groups)).toEqual([[2, "Marathon", ["Marathon Till 1", "Marathon Till 2", "Trophy Till 1"]]]);
     // The same cards, in the same order, captureCards alone gives for those stores.
     expect(groups[0].cards).toEqual(captureCards({ A1: ESTATE.A1, A2: ESTATE.A2, T1: ESTATE.T1 }));
   });
 
   it("a Section 1 viewer gets Pine and both Concrete tills, and nothing of Section 2", () => {
     expect(shape(cardsBySection(cards, SEED_REGISTRY, [1])))
-      .toEqual([[1, "Section 1", ["Concrete Till 1", "Concrete Till 2", "Pine Till 1"]]]);
+      .toEqual([[1, "Concrete", ["Concrete Till 1", "Concrete Till 2", "Pine Till 1"]]]);
   });
 
   it("a viewer of both gets both groups, Section 2 first", () => {
     expect(shape(cardsBySection(cards, SEED_REGISTRY, [1, 2]))).toEqual([
-      [2, "Section 2", ["Marathon Till 1", "Marathon Till 2", "Trophy Till 1"]],
-      [1, "Section 1", ["Concrete Till 1", "Concrete Till 2", "Pine Till 1"]],
+      [2, "Marathon", ["Marathon Till 1", "Marathon Till 2", "Trophy Till 1"]],
+      [1, "Concrete", ["Concrete Till 1", "Concrete Till 2", "Pine Till 1"]],
     ]);
   });
 
@@ -75,12 +75,12 @@ describe("storeGroups — the settings sheet's store picker", () => {
   ];
   it("groups by the section the callable sent, Section 2 first, order kept inside a group", () => {
     expect(storeGroups(stores, SEED_REGISTRY).map((g) => [g.name, g.stores.map((s) => s.storeId)]))
-      .toEqual([["Section 2", ["pe", "trophy"]], ["Section 1", ["pine", "concrete"]]]);
+      .toEqual([["Marathon", ["pe", "trophy"]], ["Concrete", ["pine", "concrete"]]]);
   });
   it("an older callable that sends no section is grouped by the registry instead", () => {
     const bare = stores.map(({ section: _s, ...rest }) => rest);
     expect(storeGroups(bare, SEED_REGISTRY).map((g) => [g.name, g.stores.map((s) => s.storeId)]))
-      .toEqual([["Section 2", ["pe", "trophy"]], ["Section 1", ["pine", "concrete"]]]);
+      .toEqual([["Marathon", ["pe", "trophy"]], ["Concrete", ["pine", "concrete"]]]);
   });
   it("a store neither knows goes last, under Other — never dropped from the picker", () => {
     const g = storeGroups([...stores, { storeId: "zzz", label: "Zed" }], SEED_REGISTRY);

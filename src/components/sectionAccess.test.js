@@ -85,8 +85,8 @@ describe("reading a stored record", () => {
     expect(sectionChoiceOf({ sections: { 1: "true" } })).toBe("");
   });
   it("names a section the way the registry does", () => {
-    expect(sectionName(SEED_REGISTRY, 1)).toBe("Section 1");
-    expect(sectionName(SEED_REGISTRY, 2)).toBe("Section 2");
-    expect(sectionName(null, 2)).toBe("Section 2");
+    expect(sectionName(SEED_REGISTRY, 1)).toBe("Concrete");
+    expect(sectionName(SEED_REGISTRY, 2)).toBe("Marathon");
+    expect(sectionName(null, 2)).toBe("Marathon");
   });
 });

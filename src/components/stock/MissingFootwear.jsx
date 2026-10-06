@@ -55,7 +55,7 @@ import { readPathOnce } from "../../offline/localReads";
 import { stampRecord } from "../../device/deviceStamp";
 import { useMySections } from "../../utils/useMySections";
 import { hubIds, liveSections, centralId, nameOf } from "./sectionRouting";
-import { policyKeyFor } from "../../utils/networkRegistry";
+import { policyKeyFor, sectionName } from "../../utils/networkRegistry";
 
 // THE HUBS COME FROM THE NETWORK REGISTRY, ONE SECTION AT A TIME (see the
 // component): DETECTION scope is that section's hubs — "missing" = zero units
@@ -336,7 +336,7 @@ export default function MissingFootwear({ products = [] }) {
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
       {sectionChoices.map((s) => (
         <button key={s} onClick={() => { setSectionPick(s); setOpenPid(null); setSolvePid(null); }} style={destChip(section === s)}>
-          {network.sections?.[s]?.name || `Section ${s}`} · {hubIds(network, { section: s }).map((h) => nameOf(h, network)).join(" + ")}
+          {sectionName(network, s)} · {hubIds(network, { section: s }).map((h) => nameOf(h, network)).join(" + ")}
         </button>
       ))}
     </div>
