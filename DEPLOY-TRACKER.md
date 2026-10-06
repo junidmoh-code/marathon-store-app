@@ -434,3 +434,27 @@ not live surfaces — re-run them with the sentinel before trusting an old numbe
 - Never "fix" a filing `storeId` to match a placement. That strands every batch filed under the old one.
 - The batch record's capture-time `expected` / `varianceCents` still join the row's filing till. No screen reads them. If anything ever does (a nightly email, an alarm), compute them by placement first.
 - Enter moves from Card machines → ⚙ → **Moved** (`cardTerminalAdmin` action `move`, deployed by name). An Edit of a machine standing in another store is refused on purpose.
+
+---
+
+## Sections: one registry decides who supplies whom, and a `live` flag decides what runs by itself (6 Oct 2026, #699 / #700, POS #484 / #488)
+
+**What's true:** the network is Central plus two sections. Section 1 is Marathon Pine, Concrete, Hub 3 and the Concrete Stockroom. Section 2 is Marathon PE, Trophy, Hub 1 and Hub 2. The registry is the small `/network` node over a built-in seed (`src/utils/networkRegistry.js`); the same body is in `functions/lib/network-registry.cjs` and the POS's `src/shared/networkRegistry.js`, pinned equal by hash. Stock never moves directly between sections. Every Section 1 location shipped `live: false`.
+
+**Live since 6 Oct 2026:** store `30706a00`, POS `abfc6b0`. `/network` was still unseeded at deploy, so both apps ran on the seed.
+
+**Still to do by the owner, in this order:** paste block A of `docs/SECTIONS-RULES.md`; Home → Network → Set up the network; paste block B.
+
+**What a change must respect:**
+- A new list of locations reads the registry. Anything automatic asks `autoRouteAllowed` or `isLive`; anything a person does by hand must keep working for a location that is not live.
+- The policy template (`src/components/stock/policyTemplate.js`) is a VIEW. Saving it to `/config/refillEngine` would freeze a follower's numbers. Saves go through `setCategoryPolicy`, which reads the raw node.
+- The snapshot tests (`functions/test/sections-routing-snapshot.test.cjs`, `src/components/stock/sectionsRoutingSnapshot.test.js`) are the Section 2 gate. Their golden files were generated on untouched main from a synthetic fixture and are never regenerated to make a test pass.
+- Sneaker returns go back to the cell the sale deducted, else the hub in the returning store's own section that holds most. Never across the wall.
+- No Receipt Return did not ship with this (POS #485 is held). The Network card deliberately offers no no-slip-returns switch.
+- Section scope for owed money starts at `/network/creditScopeSince`, which the Network card writes when the scope is switched to "section". Earlier or unstamped records stay shared.
+
+**Before Hub 3 is made live:** Source sale-row answers are keyed by date, product and size with no hub term. Two live reactive hubs would share one answer cell. Add the hub to the key first.
+
+**Not decided:** which building Concrete and its stockroom are in (`transitLanes.BUILDING` has no entry, so moves from Central are one step). Concrete and its stockroom are excluded from online availability as a default, not an owner ruling; the Shopify runner's checkout on the mini has not been pulled, which changes nothing while they hold no stock.
+
+**Deploy note:** `arrearsReminder` (POS) has never been deployed. A by-name deploy on 6 Oct created it by mistake; it was deleted within a minute and never ran. Leave it out of deploy lists until the owner asks for reminders.
