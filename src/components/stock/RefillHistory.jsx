@@ -128,7 +128,9 @@ export default function RefillHistory({ products = [] }) {
   // Only the added locations this account's sections include.
   const { registry: historyNet } = useNetwork();
   const { canSee: canSeeLoc } = useMySections();
-  const hubStep = hubStepsFor(historyNet, canSeeLoc)[hubIdx];
+  // Memoised: a fresh step object each render would re-run every scan below.
+  const hubSteps = useMemo(() => hubStepsFor(historyNet, canSeeLoc), [historyNet, canSeeLoc]);
+  const hubStep = hubSteps[hubIdx];
 
   // Queued = open but behind the next release window — same config, same pure
   // gate as the pick queue.
