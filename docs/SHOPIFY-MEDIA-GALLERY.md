@@ -138,24 +138,38 @@ When an edit CHANGES position 0, `/products/{pid}` gets `photoUrl` (+
 thumbnail is rebuilt (appPhoto.js), exactly the AI Studio approve write.
 Extras and videos never touch the app photo.
 
-### 2.5 Reconciler (scripts/shopify/mediaSync.mjs)
+### 2.5 Reconciler (scripts/shopify/mediaSync.mjs) + the video sender
 
-* Per item: photos by URL, videos by staged upload — bytes streamed from
-  Storage, SHA-256-checked in flight, **sent exactly once** (resourceUrl
-  recorded on acceptance; later ticks only attach and poll).
-* State: `/shopify_sync/{pid}/media/items/{itemId}` (Shopify media id,
-  status, resourceUrl, attempts) + `/shopify_publish/{pid}/mediaShopify`
+* Per item: photos by URL (Shopify fetches them), videos by staged upload.
+* **Video bytes move only in `media-video-runner.mjs`** — its own launchd job
+  (`com.marathon.shopifymediavideo`, KeepAlive + ThrottleInterval 120, own
+  lockfile), one video per run. It streams the Storage object to Shopify,
+  SHA-256-checked in flight, and records the `resourceUrl` the moment Shopify
+  accepts it: **sent exactly once**. The reconcile tick never moves bytes; it
+  attaches what has arrived and polls. A run killed mid-transfer recorded
+  nothing and sends again (the bytes never landed); 3 real failures → failed.
+* State: `/shopify_sync/{pid}/media/items/{key}` (Shopify media id, status,
+  resourceUrl, attempts; written field by field so the tick and the sender
+  never overwrite each other) + `/shopify_sync/{pid}/media/inflight` (a create
+  whose answer was lost, adopted next tick) + `/shopify_publish/{pid}/mediaShopify`
   (what the page shows) + `mediaSyncedSig` + `/shopify_sync/_mediaPending`.
-* Order: ours in list order first (productReorderMedia), anything not ours
-  after, untouched. Removal: only items this system created that left the
-  list, plus the pre-tracking set the old path attached (proven by its
-  `mediaFingerprint`), removed LAST so a live product is never imageless.
-* Publish path: photos READY before going live; videos queued.
-* Live path: runs after the intent batch and sweeps; `VIDEO_UPLOADS_PER_TICK
-  = 1`; a settled product costs no Shopify call (sig compare) and an idle
-  re-run writes nothing anywhere.
+* Order: ours that are READY, in list order, first (productReorderMedia);
+  anything not ours after, untouched. Alt text = the validated listing name,
+  re-labelled on rename (fileUpdate).
+* Removal: only items this system created that left the list, plus the
+  pre-tracking photo set the old path attached — snapshotted into the record on
+  first contact, IMAGE-only, count-checked against `mediaCount` (stamped beside
+  `mediaFingerprint` from now on). On a live product nothing is removed until
+  every listed photo is READY, so the shop never shows it without photos.
+* FAILED photos are retried (3×); a FAILED video is never re-sent.
+* Publish path: photos READY before going live; videos queued for the sender.
+* Live path: runs after the intent batch and sweeps, rotating through the
+  pending set; a settled product costs no Shopify call (sig compare) and an
+  idle re-run writes nothing anywhere.
 * Videos Shopify cannot take (> 1 GB, > 10 min, > 4K, other formats) are kept
   and never pushed; the strip says "kept, too large for Shopify".
+* `productCreateMedia` / `productDeleteMedia` are deprecated but still served
+  in API 2026-07 (introspected 6 Oct 2026); the existing photo path uses them too.
 
 ### 2.6 Storefront (theme/snippets/marathon-card.liquid + marathon-storefront.js/css)
 
