@@ -173,7 +173,9 @@ describe("setPublishPhotos — the publishing photo set", () => {
     // right host, WRONG bucket — another project's public URL must not ride the push
     expect(publishPhotoListProblem(["https://firebasestorage.googleapis.com/v0/b/strangers-app.appspot.com/o/x.jpg"])).toMatch(/Firebase Storage/);
     expect(publishPhotoListProblem(["not a url"])).toMatch(/invalid URL/);
-    expect(publishPhotoListProblem(Array.from({ length: 21 }, (_, i) => FS(String(i))))).toMatch(/At most 20/);
+    // Shopify's own per-product cap (250), not an invented lower one (Junid, 6 Oct 2026).
+    expect(publishPhotoListProblem(Array.from({ length: 250 }, (_, i) => FS(String(i))))).toBeNull();
+    expect(publishPhotoListProblem(Array.from({ length: 251 }, (_, i) => FS(String(i))))).toMatch(/At most 250/);
   });
   it("refuses when the server's photo set differs from the basis this edit was computed from", async () => {
     // Two sessions: the server already holds a 3-photo set; this edit was

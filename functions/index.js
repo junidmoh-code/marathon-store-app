@@ -3963,6 +3963,13 @@ exports.deviceEnrolmentEmail = require("./deviceEnrolment/deviceEnrolment.js").d
 //   firebase deploy --only functions:setProductType
 exports.setProductType = require("./productType/setProductType.js").setProductType;
 
+// ─── SHOPIFY PUBLISHING — mediaHashClaim (the wrong-photo guard) ─────────────
+// Every new publishing photo/video is hashed on the phone and claimed here
+// before upload; an exact file already on a DIFFERENT product is refused and
+// that product named. Index: /shopify_sync/_mediaHash/{sha256}. lib/media-hash.cjs.
+//   firebase deploy --only functions:mediaHashClaim
+exports.mediaHashClaim = require("./mediaHash/mediaHashClaim.js").mediaHashClaim;
+
 // ─── CARD RECON — syncCardReconClaim (the permission becomes a token claim) ──
 // Slip photos under Storage cardRecon/** carry masked PANs, auth codes and RRNs
 // for every transaction in a batch. Storage rules cannot read RTDB, so the

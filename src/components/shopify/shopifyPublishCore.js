@@ -7,7 +7,7 @@
 import { triggersInText, cleanTitleFor } from "../../utils/shopifyTriggers.js";
 import { NAME_PROPOSAL_KEY, isPendingProposal, isRefusedProposal, validateVisionName } from "../../utils/visionNaming.js";
 import { isPriceRecord } from "../../utils/productCategory.js";
-import { normalizePhotoList, CONDITIONS } from "./publishShared.js";
+import { CONDITIONS, resolveMediaList, photoUrlsOf } from "./publishShared.js";
 import { staleHandleBlock } from "../../utils/shopifyHandle.js";
 
 // Condition values, exactly these three (owner spec 2026-08-13). NO default:
@@ -189,21 +189,19 @@ export function blockStatus(node, effectiveName) {
 }
 
 // ─── PUBLISHING PHOTOS ───────────────────────────────────────────────────────
-// The photos a publish would ship, in order, first = primary. Photos are a
-// PUBLISHING concern living at /shopify_publish/{pid}/photos — /products is
-// never written. Absent that node, the set is the record's own photoUrl +
-// gallery in the same order and de-duplication the push scripts use
-// (media.mjs) and the app's viewers use (productPhotos in App.jsx).
+// The photos a publish would ship, in order, first = primary. A projection of
+// the one media list (publishShared.resolveMediaList): the saved list when
+// there is one, else the record's own photoUrl + gallery in the same order and
+// de-duplication the push scripts use (media.mjs) and the app's viewers use
+// (productPhotos in App.jsx). `custom` = something was saved for publishing.
 export function effectivePhotoList(product, node) {
-  const custom = normalizePhotoList(node?.photos);
-  if (custom) return { photos: custom, custom: true };
-  const out = [];
-  const push = (u) => {
-    if (typeof u === "string" && u.trim() !== "" && !out.includes(u)) out.push(u);
-  };
-  push(product?.photoUrl);
-  for (const u of Array.isArray(product?.gallery) ? product.gallery : []) push(u);
-  return { photos: out, custom: false };
+  const { items, source } = resolveMediaList(node, product);
+  return { photos: photoUrlsOf(items), custom: source !== "record" };
+}
+
+/** The whole ordered media list (photos AND videos) — see resolveMediaList. */
+export function effectiveMediaList(product, node) {
+  return resolveMediaList(node, product);
 }
 
 // ─── REVIEW-FLOW STATE (the full-page tab) ───────────────────────────────────
