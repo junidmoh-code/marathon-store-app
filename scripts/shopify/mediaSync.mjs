@@ -214,9 +214,11 @@ export function recordPatch(before, after) {
     const a = after?.[k];
     if (JSON.stringify(b) === JSON.stringify(a)) continue;
     if (a === undefined) { patch[`items/${k}`] = null; continue; }
-    if (b === undefined) { patch[`items/${k}`] = a; continue; }
-    for (const f of new Set([...Object.keys(b), ...Object.keys(a)])) {
-      if (JSON.stringify(b[f]) !== JSON.stringify(a[f])) patch[`items/${k}/${f}`] = a[f] === undefined ? null : a[f];
+    // Field by field even for a NEW entry, so a field another writer set in
+    // between (the video sender's resourceUrl) is never overwritten.
+    for (const f of new Set([...Object.keys(b || {}), ...Object.keys(a)])) {
+      if (b === undefined && a[f] === undefined) continue;
+      if (JSON.stringify(b?.[f]) !== JSON.stringify(a[f])) patch[`items/${k}/${f}`] = a[f] === undefined ? null : a[f];
     }
   }
   return patch;
@@ -523,8 +525,11 @@ export async function syncProductMedia({ graphql, db, pid, gid, node, product, t
     if (relabel.length) { await setAlt(graphql, relabel); writes += 1; log(`  media: alt text set on ${relabel.length}`); }
     // 6. Removal — LAST, and on a live product only once every photo in the
     //    list is READY there, so the shop never shows it without its photos.
-    const photosReady = desired.filter((m) => m.type === "photo")
-      .every((m) => byId.get(rec[m.id]?.shopifyMediaId)?.status === "READY");
+    // A photo that failed for good (terminal) cannot block removals for ever;
+    // the PRIMARY must be READY, and every other photo still being tried too.
+    const livePhotos = desired.filter((m) => m.type === "photo" && !rec[m.id]?.terminal);
+    const photosReady = desired[0] && !rec[desired[0].id]?.terminal &&
+      livePhotos.every((m) => byId.get(rec[m.id]?.shopifyMediaId)?.status === "READY");
     const toRemove = Object.entries(rec).filter(([, r]) => r.remove && r.shopifyMediaId && byId.has(r.shopifyMediaId));
     if (toRemove.length && (mode === "on" || photosReady)) {
       await deleteMedia(graphql, gid, toRemove.map(([, r]) => r.shopifyMediaId));
