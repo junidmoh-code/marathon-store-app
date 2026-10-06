@@ -58,7 +58,7 @@ describe("the gate", () => {
     const { tree } = mount(OWNER);
     expect(useNetworkMock).toHaveBeenCalledWith(true);
     const locs = tree.root.findAll((n) => n.props && n.props["data-loc"]).map((n) => n.props["data-loc"]);
-    expect(locs).toEqual(["marathon-pine", "concrete", "hub3", "concrete-stockroom", "marathon-pe", "trophy", "hub1", "hub2"]);
+    expect(locs).toEqual(["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3", "concrete-stockroom"]);
     expect(text(rowButton(tree, "hub3"))).toBe("Not live");
     expect(text(rowButton(tree, "hub2"))).toBe("Live");
   });

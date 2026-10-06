@@ -841,8 +841,8 @@ describe("hubs from the registry, by section", () => {
     expect(labelsIn(groups[0])).toEqual(["Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda"]);
     expect(labelsIn(groups[1])).toEqual(["Hub 3 alerts for Ayanda", "Concrete Stockroom alerts for Ayanda"]);
     const t = flattenTree(tree);
-    expect(t).toContain("Section 2");
-    expect(t).toContain("Section 1");
+    expect(t).toContain("Marathon");
+    expect(t).toContain("Concrete");
   });
 
   it("a hub the owner adds to the registry gets a switch with no code change", async () => {
@@ -875,7 +875,7 @@ describe("hubs from the registry, by section", () => {
     expect(by["Hub 2"].props.disabled).toBe(true);
     expect(by["Hub 3"].props.disabled).toBe(false);
     expect(by["Concrete Stockroom"].props.disabled).toBe(false);
-    expect(flattenTree(tree)).toContain("Section 1 only");
+    expect(flattenTree(tree)).toContain("Concrete only");
     // The guard is in the handler too — a disabled attribute is not enforcement.
     await act(async () => { by["Hub 1"].props.onClick(); });
     expect(updateMock).not.toHaveBeenCalled();

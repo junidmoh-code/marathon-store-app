@@ -22,7 +22,7 @@
 // has one, and otherwise sees both — every account that predates sections.
 //
 // Pure: no firebase, no React.
-import { sectionsFor } from "../utils/networkRegistry";
+import { sectionsFor, sectionName as registrySectionName, sectionLabel as registrySectionLabel } from "../utils/networkRegistry";
 
 function isObj(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -78,7 +78,12 @@ export function sectionPatch(choice) {
   throw new Error(`section choice must be "1", "2" or "both" — got "${choice}"`);
 }
 
-/** "Section 1" — the registry's own name for a section. */
+/** "Marathon" — the registry's own name for a section (the owner's, Network card). */
 export function sectionName(registry, n) {
-  return (registry && registry.sections && registry.sections[n] && registry.sections[n].name) || `Section ${n}`;
+  return registrySectionName(registry, n);
+}
+
+/** The same name for a PICKER beside store names: "Concrete group", never just "Concrete". */
+export function sectionLabel(registry, n) {
+  return registrySectionLabel(registry, n);
 }

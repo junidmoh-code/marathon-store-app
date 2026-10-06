@@ -21,7 +21,7 @@
 //
 // Pure: no firebase, no clock, no React. The caller passes the registry
 // (currentNetwork() outside React, useNetwork() inside).
-import {
+import { sectionName,
   locationOf, sectionOf, hubsOf, storesOf, backStockFor,
   wallCheck, wallMessage, autoRouteAllowed, locationName,
 } from "./networkRegistry";
@@ -118,7 +118,6 @@ export function hubLabel(network, hub) {
 // Section 2 first: Hub 1 and Hub 2 stay where they have always been on every
 // picker; Section 1 follows.
 const bySectionLegacyOrder = (a, b) => (b.section - a.section) || (a.sort - b.sort) || a.id.localeCompare(b.id);
-const sectionName = (network, n) => (network && network.sections && network.sections[n] && network.sections[n].name) || `Section ${n}`;
 
 function grouped(network, locs, canSee, toRow) {
   const out = [];

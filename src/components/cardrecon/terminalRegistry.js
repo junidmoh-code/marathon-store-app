@@ -21,7 +21,7 @@
 //
 // Pure: no React, no Firebase, no clock. Fuzzed against its server half in
 // terminalRegistry.test.js.
-import { sectionOf } from "../../utils/networkRegistry.js";
+import { sectionOf, sectionName } from "../../utils/networkRegistry.js";
 
 /** `retiredAt` — the stamp — IS the flag; a boolean beside it could disagree. */
 export function isRetiredTerminal(row) {
@@ -109,7 +109,7 @@ export function cardsBySection(cards, registry, sections) {
     let g = groups.find((x) => x.section === section);
     if (!g) {
       const name = section === null ? null
-        : (registry && registry.sections && registry.sections[section] && registry.sections[section].name) || `Section ${section}`;
+        : sectionName(registry, section);
       g = { section, name, cards: [] };
       groups.push(g);
     }

@@ -43,7 +43,7 @@ import { functions } from "../../firebase";
 import { FONT } from "./cardReconStyles";
 import { captureMode, isRetiredTerminal } from "./terminalRegistry";
 import { useNetwork } from "../../utils/useNetwork";
-import { sectionOf } from "../../utils/networkRegistry";
+import { sectionOf, sectionName } from "../../utils/networkRegistry";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 
 /**
@@ -59,7 +59,7 @@ export function storeGroups(stores, registry) {
     let g = groups.find((x) => x.section === section);
     if (!g) {
       const name = section === null ? "Other"
-        : (registry && registry.sections && registry.sections[section] && registry.sections[section].name) || `Section ${section}`;
+        : sectionName(registry, section);
       g = { section, name, stores: [] };
       groups.push(g);
     }

@@ -36,7 +36,7 @@ import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing, cardSection } from "./missingProductsCore";
 import { useMySections } from "../../utils/useMySections";
-import { isLive } from "../../utils/networkRegistry";
+import { isLive, sectionName } from "../../utils/networkRegistry";
 import { centralId, isCentral, storeIds, solveHubFor, solveHubsOfSection } from "./sectionRouting";
 import { engineConfigView } from "./policyTemplate";
 import { solveBlocks, allocationOrder, planSectionSolve, mergeSolveUpdates, undoablePaths } from "./solveSections";
@@ -882,7 +882,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       {sectionChoices.map((sec) => (
         <button key={sec} onClick={() => { setSectionPick(sec); setOpenPid(null); setSolvePid(null); setHidePid(null); exitSelect(); }}
                 style={destChip((listSection || HOME_SECTION) === sec)}>
-          {network.sections?.[sec]?.name || `Section ${sec}`}: stranded
+          {sectionName(network, sec)}: stranded
         </button>
       ))}
     </div>

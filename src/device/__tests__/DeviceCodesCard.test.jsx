@@ -127,8 +127,8 @@ describe("DeviceCodesCard", () => {
     const { call } = fakeServer();
     let r; act(() => { r = TestRenderer.create(<DeviceCodesCard isOwner call={call} onExit={() => {}} />); });
     await flush();
-    expect(JSON.stringify(pick(r, 1).props.children)).toContain("Section 1");
-    expect(JSON.stringify(pick(r, 2).props.children)).toContain("Section 2");
+    expect(JSON.stringify(pick(r, 1).props.children)).toContain("Concrete group");
+    expect(JSON.stringify(pick(r, 2).props.children)).toContain("Marathon");
     expect(pick(r, 2).props["aria-checked"]).toBe(true);
     expect(pick(r, 1).props["aria-checked"]).toBe(false);
     // Nothing is typed for it: the only text input on the form is the name.
@@ -143,7 +143,7 @@ describe("DeviceCodesCard", () => {
     await makeCode(r, "Pine tablet");
     expect(calls.find((c) => c.action === "createCode")).toMatchObject({ name: "Pine tablet", section: 1 });
     expect(textOf(r)).toContain("The device will work in ");
-    expect(textOf(r)).toContain("Section 1");
+    expect(textOf(r)).toContain("Concrete group");
   });
 
   it("starts on the section of the code-maker's own shop, or of their own device", async () => {
@@ -176,9 +176,9 @@ describe("DeviceCodesCard", () => {
       const walk = (n) => (n == null ? "" : typeof n === "string" ? n : Array.isArray(n) ? n.map(walk).join("") : walk(n.children));
       return walk(r.toJSON().children.find((c) => JSON.stringify(c).includes(`"${attr}":"${id}"`)));
     };
-    expect(rowText("data-device-row", "dev-aaaaaaaa")).toContain("Android phone · Chrome · Section 1");
-    expect(rowText("data-device-row", "dev-bbbbbbbb")).toContain("Android phone · Chrome · Both sections");
-    expect(rowText("data-person-row", "p1")).toContain("Sipho · Section 2");
+    expect(rowText("data-device-row", "dev-aaaaaaaa")).toContain("Android phone · Chrome · Concrete group");
+    expect(rowText("data-device-row", "dev-bbbbbbbb")).toContain("Android phone · Chrome · Both divisions");
+    expect(rowText("data-person-row", "p1")).toContain("Sipho · Marathon");
   });
 
   it("when() reads like a person would say it", () => {

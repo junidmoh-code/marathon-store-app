@@ -114,7 +114,7 @@ describe("one screen: a block per section, a tick per store", () => {
     const tree = render();
     await open(tree);
     const text = textOf(tree);
-    expect(text).toMatch(/Carry atSection 1.*Marathon Pine.*Concrete.*Section 2.*Marathon PE.*Trophy/);
+    expect(text).toMatch(/Carry atConcrete.*Marathon Pine.*Concrete.*Marathon.*Marathon PE.*Trophy/);
     expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete", "Marathon PE", "Trophy"]);
     expect(ticked(tree)).toEqual(["Marathon PE"]);
     expect(boxes(tree).every((b) => !b.props.disabled)).toBe(true);
@@ -374,7 +374,7 @@ describe("the other section's list", () => {
     const stock = { ...stockWith(PLENTY), "marathon-pe": { [TEE]: { M: cell(1) } } };
     const tree = render({ stock });
     expect(textOf(tree)).toMatch(/No stranded products/);
-    await act(async () => { buttonSaying(tree, "Section 1").props.onClick(); });
+    await act(async () => { buttonSaying(tree, "Concrete").props.onClick(); });
     expect(textOf(tree)).toMatch(/Essentials Tee Olive/);
     await open(tree);
     expect(box(tree, "Marathon Pine").props.disabled).toBe(true);

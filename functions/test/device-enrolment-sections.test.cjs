@@ -95,7 +95,7 @@ test("the server refuses any section that is not 1 or 2 — and writes nothing",
   const db = fresh();
   for (const bad of [3, 0, "1", "2", "both", true, {}, [1], 1.5]) {
     await assert.rejects(call(OWNER, { action: "createCode", name: `X ${JSON.stringify(bad)}`, section: bad }, db),
-      /Section 1 or Section 2/, JSON.stringify(bad));
+      /Pick the device's division/, JSON.stringify(bad));
   }
   assert.equal(readAt(db.state.root, "device_enrolment/people"), null);
   assert.equal(readAt(db.state.root, "device_enrolment/codes"), null);

@@ -11,9 +11,12 @@ const CREDIT_SCOPES = Object.freeze(["shared", "section"]);
 
 const DEFAULT_NETWORK = Object.freeze({
   creditScope: "shared",
+  // The two divisions. The NAME is the owner's (Network card, stored at
+  // /network/sections/{n}/name); these are the seed. Sort puts Marathon, the
+  // division that has always traded, first in every list of divisions.
   sections: Object.freeze({
-    1: Object.freeze({ id: 1, name: "Section 1", sort: 1 }),
-    2: Object.freeze({ id: 2, name: "Section 2", sort: 2 }),
+    1: Object.freeze({ id: 1, name: "Concrete", sort: 2 }),
+    2: Object.freeze({ id: 2, name: "Marathon", sort: 1 }),
   }),
   locations: Object.freeze({
     central: Object.freeze({
@@ -165,6 +168,22 @@ function normLocation(id, raw, seed) {
   return out;
 }
 
+// The two sections: their ids are fixed (1, 2 — the wall and every stamp key on
+// them); only the name and the sort are the owner's. A blank or junk name falls
+// back to the seed's, so a section is never nameless.
+function normSections(raw) {
+  const r = isObj(raw) ? raw : (Array.isArray(raw) ? Object.fromEntries(raw.map((v, i) => [i, v])) : {});
+  const out = {};
+  for (const n of [1, 2]) {
+    const s = DEFAULT_NETWORK.sections[n];
+    const x = isObj(r[n]) ? r[n] : (isObj(r[String(n)]) ? r[String(n)] : {});
+    const name = typeof x.name === "string" && x.name.trim() ? x.name.trim().slice(0, 40) : s.name;
+    const sort = Number.isFinite(Number(x.sort)) && x.sort !== null && x.sort !== undefined && x.sort !== "" ? Number(x.sort) : s.sort;
+    out[n] = { id: n, name, sort };
+  }
+  return out;
+}
+
 // Raw /network value (or null) → a complete, validated registry. Never throws.
 function normalizeNetwork(raw) {
   const r = isObj(raw) ? raw : {};
@@ -219,7 +238,7 @@ function normalizeNetwork(raw) {
 
   return {
     creditScope: CREDIT_SCOPES.includes(r.creditScope) ? r.creditScope : DEFAULT_NETWORK.creditScope,
-    sections: DEFAULT_NETWORK.sections,
+    sections: normSections(r.sections),
     locations, aliasIndex, backStock, productOverrides,
   };
 }
@@ -441,6 +460,31 @@ function sectionsFor(registry, record, opts) {
   return [1, 2];
 }
 
+// ── DIVISION NAMES ───────────────────────────────────────────────────────────
+// sectionName: the owner's name for a section ("Marathon", "Concrete").
+// sectionLabel: the same name for a PICKER, where it sits beside store names.
+// A division named exactly like one of the stores ("Concrete" — the division
+// and the store) reads "Concrete group", so a chip never says the same word
+// twice for two different things.
+// sectionsInOrder: [n, …] by the section's sort, then its number.
+function sectionName(registry, n) {
+  const s = reg(registry).sections && reg(registry).sections[n];
+  return (s && s.name) || (DEFAULT_NETWORK.sections[n] && DEFAULT_NETWORK.sections[n].name) || `Section ${n}`;
+}
+
+function sectionLabel(registry, n) {
+  const name = sectionName(registry, n);
+  const k = aliasKey(name);
+  const clash = Object.values(reg(registry).locations).some((l) => l.type === "store" && aliasKey(l.name) === k);
+  return clash ? `${name} group` : name;
+}
+
+function sectionsInOrder(registry, list) {
+  const R = reg(registry);
+  const sortOf = (n) => (R.sections && R.sections[n] && Number.isFinite(R.sections[n].sort) ? R.sections[n].sort : n);
+  return [...(list === undefined ? [1, 2] : asList(list))].filter((n) => n === 1 || n === 2).sort((a, b) => sortOf(a) - sortOf(b) || a - b);
+}
+
 function canSeeLocation(registry, sections, anyLoc) {
   const l = locationOf(registry, anyLoc);
   if (!l) return false;
@@ -468,7 +512,12 @@ function seedPayload() {
   }
   const backStock = {};
   for (const s of Object.keys(DEFAULT_NETWORK.backStock)) backStock[s] = { ...DEFAULT_NETWORK.backStock[s] };
-  return { creditScope: DEFAULT_NETWORK.creditScope, locations, backStock, posStores: posStoreIndex(DEFAULT_NETWORK.locations) };
+  const sections = {};
+  for (const n of Object.keys(DEFAULT_NETWORK.sections)) {
+    const s = DEFAULT_NETWORK.sections[n];
+    sections[n] = { id: s.id, name: s.name, sort: s.sort };
+  }
+  return { creditScope: DEFAULT_NETWORK.creditScope, sections, locations, backStock, posStores: posStoreIndex(DEFAULT_NETWORK.locations) };
 }
 
 // POS store id → { location, section }. A DERIVED index, stored under
@@ -493,4 +542,5 @@ module.exports = {
   backStockFor, backStockHubsOf, storesServedBy, autoRouteAllowed,
   creditScopeOf, creditSpendableAt, issuingStamp, seedPayload, posStoreIndex,
   policyKeyFor, numberPrefixFor, sectionsFor, canSeeLocation,
+  sectionName, sectionLabel, sectionsInOrder,
 };

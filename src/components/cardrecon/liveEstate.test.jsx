@@ -97,7 +97,7 @@ describe("the capture screen against the live estate", () => {
     let tree;
     act(() => { tree = TestRenderer.create(<CardReconScreen onExit={() => {}} />); });
     const headings = tree.root.findAll((n) => n.type === "div" && n.props["data-section-heading"] !== undefined);
-    expect(headings.map((h) => [h.props["data-section-heading"], h.props.children])).toEqual([[2, "Section 2"], [1, "Section 1"]]);
+    expect(headings.map((h) => [h.props["data-section-heading"], h.props.children])).toEqual([[2, "Marathon"], [1, "Concrete"]]);
   });
 
   it("neither stamp hides a card — activeFrom and tillChangedAt are not filters", () => {

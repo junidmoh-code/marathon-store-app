@@ -11,6 +11,8 @@
 //                   section that issued it).
 //   Concrete at the till   takes cash, cashier price edits, which till is the
 //                   recycler — the POS's per-store switches.
+//   Division names  each section's name ("Marathon", "Concrete"), shown in
+//                   both apps wherever a section is named.
 //
 // OWNER ONLY, three layers: the tile, the route, and this component's own
 // check — and the RTDB rule on /network is what actually refuses the write.
@@ -23,12 +25,12 @@ import { ADMIN_EMAIL } from "../PermissionsContext";
 import { useNetwork } from "../../utils/useNetwork";
 import { usePathState } from "../stock/useStock";
 import { serverNowMs } from "../../utils/serverTime";
-import { listLocations, locationName } from "../../utils/networkRegistry";
+import { listLocations, locationName, sectionName, sectionsInOrder } from "../../utils/networkRegistry";
 import { allCategories } from "../../utils/productTaxonomy";
 import { useTaxonomy } from "./useTaxonomy";
 import {
   liveUpdate, categoryHubUpdate, productOverrideUpdate, creditScopeUpdate, seedUpdate, categoryRows,
-  SWITCHABLE_STORE, SWITCHABLE_HUBS,
+  sectionNameUpdate, SECTION_NAME_MAX, SWITCHABLE_STORE, SWITCHABLE_HUBS,
   POS_FLAGS, posSwitchState, posFlagUpdate, recyclerTillUpdate,
 } from "./networkSettingsCore";
 
@@ -63,6 +65,8 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
   const [msg, setMsg] = useState(null);
   const [confirmLive, setConfirmLive] = useState(null);
   const [search, setSearch] = useState("");
+  // The division whose name is being edited: { section, text } or null.
+  const [naming, setNaming] = useState(null);
 
   const categories = useMemo(() => allCategories(taxonomy), [taxonomy]);
   const hubOptions = SWITCHABLE_HUBS.map((h) => ({ value: h, label: locationName(registry, h) }));
@@ -116,7 +120,7 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
       {needsSeed && (
         <div style={box}>
           <div style={label}>First-time setup</div>
-          <p>Concrete and the Concrete Stockroom are not registered yet. This adds them, switched off, and changes nothing for Marathon PE, Trophy, Hub 1 or Hub 2.</p>
+          <p>Something the apps need is not registered yet (Concrete, the Concrete Stockroom, or the two division names). This adds only what is missing — new locations switched off — and changes nothing for Marathon PE, Trophy, Hub 1 or Hub 2.</p>
           <button type="button" style={btn} disabled={busy}
             onClick={() => send(seedUpdate(raw, stockLocs.value, now(), uid), "Network registered.")}>
             Set up the network
@@ -124,9 +128,24 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
         </div>
       )}
 
-      {[1, 2].map((section) => (
-        <div style={box} key={section}>
-          <div style={label}>Section {section}</div>
+      {sectionsInOrder(registry).map((section) => (
+        <div style={box} key={section} data-section={section}>
+          {naming && naming.section === section ? (
+            <form style={{ display: "flex", gap: 8, alignItems: "center" }}
+              onSubmit={(e) => { e.preventDefault(); const nm = naming.text; send(sectionNameUpdate(section, nm, now(), uid), `Division named ${nm.trim()}.`); setNaming(null); }}>
+              <input aria-label={`Name of division ${section}`} value={naming.text} maxLength={SECTION_NAME_MAX} autoFocus
+                onChange={(e) => setNaming({ section, text: e.target.value })}
+                style={{ ...btn, flex: 1, cursor: "text" }} />
+              <button type="submit" style={on} disabled={busy || !naming.text.trim()}>Save</button>
+              <button type="button" style={btn} onClick={() => setNaming(null)}>Cancel</button>
+            </form>
+          ) : (
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <div style={label}>{sectionName(registry, section)}</div>
+              <button type="button" style={btn} disabled={busy} aria-label={`Rename ${sectionName(registry, section)}`}
+                onClick={() => setNaming({ section, text: sectionName(registry, section) })}>Rename</button>
+            </div>
+          )}
           {listLocations(registry, { section }).map((l) => (
             <div style={row} key={l.id} data-loc={l.id}>
               <span>

@@ -340,7 +340,7 @@ async function handleAdmin(request, deps) {
     let section = null;
     if (rawSection !== undefined && rawSection !== null) {
       section = E.readSection(rawSection);
-      if (!section) throw new HttpsError("invalid-argument", "Pick the device's section: Section 1 or Section 2.");
+      if (!section) throw new HttpsError("invalid-argument", "Pick the device's division.");
     }
     // A code-maker who is themselves scoped to a section makes codes for THAT
     // section only — otherwise a Section 2 device could mint itself a way into
