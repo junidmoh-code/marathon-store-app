@@ -20,7 +20,9 @@ import { database, auth } from "../../firebase";
 import { serverNowMs } from "../../utils/serverTime";
 import { OFFERED_CONDITIONS } from "./shopifyPublishCore";
 import { APP_STORAGE_PREFIX, publishPhotoListProblem, precheck, approveNameMutator, applyProposalMutator,
-         dismissProposalMutator, publishMutator, desiredStateMutator, photosMutator, conditionMutator } from "./publishMutators";
+         dismissProposalMutator, publishMutator, desiredStateMutator, photosMutator, conditionMutator,
+         mediaMutator, appendMediaMutator } from "./publishMutators";
+import { storedMediaKey } from "./publishShared";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
 // and the Admin-SDK scripts (which use assertSafeSegment) address DIFFERENT
@@ -361,6 +363,29 @@ export async function setPublishPhotos(productId, node, photos) {
   const problem = precheck.photos(photos);
   if (problem) return { ok: false, message: problem };
   return decide(productId, node, photosMutator, { photos, basisPhotos: node?.photos });
+}
+
+/**
+ * Save the product's whole ordered MEDIA list (photos and videos; first = the
+ * primary photo) to /shopify_publish/{pid}/media, with `photos` rewritten as
+ * its photo projection in the same transaction. Allowed while the listing is
+ * ON — the reconciler carries it to Shopify on its next tick. Optimistically
+ * concurrent against `node` (the snapshot this edit was computed from).
+ */
+export async function setPublishMedia(productId, node, items) {
+  const problem = precheck.media(items);
+  if (problem) return { ok: false, message: problem };
+  return decide(productId, node, mediaMutator, { media: items, basisKey: storedMediaKey(node) });
+}
+
+/**
+ * Append finished uploads (bytes already in Storage) to the product's media
+ * list, computed from the server's current list inside the transaction.
+ * `product` supplies the record photo for a product with no list yet.
+ */
+export async function appendPublishMedia(productId, node, items, product) {
+  return decide(productId, node, appendMediaMutator,
+    { items, product: { photoUrl: product?.photoUrl ?? null, gallery: product?.gallery ?? null } });
 }
 
 /** Set the condition grade. Unblocks a blocked product (blocked → awaiting). */

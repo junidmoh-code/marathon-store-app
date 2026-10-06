@@ -54,6 +54,13 @@ import {
   validatePayload,
 } from "./compliance.mjs";
 import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } from "./media.mjs";
+// Photos AND videos, per item, in Junid's order — for every product whose node
+// carries the media list (publishShared.js). Nodes without one keep the
+// fingerprint path above, unchanged. See mediaSync.mjs.
+import {
+  hasMediaModel, syncProductMedia, needsLiveMediaSync, pushSigFor, desiredPushItems,
+  MEDIA_PENDING_PATH, MEDIA_PRODUCTS_PER_TICK,
+} from "./mediaSync.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable, readAvailable,
   TRACKED_VARIANT, untrackedVariants, enforceTracking, InventoryMovedError,
@@ -873,7 +880,7 @@ for (const { pid, want } of capped) {
       `query ($id: ID!) {
         product(id: $id) {
           id
-          media(first: 50) { pageInfo { hasNextPage } nodes { id } }
+          media(first: 250) { pageInfo { hasNextPage } nodes { id } }
           variants(first: 100) { pageInfo { hasNextPage } nodes {
             id title inventoryPolicy inventoryItem { id tracked }
           } }
@@ -923,7 +930,7 @@ for (const { pid, want } of capped) {
       if (priceErrs?.length) { const down = await failSafeUnpublish(gid); await refuse(pid, `variant price update userErrors: ${JSON.stringify(priceErrs)}`, { tookDown: down }); continue; }
       console.log(`  variant prices set to ${priceNow}`);
     }
-    if (bp.media?.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">50 media unpaginated — cannot verify the photo set", { tookDown: down }); continue; }
+    if (bp.media?.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">250 media unpaginated — cannot verify the photo set", { tookDown: down }); continue; }
     const mediaCount = bp.media?.nodes?.length ?? 0;
     // Shopify rehosts files, so what it holds can't be compared to the plan
     // by URL — the fingerprint recorded on /shopify_sync at attach time is
@@ -935,7 +942,31 @@ for (const { pid, want } of capped) {
     // ship "verified" forever (reviewer finding, 2026-08-14). This happens
     // while the product is off the sales channel, invisible to customers.
     const planFp = mediaFingerprint(mediaPlan);
-    if (mediaCount > 0 && mapNode?.mediaFingerprint === planFp && mediaCount === mediaPlan.length) {
+    // THE MEDIA LIST PATH (photos AND videos). The product is off the channel
+    // here, so this may create, reorder and remove freely; its photos are
+    // READY before it returns ok, and its videos are queued for the media
+    // phase at the end of the tick (never uploaded inside this batch).
+    const mediaModel = hasMediaModel(fresh);
+    if (mediaModel) {
+      let res;
+      try {
+        await preflightPhotoUrls(desiredPushItems(fresh, product).filter((m) => m.type === "photo").map((m) => m.url));
+        // A drift-visible product (published in the admin while confirmed off)
+        // must not show a half-replaced set — off the channel first, as the
+        // fingerprint path does. Idempotent; the ON path re-publishes at the end.
+        if (mediaCount > 0) await failSafeUnpublish(gid);
+        res = await syncProductMedia({ graphql, db, pid, gid, node: fresh, product, title, mode: "on",
+                                       log: (line) => console.log(line) });
+      } catch (e) {
+        res = { ok: false, error: String(e?.message || e) };
+      }
+      if (!res.ok) {
+        const down = await failSafeUnpublish(gid);
+        await refuse(pid, `media: ${res.error} — the next publish re-syncs the list`, { tookDown: down });
+        continue;
+      }
+      for (const n of res.notes || []) console.log(`  media note: ${n}`);
+    } else if (mediaCount > 0 && mapNode?.mediaFingerprint === planFp && mediaCount === mediaPlan.length) {
       // Verified: Shopify's media is exactly this plan, attached by us.
     } else {
       await preflightPhotoUrls(mediaPlan.map((m) => m.originalSource));
@@ -974,7 +1005,9 @@ for (const { pid, want } of capped) {
       // next run sees 0/partial media and re-attaches the reviewed set).
       try {
         const { count } = await attachMedia(graphql, gid, mediaPlan);
-        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
+        // The count rides beside the fingerprint so the media-list path can
+        // later prove exactly which set this attached (mediaSync.mjs).
+        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp, mediaCount: mediaPlan.length });
         console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
       } catch (e) {
         const down = await failSafeUnpublish(gid);
@@ -993,7 +1026,7 @@ for (const { pid, want } of capped) {
           id title handle vendor productType tags descriptionHtml
           seo { title description }
           options { name optionValues { name } }
-          media(first: 50) { pageInfo { hasNextPage } nodes { alt } }
+          media(first: 250) { pageInfo { hasNextPage } nodes { alt } }
           variants(first: 100) { nodes { sku } }
         }
       }`,
@@ -1001,7 +1034,7 @@ for (const { pid, want } of capped) {
     );
     const cp = canon.product;
     if (!cp) { await refuse(pid, `${gid} not found on the shop — deleted in admin mid-run?`); continue; }  // nothing there to take down
-    if (cp.media.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">50 media unpaginated — the FULL validator cannot see them all", { tookDown: down }); continue; }
+    if (cp.media.pageInfo?.hasNextPage) { const down = await failSafeUnpublish(gid); await refuse(pid, ">250 media unpaginated — the FULL validator cannot see them all", { tookDown: down }); continue; }
     const verdict = validatePayload({
       title: cp.title, handle: cp.handle, vendor: cp.vendor, productType: cp.productType,
       tags: cp.tags, descriptionHtml: cp.descriptionHtml, seo: cp.seo,
@@ -1164,7 +1197,12 @@ for (const { pid, want } of capped) {
     // Leave the intent unconsumed; the next run rebuilds the plan from the
     // new set (and re-syncs the media by fingerprint).
     let lastPlanFp = null;
-    try { lastPlanFp = mediaFingerprint(buildMediaPlan(product, title, normalizePhotoList(lastCheck?.photos))); } catch { /* unbuildable ⇒ changed */ }
+    if (mediaModel) {
+      // The media list's own signature: any change to what Shopify should hold.
+      lastPlanFp = hasMediaModel(lastCheck) && pushSigFor(lastCheck, product) === pushSigFor(fresh, product) ? planFp : null;
+    } else {
+      try { lastPlanFp = mediaFingerprint(buildMediaPlan(product, title, normalizePhotoList(lastCheck?.photos))); } catch { /* unbuildable ⇒ changed */ }
+    }
     if (lastPlanFp !== planFp) {
       results.push({ pid, ok: true, note: "photo set changed mid-run — left for the next run to apply the new set" });
       continue;
@@ -1518,6 +1556,85 @@ if (!ONLY && sweepDue && liveNow) {
     }
 }
 
+// ── LIVE MEDIA — photos and videos on products already on the shop ─────────
+// Junid edits a live product's photos and videos in the app; this carries the
+// change to Shopify on the next tick with no extra tap. Runs AFTER the intent
+// batch and the sweeps, so a video transfer never holds up a publish.
+//
+// WHO IS LOOKED AT, WITHOUT A SHOPIFY CALL: products in this tick's changed
+// set (`all` — a node edited in the app moves `updatedAt`) plus those carried
+// forward on /shopify_sync/_mediaPending (videos queued, uploading or
+// processing). For each, the node's own mediaSyncedSig is compared with its
+// list first; equal and not pending = nothing to do, zero Shopify calls.
+//
+// Video BYTES are never sent here — media-video-runner.mjs (its own launchd
+// job, one video at a time) sends them; this tick attaches what has arrived
+// and polls. A failure never fails the tick: the product stays pending and
+// the next tick resumes.
+let mediaCursor = null;
+if (COMMIT) try {
+  const pendingNow = (await db.ref(MEDIA_PENDING_PATH).get()).val() || {};
+  meter("media pending", pendingNow);
+  // Products edited in this window first, then the carried-forward set from
+  // a ROTATING start, so a long tail of videos still processing can never
+  // starve a product behind it.
+  const pendingKeys = Object.keys(pendingNow).sort();
+  const rot = scanState?.mediaCursor ? pendingKeys.findIndex((p) => p > scanState.mediaCursor) : 0;
+  const rotated = rot > 0 ? [...pendingKeys.slice(rot), ...pendingKeys.slice(0, rot)] : pendingKeys;
+  const candidates = [...new Set([
+    ...Object.entries(all).filter(([, n]) => hasMediaModel(n) && n?.state === "live").map(([p]) => p),
+    ...rotated,
+  ])].filter((p) => !ONLY || ONLY.has(p)).slice(0, MEDIA_PRODUCTS_PER_TICK);
+  if (candidates.length) mediaCursor = candidates[candidates.length - 1];
+  let touched = 0;
+  for (const pid of candidates) {
+    try {
+      assertSafeSegment(pid, "productId");
+      const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
+      const pending = !!pendingNow[pid];
+      // A product off the shop (or with no list) waits for its next publish,
+      // which re-plans everything — nothing is carried for it meanwhile.
+      if (!needsLiveMediaSync(node, null, { pending })) {
+        if (pending && !(node?.state === "live" && node?.liveState === "on" && hasMediaModel(node))) {
+          await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).remove();
+        }
+        continue;
+      }
+      const gid = (await db.ref(`shopify_sync/${pid}/shopifyProductId`).get()).val();
+      if (!gid) { console.error(`  ⚠ media ${pid}: live but no Shopify mapping — left for the next publish`); continue; }
+      const product = (await db.ref(`products/${pid}`).get()).val();
+      // The ON path's title rule, exactly: the reviewed name while it is
+      // trigger-free, else the lexicon's. Alt text is nothing else.
+      let title = null;
+      if (node.cleanName && isTriggerFree(node.cleanName)) title = String(node.cleanName).trim();
+      else if (!node.cleanName && product) { const named = cleanTitleFor(product); if (!named.needsAI) title = named.title; }
+      if (!title) { console.error(`  ⚠ media ${pid}: no valid listing name for the alt text — not pushed`); continue; }
+      console.log(`\n▶ ${pid} media (live)`);
+      touched += 1;
+      const res = await syncProductMedia({ graphql, db, pid, gid, node, product, title, mode: "live",
+                                           log: (line) => console.log(line) });
+      for (const n of res.notes || []) console.log(`  media note: ${n}`);
+      if (!res.ok && res.retryable === false) {
+        // Retrying cannot help (no valid name, no photo first): say so once
+        // and stop carrying it — the next edit of the list re-enters it.
+        console.error(`  ⚠ media ${pid}: ${res.error} — not pushed; fix the list or the name`);
+        await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).remove();
+      } else if (!res.ok) {
+        console.error(`  ⚠ media ${pid}: ${res.error} — kept pending, the next tick retries`);
+        await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).set(true);
+      } else {
+        console.log(`  media ${pid}: ${res.pending ? "in progress (carried to the next tick)" : "in step with Shopify"}`);
+      }
+    } catch (e) {
+      console.error(`  ⚠ media ${pid}: ${String(e?.message || e)} — kept pending, the next tick retries`);
+      try { await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).set(true); } catch { /* the next tick re-reads */ }
+    }
+  }
+  if (touched) console.log(`\nmedia: ${touched} product(s) synced (video bytes are sent by com.marathon.shopifymediavideo)`);
+} catch (e) {
+  console.error(`  ⚠ media phase failed (${String(e?.message || e)}) — the next tick retries`);
+}
+
 // RTDB stores no empty object — writing `{}` deletes the key, which is exactly
 // what an empty retry set should do, but the Admin SDK refuses `{}` in an
 // update payload. Say `null` and mean it.
@@ -1594,6 +1711,7 @@ if (COMMIT && !ONLY) {
     ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
     ...(inventoryCursorWritten ? { inventoryCursor } : {}),
     ...(markerCursorWritten ? { markerCursor } : {}),
+    ...(mediaCursor ? { mediaCursor } : {}),
     updatedAt: runStartedAt,
   });
 }

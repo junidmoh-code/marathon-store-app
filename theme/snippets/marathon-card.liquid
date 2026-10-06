@@ -253,7 +253,75 @@
         the whole product should be visible, so it keeps its real proportions.
         Lazy, because it is inside a panel that is hidden until opened.
       {%- endcomment -%}
-      {%- if product.featured_media -%}
+      {%- comment -%}
+        THE GALLERY (Junid, 6 Oct 2026): every photo AND video on the product,
+        in the order set in the app's Shopify Publishing (the reconciler pushes
+        that order; the first is always the primary photo, which is also the
+        grid tile above). Swipe sideways on a phone — native scroll-snap, no
+        library — or use the arrows on a desktop.
+
+        BANDWIDTH. Every image is lazy inside a panel hidden until opened. A
+        video is a POSTER (its lazy preview image) with a play button; the
+        <video> itself lives in an inert <template> and is only created when
+        the shopper taps play — preload="none", controls, playsinline (so an
+        iPhone plays it in the panel, not full screen), never autoplaying
+        before that tap. Swiping away or closing pauses it.
+
+        One item renders exactly as the single photo did before, with no
+        gallery chrome.
+      {%- endcomment -%}
+      {%- assign gallery_count = product.media.size -%}
+      {%- if gallery_count > 1 -%}
+        <div class="mc-gallery" data-mc-gallery>
+          <div class="mc-gallery__track" data-mc-gallery-track tabindex="0" role="region" aria-roledescription="carousel" aria-label="Photos and videos, {{ gallery_count }} items">
+            {%- for media in product.media -%}
+              <div class="mc-gallery__slide" data-mc-slide>
+                {%- case media.media_type -%}
+                  {%- when 'video' or 'external_video' -%}
+                    <button type="button" class="mc-gallery__play" data-mc-play aria-label="Play video {{ forloop.index }} of {{ gallery_count }}">
+                      {%- if media.preview_image -%}
+                        {{
+                          media.preview_image
+                          | image_url: width: 1000
+                          | image_tag:
+                            loading: 'lazy',
+                            widths: '400,600,800,1000',
+                            sizes: '(min-width: 750px) 460px, 92vw',
+                            class: 'mc-panel__photo',
+                            alt: img_alt
+                        }}
+                      {%- endif -%}
+                      <span class="mc-gallery__playicon" aria-hidden="true"></span>
+                    </button>
+                    <template data-mc-video>
+                      {%- if media.media_type == 'video' -%}
+                        {{ media | video_tag: controls: true, preload: 'none', playsinline: true, class: 'mc-panel__photo mc-gallery__video', image_size: '1000x' }}
+                      {%- else -%}
+                        {{ media | external_video_tag: class: 'mc-gallery__video' }}
+                      {%- endif -%}
+                    </template>
+                  {%- else -%}
+                    {%- if media.preview_image -%}
+                      {{
+                        media.preview_image
+                        | image_url: width: 1000
+                        | image_tag:
+                          loading: 'lazy',
+                          widths: '400,600,800,1000',
+                          sizes: '(min-width: 750px) 460px, 92vw',
+                          class: 'mc-panel__photo',
+                          alt: img_alt
+                      }}
+                    {%- endif -%}
+                {%- endcase -%}
+              </div>
+            {%- endfor -%}
+          </div>
+          <button type="button" class="mc-gallery__arrow mc-gallery__arrow--prev" data-mc-gallery-prev aria-label="Previous">&lsaquo;</button>
+          <button type="button" class="mc-gallery__arrow mc-gallery__arrow--next" data-mc-gallery-next aria-label="Next">&rsaquo;</button>
+          <p class="mc-gallery__count" data-mc-gallery-count aria-live="polite">1 / {{ gallery_count }}</p>
+        </div>
+      {%- elsif product.featured_media -%}
         {{
           product.featured_media.preview_image
           | image_url: width: 1000
@@ -318,7 +386,8 @@
         data-mc-add
         {% if sold_out %}disabled{% endif %}
       >{% if sold_out %}Sold out{% else %}Add to cart{% endif %}</button>
-      <a class="mc-panel__link" href="{{ product.url }}">View full details</a>
+      <p style="font-size:14px;line-height:1.5;margin:12px 0;">R99 delivery across South Africa. Free on orders from R1,000.</p>
+      <a class="mc-panel__link" href="{{ product.url }}">Product details &amp; condition</a>
       </div>
     </div>
   </div>

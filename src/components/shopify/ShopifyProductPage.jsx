@@ -24,16 +24,14 @@ import React, { useEffect, useMemo, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, BLUE_L, GLASS_SOLID, tabOn, tabOff, input as inputStyle, bBlue, bGray, bGreen } from "../stock/ui";
 import {
   CONDITIONS, OFFERED_CONDITIONS, checkCleanName, blockStatus, reviewStateFor, effectiveNameFor,
-  isOn, isPendingSwitch, canGoLive, effectivePhotoList, normalizedState,
+  isOn, isPendingSwitch, canGoLive, effectivePhotoList, effectiveMediaList, normalizedState,
   pendingProposal, proposalApplyBlocker,
 } from "./shopifyPublishCore";
 import { describeOff } from "./publishAudit";
-import { MAX_PUBLISH_PHOTOS, buildDescriptionHtml } from "./publishShared";
-import { approveName, publishProduct, setDesiredState, setCondition, setPublishPhotos,
+import { buildDescriptionHtml } from "./publishShared";
+import { approveName, publishProduct, setDesiredState, setCondition,
          applyNameProposal, dismissNameProposal } from "./shopifyPublishStore";
-import { uploadFileProblem, compressImageFile, uploadPublishPhoto } from "./photoTools";
-import AiStudioCard from "./AiStudioCard";
-import { usePermissions } from "../PermissionsContext";
+import MediaStrip from "./MediaStrip";
 
 // The uppercase section label used across the full-page views.
 const SECTION_LABEL = {
@@ -170,170 +168,9 @@ export function PublishConfirmDialog({ facts, busy, onCancel, onConfirm }) {
   );
 }
 
-// ─── PHOTO PICKER ────────────────────────────────────────────────────────────
-// The product's publishing photo set, always visible on this page (it was the
-// list row's on-demand strip until the page took over the editing). The
-// interaction pattern is the repo's own: the thumbnail strip (white active
-// border, dimmed rest) is GalleryLightbox's strip from App.jsx; tap a thumb
-// to select it, then act on it with chips — the tap-to-act chip treatment of
-// the AI Studio Style Kit reference grid. Reordering is the lightbox's ‹ ›
-// glyph pair on the SELECTED thumb (no drag interaction exists anywhere in
-// the repo to match). First photo is primary, marked.
-//
-// Every action writes the full ordered list to /shopify_publish/{pid}/photos
-// through the store's transaction — NEVER to /products, never a blind set().
-// Removing only removes from the publishing set (the product record and
-// Storage keep the file); the last photo cannot be removed (imageless never
-// ships). Locked while the listing is ON, like the name and condition.
-export function PhotoStrip({ product, node, locked, onChanged }) {
-  // Generating a photo SPENDS MONEY and is its own permission (`photo_generation`),
-  // separate from the one that opens this page. Reaching Shopify Publishing does
-  // not buy the right to spend, so the generate card is hidden unless the viewer
-  // actually holds it — a button that is always going to come back
-  // "permission-denied" from the function is worse than no button.
-  //
-  // This closes a show-and-fail that predates the split: generateProductPhotos
-  // was super-admin-email-only, so every stockRole admin who reached this page
-  // already saw a card that could never work for them.
-  const { hasPermission, isSuperAdmin } = usePermissions();
-  const canGenerate = isSuperAdmin || hasPermission("photo_generation");
-  const { photos, custom } = effectivePhotoList(product, node);
-  const [sel, setSel] = useState(null);
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState(null);
-  const [uploading, setUploading] = useState(false);
-  const fileRef = useRef(null);
-
-  // → true iff the list committed (callers that consume a resource on
-  // success — the accept flow discarding its candidate — must not do so on a
-  // refused write).
-  const write = async (nextList, after) => {
-    setBusy(true); setErr(null);
-    try {
-      const res = await setPublishPhotos(product.id, node, nextList);
-      if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }
-      onChanged(product.id, res.node);
-      after?.();
-      return true;
-    } catch (e) {
-      setErr(String(e?.message || e));
-      return false;
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const move = (i, d) => {
-    const j = i + d;
-    if (j < 0 || j >= photos.length) return;
-    const next = [...photos];
-    [next[i], next[j]] = [next[j], next[i]];
-    write(next, () => setSel(j));
-  };
-  const makePrimary = (i) => {
-    const next = [photos[i], ...photos.filter((_, k) => k !== i)];
-    write(next, () => setSel(0));
-  };
-  const removeAt = (i) => {
-    if (photos.length === 1) {
-      setErr("A product never ships imageless — add another photo before removing this one.");
-      return;
-    }
-    write(photos.filter((_, k) => k !== i), () => setSel(null));
-  };
-
-  const handleFile = async (e) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) return;
-    const problem = uploadFileProblem(file);
-    if (problem) { setErr(problem); return; }
-    if (photos.length >= MAX_PUBLISH_PHOTOS) { setErr(`At most ${MAX_PUBLISH_PHOTOS} photos per product.`); return; }
-    setUploading(true); setErr(null);
-    try {
-      const blob = await compressImageFile(file);
-      const url = await uploadPublishPhoto(product.id, blob);
-      await write([...photos, url]);
-    } catch (ex) {
-      setErr(String(ex?.message || ex));
-    } finally {
-      setUploading(false);
-    }
-  };
-
-  const chip = (label, onClick, disabled = false) => (
-    <button key={label} disabled={busy || uploading || disabled} onClick={onClick}
-      style={{ ...tabOff, padding: "4px 9px", fontSize: "0.66rem" }}>
-      {label}
-    </button>
-  );
-
-  return (
-    <div>
-      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "flex-start" }}>
-        {photos.map((u, i) => (
-          <div key={u} style={{ position: "relative" }}>
-            <img src={u} alt="" loading="lazy"
-              onClick={() => !locked && setSel(sel === i ? null : i)}
-              style={{ width: 84, height: 84, objectFit: "cover", borderRadius: 9,
-                       cursor: locked ? "default" : "pointer", background: "rgba(255,255,255,.08)",
-                       border: sel === i ? "2px solid #fff" : "2px solid transparent",
-                       opacity: sel === null || sel === i ? 1 : 0.55 }} />
-            {i === 0 && (
-              <div style={{ position: "absolute", left: 2, bottom: 2, fontSize: 8, fontWeight: 800,
-                            color: GREEN, background: "rgba(0,0,0,.62)", borderRadius: 5, padding: "1px 4px" }}>
-                PRIMARY
-              </div>
-            )}
-          </div>
-        ))}
-        {!locked && (
-          <>
-            {/* PLAIN image/*, not a list. A narrow accept list is what the
-                phone picker greys the camera roll out with — an iPhone whose
-                photos are HEIC would show them all unselectable, so the person
-                never even reaches the upload to be refused by it. The real
-                gate is uploadFileProblem, which runs on whatever comes back. */}
-            <input ref={fileRef} type="file" accept="image/*"
-              onChange={handleFile} style={{ display: "none" }} />
-            <button disabled={busy || uploading} onClick={() => fileRef.current?.click()}
-              style={{ width: 84, height: 84, borderRadius: 9, cursor: "pointer", fontFamily: FONT,
-                       background: "rgba(255,255,255,.03)", border: "1px dashed rgba(255,255,255,.18)",
-                       color: GRAY, fontSize: 20 }}>
-              {uploading ? "…" : "＋"}
-            </button>
-          </>
-        )}
-      </div>
-      {locked && (
-        <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
-          Listing is ON — switch it off to change photos. The reconciler re-syncs them at the next turn-on.
-        </div>
-      )}
-      {!locked && (
-        <div style={{ fontSize: 10, color: GRAY, marginTop: 5 }}>
-          {custom
-            ? "Custom publishing set — the product record's own photos are untouched."
-            : "Showing the product record's photos. Any change saves a publishing copy; the record is never edited."}
-        </div>
-      )}
-      {!locked && sel !== null && photos[sel] && (
-        <div style={{ display: "flex", flexWrap: "wrap", gap: 5, marginTop: 7 }}>
-          {chip("‹ Move", () => move(sel, -1), sel === 0)}
-          {chip("Move ›", () => move(sel, 1), sel === photos.length - 1)}
-          {chip("Make primary", () => makePrimary(sel), sel === 0)}
-          {chip("Remove from publish set", () => removeAt(sel))}
-          {canGenerate && <AiStudioCard
-            product={product} node={node} sourceUrl={photos[sel]} photoCount={photos.length}
-            busy={busy || uploading}
-            onReplace={(url, sourceUrl) => write(photos.map((u) => (u === sourceUrl ? url : u)))}
-            onAdd={(url) => write([...photos, url], () => setSel(photos.length))} />}
-        </div>
-      )}
-      {err && <div style={{ fontSize: 11, color: RED, fontWeight: 700, marginTop: 5 }}>{err}</div>}
-    </div>
-  );
-}
+// ─── PHOTOS AND VIDEOS ───────────────────────────────────────────────────────
+// The product's ordered publishing media — MediaStrip.jsx (it replaced the
+// photo-only PhotoStrip on 6 Oct 2026, keeping its select-then-act pattern).
 
 // ─── THE PAGE ────────────────────────────────────────────────────────────────
 // `node` is the loaded /shopify_publish body (or null for a never-seen
@@ -352,6 +189,8 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
   const on = isOn(node);
   const pending = isPendingSwitch(node);
   const photoList = useMemo(() => effectivePhotoList(product, node), [product, node]);
+  const mediaCount = useMemo(() => effectiveMediaList(product, node).items.length, [product, node]);
+  const videoCount = mediaCount - photoList.photos.length;
   const verdict = checkCleanName(draft); // the LIVE trigger check
   const { blocked, staleNote } = blockStatus(node, effectiveNameFor(product, node).name);
   const isLive = state === "live";
@@ -513,11 +352,12 @@ export default function ShopifyProductPage({ product, node, onBack, onChanged })
           </div>
           <div style={{ fontSize: 12, color: "rgba(255,255,255,.6)", marginTop: 4 }}>
             {price > 0 ? `R ${price.toFixed(2)}` : "no price set"} · {photoList.photos.length} photo{photoList.photos.length === 1 ? "" : "s"}
+            {videoCount > 0 ? ` · ${videoCount} video${videoCount === 1 ? "" : "s"}` : ""}
           </div>
         </div>
 
-        {section("Photos — first is what customers see", (
-          <PhotoStrip product={product} node={node} locked={nameLocked} onChanged={onChanged} />
+        {section("Photos and videos — the first photo is what customers see", (
+          <MediaStrip product={product} node={node} onChanged={onChanged} />
         ))}
 
         {section("Listing name — what the storefront shows", (

@@ -13,14 +13,17 @@
 // { now: serverNowMs(), uid }, and returns { next } or { refusal }.
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
          NAME_PROPOSAL_KEY, PROPOSAL_APPROVED_SOURCE, proposalApplyBlocker } from "./shopifyPublishCore.js";
-import { MAX_PUBLISH_PHOTOS, normalizePhotoList } from "./publishShared.js";
+import { MAX_PUBLISH_PHOTOS, APP_STORAGE_PREFIX, normalizePhotoList, normalizeMediaItems, cleanMediaItem,
+         mergePhotosIntoMedia, mediaListProblem, photoUrlsOf, storedMediaKey, resolveMediaList,
+         MAX_PUBLISH_MEDIA } from "./publishShared.js";
 import { buildOffRecord, offAuditFields } from "./publishAudit.js";
 
 const stamp = (ctx) => ({ updatedAt: ctx.now, updatedBy: ctx.uid ?? null });
 
 // What a publishing photo list may contain — the client-side mirror of the
-// media.mjs guards. Pinned to THIS app's bucket.
-export const APP_STORAGE_PREFIX = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/";
+// media.mjs guards. Pinned to THIS app's bucket (the prefix now lives in
+// publishShared.js, beside the media list it also guards).
+export { APP_STORAGE_PREFIX };
 export function publishPhotoListProblem(photos) {
   if (!Array.isArray(photos) || photos.length === 0) {
     return "The photo set can't be empty — a product never ships imageless.";
@@ -46,6 +49,7 @@ export const precheck = {
   publish: (name) => { const v = checkCleanName(name); return v.ok ? null : v.problems.join("; "); },
   condition: (condition) => (CONDITIONS.includes(condition) ? null : "Not one of the three condition grades."),
   photos: (photos) => (photos === null ? null : publishPhotoListProblem(photos.map((u) => (typeof u === "string" ? u.trim() : u)))),
+  media: (items) => mediaListProblem(items),
   desiredState: (want) => (want === "on" || want === "off" ? null : "Switch must be on or off."),
 };
 
@@ -110,7 +114,35 @@ export function photosMutator(base, { photos, basisPhotos }, ctx) {
     return { refusal: "The photo set changed in another session — reopen the strip and redo the edit." };
   }
   const clean = photos === null ? null : photos.map((u) => (typeof u === "string" ? u.trim() : u));
-  return { next: { ...base, ...normalizedFields(base), photos: clean, ...stamp(ctx) } };
+  // A photos-only writer (the New Arrivals chain) must not strand the media
+  // list: when one exists it follows — photos in the new order, videos kept
+  // in their places, position 0 a photo. Clearing the photos clears both
+  // (back to the record's own photo).
+  const media = normalizeMediaItems(base.media);
+  const nextMedia = clean === null ? null : media ? mergePhotosIntoMedia(media, clean) : undefined;
+  return { next: { ...base, ...normalizedFields(base), photos: clean,
+                   ...(nextMedia !== undefined ? { media: nextMedia } : {}), ...stamp(ctx) } };
+}
+
+/**
+ * THE MEDIA LIST WRITE — photos and videos, ordered, first = the primary
+ * photo. Unlike photosMutator this is NOT refused while the listing is ON:
+ * Junid's media changes reach a live product through the reconciler on its
+ * next tick with no extra tap (6 Oct 2026), and nothing here can change what
+ * the storefront NAMES the product.
+ *
+ * `basisKey` is storedMediaKey() of the node the edit was computed from —
+ * optimistic concurrency, so an edit made from a stale screen is refused
+ * rather than silently dropping another session's photo.
+ */
+export function mediaMutator(base, { media, basisKey }, ctx) {
+  if (storedMediaKey(base) !== basisKey) {
+    return { refusal: "The photos and videos changed in another session — nothing was saved. The list now shows the latest; redo the change." };
+  }
+  const problem = mediaListProblem(media);
+  if (problem) return { refusal: problem };
+  const clean = media.map(cleanMediaItem);
+  return { next: { ...base, ...normalizedFields(base), media: clean, photos: photoUrlsOf(clean), ...stamp(ctx) } };
 }
 
 export function conditionMutator(base, { condition }, ctx) {
@@ -118,4 +150,29 @@ export function conditionMutator(base, { condition }, ctx) {
   const unblocking = normalizedState(base) === "blocked";
   return { next: { ...base, ...normalizedFields(base), condition,
                    ...(unblocking ? { state: "awaiting", blockedReason: null } : {}), ...stamp(ctx) } };
+}
+
+/**
+ * APPEND finished uploads to the CURRENT list — no basis check, because an
+ * append drops nobody's change: it is computed from the server's node inside
+ * the transaction. `product` = { photoUrl, gallery } for the lazy read of a
+ * node that has no list yet. Refused, adding nothing, when an item is already
+ * there (same id, file or hash) or Shopify's cap would be passed. A video can
+ * never land first: with no photo in the list yet, the append is refused.
+ */
+export function appendMediaMutator(base, { items, product = null }, ctx) {
+  const { items: current } = resolveMediaList(base, product);
+  const adding = (items || []).map(cleanMediaItem);
+  if (!adding.length || adding.some((m) => !m)) return { refusal: "Nothing to add." };
+  for (const m of adding) {
+    if (current.some((c) => c.id === m.id || c.url === m.url || (m.sha256 && c.sha256 === m.sha256))) {
+      return { refusal: "That file is already in this product's photos and videos." };
+    }
+  }
+  const next = [...current, ...adding];
+  if (next.length > MAX_PUBLISH_MEDIA) return { refusal: `Shopify takes at most ${MAX_PUBLISH_MEDIA} photos and videos per product.` };
+  if (next[0].type !== "photo") return { refusal: "Add a photo first — a video can never be the first item (the primary is always a photo)." };
+  const problem = mediaListProblem(next);
+  if (problem) return { refusal: problem };
+  return { next: { ...base, ...normalizedFields(base), media: next, photos: photoUrlsOf(next), ...stamp(ctx) } };
 }

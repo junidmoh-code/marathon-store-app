@@ -1,0 +1,33 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd agent for the product VIDEO sender (media-video-runner.mjs), 6 Oct
+  2026. A sibling of com.marathon.shopifyreconcile with the same shape
+  (KeepAlive + ThrottleInterval 120, absolute node path, credentials by path
+  only) — kept SEPARATE so a long video transfer never holds up a reconcile
+  tick. One video per run; its own single-flight lockfile.
+  INSTALL: copy to ~/Library/LaunchAgents, mkdir -p logs, then
+  launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.marathon.shopifymediavideo.plist
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.marathon.shopifymediavideo</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/marathonclub/marathon-store-app/scripts/shopify/media-video-runner.mjs</string>
+  </array>
+  <key>WorkingDirectory</key><string>/Users/marathonclub/marathon-store-app</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+    <key>GOOGLE_APPLICATION_CREDENTIALS</key><string>/Users/marathonclub/.config/marathon/shopify-reconciler-sa.json</string>
+  </dict>
+  <!-- Every 2 minutes (owner spec). A tick with nothing to do exits in under a
+       second having made zero Shopify calls. -->
+  <key>KeepAlive</key><true/>
+  <key>ThrottleInterval</key><integer>120</integer>
+  <key>RunAtLoad</key><true/>
+  <key>StandardOutPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-mediavideo.out.log</string>
+  <key>StandardErrorPath</key><string>/Users/marathonclub/marathon-store-app/logs/launchd-mediavideo.err.log</string>
+</dict>
+</plist>

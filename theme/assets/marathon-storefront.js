@@ -80,6 +80,7 @@
     // ~130px shift that caused.
     var card = openCard;
     var panel = $("[data-mc-panel]", card);
+    if (panel) pauseGalleryVideos(panel, null);
     if (panel) panel.hidden = true;
     var sheet = panel && $("[data-mc-sheet]", panel);
     if (sheet) { sheet.style.transform = ""; sheet.classList.remove("is-dragging"); }
@@ -107,6 +108,12 @@
     panel.hidden = false;
     card.classList.add(OPEN_CLASS);
     openCard = card;
+    // Every gallery opens on its primary photo.
+    $$("[data-mc-gallery]", panel).forEach(function (g) {
+      var track = $("[data-mc-gallery-track]", g);
+      if (track) track.scrollLeft = 0;
+      syncGallery(g);
+    });
 
     // "Added to cart." from a previous visit to this card would otherwise still
     // be sitting there, telling the shopper they have done something they have
@@ -152,17 +159,34 @@
   // The gesture people already know from a photo library. Only a drag that
   // starts at the TOP of the sheet's own scroll counts, so dragging down while
   // reading a long size list scrolls the sheet instead of dismissing it.
-  var dragY = null, dragSheet = null;
+  // A SIDEWAYS drag is the photo gallery's swipe, never a dismiss: the first
+  // clear movement decides, and a horizontal one releases the sheet.
+  var dragY = null, dragX = null, dragSheet = null, dragDecided = false;
   document.addEventListener("touchstart", function (ev) {
     var sheet = ev.target.closest && ev.target.closest("[data-mc-sheet]");
     if (!sheet || sheet.scrollTop > 0) return;
     dragSheet = sheet;
     dragY = ev.touches[0].clientY;
+    dragX = ev.touches[0].clientX;
+    dragDecided = false;
   }, { passive: true });
 
   document.addEventListener("touchmove", function (ev) {
     if (!dragSheet || dragY === null) return;
     var dy = ev.touches[0].clientY - dragY;
+    var dx = ev.touches[0].clientX - dragX;
+    // The direction is decided ONCE, by the first clear movement: a sideways
+    // start is the gallery's swipe; a downward start stays a dismiss even if
+    // the finger later drifts sideways.
+    if (!dragDecided && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      dragDecided = true;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        dragSheet.classList.remove("is-dragging");
+        dragSheet.style.transform = "";
+        dragSheet = null; dragY = null; dragX = null;
+        return;
+      }
+    }
     if (dy <= 0) return;
     dragSheet.classList.add("is-dragging");
     dragSheet.style.transform = "translateY(" + dy + "px)";
@@ -181,6 +205,91 @@
     }
     dragSheet = null; dragY = null;
   }, { passive: true });
+
+  // ── the photo + video gallery (snippets/marathon-card.liquid) ─────────────
+  // Native horizontal scroll-snap does the swiping; this only keeps the
+  // "2 / 5" counter honest, drives the desktop arrows, turns a tapped poster
+  // into its <video>, and pauses any video that is swiped away from or whose
+  // panel closes. A video is created ONLY by a tap (from an inert <template>),
+  // with preload="none" — so no video byte loads until someone asks to watch.
+  function gallerySlides(gallery) { return $$("[data-mc-slide]", gallery); }
+  function currentSlideIndex(gallery) {
+    var track = $("[data-mc-gallery-track]", gallery);
+    if (!track || !track.clientWidth) return 0;
+    return Math.round(track.scrollLeft / track.clientWidth);
+  }
+  function pauseGalleryVideos(scope, keepSlide) {
+    $$("video", scope).forEach(function (v) {
+      if (keepSlide && keepSlide.contains(v)) return;
+      try { v.pause(); } catch (e) { /* already stopped */ }
+    });
+    // An embedded (YouTube/Vimeo) player cannot be paused from here; reloading
+    // its address stops it.
+    $$("iframe", scope).forEach(function (f) {
+      if (keepSlide && keepSlide.contains(f)) return;
+      var src = f.getAttribute("src");
+      if (src) f.setAttribute("src", src);
+    });
+  }
+  function syncGallery(gallery) {
+    var slides = gallerySlides(gallery);
+    var i = Math.max(0, Math.min(slides.length - 1, currentSlideIndex(gallery)));
+    var count = $("[data-mc-gallery-count]", gallery);
+    if (count) count.textContent = (i + 1) + " / " + slides.length;
+    var prev = $("[data-mc-gallery-prev]", gallery);
+    var next = $("[data-mc-gallery-next]", gallery);
+    if (prev) prev.disabled = i === 0;
+    if (next) next.disabled = i === slides.length - 1;
+    pauseGalleryVideos(gallery, slides[i]);
+  }
+  function goToSlide(gallery, i) {
+    var track = $("[data-mc-gallery-track]", gallery);
+    if (!track) return;
+    track.scrollTo({ left: i * track.clientWidth, behavior: "smooth" });
+  }
+  // Scroll events do not bubble, but they can be captured at the document.
+  var galleryScrollTimer = null;
+  document.addEventListener("scroll", function (ev) {
+    var track = ev.target && ev.target.closest && ev.target.closest("[data-mc-gallery-track]");
+    if (!track) return;
+    clearTimeout(galleryScrollTimer);
+    var gallery = track.closest("[data-mc-gallery]");
+    galleryScrollTimer = setTimeout(function () { syncGallery(gallery); }, 80);
+  }, { passive: true, capture: true });
+  document.addEventListener("click", function (ev) {
+    var t = ev.target;
+    var play = t.closest && t.closest("[data-mc-play]");
+    if (play) {
+      ev.preventDefault();
+      var slide = play.closest("[data-mc-slide]");
+      var tpl = slide && $("template[data-mc-video]", slide);
+      if (!tpl) return;
+      slide.appendChild(tpl.content.cloneNode(true));
+      var video = $("video", slide);
+      play.remove();
+      var focusTarget = video || $("iframe", slide);
+      if (focusTarget) { focusTarget.setAttribute("tabindex", "-1"); focusTarget.focus({ preventScroll: true }); }
+      if (video) {
+        // A tap is the shopper's own gesture: sound on, controls on, inline.
+        video.setAttribute("playsinline", "");
+        video.playsInline = true;
+        video.controls = true;
+        video.muted = false;
+        var p = video.play && video.play();
+        if (p && p.catch) p.catch(function () { /* the controls stay for a second tap */ });
+      }
+      var gallery = slide.closest("[data-mc-gallery]");
+      if (gallery) pauseGalleryVideos(gallery, slide);
+      return;
+    }
+    var arrow = t.closest && t.closest("[data-mc-gallery-prev], [data-mc-gallery-next]");
+    if (arrow) {
+      ev.preventDefault();
+      var g = arrow.closest("[data-mc-gallery]");
+      var step = arrow.hasAttribute("data-mc-gallery-next") ? 1 : -1;
+      goToSlide(g, currentSlideIndex(g) + step);
+    }
+  });
 
   // ── clicks ─────────────────────────────────────────────────────────────────
   document.addEventListener("click", function (ev) {

@@ -45,7 +45,7 @@ const fakeWindow = {
 globalThis.window = fakeWindow;
 globalThis.requestAnimationFrame = globalThis.requestAnimationFrame || ((fn) => fn());
 
-const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [],
+const calls = { approve: [], publish: [], desired: [], nodesFor: [], photos: [], media: [], appPhoto: [],
                 applyProposal: [], dismissProposal: [], proposalPages: [] };
 let keys = new Set();
 let reviewHidden = new Set();
@@ -129,6 +129,24 @@ vi.mock("./shopifyPublishStore", () => ({
   setPublishPhotos: (pid, node, photos) => {
     calls.photos.push({ pid, photos });
     return Promise.resolve({ ok: true, node: { ...(node || {}), state: node?.state || "awaiting", photos } });
+  },
+  setPublishMedia: (pid, node, media) => {
+    calls.media.push({ pid, media });
+    return Promise.resolve({ ok: true, node: { ...(node || {}), state: node?.state || "awaiting", media,
+                                               photos: media.filter((m) => m.type === "photo").map((m) => m.url) } });
+  },
+  appendPublishMedia: (pid, node, items) => Promise.resolve({ ok: true, node: { ...(node || {}), media: [...((node || {}).media || []), ...items] } }),
+}));
+// Uploads and the app-photo write reach Firebase — both have their own unit
+// layers (mediaUpload.test.js, appPhoto.test.js); here they are recorded.
+vi.mock("./mediaUpload", () => ({
+  prepareMediaItem: () => Promise.reject(new Error("not in render tests")),
+  pickedKind: () => "photo", pickedFileProblem: () => null, newMediaId: () => "mnew",
+}));
+vi.mock("./appPhoto", () => ({
+  syncAppPhoto: (pid, product, oldPrimary, newPrimary) => {
+    calls.appPhoto.push({ pid, oldPrimary, newPrimary });
+    return Promise.resolve({ ok: true, changed: true });
   },
 }));
 // photoTools reaches firebase storage — mock it out entirely (uploads are
@@ -755,7 +773,10 @@ test("batch: cancel in the confirmation writes nothing and keeps the selection",
   expect(texts(tree)).toContain("Publish selected…"); // still selected, bar still up
 });
 
-test("page photo picker: always visible, reorder writes the full ordered list, last photo cannot be removed", async () => {
+const thumb = (tree, label) => tree.root.findAll((n) => n.type === "button" && n.props["aria-label"] === label)[0];
+const mediaUrls = (call) => call.media.map((m) => m.url);
+
+test("page media strip: always visible, reorder writes the full ordered list, the last photo cannot be removed", async () => {
   keys = new Set(["p1"]);
   bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND,
                 photos: ["https://firebasestorage.googleapis.com/a.jpg", "https://firebasestorage.googleapis.com/b.jpg"] };
@@ -764,37 +785,64 @@ test("page photo picker: always visible, reorder writes the full ordered list, l
   await flush();
   await openClothing(tree);
   await openProductPage(tree, "Plain tee black");
-  // The picker is part of the page — no chip to tap first.
-  const thumbs = tree.root.findAll((n) => n.type === "img" && n.props.src === "https://firebasestorage.googleapis.com/b.jpg");
-  expect(thumbs.length).toBe(1);
-  expect(thumbs[0].props.loading).toBe("lazy");
+  const imgs = tree.root.findAll((n) => n.type === "img" && n.props.src === "https://firebasestorage.googleapis.com/b.jpg");
+  expect(imgs.length).toBe(1);
+  expect(imgs[0].props.loading).toBe("lazy");
   expect(texts(tree)).toContain("PRIMARY");
-  // select the second thumb, move it left — the WHOLE ordered list is written
-  await act(() => { thumbs[0].props.onClick(); });
+  await act(() => { thumb(tree, "Photo 2").props.onClick(); });
   await flush();
   await act(() => { button(tree, "‹ Move").props.onClick(); });
   await flush();
-  expect(calls.photos).toEqual([{ pid: "p1", photos: [
+  expect(mediaUrls(calls.media[0])).toEqual([
     "https://firebasestorage.googleapis.com/b.jpg",
     "https://firebasestorage.googleapis.com/a.jpg",
-  ] }]);
-  // now try to strip it to nothing: remove twice — the last one refuses.
-  // The moved thumb keeps its selection after the write, so Remove is already
-  // offered. (stripThumb filters to PICKER thumbs — they carry onClick.)
-  const stripThumb = (src) => tree.root.findAll((n) =>
-    n.type === "img" && n.props.src === src && typeof n.props.onClick === "function")[0];
-  await act(() => { button(tree, "Remove from publish set").props.onClick(); });
+  ]);
+  // The new primary becomes the app photo (26 Sep).
+  expect(calls.appPhoto).toEqual([{ pid: "p1", oldPrimary: "https://firebasestorage.googleapis.com/a.jpg",
+                                    newPrimary: "https://firebasestorage.googleapis.com/b.jpg" }]);
+  // Remove asks first, inline — no modal — then writes.
+  await act(() => { button(tree, "Remove…").props.onClick(); });
   await flush();
-  expect(calls.photos[1].photos).toEqual(["https://firebasestorage.googleapis.com/a.jpg"]);
-  await act(() => { stripThumb("https://firebasestorage.googleapis.com/a.jpg").props.onClick(); });
+  expect(calls.media.length).toBe(1);
+  await act(() => { button(tree, "Remove").props.onClick(); });
   await flush();
-  await act(() => { button(tree, "Remove from publish set").props.onClick(); });
+  expect(mediaUrls(calls.media[1])).toEqual(["https://firebasestorage.googleapis.com/a.jpg"]);
+  // The only photo left cannot be removed: the chip is disabled, not a warning after the fact.
+  await act(() => { thumb(tree, "Photo 1, primary").props.onClick(); });
   await flush();
-  expect(calls.photos.length).toBe(2); // refused locally — no third write
-  expect(texts(tree)).toContain("never ships imageless");
+  expect(button(tree, "Remove…").props.disabled).toBe(true);
+  expect(texts(tree)).toContain("only photo");
 });
 
-test("page photo picker: locked read-only while the listing is ON", async () => {
+test("page media strip: a video is never first, plays only on a tap (preload none), and has no Make primary", async () => {
+  keys = new Set(["p1"]);
+  const A = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/a.jpg";
+  const V = "https://firebasestorage.googleapis.com/v0/b/marathon-club.firebasestorage.app/o/v.mp4";
+  bodies.p1 = { state: "awaiting", cleanName: "Basic tee black", nameApprovedAt: 5, condition: COND,
+                media: [{ id: "m1", type: "photo", url: A }, { id: "m2", type: "video", url: V, posterUrl: A, bytes: 2_000_000_000, durationMs: 31000 }],
+                photos: [A] };
+  let tree;
+  await act(() => { tree = create(<ShopifyPublishView products={PRODUCTS} onExit={() => {}} />, { createNodeMock: nodeMock }); });
+  await flush();
+  await openClothing(tree);
+  await openProductPage(tree, "Plain tee black");
+  // The strip shows posters only — no <video> until one is selected.
+  expect(tree.root.findAll((n) => n.type === "video").length).toBe(0);
+  expect(texts(tree)).toContain("▶ VIDEO");
+  expect(texts(tree)).toContain("NOT ON SHOPIFY"); // 2 GB: kept, too large for Shopify
+  await act(() => { thumb(tree, "Video 2").props.onClick(); });
+  await flush();
+  const vids = tree.root.findAll((n) => n.type === "video");
+  expect(vids.length).toBe(1);
+  expect(vids[0].props.preload).toBe("none");
+  expect(vids[0].props.autoPlay).toBeFalsy();
+  expect(vids[0].props.playsInline).toBe(true);
+  expect(texts(tree)).toContain("too large for Shopify");
+  expect(button(tree, "‹ Move").props.disabled).toBe(true);   // would put the video first
+  expect(button(tree, "Make primary")).toBeUndefined();        // photos only
+});
+
+test("page media strip: editable while the listing is ON — the reconciler carries the change", async () => {
   keys = new Set(["p1"]);
   pipeline = { p1: { state: "live", liveState: "on", desiredState: "on", cleanName: "Basic tee black", condition: COND } };
   let tree;
@@ -802,10 +850,10 @@ test("page photo picker: locked read-only while the listing is ON", async () => 
   await flush();
   await act(() => { button(tree, "Live").props.onClick(); });
   await flush();
-  await flush(); // the Live tab is one flat list — no group to open
+  await flush();
   await openProductPage(tree, "Plain tee black");
-  expect(texts(tree)).toContain("switch it off to change photos");
-  expect(tree.root.findAll((n) => n.type === "button" && n.children.includes("Remove from publish set")).length).toBe(0);
+  expect(texts(tree)).toContain("changes reach Shopify by themselves");
+  expect(button(tree, "＋ From gallery").props.disabled).toBe(false);
 });
 
 test("home badge counts only never-seen products — live and blocked are excluded", async () => {
