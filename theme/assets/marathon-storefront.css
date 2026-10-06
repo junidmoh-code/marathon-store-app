@@ -475,6 +475,108 @@
   }
 }
 
+/* THE PHOTO + VIDEO GALLERY (Junid, 6 Oct 2026). One full-width slide per
+   item, native scroll-snap for the swipe — no library, nothing to load. Each
+   slide keeps the photo's real proportions exactly as the single photo did
+   (.mc-panel__photo). No `-webkit-overflow-scrolling: touch`: on iOS it
+   promotes the scroller to its own layer, the trap the nav panels hit. */
+.mc-gallery {
+  position: relative;
+}
+.mc-gallery__track {
+  display: flex;
+  overflow-x: auto;
+  overflow-y: hidden;
+  scroll-snap-type: x mandatory;
+  scrollbar-width: none;
+  border-radius: var(--mc-btn-radius);
+  outline: none;
+}
+.mc-gallery__track::-webkit-scrollbar { display: none; }
+.mc-gallery__slide {
+  position: relative;
+  flex: 0 0 100%;
+  scroll-snap-align: center;
+  scroll-snap-stop: always;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.mc-gallery__slide .mc-panel__photo {
+  width: 100%;
+  height: 46vh;
+}
+.mc-gallery__video {
+  width: 100%;
+  height: 46vh;
+  background: #000;
+  border-radius: var(--mc-btn-radius);
+}
+.mc-gallery__play {
+  position: relative;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  background: none;
+  cursor: pointer;
+  display: block;
+}
+.mc-gallery__playicon {
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 50%;
+  width: 6.4rem;
+  height: 6.4rem;
+  margin: -3.2rem 0 0 -3.2rem;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.55);
+  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.85) inset;
+}
+.mc-gallery__playicon::after {
+  content: "";
+  position: absolute;
+  inset-block-start: 50%;
+  inset-inline-start: 54%;
+  transform: translate(-50%, -50%);
+  border-style: solid;
+  border-width: 1.2rem 0 1.2rem 2rem;
+  border-color: transparent transparent transparent #fff;
+}
+.mc-gallery__arrow {
+  position: absolute;
+  inset-block-start: 50%;
+  transform: translateY(-50%);
+  width: 3.6rem;
+  height: 3.6rem;
+  border-radius: 50%;
+  border: 0;
+  background: rgba(0, 0, 0, 0.5);
+  color: #fff;
+  font-size: 2.6rem;
+  line-height: 1;
+  cursor: pointer;
+  display: none;
+}
+.mc-gallery__arrow--prev { inset-inline-start: 0.6rem; }
+.mc-gallery__arrow--next { inset-inline-end: 0.6rem; }
+.mc-gallery__arrow:disabled { opacity: 0; pointer-events: none; }
+.mc-gallery__count {
+  position: absolute;
+  inset-block-start: 0.6rem;
+  inset-inline-start: 0.6rem;
+  margin: 0;
+  padding: 0.2rem 0.8rem;
+  border-radius: 99px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  font-size: 1.2rem;
+  pointer-events: none;
+}
+/* Arrows only where there is a mouse; a phone swipes. */
+@media (hover: hover) and (pointer: fine) {
+  .mc-gallery__arrow { display: block; }
+}
+
 .mc-panel__close {
   position: absolute;
   inset-block-start: 0.6rem;
