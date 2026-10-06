@@ -32,9 +32,10 @@ export function sizeFor(aspectRatio) {
 
 // gpt-image-1 keeps the FIRST input image most faithfully (input_fidelity
 // high). So the real product photo goes first, then its box, then the backdrop,
-// reference and diagram — every image still named by its own sentence, so the
-// prompt and the process are the same as Gemini's; only the order of the
-// attachments differs.
+// reference and diagram — every image still named by its own sentence. What differs from the Gemini
+// request: the order of the attachments, and the numbered list of them
+// appended to the prompt (gpt-image-1 takes one prompt, not interleaved text
+// and images).
 const rank = (label) => (/^(SHOE|GARMENT) PHOTO/.test(label) ? 0 : /^BOX PHOTO/.test(label) ? 1 : 2);
 
 /**

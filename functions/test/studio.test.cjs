@@ -645,8 +645,15 @@ test("Full OpenAI on a tap: the SAME prompt and images go to gpt-image-1; the re
   assert.equal(ga[1], "gemini-3-pro-image");
   assert.equal(gb[1], "gpt-image-1");
   // Same prompt, same parts, same image config — only the engine differs.
-  assert.deepEqual(gb[3], ga[3]);
-  assert.deepEqual(gb[2], ga[2]);
+  // The same prompt and the same images — except the frame: gpt-image-1 makes 2:3 (Gemini 3:4), so the
+  // layout diagram is drawn in that frame; everything else is byte for byte the same.
+  const texts = (parts) => parts.filter((p) => p.text).map((p) => p.text);
+  // Each image with the sentence before it, the layout diagram left out.
+  const images = (parts) => parts.map((p, i) => (p.inline_data ? [parts[i - 1]?.text || "", p.inline_data.data] : null)).filter((x) => x && !/^LAYOUT DIAGRAM/.test(x[0]));
+  assert.deepEqual(texts(gb[3]), texts(ga[3]));
+  assert.ok(images(ga[3]).length >= 2);
+  assert.deepEqual(images(gb[3]), images(ga[3]), "plate, reference, product and box are the same bytes");
+  assert.equal(gb[2].aspectRatio, "2:3"); assert.equal(ga[2].aspectRatio, "3:4");
   const ia = await itemOf(gemini.db), ib = await itemOf(openai.db);
   assert.equal(ia.generations[a.genId].provider, "gemini");
   assert.equal(ib.generations[b.genId].provider, "openai");

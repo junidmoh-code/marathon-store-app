@@ -936,21 +936,21 @@ test("how refuses bad ids and an unknown generation", async () => {
 test("method: set full / split, clear with null; only the method field changes; nothing logged", async () => {
   const db = withGens("ready");
   const before = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
-  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }), { ok: true, method: "full" });
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }), { ok: true, method: "full", provider: null });
   let it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
   assert.equal(it.method, "full");
   const { method: _m, ...rest } = it;
   assert.deepEqual(rest, before, "nothing else changes");
-  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }), { ok: true, method: "full", unchanged: true });
-  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "split" }), { ok: true, method: "split" });
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }), { ok: true, method: "full", provider: null, unchanged: true });
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "split" }), { ok: true, method: "split", provider: null });
   assert.equal((await db.ref(`${core.ITEMS}/${PID}/method`).once()).val(), "split");
-  assert.deepEqual(await na.setMethod(db, { pid: PID, method: null }), { ok: true, method: null });
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: null }), { ok: true, method: null, provider: null });
   it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
   assert.equal("method" in it, false);
   assert.deepEqual(await decisions(db), [], "a setting, not a decision");
   for (const lane of ["new", "rejected"]) {
     const d2 = withGens(lane);
-    assert.deepEqual(await na.setMethod(d2, { pid: PID, method: "full" }), { ok: true, method: "full" });
+    assert.deepEqual(await na.setMethod(d2, { pid: PID, method: "full" }), { ok: true, method: "full", provider: null });
   }
 });
 
@@ -1021,14 +1021,14 @@ test("the old queue Generate is retired: it refuses and says to reload (a reques
   assert.equal((await db.ref(`${core.ROOT}/requests`).once()).val(), null);
 });
 
-test("the provider is set beside the method: openai / gemini / null (default); an older card that sends only the method leaves it alone", async () => {
+test("the provider is set beside the method: openai / gemini / null (default); an older card that sends only the method means Gemini", async () => {
   const db = withGens("ready");
   assert.deepEqual(await na.setMethod(db, { pid: PID, method: "split", provider: "openai" }, NOW), { ok: true, method: "split", provider: "openai" });
   let it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();
   assert.equal(it.method, "split"); assert.equal(it.provider, "openai");
-  // An older bundle: method only — the provider stays.
-  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }, NOW), { ok: true, method: "full" });
-  assert.equal((await db.ref(`${core.ITEMS}/${PID}/provider`).once()).val(), "openai");
+  // An older bundle (Gemini buttons only) sends the method alone: that means Gemini — the provider is cleared, never blended.
+  assert.deepEqual(await na.setMethod(db, { pid: PID, method: "full" }, NOW), { ok: true, method: "full", provider: null });
+  assert.equal((await db.ref(`${core.ITEMS}/${PID}/provider`).once()).val(), null);
   // Back to the default (Full Gemini): both cleared.
   assert.deepEqual(await na.setMethod(db, { pid: PID, method: null, provider: null }, NOW), { ok: true, method: null, provider: null });
   it = (await db.ref(`${core.ITEMS}/${PID}`).once()).val();

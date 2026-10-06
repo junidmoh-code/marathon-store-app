@@ -930,7 +930,8 @@ describe("the card's own state helpers", () => {
     l = view.foldLive(l, { type: "draft", url: "u1" });
     l = view.foldLive(l, { type: "draft", url: "u1" });
     l = view.foldLive(l, { type: "bogus" });
-    expect(l).toEqual({ status: "Gemini is drawing…", thoughts: "ab", drafts: ["u1"], startedAt: 5 });
+    expect(l).toEqual({ status: "Gemini is drawing…", thoughts: "ab", drafts: ["u1"], startedAt: 5, engine: "Gemini" });
+    expect(view.foldLive(view.liveStart(5, "OpenAI"), { type: "draft", url: "u1" }).status).toBe("OpenAI is drawing…");
     expect(view.foldLive(l, { type: "status", text: "Finishing the photo…" }).status).toBe("Finishing the photo…");
   });
 

@@ -443,14 +443,15 @@ const copyFrom = (cur, was, keys) => {
 };
 
 /** A generation that has just started, as the card shows it. Pure. */
-export const liveStart = (at) => ({ status: "Starting…", thoughts: "", drafts: [], startedAt: at });
+export const liveStart = (at, engine = "Gemini") => ({ status: "Starting…", thoughts: "", drafts: [], startedAt: at, engine });
 
 /** One progress event from the photo studio folded into the live view. Pure. */
 export function foldLive(live, ev) {
   if (!ev || typeof ev !== "object") return live;
   if (ev.type === "status" && ev.text) return { ...live, status: String(ev.text) };
-  if (ev.type === "thought" && ev.text) return { ...live, status: "Gemini is thinking…", thoughts: live.thoughts + String(ev.text) };
-  if (ev.type === "draft" && ev.url) return live.drafts.includes(ev.url) ? live : { ...live, status: "Gemini is drawing…", drafts: [...live.drafts, String(ev.url)] };
+  const who = live.engine || "Gemini";
+  if (ev.type === "thought" && ev.text) return { ...live, status: `${who} is thinking…`, thoughts: live.thoughts + String(ev.text) };
+  if (ev.type === "draft" && ev.url) return live.drafts.includes(ev.url) ? live : { ...live, status: `${who} is drawing…`, drafts: [...live.drafts, String(ev.url)] };
   return live;
 }
 

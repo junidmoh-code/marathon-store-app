@@ -125,7 +125,14 @@ changed.**
   - no thought summary — "How it was made" shows its drafts only;
   - the key is the `OPENAI_API_KEY` secret (shared with the older AI Studio);
     cost from its own token counts (text in $5, image in $10, image out $40
-    per 1M) — roughly three times a Gemini photo.
+    per 1M) — about three times a Gemini photo on the three live test photos
+    of 4 Oct (R7.70–R8.90 against R2.35);
+  - its photos are 1024 px wide (Gemini's 2K are 1792); the plate lock lifts
+    from that;
+  - **it may redraw the product.** On the 4 Oct test it reworded a neck
+    label, turned "F50" into "CS" and removed a fade. Junid chose to ship it
+    anyway as a fallback he picks himself; the plate lock was tuned on Gemini
+    photos and has not been run on OpenAI's.
   Each generation records `provider` (`gemini` | `openai`; absent = Gemini).
 - **The footwear plate lock** (Junid, 5 Oct — `studio/correct.mjs`,
   `studio/lift.mjs`; `generation.json` `footwearCorrection`): in the final

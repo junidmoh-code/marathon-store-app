@@ -715,7 +715,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     const pid = item.pid;
     if (liveRef.current[pid] || isGenerating(item)) return;
     taps.current += 1;
-    liveRef.current = { ...liveRef.current, [pid]: liveStart(Date.now()) };
+    liveRef.current = { ...liveRef.current, [pid]: liveStart(Date.now(), item.provider === "openai" ? "OpenAI" : "Gemini") };
     setLive(liveRef.current);
     // The item's OWN choice is sent; with none the function uses its default (Full Gemini).
     const method = item.method === "full" || item.method === "split" ? item.method : null;

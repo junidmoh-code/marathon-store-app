@@ -133,7 +133,9 @@ export async function generateOne({ item, product, genId, method = "full", provi
     placement: placementText(kind, effSpec), layers, boxMode });
   const plateJ = plate.forModel || await forModel(plate.buffer);
   const refJ = ref ? (ref.forModel || await forModel(ref.buffer)) : null;
-  const aspect = closestAspect(plate.width, plate.height);
+  // The frame asked for: the engine's nearest supported ratio (gpt-image-1 makes 2:3, 3:2 or 1:1 only); the
+  // layout diagram is drawn in that frame and the result is cover-cropped to the plate, as for Gemini.
+  const aspect = closestAspect(plate.width, plate.height, provider === "openai" ? ["2:3", "3:2", "1:1"] : null);
   const frame = genFrameOf(plate.width, plate.height, RATIOS[aspect]);
   const guideJ = await forModel(await layoutGuideImage(kind, effSpec, plate.buffer, frame));
 
@@ -187,7 +189,7 @@ export async function generateOne({ item, product, genId, method = "full", provi
     if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
     let out, mime = "image/jpeg";
     try { out = await toCanvas(gen.buffer, plate); }
-    catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
+    catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as ${engine} made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
     measured = out;
     const stamp = deps.now();
     // (A footwear photo the finishing step could not even resize is kept as Gemini made it — and the card says so.)

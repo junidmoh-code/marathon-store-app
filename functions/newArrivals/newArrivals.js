@@ -446,8 +446,9 @@ async function setMethod(db, { pid, method, provider }, nowMs = Date.now()) {
   if (provider !== null && provider !== undefined && !core.PROVIDERS.includes(provider)) throw new HttpsError("invalid-argument", "Provider is gemini, openai or null.");
   pid = String(pid);
   const want = method || null;
-  // The provider is changed only when the call names it (an older card bundle sends the method alone).
-  const setProvider = provider !== undefined;
+  // A call that names no provider is from a card with only the Gemini buttons: it means Gemini (the default),
+  // so the stored provider is cleared — Gemini and OpenAI are never blended.
+  const setProvider = true;
   const wantProvider = provider || null;
   const out = {};
   const res = await db.ref(`${core.ITEMS}/${pid}`).transaction((cur) => {

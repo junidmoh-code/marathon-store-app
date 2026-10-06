@@ -470,7 +470,7 @@ export async function liftFromPlate(photoBuf, plate, { allowColourless = false }
   // (flatten: a photo with transparency is read on white, never with undefined colour under it)
   const [photo, plateRaw] = await Promise.all([at(photoBuf, W, H, 1.2), at(plate.buffer, W, H, 1.2)]);
   const line = soleLine(photo, W, H);
-  if (!line) return { problem: "Gemini changed the pedestal — its black front panel could not be found" };
+  if (!line) return { problem: "the model changed the pedestal — its black front panel could not be found" };
   // Against the plate when Gemini kept the backdrop; from the photo alone when it redrew it (too much differs).
   let ev = evidence(photo, plateRaw, W, H), found = ev.share <= REDRAWN ? findProducts(ev, W, H, line) : { problem: "redrawn" };
   if (found.problem) {
@@ -478,7 +478,7 @@ export async function liftFromPlate(photoBuf, plate, { allowColourless = false }
     if (second.problem) return { problem: found.problem === "redrawn" ? second.problem : found.problem };
     // From the photo alone only a COLOURED shoe is trusted: a white, grey or black one cannot be told from a
     // redrawn pedestal and backdrop well enough to cut.
-    if (!allowColourless && colouredShare(photo, W, second.shoe) < 0.5) return { problem: "Gemini redrew the backdrop, and a shoe with no colour cannot be told apart from it" };
+    if (!allowColourless && colouredShare(photo, W, second.shoe) < 0.5) return { problem: "the model redrew the backdrop, and a shoe with no colour cannot be told apart from it" };
     found = second; found.fromPhotoOnly = true;
   }
   // The pixels are copied from the photo at its own resolution (never above twice the plate's).
@@ -490,6 +490,6 @@ export async function liftFromPlate(photoBuf, plate, { allowColourless = false }
     shoe: await cutPng(hi, hiW, hiH, found.shoe, W, H),
     box: found.box ? await cutPng(hi, hiW, hiH, found.box, W, H) : null,
     found: { shoe: fracRect(found.shoe.rect, W, H), box: found.box ? fracRect(found.box.rect, W, H) : null },
-    how: found.fromPhotoOnly ? "from the photo alone (Gemini redrew the backdrop)" : "against the plate",
+    how: found.fromPhotoOnly ? "from the photo alone (the model redrew the backdrop)" : "against the plate",
   };
 }

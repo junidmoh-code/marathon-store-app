@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 export const GENSEQ = "new_arrivals/genSeq";
 export const GENLOG = "new_arrivals/genlog";
 export const THOUGHTS_LABEL = "Gemini's own account — not proof";
+export const OPENAI_THOUGHTS_LABEL = "OpenAI gives no account of its work — its drafts only";
 export const SEED_NOTE = "not set — the API picks";
 export const RTDB_THOUGHTS_MAX = 4000;
 
@@ -50,6 +51,8 @@ export function costOf(rows, prices, usdZar = null) {
 /** The list-price estimate of ONE generation, used only when the API returned no usage. Pure. */
 export function generationEstimateUsd(prices, model = "gemini-3-pro-image") {
   const p = prices.models[model] || prices.models.default;
+  // gpt-image-1 at 1024×1536, quality high: ~6,240 image tokens out, ~1,500 image tokens in (input_fidelity high), ~900 of text.
+  if (/^gpt-image/.test(model)) return (6240 * (p.imageOutput ?? p.output) + 1500 * (p.imageInput ?? p.input) + 900 * p.input) / 1e6;
   return (1120 * (p.imageOutput ?? p.output) + 9000 * p.input) / 1e6;
 }
 
@@ -145,7 +148,7 @@ export function genlogRecord({ code, pid, genId, gen, trace = null, totalMs = nu
     // Footwear: what the correction found and where it placed it (or why it could not).
     ...(t.correction ? { correction: t.correction } : {}),
     ...(t.thoughtsUnsupported ? { thoughtsUnsupported: t.thoughtsUnsupported } : {}),
-    thoughtsLabel: THOUGHTS_LABEL,
+    thoughtsLabel: gen.provider === "openai" ? OPENAI_THOUGHTS_LABEL : THOUGHTS_LABEL,
     measurements: gen.measurements || null,
     transport: gen.provider === "openai" ? "images/edits (Cloud Function)" : "streamGenerateContent (Cloud Function)",
   });
