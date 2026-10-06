@@ -38,6 +38,11 @@ mkdirSync(CACHE, { recursive: true });
 const WEEKS = Number(opt("--weeks", 8));
 const TODAY = opt("--today", new Date().toISOString().slice(0, 10));
 const SHAPE = argv.includes("--shape");
+// Lay-bys are cancelled weeks after they are made. --lookback-weeks N also
+// reads the N weeks BEFORE the window, and keeps from them only lay-bys whose
+// cancellation falls inside the window.
+const LOOKBACK = Number(opt("--lookback-weeks", 0));
+const JSON_OUT = opt("--json", null);
 const R = reg.SEED_REGISTRY;
 const SECTION2_STORES = new Set(["pe", "trophy"]);
 
@@ -97,6 +102,18 @@ for (let t = startMs; t < endMs; t += 864e5) {
   }
 }
 
+// Lay-bys created before the window and cancelled inside it.
+let lookbackRecords = 0;
+for (let t = startMs - LOOKBACK * 7 * 864e5; t < startMs; t += 864e5) {
+  const day = new Date(t).toISOString().slice(0, 10);
+  const s = cached(`sales-${day}.json`, () => getJson("pos/sales", [["orderBy", '"createdAt"'], ["startAt", String(t)], ["endAt", String(t + 864e5 - 1)]]) || {});
+  for (const [id, r] of Object.entries(s)) {
+    lookbackRecords++;
+    const cancelledAt = Number(r?.layby?.cancelledAt) || 0;
+    if (r?.type === "layby" && r.status === "cancelled" && cancelledAt >= startMs && cancelledAt < endMs) sales[id] = r;
+  }
+}
+
 if (SHAPE) {
   const tally = (f) => { const o = {}; for (const r of Object.values(sales)) { const k = String(f(r)); o[k] = (o[k] || 0) + 1; } return o; };
   const keys = {};
@@ -134,7 +151,7 @@ for (const [id, r] of Object.entries(sales)) {
   if (r.type === "layby" && (r.status === "cancelled" || r.cancelledAt)) {
     for (const [, l] of lines) {
       if (l.sourceType === "return") continue;
-      expected.push({ lineName: l.name || null, kind: "layby cancel", recordId: id, storeId: r.storeId, at: r.cancelledAt || at, productId: l.productId, size: l.size, qty: Number(l.qty) || 0, originalSaleId: id, sourceHub: l.sourceHub || null });
+      expected.push({ lineName: l.name || null, kind: "layby cancel", recordId: id, storeId: r.storeId, at: r.layby?.cancelledAt || r.cancelledAt || at, productId: l.productId, size: l.size, qty: Number(l.qty) || 0, originalSaleId: id, sourceHub: l.sourceHub || null });
     }
   }
 }
@@ -248,7 +265,9 @@ const md = [
   "",
   "## Limits of this count",
   "",
-  "- Records are found by the date they were CREATED. A lay-by created before the window and cancelled inside it is not counted.",
+  LOOKBACK
+    ? `- Lay-bys created up to ${LOOKBACK} weeks before the window and cancelled inside it ARE included (${lookbackRecords} earlier records read for them). One created earlier still is not.`
+    : "- Records are found by the date they were CREATED. A lay-by created before the window and cancelled inside it is not counted (run with --lookback-weeks).",
   "- A void has no status of its own in this data; it is a refund record with return lines, and is counted as a refund.",
   "- \"Looks short now\" is the cell's on-hand today. It cannot prove a shortage: later counts, refills and sales have moved the cell since.",
   "- Read-only. Nothing was repaired.",
@@ -257,4 +276,8 @@ const md = [
 const OUT = opt("--out", join(process.env.HOME, "Documents/sections-private/dropped-returns.md"));
 if (OUT.startsWith(ROOT)) throw new Error("the report names real products and records — write it outside this (public) repo");
 writeFileSync(OUT, md);
+if (JSON_OUT) {
+  if (JSON_OUT.startsWith(ROOT)) throw new Error("the list names real products and records — write it outside this (public) repo");
+  writeFileSync(JSON_OUT, JSON.stringify({ generatedAt: new Date().toISOString(), window: { startMs, endMs }, dropped: real }, null, 1));
+}
 console.log(JSON.stringify({ genuine: real.length, byDesign: design.length, genuineByLoc: Object.fromEntries(Object.entries(realByLoc).map(([k, l]) => [k, units(l)])), records: Object.keys(sales).length, mvScanned, expectedLines: expected.length, restocked, dropped: dropped.length, droppedUnits: units(dropped), byHub: Object.fromEntries(Object.entries(byHub).map(([k, l]) => [k, units(l)])), byKind: Object.fromEntries(Object.entries(byKind).map(([k, l]) => [k, units(l)])) }, null, 1));
