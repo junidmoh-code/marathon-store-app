@@ -133,22 +133,16 @@ export function photosMutator(base, { photos, basisPhotos }, ctx) {
  *
  * `basisKey` is storedMediaKey() of the node the edit was computed from —
  * optimistic concurrency, so an edit made from a stale screen is refused
- * rather than silently dropping another session's photo. `basisPhotos` is the
- * photo list the page SHOWED (the resolved list); on a node's first media
- * write it is kept as `mediaBasis`, which is how the reconciler recognises the
- * photos it already pushed to a live product and leaves them in place.
+ * rather than silently dropping another session's photo.
  */
-export function mediaMutator(base, { media, basisKey, basisPhotos = null }, ctx) {
+export function mediaMutator(base, { media, basisKey }, ctx) {
   if (storedMediaKey(base) !== basisKey) {
     return { refusal: "The photos and videos changed in another session — nothing was saved. The list now shows the latest; redo the change." };
   }
   const problem = mediaListProblem(media);
   if (problem) return { refusal: problem };
   const clean = media.map(cleanMediaItem);
-  const firstWrite = !normalizeMediaItems(base.media) && base.mediaBasis == null;
-  const basis = firstWrite ? normalizePhotoList(basisPhotos) : null;
-  return { next: { ...base, ...normalizedFields(base), media: clean, photos: photoUrlsOf(clean),
-                   ...(basis ? { mediaBasis: basis } : {}), ...stamp(ctx) } };
+  return { next: { ...base, ...normalizedFields(base), media: clean, photos: photoUrlsOf(clean), ...stamp(ctx) } };
 }
 
 export function conditionMutator(base, { condition }, ctx) {
@@ -167,7 +161,7 @@ export function conditionMutator(base, { condition }, ctx) {
  * never land first: with no photo in the list yet, the append is refused.
  */
 export function appendMediaMutator(base, { items, product = null }, ctx) {
-  const { items: current, source } = resolveMediaList(base, product);
+  const { items: current } = resolveMediaList(base, product);
   const adding = (items || []).map(cleanMediaItem);
   if (!adding.length || adding.some((m) => !m)) return { refusal: "Nothing to add." };
   for (const m of adding) {
@@ -180,8 +174,5 @@ export function appendMediaMutator(base, { items, product = null }, ctx) {
   if (next[0].type !== "photo") return { refusal: "Add a photo first — a video can never be the first item (the primary is always a photo)." };
   const problem = mediaListProblem(next);
   if (problem) return { refusal: problem };
-  const firstWrite = !normalizeMediaItems(base.media) && base.mediaBasis == null;
-  const basis = firstWrite && source !== "media" ? photoUrlsOf(current) : [];
-  return { next: { ...base, ...normalizedFields(base), media: next, photos: photoUrlsOf(next),
-                   ...(basis.length ? { mediaBasis: basis } : {}), ...stamp(ctx) } };
+  return { next: { ...base, ...normalizedFields(base), media: next, photos: photoUrlsOf(next), ...stamp(ctx) } };
 }

@@ -371,12 +371,11 @@ export async function setPublishPhotos(productId, node, photos) {
  * its photo projection in the same transaction. Allowed while the listing is
  * ON — the reconciler carries it to Shopify on its next tick. Optimistically
  * concurrent against `node` (the snapshot this edit was computed from).
- * `basisPhotos` = the photo list the page showed before this edit.
  */
-export async function setPublishMedia(productId, node, items, { basisPhotos = null } = {}) {
+export async function setPublishMedia(productId, node, items) {
   const problem = precheck.media(items);
   if (problem) return { ok: false, message: problem };
-  return decide(productId, node, mediaMutator, { media: items, basisKey: storedMediaKey(node), basisPhotos });
+  return decide(productId, node, mediaMutator, { media: items, basisKey: storedMediaKey(node) });
 }
 
 /**
