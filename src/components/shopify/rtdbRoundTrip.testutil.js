@@ -3,6 +3,8 @@
 //   • null/undefined children are deleted;
 //   • an EMPTY array or object is deleted (RTDB cannot store one), and a
 //     parent left empty by that disappears too;
+//   • an object's keys come back SORTED (a comparison that depends on the
+//     order a value was built in sees a change that is not there);
 //   • a container whose keys are all small integers comes back as an ARRAY
 //     when more than half of 0..max are present (holes read as null), and as
 //     an OBJECT keyed "0","2",… otherwise.
@@ -27,5 +29,7 @@ export function rtdbRoundTrip(v) {
       return arr;
     }
   }
-  return out;
+  const sorted = {};
+  for (const k of Object.keys(out).sort()) sorted[k] = out[k];
+  return sorted;
 }

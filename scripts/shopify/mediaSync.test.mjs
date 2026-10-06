@@ -77,7 +77,8 @@ function fakeShopify({ readyAfterReads = 1, initial = [] } = {}) {
       s.reads += 1;
       for (const m of s.media) { m.age = (m.age || 0) + 1; if (m.status !== "READY" && m.status !== "FAILED" && m.age > readyAfterReads) m.status = "READY"; }
       return { product: { id: GID, media: { pageInfo: { hasNextPage: false },
-        nodes: s.media.map(({ id, status, mediaContentType, alt }) => ({ id, status, mediaContentType, alt, mediaErrors: [] })) } } };
+        nodes: s.media.map(({ id, status, mediaContentType, alt }) => ({ id, status, mediaContentType, alt, mediaErrors: [],
+          preview: mediaContentType === "VIDEO" && status === "READY" ? { image: { url: `https://cdn.example/${id.split("/").pop()}.jpg` } } : null })) } } };
     }
     throw new Error(`unexpected query ${q.slice(0, 60)}`);
   };
@@ -153,7 +154,10 @@ describe("a video's bytes go to Shopify EXACTLY ONCE, and never inside the tick"
     for (let i = 0; i < 6; i++) { await tick(env, node); await send(env, node); }
     expect(env.up.calls).toEqual(["mv1"]);                  // never again
     expect(env.fdb.get(`${MEDIA_PENDING_PATH}/p1`)).toBeNull();
-    expect(env.fdb.get("shopify_publish/p1/mediaShopify")).toEqual({ mp1: { status: "ready" }, mv1: { status: "ready" } });
+    // A READY video carries Shopify's own preview frame — the strip's poster
+    // when the phone could not draw one at upload.
+    expect(env.fdb.get("shopify_publish/p1/mediaShopify")).toEqual({ mp1: { status: "ready" },
+      mv1: { status: "ready", previewUrl: expect.stringMatching(/^https:\/\/cdn\.example\//) } });
     expect(env.shop.s.mutations.filter((m) => m[0] === "create").length).toBe(2); // photos once, video attach once
   });
   it("the tick's own record writes never overwrite the runner's resourceUrl (field-level)", async () => {
