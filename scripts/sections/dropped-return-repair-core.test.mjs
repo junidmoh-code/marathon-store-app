@@ -68,10 +68,12 @@ describe("what is set aside, never forced", () => {
     expect(planDroppedRepair({ dropped: [shoe()], products: { "p-shoe": {} } }).setAside[0].why).toMatch(/no merge survivor/);
   });
 
-  it("a sale the books only partly covered has only its covered part restocked", () => {
-    const p = plan([shirt({ qty: 3, soldShortfall: 1 })]);
-    expect(p.restocks[0]).toMatchObject({ qty: 2, withheld: 1 });
-    expect(plan([shirt({ qty: 1, soldShortfall: 1 })]).setAside[0].why).toMatch(/short by the whole quantity/);
+  it("a sale that sold short is never guessed at — set aside, whatever the quantities", () => {
+    for (const d of [shirt({ qty: 3, soldShortfall: 1 }), shirt({ qty: 1, soldShortfall: 2 }), shirt({ qty: 1, soldShortfall: 1 })]) {
+      const p = plan([d]);
+      expect(p.restocks).toEqual([]);
+      expect(p.setAside[0].why).toMatch(/needs a person to decide/);
+    }
   });
 
   it("a store the registry does not know, and a line with no quantity", () => {

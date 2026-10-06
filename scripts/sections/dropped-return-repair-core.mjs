@@ -41,14 +41,17 @@ export function planDroppedRepair({ dropped = [], products = {}, log = {}, regis
   const R = registry || reg.SEED_REGISTRY;
   const out = { restocks: [], setAside: [], alreadyRepaired: [] };
   for (const d of dropped) {
-    // A sale the books could only PARTLY cover (it sold with the cell short)
-    // has only its covered part restocked — the same cap every return gets.
     const short = Math.max(Number(d.soldShortfall) || 0, 0);
-    const base = { recordId: d.recordId, originalSaleId: d.originalSaleId || null, kind: d.kind, storeId: d.storeId, productId: d.productId, size: d.size, sizeKey: sizeKeyOf(d.size), qty: Math.max((Number(d.qty) || 0) - short, 0), withheld: Math.min(short, Number(d.qty) || 0), name: d.name || d.productId, at: d.at };
+    const base = { recordId: d.recordId, originalSaleId: d.originalSaleId || null, kind: d.kind, storeId: d.storeId, productId: d.productId, size: d.size, sizeKey: sizeKeyOf(d.size), qty: Number(d.qty) || 0, name: d.name || d.productId, at: d.at };
     const key = logKeyFor(d);
     const entry = (log || {})[key];
     if (entry && entry.status === "done") { out.alreadyRepaired.push({ ...base, to: entry.to }); continue; }
-    if (!(base.qty > 0)) { out.setAside.push({ ...base, why: base.withheld > 0 ? "the original sale was short by the whole quantity — nothing to restock" : "the dropped line has no quantity" }); continue; }
+    if (!(base.qty > 0)) { out.setAside.push({ ...base, why: "the dropped line has no quantity" }); continue; }
+    // A sale the books could not fully cover (it sold with the cell short):
+    // how much of THIS return is covered depends on the sale's quantity and on
+    // what was already returned against it, which this list does not carry.
+    // Not guessed — set aside for a person.
+    if (short > 0) { out.setAside.push({ ...base, why: `the original sale was short by ${short} when it sold — how much of this return is covered needs a person to decide` }); continue; }
     const shop = reg.locationOf(R, d.storeId);
     if (!shop || shop.type !== "store") { out.setAside.push({ ...base, why: `the return was taken at a store the registry does not know (${d.storeId ?? "none"})` }); continue; }
 

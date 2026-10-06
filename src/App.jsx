@@ -15113,7 +15113,11 @@ function CustomerView({ orders, onExit }) {
       {!found && (
         <div style={{ maxWidth: isWide ? 460 : "100%" }}>
           <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").replace(/^([A-Z]{0,3})(.*)$/, (_m, p, rest) => p + rest.replace(/[^0-9]/g, "")))}
-                 onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4} inputMode="numeric"
+                 onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4}
+                 // The digit keypad, as always — unless a store's own sequence is in
+                 // use (an order key like "P007" is on the board), when the customer
+                 // needs the letter too.
+                 inputMode={heldOrders.some(o => /^[A-QS-Z]/.test(String(o?.id ?? ""))) ? "text" : "numeric"}
                  style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "18px", color: "#fff", fontSize: 34, fontWeight: 800, textAlign: "center", letterSpacing: "12px", outline: "none", marginBottom: 10, fontVariantNumeric: "tabular-nums" }} />
           <button onClick={() => doSearch()} className="ot-press"
                   style={{ width: "100%", background: "linear-gradient(180deg, #5A8BFF, #4A7FFF)", color: "#fff", border: "none", borderRadius: 13, padding: 15, fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, boxShadow: "0 10px 24px -10px rgba(74,127,255,.8)" }}>

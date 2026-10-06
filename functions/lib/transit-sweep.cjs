@@ -246,11 +246,15 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
 // screen when they mean to. Every Section 2 destination is live, so for them
 // the plan is returned untouched (the same object).
 function holdNonLiveReleases(plan, network) {
-  const held = plan.releases.filter((r) => !networkRegistry.isLive(network, r.dest));
+  // A RESUMED release is not a new one: its transit debit already landed and
+  // only the credit is owed. Holding it would strand units that have already
+  // left in_transit, so it is always completed.
+  const blocked = (r) => !r.resumed && !networkRegistry.isLive(network, r.dest);
+  const held = plan.releases.filter(blocked);
   if (!held.length) return plan;
   return {
     ...plan,
-    releases: plan.releases.filter((r) => networkRegistry.isLive(network, r.dest)),
+    releases: plan.releases.filter((r) => !blocked(r)),
     pending: [...plan.pending, ...held.map((r) => ({ ...r, why: `${networkRegistry.locationName(network, r.dest)} is not live — the sweep releases nothing there; release it by hand` }))],
   };
 }

@@ -28,6 +28,13 @@ test("once the owner marks it live the sweep releases there", () => {
   assert.deepEqual(out.releases.map((r) => r.dest), ["hub3"]);
 });
 
+test("a release whose transit debit already landed is completed even for a location that is not live", () => {
+  const p = plan(["hub3"]);
+  p.releases.push({ ...rel("hub3", "l-resumed"), resumed: true });
+  const out = holdNonLiveReleases(p, reg.SEED_REGISTRY);
+  assert.deepEqual(out.releases.map((r) => r.lineId), ["l-resumed"]);
+});
+
 test("an unknown destination is not live", () => {
   assert.deepEqual(holdNonLiveReleases(plan(["hub9"]), reg.SEED_REGISTRY).releases, []);
 });
