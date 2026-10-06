@@ -77,8 +77,10 @@ const inFlight = new Set();
  * @param busy         the parent strip is mid-write
  * @param onReplace    (newUrl, sourceUrl) => Promise<boolean> — swap this slot
  * @param onAdd        (newUrl) => Promise<boolean> — append, keeping the original
+ * @param isPrimary    the selected slot is the PRIMARY photo — replacing it
+ *                     also changes the product's photo in the app (26 Sep)
  */
-export default function AiStudioCard({ product, node = null, sourceUrl, photoCount = 0, busy = false, onReplace, onAdd }) {
+export default function AiStudioCard({ product, node = null, sourceUrl, photoCount = 0, isPrimary = false, busy = false, onReplace, onAdd }) {
   const [open, setOpen] = useState(false);
   const [style, setStyle] = useState(PHOTO_PRESETS[0].key);
   const [engine, setEngine] = useState("auto");
@@ -208,7 +210,7 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
   const useIt = async (mode) => {
     if (!candidate || saving || savingRef.current) return;
     if (mode === "add" && photoCount >= MAX_PUBLISH_PHOTOS) {
-      setErr(`At most ${MAX_PUBLISH_PHOTOS} photos per product — replace one instead.`);
+      setErr(`Shopify takes at most ${MAX_PUBLISH_PHOTOS} photos and videos per product — replace one instead.`);
       return;
     }
     savingRef.current = true;
@@ -236,7 +238,9 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
         setCandidate(null);
         setMsg(mode === "add"
           ? "Added to the publishing set. The photo it came from is still there."
-          : "This slot now uses the new photo. The original is untouched in Storage and on the product record.");
+          : isPrimary
+            ? "The primary photo is now the new one — on Shopify and as the product's photo in the app. The original is kept in Storage."
+            : "This slot now uses the new photo. The original is untouched in Storage and on the product record.");
       }
     } catch (e) {
       setErr(String(e?.message || e));
