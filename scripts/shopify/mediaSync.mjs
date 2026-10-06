@@ -229,7 +229,8 @@ export async function readProductMedia(graphql, gid) {
   const d = await graphql(
     `query ($id: ID!) { product(id: $id) { id media(first: ${MEDIA_PAGE}) {
         pageInfo { hasNextPage }
-        nodes { id status mediaContentType alt mediaErrors { code message } } } } }`,
+        nodes { id status mediaContentType alt mediaErrors { code message }
+                preview { image { url(transform: { maxWidth: 480 }) } } } } } }`,
     { id: gid });
   if (!d.product) return null;
   if (d.product.media.pageInfo?.hasNextPage) throw new Error(`more than ${MEDIA_PAGE} media on ${gid} — cannot verify the set`);
@@ -545,9 +546,15 @@ export async function syncProductMedia({ graphql, db, pid, gid, node, product, t
 
   // The page's projection + the carry-forward marker + the finished sig.
   const statusMap = {};
+  const finalById = new Map(shopify.map((n) => [n.id, n]));
   for (const m of desired) {
     const r = rec[m.id] || {};
     statusMap[m.id] = r.note && r.status !== "ready" ? { status: r.status || "queued", note: r.note } : { status: r.status || "queued" };
+    // A READY video's own preview frame (Shopify's CDN, a small JPEG): the
+    // strip's poster when the phone could not draw one at upload — some phones
+    // cannot decode every format, and a backgrounded browser tab decodes none.
+    const preview = m.type === "video" && r.status === "ready" ? finalById.get(r.shopifyMediaId)?.preview?.image?.url : null;
+    if (preview) statusMap[m.id].previewUrl = preview;
   }
   const removalsLeft = Object.values(rec).some((r) => r.remove);
   const pending = removalsLeft || desired.some((m) => !["ready", "failed"].includes(statusMap[m.id].status));

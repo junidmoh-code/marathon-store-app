@@ -65,19 +65,22 @@ const fmtDuration = (ms) => {
 };
 const fmtBytes = (n) => (n >= 1e9 ? `${(n / 1e9).toFixed(2)} GB` : n >= 1e6 ? `${Math.round(n / 1e6)} MB` : `${Math.max(1, Math.round(n / 1e3))} KB`);
 
-function Thumb({ item, index, selected, dim, line, onSelect }) {
+function Thumb({ item, index, selected, dim, line, onSelect, fallbackPoster = null }) {
   const video = item.type === "video";
+  // A video's thumbnail is its poster drawn at upload, else Shopify's own
+  // preview frame once it has processed the video — never the video itself.
+  const poster = item.posterUrl || fallbackPoster;
   return (
     <div style={{ position: "relative" }}>
       <button type="button" onClick={onSelect} aria-label={`${video ? "Video" : "Photo"} ${index + 1}${index === 0 ? ", primary" : ""}`}
         style={{ width: 84, height: 84, padding: 0, borderRadius: 9, overflow: "hidden", cursor: "pointer",
                  background: "rgba(255,255,255,.08)", border: selected ? "2px solid #fff" : "2px solid transparent",
                  opacity: dim ? 0.55 : 1, display: "block" }}>
-        {video && !item.posterUrl ? (
+        {video && !poster ? (
           <div style={{ width: "100%", height: "100%", display: "flex", alignItems: "center", justifyContent: "center",
                         color: "#fff", fontSize: 26 }}>▶</div>
         ) : (
-          <img src={video ? item.posterUrl : item.url} alt="" loading="lazy"
+          <img src={video ? poster : item.url} alt="" loading="lazy"
             style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
         )}
       </button>
@@ -250,6 +253,7 @@ export default function MediaStrip({ product, node, onChanged }) {
         {items.map((m, k) => (
           <Thumb key={m.id} item={m} index={k} selected={sel === k} dim={sel !== null && sel !== k}
             line={m.type === "video" ? shopifyLine(m, node) : null}
+            fallbackPoster={node?.mediaShopify?.[m.id]?.previewUrl || null}
             onSelect={() => setSel(sel === k ? null : k)} />
         ))}
       </div>
@@ -311,7 +315,7 @@ export default function MediaStrip({ product, node, onChanged }) {
           {selected.type === "video" && (
             // Plays ONLY on a tap: preload="none" with the poster, so nothing
             // of the original is fetched until then. playsInline for iPhone.
-            <video key={selected.id} src={selected.url} poster={selected.posterUrl || undefined}
+            <video key={selected.id} src={selected.url} poster={selected.posterUrl || node?.mediaShopify?.[selected.id]?.previewUrl || undefined}
               preload="none" controls playsInline
               style={{ width: "100%", maxHeight: 360, borderRadius: 8, background: "#000", display: "block", marginBottom: 8 }} />
           )}
