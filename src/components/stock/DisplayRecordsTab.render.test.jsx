@@ -23,6 +23,8 @@ vi.mock("./displayRegistrationStore", () => ({
 vi.mock("./useStock", () => ({
   useDisplaySlots: () => SLOTS,
   useDisplayRegister: () => REGISTER,
+  // /network: no node, so the registry is its seed (Hub 1 + Hub 2 live).
+  usePathState: () => ({ value: null, settled: true, error: false }),
 }));
 
 const DisplayRecordsTab = (await import("./DisplayRecordsTab")).default;

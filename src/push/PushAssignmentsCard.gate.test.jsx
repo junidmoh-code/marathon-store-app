@@ -59,6 +59,13 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("../firebase", () => ({ database: { fake: true } }));
 vi.mock("../utils/serverTime", () => ({ serverNowMs: () => 1_757_000_000_000 }));
+// The network registry, without the live /network read behind it. The built-in
+// registry unless a test puts another one in `net.registry`.
+const net = vi.hoisted(() => ({ registry: null }));
+vi.mock("../utils/useNetwork", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../utils/networkRegistry");
+  return { useNetwork: () => ({ registry: net.registry || SEED_REGISTRY, settled: true, error: false }) };
+});
 
 const PushAssignmentsCard = (await import("./PushAssignmentsCard.jsx")).default;
 const { PUSH_HUBS } = await import("./pushAssignments.js");
@@ -104,7 +111,7 @@ const render = async (props) => {
 const screenNames = (tree) =>
   tree.root.findAll((n) => typeof n.type === "function").map((n) => n.type.name);
 
-beforeEach(() => { getMock.mockClear(); updateMock.mockClear(); });
+beforeEach(() => { getMock.mockClear(); updateMock.mockClear(); net.registry = null; });
 
 describe("a refused viewer reads NOTHING", () => {
   it("a signed-in non-super-admin triggers no read at all", async () => {
@@ -232,7 +239,11 @@ describe("the roster it shows", () => {
     const ayanda = rowSwitches(tree).filter((n) => n.props["aria-label"].includes("Ayanda"));
     // hub1 on; hub2 explicitly false; hub3 ABSENT from this legacy-shaped
     // record and therefore off — not unset-and-therefore-on.
-    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false, false]);
+    // The Concrete Stockroom, a hub the record has never heard of, is off too.
+    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false, false, false]);
+    expect(ayanda.map((n) => n.props["aria-label"])).toEqual([
+      "Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda", "Hub 3 alerts for Ayanda", "Concrete Stockroom alerts for Ayanda",
+    ]);
   });
 
   it("everyone else renders OFF — absence of a record is off, not unset", async () => {
@@ -273,6 +284,9 @@ describe("what a tap actually writes", () => {
       "push_hub_audience/hub1/u1": { at: 1_757_000_000_000 },
       "push_hub_audience/hub2/u1": null,
       "push_hub_audience/hub3/u1": null,
+      // The registry's fourth hub is cleared in the index like the rest; the
+      // RECORD above is unchanged, so today's published rule still accepts it.
+      "push_hub_audience/concrete-stockroom/u1": null,
     });
   });
 
@@ -810,5 +824,88 @@ describe("the card shows who has muted themselves", () => {
         expect(path.startsWith("push_mutes")).toBe(false);
       }
     }
+  });
+});
+
+// ─── THE HUBS COME FROM THE NETWORK REGISTRY, GROUPED BY SECTION ─────────────
+describe("hubs from the registry, by section", () => {
+  const switchesFor = (tree, name) =>
+    tree.root.findAll((n) => n.props && n.props.role === "switch" && n.props["aria-label"].endsWith(`for ${name}`));
+
+  it("groups Hub 1 and Hub 2 under Section 2, Hub 3 and the Concrete Stockroom under Section 1", async () => {
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
+    const tree = await render({ authUser: ADMIN });
+    const groups = tree.root.findAll((n) => n.type === "span" && n.props["data-hub-group"] !== undefined);
+    expect(groups.map((g) => g.props["data-hub-group"])).toEqual([2, 1]);
+    const labelsIn = (g) => g.findAll((n) => n.props && n.props.role === "switch").map((n) => n.props["aria-label"]);
+    expect(labelsIn(groups[0])).toEqual(["Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda"]);
+    expect(labelsIn(groups[1])).toEqual(["Hub 3 alerts for Ayanda", "Concrete Stockroom alerts for Ayanda"]);
+    const t = flattenTree(tree);
+    expect(t).toContain("Section 2");
+    expect(t).toContain("Section 1");
+  });
+
+  it("a hub the owner adds to the registry gets a switch with no code change", async () => {
+    const { normalizeNetwork } = await import("../utils/networkRegistry");
+    net.registry = normalizeNetwork({ locations: { hub4: { name: "Hub 4", type: "hub", section: 2, sort: 30 } } });
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
+    const tree = await render({ authUser: ADMIN });
+    expect(switchesFor(tree, "Ayanda").map((n) => n.props["aria-label"])).toContain("Hub 4 alerts for Ayanda");
+  });
+
+  it("assigning the Concrete Stockroom writes its index entry and the record child", async () => {
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
+    const tree = await render({ authUser: ADMIN });
+    const stockroom = switchesFor(tree, "Ayanda").find((n) => n.props["aria-label"].startsWith("Concrete Stockroom"));
+    await act(async () => { stockroom.props.onClick(); });
+    expect(updateMock.mock.calls[0][1]).toEqual({
+      "push_assignments/u1": { hub1: false, hub2: false, hub3: false, "concrete-stockroom": true, updatedAt: 1_757_000_000_000 },
+      "push_hub_audience/hub1/u1": null,
+      "push_hub_audience/hub2/u1": null,
+      "push_hub_audience/hub3/u1": null,
+      "push_hub_audience/concrete-stockroom/u1": { at: 1_757_000_000_000 },
+    });
+  });
+
+  it("an account scoped to Section 1 cannot be switched onto a Section 2 hub — disabled, and the tap writes nothing", async () => {
+    getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Pinky", sections: { 1: true } } } }));
+    const tree = await render({ authUser: ADMIN });
+    const by = Object.fromEntries(switchesFor(tree, "Pinky").map((n) => [n.props["aria-label"].split(" alerts")[0], n]));
+    expect(by["Hub 1"].props.disabled).toBe(true);
+    expect(by["Hub 2"].props.disabled).toBe(true);
+    expect(by["Hub 3"].props.disabled).toBe(false);
+    expect(by["Concrete Stockroom"].props.disabled).toBe(false);
+    expect(flattenTree(tree)).toContain("Section 1 only");
+    // The guard is in the handler too — a disabled attribute is not enforcement.
+    await act(async () => { by["Hub 1"].props.onClick(); });
+    expect(updateMock).not.toHaveBeenCalled();
+    await act(async () => { by["Hub 3"].props.onClick(); });
+    expect(updateMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("…but an assignment made BEFORE the account was scoped can still be switched off", async () => {
+    getMock.mockImplementation(worldReader({
+      users: { u1: { displayName: "Pinky", sections: { 1: true } } },
+      push_assignments: { u1: { hub1: true, hub2: false, hub3: false, updatedAt: 1 } },
+    }));
+    const tree = await render({ authUser: ADMIN });
+    const hub1 = switchesFor(tree, "Pinky").find((n) => n.props["aria-label"].startsWith("Hub 1"));
+    expect(hub1.props["aria-checked"]).toBe(true);
+    expect(hub1.props.disabled).toBe(false);
+    await act(async () => { hub1.props.onClick(); });
+    expect(updateMock.mock.calls[0][1]["push_hub_audience/hub1/u1"]).toBe(null);
+  });
+
+  it("a shop lock (destShop) scopes the row to that shop's section; an unscoped account gets every switch", async () => {
+    getMock.mockImplementation(worldReader({ users: {
+      u1: { displayName: "Petra", destShop: "marathon-pine" },
+      u2: { displayName: "Wally", stockRole: "warehouse" },
+      u3: { displayName: "Bothy", allSections: true, destShop: "trophy" },
+    } }));
+    const tree = await render({ authUser: ADMIN });
+    const disabled = (name) => switchesFor(tree, name).map((n) => n.props.disabled);
+    expect(disabled("Petra")).toEqual([true, true, false, false]);
+    expect(disabled("Wally")).toEqual([false, false, false, false]);
+    expect(disabled("Bothy")).toEqual([false, false, false, false]);
   });
 });

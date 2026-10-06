@@ -114,17 +114,34 @@ import { readByKeyPages } from "./pagedRead";
 import { partitionRoster } from "./staffRoster";
 import { isMuted, pushMuteFlagPath } from "./pushMute";
 import {
-  PUSH_HUBS,
-  PUSH_HUB_LABEL,
   PUSH_ASSIGNMENTS_PATH,
+  pushHubsFor,
+  pushHubLabel,
   assignedHubs,
   assignmentUpdates,
   isLegalKey,
 } from "./pushAssignments";
+import { hubSectionOf } from "./pushHubs";
+import { useNetwork } from "../utils/useNetwork";
+import { accountSections, sectionRecord, sectionName } from "../components/sectionAccess";
+// The one super-admin identity the rest of the admin surface uses.
+import { ADMIN_EMAIL } from "../components/PermissionsContext";
 
-// Same super-admin identity the rest of the admin surface uses
-// (src/components/UserManagement.jsx, functions/index.js assertAdmin).
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
+// ── THE HUBS, GROUPED BY SECTION ─────────────────────────────────────────────
+// Every hub in the network registry, under the section it belongs to. Section 2
+// first, so Hub 1 and Hub 2 sit where they always have; Section 1 (Hub 3, the
+// Concrete Stockroom) follows.
+//   [{ section, name, hubs: [{ id, label }] }]
+export function hubGroups(registry) {
+  const out = [];
+  for (const hub of pushHubsFor(registry)) {
+    const section = hubSectionOf(registry, hub);
+    let g = out.find((x) => x.section === section);
+    if (!g) { g = { section, name: sectionName(registry, section), hubs: [] }; out.push(g); }
+    g.hubs.push({ id: hub, label: pushHubLabel(registry, hub) });
+  }
+  return out.sort((a, b) => b.section - a.section);
+}
 
 const FONT    = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
 const CARD    = "#1c1c1e";
@@ -202,6 +219,19 @@ function PushAssignmentsAuthed({ onExit }) {
   const loadGen = useRef(0);
   const [loading, setLoading] = useState(false);
 
+  // ── THE HUB LIST IS THE REGISTRY'S ───────────────────────────────────────
+  // Read once here and handed to everything below: which switches a row has,
+  // which hubs a record is read for, and which hubs a save writes and CLEARS.
+  // Until /network answers this is the built-in registry, which already holds
+  // every hub there is today.
+  const { registry } = useNetwork();
+  const groups = useMemo(() => hubGroups(registry), [registry]);
+  const allHubs = useMemo(() => pushHubsFor(registry), [registry]);
+  // The load reads each record FOR this list, so it runs again if the list
+  // itself changes (a hub added on the Network card) — keyed on the ids, not on
+  // the registry object, so an unrelated registry edit reloads nothing.
+  const hubKey = allHubs.join("|");
+
   const load = useCallback(async () => {
     const gen = ++loadGen.current;
     const live = () => loadGen.current === gen;
@@ -267,7 +297,7 @@ function PushAssignmentsAuthed({ onExit }) {
       .map(([uid, rec]) => ({
         uid,
         record: rec,
-        hubs: assignOk ? assignedHubs(assignments[uid]) : [],
+        hubs: assignOk ? assignedHubs(assignments[uid], hubKey.split("|")) : [],
       }));
     const { visible, hiddenPosOnly } = partitionRoster(candidates);
     setHiddenPos(hiddenPosOnly);
@@ -282,6 +312,12 @@ function PushAssignmentsAuthed({ onExit }) {
         // assignment. See src/push/pushAssignments.js.
         stockRole: (rec && rec.stockRole) || null,
         destShop: (rec && rec.destShop) || null,
+        // What scopes this account to a section (User Management): its
+        // sections map, allSections, and its shop lock. NOT an assignment
+        // either — it only decides which hubs CAN be switched on: the fan-out
+        // never sends a section's alerts to an account outside it. Kept as the
+        // three fields and resolved against the registry when the row is drawn.
+        scope: sectionRecord(rec),
         // null = not known yet / could not be read. NOT the same as 0.
         devices: null,
         // null = not known yet / could not be read. NOT the same as false.
@@ -389,7 +425,7 @@ function PushAssignmentsAuthed({ onExit }) {
         return next;
       })));
     setLoading(false);
-  }, []);
+  }, [hubKey]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -404,6 +440,11 @@ function PushAssignmentsAuthed({ onExit }) {
     if (assignError) return;
     const row = (rows || []).find((r) => r.uid === uid);
     if (!row || saving[uid]) return;
+    // A hub in a section this account is not scoped to can be switched OFF
+    // (an assignment made before the account was scoped) but never ON: the
+    // fan-out would not deliver it, and a switch that is on and silent is the
+    // one state this screen exists to prevent. The switch is disabled too.
+    if (!row.hubs.includes(hub) && !hubInSections(registry, accountSections(registry, row.scope), hub)) return;
     const next = row.hubs.includes(hub) ? row.hubs.filter((h) => h !== hub) : [...row.hubs, hub];
 
     // Optimistic, then reconciled — the same feel as User Management. A failed
@@ -413,7 +454,7 @@ function PushAssignmentsAuthed({ onExit }) {
     setRows((prev) => prev.map((r) => (r.uid === uid ? { ...r, hubs: next } : r)));
     setSaving((s) => ({ ...s, [uid]: true }));
     try {
-      await update(ref(database), assignmentUpdates(uid, next, serverNowMs()));
+      await update(ref(database), assignmentUpdates(uid, next, serverNowMs(), allHubs));
       setSavedAt((s) => ({ ...s, [uid]: Date.now() }));
       // CLEARED ON SUCCESS, AND ONLY FOR THIS ROW. Leaving a warning up after a
       // save that DID land is the same lie as a tick that persisted nothing,
@@ -428,7 +469,7 @@ function PushAssignmentsAuthed({ onExit }) {
     } finally {
       setSaving((s) => ({ ...s, [uid]: false }));
     }
-  }, [rows, saving, assignError]);
+  }, [rows, saving, assignError, registry, allHubs]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -586,6 +627,8 @@ function PushAssignmentsAuthed({ onExit }) {
                 busy={!!saving[row.uid]}
                 locked={!!assignError}
                 saved={savedAt[row.uid] && Date.now() - savedAt[row.uid] < 2200}
+                groups={groups}
+                registry={registry}
                 onToggle={(hub) => toggleHub(row.uid, hub)}
               />
             ))}
@@ -607,7 +650,14 @@ function PushAssignmentsAuthed({ onExit }) {
   );
 }
 
-function StaffRow({ row, last, busy, saved, locked, onToggle }) {
+/** May this account be alerted about this hub at all? A hub with no section
+ *  (none today) is open to everyone. */
+function hubInSections(registry, sections, hub) {
+  const s = hubSectionOf(registry, hub);
+  return s === null || (sections || []).includes(s);
+}
+
+function StaffRow({ row, last, busy, saved, locked, groups, registry, onToggle }) {
   // The sub-line is IDENTITY, not a rule: it exists so two people with similar
   // names are distinguishable. "No stock role" and "no shop" are printed rather
   // than hidden precisely because those accounts are the ones that used to be
@@ -616,6 +666,11 @@ function StaffRow({ row, last, busy, saved, locked, onToggle }) {
     row.stockRole ? `${row.stockRole}` : "no stock role",
     row.destShop ? row.destShop : "no shop",
   ];
+  // Said only for an account that is scoped: "both sections" on every other
+  // row would bury the handful it matters for.
+  const sections = accountSections(registry, row.scope);
+  const scopeText = sections.length === 2 ? null
+    : sections.length ? `${sectionName(registry, sections[0])} only` : "no section";
 
   return (
     <div style={{
@@ -660,34 +715,56 @@ function StaffRow({ row, last, busy, saved, locked, onToggle }) {
               <span style={{ color: TEXT_2, fontWeight: 700 }}>mute unknown</span>
             </>
           )}
+          {/* WHY SOME SWITCHES ARE GREYED: this account is scoped to one
+              section, and another section's hub cannot be switched on for it. */}
+          {scopeText && (
+            <>
+              {" · "}
+              <span data-section-scope="">{scopeText}</span>
+            </>
+          )}
         </span>
       </span>
 
-      <span style={{ display: "flex", gap: 7, flex: "0 0 auto" }}>
-        {PUSH_HUBS.map((hub) => {
-          const on = row.hubs.includes(hub);
-          return (
-            <button
-              key={hub}
-              type="button"
-              role="switch"
-              aria-checked={on}
-              aria-label={`${PUSH_HUB_LABEL[hub]} alerts for ${row.name}`}
-              disabled={busy || locked}
-              onClick={() => onToggle(hub)}
-              style={{
-                minWidth: 62, padding: "8px 10px", borderRadius: 10, cursor: busy ? "wait" : (locked ? "not-allowed" : "pointer"),
-                opacity: locked ? 0.45 : 1,
-                fontFamily: "inherit", fontSize: 12.5, fontWeight: 700,
-                color: on ? "#fff" : "rgba(233,238,255,.45)",
-                background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.045)",
-                border: `1px solid ${on ? "rgba(74,127,255,.62)" : "rgba(255,255,255,.1)"}`,
-                transition: "background .15s, border-color .15s, color .15s",
-              }}>
-              {PUSH_HUB_LABEL[hub]}
-            </button>
-          );
-        })}
+      {/* ONE SWITCH PER HUB, UNDER ITS SECTION. The section caption is drawn
+          only when there is more than one group to tell apart. */}
+      <span style={{ display: "flex", flexDirection: "column", gap: 6, flex: "0 1 auto", alignItems: "flex-end" }}>
+        {groups.map((group) => (
+          <span key={group.section} data-hub-group={group.section} style={{ display: "flex", gap: 7, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
+            {groups.length > 1 && (
+              <span style={{ fontSize: 10.5, fontWeight: 700, color: TEXT_2, letterSpacing: ".04em", textTransform: "uppercase" }}>{group.name}</span>
+            )}
+            {group.hubs.map(({ id: hub, label }) => {
+              const on = row.hubs.includes(hub);
+              // Outside this account's section: cannot be switched ON. Still
+              // tappable while it is on, so an old assignment can be cleared.
+              const outside = !on && !hubInSections(registry, sections, hub);
+              const off = locked || outside;
+              return (
+                <button
+                  key={hub}
+                  type="button"
+                  role="switch"
+                  aria-checked={on}
+                  aria-label={`${label} alerts for ${row.name}`}
+                  title={outside ? `${row.name} is not in ${group.name}` : undefined}
+                  disabled={busy || off}
+                  onClick={() => onToggle(hub)}
+                  style={{
+                    minWidth: 62, padding: "8px 10px", borderRadius: 10, cursor: busy ? "wait" : (off ? "not-allowed" : "pointer"),
+                    opacity: off ? 0.45 : 1,
+                    fontFamily: "inherit", fontSize: 12.5, fontWeight: 700,
+                    color: on ? "#fff" : "rgba(233,238,255,.45)",
+                    background: on ? "rgba(74,127,255,.3)" : "rgba(255,255,255,.045)",
+                    border: `1px solid ${on ? "rgba(74,127,255,.62)" : "rgba(255,255,255,.1)"}`,
+                    transition: "background .15s, border-color .15s, color .15s",
+                  }}>
+                  {label}
+                </button>
+              );
+            })}
+          </span>
+        ))}
       </span>
     </div>
   );

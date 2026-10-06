@@ -101,7 +101,7 @@ describe("a display-pair line's hub is fixed, not resolved", () => {
     const refusal = APP.indexOf("The display pair of ${gone.product.name}");
     const refusalReturn = APP.indexOf("return;", refusal);
     const firstWrite = APP.indexOf("setSubmitting(true);", refusal);
-    const orderNumber = APP.indexOf("await getNextOrderNumber()", refusal);
+    const orderNumber = APP.indexOf("await getNextOrderNumber(", refusal);
     expect(refusal, "the refusal is gone").toBeGreaterThan(-1);
     expect(firstWrite, "placeOrders no longer sets submitting after the guard").toBeGreaterThan(-1);
     expect(orderNumber, "placeOrders no longer claims an order number").toBeGreaterThan(-1);

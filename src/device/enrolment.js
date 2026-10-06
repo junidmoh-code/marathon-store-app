@@ -5,8 +5,9 @@
 // functions/lib/device-enrolment.cjs for the server half). Once enrolled, the
 // device's session is a custom-token session for the same uid whose ID token
 // carries the device's claims: deviceId, eid (this enrolment), personId,
-// personName. The claims are signed by the server, so the database rules can
-// trust them; this file only READS them.
+// personName — and `section` (1 or 2) when the code was made for one. The
+// claims are signed by the server, so the database rules can trust them; this
+// file only READS them.
 //
 // A device may use the app when, and only while:
 //   its token names a device, AND /users/{uid}/deviceGate/{deviceId} === eid.
@@ -50,6 +51,9 @@ export function pickDeviceClaims(claims) {
     // Only decides whether the Device codes tile is SHOWN; the server re-checks
     // the person on every admin call.
     canManageCodes: claims?.dmgr === true,
+    // The section the device's code was made for (1 or 2). Absent on a device
+    // enrolled before sections existed — that device is scoped by nothing.
+    section: claims?.section === 1 || claims?.section === 2 ? claims.section : null,
   };
 }
 
@@ -93,7 +97,7 @@ export function isLiveEnrolment(permRecord, claims) {
 // ── who is holding this device (for the stamps on every write) ──────────────
 // Set by AuthGate from the claims and the /users record; read by deviceStamp.
 // For a login without codes (Mike's own account) the person is the account.
-let identity = { deviceId: null, personName: null, personId: null, enrolled: false, canManageCodes: false };
+let identity = { deviceId: null, personName: null, personId: null, enrolled: false, canManageCodes: false, section: null };
 
 // Pure: the identity for these claims and this /users record.
 export function identityFrom({ claims, permRecord, user }) {
@@ -107,6 +111,9 @@ export function identityFrom({ claims, permRecord, user }) {
     personId: enrolled ? c.personId : null,
     enrolled,
     canManageCodes: enrolled && c.canManageCodes === true && isLiveEnrolment(permRecord, c),
+    // Which section this DEVICE works in (useMySections reads it). Only an
+    // enrolled device has one; null is "not scoped by its device".
+    section: enrolled && (c.section === 1 || c.section === 2) ? c.section : null,
   };
 }
 

@@ -78,8 +78,7 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const {
-  TRIGGER_STORE_FLAGS,
-  isTriggerStoreEnabled,
+  triggerStores,
   stockSizeKey,
   saDateStringFromMs,
   saMonthOfDate,
@@ -90,6 +89,7 @@ const {
   resolveAssignment,
 } = require("./lib.cjs");
 const { guardedMutate } = require("./guardedTransaction.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -195,7 +195,8 @@ async function reapTombstone(db, store, saDate, key, preRead) {
 async function runWakeSweep({ db, nowMs }) {
   const now = nowMs ?? Date.now();
   const saDate = saDateStringFromMs(now);
-  const stores = Object.keys(TRIGGER_STORE_FLAGS).filter(isTriggerStoreEnabled);
+  // The LIVE stores of the network registry (PE + Trophy on the seed).
+  const stores = triggerStores(await loadNetwork(db, { nowMs: now }));
   let stockSeen = 0, activated = 0, reHeld = 0, reaped = 0;
 
   for (const store of stores) {

@@ -62,6 +62,7 @@ const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, 
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
   FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-engine.cjs");
+const { loadNetwork } = require("./network-load.cjs");
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -705,7 +706,10 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // same config, attached to the entries it concerns — so a footwear category
   // with its own numbers, or a footwear policy that has stopped being one,
   // carries a badge on the card without anybody having to go looking.
-  const footwearDrift = footwearPolicyDrift(config);
+  // …and the same registry: a hub that follows Hub 2's leg through its policy
+  // template (Hub 3, the Concrete Stockroom) is not a third location. One
+  // small cached read of /network; the seed if it cannot be read.
+  const footwearDrift = footwearPolicyDrift(config, await loadNetwork(db));
   const categories = [];
   for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;

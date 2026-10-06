@@ -17,11 +17,14 @@ const stores = posStores({});
 const TILL2 = { mid: "000000004977890", storeId: "pe", tillId: "till-2", label: "Marathon Till 2", activeFrom: 1 };
 
 // ── the POS list ─────────────────────────────────────────────────────────────
-test("the POS stores are pe / pine / trophy, by trading name, with their real tills", () => {
+test("the POS stores are pe / pine / trophy, by trading name, with their real tills — then Concrete", () => {
+  // The first three rows are the list as it was typed here before it came from
+  // the network registry: same ids, same names, same tills, same order.
   assert.deepEqual(stores.map((s) => [s.storeId, s.label, s.tills.map((t) => t.tillId).join(",")]), [
     ["pe", "Marathon PE", "till-1,till-2,till-3"],
     ["pine", "Marathon Pine", "till-1"],
     ["trophy", "Trophy", "till-1,till-2"],
+    ["concrete", "Concrete", "till-1,till-2"],
   ]);
   assert.ok(stores.every((s) => s.source === "pos-fallback"));
 });
@@ -34,8 +37,9 @@ test("a seeded /pos/config/{store}/tills wins over the fallback, as it does in t
 
 test("the fallback is marathon-pos-app's TILLS_FALLBACK as of origin/main 908da4f (21 Sept 2026)", () => {
   // Pinned rather than read from a sibling checkout, which may be stale.
+  // pe / pine / trophy exactly as pinned then; Concrete (2 tills) is the registry's addition.
   assert.deepEqual(Object.fromEntries(Object.entries(TILLS_FALLBACK).map(([k, v]) => [k, v.map((t) => t.tillId)])),
-    { pe: ["till-1", "till-2", "till-3"], pine: ["till-1"], trophy: ["till-1", "till-2"] });
+    { pe: ["till-1", "till-2", "till-3"], pine: ["till-1"], trophy: ["till-1", "till-2"], concrete: ["till-1", "till-2"] });
 });
 
 // ── the TID ──────────────────────────────────────────────────────────────────
@@ -184,7 +188,7 @@ test("only Junid's account may call it", () => {
 
 test("options returns the POS stores and tills", async () => {
   const out = await _handle(fakeDb(estate()), REQ({ action: "options" }));
-  assert.deepEqual(out.stores.map((s) => s.storeId), ["pe", "pine", "trophy"]);
+  assert.deepEqual(out.stores.map((s) => s.storeId), ["pe", "pine", "trophy", "concrete"]);
 });
 
 test("add → edit → replace, end to end: history keeps resolving and nothing is overwritten", async () => {

@@ -63,7 +63,10 @@ import { readyPromisedByCell } from "./availabilityCore";
 import { serverNowMs } from "../../utils/serverTime";
 import { useDisplayRowsState, useStockCellsState } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
-import { GATED_SNEAKER_HUBS, isFootwearProduct } from "./availabilityCore";
+import { gatedSneakerHubs, isFootwearProduct } from "./availabilityCore";
+import { displayStores } from "./hubCleanupCore";
+import { useNetwork } from "../../utils/useNetwork";
+import { wallAllows } from "../../utils/networkRegistry";
 import { isDeactivated } from "../../utils/deactivation";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
@@ -71,9 +74,11 @@ import { SizePicker, HistoryToggle } from "./displayRowUi";
 import { FONT } from "./ui";
 import { MirroredImg } from "../../offline/MirroredImg.jsx";
 
-// The two walls. Pine's displays are booked at hub3, outside
-// GATED_SNEAKER_HUBS, so Pine is deliberately not offered.
-const STORES = ["marathon-pe", "trophy"];
+// THE WALLS COME FROM THE NETWORK REGISTRY: the LIVE shops (Marathon PE and
+// Trophy on the seed). Pine's displays are booked at Hub 3, which is not a
+// gated hub while it is not live, so Pine is not offered — and is, with its
+// own hubs, the day the owner makes them live. A wall's source hubs are the
+// gated hubs on ITS side of the section wall, never the other section's.
 const PAGE = 30;
 
 // "11:42", in the shops' own clock whatever the device's timezone says.
@@ -159,7 +164,13 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const { permRecord, isSuperAdmin } = usePermissions();
   const isAdmin = isSuperAdmin || permRecord?.stockRole === "admin";
 
-  const [store, setStore] = useState(() => (ordersScope && STORES.includes(ordersScope) ? ordersScope : STORES[0]));
+  const { registry: network } = useNetwork();
+  const STORES = useMemo(() => displayStores(network), [network]);
+  const [storePick, setStore] = useState(() => ordersScope || null);
+  const store = storePick && STORES.includes(storePick) ? storePick : STORES[0];
+  // The (at most two) gated hubs that can supply this wall. Two fixed hooks
+  // below read them; Hub 1 and Hub 2 for Marathon PE and Trophy.
+  const HUB_PAIR = useMemo(() => gatedSneakerHubs(network).filter((h) => wallAllows(network, store, h)).slice(0, 2), [network, store]);
   const [q, setQ] = useState("");
   const [page, setPage] = useState(0);
   const [acting, setActing] = useState(null);      // productId whose picker is open
@@ -171,8 +182,8 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   const [tapped, setTapped] = useState({});
 
   const { value: rows, settled: rowsLoaded } = useDisplayRowsState(true);
-  const hub1 = useStockCellsState(GATED_SNEAKER_HUBS[0]);
-  const hub2 = useStockCellsState(GATED_SNEAKER_HUBS[1]);
+  const hub1 = useStockCellsState(HUB_PAIR[0] || null);
+  const hub2 = useStockCellsState(HUB_PAIR[1] || null);
 
   const productsById = useMemo(() => {
     const m = new Map();
@@ -211,23 +222,23 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
     return ids;
   }, [requests, tapped, store]);
   const hubData = useMemo(() => Object.fromEntries(
-    [[GATED_SNEAKER_HUBS[0], hub1], [GATED_SNEAKER_HUBS[1], hub2]].map(([h, st]) => [h, {
+    [[HUB_PAIR[0], hub1], [HUB_PAIR[1], hub2]].filter(([h]) => !!h).map(([h, st]) => [h, {
       cells: st.cells, ready: !!st.settled,
       promised: readyPromisedByCell(orders, h, productsByIdObj),
     }])
-  ), [hub1, hub2, orders, productsByIdObj]);
+  ), [hub1, hub2, orders, productsByIdObj, HUB_PAIR]);
 
   // BOTH LEDGER AND CELLS MUST HAVE ANSWERED. With the ledger unanswered every
   // shoe reads as "no display record", and a tap would open a SECOND row beside
   // one already there — the duplicate this screen exists to prevent, created by
   // the screen itself.
-  const ready = rowsLoaded && hub1.settled && hub2.settled;
+  const ready = rowsLoaded && HUB_PAIR.length > 0 && hub1.settled && (!HUB_PAIR[1] || hub2.settled);
 
   const candidates = useMemo(
     () => (ready
       ? unregisteredAcrossHubs({
-          cellsByHub: { [GATED_SNEAKER_HUBS[0]]: hub1.cells, [GATED_SNEAKER_HUBS[1]]: hub2.cells },
-          rows, store, productsById, hubs: GATED_SNEAKER_HUBS,
+          cellsByHub: Object.fromEntries([[HUB_PAIR[0], hub1.cells], [HUB_PAIR[1], hub2.cells]].filter(([h]) => !!h)),
+          rows, store, productsById, hubs: HUB_PAIR,
           // A DEACTIVATED line is never offered a new display. It still holds
           // warehouse stock, so it would otherwise sit at the top of a wall walk
           // asking to be put on a shelf the business has retired it from.
@@ -235,7 +246,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
           predicate: (p) => isFootwearProduct(p) && !isDeactivated(p),
         })
       : []),
-    [ready, hub1.cells, hub2.cells, rows, store, productsById]
+    [ready, hub1.cells, hub2.cells, rows, store, productsById, HUB_PAIR]
   );
 
   // Typing searches BOTH sides at once: shoes with no record, and shoes that
@@ -282,7 +293,7 @@ export default function DisplayRegistrationView({ products = [], orders = [], or
   // only while the live cells still say so; the moment either hub can give a
   // pair out, the row and the button come back. (CodeRabbit.)
   const noneAnywhere = (c) => !!tapped[`${store}::${c.productId}`]?.noStock
-    && !pickDisplaySourceHub({ product: c.product || { id: c.productId }, hubData }).hub;
+    && !pickDisplaySourceHub({ product: c.product || { id: c.productId }, hubData, store, network }).hub;
 
   // The Requested list: the stream's answer, plus a tap the stream has not
   // delivered yet (so the row moves the instant the request is written).

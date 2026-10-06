@@ -20,6 +20,9 @@
 // UNCHANGED ON PURPOSE: hubs (Hub 1/2/3, ≥1 required, clothing barred from
 // Hub 1), pricing, the shoebox checkbox, and the auto-assigned SKU + barcode.
 
+import { VALID_HUBS } from "../../utils/newProductRecord";
+import { locationName } from "../../utils/networkRegistry";
+import { currentNetwork } from "../../utils/networkStore";
 import { sizesOf } from "../../utils/productTaxonomy.js";
 import CategorySelect from "./CategorySelect.jsx";
 import PrintedBarcodeCapture from "./PrintedBarcodeCapture.jsx";
@@ -380,7 +383,7 @@ export default function NewProductForm({
       <div>
         <Label required hint="select at least one">Hubs</Label>
         <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-          {[["hub1", "Hub 1"], ["hub2", "Hub 2"], ["hub3", "Hub 3"]].map(([val, label]) => {
+          {VALID_HUBS.map((id) => [id, locationName(currentNetwork(), id)]).map(([val, label]) => {
             const disabled = formIsClothing && val === "hub1";
             const checked = form.hubs.includes(val) && !disabled;
             return (

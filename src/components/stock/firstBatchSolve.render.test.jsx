@@ -75,6 +75,20 @@ const buttonsOf = (tree) => tree.root.findAll((n) => n.type === "button");
 const buttonSaying = (tree, needle) =>
   buttonsOf(tree).find((b) => (b.children || []).some((c) => typeof c === "string" && c.includes(needle)));
 const buttonExactly = (tree, label) => buttonsOf(tree).find((b) => (b.children || []).join("") === label);
+// THE PANEL IS TICK BOXES (one screen, both sections, since 2026-10): the
+// default store opens ticked ("✓ Trophy"). "Nominate X" — what tapping X's
+// chip used to mean — is: tick X, untick anything else.
+const storeBoxes = (tree) => buttonsOf(tree).filter((b) => b.props.role === "checkbox");
+const boxLabel = (b) => (b.children || []).join("").replace(/^✓ /, "");
+function tickOnly(tree, name) {
+  for (let guard = 0; guard < 8; guard++) {
+    const other = storeBoxes(tree).find((b) => b.props["aria-checked"] && boxLabel(b) !== name);
+    if (!other) break;
+    act(() => { other.props.onClick(); });
+  }
+  const box = storeBoxes(tree).find((b) => boxLabel(b) === name);
+  if (!box.props["aria-checked"]) act(() => { box.props.onClick(); });
+}
 
 function render({ products = PRODUCTS, stock = STOCK, targets = {}, category = "clothing" } = {}) {
   const cards = computeMissingProducts({ allStock: stock, products });
@@ -90,7 +104,7 @@ function render({ products = PRODUCTS, stock = STOCK, targets = {}, category = "
 // Open the Solve panel of the FIRST card, pick a store, confirm.
 async function solve(tree, store) {
   await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
-  if (store) await act(async () => { buttonExactly(tree, store).props.onClick(); });
+  if (store) tickOnly(tree, store);
   const confirm = buttonSaying(tree, "Solve — ");
   await act(async () => { await confirm.props.onClick(); });
   return confirm;
@@ -195,7 +209,7 @@ describe("mapped categories and explicit rows — on the path since 2026-09-17, 
   it("the map names Trophy only: the Marathon PE chip is offered but its confirm is blocked with the no-policy sentence, and nothing is written", async () => {
     const tree = render({ products: onlyProduct(BAG) });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
-    await act(async () => { buttonExactly(tree, "Marathon PE").props.onClick(); });
+    tickOnly(tree, "Marathon PE");
     expect(textOf(tree)).toMatch(/No refill policy covers this product at Marathon PE/);
     const confirm = buttonSaying(tree, "Solve — ");
     expect(confirm.props.disabled).toBe(true);
@@ -243,7 +257,7 @@ describe("location history informs the SPLIT at the screen: a size the shop's ca
   it("the operator taps Marathon PE (no history there): every size Central can send goes first — history only speaks for the shop it knows", async () => {
     const tree = render({ products: [KEYED, ...LINES], stock });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
-    await act(async () => { buttonExactly(tree, "Marathon PE").props.onClick(); });
+    tickOnly(tree, "Marathon PE");
     const text = textOf(tree);
     expect(text).toMatch(/go to Marathon PE first/);
     expect(text).not.toMatch(/stays at Hub 2 first/);
@@ -389,7 +403,7 @@ describe("the history line and the operator's tap agree (spec review, PR #608)",
   it("after tapping the other shop the line says what history suggested and what was chosen — never 'X first' over a panel sending to Y", async () => {
     const tree = render({ products: [KEYED_TEE, ...TROPHY_TEES], stock: { ...STOCK, trophy: { tt1: { M: cell(1) }, tt2: { M: cell(0) }, tt3: { M: cell(2) } } } });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
-    await act(async () => { buttonExactly(tree, "Marathon PE").props.onClick(); });
+    tickOnly(tree, "Marathon PE");
     const text = textOf(tree);
     expect(text).toMatch(/Trophy was suggested — where 3 of 3 t-shirts lines are kept\. You chose Marathon PE\./);
     expect(text).not.toMatch(/Trophy first/);

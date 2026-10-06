@@ -309,9 +309,23 @@ test("the index carries per-store counts, because the sidebar total is not the w
   await runSweep({ io, nowMs: NOW });
 
   const idx = io.commits[0][`${INDEX_PATH}/2026-09-19`];
-  assert.deepStrictEqual(idx, { n: 4, pe: 1, trophy: 1, pine: 1, other: 1 });
-  // The three store filters plus the unfiltered remainder add up to the day.
-  assert.strictEqual(idx.pe + idx.trophy + idx.pine + idx.other, idx.n);
+  // Sections: Concrete has its own count (0 on a day with no Concrete event).
+  assert.deepStrictEqual(idx, { n: 4, pe: 1, trophy: 1, pine: 1, concrete: 0, other: 1 });
+  // The store filters plus the unfiltered remainder add up to the day.
+  assert.strictEqual(idx.pe + idx.trophy + idx.pine + idx.concrete + idx.other, idx.n);
+});
+
+test("sections: the shop decides the bucket — a Concrete event through Hub 3 is Concrete's, not Pine's", async () => {
+  const rows = makeLog([
+    sale(Date.parse("2026-09-19T08:00:00.000Z"), { destShop: "concrete", placedAtHub: "hub3" }),
+    sale(Date.parse("2026-09-19T08:01:00.000Z"), { destShop: "marathon-pine", placedAtHub: "hub3" }),
+    sale(Date.parse("2026-09-19T08:02:00.000Z"), { placedAtHub: "hub3" }),          // untagged history: Pine
+    sale(Date.parse("2026-09-19T08:03:00.000Z"), { destShop: "trophy", placedAtHub: "hub2" }),
+  ]);
+  const io = makeIo(rows, { dayKeys: allBackstopDays(TODAY) });
+  await runSweep({ io, nowMs: NOW });
+  const idx = io.commits[0][`${INDEX_PATH}/2026-09-19`];
+  assert.deepStrictEqual(idx, { n: 4, pe: 0, trophy: 1, pine: 2, concrete: 1, other: 0 });
 });
 
 // ─── THE RUNNING COUNTER ─────────────────────────────────────────────────────

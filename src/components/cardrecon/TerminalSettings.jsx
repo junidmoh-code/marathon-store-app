@@ -12,8 +12,13 @@
 // WHAT CAN BE TYPED, AND WHAT CANNOT:
 //   • TID — the only typed identity, [A-Z0-9]{4,16}, uppercased as typed.
 //   • Store and till — PICKED from the POS's own list (the callable's
-//     "options"). The store key joins to /pos/paymentEvents; a key the POS
-//     never writes would make every variance 100% short.
+//     "options", which reads the network registry — so Concrete and its two
+//     tills, Pine, and any store Junid adds on the Network card are offered,
+//     grouped by section). The store key joins to /pos/paymentEvents; a key
+//     the POS never writes would make every variance 100% short.
+//   • In use from — PICKED on a calendar, only when adding: the day the
+//     machine started trading, for one registered after the fact. Left alone
+//     it is today, exactly as before.
 //   • Label (display only) and MID (optional) — typed.
 //   • Capture — Email, Photo or Both. An Email-only card shows its tick and
 //     never the camera.
@@ -37,7 +42,32 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT } from "./cardReconStyles";
 import { captureMode, isRetiredTerminal } from "./terminalRegistry";
-import { serverNowMs } from "../../utils/serverTime";
+import { useNetwork } from "../../utils/useNetwork";
+import { sectionOf } from "../../utils/networkRegistry";
+import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
+
+/**
+ * The store picker's groups: [{ section, name, stores }], Section 2 first so
+ * Marathon PE and Trophy stay at the top. A store's section is the one the
+ * callable sent with it, else the registry's for its POS id; a store with
+ * neither goes last under "Other".
+ */
+export function storeGroups(stores, registry) {
+  const groups = [];
+  for (const s of stores || []) {
+    const section = s.section === 1 || s.section === 2 ? s.section : sectionOf(registry, s.storeId);
+    let g = groups.find((x) => x.section === section);
+    if (!g) {
+      const name = section === null ? "Other"
+        : (registry && registry.sections && registry.sections[section] && registry.sections[section].name) || `Section ${section}`;
+      g = { section, name, stores: [] };
+      groups.push(g);
+    }
+    g.stores.push(s);
+  }
+  const rank = (g) => (g.section === null ? 99 : -g.section);
+  return groups.sort((a, b) => rank(a) - rank(b));
+}
 
 const adminFn = httpsCallable(functions, "cardTerminalAdmin", { timeout: 60000 });
 
@@ -157,13 +187,15 @@ function sentenceOf(err) {
  *   edit    — till, label, MID, capture (TID and store fixed)
  *   replace — the NEW TID, label, MID, capture (store and till carried over)
  */
-function TerminalForm({ mode, base, stores, busy, onSubmit, onCancel }) {
+function TerminalForm({ mode, base, stores, groups, today, busy, onSubmit, onCancel }) {
   const [tid, setTid] = useState(mode === "edit" ? base.tid : "");
   const [storeId, setStoreId] = useState(base?.storeId || "");
   const [tillId, setTillId] = useState(base?.tillId || "");
   const [label, setLabel] = useState(base?.label || "");
   const [mid, setMid] = useState(mode === "replace" ? "" : (base?.mid || ""));
   const [capture, setCapture] = useState(base ? captureMode(base) : "both");
+  // "" = today (the server stamps the moment of the add, as it always has).
+  const [fromDate, setFromDate] = useState("");
 
   const store = stores.find((s) => s.storeId === storeId);
   const tills = store ? store.tills : [];
@@ -173,7 +205,12 @@ function TerminalForm({ mode, base, stores, busy, onSubmit, onCancel }) {
   const submit = (e) => {
     e.preventDefault();
     if (!ready || busy) return;
-    onSubmit({ tid, storeId, tillId, label: label.trim(), mid: mid.trim(), capture });
+    onSubmit({
+      tid, storeId, tillId, label: label.trim(), mid: mid.trim(), capture,
+      // Sent only when a day EARLIER than today was picked; today is the
+      // server's own stamp, to the second.
+      ...(mode === "add" && fromDate && fromDate !== today ? { activeFromDate: fromDate } : {}),
+    });
   };
 
   return (
@@ -200,7 +237,11 @@ function TerminalForm({ mode, base, stores, busy, onSubmit, onCancel }) {
           <select id="ts-store" style={U.input} value={storeId}
                   onChange={(e) => { setStoreId(e.target.value); setTillId(""); }}>
             <option value="">Pick the store…</option>
-            {stores.map((s) => <option key={s.storeId} value={s.storeId}>{s.label}</option>)}
+            {groups.map((g) => (
+              <optgroup key={String(g.section)} label={g.name}>
+                {g.stores.map((s) => <option key={s.storeId} value={s.storeId}>{s.label}</option>)}
+              </optgroup>
+            ))}
           </select>
         </>
       ) : (
@@ -224,6 +265,19 @@ function TerminalForm({ mode, base, stores, busy, onSubmit, onCancel }) {
           {mode === "edit" && base.tillId && tillId && tillId !== base.tillId && (
             <div style={U.note}>Moving tills is recorded, and the one batch that spans the move is flagged on its record.</div>
           )}
+        </>
+      )}
+
+      {mode === "add" && (
+        <>
+          <label style={U.label} htmlFor="ts-from">In use from</label>
+          <input id="ts-from" type="date" style={U.input} value={fromDate || today} max={today}
+                 onChange={(e) => setFromDate(e.target.value)} />
+          <div style={U.note}>
+            {fromDate && fromDate !== today
+              ? "This machine counts as in use from the start of that day — pick the day it began trading."
+              : "Today. If this machine was already trading before now, pick the day it started."}
+          </div>
         </>
       )}
 
@@ -266,6 +320,11 @@ export default function TerminalSettings({ terminals, onClose }) {
   const [confirmRetire, setConfirmRetire] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);           // { ok, text }
+  // Section names and each store's section, for the store picker's groups.
+  const { registry } = useNetwork();
+  const groups = useMemo(() => storeGroups(stores, registry), [stores, registry]);
+  // The server's day in South Africa — the latest day a terminal can start on.
+  const today = saDateStringAt(serverNowMs());
 
   useEffect(() => {
     let live = true;
@@ -319,7 +378,7 @@ export default function TerminalSettings({ terminals, onClose }) {
       {stores && form && form.mode !== "move" && (
         <TerminalForm
           key={`${form.mode}:${form.tid || ""}`}
-          mode={form.mode} base={base} stores={stores} busy={busy}
+          mode={form.mode} base={base} stores={stores} groups={groups} today={today} busy={busy}
           onCancel={() => setForm(null)}
           onSubmit={(t) => {
             if (form.mode === "replace") {

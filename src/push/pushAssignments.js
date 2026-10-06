@@ -19,10 +19,12 @@
 //
 // ── TWO PATHS, ONE WRITE ────────────────────────────────────────────────────
 //
-//   /push_assignments/{uid}        one bool per hub in PUSH_HUBS, plus
-//                                  updatedAt: number. Records written before
-//                                  2026-09-08 carry no hub3 child; an absent
-//                                  hub reads as false and is never migrated.
+//   /push_assignments/{uid}        hub1, hub2, hub3: bool, plus updatedAt:
+//                                  number, plus `true` for any OTHER hub the
+//                                  person is assigned to. Records written
+//                                  before 2026-09-08 carry no hub3 child; an
+//                                  absent hub reads as false and is never
+//                                  migrated.
 //        The DECISION. One record per assigned person, admin-write only. This
 //        is what the admin card renders, and the only place the answer to
 //        "who did Junid assign?" exists.
@@ -57,14 +59,50 @@
 // The list is CLOSED and it is what makes a CLEAR possible: an update always
 // writes every hub in it, setting the assigned ones and NULLING the rest, so a
 // person moved from all three hubs to Hub 1 actually stops hearing about the
-// other two instead of staying in an index nothing knows to look in. Adding a
-// hub here is therefore the ONE edit that adds a hub — the record shape, the
-// index writes and the card's switches are all derived from it, so none of
-// them can be left behind half-done.
+// other two instead of staying in an index nothing knows to look in.
+//
+// ── THE LIST IS THE NETWORK REGISTRY'S HUBS (sections build) ────────────────
+// It used to be typed here. It is now every hub in the registry — so the
+// Concrete Stockroom is assignable, Hub 3 is one hub among four rather than a
+// special case, and a hub Junid adds on the Network card appears on the Order
+// Alerts card with no deploy. The record shape, the index writes and the
+// card's switches are all still derived from the ONE list (pushHubsFor), so
+// none of them can be left behind half-done.
+//
+// ── WHAT A RECORD LOOKS LIKE, AND WHY THE NEW HUBS ARE WRITTEN DIFFERENTLY ──
+// hub1, hub2 and hub3 are written as a boolean on EVERY record, true or false,
+// exactly as before: the published rule requires hub1 and hub2 to be there,
+// and every record ever written has that shape. Any other hub is written ONLY
+// when it is assigned (`true`), and is simply absent otherwise — absence
+// already reads as "not assigned". So a save that does not involve a new hub
+// writes the same record it always wrote, and keeps working under the rules
+// that are published today; only switching a NEW hub on needs that hub's line
+// in the rules (PUSH-ASSIGNMENT-RULES-DEPLOY.md).
+import { SEED_REGISTRY } from "../utils/networkRegistry";
+import { pushHubsOf, hubLabel } from "./pushHubs";
 
-// The hubs an assignment may name, and the words the card puts on them.
-export const PUSH_HUBS = Object.freeze(["hub1", "hub2", "hub3"]);
-export const PUSH_HUB_LABEL = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" });
+// The hubs every assignment record has always named. A record shape, tied to
+// the published rule — not the list of hubs (that is pushHubsFor).
+export const RECORD_HUBS = Object.freeze(["hub1", "hub2", "hub3"]);
+
+/** The hubs an assignment may name under this registry: the three every record
+ *  carries, in the order they have always been in, then every other registry
+ *  hub in the registry's order. */
+export function pushHubsFor(registry) {
+  const all = pushHubsOf(registry);
+  return [...RECORD_HUBS, ...all.filter((h) => !RECORD_HUBS.includes(h))];
+}
+
+/** The words the card puts on a hub's switch. */
+export function pushHubLabel(registry, hub) {
+  return hubLabel(registry, hub, "a hub");
+}
+
+// The same two answers on the built-in registry — what applies before /network
+// has been read, and what the rules document is checked against.
+export const PUSH_HUBS = Object.freeze(pushHubsFor(SEED_REGISTRY));
+export const PUSH_HUB_LABEL = Object.freeze(
+  Object.fromEntries(PUSH_HUBS.map((hub) => [hub, pushHubLabel(SEED_REGISTRY, hub)])));
 
 export const PUSH_ASSIGNMENTS_PATH = "push_assignments";
 export const pushAssignmentPath = (uid) => `${PUSH_ASSIGNMENTS_PATH}/${uid}`;
@@ -96,11 +134,12 @@ export function isLegalKey(v) {
  * silence rather than to notifying someone nobody chose.
  *
  * @param {object|null} record /push_assignments/{uid}, or null when absent
- * @returns {string[]} a subset of PUSH_HUBS, in PUSH_HUBS order
+ * @param {string[]} [allHubs] pushHubsFor(registry); the built-in list if absent
+ * @returns {string[]} a subset of `allHubs`, in its order
  */
-export function assignedHubs(record) {
+export function assignedHubs(record, allHubs = PUSH_HUBS) {
   if (!record || typeof record !== "object" || Array.isArray(record)) return [];
-  return PUSH_HUBS.filter((hub) => record[hub] === true);
+  return allHubs.filter((hub) => record[hub] === true);
 }
 
 /** Is this person assigned to anything at all? */
@@ -121,20 +160,24 @@ export function isAssigned(record) {
  * the same answer for every later reader to agree about.
  *
  * @param {string} uid
- * @param {string[]} hubs  any subset of PUSH_HUBS; unknown hubs are ignored
+ * @param {string[]} hubs  any subset of `allHubs`; unknown hubs are ignored
  * @param {number} nowMs   serverNowMs(), never Date.now() — updatedAt is
  *        rules-validated and a till's clock is not evidence of anything
+ * @param {string[]} [allHubs] pushHubsFor(registry); the built-in list if absent
  * @returns {object} path → value (null deletes)
  */
-export function assignmentUpdates(uid, hubs, nowMs) {
+export function assignmentUpdates(uid, hubs, nowMs, allHubs = PUSH_HUBS) {
   if (!isLegalKey(uid)) throw new Error(`push assignment: unusable uid "${uid}"`);
-  const want = new Set(Array.isArray(hubs) ? hubs.filter((h) => PUSH_HUBS.includes(h)) : []);
+  // A hub id becomes a path segment below, so one RTDB could not store is
+  // dropped from the list rather than allowed to throw the whole save.
+  const list = allHubs.filter(isLegalKey);
+  const want = new Set(Array.isArray(hubs) ? hubs.filter((h) => list.includes(h)) : []);
   const upd = {};
 
   // The index FIRST, every hub in the closed list, every time — set or null.
   // Writing only the hubs being turned on is the bug this list exists to
   // prevent: the ones being turned off would keep their entry and keep firing.
-  for (const hub of PUSH_HUBS) {
+  for (const hub of list) {
     upd[pushHubAudienceEntryPath(hub, uid)] = want.has(hub) ? { at: nowMs } : null;
   }
 
@@ -145,9 +188,16 @@ export function assignmentUpdates(uid, hubs, nowMs) {
   // assignment record with no hub3 in it — the person would be notified, and
   // the card would show their Hub 3 switch OFF, which is the one state this
   // module exists to make impossible.
+  //
+  // hub1/hub2/hub3 are always written, true or false; any other hub only when
+  // it is assigned. The record is set WHOLE, so a hub left out here is cleared
+  // from it — see "what a record looks like" in the header.
   upd[pushAssignmentPath(uid)] = want.size
-    ? PUSH_HUBS.reduce((rec, hub) => { rec[hub] = want.has(hub); return rec; },
-                       { updatedAt: nowMs })
+    ? list.reduce((rec, hub) => {
+      if (RECORD_HUBS.includes(hub)) rec[hub] = want.has(hub);
+      else if (want.has(hub)) rec[hub] = true;
+      return rec;
+    }, { updatedAt: nowMs })
     : null;
 
   return upd;

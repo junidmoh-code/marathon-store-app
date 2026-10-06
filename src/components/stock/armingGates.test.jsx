@@ -82,6 +82,9 @@ vi.mock("./useStock", () => ({
   }),
   useEngineConfig: () => GATE_CONFIG,
   useEngineConfigState: () => ({ value: GATE_CONFIG, settled: true, error: false }),
+  // /network: no node, so the registry is its seed (the Arming tab asks it
+  // which two hubs to compare — Hub 1 + Hub 2).
+  usePathState: () => ({ value: null, settled: true, error: false }),
 }));
 
 const ArmingTab = (await import("./ArmingTab.jsx")).default;

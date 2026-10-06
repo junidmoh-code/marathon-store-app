@@ -79,7 +79,8 @@ import { planPhotoIntake, payloadRefusal } from "./photoIntake";
 import { describeCallableError, describeDecodeError } from "./captureFailure";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
 import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
-import { captureCards, takesPhoto, typesTotal } from "./terminalRegistry";
+import { captureCards, cardsBySection, takesPhoto, typesTotal } from "./terminalRegistry";
+import { useMySections } from "../../utils/useMySections";
 import TerminalSettings from "./TerminalSettings";
 import { FONT } from "./cardReconStyles";
 
@@ -149,6 +150,9 @@ const T = {
           margin: "-6px -10px 0 0", display: "flex", alignItems: "center", justifyContent: "center",
           color: "rgba(233,238,255,.55)" },
   cardStatic: { cursor: "default" },
+  // A section's name above its tills — drawn only when two sections are on screen.
+  section: { fontSize: 12.5, fontWeight: 700, letterSpacing: "0.06em", textTransform: "uppercase",
+             color: "rgba(233,238,255,.42)", margin: "10px 2px -2px" },
   day: { fontSize: 14, color: "rgba(233,238,255,.42)", marginTop: 5, letterSpacing: "-0.1px" },
   list: { marginTop: 30, display: "grid", gap: 12 },
   card: { position: "relative", display: "flex", alignItems: "center", justifyContent: "space-between",
@@ -305,7 +309,16 @@ export default function CardReconScreen({ onExit }) {
 
   // A RETIRED MACHINE HAS NO CARD. Which ones those are, and the order the rest
   // are drawn in, is the registry module's decision — see terminalRegistry.js.
-  const terminalList = useMemo(() => captureCards(terminals), [terminals]);
+  //
+  // …AND A TILL IN ANOTHER SECTION HAS NO CARD FOR THIS VIEWER. Which section a
+  // till's store is in comes from the network registry; which sections this
+  // account (or this enrolled device) works in from useMySections. The cards
+  // are grouped by section, and the callable refuses the rest regardless.
+  const { sections, registry } = useMySections();
+  const cardGroups = useMemo(
+    () => cardsBySection(captureCards(terminals), registry, sections),
+    [terminals, registry, sections]);
+  const terminalList = useMemo(() => cardGroups.flatMap((g) => g.cards), [cardGroups]);
 
   const arrived = useMemo(() => {
     const byEmail = emailedArrivals(intake, today, saDateStringAt);
@@ -521,13 +534,25 @@ export default function CardReconScreen({ onExit }) {
 
       {!settingsOpen && <div style={T.list}>
         {terminals === null && <div style={T.quiet}>Loading…</div>}
-        {terminals !== null && terminalList.length === 0 && (
+        {terminals !== null && terminalList.length === 0 && captureCards(terminals).length === 0 && (
           <div style={T.quiet}>
             No card machines are registered yet. An admin maps each machine to its till under
             /config/cardTerminals before slips can be captured.
           </div>
         )}
+        {/* Machines exist, none of them in this viewer's section — a different
+            sentence, because "none registered" would send them to Junid for a
+            setup that is already done. */}
+        {terminals !== null && terminalList.length === 0 && captureCards(terminals).length > 0 && (
+          <div style={T.quiet}>
+            There are no card machines in your section yet. Junid adds them in Card machines → settings.
+          </div>
+        )}
         {terminalList.map((t) => {
+          // The section heading, above the FIRST card of each group — and only
+          // when there is more than one group, so a one-section viewer sees the
+          // plain list.
+          const group = cardGroups.length > 1 ? cardGroups.find((g) => g.cards[0] === t) : null;
           const state = work[t.tid] || {};
           const busy = state.phase === "busy";
           const done = arrived.has(t.tid);
@@ -558,6 +583,7 @@ export default function CardReconScreen({ onExit }) {
           );
           return (
             <React.Fragment key={t.tid}>
+              {group && group.name && <div style={T.section} data-section-heading={group.section}>{group.name}</div>}
               {camera ? (
                 <button type="button" style={{ ...cardStyle, ...T.cardButton }} disabled={busy}
                         aria-expanded={chooserFor === t.tid}

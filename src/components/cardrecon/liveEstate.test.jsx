@@ -28,6 +28,18 @@ const LIVE_ESTATE = {
 };
 
 vi.mock("../../firebase", () => ({ database: {}, functions: {}, storage: {}, auth: {} }));
+// The network registry and the viewer's sections, without the live reads behind
+// them: the built-in registry, and (unless a test narrows it) a viewer who sees
+// both sections — which is every account there is before Junid scopes one.
+const viewer = vi.hoisted(() => ({ sections: [1, 2] }));
+vi.mock("../../utils/useNetwork", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../../utils/networkRegistry");
+  return { useNetwork: () => ({ registry: SEED_REGISTRY, settled: true, error: false }) };
+});
+vi.mock("../../utils/useMySections", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../../utils/networkRegistry");
+  return { useMySections: () => ({ sections: viewer.sections, both: viewer.sections.length === 2, registry: SEED_REGISTRY, canSee: () => true }) };
+});
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (refOrQuery, cb) => {
@@ -59,10 +71,33 @@ const renderCards = () => {
 
 describe("the capture screen against the live estate", () => {
   it("draws one card per registered machine — all six, Trophy included", () => {
+    // Grouped by section for a viewer who sees both: Section 2 (Marathon,
+    // Trophy) first, by label, then Section 1 (Pine). The same six cards.
     expect(renderCards()).toEqual([
       "Marathon Till 1", "Marathon Till 2", "Marathon Till 3",
-      "Pine Till 1", "Trophy Till 1", "Trophy Till 2",
+      "Trophy Till 1", "Trophy Till 2", "Pine Till 1",
     ]);
+  });
+
+  it("a viewer in Section 2 sees the Section 2 tills as the plain list — no Pine, no heading", () => {
+    viewer.sections = [2];
+    try {
+      expect(renderCards()).toEqual([
+        "Marathon Till 1", "Marathon Till 2", "Marathon Till 3", "Trophy Till 1", "Trophy Till 2",
+      ]);
+      let tree;
+      act(() => { tree = TestRenderer.create(<CardReconScreen onExit={() => {}} />); });
+      expect(tree.root.findAll((n) => n.props && n.props["data-section-heading"] !== undefined)).toHaveLength(0);
+    } finally { viewer.sections = [1, 2]; }
+  });
+
+  it("a viewer in Section 1 sees only Pine; a viewer in both gets a heading per section", () => {
+    viewer.sections = [1];
+    try { expect(renderCards()).toEqual(["Pine Till 1"]); } finally { viewer.sections = [1, 2]; }
+    let tree;
+    act(() => { tree = TestRenderer.create(<CardReconScreen onExit={() => {}} />); });
+    const headings = tree.root.findAll((n) => n.type === "div" && n.props["data-section-heading"] !== undefined);
+    expect(headings.map((h) => [h.props["data-section-heading"], h.props.children])).toEqual([[2, "Section 2"], [1, "Section 1"]]);
   });
 
   it("neither stamp hides a card — activeFrom and tillChangedAt are not filters", () => {

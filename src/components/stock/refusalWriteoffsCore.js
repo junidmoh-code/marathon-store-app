@@ -6,9 +6,11 @@
 // Pure — the screen only draws what this returns, and the test pins that it
 // reads exactly the fields the engine writes.
 
+import { nameOf } from "./sectionRouting";
+
 const LOC = { hub1: "Hub 1", hub2: "Hub 2", central: "Central", "marathon-pe": "Marathon PE", trophy: "Trophy" };
 const MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-export const locName = (l) => LOC[l] || l || "—";
+export const locName = (l) => LOC[l] || nameOf(l);   // any other location is named by the network registry
 export const dayLabel = (d) => {
   const [, m, day] = String(d || "").split("-");
   return m ? `${Number(day)} ${MON[Number(m) - 1]}` : String(d || "");

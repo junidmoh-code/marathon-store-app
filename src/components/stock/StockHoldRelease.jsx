@@ -27,9 +27,10 @@ import { groupShipments, shipmentTitle, nextShipmentAfter, oldestPendingMs } fro
 import { parseReleaseTimes } from "./releaseWindows";
 import { serverNowMs } from "../../utils/serverTime";
 import { formatDuration } from "../../utils/duration";
+import { nameOf } from "./sectionRouting";
 
 const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3" };
-const hubLabelOf = (d) => HUB_LABELS[d] || d;
+const hubLabelOf = (d) => HUB_LABELS[d] || nameOf(d);   // any other hub is named by the network registry
 const one = async (path) => (await get(child(ref(database), path))).val();
 
 export default function StockHoldRelease({ viewer, actorRole, onExit }) {

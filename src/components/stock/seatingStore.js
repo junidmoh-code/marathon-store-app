@@ -41,6 +41,8 @@
 // (the cell-existence one, verified by source zip 2026-08-24), not only of the
 // reverted provenance build. Nobody is sent to the queue to tidy up.
 
+import { currentNetwork } from "../../utils/networkStore";
+import { wallMessage } from "../../utils/networkRegistry";
 import { ref, get } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions, auth } from "../../firebase";
@@ -345,6 +347,11 @@ export function movePlan(ctx, loc, pid) {
 export function moveBlockers(from, to, lines = [], destSeat = null) {
   if (!to) return "Pick where it goes.";
   if (to === from) return "That is the same location.";
+  // The section wall: nothing moves directly between Section 1 and Section 2.
+  // Said here so the destination is refused on the screen, with the reason,
+  // before the writer refuses it.
+  const walled = wallMessage(currentNetwork(), from, to);
+  if (walled) return walled;
   // Cross-building sends out of Central are a TWO-STEP transit lane (T1): stock
   // parks in in_transit and reaches the destination only when somebody scans it
   // in. This screen does one confirm and one hop, so it declines the lane rather

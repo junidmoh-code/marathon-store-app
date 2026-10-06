@@ -41,7 +41,9 @@ import { database } from "../../firebase";
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { applyMovement } from "./applyMovement";
 import { transferMovementId } from "./transferDraft";
-import { suggestInitialDistribution, DEST_LABELS } from "./distributionSuggest";
+import { suggestInitialDistribution, distributionDests, destLabel } from "./distributionSuggest";
+import { useNetwork } from "../../utils/useNetwork";
+import { centralId } from "./sectionRouting";
 import { GLASS_SOLID, BLUE_L, GREEN, RED, GRAY, FONT } from "./ui";
 import { SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { usePermissions } from "../PermissionsContext";
@@ -79,6 +81,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
   // stockRole node), purely the ledger's audit stamp.
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
+  const { registry: network } = useNetwork();
 
   // An unfinished batch for THIS product resumes instead of restarting.
   const [draft] = useState(() => loadDistDraft(product.id));
@@ -96,7 +99,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
   // Live Central on-hand for this one product — a single-node subscription,
   // same source of truth as Locator/SetQuantity (never a /stock-wide read).
   useEffect(() => {
-    const unsub = onValue(ref(database, `stock/central/${product.id}`), (snap) => {
+    const unsub = onValue(ref(database, `stock/${centralId(network)}/${product.id}`), (snap) => {
       const out = {};
       for (const [k, cell] of Object.entries(snap.val() || {})) {
         out[decodeSizeKey(k)] = Math.max(0, Number(cell?.qty) || 0);
@@ -110,7 +113,11 @@ export default function InitialDistributionWizard({ product, onClose }) {
   // selection (policy in the header comment). No availability clamping —
   // the over-allocation block below is the only shortage mechanism.
   const start = () => {
-    const { suggestions, defaultOn } = suggestInitialDistribution({ product });
+    // Destinations from the network registry: the original five in their
+    // order, then Concrete, Hub 3 and the Concrete Stockroom (offered, never
+    // pre-ticked while not live). Everything here leaves from Central, which
+    // supplies both sections.
+    const { suggestions, defaultOn } = suggestInitialDistribution({ product, dests: distributionDests(network), network });
     const destList = Object.keys(suggestions);
     const nextAlloc = {};
     for (const dest of destList) {
@@ -168,7 +175,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
       try {
         res = await applyMovement({
           type: "transfer_out", productId: product.id, size, qty,
-          from: "central", to: dest, actorRole,
+          from: centralId(network), to: dest, actorRole,
           reason: "initial_distribution",
           movementId: transferMovementId(batch, product.id, size, dest),
           link: { transferId: batch },
@@ -246,7 +253,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
             </div>
             <div style={{ fontSize: 12, color: GRAY, marginBottom: 14 }}>
               {draft.pending.map((l, i) => (
-                <div key={i}>{DEST_LABELS[l.dest] || l.dest} · size {l.size} × {l.qty}</div>
+                <div key={i}>{destLabel(l.dest, network)} · size {l.size} × {l.qty}</div>
               ))}
             </div>
             <div style={{ fontSize: 11.5, color: GRAY, marginBottom: 12 }}>
@@ -287,7 +294,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
               {dests.map((dest) => (
                 <button key={dest} style={pill(!!locsOn[dest])} disabled={busy}
                         onClick={() => !busy && setLocsOn((l) => ({ ...l, [dest]: !l[dest] }))}>
-                  {locsOn[dest] ? "✓ " : ""}{DEST_LABELS[dest] || dest}
+                  {locsOn[dest] ? "✓ " : ""}{destLabel(dest, network)}
                 </button>
               ))}
             </div>
@@ -296,7 +303,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
             {dests.filter((d) => locsOn[d]).map((dest) => (
               <div key={dest} style={{ margin: "12px 0" }}>
                 <div style={{ fontSize: 12, fontWeight: 800, color: BLUE_L, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
-                  {DEST_LABELS[dest] || dest} · {sizes.reduce((n, s) => n + (alloc[dest]?.[s] || 0), 0)} units
+                  {destLabel(dest, network)} · {sizes.reduce((n, s) => n + (alloc[dest]?.[s] || 0), 0)} units
                 </div>
                 <div style={CHIP_GRID}>
                   {sizes.map((s) => (
@@ -330,7 +337,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
             {/* Summary + confirm */}
             <div style={{ fontSize: 12.5, color: GRAY, margin: "8px 0" }}>
               {destTotals.length
-                ? <>Sending {totalUnits} units — {destTotals.map((d) => `${DEST_LABELS[d.dest] || d.dest} ${d.units}`).join(" · ")}. {centralLeft} stay at Central.</>
+                ? <>Sending {totalUnits} units — {destTotals.map((d) => `${destLabel(d.dest, network)} ${d.units}`).join(" · ")}. {centralLeft} stay at Central.</>
                 : "Nothing allocated yet — everything stays at Central."}
             </div>
             <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 10 }}>
@@ -363,7 +370,7 @@ export default function InitialDistributionWizard({ product, onClose }) {
                   {result.failed.map((f, i) => (
                     <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid rgba(255,255,255,.05)" }}>
                       <div style={{ flex: 1, fontSize: 12.5, color: "#fff" }}>
-                        {DEST_LABELS[f.dest] || f.dest} · size {f.size}
+                        {destLabel(f.dest, network)} · size {f.size}
                         <span style={{ color: RED, marginLeft: 8, fontSize: 11.5 }}>{f.reason}</span>
                       </div>
                       <div style={{ display: "flex", alignItems: "center", gap: 7 }}>

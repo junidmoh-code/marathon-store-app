@@ -370,3 +370,28 @@ describe("computeRestockCounts (Source Today built from restock_log sales)", () 
 // (onHoldEventsFromLog / onHoldKey tests removed 2026-08-08 with the exports —
 // the On Hold surface they rebuilt is abolished; holds are ordinary
 // /refill_requests rows now.)
+
+// ─── SECTIONS: A HUB-LESS EVENT IS HUB 1'S ONLY WHEN IT IS SECTION 2'S ───────
+describe("restockCountsFromLog — the missing-hub default respects the wall", () => {
+  const D = "2026-10-01";
+  const ev = (orderNumber, extra) => ({
+    action: "ready", productType: "sneaker", productId: `p${orderNumber}`, productName: `Shoe ${orderNumber}`,
+    size: "8", orderNumber, timestamp: `${D}T08:00:00.000Z`, ...extra,
+  });
+  const log = [
+    ev("001", {}),                                  // legacy: no hub, no shop
+    ev("002", { destShop: "marathon-pe" }),
+    ev("003", { destShop: "trophy" }),
+    ev("P001", { destShop: "marathon-pine" }),      // Section 1, no hub stamped
+    ev("C001", { destShop: "concrete" }),
+  ];
+  const ids = (hub) => Object.values(restockCountsFromLog({ log, dateStr: D, hub })).map((g) => g.productId).sort();
+
+  it("Hub 1 gets exactly the legacy and Section 2 events it always got", () => {
+    expect(ids("hub1")).toEqual(["p001", "p002", "p003"]);
+  });
+  it("a Section 1 event falls back to its own shop's hub, not Hub 1", () => {
+    expect(ids("hub3")).toEqual(["pC001", "pP001"]);
+    expect(ids("hub2")).toEqual([]);
+  });
+});

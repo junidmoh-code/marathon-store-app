@@ -36,6 +36,7 @@ removed, so nothing has to be un-pasted.)
     "hub1":      { ".validate": "newData.isBoolean()" },
     "hub2":      { ".validate": "newData.isBoolean()" },
     "hub3":      { ".validate": "newData.isBoolean()" },
+    "concrete-stockroom": { ".validate": "newData.isBoolean()" },
     "updatedAt": { ".validate": "newData.isNumber()" },
     "$other":    { ".validate": false }
   }
@@ -170,3 +171,26 @@ leaving `hub3` out of `hasChildren`. So the safe order is:
 If hosting somehow went out first, the fix is to paste the rule — nothing needs
 rolling back and no data is damaged, because every refused write was refused
 whole.
+
+
+## 2026-10-02 — the Concrete Stockroom became assignable (sections build)
+
+The hubs on the Order Alerts card now come from the network registry, so the
+Concrete Stockroom (`concrete-stockroom`, Section 1) has a switch beside Hub 3.
+
+### What changed in the rule — one line
+
+A `concrete-stockroom` child, validated as a boolean, inside
+`push_assignments/$uid`. `hasChildren` is NOT touched, for the reason given
+above for `hub3`.
+
+### What works BEFORE this line is pasted, and what does not
+
+The app writes `concrete-stockroom` on a record ONLY when it is switched on —
+it is never written as `false`. So every save that does not involve the
+Stockroom writes the same `{hub1, hub2, hub3, updatedAt}` record as before and
+is accepted by the rules published today. Only switching the Stockroom ON is
+refused until this line is pasted (the row is put back and the card says so).
+The index needs nothing: `push_hub_audience/$hub` is a wildcard.
+
+A hub added later on the Network card needs its own line the same way.

@@ -10,17 +10,19 @@
 import React, { useMemo, useState } from "react";
 import { useStockCells, useStockTargets, useEngineConfig } from "./useStock";
 import { usePermissions } from "../PermissionsContext";
-import { computeUnintroduced, migrateToEngine, destsFrom, effectiveRun } from "./introduceExistingCore";
+import { computeUnintroduced, migrateToEngine, destsFrom, effectiveRun, isBufferLike } from "./introduceExistingCore";
+import { nameOf, isStore } from "./sectionRouting";
+import { useNetwork } from "../../utils/useNetwork";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge } from "./healthWidgets";
-
-const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
 
 export default function IntroduceExisting({ products = [] }) {
   const allStock = useStockCells();
   const allTargetsRaw = useStockTargets();   // null until the listener answers
   const allTargets = allTargetsRaw || {};
   const config = useEngineConfig();
+  // Names, and which locations are buffer hubs, come from the network registry.
+  const { registry: network } = useNetwork();
   const { permRecord, isSuperAdmin } = usePermissions();
   const isAdmin = isSuperAdmin || permRecord?.stockRole === "admin";
   // Never classify against half-loaded data: with targets still null EVERY
@@ -40,18 +42,22 @@ export default function IntroduceExisting({ products = [] }) {
   const migratable = items.filter((i) => i.migratable);
   const numeric = items.filter((i) => !i.migratable);
   const cellEstimate = migratable.reduce((t, i) =>
-    t + i.standardSizes.length * dests.filter((l) => l === "hub2" || i.carries?.[l]).length, 0);
+    t + i.standardSizes.length * dests.filter((l) => isBufferLike(l, network) || i.carries?.[l]).length, 0);
   // Preview EXACTLY the runs the migration will apply (validated config or the
   // per-location fallback) — never a raw config value the writer would reject.
-  const run = effectiveRun(config, "marathon-pe");
-  const hubRun = effectiveRun(config, "hub2");
+  // The shop run and the buffer run shown are those of the first shop and the
+  // first buffer hub being introduced (Marathon PE and Hub 2 today).
+  const shopLoc = dests.find((l) => isStore(l, network)) || "marathon-pe";
+  const bufferLoc = dests.find((l) => isBufferLike(l, network)) || "hub2";
+  const run = effectiveRun(config, shopLoc, network);
+  const hubRun = effectiveRun(config, bufferLoc, network);
 
   const apply = async () => {
     if (busy || !isAdmin || !migratable.length) return;
     setBusy(true);
     setResult(null);
     const res = await migrateToEngine(items, {
-      config, approvedBy: "introduce-existing", onProgress: setProgress,
+      config, approvedBy: "introduce-existing", onProgress: setProgress, network,
     });
     setResult(res);
     setBusy(false);
@@ -102,12 +108,12 @@ export default function IntroduceExisting({ products = [] }) {
           {migratable.length} existing product{migratable.length === 1 ? "" : "s"} ready to enter engine management
         </div>
         <div style={{ color: GRAY, fontSize: 12, marginTop: 6, lineHeight: 1.65 }}>
-          These already circulate at {dests.map((l) => LOC_LABEL[l] || l).join(" / ")} but were never
+          These already circulate at {dests.map((l) => nameOf(l, network)).join(" / ")} but were never
           given targets — they are <b>not new products</b> and this is <b>not a decision</b>: your approved
-          policy — shops {Object.entries(run).map(([s, q]) => `${s}${q}`).join(" ")} · Hub 2
+          policy — shops {Object.entries(run).map(([s, q]) => `${s}${q}`).join(" ")} · {nameOf(bufferLoc, network)}
           buffer {Object.entries(hubRun).map(([s, q]) => `${s}${q}`).join(" ")} — is applied
           following each store's own assortment (a store gets targets only for products it actually
-          carries — sales or stock evidence; Hub 2 buffers everything) — {cellEstimate.toLocaleString()} target cells.
+          carries — sales or stock evidence; {nameOf(bufferLoc, network)} buffers everything) — {cellEstimate.toLocaleString()} target cells.
           From the next scan the engine creates the refill and distribution work — paced by the circuit breaker at{" "}
           {config?.maxIntentsPerRun ?? 200} requests per hourly scan — and the warehouse validates it; nothing
           moves without a human. <b>Expect busy warehouse queues while the backlog drains</b>; before
@@ -131,7 +137,7 @@ export default function IntroduceExisting({ products = [] }) {
       {migratable.slice(0, 60).map((i) => (
         <ProductCard key={i.pid} photo={byId.get(i.pid)?.photoUrl} name={byId.get(i.pid)?.name || i.pid}
           badges={<Badge tone={BLUE_L}>AWAITING ENGINE</Badge>}
-          sub={`${Object.entries(i.byLoc).filter(([, u]) => u > 0).map(([l, u]) => `${LOC_LABEL[l]} ${u}`).join(" · ")} — sizes ${i.standardSizes.join(", ")}`} />
+          sub={`${Object.entries(i.byLoc).filter(([, u]) => u > 0).map(([l, u]) => `${nameOf(l, network)} ${u}`).join(" · ")} — sizes ${i.standardSizes.join(", ")}`} />
       ))}
       {migratable.length > 60 && (
         <div style={{ color: GRAY, fontSize: 12, textAlign: "center", padding: 8 }}>…and {migratable.length - 60} more — all included in the one tap above.</div>

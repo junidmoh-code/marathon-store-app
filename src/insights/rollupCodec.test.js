@@ -181,7 +181,9 @@ describe("rollupCodec — the awkward rows a real day does not happen to contain
 // they partition exactly the way `matchesStore` in App.jsx does, so that is
 // what is compared: this transcription against the original, over a real day.
 describe("storeBucketOf — transcribed from App.jsx matchesStore", () => {
-  // Verbatim from src/App.jsx (InsightsView).
+  // The screen's filters as they stood BEFORE sections (App.jsx InsightsView
+  // now calls storeBucketOf itself). Kept verbatim as the Section 2 proof: on a
+  // real day the new buckets file every row exactly where these did.
   const matchers = {
     pine: (e) => e && (e.destShop === "marathon-pine" || e.placedAtHub === "hub3"),
     trophy: (e) => e && e.destShop === "trophy",
@@ -207,7 +209,8 @@ describe("storeBucketOf — transcribed from App.jsx matchesStore", () => {
     const { countByStore } = await import("./rollupCodec");
     const rows = Object.keys(DAY).sort().map((k) => DAY[k]);
     const c = countByStore(rows);
-    expect(c.pe + c.trophy + c.pine + c.other).toBe(rows.length);
+    expect(c.pe + c.trophy + c.pine + c.concrete + c.other).toBe(rows.length);
+    expect(c.concrete).toBe(0);   // a day from before Concrete existed
   });
 
   it("counts a destShop nobody filters on separately, never into a store", async () => {
@@ -290,5 +293,32 @@ describe("qty, including the values a sentinel would have eaten", () => {
     const args = (log) => ({ isToday: false, log, filterStart: "2026-09-18T00:00:00.000Z", filterEnd: "2026-09-19T00:00:00.000Z" });
     expect(clothingRefillEventsForPeriod(args(expandDay(compactDay(events, meta)))))
       .toEqual(clothingRefillEventsForPeriod(args(events)));
+  });
+});
+
+// ─── SECTIONS: THE SHOP DECIDES, NOT THE HUB ─────────────────────────────────
+describe("storeBucketOf — Hub 3 serves Pine AND Concrete", () => {
+  it("files an event under its destShop whatever hub it went through", async () => {
+    const { storeBucketOf } = await import("./rollupCodec");
+    expect(storeBucketOf({ destShop: "concrete", placedAtHub: "hub3" })).toBe("concrete");
+    expect(storeBucketOf({ destShop: "concrete", placedAtHub: "concrete-stockroom" })).toBe("concrete");
+    expect(storeBucketOf({ destShop: "marathon-pine", placedAtHub: "hub3" })).toBe("pine");
+  });
+  it("Marathon PE and Trophy events land exactly where they did", async () => {
+    const { storeBucketOf } = await import("./rollupCodec");
+    expect(storeBucketOf({ destShop: "marathon-pe", placedAtHub: "hub1" })).toBe("pe");
+    expect(storeBucketOf({ destShop: "marathon-pe", placedAtHub: "hub2" })).toBe("pe");
+    expect(storeBucketOf({ destShop: "trophy", placedAtHub: "hub2" })).toBe("trophy");
+  });
+  it("history with NO destShop is still read off its hub: hub3 → pine, the rest → pe", async () => {
+    const { storeBucketOf } = await import("./rollupCodec");
+    expect(storeBucketOf({ placedAtHub: "hub3" })).toBe("pine");
+    expect(storeBucketOf({ placedAtHub: "hub1" })).toBe("pe");
+    expect(storeBucketOf({})).toBe("pe");
+  });
+  it("countByStore carries a concrete count and still sums to the day", async () => {
+    const { countByStore } = await import("./rollupCodec");
+    const c = countByStore([{ destShop: "concrete" }, { destShop: "marathon-pine" }, { destShop: "trophy" }, {}, { destShop: "x" }]);
+    expect(c).toEqual({ pe: 1, trophy: 1, pine: 1, concrete: 1, other: 1 });
   });
 });

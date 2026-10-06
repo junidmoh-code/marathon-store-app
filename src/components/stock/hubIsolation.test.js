@@ -79,8 +79,11 @@ describe("Hub 3 and the shops are untouched by the sneaker availability gate", (
   });
   it("Pine devices subscribe to NEITHER hub subtree — no stream that could never gate", () => {
     const a = app();
-    expect(a).toContain('useStockCellsState(effectiveStoreMode === "pine" ? null : "hub1")');
-    expect(a).toContain('useStockCellsState(effectiveStoreMode === "pine" ? null : "hub2")');
+    // Sections: "Pine" became "any shop that is not Marathon PE / Trophy"
+    // (onSection2Hubs = usesSection2Hubs(registry, shop)), so Concrete skips
+    // them too.
+    expect(a).toContain('useStockCellsState(!onSection2Hubs ? null : "hub1")');
+    expect(a).toContain('useStockCellsState(!onSection2Hubs ? null : "hub2")');
   });
   it("hub3 promises never book a hub1 or hub2 cell", () => {
     const rows = [{ status: "ready", productId: "s1", size: "8", hub: "hub3", placedAtHub: "hub3" }];
@@ -237,7 +240,9 @@ describe("Hub 2 clothing behaves exactly as it did before this change", () => {
   });
   it("the clothing grey-out still reads the SERVING hub, chosen by universe", () => {
     const a = app();
-    expect(a).toContain('const servingHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";');
+    // Sections: the same literal is still Marathon PE's / Trophy's answer; every
+    // other shop's comes from the registry through servingHubFor.
+    expect(a).toContain('const servingHub = servingHubFor(sectionNet, effectiveShop, CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2") || "__off__";');
     expect(a).toContain("const servingHubCells = useStockCells(servingHub);");
     expect(a).toContain('const CR_HUB_BY_UNIVERSE = { central: "hub2", pine: "hub3" };');
   });
@@ -464,7 +469,8 @@ describe("stock-aware sourcing has exactly one answer", () => {
     // The stock-aware layer sits ON it, never inside it: hub3/Pine, clothing
     // and the display-refill patch at line ~11140 all still get the raw tag.
     expect(app()).toContain('return getProductHubs(item.product).find(h => h === "hub1" || h === "hub2") || "hub1";');
-    expect(app()).toContain('if (effectiveStoreMode === "pine") return "hub3";');
+    // Sections: the non-Section-2 branch asks the registry (Pine → Hub 3).
+    expect(app()).toContain('if (!onSection2Hubs) return placementHub(sectionNet, effectiveShop, item.product, () => null);');
   });
 });
 

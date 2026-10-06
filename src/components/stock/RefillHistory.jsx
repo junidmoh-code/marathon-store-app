@@ -40,13 +40,14 @@ import {
   STATUS_LABEL, STATUS_EXPLAIN, REASON_TEXT, requestRows, movementRows, mergeRows,
 } from "./refillHistoryCore";
 import { MirroredImg } from "../../offline/MirroredImg.jsx";
+import { nameOf } from "./sectionRouting";
 import { readPathOnce } from "../../offline/localReads";
 
 const LOC_LABEL = {
   hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", central: "Central",
   "marathon-pe": "Marathon PE", trophy: "Trophy", "marathon-pine": "Marathon Pine",
 };
-const loc = (k) => LOC_LABEL[k] || k || "—";
+const loc = (k) => LOC_LABEL[k] || nameOf(k);   // a location this map does not name is named by the network registry
 
 const TONE = {
   fulfilled: GREEN, requested: "#9DBCFF", queued: AMBER, rejected: RED,

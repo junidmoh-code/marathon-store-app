@@ -146,6 +146,9 @@ function makeIo(db) {
             pe: (Number(base.pe) || 0) + (seen.pe || 0),
             trophy: (Number(base.trophy) || 0) + (seen.trophy || 0),
             pine: (Number(base.pine) || 0) + (seen.pine || 0),
+            // Concrete's own count (sections). Totals stored before it existed
+            // have no such key and read as 0, which is what they held.
+            concrete: (Number(base.concrete) || 0) + (seen.concrete || 0),
             other: (Number(base.other) || 0) + (seen.other || 0),
             cursor: cursor ?? null,
             at,

@@ -246,7 +246,7 @@ async function runSweep({ io, nowMs, log = () => {} }) {
   // ── 1. what has landed since last time ──────────────────────────────────
   const touched = new Set();
   const late = {};
-  const seenByStore = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+  const seenByStore = { n: 0, pe: 0, trophy: 0, pine: 0, concrete: 0, other: 0 };
   let cursor = cursorBefore;
   let pages = 0;
   let truncated = false;

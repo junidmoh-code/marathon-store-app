@@ -45,12 +45,39 @@
 
 "use strict";
 
-const { resolveTarget, encodeSizeKey } = require("./refill-engine.cjs");
+const { resolveTarget, encodeSizeKey, policyCategoryKey } = require("./refill-engine.cjs");
 const { hubPresenceSignals, pickInProgress } = require("./shop-source-rule.cjs");
 
 // CJS twins of the constants in src/components/stock/firstBatchCore.js — a
 // test pins them equal.
+const networkRegistry = require("./network-registry.cjs");
+const { loadNetwork } = require("./network-load.cjs");
+// ── "HUB 2" IS "THE SHOP'S BACK-STOCK HUB" (sections, 2026-10) ───────────────
+// This module was written when one hub stood behind every shop. The rule was
+// never about Hub 2 in particular: it is about the hub that holds the shop's
+// back stock — Hub 2 for Marathon PE and Trophy, Hub 3 for Pine, Hub 3 or the
+// Concrete Stockroom for Concrete. The trigger now resolves that hub from the
+// network registry for the shop on the request (hubForShop below) and does
+// for IT everything it did for Hub 2. Read "Hub 2" in the notes below as
+// "the shop's hub". The constant stays as the registry's answer for the two
+// original shops and as the default of the helpers that take a hub.
+//
+// STORED NAMES ARE UNCHANGED, whatever hub they now describe: the marker
+// firstBatch/hub2Leg, via "first_batch_hub2_leg", the reasons and `none`
+// values (hub2_present, hub2_covered, no_hub2_target). The client reads them.
 const FIRST_BATCH_HUB = "hub2";
+// The two categories that never take this path (the client's EXCLUDED_KEYS /
+// sectionRouting.NON_HUB_FLOW_KEYS, pinned equal by test). Their category's
+// hub (Hub 1, for sneakers) is therefore never this path's hub: a record
+// carrying one of these keys is routed through the shop's DEFAULT hub.
+const NON_HUB_FLOW_KEYS = Object.freeze(["sneakers", "slides"]);
+// The hub behind a shop for one product — the registry's mapping (product
+// override → the category's hub → the shop's default), never a field the
+// client wrote. Twin of src/components/stock/sectionRouting.js solveHubFor.
+function hubForShop(network, store, product, pid) {
+  const key = product ? policyCategoryKey(product) : null;
+  return networkRegistry.backStockFor(network, store, key && !NON_HUB_FLOW_KEYS.includes(key) ? key : null, pid);
+}
 const FIRST_BATCH_RUN_PREFIX = "first_batch:";
 const SOLVE_UNDONE_REASON = "solve_undone";
 const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
@@ -94,17 +121,19 @@ const HUB2_PRESENT_REASON = "first_batch_hub2_present";
 // then the signal is not read here (reported as a residual — never a
 // whole-node read). RULE TO PASTE, under "refill_requests":
 //   ".indexOn": ["productId"]
-async function openHub2RequestIds({ db, pid, config }) {
+// `hub` is the shop's hub (default Hub 2).
+async function openHub2RequestIds({ db, pid, config, hub = FIRST_BATCH_HUB }) {
   if (!config || config.refillRequestsProductIdIndex !== true) return [];
   const snap = await db.ref("refill_requests").orderByChild("productId").equalTo(pid).once("value");
   const rows = snap.val() || {};
-  return Object.entries(rows).filter(([, r]) => r && r.status === "open" && r.requestingLocation === FIRST_BATCH_HUB).map(([id]) => id);
+  return Object.entries(rows).filter(([, r]) => r && r.status === "open" && r.requestingLocation === hub).map(([id]) => id);
 }
 // The CLIENT's stock cell key (src/utils/sizeKey.js stockSizeKey): a one-size /
 // blank / "Free Size" size is the "_" cell, no trim. The engine's encodeSizeKey
 // (trims, "Free Size" → "Free_Size") keys LOCKS; a Hub 2 seed written under it
 // would be a phantom twin of the cell the client and the POS use (#279).
 const clientCellKey = (size) => (size == null || size === "" || size === "Free Size") ? "_" : String(size).replace(/[.#$[\]/\s]/g, "_");
+// The inputs are named for Hub 2 and are the SHOP'S HUB's, whichever hub that is.
 function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, sinceIso, heldLines, pid } = {}) {
   // PRIOR presence is what counts: a qty-0 seed cell stamped AT OR AFTER the
   // request's own createdAt (`sinceIso`) was written by this Solve (its seeds
@@ -157,14 +186,19 @@ async function seedIfAbsent(db, path, nowIso) {
 // would read Central as fully reserved, record "central_empty", and strand the
 // leg until the engine's orphaned-pending self-heal deleted the lock an hour
 // later. (Found by the crash-recovery test, PR #607.)
-async function centralReservations({ db, routes, pid, sizeKey, excludeRefillId, excludeRunId }) {
+// `alsoAt` (optional): locations to walk besides the routed ones — the LIVE
+// stores and hubs the routes do not name yet (a shop's first-batch lock there
+// names Central as its source explicitly, and its units are just as promised).
+async function centralReservations({ db, routes, pid, sizeKey, excludeRefillId, excludeRunId, alsoAt }) {
   let reserved = 0;
-  for (const dest of Object.keys(routes || {})) {
+  const dests = Object.keys(routes || {});
+  for (const d of alsoAt || []) if (!dests.includes(d)) dests.push(d);
+  for (const dest of dests) {
     const entry = (await db.ref(`refill_engine/open/${dest}/${pid}/${sizeKey}`).once("value")).val();
     if (!entry) continue;
     if (entry.refillId && entry.refillId === excludeRefillId) continue;
     if (excludeRunId && entry.runId === excludeRunId) continue;
-    const src = entry.source || routes[dest];
+    const src = entry.source || (routes || {})[dest];
     if (src !== SOURCE) continue;
     reserved += Math.max(num(entry.qty) || 1, 1);
   }
@@ -238,6 +272,33 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   const solveId = rr.createdFrom.solveId;
   const runId = firstBatchRunId(solveId);
 
+  // THE SECTION WALL + LIVE, AND WHICH HUB. This trigger seeds the shop's
+  // back-stock hub and raises that hub's leg from Central on the shop's
+  // behalf. The hub is the registry's answer for THIS shop and THIS product
+  // (hubForShop) — Hub 2 for Marathon PE and Trophy, Hub 3 for Pine, Hub 3 or
+  // the Concrete Stockroom for Concrete — so a Section 1 shop's leg is raised
+  // at ITS hub and never at Hub 2. It is done only when the route is open:
+  // the shop live, its hub live, both on the same side of the wall, and
+  // Central → hub open. Otherwise it writes nothing at all — no seed, no
+  // request, no lock.
+  const network = await loadNetwork(db);
+  // A hub's own leg — Hub 3's as much as Hub 2's — must never recurse. The
+  // legs this trigger raises say so themselves (`via`).
+  const requester = networkRegistry.locationOf(network, store);
+  if (requester && requester.type === "hub" && rr.createdFrom.via === "first_batch_hub2_leg") return { skipped: "hub_leg" };
+  // One scoped read, reused by every branch below.
+  const productRead = (await db.ref(`products/${pid}`).once("value")).val();
+  // A requester that is not a store has no back-stock hub; it is judged
+  // against Hub 2 exactly as it always was.
+  const HUB = requester && requester.type === "store" ? hubForShop(network, store, productRead, pid) : FIRST_BATCH_HUB;
+  if (!HUB || !networkRegistry.autoRouteAllowed(network, HUB, store)
+      || !networkRegistry.autoRouteAllowed(network, SOURCE, HUB)) {
+    return { skipped: "section_wall", store };
+  }
+  // Live stores and hubs — Central's reservations are walked there as well
+  // as at the routed locations (centralReservations `alsoAt`).
+  const liveLocs = [...networkRegistry.storesOf(network, { liveOnly: true }), ...networkRegistry.hubsOf(network, { liveOnly: true })].map((l) => l.id);
+
   const resolved = rr.status !== "open";
   // "Untouched" must be CERTAIN before a row is withdrawn: a sentQty of an
   // unexpected shape (a string "1") reads as 0 to num() — treat any non-number
@@ -268,7 +329,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // cancel so the re-fire this cancel causes is a no-op (`hub2_leg_done`).
     // No resolvedBy: to Refill History a reasoned cancel with no actor IS an
     // engine withdrawal; a synthetic actor string would render as neither.
-    if (product) await seedIfAbsent(db, `stock/${FIRST_BATCH_HUB}/${pid}/${clientCellKey(size)}`, now);
+    if (product) await seedIfAbsent(db, `stock/${HUB}/${pid}/${clientCellKey(size)}`, now);
     // COLD-NULL TRAP (admin-movement.cjs): the first callback runs on null in
     // a Cloud Function; judge it against the row already read (`rr`) — the
     // proposal then CASes against the server value and re-runs on a mismatch.
@@ -307,9 +368,9 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // record that no longer exists is forever). (Adversarial review, PR #609.)
     const [offConfig, offProduct] = await Promise.all([
       db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
-      db.ref(`products/${pid}`).once("value").then((s) => s.val()),
+      Promise.resolve(productRead),
     ]);
-    if (((offConfig.routes || {})[store]) !== FIRST_BATCH_HUB) return { skipped: "path_off_not_shop", store };
+    if (((offConfig.routes || {})[store]) !== HUB) return { skipped: "path_off_not_shop", store };
     return withdrawToOldSolve({ reason: PATH_OFF_REASON, none: offProduct ? "path_off" : "product_missing", product: offProduct });
   }
   // "Already judged" is decided by the SERVER-OWNED shop lock (client-
@@ -326,13 +387,13 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // engine may legitimately raise Hub 2's own leg (hub2←central from the
     // remainder) and that lock must never read as "Hub 2 held it before".
     const [hub2Node, hub2Locks, product, heldLines, guardConfig] = await Promise.all([
-      db.ref(`stock/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
-      db.ref(`refill_engine/open/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
-      db.ref(`products/${pid}`).once("value").then((s) => s.val()),
-      db.ref(`settings/stockHold/held/${FIRST_BATCH_HUB}`).once("value").then((s) => s.val()),
+      db.ref(`stock/${HUB}/${pid}`).once("value").then((s) => s.val()),
+      db.ref(`refill_engine/open/${HUB}/${pid}`).once("value").then((s) => s.val()),
+      Promise.resolve(productRead),
+      db.ref(`settings/stockHold/held/${HUB}`).once("value").then((s) => s.val()),
       db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
     ]);
-    const hub2OpenRequestIds = await openHub2RequestIds({ db, pid, config: guardConfig });
+    const hub2OpenRequestIds = await openHub2RequestIds({ db, pid, config: guardConfig, hub: HUB });
     const signals = hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, sinceIso: rr.createdAt, heldLines, pid });
     if (signals.length) {
       const r = await withdrawToOldSolve({ reason: HUB2_PRESENT_REASON, none: "hub2_present", product });
@@ -380,10 +441,10 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // ── scoped reads ───────────────────────────────────────────────────────────
   const [config, product, hub2TargetRow, centralCell, hub2Cells, storeCells] = await Promise.all([
     db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
-    db.ref(`products/${pid}`).once("value").then((s) => s.val()),
-    db.ref(`stock_targets/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
+    Promise.resolve(productRead),
+    db.ref(`stock_targets/${HUB}/${pid}`).once("value").then((s) => s.val()),
     db.ref(`stock/${SOURCE}/${pid}/${sizeKey}`).once("value").then((s) => s.val()),
-    db.ref(`stock/${FIRST_BATCH_HUB}/${pid}`).once("value").then((s) => s.val()),
+    db.ref(`stock/${HUB}/${pid}`).once("value").then((s) => s.val()),
     db.ref(`stock/${store}/${pid}`).once("value").then((s) => s.val()),
   ]);
   if (!product) {
@@ -392,7 +453,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   }
 
   const cellKey = clientCellKey(size);   // the client's cell key, never the lock key (see clientCellKey)
-  const seedPath = `stock/${FIRST_BATCH_HUB}/${pid}/${cellKey}`;
+  const seedPath = `stock/${HUB}/${pid}/${cellKey}`;
   // `== null`, never `=== undefined`: an array-coerced /stock row (dense numeric
   // size keys) comes back with NULL holes, and a hole is an absent cell.
   const seedNeeded = !hub2Cells || hub2Cells[cellKey] == null;
@@ -403,7 +464,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // shadow/off hub only ever gets shadow rows). Seed only: Hub 2 carries the
   // size from here, and the engine raises hub2←central itself the moment it
   // is live again. (Adversarial review, PR #607.)
-  if (config.enabled !== true || (config.mode && config.mode[FIRST_BATCH_HUB] !== "live")) {
+  if (config.enabled !== true || (config.mode && config.mode[HUB] !== "live")) {
     if (seedNeeded) await seedIfAbsent(db, seedPath, now);
     await reqRef.update({ "firstBatch/hub2Leg": { none: "engine_off", at: now }, ...declineStamp });
     return { raised: false, none: "engine_off", seeded: seedNeeded };
@@ -422,14 +483,14 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   const ctx = {
     config,
     products: { [pid]: product },
-    targets: hub2TargetRow ? { [FIRST_BATCH_HUB]: { [pid]: hub2TargetRow } } : {},
+    targets: hub2TargetRow ? { [HUB]: { [pid]: hub2TargetRow } } : {},
     stock: {
-      [FIRST_BATCH_HUB]: { [pid]: hub2CellsAfterSeed },
+      [HUB]: { [pid]: hub2CellsAfterSeed },
       [SOURCE]: { [pid]: centralCell ? { [sizeKey]: centralCell } : {} },
       [store]: { [pid]: storeCells || {} },
     },
   };
-  const t = resolveTarget(ctx, FIRST_BATCH_HUB, pid, size);
+  const t = resolveTarget(ctx, HUB, pid, size);
   if (!t || !(t.target > 0)) {
     // No target at Hub 2 right now (kill switch off, policy withdrawn, a dead
     // size). Not a request — but the seed still lands, so Hub 2 carries the
@@ -439,7 +500,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     await reqRef.update({ "firstBatch/hub2Leg": { none: "no_hub2_target", at: now }, ...declineStamp });
     return { raised: false, none: "no_hub2_target", seeded: seedNeeded };
   }
-  const lockPath = `refill_engine/open/${FIRST_BATCH_HUB}/${pid}/${sizeKey}`;
+  const lockPath = `refill_engine/open/${HUB}/${pid}/${sizeKey}`;
   // Somebody already bookkeeps this Hub 2 cell (the engine, or an earlier
   // solve's leg) → ONE request stands; record where the demand went. Read
   // BEFORE sizing: an existing lock is an answer, not a reservation to
@@ -464,7 +525,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   const hub2Have = avail(hub2Cells && hub2Cells[cellKey] ? hub2Cells[cellKey].qty : 0);
   const centralHave = avail(centralCell ? centralCell.qty : 0);
   const routes = config.routes || {};
-  let reserved = await centralReservations({ db, routes, pid, sizeKey, excludeRefillId: requestId, excludeRunId: runId });
+  let reserved = await centralReservations({ db, routes, pid, sizeKey, excludeRefillId: requestId, excludeRunId: runId, alsoAt: liveLocs });
   // A partially-sent shop request still has its remainder to come from
   // Central — the shop is served first, always.
   if (!resolved) reserved += Math.max(num(rr.qty) || 0, 0);
@@ -513,7 +574,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
 
   const key = db.ref("refill_requests").push().key;
   const hubRequest = {
-    productId: pid, size, qty, requestingLocation: FIRST_BATCH_HUB, status: "open",
+    productId: pid, size, qty, requestingLocation: HUB, status: "open",
     createdAt: now,
     createdFrom: { firstBatch: true, solveId, source: SOURCE, store, shopRequestId: requestId, via: "first_batch_hub2_leg" },
   };
@@ -543,4 +604,5 @@ module.exports = {
   seedCell,
   FIRST_BATCH_HUB, FIRST_BATCH_RUN_PREFIX, SOLVE_UNDONE_REASON, CENTRAL_DECLINED_REASON, firstBatchRunId,
   FIRST_BATCH_PATH_ENABLED, PATH_OFF_REASON, HUB2_PRESENT_REASON, hub2PresenceSignals, openHub2RequestIds, clientCellKey,
+  hubForShop, NON_HUB_FLOW_KEYS,
 };

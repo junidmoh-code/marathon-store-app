@@ -59,8 +59,10 @@ import {
   computeHubSneakerExcess,
   computeHubClothingExcess,
   reservedByHubFromOpenRequests,
-  EXCESS_HUB_LOCATIONS,
+  excessHubLocations,
 } from "./excessComputation";
+import { useMySections } from "../../utils/useMySections";
+import { nameOf, centralId } from "./sectionRouting";
 import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { serverNowMs } from "../../utils/serverTime";
@@ -68,9 +70,6 @@ import { sizeRank } from "./hubSizeRank";
 import { SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { GLASS, GRAY, GREEN, BLUE_L, FONT } from "./ui";
 
-const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2" };
-const DEST_KEY   = "central";      // the /stock location key
-const DEST_LABEL = "Central";      // what the operator is shown
 const COLLAPSED_H = 78;   // one collapsed card incl. its 8px gap
 const OVERSCAN = 4;
 const UNDO_MS = 5000;
@@ -95,7 +94,18 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
     [openRequests, config],
   );
 
-  const [hub, setHub] = useState(EXCESS_HUB_LOCATIONS[0] || "hub1");
+  // THE HUBS COME FROM THE REGISTRY (excessComputation.excessHubLocations):
+  // the live hubs first — Hub 1, Hub 2, as this picker always read — then any
+  // hub that is not live yet, whose excess is still shown and can be sent back
+  // to Central by hand. Every move on this screen is hub → Central, which the
+  // section wall always allows. A viewer sees their own sections' hubs.
+  const { registry: network, canSee } = useMySections();
+  const hubs = useMemo(() => excessHubLocations(network).filter((h) => canSee(h)), [network, canSee]);
+  const DEST_KEY = centralId(network);          // the /stock location key
+  const DEST_LABEL = nameOf(DEST_KEY, network); // what the operator is shown
+  const hubLabel = (h) => nameOf(h, network);
+  const [hubPick, setHub] = useState(null);
+  const hub = hubPick && hubs.includes(hubPick) ? hubPick : (hubs[0] || "hub1");
   const [openKey, setOpenKey] = useState(null);          // the one expanded card
   const [edits, setEdits] = useState({});                // `${loc}|${pid}|${size}` -> qty
   const [movedKeys, setMovedKeys] = useState(() => new Set());
@@ -232,7 +242,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
         return { key: card.key, hub: card.loc, pid: card.pid, name: card.name, lines: moved, total, timer };
       });
     });
-  }, [busyKey, movedKeys, leavingKeys, doMove, qtyFor]);
+  }, [busyKey, movedKeys, leavingKeys, doMove, qtyFor, DEST_KEY]);
 
   const undoNow = useCallback(() => {
     if (!undo) return;
@@ -246,7 +256,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
     doMove(u.pid, u.lines, DEST_KEY, u.hub).then(() => {
       setMovedKeys((prev) => { const n = new Set(prev); n.delete(u.key); return n; });
     });
-  }, [undo, doMove]);
+  }, [undo, doMove, DEST_KEY]);
 
   useEffect(() => () => { if (undo) clearTimeout(undo.timer); }, [undo]);
 
@@ -309,10 +319,10 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
   return (
     <div>
       <div style={{ ...GLASS, padding: "12px 14px", marginBottom: 12, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10, flexWrap: "wrap" }}>
-        <div style={{ fontSize: 15, fontWeight: 800 }}>{HUB_LABEL[hub] || hub} → {DEST_LABEL}</div>
+        <div style={{ fontSize: 15, fontWeight: 800 }}>{hubLabel(hub)} → {DEST_LABEL}</div>
         <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ display: "flex", borderRadius: 999, border: "1px solid rgba(255,255,255,.12)", background: "rgba(255,255,255,.03)", padding: 2 }}>
-            {EXCESS_HUB_LOCATIONS.map((h) => (
+            {hubs.map((h) => (
               <button key={h} onClick={() => { setHub(h); setOpenKey(null); }} aria-pressed={hub === h}
                 style={{
                   padding: "6px 14px", borderRadius: 999, border: "none", cursor: "pointer", fontFamily: FONT,
@@ -320,7 +330,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
                   background: hub === h ? "rgba(74,127,255,.18)" : "transparent",
                   color: hub === h ? BLUE_L : GRAY,
                 }}>
-                {HUB_LABEL[h] || h}
+                {hubLabel(h)}
               </button>
             ))}
           </div>
@@ -347,7 +357,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
                 }}>
                 <Card
                   card={c} open={isOpen} busy={busyKey === c.key} locked={!!busyKey}
-                  hubLabel={HUB_LABEL[c.loc] || c.loc}
+                  hubLabel={hubLabel(c.loc)} destLabel={DEST_LABEL}
                   qtyFor={qtyFor} chosen={chosenTotal(c)}
                   onToggle={() => setOpenKey(isOpen ? null : c.key)}
                   onQty={(size, q) => setEdits((prev) => ({ ...prev, [`${c.loc}|${c.pid}|${size}`]: q }))}
@@ -378,7 +388,7 @@ export default function ExcessHubToCentral({ products = [], actorRole }) {
   );
 }
 
-function Card({ card, open, busy, locked, hubLabel, qtyFor, chosen, onToggle, onQty, onTransfer }) {
+function Card({ card, open, busy, locked, hubLabel, destLabel: DEST_LABEL, qtyFor, chosen, onToggle, onQty, onTransfer }) {
   return (
     <div style={{ ...GLASS, padding: open ? "10px 12px 12px" : "10px 12px", boxSizing: "border-box" }}>
       {/* role="button" without tabIndex/keys would make the whole transfer

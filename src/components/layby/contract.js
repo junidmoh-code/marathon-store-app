@@ -19,6 +19,9 @@
 
 // Full layby lifecycle, on /laybys/{laybyId}.status. Happy path is linear;
 // `expired` and `rejected` are the two off-ramps.
+import { currentNetwork } from "../../utils/networkStore";
+import { fallbackHub } from "../../utils/sectionRouting";
+
 export const LAYBY_STATUS = {
   CREATED:        "created",            // POS: layby taken
   LABEL_PRINTED:  "labelPrinted",       // POS: parcel label printed
@@ -63,6 +66,17 @@ export function dispositionOf(pull) {
 }
 
 export const DEFAULT_STORAGE_HUB = "hub1";
+
+// The hub a layby (or a pull) is stored at. The POS stamps storageHub on every
+// new record. One WITHOUT it is from before that: it belongs to Hub 1, as it
+// always has — unless the record names a store outside Marathon PE / Trophy,
+// in which case Hub 1 is across the section wall and the store's own
+// back-stock hub is the answer (null if the registry has none: it then shows
+// on no hub's list rather than on the wrong section's).
+export function storageHubOf(x, network = currentNetwork()) {
+  if (x?.storageHub) return x.storageHub;
+  return fallbackHub(network, x?.storeId || x?.issuingStore || null, DEFAULT_STORAGE_HUB);
+}
 
 // Coerce an epoch-ms number OR an ISO/date string to epoch ms. Returns NaN when
 // unparseable so callers can guard. POS may write either form for time fields.

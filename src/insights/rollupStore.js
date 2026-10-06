@@ -85,7 +85,7 @@ export async function readDayIndex() {
 }
 
 /** All-time per-store totals from the index, plus whatever the window read
- *  found live. `pe + trophy + pine + other === n`, by construction. */
+ *  found live. `pe + trophy + pine + concrete + other === n`, by construction. */
 /** Does this event belong to `dateStr` in SA time? */
 function inDay(e, dateStr) {
   const ms = Date.parse(e && e.timestamp);
@@ -94,7 +94,7 @@ function inDay(e, dateStr) {
 }
 
 export function totalsFromIndex(index) {
-  const out = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+  const out = { n: 0, pe: 0, trophy: 0, pine: 0, concrete: 0, other: 0 };
   for (const v of Object.values(index || {})) {
     if (!v || typeof v !== "object") continue;
     for (const k of Object.keys(out)) out[k] += Number(v[k]) || 0;
@@ -280,7 +280,7 @@ export async function readWindow({ startIso, endIso, nowMs, allTime = false, io 
   try {
     const stored = await readers.readLogTotals();
     if (stored && typeof stored === "object" && stored.cursor) {
-      totals = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+      totals = { n: 0, pe: 0, trophy: 0, pine: 0, concrete: 0, other: 0 };
       for (const k of Object.keys(totals)) totals[k] = Number(stored[k]) || 0;
       const sinceRange = { startKey: stored.cursor, endKey: "\uffff", startMs: 0, endMs: 0 };
       const since = await readers.readLogRange(sinceRange);

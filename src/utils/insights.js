@@ -19,6 +19,9 @@ const saDateOf = (iso) => {
 const eventCompositeKey  = (e) => `${saDateOf(e.timestamp)}::${e.orderNumber}`;
 const returnCompositeKey = (r) => `${r.date || saDateOf(r.timestamp)}::${r.orderNumber}`;
 
+import { currentNetwork } from "./networkStore";
+import { fallbackHub } from "./sectionRouting";
+
 // Classify an insights_log entry / order as sneaker | clothing. Prefers explicit
 // productType; falls back to a size-letter heuristic for legacy entries (numeric
 // 3..11 vs letters S..XXXL don't overlap).
@@ -228,10 +231,13 @@ export function computeRestockCounts(entries, { onNameCollision } = {}) {
 // live path (status===READY||COLLECTED) never showed it in the footwear History.
 // Filtering to sneaker reproduces that exactly and keeps clothing refills out of
 // hub2's restock list (clothing has its own "Clothing Sold" tab).
-export function restockCountsFromLog({ log, dateStr, hub, returnedIds, onNameCollision }) {
+// SECTIONS: an event with no placedAtHub is Hub 1's only when it is Marathon
+// PE's / Trophy's, or names no shop at all (legacy). A Section 1 shop's event
+// falls back to that shop's own hub, never across the wall into Hub 1.
+export function restockCountsFromLog({ log, dateStr, hub, returnedIds, onNameCollision, network = currentNetwork() }) {
   const raw = (log || []).filter(
     (e) => e && e.action === "ready" && inferProductType(e) === "sneaker" &&
-           saDateOf(e.timestamp) === dateStr && (e.placedAtHub || "hub1") === hub
+           saDateOf(e.timestamp) === dateStr && (e.placedAtHub || fallbackHub(network, e.destShop, "hub1")) === hub
   );
   const result = {};
   const seenNames = new Map();

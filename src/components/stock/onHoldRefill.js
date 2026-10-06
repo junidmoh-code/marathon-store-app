@@ -68,8 +68,11 @@
 // ever, but the refill line comes from the engine's own scan seeing the cell
 // at its reorder point, never from here. reactiveRefillHubs.js is the one
 // list; a hub1 order now fails closed exactly like an unroutable hub.
-import { REACTIVE_REFILL_HUBS } from "./reactiveRefillHubs.js";
-const VALID_HUBS = new Set(REACTIVE_REFILL_HUBS);
+// Asked of the network registry at plan time (not frozen at load): the hub
+// behind a shop's everyday stock, LIVE only — Hub 2 today, Hub 3 as well once
+// it goes live. A hold on any other hub raises nothing here.
+import { isReactiveRefillHub } from "./reactiveRefillHubs.js";
+import { centralId } from "./sectionRouting.js";
 
 // ── THE LIFECYCLE (owner spec 2026-08-08 — On Hold is ABOLISHED from the
 // refill surface, not relocated; notification reinstated at FULFIL 2026-08-19)
@@ -153,7 +156,7 @@ export function holdCustomerLink(order, saDate) {
 
 export function onHoldRefillPlan(order, { nowIso, saDate }) {
   const hub = order?.placedAtHub || order?.hub || null;
-  if (!VALID_HUBS.has(hub)) return { ok: false, reason: hub ? `unroutable_hub_${hub}` : "no_hub" };
+  if (!isReactiveRefillHub(hub)) return { ok: false, reason: hub ? `unroutable_hub_${hub}` : "no_hub" };
   if (!order?.productId) return { ok: false, reason: "no_product_id" };
   const size = order?.size;
   if (size == null || String(size).trim() === "") return { ok: false, reason: "no_size" };
@@ -171,7 +174,7 @@ export function onHoldRefillPlan(order, { nowIso, saDate }) {
       createdAt: nowIso,
       // manual (a person committed to the customer), traceable to the order.
       // source: central — the same supply source every hub refill fulfils from.
-      createdFrom: { manual: true, source: "central", via: "on_hold", orderId: String(order.id), orderDate: saDate },
+      createdFrom: { manual: true, source: centralId(), via: "on_hold", orderId: String(order.id), orderDate: saDate },
       // The invisible re-link. Read by exactly one consumer — the server-side
       // fulfil notifier — and rendered by none. See the module header.
       holdLink: holdCustomerLink(order, saDate),

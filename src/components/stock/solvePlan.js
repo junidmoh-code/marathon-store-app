@@ -32,6 +32,7 @@
 // spec review, PR #608.)
 
 import { encodeSizeKey } from "../../utils/sizeKey";
+import { locationName } from "../../utils/networkRegistry";
 
 // Is the engine's rule-based targeting on at this destination? A BYTE-FOR-BYTE
 // mirror of ruleTargetsEnabled() in refill-engine.cjs, including its fail-safe:
@@ -53,11 +54,20 @@ export function ruleTargetsEnabledFor(ruleBasedTargets, dest) {
   return false;
 }
 
-// Which locations get a qty-0 carriage seed. Central-stranded needs BOTH Hub 2
-// (so the engine raises central→hub2) and the nominated store (so it raises
-// hub2→store once Hub 2 receives). Hub2-stranded needs the store only.
-export function seedLocations(source, store) {
-  return source === "central" ? ["hub2", store] : [store];
+// Which locations get a qty-0 carriage seed. Central-stranded needs BOTH the
+// store's back-stock hub (so the engine raises central→hub) and the nominated
+// store (so it raises hub→store once the hub receives). Hub-stranded needs the
+// store only.
+//
+// `hub` is the hub that holds THIS store's back stock for THIS product — the
+// caller resolves it from the network registry (sectionRouting.solveHubFor):
+// Hub 2 for Marathon PE and Trophy, Hub 3 for Pine, Hub 3 or the Concrete
+// Stockroom for Concrete. It defaults to Hub 2, which is what every caller
+// meant before there was a second section.
+export const SOLVE_CENTRAL = "central";
+export const DEFAULT_SOLVE_HUB = "hub2";
+export function seedLocations(source, store, hub = DEFAULT_SOLVE_HUB) {
+  return source === SOLVE_CENTRAL ? [hub, store] : [store];
 }
 
 // Fold the two standard sources into one { loc: { SIZE: target } } map for ONE
@@ -285,12 +295,12 @@ export function standardUnits(run, sizes) {
 }
 
 // The sizes it's safe to seed: those with a POSITIVE standard at EVERY location the
-// seed touches (store for hub2-stranded; Hub 2 AND store for central-stranded). A
+// seed touches (store for hub-stranded; the store's hub AND store for central-stranded). A
 // size with no standard would seed a cell the engine never refills, then vanish
 // from the list with a false "solved" — so it's excluded. If this returns empty,
 // the product is not solvable and Solve must be disabled.
-export function qualifyingSizes(sizes, source, store, std) {
-  const locs = seedLocations(source, store);
+export function qualifyingSizes(sizes, source, store, std, hub = DEFAULT_SOLVE_HUB) {
+  const locs = seedLocations(source, store, hub);
   return (sizes || []).filter((sz) =>
     locs.every((loc) => Number((std?.[loc] || {})[String(sz).toUpperCase()]) > 0));
 }
@@ -298,23 +308,25 @@ export function qualifyingSizes(sizes, source, store, std) {
 // The confirm estimate for one product/store.
 //   std      — { loc: { SIZE: target } } (defaultRunByStore)
 //   sizes    — catalog sizes to seed
-//   source   — "central" | "hub2"
+//   source   — "central" | the hub the product is stranded at
 //   store    — nominated store id
 //   availAt(loc, size) — live on-hand at a location for a size (for coverage)
-export function solvePlan({ std, sizes, source, store, availAt }) {
+//   hub      — the store's back-stock hub (default Hub 2; see seedLocations)
+//   hubLabel — its name for the panel (default: the registry's name for it)
+export function solvePlan({ std, sizes, source, store, availAt, hub = DEFAULT_SOLVE_HUB, hubLabel }) {
   const storeRun = (std && std[store]) || {};
   const storeUnits = standardUnits(storeRun, sizes);
   const at = typeof availAt === "function" ? availAt : () => 0;
-  if (source === "hub2") {
-    // Store is fed directly from Hub 2 — coverage checked against Hub 2.
+  if (source === hub) {
+    // Store is fed directly from its hub — coverage checked against the hub.
     const cover = (sizes || []).reduce(
-      (t, sz) => t + Math.min(Number(storeRun[String(sz).toUpperCase()]) || 0, at("hub2", sz)), 0);
-    return { sizes, storeUnits, twoLeg: false, cover, coverLoc: "Hub 2" };
+      (t, sz) => t + Math.min(Number(storeRun[String(sz).toUpperCase()]) || 0, at(hub, sz)), 0);
+    return { sizes, storeUnits, twoLeg: false, cover, coverLoc: hubLabel || locationName(null, hub) };
   }
-  // Central-stranded: the Hub 2 buffer leg pulls from Central.
-  const hubRun = (std && std.hub2) || {};
+  // Central-stranded: the hub's buffer leg pulls from Central.
+  const hubRun = (std && std[hub]) || {};
   const hubUnits = standardUnits(hubRun, sizes);
   const cover = (sizes || []).reduce(
-    (t, sz) => t + Math.min(Number(hubRun[String(sz).toUpperCase()]) || 0, at("central", sz)), 0);
+    (t, sz) => t + Math.min(Number(hubRun[String(sz).toUpperCase()]) || 0, at(SOLVE_CENTRAL, sz)), 0);
   return { sizes, storeUnits, twoLeg: true, hubUnits, cover, coverLoc: "Central" };
 }

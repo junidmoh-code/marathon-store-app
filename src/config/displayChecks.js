@@ -40,6 +40,8 @@
 //   for the owner; not decided here.
 
 import { ADMIN_EMAIL } from "../components/PermissionsContext";
+import { SEED_REGISTRY, storesOf, locationOf } from "../utils/networkRegistry";
+import { currentNetwork } from "../utils/networkStore";
 
 // ── FEATURE FLAGS ─────────────────────────────────────────────────────────────
 
@@ -50,19 +52,31 @@ export const DISPLAY_CHECKS_MASTER_ENABLED = true;
 // Per-store enable flags. Phase 1 goes live at PE + Trophy; Pine is built but
 // dark (flip to true, no code change). Keyed by the physical shop id used by
 // /stock and /users.destShop.
-export const DISPLAY_CHECKS_STORE_FLAGS = {
-  "marathon-pe": true,
-  "trophy": true,
-  "marathon-pine": false,
-};
+//
+// SECTIONS (2026-10): the flag IS the store's LIVE flag in the network
+// registry. Marathon PE and Trophy are live, Pine is not — the same three
+// answers this map always held — and Concrete is a store like any other: off
+// until the owner marks it live on the Network card, on from that moment, no
+// deploy. This constant is the seed's answer; isDisplayChecksStoreEnabled
+// asks the live registry.
+const flagsOf = (network) => Object.fromEntries(
+  [...storesOf(network)].sort((a, b) => (b.section - a.section) || (a.sort - b.sort)).map((l) => [l.id, l.live === true]));
+export const DISPLAY_CHECKS_STORE_FLAGS = flagsOf(SEED_REGISTRY);
+
+// The enabled stores, in order, from the live registry.
+export function displayChecksEnabledStores(network = currentNetwork()) {
+  const flags = flagsOf(network);
+  return Object.keys(flags).filter((id) => flags[id] === true);
+}
 
 // Permission strings the gate looks for. Neither is seeded yet (inert today).
 export const DISPLAY_CHECKS_PERMISSION = "display_checks";   // base access
 export const DISPLAY_MANAGER_PERMISSION = "display_manager"; // Analytics + Settings
 
 // Is a given shop turned on for Display Checks? Unknown/absent shop → false.
-export function isDisplayChecksStoreEnabled(storeId) {
-  return DISPLAY_CHECKS_STORE_FLAGS[storeId] === true;
+export function isDisplayChecksStoreEnabled(storeId, network = currentNetwork()) {
+  const l = locationOf(network, storeId);
+  return !!l && l.type === "store" && l.id === storeId && l.live === true;
 }
 
 // ── GATES ─────────────────────────────────────────────────────────────────────

@@ -90,6 +90,20 @@ const buttonsOf = (tree) => tree.root.findAll((n) => n.type === "button");
 const solveButton = (tree) => buttonsOf(tree).find((b) => (b.children || []).includes("Solve"));
 const buttonSaying = (tree, needle) =>
   buttonsOf(tree).find((b) => (b.children || []).some((c) => typeof c === "string" && c.includes(needle)));
+// THE PANEL IS TICK BOXES (one screen, both sections, since 2026-10): the
+// default store opens ticked ("✓ Trophy"). "Nominate X" — what tapping X's
+// chip used to mean — is: tick X, untick anything else.
+const storeBoxes = (tree) => buttonsOf(tree).filter((b) => b.props.role === "checkbox");
+const boxLabel = (b) => (b.children || []).join("").replace(/^✓ /, "");
+function tickOnly(tree, name) {
+  for (let guard = 0; guard < 8; guard++) {
+    const other = storeBoxes(tree).find((b) => b.props["aria-checked"] && boxLabel(b) !== name);
+    if (!other) break;
+    act(() => { other.props.onClick(); });
+  }
+  const box = storeBoxes(tree).find((b) => boxLabel(b) === name);
+  if (!box.props["aria-checked"]) act(() => { box.props.onClick(); });
+}
 
 beforeEach(() => {
   updateMock.mockClear();
@@ -294,7 +308,7 @@ describe("the coverage estimate reads the cell the stock is actually in", () => 
   it("reports Central's real cover, not a silent zero", () => {
     const tree = render(PADDED_TARGETS, { products: PADDED_PRODUCT, stock: PADDED_STOCK });
     act(() => { solveButton(tree).props.onClick(); });
-    act(() => { buttonSaying(tree, "Trophy").props.onClick(); });
+    tickOnly(tree, "Trophy");
     // Hub 2 wants 4; Central holds 6, so it covers all 4 → the "covers ✓" branch.
     const text = textOf(tree);
     expect(text).toMatch(/covers/);
@@ -443,7 +457,7 @@ describe("Solve writes carriage cells and NEVER a target row", () => {
     const tree = render(targets);
     // Open the panel, nominate Trophy, confirm.
     await act(async () => { solveButton(tree).props.onClick(); });
-    await act(async () => { buttonSaying(tree, "Trophy").props.onClick(); });
+    tickOnly(tree, "Trophy");
     await act(async () => { buttonSaying(tree, "Solve — carry at").props.onClick(); });
 
     expect(updateMock).toHaveBeenCalledTimes(1);

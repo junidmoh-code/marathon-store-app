@@ -18,14 +18,30 @@
 // header-comment pattern as lib/auth-utils.cjs). The client MASTER flag gates
 // only the UI; this map alone gates the trigger. Phase 1: PE + Trophy write,
 // Pine dark. A non-shop `from` (hub1/hub2/central/…) is simply absent → off.
-const TRIGGER_STORE_FLAGS = {
-  "marathon-pe": true,
-  "trophy": true,
-  "marathon-pine": false,
-};
+//
+// SECTIONS (2026-10-02): the flag is the network registry's `live`. A STORE
+// that is live writes; a store that is not live is dark; a hub, Central or an
+// unknown id is not a store → off. On the built-in seed that is PE + Trophy
+// on, Pine (and Concrete) dark — the same answers this map has always given.
+// Pine and Concrete switch on the day the owner marks them live.
+const { storesOf, SEED_REGISTRY } = require("../lib/network-registry.cjs");
 
-function isTriggerStoreEnabled(storeId) {
-  return TRIGGER_STORE_FLAGS[storeId] === true;
+function triggerStoreFlags(network) {
+  return Object.fromEntries(storesOf(network || SEED_REGISTRY).map((l) => [l.id, l.live === true]));
+}
+// The seed's answer, for a caller with no registry to hand.
+const TRIGGER_STORE_FLAGS = Object.freeze(triggerStoreFlags(SEED_REGISTRY));
+
+function isTriggerStoreEnabled(storeId, network) {
+  if (typeof storeId !== "string" || !storeId) return false;
+  const flags = network ? triggerStoreFlags(network) : TRIGGER_STORE_FLAGS;
+  return Object.prototype.hasOwnProperty.call(flags, storeId) && flags[storeId] === true;
+}
+
+// The stores the trigger is on for, in registry order.
+function triggerStores(network) {
+  const flags = network ? triggerStoreFlags(network) : TRIGGER_STORE_FLAGS;
+  return Object.keys(flags).filter((id) => flags[id] === true);
 }
 
 // ── Size-key mirror ───────────────────────────────────────────────────────────
@@ -506,6 +522,8 @@ function completionFlipMutation({ expectedCheckId, result, nowMs, saDate, actor,
 
 module.exports = {
   TRIGGER_STORE_FLAGS,
+  triggerStoreFlags,
+  triggerStores,
   WAKE_DEFAULT_DELAY_MINUTES,
   wakeDelayMs,
   wakeTransition,

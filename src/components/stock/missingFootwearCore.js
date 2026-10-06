@@ -82,7 +82,10 @@ const carries = (allStock, loc, pid) => cellsOf(allStock, loc, pid).length > 0;
 // Normalised name, for spotting duplicate catalogue records of one physical shoe.
 const nameKey = (s) => String(s || "").trim().toLowerCase().replace(/\s+/g, " ");
 
-export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1", "hub2"], heldLines = null }) {
+// `hubs` is ONE SECTION'S hubs (the default is Section 2's, Hub 1 and Hub 2 —
+// what the network registry's seed answers, pinned by test); the screen passes
+// the section it is showing. `central` is Central's id.
+export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1", "hub2"], heldLines = null, central = "central" }) {
   const byId = products instanceof Map ? products : new Map((products || []).map((p) => [p.id, p]));
   // Held central→hub credits (count-integrity hold lane): units a fulfil has
   // parked at stock/in_transit awaiting the owner's release. They ARE hub
@@ -128,7 +131,7 @@ export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1"
     (idsByName.get(nameKey(name)) || []).find((o) => o !== pid && hubs.some((h) => unitsAt(allStock, h, o))) || null;
 
   const out = [];
-  for (const pid of Object.keys(allStock?.central || {})) {
+  for (const pid of Object.keys(allStock?.[central] || {})) {
     if (pid === "_meta") continue;
     const p = byId.get(pid);
     // A clothing-TYPED record with a legacy "Footwear" category (a data
@@ -142,12 +145,12 @@ export function computeMissingFootwear({ allStock, products = [], hubs = ["hub1"
     // here (this screen writes /refill_requests directly, outside the engine).
     // Its stock stays visible on the Deactivated list, not as a "missing" row.
     if (isDeactivated(p)) continue;
-    const centralUnits = unitsAt(allStock, "central", pid);
+    const centralUnits = unitsAt(allStock, central, pid);
     if (centralUnits <= 0) continue;
     // Missing = no UNITS at any hub that holds buffer — parked-box units count.
     if (hubs.some((h) => unitsAt(allStock, h, pid) > 0 || heldUnitsAt(h, pid) > 0)) continue;
 
-    const sizes = cellsOf(allStock, "central", pid)
+    const sizes = cellsOf(allStock, central, pid)
       .map(([sizeKey, c]) => ({ sizeKey, size: String(sizeKey).replace(/(\d)_(\d)/, "$1.$2"), avail: Math.max(Number(c?.qty) || 0, 0) }))
       .filter((s) => s.avail > 0)
       .sort((a, b) => footwearSizeRank(a.size) - footwearSizeRank(b.size));

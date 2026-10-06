@@ -26,7 +26,21 @@ import { isDeactivated } from "../../utils/deactivation.js";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 import { FOOTWEAR_CATEGORY_KEYS } from "../../utils/footwearLine.js";
 
-const STORES = ["marathon-pe", "trophy"];
+import { sectionOf, locationName } from "../../utils/networkRegistry";
+import { net, storeIds, solveHubsOfSection, centralId, liveSections } from "./sectionRouting";
+
+// ── ONE SECTION AT A TIME ────────────────────────────────────────────────────
+// "Stranded" is a statement about ONE section: stock that sits upstream of
+// that section's shops and none of them carries. Upstream is Central plus the
+// hub(s) holding that section's back stock for the product; downstream is
+// that section's shops. A product Marathon PE carries is not stranded for
+// Section 2 — and says nothing at all about Section 1.
+//
+// The section is asked of the network registry. With no `section` given the
+// list is Section 2's — Hub 2 upstream, Marathon PE and Trophy downstream —
+// which is the list this function has always built (the registry's seed
+// answers exactly those three; pinned by test).
+const DEFAULT_SECTION = 2;
 
 // ── GROUPING: three chips — Clothing, Perfume, Sneakers ──────────────────────
 // Owner directive 2026-08-05: "remove the rest of the categories and just leave
@@ -118,8 +132,14 @@ export function inFootwearGroup(p) {
 export const admitsMissingProduct = (p) => !!p && !inFootwearGroup(p);
 
 // The stranded-card list. `allStock` is { loc: { pid: { sizeKey: cell } } } and
-// `products` is an array of catalogue records.
-export function computeMissingProducts({ allStock, products } = {}) {
+// `products` is an array of catalogue records. `section` (default 2) is the
+// section the list is for; `network` is the registry (default: the current
+// one). A card built for an explicitly named section carries it as `section`.
+export function computeMissingProducts({ allStock, products, network, section } = {}) {
+  const N = net(network);
+  const sec = section || DEFAULT_SECTION;
+  const central = centralId(N);
+  const STORES = storeIds(N, { section: sec });
   // Array.isArray, not `products || []`: an object here (the raw /products map
   // rather than the array the app passes) would throw on .map and blank the whole
   // Health screen. A tab that surfaces stranded stock should degrade to "nothing
@@ -131,7 +151,11 @@ export function computeMissingProducts({ allStock, products } = {}) {
     !!allStock?.[loc]?.[pid] && Object.keys(allStock[loc][pid]).length > 0;
 
   const out = [];
-  const pids = new Set([...Object.keys(allStock?.central || {}), ...Object.keys(allStock?.hub2 || {})]);
+  // Every hub that is some shop of this section's default back-stock hub —
+  // the candidate set; each product then asks for ITS hubs (a category or a
+  // product can be mapped to another hub of the section).
+  const sectionHubs = solveHubsOfSection(N, sec, null, null);
+  const pids = new Set([...Object.keys(allStock?.[central] || {}), ...sectionHubs.flatMap((h) => Object.keys(allStock?.[h] || {}))]);
   for (const pid of pids) {
     const p = byId.get(pid);
     // Everything outside the footwear group — clothing, perfume, and (since
@@ -143,27 +167,44 @@ export function computeMissingProducts({ allStock, products } = {}) {
     // arrival ever follows, so nothing would auto-reactivate: the exact
     // "seed, vanish, never refill" divergence the mirror comments warn about.
     if (isDeactivated(p)) continue;
-    const ce = sumAt("central", pid), h2 = sumAt("hub2", pid);
-    const carriedDownstream = carries("marathon-pe", pid) || carries("trophy", pid);
+    // This product's hubs in this section (Hub 2 for every Section 2 product).
+    const hubs = solveHubsOfSection(N, sec, p, pid);
+    const ce = sumAt(central, pid);
+    const carriedDownstream = STORES.some((s) => carries(s, pid));
     let source = null, kind = null;
-    if (ce > 0 && !carries("hub2", pid) && !carriedDownstream) { source = "central"; kind = "Only in Central"; }
-    else if (h2 > 0 && !carriedDownstream) { source = "hub2"; kind = "Only in Hub 2"; }
+    if (ce > 0 && !hubs.some((h) => carries(h, pid)) && !carriedDownstream) { source = central; kind = "Only in Central"; }
+    else if (!carriedDownstream) {
+      const h = hubs.find((x) => sumAt(x, pid) > 0);
+      if (h) { source = h; kind = `Only in ${locationName(N, h)}`; }
+    }
     if (!source) continue;
     const sizes = Object.entries(allStock[source]?.[pid] || {})
       .map(([size, c]) => ({ size, avail: Math.max(Number(c?.qty) || 0, 0) }))
       .filter((s) => s.avail > 0)
       .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
     if (!sizes.length) continue;
-    const missing = source === "central" ? ["hub2", ...STORES].filter((l) => !carries(l, pid)) : STORES;
+    const missing = source === central ? [...hubs, ...STORES].filter((l) => !carries(l, pid)) : STORES;
     const group = groupOf(p);
     out.push({
       pid, name: p?.name || pid, photo: p?.photoUrl, source, kind, sizes, missing,
       group: group.key, groupLabel: group.label,
       units: sizes.reduce((t, s) => t + s.avail, 0),
+      // Named only when the caller named a section — the default call's cards
+      // are exactly the shape they always were.
+      ...(section ? { section: sec } : {}),
     });
   }
   return out.sort((a, b) => b.units - a.units);
 }
+
+// The lists a screen builds BY ITSELF: one per section that has a LIVE shop
+// (Section 2 on the registry's seed). A section whose shops are not live yet
+// has no work list of its own accord — nothing is routed there automatically —
+// but its list can still be LOOKED at: computeMissingProducts({ section }).
+export const missingProductSections = (network) => liveSections(network);
+// The section a card belongs to (cards from the default call carry none).
+export const cardSection = (card, network) =>
+  card?.section || (card?.source && sectionOf(net(network), card.source)) || DEFAULT_SECTION;
 
 // Card counts per chip, keyed by group. With the two-chip rule every card lands
 // under "clothing", so this reduces to { clothing: N } — kept generic because

@@ -33,6 +33,9 @@ vi.mock("./displayRequestStore", () => ({ raiseDisplayRequest: (...a) => raiseDi
 vi.mock("./useStock", () => ({
   useDisplayRowsState: () => ({ value: ROWS, settled: true, error: false }),
   useStockCellsState: (hub) => ({ cells: hub === "hub1" ? CELLS1 : CELLS2, settled: true, error: false }),
+  // /network: no node, so the registry is its seed — the two live walls
+  // (Marathon PE, Trophy) and their two gated hubs (Hub 1, Hub 2).
+  usePathState: () => ({ value: null, settled: true, error: false }),
 }));
 
 const { default: View } = await import("./DisplayRegistrationView.jsx");

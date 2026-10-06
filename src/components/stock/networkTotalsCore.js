@@ -58,6 +58,9 @@
 // not part of the pool he reorders against, so their units would distort the
 // research number rather than inform it. Named here once; the screen reads this
 // list to build both the read plan and the line that tells him what it summed.
+import { isLive } from "../../utils/networkRegistry";
+import { net, storeIds, hubIds } from "./sectionRouting";
+
 export const EXCLUDED_LOCATIONS = ["marathon-pine", "hub3"];
 
 // The locations to sum. `registry` is the /locations map ({ id: {active,…} });
@@ -72,9 +75,23 @@ export const EXCLUDED_LOCATIONS = ["marathon-pine", "hub3"];
 // units cannot legitimately reach an unregistered location in the first place.
 // An id passed in that the registry does not describe is still counted (a caller
 // that knows about a location is trusted); the screen simply never has one.
-export function countedLocations(locationIds, registry) {
+//
+// THE EXCLUSION IS THE LIVE FLAG NOW. "Pine and Hub 3 are not part of the pool
+// he reorders against" is exactly what the network registry's `live: false`
+// says about them, so the list is asked of the registry instead of spelled
+// out: every store and hub that is not live is left out. On the seed that is
+// Pine and Hub 3 (the constant above, kept for its importers and pinned by
+// test) plus the two new Section 1 locations, Concrete and the Concrete
+// Stockroom, which hold nothing yet. WHAT SWITCHES ON when the owner makes one
+// of them live: its units join the network total.
+export function excludedLocations(network) {
+  const N = net(network);
+  return [...storeIds(N), ...hubIds(N)].filter((id) => !isLive(N, id)).sort();
+}
+export function countedLocations(locationIds, registry, network) {
+  const excluded = excludedLocations(network);
   return [...(locationIds || [])]
-    .filter((id) => !EXCLUDED_LOCATIONS.includes(id))
+    .filter((id) => !excluded.includes(id))
     .filter((id) => (registry && registry[id] ? registry[id].active !== false : true))
     .sort();
 }

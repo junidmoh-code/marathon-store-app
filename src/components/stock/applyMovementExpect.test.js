@@ -100,7 +100,7 @@ describe("expect: { qty } — the absolute-value precondition", () => {
 
   it("rejects `expect` on a two-cell movement — 'the expected quantity' is ambiguous", async () => {
     const res = await applyMovement({
-      type: "transfer_out", productId: PID, size: "8", qty: 1, from: LOC, to: "in_transit",
+      type: "transfer_out", productId: PID, size: "8", qty: 1, from: LOC, to: "in_transit", transitTo: "trophy",
       expect: { qty: 4 },
     }, { maxRetries: 1 });
     expectVi(res.reason).toBe("expect_requires_single_cell");

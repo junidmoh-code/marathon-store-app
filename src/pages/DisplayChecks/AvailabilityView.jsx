@@ -18,7 +18,9 @@ import { ref, get } from "firebase/database";
 import { Html5Qrcode, Html5QrcodeSupportedFormats } from "html5-qrcode";
 import { database } from "../../firebase";
 import { decodeSizeKey } from "../../utils/sizeKey";
-import { SHOP_IDS, SHOP_LABELS } from "../../utils/stores";
+import { shopIdsOf, SHOP_LABELS } from "../../utils/stores";
+import { sectionOf } from "../../utils/networkRegistry";
+import { currentNetwork } from "../../utils/networkStore";
 import { installBarcodeListener, subscribeBarcode } from "../../components/stock/barcodeListener";
 import { FONT, MONO, BLUE, BLUE_SOFT, INK, GLASS_BG, GLASS_BORDER, PANEL, META } from "./tokens";
 import { dcSession } from "./session";
@@ -159,7 +161,13 @@ function SizeTable({ product, sizes }) {
 function ResultCard({ product, storeId, big }) {
   const [sizes, setSizes] = useState("loading");
   const [others, setOthers] = useState(null); // null | "loading" | { storeId: sizesMap }
-  const otherStoreIds = useMemo(() => SHOP_IDS.filter((s) => s !== storeId), [storeId]);
+  // Sections: only the OTHER shops in this shop's own section. Showing a shop
+  // across the wall invites an ask that stock can never answer directly.
+  const otherStoreIds = useMemo(() => {
+    const net = currentNetwork();
+    const mine = sectionOf(net, storeId);
+    return shopIdsOf(net).filter((s) => s !== storeId && sectionOf(net, s) === mine);
+  }, [storeId]);
 
   useEffect(() => {
     let alive = true;

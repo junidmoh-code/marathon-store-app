@@ -36,6 +36,8 @@ import { ref, get } from "firebase/database";
 import { database } from "../../firebase";
 import { stockCellPath, assertSafeSegment } from "../../utils/sizeKey";
 import { availableUnits, gatedSneakerHub } from "./availabilityCore";
+import { locationOf, sectionOf } from "../../utils/networkRegistry";
+import { net, hubIds } from "./sectionRouting";
 
 const CENTRAL = "central";
 const CACHE_TTL_MS = 60 * 1000;
@@ -125,12 +127,34 @@ export async function fetchCentralAvailability(productId, size, { fresh = false 
 // The hub rule matches the app's orderInHub VERBATIM: hub3/hubC live in
 // placedAtHub, hub1/hub2 in `hub` (defaulted hub1).
 export const CENTRAL_FED_HUBS = ["hub1", "hub2"];
-export function centralFedRow(order, product) {
-  if (order?.placedAtHub === "hub3" || order?.placedAtHub === "hubC") return false;
-  const hub = order?.hub || "hub1";
-  if (!CENTRAL_FED_HUBS.includes(hub)) return false;
+
+// ── THE SAME RULE, ASKED OF THE NETWORK REGISTRY ─────────────────────────────
+// Which hubs does Central feed BY ITSELF? The live ones: on the registry's
+// seed, Hub 1 and Hub 2 — the constant above (pinned by test). Hub 3 is fed
+// by Central too, but nothing automatic routes to a hub that is not live, so
+// its rows are not probed until the owner makes it live; from then on a Hub 3
+// row is probed on the same terms as a Hub 2 row (the grid's own predicate).
+export function centralFedHubs(network) {
+  return hubIds(net(network), { liveOnly: true });
+}
+// Which hub an order row belongs to. The convention is the app's orderInHub,
+// verbatim for today's data: Hub 1 / Hub 2 orders carry `hub` (defaulted
+// hub1); an order for a hub in ANOTHER section (Hub 3 — and the Concrete
+// Stockroom, by the same rule) carries it in `placedAtHub`, as does the
+// legacy "hubC". A placedAtHub naming a Hub 1-side hub never overrides `hub`.
+export function orderRowHub(order, network) {
+  const N = net(network);
+  const placed = order?.placedAtHub;
+  if (placed === "hubC") return placed;
+  const loc = placed ? locationOf(N, placed) : null;
+  if (loc && loc.type === "hub" && loc.section !== sectionOf(N, "hub1")) return loc.id;
+  return order?.hub || "hub1";
+}
+export function centralFedRow(order, product, network) {
+  const hub = orderRowHub(order, network);
+  if (!centralFedHubs(network).includes(hub)) return false;
   if (hub === "hub1") return true;                                  // 2026-08-25, verbatim
-  return gatedSneakerHub(product, "hub2") === "hub2";               // hub2: the grid's own predicate
+  return gatedSneakerHub(product, hub, network) === hub;            // every other hub: the grid's own predicate
 }
 
 // The outcome a tap must produce, from a fresh availability answer.

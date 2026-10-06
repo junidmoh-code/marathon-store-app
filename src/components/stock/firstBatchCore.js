@@ -60,7 +60,23 @@
 import { stockSizeKey, stockCellPath, encodeSizeKey } from "../../utils/sizeKey";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 import { isDeactivated } from "../../utils/deactivation.js";
+import { locationOf, locationName } from "../../utils/networkRegistry.js";
+import { net } from "./sectionRouting.js";
 
+// ── "HUB 2" IS "THE STORE'S BACK-STOCK HUB" (sections, 2026-10) ──────────────
+// Everything below was written when one hub stood behind every shop. The rule
+// it describes was never about Hub 2 in particular: it is about the hub that
+// holds a shop's back stock — Hub 2 for Marathon PE and Trophy, Hub 3 for
+// Pine, Hub 3 or the Concrete Stockroom for Concrete. Every function that
+// used the constant now takes that hub as a PARAMETER (`hub`), resolved by the
+// caller from the network registry (sectionRouting.solveHubFor); the constant
+// is its default, so a caller that passes nothing gets exactly what it always
+// got. Read "Hub 2" in the notes below as "the store's hub".
+//
+// Names that are STORED are unchanged, whatever hub they now describe: the
+// request field createdFrom.hub2Seeded, the marker firstBatch/hub2Leg, the
+// signal "open_hub2_request" and the reasons the server stamps. Renaming a
+// stored name is a migration; generalising its meaning is not.
 export const FIRST_BATCH_HUB = "hub2";
 // The lock runId the server stamps on both legs' engine locks. Kept as ONE
 // string in one place per side (functions/lib/first-batch.cjs has the CJS
@@ -83,7 +99,12 @@ export const SOLVE_UNDONE_REASON = "solve_undone";
 export const CENTRAL_DECLINED_REASON = "first_batch_central_declined";
 // A first-batch SHOP leg (never Hub 2's own leg, whose human "no" IS the
 // Central-level answer the engine should learn from).
-export const isFirstBatchShopLeg = (r) => !!r && r.createdFrom?.firstBatch === true && r.requestingLocation !== FIRST_BATCH_HUB;
+// "Not a hub", asked of the network registry: Hub 2's own leg — and Hub 3's,
+// and any hub's — is never a shop leg. (It used to read "not Hub 2", which
+// would have called Hub 3's own leg a shop's.) `network` is optional; a
+// careless second argument — an index from .filter() — is ignored.
+export const isFirstBatchShopLeg = (r, network) => !!r && r.createdFrom?.firstBatch === true
+  && r.requestingLocation !== FIRST_BATCH_HUB && locationOf(net(network), r.requestingLocation)?.type !== "hub";
 // Which open request rows Source's queues LIST — and therefore which its
 // badges COUNT (App.jsx hubBadges; RefillQueue's own filter is the same
 // predicate). A hub's queue lists every open request at that hub. A SHOP's
@@ -173,6 +194,9 @@ export const FIRST_BATCH_ENABLED = true;   // ON again since the Hub 2-presence 
 // presence (the #608 owner spec put explicit-row products on the path); it is
 // reported in `signals` for the panel but does not gate.
 // CJS twin: functions/lib/first-batch.cjs hub2PresenceSignals (pinned equal).
+// The inputs are named for Hub 2 and are the HUB's, whichever hub the store's
+// back stock sits at: its /stock node, its lock node, its open requests, its
+// held lines. hubPresenceSignals below takes them under plain names.
 export function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, sinceIso, heldLines, pid } = {}) {
   const sinceMs = sinceIso ? Date.parse(sinceIso) : NaN;
   // PRIOR presence is what counts: a qty-0 seed cell stamped AT OR AFTER the
@@ -213,14 +237,19 @@ export function hub2PresenceSignals({ hub2Node, hub2Locks, hub2OpenRequestIds, s
   return signals;
 }
 export const hub2Present = (args) => hub2PresenceSignals(args).length > 0;
+// The same test under hub-neutral names — one body, so the two cannot drift.
+export const hubPresenceSignals = ({ hubNode, hubLocks, hubOpenRequestIds, sinceIso, heldLines, pid } = {}) =>
+  hub2PresenceSignals({ hub2Node: hubNode, hub2Locks: hubLocks, hub2OpenRequestIds: hubOpenRequestIds, sinceIso, heldLines, pid });
 
 // `hub2Present` is REQUIRED and fails closed: anything but an explicit
 // `false` (unknown, unread, true) keeps the Solve on the old path.
-export function firstBatchEligible({ source, store, product, routes, enabled = FIRST_BATCH_ENABLED, hub2Present: present } = {}) {
+// `hub` is the store's back-stock hub (default Hub 2): the store's route must
+// run through THAT hub, and the presence judged must be THAT hub's.
+export function firstBatchEligible({ source, store, product, routes, enabled = FIRST_BATCH_ENABLED, hub2Present: present, hub = FIRST_BATCH_HUB } = {}) {
   if (enabled !== true) return false;
   if (present !== false) return false;
   if (source !== "central") return false;
-  if (!store || routes?.[store] !== FIRST_BATCH_HUB) return false;
+  if (!store || !hub || routes?.[store] !== hub) return false;
   if (!product) return false;
   if (isSneakerOrSlide(product)) return false;
   return true;
@@ -460,11 +489,13 @@ export const centralFreeFor = ({ qtyAt, reserved, size }) =>
 //      policy does not cover, is never a first-batch size.
 // The shop NOMINATION (own row > siblings > category) is unchanged.
 export const MIN_LINES_FOR_SIZE_HINT = 10;
-export function firstBatchSizeHints({ history, store, sizes, labels = {}, minLines = MIN_LINES_FOR_SIZE_HINT } = {}) {
+// `hub` names the hub in the sentences (default Hub 2).
+export function firstBatchSizeHints({ history, store, sizes, labels = {}, minLines = MIN_LINES_FOR_SIZE_HINT, hub = FIRST_BATCH_HUB } = {}) {
   const h = history?.byStore?.[store];
   const out = {};
   if (!h) return out;
   const label = labels[store] || store;
+  const hubName = labels[hub] || locationName(null, hub);
   const cat = humanKey(history.key);
   for (const sz of sizes || []) {
     const size = String(sz);
@@ -473,14 +504,14 @@ export function firstBatchSizeHints({ history, store, sizes, labels = {}, minLin
       const n = h.siblingSizes?.[sk] || 0;
       out[size] = n > 0
         ? { to: "shop", why: null }
-        : { to: "hub", why: `${size === "_" ? "One size" : size} stays at Hub 2 first — ${h.siblingCells === 1 ? "the colourway sibling" : `none of the ${h.siblingCells} colourway siblings`} at ${label} carr${h.siblingCells === 1 ? "ies no" : "y"} ${size === "_" ? "one-size" : size}; the engine sends it to ${label} from Hub 2 when needed.` };
+        : { to: "hub", why: `${size === "_" ? "One size" : size} stays at ${hubName} first — ${h.siblingCells === 1 ? "the colourway sibling" : `none of the ${h.siblingCells} colourway siblings`} at ${label} carr${h.siblingCells === 1 ? "ies no" : "y"} ${size === "_" ? "one-size" : size}; the engine sends it to ${label} from ${hubName} when needed.` };
       continue;
     }
     if ((h.categoryCarried || 0) >= minLines) {
       const n = h.sizeCarried?.[sk] || 0;
       out[size] = n > 0
         ? { to: "shop", why: null }
-        : { to: "hub", why: `${size === "_" ? "One size" : size} stays at Hub 2 first — none of the ${h.categoryCarried} ${cat} lines at ${label} carries ${size === "_" ? "one-size" : size}; the engine sends it to ${label} from Hub 2 when needed.` };
+        : { to: "hub", why: `${size === "_" ? "One size" : size} stays at ${hubName} first — none of the ${h.categoryCarried} ${cat} lines at ${label} carries ${size === "_" ? "one-size" : size}; the engine sends it to ${label} from ${hubName} when needed.` };
       continue;
     }
     out[size] = { to: "shop", why: null };
@@ -529,7 +560,10 @@ export function firstBatchSplit({ sizes, run, store, centralAvail, maxUnitsPerIn
 //     plus the firstBatch tag the server trigger keys on.
 // Returns the update, the request ids (for the undo record) and the seeded
 // cell paths (the same contract the old Solve's undo record already uses).
-export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, seedCell, nowIso, uid, solveId, newKey } = {}) {
+// `hub` is the store's back-stock hub (default Hub 2) — the hub seeded here
+// and named on the request, where the server trigger reads it back and
+// checks it against the registry before raising that hub's own leg.
+export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, seedCell, nowIso, uid, solveId, newKey, hub = FIRST_BATCH_HUB } = {}) {
   const updates = {};
   const paths = [];
   // stockSizeKey, the SAME encoder stockCellPath uses for the path — never
@@ -548,8 +582,8 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
   // Hub 2 AND the shop for EVERY qualifying size — first-batch sizes
   // included (Hub 2 is always a valid source; see the header).
   const hub2Seeded = [];
-  for (const l of split.firstBatch) { if (seed(FIRST_BATCH_HUB, l.size)) hub2Seeded.push(stockSizeKey(l.size)); seed(store, l.size); }
-  for (const sz of split.normal) { seed(FIRST_BATCH_HUB, sz); seed(store, sz); }
+  for (const l of split.firstBatch) { if (seed(hub, l.size)) hub2Seeded.push(stockSizeKey(l.size)); seed(store, l.size); }
+  for (const sz of split.normal) { seed(hub, sz); seed(store, sz); }
   const requestIds = [];
   for (const l of split.firstBatch) {
     const id = newKey();
@@ -562,7 +596,7 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
       status: "open",
       createdAt: nowIso,
       createdFrom: {
-        firstBatch: true, solveId, source: "central", store, hub: FIRST_BATCH_HUB,
+        firstBatch: true, solveId, source: "central", store, hub,
         via: "missing_products_solve",
         // the Hub 2 seeds THIS solve writes — information for the audit trail
         // (the guard judges its own seeds by their stamp, not by this list).
@@ -628,8 +662,8 @@ export function firstBatchUndoCancelTxn({ nowIso, uid } = {}) {
 // Units the panel shows: what goes to the shop NOW, and Hub 2's own policy
 // quantity that FOLLOWS after the shop's fulfil (an estimate — the server sizes
 // the real Hub 2 leg from Central's remainder at that moment).
-export function firstBatchEstimate({ split, run } = {}) {
-  const hubRun = (run && run[FIRST_BATCH_HUB]) || {};
+export function firstBatchEstimate({ split, run, hub = FIRST_BATCH_HUB } = {}) {
+  const hubRun = (run && run[hub]) || {};
   const shopNow = (split?.firstBatch || []).reduce((t, l) => t + l.qty, 0);
   const hubAfter = (split?.firstBatch || []).reduce((t, l) => t + (Number(hubRun[String(l.size).toUpperCase()]) || 0), 0);
   const heldSizes = new Set((split?.held || []).map((h) => h.size));

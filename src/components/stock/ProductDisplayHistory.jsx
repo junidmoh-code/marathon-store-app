@@ -45,7 +45,7 @@ import { get, ref } from "firebase/database";
 import { database } from "../../firebase";
 import { allRows, rowIsOpen, rowSegment, storeRowsPath, OPEN_VIA_TEXT, CLOSE_REASON_TEXT, rowSizeText } from "./displayRowCore";
 import { RowHistory } from "./displayRowUi";
-import { DISPLAY_STORES } from "./hubCleanupCore";
+import { displayStores } from "./hubCleanupCore";
 import { labelFor } from "./locations";
 import { formatSize } from "../../utils/sizeLabel";
 import { BORDER, GREEN, GRAY, FONT } from "./ui";
@@ -69,7 +69,7 @@ export default function ProductDisplayHistory({ productId, registry }) {
       // rows rather than rows read from some other product's path.
       const pid = rowSegment(productId);
       if (pid) {
-        await Promise.all(DISPLAY_STORES.map(async (store) => {
+        await Promise.all(displayStores().map(async (store) => {
           const base = storeRowsPath(store);
           if (!base) return;
           try {

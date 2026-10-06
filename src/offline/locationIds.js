@@ -29,17 +29,26 @@
 // and this app did not.
 
 // POS/short id → canonical id used by /stock and /orders.destShop.
-const SHORT_TO_CANONICAL = Object.freeze({
+//
+// SECTIONS (2026-10): Concrete (store) and the Concrete Stockroom (hub) are
+// added. Concrete's POS id is "concrete" — one spelling, like Trophy. The list
+// stays TYPED HERE, on purpose: the mirror must know a location exists without
+// waiting on a read of /network (a mirror that needs the network to know what
+// to mirror reads empty when the network does). locationIds.test.js holds it
+// in step with the registry seed instead — add a location there and that test
+// names this file.
+export const SHORT_TO_CANONICAL = Object.freeze({
   pe: "marathon-pe",
   pine: "marathon-pine",
   trophy: "trophy",
+  concrete: "concrete",
 });
 
 // Every canonical location id the mirror will accept in a /stock row key.
 // A change record naming anything else is recorded and skipped rather than
 // stored under a location that no screen will ever ask for.
 export const CANONICAL_LOCATION_IDS = Object.freeze([
-  "base", "central", "hub1", "hub2", "hub3", "in_transit",
+  "base", "central", "concrete", "concrete-stockroom", "hub1", "hub2", "hub3", "in_transit",
   "marathon-pe", "marathon-pine", "studio", "trophy",
 ]);
 

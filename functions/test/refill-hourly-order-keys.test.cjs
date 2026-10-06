@@ -360,11 +360,14 @@ test("RUNS_KEEP_DAYS still keeps a week of runs, now 91 records not 342", () => 
 });
 
 test("the daily refill counter cannot wrap at this cadence", () => {
-  // One draw per destination per run. Three store destinations exist
-  // (UNIVERSE_BY_SHOP), so the ceiling is runs × 3 — nowhere near the 999 wrap.
-  const universe = /const UNIVERSE_BY_SHOP = \{([^}]+)\}/.exec(SRC)?.[1] || "";
-  const destCount = universe.split(",").filter((s) => s.includes(":")).length;
-  assert.ok(destCount >= 3, `expected the three store universes, found ${destCount}`);
+  // One draw per destination per run. The store destinations are the network
+  // registry's stores (refill-scan.cjs shopUniverse — it used to be a literal
+  // UNIVERSE_BY_SHOP of three), so the ceiling is runs × stores — nowhere near
+  // the 999 wrap.
+  const { storesOf, SEED_REGISTRY } = require("../lib/network-registry.cjs");
+  const destCount = storesOf(SEED_REGISTRY).filter((s) => s.universe).length;
+  assert.ok(destCount >= 3, `expected at least the three original store universes, found ${destCount}`);
+  assert.match(SRC, /const isStoreLeg = shopUniverse\(network, dest\) != null;/);
   assert.ok(SCHEDULE.runs.length * destCount < 999,
     "if a day could exhaust 999 the counter would wrap mid-day and collide with itself");
 });

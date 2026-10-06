@@ -14,10 +14,18 @@ describe("solve → undo wiring", () => {
     // updates is seed-if-absent: a cell that already existed is not in it and
     // must survive an undo — so the recorded paths MUST be Object.keys(updates),
     // inside the non-empty guard, alongside the solve-time priorOpen snapshot.
-    const start = NETWORK.indexOf("if (Object.keys(updates).length) {");
+    //
+    // One confirm can now cover several stores (sections, 2026-10): each
+    // store's part is built into its own `updates`, its undo record is made
+    // under the SAME non-empty guard with the SAME exact paths, and the
+    // records are added to the list only after the ONE merged write landed.
+    expect(NETWORK).toContain("if (Object.keys(updates).length) entries.push({ key, pid: card.pid, name: card.name, store, locs, paths: Object.keys(updates), priorOpen });");
+    // a single-store confirm keeps the key it always had
+    expect(NETWORK).toContain("const key = many ? `${card.pid}_${now}_${store}` : `${card.pid}_${now}`;");
+    const start = NETWORK.indexOf("const updates = mergeSolveUpdates(parts);");
     expect(start).toBeGreaterThan(-1);
     const block = NETWORK.slice(start, NETWORK.indexOf("setSolved", start));
-    expect(block).toMatch(/setUndoables\(\(l\) => \[\{ key: `\$\{card\.pid\}_\$\{now\}`, pid: card\.pid, name: card\.name, store, locs, paths: Object\.keys\(updates\), priorOpen \}, \.\.\.l\]\)/);
+    expect(block).toMatch(/if \(Object\.keys\(updates\)\.length\) \{\s+await update\(ref\(database\), updates\);\s+setUndoables\(\(l\) => \[\.\.\.entries, \.\.\.l\]\);\s+\}/);
   });
   it("the prior-lock snapshot is read BEFORE the seed write — identity, never clocks", () => {
     // A lock's createdAt is its scan's START time, so clock comparison
@@ -29,25 +37,33 @@ describe("solve → undo wiring", () => {
     // path from its own per-location read. Both must precede their write.
     const fbReadAt = NETWORK.indexOf("if (onPath) { try { openNow = await readOpenLocks(card.pid); } catch { openNow = null; } }");
     const fbSnapAt = NETWORK.indexOf("priorOpen[loc] = openNow[loc] ?? null;");
-    const fbWriteAt = NETWORK.indexOf("await update(ref(database), updates)");
+    // (Sections, 2026-10: both paths are now per-store parts of ONE write —
+    // there is a single update in the solve, and BOTH snapshots precede it.)
+    const solveStart = NETWORK.indexOf("const solve = async (card) => {");
+    const solveBlock = NETWORK.slice(solveStart, NETWORK.indexOf("\n  };", solveStart));
+    expect(solveBlock.split("await update(ref(database), updates)").length - 1).toBe(1);
+    const writeAt = NETWORK.indexOf("await update(ref(database), updates)");
     expect(fbReadAt).toBeGreaterThan(-1);
     expect(fbSnapAt).toBeGreaterThan(fbReadAt);
-    expect(fbSnapAt).toBeLessThan(fbWriteAt);
+    expect(fbSnapAt).toBeLessThan(writeAt);
     const readAt = NETWORK.indexOf("priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val()");
-    const writeAt = NETWORK.lastIndexOf("await update(ref(database), updates)");
-    expect(readAt).toBeGreaterThan(fbWriteAt);
+    expect(readAt).toBeGreaterThan(fbReadAt);
     expect(readAt).toBeLessThan(writeAt);
     // And the guard core carries no timestamp inputs at all.
     // (ownRunId, first batch 2026-09-17: the solve's OWN server-claimed lock is
     // exempted by runId — an identity, still never a clock.)
-    expect(NETWORK).toMatch(/solveUndoBlockers\(\{ paths: u\.paths, openByLoc, priorOpenByLoc: u\.priorOpen, ownRunId: [^}]*\}\)/);
+    // (Sections, 2026-10: the paths judged and deleted are the entry's own,
+    // less any a sibling solve of the same product still standing also wrote
+    // — for a one-store solve, every path. solveSections.undoablePaths.)
+    expect(NETWORK).toContain("const ownPaths = undoablePaths(u, undoables);");
+    expect(NETWORK).toMatch(/solveUndoBlockers\(\{ paths: ownPaths, openByLoc, priorOpenByLoc: u\.priorOpen, ownRunId: [^}]*\}\)/);
     expect(NETWORK).not.toMatch(/solvedAtMs/);
   });
   it("the deletion is per-cell TRANSACTIONS through undoCellTxn — never read-then-delete", () => {
     // The TOCTOU HIGH from the substitute pair: a plain update() of nulls
     // erases whatever landed after the guard read. Each cell must re-verify
     // the untouched seed INSIDE the CAS.
-    expect(NETWORK).toMatch(/await Promise\.all\(u\.paths\.map\(\(p\) => runTransaction\(ref\(database, p\), undoCellTxn\)\)\)/);
+    expect(NETWORK).toMatch(/await Promise\.all\(ownPaths\.map\(\(p\) => runTransaction\(ref\(database, p\), undoCellTxn\)\)\)/);
     const undoStart = NETWORK.indexOf("const undoSolve = async (u) => {");
     const undoBlock = NETWORK.slice(undoStart, NETWORK.indexOf("\n  };", undoStart));
     // (First batch, 2026-09-17: the shop-request cancel is ALSO a CAS —
@@ -57,7 +73,7 @@ describe("solve → undo wiring", () => {
     expect(undoBlock).toMatch(/runTransaction\(ref\(database, `refill_requests\/\$\{id\}`\), txn\)/);
   });
   it("an aborted cell is reported, a full undo clears the stale Solved banner and leaves the strip", () => {
-    expect(NETWORK).toMatch(/const kept = u\.paths\.filter\(\(p, i\) => !results\[i\]\.committed\)/);
+    expect(NETWORK).toMatch(/const kept = ownPaths\.filter\(\(p, i\) => !results\[i\]\.committed\)/);
     expect(NETWORK).toMatch(/setUndoables\(\(l\) => l\.filter\(\(x\) => x\.key !== u\.key\)\)/);
     expect(NETWORK).toMatch(/setSolved\(\(d\) => \{ const n = \{ \.\.\.d \}; delete n\[u\.pid\]; return n; \}\);/);
   });

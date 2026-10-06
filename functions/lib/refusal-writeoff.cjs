@@ -52,9 +52,32 @@
 "use strict";
 
 const { stockCellKey } = require("./admin-movement.cjs");
+const { listLocations, storesOf, SEED_REGISTRY } = require("./network-registry.cjs");
 
-const WRITEOFF_LOCATIONS = Object.freeze(["hub1", "hub2", "central"]);
-const EXCLUDED_LOCATIONS = Object.freeze(["marathon-pine"]);
+// ── WHICH LOCATIONS, read from the network registry (sections, 2026-10-02) ───
+// A refusal can write a cell off at a LIVE hub or at Central: Hub 1, Hub 2 and
+// Central today — the three this module has always named. Hub 3 and the
+// Concrete Stockroom join the day the owner marks them live.
+//
+// A refusal of a request FROM a store that is NOT live never counts: Marathon
+// Pine today (the recorded exclusion), and Concrete. The day such a store goes
+// live its requests count like Marathon PE's and Trophy's do.
+//
+// The two constants are the built-in seed's answer, kept for callers and tests
+// that have no registry to hand; the planner reads the snapshot's registry.
+const CENTRAL_LOCATION = "central";
+function writeoffLocations(network) {
+  const reg = network || SEED_REGISTRY;
+  return [
+    ...listLocations(reg, { type: "hub", liveOnly: true }).map((l) => l.id),
+    ...listLocations(reg, { type: "central", liveOnly: true }).map((l) => l.id),
+  ];
+}
+function excludedRequesters(network) {
+  return storesOf(network || SEED_REGISTRY).filter((l) => l.live !== true).map((l) => l.id);
+}
+const WRITEOFF_LOCATIONS = Object.freeze(writeoffLocations(SEED_REGISTRY));
+const EXCLUDED_LOCATIONS = Object.freeze(excludedRequesters(SEED_REGISTRY));
 const MIN_DISTINCT_DAYS = 4;
 const MOVEMENT_TYPE = "refusal_writeoff";
 const ACTOR = "system:refusal-writeoff";
@@ -127,12 +150,13 @@ function cellAt(stock, loc, pid, cellKey) {
 function planRefusalWriteoffs(snapshot) {
   const {
     config = {}, stock = {}, products = {}, refillRequests = {}, movements = [],
-    cursors = {}, windowStartMs = 0,
+    cursors = {}, windowStartMs = 0, network = null,
   } = snapshot || {};
   const out = { writeoffs: [], deferred: [] };
   if (config?.refusalWriteoff?.enabled === false) return out;   // live kill switch
   const routes = config?.routes || {};
-  const allowed = new Set(WRITEOFF_LOCATIONS);
+  const allowed = new Set(writeoffLocations(network));
+  const excluded = new Set(excludedRequesters(network));
 
   // ── group every request by the cell it asked (location × product × size) ──
   const groups = new Map();
@@ -149,11 +173,12 @@ function planRefusalWriteoffs(snapshot) {
     if (rr.status === "open") { openAt.add(key); continue; }
     const fulfilled = isFulfilment(rr);
     if (!fulfilled && !isRefusal(rr)) continue;   // an engine withdrawal says nothing
-    if (!fulfilled && rr.cancelReason === CENTRAL_DECLINED_REASON && loc !== "central") continue;
+    if (!fulfilled && rr.cancelReason === CENTRAL_DECLINED_REASON && loc !== CENTRAL_LOCATION) continue;
     // Pine's refusals never count toward a write-off. A fulfilment TO Pine
     // still does — the location found the size — and so does an open Pine
     // request above (someone may be picking it). Found by the property fuzz.
-    if (!fulfilled && EXCLUDED_LOCATIONS.includes(rr.requestingLocation)) continue;
+    // ("Pine" = any store the registry says is not live; see the top.)
+    if (!fulfilled && excluded.has(rr.requestingLocation)) continue;
     // When the refusal was SAID: a hub's shop-line refusal carries refusedAt
     // (copied from the order by the scan's close); otherwise resolvedAt.
     const ts = (!fulfilled && msOf(rr.refusedAt)) || msOf(rr.resolvedAt) || msOf(rr.createdAt);
@@ -417,5 +442,5 @@ async function applyRefusalWriteoffs({ db, writeoffs, snapshot, update, nowMs, r
 
 module.exports = {
   planRefusalWriteoffs, applyRefusalWriteoffs, refusingLocation, sastDay, writeoffId,
-  WRITEOFF_LOCATIONS, EXCLUDED_LOCATIONS, MIN_DISTINCT_DAYS, MOVEMENT_TYPE, ACTOR,
+  WRITEOFF_LOCATIONS, EXCLUDED_LOCATIONS, writeoffLocations, excludedRequesters, MIN_DISTINCT_DAYS, MOVEMENT_TYPE, ACTOR,
 };

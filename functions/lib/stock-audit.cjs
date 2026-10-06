@@ -37,11 +37,19 @@
 
 const { isClothing } = require("./refill-engine.cjs");
 const { saDateStringFromMs, SAST_OFFSET_MS } = require("./sa-time.cjs");
+const { storesOf, hubsOf, SEED_REGISTRY } = require("./network-registry.cjs");
 
 // The two shops this feature covers. Hard-coded, not config-driven: the scope
 // is an owner decision about which floors have someone to walk them, and a
 // config key would invite a third store to appear without anyone deciding it.
-const AUDIT_STORES = ["marathon-pe", "trophy"];
+//
+// SECTIONS (2026-10-02): the deciding is now done in ONE place — the network
+// registry's `live` flag, which only the owner flips. The shops this feature
+// covers are the LIVE stores: Marathon PE and Trophy today, exactly the two
+// this list has always held. Marathon Pine and Concrete join the day he marks
+// them live, by the same rule, and not before. Still not a config key.
+const auditStores = (network) => storesOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => l.id);
+const AUDIT_STORES = auditStores(SEED_REGISTRY);
 
 // The hubs this audit covers. Hub 3 answers customer orders too — it produced
 // 7 sold-out lines on the day this was measured — but it serves Pine, which is
@@ -49,7 +57,12 @@ const AUDIT_STORES = ["marathon-pe", "trophy"];
 // clothing rotation. Owner decision 2026-09-08. Dropping it here is what stops
 // its list being written at all; the card cannot show a chip for a node the
 // pass never fills.
-const AUDIT_HUBS = ["hub1", "hub2"];
+//
+// SECTIONS (2026-10-02): the LIVE hubs — Hub 1 and Hub 2 today, the same two.
+// Hub 3 (and the Concrete Stockroom) stay out for exactly as long as they are
+// not live in the network registry, and come in with their section.
+const auditHubs = (network) => hubsOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => l.id);
+const AUDIT_HUBS = auditHubs(SEED_REGISTRY);
 
 // The two answers that send a customer away, and the order field that records
 // each. Nothing else belongs in Tab A: a rejected refill request is two
@@ -464,7 +477,7 @@ function buildStoreSnapshot({ store, nowMs, cfg, saDate, stock, products, moveme
 }
 
 module.exports = {
-  AUDIT_STORES, AUDIT_HUBS, UNAVAILABLE_ANSWERS, WEEKDAYS, DEFAULTS,
+  AUDIT_STORES, AUDIT_HUBS, auditStores, auditHubs, UNAVAILABLE_ANSWERS, WEEKDAYS, DEFAULTS,
   auditConfig, saHour, saWeekday, shouldRunDailyPass, isRotationDay,
   cellKey, sizeLabel, stockSizeKey,
   buildOutOfStock, rotationUniverse, selectRotationBatch, soldIndex,

@@ -26,8 +26,25 @@
 //             fed shoes from the hubs, not from Central directly).
 // ============================================================================
 
+import { policyKeyFor, isLive } from "../../utils/networkRegistry";
+import { net, storeIds, hubIds, isStore, nameOf } from "./sectionRouting";
+
 // Every operational destination the wizard offers, in display/deal order.
 export const DISTRIBUTION_DESTS = ["marathon-pe", "trophy", "marathon-pine", "hub1", "hub2"];
+
+// ── THE DESTINATIONS, FROM THE NETWORK REGISTRY ──────────────────────────────
+// The five above, in the order the wizard has always dealt them, then every
+// other store and hub the registry knows (Concrete, Hub 3, the Concrete
+// Stockroom). The wizard is a person sending stock out of Central BY HAND —
+// Central supplies both sections — so a location that is not live is offered
+// like any other; it is simply never pre-ticked (see defaultOn below).
+export function distributionDests(network) {
+  const N = net(network);
+  const known = [...storeIds(N), ...hubIds(N)];
+  return [...DISTRIBUTION_DESTS.filter((d) => known.includes(d)), ...known.filter((d) => !DISTRIBUTION_DESTS.includes(d))];
+}
+// A destination's label: the registry's name (a missing id reads as itself).
+export const destLabel = (dest, network) => DEST_LABELS[dest] || nameOf(dest, network);
 
 export const DEST_LABELS = {
   "marathon-pe": "Marathon PE",
@@ -68,6 +85,10 @@ export function sizeFamily(product) {
   return (product?.productType || "sneaker") === "clothing" ? "waist" : "shoe";
 }
 
+// `dest` here is the POLICY key: the destination itself when it has a run of
+// its own, else the location it is declared to be like (Concrete follows
+// Marathon PE; Hub 3 and the Concrete Stockroom follow Hub 2 — the registry's
+// policyKeyFor). The five original destinations all have their own.
 function defaultQty(family, dest, size) {
   if (family === "letters") return LETTER_RUNS[dest]?.[String(size).toUpperCase()] ?? 0;
   if (family === "waist") {
@@ -90,21 +111,31 @@ const NEVER_DEFAULT_ON = new Set(["hub1", "hub2"]);
 // (owner decision, 2026-07-16: the tables are the recommendation; a shortage
 // is the operator's call, surfaced by the wizard's over-allocation block).
 // Destination toggling and operator edits are the wizard's job.
-export function suggestInitialDistribution({ product }) {
+// `dests` defaults to the original five, so a caller that passes nothing gets
+// exactly what it always got. The wizard passes distributionDests(network).
+// A destination OUTSIDE the original five is pre-ticked only when it is a
+// LIVE store: a hub is never pre-ticked (as above), and a location that has
+// not been counted in is offered but left for the operator to choose.
+export function suggestInitialDistribution({ product, dests = DISTRIBUTION_DESTS, network }) {
+  const N = net(network);
   const family = sizeFamily(product);
   const sizes = Array.isArray(product?.sizes) ? product.sizes : [];
   const suggestions = {};
   const defaultOn = {};
-  for (const dest of DISTRIBUTION_DESTS) {
+  for (const dest of dests) {
+    const original = DISTRIBUTION_DESTS.includes(dest);
+    const key = original ? dest : policyKeyFor(N, LETTER_RUNS, dest);
     const perSize = {};
     let any = false;
     for (const size of sizes) {
-      const q = defaultQty(family, dest, size);
+      const q = defaultQty(family, key, size);
       perSize[size] = q;
       if (q > 0) any = true;
     }
     suggestions[dest] = perSize;
-    defaultOn[dest] = any && !NEVER_DEFAULT_ON.has(dest);
+    defaultOn[dest] = original
+      ? any && !NEVER_DEFAULT_ON.has(dest)
+      : any && isStore(dest, N) && isLive(N, dest);
   }
   return { family, suggestions, defaultOn };
 }

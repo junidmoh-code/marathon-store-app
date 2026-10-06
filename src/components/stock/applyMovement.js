@@ -45,6 +45,8 @@ import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { reactivateUpdates, REACTIVATED_EVENT } from "../../utils/deactivation";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { deviceStamp } from "../../device/deviceStamp";
+import { currentNetwork } from "../../utils/networkStore";
+import { wallCheck, wallMessage, locationOf, TRANSIT_ID } from "../../utils/networkRegistry";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
 
@@ -90,6 +92,86 @@ function isArrival(m) {
 function clampsNegativeBase(movement, delta, loc) {
   return delta > 0 && movement.type !== "adjustment" && loc !== "in_transit";
 }
+
+// ── THE SECTION WALL, FOR ONE MOVEMENT ───────────────────────────────────────
+// No stock moves directly between a Section 1 and a Section 2 location; it
+// goes back to Central first (src/utils/networkRegistry.js).
+//
+//   • A single-location write (received, sold, adjustment, return) crosses
+//     nothing.
+//   • A two-location move is judged on its pair.
+//   • A send INTO in_transit hides its destination, so the sender passes it as
+//     `transitTo` and that is what is judged. A sectioned origin that parks
+//     stock in transit without saying where it is going is refused: only
+//     Central's building dispatches into transit, and Central pairs with
+//     anything.
+//   • A receive OUT OF in_transit is judged against `transitFrom` when the
+//     receiver knows it; the dispatch was already judged, and the /transfers
+//     rule pins from and to for the life of the transfer.
+export function movementWallCheck(registry, movement) {
+  const { from, to } = movement || {};
+  if (!from || !to) return { ok: true, reason: "single_location" };
+  let a = from, b = to;
+  if (to === TRANSIT_ID) {
+    if (movement.transitTo) b = movement.transitTo;
+    else {
+      const origin = locationOf(registry, from);
+      if (origin && origin.type === "central") return { ok: true, reason: "central" };
+      return { ok: false, reason: "transit_needs_real_endpoints", message: wallMessage(registry, from, to) };
+    }
+  }
+  if (from === TRANSIT_ID) {
+    if (!movement.transitFrom) return { ok: true, reason: "transit_receive" };
+    a = movement.transitFrom;
+  }
+  if (a === TRANSIT_ID || b === TRANSIT_ID) return { ok: true, reason: "transit_internal" };
+  const c = wallCheck(registry, a, b);
+  return c.ok ? c : { ...c, message: wallMessage(registry, a, b) };
+}
+
+// ── CENTRAL DISPATCH — what Central sent a section, and what it cost ─────────
+// Central is its own entity and supplies both sections. Every unit it sends to
+// a section's store or hub is recorded here, per movement line, with its COST
+// VALUE and the RECEIVING SECTION, so inter-company invoicing can be built on
+// top later. Nothing is invoiced and no accounting entry is made now: this is
+// only the record that makes it possible.
+//
+// One small append-only row at central_dispatch/{movementId}, written in the
+// SAME atomic update as the stock cells and the ledger movement — so it shares
+// the movement's idempotency (same id → written once) and cannot exist
+// without its movement. It is written HERE because every Central dispatch in
+// the app — the Source queue's fulfil, a Transfer from Central, the Initial
+// Distribution wizard, a first-batch send, a manual move off a Missing
+// Products card — is a movement out of Central through this one writer.
+//
+// WHAT COUNTS. A relocation (transfer_out / transfer_in) whose origin is
+// Central (type "central" in the network registry). The destination is the
+// REAL one: a send into in_transit names it as `transitTo`. A move between
+// Central's own buildings (the retired Studio / Base) is not a dispatch. A
+// receive OUT of in_transit is not one either — its dispatch was recorded
+// when it left Central. A transit send that does not say where it is going
+// is still recorded (the units and the cost left Central), with no section.
+export const CENTRAL_DISPATCH_ROOT = "central_dispatch";
+// The product's cost. `stockPrice` is the ONE cost field a product record
+// carries (retailPrice is the selling price); it is what the cost editor and
+// the price batches write and what the margin screens read.
+export const DISPATCH_COST_FIELD = "stockPrice";
+
+export function centralDispatchOf(registry, movement) {
+  const m = movement || {};
+  if (m.type !== "transfer_out" && m.type !== "transfer_in") return null;
+  if (!m.from || !m.to || m.from === TRANSIT_ID) return null;
+  const origin = locationOf(registry, m.from);
+  if (!origin || origin.type !== "central") return null;
+  const realTo = m.to === TRANSIT_ID ? (m.transitTo || null) : m.to;
+  if (!realTo) return { from: origin.id, to: TRANSIT_ID, section: null };
+  const dest = locationOf(registry, realTo);
+  if (!dest || dest.type === "central") return null;
+  return { from: origin.id, to: dest.id, section: dest.section };
+}
+
+// Cents-exact: 3 × 199.99 is 599.97, not 599.9699999999999.
+const money = (n) => Math.round(n * 100) / 100;
 
 function emptyLink(link) {
   return { orderId: null, transferId: null, refillId: null, saleId: null, deviceId: null, ...(link || {}) };
@@ -155,6 +237,19 @@ export async function applyMovement(movement, opts = {}) {
   const deltas = cellDeltas(movement);
   if (!deltas) return { ok: false, reason: "missing_location" };
 
+  // ── THE SECTION WALL ───────────────────────────────────────────────────────
+  // Every stock move in this app passes through here, so this is the one
+  // client-side place the wall is enforced (the /stock_movements rule is the
+  // server-side one). Nothing is written, read or reserved before it.
+  const wall = movementWallCheck(currentNetwork(), movement);
+  if (!wall.ok) {
+    return { ok: false, reason: "section_wall", wall: wall.reason, message: wall.message };
+  }
+
+  // CENTRAL DISPATCH (see centralDispatchOf): decided once, from the same
+  // registry the wall just judged with.
+  const dispatch = centralDispatchOf(currentNetwork(), movement);
+
   const expectQty = movement.expect && typeof movement.expect.qty === "number" ? movement.expect.qty : null;
   if (expectQty !== null && deltas.length !== 1) return { ok: false, reason: "expect_requires_single_cell" };
 
@@ -179,6 +274,27 @@ export async function applyMovement(movement, opts = {}) {
       reactivation = null;
     }
   }
+
+  // The dispatch's unit cost: ONE key (products/{pid}/stockPrice), never the
+  // product record, read once. A product with no cost, or a failed read, must
+  // never hold up the stock move — the row is written with no cost and the
+  // gap is visible to whoever prices the dispatch later.
+  let unitCost = null;
+  if (dispatch) {
+    try {
+      const c = (await get(child(ref(database), `products/${movement.productId}/${DISPATCH_COST_FIELD}`))).val();
+      if (typeof c === "number" && Number.isFinite(c) && c > 0) unitCost = c;
+    } catch {
+      unitCost = null;
+    }
+  }
+  // The dispatch row rides in the atomic update. If that update is refused,
+  // the row comes OUT and the move is retried without it: a database that
+  // does not (yet) accept /central_dispatch writes must not stop stock
+  // moving. The row is then written on its own straight after the move
+  // lands, best-effort. (A refusal and a version conflict look the same from
+  // here, so a conflicted move takes the same route and still gets its row.)
+  let dispatchInUpdate = !!dispatch;
 
   for (let attempt = 1; attempt <= maxRetries; attempt++) {
     // Idempotency: if this movement already landed, treat as success (re-sync safe).
@@ -297,9 +413,27 @@ export async function applyMovement(movement, opts = {}) {
       updates[`${c.path}/updatedBy`] = user.uid;
       if (movement.cellState) updates[`${c.path}/state`] = movement.cellState;
     }
+    const dispatchRow = dispatch ? {
+      productId: movement.productId,
+      size: movement.size,
+      qty: mv.qty,
+      unitCost,
+      costValue: unitCost === null ? null : money(unitCost * mv.qty),
+      from: dispatch.from,
+      to: dispatch.to,
+      section: dispatch.section,
+      ts: mv.ts,
+      actor: user.uid,
+      movementId: mvId,
+    } : null;
+    if (dispatchRow && dispatchInUpdate) updates[`${CENTRAL_DISPATCH_ROOT}/${mvId}`] = dispatchRow;
 
     try {
       await update(ref(database), updates);
+      if (dispatchRow && !dispatchInUpdate) {
+        // The move landed without its row (see dispatchInUpdate above).
+        try { await update(ref(database), { [`${CENTRAL_DISPATCH_ROOT}/${mvId}`]: dispatchRow }); } catch { /* the stock move stands */ }
+      }
       // ─── THE OFFLINE MIRROR ───────────────────────────────────────────────
       // Every fulfil, transfer, receive, count and adjust in this app lands
       // here, and on a device reading from its local copy the new quantity is
@@ -322,6 +456,13 @@ export async function applyMovement(movement, opts = {}) {
         ? { ok: true, movementId: mvId, reactivated: true }
         : { ok: true, movementId: mvId };
     } catch (err) {
+      if (dispatch && dispatchInUpdate) {
+        // Take the dispatch row out and go again at once — this attempt is
+        // not spent, so a caller's retry budget is exactly what it was.
+        dispatchInUpdate = false;
+        attempt -= 1;
+        continue;
+      }
       if (attempt === maxRetries) {
         return { ok: false, reason: "write_failed", error: String(err?.message || err) };
       }
