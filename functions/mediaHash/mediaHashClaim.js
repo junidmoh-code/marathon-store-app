@@ -38,8 +38,8 @@ async function handleMediaHashClaim(request, deps) {
   const args = parseClaimArgs(request.data);
   if (args.problem) throw new HttpsError("invalid-argument", args.problem);
   const { pid, sha, kind } = args;
-  // ONE product's record, by a validated, non-empty id (parseClaimArgs).
-  const exists = (await db.ref(`products/${pid}`).once("value")).exists();
+  // ONE product's name, by a validated, non-empty id (parseClaimArgs).
+  const exists = (await db.ref(`products/${pid}/name`).once("value")).exists();
   if (!exists) throw new HttpsError("not-found", "That product no longer exists.");
 
   const entryRef = db.ref(`${MEDIA_HASH_ROOT}/${sha}`);
@@ -51,9 +51,10 @@ async function handleMediaHashClaim(request, deps) {
     ownerUses = f.uses;
     ownerName = f.name;
   }
-  const verdict = decideClaim({ pid, existing, ownerUses });
+  const now = deps.now();
+  const verdict = decideClaim({ pid, existing, ownerUses, now });
   if (!verdict.claim) {
-    return { ok: false, ownerPid: verdict.ownerPid, ownerName };
+    return { ok: false, ownerPid: verdict.ownerPid, ownerName, inFlight: !!verdict.inFlight };
   }
 
   // The claim itself is compare-and-set against the entry the verdict was
@@ -61,8 +62,11 @@ async function handleMediaHashClaim(request, deps) {
   // a clash, answered by asking again rather than overwritten.
   const before = existing?.pid ?? null;
   let clash = false;
-  const now = deps.now();
   const txn = await entryRef.transaction((cur) => {
+    // The FIRST pass sees the local cache, usually null whatever the server
+    // holds. Aborting there would never reach the server: answer with the
+    // claim and let the server re-run this with the real value.
+    if (cur === null) { clash = false; return { pid, at: now, uid: auth.uid, kind }; }
     const curPid = cur?.pid ?? null;
     if (curPid !== before && curPid !== pid) { clash = true; return undefined; }
     clash = false;

@@ -59,7 +59,7 @@ import { buildMediaPlan, preflightPhotoUrls, attachMedia, mediaFingerprint } fro
 // fingerprint path above, unchanged. See mediaSync.mjs.
 import {
   hasMediaModel, syncProductMedia, needsLiveMediaSync, pushSigFor, desiredPushItems,
-  MEDIA_PENDING_PATH, MEDIA_PRODUCTS_PER_TICK, VIDEO_UPLOADS_PER_TICK,
+  MEDIA_PENDING_PATH, MEDIA_PRODUCTS_PER_TICK,
 } from "./mediaSync.mjs";
 import {
   networkTotals, requireSingleLocation, setAvailable, readAvailable,
@@ -1005,7 +1005,9 @@ for (const { pid, want } of capped) {
       // next run sees 0/partial media and re-attaches the reviewed set).
       try {
         const { count } = await attachMedia(graphql, gid, mediaPlan);
-        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp });
+        // The count rides beside the fingerprint so the media-list path can
+        // later prove exactly which set this attached (mediaSync.mjs).
+        await db.ref(`shopify_sync/${pid}`).update({ mediaFingerprint: planFp, mediaCount: mediaPlan.length });
         console.log(mediaCount > 0 ? `  media re-synced to the reviewed set: ${count}` : `  media READY: ${count}`);
       } catch (e) {
         const down = await failSafeUnpublish(gid);
@@ -1565,17 +1567,25 @@ if (!ONLY && sweepDue && liveNow) {
 // processing). For each, the node's own mediaSyncedSig is compared with its
 // list first; equal and not pending = nothing to do, zero Shopify calls.
 //
-// Video uploads are capped per tick (VIDEO_UPLOADS_PER_TICK); the rest stay
-// queued and pending. A failure never fails the tick: the product stays
-// pending and the next tick resumes.
+// Video BYTES are never sent here — media-video-runner.mjs (its own launchd
+// job, one video at a time) sends them; this tick attaches what has arrived
+// and polls. A failure never fails the tick: the product stays pending and
+// the next tick resumes.
+let mediaCursor = null;
 if (COMMIT) try {
   const pendingNow = (await db.ref(MEDIA_PENDING_PATH).get()).val() || {};
   meter("media pending", pendingNow);
+  // Products edited in this window first, then the carried-forward set from
+  // a ROTATING start, so a long tail of videos still processing can never
+  // starve a product behind it.
+  const pendingKeys = Object.keys(pendingNow).sort();
+  const rot = scanState?.mediaCursor ? pendingKeys.findIndex((p) => p > scanState.mediaCursor) : 0;
+  const rotated = rot > 0 ? [...pendingKeys.slice(rot), ...pendingKeys.slice(0, rot)] : pendingKeys;
   const candidates = [...new Set([
     ...Object.entries(all).filter(([, n]) => hasMediaModel(n) && n?.state === "live").map(([p]) => p),
-    ...Object.keys(pendingNow),
+    ...rotated,
   ])].filter((p) => !ONLY || ONLY.has(p)).slice(0, MEDIA_PRODUCTS_PER_TICK);
-  let videoBudget = VIDEO_UPLOADS_PER_TICK;
+  if (candidates.length) mediaCursor = candidates[candidates.length - 1];
   let touched = 0;
   for (const pid of candidates) {
     try {
@@ -1601,12 +1611,15 @@ if (COMMIT) try {
       if (!title) { console.error(`  ⚠ media ${pid}: no valid listing name for the alt text — not pushed`); continue; }
       console.log(`\n▶ ${pid} media (live)`);
       touched += 1;
-      const before = videoBudget;
       const res = await syncProductMedia({ graphql, db, pid, gid, node, product, title, mode: "live",
-                                           videoBudget, log: (line) => console.log(line) });
-      videoBudget = Math.max(0, before - (res.uploadsStarted || 0));
+                                           log: (line) => console.log(line) });
       for (const n of res.notes || []) console.log(`  media note: ${n}`);
-      if (!res.ok) {
+      if (!res.ok && res.retryable === false) {
+        // Retrying cannot help (no valid name, no photo first): say so once
+        // and stop carrying it — the next edit of the list re-enters it.
+        console.error(`  ⚠ media ${pid}: ${res.error} — not pushed; fix the list or the name`);
+        await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).remove();
+      } else if (!res.ok) {
         console.error(`  ⚠ media ${pid}: ${res.error} — kept pending, the next tick retries`);
         await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).set(true);
       } else {
@@ -1617,7 +1630,7 @@ if (COMMIT) try {
       try { await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).set(true); } catch { /* the next tick re-reads */ }
     }
   }
-  if (touched) console.log(`\nmedia: ${touched} product(s) synced · video uploads left this tick: ${videoBudget}`);
+  if (touched) console.log(`\nmedia: ${touched} product(s) synced (video bytes are sent by com.marathon.shopifymediavideo)`);
 } catch (e) {
   console.error(`  ⚠ media phase failed (${String(e?.message || e)}) — the next tick retries`);
 }
@@ -1698,6 +1711,7 @@ if (COMMIT && !ONLY) {
     ...(sweepRan ? { lastSweepAt: runStartedAt } : sweepUnfinished ? { lastSweepAt: null } : {}),
     ...(inventoryCursorWritten ? { inventoryCursor } : {}),
     ...(markerCursorWritten ? { markerCursor } : {}),
+    ...(mediaCursor ? { mediaCursor } : {}),
     updatedAt: runStartedAt,
   });
 }

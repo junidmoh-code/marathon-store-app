@@ -16,6 +16,11 @@
 // photo from it, or the upload that claimed it never finished), the claim
 // moves to the product asking now. Checking that reads ONE node — the owner's
 // /shopify_publish/{pid}/media — never anything wider.
+//
+// AN UPLOAD IN FLIGHT COUNTS AS USE. A claim younger than CLAIM_HOLD_MS is
+// held even though the owner's list does not carry the file yet (its bytes
+// may still be uploading) — otherwise two products could each take the same
+// file within the same few minutes and both keep it.
 "use strict";
 
 const MEDIA_HASH_ROOT = "shopify_sync/_mediaHash";
@@ -47,10 +52,12 @@ function mediaHasHash(media, sha) {
  *   ownerUses   — does the existing owner's media list still carry the hash?
  * → { claim: true } | { claim: false, ownerPid }
  */
-function decideClaim({ pid, existing, ownerUses }) {
+const CLAIM_HOLD_MS = 15 * 60 * 1000;
+function decideClaim({ pid, existing, ownerUses, now = Date.now() }) {
   if (!existing || !existing.pid || existing.pid === pid) return { claim: true };
-  if (!ownerUses) return { claim: true };
-  return { claim: false, ownerPid: existing.pid };
+  const fresh = Number(existing.at) > 0 && now - Number(existing.at) < CLAIM_HOLD_MS;
+  if (!ownerUses && !fresh) return { claim: true };
+  return { claim: false, ownerPid: existing.pid, inFlight: !ownerUses };
 }
 
 /** May this signed-in user edit Shopify publishing? Mirrors the live /shopify_publish/$pid write rule. */
@@ -61,4 +68,4 @@ function maySetPublishing(token, userRecord) {
   return userRecord?.permFlags?.shopify_publish === true;
 }
 
-module.exports = { MEDIA_HASH_ROOT, PID_RE, SHA_RE, parseClaimArgs, mediaHasHash, decideClaim, maySetPublishing };
+module.exports = { CLAIM_HOLD_MS, MEDIA_HASH_ROOT, PID_RE, SHA_RE, parseClaimArgs, mediaHasHash, decideClaim, maySetPublishing };

@@ -7,19 +7,26 @@
 //   • each item's Shopify media id and processing status is tracked
 //     (/shopify_sync/{pid}/media — server-only — plus a small status
 //     projection at /shopify_publish/{pid}/mediaShopify for the page);
-//   • a video's bytes go to Shopify EXACTLY ONCE: once the staged upload has
-//     been accepted its resourceUrl is recorded and the upload is never made
-//     again — later ticks only attach (with that same resourceUrl) and poll;
-//   • only media THIS SYSTEM created is ever removed from Shopify — items the
+//   • a video's bytes go to Shopify EXACTLY ONCE: once a staged upload has been
+//     accepted its resourceUrl is recorded and the bytes are never sent again —
+//     later ticks only attach (with that same resourceUrl) and poll. A FAILED
+//     video is never re-sent; Junid removes it and adds it again;
+//   • VIDEO BYTES NEVER MOVE INSIDE THE RECONCILE TICK. The transfer is done by
+//     its own launchd job (media-video-runner.mjs, one video at a time, its own
+//     lock), so a 1 GB upload can never hold up the 25-product publish batch,
+//     the inventory push or the next tick — the tick only attaches what the
+//     runner has already sent;
+//   • only media THIS SYSTEM created is ever removed from Shopify: items the
 //     list no longer holds, and the photo set the reconciler attached before
 //     per-item tracking existed (proven ours by the mediaFingerprint it
-//     stamped). Anything else on the product is left exactly where it is;
-//   • re-running with nothing changed makes ZERO Shopify writes and ZERO
-//     Storage downloads (the live path does not even read Shopify: it compares
-//     the node's mediaSyncedSig with the list first);
-//   • video transfers are capped per tick (VIDEO_UPLOADS_PER_TICK) and run
-//     AFTER the intent batch, so a 1 GB upload never holds up the 25 products
-//     waiting to go live — the rest carry forward on /shopify_sync/_mediaPending.
+//     stamped, and SNAPSHOTTED into the record the first time, so a later tick
+//     never re-guesses). Anything else on the product is left where it is;
+//   • on a LIVE product nothing is removed until every photo in the list is
+//     READY on Shopify — the storefront never shows the product without its
+//     photos while new ones process;
+//   • re-running with nothing changed makes ZERO Shopify writes, ZERO Storage
+//     downloads and ZERO database writes (the live path does not even read
+//     Shopify: it compares the node's mediaSyncedSig with its list first).
 //
 // Videos Shopify cannot take (over 1 GB, over 10 minutes, over 4K, or a format
 // it does not accept — publishShared.shopifyVideoProblem) are kept in Storage
@@ -29,17 +36,20 @@
 //
 // ALT TEXT. Every image and video carries the product's validated listing name
 // — the same title the ON path validates (cleanName while trigger-free, else
-// the lexicon title) — and nothing else. No filename, no item metadata ever
-// reaches Shopify: the staged upload is named video_<id>.<ext>.
+// the lexicon title) — and nothing else; a rename re-labels every item. No
+// filename or item metadata reaches Shopify: a staged upload is video_<id>.<ext>.
+//
+// RECORD WRITES ARE FIELD-LEVEL. The tick and the video runner both write
+// /shopify_sync/{pid}/media/items; each writes only the fields it changed, so
+// neither can overwrite the other's (above all, never the runner's resourceUrl).
 import { createHash, randomBytes } from "node:crypto";
 import https from "node:https";
 import {
   resolveMediaList, normalizeMediaItems, shopifyVideoProblem, mediaPushSig, APP_STORAGE_PREFIX,
 } from "../../src/components/shopify/publishShared.js";
 
-export const VIDEO_UPLOADS_PER_TICK = 1;
 export const MEDIA_PRODUCTS_PER_TICK = 25;
-export const MAX_UPLOAD_ATTEMPTS = 3;
+export const MAX_ATTEMPTS = 3;
 export const MEDIA_PENDING_PATH = "shopify_sync/_mediaPending";
 const MEDIA_PAGE = 250; // Shopify's per-product media cap AND its largest page
 
@@ -57,111 +67,124 @@ export function desiredPushItems(node, product) {
     .filter((m) => typeof m.url === "string" && m.url.startsWith(APP_STORAGE_PREFIX));
 }
 
-/** The sig the live path compares — what the reconciler last FINISHED applying. */
+/**
+ * The sig the live path compares — what the reconciler last FINISHED applying:
+ * the pushed items AND the listing name (a rename re-labels every alt text).
+ */
 export function pushSigFor(node, product) {
-  return mediaPushSig(desiredPushItems(node, product));
+  return `${mediaPushSig(desiredPushItems(node, product))}|${JSON.stringify(node?.cleanName ?? null)}`;
 }
+
+const copy = (o) => JSON.parse(JSON.stringify(o ?? {}));
 
 // ─── THE PLAN (pure) ─────────────────────────────────────────────────────────
 /**
  * desired  — items in order (desiredPushItems)
- * record   — /shopify_sync/{pid}/media/items  { [itemId]: entry }
+ * record   — /shopify_sync/{pid}/media/items  { [key]: entry }
+ * inflight — /shopify_sync/{pid}/media/inflight: a create whose answer was
+ *            never recorded ({ before: [shopify ids], items: [itemIds], kind })
  * shopify  — the product's media as read now, in Shopify's order:
- *            [{ id, status, mediaContentType, mediaErrors? }]
- * legacyFingerprint — /shopify_sync/{pid}/mediaFingerprint (the old photo
- *            path's proof that it attached the product's current set)
- * videoBudget — how many video uploads this call may start
+ *            [{ id, status, mediaContentType, alt, mediaErrors? }]
+ * legacyFingerprint — /shopify_sync/{pid}/mediaFingerprint
  *
- * → {
- *   createPhotos: [item]            photos with no live Shopify media
- *   uploadVideos: [item]            videos whose bytes have never been accepted (within budget)
- *   queuedVideos: [item]            ditto, past the budget — next tick
- *   attachVideos: [item]            bytes accepted (resourceUrl recorded), not attached
- *   removeIds:    [shopifyMediaId]  ours, no longer in the list (incl. our FAILED ones)
- *   legacyIds:    [shopifyMediaId]  the pre-tracking photo set — removed once ours are in
- *   foreignIds:   [shopifyMediaId]  not ours — never touched
- *   status:       { [itemId]: { status, note? } }   the projection as known before I/O
- *   record:       the next record (ids of vanished media cleared; failures noted)
- * }
+ * → { createPhotos, attachVideos, failedIds, foreignIds, record }
+ *   (record entries carrying `remove: true` are ours and due to come off)
  */
-export function planMediaSync({ desired, record = {}, shopify = [], legacyFingerprint = null, videoBudget = 0 }) {
+export function planMediaSync({ desired, record = {}, inflight = null, shopify = [], legacyFingerprint = null, legacyCount = null }) {
   const shopById = new Map(shopify.map((n) => [n.id, n]));
-  const next = {};
-  for (const [k, v] of Object.entries(record || {})) next[k] = { ...v };
+  const next = copy(record);
   const desiredIds = new Set(desired.map((m) => m.id));
-  const ownedIds = new Set(Object.values(next).map((r) => r.shopifyMediaId).filter(Boolean));
-  const out = { createPhotos: [], uploadVideos: [], queuedVideos: [], attachVideos: [],
-                removeIds: [], legacyIds: [], foreignIds: [], status: {}, record: next };
-  let budget = videoBudget;
+  const out = { createPhotos: [], attachVideos: [], failedIds: [], foreignIds: [], record: next };
+  const ownedNow = () => new Set(Object.values(next).map((r) => r.shopifyMediaId).filter(Boolean));
+
+  // A create whose response was lost (a crash, a timeout): the media it made
+  // are the ids that appeared since, of the right type, in order. Adopted only
+  // when the count matches exactly; otherwise they stay unknown and are left
+  // alone (never deleted on a guess).
+  if (inflight?.items?.length) {
+    const owned = ownedNow();
+    const before = new Set(inflight.before || []);
+    const fresh = shopify.filter((n) => !before.has(n.id) && !owned.has(n.id) &&
+      n.mediaContentType === (inflight.kind === "video" ? "VIDEO" : "IMAGE"));
+    if (fresh.length === inflight.items.length) {
+      inflight.items.forEach((itemId, k) => {
+        const r = next[itemId] || (next[itemId] = {});
+        r.shopifyMediaId = fresh[k].id;
+      });
+    }
+  }
+
+  // FIRST CONTACT: snapshot the set the old path attached. Only when the
+  // record is empty AND the old path's fingerprint proves it attached the
+  // product's media — and only IMAGES (the old path never attached anything
+  // else), and only when their count is the count it attached (mediaCount,
+  // stamped beside the fingerprint since 6 Oct; older stamps carry none). From
+  // then on these are ordinary records, marked for removal, never re-guessed.
+  // Anything that fails the proof is somebody else's and is left alone.
+  if (Object.keys(record || {}).length === 0 && !inflight && legacyFingerprint) {
+    const images = shopify.filter((n) => n.mediaContentType === "IMAGE");
+    if (legacyCount == null || images.length === Number(legacyCount)) {
+      for (const n of images) {
+        next[`L${String(n.id).split("/").pop()}`] = { legacy: true, remove: true, shopifyMediaId: n.id, type: "photo" };
+      }
+    }
+  }
 
   for (const m of desired) {
-    const r = next[m.id] || (next[m.id] = { type: m.type });
+    const r = next[m.id] || (next[m.id] = {});
     r.type = m.type;
     r.url = m.url;
+    delete r.remove;
     const sm = r.shopifyMediaId ? shopById.get(r.shopifyMediaId) : null;
-    if (r.shopifyMediaId && !sm) {
-      // Gone from Shopify (deleted in the admin, or our own FAILED removal).
-      delete r.shopifyMediaId;
-    }
+    if (r.shopifyMediaId && !sm) delete r.shopifyMediaId; // gone (deleted in the admin)
     if (sm) {
-      if (sm.status === "READY") { r.status = "ready"; delete r.note; }
+      if (sm.status === "READY") { r.status = "ready"; delete r.note; delete r.terminal; }
       else if (sm.status === "FAILED") {
-        // Shopify could not process it. Ours, so it is taken off the product;
-        // a video is NOT re-uploaded (exactly once) — Junid removes and re-adds.
         const why = (sm.mediaErrors || []).map((e) => e?.message || e?.code).filter(Boolean).join("; ");
-        r.status = "failed";
-        r.terminal = true;
-        r.note = why ? `Shopify said: ${why}` : "Shopify could not process this file";
-        out.removeIds.push(sm.id);
+        out.failedIds.push(sm.id);   // ours, not shown anyway — taken off Shopify
         delete r.shopifyMediaId;
+        r.note = why ? `Shopify said: ${why}` : "Shopify could not process this file";
+        if (m.type === "photo" && (r.createAttempts || 0) < MAX_ATTEMPTS) {
+          // A photo is re-fetched by Shopify from Storage: a transient fetch
+          // failure must not lose it for good. Retried, up to MAX_ATTEMPTS.
+          out.createPhotos.push(m);
+          r.status = "processing";
+        } else {
+          // A video's bytes are never sent twice; a photo that failed every try stops.
+          r.status = "failed";
+          r.terminal = true;
+        }
       } else r.status = "processing";
     } else if (r.terminal) {
-      // A failure already recorded stays failed until the item leaves the list.
+      r.status = "failed";
     } else if (m.type === "photo") {
       out.createPhotos.push(m);
       r.status = "processing";
     } else if (r.resourceUrl) {
       out.attachVideos.push(m);
       r.status = "processing";
-    } else if ((r.uploadAttempts || 0) >= MAX_UPLOAD_ATTEMPTS) {
-      r.status = "failed";
-      r.terminal = true;
-      r.note = r.note || `could not be sent to Shopify after ${MAX_UPLOAD_ATTEMPTS} tries`;
-    } else if (budget > 0) {
-      budget -= 1;
-      out.uploadVideos.push(m);
-      r.status = "uploading";
-    } else {
-      out.queuedVideos.push(m);
-      r.status = "queued";
+    } else if (r.status !== "uploading") {
+      r.status = "queued"; // the video runner sends it
     }
-    out.status[m.id] = r.note ? { status: r.status, note: r.note } : { status: r.status };
   }
 
-  // Ours, but no longer in the list → off Shopify, and out of the record.
-  for (const [itemId, r] of Object.entries(next)) {
-    if (desiredIds.has(itemId)) continue;
-    if (r.shopifyMediaId && shopById.has(r.shopifyMediaId)) out.removeIds.push(r.shopifyMediaId);
-    delete next[itemId];
+  // Ours, but no longer in the list → marked; removed when it is safe.
+  for (const [key, r] of Object.entries(next)) {
+    if (desiredIds.has(key)) continue;
+    if (r.shopifyMediaId && shopById.has(r.shopifyMediaId)) r.remove = true;
+    else delete next[key];
   }
 
-  // Everything on Shopify that no record names: the pre-tracking set (ours, if
-  // the old path's fingerprint proves it attached the product's media) or
-  // somebody else's (left alone).
-  const recordWasEmpty = Object.keys(record || {}).length === 0;
-  for (const n of shopify) {
-    if (ownedIds.has(n.id)) continue;
-    if (recordWasEmpty && legacyFingerprint) out.legacyIds.push(n.id);
-    else out.foreignIds.push(n.id);
-  }
+  const owned = ownedNow();
+  for (const n of shopify) if (!owned.has(n.id) && !out.failedIds.includes(n.id)) out.foreignIds.push(n.id);
   return out;
 }
 
 /**
  * The productReorderMedia moves that turn `current` (ids in Shopify's order)
- * into `target` (ours in list order first, then everything else in its
- * current relative order). Simulated exactly as Shopify applies them —
- * sequentially — so the result is checkable. [] when already in order.
+ * into `targetFront` first, everything else after in its current relative
+ * order. Simulated exactly as Shopify applies them (sequentially). [] when
+ * already in order.
  */
 export function reorderMoves(current, targetFront) {
   const front = targetFront.filter((id) => current.includes(id));
@@ -177,6 +200,26 @@ export function reorderMoves(current, targetFront) {
     moves.push({ id: target[k], newPosition: String(k) });
   }
   return moves;
+}
+
+/**
+ * The /shopify_sync/{pid}/media update that turns `before` into `after`,
+ * field by field — null for a removed entry or field. {} when nothing changed.
+ */
+export function recordPatch(before, after) {
+  const patch = {};
+  const keys = new Set([...Object.keys(before || {}), ...Object.keys(after || {})]);
+  for (const k of keys) {
+    const b = before?.[k];
+    const a = after?.[k];
+    if (JSON.stringify(b) === JSON.stringify(a)) continue;
+    if (a === undefined) { patch[`items/${k}`] = null; continue; }
+    if (b === undefined) { patch[`items/${k}`] = a; continue; }
+    for (const f of new Set([...Object.keys(b), ...Object.keys(a)])) {
+      if (JSON.stringify(b[f]) !== JSON.stringify(a[f])) patch[`items/${k}/${f}`] = a[f] === undefined ? null : a[f];
+    }
+  }
+  return patch;
 }
 
 // ─── SHOPIFY I/O ─────────────────────────────────────────────────────────────
@@ -225,12 +268,23 @@ async function reorderMedia(graphql, gid, moves) {
   if (errs?.length) throw new Error(`productReorderMedia userErrors: ${JSON.stringify(errs)}`);
 }
 
+// Alt text on READY media (fileUpdate needs the file READY).
+async function setAlt(graphql, files) {
+  if (!files.length) return;
+  const d = await graphql(
+    `mutation ($files: [FileUpdateInput!]!) { fileUpdate(files: $files) { files { id } userErrors { field message } } }`,
+    { files }, { mutation: true });
+  const errs = d.fileUpdate.userErrors;
+  if (errs?.length) throw new Error(`fileUpdate userErrors: ${JSON.stringify(errs)}`);
+}
+
 const EXT = { "video/mp4": "mp4", "video/quicktime": "mov", "video/webm": "webm" };
 
 /**
  * Stream one video's Storage bytes to a Shopify staged upload, exactly as
- * stored. → resourceUrl. Throws (before anything is recorded) on any failure;
- * the caller counts the attempt. Hash-checked in flight.
+ * stored. → resourceUrl. Throws on any failure, before anything is recorded.
+ * Hash-checked in flight: a mismatch aborts before the closing boundary, so
+ * the wrong bytes never complete an upload.
  */
 export async function uploadVideoToShopify(graphql, item, { fetchImpl = fetch, request = https.request } = {}) {
   const mime = String(item.mime || "video/mp4").toLowerCase();
@@ -248,7 +302,8 @@ export async function uploadVideoToShopify(graphql, item, { fetchImpl = fetch, r
   const target = staged.stagedUploadsCreate.stagedTargets?.[0];
   if (!target?.url || !target?.resourceUrl) throw new Error("stagedUploadsCreate returned no target");
 
-  const src = await fetchImpl(item.url, { signal: AbortSignal.timeout(60 * 60 * 1000) });
+  const abort = new AbortController();
+  const src = await fetchImpl(item.url, { signal: AbortSignal.any ? AbortSignal.any([abort.signal, AbortSignal.timeout(60 * 60 * 1000)]) : abort.signal });
   if (!src.ok || !src.body) throw new Error(`could not read the video from Storage (HTTP ${src.status})`);
   const len = Number(src.headers.get("content-length"));
   if (len && len !== Number(item.bytes)) throw new Error(`Storage holds ${len} bytes, the list recorded ${item.bytes} — refusing`);
@@ -262,186 +317,235 @@ export async function uploadVideoToShopify(graphql, item, { fetchImpl = fetch, r
   const post = Buffer.from(`\r\n--${boundary}--\r\n`);
   const hash = createHash("sha256");
   let sent = 0;
-  await new Promise((resolve, reject) => {
-    const req = request(target.url, {
-      method: "POST",
-      headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`,
-                 "Content-Length": pre.length + Number(item.bytes) + post.length },
-    }, (res) => {
-      let body = "";
-      res.on("data", (c) => { if (body.length < 2000) body += c; });
-      res.on("end", () => (res.statusCode >= 200 && res.statusCode < 300
-        ? resolve()
-        : reject(new Error(`staged upload HTTP ${res.statusCode}: ${body.slice(0, 300)}`))));
+  try {
+    await new Promise((resolve, reject) => {
+      const req = request(target.url, {
+        method: "POST",
+        headers: { "Content-Type": `multipart/form-data; boundary=${boundary}`,
+                   "Content-Length": pre.length + Number(item.bytes) + post.length },
+      }, (res) => {
+        let body = "";
+        res.on("data", (c) => { if (body.length < 2000) body += c; });
+        res.on("end", () => (res.statusCode >= 200 && res.statusCode < 300
+          ? resolve()
+          : reject(new Error(`staged upload HTTP ${res.statusCode}: ${body.slice(0, 300)}`))));
+      });
+      req.on("error", reject);
+      req.setTimeout(10 * 60 * 1000, () => req.destroy(new Error("staged upload stalled for 10 minutes")));
+      // Back-pressure that cannot hang: a request that errors or closes while
+      // the writer waits for "drain" releases the wait too.
+      const writeAll = (buf) => (req.write(buf) ? Promise.resolve() : new Promise((r) => {
+        const done = () => { req.off("drain", done); req.off("close", done); req.off("error", done); r(); };
+        req.once("drain", done); req.once("close", done); req.once("error", done);
+      }));
+      (async () => {
+        try {
+          await writeAll(pre);
+          for await (const chunk of src.body) {
+            if (req.destroyed) throw new Error("the upload connection closed");
+            const buf = Buffer.from(chunk);
+            sent += buf.length;
+            if (sent > Number(item.bytes)) throw new Error("Storage sent more bytes than recorded");
+            hash.update(buf);
+            await writeAll(buf);
+          }
+          if (sent !== Number(item.bytes)) throw new Error(`Storage sent ${sent} bytes, expected ${item.bytes}`);
+          const hex = hash.digest("hex");
+          if (item.sha256 && hex !== item.sha256) {
+            throw new Error(`the bytes in Storage do not match the file Junid picked (sha256 ${hex.slice(0, 12)}… ≠ ${item.sha256.slice(0, 12)}…)`);
+          }
+          req.end(post);
+        } catch (e) { req.destroy(e); reject(e); }
+      })();
     });
-    req.on("error", reject);
-    req.setTimeout(10 * 60 * 1000, () => req.destroy(new Error("staged upload stalled for 10 minutes")));
-    (async () => {
-      try {
-        if (!req.write(pre)) await new Promise((r) => req.once("drain", r));
-        for await (const chunk of src.body) {
-          const buf = Buffer.from(chunk);
-          sent += buf.length;
-          if (sent > Number(item.bytes)) throw new Error("Storage sent more bytes than recorded");
-          hash.update(buf);
-          if (!req.write(buf)) await new Promise((r) => req.once("drain", r));
-        }
-        if (sent !== Number(item.bytes)) throw new Error(`Storage sent ${sent} bytes, expected ${item.bytes}`);
-        req.end(post);
-      } catch (e) { req.destroy(e); reject(e); }
-    })();
-  });
-  const hex = hash.digest("hex");
-  if (item.sha256 && hex !== item.sha256) {
-    throw new Error(`the bytes in Storage do not match the file Junid picked (sha256 ${hex.slice(0, 12)}… ≠ ${item.sha256.slice(0, 12)}…)`);
+  } finally {
+    abort.abort(); // never leave the Storage download open
   }
   return target.resourceUrl;
+}
+
+// ─── THE VIDEO RUNNER'S ONE STEP ─────────────────────────────────────────────
+/**
+ * Send ONE queued video for this product to Shopify (media-video-runner.mjs
+ * calls it, under its own lock). → { sent, itemId?, error? }.
+ * Exactly once: a video with a recorded resourceUrl is never picked; the
+ * resourceUrl is written the moment Shopify accepts the bytes. A run killed
+ * mid-transfer recorded nothing and costs no attempt — the bytes never landed.
+ */
+export async function sendNextQueuedVideo({ graphql, db, pid, node, product = null, upload = uploadVideoToShopify, log = () => {} }) {
+  const items = desiredPushItems(node, product).filter((m) => m.type === "video");
+  if (!items.length) return { sent: false };
+  const recRef = db.ref(`shopify_sync/${pid}/media/items`);
+  const record = (await recRef.get()).val() || {};
+  const m = items.find((v) => {
+    const r = record[v.id] || {};
+    return !r.resourceUrl && !r.shopifyMediaId && !r.terminal && (r.uploadAttempts || 0) < MAX_ATTEMPTS;
+  });
+  if (!m) return { sent: false };
+  const itemRef = recRef.child(m.id);
+  const projRef = db.ref(`shopify_publish/${pid}/mediaShopify/${m.id}`);
+  await itemRef.update({ type: "video", url: m.url, status: "uploading" });
+  await projRef.set({ status: "uploading" });
+  log(`  media: sending video ${m.id} of ${pid} (${Math.round(Number(m.bytes) / 1e6)} MB) to Shopify…`);
+  try {
+    const resourceUrl = await upload(graphql, m);
+    await itemRef.update({ resourceUrl, uploadedAt: Date.now(), status: "processing", note: null });
+    await projRef.set({ status: "processing" });
+    return { sent: true, itemId: m.id };
+  } catch (e) {
+    const attempts = ((record[m.id] || {}).uploadAttempts || 0) + 1;
+    const note = String(e?.message || e).slice(0, 300);
+    const terminal = attempts >= MAX_ATTEMPTS;
+    await itemRef.update({ uploadAttempts: attempts, note, status: terminal ? "failed" : "queued", ...(terminal ? { terminal: true } : {}) });
+    await projRef.set({ status: terminal ? "failed" : "queued", note });
+    return { sent: false, itemId: m.id, error: note };
+  }
 }
 
 // ─── ONE PRODUCT ─────────────────────────────────────────────────────────────
 /**
  * Bring one product's Shopify media in line with its list.
- *   mode "on"   — the product is OFF the channel (the publish path): photos
- *                 must all be READY before this returns ok (customers never see
- *                 a product without its photos); videos are only QUEUED here —
- *                 the media phase at the end of the tick uploads them.
- *   mode "live" — the product is on the shop: create, reorder, then remove;
- *                 never waits for processing (the next tick polls).
- * → { ok, error?, pending, notes[], writes }
+ *   mode "on"   — the product is OFF the channel (the publish path): removal
+ *                 is free, and every photo must be READY before this returns ok.
+ *   mode "live" — the product is on the shop: create, reorder, re-label; remove
+ *                 only once every photo in the list is READY. Never waits.
+ * Videos are only ATTACHED here (their bytes are sent by the video runner).
+ * → { ok, error?, retryable, pending, notes[], writes }
  */
 export async function syncProductMedia({ graphql, db, pid, gid, node, product, title, mode = "live",
-                                         videoBudget = 0, log = () => {}, uploadVideo = uploadVideoToShopify,
-                                         pollMs = 2000, pollTries = 15 }) {
+                                         log = () => {}, pollMs = 2000, pollTries = 15 }) {
   const alt = String(title ?? "").trim();
-  if (!alt) return { ok: false, error: "media alt text requires the validated listing name", pending: true, notes: [], writes: 0 };
+  if (!alt) return { ok: false, retryable: false, error: "media alt text requires the validated listing name", pending: false, notes: [], writes: 0 };
+  const listed = resolveMediaList(node, product).items;
   const desired = desiredPushItems(node, product);
-  if (!desired.length || desired[0].type !== "photo") {
-    return { ok: false, error: "the media list has no photo first — an imageless product is never pushed", pending: false, notes: [], writes: 0 };
+  if (!desired.length || desired[0].type !== "photo" || desired[0].id !== listed[0]?.id) {
+    return { ok: false, retryable: false, error: "the list's first photo cannot be pushed (no photo first, or not this app's own Storage file) — an imageless or wrong-primary product is never pushed", pending: false, notes: [], writes: 0 };
   }
-  const syncRef = db.ref(`shopify_sync/${pid}`);
-  const mapNode = (await syncRef.get()).val() || {};
-  const record = mapNode.media?.items || {};
+  const mediaRef = db.ref(`shopify_sync/${pid}/media`);
+  const stored = (await mediaRef.get()).val() || {};
+  const fingerprint = (await db.ref(`shopify_sync/${pid}/mediaFingerprint`).get()).val();
+  const legacyCount = fingerprint ? (await db.ref(`shopify_sync/${pid}/mediaCount`).get()).val() : null;
   let shopify = await readProductMedia(graphql, gid);
-  if (!shopify) return { ok: false, error: `${gid} not found on Shopify`, pending: true, notes: [], writes: 0 };
+  if (!shopify) return { ok: false, retryable: true, error: `${gid} not found on Shopify`, pending: true, notes: [], writes: 0 };
 
-  const plan = planMediaSync({ desired, record, shopify, legacyFingerprint: mapNode.mediaFingerprint || null,
-                               videoBudget: mode === "on" ? 0 : videoBudget });
+  const plan = planMediaSync({ desired, record: stored.items || {}, inflight: stored.inflight || null, shopify, legacyFingerprint: fingerprint || null, legacyCount });
   const rec = plan.record;
+  let saved = copy(stored.items || {});
   const notes = [];
   let writes = 0;
-  let uploadsStarted = 0;
-  // Written only when it changed — an idle re-run writes nothing anywhere.
-  let savedJson = JSON.stringify(record);
-  const saveRecord = async () => {
-    const json = JSON.stringify(rec);
-    if (json === savedJson) return;
-    await syncRef.child("media").set(Object.keys(rec).length ? { items: rec } : null);
-    savedJson = json;
+  const save = async (extra = {}) => {
+    const patch = { ...recordPatch(saved, rec), ...extra };
+    if (!Object.keys(patch).length) return;
+    await mediaRef.update(patch);
+    saved = copy(rec);
+  };
+  // A lost create resolved by adoption (or not): the inflight note goes.
+  if (stored.inflight) await save({ inflight: null });
+
+  const create = async (items, kind, inputs) => {
+    await save({ inflight: { before: shopify.map((n) => n.id), items: items.map((m) => m.id), kind } });
+    const made = await createMedia(graphql, gid, inputs);
+    writes += 1;
+    items.forEach((m, k) => { rec[m.id].shopifyMediaId = made[k].id; });
+    await save({ inflight: null });
+    return made;
   };
 
   try {
+    // 0. Shopify's FAILED copies of our media off the product (never shown anyway).
+    if (plan.failedIds.length) { await deleteMedia(graphql, gid, plan.failedIds); writes += 1; shopify = shopify.filter((n) => !plan.failedIds.includes(n.id)); }
     // 1. New photos — one call, ids back in input order.
     if (plan.createPhotos.length) {
-      const made = await createMedia(graphql, gid, plan.createPhotos.map((m) =>
-        ({ originalSource: m.url, alt, mediaContentType: "IMAGE" })));
-      writes += 1;
-      plan.createPhotos.forEach((m, k) => { rec[m.id].shopifyMediaId = made[k].id; rec[m.id].createdAt = Date.now(); });
-      await saveRecord();
+      for (const m of plan.createPhotos) rec[m.id].createAttempts = (rec[m.id].createAttempts || 0) + 1;
+      const made = await create(plan.createPhotos, "photo",
+        plan.createPhotos.map((m) => ({ originalSource: m.url, alt, mediaContentType: "IMAGE" })));
       log(`  media: +${made.length} photo(s)`);
     }
-    // 2. Video bytes — exactly once each. The resourceUrl is recorded the
-    //    moment Shopify accepts the bytes, BEFORE anything else can fail.
-    for (const m of plan.uploadVideos) {
-      const r = rec[m.id];
-      uploadsStarted += 1;
-      // The page says "sending to Shopify" while the bytes are in flight.
-      await db.ref(`shopify_publish/${pid}/mediaShopify/${m.id}`).set({ status: "uploading" });
-      r.uploadAttempts = (r.uploadAttempts || 0) + 1;
-      await saveRecord(); // an attempt is counted even if the process dies mid-transfer
-      try {
-        log(`  media: sending video ${m.id} (${Math.round(Number(m.bytes) / 1e6)} MB) to Shopify…`);
-        r.resourceUrl = await uploadVideo(graphql, m);
-        r.uploadedAt = Date.now();
-        delete r.note;
-        await saveRecord();
-        writes += 1;
-        plan.attachVideos.push(m);
-      } catch (e) {
-        r.status = (r.uploadAttempts >= MAX_UPLOAD_ATTEMPTS) ? "failed" : "queued";
-        if (r.status === "failed") r.terminal = true;
-        r.note = String(e?.message || e).slice(0, 300);
-        await saveRecord();
-        notes.push(`video ${m.id}: ${r.note}`);
-      }
-    }
-    // 3. Attach videos whose bytes Shopify already holds (never re-sent).
+    // 2. Videos whose bytes Shopify already holds (sent once, by the runner).
     if (plan.attachVideos.length) {
       try {
-        const made = await createMedia(graphql, gid, plan.attachVideos.map((m) =>
-          ({ originalSource: rec[m.id].resourceUrl, alt, mediaContentType: "VIDEO" })));
-        writes += 1;
-        plan.attachVideos.forEach((m, k) => { rec[m.id].shopifyMediaId = made[k].id; rec[m.id].status = "processing"; });
-        await saveRecord();
+        for (const m of plan.attachVideos) rec[m.id].attachAttempts = (rec[m.id].attachAttempts || 0) + 1;
+        const made = await create(plan.attachVideos, "video",
+          plan.attachVideos.map((m) => ({ originalSource: rec[m.id].resourceUrl, alt, mediaContentType: "VIDEO" })));
         log(`  media: +${made.length} video(s) attached`);
       } catch (e) {
         for (const m of plan.attachVideos) {
           const r = rec[m.id];
-          r.attachAttempts = (r.attachAttempts || 0) + 1;
           r.note = String(e?.message || e).slice(0, 300);
-          if (r.attachAttempts >= MAX_UPLOAD_ATTEMPTS) { r.status = "failed"; r.terminal = true; }
+          if (r.attachAttempts >= MAX_ATTEMPTS) { r.status = "failed"; r.terminal = true; }
         }
-        await saveRecord();
+        await save({ inflight: null });
         notes.push(`video attach: ${String(e?.message || e)}`);
       }
     }
-    // 4. Order: ours in list order first; everything else after, untouched.
-    if (writes || plan.removeIds.length || plan.legacyIds.length) shopify = await readProductMedia(graphql, gid);
-    const ours = desired.map((m) => rec[m.id]?.shopifyMediaId).filter(Boolean);
-    const moves = reorderMoves(shopify.map((n) => n.id), ours);
-    if (moves.length) { await reorderMedia(graphql, gid, moves); writes += 1; log(`  media: reordered (${moves.length} move(s))`); }
-    // 5. Remove what is ours and no longer wanted — LAST, so a live product is
-    //    never without its photos in between. Legacy (pre-tracking) photos go
-    //    only once at least the list's photos are attached.
-    const legacyNow = plan.legacyIds.filter((id) => shopify.some((n) => n.id === id));
-    const photosIn = desired.filter((m) => m.type === "photo").every((m) => rec[m.id]?.shopifyMediaId);
-    const removeNow = [...plan.removeIds, ...(photosIn ? legacyNow : [])];
-    if (removeNow.length) {
-      await deleteMedia(graphql, gid, removeNow);
-      writes += 1;
-      log(`  media: removed ${removeNow.length} (ours, no longer in the list${photosIn && legacyNow.length ? `, incl. ${legacyNow.length} from before per-item tracking` : ""})`);
-    }
-    if (plan.foreignIds.length) notes.push(`${plan.foreignIds.length} media on Shopify were not added by this app and were left alone`);
-
-    // 6. The publish path waits for its photos.
+    if (writes) shopify = await readProductMedia(graphql, gid);
+    // 3. The publish path waits for its photos BEFORE ordering them: Shopify
+    //    refuses to reorder media that is still processing.
     if (mode === "on") {
-      const want = new Set(desired.filter((m) => m.type === "photo").map((m) => rec[m.id]?.shopifyMediaId));
+      const want = desired.filter((m) => m.type === "photo").map((m) => rec[m.id]?.shopifyMediaId);
+      if (want.some((id) => !id)) {
+        return { ok: false, retryable: true, error: "a photo failed on Shopify every time it was sent — remove it and add it again, then publish", pending: true, notes, writes };
+      }
       let ready = false;
       for (let t = 0; t < pollTries; t++) {
         const now = await readProductMedia(graphql, gid);
-        const mine = now.filter((n) => want.has(n.id));
+        const mine = now.filter((n) => want.includes(n.id));
         if (mine.some((n) => n.status === "FAILED")) {
-          return { ok: false, error: "a photo FAILED processing on Shopify — the product must not ship without it", pending: true, notes, writes };
+          return { ok: false, retryable: true, error: "a photo FAILED processing on Shopify — the product must not ship without it; publishing again retries it", pending: true, notes, writes };
         }
-        if (mine.length === want.size && mine.every((n) => n.status === "READY")) {
-          ready = true;
-          for (const m of desired) if (m.type === "photo") rec[m.id].status = "ready";
-          break;
-        }
+        if (mine.length === want.length && mine.every((n) => n.status === "READY")) { ready = true; shopify = now; break; }
         await sleep(pollMs);
       }
-      if (!ready) return { ok: false, error: "the photos were not READY on Shopify after polling — the next run resumes", pending: true, notes, writes };
+      if (!ready) return { ok: false, retryable: true, error: "the photos were not READY on Shopify after polling — publishing again resumes", pending: true, notes, writes };
     }
+    // 4. Order: ours that are READY, in list order, first; everything else
+    //    after, untouched. Items still processing join on a later tick.
+    let byId = new Map(shopify.map((n) => [n.id, n]));
+    const readyOurs = desired.map((m) => rec[m.id]?.shopifyMediaId).filter((id) => byId.get(id)?.status === "READY");
+    const moves = reorderMoves(shopify.map((n) => n.id), readyOurs);
+    if (moves.length) {
+      try {
+        await reorderMedia(graphql, gid, moves);
+        writes += 1;
+        log(`  media: reordered (${moves.length} move(s))`);
+      } catch (e) {
+        if (!/NON_READY|not ready|processing/i.test(String(e?.message || e))) throw e;
+        notes.push("reorder waits for Shopify to finish processing — next tick");
+      }
+    }
+    for (const m of desired) {
+      const st = byId.get(rec[m.id]?.shopifyMediaId)?.status;
+      if (st === "READY") rec[m.id].status = "ready";
+    }
+    // 5. Alt text = the validated listing name, on every READY item of ours.
+    const relabel = desired.map((m) => byId.get(rec[m.id]?.shopifyMediaId))
+      .filter((n) => n && n.status === "READY" && n.alt !== alt).map((n) => ({ id: n.id, alt }));
+    if (relabel.length) { await setAlt(graphql, relabel); writes += 1; log(`  media: alt text set on ${relabel.length}`); }
+    // 6. Removal — LAST, and on a live product only once every photo in the
+    //    list is READY there, so the shop never shows it without its photos.
+    const photosReady = desired.filter((m) => m.type === "photo")
+      .every((m) => byId.get(rec[m.id]?.shopifyMediaId)?.status === "READY");
+    const toRemove = Object.entries(rec).filter(([, r]) => r.remove && r.shopifyMediaId && byId.has(r.shopifyMediaId));
+    if (toRemove.length && (mode === "on" || photosReady)) {
+      await deleteMedia(graphql, gid, toRemove.map(([, r]) => r.shopifyMediaId));
+      writes += 1;
+      for (const [k] of toRemove) delete rec[k];
+      await save();
+      log(`  media: removed ${toRemove.length} (ours, no longer in the list)`);
+    }
+    if (plan.foreignIds.length) notes.push(`${plan.foreignIds.length} media on Shopify were not added by this app and were left alone`);
   } finally {
-    await saveRecord();
+    await save();
   }
 
   // The page's projection + the carry-forward marker + the finished sig.
   const statusMap = {};
   for (const m of desired) {
     const r = rec[m.id] || {};
-    statusMap[m.id] = r.note ? { status: r.status || "queued", note: r.note } : { status: r.status || "queued" };
+    statusMap[m.id] = r.note && r.status !== "ready" ? { status: r.status || "queued", note: r.note } : { status: r.status || "queued" };
   }
-  const pending = desired.some((m) => !["ready", "failed"].includes(statusMap[m.id].status));
+  const removalsLeft = Object.values(rec).some((r) => r.remove);
+  const pending = removalsLeft || desired.some((m) => !["ready", "failed"].includes(statusMap[m.id].status));
   const pubRef = db.ref(`shopify_publish/${pid}`);
   if (JSON.stringify(node?.mediaShopify || null) !== JSON.stringify(statusMap)) {
     await pubRef.child("mediaShopify").set(statusMap);
@@ -453,7 +557,7 @@ export async function syncProductMedia({ graphql, db, pid, gid, node, product, t
   const marked = (await markerRef.get()).val() != null;
   if (pending && !marked) await markerRef.set(true);
   else if (!pending && marked) await markerRef.remove();
-  return { ok: true, pending, notes, writes, uploadsStarted };
+  return { ok: true, pending, notes, writes };
 }
 
 /**

@@ -20,8 +20,13 @@ function fakeDb(store) {
     ref: (path) => ({
       once: async () => { reads.push(path); const v = at(path); return { val: () => v, exists: () => v != null }; },
       transaction: async (fn) => {
-        fn(null); // cold-cache first pass, as the real SDK does
-        const next = fn(at(path));
+        // The real SDK's cold-cache first pass: an undefined answer ABORTS
+        // there and then, without ever asking the server.
+        const first = fn(null);
+        if (first === undefined) return { committed: false, snapshot: { val: () => at(path) } };
+        const real = at(path);
+        if (real === null) { setAt(path, first); return { committed: true, snapshot: { val: () => at(path) } }; }
+        const next = fn(real);
         if (next !== undefined) setAt(path, next);
         return { committed: next !== undefined, snapshot: { val: () => at(path) } };
       },
@@ -49,7 +54,7 @@ test("an exact file already owned by ANOTHER product is refused, naming that pro
     shopify_sync: { _mediaHash: { [SHA]: { pid: "p2", at: 1 } } },
   });
   const r = await _handleMediaHashClaim(req({ productId: "p1", sha256: SHA, kind: "photo" }), { db, now: () => 5 });
-  assert.deepEqual(r, { ok: false, ownerPid: "p2", ownerName: "Plain tee white" });
+  assert.deepEqual(r, { ok: false, ownerPid: "p2", ownerName: "Plain tee white", inFlight: false });
   // Only per-path reads: the owner's media list and name, never a scan.
   assert.ok(db.reads.includes("shopify_publish/p2/media"));
   assert.ok(!db.reads.some((p) => p === "shopify_publish" || p === "products"));
@@ -61,9 +66,18 @@ test("the claim moves when the owner no longer carries the file (Junid removed t
     shopify_publish: { p2: { media: [{ id: "m9", type: "photo", url: "v", sha256: "b".repeat(64) }] } },
     shopify_sync: { _mediaHash: { [SHA]: { pid: "p2", at: 1 } } },
   };
-  const r = await _handleMediaHashClaim(req({ productId: "p1", sha256: SHA }), { db: fakeDb(store), now: () => 7 });
+  const r = await _handleMediaHashClaim(req({ productId: "p1", sha256: SHA }), { db: fakeDb(store), now: () => 20 * 60 * 1000 });
   assert.deepEqual(r, { ok: true, transferredFrom: "p2" });
   assert.equal(store.shopify_sync._mediaHash[SHA].pid, "p1");
+});
+
+test("an upload still in flight holds its claim: a second product within 15 minutes is refused", async () => {
+  const store = {
+    users: { u1: {} }, products: { p1: { name: "a" }, p2: { name: "b" } },
+    shopify_sync: { _mediaHash: { [SHA]: { pid: "p2", at: 1_000 } } },
+  };
+  const r = await _handleMediaHashClaim(req({ productId: "p1", sha256: SHA }), { db: fakeDb(store), now: () => 60_000 });
+  assert.deepEqual(r, { ok: false, ownerPid: "p2", ownerName: "b", inFlight: true });
 });
 
 test("a new file is claimed; the same product re-claiming is fine", async () => {
@@ -71,6 +85,7 @@ test("a new file is claimed; the same product re-claiming is fine", async () => 
   const db = fakeDb(store);
   assert.deepEqual(await _handleMediaHashClaim(req({ productId: "p1", sha256: SHA, kind: "video" }), { db, now: () => 9 }), { ok: true, transferredFrom: null });
   assert.deepEqual(store.shopify_sync._mediaHash[SHA], { pid: "p1", at: 9, uid: "u1", kind: "video" });
+  // Re-claiming an entry that EXISTS — the path the cold-pass abort used to break.
   assert.equal((await _handleMediaHashClaim(req({ productId: "p1", sha256: SHA }), { db, now: () => 10 })).ok, true);
 });
 
@@ -78,13 +93,13 @@ test("only Junid, a stock admin or a shopify_publish holder may claim", async ()
   assert.equal(maySetPublishing({ email: "x@y", firebase: {} }, { stockRole: "staff" }), false);
   assert.equal(maySetPublishing({ email: "x@y", firebase: {} }, { permFlags: { shopify_publish: true } }), true);
   assert.equal(maySetPublishing({ email: "gunidmoh@gmail.com", firebase: { sign_in_provider: "anonymous" } }, {}), false);
-  const db = fakeDb({ users: { u1: { stockRole: "staff" } }, products: { p1: {} } });
+  const db = fakeDb({ users: { u1: { stockRole: "staff" } }, products: { p1: { name: "a" } } });
   await assert.rejects(_handleMediaHashClaim(req({ productId: "p1", sha256: SHA }, { email: "s@x", firebase: {} }), { db, now: () => 1 }), /limited to Junid/);
 });
 
 test("decideClaim / mediaHasHash", () => {
   assert.deepEqual(decideClaim({ pid: "p1", existing: null, ownerUses: false }), { claim: true });
-  assert.deepEqual(decideClaim({ pid: "p1", existing: { pid: "p2" }, ownerUses: true }), { claim: false, ownerPid: "p2" });
+  assert.deepEqual(decideClaim({ pid: "p1", existing: { pid: "p2" }, ownerUses: true }), { claim: false, ownerPid: "p2", inFlight: false });
   assert.equal(mediaHasHash({ 0: { sha256: SHA }, 3: { sha256: "x" } }, SHA), true); // object shape (a list with a hole)
   assert.equal(mediaHasHash(null, SHA), false);
 });
