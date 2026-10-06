@@ -83,7 +83,11 @@ const REGION = "europe-west1";
 const baseOpts = {
   instance: INSTANCE,
   region: REGION,
-  memory: "128MiB",
+  // 256, never 128. The shared functions bundle loads 129–138 MiB at startup,
+  // so at 128 every cold start was killed before the handler ran (≈1,600 OOMs
+  // on 5 Oct across the ten triggers): records arrived minutes late or never,
+  // and a saved price stayed blank on every device serving its mirror.
+  memory: "256MiB",
   timeoutSeconds: 60,
   // See "COMPLETENESS" above. A dropped append is a silent, permanent hole in
   // every device's copy; a duplicated one costs one re-read.

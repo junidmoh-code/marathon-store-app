@@ -129,3 +129,13 @@ test("no leg's node is an ancestor of another's", () => {
     }
   }
 });
+
+test("the change triggers get enough memory to start (128 MiB OOMed every cold start)", () => {
+  // mirrorChanges.js builds live triggers at require time, so read it as text.
+  const src = require("node:fs").readFileSync(require("node:path").join(__dirname, "../mirrorChanges/mirrorChanges.js"), "utf8");
+  const base = src.match(/const baseOpts = \{([\s\S]*?)\n\};/);
+  assert.ok(base, "baseOpts block not found");
+  const mem = base[1].match(/memory:\s*"(\d+)MiB"/);
+  assert.ok(mem, "baseOpts has no memory setting");
+  assert.ok(Number(mem[1]) >= 256, `trigger memory ${mem[1]}MiB is below the 129–138 MiB startup footprint`);
+});
