@@ -41,9 +41,18 @@ export function productOverrideUpdate(registry, productId, hub, nowMs, uid) {
   return { ok: true, updates: { [`${NETWORK_PATH}/productOverrides/${SWITCHABLE_STORE}/${productId}`]: hub, ...stamp(nowMs, uid) } };
 }
 
-export function creditScopeUpdate(scope, nowMs, uid) {
+// `creditScopeSince` is the moment section scope began. Owed money recorded
+// BEFORE it stays shared after the switch: a debt charged at Pine and paid at
+// Marathon PE while everything was shared must not come back as "owing in
+// Section 1, in credit in Section 2". The POS and its functions read it; with
+// scope "section" and no such time they treat every owed record as shared.
+// Switching to the scope already in force leaves the time alone.
+export function creditScopeUpdate(scope, nowMs, uid, currentScope = null) {
   if (!CREDIT_SCOPES.includes(scope)) return fail("Credit scope is shared or section.");
-  return { ok: true, updates: { [`${NETWORK_PATH}/creditScope`]: scope, ...stamp(nowMs, uid) } };
+  const since = scope === "shared" ? { [`${NETWORK_PATH}/creditScopeSince`]: null }
+    : currentScope === "section" ? {}
+    : { [`${NETWORK_PATH}/creditScopeSince`]: nowMs };
+  return { ok: true, updates: { [`${NETWORK_PATH}/creditScope`]: scope, ...since, ...stamp(nowMs, uid) } };
 }
 
 // First-time seed. Writes /network ONLY when it is absent, and registers the

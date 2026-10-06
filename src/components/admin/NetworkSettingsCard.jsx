@@ -212,7 +212,7 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
           <span>Where can credit be spent?</span>
           <Choice value={registry.creditScope} busy={busy}
             options={[{ value: "shared", label: "Any store" }, { value: "section", label: "Its own section only" }]}
-            onPick={(scope) => send(creditScopeUpdate(scope, now(), uid), scope === "shared" ? "Credit is spendable at any store." : "Credit is spendable only in the section that issued it.")} />
+            onPick={(scope) => send(creditScopeUpdate(scope, now(), uid, raw?.creditScopeSince > 0 ? registry.creditScope : null), scope === "shared" ? "Credit is spendable at any store." : "Credit is spendable only in the section that issued it.")} />
         </div>
         <p style={{ color: "#8e8e93", fontSize: 13 }}>Credit issued before sections existed carries no section and stays spendable everywhere.</p>
       </div>

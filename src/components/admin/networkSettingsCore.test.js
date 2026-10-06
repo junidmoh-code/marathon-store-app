@@ -223,3 +223,20 @@ describe("Concrete at the till — the POS switches", () => {
     expect(posSwitchState(R, { locations: { concrete: { pos: { recyclerTill: "till-9" } } } }).recyclerTill).toBe(null);
   });
 });
+
+describe("credit scope — the moment section scope began", () => {
+  it("switching to section records the time; owed money before it stays shared", () => {
+    const u = creditScopeUpdate("section", NOW, "o", "shared").updates;
+    expect(u["network/creditScope"]).toBe("section");
+    expect(u["network/creditScopeSince"]).toBe(NOW);
+  });
+  it("choosing section while it is already in force does not move the time", () => {
+    expect("network/creditScopeSince" in creditScopeUpdate("section", NOW + 5, "o", "section").updates).toBe(false);
+  });
+  it("switching back to shared removes it", () => {
+    expect(creditScopeUpdate("shared", NOW, "o", "section").updates["network/creditScopeSince"]).toBe(null);
+  });
+  it("with the current scope unknown, section still records a time (never section without one)", () => {
+    expect(creditScopeUpdate("section", NOW, "o").updates["network/creditScopeSince"]).toBe(NOW);
+  });
+});
