@@ -4,7 +4,10 @@
 //                     thought summary and the interim drafts while it works,
 //                     then the finished photo. No request queue, no Mac mini.
 //
-// EVERYTHING IS MANUAL (Junid, 4 Oct): Gemini is called here and only here,
+// TWO ENGINES, one interface: Gemini (the default) or OpenAI's gpt-image-1,
+// picked per item on the card. Same prompt, same process; never blended.
+//
+// EVERYTHING IS MANUAL (Junid, 4 Oct): an image model is called here and only here,
 // once per tap. No checker, no verdict, no retry, no automatic anything.
 //
 // The generation code is studio/*.mjs (ES modules, loaded on first use). The
@@ -25,6 +28,8 @@ const na = require("./newArrivals.js");
 const { CONDITION_CLAUSE } = require("../lib/photo-prompt.cjs");
 
 const geminiApiKey = defineSecret("GEMINI_API_KEY");
+// The second provider (gpt-image-1): the same secret the older AI Studio already uses.
+const openaiApiKey = defineSecret("OPENAI_API_KEY");
 const BUCKET = "marathon-club.firebasestorage.app";
 const ASSETS = "new_arrivals/assets";
 
@@ -37,8 +42,8 @@ const examplesLock = require("./studio/config/examples.lock.json");
 // The ES modules, loaded once per instance.
 let modsP = null;
 const mods = () => (modsP ||= Promise.all([
-  import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"), import("./studio/split.mjs"),
-]).then(([studio, gemini, record, compose, split]) => ({ studio, gemini, record, compose, split }))
+  import("./studio/studio.mjs"), import("./studio/gemini-stream.mjs"), import("./studio/record.mjs"), import("./studio/compose.mjs"), import("./studio/split.mjs"), import("./studio/openai-image.mjs"),
+]).then(([studio, gemini, record, compose, split, openai]) => ({ studio, gemini, record, compose, split, openai }))
   .catch((e) => { modsP = null; throw e; }));
 
 const val = async (db, path) => (await db.ref(path).once("value")).val();
@@ -240,15 +245,16 @@ async function addSpend(db, zar, { estimated = false } = {}) {
 
 // ── one generation ───────────────────────────────────────────────────────────
 /**
- * deps (all injectable for tests): { bucket, apiKey, now(), fetchBytes?, image?, fx?, assets?, correct?, generation? }
+ * deps (all injectable for tests): { bucket, apiKey (Gemini), openaiKey, now(), fetchBytes?, image?, fx?, assets?, correct?, generation? }
  * emit(ev): progress chunks for the card.
  * → { ok, pid, genId, code, seconds, item (as the card shows it) }
  */
-async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
+async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = () => {}) {
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== undefined && method !== null && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full or split.");
+  if (provider !== undefined && provider !== null && !core.PROVIDERS.includes(provider)) throw new HttpsError("invalid-argument", "Provider is gemini or openai.");
   pid = String(pid);
-  const { studio, gemini, record, compose, split } = await mods();
+  const { studio, gemini, record, compose, split, openai } = await mods();
   const now = deps.now || (() => Date.now());
   const t0 = now();
   const product = await val(db, `products/${pid}`);
@@ -256,12 +262,17 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
   const { item, prev } = await claim(db, pid, uid, t0);
   const genId = `g${t0}`;
   const how = studio.methodFor(item, { asked: method || null, defaultMethod: generation.defaultMethod });
+  // THE ENGINE: Gemini (the default) or OpenAI's gpt-image-1 — the tap's choice, else the item's.
+  // One photo, one engine: the same prompt and process go to whichever was picked.
+  const engine = studio.providerFor(item, { asked: provider || null, defaultProvider: generation.defaultProvider });
+  const model = engine === "openai" ? generation.openaiModel : generation.imageModel;
+  const who = core.PROVIDER_LABEL[engine];
   const bucket = deps.bucket;
   const fxOf = (at) => (deps.fx ? deps.fx(at) : usdZarToday(db, at)).catch(() => ({ rate: prices.usdToZar, fallback: true }));
   let res;
   try {
     res = await studio.generateOne({
-      item: { ...item, pid }, product, genId, method: how, emit,
+      item: { ...item, pid }, product, genId, method: how, provider: engine, emit,
       deps: {
         fetchBytes: deps.fetchBytes || fetchBytes,
         loadPlate: (kind) => loadRoleFile(bucket, compose.ROLES[kind].plate, compose.forModel),
@@ -272,7 +283,10 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
         spec, generation: deps.generation || generation, conditionClause: CONDITION_CLAUSE,
         // The footwear correction (studio/correct.mjs unless a test supplies its own).
         ...(deps.correct ? { correct: deps.correct } : {}),
-        image: deps.image || ((model, parts, imageConfig, opts) => gemini.streamImage(model, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
+        // The ONE interface both engines sit behind: (model, parts, imageConfig, { onEvent }) → { buffer, usage, … }.
+        image: deps.image || (engine === "openai"
+          ? (m, parts, imageConfig, opts) => openai.openaiImage(m, parts, imageConfig, { ...opts, apiKey: deps.openaiKey })
+          : (m, parts, imageConfig, opts) => gemini.streamImage(m, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
         upload: (p, buf, mime) => uploadImmutable(bucket, p, buf, mime),
         now,
         log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`),
@@ -286,10 +300,11 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     const status = Number(e.status) || 0;
     const reason = e.paid ? "the photo was made but could not be stored — it was charged; tap Generate to make another"
       : e.studioRefusal ? e.message
-      : e.refusal ? "Gemini declined to make this photo"
-      : status === 402 ? "the Gemini prepaid credit has run out — top it up in Google AI Studio, then tap Generate again"
+      : e.refusal ? `${who} declined to make this photo`
+      : status === 402 || (engine === "openai" && status === 429 && /quota|billing/i.test(String(e.message))) ? `the ${who}${engine === "openai" ? "" : " prepaid"} credit has run out — top it up${engine === "openai" ? " on the OpenAI platform" : " in Google AI Studio"}, then tap Generate again`
+      : engine === "openai" && status === 401 ? "the OpenAI key was refused — it needs replacing in Secret Manager"
       : status === 429 || status === 503 ? "the photo service is busy — tap Generate again"
-      : status === 504 ? "Gemini took too long and the connection was closed — it may still have been charged; tap Generate to try again"
+      : status === 504 ? `${who} took too long and the connection was closed — it may still have been charged; tap Generate to try again`
       : "the photo could not be made — tap Generate again";
     await release(db, pid, t0, now(), reason);
     console.error(`newArrivalsStudio: ${pid} failed${e.paid ? " AFTER the image was made" : ""} — ${e.message}`);
@@ -297,22 +312,22 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
     // the whole image when it was made and lost (paid), else its prompt tokens.
     if (e.paid || e.usage) {
       const fx = await fxOf(now());
-      const lost = e.paid ? record.generationCost({ model: generation.imageModel, usage: e.usage, prices, fx }) : null;
-      await addSpend(db, lost ? lost.zar : record.failedCallZar({ model: generation.imageModel, usage: e.usage, prices, fx }), { estimated: !!lost?.estimated });
+      const lost = e.paid ? record.generationCost({ model, usage: e.usage, prices, fx }) : null;
+      await addSpend(db, lost ? lost.zar : record.failedCallZar({ model, usage: e.usage, prices, fx }), { estimated: !!lost?.estimated });
     }
     throw new HttpsError(e.studioRefusal ? "failed-precondition" : status === 402 ? "resource-exhausted" : status === 429 || status === 503 ? "unavailable" : "internal", `No photo — ${reason}.`);
   }
 
   // The photo exists, is stored and is paid for: from here every step is retried.
   const at = now();
-  const cost = record.generationCost({ model: generation.imageModel, usage: res.usage, prices, fx: await fxOf(at) });
+  const cost = record.generationCost({ model, usage: res.usage, prices, fx: await fxOf(at) });
   let code = null;
   try {
     const seq = await studio.withRetries(() => db.ref(record.GENSEQ).transaction((cur) => (Number(cur) || 0) + 1));
     if (seq && seq.committed) code = record.formatCode(Number(seq.snapshot.val()));
   } catch (e) { console.error(`newArrivalsStudio: ${pid} has no code — ${e.message}`); }
   const reason = item.generateRequest.regenerate ? "regenerate" : "requested";
-  const gen = record.generationEntry(res, { at, cost, model: generation.imageModel, reason, code, draftCount: res.draftFiles.length });
+  const gen = record.generationEntry(res, { at, cost, model, reason, code, draftCount: res.draftFiles.length });
 
   // `from` is the lane the item was claimed in: a retried landing (the first
   // try committed but its answer was lost) must still move the index from there.
@@ -375,13 +390,13 @@ async function studioGenerate(db, { pid, method }, uid, deps, emit = () => {}) {
 
 const newArrivalsStudio = onCall(
   // 2 vCPU for sharp; one generation holds ~200 MB of images. Not retried, not scheduled.
-  { region: "europe-west1", memory: "2GiB", cpu: 2, timeoutSeconds: 540, concurrency: 3, maxInstances: 4, secrets: [geminiApiKey] },
+  { region: "europe-west1", memory: "2GiB", cpu: 2, timeoutSeconds: 540, concurrency: 3, maxInstances: 4, secrets: [geminiApiKey, openaiApiKey] },
   async (request, response) => {
     await na._internals.assertNewArrivalsAccess(request);
     const emit = request.acceptsStreaming && response ? (ev) => { response.sendChunk(ev); } : () => {};
     const d = request.data || {};
-    return studioGenerate(admin.database(), { pid: d.pid, method: d.method }, request.auth?.uid,
-      { bucket: admin.storage().bucket(BUCKET), apiKey: geminiApiKey.value() }, emit);
+    return studioGenerate(admin.database(), { pid: d.pid, method: d.method, provider: d.provider }, request.auth?.uid,
+      { bucket: admin.storage().bucket(BUCKET), apiKey: geminiApiKey.value(), openaiKey: openaiApiKey.value() }, emit);
   },
 );
 

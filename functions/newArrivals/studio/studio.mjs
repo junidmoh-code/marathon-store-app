@@ -18,6 +18,15 @@ import { correctFootwear } from "./correct.mjs";
 import sourcePhoto from "../sourcePhoto.cjs";
 
 export const METHODS = Object.freeze(["full", "split"]);
+export const PROVIDERS = Object.freeze(["gemini", "openai"]);
+const PROVIDER_NAME = { gemini: "Gemini", openai: "OpenAI" };
+
+/** The engine for this generation: the tap's choice, else the item's, else the default (Gemini). Pure. */
+export function providerFor(item, { asked = null, defaultProvider = "gemini" } = {}) {
+  if (PROVIDERS.includes(asked)) return asked;
+  if (PROVIDERS.includes(item?.provider)) return item.provider;
+  return PROVIDERS.includes(defaultProvider) ? defaultProvider : "gemini";
+}
 
 /** The method for this generation: the tap's choice, else the item's, else the default. Pure. */
 export function methodFor(item, { asked = null, defaultMethod = "full" } = {}) {
@@ -63,7 +72,10 @@ const draftJpeg = (buf) => sharp(buf).rotate().resize(1280, 1280, { fit: "inside
  * emit({ type, … }) — progress for the card; never throws.
  * → { generated, kind, method, promptVersion, layersUsed, box, trace, draftFiles, usage }
  */
-export async function generateOne({ item, product, genId, method = "full", deps, emit = () => {} }) {
+export async function generateOne({ item, product, genId, method = "full", provider = "gemini", deps, emit = () => {} }) {
+  // The engine: its model and its name for the card's progress line. Everything else is the same for both.
+  const model = provider === "openai" ? deps.generation.openaiModel : deps.generation.imageModel;
+  const engine = PROVIDER_NAME[provider] || "Gemini";
   const say = (ev) => { try { emit(ev); } catch { /* the card's view never affects the generation */ } };
   let kind = kindFor(product || { categoryKey: item.categoryKey });
   // A clothing item with no category key: one garment on the single fence (a set has its own category).
@@ -108,7 +120,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
 
   if (method === "split") {
     if (!deps.split) throw new StudioRefusal("the split method is not installed");
-    return deps.split({ item, product, genId, kind, categoryKey, orig, originalUrl, box, boxMode, boxSource, boxFrom, brand, libraryBoxPng, deps, say });
+    return deps.split({ item, product, genId, kind, categoryKey, orig, originalUrl, box, boxMode, boxSource, boxFrom, brand, libraryBoxPng, provider, model, engine, deps, say });
   }
 
   const plate = await deps.loadPlate(kind), ref = await deps.loadReference(kind);
@@ -121,7 +133,9 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     placement: placementText(kind, effSpec), layers, boxMode });
   const plateJ = plate.forModel || await forModel(plate.buffer);
   const refJ = ref ? (ref.forModel || await forModel(ref.buffer)) : null;
-  const aspect = closestAspect(plate.width, plate.height);
+  // The frame asked for: the engine's nearest supported ratio (gpt-image-1 makes 2:3, 3:2 or 1:1 only); the
+  // layout diagram is drawn in that frame and the result is cover-cropped to the plate, as for Gemini.
+  const aspect = closestAspect(plate.width, plate.height, provider === "openai" ? ["2:3", "3:2", "1:1"] : null);
   const frame = genFrameOf(plate.width, plate.height, RATIOS[aspect]);
   const guideJ = await forModel(await layoutGuideImage(kind, effSpec, plate.buffer, frame));
 
@@ -152,10 +166,10 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   ];
   const imageConfig = { aspectRatio: aspect, imageSize: generation.imageSize };
 
-  say({ type: "status", text: "Gemini is working…" });
+  say({ type: "status", text: `${engine} is working…` });
   const draftFiles = [];
   const draftJobs = [];
-  const gen = await deps.image(generation.imageModel, parts, imageConfig, {
+  const gen = await deps.image(model, parts, imageConfig, {
     onEvent: (ev) => {
       if (ev.type === "thought") say({ type: "thought", text: ev.text });
       // A draft is shown as soon as it is stored; a failed upload never costs the photo.
@@ -175,13 +189,13 @@ export async function generateOne({ item, product, genId, method = "full", deps,
     if (!gm.width || !gm.height) throw new Error("the image model's answer was not a readable image");
     let out, mime = "image/jpeg";
     try { out = await toCanvas(gen.buffer, plate); }
-    catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as Gemini made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
+    catch (e) { out = gen.buffer; mime = gen.mime || "image/png"; finishNote = `kept as ${engine} made it — the finishing step failed (${String(e.message).slice(0, 80)})`; }
     measured = out;
     const stamp = deps.now();
     // (A footwear photo the finishing step could not even resize is kept as Gemini made it — and the card says so.)
     if (kind === "footwear" && generation.footwearCorrection && finishNote) {
       correction = { applied: false, problem: "the finishing step failed" };
-      note = "Not placed on your backdrop — the finishing step failed. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.";
+      note = `Not placed on your backdrop — the finishing step failed. The photo shown is ${engine}'s own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
     }
     // THE PLATE LOCK (footwear): everything but the shoe and its box comes from the ONE fixed plate. The shoe
     // and box are lifted out of Gemini's photo, scaled uniformly to the measured layout and placed on the
@@ -202,12 +216,12 @@ export async function generateOne({ item, product, genId, method = "full", deps,
         // Gemini was given a box but none could be found in its photo: the corrected photo has no box — said, never silent.
         if (boxMode !== "none" && !fixed.placed?.box) {
           correction.boxMissing = true;
-          note = "The box could not be found on its own in Gemini's photo, so it was not placed — check this photo. Gemini's own photo is the small one below; tap Regenerate to try again.";
+          note = `The box could not be found on its own in ${engine}'s photo, so it was not placed — check this photo. ${engine}'s own photo is the small one below; tap Regenerate to try again.`;
         }
       } else {
         const why = fixed?.problem || "the correction gave no photo";
         correction = { applied: false, problem: why };
-        note = `Not placed on your backdrop — ${why}. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
+        note = `Not placed on your backdrop — ${why}. The photo shown is ${engine}'s own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
       }
     }
     try {
@@ -217,7 +231,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
       if (!uncorrected) throw e;
       generated = uncorrected; uncorrected = null; measured = gen.buffer; placedSpec = null;
       correction = { applied: false, problem: "the corrected photo could not be stored" };
-      note = "Not placed on your backdrop — the corrected photo could not be stored. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.";
+      note = `Not placed on your backdrop — the corrected photo could not be stored. The photo shown is ${engine}'s own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
     }
   } catch (e) {
     // The caller still counts what Gemini charged for it.
@@ -235,7 +249,7 @@ export async function generateOne({ item, product, genId, method = "full", deps,
   const finalData = gen.buffer.toString("base64");
   const kept = draftFiles.filter((d) => d.data !== finalData).sort((a, b) => a.n - b.n).map(({ url, path }) => ({ url, path }));
   return {
-    generated, kind, method: "full",
+    generated, kind, method: "full", provider, model,
     ...(uncorrected ? { uncorrected } : {}), ...(correction ? { corrected: correction.applied } : {}), ...(note ? { note } : {}),
     // The product photo this was made from: a later re-shoot makes the generation out of date.
     // (Always the product's photo address — the same one the list compares with — even when the

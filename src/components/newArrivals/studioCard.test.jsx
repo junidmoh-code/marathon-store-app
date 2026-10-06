@@ -177,32 +177,71 @@ describe("Generate: live on the card", () => {
     expect(btn(c, "Regenerate").props.disabled).toBe(false);
   });
 
-  it("the method is chosen per item: Full Gemini by default, Split on a tap — and Generate uses it", async () => {
+  const radios = (tree, pid) => card(tree, pid).findAll((n) => n.props && n.props.role === "radio");
+  const picked = (tree, pid) => radios(tree, pid).filter((r) => r.props["aria-checked"]).map(label);
+
+  it("FOUR explicit buttons — Full Gemini, Split (Gemini), Full OpenAI, Split (OpenAI); Full Gemini is the default and the one in use is highlighted", async () => {
+    const tree = await render(fakeApi([bare(1)]));
+    expect(radios(tree, P(1)).map(label)).toEqual(["Full Gemini", "Split (Gemini)", "Full OpenAI", "Split (OpenAI)"]);
+    expect(picked(tree, P(1))).toEqual(["Full Gemini"]);
+  });
+
+  it("each button sets the engine AND the method, at once on the card and on the server; Generate then uses exactly that", async () => {
     const api = fakeApi([bare(1)], { generate: vi.fn(() => new Promise(() => {})) });
     const tree = await render(api);
-    const radios = () => card(tree, P(1)).findAll((n) => n.props && n.props.role === "radio");
-    expect(radios().map((r) => [label(r), r.props["aria-checked"]])).toEqual([["Split", false], ["Full Gemini", true]]);
-    await tap(radios()[0]);
-    expect(radios().map((r) => r.props["aria-checked"])).toEqual([true, false]);
-    expect(api.method).toHaveBeenCalledWith(P(1), "split");
+    await tap(radios(tree, P(1))[3]);                                   // Split (OpenAI)
+    expect(picked(tree, P(1))).toEqual(["Split (OpenAI)"]);
+    expect(api.method).toHaveBeenLastCalledWith(P(1), "split", "openai");
+    await settle(() => {});
+    await tap(radios(tree, P(1))[2]);                                   // Full OpenAI: the default method, OpenAI's engine
+    expect(picked(tree, P(1))).toEqual(["Full OpenAI"]);
+    expect(api.method).toHaveBeenLastCalledWith(P(1), null, "openai");
+    await settle(() => {});
     await tap(btn(card(tree, P(1)), "Generate"));
-    expect(api.generate).toHaveBeenCalledWith(P(1), expect.objectContaining({ method: "split" }));
+    expect(api.generate).toHaveBeenCalledWith(P(1), expect.objectContaining({ method: "full", provider: "openai" }));
   });
 
-  it("the default method is the function's own (it comes with the list): with Split as the default, Split shows selected and choosing Full Gemini is SENT", async () => {
+  it("the buttons are never blended: a Gemini choice sends Gemini, an OpenAI choice sends OpenAI", async () => {
+    for (const [i, want] of [[0, { method: null, provider: null }], [1, { method: "split", provider: null }], [2, { method: null, provider: "openai" }], [3, { method: "split", provider: "openai" }]]) {
+      const api = fakeApi([bare(1, i === 0 ? { method: "split", provider: "openai" } : {})]);
+      const tree = await render(api);
+      await tap(radios(tree, P(1))[i]);
+      expect(api.method).toHaveBeenLastCalledWith(P(1), want.method, want.provider);
+    }
+  });
+
+  it("an item with no choice of its own sends none: the function uses its default (Full Gemini)", async () => {
+    const api = fakeApi([bare(1)], { generate: vi.fn(() => new Promise(() => {})) });
+    const tree = await render(api);
+    await tap(btn(card(tree, P(1)), "Generate"));
+    expect(api.generate).toHaveBeenCalledWith(P(1), expect.objectContaining({ method: null, provider: null }));
+  });
+
+  it("the choice is refused by the server: the highlight goes back to what it was, and it is said", async () => {
+    const api = fakeApi([bare(1)], { method: vi.fn(async () => { throw refusal("Can't change the method — a new photo is being generated."); }) });
+    const tree = await render(api);
+    await tap(radios(tree, P(1))[2]);
+    await settle(() => {});
+    expect(picked(tree, P(1))).toEqual(["Full Gemini"]);
+    expect(lastToast(tree)).toMatch(/^Item 1: Choice not changed — Can't change the method/);
+  });
+
+  it("each photo says which engine and method made it; OpenAI's record button does not claim Gemini", async () => {
+    const tree = await render(fakeApi([withPhoto(1, { generations: { g1: GEN("g1", 1, { provider: "gemini", method: "split" }), g2: GEN("g2", 2, { provider: "openai", method: "full" }) } })]));
+    expect(text({ toJSON: () => byId(card(tree, P(1)), "main-meta")[0] && tree.toJSON() })).toContain("Full OpenAI · R2.50");
+    const how = card(tree, P(1)).findAll((n) => n.props && n.props["data-testid"] === "how-toggle" && typeof n.type === "string").map(label);
+    expect(how).toEqual(["How it was made", "How Gemini did it"]);
+    expect(view.madeTag({ method: "split", provider: "openai" })).toBe("Split (OpenAI)");
+    expect(view.madeTag({ method: "full" })).toBe("Full Gemini");          // an older photo with no engine recorded: Gemini
+    expect(view.madeTag({})).toBeNull();
+  });
+
+  it("with Split as the function's default method, the Split buttons are the default pair", async () => {
     const api = fakeApi([bare(1)], { list: vi.fn(async (tab) => ({ tab, items: [bare(1)], total: 1, tabCounts: { new: 1, done: 0 }, groupCounts: { sneakers: 1, clothing: 0 }, defaultMethod: "split" })) });
     const tree = await render(api);
-    const radios = () => card(tree, P(1)).findAll((n) => n.props && n.props.role === "radio");
-    expect(radios().map((r) => r.props["aria-checked"])).toEqual([true, false]);
-    await tap(radios()[1]);
-    expect(api.method).toHaveBeenCalledWith(P(1), "full");
-  });
-
-  it("choosing the default method clears the item's override on the server", async () => {
-    const api = fakeApi([bare(1, { method: "split" })]);
-    const tree = await render(api);
-    await tap(card(tree, P(1)).findAll((n) => n.props && n.props.role === "radio")[1]);
-    expect(api.method).toHaveBeenCalledWith(P(1), null);
+    expect(picked(tree, P(1))).toEqual(["Split (Gemini)"]);
+    await tap(radios(tree, P(1))[0]);
+    expect(api.method).toHaveBeenLastCalledWith(P(1), "full", null);
   });
 });
 
@@ -891,7 +930,8 @@ describe("the card's own state helpers", () => {
     l = view.foldLive(l, { type: "draft", url: "u1" });
     l = view.foldLive(l, { type: "draft", url: "u1" });
     l = view.foldLive(l, { type: "bogus" });
-    expect(l).toEqual({ status: "Gemini is drawing…", thoughts: "ab", drafts: ["u1"], startedAt: 5 });
+    expect(l).toEqual({ status: "Gemini is drawing…", thoughts: "ab", drafts: ["u1"], startedAt: 5, engine: "Gemini" });
+    expect(view.foldLive(view.liveStart(5, "OpenAI"), { type: "draft", url: "u1" }).status).toBe("OpenAI is drawing…");
     expect(view.foldLive(l, { type: "status", text: "Finishing the photo…" }).status).toBe("Finishing the photo…");
   });
 

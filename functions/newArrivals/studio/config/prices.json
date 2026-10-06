@@ -1,13 +1,41 @@
 {
-  "note": "List prices, USD per 1M tokens (Gemini API paid tier, as published). Image output is billed per token (a 2K image ≈ 1,120 tokens). Update when Google changes them.",
+  "note": "List prices, USD per 1M tokens (Gemini API paid tier, as published). Image output is billed per token (a 2K image \u2248 1,120 tokens). Update when Google changes them. gpt-image-1: text in $5, image in $10, image out $40 per 1M tokens (OpenAI list prices).",
   "usdToZar": 18.0,
   "models": {
-    "gemini-3-pro-image": { "input": 2.0, "output": 12.0, "imageOutput": 120.0 },
-    "gemini-3.1-pro-preview": { "input": 2.0, "output": 12.0 },
-    "gemini-3.7-flash": { "input": 0.5, "output": 3.0 },
-    "gemini-3.6-flash": { "input": 0.5, "output": 3.0 },
-    "gemini-3.8-flash": { "input": 0.5, "output": 3.0 },
-    "gemini-3-flash-preview": { "input": 0.5, "output": 3.0 },
-    "default": { "input": 2.0, "output": 12.0 }
+    "gemini-3-pro-image": {
+      "input": 2.0,
+      "output": 12.0,
+      "imageOutput": 120.0
+    },
+    "gemini-3.1-pro-preview": {
+      "input": 2.0,
+      "output": 12.0
+    },
+    "gemini-3.7-flash": {
+      "input": 0.5,
+      "output": 3.0
+    },
+    "gemini-3.6-flash": {
+      "input": 0.5,
+      "output": 3.0
+    },
+    "gemini-3.8-flash": {
+      "input": 0.5,
+      "output": 3.0
+    },
+    "gemini-3-flash-preview": {
+      "input": 0.5,
+      "output": 3.0
+    },
+    "default": {
+      "input": 2.0,
+      "output": 12.0
+    },
+    "gpt-image-1": {
+      "input": 5.0,
+      "imageInput": 10.0,
+      "output": 40.0,
+      "imageOutput": 40.0
+    }
   }
 }

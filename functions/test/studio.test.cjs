@@ -634,3 +634,98 @@ test("an answer that is not a readable image is never stored or shown as a photo
   assert.notEqual(it.status, "ready");
   assert.equal(w.uploads.filter((u) => /gen_\d+/.test(u.path)).length, 0);
 });
+
+// ── THE SECOND ENGINE: OpenAI's gpt-image-1, behind the same interface ───────
+test("Full OpenAI on a tap: the SAME prompt and images go to gpt-image-1; the record says which engine made it; nothing else differs", async () => {
+  const gemini = await world();
+  const a = await studio.studioGenerate(gemini.db, { pid: PID }, "junid", gemini.deps);
+  const openai = await world();
+  const b = await studio.studioGenerate(openai.db, { pid: PID, provider: "openai" }, "junid", openai.deps);
+  const ga = gemini.calls.find((c) => c[0] === "image"), gb = openai.calls.find((c) => c[0] === "image");
+  assert.equal(ga[1], "gemini-3-pro-image");
+  assert.equal(gb[1], "gpt-image-1");
+  // Same prompt, same parts, same image config — only the engine differs.
+  // The same prompt and the same images — except the frame: gpt-image-1 makes 2:3 (Gemini 3:4), so the
+  // layout diagram is drawn in that frame; everything else is byte for byte the same.
+  const texts = (parts) => parts.filter((p) => p.text).map((p) => p.text);
+  // Each image with the sentence before it, the layout diagram left out.
+  const images = (parts) => parts.map((p, i) => (p.inline_data ? [parts[i - 1]?.text || "", p.inline_data.data] : null)).filter((x) => x && !/^LAYOUT DIAGRAM/.test(x[0]));
+  assert.deepEqual(texts(gb[3]), texts(ga[3]));
+  assert.ok(images(ga[3]).length >= 2);
+  assert.deepEqual(images(gb[3]), images(ga[3]), "plate, reference, product and box are the same bytes");
+  assert.equal(gb[2].aspectRatio, "2:3"); assert.equal(ga[2].aspectRatio, "3:4");
+  const ia = await itemOf(gemini.db), ib = await itemOf(openai.db);
+  assert.equal(ia.generations[a.genId].provider, "gemini");
+  assert.equal(ib.generations[b.genId].provider, "openai");
+  assert.equal(ib.generations[b.genId].model, "gpt-image-1");
+  assert.equal(ib.generations[b.genId].promptVersion, ia.generations[a.genId].promptVersion);
+  assert.equal(ib.status, "ready");
+  assert.equal(ib.naming.status, "pending", "approval, naming and posting do not care which engine made it");
+  assert.equal((await openai.db.ref(`${core.GENLOG}/${b.code}/provider`).once()).val(), "openai");
+});
+
+test("the item's own provider is used when the tap names none; with neither, Gemini", async () => {
+  const w = await world({ item: { provider: "openai" } });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.equal((await itemOf(w.db)).generations[out.genId].provider, "openai");
+  const d = await world();
+  const o2 = await studio.studioGenerate(d.db, { pid: PID }, "junid", d.deps);
+  assert.equal((await itemOf(d.db)).generations[o2.genId].provider, "gemini");
+  await assert.rejects(studio.studioGenerate(d.db, { pid: PID, provider: "midjourney" }, "junid", d.deps), /Provider is gemini or openai/);
+});
+
+test("Split (OpenAI) that cannot be cut out keeps OpenAI's own photo and says so — naming OpenAI, as the Gemini split names Gemini", async () => {
+  const w = await world();
+  const image = w.deps.image;
+  w.deps.image = async (model, parts, cfg, opts) => ({ ...(await image(model, parts, cfg, opts)), buffer: await garmentOnGrey("#DEDEDE"), mime: "image/png" });
+  const out = await studio.studioGenerate(w.db, { pid: PID, method: "split", provider: "openai" }, "junid", w.deps);
+  const gen = (await itemOf(w.db)).generations[out.genId];
+  assert.equal(gen.method, "split");
+  assert.equal(gen.provider, "openai");
+  assert.match(gen.note, /^Split could not place this one — .* The photo shown is OpenAI's own, on grey; try Full OpenAI for this item\.$/);
+  assert.match(gen.url, /-product\.jpg/);
+});
+
+test("OpenAI's errors are said in the same plain way: declined, out of credit, a refused key, too slow", async () => {
+  const say = async (err) => {
+    const w = await world();
+    w.deps.image = async () => { throw err; };
+    let msg = null;
+    await studio.studioGenerate(w.db, { pid: PID, provider: "openai" }, "junid", w.deps).catch((e) => { msg = e.message; });
+    assert.equal((await itemOf(w.db)).generateRequest, undefined, "the item is given back");
+    return msg;
+  };
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 400: rejected by the safety system"), { status: 400, refusal: true })), "No photo — OpenAI declined to make this photo.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 429: You exceeded your current quota, please check your plan and billing details"), { status: 429 })), "No photo — the OpenAI credit has run out — top it up on the OpenAI platform, then tap Generate again.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 429: Rate limit reached"), { status: 429 })), "No photo — the photo service is busy — tap Generate again.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 401: Incorrect API key"), { status: 401 })), "No photo — the OpenAI key was refused — it needs replacing in Secret Manager.");
+  assert.equal(await say(Object.assign(new Error("OpenAI gpt-image-1 gave no photo within 300s"), { status: 504 })), "No photo — OpenAI took too long and the connection was closed — it may still have been charged; tap Generate to try again.");
+});
+
+test("OpenAI gets the SAME steam layer on a hoodie and the SAME box rule + shoe references on a sneaker — and its request puts the real product first", async () => {
+  const { toPromptAndImages } = await import("../newArrivals/studio/openai-image.mjs");
+  const { STEAM_LAYER, footwearBoxLayer, FOOTWEAR_POSE_LAYER } = await import("../newArrivals/studio/prompt.mjs");
+  // Clothing: the steam layer, word for word, in the prompt OpenAI is sent.
+  const h = await world();
+  const ho = await studio.studioGenerate(h.db, { pid: PID, provider: "openai" }, "junid", h.deps);
+  const hParts = h.calls.find((c) => c[0] === "image")[3];
+  assert.ok(toPromptAndImages(hParts).prompt.includes(STEAM_LAYER));
+  assert.deepEqual((await itemOf(h.db)).generations[ho.genId].layers, { steam: true });
+  // Footwear: no box photo of its own → the brand's library box, never an invented one; the reference photo goes too.
+  const s = await world({ product: { name: "Nike Air", categoryKey: "sneakers", brand: "Nike" }, item: { categoryKey: "sneakers" } });
+  const lib = await sharp({ create: { width: 300, height: 200, channels: 4, background: "#e85d04" } }).png().toBuffer();
+  s.deps.assets = { ...s.deps.assets, libraryBox: async (key) => (key === "nike" ? { buffer: lib, kind: "stand-in" } : null), loadReference: async () => ({ buffer: await jpeg(300, 400, "#444"), file: "footwear-reference.png" }) };
+  const so = await studio.studioGenerate(s.db, { pid: PID, provider: "openai" }, "junid", s.deps);
+  const call = s.calls.find((c) => c[0] === "image");
+  assert.equal(call[1], "gpt-image-1");
+  const sent = toPromptAndImages(call[3]);
+  assert.ok(sent.prompt.includes(footwearBoxLayer("library")));
+  assert.ok(sent.prompt.includes(FOOTWEAR_POSE_LAYER));
+  assert.ok(sent.prompt.includes("Never invent a box") || sent.prompt.includes("a box's logo is never invented"));
+  const order = sent.images.map((i) => i.label.split(" — ")[0]);
+  assert.deepEqual(order.slice(0, 2), ["SHOE PHOTO", "BOX PHOTO"], "the real shoe, then its box, are the first images OpenAI sees");
+  assert.ok(order.includes("REFERENCE") && order.includes("BACKGROUND PLATE") && order.includes("LAYOUT DIAGRAM"));
+  const gen = (await itemOf(s.db)).generations[so.genId];
+  assert.equal(gen.provider, "openai");
+  assert.equal(gen.layers.footwearBox, true); assert.equal(gen.layers.footwearPose, true);
+});

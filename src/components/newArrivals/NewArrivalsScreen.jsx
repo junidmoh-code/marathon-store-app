@@ -34,7 +34,7 @@ import {
   TABS, REJECT_CHIPS, priceText, sizesText, statusLine, destinationLines, actionsFor, whenText,
   shopifyNameLine, needsStockPrice, PRICE_TABS, priceField, changedPrices, UNDO_MS, generationsOf, costText, totalCostText, spentText, canPick, currentGenId, stockText,
   isGroupTab, groupLabel, stepGroup, rememberedGroup, rememberGroup, genCode, canLove, isLoved,
-  normalizeTab, canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, methodMadeText, METHOD_TABS, effectiveMethod, methodToSet, METHOD_CHOICES,
+  normalizeTab, canHow, THOUGHTS_LABEL, HOW_NONE_TEXT, methodMadeText, METHOD_TABS, METHOD_CHOICES, effectiveChoice, choiceToSet, afterChoice, madeTag, howLabel,
   foldLive, liveStart, afterPick, afterPrices, afterLove, withoutItem, withItemBack, isGenerating,
   revertPick, revertLove, revertPrices, revertMethod, afterGenerated, named, sourceUrlOf,
 } from "./newArrivalsView";
@@ -81,7 +81,7 @@ function Elapsed({ since }) {
 function LiveTile({ live }) {
   const draft = live.drafts[live.drafts.length - 1] || null;
   return (
-    <Tile testid="live-tile" url={draft} label={draft ? `Draft ${live.drafts.length} — Gemini is still working` : "Generating…"}>
+    <Tile testid="live-tile" url={draft} label={draft ? `Draft ${live.drafts.length} — ${live.engine || "Gemini"} is still working` : "Generating…"}>
       <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "18px 10px 8px", fontSize: 12, color: "#fff",
         background: draft ? "linear-gradient(transparent, rgba(0,0,0,.75))" : "none", display: "flex", justifyContent: "space-between", gap: 8 }}>
         <span data-testid="live-status">{live.status}</span><Elapsed since={live.startedAt} />
@@ -117,7 +117,7 @@ function HowPanel({ pid, gen, loadHow }) {
   const drafts = data && Array.isArray(data.drafts) ? data.drafts.filter((d) => d?.url) : [];
   return (
     <div data-testid="how-panel" style={{ background: "rgba(255,255,255,.04)", borderRadius: 12, padding: 10, marginTop: 8, fontSize: 12 }}>
-      <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>How Gemini did it · {genCode(gen)}</div>
+      <div style={{ color: GRAY, fontSize: 11, marginBottom: 4 }}>{howLabel(gen)} · {genCode(gen)}</div>
       {!data && !error && <div style={{ color: GRAY }}>Loading…</div>}
       {error && <div style={{ color: INK }}>Couldn't load: {error}</div>}
       {data?.none && <div data-testid="how-none" style={{ color: GRAY }}>{HOW_NONE_TEXT}</div>}
@@ -196,7 +196,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
   const total = totalCostText(item, stats);
   const how = (g, wide) => h.loadHow && canHow(g) && (
     <button data-testid="how-toggle" aria-expanded={howOpen === g.genId} onClick={() => toggleHow(g.genId)} style={{ ...mini, ...(wide ? { width: "100%", marginTop: 4, fontSize: 11 } : {}) }}>
-      {howOpen === g.genId ? "Hide" : "How Gemini did it"}
+      {howOpen === g.genId ? "Hide" : howLabel(g)}
     </button>
   );
   return (
@@ -210,7 +210,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
       {!live && main && (
         <div data-testid="main-meta" style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap", marginTop: 6 }}>
           <GenCode gen={main} />
-          <span style={{ color: GRAY, fontSize: 11 }}>{[methodTag(main), costText(main, stats)].filter(Boolean).join(" · ")}</span>
+          <span style={{ color: GRAY, fontSize: 11 }}>{[madeTag(main), costText(main, stats)].filter(Boolean).join(" · ")}</span>
           <span style={{ flex: 1 }} />
           {how(main, false)}
           {h.onLove && canLove(tab, main) && <LoveButton item={item} gen={main} onLove={h.onLove} disabled={busy} />}
@@ -225,7 +225,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
       {!live && main?.uncorrected?.url && (
         <a data-testid="uncorrected" href={main.uncorrected.url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, color: GRAY, fontSize: 11, textDecoration: "none" }}>
           <img src={main.uncorrected.url} alt="Before it was placed on your backdrop" loading="lazy" style={{ width: 54, height: 72, objectFit: "cover", borderRadius: 8, background: "#1c1c1e" }} />
-          <span>Shoe and box placed on your fixed backdrop. This is Gemini's photo before that.</span>
+          <span>Shoe and box placed on your fixed backdrop. This is {main.provider === "openai" ? "OpenAI" : "Gemini"}'s photo before that.</span>
         </a>
       )}
       {/* What Junid must know about this photo (e.g. Split could not place it): it stays on the card, not only in a passing message. */}
@@ -258,9 +258,6 @@ function Photos({ item, tab, stats, live, busy, h }) {
     </>
   );
 }
-
-// How a photo was made, as a short tag beside its code.
-const methodTag = (gen) => (gen?.method === "split" ? "Split" : gen?.method === "full" ? "Full Gemini" : null);
 
 function ItemCard({ item, tab, live, h, stats }) {
   const p = item.product || {};
@@ -303,12 +300,13 @@ function ItemCard({ item, tab, live, h, stats }) {
       )}
       {METHOD_TABS.includes(tab) && h.onMethod && (
         <div data-testid="method" style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap", marginTop: 10, fontSize: 11, color: GRAY }}>
-          <span role="radiogroup" aria-label="Method for the next photo" style={{ display: "flex", alignItems: "center", gap: 6 }}>
+          {/* NEXT PHOTO: four explicit choices — engine and method together; the one in use is highlighted. */}
+          <span role="radiogroup" aria-label="Next photo: engine and method" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, flex: "1 1 100%" }}>
             {METHOD_CHOICES.map((m) => {
-              const on = effectiveMethod(item, h.defaultMethod) === m.key;
+              const on = effectiveChoice(item, h.defaultMethod) === m.key;
               return (
                 <button key={m.key} role="radio" aria-checked={on} aria-disabled={working} onClick={() => { if (!working && !on) h.onMethod(item, m.key); }}
-                  style={{ ...(on ? bBlue : bGray), minHeight: 40, padding: "0 14px", fontSize: 12, borderRadius: 999, opacity: working ? 0.5 : 1 }}>{m.label}</button>
+                  style={{ ...(on ? bBlue : bGray), minHeight: 40, padding: "0 8px", fontSize: 12, borderRadius: 999, opacity: working ? 0.5 : 1 }}>{m.label}</button>
               );
             })}
           </span>
@@ -608,7 +606,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   // ❤ — never moves or approves the item.
   h.onLove = api.love ? (item, genId, loved) => instant(item, (i) => afterLove(i, genId, loved, Date.now()), revertLove(item, genId), () => api.love(item.pid, genId, loved), loved ? "Not loved" : "Love not removed") : null;
   // THE METHOD for this item's next photo: Full Gemini or Split.
-  h.onMethod = api.method ? (item, choice) => instant(item, (i) => ({ ...i, method: choice }), revertMethod(item, choice), () => api.method(item.pid, methodToSet(choice, defaultMethod)), "Method not changed") : null;
+  h.onMethod = api.method ? (item, key) => instant(item, (i) => afterChoice(i, key), revertMethod(item, key), () => { const c = choiceToSet(key, defaultMethod); return api.method(item.pid, c.method, c.provider); }, "Choice not changed") : null;
   // FEEDBACK — one chip, noted against the photo shown; the item stays.
   h.onReject = api.reject ? (item, why) => {
     say(item, `Noted: ${why}.`);
@@ -717,15 +715,17 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     const pid = item.pid;
     if (liveRef.current[pid] || isGenerating(item)) return;
     taps.current += 1;
-    liveRef.current = { ...liveRef.current, [pid]: liveStart(Date.now()) };
+    liveRef.current = { ...liveRef.current, [pid]: liveStart(Date.now(), item.provider === "openai" ? "OpenAI" : "Gemini") };
     setLive(liveRef.current);
     // The item's OWN choice is sent; with none the function uses its default (Full Gemini).
     const method = item.method === "full" || item.method === "split" ? item.method : null;
+    // …and its own engine (none = the default, Gemini).
+    const provider = item.provider === "openai" || item.provider === "gemini" ? item.provider : null;
     (async () => {
       // The list is re-read AFTER the card has left its "generating" state (never during).
       let reread = false;
       try {
-        const res = await api.generate(pid, { method, onEvent: (ev) => { if (alive.current) setLive((l) => (l[pid] ? { ...l, [pid]: foldLive(l[pid], ev) } : l)); } });
+        const res = await api.generate(pid, { method, provider, onEvent: (ev) => { if (alive.current) setLive((l) => (l[pid] ? { ...l, [pid]: foldLive(l[pid], ev) } : l)); } });
         if (!alive.current) return;
         if (res?.addedOnly) {
           // The item had moved on while its photo was made (skipped or approved elsewhere).

@@ -147,9 +147,9 @@ export function toGenFrame(b, f) {
 export const RATIOS = { "1:1": 1, "2:3": 2 / 3, "3:2": 1.5, "3:4": 0.75, "4:3": 4 / 3, "4:5": 0.8, "5:4": 1.25, "9:16": 9 / 16, "16:9": 16 / 9, "21:9": 21 / 9 };
 /** The supported generation aspect closest to the plate's canvas. Pure. */
 
-export function closestAspect(width, height) {
+export function closestAspect(width, height, only = null) {
   const r = width / height;
-  return Object.entries(RATIOS).sort((a, b) => Math.abs(Math.log(a[1] / r)) - Math.abs(Math.log(b[1] / r)))[0][0];
+  return Object.entries(RATIOS).filter(([k]) => !only || only.includes(k)).sort((a, b) => Math.abs(Math.log(a[1] / r)) - Math.abs(Math.log(b[1] / r)))[0][0];
 }
 
 /** The plate's EXACT canvas: uniform scale to cover, centred — never a stretch. */

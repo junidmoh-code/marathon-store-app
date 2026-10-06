@@ -10,6 +10,7 @@ import crypto from "node:crypto";
 export const GENSEQ = "new_arrivals/genSeq";
 export const GENLOG = "new_arrivals/genlog";
 export const THOUGHTS_LABEL = "Gemini's own account — not proof";
+export const OPENAI_THOUGHTS_LABEL = "OpenAI gives no account of its work — its drafts only";
 export const SEED_NOTE = "not set — the API picks";
 export const RTDB_THOUGHTS_MAX = 4000;
 
@@ -26,6 +27,12 @@ const r2 = (x) => Math.round(x * 100) / 100;
 /** One call's usageMetadata as a priced row (image output tokens apart). Pure. */
 export function usageRow(model, usage) {
   if (!usage) return null;
+  // OpenAI's shape (gpt-image-1): input split into text and image tokens; the output is the image.
+  if ("input_tokens" in usage || "output_tokens" in usage) {
+    const d = usage.input_tokens_details || {};
+    const imageIn = d.image_tokens || 0;
+    return { model, prompt: d.text_tokens ?? Math.max(0, (usage.input_tokens || 0) - imageIn), imageIn, output: 0, imageOut: usage.output_tokens || 0, thoughts: 0 };
+  }
   const imageOut = (usage.candidatesTokensDetails || []).filter((d) => d.modality === "IMAGE").reduce((n, d) => n + (d.tokenCount || 0), 0);
   return { model, prompt: usage.promptTokenCount || 0, output: Math.max(0, (usage.candidatesTokenCount || 0) - imageOut), imageOut, thoughts: usage.thoughtsTokenCount || 0 };
 }
@@ -36,7 +43,7 @@ export function costOf(rows, prices, usdZar = null) {
   const unpriced = new Set();
   for (const r of rows) {
     const p = prices.models[r.model] || (unpriced.add(r.model), prices.models.default);
-    usd += (r.prompt * p.input + (r.output + r.thoughts) * p.output + r.imageOut * (p.imageOutput ?? p.output)) / 1e6;
+    usd += (r.prompt * p.input + (r.imageIn || 0) * (p.imageInput ?? p.input) + (r.output + r.thoughts) * p.output + r.imageOut * (p.imageOutput ?? p.output)) / 1e6;
   }
   return { usd, zar: usd * (usdZar ?? prices.usdToZar), calls: rows.length, unpriced: [...unpriced] };
 }
@@ -44,6 +51,8 @@ export function costOf(rows, prices, usdZar = null) {
 /** The list-price estimate of ONE generation, used only when the API returned no usage. Pure. */
 export function generationEstimateUsd(prices, model = "gemini-3-pro-image") {
   const p = prices.models[model] || prices.models.default;
+  // gpt-image-1 at 1024×1536, quality high: ~6,240 image tokens out, ~1,500 image tokens in (input_fidelity high), ~900 of text.
+  if (/^gpt-image/.test(model)) return (6240 * (p.imageOutput ?? p.output) + 1500 * (p.imageInput ?? p.input) + 900 * p.input) / 1e6;
   return (1120 * (p.imageOutput ?? p.output) + 9000 * p.input) / 1e6;
 }
 
@@ -89,6 +98,8 @@ export function generationEntry(res, { at, cost, model, reason, code = null, dra
     ...(res.sourceUrl ? { sourceUrl: res.sourceUrl } : {}),
     promptVersion: res.promptVersion,
     method,
+    // Which engine made it: "gemini" or "openai" (older generations have none: Gemini).
+    provider: res.provider === "openai" ? "openai" : "gemini",
     ...(method === "split" ? (res.packaging ? { packaging: res.packaging } : {}) : { layers: Object.fromEntries((res.layersUsed || []).map((k) => [k, true])) }),
     how: { code: code || null, draftCount: Number(draftCount) || 0 },
     plate: res.kind ? `junid-${res.kind}` : null, kind: res.kind || null,
@@ -132,14 +143,14 @@ export function genlogRecord({ code, pid, genId, gen, trace = null, totalMs = nu
     timing: { requestMs: t.requestMs ?? null, totalMs },
     thoughts: t.thoughts ?? null, thoughtImages: t.thoughtImages || 0,
     drafts: (t.draftFiles || []).map((d) => ({ url: d.url, path: d.path || null })),
-    method: gen.method || "full",
+    method: gen.method || "full", provider: gen.provider || "gemini",
     ...(t.split ? { split: t.split } : {}),
     // Footwear: what the correction found and where it placed it (or why it could not).
     ...(t.correction ? { correction: t.correction } : {}),
     ...(t.thoughtsUnsupported ? { thoughtsUnsupported: t.thoughtsUnsupported } : {}),
-    thoughtsLabel: THOUGHTS_LABEL,
+    thoughtsLabel: gen.provider === "openai" ? OPENAI_THOUGHTS_LABEL : THOUGHTS_LABEL,
     measurements: gen.measurements || null,
-    transport: "streamGenerateContent (Cloud Function)",
+    transport: gen.provider === "openai" ? "images/edits (Cloud Function)" : "streamGenerateContent (Cloud Function)",
   });
 }
 

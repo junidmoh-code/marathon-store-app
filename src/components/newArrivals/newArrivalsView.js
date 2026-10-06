@@ -208,11 +208,44 @@ export const isFullGemini = (item) => item?.method === "full";
 export const effectiveMethod = (item, defaultMethod = "full") => (item?.method === "full" || item?.method === "split" ? item.method : defaultMethod === "split" ? "split" : "full");
 /** What a tap on `choice` writes: the default clears the override (null), anything else is set. Pure. */
 export const methodToSet = (choice, defaultMethod = "full") => (choice === (defaultMethod === "split" ? "split" : "full") ? null : choice);
-export const METHOD_CHOICES = Object.freeze([{ key: "split", label: "Split" }, { key: "full", label: "Full Gemini" }]);
+// THE FOUR CHOICES for the next photo (Junid, 4 Oct): the engine and the method,
+// picked together, one button each. Gemini and OpenAI are separate buttons —
+// never blended. The same prompt and process go to whichever is picked.
+export const METHOD_CHOICES = Object.freeze([
+  { key: "gemini:full", provider: "gemini", method: "full", label: "Full Gemini" },
+  { key: "gemini:split", provider: "gemini", method: "split", label: "Split (Gemini)" },
+  { key: "openai:full", provider: "openai", method: "full", label: "Full OpenAI" },
+  { key: "openai:split", provider: "openai", method: "split", label: "Split (OpenAI)" },
+]);
+export const DEFAULT_CHOICE = "gemini:full";
+const providerOf = (v) => (v === "openai" ? "openai" : "gemini");
+/** The choice in use for this item's next photo: its own engine and method, else the defaults (Full Gemini). Pure. */
+export function effectiveChoice(item, defaultMethod = "full") {
+  return `${providerOf(item?.provider)}:${effectiveMethod(item, defaultMethod)}`;
+}
+/** What a tap on `key` stores: the default engine / method are stored as none (null). Pure. → { method, provider } */
+export function choiceToSet(key, defaultMethod = "full") {
+  const c = METHOD_CHOICES.find((x) => x.key === key) || METHOD_CHOICES[0];
+  return { method: methodToSet(c.method, defaultMethod), provider: c.provider === "gemini" ? null : c.provider };
+}
+/** The item as the card shows it after a tap on `key`. Pure. */
+export function afterChoice(item, key) {
+  const c = METHOD_CHOICES.find((x) => x.key === key) || METHOD_CHOICES[0];
+  return { ...item, method: c.method, provider: c.provider };
+}
+/** How one photo was made, as a short tag: "Full Gemini", "Split (OpenAI)" … or null. Pure. */
+export function madeTag(gen) {
+  if (gen?.method !== "split" && gen?.method !== "full") return null;
+  const c = METHOD_CHOICES.find((x) => x.method === gen.method && x.provider === providerOf(gen.provider));
+  return c ? c.label : null;
+}
+/** The button that opens a photo's record: Gemini gives an account of its thinking; OpenAI gives drafts only. Pure. */
+export const howLabel = (gen) => (gen?.provider === "openai" ? "How it was made" : "How Gemini did it");
 /** How one photo was made, as a small label, or null. Pure. */
 export function methodMadeText(gen) {
-  if (gen?.method === "split") return "made: product by Gemini, placed by code";
-  if (gen?.method === "full") return "made: full Gemini";
+  const who = gen?.provider === "openai" ? "OpenAI" : "Gemini";
+  if (gen?.method === "split") return `made: product by ${who}, placed by code`;
+  if (gen?.method === "full") return `made: full ${who}`;
   return null;
 }
 /** The tabs whose cards carry the "Full Gemini" control. */
@@ -410,14 +443,15 @@ const copyFrom = (cur, was, keys) => {
 };
 
 /** A generation that has just started, as the card shows it. Pure. */
-export const liveStart = (at) => ({ status: "Starting…", thoughts: "", drafts: [], startedAt: at });
+export const liveStart = (at, engine = "Gemini") => ({ status: "Starting…", thoughts: "", drafts: [], startedAt: at, engine });
 
 /** One progress event from the photo studio folded into the live view. Pure. */
 export function foldLive(live, ev) {
   if (!ev || typeof ev !== "object") return live;
   if (ev.type === "status" && ev.text) return { ...live, status: String(ev.text) };
-  if (ev.type === "thought" && ev.text) return { ...live, status: "Gemini is thinking…", thoughts: live.thoughts + String(ev.text) };
-  if (ev.type === "draft" && ev.url) return live.drafts.includes(ev.url) ? live : { ...live, status: "Gemini is drawing…", drafts: [...live.drafts, String(ev.url)] };
+  const who = live.engine || "Gemini";
+  if (ev.type === "thought" && ev.text) return { ...live, status: `${who} is thinking…`, thoughts: live.thoughts + String(ev.text) };
+  if (ev.type === "draft" && ev.url) return live.drafts.includes(ev.url) ? live : { ...live, status: `${who} is drawing…`, drafts: [...live.drafts, String(ev.url)] };
   return live;
 }
 
@@ -497,7 +531,8 @@ export const revertPrices = (was, drafts) => (cur) => {
   return { ...cur, product };
 };
 /** Undo a method choice — only if it is still the one chosen. Pure. */
-export const revertMethod = (was, choice) => (cur) => (cur?.method === choice ? copyFrom(cur, was, ["method"]) : cur);
+export const revertMethod = (was, key) => (cur) => (effectiveChoiceRaw(cur) === key ? copyFrom(cur, was, ["method", "provider"]) : cur);
+const effectiveChoiceRaw = (item) => `${item?.provider === "openai" ? "openai" : "gemini"}:${item?.method === "split" ? "split" : "full"}`;
 
 /** The server's item after a generation, merged onto the card: the card keeps its product and stock lines. Pure. */
 export const afterGenerated = (cur, item) => ({ sourceUrl: cur.sourceUrl, ...item, product: cur.product, availableSizes: cur.availableSizes, totalUnits: cur.totalUnits, stockKnown: cur.stockKnown });
