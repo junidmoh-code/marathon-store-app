@@ -61,7 +61,7 @@ import { stockSizeKey, stockCellPath, encodeSizeKey } from "../../utils/sizeKey"
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 import { isDeactivated } from "../../utils/deactivation.js";
 import { locationOf, locationName } from "../../utils/networkRegistry.js";
-import { net } from "./sectionRouting.js";
+import { net, engineSourceFor } from "./sectionRouting.js";
 
 // ── "HUB 2" IS "THE STORE'S BACK-STOCK HUB" (sections, 2026-10) ──────────────
 // Everything below was written when one hub stood behind every shop. The rule
@@ -145,8 +145,9 @@ export function isSneakerOrSlide(p) {
 // True when ALL of these hold; a "no" leaves the old seed-only path untouched:
 //   • the card is Central-stranded (source "central") — a hub-stranded card is
 //     the hub-to-hub Solve, frozen;
-//   • the nominated store's route is Hub 2 (config.routes) — that is what "kept
-//     at Hub 2" means to the engine;
+//   • the nominated store's engine route is its hub (config.routes; for a
+//     store config.routes does not name, the registry — see firstBatchEligible)
+//     — that is what "kept at the hub" means to the engine;
 //   • the product exists and is not a sneaker or a slide.
 //
 // WHAT PR #607 ALSO REQUIRED, AND WHY IT NO LONGER DOES (2026-09-17): the
@@ -245,11 +246,30 @@ export const hubPresenceSignals = ({ hubNode, hubLocks, hubOpenRequestIds, since
 // `false` (unknown, unread, true) keeps the Solve on the old path.
 // `hub` is the store's back-stock hub (default Hub 2): the store's route must
 // run through THAT hub, and the presence judged must be THAT hub's.
-export function firstBatchEligible({ source, store, product, routes, enabled = FIRST_BATCH_ENABLED, hub2Present: present, hub = FIRST_BATCH_HUB } = {}) {
+//
+// "THE STORE'S ROUTE" IS THE ENGINE'S. With the network registry handed in
+// (`network` — NetworkTransfer always does) the route is the one the engine
+// will refill the shop by afterwards (sectionRouting.engineSourceFor, pinned
+// to the engine's networkRouting): the config.routes entry for a store it
+// names — Marathon PE and Trophy, read exactly as before — and, for a LIVE
+// store it does not name (Pine, Concrete), the registry's back-stock hub for
+// this product. A store that is not live has no route and takes the old
+// seed-only Solve. Without a registry the answer is config.routes alone.
+export function firstBatchEligible({ source, store, product, productId, routes, network, enabled = FIRST_BATCH_ENABLED, hub2Present: present, hub = FIRST_BATCH_HUB } = {}) {
   if (enabled !== true) return false;
   if (present !== false) return false;
   if (source !== "central") return false;
-  if (!store || !hub || routes?.[store] !== hub) return false;
+  if (!store || !hub) return false;
+  // The registry answers ONLY for a store that config.routes does not name
+  // and that follows a policy template — a store that goes live with no
+  // config entry by design (Pine, Concrete). A store with no template that
+  // config.routes simply leaves out (Trophy on a config with no routes) keeps
+  // the old seed-only Solve, exactly as before — the render tests pin that —
+  // although the engine, handed the registry, would route it too.
+  const named = !!routes && Object.prototype.hasOwnProperty.call(routes, store);
+  const byRegistry = !named && !!(network && network.locations && network.aliasIndex) && !!network.locations[store]?.policyLike;
+  const route = byRegistry ? engineSourceFor(network, routes, store, product, productId) : routes?.[store];
+  if (route !== hub) return false;
   if (!product) return false;
   if (isSneakerOrSlide(product)) return false;
   return true;

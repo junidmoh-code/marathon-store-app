@@ -21,15 +21,20 @@ beforeEach(() => __resetNetworkCacheForTests());
 
 const T1 = "2026-10-02T10:00:00.000Z";
 const S1_LIVE = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true }, "concrete-stockroom": { live: true } } };
+// PRODUCTION-SHAPED: /config/refillEngine names ONLY the Section 2 locations —
+// their modes, their routes, their size runs. Section 1 has no entry in any
+// of them: Pine and Concrete are routed by the registry (back-stock hub per
+// product), Hub 3 and the Concrete Stockroom are fed from Central by the
+// registry, a live registry-routed location with no mode entry acts live, and
+// the numbers are the template's (Pine/Concrete follow Marathon PE, Hub 3 and
+// the stockroom follow Hub 2). Hub 2's run is deliberately not Marathon PE's,
+// so a leg sized 3 can only have come from Hub 2's numbers.
 const CONFIG = {
   enabled: true,
-  mode: { hub1: "live", hub2: "live", hub3: "live", "concrete-stockroom": "live", trophy: "live", "marathon-pe": "live", "marathon-pine": "live", concrete: "live" },
-  routes: { hub1: "central", hub2: "central", hub3: "central", "concrete-stockroom": "central", trophy: "hub2", "marathon-pe": "hub2", "marathon-pine": "hub3", concrete: "hub3" },
+  mode: { hub1: "live", hub2: "live", trophy: "live", "marathon-pe": "live" },
+  routes: { hub1: "central", hub2: "central", trophy: "hub2", "marathon-pe": "hub2" },
   ruleBasedTargets: true, maxUnitsPerIntent: 20, maxIntentsPerRun: 200, staleIntentHours: 48,
-  defaultRunByStore: {
-    hub2: { M: 3, L: 3 }, hub3: { M: 3, L: 3 }, "concrete-stockroom": { M: 3, L: 3 },
-    trophy: { M: 2, L: 2 }, "marathon-pe": { M: 2, L: 2 }, "marathon-pine": { M: 2, L: 2 }, concrete: { M: 2, L: 2 },
-  },
+  defaultRunByStore: { hub2: { M: 3, L: 3 }, trophy: { M: 2, L: 2 }, "marathon-pe": { M: 2, L: 2 } },
 };
 const PRODUCTS = {
   p1: { id: "p1", name: "Essentials Tee", productType: "clothing", categoryKey: "t-shirts", sizes: ["M", "L"] },
@@ -177,14 +182,12 @@ test("NOT LIVE: a live shop whose HUB is not live gets nothing either", async ()
   assert.equal(JSON.stringify(root(db)), before);
 });
 
-test("CENTRAL IS SHARED: a live Section 1 shop's open Central lock is a reservation when Hub 2's leg is sized, even where the routes do not name that shop", async () => {
-  // The engine's routes do not name Pine; Pine holds an open first-batch lock
-  // on 3 of Central's M (source central, stamped on the lock).
-  const routes = { hub1: "central", hub2: "central", trophy: "hub2", "marathon-pe": "hub2" };
+test("CENTRAL IS SHARED: a live Section 1 shop's open Central lock is a reservation when Hub 2's leg is sized, even though the routes do not name that shop", async () => {
+  // Pine holds an open first-batch lock on 3 of Central's M (source central,
+  // stamped on the lock).
   const db = world("trophy", {
     req: { createdFrom: { firstBatch: true, solveId: "fb_p1_trophy", source: "central", store: "trophy", hub: "hub2" } },
     extra: {
-      config: { refillEngine: { ...CONFIG, routes } },
       refill_engine: { open: { "marathon-pine": { p1: { M: { qty: 3, source: "central", createdAt: T1, runId: "first_batch:other", refillId: "rX" } } } } },
     },
   });
@@ -194,4 +197,61 @@ test("CENTRAL IS SHARED: a live Section 1 shop's open Central lock is a reservat
   const res = await run(db);
   // Central 4 − Pine's 3 = 1 free; Hub 2 wants 3 → 1.
   assert.equal(res.qty, 1);
+});
+
+// ── THE PRODUCTION SHAPE, SAID OUT LOUD ──────────────────────────────────────
+test("the test world is production-shaped: the engine config names no Section 1 location anywhere", () => {
+  const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+  const text = JSON.stringify(CONFIG);
+  for (const id of S1) assert.equal(text.includes(`"${id}"`), false, id);
+});
+
+test("SECTION 1, LIVE: the hub leg is sized by the TEMPLATE (Hub 2's numbers), and a hub with numbers of its own reads its own", async () => {
+  // Template: Hub 3 has no run → Hub 2's M:3. Central has 4 left → 3.
+  const tpl = world("marathon-pine");
+  const a = await fulfilAndFire(tpl);
+  assert.deepEqual({ raised: a.raised, qty: a.qty }, { raised: true, qty: 3 });
+  assert.equal(root(tpl).refill_requests.r1.firstBatch.hub2Leg.target, 3);
+  // Its own entry wins: Hub 3 M:1 → 1.
+  const own = world("marathon-pine", { extra: { config: { refillEngine: { ...CONFIG, defaultRunByStore: { ...CONFIG.defaultRunByStore, hub3: { M: 1 } } } } } });
+  const b = await fulfilAndFire(own);
+  assert.deepEqual({ raised: b.raised, qty: b.qty }, { raised: true, qty: 1 });
+  // The trigger never saves the template back: the config node is untouched.
+  assert.deepEqual(root(tpl).config.refillEngine, CONFIG);
+});
+
+test("SECTION 1, LIVE: a config.mode entry for the hub still wins — Hub 3 named 'shadow' gets the seed only (engine_off), as Hub 2 would", async () => {
+  const db = world("marathon-pine", { extra: { config: { refillEngine: { ...CONFIG, mode: { ...CONFIG.mode, hub3: "shadow" } } } } });
+  const res = await fulfilAndFire(db);
+  assert.deepEqual(res, { raised: false, none: "engine_off", seeded: true });
+  assert.equal(root(db).stock.hub3.p1.M.mv, "seed");
+  assert.equal(requestsAt(db, "hub3").length, 0);
+  assert.equal(lockAt(db, "hub3"), null);
+  // …and the engine switched off altogether is the same answer
+  const off = world("marathon-pine", { extra: { config: { refillEngine: { ...CONFIG, enabled: false } } } });
+  assert.equal((await fulfilAndFire(off)).none, "engine_off");
+});
+
+test("SECTION 1, LIVE: the hub leg holds the ENGINE's lock — the very next scan plans no second Hub 3 ← Central request beside it", async () => {
+  const { computeRefillPlan } = require("../lib/refill-engine.cjs");
+  const db = world("marathon-pine");
+  await fulfilAndFire(db);
+  await db.ref("stock/marathon-pine/p1/M/qty").set(2);   // the shop's first batch arrived
+  const r = root(db);
+  const plan = computeRefillPlan({
+    nowMs: Date.parse(T1) + 60e3, config: r.config.refillEngine, targets: {}, stock: r.stock, products: PRODUCTS,
+    openIndex: r.refill_engine.open, refillRequests: r.refill_requests, orders: {}, movements: [],
+    network: normalizeNetwork(S1_LIVE),
+  });
+  assert.deepEqual(plan.intents.filter((i) => i.dest === "hub3" && i.productId === "p1" && i.size === "M"), []);
+  assert.deepEqual(plan.closes.filter((c) => c.dest === "hub3"), []);
+});
+
+test("PATH OFF: a live Section 1 shop's open first-batch row is turned back into the old Solve at ITS hub — the registry route counts as 'routed via its hub'", async () => {
+  const db = world("marathon-pine");
+  const res = await processFirstBatchRequest({ db, requestId: "r1", nowIso: T1, pathEnabled: false });
+  assert.deepEqual({ none: res.none, withdrawn: res.withdrawn }, { none: "path_off", withdrawn: true });
+  assert.equal(root(db).refill_requests.r1.cancelReason, "first_batch_path_off");
+  assert.equal(root(db).stock.hub3.p1.M.mv, "seed");
+  assert.equal(root(db).stock.hub2, undefined);
 });

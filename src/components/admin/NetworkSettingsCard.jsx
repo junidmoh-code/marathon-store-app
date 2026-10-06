@@ -9,6 +9,8 @@
 //                   optional override for one product.
 //   Credit scope    shared (credit spendable anywhere) or section (only in the
 //                   section that issued it).
+//   Concrete at the till   takes cash, cashier price edits, no-slip returns,
+//                   which till is the recycler — the POS's per-store switches.
 //
 // OWNER ONLY, three layers: the tile, the route, and this component's own
 // check — and the RTDB rule on /network is what actually refuses the write.
@@ -27,6 +29,7 @@ import { useTaxonomy } from "./useTaxonomy";
 import {
   liveUpdate, categoryHubUpdate, productOverrideUpdate, creditScopeUpdate, seedUpdate, categoryRows,
   SWITCHABLE_STORE, SWITCHABLE_HUBS,
+  POS_FLAGS, posSwitchState, posFlagUpdate, recyclerTillUpdate,
 } from "./networkSettingsCore";
 
 const page = { minHeight: "100vh", background: "#000", color: "#f2f2f7", padding: 16, maxWidth: 760, margin: "0 auto", fontFamily: "-apple-system, system-ui, sans-serif" };
@@ -95,6 +98,7 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
     && !seedUpdate(raw, stockLocs.value, 0, uid).nothingToDo;
 
   const overrides = registry.productOverrides[SWITCHABLE_STORE] || {};
+  const pos = posSwitchState(registry, raw);
   const q = search.trim().toLowerCase();
   const matches = q.length >= 2
     ? products.filter((p) => p && p.id && !overrides[p.id] && String(p.name || "").toLowerCase().includes(q)).slice(0, 8)
@@ -182,6 +186,24 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
               onPick={(hub) => { setSearch(""); send(productOverrideUpdate(registry, p.id, hub, now(), uid), `${p.name}: ${locationName(registry, hub)}.`); }} />
           </div>
         ))}
+      </div>
+
+      <div style={box}>
+        <div style={label}>Concrete — at the till</div>
+        {POS_FLAGS.map((f) => (
+          <div style={row} key={f.key} data-pos={f.key}>
+            <span>{f.label}{f.note && <span style={{ color: "#8e8e93" }}> · {f.note}</span>}</span>
+            <Choice value={pos.flags[f.key]} busy={busy} options={[{ value: true, label: "On" }, { value: false, label: "Off" }]}
+              onPick={(v) => send(posFlagUpdate(registry, f.key, v, now(), uid), `${f.label}: ${v ? "on" : "off"}.`)} />
+          </div>
+        ))}
+        <div style={row} data-pos="recyclerTill">
+          <span>Cash recycler till</span>
+          <Choice value={pos.recyclerTill} busy={busy}
+            options={[{ value: null, label: "None" }, ...pos.tills.map((t) => ({ value: t.tillId, label: t.name }))]}
+            onPick={(t) => send(recyclerTillUpdate(registry, t, now(), uid), t ? "Recycler till set." : "No recycler till.")} />
+        </div>
+        <p style={{ color: "#8e8e93", fontSize: 13 }}>Concrete starts with all of these off: card-only, manager-only price edits, no recycler. A till picks a change up without a restart.</p>
       </div>
 
       <div style={box}>

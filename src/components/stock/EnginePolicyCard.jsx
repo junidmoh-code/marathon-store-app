@@ -1025,7 +1025,7 @@ function CategoryDetail({
   onScope, onPreview, onSave, onBack, onPanel, onOpenRows, onRowField, onSaveRows, onRevert, onOpenMember,
 }) {
   const armed = c.armedEffective || [];
-  const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations });
+  const locRows = editorRows({ entry: c.effectiveEntry || c.entry, carriage: c.carriage, destinations, follows: c.follows });
   const headline = armed.length
     ? armed.map((l) => `${locLabel(l)} ${headlineNumber(c.effectiveEntry?.[l])}`).join(" · ")
     : "No policy";
@@ -1276,6 +1276,14 @@ function LocationBoxes({ category: c, rows, draft, errors, onField, onArm, onDro
               <div className="ep-loc-name">
                 <span aria-hidden="true" style={{ fontSize: "1rem" }}>{locIcon(r.loc)}</span>
                 <span style={{ fontWeight: 600, fontSize: ".93rem" }}>{locLabel(r.loc)}</span>
+                {/* Armed through the policy template: no numbers of its own,
+                    so nothing here is saved for it and it keeps following. */}
+                {!inDraft && r.follows && (
+                  <span data-follows={r.follows} title={`${locLabel(r.loc)} has no numbers of its own for this category, so it uses ${locLabel(r.follows)}'s. Change ${locLabel(r.follows)}'s and it follows. Give it numbers here only if it should differ.`}
+                    style={{ fontSize: ".72rem", color: "rgba(233,238,255,.6)" }}>
+                    follows {locLabel(r.follows)}
+                  </span>
+                )}
               </div>
               <div className="ep-box-actions">
                 {/* Carriage scope (2026-08-25). "Carried only" = this leg speaks

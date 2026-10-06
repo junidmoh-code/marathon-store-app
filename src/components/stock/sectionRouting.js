@@ -19,7 +19,7 @@
 import { currentNetwork } from "../../utils/networkStore";
 import {
   storesOf, hubsOf, listLocations, locationOf, locationName, sectionOf, isLive,
-  backStockFor, autoRouteAllowed, wallAllows, policyKeyFor, resolveLocationId,
+  backStockFor, backStockHubsOf, autoRouteAllowed, wallAllows, resolveLocationId,
 } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
 
@@ -86,6 +86,38 @@ export function solveHubsOfSection(network, section, product, productId, { liveO
   return out;
 }
 
+// ── WHERE THE ENGINE REFILLS THIS STORE FROM, FOR THIS PRODUCT ───────────────
+// The engine's own answer (functions/lib/refill-engine.cjs networkRouting
+// sourceFor), for a screen that must only start what the engine will carry on:
+//   • a store config.routes NAMES is routed by that entry and nothing else —
+//     when the leg is open (both ends live, one side of the wall);
+//   • a LIVE store it does not name (Pine, Concrete) is routed by the registry,
+//     per product: the hub holding its back stock for that product, when that
+//     hub is live. The category asked is the product's real one — a sneaker
+//     asks the sneakers mapping, as the engine does.
+// undefined = the engine has no leg into this store for this product.
+// Pinned equal to the engine by sectionRouting.engineRoute.test.js.
+export function engineSourceFor(network, routes, store, product, productId) {
+  const N = net(network);
+  const cfg = routes && typeof routes === "object" ? routes : {};
+  if (Object.prototype.hasOwnProperty.call(cfg, store)) {
+    return autoRouteAllowed(N, cfg[store], store) ? cfg[store] : undefined;
+  }
+  const loc = N.locations[store];
+  if (!loc || loc.live !== true || loc.retired === true) return undefined;
+  // (asked of a hub: a live hub config.routes does not name is fed from Central)
+  if (loc.type === "hub") {
+    const central = listLocations(N, { type: "central", liveOnly: true })[0]?.id;
+    return central && autoRouteAllowed(N, central, store) ? central : undefined;
+  }
+  if (loc.type !== "store") return undefined;
+  const hubs = backStockHubsOf(N, store).filter((h) => autoRouteAllowed(N, h, store));
+  if (!hubs.length) return undefined;
+  const pid = productId !== undefined && productId !== null ? productId : product?.id;
+  const hub = backStockFor(N, store, effectiveCategoryKey(product), pid);
+  return hub && hubs.includes(hub) ? hub : undefined;
+}
+
 // ── MAY SOLVE ROUTE THIS STORE BY ITSELF? ────────────────────────────────────
 // null = yes. Otherwise the one plain sentence the screen shows beside the
 // disabled tick. `source` is where the product is stranded (Central, or a hub).
@@ -106,57 +138,6 @@ export function solveStoreBlock(network, { source, store, hub }) {
   return null;
 }
 
-// ── "THE SAME POLICY FOR EVERY STORE UNLESS IT HAS ITS OWN" ──────────────────
-// A policy map keyed by location, with every location in `locs` that has no
-// entry of its own answered by its template (Pine and Concrete follow Marathon
-// PE; Hub 3 and the Concrete Stockroom follow Hub 2 — registry policyKeyFor).
-// A location WITH an entry keeps it, so Marathon PE, Trophy, Hub 1 and Hub 2
-// read exactly what they always read. Returns the SAME object when nothing
-// needed filling, so a Section 2-only caller is untouched.
-export function withPolicyTemplates(network, byLocation, locs) {
-  if (!byLocation || typeof byLocation !== "object" || Array.isArray(byLocation)) return byLocation;
-  const N = net(network);
-  let out = byLocation;
-  for (const loc of locs || []) {
-    const key = policyKeyFor(N, byLocation, loc);
-    if (key === loc || byLocation[key] === undefined || byLocation[key] === null) continue;
-    if (out === byLocation) out = { ...byLocation };
-    out[loc] = byLocation[key];
-  }
-  return out;
-}
-
-// The engine config as the Solve reads it, with the templates applied for
-// `locs`. Three number maps follow the template: the size run, the subcategory
-// run, and each category's policy entry.
-//
-// THE KILL SWITCH FOLLOWS IT TOO. ruleBasedTargets in its per-destination form
-// is a map by location like the others; a location with no entry of its own
-// asks its template, and an explicit `false` IS an entry of its own, so a
-// location can still be switched off alone. Without this a store on the
-// template run could never qualify for a Solve by rule while the switch is in
-// its per-destination form. (The engine must resolve the switch the same way:
-// Solve only ever seeds what the engine will then refill.)
-export function templatedPolicyConfig(network, cfg, locs) {
-  if (!cfg || typeof cfg !== "object") return cfg;
-  const N = net(network);
-  const list = (locs || []).filter(Boolean);
-  if (!list.length) return cfg;
-  const defaultRunByStore = withPolicyTemplates(N, cfg.defaultRunByStore, list);
-  const subcategoryRunByLocation = withPolicyTemplates(N, cfg.subcategoryRunByLocation, list);
-  const ruleBasedTargets = withPolicyTemplates(N, cfg.ruleBasedTargets, list);
-  let categoryPolicy = cfg.categoryPolicy;
-  if (categoryPolicy && typeof categoryPolicy === "object" && !Array.isArray(categoryPolicy)) {
-    let changed = false;
-    const next = {};
-    for (const [cat, entry] of Object.entries(categoryPolicy)) {
-      const t = withPolicyTemplates(N, entry, list);
-      next[cat] = t;
-      if (t !== entry) changed = true;
-    }
-    if (changed) categoryPolicy = next;
-  }
-  if (defaultRunByStore === cfg.defaultRunByStore && subcategoryRunByLocation === cfg.subcategoryRunByLocation
-    && ruleBasedTargets === cfg.ruleBasedTargets && categoryPolicy === cfg.categoryPolicy) return cfg;
-  return { ...cfg, defaultRunByStore, subcategoryRunByLocation, ruleBasedTargets, categoryPolicy };
-}
+// "The same policy for every store unless it has its own" — the policy
+// template — lives in ONE place in the browser: policyTemplate.js, pinned to
+// the engine's functions/lib/policy-template.cjs.

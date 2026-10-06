@@ -103,6 +103,23 @@ export const HUB_STEPS = [
   { key: "hub2",  label: "Hub 2", locs: ["hub2"] },
   { key: "shops", label: "Shops", locs: ["marathon-pe", "trophy", "marathon-pine", "hub3"] },
 ];
+// The same four stops, for the network as the registry describes it. HUB_STEPS
+// names the locations that existed when it was written; a store or hub the
+// registry has gained since (Concrete, the Concrete Stockroom) had no stop, so
+// its requests were filtered out of every view, "All" included. Each one joins
+// "All" and "Shops" — the stop Hub 3 already sits under; Hub 1 and Hub 2 keep
+// their own. With no registry, or one that adds nothing, the lists are
+// HUB_STEPS' own, in the same order.
+export function hubStepsFor(network) {
+  const locs = network && network.locations ? Object.values(network.locations) : [];
+  const known = new Set(HUB_STEPS[0].locs);
+  const extra = locs
+    .filter((l) => l && (l.type === "store" || l.type === "hub") && l.retired !== true && !known.has(l.id))
+    .sort((a, b) => (a.sort ?? 999) - (b.sort ?? 999) || String(a.id).localeCompare(String(b.id)))
+    .map((l) => l.id);
+  if (!extra.length) return HUB_STEPS;
+  return HUB_STEPS.map((h) => (h.key === "all" || h.key === "shops" ? { ...h, locs: [...h.locs, ...extra] } : h));
+}
 /** Cyclic step: from index `i`, ±1 wraps around the four stops. */
 export function stepHub(i, delta) {
   const n = HUB_STEPS.length;

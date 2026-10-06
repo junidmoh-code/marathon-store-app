@@ -15,6 +15,8 @@ import {
   saDayOf, saDayStartMs, resolveRange, classifyRequest, eventMsOf,
   requestRows, movementRows, mergeRows, totalsFor, movementKind, REQUESTS_INDEXED,
 } from "./refillHistoryCore.js";
+import { hubStepsFor } from "./refillHistoryCore.js";
+import { SEED_REGISTRY, normalizeNetwork } from "../../utils/networkRegistry";
 
 // 2026-08-07 09:00 SA = 07:00 UTC
 const NOW = Date.parse("2026-08-07T07:00:00.000Z");
@@ -487,6 +489,28 @@ describe("stepHub — cycles All / Hub 1 / Hub 2 / Shops", () => {
     expect(shops).toEqual(["marathon-pe", "trophy", "marathon-pine", "hub3"]);
     const all = HUB_STEPS.find((h) => h.key === "all").locs;
     for (const l of ["hub1", "hub2", ...shops]) expect(all).toContain(l);
+  });
+});
+
+describe("hubStepsFor — the stops, from the network registry", () => {
+  it("on the seed registry Concrete and the Concrete Stockroom join All and Shops; Hub 1 and Hub 2 keep their own stops; the original lists lead, in order", () => {
+    const steps = hubStepsFor(SEED_REGISTRY);
+    expect(steps.map((h) => h.label)).toEqual(["All", "Hub 1", "Hub 2", "Shops"]);
+    expect(steps[0].locs).toEqual([...HUB_STEPS[0].locs, "concrete", "concrete-stockroom"]);
+    expect(steps[3].locs).toEqual([...HUB_STEPS[3].locs, "concrete", "concrete-stockroom"]);
+    expect(steps[1]).toBe(HUB_STEPS[1]);
+    expect(steps[2]).toBe(HUB_STEPS[2]);
+  });
+  it("with no registry, or one that adds nothing, it is HUB_STEPS itself", () => {
+    expect(hubStepsFor(undefined)).toBe(HUB_STEPS);
+    expect(hubStepsFor({ locations: { hub1: { id: "hub1", type: "hub" }, central: { id: "central", type: "central" } } })).toBe(HUB_STEPS);
+  });
+  it("a location added later gets a stop too; a retired one and Central do not", () => {
+    const reg = normalizeNetwork({ locations: { newshop: { type: "store", section: 2, live: true }, old: { type: "store", section: 2, retired: true } } });
+    const all = hubStepsFor(reg)[0].locs;
+    expect(all).toContain("newshop");
+    expect(all).not.toContain("old");
+    expect(all).not.toContain("central");
   });
 });
 

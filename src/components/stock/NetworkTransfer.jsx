@@ -37,7 +37,8 @@ import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as comput
 import { computeMissingProducts, isClothing, cardSection } from "./missingProductsCore";
 import { useMySections } from "../../utils/useMySections";
 import { isLive } from "../../utils/networkRegistry";
-import { centralId, isCentral, storeIds, solveHubFor, solveHubsOfSection, templatedPolicyConfig } from "./sectionRouting";
+import { centralId, isCentral, storeIds, solveHubFor, solveHubsOfSection } from "./sectionRouting";
+import { engineConfigView } from "./policyTemplate";
 import { solveBlocks, allocationOrder, planSectionSolve, mergeSolveUpdates, undoablePaths } from "./solveSections";
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
@@ -294,13 +295,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     () => { setCfgErr(true); setCfg({}); },   // unreadable → no switches → Solve off (fail-safe)
   ), []);
   // "THE SAME POLICY FOR EVERY STORE UNLESS IT HAS ITS OWN." The policy maps
-  // are read through the registry's template (sectionRouting.
-  // templatedPolicyConfig): a location with no numbers of its own — Pine,
-  // Concrete, Hub 3, the Concrete Stockroom — reads the location it is
-  // declared to be like. Marathon PE, Trophy, Hub 1 and Hub 2 all have their
-  // own and read exactly what they always read.
-  const policyLocs = useMemo(() => Object.values(network.locations).filter((l) => l.type !== "central").map((l) => l.id), [network]);
-  const pcfg = useMemo(() => templatedPolicyConfig(network, cfg, policyLocs), [network, cfg, policyLocs]);
+  // are read as the ENGINE reads them (policyTemplate.engineConfigView, the
+  // one browser copy of the engine's template step): a LIVE location with no
+  // numbers of its own — Pine, Concrete, Hub 3, the Concrete Stockroom —
+  // reads the location it is declared to be like. Marathon PE, Trophy, Hub 1
+  // and Hub 2 have their own and read exactly what they always read; a
+  // location that is not live reads what is stored (and cannot be ticked).
+  // `cfg` stays the stored node; `pcfg` is a view and is never written.
+  const pcfg = useMemo(() => engineConfigView(cfg, network), [network, cfg]);
   const std = pcfg?.defaultRunByStore;
   const subRun = pcfg?.subcategoryRunByLocation;
   // Mirrors the engine's kill switch exactly (solvePlan.js). Absent → off.
@@ -541,15 +543,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     hub2OpenRequestIds: openByLoc ? openByLoc.openHubRequests?.[hub] : null,
     heldLines: openByLoc ? openByLoc.heldByHub?.[hub] : null, pid,
   }).length > 0;
-  // The store's ENGINE route (config.routes) must run through its hub — that
-  // is what "kept at the hub" means to the engine, and without it nothing
-  // would refill the shop after the first batch. A store the routes do not
-  // name takes the old seed-only Solve, exactly as it always has.
+  // The store's ENGINE route must run through its hub — that is what "kept at
+  // the hub" means to the engine, and without it nothing would refill the
+  // shop after the first batch. The route is config.routes for a store it
+  // names; a LIVE store it does not name (Pine, Concrete) is routed by the
+  // registry, as the engine routes it (firstBatchEligible). A store with no
+  // engine route takes the old seed-only Solve.
   const eligibleAt = (card, store, openByLoc) => {
     const hub = hubOf(card, store);
     return !!cfg && !targetsError && !!hub
-      && firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), hub,
-        routes: cfg.routes, hub2Present: hubPresentFor(card.pid, hub, openByLoc) });
+      && firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), productId: card.pid, hub,
+        routes: cfg.routes, network, hub2Present: hubPresentFor(card.pid, hub, openByLoc) });
   };
   // THE DEFAULT TICK — one store, the one the old Solve nominated: within the
   // card's OWN section, the first store with qualifying sizes, history-ranked

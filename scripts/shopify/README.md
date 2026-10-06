@@ -107,7 +107,9 @@ Pure modules, tested via the normal `npm test`:
   offered, and it is the union of two separate ideas:
   `UNSELLABLE_LOCATIONS` (`in_transit` — stock that physically cannot be
   picked) and `UNTRUSTED_LOCATIONS` (`hub3`, `marathon-pine` — real, sellable
-  stock whose COUNT is not believed; owner decision 2026-09-08). Excluded
+  stock whose COUNT is not believed; owner decision 2026-09-08). `concrete` and
+  `concrete-stockroom` joined that list on 2026-10-06 (new Section 1 locations
+  nothing online picks from yet — a default, not an owner ruling). Excluded
   locations keep their `/stock` cells, their refills and their reporting; they
   are simply not promised to strangers. Measure before changing the list:
   `node scripts/shopify/census-online-locations.mjs --exclude <ids>`.

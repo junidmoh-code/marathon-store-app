@@ -4,7 +4,7 @@
 // rules require auth != null — a listener registered before sign-in is rejected
 // and does NOT auto-retry on permission errors.
 
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 import { ref, onValue, query, orderByKey, limitToLast } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
@@ -14,6 +14,8 @@ import { STOCK_HOLD_ROOT } from "../../config/stockHold";
 import { DISPLAY_SLOTS_ROOT } from "./displaySlots";
 import { DISPLAY_ROWS_ROOT } from "./displayRowCore";
 import { HIDDEN_ROOT } from "./hiddenProductsCore";
+import { currentNetwork, onNetworkChange } from "../../utils/networkStore";
+import { engineConfigView } from "./policyTemplate";
 
 function useAuthReady() {
   const [ready, setReady] = useState(() => !!auth.currentUser);
@@ -314,8 +316,32 @@ export function useEngineRuns(limit = 8) {
   return arr.sort((a, b) => b.id.localeCompare(a.id)).slice(0, limit);
 }
 
-// /config/refillEngine → { enabled, mode, routes, ... }
+// The network registry the app already holds (utils/networkStore — fed by the
+// one /network subscription in useNetwork). No listener of its own: this only
+// re-renders when that store changes. The seed until /network answers.
+function useCurrentNetwork() {
+  return useSyncExternalStore(onNetworkChange, currentNetwork, currentNetwork);
+}
+
+// /config/refillEngine → { enabled, mode, routes, ... } AS THE ENGINE RESOLVES
+// IT: with the policy template applied for the locations the engine plans
+// (policyTemplate.engineConfigView) — a live location with no numbers of its
+// own reads its template's, exactly as the scan does. This is the single point
+// every stock screen loads the config through, so every target mirror
+// (seatingCore, armingCore, solvePlan, excess, No Target…) agrees with the
+// engine without knowing templates exist. With no live follower (Section 2
+// only; the seed registry) it is the stored node itself, the same object.
+//
+// READ-ONLY VIEW — never write what this returns to /config/refillEngine (see
+// policyTemplate.js). The stored node is useEngineConfigRaw().
 export function useEngineConfig() {
+  const raw = usePath("config/refillEngine");
+  const network = useCurrentNetwork();
+  return useMemo(() => engineConfigView(raw, network), [raw, network]);
+}
+
+// The STORED node, untouched — for anything that edits or saves engine config.
+export function useEngineConfigRaw() {
   return usePath("config/refillEngine");
 }
 
@@ -325,8 +351,11 @@ export function useEngineConfig() {
 // arrives produces a confident "armed nowhere" — which on the Arming tab is a
 // clean, wrong verdict on the exact defect it exists to surface. See
 // usePathState's own note on why `value != null` is not the gate.
+// `value` is the templated view (as useEngineConfig); `raw` is the stored node.
 export function useEngineConfigState() {
-  return usePathState("config/refillEngine");
+  const state = usePathState("config/refillEngine");
+  const network = useCurrentNetwork();
+  return useMemo(() => ({ ...state, value: engineConfigView(state.value, network), raw: state.value }), [state, network]);
 }
 
 // /settings/stockHold/config → { enabled, delegates, ... } — the central→hub

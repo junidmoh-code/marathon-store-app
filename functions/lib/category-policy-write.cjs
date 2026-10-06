@@ -56,7 +56,7 @@
 const {
   validateCategoryPolicy, diffCategoryPolicy, modelCategoryPolicy, defaultMinQty,
   carriageForCategory, validateLocationEntry, REFUSED_CATEGORY_KEYS,
-  MAX_TARGET, MAX_REORDER_POINT,
+  MAX_TARGET, MAX_REORDER_POINT, policyRouting,
 } = require("./category-policy.cjs");
 const { validatePolicyGroup, sizeRunForCategory, sizeRunForGroup, fillAllSizes, MAX_GROUP_UNION } = require("./policy-groups.cjs");
 const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnlyOf,
@@ -385,7 +385,13 @@ function normalizePolicy(input) {
 // open-intent maps for the locations actually involved. Central is always
 // included because it is the only place a hub deficit can be filled from and
 // "Central holds N" is half the verdict.
-async function buildPreview(db, { config, categoryKey, policyAfter, locations }) {
+// `network` (the registry) adds the live locations the registry routes and
+// lets the model resolve the templated numbers for them — see policyRouting
+// in category-policy.cjs. `policyAfter` and `config` stay RAW throughout: the
+// template is applied inside the model, for the read, and never to anything
+// this path writes.
+async function buildPreview(db, { config, categoryKey, policyAfter, locations, network }) {
+  const pr = policyRouting(config, network);
   const configAfter = {
     ...config,
     categoryPolicy: { ...(config.categoryPolicy || {}), ...(policyAfter === null ? {} : { [categoryKey]: policyAfter }) },
@@ -401,11 +407,11 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
   // counts those). Reading only the armed ones would hand the model an empty
   // targets map for those legs and silently reproduce the under-reporting bug
   // the differential fuzz caught.
-  for (const loc of Object.keys(config.mode || {})) involved.add(loc);
+  for (const loc of pr.destinations) involved.add(loc);
   // Sources too: a leg's requests are capped by what its source can pick, so a
   // preview that never read the source's stock would report requests the engine
   // will not create.
-  for (const loc of [...involved]) { const src = config.routes?.[loc]; if (src) involved.add(src); }
+  for (const loc of [...involved]) for (const src of pr.sourcesOf(loc)) involved.add(src);
   // Carriage has to be answered for EVERY location the card can offer, not just
   // the armed ones — "Not carried" is the reason a row is not editable, so the
   // card needs the answer for the rows it greys out too.
@@ -420,7 +426,7 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
   }
   const args = {
     products, stock, targets, openIndex, categoryKey, locations: carriageLocs,
-    maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent,
+    maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent, network,
   };
   return {
     before: modelCategoryPolicy({ config, ...args }),
@@ -442,7 +448,10 @@ async function buildPreview(db, { config, categoryKey, policyAfter, locations })
 // is read, not just the one being edited, because the dead-size rule counts
 // units ANYWHERE (refill-engine.cjs sizeUnitsAnywhere) — feeding it the edited
 // location alone makes a size whose stock sits in transit read as dead.
-async function previewProductTargets(db, { config, loc, pid, update, knownLocations }) {
+async function previewProductTargets(db, { config: rawConfig, loc, pid, update, knownLocations, network }) {
+  // The config THIS location's targets resolve from in the engine: templated
+  // for a live location that follows another, the raw one for every other.
+  const config = policyRouting(rawConfig, network).configFor(loc);
   const product = await val(db, `products/${pid}`);
   if (!isPlainObject(product)) {
     throw httpsError("failed-precondition", `No product record for ${pid}.`);
@@ -496,8 +505,8 @@ async function previewProductTargets(db, { config, loc, pid, update, knownLocati
     changedSizes: sizes.filter((s) => s.changed).length };
 }
 
-function rowLocationsFor(config) {
-  const out = new Set(Object.keys(config?.mode || {}));
+function rowLocationsFor(config, network) {
+  const out = new Set(policyRouting(config, network).destinations);
   const collect = (entry) => {
     if (!isPlainObject(entry)) return;
     for (const k of Object.keys(entry)) if (k !== "perSize" && isPlainObject(entry[k])) out.add(k);
@@ -513,14 +522,15 @@ function rowLocationsFor(config) {
 // number is a ceiling by the same construction as every other number that
 // function produces, which is the right direction for a gate: it refuses on the
 // worst case rather than being talked past by the best one.
-async function modelGroupArming(db, { config, groupKey, group, knownLocations }) {
+async function modelGroupArming(db, { config, groupKey, group, knownLocations, network }) {
+  const pr = policyRouting(config, network);
   const configAfter = {
     ...config,
     policyGroups: { ...(config.policyGroups || {}), [groupKey]: { ...group, armed: true } },
   };
-  const involved = new Set(["central", ...Object.keys(config.mode || {})]);
+  const involved = new Set(["central", ...pr.destinations]);
   for (const k of Object.keys(group.policy || {})) if (k !== "perSize") involved.add(k);
-  for (const loc of [...involved]) { const src = config.routes?.[loc]; if (src) involved.add(src); }
+  for (const loc of [...involved]) for (const src of pr.sourcesOf(loc)) involved.add(src);
   const carriageLocs = [...new Set([...involved, ...(knownLocations || [])])];
 
   const products = await readMapPaged(db, "products");
@@ -535,7 +545,7 @@ async function modelGroupArming(db, { config, groupKey, group, knownLocations })
   for (const key of (group.memberCategoryKeys || [])) {
     const m = modelCategoryPolicy({
       config: configAfter, products, stock, targets, openIndex, categoryKey: key,
-      locations: carriageLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent,
+      locations: carriageLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent, network,
     });
     // overriddenProducts TRAVELS WITH THE MEMBER. The group preview sums it
     // into its "Old rows" number; dropping it here made that number 0 for
@@ -554,8 +564,8 @@ async function modelGroupArming(db, { config, groupKey, group, knownLocations })
 // The derived size run for ONE category, read on demand. Same function the
 // census uses, so the run the editor offered and the run the server enforces
 // are the same list rather than two derivations that agree today.
-async function deriveSizeRun(db, { config, categoryKey, knownLocations }) {
-  const locs = [...new Set([...rowLocationsFor(config), ...(knownLocations || [])])];
+async function deriveSizeRun(db, { config, categoryKey, knownLocations, network }) {
+  const locs = [...new Set([...rowLocationsFor(config, network), ...(knownLocations || [])])];
   const products = await readMapPaged(db, "products");
   const stock = {}, targets = {};
   for (const loc of locs) {
@@ -569,8 +579,8 @@ async function deriveSizeRun(db, { config, categoryKey, knownLocations }) {
 // The derived size run for a GROUP: the union of its members' runs, read on
 // demand, the same sizeRunForGroup the census uses. A per-size group write is
 // validated against THIS list, not the one the client offered.
-async function deriveGroupSizeRun(db, { config, group, knownLocations }) {
-  const locs = [...new Set([...rowLocationsFor(config), ...(knownLocations || [])])];
+async function deriveGroupSizeRun(db, { config, group, knownLocations, network }) {
+  const locs = [...new Set([...rowLocationsFor(config, network), ...(knownLocations || [])])];
   const products = await readMapPaged(db, "products");
   const stock = {}, targets = {};
   for (const loc of locs) {
@@ -617,7 +627,12 @@ let censusCache = null;    // { at, key, payload } — per-instance, never share
 
 function invalidateCensusCache() { censusCache = null; }
 
-async function buildCensus(db, { config, taxonomy, knownLocations }) {
+async function buildCensus(db, { config, taxonomy, knownLocations, network: handed }) {
+  // The registry: which live locations it routes beyond config.mode, and whose
+  // numbers each follows. One small cached read of /network; the seed if it
+  // cannot be read (Section 1 not live → the census config.mode describes).
+  const network = handed || await loadNetwork(db);
+  const pr = policyRouting(config, network);
   const policy = isPlainObject(config.categoryPolicy) ? config.categoryPolicy : {};
   const groups = isPlainObject(config.policyGroups) ? config.policyGroups : {};
   const cats = isPlainObject(taxonomy?.cats) ? taxonomy.cats : {};
@@ -627,7 +642,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   const groupedKeys = Object.values(groups).flatMap((g) => (Array.isArray(g?.memberCategoryKeys) ? g.memberCategoryKeys : []));
   const keys = [...new Set([...Object.keys(policy), ...Object.keys(cats), ...groupedKeys])].sort();
 
-  const destinations = Object.keys(config.mode || {});
+  const destinations = pr.destinations;
   // Every location the map ALREADY names, even one that is not a configured
   // destination. Without this an armed-but-not-a-destination location got
   // `targets[loc] === undefined`, so resolveTarget found no explicit row and
@@ -652,7 +667,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // feeds parks as "no stock upstream". Today every source happens to be a
   // destination, so this changes nothing — but one routes edit away it would
   // have silently zeroed a whole leg's requests. buildPreview already does it.
-  const sources = Object.values(config.routes || {});
+  const sources = [...Object.values(config.routes || {}), ...pr.added.flatMap((d) => pr.sourcesOf(d))];
   const stockLocs = [...new Set([...destinations, ...armedAnywhere, ...sources, "central"])];
   const rowLocs = [...new Set([...destinations, ...armedAnywhere])];
 
@@ -709,7 +724,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
   // …and the same registry: a hub that follows Hub 2's leg through its policy
   // template (Hub 3, the Concrete Stockroom) is not a third location. One
   // small cached read of /network; the seed if it cannot be read.
-  const footwearDrift = footwearPolicyDrift(config, await loadNetwork(db));
+  const footwearDrift = footwearPolicyDrift(config, network);
   const categories = [];
   for (const key of [...keys, ...rowOnlyKeys]) {
     const entry = isPlainObject(policy[key]) ? policy[key] : null;
@@ -727,7 +742,7 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
     // categories would be a minute of nothing.
     const m = effArmed.length
       ? modelCategoryPolicy({ config, products, stock, targets, openIndex, categoryKey: key,
-          locations: stockLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent })
+          locations: stockLocs, maxIntentsPerRun: config.maxIntentsPerRun, maxUnitsPerIntent: config.maxUnitsPerIntent, network })
       : null;
     // The size run the per-size editor may offer, DERIVED from live data. An
     // empty run at a category the registry calls sized is a STOP — the card
@@ -759,6 +774,14 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       memberOfGroup: memberOf[key] || null,
       effectiveEntry: effEntry,
       armedEffective: effArmed,
+      // ARMED THROUGH THE POLICY TEMPLATE: { location: the location whose
+      // numbers it reads }. A LIVE location with no entry of its own here that
+      // the engine arms from its template (Pine / Concrete follow Marathon PE,
+      // Hub 3 / the Concrete Stockroom follow Hub 2). A fact for the card to
+      // show — it is NOT in `entry` / `effectiveEntry`, which stay exactly
+      // what is stored, so a save can never write a follower's numbers down
+      // and stop it following. A location that is not live is never here.
+      follows: m ? m.follows : {},
       // The shape each armed location holds — "uniform" or "per-size".
       shapes: isPlainObject(effEntry)
         ? Object.fromEntries(effArmed.map((l) => [l, locationEntryMode(effEntry[l])])) : {},
@@ -863,6 +886,12 @@ async function buildCensus(db, { config, taxonomy, knownLocations }) {
       memberOfGroup: null,
       effectiveEntry: policyEntry,
       armedEffective: armedLocs,
+      // As on a category: live locations armed by this group's policy through
+      // their template. Never part of the stored policy.
+      follows: g.armed === true && policyEntry
+        ? Object.fromEntries([...pr.planned].sort().map((l) => [l, pr.followsIn(policyEntry, l)])
+            .filter(([l, f]) => f && locationEntryMode(policyEntry[f]) !== "invalid" && policyEntry[l] == null))
+        : {},
       shapes: policyEntry ? Object.fromEntries(armedLocs.map((l) => [l, locationEntryMode(policyEntry[l])])) : {},
       sizeRun: run.sizes,
       sizeRunExtra: [],
@@ -921,6 +950,11 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   const cfg = config && typeof config === "object" ? config : {};
   const knownCategoryKeys = Object.keys(taxonomy?.cats || {});
   const knownLocations = Object.keys(locationsNode || {});
+  // The network registry — which live locations the engine plans beyond
+  // config.mode, and whose numbers each follows. Used for READS only (the
+  // census, the previews, the row lists). `cfg` stays the RAW node for every
+  // validation and every write below.
+  const network = await loadNetwork(db);
 
   // Read-only. Reached only after the caller check above, so a refused caller
   // does not get a catalogue-wide census either.
@@ -931,12 +965,14 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // which is what this screen is actually about. `refresh: true` skips it.
     // policyGroups is in the cache key for the same reason categoryPolicy is:
     // arming a group through any other route must not be served a stale list.
+    // …and the registry-routed destinations: a location going live must not be
+    // served the list from before it did.
     const key = canonical({ policy: cfg.categoryPolicy ?? null, groups: cfg.policyGroups ?? null,
-      cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null });
+      cap: cfg.maxIntentsPerRun ?? null, mode: cfg.mode ?? null, routed: policyRouting(cfg, network).added });
     const fresh = !!censusCache && censusCache.key === key && (nowMs - censusCache.at) < CENSUS_TTL_MS;
     const census = fresh && d.refresh !== true
       ? censusCache.payload
-      : await buildCensus(db, { config: cfg, taxonomy, knownLocations });
+      : await buildCensus(db, { config: cfg, taxonomy, knownLocations, network });
     if (!fresh || d.refresh === true) censusCache = { at: nowMs, key, payload: census };
     return {
       ok: true,
@@ -967,7 +1003,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       throw httpsError("invalid-argument", "categoryKey is required to list rows.");
     }
     const rowKeys = new Set(rowGroupKey ? (Array.isArray(rowGroup.memberCategoryKeys) ? rowGroup.memberCategoryKeys : []) : [categoryKey]);
-    const allRowLocs = rowLocationsFor(cfg);
+    const allRowLocs = rowLocationsFor(cfg, network);
     // An optional narrowing. Validated against the known set rather than
     // interpolated on trust — this string becomes a path segment.
     const onlyLoc = typeof d.loc === "string" && d.loc ? d.loc : null;
@@ -1314,7 +1350,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // The engine's own resolveTarget, per size, before and after — against live
     // data rather than the browser's snapshot. Scoped reads only: this product's
     // cells and rows at every location, never a node.
-    const preview = await previewProductTargets(db, { config: cfg, loc, pid, update, knownLocations });
+    const preview = await previewProductTargets(db, { config: cfg, loc, pid, update, knownLocations, network });
     if (dryRun) {
       return { ok: true, action: "setProductTargets", dryRun: true, loc, pid, changes, preview,
         before, foreign, serverNowMs: nowMs };
@@ -1396,7 +1432,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       && Object.keys(after.policy).some((k) => k !== "perSize" && locationEntryMode(after.policy[k]) === "per-size");
     if (groupCarriesSizeMap) {
       const members = Array.isArray(after.memberCategoryKeys) ? after.memberCategoryKeys : [];
-      groupRun = await deriveGroupSizeRun(db, { config: cfg, group: { memberCategoryKeys: members }, knownLocations });
+      groupRun = await deriveGroupSizeRun(db, { config: cfg, group: { memberCategoryKeys: members }, knownLocations, network });
       if (groupRun.empty) {
         throw httpsError("failed-precondition",
           `No size run can be worked out for the "${groupKey}" group from the live data — no member declares a size, holds a cell or has a row. A size-by-size policy here would be a guess.`,
@@ -1457,7 +1493,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
     // LEAVE the group armed.
     let armModel = null;
     if (after && isPlainObject(after.policy) && (after.armed === true || d.dryRun === true)) {
-      armModel = await modelGroupArming(db, { config: cfg, groupKey, group: after, knownLocations });
+      armModel = await modelGroupArming(db, { config: cfg, groupKey, group: after, knownLocations, network });
     }
     if (after && after.armed === true) {
       if (armModel && armModel.exceedsCap) {
@@ -1546,7 +1582,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   const carriesSizeMap = isPlainObject(policyAfter)
     && Object.keys(policyAfter).some((k) => k !== "perSize" && locationEntryMode(policyAfter[k]) === "per-size");
   if (carriesSizeMap) {
-    const run = await deriveSizeRun(db, { config: cfg, categoryKey, knownLocations });
+    const run = await deriveSizeRun(db, { config: cfg, categoryKey, knownLocations, network });
     if (run.empty) {
       // Two different problems, two different sentences. A one-size category is
       // not broken — it simply has no sizes, and its map speaks for the "_" cell
@@ -1580,7 +1616,7 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
   }
 
   const changes = diffCategoryPolicy(before, policyAfter);
-  const preview = await buildPreview(db, { config: cfg, categoryKey, policyAfter, locations: knownLocations });
+  const preview = await buildPreview(db, { config: cfg, categoryKey, policyAfter, locations: knownLocations, network });
 
   if (dryRun) {
     return { ok: true, dryRun: true, categoryKey, before, after: policyAfter, changes, preview, live: before,

@@ -9,9 +9,10 @@ import { describe, it, expect } from "vitest";
 import { createRequire } from "node:module";
 import { normalizeNetwork, SEED_REGISTRY } from "../../utils/networkRegistry";
 import {
-  solveHubFor, solveHubsOfSection, solveStoreBlock, withPolicyTemplates, templatedPolicyConfig,
+  solveHubFor, solveHubsOfSection, solveStoreBlock,
   storeIds, hubIds, liveSections, centralId, NON_HUB_FLOW_KEYS, net,
 } from "./sectionRouting";
+import { withPolicyTemplates, engineConfigView } from "./policyTemplate";
 import { solveBlocks, allocationOrder, registryOrder, planSectionSolve, mergeSolveUpdates, undoablePaths } from "./solveSections";
 import { seedLocations, qualifyingSizes, solvePlan, resolvedRun } from "./solvePlan";
 import {
@@ -210,39 +211,46 @@ describe("the Solve functions take the hub — Hub 2 by default, so Section 2 is
   });
 });
 
-describe("the same policy for every store unless it has its own", () => {
+describe("the same policy for every store unless it has its own (policyTemplate.js — the one browser copy, pinned to the engine in policyTemplate.parity.test.js)", () => {
   const run = { "marathon-pe": { M: 2 }, hub2: { M: 3 }, trophy: { M: 1 } };
-  const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
-  it("Section 1 locations read their template; Section 2 reads its own — the same object when nothing needs filling", () => {
-    expect(withPolicyTemplates(SEED_REGISTRY, run, ["marathon-pe", "trophy", "hub1", "hub2"])).toBe(run);
-    const t = withPolicyTemplates(SEED_REGISTRY, run, S1);
+  const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
+  it("the template step: Section 1 locations read their template; a store-specific entry always wins; a config with nothing to fill is the same object", () => {
+    const cfg = { defaultRunByStore: run };
+    const t = withPolicyTemplates(cfg, SEED_REGISTRY).defaultRunByStore;
     expect(t).toEqual({ ...run, "marathon-pine": { M: 2 }, concrete: { M: 2 }, hub3: { M: 3 }, "concrete-stockroom": { M: 3 } });
-    // a store-specific entry always wins
-    expect(withPolicyTemplates(SEED_REGISTRY, { ...run, concrete: { M: 9 } }, S1).concrete).toEqual({ M: 9 });
-    expect(withPolicyTemplates(SEED_REGISTRY, null, S1)).toBeNull();
+    expect(withPolicyTemplates({ defaultRunByStore: { ...run, concrete: { M: 9 } } }, SEED_REGISTRY).defaultRunByStore.concrete).toEqual({ M: 9 });
+    expect(withPolicyTemplates(null, SEED_REGISTRY)).toBeNull();
+    const none = { routes: ROUTES, enabled: true };
+    expect(withPolicyTemplates(none, SEED_REGISTRY)).toBe(none);
   });
 
-  it("the whole config: size run, subcategory run, each category's policy, and the per-destination switch", () => {
+  it("the config a screen reads: size run, subcategory run, each category's policy and the per-destination switch — for LIVE followers only", () => {
     const cfg = {
       defaultRunByStore: run,
       subcategoryRunByLocation: { "marathon-pe": { Watches: 2 } },
       ruleBasedTargets: { "marathon-pe": true, hub2: true, concrete: false },
       categoryPolicy: { bags: { perSize: false, "marathon-pe": { target: 2 }, hub2: { target: 4 } } },
-      routes: { "marathon-pe": "hub2" },
+      routes: ROUTES,
     };
-    const t = templatedPolicyConfig(SEED_REGISTRY, cfg, S1);
+    const before = JSON.stringify(cfg);
+    const t = engineConfigView(cfg, S1_LIVE);
     expect(t.defaultRunByStore["marathon-pine"]).toEqual({ M: 2 });
     expect(t.subcategoryRunByLocation.concrete).toEqual({ Watches: 2 });
     expect(t.categoryPolicy.bags).toEqual({ perSize: false, "marathon-pe": { target: 2 }, hub2: { target: 4 }, "marathon-pine": { target: 2 }, concrete: { target: 2 }, hub3: { target: 4 }, "concrete-stockroom": { target: 4 } });
     expect(t.ruleBasedTargets).toMatchObject({ "marathon-pine": true, hub3: true, concrete: false });   // an explicit false is its own entry
     expect(t.routes).toBe(cfg.routes);                                                                  // routes are not a policy
-    // Section 2 only: untouched, the very same object
-    expect(templatedPolicyConfig(SEED_REGISTRY, cfg, ["marathon-pe", "trophy", "hub2"])).toEqual(cfg);
-    expect(templatedPolicyConfig(SEED_REGISTRY, { ruleBasedTargets: true }, S1)).toEqual({ ruleBasedTargets: true, defaultRunByStore: undefined, subcategoryRunByLocation: undefined, categoryPolicy: undefined });
+    expect(JSON.stringify(cfg)).toBe(before);                                                           // a view: the stored node is not touched
+    // Section 1 NOT live (the seed): the very same object — nothing follows anything
+    expect(engineConfigView(cfg, SEED_REGISTRY)).toBe(cfg);
+    // only Hub 3 live: Hub 3 follows, Pine (not live) reads what is stored — nothing
+    const part = engineConfigView(cfg, normalizeNetwork({ locations: { hub3: { live: true } } }));
+    expect(part.defaultRunByStore.hub3).toEqual({ M: 3 });
+    expect(part.defaultRunByStore["marathon-pine"]).toBeUndefined();
+    expect(part.categoryPolicy.bags["marathon-pine"]).toBeUndefined();
   });
 
-  it("through resolvedRun, Pine qualifies exactly where Marathon PE does", () => {
-    const cfg = templatedPolicyConfig(SEED_REGISTRY, { defaultRunByStore: { "marathon-pe": { S: 2, M: 2 }, hub2: { S: 2, M: 3 } }, ruleBasedTargets: true }, S1);
+  it("through resolvedRun, a live Pine qualifies exactly where Marathon PE does", () => {
+    const cfg = engineConfigView({ routes: ROUTES, defaultRunByStore: { "marathon-pe": { S: 2, M: 2 }, hub2: { S: 2, M: 3 } }, ruleBasedTargets: true }, S1_LIVE);
     const r = resolvedRun({ std: cfg.defaultRunByStore, sizes: ["S", "M", "L"], targets: {}, pid: "tee", ruleBasedTargets: cfg.ruleBasedTargets });
     expect(qualifyingSizes(["S", "M", "L"], "central", "marathon-pine", r, "hub3")).toEqual(qualifyingSizes(["S", "M", "L"], "central", "marathon-pe", r, "hub2"));
     expect(qualifyingSizes(["S", "M", "L"], "central", "marathon-pine", r, "hub3")).toEqual(["S", "M"]);

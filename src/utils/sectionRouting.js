@@ -151,6 +151,38 @@ export function hubAllowedForViewer(network, canSee, hub) {
   return !!l && l.type === "hub" && l.id === hub && canSee(hub);
 }
 
+// What to do with the hub a device has PERSISTED (localStorage.warehouseHub):
+//   "none"  nothing stored.
+//   "keep"  a hub this viewer may work as.
+//   "drop"  not allowed (the other section's hub, a retired or made-up id) —
+//           the device must not go on carrying it.
+//   "wait"  not allowed by the registry in hand, but /network has not answered
+//           yet: a hub that exists only in the live node would be thrown away
+//           on every cold start if this were judged on the built-in seed.
+// `registryAnswered`: /network has settled (or failed for good).
+export function storedHubVerdict(network, canSee, hub, registryAnswered) {
+  if (!hub) return "none";
+  if (hubAllowedForViewer(network, canSee, hub)) return "keep";
+  return registryAnswered ? "drop" : "wait";
+}
+
+// ─── THE WAREHOUSE SCREEN'S TABS, PER HUB ────────────────────────────────────
+// One list, read by the screen (which adds the labels and badges) and by the
+// push deep link (which may only persist a tab the hub actually has):
+//   the trial hub         Order Queue only.
+//   a CR hub              Order Queue, CR Orders, Display Refills, Layby —
+//                         Hub 2, Hub 3 and the Concrete Stockroom.
+//   a sneakers-only hub   the same without CR Orders — Hub 1.
+//   anything else         nothing: it is not a hub.
+export function warehouseTabKeys(network, hub) {
+  if (hub === TRIAL_HUB) return ["queue"];
+  const l = locationOf(network, hub);
+  if (!l || l.type !== "hub" || l.id !== hub) return [];
+  return crHubIds(network).includes(hub)
+    ? ["queue", "clothing", "refills", "layby"]
+    : ["queue", "refills", "layby"];
+}
+
 // Shops grouped by section, filtered to the viewer. [{ section, name, items: [{ id, label, live }] }]
 export function shopGroups(network, canSee, labelOf) {
   return grouped(network, storesOf(network), canSee, (l) => ({ id: l.id, label: labelOf ? labelOf(l.id) : l.name, live: l.live === true }));
@@ -271,6 +303,13 @@ export function sourceTabsFor(network, canSee) {
   }
   out.push(SOURCE_HISTORY_TAB);
   return out;
+}
+
+// Every Source tab key the registry yields, for the push deep link — which
+// runs before anyone is signed in, so it cannot ask who the viewer is. The
+// Source screen itself drops a tab the viewer's sections do not include.
+export function sourceTabKeys(network) {
+  return sourceTabsFor(network, null).map((t) => t.key);
 }
 
 // ─── INSIGHTS STORE FILTER ───────────────────────────────────────────────────

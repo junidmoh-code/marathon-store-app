@@ -98,3 +98,45 @@ export function categoryRows(registry, categories) {
   }
   return rows;
 }
+
+// ── CONCRETE AT THE TILL — THE POS SWITCHES ──────────────────────────────────
+// Four facts the POS reads from /network/locations/{id}/pos (its
+// src/shared/storeTraits.js): whether the store reconciles cash, whether it is
+// offered for no-slip returns, whether a cashier may edit a line price, and
+// which till is the cash recycler. Marathon PE, Trophy and Pine have their
+// answers built in; Concrete starts with every switch OFF and is set here.
+// One small path per switch, so no control overwrites another — and the
+// location's own record (live, section, tills) is never rewritten.
+export const POS_FLAGS = Object.freeze([
+  Object.freeze({ key: "cashRecon", label: "Takes cash (cash-up, payouts and collections at this store)" }),
+  Object.freeze({ key: "cashierPriceEdit", label: "Cashiers may edit a line price (not only a manager)" }),
+  Object.freeze({ key: "noSlipReturns", label: "Offered for no-slip returns", note: "Takes effect only once the separate No Receipt Return change is live." }),
+]);
+
+export function posSwitchState(registry, rawNetwork, store = SWITCHABLE_STORE) {
+  const loc = locationOf(registry, store);
+  const pos = rawNetwork?.locations?.[loc?.id]?.pos;
+  const cur = pos && typeof pos === "object" && !Array.isArray(pos) ? pos : {};
+  const tills = loc && loc.type === "store" ? loc.tills || [] : [];
+  const flags = Object.fromEntries(POS_FLAGS.map((f) => [f.key, cur[f.key] === true]));
+  const recyclerTill = typeof cur.recyclerTill === "string" && tills.some((t) => t.tillId === cur.recyclerTill) ? cur.recyclerTill : null;
+  return { flags, recyclerTill, tills };
+}
+
+export function posFlagUpdate(registry, key, value, nowMs, uid, store = SWITCHABLE_STORE) {
+  const loc = locationOf(registry, store);
+  if (!loc || loc.type !== "store") return fail("That store is not in the registry.");
+  if (!POS_FLAGS.some((f) => f.key === key)) return fail("That is not a till switch.");
+  if (typeof value !== "boolean") return fail("A switch is on or off.");
+  return { ok: true, updates: { [`${NETWORK_PATH}/locations/${loc.id}/pos/${key}`]: value, ...stamp(nowMs, uid) } };
+}
+
+// tillId === null → no recycler at this store (stored as false: a null would
+// delete the key and fall back to a built-in answer, which is "none" for
+// Concrete today but must not depend on that).
+export function recyclerTillUpdate(registry, tillId, nowMs, uid, store = SWITCHABLE_STORE) {
+  const loc = locationOf(registry, store);
+  if (!loc || loc.type !== "store") return fail("That store is not in the registry.");
+  if (tillId !== null && !(loc.tills || []).some((t) => t.tillId === tillId)) return fail("That is not one of this store's tills.");
+  return { ok: true, updates: { [`${NETWORK_PATH}/locations/${loc.id}/pos/recyclerTill`]: tillId === null ? false : tillId, ...stamp(nowMs, uid) } };
+}

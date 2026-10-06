@@ -583,7 +583,7 @@ describe("the excluded-location list is shared with the trigger", () => {
   it("both sides refuse to count the untrusted locations", () => {
     const { ONLINE_EXCLUDED_LOCATIONS: fromTrigger } =
       createRequire(import.meta.url)("../../functions/lib/shopify-inventory-dirty.cjs");
-    for (const id of ["in_transit", "hub3", "marathon-pine"]) {
+    for (const id of ["in_transit", "hub3", "marathon-pine", "concrete", "concrete-stockroom"]) {
       expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `push must not count ${id}`).toBe(true);
       expect(fromTrigger.has(id), `trigger must not mark on ${id}`).toBe(true);
     }

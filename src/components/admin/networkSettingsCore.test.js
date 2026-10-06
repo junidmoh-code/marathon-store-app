@@ -4,6 +4,7 @@ import { describe, it, expect } from "vitest";
 import { normalizeNetwork } from "../../utils/networkRegistry";
 import {
   liveUpdate, categoryHubUpdate, productOverrideUpdate, creditScopeUpdate, seedUpdate, categoryRows,
+  POS_FLAGS, posSwitchState, posFlagUpdate, recyclerTillUpdate,
 } from "./networkSettingsCore";
 
 const R = normalizeNetwork(null);
@@ -171,5 +172,52 @@ describe("first-time seed", () => {
   it("writes no ancestor together with its descendant (RTDB rejects that update)", () => {
     const paths = Object.keys(seedUpdate(null, LIVE_LOCATIONS, NOW, "o").updates);
     for (const a of paths) for (const b of paths) if (a !== b) expect(b.startsWith(`${a}/`), `${a} ⊃ ${b}`).toBe(false);
+  });
+});
+
+describe("Concrete at the till — the POS switches", () => {
+  it("starts with every switch off and no recycler", () => {
+    expect(posSwitchState(R, null)).toEqual({
+      flags: { cashRecon: false, cashierPriceEdit: false, noSlipReturns: false }, recyclerTill: null,
+      tills: [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }],
+    });
+  });
+
+  it("each switch writes ONE path under the store's pos record — the path the POS reads", () => {
+    for (const f of POS_FLAGS) {
+      const u = posFlagUpdate(R, f.key, true, NOW, "o");
+      expect(Object.keys(u.updates).sort()).toEqual([`network/locations/concrete/pos/${f.key}`, "network/updatedAt", "network/updatedBy"].sort());
+      expect(u.updates[`network/locations/concrete/pos/${f.key}`]).toBe(true);
+    }
+    expect(recyclerTillUpdate(R, "till-2", NOW, "o").updates["network/locations/concrete/pos/recyclerTill"]).toBe("till-2");
+    // "none" is stored as false, never null: a deleted key would fall back to a built-in answer
+    expect(recyclerTillUpdate(R, null, NOW, "o").updates["network/locations/concrete/pos/recyclerTill"]).toBe(false);
+  });
+
+  it("what is written is what the card then shows, and the location's own record is untouched", () => {
+    let tree = applyUpdate({}, seedUpdate(null, { concrete: {}, "concrete-stockroom": {} }, NOW, "o").updates);
+    tree = applyUpdate(tree, posFlagUpdate(R, "cashRecon", true, NOW, "o").updates);
+    tree = applyUpdate(tree, recyclerTillUpdate(R, "till-1", NOW, "o").updates);
+    const after = normalizeNetwork(tree.network);
+    expect(posSwitchState(after, tree.network)).toMatchObject({ flags: { cashRecon: true, cashierPriceEdit: false, noSlipReturns: false }, recyclerTill: "till-1" });
+    expect(after.locations.concrete).toEqual(R.locations.concrete);
+    expect(after.locations.concrete.live).toBe(false);
+    // turning it off again, and clearing the recycler
+    tree = applyUpdate(tree, posFlagUpdate(R, "cashRecon", false, NOW, "o").updates);
+    tree = applyUpdate(tree, recyclerTillUpdate(R, null, NOW, "o").updates);
+    expect(posSwitchState(normalizeNetwork(tree.network), tree.network)).toMatchObject({ flags: { cashRecon: false }, recyclerTill: null });
+    expect(tree.network.locations.concrete.pos.recyclerTill).toBe(false);
+  });
+
+  it("refuses an unknown switch, a non-boolean, a till the store does not have, and a non-store", () => {
+    expect(posFlagUpdate(R, "live", true, NOW, "o").ok).toBe(false);
+    expect(posFlagUpdate(R, "cashRecon", "yes", NOW, "o").ok).toBe(false);
+    expect(recyclerTillUpdate(R, "till-3", NOW, "o").ok).toBe(false);
+    expect(posFlagUpdate(R, "cashRecon", true, NOW, "o", "hub3").ok).toBe(false);
+    expect(recyclerTillUpdate(R, "till-1", NOW, "o", "nowhere").ok).toBe(false);
+  });
+
+  it("a recycler till the store no longer has is shown as none", () => {
+    expect(posSwitchState(R, { locations: { concrete: { pos: { recyclerTill: "till-9" } } } }).recyclerTill).toBe(null);
   });
 });

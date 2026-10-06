@@ -63,7 +63,8 @@
 // real engine alongside the model on the live snapshot — so the residual gap is
 // measured rather than assumed.
 
-const { resolveTarget, encodeSizeKey, policyCategoryKey, passThroughExcluded } = require("./refill-engine.cjs");
+const { resolveTarget, encodeSizeKey, policyCategoryKey, passThroughExcluded, networkRouting } = require("./refill-engine.cjs");
+const { withPolicyTemplates, policyTemplateKey, LOCATION_MAP_KEYS } = require("./policy-template.cjs");
 // Group and per-size resolution, from the leaf module the ENGINE consumes — so
 // "which policy speaks here" is answered once. A copy on this side would drift
 // the first time the precedence changed, and the model's whole value is that it
@@ -332,6 +333,83 @@ function carriageForCategory({ products, stock, categoryKey, locations }) {
   return { pids, byLocation: out };
 }
 
+// ── WHICH LOCATIONS THE ENGINE PLANS, AND WHOSE NUMBERS THEY READ ────────────
+// The preview, the census and the write path's read lists used to take
+// destinations from config.mode and sources from config.routes and nothing
+// else. The engine has two more inputs since sections: a LIVE location that
+// config.routes does not name is routed by the network registry (a hub from
+// Central, a store per product from its back-stock hub — networkRouting), and
+// a location with no numbers of its own reads its template's
+// (withPolicyTemplates: Pine and Concrete follow Marathon PE; Hub 3 and the
+// Concrete Stockroom follow Hub 2). Both are asked of the engine's OWN
+// functions here, never re-derived, so this file cannot drift from the scan.
+//
+// With no registry handed in, every answer is the config's alone — exactly
+// what these functions read before. With the registry:
+//   destinations   config.mode's keys, in their order, THEN the live locations
+//                  the registry routes that config.mode does not name AND that
+//                  follow a template (`added`). A location that is not live is
+//                  never added.
+//   modeOf(loc)    a config.mode entry wins; an added location with none acts
+//                  "live" (the engine's modeOf).
+//   sourceFor / sourcesOf   config.routes for a location it names; for an
+//                  added one, the registry's per-product hub.
+//
+// WHY ONLY TEMPLATE FOLLOWERS ARE ADDED. These screens have always taken
+// "destination" from config.mode, and a location config.mode leaves out is
+// shown as not a destination — tests pin that (category-policy-write.test.cjs:
+// Trophy left out of a config is not read). The engine, handed the registry,
+// would route such a location too. That case — a location with no template
+// that someone removed from config.mode and config.routes — is left exactly
+// as these screens showed it before; it is not what sections added. What
+// sections added is a location that goes live with NO config entry by design
+// and reads another's numbers, and those are all added here.
+//   configFor(loc) the config a target at `loc` resolves from: the TEMPLATED
+//                  one for a location the engine plans, the raw one otherwise
+//                  (a location that is not live resolves what it always did —
+//                  a template must never make it look armed).
+//   followsIn(map, loc)   the location whose entry in ONE policy map governs
+//                  `loc` when that is not its own — "follows Hub 2" — or null.
+//
+// NOTHING HERE IS EVER WRITTEN. configFor's templated config is a view for one
+// read; the write paths save the caller's entry to the RAW node only.
+function policyRouting(config, network) {
+  const cfgRoutes = isPlainObject(config?.routes) ? config.routes : {};
+  const cfgDests = Object.keys(config?.mode || {});
+  const byRegistry = !!(network && network.locations && network.aliasIndex);
+  const routing = byRegistry ? networkRouting(config, network) : null;
+  const registryRouted = routing ? routing.registryRouted : new Set();
+  const planned = new Set(routing ? routing.dests : []);
+  const follower = (d) => !!network.locations[d] && !!network.locations[d].policyLike;
+  // Routed by the registry and following a template — whether or not
+  // config.mode happens to name it (a mode entry only sets its mode).
+  const isAdded = new Set(routing ? routing.dests.filter((d) => registryRouted.has(d) && follower(d)) : []);
+  const added = [...isAdded].filter((d) => !cfgDests.includes(d));
+  const templated = byRegistry ? withPolicyTemplates(config, network) : config;
+  const followsIn = (map, loc) => {
+    if (!byRegistry || !planned.has(loc) || !isPlainObject(map)) return null;
+    const key = policyTemplateKey(network, map, loc);
+    return key && key !== loc ? key : null;
+  };
+  return {
+    destinations: [...cfgDests, ...added],
+    added,
+    planned,
+    isAdded,
+    modeOf: (loc) => (config?.mode || {})[loc] || (isAdded.has(loc) ? "live" : "off"),
+    sourceFor: (loc, product, pid) => (isAdded.has(loc) ? (routing.sourceFor(loc, product, pid) || null) : (cfgRoutes[loc] || null)),
+    sourcesOf: (loc) => (isAdded.has(loc) ? routing.sourcesOf(loc) : (cfgRoutes[loc] ? [cfgRoutes[loc]] : [])),
+    configFor: (loc) => (planned.has(loc) ? templated : config),
+    followsIn,
+    // The first policy map in which `loc` reads a template — its category
+    // entry is asked separately by the model (it knows which entry speaks).
+    followsAny: (loc) => {
+      for (const k of LOCATION_MAP_KEYS) { const f = followsIn(config?.[k], loc); if (f) return f; }
+      return null;
+    },
+  };
+}
+
 // ── THE DAY-ONE MODEL ────────────────────────────────────────────────────────
 // Applies a proposed category map to a COPY of the live config and walks the
 // deficit loop's arithmetic over the category's cells at each named location.
@@ -339,10 +417,16 @@ function carriageForCategory({ products, stock, categoryKey, locations }) {
 // `configAfter` is built by the caller (never mutated here) so the same
 // function answers "what does the map do today" (configBefore) and "what would
 // it do after this edit" (configAfter), and the card can show both.
+//
+// `network` (optional) is the normalised registry. With it the model walks the
+// destinations the ENGINE plans and resolves each from the config the engine
+// resolves it from (policyRouting above). Without it the model is the
+// config.mode / config.routes model it always was.
 function modelCategoryPolicy({
   config, products, stock, targets, openIndex,
-  categoryKey, locations, maxIntentsPerRun, maxUnitsPerIntent,
+  categoryKey, locations, maxIntentsPerRun, maxUnitsPerIntent, network,
 }) {
+  const pr = policyRouting(config, network);
   const { pids, byLocation: carriage } = carriageForCategory({ products, stock, categoryKey, locations });
   // ── THE POLICY THAT ACTUALLY SPEAKS FOR THIS CATEGORY ─────────────────────
   // Its own entry, or — only when it has none — an ARMED group's. Reading
@@ -351,7 +435,25 @@ function modelCategoryPolicy({
   // the engine refilled it. Same bug shape as the unarmed-legs one the
   // differential fuzz caught, same direction.
   const eff = effectivePolicyFor(config, categoryKey);
-  const cat = eff ? eff.entry : null;
+  const ownCat = eff ? eff.entry : null;
+  // THE TEMPLATE, FOR THE LOCATIONS THE ENGINE PLANS. A planned location with
+  // no entry of its own in the entry that speaks for this category carries its
+  // template's entry — the one resolveTarget reads for it from the templated
+  // config. `follows` records whose. A location that is not live is not
+  // planned and gains nothing: it is never shown as armed by a template.
+  const follows = {};
+  let cat = ownCat;
+  if (isPlainObject(ownCat) && pr.planned.size) {
+    const effT = effectivePolicyFor(pr.configFor([...pr.planned][0]), categoryKey);
+    const catT = effT && isPlainObject(effT.entry) ? effT.entry : {};
+    for (const loc of pr.planned) {
+      const from = pr.followsIn(ownCat, loc);
+      if (!from || catT[loc] === undefined || catT[loc] === null) continue;
+      if (cat === ownCat) cat = { ...ownCat };
+      cat[loc] = catT[loc];
+      follows[loc] = from;
+    }
+  }
   const policySource = eff ? eff.source : null;         // "category" | "group" | null
   const policyGroupKey = eff ? eff.groupKey : null;
   const armedLocs = isPlainObject(cat)
@@ -372,7 +474,7 @@ function modelCategoryPolicy({
   // Unarmed legs carry no map numbers (target/minQty/reorderPoint null) and are
   // marked armed:false, so the editor still refuses to treat them as policy —
   // but their rows are counted, because the engine counts them.
-  const dests = Object.keys(config?.mode || {});
+  const dests = pr.destinations;
   const hasRowsHere = (loc) => pids.some((pid) => Object.keys(targets?.[loc]?.[pid] || {}).length > 0);
   const legLocs = [...new Set([...armedLocs, ...dests.filter(hasRowsHere)])];
   // A destination's MODE decides whether the scan writes anything at all:
@@ -383,9 +485,17 @@ function modelCategoryPolicy({
   // matches), so the mode is reported per leg instead of being silently folded
   // in. A caller presenting "the scan will ask for N" must say which of those
   // N land at a destination that is not live.
-  const modeOf = (loc) => (config?.mode || {})[loc] || "off";
+  const modeOf = pr.modeOf;
   const perSize = isPlainObject(cat) && cat.perSize === true;
-  const ctx = { targets, config, products, stock };
+  // One resolver context per config: the raw one, and (only when a registry
+  // was handed in and it changes something) the templated one.
+  const rawCtx = { targets, config, products, stock };
+  const ctxMemo = new Map([[config, rawCtx]]);
+  const ctxOf = (loc) => {
+    const c = pr.configFor(loc);
+    if (!ctxMemo.has(c)) ctxMemo.set(c, { targets, config: c, products, stock });
+    return ctxMemo.get(c);
+  };
   // THE ENGINE'S OWN DEFAULTS, not convenient ones. refill-engine.cjs falls
   // back to 20 units per intent and 200 intents per run when the config keys
   // are absent. Defaulting to Infinity/null here made the model overstate units
@@ -394,6 +504,10 @@ function modelCategoryPolicy({
   const capUnits = typeof maxUnitsPerIntent === "number" && maxUnitsPerIntent > 0
     ? maxUnitsPerIntent : ENGINE_DEFAULT_MAX_UNITS_PER_INTENT;
   const routes = config?.routes && typeof config.routes === "object" ? config.routes : {};
+  // A leg's source: config.routes for a location it names; for a location the
+  // registry routes, the engine's per-product answer (a store's back-stock hub
+  // for THAT product; Central for a hub).
+  const srcOf = (loc, pid) => pr.sourceFor(loc, products?.[pid], pid);
   const qtyAt = (loc, pid, sizeKey) =>
     Math.max(typeof stock?.[loc]?.[pid]?.[sizeKey]?.qty === "number" ? stock[loc][pid][sizeKey].qty : 0, 0);
   // Units of one cell across the WHOLE network — the engine's networkQty. A
@@ -421,7 +535,7 @@ function modelCategoryPolicy({
     for (const [pid, bySize] of Object.entries(byPid || {})) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
-        const src = entry.source || routes[dest];
+        const src = entry.source || srcOf(dest, pid);
         if (!src) continue;
         const k = `${src}|${pid}|${sizeKey}`;
         // num(), not Number(): the engine maps a non-finite qty to 0 and then
@@ -452,11 +566,21 @@ function modelCategoryPolicy({
   // walked in the ENGINE's destination order (a shop before the hub that
   // feeds it) and reported in the original order.
   const passThrough = new Map();
-  const walkOrder = [...legLocs].sort((a, b) => {
+  // The locations the registry routes go in where the engine puts them
+  // (networkRouting `dests`): its hubs after the config destinations, each of
+  // its stores ahead of the first hub it can pull from.
+  const walkOrder = legLocs.filter((l) => !pr.isAdded.has(l)).sort((a, b) => {
     if (routes[a] === b) return -1;
     if (routes[b] === a) return 1;
     return a.localeCompare(b);
   });
+  const addedLegs = legLocs.filter((l) => pr.isAdded.has(l)).sort();
+  const addedHubs = addedLegs.filter((l) => pr.sourcesOf(l).every((s) => !pr.isAdded.has(s)));
+  walkOrder.push(...addedHubs);
+  for (const s of addedLegs.filter((l) => !addedHubs.includes(l))) {
+    const at = walkOrder.findIndex((d) => pr.sourcesOf(s).includes(d));
+    if (at === -1) walkOrder.push(s); else walkOrder.splice(at, 0, s);
+  }
 
   const legs = [];
   const overriddenPids = new Set();
@@ -465,8 +589,8 @@ function modelCategoryPolicy({
     let cells = 0, wouldRequest = 0, unitsWanted = 0, silent = 0, atTarget = 0, onHand = 0, overrides = 0;
     let parkedNoSource = 0, parkedNothingAnywhere = 0, inFlight = 0, legacyRows = 0, carriedThroughHub = 0;
     const overrideRows = [], legacyRowList = [];
-    const src = routes[loc] || null;
     for (const pid of pids) {
+      const src = srcOf(loc, pid);
       // ── THE SIZES THE DEFICIT LOOP WOULD ACTUALLY WALK ────────────────────
       // sizesFor() (refill-engine.cjs) STARTS from the explicit rows that
       // already exist for this cell and then ADDS the map's sizes. Deriving the
@@ -522,7 +646,7 @@ function modelCategoryPolicy({
 
       let pidOverridden = false;
       for (const [sizeKey, size] of bySizeKey) {
-        const t = resolveTarget(ctx, loc, pid, size);
+        const t = resolveTarget(ctxOf(loc), loc, pid, size);
         if (!t || t.target <= 0) continue;
         cells += 1;
         if (t.source === "explicit") {
@@ -574,9 +698,9 @@ function modelCategoryPolicy({
         const srcKey = `${src}|${pid}|${sizeKey}`;
         const srcAvail = src ? qtyAt(src, pid, sizeKey) - (reserved.get(srcKey) || 0) : 0;
         if (srcAvail <= 0) {
-          const up = src ? routes[src] : null;
+          const up = src ? srcOf(src, pid) : null;
           const ptKey = `${src}|${pid}|${sizeKey}`;
-          if (up && !openIndex?.[src]?.[pid]?.[sizeKey] && resolveTarget(ctx, src, pid, size) === null
+          if (up && !openIndex?.[src]?.[pid]?.[sizeKey] && resolveTarget(ctxOf(src), src, pid, size) === null
               && qtyAt(up, pid, sizeKey) > 0 && !passThroughExcluded(products[pid])) {
             const cur = passThrough.get(ptKey);
             const upKey = `${up}|${pid}|${sizeKey}`;
@@ -603,6 +727,7 @@ function modelCategoryPolicy({
       if (pidOverridden) overriddenPids.add(pid);
     }
     const c = carriage[loc] || { carries: false, products: 0, units: 0 };
+    const legSources = pr.isAdded.has(loc) ? pr.sourcesOf(loc) : (routes[loc] ? [routes[loc]] : []);
     const mapped = isPlainObject(cat) && isPlainObject(cat[loc]) ? cat[loc] : null;
     const mappedMode = mapped ? locationEntryMode(mapped) : null;
     legs.push({
@@ -629,7 +754,15 @@ function modelCategoryPolicy({
       minQty: mappedMode === "uniform" ? (mapped.minQty ?? null) : null,
       reorderPoint: mappedMode === "uniform" ? (mapped.reorderPoint ?? null) : null,
       sizes: mappedMode === "per-size" ? mapped.sizes : null,
-      source: src,
+      // A location the registry routes per product can have more than one
+      // source; `source` is the one when there is exactly one.
+      source: legSources.length === 1 ? legSources[0] : null,
+      ...(pr.isAdded.has(loc) ? { sources: legSources } : {}),
+      // Whose numbers this leg reads when they are not its own ("follows
+      // Hub 2"): the category entry's template; for a leg the map does not
+      // arm, the first size-run or switch map it follows. null = armed by an
+      // entry of its own, or it follows nobody.
+      follows: follows[loc] || (armedLocs.includes(loc) ? null : pr.followsAny(loc)),
       cells, wouldRequest, unitsWanted, silent, atTarget, onHand,
       inFlight, parkedNoSource, parkedNothingAnywhere,
       // Shop cells whose shortfall rides a Central→hub pass-through request
@@ -681,6 +814,10 @@ function modelCategoryPolicy({
     policySource, policyGroupKey,
     products: pids.length,
     armedLocations: armedLocs,
+    // { location: the location whose entry it reads } — armed here through the
+    // policy template, with no entry of its own. Never saved: an entry written
+    // for one of these would stop it following.
+    follows,
     // Legs that produce refills off explicit rows alone, with no map entry.
     unarmedLegsWithRows: legLocs.filter((l) => !armedLocs.includes(l)),
     carriage,
@@ -722,5 +859,5 @@ module.exports = {
   validateLocationEntry,
   ENGINE_DEFAULT_MAX_UNITS_PER_INTENT, ENGINE_DEFAULT_MAX_INTENTS_PER_RUN,
   validatePolicyEntry, validateCategoryPolicy, diffCategoryPolicy,
-  carriageForCategory, modelCategoryPolicy, defaultMinQty,
+  carriageForCategory, modelCategoryPolicy, defaultMinQty, policyRouting,
 };
