@@ -137,7 +137,9 @@ export default function MediaStrip({ product, node, onChanged }) {
     onChanged(product.id, res.node);
     const newPrimary = photoUrlsOf(resolveMediaList(res.node, product).items)[0] || null;
     if (newPrimary && newPrimary !== oldPrimary) {
-      const app = await syncAppPhoto(product.id, product, oldPrimary, newPrimary);
+      // One retry: the list is already saved, and the app photo must follow it.
+      let app = await syncAppPhoto(product.id, product, oldPrimary, newPrimary);
+      if (!app.ok) app = await syncAppPhoto(product.id, product, oldPrimary, newPrimary);
       if (!app.ok) setErr(app.message);
       else if (app.changed) setNote("The new primary photo is now the product's photo in the app too.");
     }
@@ -149,7 +151,10 @@ export default function MediaStrip({ product, node, onChanged }) {
     setBusy(true); setErr(null); setNote(null);
     const oldPrimary = photoUrlsOf(items)[0] || null;
     try {
-      const res = await setPublishMedia(product.id, nodeRef.current, next);
+      // The basis is the SAME snapshot `items` came from (the rendered node):
+      // a write computed from a list that has since grown must be refused,
+      // never silently drop what was added in between.
+      const res = await setPublishMedia(product.id, node, next);
       if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }
       await afterWrite(res, oldPrimary);
       after?.();
@@ -206,7 +211,8 @@ export default function MediaStrip({ product, node, onChanged }) {
     e.target.value = "";
     if (!files.length) return;
     setErr(null); setNote(null);
-    const room = MAX_PUBLISH_MEDIA - items.length;
+    // Files still waiting in the queue count against Shopify's cap too.
+    const room = MAX_PUBLISH_MEDIA - items.length - pendingRef.current.length;
     // With no photo in the list yet a video cannot go first, so photos go first.
     const hasPhoto = items.some((m) => m.type === "photo");
     const ordered = hasPhoto ? files : [...files.filter((f) => pickedKind(f) === "photo"), ...files.filter((f) => pickedKind(f) !== "photo")];
@@ -346,17 +352,17 @@ export default function MediaStrip({ product, node, onChanged }) {
               <AiStudioCard
                 product={product} node={node} sourceUrl={selected.url} photoCount={items.length}
                 isPrimary={i === 0} busy={busy || uploading}
-                onReplace={(url, sourceUrl) => write(replaceItem(items, sourceUrl, {
-                  id: newMediaId(), type: "photo", url, path: storagePathOf(url) || undefined,
+                onReplace={(url, sourceUrl, meta = {}) => write(replaceItem(items, sourceUrl, {
+                  id: newMediaId(), type: "photo", url, path: storagePathOf(url) || undefined, sha256: meta.sha256,
                   source: "ai", derivedFrom: sourceUrl, addedBy: auth.currentUser?.uid || undefined,
                 }))}
-                onAdd={async (url) => {
+                onAdd={async (url, meta = {}) => {
                   const oldPrimary = photoUrlsOf(items)[0] || null;
                   setBusy(true); setErr(null);
                   try {
                     const res = await appendPublishMedia(product.id, nodeRef.current, [{
                       id: newMediaId(), type: "photo", url, path: storagePathOf(url) || undefined,
-                      source: "ai", derivedFrom: selected.url,
+                      sha256: meta.sha256, source: "ai", derivedFrom: selected.url,
                       ...(auth.currentUser?.uid ? { addedBy: auth.currentUser.uid } : {}),
                     }], product);
                     if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }

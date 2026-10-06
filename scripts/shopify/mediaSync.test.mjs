@@ -3,7 +3,7 @@ import http from "node:http";
 import { createHash } from "node:crypto";
 import {
   planMediaSync, reorderMoves, syncProductMedia, needsLiveMediaSync, pushSigFor, uploadVideoToShopify,
-  MEDIA_PENDING_PATH,
+  sendNextQueuedVideo, recordPatch, MEDIA_PENDING_PATH,
 } from "./mediaSync.mjs";
 import { APP_STORAGE_PREFIX } from "../../src/components/shopify/publishShared.js";
 import { rtdbRoundTrip } from "../../src/components/shopify/rtdbRoundTrip.testutil.js";
@@ -31,6 +31,10 @@ function fakeDb(initial = {}) {
   };
   const ref = (p) => ({
     get: async () => ({ val: () => get(p) }),
+    update: async (obj) => {
+      writes.push(["update", p]);
+      for (const [k, v] of Object.entries(obj)) put(`${p}/${k}`, v);
+    },
     set: async (v) => { writes.push(["set", p]); put(p, v); },
     remove: async () => { writes.push(["remove", p]); put(p, null); },
     child: (k) => ref(`${p}/${k}`),
@@ -63,6 +67,11 @@ function fakeShopify({ readyAfterReads = 1, initial = [] } = {}) {
       }
       return { productReorderMedia: { job: { id: "j", done: false }, mediaUserErrors: [] } };
     }
+    if (/fileUpdate/.test(q)) {
+      s.mutations.push(["alt", v.files.map((f) => f.id)]);
+      for (const f of v.files) { const m = s.media.find((x) => x.id === f.id); if (m) m.alt = f.alt; }
+      return { fileUpdate: { files: v.files.map((f) => ({ id: f.id })), userErrors: [] } };
+    }
     if (/stagedUploadsCreate/.test(q)) throw new Error("the injected uploader should be used");
     if (/media\(first: 250\)/.test(q)) {
       s.reads += 1;
@@ -85,7 +94,15 @@ function makeUploader() {
 
 async function tick(env, node, opts = {}) {
   return syncProductMedia({ graphql: env.shop.graphql, db: env.fdb.db, pid: "p1", gid: GID, node, product: null,
-                            title: "Plain tee black", mode: "live", videoBudget: 1, uploadVideo: env.up.upload, pollMs: 0, ...opts });
+                            title: "Plain tee black", mode: "live", pollMs: 0, ...opts });
+}
+// The video runner's one step (its own launchd job in production).
+const send = (env, node) => sendNextQueuedVideo({ graphql: env.shop.graphql, db: env.fdb.db, pid: "p1", node, upload: env.up.upload });
+// Ticks + runner steps until the product settles (or n rounds).
+async function settle(env, node, n = 6) {
+  let r;
+  for (let i = 0; i < n; i++) { await send(env, node); r = await tick(env, node); if (!r.pending) break; }
+  return r;
 }
 
 let env;
@@ -94,9 +111,9 @@ beforeEach(() => { env = { fdb: fakeDb(), shop: fakeShopify(), up: makeUploader(
 describe("the full ordered set, primary first", () => {
   it("pushes several photos and a video in list order, alt = the validated listing name on every item", async () => {
     const node = live([photo(1), video(1), photo(2)]);
-    await tick(env, node);
-    const order = env.shop.s.media.map((m) => m.src);
-    expect(order).toEqual([U(1), "https://shopify-staged.example/mv1", U(2)]);
+    const r = await settle(env, node);
+    expect(r.pending).toBe(false);
+    expect(env.shop.s.media.map((m) => m.src)).toEqual([U(1), "https://shopify-staged.example/mv1", U(2)]);
     expect(env.shop.s.media.every((m) => m.alt === "Plain tee black")).toBe(true);
   });
   it("reorderMoves reproduces any target exactly as Shopify applies moves (sequentially)", () => {
@@ -112,27 +129,42 @@ describe("the full ordered set, primary first", () => {
     }
     expect(reorderMoves(cur, ["a", "b"])).toEqual([]);
   });
+  it("a rename re-labels every item's alt text", async () => {
+    const node = live([photo(1), photo(2)]);
+    await settle(env, node);
+    const renamed = { ...node, cleanName: "Plain tee charcoal" };
+    expect(needsLiveMediaSync({ ...renamed, mediaSyncedSig: pushSigFor(node, null) }, null)).toBe(true);
+    await tick(env, renamed, { title: "Plain tee charcoal" });
+    expect(env.shop.s.media.every((m) => m.alt === "Plain tee charcoal")).toBe(true);
+  });
 });
 
-describe("a video's bytes go to Shopify EXACTLY ONCE, across ticks", () => {
-  it("tick 1 uploads + attaches, tick 2 polls processing, tick 3 sees READY — one upload in all", async () => {
+describe("a video's bytes go to Shopify EXACTLY ONCE, and never inside the tick", () => {
+  it("the tick never uploads: it queues; the runner sends once; the tick attaches and polls to READY", async () => {
     env.shop = fakeShopify({ readyAfterReads: 3 });
     const node = live([photo(1), video(1)]);
     const t1 = await tick(env, node);
-    expect(env.up.calls).toEqual(["mv1"]);
+    expect(env.up.calls).toEqual([]);                       // nothing moved inside the tick
+    expect(env.fdb.get("shopify_publish/p1/mediaShopify/mv1").status).toBe("queued");
     expect(t1.pending).toBe(true);
     expect(env.fdb.get(`${MEDIA_PENDING_PATH}/p1`)).toBe(true);
-    const rec = env.fdb.get("shopify_sync/p1/media/items/mv1");
-    expect(rec).toMatchObject({ resourceUrl: "https://shopify-staged.example/mv1", uploadAttempts: 1 });
-    const n2 = { ...node, mediaShopify: env.fdb.get("shopify_publish/p1/mediaShopify") };
-    await tick(env, n2);
-    await tick(env, n2);
-    const t4 = await tick(env, n2);
-    expect(env.up.calls).toEqual(["mv1"]);   // never again
-    expect(t4.pending).toBe(false);
+    expect((await send(env, node)).sent).toBe(true);
+    expect(env.fdb.get("shopify_sync/p1/media/items/mv1")).toMatchObject({ resourceUrl: "https://shopify-staged.example/mv1" });
+    for (let i = 0; i < 6; i++) { await tick(env, node); await send(env, node); }
+    expect(env.up.calls).toEqual(["mv1"]);                  // never again
     expect(env.fdb.get(`${MEDIA_PENDING_PATH}/p1`)).toBeNull();
     expect(env.fdb.get("shopify_publish/p1/mediaShopify")).toEqual({ mp1: { status: "ready" }, mv1: { status: "ready" } });
     expect(env.shop.s.mutations.filter((m) => m[0] === "create").length).toBe(2); // photos once, video attach once
+  });
+  it("the tick's own record writes never overwrite the runner's resourceUrl (field-level)", async () => {
+    const node = live([photo(1), video(1)]);
+    await tick(env, node);
+    await send(env, node);
+    // A tick that read the record BEFORE the runner finished still only writes the fields it changed.
+    expect(recordPatch({ mv1: { status: "queued", url: "u" } }, { mv1: { status: "queued", url: "u", type: "video" } }))
+      .toEqual({ "items/mv1/type": "video" });
+    await tick(env, node);
+    expect(env.fdb.get("shopify_sync/p1/media/items/mv1/resourceUrl")).toBe("https://shopify-staged.example/mv1");
   });
   it("an attach that fails is retried with the SAME resourceUrl — the bytes are not sent again", async () => {
     const node = live([photo(1), video(1)]);
@@ -142,44 +174,52 @@ describe("a video's bytes go to Shopify EXACTLY ONCE, across ticks", () => {
       if (failOnce && /productCreateMedia/.test(q) && v.media[0].mediaContentType === "VIDEO") { failOnce = false; throw new Error("blip"); }
       return real(q, v);
     };
-    await tick(env, node);
-    await tick(env, node);
+    await settle(env, node);
     expect(env.up.calls).toEqual(["mv1"]);
     expect(env.shop.s.media.some((m) => m.src === "https://shopify-staged.example/mv1")).toBe(true);
   });
   it("a video Shopify FAILED is taken off and marked failed — and NOT re-uploaded", async () => {
     const node = live([photo(1), video(1)]);
-    await tick(env, node);
+    await send(env, node); await tick(env, node);
     env.shop.s.media.find((m) => m.mediaContentType === "VIDEO").status = "FAILED";
-    await tick(env, node);
-    await tick(env, node);
+    await settle(env, node);
     expect(env.up.calls).toEqual(["mv1"]);
     expect(env.fdb.get("shopify_publish/p1/mediaShopify/mv1").status).toBe("failed");
     expect(env.shop.s.media.some((m) => m.mediaContentType === "VIDEO")).toBe(false);
   });
-  it("uploads are capped per tick; the rest stay queued and pending", async () => {
-    const node = live([photo(1), video(1), video(2), video(3)]);
-    await tick(env, node, { videoBudget: 1 });
+  it("a transfer that dies before Shopify accepts it records no resourceUrl and is sent again (the bytes never landed)", async () => {
+    const node = live([photo(1), video(1)]);
+    let die = true;
+    const upload = async (g, item) => { if (die) { die = false; throw new Error("connection reset"); } return env.up.upload(g, item); };
+    await sendNextQueuedVideo({ graphql: env.shop.graphql, db: env.fdb.db, pid: "p1", node, upload });
+    expect(env.fdb.get("shopify_sync/p1/media/items/mv1")).toMatchObject({ uploadAttempts: 1, status: "queued" });
+    await sendNextQueuedVideo({ graphql: env.shop.graphql, db: env.fdb.db, pid: "p1", node, upload });
     expect(env.up.calls).toEqual(["mv1"]);
+  });
+  it("one video per runner step; the rest stay queued and pending", async () => {
+    const node = live([photo(1), video(1), video(2), video(3)]);
+    await tick(env, node);
+    await send(env, node);
+    expect(env.up.calls).toEqual(["mv1"]);
+    await tick(env, node);
     expect(env.fdb.get("shopify_publish/p1/mediaShopify/mv2").status).toBe("queued");
-    await tick(env, node, { videoBudget: 1 });
+    await send(env, node);
     expect(env.up.calls).toEqual(["mv1", "mv2"]);
   });
 });
 
 describe("re-running with nothing changed", () => {
-  it("makes ZERO Shopify writes and ZERO Storage downloads, and the live phase skips it without a Shopify read", async () => {
+  it("makes ZERO Shopify writes, ZERO Storage downloads and ZERO database writes; the live phase skips it without a Shopify read", async () => {
     const node = live([photo(1), photo(2), video(1)]);
-    for (let i = 0; i < 4; i++) await tick(env, { ...node, mediaShopify: env.fdb.get("shopify_publish/p1/mediaShopify") });
+    await settle(env, node);
     const settled = { ...node, mediaShopify: env.fdb.get("shopify_publish/p1/mediaShopify"),
                       mediaSyncedSig: env.fdb.get("shopify_publish/p1/mediaSyncedSig") };
     expect(settled.mediaSyncedSig).toBe(pushSigFor(node, null));
-    // The live phase's gate: no Shopify call at all.
     expect(needsLiveMediaSync(settled, null, { pending: false })).toBe(false);
-    // And even if run anyway: no mutation, no upload, no RTDB write.
     const muts = env.shop.s.mutations.length;
     const dbWrites = env.fdb.writes.length;
     const r = await tick(env, settled);
+    expect((await send(env, settled)).sent).toBe(false);
     expect(r.writes).toBe(0);
     expect(env.shop.s.mutations.length).toBe(muts);
     expect(env.up.calls).toEqual(["mv1"]);
@@ -187,38 +227,95 @@ describe("re-running with nothing changed", () => {
   });
 });
 
+describe("a live product is never without its photos", () => {
+  it("swapping the primary: the old photo stays on Shopify until the new one is READY", async () => {
+    await settle(env, live([photo(1)]));
+    env.shop = { ...env.shop };
+    const node = live([photo(2)]);
+    const real = env.shop.graphql;
+    // The new photo takes a few reads to process.
+    await tick(env, node);
+    const newOne = env.shop.s.media.find((m) => m.src === U(2));
+    newOne.status = "UPLOADED"; newOne.age = -5;
+    await tick(env, node);
+    expect(env.shop.s.media.map((m) => m.src)).toContain(U(1));          // not removed yet
+    newOne.age = 10;
+    await tick(env, node);
+    await tick(env, node);
+    expect(env.shop.s.media.map((m) => m.src)).toEqual([U(2)]);
+    void real;
+  });
+  it("a photo Shopify FAILED (a transient fetch error) is retried, not lost", async () => {
+    const node = live([photo(1)]);
+    await tick(env, node);
+    env.shop.s.media[0].status = "FAILED";
+    await settle(env, node);
+    expect(env.shop.s.media.map((m) => [m.src, m.status])).toEqual([[U(1), "READY"]]);
+  });
+  it("a create whose answer was lost is adopted on the next tick, never duplicated", async () => {
+    const node = live([photo(1), photo(2)]);
+    const real = env.shop.graphql;
+    let lose = true;
+    env.shop.graphql = async (q, v) => {
+      const out = await real(q, v);
+      if (lose && /productCreateMedia/.test(q)) { lose = false; throw new Error("socket hang up (the create DID happen)"); }
+      return out;
+    };
+    await expect(tick(env, node)).rejects.toThrow(/hang up/);
+    expect(env.fdb.get("shopify_sync/p1/media/inflight")).toBeTruthy();
+    await settle(env, node);
+    expect(env.shop.s.media.map((m) => m.src)).toEqual([U(1), U(2)]);  // two, not four
+    expect(env.fdb.get("shopify_sync/p1/media/inflight")).toBeNull();
+  });
+});
+
 describe("removal: only what this system created", () => {
   it("drops an item from Shopify when it leaves the list; leaves media it did not create alone", async () => {
     env.shop = fakeShopify({ initial: [{ id: "gid://shopify/Media/9", status: "READY", mediaContentType: "IMAGE", src: "admin-upload" }] });
-    const node = live([photo(1), photo(2)]);
-    await tick(env, node);   // no fingerprint → the admin's photo is foreign
-    await tick(env, live([photo(1)]));
-    const srcs = env.shop.s.media.map((m) => m.src);
-    expect(srcs).toEqual([U(1), "admin-upload"]); // ours first, theirs untouched
+    await settle(env, live([photo(1), photo(2)]));   // no fingerprint → the admin's photo is foreign
+    await settle(env, live([photo(1)]));
+    expect(env.shop.s.media.map((m) => m.src)).toEqual([U(1), "admin-upload"]); // ours first, theirs untouched
     expect(env.fdb.get("shopify_sync/p1/media/items/mp2")).toBeNull();
   });
-  it("replaces the photo set the OLD path attached (proven by its fingerprint) — new ones in first, old removed last", async () => {
-    env.fdb = fakeDb({ shopify_sync: { p1: { shopifyProductId: GID, mediaFingerprint: "abc" } } });
+  it("replaces the photo set the OLD path attached — new ones in and READY first, old removed last, even if a removal fails once", async () => {
+    env.fdb = fakeDb({ shopify_sync: { p1: { shopifyProductId: GID, mediaFingerprint: "abc", mediaCount: 2 } } });
     env.shop = fakeShopify({ initial: [
       { id: "gid://shopify/Media/1", status: "READY", mediaContentType: "IMAGE", src: "old-1" },
       { id: "gid://shopify/Media/2", status: "READY", mediaContentType: "IMAGE", src: "old-2" }] });
-    await tick(env, live([photo(1), photo(2)]));
+    const real = env.shop.graphql;
+    let failDelete = true;
+    env.shop.graphql = async (q, v) => {
+      if (failDelete && /productDeleteMedia/.test(q)) { failDelete = false; throw new Error("blip"); }
+      return real(q, v);
+    };
+    const node = live([photo(1), photo(2)]);
+    await tick(env, node);
+    expect(env.shop.s.media.length).toBe(4); // never imageless: old still up while new process
+    for (let i = 0; i < 4; i++) { try { await tick(env, node); } catch { /* the one failed delete */ } }
     const kinds = env.shop.s.mutations.map((m) => m[0]);
-    expect(kinds.indexOf("create")).toBeLessThan(kinds.indexOf("delete")); // never imageless in between
+    expect(kinds.indexOf("create")).toBeLessThan(kinds.indexOf("delete"));
     expect(env.shop.s.media.map((m) => m.src)).toEqual([U(1), U(2)]);
   });
+  it("a legacy set whose count does not match what the old path attached is NOT taken as ours", async () => {
+    env.fdb = fakeDb({ shopify_sync: { p1: { shopifyProductId: GID, mediaFingerprint: "abc", mediaCount: 1 } } });
+    env.shop = fakeShopify({ initial: [
+      { id: "gid://shopify/Media/1", status: "READY", mediaContentType: "IMAGE", src: "old-1" },
+      { id: "gid://shopify/Media/2", status: "READY", mediaContentType: "IMAGE", src: "admin-added" }] });
+    await settle(env, live([photo(1)]));
+    expect(env.shop.s.media.map((m) => m.src)).toEqual([U(1), "old-1", "admin-added"]);
+  });
   it("removing EVERY extra empties the record the way the real database does", async () => {
-    await tick(env, live([photo(1), photo(2), video(1)]));
-    await tick(env, live([photo(1)]));
+    await settle(env, live([photo(1), photo(2), video(1)]));
+    await settle(env, live([photo(1)]));
     expect(Object.keys(env.fdb.get("shopify_sync/p1/media/items"))).toEqual(["mp1"]);
     expect(Object.keys(env.fdb.get("shopify_publish/p1/mediaShopify"))).toEqual(["mp1"]);
   });
 });
 
 describe("oversize video: kept, never pushed", () => {
-  it("a 2 GB video is never uploaded and gets no Shopify status; the rest of the list syncs", async () => {
+  it("a 2 GB video is never sent and gets no Shopify status; the rest of the list syncs", async () => {
     const node = live([photo(1), video(1, { bytes: 2_000_000_000 })]);
-    const r = await tick(env, node);
+    const r = await settle(env, node);
     expect(env.up.calls).toEqual([]);
     expect(env.shop.s.media.length).toBe(1);
     expect(env.fdb.get("shopify_publish/p1/mediaShopify/mv1")).toBeNull();
@@ -235,9 +332,9 @@ describe("the publish path (mode on)", () => {
     expect(env.fdb.get("shopify_publish/p1/mediaShopify/mv1").status).toBe("queued");
     expect(env.fdb.get(`${MEDIA_PENDING_PATH}/p1`)).toBe(true);
   });
-  it("refuses a list with no photo first", async () => {
+  it("refuses a list with no photo first, as not retryable", async () => {
     const r = await tick(env, live([video(1)]), { mode: "on" });
-    expect(r.ok).toBe(false);
+    expect(r).toMatchObject({ ok: false, retryable: false });
   });
 });
 
@@ -247,7 +344,8 @@ describe("planMediaSync (pure)", () => {
       desired: [photo(1)], record: { mp1: { type: "photo", shopifyMediaId: "m1" } },
       shopify: [{ id: "m1", status: "READY" }],
     });
-    expect([p.createPhotos, p.uploadVideos, p.attachVideos, p.removeIds, p.legacyIds].every((a) => a.length === 0)).toBe(true);
+    expect([p.createPhotos, p.attachVideos, p.failedIds].every((a) => a.length === 0)).toBe(true);
+    expect(Object.values(p.record).some((r) => r.remove)).toBe(false);
   });
 });
 

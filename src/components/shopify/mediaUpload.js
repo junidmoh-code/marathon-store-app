@@ -99,7 +99,9 @@ export async function claimMediaHash(pid, sha256, kind) {
 
 // ─── VIDEO FACTS + POSTER ────────────────────────────────────────────────────
 function withTimeout(p, ms, what) {
-  return Promise.race([p, new Promise((_, rej) => setTimeout(() => rej(new Error(`${what} timed out`)), ms))]);
+  let t = null;
+  return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(`${what} timed out`)), ms); })])
+    .finally(() => clearTimeout(t));
 }
 
 /**

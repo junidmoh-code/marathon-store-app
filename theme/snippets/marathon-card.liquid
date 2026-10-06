@@ -273,7 +273,7 @@
       {%- assign gallery_count = product.media.size -%}
       {%- if gallery_count > 1 -%}
         <div class="mc-gallery" data-mc-gallery>
-          <div class="mc-gallery__track" data-mc-gallery-track tabindex="0" aria-label="Photos and videos, {{ gallery_count }} items">
+          <div class="mc-gallery__track" data-mc-gallery-track tabindex="0" role="region" aria-roledescription="carousel" aria-label="Photos and videos, {{ gallery_count }} items">
             {%- for media in product.media -%}
               <div class="mc-gallery__slide" data-mc-slide>
                 {%- case media.media_type -%}

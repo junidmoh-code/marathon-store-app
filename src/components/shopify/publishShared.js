@@ -117,6 +117,10 @@ export function normalizePhotoList(val) {
 //     sha256?, bytes?, mime?, width?, height?, durationMs?,
 //     addedAt?, addedBy?, source?, derivedFrom? }
 //
+// `sha256` is the hash of the bytes JUNID PICKED — for a video exactly the
+// stored object, for a photo the camera file before the app's 1600 px JPEG
+// re-encode (it is the wrong-pick guard's identity, not a checksum of `path`).
+//
 // It EXTENDS the `photos` list rather than standing beside it: every write
 // of `media` also writes `photos` = the photo URLs in list order, in the same
 // transaction (publishMutators.mediaMutator), so every reader that only knows

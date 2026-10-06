@@ -37,9 +37,9 @@ export function appPhotoPatch(pid, product, oldPrimary, newPrimary) {
   if (product?.photoUrl === newPrimary) return null;
   const patch = { photoUrl: newPrimary };
   const current = product?.photoUrl || null;
-  // Keep the staff photo being replaced, the AI Studio approve rule.
+  // Keep the STAFF photo being replaced (photo.jpg) — the AI Studio approve
+  // rule. A publishing or generated photo is never recorded as the original.
   if (current && isStaffPhoto(pid, current) && current !== newPrimary) patch.photoUrlOriginal = current;
-  else if (current && !product?.photoUrlOriginal && current !== newPrimary) patch.photoUrlOriginal = current;
   return patch;
 }
 

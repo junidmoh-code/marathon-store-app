@@ -161,24 +161,31 @@
   // reading a long size list scrolls the sheet instead of dismissing it.
   // A SIDEWAYS drag is the photo gallery's swipe, never a dismiss: the first
   // clear movement decides, and a horizontal one releases the sheet.
-  var dragY = null, dragX = null, dragSheet = null;
+  var dragY = null, dragX = null, dragSheet = null, dragDecided = false;
   document.addEventListener("touchstart", function (ev) {
     var sheet = ev.target.closest && ev.target.closest("[data-mc-sheet]");
     if (!sheet || sheet.scrollTop > 0) return;
     dragSheet = sheet;
     dragY = ev.touches[0].clientY;
     dragX = ev.touches[0].clientX;
+    dragDecided = false;
   }, { passive: true });
 
   document.addEventListener("touchmove", function (ev) {
     if (!dragSheet || dragY === null) return;
     var dy = ev.touches[0].clientY - dragY;
     var dx = ev.touches[0].clientX - dragX;
-    if (Math.abs(dx) > Math.abs(dy) && Math.abs(dx) > 8) {
-      dragSheet.classList.remove("is-dragging");
-      dragSheet.style.transform = "";
-      dragSheet = null; dragY = null; dragX = null;
-      return;
+    // The direction is decided ONCE, by the first clear movement: a sideways
+    // start is the gallery's swipe; a downward start stays a dismiss even if
+    // the finger later drifts sideways.
+    if (!dragDecided && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      dragDecided = true;
+      if (Math.abs(dx) > Math.abs(dy)) {
+        dragSheet.classList.remove("is-dragging");
+        dragSheet.style.transform = "";
+        dragSheet = null; dragY = null; dragX = null;
+        return;
+      }
     }
     if (dy <= 0) return;
     dragSheet.classList.add("is-dragging");
@@ -215,6 +222,13 @@
     $$("video", scope).forEach(function (v) {
       if (keepSlide && keepSlide.contains(v)) return;
       try { v.pause(); } catch (e) { /* already stopped */ }
+    });
+    // An embedded (YouTube/Vimeo) player cannot be paused from here; reloading
+    // its address stops it.
+    $$("iframe", scope).forEach(function (f) {
+      if (keepSlide && keepSlide.contains(f)) return;
+      var src = f.getAttribute("src");
+      if (src) f.setAttribute("src", src);
     });
   }
   function syncGallery(gallery) {
@@ -253,6 +267,8 @@
       slide.appendChild(tpl.content.cloneNode(true));
       var video = $("video", slide);
       play.remove();
+      var focusTarget = video || $("iframe", slide);
+      if (focusTarget) { focusTarget.setAttribute("tabindex", "-1"); focusTarget.focus({ preventScroll: true }); }
       if (video) {
         // A tap is the shopper's own gesture: sound on, controls on, inline.
         video.setAttribute("playsinline", "");

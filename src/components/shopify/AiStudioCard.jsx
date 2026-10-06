@@ -36,6 +36,7 @@ import { httpsCallable } from "firebase/functions";
 import { functions } from "../../firebase";
 import { FONT, GRAY, RED, AMBER, BLUE_L, GREEN, bBlue, bGray, bGreen, tabOn, tabOff, input as inputStyle } from "../stock/ui";
 import { uploadPublishPhoto } from "./photoTools";
+import { sha256OfBlob } from "./sha256";
 import { APP_STORAGE_PREFIX } from "./shopifyPublishStore";
 import { MAX_PUBLISH_PHOTOS } from "./publishShared";
 import {
@@ -231,9 +232,12 @@ export default function AiStudioCard({ product, node = null, sourceUrl, photoCou
       if (!res.ok) throw new Error(`could not read the generated image back (HTTP ${res.status})`);
       const blob = await res.blob();
       const url = await uploadPublishPhoto(product.id, blob, { kind: "gen", derivedFrom: candidate.sourceUrl });
+      // Hashed like every other publishing photo, so the same generated image
+      // can't be added to this product twice.
+      const sha256 = await sha256OfBlob(blob);
       // Only a COMMITTED list write consumes the candidate — a refused write
       // shows its error and keeps the side-by-side up for another go.
-      const committed = mode === "add" ? await onAdd(url) : await onReplace(url, candidate.sourceUrl);
+      const committed = mode === "add" ? await onAdd(url, { sha256 }) : await onReplace(url, candidate.sourceUrl, { sha256 });
       if (committed) {
         setCandidate(null);
         setMsg(mode === "add"
