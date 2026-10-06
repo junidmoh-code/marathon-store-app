@@ -114,6 +114,9 @@ export default function MissingFootwear({ products = [] }) {
   const section = sectionPick && sectionChoices.includes(sectionPick) ? sectionPick : (sectionChoices[0] ?? 2);
   const HUBS = useMemo(() => hubIds(network, { section }), [network, section]);
   const REQUESTABLE_HUBS = useMemo(() => hubIds(network, { section, liveOnly: true }), [network, section]);
+  // Hubs a person may raise their OWN request for: every hub of the section,
+  // live or not. On Section 2 this is the same list as REQUESTABLE_HUBS.
+  const REQUEST_HUBS = HUBS;
   // Central's shelf is shared by both sections, so what is already promised
   // out of it is counted across this section's hubs AND every other live hub.
   const RESERVING_HUBS = useMemo(() => [...new Set([...HUBS, ...hubIds(network, { liveOnly: true })])], [HUBS, network]);
@@ -156,10 +159,11 @@ export default function MissingFootwear({ products = [] }) {
   // refill lane. Same write shape and same queue as Solve; only the number
   // differs. Stock does NOT move here — Central picks it from the queue.
   const request = async (card) => {
-    const dest = dests[card.pid] || REQUESTABLE_HUBS[0];
-    // LIVE only (REQUESTABLE_HUBS): a request is never raised for a hub that
-    // has not been counted in.
-    if (busyPid || !canAct || !dest || !REQUESTABLE_HUBS.includes(dest)) return;
+    const dest = dests[card.pid] || REQUEST_HUBS[0];
+    // A REQUEST is a person's own ask — their sizes, their quantities — so it
+    // works for a hub that is not live yet, like every manual action. (SOLVE,
+    // which raises the policy's numbers by itself, stays live-only below.)
+    if (busyPid || !canAct || !dest || !REQUEST_HUBS.includes(dest)) return;
     const picks = card.sizes.map((s) => ({ size: s.size, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
     if (!picks.length) return;
     // Same stale-screen guard as solve(): a finished line takes no requests.
@@ -352,7 +356,7 @@ export default function MissingFootwear({ products = [] }) {
       {cards.map((card) => {
         const open = openPid === card.pid;
         const result = done[card.pid];
-        const dest = dests[card.pid] || REQUESTABLE_HUBS[0];
+        const dest = dests[card.pid] || REQUEST_HUBS[0];
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
@@ -363,7 +367,7 @@ export default function MissingFootwear({ products = [] }) {
         // disabled AND is the text shown on the row. These were `title=` only —
         // a hover tooltip, invisible on the warehouse tablets this runs on.
         const solveBlocked = notLive || footwearSolveReason({ canAct, runLoaded: !!footwearRun, linesAtAnyHub: solvable });
-        const requestBlocked = notLive || footwearRequestReason({ canAct });
+        const requestBlocked = footwearRequestReason({ canAct });
         // `busy` is the GLOBAL in-flight flag, not this row's, because the
         // buttons below are disabled by the global one. Passing the per-row test
         // while disabling on the global left a window — another card mid-write —
@@ -463,7 +467,7 @@ export default function MissingFootwear({ products = [] }) {
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "10px 0 8px" }}>
-                  {REQUESTABLE_HUBS.map((h) => (
+                  {REQUEST_HUBS.map((h) => (
                     <button key={h} onClick={() => setDests((d) => ({ ...d, [card.pid]: h }))} style={destChip(dest === h)}>
                       {LOC_LABEL[h]}
                     </button>

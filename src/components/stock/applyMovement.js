@@ -139,10 +139,16 @@ export function movementWallCheck(registry, movement) {
 // One small append-only row at central_dispatch/{movementId}, written in the
 // SAME atomic update as the stock cells and the ledger movement — so it shares
 // the movement's idempotency (same id → written once) and cannot exist
-// without its movement. It is written HERE because every Central dispatch in
-// the app — the Source queue's fulfil, a Transfer from Central, the Initial
-// Distribution wizard, a first-batch send, a manual move off a Missing
-// Products card — is a movement out of Central through this one writer.
+// without its movement. It is written HERE because every COUNTED Central
+// dispatch in the app — the Source queue's fulfil, a Transfer from Central,
+// the Initial Distribution wizard, a first-batch send, a manual move off a
+// Missing Products card — is a movement out of Central through this one writer.
+//
+// NOT COVERED: an UNCOUNTED fulfil. When Central's own cell is not counted,
+// the Source queue (and the CR uncounted path) records a `received` at the
+// destination with no origin — there is no movement out of Central, so no
+// row. Those dispatches are missing from central_dispatch until they are
+// given an origin.
 //
 // WHAT COUNTS. A relocation (transfer_out / transfer_in) whose origin is
 // Central (type "central" in the network registry). The destination is the

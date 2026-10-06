@@ -13,7 +13,8 @@
 
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
-const { sweepCandidates, planTransitSweep, applyTransitSweep } = require("./lib/transit-sweep.cjs");
+const { sweepCandidates, planTransitSweep, applyTransitSweep, holdNonLiveReleases } = require("./lib/transit-sweep.cjs");
+const { loadNetwork } = require("./lib/network-load.cjs");
 
 if (!admin.apps.length) admin.initializeApp();
 
@@ -30,7 +31,8 @@ async function runSweep(db = admin.database(), nowMs = Date.now()) {
   // KB with its gallery and alternatives; existence is one small read.
   for (const pid of candidates.lookups.productIds) productExists[pid] = (await read(`products/${pid}/id`)) != null || (await read(`products/${pid}/name`)) != null;
 
-  const plan = planTransitSweep({ candidates, movements, productExists, config: hold && hold.config, nowMs });
+  const planned = planTransitSweep({ candidates, movements, productExists, config: hold && hold.config, nowMs });
+  const plan = holdNonLiveReleases(planned, await loadNetwork(db, { nowMs }));
   const applied = await applyTransitSweep(db, plan, { nowIso, nowMs });
 
   const summary = {

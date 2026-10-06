@@ -422,14 +422,18 @@ function numberPrefixFor(registry, anyStore) {
 //   • a destShop (the existing single-shop lock)             → that shop's
 //   • nothing at all (every account that predates sections)  → both, so no
 //     one is locked out by the deploy; Junid narrows them from User Management.
-// Stored as a MAP, never an array: RTDB deletes an empty array, and "no
-// sections" must not read back as "all sections".
+// WRITTEN as a map, never an array: RTDB deletes an empty array, and "no
+// sections" must not read back as "all sections". READ as either — see below.
 function sectionsFor(registry, record, opts) {
   const o = opts || {};
   if (o.isOwner === true) return [1, 2];
   const r = isObj(record) ? record : {};
   if (r.allSections === true) return [1, 2];
-  if (isObj(r.sections)) return [1, 2].filter((n) => r.sections[n] === true || r.sections[String(n)] === true);
+  // RTDB hands a map with small integer keys back as an ARRAY: { "1": true }
+  // reads as [null, true], { "2": true } as [null, null, true] (or stays a map,
+  // depending on density). Both shapes are the same answer here.
+  const sec = Array.isArray(r.sections) ? Object.fromEntries(r.sections.map((v, i) => [i, v])) : r.sections;
+  if (isObj(sec)) return [1, 2].filter((n) => sec[n] === true || sec[String(n)] === true);
   const one = normSection(r.section !== undefined ? r.section : o.deviceSection);
   if (one !== null) return [one];
   const shop = r.destShop ? sectionOf(registry, r.destShop) : null;

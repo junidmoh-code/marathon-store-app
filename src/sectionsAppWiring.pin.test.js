@@ -90,7 +90,8 @@ describe("the TV boards", () => {
   it("the default board is still TvOnlyShell; only ?section=1 mounts the section board", () => {
     expect(APP).toContain("renderTv={() => (tvSectionFromSearch(window.location.search) === 1 ? <SectionTvShell section={1} /> : <TvOnlyShell />)}");
     const hook = between("function useSectionTvOrders(section) {", "\n}\n");
-    expect(hook).toContain("tvOrderKeyRanges(currentNetwork(), section)");
+    expect(hook).toContain("tvOrderKeyRanges(tvNetwork, section)");
+    expect(hook).toContain("const { registry: tvNetwork } = useNetwork();");
     expect(hook).toContain("keyInOrderRanges(key, ranges)");
     expect(hook).toContain("startAt(r.start), endAt(r.end)");
   });

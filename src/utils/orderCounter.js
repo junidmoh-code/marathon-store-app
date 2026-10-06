@@ -40,12 +40,33 @@ async function drawCounter(path) {
   return txResult.snapshot.val()?.counter ?? 1;
 }
 
+// ── A STORE'S OWN SEQUENCE NEEDS ITS RULE; WITHOUT IT, NOTHING CHANGES ───────
+// The per-store counters live at new paths (/orderCounter_byStore/{shop},
+// /refillCounter_byStore/{shop}) that the database only accepts once their
+// rule has been pasted (docs/SECTIONS-RULES.md). Pine places orders TODAY, on
+// the shared sequence — so until that rule exists a prefixed store must keep
+// doing exactly that, not start failing at the counter. A REFUSED per-store
+// draw therefore falls back to the shared sequence and the unprefixed key: the
+// behaviour before sections, to the letter. Pasting the rule is the switch.
+// Any other failure (offline, a real error) is thrown as it always was.
+const isRefused = (err) => /permission[_ ]denied/i.test(String(err?.code ?? "") + " " + String(err?.message ?? err ?? ""));
+
+async function drawFor(network, shop, pathOf, format) {
+  const prefix = orderPrefixFor(network, shop);
+  if (!prefix) return format(null, await drawCounter(pathOf(network, shop)));
+  try {
+    return format(prefix, await drawCounter(pathOf(network, shop)));
+  } catch (err) {
+    if (!isRefused(err)) throw err;
+    console.warn(`[orders] ${shop}'s own number sequence is not allowed by the database yet — using the shared sequence`);
+    return format(null, await drawCounter(pathOf(network, null)));
+  }
+}
+
 // `shop` is the order's destShop. Omitted / Marathon PE / Trophy → the shared
 // sequence, "001".
 export async function getNextOrderNumber(shop = null) {
-  const network = currentNetwork();
-  const prefix = orderPrefixFor(network, shop);
-  return formatOrderKey(prefix, await drawCounter(orderCounterPath(network, shop)));
+  return drawFor(currentNetwork(), shop, orderCounterPath, formatOrderKey);
 }
 
 // ─── THE DAILY REFILL-CART NUMBER ────────────────────────────────────────────
@@ -53,7 +74,5 @@ export async function getNextOrderNumber(shop = null) {
 // R-number per refill CART; the per-line /orders keys are `${number}-${i}`.
 // Shared: "R001". Pine: "RP001", from /refillCounter_byStore/marathon-pine.
 export async function getNextRefillNumber(shop = null) {
-  const network = currentNetwork();
-  const prefix = orderPrefixFor(network, shop);
-  return formatRefillNumber(prefix, await drawCounter(refillCounterPath(network, shop)));
+  return drawFor(currentNetwork(), shop, refillCounterPath, formatRefillNumber);
 }

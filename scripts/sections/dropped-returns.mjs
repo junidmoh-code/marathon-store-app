@@ -23,7 +23,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const require = createRequire(import.meta.url);
@@ -274,10 +274,10 @@ const md = [
   "",
 ].join("\n");
 const OUT = opt("--out", join(process.env.HOME, "Documents/sections-private/dropped-returns.md"));
-if (OUT.startsWith(ROOT)) throw new Error("the report names real products and records — write it outside this (public) repo");
+if (resolve(OUT).startsWith(ROOT)) throw new Error("the report names real products and records — write it outside this (public) repo");
 writeFileSync(OUT, md);
 if (JSON_OUT) {
-  if (JSON_OUT.startsWith(ROOT)) throw new Error("the list names real products and records — write it outside this (public) repo");
+  if (resolve(JSON_OUT).startsWith(ROOT)) throw new Error("the list names real products and records — write it outside this (public) repo");
   writeFileSync(JSON_OUT, JSON.stringify({ generatedAt: new Date().toISOString(), window: { startMs, endMs }, dropped: real }, null, 1));
 }
 console.log(JSON.stringify({ genuine: real.length, byDesign: design.length, genuineByLoc: Object.fromEntries(Object.entries(realByLoc).map(([k, l]) => [k, units(l)])), records: Object.keys(sales).length, mvScanned, expectedLines: expected.length, restocked, dropped: dropped.length, droppedUnits: units(dropped), byHub: Object.fromEntries(Object.entries(byHub).map(([k, l]) => [k, units(l)])), byKind: Object.fromEntries(Object.entries(byKind).map(([k, l]) => [k, units(l)])) }, null, 1));

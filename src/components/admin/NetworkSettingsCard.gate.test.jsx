@@ -5,7 +5,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
-import { normalizeNetwork } from "../../utils/networkRegistry";
+import { normalizeNetwork, seedPayload } from "../../utils/networkRegistry";
 
 const useNetworkMock = vi.fn();
 const usePathStateMock = vi.fn();
@@ -125,8 +125,11 @@ describe("Concrete's mapping and credit scope", () => {
   });
 
   it("offers first-time setup only while something is missing", () => {
-    const seeded = mount(OWNER, { raw: { creditScope: "shared" } });
+    const seeded = mount(OWNER, { raw: seedPayload() });
     expect(buttons(seeded.tree).map(text)).not.toContain("Set up the network");
+    // a node that exists but lacks its sections (a flip made before set-up) still needs it
+    const partial = mount(OWNER, { raw: { creditScope: "shared", locations: { hub3: { live: true } } } });
+    expect(buttons(partial.tree).map(text)).toContain("Set up the network");
     const fresh = mount(OWNER, { raw: null });
     expect(buttons(fresh.tree).map(text)).toContain("Set up the network");
   });

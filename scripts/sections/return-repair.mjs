@@ -31,7 +31,7 @@
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { planRepair, buildMoveUpdate, cellKey, soldKey, originalSaleIdsFor, unitsByProductSizeHub, LOG_ROOT, REPAIR_REASON } from "./return-repair-core.mjs";
 
@@ -167,7 +167,7 @@ const md = [
   ...(APPLY ? ["## Verification", "", `- Totals across the moved cells unchanged: ${totalsOk ? "yes" : "NO"}`, `- No cell negative: ${noNegative ? "yes" : "NO"}`, `- Refused at write time (cell changed): ${refusedAtWrite.length}`, ""] : []),
 ].join("\n");
 const OUT = opt("--out", join(process.env.HOME, "Documents/sections-private/sections-return-repair.md"));
-if (OUT.startsWith(ROOT)) throw new Error("the report names real products and records — write it outside this (public) repo");
+if (resolve(OUT).startsWith(ROOT)) throw new Error("the report names real products and records — write it outside this (public) repo");
 writeFileSync(OUT, md);
 console.log(JSON.stringify({ apply: APPLY, scanned, section1Returns: returns.length, takenInSection1: plan.notSection2.length, moves: plan.moves.length, applied: applied.length, shortAtSource: plan.shortAtSource.length, undetermined: plan.undetermined.length, alreadyRepaired: plan.alreadyRepaired.length, totalsOk, noNegative }, null, 1));
 if (APPLY && !(totalsOk && noNegative)) process.exit(1);

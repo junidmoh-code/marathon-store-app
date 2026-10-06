@@ -131,14 +131,40 @@ describe("first-time seed", () => {
     for (const id of ["marathon-pe", "trophy", "hub1", "hub2"]) expect(updates[`network/locations/${id}`].live).toBe(true);
   });
 
-  it("never overwrites a registry that exists — a second run cannot undo a live flip", () => {
-    const { updates, nothingToDo } = seedUpdate({ locations: { hub3: { live: true } } }, { ...LIVE_LOCATIONS, concrete: {}, "concrete-stockroom": {} }, NOW, "o");
-    expect(nothingToDo).toBe(true);
-    expect(updates).toEqual({});
+  it("a complete registry needs nothing — a second run writes nothing", () => {
+    const stored = applyUpdate({}, seedUpdate(null, LIVE_LOCATIONS, NOW, "o").updates);
+    const again = seedUpdate(stored.network, { ...LIVE_LOCATIONS, ...stored.locations }, NOW, "o");
+    expect(again.nothingToDo).toBe(true);
+    expect(again.updates).toEqual({});
   });
 
-  it("registers a missing stock location without re-seeding the registry", () => {
-    const { updates } = seedUpdate({ creditScope: "section" }, { ...LIVE_LOCATIONS, concrete: {} }, NOW, "o");
+  it("A LIVE FLIP MADE BEFORE SET-UP: the missing sections are filled in and the flip is kept", () => {
+    // the owner tapped Hub 3 live and changed the credit scope first — /network exists, with no sections
+    const early = { creditScope: "section", locations: { hub3: { live: true } }, updatedAt: 1 };
+    const { updates, nothingToDo } = seedUpdate(early, { ...LIVE_LOCATIONS, concrete: {}, "concrete-stockroom": {} }, NOW, "o");
+    expect(nothingToDo).toBeUndefined();
+    // never touched
+    expect("network/creditScope" in updates).toBe(false);
+    expect("network/locations/hub3/live" in updates).toBe(false);
+    expect("network/locations/hub3" in updates).toBe(false);
+    // filled in — what the wall rules read
+    expect(updates["network/locations/hub3/section"]).toBe(1);
+    expect(updates["network/locations/hub3/type"]).toBe("hub");
+    expect(updates["network/locations/hub2"].section).toBe(2);
+    expect(updates["network/posStores/pe"]).toEqual({ location: "marathon-pe", section: 2 });
+    const stored = applyUpdate({ network: early }, updates).network;
+    const after = normalizeNetwork(stored);
+    expect(after.locations.hub3.live).toBe(true);
+    expect(after.creditScope).toBe("section");
+    // every sectioned location now has its section STORED, which is what the rules read
+    for (const id of ["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3", "concrete-stockroom"]) {
+      expect(stored.locations[id].section, id).toBe(after.locations[id].section);
+    }
+  });
+
+  it("registers a missing stock location without touching a complete registry", () => {
+    const stored = applyUpdate({}, seedUpdate(null, LIVE_LOCATIONS, NOW, "o").updates);
+    const { updates } = seedUpdate(stored.network, { ...LIVE_LOCATIONS, concrete: {} }, NOW, "o");
     expect(Object.keys(updates).sort()).toEqual(["locations/concrete-stockroom", "network/updatedAt", "network/updatedBy"]);
   });
 

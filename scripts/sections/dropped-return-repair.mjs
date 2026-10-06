@@ -16,10 +16,15 @@
 // original POS record) and the repair-log entry. No original record is edited
 // or deleted. Idempotent: the movement id and log key derive from the record,
 // product and size, and a logged line is never planned again.
+//
+// LIMIT: the cell is read and then written; there is no compare-and-set over
+// REST. The cell is re-read after each write and the report shows before →
+// after, so a sale landing in that instant shows up as a mismatch. Run it
+// outside trading hours.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createRequire } from "node:module";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { planDroppedRepair, buildRestockUpdate, unitsByLocation, LOG_ROOT, REPAIR_REASON } from "./dropped-return-repair-core.mjs";
 
@@ -33,7 +38,7 @@ const APPLY = argv.includes("--apply");
 const LIST = opt("--list", null);
 if (!LIST) { console.error("--list FILE is required (from dropped-returns.mjs --json)"); process.exit(2); }
 const OUT = opt("--out", join(dirname(LIST), "dropped-return-repair.md"));
-if (OUT.startsWith(ROOT) || LIST.startsWith(ROOT)) throw new Error("the list and the report name real products and records — keep them outside this (public) repo");
+if (resolve(OUT).startsWith(ROOT) || resolve(LIST).startsWith(ROOT)) throw new Error("the list and the report name real products and records — keep them outside this (public) repo");
 const ACTOR = REPAIR_REASON;
 
 function accessToken() {

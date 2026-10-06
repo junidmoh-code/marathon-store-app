@@ -551,13 +551,16 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       && firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), hub,
         routes: cfg.routes, hub2Present: hubPresentFor(card.pid, hub, openByLoc) });
   };
-  // THE DEFAULT TICK — one store, the one the old Solve nominated: the card's
-  // own section first (then the other), and within a section the first store
-  // with qualifying sizes, history-ranked on the first-batch path.
+  // THE DEFAULT TICK — one store, the one the old Solve nominated: within the
+  // card's OWN section, the first store with qualifying sizes, history-ranked
+  // on the first-batch path. Never a store in the other section: a card on
+  // the Section 1 stranded list must not open with Marathon PE or Trophy
+  // already ticked and the confirm live (which, while Section 1 is not live,
+  // it always would have). The owner can still tick the other section by hand.
   const storeChoiceFor = (card) => {
     const tickable = tickableStores(card);
     const home = cardSection(card, network);
-    for (const sec of [home, ...[1, 2].filter((x) => x !== home)]) {
+    for (const sec of [home]) {
       const candidates = tickable.filter((st) => sectionOfStore(st) === sec && qualifyingSizes(card, st).length > 0);
       if (!candidates.length) continue;
       const onPath = candidates.some((st) => eligibleAt(card, st, openLocks[card.pid]));
@@ -565,7 +568,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       const c = firstBatchStoreChoice({ history: historyFor(card, candidates[0]), candidates, labels: LOC_LABEL });
       return c.store ? c : { store: candidates[0], tier: null, sentence: null };
     }
-    return { store: tickable.find((st) => sectionOfStore(st) === home) || tickable[0] || null, tier: null, sentence: null };
+    return { store: tickable.find((st) => sectionOfStore(st) === home) || null, tier: null, sentence: null };
   };
   const defaultStoreFor = (card) => storeChoiceFor(card).store;
   // THE TICKS, in the order ticked — which is the order Central's units are

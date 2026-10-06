@@ -348,6 +348,16 @@ describe("section access", () => {
     expect(sectionsFor(SEED, { sections: { 2: true, 1: false } })).toEqual([2]);
     expect(sectionsFor(SEED, { sections: { 1: false } })).toEqual([]);
   });
+  it("reads the map as the database hands it back — an ARRAY for small integer keys", () => {
+    // what the JS SDK returns for { "1": true }, { "2": true } and { "1": true, "2": true }
+    expect(sectionsFor(SEED, { sections: [null, true] })).toEqual([1]);
+    expect(sectionsFor(SEED, { sections: [null, null, true] })).toEqual([2]);
+    expect(sectionsFor(SEED, { sections: [null, true, true] })).toEqual([1, 2]);
+    expect(sectionsFor(SEED, { sections: [null, false] })).toEqual([]);
+    // and it outranks the shop lock, as the map does
+    expect(sectionsFor(SEED, { sections: [null, true], destShop: "trophy" })).toEqual([1]);
+  });
+
   it("a device's section, then the existing shop lock, decide when there is no map", () => {
     expect(sectionsFor(SEED, {}, { deviceSection: 1 })).toEqual([1]);
     expect(sectionsFor(SEED, { section: 2 })).toEqual([2]);

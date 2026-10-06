@@ -61,6 +61,7 @@
 "use strict";
 
 const { applyMovementAdmin } = require("./admin-movement.cjs");
+const networkRegistry = require("./network-registry.cjs");
 const { encodeSizeKey } = require("./refill-engine.cjs");
 
 const SA_OFFSET_MS = 2 * 60 * 60 * 1000;
@@ -238,6 +239,22 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
  * order; the archive is only ever written on the strength of a movement that
  * is actually in the ledger.
  */
+// ── SECTIONS: THE SWEEP RELEASES NOTHING INTO A LOCATION THAT IS NOT LIVE ────
+// A release here is AUTOMATIC — nobody tapped it. A location that is not live
+// gets no automatic stock (network registry), so a line parked for one stays
+// parked and is reported as pending; a person releases it from the Stock Hold
+// screen when they mean to. Every Section 2 destination is live, so for them
+// the plan is returned untouched (the same object).
+function holdNonLiveReleases(plan, network) {
+  const held = plan.releases.filter((r) => !networkRegistry.isLive(network, r.dest));
+  if (!held.length) return plan;
+  return {
+    ...plan,
+    releases: plan.releases.filter((r) => networkRegistry.isLive(network, r.dest)),
+    pending: [...plan.pending, ...held.map((r) => ({ ...r, why: `${networkRegistry.locationName(network, r.dest)} is not live — the sweep releases nothing there; release it by hand` }))],
+  };
+}
+
 async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
   const out = { released: 0, releasedUnits: 0, failures: [] };
   const read = async (p) => (await db.ref(p).once("value")).val();
@@ -320,6 +337,7 @@ async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
 }
 
 module.exports = {
+  holdNonLiveReleases,
   sweepCandidates, planTransitSweep, applyTransitSweep, cellsWithUnits, shipmentReleaseMs,
   RELEASE_GRACE_MS, ORPHAN_MIN_AGE_MS, ACTOR, UNFILED_SHIPMENT,
 };

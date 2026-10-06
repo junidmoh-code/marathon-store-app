@@ -1135,7 +1135,10 @@ function useTvOrders() {
 function useSectionTvOrders(section) {
   const authReady = useAuthReady();
   const [orders, setOrders] = useState([]);
-  const ranges = useMemo(() => tvOrderKeyRanges(currentNetwork(), section), [section]);
+  // The LIVE registry (a kiosk mounts nothing else that reads it): a prefix
+  // the owner changes, or a store added later, reaches this board.
+  const { registry: tvNetwork } = useNetwork();
+  const ranges = useMemo(() => tvOrderKeyRanges(tvNetwork, section), [tvNetwork, section]);
   const shape = useCallback((data) => (
     Object.values(data || {}).filter(Boolean).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
   ), []);
@@ -15109,7 +15112,7 @@ function CustomerView({ orders, onExit }) {
       {/* Search */}
       {!found && (
         <div style={{ maxWidth: isWide ? 460 : "100%" }}>
-          <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.replace(/[^0-9]/g, ""))}
+          <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").replace(/^([A-Z]{0,3})(.*)$/, (_m, p, rest) => p + rest.replace(/[^0-9]/g, "")))}
                  onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4} inputMode="numeric"
                  style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "18px", color: "#fff", fontSize: 34, fontWeight: 800, textAlign: "center", letterSpacing: "12px", outline: "none", marginBottom: 10, fontVariantNumeric: "tabular-nums" }} />
           <button onClick={() => doSearch()} className="ot-press"
@@ -16140,11 +16143,13 @@ function ClothingSoldView({ products }) {
   const [refillFrom, setRefillFrom] = useState("");
   const { registry: network } = useNetwork();
   const refillSourceOpts = useMemo(
-    // Sources are offered only if they can fill at least one LIVE store —
-    // i.e. Central, and the hubs of a section that has a live store. A hub
-    // across the section wall from every store on this screen is not a choice.
+    // Every non-store location that can fill at least one store: a refill a
+    // person makes by hand works for a location that is not live too (Hub 3 →
+    // Pine, as before sections). Which cards a source can fill is decided per
+    // card by the wall (canFill above), so a hub is never offered a card in
+    // the other section.
     () => transferTargets(registry).filter(l => l.kind !== "store")
-      .filter(l => storesOf(network, { liveOnly: true }).some(s => wallAllows(network, l.id, s.id)))
+      .filter(l => storesOf(network).some(s => wallAllows(network, l.id, s.id)))
       .map(l => ({ id: l.id, label: labelFor(l.id, registry) })),
     [registry, network]
   );

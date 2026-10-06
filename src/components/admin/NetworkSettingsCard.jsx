@@ -88,8 +88,11 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
     }
   };
   const uid = authUser.uid;
-  const needsSeed = settled && !error && (raw == null || (stockLocs.settled && !stockLocs.error
-    && (!stockLocs.value?.concrete || !stockLocs.value?.["concrete-stockroom"])));
+  // Offered whenever ANYTHING the rules or the apps need is missing — not only
+  // when /network is absent (a live flip made first creates the node without
+  // its sections).
+  const needsSeed = settled && !error && stockLocs.settled && !stockLocs.error
+    && !seedUpdate(raw, stockLocs.value, 0, uid).nothingToDo;
 
   const overrides = registry.productOverrides[SWITCHABLE_STORE] || {};
   const q = search.trim().toLowerCase();
@@ -139,7 +142,7 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
         <div style={{ ...box, borderColor: "#ff9f0a" }} role="alertdialog">
           <p>
             {confirmLive.to
-              ? `Switch ${confirmLive.name} LIVE? Refills, Solve and automatic orders will start routing stock to and from it. Only do this after its count.`
+              ? `Switch ${confirmLive.name} LIVE? Refills, Solve and automatic orders will start routing stock to and from it. It also joins everything else that only runs for live locations: the stock audit, display checks, the refusal write-off (which can erase a count that keeps being refused), hub clean-up, and the network totals. Only do this after its count.`
               : `Switch ${confirmLive.name} off? Nothing automatic will route stock to or from it. Stock already there stays.`}
           </p>
           <button type="button" style={on} disabled={busy}

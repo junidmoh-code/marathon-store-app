@@ -8,8 +8,10 @@ import { readFileSync } from "node:fs";
 import { join } from "node:path";
 
 const md = readFileSync(join(process.cwd(), "docs/SECTIONS-RULES.md"), "utf8");
-const start = md.indexOf("```json") + 7;
-const block = JSON.parse(`{${md.slice(start, md.indexOf("```", start))}}`);
+// Two fenced JSON blocks: A (new keys and optional children) and B (the wall).
+const blocks = [...md.matchAll(/```json\n([\s\S]*?)```/g)].map((m) => JSON.parse(`{${m[1]}}`));
+const [blockA, blockB] = blocks;
+const block = { ...blockA, ...blockB };
 
 function expressions(node, path = "", out = []) {
   for (const [k, v] of Object.entries(node)) {
@@ -21,8 +23,34 @@ function expressions(node, path = "", out = []) {
 const all = expressions(block);
 
 describe("the printed rules block", () => {
-  it("is valid JSON with exactly the keys the document describes", () => {
-    expect(Object.keys(block)).toEqual(["network", "stock_movements", "transfers", "orders", "refill_requests", "sections_repair"]);
+  it("is two valid JSON blocks with exactly the keys the document describes", () => {
+    expect(blocks).toHaveLength(2);
+    expect(Object.keys(blockA)).toEqual(["network", "orderCounter_byStore", "refillCounter_byStore", "central_dispatch", "sections_repair", "push_assignments", "users"]);
+    expect(Object.keys(blockB)).toEqual(["stock_movements", "transfers", "orders", "refill_requests"]);
+  });
+
+  it("block A refuses nothing that works today: it only adds keys, or optional children under an unchanged parent", () => {
+    // /users keeps its owner-only root write and gains no child .write
+    expect(blockA.users[".write"]).toBe("auth.token.email === 'gunidmoh@gmail.com'");
+    expect(JSON.stringify(blockA.users.$uid)).not.toContain(".write");
+    // push_assignments keeps its required children and its catch-all
+    expect(blockA.push_assignments.$uid[".validate"]).toBe("newData.hasChildren(['hub1','hub2','updatedAt'])");
+    expect(blockA.push_assignments.$uid.$other[".validate"]).toBe(false);
+    expect(blockA.push_assignments.$uid["concrete-stockroom"][".validate"]).toBe("newData.isBoolean()");
+  });
+
+  it("the per-store counters accept exactly what the app writes", () => {
+    for (const k of ["orderCounter_byStore", "refillCounter_byStore"]) {
+      expect(blockA[k].$shop[".validate"]).toContain("newData.hasChildren(['day','counter'])");
+      expect(blockA[k].$shop[".validate"]).toContain("newData.child('counter').val() <= 999");
+    }
+  });
+
+  it("a dispatch cost row must describe the Central movement written with it", () => {
+    const v = blockA.central_dispatch.$mvId[".validate"];
+    expect(v).toContain("child('stock_movements').child($mvId).child('from').val() === newData.child('from').val()");
+    expect(v).toContain("child('stock_movements').child($mvId).child('qty').val() === newData.child('qty').val()");
+    expect(v).toContain("child('type').val() !== 'hub'");
   });
 
   it("every expression has balanced brackets and quotes", () => {
@@ -71,9 +99,18 @@ describe("the printed rules block", () => {
     expect(block.refill_requests.$refillId.status[".validate"]).toBeTruthy();
   });
 
-  it("transfers keeps its field rules and gains the pair check", () => {
+  it("transfers keeps its field rules and gains the pair check — guarded, so a transfer with no from/to is still writable", () => {
     expect(block.transfers.$transferId.from[".validate"]).toContain("root.child('locations')");
-    expect(block.transfers.$transferId[".validate"]).toContain("child('section')");
+    const v = block.transfers.$transferId[".validate"];
+    expect(v).toContain("child('section')");
+    expect(v.startsWith("!newData.exists() || !newData.child('from').exists() || !newData.child('to').exists() || ")).toBe(true);
+  });
+
+  it("a device enrolled for a section writes stock only in that section or at Central; no claim, no restriction", () => {
+    const v = block.stock_movements.$mvId[".validate"];
+    expect(v.split("auth.token.section === null").length - 1).toBe(2);
+    expect(v).toContain(".val() === auth.token.section)");
+    expect(v).toContain("(!newData.child('to').exists() || (auth.token.section === null");
   });
 
   it("/network is owner-write, and back stock must be a hub in the store's own section", () => {

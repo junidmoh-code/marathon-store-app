@@ -55,9 +55,14 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     expect(hubIds(SEED_REGISTRY, { section: 2 })).toEqual(["hub1", "hub2"]);
     expect(hubIds(SEED_REGISTRY, { section: 2, liveOnly: true })).toEqual(["hub1", "hub2"]);
     expect(mf).not.toContain("REACTIVE_REFILL_HUBS");
-    expect(mf.split("dests[card.pid] || REQUESTABLE_HUBS[0]").length - 1).toBe(2);
+    // A REQUEST (the operator's own sizes) is offered every hub of the section,
+    // live or not; SOLVE (the policy's numbers) only the live ones. On Section 2
+    // both lists are Hub 1 + Hub 2.
+    expect(mf).toContain("const REQUEST_HUBS = HUBS;");
+    expect(mf.split("dests[card.pid] || REQUEST_HUBS[0]").length - 1).toBe(2);
     expect(mf).toContain("solveHub[card.pid] || REQUESTABLE_HUBS[0]");
-    expect(mf.split("{REQUESTABLE_HUBS.map((h) => (").length - 1).toBe(2);
+    expect(mf.split("{REQUESTABLE_HUBS.map((h) => (").length - 1).toBe(1);
+    expect(mf.split("{REQUEST_HUBS.map((h) => (").length - 1).toBe(1);
     // Detection and Central-reservation math still span BOTH hubs.
     expect(mf).toContain('hubs: HUBS');
     expect(mf).toContain("RESERVING_HUBS.includes(r.requestingLocation)");

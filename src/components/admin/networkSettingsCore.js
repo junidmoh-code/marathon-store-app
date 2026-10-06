@@ -56,14 +56,30 @@ const NEW_STOCK_LOCATIONS = Object.freeze({
 });
 
 export function seedUpdate(rawNetwork, stockLocations, nowMs, uid) {
+  // FILL WHAT IS MISSING, FIELD BY FIELD — never "write only when the node is
+  // absent". The other controls on this card each write one small path, so the
+  // owner can flip a live switch or the credit scope BEFORE pressing Set up;
+  // /network then exists but holds no sections, and the wall clauses in the
+  // database rules (which read each location's section from here) would pass
+  // everything, for good. Whatever is already stored — a live flip above all —
+  // is never touched.
+  const isObj = (v) => v !== null && typeof v === "object" && !Array.isArray(v);
+  const raw = isObj(rawNetwork) ? rawNetwork : {};
+  const seed = seedPayload();
   const updates = {};
-  if (rawNetwork == null) {
-    const seed = seedPayload();
-    updates[`${NETWORK_PATH}/creditScope`] = seed.creditScope;
-    for (const id of Object.keys(seed.locations)) updates[`${NETWORK_PATH}/locations/${id}`] = seed.locations[id];
-    for (const s of Object.keys(seed.backStock)) updates[`${NETWORK_PATH}/backStock/${s}`] = seed.backStock[s];
-    for (const id of Object.keys(seed.posStores)) updates[`${NETWORK_PATH}/posStores/${id}`] = seed.posStores[id];
-  }
+  if (raw.creditScope === undefined || raw.creditScope === null) updates[`${NETWORK_PATH}/creditScope`] = seed.creditScope;
+  const fill = (root, have, want) => {
+    for (const id of Object.keys(want)) {
+      if (!isObj(have?.[id])) { updates[`${NETWORK_PATH}/${root}/${id}`] = want[id]; continue; }
+      for (const field of Object.keys(want[id])) {
+        const cur = have[id][field];
+        if (cur === undefined || cur === null) updates[`${NETWORK_PATH}/${root}/${id}/${field}`] = want[id][field];
+      }
+    }
+  };
+  fill("locations", raw.locations, seed.locations);
+  fill("backStock", raw.backStock, seed.backStock);
+  fill("posStores", raw.posStores, seed.posStores);
   for (const id of Object.keys(NEW_STOCK_LOCATIONS)) {
     if (!stockLocations || !stockLocations[id]) updates[`locations/${id}`] = NEW_STOCK_LOCATIONS[id];
   }
