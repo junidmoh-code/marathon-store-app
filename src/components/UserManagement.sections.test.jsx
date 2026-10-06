@@ -51,8 +51,10 @@ const instText = (n) => (typeof n === "string" ? n : n.children.map(instText).jo
 // A radio row: the clickable div whose text starts with the option's label.
 const option = (tree, label) => tree.root.findAll((n) =>
   n.type === "div" && typeof n.props.onClick === "function" && instText(n).startsWith(label)
-  // "Marathon" the division, not "Marathon PE" the store above it.
-  && !instText(n).startsWith(`${label} `))[0];
+  // "Marathon" the division, not "Marathon PE" the store above it; and the
+  // division list comes after Store Access, so "Concrete" the division is the
+  // LAST match, not the Concrete store row.
+  && !instText(n).startsWith(`${label} `)).at(-1);
 // Its radio is filled: the inner dot is only rendered for the selected row.
 const isOn = (node) => node.findAll((n) => n.type === "div" && n.props.style
   && n.props.style.width === 10 && n.props.style.borderRadius === "50%").length === 1;
@@ -66,14 +68,14 @@ beforeEach(() => {
 describe("the section control writes the scope, and only the scope", () => {
   it("offers Section 1, Section 2 and Both — each named by the registry, with its locations", async () => {
     const tree = await render(ADMIN);
-    expect(instText(option(tree, "Concrete group"))).toBe("Concrete groupMarathon Pine · Concrete · Hub 3 · Concrete Stockroom");
+    expect(instText(option(tree, "Concrete"))).toBe("ConcreteMarathon Pine · Concrete · Hub 3 · Concrete Stockroom");
     expect(instText(option(tree, "Marathon"))).toBe("MarathonMarathon PE · Trophy · Hub 1 · Hub 2");
     expect(option(tree, "Both divisions")).toBeTruthy();
   });
 
   it("Section 1 → sections {1: true}, allSections removed", async () => {
     const tree = await render(ADMIN);
-    await act(async () => { option(tree, "Concrete group").props.onClick(); });
+    await act(async () => { option(tree, "Concrete").props.onClick(); });
     expect(updateMock).toHaveBeenCalledTimes(1);
     expect(updateMock.mock.calls[0][0]).toEqual({ path: "users/u1" });
     expect(updateMock.mock.calls[0][1]).toEqual({ sections: { 1: true }, allSections: null });
@@ -94,7 +96,7 @@ describe("the section control writes the scope, and only the scope", () => {
   it("writes nothing else on the record — not the shop lock, not a permission", async () => {
     USERS.u1 = { ...USERS.u1, destShop: "marathon-pe", stockRole: "store", permissions: ["store_assistant"] };
     const tree = await render(ADMIN);
-    await act(async () => { option(tree, "Concrete group").props.onClick(); });
+    await act(async () => { option(tree, "Concrete").props.onClick(); });
     expect(Object.keys(updateMock.mock.calls[0][1]).sort()).toEqual(["allSections", "sections"]);
   });
 
@@ -102,7 +104,7 @@ describe("the section control writes the scope, and only the scope", () => {
     USERS.u1 = { ...USERS.u1, sections: { 2: true } };
     const tree = await render(ADMIN);
     expect(isOn(option(tree, "Marathon"))).toBe(true);
-    expect(isOn(option(tree, "Concrete group"))).toBe(false);
+    expect(isOn(option(tree, "Concrete"))).toBe(false);
     await act(async () => { option(tree, "Marathon").props.onClick(); });
     expect(updateMock).not.toHaveBeenCalled();
   });
@@ -110,22 +112,22 @@ describe("the section control writes the scope, and only the scope", () => {
   it("a refused write puts the choice back", async () => {
     updateMock.mockRejectedValueOnce(Object.assign(new Error("PERMISSION_DENIED"), { code: "PERMISSION_DENIED" }));
     const tree = await render(ADMIN);
-    await act(async () => { option(tree, "Concrete group").props.onClick(); });
-    expect(isOn(option(tree, "Concrete group"))).toBe(false);
+    await act(async () => { option(tree, "Concrete").props.onClick(); });
+    expect(isOn(option(tree, "Concrete"))).toBe(false);
   });
 });
 
 describe("what is shown for an account as it stands", () => {
   it("an account with nothing set selects nothing and says it sees both", async () => {
     const tree = await render(ADMIN);
-    for (const l of ["Concrete group", "Marathon", "Both divisions"]) expect(isOn(option(tree, l)), l).toBe(false);
+    for (const l of ["Concrete", "Marathon", "Both divisions"]) expect(isOn(option(tree, l)), l).toBe(false);
     expect(textOf(tree.toJSON())).toContain("Not set — sees both divisions");
   });
 
   it("an account with only a shop lock says which section that lock puts it in", async () => {
     USERS.u1 = { ...USERS.u1, destShop: "marathon-pine" };
     const tree = await render(ADMIN);
-    expect(textOf(tree.toJSON())).toContain("Not set — follows Store Access above, so Concrete group only.");
+    expect(textOf(tree.toJSON())).toContain("Not set — follows Store Access above, so Concrete only.");
   });
 
   it("allSections shows Both; a one-key map shows that section", async () => {
@@ -133,8 +135,8 @@ describe("what is shown for an account as it stands", () => {
     expect(isOn(option(await render(ADMIN), "Both divisions"))).toBe(true);
     USERS.u1 = { displayName: "Sipho", sections: { 1: true } };
     const tree = await render(ADMIN);
-    expect(isOn(option(tree, "Concrete group"))).toBe(true);
-    expect(textOf(tree.toJSON())).toContain("Sees & works in Concrete group");
+    expect(isOn(option(tree, "Concrete"))).toBe(true);
+    expect(textOf(tree.toJSON())).toContain("Sees & works in Concrete");
   });
 });
 

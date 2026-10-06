@@ -127,7 +127,7 @@ describe("DeviceCodesCard", () => {
     const { call } = fakeServer();
     let r; act(() => { r = TestRenderer.create(<DeviceCodesCard isOwner call={call} onExit={() => {}} />); });
     await flush();
-    expect(JSON.stringify(pick(r, 1).props.children)).toContain("Concrete group");
+    expect(JSON.stringify(pick(r, 1).props.children)).toContain("Concrete");
     expect(JSON.stringify(pick(r, 2).props.children)).toContain("Marathon");
     expect(pick(r, 2).props["aria-checked"]).toBe(true);
     expect(pick(r, 1).props["aria-checked"]).toBe(false);
@@ -143,7 +143,7 @@ describe("DeviceCodesCard", () => {
     await makeCode(r, "Pine tablet");
     expect(calls.find((c) => c.action === "createCode")).toMatchObject({ name: "Pine tablet", section: 1 });
     expect(textOf(r)).toContain("The device will work in ");
-    expect(textOf(r)).toContain("Concrete group");
+    expect(textOf(r)).toContain("Concrete");
   });
 
   it("starts on the section of the code-maker's own shop, or of their own device", async () => {
@@ -176,7 +176,7 @@ describe("DeviceCodesCard", () => {
       const walk = (n) => (n == null ? "" : typeof n === "string" ? n : Array.isArray(n) ? n.map(walk).join("") : walk(n.children));
       return walk(r.toJSON().children.find((c) => JSON.stringify(c).includes(`"${attr}":"${id}"`)));
     };
-    expect(rowText("data-device-row", "dev-aaaaaaaa")).toContain("Android phone · Chrome · Concrete group");
+    expect(rowText("data-device-row", "dev-aaaaaaaa")).toContain("Android phone · Chrome · Concrete");
     expect(rowText("data-device-row", "dev-bbbbbbbb")).toContain("Android phone · Chrome · Both divisions");
     expect(rowText("data-person-row", "p1")).toContain("Sipho · Marathon");
   });

@@ -46,7 +46,7 @@ import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS
 import { ADMIN_EMAIL } from "./PermissionsContext";
 import { useNetwork } from "../utils/useNetwork";
 import { listLocations } from "../utils/networkRegistry";
-import { accountSections, sectionChoiceOf, sectionPatch, sectionLabel } from "./sectionAccess";
+import { accountSections, sectionChoiceOf, sectionPatch, sectionName } from "./sectionAccess";
 
 // ─── Design tokens (iOS-Dark-Mode grouped-list aesthetic) ────────────────────
 const FONT       = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
@@ -836,7 +836,7 @@ function UserDetailView({ user, onBack }) {
         <RadioList
           options={[1, 2].map((n) => ({
             key: String(n),
-            label: sectionLabel(registry, n),
+            label: sectionName(registry, n),
             desc: listLocations(registry, { section: n }).map((l) => l.name).join(" · "),
           })).concat([{ key: "both", label: "Both divisions", desc: "For an admin who works across the whole network." }])}
           value={localSection}
@@ -844,12 +844,12 @@ function UserDetailView({ user, onBack }) {
         />
         <div style={{ fontSize: 11, color: TEXT_2, padding: "6px 4px 0", marginBottom: 22, lineHeight: 1.5 }}>
           {localSection
-            ? <>Sees &amp; works in <span style={{ color: BLUE_L }}>{localSection === "both" ? "both divisions" : sectionLabel(registry, Number(localSection))}</span>. Central is always visible.</>
+            ? <>Sees &amp; works in <span style={{ color: BLUE_L }}>{localSection === "both" ? "both divisions" : sectionName(registry, Number(localSection))}</span>. Central is always visible.</>
             : (() => {
               // Nothing chosen yet: say what applies today, so "unset" is never a guess.
               const now = accountSections(registry, { ...user, destShop: localDestShop || null });
               return now.length === 1
-                ? <>Not set — follows Store Access above, so <span style={{ color: BLUE_L }}>{sectionLabel(registry, now[0])}</span> only.</>
+                ? <>Not set — follows Store Access above, so <span style={{ color: BLUE_L }}>{sectionName(registry, now[0])}</span> only.</>
                 : "Not set — sees both divisions, as every account did before divisions. Pick one to limit this account.";
             })()}
         </div>
