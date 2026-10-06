@@ -483,22 +483,12 @@ function sectionsFor(registry, record, opts) {
 }
 
 // ── DIVISION NAMES ───────────────────────────────────────────────────────────
-// sectionName: the owner's name for a section ("Marathon", "Concrete").
-// sectionLabel: the same name for a PICKER, where it sits beside store names.
-// A division named exactly like one of the stores ("Concrete" — the division
-// and the store) reads "Concrete group", so a chip never says the same word
-// twice for two different things.
+// sectionName: the owner's name for a section ("Marathon", "Concrete"), exactly
+// as stored — nothing is added to it in code, in any picker.
 // sectionsInOrder: [n, …] by the section's sort, then its number.
 function sectionName(registry, n) {
   const s = reg(registry).sections && reg(registry).sections[n];
   return (s && s.name) || (DEFAULT_NETWORK.sections[n] && DEFAULT_NETWORK.sections[n].name) || `Section ${n}`;
-}
-
-function sectionLabel(registry, n) {
-  const name = sectionName(registry, n);
-  const k = aliasKey(name);
-  const clash = Object.values(reg(registry).locations).some((l) => l.type === "store" && aliasKey(l.name) === k);
-  return clash ? `${name} group` : name;
 }
 
 function sectionsInOrder(registry, list) {
@@ -565,5 +555,5 @@ export {
   backStockFor, backStockHubsOf, storesServedBy, autoRouteAllowed,
   creditScopeOf, creditSpendableAt, issuingStamp, seedPayload, posStoreIndex,
   policyKeyFor, numberPrefixFor, sectionsFor, canSeeLocation,
-  sectionName, sectionLabel, sectionsInOrder,
+  sectionName, sectionsInOrder,
 };
