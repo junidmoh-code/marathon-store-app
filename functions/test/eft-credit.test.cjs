@@ -135,3 +135,29 @@ test("the unallocated hold carries everything the owner needs to resolve it", ()
     at: 8888,
   });
 });
+
+// ── THE SECTION STAMP ────────────────────────────────────────────────────────
+test("with no stamp the mirror and the ledger txn are exactly what they were before sections", () => {
+  const claim = buildEftCreditClaim(KEY, usedRecord(), 9999);
+  assert.deepEqual(eftCreditMirrorRecord(claim, TS), { remainingAmount: 7000, issuedAt: TS });
+  assert.deepEqual(eftCreditMirrorRecord(claim, TS, null), eftCreditMirrorRecord(claim, TS));
+  assert.deepEqual(ledgerApplyDecision(null, claim, TS, null), ledgerApplyDecision(null, claim, TS));
+  const txn = Object.values(ledgerApplyDecision(null, claim, TS).txns)[0];
+  assert.ok(!("issuingStore" in txn) && !("section" in txn));
+});
+
+test("a settling store the registry knows stamps the mirror and the ledger txn, and nothing else moves", () => {
+  const { issuingStamp, SEED_REGISTRY } = require("../lib/network-registry.cjs");
+  const claim = buildEftCreditClaim(KEY, usedRecord(), 9999);
+  const stamp = issuingStamp(SEED_REGISTRY, claim.storeId);           // the claim carries the POS store id
+  assert.deepEqual(stamp, { issuingStore: "marathon-pe", section: 2 });
+  assert.deepEqual(eftCreditMirrorRecord(claim, TS, stamp), { remainingAmount: 7000, issuedAt: TS, issuingStore: "marathon-pe", section: 2 });
+  const plain = ledgerApplyDecision(null, claim, TS);
+  const stamped = ledgerApplyDecision(null, claim, TS, stamp);
+  const id = Object.keys(plain.txns)[0];
+  assert.deepEqual(stamped.txns[id], { ...plain.txns[id], issuingStore: "marathon-pe", section: 2 });
+  assert.equal(stamped.balance, plain.balance);
+  // a store the registry does not know gives no stamp, so the credit stays shared
+  assert.equal(issuingStamp(SEED_REGISTRY, "nowhere"), null);
+  assert.deepEqual(eftCreditMirrorRecord(claim, TS, issuingStamp(SEED_REGISTRY, null)), { remainingAmount: 7000, issuedAt: TS });
+});

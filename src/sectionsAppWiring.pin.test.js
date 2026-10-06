@@ -18,7 +18,10 @@ describe("order placement", () => {
   it("placeOrders: registry hub for non-Section-2 shops, the wall BEFORE the number, the shop's own sequence, the section stamp", () => {
     expect(placeOrders).not.toBeNull();
     expect(placeOrders).toContain("placementHub(sectionNet, effectiveShop, item.product, () => CR_HUB_BY_UNIVERSE[effectiveStoreMode] || \"hub2\")");
-    expect(placeOrders).toContain("placementHub(sectionNet, effectiveShop, item.product, () => (cartAllocation.hubOf.get(item) || computeHubForItem(item)))");
+    // Sneakers: the allocation's hub goes in too, so a Section 1 line is booked
+    // against the hub its tile was gated on (utils/sectionSneakerHubs.js);
+    // Marathon PE / Trophy still get the legacy computation, unchanged.
+    expect(placeOrders).toContain("sneakerPlacementHub(sectionNet, effectiveShop, item.product, cartAllocation.hubOf.get(item), () => (cartAllocation.hubOf.get(item) || computeHubForItem(item)))");
     expect(placeOrders).toContain("const placedHub = placedHubFor(item);");
     const wall = placeOrders.indexOf("orderPlacementCheck(sectionNet, { hub: placedHub, destShop: effectiveShop })");
     const refuse = placeOrders.indexOf("if (!wall.ok) throw new Error(wall.message);");
@@ -79,10 +82,81 @@ describe("the warehouse hub", () => {
     // nothing else reads the raw value into the working hub
     expect(APP.split('localStorage.getItem("warehouseHub")').length - 1).toBe(1);
   });
+  it("a hub outside the viewer's sections is never persisted, and one already on the device is dropped", () => {
+    // every write of the key sits behind the section gate …
+    expect(APP.split('localStorage.setItem("warehouseHub"').length - 1).toBe(1);
+    const select = between("const selectHub = (hub) => {", "setSelectedHub(hub);");
+    expect(select).not.toBeNull();
+    expect(select.indexOf("if (!hubAllowedForViewer(whNet, canSeeHub, hub)) return;")).toBeGreaterThan(-1);
+    expect(select.indexOf("if (!hubAllowedForViewer(whNet, canSeeHub, hub)) return;"))
+      .toBeLessThan(select.indexOf('localStorage.setItem("warehouseHub", hub);'));
+    // … and a stored one that fails it is removed, only once /network answered
+    expect(APP).toContain("const storedHubFate = storedHubVerdict(whNet, canSeeHub, storedHub, whNetSettled && !whNetError);");
+    const drop = between("const storedHubFate = storedHubVerdict(", "}, [storedHubFate]);");
+    expect(drop).toContain('if (storedHubFate !== "drop") return;');
+    expect(drop).toContain('localStorage.removeItem("warehouseHub");');
+  });
   it("dispatch accepts every registry hub, and the CR tab follows the registry", () => {
     expect(APP).toContain("const VALID_HUBS = stockHubIds(whNet);");
-    expect(APP).toContain(": crHubsNow().includes(selectedHub)");
+    expect(APP).toContain("const tabDefs = warehouseTabKeys(whNet, selectedHub).map((key) => [key, ...tabMeta[key]]);");
     expect(APP).toContain("shops={shopsOfHub(whNet, selectedHub)}");
+  });
+});
+
+describe("the order screen's sneaker lane follows the shop's own section", () => {
+  // The answers are tested in utils/sectionSneakerHubs.test.js (with the real
+  // resolver and allocation). These pins prove the screen ASKS them.
+  it("a Section 1 shop's gated hubs come from the registry, one subscription per slot", () => {
+    expect(APP).toContain("const sectionHubIds = useMemo(() => sectionSneakerHubs(sectionNet, effectiveShop), [sectionNet, effectiveShop]);");
+    expect(APP).toContain("const sectionCellsA = useStockCellsState(sectionHubA);");
+    expect(APP).toContain("const sectionCellsB = useStockCellsState(sectionHubB);");
+    expect(APP).toContain("() => (sectionHubA ? readyPromisedByCell(orders, sectionHubA, productsById) : {}),");
+    expect(APP).toContain("() => (sectionHubB ? readyPromisedByCell(orders, sectionHubB, productsById) : {}),");
+  });
+  it("the gate, the availability read and the ✕ note read the section hub's own cells and promises", () => {
+    expect(APP).toContain("const sneakerCellsOf = (hub) => sectionSneaker[hub]?.state || sneakerCellsState(hub);");
+    expect(APP).toContain("const sneakerPromisedOf = (hub) => sectionSneaker[hub]?.promised || sneakerPromisedMap(hub);");
+    const ready = between("const sneakerGateReady = (hub) => {", "};");
+    expect(ready).toContain("const st = sneakerCellsOf(hub);");
+    expect(APP).toContain("cellAvailability({ cells: sneakerCellsOf(hub).cells, promised: sneakerPromisedOf(hub), productId: pid, size });");
+    expect(APP).toContain("...cellBlockInfo({ cells: sneakerCellsOf(hub).cells, promised: sneakerPromisedOf(hub), productId: p.id, size: s }),");
+  });
+  it("the resolver and the cart allocation are handed ONLY this shop's hubs beside the Hub 1 / Hub 2 pair", () => {
+    const data = between("const sneakerHubData = () => ({", "\n  });");
+    expect(data).not.toBeNull();
+    expect(data).toContain('hub1: { cells: hub1CellsState.cells, promised: hub1Promised, ready: sneakerGateReady("hub1") },');
+    expect(data).toContain('hub2: { cells: hub2CellsState.cells, promised: hub2ReadyPromised, ready: sneakerGateReady("hub2") },');
+    expect(data).toContain("...Object.fromEntries(Object.keys(sectionSneaker).map((h) => [h, {");
+    // one hubData for both walks, so the tile and the checkout cannot disagree
+    expect(APP.split("hubData: sneakerHubData(),").length - 1).toBe(2);
+  });
+  it("Marathon PE / Trophy still name the pair; a Section 1 shop names its own list", () => {
+    expect(APP).toContain("const sneakerHubsOfShop = onSection2Hubs ? GATED_SNEAKER_HUBS : sectionHubIds;");
+  });
+  it("the submit guard checks the hub the line is booked against, and nets that hub's promises", () => {
+    // the hub the guard re-reads and the hub the order is written with are one call
+    expect(APP).toContain("hub: placedHubFor(item), productId: item.product.id, size: item.size, label: item.product.name,");
+    expect(APP).toContain("const placedHub = placedHubFor(item);");
+    expect(APP).toContain("return !!gatedSneakerHub(item.product, placedHubFor(item));");
+    const guard = between("const refusal = await findSubmitShortfall({", "isOnline:");
+    expect(guard).toContain("promisedFor: (hub, pid, size) => (sectionSneaker[hub]");
+    expect(guard).toContain("? (sectionSneaker[hub].promised[promisedKey(pid, size)] || 0)");
+  });
+  it("clothing greys out on the product's own back-stock hub", () => {
+    expect(APP).toContain("const extraHub = extraClothingHub(sectionNet, effectiveShop, servingHub);");
+    expect(APP).toContain('const extraHubCells = useStockCells(extraHub || "__off__");');
+    expect(APP).toContain("const clothingHubOf = (pid) => clothingHubFor(sectionNet, effectiveShop, productsById[pid], servingHub);");
+    expect(APP).toContain("const hubQty = (pid, size) => availableUnits(clothingCellsOf(pid)?.[pid]?.[decodedCellKey(size)]?.qty);");
+  });
+});
+
+describe("Source: the sale-driven lanes follow the registry's reactive hubs", () => {
+  it("the reactive hub list is the registry's, and a live Section 1 hub tab gets sale rows", () => {
+    expect(APP).toContain("const REACTIVE_REFILL_HUBS = useMemo(() => reactiveRefillHubs(srcNet), [srcNet]);");
+    expect(APP).not.toMatch(/import \{[^}]*\bREACTIVE_REFILL_HUBS\b[^}]*\} from/);
+    expect(APP).toContain("const sectionReactiveHub = sectionTabLoc[tab] && REACTIVE_REFILL_HUBS.includes(sectionTabLoc[tab]) ? sectionTabLoc[tab] : null;");
+    expect(APP).toContain('const activeHub = tab === "hub1refill" ? "hub1" : tab === "clothing" ? "hub2" : sectionReactiveHub;');
+    expect(APP).toContain("? hubTabContent(sectionReactiveHub)");
   });
 });
 

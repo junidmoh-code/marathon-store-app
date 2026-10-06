@@ -165,7 +165,10 @@ export async function raiseDisplayRequest({ orders, store, product, hubData }) {
     let orderId = null;
     let order = null;
     try {
-      orderId = await getNextOrderNumber();
+      // The request's own shop: a store with its own number sequence (Pine,
+      // Concrete) draws from it; Marathon PE and Trophy draw from the shared
+      // one, exactly as with no argument.
+      orderId = await getNextOrderNumber(store);
       order = wallWalkOrder({ orderId, store, hub: pick.hub, product, nowIso, by });
       order.raisedByEmail = auth.currentUser?.email || null;
       order = stampRecord(order, "display-request");

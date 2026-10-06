@@ -377,3 +377,20 @@ describe("section access", () => {
     expect(canSeeLocation(SEED, [1, 2], "nowhere")).toBe(false);
   });
 });
+
+// The Solve first-batch twin and the Engine Policy preview route a location by
+// the registry only when it has a policy template (`policyLike`); the engine
+// routes any live location the config does not name. They agree as long as
+// every seeded location outside Section 2 declares a template — keep it so.
+describe("every seeded Section 1 store and hub declares the location it follows", () => {
+  it("has policyLike naming a Section 2 location of the same type", () => {
+    const s1 = Object.values(SEED.locations).filter((l) => l.section === 1 && (l.type === "store" || l.type === "hub"));
+    expect(s1.map((l) => l.id).sort()).toEqual(["concrete", "concrete-stockroom", "hub3", "marathon-pine"]);
+    for (const l of s1) {
+      const like = SEED.locations[l.policyLike];
+      expect(like, `${l.id} follows a known location`).toBeTruthy();
+      expect(like.section).toBe(2);
+      expect(like.type).toBe(l.type);
+    }
+  });
+});

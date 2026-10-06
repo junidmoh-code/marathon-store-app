@@ -34,9 +34,11 @@ import { database } from "../../firebase";
 import { GRAY, GREEN, RED, AMBER, BLUE, FONT } from "./ui";
 import { serverNowMs } from "../../utils/serverTime";
 import { useEngineConfig } from "./useStock";
+import { useNetwork } from "../../utils/useNetwork";
+import { useMySections } from "../../utils/useMySections";
 import { parseReleaseTimes, isReleased } from "./releaseWindows";
 import {
-  REQUESTS_INDEXED, resolveRange, saDayOf, shiftDay, HUB_STEPS, stepHub,
+  REQUESTS_INDEXED, resolveRange, saDayOf, shiftDay, hubStepsFor, stepHub,
   STATUS_LABEL, STATUS_EXPLAIN, REASON_TEXT, requestRows, movementRows, mergeRows,
 } from "./refillHistoryCore";
 import { MirroredImg } from "../../offline/MirroredImg.jsx";
@@ -121,7 +123,14 @@ export default function RefillHistory({ products = [] }) {
   const range = useMemo(() => resolveRange("custom", serverNowMs(), { from: day, to: day }), [day]);
 
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
-  const hubStep = HUB_STEPS[hubIdx];
+  // The stops come from the network registry, so a location added since the
+  // list was written (Concrete, the Concrete Stockroom) has its requests shown.
+  // Only the added locations this account's sections include.
+  const { registry: historyNet } = useNetwork();
+  const { canSee: canSeeLoc } = useMySections();
+  // Memoised: a fresh step object each render would re-run every scan below.
+  const hubSteps = useMemo(() => hubStepsFor(historyNet, canSeeLoc), [historyNet, canSeeLoc]);
+  const hubStep = hubSteps[hubIdx];
 
   // Queued = open but behind the next release window — same config, same pure
   // gate as the pick queue.

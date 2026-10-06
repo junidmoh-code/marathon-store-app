@@ -33,12 +33,17 @@
 // instead of hijacking a later, unrelated visit to the warehouse.
 
 import { currentNetwork } from "../utils/networkStore";
+import { warehouseTabKeys, sourceTabKeys } from "../utils/sectionRouting";
 import { warehouseHubsOf } from "./pushHubs";
 
 const ROLE_KEY = "marathon_role";
 const SOURCE_TAB_KEY = "tabState:source";
 const SOURCE_ROLE = "source";
-const VALID_TABS = new Set(["hub1refill", "clothing", "refillhistory"]);
+// The Source tabs come from the registry: the four Section 2 keys and Refill
+// History as they always were, plus one "loc:{id}" tab per other hub and shop
+// (Hub 3, the Concrete Stockroom, Pine, Concrete). A key naming a location the
+// registry does not hold is not among them and falls back to the first tab.
+const validSourceTab = (tab) => typeof tab === "string" && sourceTabKeys(currentNetwork()).includes(tab);
 
 const WAREHOUSE_ROLE = "warehouse";
 const WAREHOUSE_HUB_KEY = "warehouseHub";
@@ -55,7 +60,10 @@ const WAREHOUSE_TAB_KEY = "tabState:warehouse";
 // That is the warehouse screen's check on the persisted hub when it reads it
 // (hubAllowedForViewer, src/utils/sectionRouting.js).
 const validHub = (hub) => typeof hub === "string" && warehouseHubsOf(currentNetwork()).includes(hub);
-const VALID_WAREHOUSE_TABS = new Set(["queue", "clothing"]);
+// A tab is honoured only when THAT hub has it (warehouseTabKeys — the list the
+// warehouse screen renders from): "clothing" on a CR hub, never on Hub 1;
+// "refills" and "layby" on every registry hub; only the queue on "hubC".
+const validWarehouseTab = (hub, tab) => typeof tab === "string" && !!hub && warehouseTabKeys(currentNetwork(), hub).includes(tab);
 
 /** Where a single-order link leaves the card to ring. Read (and cleared) by
  *  WarehouseView. Session-scoped in spirit but written to localStorage because
@@ -106,7 +114,7 @@ function applyOrderLink(params, store, nowMs) {
   const hubParam = params.get("hub");
   const hub = validHub(hubParam) ? hubParam : null;
   const tabParam = params.get("tab");
-  const tab = VALID_WAREHOUSE_TABS.has(tabParam) ? tabParam : "queue";
+  const tab = validWarehouseTab(hub, tabParam) ? tabParam : "queue";
   try {
     store?.setItem(ROLE_KEY, WAREHOUSE_ROLE);
     // No hub in the link (or one this app does not offer) leaves the warehouse
@@ -121,7 +129,7 @@ function applyOrderLink(params, store, nowMs) {
 
 function applyRefillLink(params, store) {
   const tabParam = params.get("tab");
-  const tab = VALID_TABS.has(tabParam) ? tabParam : "hub1refill";
+  const tab = validSourceTab(tabParam) ? tabParam : "hub1refill";
   try {
     store?.setItem(ROLE_KEY, SOURCE_ROLE);
     store?.setItem(SOURCE_TAB_KEY, tab);

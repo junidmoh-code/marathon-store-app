@@ -872,7 +872,7 @@ function computeRefillPlan(snapshot) {
   for (const [id, r] of Object.entries(refillRequests || {})) {
     if (!r || r.status !== "open" || r.shadow || lockedRefillIds.has(id) || !r.productId || r.size == null) continue;
     const src = r.createdFrom?.source || r.source || null;
-    if (!forbiddenShopSource({ dest: r.requestingLocation, source: src, routes, locations })) continue;
+    if (!forbiddenShopSource({ dest: r.requestingLocation, source: src, routes, locations, routing })) continue;
     const sk = encodeSizeKey(r.size);
     locklessShopCentral.push([id, r, sk]);   // judged below whatever its age
     // Inbound is age-bounded like a lock (staleIntentHours): a row nobody has
@@ -1119,7 +1119,7 @@ function computeRefillPlan(snapshot) {
         // A lock-less shop ← Central row gets the same judgement in the
         // lock-less pass below (satisfiedClosures).
         const hubServes = shopCentralWithdrawal({
-          dest, pid, entry, rr, inFlight, routes, locations,
+          dest, pid, entry, rr, inFlight, routes, locations, routing, product: products?.[pid],
           snapshot: { stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
@@ -1354,7 +1354,7 @@ function computeRefillPlan(snapshot) {
       if (locklessIds.has(id)) {
         const hubServes = shopCentralWithdrawal({
           dest, pid: r.productId, entry: { source: r.createdFrom?.source || r.source }, rr: r,
-          inFlight: movedRefillIds.has(String(id)), routes, locations,
+          inFlight: movedRefillIds.has(String(id)), routes, locations, routing, product: products?.[r.productId],
           snapshot: { stock, openIndex, heldLines, refillRequests }, nowMs,
         });
         if (hubServes) {
@@ -2250,7 +2250,7 @@ function computeRefillPlan(snapshot) {
   // THE BACKSTOP — every engine intent leaves through here, so no planning
   // branch (deficit, pass-through, a future one) can emit shop ← Central.
   const routedIntents = intents.filter((i) => {
-    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations })) return true;
+    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing })) return true;
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;
   });

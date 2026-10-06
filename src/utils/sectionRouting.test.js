@@ -9,6 +9,7 @@ import {
   usesSection2Hubs, stockHubIds, crHubIds, hubLabel, warehouseHubGroups, hubAllowedForViewer,
   shopGroups, shopsOfHub, orderIsAtHub, orderPlacementCheck, sectionStamp, sectionOfRecord,
   dispatchHoldMs, sourceTabsFor, insightsStoreOptions, insightsBucketKey, insightsStoreMatcher, TRIAL_HUB,
+  storedHubVerdict, warehouseTabKeys, sourceTabKeys,
 } from "./sectionRouting";
 import { SEED_REGISTRY, normalizeNetwork, canSeeLocation, sectionOf, wallAllows } from "./networkRegistry";
 
@@ -172,6 +173,40 @@ describe("the warehouse hub picker and the persisted hub", () => {
     expect(hubAllowedForViewer(NET, see([]), "hub1")).toBe(false);
     expect(hubAllowedForViewer(NET, null, "hub1")).toBe(false);
   });
+  it("a stored hub the viewer may not work as is dropped — but only once /network has answered", () => {
+    const s1 = see([1]); const s2 = see([2]);
+    expect(storedHubVerdict(NET, s2, null, true)).toBe("none");
+    expect(storedHubVerdict(NET, s2, "", true)).toBe("none");
+    // allowed: kept, answered or not
+    for (const answered of [true, false]) {
+      expect(storedHubVerdict(NET, s2, "hub2", answered)).toBe("keep");
+      expect(storedHubVerdict(NET, s2, "hubC", answered)).toBe("keep");
+      expect(storedHubVerdict(NET, s1, "concrete-stockroom", answered)).toBe("keep");
+    }
+    // the other section's hub, and things that are not hubs
+    for (const [canSee, hub] of [[s2, "hub3"], [s2, "concrete-stockroom"], [s1, "hub1"], [s1, "hubC"], [s2, "marathon-pe"], [s2, "hub9"], [s2, "../../evil"]]) {
+      expect(storedHubVerdict(NET, canSee, hub, true)).toBe("drop");
+      expect(storedHubVerdict(NET, canSee, hub, false)).toBe("wait");
+    }
+    // a hub that exists only in the live node: unknown to the seed (wait), a
+    // real hub once /network is in hand (keep)
+    const live = normalizeNetwork({ locations: { hub9: { type: "hub", section: 2, live: true, name: "Hub 9" } } });
+    expect(storedHubVerdict(NET, s2, "hub9", false)).toBe("wait");
+    expect(storedHubVerdict(live, (loc) => canSeeLocation(live, [2], loc), "hub9", true)).toBe("keep");
+  });
+  it("the warehouse tabs each hub has", () => {
+    const all = ["queue", "clothing", "refills", "layby"];
+    expect(warehouseTabKeys(NET, "hub1")).toEqual(["queue", "refills", "layby"]);       // sneakers-only: no CR Orders
+    expect(warehouseTabKeys(NET, "hub2")).toEqual(all);
+    expect(warehouseTabKeys(NET, "hub3")).toEqual(all);
+    expect(warehouseTabKeys(NET, "concrete-stockroom")).toEqual(all);                    // the same screen Hub 3 gets
+    expect(warehouseTabKeys(NET, TRIAL_HUB)).toEqual(["queue"]);
+    for (const bad of ["marathon-pe", "central", "hub9", "Hub 3", "", null, undefined]) expect(warehouseTabKeys(NET, bad)).toEqual([]);
+    // "CR Orders" is exactly the CR hubs
+    for (const h of [...stockHubIds(NET), TRIAL_HUB]) {
+      expect(warehouseTabKeys(NET, h).includes("clothing")).toBe(crHubIds(NET).includes(h));
+    }
+  });
   it("shops grouped by section for the viewer", () => {
     expect(shopGroups(NET, see([1, 2])).map((g) => [g.section, g.items.map((i) => i.id)])).toEqual([
       [2, ["marathon-pe", "trophy"]], [1, ["marathon-pine", "concrete"]],
@@ -251,6 +286,11 @@ describe("Source tabs", () => {
     const APP = readFileSync(new URL("../App.jsx", import.meta.url), "utf8");
     expect(APP).toContain('const SOURCE_SHOP_TABS = [["trophy","Trophy","trophy"],["marathonpe","Marathon","marathon-pe"]];');
     expect(APP).toContain('const SOURCE_TABS = [["hub1refill","Hub 1 Refill"],["clothing","Hub 2 Refill"],...SOURCE_SHOP_TABS');
+  });
+  it("sourceTabKeys: every key the registry yields, for a link that cannot know the viewer", () => {
+    expect(sourceTabKeys(NET)).toEqual(keys(sourceTabsFor(NET, see([1, 2]))));
+    expect(sourceTabKeys(NET)).toContain("loc:concrete-stockroom");
+    expect(sourceTabKeys(NET)).not.toContain("loc:hub9");
   });
   it("both sections: Section 2's, then Section 1's hubs and shops, then history", () => {
     expect(keys(sourceTabsFor(NET, see([1, 2])))).toEqual([

@@ -32,6 +32,19 @@
 // THE SHOP'S HUB is `routes[shop]` when that is not Central — Hub 2 for
 // Marathon PE and Trophy today. Never "any hub": a product Hub 1 has held
 // says nothing about whether Trophy's hub has it.
+//
+// A SHOP config.routes DOES NOT NAME (Pine, Concrete) is routed by the network
+// registry, per product: its hub is the hub holding its back stock for THAT
+// product — Hub 3, or the Concrete Stockroom where the category or the product
+// is mapped there. This module does not work that out a second time. The
+// caller hands over the engine's own answer, `routing` (refill-engine.cjs
+// networkRouting): `routing.stores` are the live shops the registry routes and
+// `routing.sourceFor(shop, product, pid)` is the hub the engine refills that
+// product from. So the rule covers exactly the shops the engine plans for and
+// judges each against the hub the engine would use. A shop that is not live,
+// or whose hub is not, is not in `routing.stores`: nothing automatic touches
+// its requests. With no `routing`, or for a location config.routes names, the
+// answer is the one above and nothing else.
 
 "use strict";
 
@@ -42,7 +55,9 @@ const CENTRAL = "central";
 // location the routes plainly treat as a shop (Fable review, PR #673). Both
 // "store" and "shop" read as a shop, trimmed and case-folded.
 const SHOP_KINDS = new Set(["store", "shop"]);
-function isShopLoc(loc, { routes = {}, locations = null } = {}) {
+// The shops the registry routes, from the engine's routing — or false.
+const registryShop = (loc, routing) => !!routing && !!routing.stores && typeof routing.stores.has === "function" && routing.stores.has(loc);
+function isShopLoc(loc, { routes = {}, locations = null, routing = null } = {}) {
   if (!loc || loc === CENTRAL) return false;
   // A location something else is routed TO is a hub, whatever the registry
   // says (Hub 1 sells sneakers; a "store" tag on it must never refuse its own
@@ -51,22 +66,28 @@ function isShopLoc(loc, { routes = {}, locations = null } = {}) {
   const reg = locations && typeof locations === "object" ? locations[loc] : null;
   if (reg && typeof reg === "object" && typeof reg.kind === "string" && SHOP_KINDS.has(reg.kind.trim().toLowerCase())) return true;
   const hub = routes[loc];
-  return !!hub && hub !== CENTRAL && routes[hub] != null;
+  if (!!hub && hub !== CENTRAL && routes[hub] != null) return true;
+  return registryShop(loc, routing);
 }
 
 // The hub a shop refills from, or null (not a shop, or routed straight to
-// Central — itself a refused route, see forbiddenShopSource).
+// Central — itself a refused route, see forbiddenShopSource). For a shop the
+// registry routes the hub is a per-product question: `ctx.product` / `ctx.pid`
+// say which product, and a product with no live hub mapped answers null.
 function shopHubFor(loc, ctx = {}) {
   if (!isShopLoc(loc, ctx)) return null;
   const hub = (ctx.routes || {})[loc];
-  return hub && hub !== CENTRAL ? hub : null;
+  if (hub) return hub !== CENTRAL ? hub : null;
+  if (!registryShop(loc, ctx.routing) || typeof ctx.routing.sourceFor !== "function") return null;
+  const regHub = ctx.routing.sourceFor(loc, ctx.product, ctx.pid);
+  return regHub && regHub !== CENTRAL ? regHub : null;
 }
 
 // True when a request INTO `dest` FROM `source` is one the engine may never
 // create: a shop asking Central. (The first-batch Solve is not the engine and
 // is guarded by its own Hub-presence precondition.)
-function forbiddenShopSource({ dest, source, routes, locations } = {}) {
-  return source === CENTRAL && isShopLoc(dest, { routes, locations });
+function forbiddenShopSource({ dest, source, routes, locations, routing } = {}) {
+  return source === CENTRAL && isShopLoc(dest, { routes, locations, routing });
 }
 
 // ── PRESENCE: has the hub held this product? ────────────────────────────────
@@ -151,16 +172,18 @@ function requestUntouched(rr, nowMs = Date.now()) {
 //     the picker;
 //   • the shop's hub shows presence for the product.
 // `snapshot` is the engine's: { stock, openIndex, heldLines, refillRequests }.
-function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locations, snapshot = {}, nowMs = Date.now() } = {}) {
+// `routing` + `product` (optional): the engine's routing and the product
+// record, for a shop the registry routes — see the header.
+function shopCentralWithdrawal({ dest, pid, entry, rr, inFlight, routes, locations, routing, product, snapshot = {}, nowMs = Date.now() } = {}) {
   if (!entry || !rr) return null;
   // No createdAt → "prior" cannot be judged: every seed and lock would read as
   // before the request and a legitimate first batch would be withdrawn. Leave
   // it (Fable review, PR #673).
   if (!rr.createdAt || !Number.isFinite(Date.parse(rr.createdAt))) return null;
   const source = entry.source || (routes || {})[dest];
-  if (!forbiddenShopSource({ dest, source, routes, locations })) return null;
+  if (!forbiddenShopSource({ dest, source, routes, locations, routing })) return null;
   if (rr.status !== "open" || !requestUntouched(rr, nowMs) || inFlight) return null;
-  const hub = shopHubFor(dest, { routes, locations });
+  const hub = shopHubFor(dest, { routes, locations, routing, product, pid });
   if (!hub) return null;   // a shop with no hub has nowhere else to go — the route itself is refused at intent time
   const { stock = {}, openIndex = {}, heldLines = {}, refillRequests = {} } = snapshot;
   const hubOpenRequests = [];

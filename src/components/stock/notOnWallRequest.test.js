@@ -135,6 +135,23 @@ describe("Not on the wall — one request, on the Display Refill card", () => {
     expect(isOpenDisplayRequest(o)).toBe(true);
   });
 
+  it("the number is drawn for the request's OWN shop: the store is handed to the counter (wiring), and Trophy / Marathon PE still draw the shared sequence", async () => {
+    // Wiring, read from the source: orderCounter picks the sequence from the
+    // shop it is handed (its own tests cover Pine "P…" / Concrete "C…"); with
+    // no argument every wall-walk request drew the shared one.
+    const fs = await import("node:fs");
+    const src = fs.readFileSync(new URL("./displayRequestStore.js", import.meta.url), "utf8");
+    expect(src.includes("await getNextOrderNumber(store)")).toBe(true);
+    expect(src.includes("getNextOrderNumber()")).toBe(false);
+    // Behaviour, Section 2: the shared counter moves by one per request, as before.
+    for (const [store, want] of [["trophy", 42], ["marathon-pe", 43]]) {
+      const res = await raiseDisplayRequest({ orders: [], store, product, hubData: hubData({ 8: { qty: 5 } }, null) });
+      expect(res.ok).toBe(true);
+      expect(read("orderCounter/counter")).toBe(want);
+    }
+    expect(wallRequests().map((o) => o.id).sort()).toEqual(["042", "043"]);
+  });
+
   it("falls to the other hub when the tagged hub cannot give a pair out", async () => {
     const res = await raiseDisplayRequest({ orders: [], store: "marathon-pe", product, hubData: hubData({ 8: { qty: 0 } }, { 9: { qty: 1 } }) });
     expect(res.ok).toBe(true);

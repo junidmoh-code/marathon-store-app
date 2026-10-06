@@ -66,7 +66,7 @@ describe("the excluded-location set is the same on both sides", () => {
   it("holds the locations the owner decided must not feed the storefront", () => {
     // Named explicitly so REMOVING one is a deliberate act with a test to
     // change, not a silent widening of what the shop offers strangers.
-    for (const id of ["in_transit", "hub3", "marathon-pine"]) {
+    for (const id of ["in_transit", "hub3", "marathon-pine", "concrete", "concrete-stockroom"]) {
       expect(ONLINE_EXCLUDED_LOCATIONS.has(id), `${id} must not feed the storefront`).toBe(true);
     }
   });

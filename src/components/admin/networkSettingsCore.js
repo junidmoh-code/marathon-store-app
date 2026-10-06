@@ -41,9 +41,18 @@ export function productOverrideUpdate(registry, productId, hub, nowMs, uid) {
   return { ok: true, updates: { [`${NETWORK_PATH}/productOverrides/${SWITCHABLE_STORE}/${productId}`]: hub, ...stamp(nowMs, uid) } };
 }
 
-export function creditScopeUpdate(scope, nowMs, uid) {
+// `creditScopeSince` is the moment section scope began. Owed money recorded
+// BEFORE it stays shared after the switch: a debt charged at Pine and paid at
+// Marathon PE while everything was shared must not come back as "owing in
+// Section 1, in credit in Section 2". The POS and its functions read it; with
+// scope "section" and no such time they treat every owed record as shared.
+// Switching to the scope already in force leaves the time alone.
+export function creditScopeUpdate(scope, nowMs, uid, currentScope = null) {
   if (!CREDIT_SCOPES.includes(scope)) return fail("Credit scope is shared or section.");
-  return { ok: true, updates: { [`${NETWORK_PATH}/creditScope`]: scope, ...stamp(nowMs, uid) } };
+  const since = scope === "shared" ? { [`${NETWORK_PATH}/creditScopeSince`]: null }
+    : currentScope === "section" ? {}
+    : { [`${NETWORK_PATH}/creditScopeSince`]: nowMs };
+  return { ok: true, updates: { [`${NETWORK_PATH}/creditScope`]: scope, ...since, ...stamp(nowMs, uid) } };
 }
 
 // First-time seed. Writes /network ONLY when it is absent, and registers the
@@ -97,4 +106,46 @@ export function categoryRows(registry, categories) {
     rows.push({ key: c.key, label: c.label || c.key, hub: map[c.key] || dflt, inherits: !map[c.key] });
   }
   return rows;
+}
+
+// ── CONCRETE AT THE TILL — THE POS SWITCHES ──────────────────────────────────
+// Facts the POS reads from /network/locations/{id}/pos (its
+// src/shared/storeTraits.js): whether the store reconciles cash, whether a
+// cashier may edit a line price, and which till is the cash recycler. (The
+// POS's fourth switch, no-slip returns, is NOT offered here: No Receipt Return
+// is held as its own change and its switch ships with it, not before.) Marathon PE, Trophy and Pine have their
+// answers built in; Concrete starts with every switch OFF and is set here.
+// One small path per switch, so no control overwrites another — and the
+// location's own record (live, section, tills) is never rewritten.
+export const POS_FLAGS = Object.freeze([
+  Object.freeze({ key: "cashRecon", label: "Takes cash (cash-up, payouts and collections at this store)" }),
+  Object.freeze({ key: "cashierPriceEdit", label: "Cashiers may edit a line price (not only a manager)" }),
+]);
+
+export function posSwitchState(registry, rawNetwork, store = SWITCHABLE_STORE) {
+  const loc = locationOf(registry, store);
+  const pos = rawNetwork?.locations?.[loc?.id]?.pos;
+  const cur = pos && typeof pos === "object" && !Array.isArray(pos) ? pos : {};
+  const tills = loc && loc.type === "store" ? loc.tills || [] : [];
+  const flags = Object.fromEntries(POS_FLAGS.map((f) => [f.key, cur[f.key] === true]));
+  const recyclerTill = typeof cur.recyclerTill === "string" && tills.some((t) => t.tillId === cur.recyclerTill) ? cur.recyclerTill : null;
+  return { flags, recyclerTill, tills };
+}
+
+export function posFlagUpdate(registry, key, value, nowMs, uid, store = SWITCHABLE_STORE) {
+  const loc = locationOf(registry, store);
+  if (!loc || loc.type !== "store") return fail("That store is not in the registry.");
+  if (!POS_FLAGS.some((f) => f.key === key)) return fail("That is not a till switch.");
+  if (typeof value !== "boolean") return fail("A switch is on or off.");
+  return { ok: true, updates: { [`${NETWORK_PATH}/locations/${loc.id}/pos/${key}`]: value, ...stamp(nowMs, uid) } };
+}
+
+// tillId === null → no recycler at this store (stored as false: a null would
+// delete the key and fall back to a built-in answer, which is "none" for
+// Concrete today but must not depend on that).
+export function recyclerTillUpdate(registry, tillId, nowMs, uid, store = SWITCHABLE_STORE) {
+  const loc = locationOf(registry, store);
+  if (!loc || loc.type !== "store") return fail("That store is not in the registry.");
+  if (tillId !== null && !(loc.tills || []).some((t) => t.tillId === tillId)) return fail("That is not one of this store's tills.");
+  return { ok: true, updates: { [`${NETWORK_PATH}/locations/${loc.id}/pos/recyclerTill`]: tillId === null ? false : tillId, ...stamp(nowMs, uid) } };
 }

@@ -45,7 +45,8 @@
 
 "use strict";
 
-const { resolveTarget, encodeSizeKey, policyCategoryKey } = require("./refill-engine.cjs");
+const { resolveTarget, encodeSizeKey, policyCategoryKey, networkRouting } = require("./refill-engine.cjs");
+const { withPolicyTemplates } = require("./policy-template.cjs");
 const { hubPresenceSignals, pickInProgress } = require("./shop-source-rule.cjs");
 
 // CJS twins of the constants in src/components/stock/firstBatchCore.js — a
@@ -370,7 +371,10 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
       db.ref("config/refillEngine").once("value").then((s) => s.val() || {}),
       Promise.resolve(productRead),
     ]);
-    if (((offConfig.routes || {})[store]) !== HUB) return { skipped: "path_off_not_shop", store };
+    // "Routed via its hub" is the ENGINE's answer (networkRouting): the
+    // config.routes entry for a shop it names, the registry's back-stock hub
+    // for a live shop it does not (Pine, Concrete).
+    if (networkRouting(offConfig, network).sourceFor(store, offProduct, pid) !== HUB) return { skipped: "path_off_not_shop", store };
     return withdrawToOldSolve({ reason: PATH_OFF_REASON, none: offProduct ? "path_off" : "product_missing", product: offProduct });
   }
   // "Already judged" is decided by the SERVER-OWNED shop lock (client-
@@ -464,7 +468,12 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // shadow/off hub only ever gets shadow rows). Seed only: Hub 2 carries the
   // size from here, and the engine raises hub2←central itself the moment it
   // is live again. (Adversarial review, PR #607.)
-  if (config.enabled !== true || (config.mode && config.mode[HUB] !== "live")) {
+  // The hub's mode is asked of the engine's own routing (networkRouting
+  // modeOf): a config.mode entry always wins, and a live hub the registry
+  // routes that config.mode does not name (Hub 3, the Concrete Stockroom)
+  // acts live — exactly what the scan does with it.
+  const routing = networkRouting(config, network);
+  if (config.enabled !== true || (config.mode && routing.modeOf(HUB) !== "live")) {
     if (seedNeeded) await seedIfAbsent(db, seedPath, now);
     await reqRef.update({ "firstBatch/hub2Leg": { none: "engine_off", at: now }, ...declineStamp });
     return { raised: false, none: "engine_off", seeded: seedNeeded };
@@ -480,8 +489,12 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // nine of. (Adversarial review, PR #607.)
   const hub2CellsAfterSeed = { ...(hub2Cells || {}) };
   if (hub2CellsAfterSeed[cellKey] == null) hub2CellsAfterSeed[cellKey] = seedCell(now);
+  // The numbers are the TEMPLATED policy's, as in the scan (computeRefillPlan
+  // applies the same step): a hub with no numbers of its own follows the
+  // location the registry says it is like — Hub 3 and the Concrete Stockroom
+  // follow Hub 2. A hub with its own entry reads its own. In-memory only.
   const ctx = {
-    config,
+    config: withPolicyTemplates(config, network),
     products: { [pid]: product },
     targets: hub2TargetRow ? { [HUB]: { [pid]: hub2TargetRow } } : {},
     stock: {

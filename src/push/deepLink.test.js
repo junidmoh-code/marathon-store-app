@@ -93,6 +93,50 @@ describe("applyPushDeepLink — an order", () => {
     expect(f.store.get("tabState:warehouse")).toBe("queue");
   });
 
+  it("opens the Concrete Stockroom like any other registry hub — queue, CR Orders, Display Refills, Layby", () => {
+    for (const tab of ["queue", "clothing", "refills", "layby"]) {
+      const f = fakeIo(`?push=order&hub=concrete-stockroom&tab=${tab}&order=C005&at=${encodeURIComponent(AT)}`);
+      expect(applyPushDeepLink(f.io)).toEqual({ role: "warehouse", hub: "concrete-stockroom", tab, order: "C005" });
+      expect(f.store.get("warehouseHub")).toBe("concrete-stockroom");
+      expect(f.store.get("tabState:warehouse")).toBe(tab);
+    }
+  });
+
+  it("every registry hub is accepted, and hubC exactly as before", () => {
+    for (const hub of ["hub1", "hub2", "hub3", "concrete-stockroom", "hubC"]) {
+      const f = fakeIo(`?push=order&hub=${hub}&tab=queue`);
+      expect(applyPushDeepLink(f.io).hub).toBe(hub);
+      expect(f.store.get("warehouseHub")).toBe(hub);
+    }
+  });
+
+  it("refuses a hub that is not in the registry — a shop, Central, a display name, a made-up id", () => {
+    for (const hub of ["hub4", "hub9", "concrete", "marathon-pe", "central", "Concrete Stockroom", "Hub 3", "concrete_stockroom", "__proto__", ""]) {
+      const f = fakeIo(`?push=order&hub=${encodeURIComponent(hub)}&tab=queue&order=005`);
+      expect(applyPushDeepLink(f.io).hub, hub).toBe(null);
+      expect(f.store.has("warehouseHub"), hub).toBe(false);
+      expect(f.store.has("tabState:warehouse"), hub).toBe(false);
+    }
+  });
+
+  it("a tab is honoured only on a hub that has it", () => {
+    // Hub 1 is sneakers-only: no CR Orders tab to land on.
+    const h1 = fakeIo("?push=order&hub=hub1&tab=clothing&order=R041-2");
+    expect(applyPushDeepLink(h1.io).tab).toBe("queue");
+    expect(h1.store.get("tabState:warehouse")).toBe("queue");
+    // hubC has the queue alone.
+    for (const tab of ["clothing", "refills", "layby"]) {
+      const c = fakeIo(`?push=order&hub=hubC&tab=${tab}`);
+      expect(applyPushDeepLink(c.io).tab).toBe("queue");
+    }
+    // Hub 3 has all four.
+    const h3 = fakeIo("?push=order&hub=hub3&tab=layby");
+    expect(applyPushDeepLink(h3.io).tab).toBe("layby");
+    // a tab key the warehouse has never had
+    const bad = fakeIo("?push=order&hub=hub3&tab=restock");
+    expect(applyPushDeepLink(bad.io).tab).toBe("queue");
+  });
+
   it("strips the query so a refresh does not re-route someone who has moved on", () => {
     const f = fakeIo("?push=order&hub=hub1&tab=queue&order=005");
     applyPushDeepLink(f.io);
@@ -119,6 +163,30 @@ describe("applyPushDeepLink — the old refill link still works", () => {
     expect(applyPushDeepLink(f.io)).toEqual({ role: "source", tab: "hub1refill", hub: "hub1" });
     expect(f.store.get("marathon_role")).toBe("source");
     expect(f.store.get("tabState:source")).toBe("hub1refill");
+  });
+});
+
+describe("applyPushDeepLink — Source tabs come from the registry", () => {
+  it("the Section 2 keys, the shop tabs and Refill History are all accepted", () => {
+    for (const tab of ["hub1refill", "clothing", "trophy", "marathonpe", "refillhistory"]) {
+      const f = fakeIo(`?push=refill&tab=${tab}`);
+      expect(applyPushDeepLink(f.io).tab).toBe(tab);
+      expect(f.store.get("tabState:source")).toBe(tab);
+    }
+  });
+  it("Section 1's lanes are keyed by location — Hub 3, the Concrete Stockroom, Pine, Concrete", () => {
+    for (const loc of ["hub3", "concrete-stockroom", "marathon-pine", "concrete"]) {
+      const f = fakeIo(`?push=refill&hub=${loc}&tab=${encodeURIComponent(`loc:${loc}`)}`);
+      expect(applyPushDeepLink(f.io)).toEqual({ role: "source", tab: `loc:${loc}`, hub: loc });
+      expect(f.store.get("tabState:source")).toBe(`loc:${loc}`);
+    }
+  });
+  it("a tab for a location the registry does not hold falls back to the first tab", () => {
+    for (const tab of ["loc:hub9", "loc:hub1", "loc:", "loc:central", "today", "../../evil"]) {
+      const f = fakeIo(`?push=refill&tab=${encodeURIComponent(tab)}`);
+      expect(applyPushDeepLink(f.io).tab, tab).toBe("hub1refill");
+      expect(f.store.get("tabState:source"), tab).toBe("hub1refill");
+    }
   });
 });
 

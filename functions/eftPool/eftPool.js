@@ -96,6 +96,8 @@ const {
   buildEftCreditClaim, buildEftCreditRecord, eftCreditMirrorRecord, eftCreditAuditRecord,
   ledgerApplyDecision, buildUnallocatedRecord,
 } = require("../lib/eft-credit.cjs");
+const { issuingStamp } = require("../lib/network-registry.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -319,12 +321,17 @@ async function finishRemainder(key) {
     // retry and nothing double-applies. The ledger transaction records the
     // txn and moves the balance atomically; the mirror is create-only because
     // redemptions decrement it. (CodeRabbit, this PR.)
+    // Which store (and so which section) issued this credit. Best effort: a
+    // registry that cannot be read must never hold up a customer's money, and
+    // an unstamped credit is simply spendable everywhere, as all were before.
+    let stamp = null;
+    try { stamp = issuingStamp(await loadNetwork(db), claim.storeId); } catch (e) { console.warn(`eftPool: no section stamp for ${claim.creditId}: ${e?.message ?? e}`); }
     await db.ref(`customers/${claim.customerId}/storeCredit/${claim.creditId}`)
-      .transaction((cur) => (cur === null ? eftCreditMirrorRecord(claim, ServerValue.TIMESTAMP) : undefined));
+      .transaction((cur) => (cur === null ? eftCreditMirrorRecord(claim, ServerValue.TIMESTAMP, stamp) : undefined));
     await db.ref(`pos/audit/store_credit_issued/${claim.customerId}/sc_${claim.creditId}`)
       .transaction((cur) => (cur === null ? eftCreditAuditRecord(claim, ServerValue.TIMESTAMP) : undefined));
     await db.ref(`pos/creditLedger/${claim.customerId}`)
-      .transaction((cur) => ledgerApplyDecision(cur, claim, ServerValue.TIMESTAMP));
+      .transaction((cur) => ledgerApplyDecision(cur, claim, ServerValue.TIMESTAMP, stamp));
     await db.ref(`pos/storeCreditQueue/${claim.creditId}`).remove(); // sides landed — consume the claim
     const flip = await runPoolTransaction(key, (cur) => remainderStatusDecision(cur, { status: "issued", at: Date.now() }));
     if (!flip.ok) {

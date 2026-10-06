@@ -106,7 +106,12 @@ function sealedSet(ids) {
 }
 
 const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
-const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine"]);
+// Concrete and its stockroom (added 6 Oct 2026 with the sections work) are on
+// this list for a different reason from Hub 3 and Pine: they are new, in the
+// other section, and nothing online picks from them. Their stock is not
+// promised to a web customer until the owner says so; take them off this list
+// (all three copies) when he does.
+const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine", "concrete", "concrete-stockroom"]);
 const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
   ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,
 ]);

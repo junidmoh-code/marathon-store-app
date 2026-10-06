@@ -170,7 +170,15 @@ function locationArms(e, perSize) {
 // arming a carried-but-unarmed one. Destination locations only — central is a
 // source, in_transit and studio are not shops, and offering them would invite
 // a policy the engine has no destination for.
-export function editorRows({ entry, carriage, destinations }) {
+//
+// `follows` (optional) is the census's { location: the location whose numbers
+// it reads } — a LIVE location with no entry of its own that the engine arms
+// through the policy template. It is carried on the row as a FACT to show
+// ("follows Hub 2") and nothing else: the row stays `armed: false`, so it is
+// not in the draft and a save never writes numbers for it — which is what
+// keeps it following. Giving it numbers of its own is the ordinary "arm this
+// location" edit, and from then on it no longer follows.
+export function editorRows({ entry, carriage, destinations, follows }) {
   const armed = new Set(armedLocations(entry));
   // ARMED LOCATIONS ARE ALWAYS ROWS, even ones absent from config.mode.
   // Without this, a location armed in the map but not a configured destination
@@ -189,6 +197,7 @@ export function editorRows({ entry, carriage, destinations }) {
       productsCarried: c.products || 0,
       unitsHeld: c.units || 0,
       armed: armed.has(loc),
+      follows: !armed.has(loc) && isObj(follows) && typeof follows[loc] === "string" ? follows[loc] : null,
       // "uniform" | "per-size" | null — which of the two shapes this leg holds
       // today. The editor renders one row or a run of size rows accordingly.
       shape: e ? (isObj(e.sizes) ? "per-size" : "uniform") : null,

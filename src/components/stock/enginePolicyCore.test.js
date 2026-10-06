@@ -361,3 +361,34 @@ it("says nothing about non-live legs when every destination is live", () => {
   const v = previewVerdict({ totalRequests: 3, totalUnits: 9, centralOnHand: 50, cap: 75, overriddenProducts: 0, legs: [], nonLiveLegs: [] });
   expect(v).not.toMatch(/does not send/);
 });
+
+// ── A LOCATION ARMED THROUGH THE POLICY TEMPLATE IS NEVER SAVED ──────────────
+// The census reports a live Section 1 location with no entry of its own as
+// `follows: { hub3: "hub2" }`. The card shows that as a fact. If it ever put
+// the follower in the draft, the save — which .set()s the whole entry — would
+// write the template's numbers down under the follower's id and it would stop
+// following.
+describe("a follower is shown, never saved", () => {
+  const entry = { hub2: { target: 10, minQty: 5, reorderPoint: 0 }, "marathon-pe": { target: 5, minQty: 3, reorderPoint: 0 } };
+  const carriage = { hub2: { carries: true, products: 3 }, "marathon-pe": { carries: true, products: 2 }, hub3: { carries: true, products: 3 }, "marathon-pine": { carries: false } };
+  const destinations = ["hub2", "marathon-pe", "hub3", "marathon-pine"];
+  const follows = { hub3: "hub2", "marathon-pine": "marathon-pe" };
+  it("the row carries the fact and stays unarmed; an armed row never says it follows", () => {
+    const rows = editorRows({ entry, carriage, destinations, follows });
+    const by = Object.fromEntries(rows.map((r) => [r.loc, r]));
+    expect({ armed: by.hub3.armed, follows: by.hub3.follows, target: by.hub3.target }).toEqual({ armed: false, follows: "hub2", target: null });
+    expect(by["marathon-pine"].follows).toBe("marathon-pe");
+    expect(by.hub2.follows).toBeNull();
+    expect(editorRows({ entry: { ...entry, hub3: { target: 2, minQty: 1 } }, carriage, destinations, follows }).find((r) => r.loc === "hub3").follows).toBeNull();
+    expect(editorRows({ entry, carriage, destinations }).every((r) => r.follows === null)).toBe(true);
+  });
+  it("SAVE ROUND TRIP: draft → edit Hub 2 → the policy that is sent has no entry for any follower", () => {
+    const draft = draftFromEntry({ entry, carriage, destinations });
+    expect(Object.keys(draft).sort()).toEqual(["hub2", "marathon-pe"]);
+    draft.hub2 = { ...draft.hub2, target: "12" };
+    const sent = policyFromDraft(draft);
+    expect(Object.keys(sent).sort()).toEqual(["hub2", "marathon-pe"]);
+    expect(sent.hub2.target).toBe(12);
+    expect("hub3" in sent || "marathon-pine" in sent).toBe(false);
+  });
+});
