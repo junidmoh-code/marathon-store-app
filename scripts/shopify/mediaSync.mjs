@@ -448,8 +448,11 @@ export async function syncProductMedia({ graphql, db, pid, gid, node, product, t
   }
   const sig = pushSigFor(node, product);
   if (!pending && node?.mediaSyncedSig !== sig) await pubRef.child("mediaSyncedSig").set(sig);
-  if (pending) await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).set(true);
-  else await db.ref(`${MEDIA_PENDING_PATH}/${pid}`).remove();
+  // The marker is written only when it changes — an idle re-run writes nothing.
+  const markerRef = db.ref(`${MEDIA_PENDING_PATH}/${pid}`);
+  const marked = (await markerRef.get()).val() != null;
+  if (pending && !marked) await markerRef.set(true);
+  else if (!pending && marked) await markerRef.remove();
   return { ok: true, pending, notes, writes, uploadsStarted };
 }
 

@@ -28,42 +28,15 @@
 // A change of PRIMARY also becomes the app photo (Junid, 26 Sep 2026).
 import React, { useEffect, useRef, useState } from "react";
 import { FONT, GRAY, GREEN, RED, AMBER, BLUE_L, tabOff, bGray, bRed } from "../stock/ui";
-import { photoUrlsOf, photoFirst, shopifyVideoProblem, MAX_PUBLISH_MEDIA, resolveMediaList, storagePathOf } from "./publishShared";
+import { photoUrlsOf, shopifyVideoProblem, MAX_PUBLISH_MEDIA, resolveMediaList, storagePathOf } from "./publishShared";
 import { isOn } from "./shopifyPublishCore";
 import { setPublishMedia, appendPublishMedia } from "./shopifyPublishStore";
 import { prepareMediaItem, pickedKind, pickedFileProblem, newMediaId } from "./mediaUpload";
 import { syncAppPhoto } from "./appPhoto";
 import AiStudioCard from "./AiStudioCard";
+import { moveItem, makePrimary, removeItem, replaceItem } from "./mediaEdits";
 import { usePermissions } from "../PermissionsContext";
 import { auth } from "../../firebase";
-
-// ─── PURE LIST EDITS ─────────────────────────────────────────────────────────
-// Each returns the next list, or null when the edit is not allowed. The chips
-// are enabled exactly when these return a list.
-export function moveItem(items, i, d) {
-  const j = i + d;
-  if (i < 0 || i >= items.length || j < 0 || j >= items.length) return null;
-  const next = [...items];
-  [next[i], next[j]] = [next[j], next[i]];
-  return next[0].type === "photo" ? next : null;
-}
-export function makePrimary(items, i) {
-  if (i <= 0 || items[i]?.type !== "photo") return null;
-  return [items[i], ...items.filter((_, k) => k !== i)];
-}
-export function removeItem(items, i) {
-  if (i < 0 || i >= items.length) return null;
-  const next = items.filter((_, k) => k !== i);
-  if (!next.some((m) => m.type === "photo")) return null; // never without a photo
-  return photoFirst(next);
-}
-export function replaceItem(items, oldUrl, newItem) {
-  const i = items.findIndex((m) => m.url === oldUrl);
-  if (i < 0) return null;
-  const next = [...items];
-  next[i] = newItem;
-  return next[0].type === "photo" ? next : null;
-}
 
 // What the reconciler last said about an item on Shopify, in Junid's words.
 const SHOPIFY_STATE = {
@@ -176,7 +149,7 @@ export default function MediaStrip({ product, node, onChanged }) {
     setBusy(true); setErr(null); setNote(null);
     const oldPrimary = photoUrlsOf(items)[0] || null;
     try {
-      const res = await setPublishMedia(product.id, nodeRef.current, next, { basisPhotos: photoUrlsOf(items) });
+      const res = await setPublishMedia(product.id, nodeRef.current, next);
       if (!res?.ok) { setErr(res?.message || "Not saved."); return false; }
       await afterWrite(res, oldPrimary);
       after?.();
