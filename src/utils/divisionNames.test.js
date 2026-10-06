@@ -35,6 +35,10 @@ describe("division names", () => {
   it("orders Marathon first", () => {
     expect(sectionsInOrder(SEED_REGISTRY)).toEqual([2, 1]);
     expect(sectionsInOrder(normalizeNetwork({ sections: { 1: { sort: 0 } } }))).toEqual([1, 2]);
+    // Only a real number is a sort; true / [] / "0" keep the seed's order.
+    for (const junk of [true, [], "0", null]) expect(sectionsInOrder(normalizeNetwork({ sections: { 1: { sort: junk } } }))).toEqual([2, 1]);
+    // Ids as RTDB keys ("1") are the same sections; duplicates and junk drop out.
+    expect(sectionsInOrder(SEED_REGISTRY, ["1", 2, 2, 7])).toEqual([2, 1]);
   });
 
   it("the seed writes the names; a stored name is never overwritten", () => {

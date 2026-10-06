@@ -28,7 +28,7 @@
 
 import { firstBatchSplit } from "./firstBatchCore";
 import { net, storeIds, nameOf, solveHubFor, solveStoreBlock } from "./sectionRouting";
-import { sectionName } from "../../utils/networkRegistry";
+import { sectionName, sectionsInOrder } from "../../utils/networkRegistry";
 
 // The blocks the panel renders: one per section the viewer may see, each with
 // its stores in registry order.
@@ -36,7 +36,7 @@ import { sectionName } from "../../utils/networkRegistry";
 // `blocked` is null (tickable) or the plain sentence shown beside the tick.
 export function solveBlocks({ network, sections = [1, 2], source, product, productId } = {}) {
   const N = net(network);
-  return [...sections].sort((a, b) => a - b).map((section) => ({
+  return sectionsInOrder(N, sections).map((section) => ({
     section,
     name: sectionName(N, section),
     stores: storeIds(N, { section }).map((id) => {

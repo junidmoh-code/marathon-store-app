@@ -114,8 +114,8 @@ describe("one screen: a block per section, a tick per store", () => {
     const tree = render();
     await open(tree);
     const text = textOf(tree);
-    expect(text).toMatch(/Carry atConcrete.*Marathon Pine.*Concrete.*Marathon.*Marathon PE.*Trophy/);
-    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete", "Marathon PE", "Trophy"]);
+    expect(text).toMatch(/Carry atMarathon.*Marathon PE.*Trophy.*Concrete.*Marathon Pine.*Concrete/);
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon PE", "Trophy", "Marathon Pine", "Concrete"]);
     expect(ticked(tree)).toEqual(["Marathon PE"]);
     expect(boxes(tree).every((b) => !b.props.disabled)).toBe(true);
   });
@@ -154,7 +154,7 @@ describe("both sections in ONE confirm — each store's excess goes to its own h
     const tree = render();
     await open(tree);
     tick(tree, "Marathon Pine");
-    expect(ticked(tree)).toEqual(["Marathon Pine", "Marathon PE"]);
+    expect(ticked(tree)).toEqual(["Marathon PE", "Marathon Pine"]);
     // the panel says what each store gets, and in which order Central is dealt
     const text = textOf(tree);
     expect(text).toMatch(/Central's stock is dealt in the order ticked: Marathon PE → Marathon Pine\./);

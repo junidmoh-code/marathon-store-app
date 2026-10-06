@@ -178,7 +178,7 @@ function normSections(raw) {
     const s = DEFAULT_NETWORK.sections[n];
     const x = isObj(r[n]) ? r[n] : (isObj(r[String(n)]) ? r[String(n)] : {});
     const name = typeof x.name === "string" && x.name.trim() ? x.name.trim().slice(0, 40) : s.name;
-    const sort = Number.isFinite(Number(x.sort)) && x.sort !== null && x.sort !== undefined && x.sort !== "" ? Number(x.sort) : s.sort;
+    const sort = typeof x.sort === "number" && Number.isFinite(x.sort) ? x.sort : s.sort;
     out[n] = { id: n, name, sort };
   }
   return out;
@@ -482,7 +482,8 @@ function sectionLabel(registry, n) {
 function sectionsInOrder(registry, list) {
   const R = reg(registry);
   const sortOf = (n) => (R.sections && R.sections[n] && Number.isFinite(R.sections[n].sort) ? R.sections[n].sort : n);
-  return [...(list === undefined ? [1, 2] : asList(list))].filter((n) => n === 1 || n === 2).sort((a, b) => sortOf(a) - sortOf(b) || a - b);
+  const ns = (list === undefined ? [1, 2] : asList(list)).map(normSection).filter((n) => n !== null);
+  return [...new Set(ns)].sort((a, b) => sortOf(a) - sortOf(b) || a - b);
 }
 
 function canSeeLocation(registry, sections, anyLoc) {

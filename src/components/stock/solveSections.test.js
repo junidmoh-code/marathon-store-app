@@ -112,14 +112,14 @@ describe("the live gate and the wall, per store", () => {
     expect(solveStoreBlock(S1_LIVE, { source: "hub3", store: "concrete", hub: "concrete-stockroom" })).toMatch(/Concrete is fed from Concrete Stockroom/);
   });
 
-  it("the blocks: Section 1 (Pine, Concrete) and Section 2 (Marathon PE, Trophy), each store with its hub and its reason", () => {
-    const blocks = solveBlocks({ network: SEED_REGISTRY, sections: [2, 1], source: "central", product: TEE, productId: "tee" });
+  it("the blocks: Marathon (Marathon PE, Trophy) then Concrete (Pine, Concrete), each store with its hub and its reason", () => {
+    const blocks = solveBlocks({ network: SEED_REGISTRY, sections: [1, 2], source: "central", product: TEE, productId: "tee" });
     expect(blocks.map((b) => [b.section, b.name, b.stores.map((s) => s.id)])).toEqual([
-      [1, "Concrete", ["marathon-pine", "concrete"]],
       [2, "Marathon", ["marathon-pe", "trophy"]],
+      [1, "Concrete", ["marathon-pine", "concrete"]],
     ]);
-    expect(blocks[0].stores.map((s) => [s.hub, s.blocked])).toEqual([["hub3", "not live yet — counted stock first"], ["hub3", "not live yet — counted stock first"]]);
-    expect(blocks[1].stores.map((s) => [s.name, s.hub, s.hubName, s.blocked])).toEqual([["Marathon PE", "hub2", "Hub 2", null], ["Trophy", "hub2", "Hub 2", null]]);
+    expect(blocks[1].stores.map((s) => [s.hub, s.blocked])).toEqual([["hub3", "not live yet — counted stock first"], ["hub3", "not live yet — counted stock first"]]);
+    expect(blocks[0].stores.map((s) => [s.name, s.hub, s.hubName, s.blocked])).toEqual([["Marathon PE", "hub2", "Hub 2", null], ["Trophy", "hub2", "Hub 2", null]]);
     // a viewer who may see one section gets one block
     expect(solveBlocks({ network: SEED_REGISTRY, sections: [2], source: "central" }).map((b) => b.section)).toEqual([2]);
   });

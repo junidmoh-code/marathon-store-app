@@ -348,7 +348,7 @@ async function handleAdmin(request, deps) {
     // pick either.
     if (!who.owner && who.section) {
       if (section && section !== who.section) {
-        throw new HttpsError("permission-denied", `You can only make codes for Section ${who.section}. Junid makes the others.`);
+        throw new HttpsError("permission-denied", "You can only make codes for your own division. Junid makes the others.");
       }
       section = who.section;
     }
