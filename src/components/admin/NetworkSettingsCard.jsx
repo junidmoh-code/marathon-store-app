@@ -9,8 +9,8 @@
 //                   optional override for one product.
 //   Credit scope    shared (credit spendable anywhere) or section (only in the
 //                   section that issued it).
-//   Concrete at the till   takes cash, cashier price edits, no-slip returns,
-//                   which till is the recycler — the POS's per-store switches.
+//   Concrete at the till   takes cash, cashier price edits, which till is the
+//                   recycler — the POS's per-store switches.
 //
 // OWNER ONLY, three layers: the tile, the route, and this component's own
 // check — and the RTDB rule on /network is what actually refuses the write.
@@ -192,7 +192,7 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
         <div style={label}>Concrete — at the till</div>
         {POS_FLAGS.map((f) => (
           <div style={row} key={f.key} data-pos={f.key}>
-            <span>{f.label}{f.note && <span style={{ color: "#8e8e93" }}> · {f.note}</span>}</span>
+            <span>{f.label}</span>
             <Choice value={pos.flags[f.key]} busy={busy} options={[{ value: true, label: "On" }, { value: false, label: "Off" }]}
               onPick={(v) => send(posFlagUpdate(registry, f.key, v, now(), uid), `${f.label}: ${v ? "on" : "off"}.`)} />
           </div>

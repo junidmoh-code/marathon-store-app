@@ -100,9 +100,17 @@ function buildEftCreditRecord(claim, serverTs) {
 //           balance increment is exactly-once by construction. (The node is
 //           one customer's ledger — bounded, not a whole-node read.)
 
+// `stamp` is { issuingStore, section } of the store that settled the payment,
+// or null (store not known, or the registry could not be read). It goes on the
+// mirror and the ledger txn — the two records the till reads to decide where a
+// credit may be spent when credit is scoped to a section. The POS sweep
+// (storeCreditLogic.js) stamps the same two records the same way; with no
+// stamp both minters write exactly what they wrote before sections.
+const stampFields = (stamp) => (stamp && stamp.issuingStore ? { issuingStore: stamp.issuingStore, section: stamp.section } : {});
+
 /** The mirror record the till spends from — same shape as the POS mint's. */
-function eftCreditMirrorRecord(claim, serverTs) {
-  return { remainingAmount: claim.amount, issuedAt: serverTs };
+function eftCreditMirrorRecord(claim, serverTs, stamp = null) {
+  return { remainingAmount: claim.amount, issuedAt: serverTs, ...stampFields(stamp) };
 }
 
 /** The audit event — same fields as the POS mintSideWrites'. */
@@ -134,7 +142,7 @@ function eftCreditAuditRecord(claim, serverTs) {
  * first call returns a real value here because a created node CASes against
  * the server and re-runs on mismatch).
  */
-function ledgerApplyDecision(current, claim, serverTs) {
+function ledgerApplyDecision(current, claim, serverTs, stamp = null) {
   const txnId = `sc_${claim.creditId}`;
   if (current?.txns?.[txnId]) return undefined; // already applied — exactly once
   return {
@@ -152,6 +160,7 @@ function ledgerApplyDecision(current, claim, serverTs) {
         storeId: claim.storeId ?? null,
         tillId: claim.tillId ?? null,
         ref: claim.reason ?? claim.saleId ?? null,
+        ...stampFields(stamp),
       },
     },
   };

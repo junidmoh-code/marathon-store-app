@@ -178,7 +178,7 @@ describe("first-time seed", () => {
 describe("Concrete at the till — the POS switches", () => {
   it("starts with every switch off and no recycler", () => {
     expect(posSwitchState(R, null)).toEqual({
-      flags: { cashRecon: false, cashierPriceEdit: false, noSlipReturns: false }, recyclerTill: null,
+      flags: { cashRecon: false, cashierPriceEdit: false }, recyclerTill: null,
       tills: [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }],
     });
   });
@@ -199,7 +199,7 @@ describe("Concrete at the till — the POS switches", () => {
     tree = applyUpdate(tree, posFlagUpdate(R, "cashRecon", true, NOW, "o").updates);
     tree = applyUpdate(tree, recyclerTillUpdate(R, "till-1", NOW, "o").updates);
     const after = normalizeNetwork(tree.network);
-    expect(posSwitchState(after, tree.network)).toMatchObject({ flags: { cashRecon: true, cashierPriceEdit: false, noSlipReturns: false }, recyclerTill: "till-1" });
+    expect(posSwitchState(after, tree.network)).toMatchObject({ flags: { cashRecon: true, cashierPriceEdit: false }, recyclerTill: "till-1" });
     expect(after.locations.concrete).toEqual(R.locations.concrete);
     expect(after.locations.concrete.live).toBe(false);
     // turning it off again, and clearing the recycler
@@ -211,6 +211,8 @@ describe("Concrete at the till — the POS switches", () => {
 
   it("refuses an unknown switch, a non-boolean, a till the store does not have, and a non-store", () => {
     expect(posFlagUpdate(R, "live", true, NOW, "o").ok).toBe(false);
+    // No Receipt Return is held as its own change: its switch cannot be set from this card
+    expect(posFlagUpdate(R, "noSlipReturns", true, NOW, "o").ok).toBe(false);
     expect(posFlagUpdate(R, "cashRecon", "yes", NOW, "o").ok).toBe(false);
     expect(recyclerTillUpdate(R, "till-3", NOW, "o").ok).toBe(false);
     expect(posFlagUpdate(R, "cashRecon", true, NOW, "o", "hub3").ok).toBe(false);

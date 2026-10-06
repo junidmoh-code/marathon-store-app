@@ -83,6 +83,8 @@ import ArmingTab from "./ArmingTab";
 import { writableRow, shapeOfRow } from "./targetOverride";
 import { enginePolicyVisibleForViewer, ADMIN_EMAIL } from "../../config/enginePolicy";
 import { nameOf } from "./sectionRouting";
+import { locationOf } from "../../utils/networkRegistry";
+import { currentNetwork } from "../../utils/networkStore";
 
 // 300s to match the function's own timeoutSeconds. The Firebase JS SDK defaults
 // httpsCallable to 70,000ms; the census, the row list and the group model can
@@ -95,7 +97,7 @@ const LOC_LABELS = { hub2: "Hub 2", hub1: "Hub 1", hub3: "Hub 3", central: "Cent
 const locLabel = (l) => LOC_LABELS[l] || nameOf(l);   // any other location is named by the network registry
 // A hub and a shop are different kinds of place; the glyph is the only thing
 // left to say so with once the line is one line. Two glyphs, not seven.
-const locIcon = (l) => (/^hub|^central/.test(l) ? "🏬" : "🏪");
+const locIcon = (l) => (/^hub|^central/.test(l) || locationOf(currentNetwork(), l)?.type === "hub" ? "🏬" : "🏪");
 
 // ── CATEGORY IMAGERY ─────────────────────────────────────────────────────────
 // A studio photograph per category, generated once (scripts/generate-

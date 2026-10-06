@@ -539,3 +539,14 @@ describe("mergeRows × partial fulfilment (PR #338): an OPEN request never absor
     expect(rows[0].movementId).toBe("rrf_r1");
   });
 });
+
+describe("hubStepsFor — the viewer's sections gate the added locations", () => {
+  const net = { locations: { concrete: { id: "concrete", type: "store", sort: 1 }, "concrete-stockroom": { id: "concrete-stockroom", type: "hub", sort: 2 } } };
+  it("an account that may not see them gets HUB_STEPS itself", () => {
+    expect(hubStepsFor(net, () => false)).toBe(HUB_STEPS);
+  });
+  it("an account that may see one gets that one only", () => {
+    const all = hubStepsFor(net, (id) => id === "concrete").find((h) => h.key === "all").locs;
+    expect(all).toEqual([...HUB_STEPS[0].locs, "concrete"]);
+  });
+});

@@ -108,13 +108,18 @@ export const HUB_STEPS = [
 // registry has gained since (Concrete, the Concrete Stockroom) had no stop, so
 // its requests were filtered out of every view, "All" included. Each one joins
 // "All" and "Shops" — the stop Hub 3 already sits under; Hub 1 and Hub 2 keep
-// their own. With no registry, or one that adds nothing, the lists are
-// HUB_STEPS' own, in the same order.
-export function hubStepsFor(network) {
+// their own. With no registry, or one that adds nothing the viewer may see,
+// the lists are HUB_STEPS' own, in the same order.
+//
+// `canSee(locationId)` is the viewer's section gate (useMySections). An added
+// location the viewer may not see is left out, so a Section 2 account's "All"
+// does not grow Section 1's new locations. Omitted → every added location.
+export function hubStepsFor(network, canSee = null) {
   const locs = network && network.locations ? Object.values(network.locations) : [];
   const known = new Set(HUB_STEPS[0].locs);
   const extra = locs
     .filter((l) => l && (l.type === "store" || l.type === "hub") && l.retired !== true && !known.has(l.id))
+    .filter((l) => typeof canSee !== "function" || canSee(l.id))
     .sort((a, b) => (a.sort ?? 999) - (b.sort ?? 999) || String(a.id).localeCompare(String(b.id)))
     .map((l) => l.id);
   if (!extra.length) return HUB_STEPS;

@@ -24,7 +24,7 @@
 // browser writes that node: Engine Policy saves go through the setCategoryPolicy
 // callable, which works from its own read of the RAW node and hands the card
 // the RAW entry to edit. A caller that needs the stored node asks for it by
-// name (useStock.useEngineConfigRaw).
+// name (the `raw` field of useStock.useEngineConfigState).
 
 import { policyKeyFor, SEED_REGISTRY, autoRouteAllowed, backStockHubsOf, listLocations } from "../../utils/networkRegistry.js";
 

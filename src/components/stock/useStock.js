@@ -327,23 +327,21 @@ function useCurrentNetwork() {
 // IT: with the policy template applied for the locations the engine plans
 // (policyTemplate.engineConfigView) — a live location with no numbers of its
 // own reads its template's, exactly as the scan does. This is the single point
-// every stock screen loads the config through, so every target mirror
-// (seatingCore, armingCore, solvePlan, excess, No Target…) agrees with the
-// engine without knowing templates exist. With no live follower (Section 2
+// every stock screen loads the config through, so the target mirrors
+// (seatingCore, armingCore, solvePlan, excess, No Target…) resolve from the
+// same numbers the engine does without knowing templates exist. (Only
+// seatingCore's resolver is pinned against the engine with a template in play
+// — policyTemplate.parity.test.js.) With no live follower (Section 2
 // only; the seed registry) it is the stored node itself, the same object.
 //
 // READ-ONLY VIEW — never write what this returns to /config/refillEngine (see
-// policyTemplate.js). The stored node is useEngineConfigRaw().
+// policyTemplate.js). The stored node is `raw` on useEngineConfigState().
 export function useEngineConfig() {
   const raw = usePath("config/refillEngine");
   const network = useCurrentNetwork();
   return useMemo(() => engineConfigView(raw, network), [raw, network]);
 }
 
-// The STORED node, untouched — for anything that edits or saves engine config.
-export function useEngineConfigRaw() {
-  return usePath("config/refillEngine");
-}
 
 // The same node, reporting the three states a bare null conflates. A screen that
 // RESOLVES TARGETS from this config must gate on `settled`: every arming answer

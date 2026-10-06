@@ -91,7 +91,7 @@ describe("the warehouse hub", () => {
     expect(select.indexOf("if (!hubAllowedForViewer(whNet, canSeeHub, hub)) return;"))
       .toBeLessThan(select.indexOf('localStorage.setItem("warehouseHub", hub);'));
     // … and a stored one that fails it is removed, only once /network answered
-    expect(APP).toContain("const storedHubFate = storedHubVerdict(whNet, canSeeHub, storedHub, whNetSettled || !!whNetError);");
+    expect(APP).toContain("const storedHubFate = storedHubVerdict(whNet, canSeeHub, storedHub, whNetSettled && !whNetError);");
     const drop = between("const storedHubFate = storedHubVerdict(", "}, [storedHubFate]);");
     expect(drop).toContain('if (storedHubFate !== "drop") return;');
     expect(drop).toContain('localStorage.removeItem("warehouseHub");');

@@ -100,17 +100,17 @@ export function categoryRows(registry, categories) {
 }
 
 // ── CONCRETE AT THE TILL — THE POS SWITCHES ──────────────────────────────────
-// Four facts the POS reads from /network/locations/{id}/pos (its
-// src/shared/storeTraits.js): whether the store reconciles cash, whether it is
-// offered for no-slip returns, whether a cashier may edit a line price, and
-// which till is the cash recycler. Marathon PE, Trophy and Pine have their
+// Facts the POS reads from /network/locations/{id}/pos (its
+// src/shared/storeTraits.js): whether the store reconciles cash, whether a
+// cashier may edit a line price, and which till is the cash recycler. (The
+// POS's fourth switch, no-slip returns, is NOT offered here: No Receipt Return
+// is held as its own change and its switch ships with it, not before.) Marathon PE, Trophy and Pine have their
 // answers built in; Concrete starts with every switch OFF and is set here.
 // One small path per switch, so no control overwrites another — and the
 // location's own record (live, section, tills) is never rewritten.
 export const POS_FLAGS = Object.freeze([
   Object.freeze({ key: "cashRecon", label: "Takes cash (cash-up, payouts and collections at this store)" }),
   Object.freeze({ key: "cashierPriceEdit", label: "Cashiers may edit a line price (not only a manager)" }),
-  Object.freeze({ key: "noSlipReturns", label: "Offered for no-slip returns", note: "Takes effect only once the separate No Receipt Return change is live." }),
 ]);
 
 export function posSwitchState(registry, rawNetwork, store = SWITCHABLE_STORE) {

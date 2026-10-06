@@ -9622,7 +9622,8 @@ function AssistantView({ products, onExit, orders = [] }) {
   // That product's sizes must grey out on the hub that will actually send it,
   // not on the shop's default hub. One more hub subtree, and only while the
   // registry names a second hub for this shop: Marathon PE / Trophy, Pine, and
-  // Concrete before any flip, subscribe to nothing here.
+  // Concrete before any flip, read no hub here (the hook is pointed at the
+  // empty `__off__` key, as the other optional hub reads in this file are).
   const extraHub = extraClothingHub(sectionNet, effectiveShop, servingHub);
   const extraHubCells = useStockCells(extraHub || "__off__");
   // ONE DEFINITION OF "AVAILABLE" (2026-09-05). The zero-test below used to be
@@ -12255,12 +12256,13 @@ function WarehouseView({ products = [], orders, onExit }) {
   // …AND A HUB THAT IS NOT ALLOWED DOES NOT STAY ON THE DEVICE. Not honouring
   // it was enough to keep the screen right, but the id sat in localStorage for
   // good — a Section 2 device went on carrying "hub3" from a mis-tapped link.
-  // Dropped once /network has answered (never on the built-in registry alone:
+  // Dropped once /network has answered — a failed read is not an answer, so it
+  // waits (never on the built-in registry alone:
   // a hub that exists only in the live node would otherwise be thrown away on
   // every cold start). An account whose sections have not loaded yet reads as
   // "both", so nothing is dropped early on that side either.
   const { settled: whNetSettled, error: whNetError } = useNetwork();
-  const storedHubFate = storedHubVerdict(whNet, canSeeHub, storedHub, whNetSettled || !!whNetError);
+  const storedHubFate = storedHubVerdict(whNet, canSeeHub, storedHub, whNetSettled && !whNetError);
   useEffect(() => {
     if (storedHubFate !== "drop") return;
     localStorage.removeItem("warehouseHub");

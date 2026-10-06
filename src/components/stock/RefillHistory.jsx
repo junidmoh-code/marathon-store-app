@@ -34,7 +34,8 @@ import { database } from "../../firebase";
 import { GRAY, GREEN, RED, AMBER, BLUE, FONT } from "./ui";
 import { serverNowMs } from "../../utils/serverTime";
 import { useEngineConfig } from "./useStock";
-import { currentNetwork } from "../../utils/networkStore";
+import { useNetwork } from "../../utils/useNetwork";
+import { useMySections } from "../../utils/useMySections";
 import { parseReleaseTimes, isReleased } from "./releaseWindows";
 import {
   REQUESTS_INDEXED, resolveRange, saDayOf, shiftDay, hubStepsFor, stepHub,
@@ -124,7 +125,10 @@ export default function RefillHistory({ products = [] }) {
   const byId = useMemo(() => new Map(products.map((p) => [p.id, p])), [products]);
   // The stops come from the network registry, so a location added since the
   // list was written (Concrete, the Concrete Stockroom) has its requests shown.
-  const hubStep = hubStepsFor(currentNetwork())[hubIdx];
+  // Only the added locations this account's sections include.
+  const { registry: historyNet } = useNetwork();
+  const { canSee: canSeeLoc } = useMySections();
+  const hubStep = hubStepsFor(historyNet, canSeeLoc)[hubIdx];
 
   // Queued = open but behind the next release window — same config, same pure
   // gate as the pick queue.
