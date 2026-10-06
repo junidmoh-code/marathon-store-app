@@ -11,36 +11,43 @@
 // (".read": "auth != null", ".write": signed-in non-anonymous). No rules change
 // ships with this feature and none is needed.
 
+import { SEED_REGISTRY, storesOf, hubsOf, locationOf } from "../utils/networkRegistry";
+
 export const STOCK_AUDIT_ROOT = "settings/stockAudit";
 
 // The two shops with staff to walk a shelf. Matches AUDIT_STORES in
 // functions/lib/stock-audit.cjs — the snapshot writer and the reader must agree
 // on the set, and a store the function never writes would render an empty card.
-export const AUDIT_STORES = [
-  { id: "marathon-pe", label: "Marathon PE" },
-  { id: "trophy", label: "Trophy" },
-];
+//
+// SECTIONS (2026-10): the set is the LIVE stores of the network registry —
+// the same rule the server twin now uses (auditStores in stock-audit.cjs).
+// Marathon PE and Trophy today, exactly the two this list has always held.
+// Marathon Pine and Concrete join the day the owner marks them live on the
+// Network card, and not before. The constant is the seed's answer (what the
+// server writes until then); auditStoresOf(network) follows the live registry.
+export const auditStoresOf = (network) =>
+  storesOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => ({ id: l.id, label: l.name }));
+export const AUDIT_STORES = auditStoresOf(SEED_REGISTRY);
 
 // The hubs this audit covers. Hub 3 serves Pine, which is out of scope for the
 // whole feature. Matches AUDIT_HUBS in functions/lib/stock-audit.cjs — the
 // writer and the reader must agree on the set, or a chip would open a node
 // nothing ever fills.
-export const AUDIT_HUBS = [
-  { id: "hub1", label: "Hub 1" },
-  { id: "hub2", label: "Hub 2" },
-];
+//
+// SECTIONS: the LIVE hubs — Hub 1 and Hub 2 today, the same two. Hub 3 and the
+// Concrete Stockroom stay out for as long as they are not live.
+export const auditHubsOf = (network) =>
+  hubsOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => ({ id: l.id, label: l.name }));
+export const AUDIT_HUBS = auditHubsOf(SEED_REGISTRY);
 
 // Every place a row can name. Held here rather than read from /locations so the
 // screen keeps its promise literally — it reads the snapshot and nothing else.
 // Anything outside this set falls through to its raw id, which is honest and
 // never blank.
-export const LOCATION_LABEL = {
-  "marathon-pe": "Marathon PE",
-  trophy: "Trophy",
-  hub1: "Hub 1",
-  hub2: "Hub 2",
-};
-export const locationLabel = (id) => LOCATION_LABEL[id] || id || "—";
+export const LOCATION_LABEL = Object.fromEntries([...AUDIT_STORES, ...AUDIT_HUBS].map((l) => [l.id, l.label]));
+// A row can also name a location that joined later (a Section 1 shop gone
+// live): its name comes from the registry's built-in seed — still no read.
+export const locationLabel = (id) => LOCATION_LABEL[id] || locationOf(SEED_REGISTRY, id)?.name || id || "—";
 
 // Hubs live under their own prefix so a hub id can never collide with a shop
 // id at the same level, and so the two halves can be read, pruned and reasoned

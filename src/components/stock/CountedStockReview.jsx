@@ -14,7 +14,7 @@
 import React, { useState, useMemo, useEffect } from "react";
 import { applyMovement } from "./applyMovement";
 import { useStockCells } from "./useStock";
-import { labelFor, transferTargets } from "./locations";
+import { labelFor, transferTargets, wallAllowedLocations } from "./locations";
 import { barcodeSizeKey } from "./barcode";
 import { TOP_CATEGORIES, UNCATEGORIZED_TOP, topCategory } from "../../utils/productCategory";
 import { Toast, Empty, LocationPicker } from "./widgets";
@@ -370,7 +370,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
               from <b style={{ color: BLUE_L }}>{labelFor(moveGroup.loc, registry)}</b> to:
             </div>
             <div style={{ marginTop: 12 }}>
-              <LocationPicker registry={registry} value={moveLoc} onChange={setMoveLoc} filter={transferTargets} exclude={moveGroup.loc} />
+              <LocationPicker registry={registry} value={moveLoc} onChange={setMoveLoc} filter={(reg) => wallAllowedLocations(transferTargets(reg), moveGroup.loc)} exclude={moveGroup.loc} />
             </div>
             <div style={{ fontSize: 11, color: "#86efac", textAlign: "center", marginTop: 10 }}>✓ Counts &amp; barcodes are kept — just relocated.</div>
             <div style={{ display: "flex", gap: 8, marginTop: 16 }}>

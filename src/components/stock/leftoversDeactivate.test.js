@@ -161,8 +161,9 @@ describe("source pins — the call sites exist", () => {
     expect(app).toContain("deadForOrder(resolveProductById(item.product.id) || item.product)");
   });
   it("MoveExcess skips deactivated products in lockstep with the engine's excess pass", () => {
-    const me = src("./MoveExcess.jsx");
-    expect(me).toContain("if (isDeactivated(p)) continue;");
+    // The card build moved to moveExcessCore.js; the screen must still call it.
+    expect(src("./moveExcessCore.js")).toContain("if (isDeactivated(p)) continue;");
+    expect(src("./MoveExcess.jsx")).toContain("computeMoveExcessCards(");
   });
   it("the Deactivated section waits for allStock so a stock-holder never reads as empty", () => {
     const hc = src("./HubCleanup.jsx");

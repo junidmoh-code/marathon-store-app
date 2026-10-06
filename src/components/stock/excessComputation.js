@@ -88,11 +88,29 @@
 import { resolveTarget, engineSizeKey, isClothing, cellQtyAt } from "./seatingCore";
 import { isDeactivated } from "../../utils/deactivation";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
+import { hubIds } from "./sectionRouting";
 
 // The only hubs this feature touches — same closed list as HubCleanup
 // (CLEANUP_HUBS, hubCleanupCore.js): hub3/Pine is out of scope everywhere in
 // this build, deliberately not derived from the location registry.
 export const EXCESS_HUB_LOCATIONS = Object.freeze(["hub1", "hub2"]);
+
+// ── THE HUBS, FROM THE NETWORK REGISTRY ──────────────────────────────────────
+// The constant above is what the registry's seed answers for "the live hubs"
+// (pinned by test), and stays the default of the computations below so their
+// output for Section 2 is untouched. A SCREEN asks this instead:
+//   • the live hubs first, in registry order (Hub 1, Hub 2);
+//   • then every hub that is not live (Hub 3, the Concrete Stockroom) — its
+//     excess is still worth seeing and can be sent back to Central by hand.
+// `liveOnly` is for anything that would act by itself.
+// Excess is judged PER HUB against that hub's own Keep numbers and its own
+// open outbound requests, so one section's needs never enter another's
+// figure; and the only move this feeds is hub → Central.
+export function excessHubLocations(network, { liveOnly = false } = {}) {
+  const live = hubIds(network, { liveOnly: true });
+  if (liveOnly) return live;
+  return [...live, ...hubIds(network).filter((h) => !live.includes(h))];
+}
 
 // footwear-all policy group member categories (policy-groups.cjs), i.e. the
 // "Sneakers" group this build arms at hub1 (Phase 1) and hub2 (Phase 2).

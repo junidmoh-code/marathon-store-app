@@ -21,7 +21,7 @@ import { dataURLToBlob, loadImageFile, encodeCompressed, prepareProductPhoto } f
 import { guideFor, missingPhotoSteps } from "./components/admin/photoGuides.js";
 import { writeProductThumb, writeApprovedThumbFromUrl } from "./utils/productThumb";
 import { setServerTimeOffsetMs, serverNowMs, serverNowIso, saDateString, saHour } from "./utils/serverTime";
-import { getTodayKey, getNextOrderNumber } from "./utils/orderCounter";
+import { getTodayKey, getNextOrderNumber, getNextRefillNumber } from "./utils/orderCounter";
 import { getDeviceId } from "./device/deviceId";
 import { InsightsLogContext } from "./insights/InsightsLogContext";
 import { useMirroredPath, useMirrorLeg } from "./offline/useMirroredPath";
@@ -55,7 +55,6 @@ import { newArrivalsApi } from "./components/newArrivals/newArrivalsApi";
 import { enginePolicyVisibleForViewer } from "./config/enginePolicy";
 import TvDisplayMockup from "./components/TvDisplayMockup";
 import { useSpecials } from "./components/TvSpecialsRail";
-import { TV_ORDER_KEY_START, TV_ORDER_KEY_END } from "./utils/tvOrdersRange";
 import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
 import DisplayChecks from "./pages/DisplayChecks";
@@ -105,6 +104,7 @@ import { usePushMute } from "./push/useMute";
 import PushAssignmentsCard from "./push/PushAssignmentsCard";
 import CostWatchCard from "./components/admin/CostWatchCard";
 import MirrorFleetCard from "./components/admin/MirrorFleetCard";
+import NetworkSettingsCard from "./components/admin/NetworkSettingsCard";
 import DeviceCodesCard from "./device/DeviceCodesCard";
 import { changeProductType, saveProductPatch, useLiveProduct } from "./components/admin/productSave";
 import { deviceStamp, orderActionName, stampPatch, stampRecord } from "./device/deviceStamp";
@@ -136,11 +136,23 @@ import AlternativesStrip from "./components/stock/AlternativesStrip.jsx";
 import { shownEntry, pickedEntry, ALTERNATIVES_LOG_PATH } from "./components/stock/alternativesTelemetry";
 import { input as stockInput } from "./components/stock/ui";
 import { sellableLocations, labelFor, transferTargets, warehouseLocations } from "./components/stock/locations";
+import { useNetwork } from "./utils/useNetwork";
+import { TV_ORDER_KEY_START, TV_ORDER_KEY_END } from "./utils/tvOrdersRange";
+import { currentNetwork } from "./utils/networkStore";
+import { wallAllows, storesOf, backStockHubsOf } from "./utils/networkRegistry";
+import { useMySections } from "./utils/useMySections";
+import {
+  fallbackHub, hubOfRecord, placementHub, servingHubFor, usesSection2Hubs, stockHubIds, crHubIds, hubLabel as registryHubLabel,
+  warehouseHubGroups, hubAllowedForViewer, shopsOfHub, orderIsAtHub, orderPlacementCheck, sectionStamp,
+  dispatchHoldMs, sourceTabsFor, TRIAL_HUB, shopOfRecord,
+  insightsStoreOptions, insightsBucketKey, insightsStoreMatcher,
+} from "./utils/sectionRouting";
+import { tvOrderKeyRanges, keyInOrderRanges, tvSectionFromSearch, isSharedSequenceOrderKey, orderKeyFromInput } from "./utils/orderNumbering";
 import { useStockCells, useStockCellsState, useDisplaySlots, useDisplaySlotsState, useDisplayRowsState, useLocations, useRefillRequests } from "./components/stock/useStock";
 import { displayUnitsByCell, slotsAfterOrderExits, displaySlotRepairs, displayRepairKey, pendingDisplayPullsByCell, mergePromised, displaySlotStoreFor, depletedTaskRevivable } from "./components/stock/displayPairCore";
 import { sendDisplayRow, closeDisplayRow, closeDisplayRowForPartnerSale } from "./components/stock/displayRowStore";
 import { hasOpenDisplayRequest, otherOpenDisplayRequests, requestStoreFor, openRowsFor } from "./components/stock/displayRowCore";
-import { shopUniverse, SHOP_LABELS } from "./utils/stores";
+import { shopUniverse, shopLabelOf, shopIdsOf } from "./utils/stores";
 import {
   clothingSoldEventsForPeriod, clothingSectionLabel, saDateOf,
   saStartIso, CLOTHING_SOLD_BACKLOG_DAYS, CLOTHING_SOLD_STORES, CLOTHING_SOLD_MAX_RANGE_DAYS,
@@ -155,7 +167,7 @@ import { PRINTED_ALREADY, PRINTED_CONFLICT, PRINTED_SIZE_MISMATCH } from "./util
 import { printDispatchLabel } from "./components/stock/printDispatch";
 import LaybyTab, { LaybyExceptionsBanner, PullCard } from "./components/layby/LaybyTab";
 import { useLaybys, useLaybyPulls } from "./components/layby/useLayby";
-import { DEFAULT_STORAGE_HUB, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
+import { storageHubOf, PULL_STATUS, LAYBY_STATUS, DISPOSITION, dispositionOf } from "./components/layby/contract";
 import { inferProductType, dedupeByOrderNumber, excludeReturnedOrderNumbers, oosEventsForPeriod, readyEventsForPeriod, clothingRefillEventsForPeriod, restockCountsFromLog, computeRestockCounts, sourceResponsePath, sourceResponseDatePath } from "./utils/insights";
 import { buildProductIdIndex, resolveProductId, buildPhotoIndex, photoForProduct, canFulfilCard } from "./utils/productIdentity";
 import { onHoldRefillPlan, holdReleaseUpdate } from "./components/stock/onHoldRefill";
@@ -851,7 +863,26 @@ const isKidsSizeSet = (sizes) =>
 // regardless of the product's `hubs`, so hubC never appears in getProductHubs /
 // the product editor. To retire the trial, drop hubC here and the few hubC
 // branches in AssistantView.placeOrders + WarehouseView.
-const HUB_LABELS = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", hubC: "Hub C" };
+// Sections: the labels are read off the network registry (so the Concrete
+// Stockroom has one, and a hub renamed on the Network card shows its new name)
+// through the same `HUB_LABELS[hub]` lookup every call site already makes.
+// An id the registry does not know answers undefined, as a missing key did.
+const HUB_LABELS = new Proxy({}, {
+  get: (_t, hub) => {
+    if (typeof hub !== "string" || !hub) return undefined;
+    const label = registryHubLabel(currentNetwork(), hub);
+    return label && label !== hub ? label : undefined;
+  },
+});
+// Shop labels, the same way: SHOP_LABELS[shop] → the registry's name for it
+// ("Pine" stays "Pine" — see utils/stores.js), undefined for an unknown id.
+const SHOP_LABELS = new Proxy({}, {
+  get: (_t, shop) => {
+    if (typeof shop !== "string" || !shop) return undefined;
+    const label = shopLabelOf(shop, currentNetwork());
+    return label && label !== shop ? label : undefined;
+  },
+});
 // CR (Shop Refill) routing — THE single map from a store universe to the hub that
 // fulfils its clothing refills: PE/Trophy (central) → hub2, Pine → hub3. The
 // warehouse "CR Orders" tab exists on exactly these hubs (CR_HUBS), each
@@ -862,14 +893,19 @@ const CR_HUB_BY_UNIVERSE = { central: "hub2", pine: "hub3" };
 // The submit-time stock guard's refusal on the checkout sheet — the same red
 // family as the sheet's other blocking notes.
 const SUBMIT_REFUSAL_STYLE = { background: "rgba(255,80,80,.1)", border: "1px solid rgba(255,80,80,.4)", color: "#FF8A8A", borderRadius: 10, padding: "9px 12px", fontSize: 12.5, fontWeight: 600, marginBottom: 10 };
-const CR_HUBS = [...new Set(Object.values(CR_HUB_BY_UNIVERSE))];
+// Sections: CR_HUB_BY_UNIVERSE is now only Marathon PE's / Trophy's answer (the
+// literal they have always had). Every other shop asks the network registry
+// (utils/sectionRouting.js), and the hubs that carry the CR tab are read from
+// it too: every hub that is not sneakers-only — Hub 2, Hub 3, the Concrete
+// Stockroom.
+const crHubsNow = () => crHubIds(currentNetwork());
 function getProductHubs(product) {
   return product?.hubs || (product?.hub ? [product.hub] : []);
 }
 
 // Hubs that hold sellable stock (hubC is a clothing-trial destination, NOT a
 // stock location). Used to validate a return's origin hub before any reversal.
-const STOCK_HUBS = ["hub1", "hub2", "hub3"];
+const isStockHub = (hub) => stockHubIds(currentNetwork()).includes(hub);
 
 // resolveReturnDestination — where a returned order's stock belongs WHEN no
 // recorded disp_ transfer exists to reverse. Mirrors recordDispatchTransfer's
@@ -903,7 +939,7 @@ function resolveReturnDestination(order, productCategory) {
     cat === "Clothing" || cat === "Accessories" || cat === "Perfume";
   if (staysAtShop) return { mode: "stay", reason: `${String(cat).toLowerCase()}_stays_at_shop` };
   const to = order.placedAtHub || order.hub;
-  return { mode: "footwear_no_ledger", originHub: STOCK_HUBS.includes(to) ? to : null };
+  return { mode: "footwear_no_ledger", originHub: isStockHub(to) ? to : null };
 }
 
 // inferProductType, dedupeByOrderNumber, returnedOrderNumberSet,
@@ -1085,6 +1121,50 @@ function useTvOrders() {
     });
     return () => unsub();
   }, [authReady, live, shapeTvOrders]);
+  return orders;
+}
+
+// ─── A SECTION'S OWN TV BOARD ────────────────────────────────────────────────
+// useTvOrders above is the board every kiosk runs today, and Section 2's: the
+// shared 001–999 keys, untouched. A store with its own number sequence keys
+// its orders with a prefix ("P001", "C001"), which that range never reaches —
+// so Section 2's board shows exactly what it always has, and a Section 1 board
+// (kiosk URL ?section=1#tv) reads one key range per prefixed store in its
+// section instead. Same two sources, same bound on both, same row shape;
+// refill carts ("R…") are outside every range. Ranges: utils/orderNumbering.js.
+function useSectionTvOrders(section) {
+  const authReady = useAuthReady();
+  const [orders, setOrders] = useState([]);
+  // The LIVE registry (a kiosk mounts nothing else that reads it): a prefix
+  // the owner changes, or a store added later, reaches this board.
+  const { registry: tvNetwork } = useNetwork();
+  const ranges = useMemo(() => tvOrderKeyRanges(tvNetwork, section), [tvNetwork, section]);
+  const shape = useCallback((data) => (
+    Object.values(data || {}).filter(Boolean).sort((a, b) => tsMs(b?.createdAt) - tsMs(a?.createdAt))
+  ), []);
+  const mirrored = useMirroredPath("orders", authReady);
+  const live = mirrored.verdict === "fallback";
+
+  useEffect(() => {
+    if (live || !mirrored.settled) return;
+    const inRange = {};
+    for (const [key, value] of Object.entries(mirrored.value || {})) {
+      if (keyInOrderRanges(key, ranges)) inRange[key] = value;
+    }
+    setOrders(shape(inRange));
+  }, [live, mirrored.settled, mirrored.value, shape, ranges]);
+
+  useEffect(() => {
+    if (!authReady || !live) return undefined;
+    // One listener per range, merged by key before shaping.
+    const parts = ranges.map(() => null);
+    const unsubs = ranges.map((r, i) => onValue(
+      query(ref(database, "orders"), orderByKey(), startAt(r.start), endAt(r.end)),
+      (snap) => { parts[i] = snap.val(); setOrders(shape(Object.assign({}, ...parts.map((p) => p || {})))); },
+      (err) => { console.warn("Firebase read error on /orders (section TV key range):", err); },
+    ));
+    return () => unsubs.forEach((u) => u());
+  }, [authReady, live, shape, ranges]);
   return orders;
 }
 
@@ -2218,19 +2298,10 @@ onValue(ref(database, ".info/serverTimeOffset"), (snap) => setServerTimeOffsetMs
 // so a 30-size refill burns exactly one refill number, never 30. Daily reset +
 // 001–999 cycle mirror the sneaker counter (refills are ephemeral too, and
 // /orders is daily-scoped by design). The per-line node keys are R{n}-{i}.
-async function getNextRefillNumber() {
-  const todayKey = getTodayKey();
-  const counterRef = ref(database, "refillCounter");
-  const txResult = await runTransaction(counterRef, (current) => {
-    if (!current || current.day !== todayKey) {
-      return { day: todayKey, counter: 1 };
-    }
-    const next = current.counter >= 999 ? 1 : current.counter + 1;
-    return { day: todayKey, counter: next };
-  });
-  const counter = txResult.snapshot.val()?.counter ?? 1;
-  return "R" + String(counter).padStart(3, "0");
-}
+// getNextRefillNumber now lives beside getNextOrderNumber in
+// utils/orderCounter.js (same transaction, unchanged for Marathon PE / Trophy:
+// /refillCounter, "R001"). A shop with its own number prefix draws from its own
+// counter and gets "RP001" — see utils/orderNumbering.js.
 
 // ─── HUB 2 DISPATCH HOLD ──────────────────────────────────────────────────────
 // Hub 2 fulfils shop orders that physically TRAVEL to the shop, so telling the
@@ -2246,7 +2317,9 @@ const HUB2_DISPATCH_HOLD_MS = 6 * 60 * 1000;
 // Add "hub3"/"hubC" here (one line) if Pine / clothing-customer parcels also ride
 // the van. The server sweep is hub-agnostic (it keys off notifyReadyAt), so this
 // set is the ONLY place that decides which hubs are held.
-const HELD_DISPATCH_HUBS = new Set(["hub2"]);
+// Sections: the per-hub answer now lives in utils/sectionRouting.js
+// (dispatchHoldMs) — Hub 2 only, exactly as this set was.
+const HELD_DISPATCH_HUBS = { has: (hub) => dispatchHoldMs(hub) > 0 };
 
 // Customer-facing view of an order under the Hub 2 dispatch hold. Only Hub 2
 // "Ready" orders carry notifyReadyAt (written by updateStatus), so this no-ops for
@@ -2928,6 +3001,16 @@ const RoleIcons = {
       <path d="M20 11V7h-4"/>
     </svg>
   ),
+  network: (
+    // One node feeding two branches: Central above, a section on each side.
+    <svg viewBox="0 0 24 24" width="30" height="30" stroke="#4A7FFF" fill="none" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="9" y="2.5" width="6" height="5" rx="1"/>
+      <rect x="2.5" y="16.5" width="6" height="5" rx="1"/>
+      <rect x="15.5" y="16.5" width="6" height="5" rx="1"/>
+      <path d="M12 7.5V12"/>
+      <path d="M5.5 16.5V12h13v4.5"/>
+    </svg>
+  ),
   mirror_fleet: (
     // lucide-style "tablet + arrow down": a device with a copy coming into it.
     // Deliberately NOT a cloud — the point of this screen is the devices, not
@@ -3408,6 +3491,11 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // the card's own check are the others, and the RTDB rules on
       // /mirror_devices and /mirror_switch are what actually enforce it.
       isSuperAdmin && { key:"mirror_fleet", icon:RoleIcons.mirror_fleet, name:"Mirror Fleet", desc:"Every device's offline copy, and the kill switch", onClick:()=>(window.location.hash = "#admin/mirror") },
+      // Network — sections, the per-location live switches, Concrete's back
+      // stock and the credit scope. Super-admin ONLY. GATE 1 of 3; the route
+      // gate and the card's own check are the others, and the RTDB rule on
+      // /network is what actually refuses the write.
+      isSuperAdmin && { key:"network", icon:RoleIcons.network, name:"Network", desc:"Sections · which locations are live · Concrete's back stock · credit scope", onClick:()=>(window.location.hash = "#admin/network") },
       // Device codes — the 4-digit code every phone on MC's login needs
       // (src/device/enrolment.js). Junid, or an enrolled device whose person may
       // make codes (MC). GATE 1 of 3; the route below and the deviceEnrolmentAdmin
@@ -7989,7 +8077,8 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Hubs</div>
       <div style={card}>
-        {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3 — Pine"]].map(([val, label], i) => {
+        {/* Sections: every hub in the network registry (Hub 3 serves Pine and Concrete; the Concrete Stockroom is one too). */}
+        {warehouseHubGroups(currentNetwork()).flatMap((g) => g.items).filter((h) => h.id !== TRIAL_HUB).map(({ id: val, label }, i) => {
           const disabled = isClothing && val === "hub1";
           const on       = productHubs.includes(val) && !disabled;
           const isLast   = i === 2;
@@ -8307,7 +8396,7 @@ function ShopStockPanel({ products }) {
   const [open, setOpen] = useState(false);
   const registry = useLocations();
   const shops = sellableLocations(registry);   // marathon-pe, trophy, marathon-pine
-  const [shopId, setShopId] = useState(() => shops[0]?.id || "marathon-pe");
+  const [shopId, setShopId] = useState(() => shops[0]?.id || shopIdsOf()[0]);
   useEffect(() => {
     if (shops.length && !shops.some(s => s.id === shopId)) setShopId(shops[0].id);
   }, [shops, shopId]);
@@ -9484,9 +9573,13 @@ function AssistantView({ products, onExit, orders = [] }) {
   // user can only place/act on their store. Falls back to the older central/pine
   // storeIds gating when no destShop is set (warehouse/admin/unassigned).
   const myShop = stockPermRecord?.destShop || null;
+  // Sections: the viewer's sections narrow the picker too (a Section 1 account
+  // is never offered Marathon PE), and `sectionNet` is the registry every hub
+  // question below is asked of.
+  const { canSee: canSeeLoc, registry: sectionNet } = useMySections();
   const availableShops = myShop
     ? allShops.filter(s => s.id === myShop)
-    : allShops.filter(s => allowedStores.includes(shopUniverse(s.id)));
+    : allShops.filter(s => allowedStores.includes(shopUniverse(s.id, sectionNet)) && canSeeLoc(s.id));
   const noStoreAccess = availableShops.length === 0;
   const singleShop    = availableShops.length === 1;
   useEffect(() => {
@@ -9502,14 +9595,22 @@ function AssistantView({ products, onExit, orders = [] }) {
     : (availableShops[0]?.id || selectedShop);
   // Routing universe derived from the chosen shop. THIS keeps every downstream
   // consumer keyed on central/pine unchanged.
-  const effectiveStoreMode = shopUniverse(effectiveShop);
+  const effectiveStoreMode = shopUniverse(effectiveShop, sectionNet);
+  // Is this shop one of the Section 2 pair (Marathon PE / Trophy)? This is the
+  // question `effectiveStoreMode === "pine"` used to ask in the negative: with
+  // Concrete, "not Pine" no longer means "central", so the Hub 1 / Hub 2
+  // subscriptions and the display slots key on this instead.
+  const onSection2Hubs = usesSection2Hubs(sectionNet, effectiveShop);
   // Live per-size availability at the SERVING CR hub (hub2 for PE/Trophy,
   // hub3 for Pine — CR_HUB_BY_UNIVERSE). Drives the clothing size grey-out:
   // a size the hub shows zero of can't be added (tap → inline "not available"
   // note), so staff learn on the spot instead of ordering into nothing. Live
   // RTDB subscription — one hub subtree only; /stock is readable by any
   // signed-in (non-anonymous) staff account, no stockRole needed for reads.
-  const servingHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
+  // Marathon PE / Trophy: the literal map, as ever. Any other shop: its default
+  // back-stock hub in the registry (Pine and Concrete → Hub 3). A shop with no
+  // hub subscribes to nothing — NEVER null, which would stream all of /stock.
+  const servingHub = servingHubFor(sectionNet, effectiveShop, CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2") || "__off__";
   const servingHubCells = useStockCells(servingHub);   // { pid: { size: cell } }
   // ONE DEFINITION OF "AVAILABLE" (2026-09-05). The zero-test below used to be
   // its own `Number(qty) || 0`; it now runs through availabilityCore's
@@ -9550,7 +9651,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // there), so they skip the subscription entirely — no ~474 KB stream that
   // can never gate anything. A null location leaves settled=false, which the
   // gate already reads as "no ✕".
-  const hub1CellsState = useStockCellsState(effectiveStoreMode === "pine" ? null : "hub1");
+  const hub1CellsState = useStockCellsState(!onSection2Hubs ? null : "hub1");
   // ── HUB 2 SNEAKER AVAILABILITY (2026-09-05) ───────────────────────────────
   // The gap this closes: Hub 1 sneakers got the ✕ in August and Hub 2 clothing
   // has had its own since long before, but a HUB 2 SNEAKER — a shoe whose
@@ -9565,7 +9666,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // tree, so this hook re-reads the cache, not the network. Pine skips it for
   // the same reason it skips hub1: computeHubForItem returns hub3 there, so
   // the gate could never fire and the stream would be pure cost.
-  const hub2CellsState = useStockCellsState(effectiveStoreMode === "pine" ? null : "hub2");
+  const hub2CellsState = useStockCellsState(!onSection2Hubs ? null : "hub2");
   const productsById = useMemo(() => {
     const m = {};
     for (const p of products || []) if (p?.id) m[p.id] = p;
@@ -9619,7 +9720,7 @@ function AssistantView({ products, onExit, orders = [] }) {
   // The live display slots — one ~60 KB listener (the marker cannot be
   // derived from stock cells; cost stated in useDisplaySlots). Skipped on
   // Pine, like the hub1 stock subscription above.
-  const displaySlotsState = useDisplaySlotsState(effectiveStoreMode !== "pine");
+  const displaySlotsState = useDisplaySlotsState(onSection2Hubs);
   const displaySlots = displaySlotsState.value;
   // THE DISPLAY REGISTER USED TO JOIN HERE AS A SECOND SOURCE AND IT WAS THE
   // BUG. That node is write-only-upward history keyed pid__sizeKey (its one
@@ -9913,8 +10014,11 @@ function AssistantView({ products, onExit, orders = [] }) {
   const base = useMemo(
     () => assistantCatalogue({
       products, wantsClothing, storeMode: effectiveStoreMode, showDeactivated, isDeactivated,
+      // Marathon PE / Trophy: null → the hub1/hub2 tag rule, unchanged. Any
+      // other shop: the hubs the registry says hold ITS back stock.
+      servedHubs: onSection2Hubs ? null : backStockHubsOf(sectionNet, effectiveShop),
     }),
-    [products, wantsClothing, effectiveStoreMode, showDeactivated]);
+    [products, wantsClothing, effectiveStoreMode, showDeactivated, onSection2Hubs, sectionNet, effectiveShop]);
 
   // `browse` is what the GRID renders with no query. For every strict store it
   // is already identical to `base` (the gate above removed them); for an EXEMPT
@@ -9988,7 +10092,9 @@ function AssistantView({ products, onExit, orders = [] }) {
   // Compute the hub an order placed right now should land in. Single source
   // of truth used for both `hub` (legacy field) and `placedAtHub` (Phase 14B).
   const computeHubForItem = (item) => {
-    if (effectiveStoreMode === "pine") return "hub3";
+    // Not Marathon PE / Trophy: the shop's back-stock hub for this product,
+    // from the registry — Pine → Hub 3; Concrete → Hub 3 or its Stockroom.
+    if (!onSection2Hubs) return placementHub(sectionNet, effectiveShop, item.product, () => null);
     // Display (partner) requests route to the hub where the PRODUCT actually
     // lives — not a forced global default. (Previously partner requests always
     // returned "hub1"; now they resolve to the product's own hub like every
@@ -10561,9 +10667,11 @@ function AssistantView({ products, onExit, orders = [] }) {
   // line itself so no index can drift out of step with it. A line the walk
   // skipped (a classic partner request, an ungated shoe) falls back to the tag
   // router, exactly as it did before any of this.
+  // Sections: Marathon PE and Trophy keep exactly that computation; every
+  // other shop's hub comes from the back-stock mapping (placementHub).
   const placedHubFor = (item) => (item.productType === "clothing"
-    ? (CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
-    : (cartAllocation.hubOf.get(item) || computeHubForItem(item)));
+    ? placementHub(sectionNet, effectiveShop, item.product, () => CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2")
+    : placementHub(sectionNet, effectiveShop, item.product, () => (cartAllocation.hubOf.get(item) || computeHubForItem(item))));
   // Which customer lines draw a unit off a hub shelf, and so must pass the
   // submit-time stock guard (orderSubmitGuard.js):
   //   • clothing customer lines, and footwear (isFootwearProduct) lines;
@@ -10780,7 +10888,6 @@ function AssistantView({ products, onExit, orders = [] }) {
           setCart(prev => prev.filter(it => it !== item));
           continue;
         }
-        const orderNum = await getNextOrderNumber();
         // Customer clothing orders route to the universe's CR hub (hub2 for
         // PE/Trophy, hub3 for Pine — CR_HUB_BY_UNIVERSE), where the clothing
         // stock actually lives. Unlike the retired hubC trial (not a stock
@@ -10823,6 +10930,15 @@ function AssistantView({ products, onExit, orders = [] }) {
         // submit-time stock guard above, so the cell the guard checked is the
         // cell the order is booked against.
         const placedHub = placedHubFor(item);
+        // THE WALL. An order whose hub and shop are on opposite sides (or that
+        // has no hub at all) is refused BEFORE a number is drawn or anything is
+        // written — dispatch could never send it. Placed by hand, so the shop
+        // need not be live.
+        const wall = orderPlacementCheck(sectionNet, { hub: placedHub, destShop: effectiveShop });
+        if (!wall.ok) throw new Error(wall.message);
+        // The shop's own sequence when it has one (Pine "P001"); the shared
+        // 001–999 for Marathon PE / Trophy, unchanged.
+        const orderNum = await getNextOrderNumber(effectiveShop);
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -10854,6 +10970,9 @@ function AssistantView({ products, onExit, orders = [] }) {
           // The physical shop the order is for (marathon-pe / trophy / marathon-pine).
           // Drives the warehouse→shop stock transfer recorded on dispatch.
           destShop: effectiveShop,
+          // The shop's section, stamped on NEW orders only. An order without
+          // it is read as "derive from destShop" (utils/sectionRouting.js).
+          section: sectionStamp(sectionNet, effectiveShop),
           requestDisplay: item.requestDisplay || false,
           requestDisplayPartner: item.requestDisplayPartner || false,
           // Display-pair PULL (2026-08-26): the pair to send IS the display
@@ -11010,13 +11129,23 @@ function AssistantView({ products, onExit, orders = [] }) {
       // must not consume the sneaker sequence one-per-size. Each line still needs
       // its own /orders node (per-size CR fulfilment + insights key off it), so
       // the line id is R{n}-{i} — a unique node key under the single cart number.
-      const refillNum = await getNextRefillNumber();
+      // CR routing: Marathon PE / Trophy → hub2 (the one map, as ever); any
+      // other shop → the registry's back-stock hub for that product. THE WALL
+      // is checked for every line BEFORE the cart's number is drawn, so a
+      // refused cart writes nothing and burns no number.
+      const refillHubFor = (item) => placementHub(sectionNet, effectiveShop, item.product, () => CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2");
+      for (const item of clothingCart) {
+        const wall = orderPlacementCheck(sectionNet, { hub: refillHubFor(item), destShop: effectiveShop });
+        if (!wall.ok) throw new Error(wall.message);
+      }
+      // The shop's own refill sequence when it has one ("RP001"); the shared
+      // /refillCounter for Marathon PE / Trophy, unchanged.
+      const refillNum = await getNextRefillNumber(effectiveShop);
       let lineIdx = 0;
       for (const item of clothingCart) {
         lineIdx += 1;
         const orderNum = `${refillNum}-${lineIdx}`;
-        // CR routing is THE one map: Pine → hub3, Central (PE/Trophy) → hub2.
-        const placedHub = CR_HUB_BY_UNIVERSE[effectiveStoreMode] || "hub2";
+        const placedHub = refillHubFor(item);
         const order = {
           id: orderNum,
           productId: item.product.id,
@@ -11034,6 +11163,8 @@ function AssistantView({ products, onExit, orders = [] }) {
           // Physical shop this refill is for — drives the warehouse→shop transfer
           // recorded on dispatch.
           destShop: effectiveShop,
+          // The shop's section — new records only; see placeOrders.
+          section: sectionStamp(sectionNet, effectiveShop),
           productType: "clothing",
           requestDisplay: false,
           requestDisplayPartner: false,
@@ -12029,7 +12160,14 @@ function WarehouseView({ products = [], orders, onExit }) {
   const displayRows = displayRowsState.value;
   const [filter, setFilter] = useState("incoming");
   const [onHoldExpanded, setOnHoldExpanded] = useState(false);
-  const [selectedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
+  // THE HUB THIS DEVICE WORKS AS is whatever localStorage.warehouseHub says —
+  // staff pick it, and a push deep link can write it. It is only HONOURED when
+  // it is a hub this viewer's sections allow: anything else (the other
+  // section's hub, a stale or made-up id) reads as "no hub picked" and the
+  // picker below, which only offers allowed hubs, is shown instead.
+  const { canSee: canSeeHub, registry: whNet } = useMySections();
+  const [storedHub, setSelectedHub] = useState(() => localStorage.getItem("warehouseHub") || null);
+  const selectedHub = hubAllowedForViewer(whNet, canSeeHub, storedHub) ? storedHub : null;
   // Phase 12C/14B: clamp mainTab when the user switches hubs and the previously
   // selected tab no longer exists for the new hub (CR Orders on the CR hubs,
   // hub2+hub3). Fall back to Order Queue. NOTE: must come AFTER selectedHub's
@@ -12040,7 +12178,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     // restock now. Clamp any persisted "restock" selection back to the queue.
     if (mainTab === "restock") setMainTab("queue");
     // CR Orders exists on every CR hub (hub2 + hub3, from CR_HUBS); clamp the rest.
-    if (!CR_HUBS.includes(selectedHub) && mainTab === "clothing") setMainTab("queue");
+    if (!crHubsNow().includes(selectedHub) && mainTab === "clothing") setMainTab("queue");
     // Trial: hubC has only the Order Queue tab — clamp anything else back.
     if (selectedHub === "hubC" && mainTab !== "queue") setMainTab("queue");
     // Phase 15: the Depleted tab was removed from the warehouse (moved to the
@@ -12051,9 +12189,11 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Phase 14B: hub3 filters by placedAtHub (the source of truth for the Pine
   // universe); hub1/hub2 still use the legacy order.hub field for back-compat.
   // Trial: hubC (customer clothing) also filters by placedAtHub.
-  const orderInHub = (o, h) => (h === "hub3" || h === "hubC")
-    ? o.placedAtHub === h
-    : (o.hub || "hub1") === h;
+  // Sections: the same split, asked of the registry (utils/sectionRouting.js) —
+  // Hub 1 / Hub 2 by the legacy field, every other hub (Hub 3, the Concrete
+  // Stockroom, hubC) by placedAtHub. A hub-less order defaults to Hub 1 only
+  // when it is Marathon PE's / Trophy's, or names no shop at all.
+  const orderInHub = (o, h) => orderIsAtHub(whNet, o, h);
 
   const selectHub = (hub) => {
     localStorage.setItem("warehouseHub", hub);
@@ -12283,7 +12423,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       // Each CR hub sees ONLY its own requests: PE/Trophy CRs land on hub2,
       // Pine CRs on hub3 (placedAtHub, written by placeRefillRequests via
       // CR_HUB_BY_UNIVERSE; o.hub fallback covers legacy hub2-era orders).
-      if ((o.placedAtHub || o.hub || "hub2") !== selectedHub) return;
+      if (hubOfRecord(whNet, o, "hub2") !== selectedHub) return;
       // This byKey layer is PER REQUEST (product, store, createdAt) — it is
       // what History records and what resolution rolls up over. The OPEN queue
       // is then merged down to one card per (product, store) by
@@ -12326,7 +12466,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         refilledUncountedQty: o.clothingRefilledUncountedQty ?? null, // portion added to shop from nothing
         refilledAt: o.clothingRefilledAt || null,
         outOfStockAt: o.clothingOutOfStockAt || null,
-        placedAtHub: o.placedAtHub || o.hub || "hub2",
+        placedAtHub: hubOfRecord(whNet, o, "hub2"),
         gen: o.clothingRefillGen || 0,                // fulfil generation — keys idempotent movementIds
         uncounted: !!o.clothingUncounted,             // fulfilled via the uncounted override (no source deduction)
         // Locked split for a partially-attempted line: reused verbatim on retry so the
@@ -12380,7 +12520,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Subscribe to THIS hub's stock only when it's a CR hub (hub2/hub3) — the CR
   // tab fulfils from the selected hub's own cells. "__off__" resolves to an
   // empty node elsewhere, so hub1/hubC devices don't stream a stock subtree.
-  const crHubCells = useStockCells(CR_HUBS.includes(selectedHub) ? selectedHub : "__off__"); // { pid: { size: cell } }
+  const crHubCells = useStockCells(crHubsNow().includes(selectedHub) ? selectedHub : "__off__"); // { pid: { size: cell } }
   const [crPhoto, setCrPhoto] = useState(null);
   // Desktop workspace gate (≥1024px). Mobile keeps the existing single-column
   // layout below; wide screens get a left rail of queues + a titled main pane.
@@ -12392,8 +12532,13 @@ function WarehouseView({ products = [], orders, onExit }) {
       <div style={{ minHeight:"100vh", background:BG, color:"#fff", fontFamily:FONT, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", padding:"2rem" }}>
         <div style={{ fontWeight:"800", fontSize:"1.5rem", letterSpacing:"0.06em", marginBottom:"0.5rem", color:"#fff" }}>WAREHOUSE</div>
         <p style={{ color:"#555", marginBottom:"2.5rem", fontSize:"0.9rem" }}>Select your hub to continue</p>
+        {/* Sections: the hubs come from the network registry, grouped by section
+            and limited to the sections this viewer may work in. */}
+        {warehouseHubGroups(whNet, canSeeHub).map((group, gi, groups) => (
+        <div key={group.section} style={{ width:"100%", maxWidth:"520px", marginBottom:"1.25rem" }}>
+        {groups.length > 1 && <div style={{ color:"#555", fontSize:"0.8rem", fontWeight:700, letterSpacing:"0.08em", textTransform:"uppercase", marginBottom:"0.5rem" }}>{group.name}</div>}
         <div style={{ display:"flex", gap:"1rem", width:"100%", maxWidth:"520px" }}>
-          {[["hub1","Hub 1"],["hub2","Hub 2"],["hub3","Hub 3"],["hubC","Hub C"]].map(([val, label]) => (
+          {group.items.map(({ id: val, label }) => (
             <button key={val} onClick={() => selectHub(val)}
               style={{ flex:1, background:CARD, border:BORDER, borderRadius:RADIUS, padding:"2.2rem 0.75rem", cursor:"pointer", color:"#fff", textAlign:"center", boxShadow:GLOW, transition:"border-color 0.15s" }}
               onMouseEnter={e => { e.currentTarget.style.borderColor=`rgba(60,110,255,.5)`; }}
@@ -12403,6 +12548,8 @@ function WarehouseView({ products = [], orders, onExit }) {
             </button>
           ))}
         </div>
+        </div>
+        ))}
       </div>
     );
   }
@@ -12418,7 +12565,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // behaviour is unchanged, they're just seen with everything else. Matches the
   // TV board's existing orders+laybys merge.
   const hubLaybyOrders = (laybyPulls || [])
-    .filter(p => p && p.invoiceNo && (p.storageHub || DEFAULT_STORAGE_HUB) === selectedHub)
+    .filter(p => p && p.invoiceNo && storageHubOf(p, whNet) === selectedHub)
     .map(p => {
       const st = p.status || PULL_STATUS.PENDING;
       // PENDING = unactioned work: bucket it as current-day so the queue's 3-day
@@ -12469,7 +12616,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     // through the profiler captures. The stamps/ history names the phone too,
     // but these two fields are what a person or the engine reads.
     if (status === STATUS.OUT_OF_STOCK) {
-      const rej = countReject({ kind: "order", ref: order.id, hub: order.placedAtHub || order.hub || "hub1", productId: order.productId, size: order.size });
+      const rej = countReject({ kind: "order", ref: order.id, hub: hubOfRecord(whNet, order, "hub1"), productId: order.productId, size: order.size });
       patch.outOfStockByUid = rej.uid;
       patch.outOfStockDeviceId = rej.deviceId;
     }
@@ -12483,7 +12630,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       if (slotStore) {
         setDisplaySlot({
           store: slotStore, productId: order.productId, productName: order.productName || "",
-          size: String(order.size), bookedHub: order.placedAtHub || order.hub || "hub1",
+          size: String(order.size), bookedHub: hubOfRecord(whNet, order, "hub1"),
           // `now` is the instant stamped on outOfStockAt in the same patch, so
           // the write and displayPairCore's replay of this reinstate agree.
           source: "manual", orderId: order.id, at: now,
@@ -12496,7 +12643,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     // WhatsApp when due). The flag is written on EVERY transition — true only for a
     // Hub 2 Ready, false otherwise — so a revert / OOS / collected clears it and a
     // held send can never fire late. Non-hub2 Ready keeps the instant path below.
-    const isHeldReady = status === STATUS.READY && HELD_DISPATCH_HUBS.has(order.placedAtHub || order.hub || "hub1");
+    const isHeldReady = status === STATUS.READY && HELD_DISPATCH_HUBS.has(hubOfRecord(whNet, order, "hub1"));
     patch.readyNotifyPending = isHeldReady;
     // Write the reveal instant for a held Ready; clear any stale one otherwise so a
     // later non-held transition can never be wrongly held by a leftover notifyReadyAt.
@@ -12640,7 +12787,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       customerPhone: order.customerPhone,
       orderNumber: order.id,
       action: insightAction,
-      placedAtHub: order.placedAtHub || order.hub || "hub1",
+      placedAtHub: hubOfRecord(currentNetwork(), order, "hub1"),
       destShop: order.destShop ?? null,
       // A "tomorrow" event that raised a refill request carries the id, so the
       // durable log can also suppress the held card after the daily order-number
@@ -12815,7 +12962,7 @@ function WarehouseView({ products = [], orders, onExit }) {
     const fromHub = order.placedAtHub || order.hub;
     // hubC (clothing-customer trials) isn't a stock location — only real hub→shop
     // sends are recorded.
-    const VALID_HUBS = ["hub1", "hub2", "hub3"];
+    const VALID_HUBS = stockHubIds(whNet);
     if (!toShop || !VALID_HUBS.includes(fromHub)) {
       // No recordable hub→shop transfer → no stock moved → no label.
       setPrintToast({ kind: "err", text: `Sent — no hub→shop transfer recorded for #${order.id}. No label — route via Lightspeed.` });
@@ -13181,7 +13328,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Pull requests now live in the MAIN queue, so this tab's badge = parcels
   // awaiting scan-in (Receiving) for this hub — the tab's remaining job.
   // Missing-in-transit exceptions get the louder banner above the tabs.
-  const laybyHubOf = (x) => x?.storageHub || DEFAULT_STORAGE_HUB;
+  const laybyHubOf = (x) => storageHubOf(x, whNet);
   const laybyBadge = laybys.filter(l =>
     laybyHubOf(l) === selectedHub && (l.status || LAYBY_STATUS.IN_TRANSIT) === LAYBY_STATUS.IN_TRANSIT
   ).length;
@@ -13223,7 +13370,7 @@ function WarehouseView({ products = [], orders, onExit }) {
             if (qty <= 0) { errors.push(`${formatSize(it.size)}: request was resized to 0 — refresh`); fail++; continue; }
           } catch { /* offline read — proceed with entered qty; movement idempotency still guards */ }
         }
-        const from = it.placedAtHub || "hub2";
+        const from = it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2");
         // SILENT SPLIT: whatever the hub has COUNTED for this size goes as a real
         // hub→shop transfer (deducts the hub); any OVERAGE is booked as an uncounted
         // add to the shop (received — +shop, no deduction, the units weren't in the
@@ -13265,7 +13412,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           // whose source just emptied as withdrawable, and a fire-and-forget
           // write here widens that race for no benefit.
           await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
-          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null });
+          logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2"), destShop: batch.destShop ?? null });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
           // Nothing moved at the hub → leave pending for an idempotent re-tap, and LOCK
@@ -13283,9 +13430,9 @@ function WarehouseView({ products = [], orders, onExit }) {
         // alone cannot say — accounts are shared. The scan copies it onto the
         // request it closes, so the write-off names the phone as well.
         ok++;
-        const rej = countReject({ kind: "clothing", ref: it.orderId, hub: it.placedAtHub || "hub2", productId: batch.productId, size: it.size });
+        const rej = countReject({ kind: "clothing", ref: it.orderId, hub: it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2"), productId: batch.productId, size: it.size });
         updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingOutOfStockDeviceId: rej.deviceId, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
-        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || "hub2", destShop: batch.destShop ?? null, byUid: rej.uid, deviceId: rej.deviceId });
+        logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2"), destShop: batch.destShop ?? null, byUid: rej.uid, deviceId: rej.deviceId });
       }
       // qty 0 & not rejected → left pending for a later pass.
     }
@@ -13317,7 +13464,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
         let legFail = null;
         if (countedQ > 0) {
-          const r = await runCRLeg(() => reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: countedQ, hub: it.placedAtHub || "hub2", orderId: it.orderId, createdAt: crLineCreatedAt(it, batch), gen: it.gen, actorRole: crActorRole }));
+          const r = await runCRLeg(() => reverseCRRefill({ store: batch.destShop, productId: batch.productId, size: it.size, qty: countedQ, hub: it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2"), orderId: it.orderId, createdAt: crLineCreatedAt(it, batch), gen: it.gen, actorRole: crActorRole }));
           if (!r.ok) legFail = r;
         }
         if (uncountedQ > 0 && !legFail) {
@@ -13363,9 +13510,7 @@ function WarehouseView({ products = [], orders, onExit }) {
   // Tab set for the active hub — shared by the mobile strip and the desktop rail.
   const tabDefs = (selectedHub === "hubC"
     ? [["queue", "Order Queue", null]]
-    : selectedHub === "hub2"
-    ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
-    : selectedHub === "hub3"
+    : crHubsNow().includes(selectedHub)   // Hub 2, Hub 3, the Concrete Stockroom — every hub that is not sneakers-only
     ? [["queue","Order Queue",null],["clothing","CR Orders",clothingBadge],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]
     : [["queue","Order Queue",null],["refills","Display Refills",refillsBadge],["layby","Layby",laybyBadge]]);
 
@@ -13599,7 +13744,7 @@ function WarehouseView({ products = [], orders, onExit }) {
                     // only in the prompt; ONLY the explicit Confirm commits.
                     const flow = sendFlows[sendFlowKey(order)] || sendFlowInit();
                     const d = (action) => sendFlowDispatch(order, action);
-                    const hubLabel = ({ hub1:"Hub 1", hub2:"Hub 2", hub3:"Hub 3" })[order.placedAtHub || order.hub] || selectedHub || "the hub";
+                    const hubLabel = HUB_LABELS[order.placedAtHub || order.hub] || selectedHub || "the hub";
                     const commitFlow = async () => {
                       const done = sendFlowReduce(flow, { type: "CONFIRM" });
                       d({ type: "CONFIRM" });
@@ -13766,6 +13911,7 @@ function WarehouseView({ products = [], orders, onExit }) {
       {mainTab === "clothing" && (
         <div style={{ padding:"0 13px" }}>
           <ClothingRefillsTab
+            shops={shopsOfHub(whNet, selectedHub)}
             activeBatches={clothingActiveBatches}
             completedBatches={clothingCompletedBatches}
             onFulfill={fulfillCRBatch}
@@ -14591,7 +14737,7 @@ function UndoCRButton({ batch, onUndo }) {
   );
 }
 
-function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products, focusOrderKey = null }) {
+function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo, hubCells, hubLabel, canFulfil, onViewPhoto, products, focusOrderKey = null, shops = ["marathon-pe", "trophy"] }) {
   // Accordion — one request expanded at a time so the whole queue stays scannable.
   const [openKey, setOpenKey] = useState(null);
   // Open = the working queue (only unresolved requests); History = resolved ones
@@ -14626,7 +14772,7 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
       </div>
       {/* Store pills — Marathon PE / Trophy refills never mix */}
       <div style={{ display:"flex", gap:6 }}>
-        {[["all", "All stores"], ["marathon-pe", "Marathon PE"], ["trophy", "Trophy"]].map(([val, label]) => (
+        {[["all", "All stores"], ...shops.map((s) => [s, SHOP_LABELS[s] || s])].map(([val, label]) => (
           <button key={val} onClick={() => setStoreFilter(val)} style={pill(storeFilter === val)}>
             {label}{val !== "all" && storeCount(activeBatches, val) ? ` (${storeCount(activeBatches, val)})` : ""}
           </button>
@@ -14710,7 +14856,10 @@ function ClothingRefillsTab({ activeBatches, completedBatches, onFulfill, onUndo
 // the Pine universe for legacy orders that only carry placedAtHub.
 function orderShopLabel(o) {
   if (o?.destShop && SHOP_LABELS[o.destShop]) return SHOP_LABELS[o.destShop];
-  if (o?.placedAtHub === "hub3") return "Pine";
+  // Hub 3 serves Pine AND Concrete now, so the hub no longer names the shop.
+  // Only an order with NO destShop — one from before orders carried it, when
+  // Hub 3 was Pine's alone — is still read off its hub.
+  if (!o?.destShop && o?.placedAtHub === "hub3") return SHOP_LABELS["marathon-pine"] || "Pine";
   return null;
 }
 // "2h ago" / "just now" relative time (recomputed on render).
@@ -14754,7 +14903,9 @@ function CustomerView({ orders, onExit }) {
     const raw = (idOverride ?? orderId).toString();
     const clean = raw.trim().replace(/^#/, "");
     if (!clean) return;
-    const o = heldOrders.find(o => o.id === clean.padStart(3, "0") || o.id === clean);
+    // orderKeyFromInput also reads a prefixed number ("p7" → "P007") — a Pine or
+    // Concrete order's own sequence. "7" → "007" exactly as before.
+    const o = heldOrders.find(o => o.id === clean.padStart(3, "0") || o.id === clean || o.id === orderKeyFromInput(clean));
     setOrderId(clean);
     setFound(o || null);
     setSearched(true);
@@ -14961,8 +15112,12 @@ function CustomerView({ orders, onExit }) {
       {/* Search */}
       {!found && (
         <div style={{ maxWidth: isWide ? 460 : "100%" }}>
-          <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.replace(/[^0-9]/g, ""))}
-                 onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4} inputMode="numeric"
+          <input placeholder="000" value={orderId} onChange={e => setOrderId(e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "").replace(/^([A-Z]{0,3})(.*)$/, (_m, p, rest) => p + rest.replace(/[^0-9]/g, "")))}
+                 onKeyDown={e => e.key === "Enter" && doSearch()} maxLength={4}
+                 // The digit keypad, as always — unless a store's own sequence is in
+                 // use (an order key like "P007" is on the board), when the customer
+                 // needs the letter too.
+                 inputMode={heldOrders.some(o => /^[A-QS-Z]/.test(String(o?.id ?? ""))) ? "text" : "numeric"}
                  style={{ width: "100%", boxSizing: "border-box", background: "rgba(255,255,255,.04)", border: "1px solid rgba(255,255,255,.12)", borderRadius: 16, padding: "18px", color: "#fff", fontSize: 34, fontWeight: 800, textAlign: "center", letterSpacing: "12px", outline: "none", marginBottom: 10, fontVariantNumeric: "tabular-nums" }} />
           <button onClick={() => doSearch()} className="ot-press"
                   style={{ width: "100%", background: "linear-gradient(180deg, #5A8BFF, #4A7FFF)", color: "#fff", border: "none", borderRadius: 13, padding: 15, fontSize: 14.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT, boxShadow: "0 10px 24px -10px rgba(74,127,255,.8)" }}>
@@ -15864,6 +16019,9 @@ function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, regi
     events.forEach(g => (g.done ? completed : pend).push(g));
     const canFill = (g) => {
       if (!refillFrom) return true;
+      // The section wall: a hub in the other section cannot fill this store.
+      // (The writer refuses the move; the card is not offered it either.)
+      if (!wallAllows(currentNetwork(), refillFrom, g.store)) return false;
       const cells = (allCells && allCells[refillFrom] && allCells[refillFrom][g.productId]) || {};
       return g.sizes.some(s => s.outstanding > 0 && (Number(cells[s.size] && cells[s.size].qty) || 0) > 0);
     };
@@ -15950,7 +16108,13 @@ function ClothingSoldScopePanel({ events, isBacklog, onViewPhoto, allCells, regi
 // put the actionable per-store DAILY lists first; the merged aging "Backlog" is
 // last and secondary. Reads the bounded movements window + products + refills once.
 function ClothingSoldView({ products }) {
-  const [scope, setScope] = usePersistedTab("clothingSold", CLOTHING_SOLD_STORES[0]);
+  // Sections: one tab per shop in the network registry, limited to the shops in
+  // this viewer's sections. A persisted tab for a shop the viewer may not see
+  // falls back to the first one they may.
+  const { canSee: canSeeSold, registry: soldNet } = useMySections();
+  const soldStores = useMemo(() => shopIdsOf(soldNet).filter((s) => canSeeSold(s)), [soldNet, canSeeSold]);
+  const [rawScope, setScope] = usePersistedTab("clothingSold", CLOTHING_SOLD_STORES[0]);
+  const scope = rawScope === "backlog" || soldStores.includes(rawScope) ? rawScope : (soldStores[0] || "backlog");
   const [fullPhoto, setFullPhoto] = useState(null); // GalleryLightbox photos array | null
   const [search, setSearch] = useState("");
 
@@ -15981,10 +16145,17 @@ function ClothingSoldView({ products }) {
   // from it (required, no default). Options = every non-shop location, whether or
   // not it currently holds stock (availability shows per card).
   const [refillFrom, setRefillFrom] = useState("");
+  const { registry: network } = useNetwork();
   const refillSourceOpts = useMemo(
+    // Every non-store location that can fill at least one store: a refill a
+    // person makes by hand works for a location that is not live too (Hub 3 →
+    // Pine, as before sections). Which cards a source can fill is decided per
+    // card by the wall (canFill above), so a hub is never offered a card in
+    // the other section.
     () => transferTargets(registry).filter(l => l.kind !== "store")
+      .filter(l => storesOf(network).some(s => wallAllows(network, l.id, s.id)))
       .map(l => ({ id: l.id, label: labelFor(l.id, registry) })),
-    [registry]
+    [registry, network]
   );
 
   const productsById = useMemo(() => {
@@ -15999,15 +16170,15 @@ function ClothingSoldView({ products }) {
   // all derived inside clothingSoldEventsForPeriod.
   const eventsByScope = useMemo(() => {
     const out = {};
-    CLOTHING_SOLD_STORES.forEach(s => {
+    soldStores.forEach(s => {
       out[s] = clothingSoldEventsForPeriod({ movements, productsById, cutoff: perStoreCutoff, store: s, oos });
     });
     out.backlog = clothingSoldEventsForPeriod({
-      movements, productsById, cutoff: perStoreCutoff, store: null, stores: CLOTHING_SOLD_STORES,
+      movements, productsById, cutoff: perStoreCutoff, store: null, stores: soldStores,
       fromSaDate: backlogWindow.from, toSaDate: backlogWindow.to, oos,
     });
     return out;
-  }, [movements, productsById, perStoreCutoff, backlogWindow.from, backlogWindow.to, oos]);
+  }, [movements, productsById, perStoreCutoff, backlogWindow.from, backlogWindow.to, oos, soldStores]);
 
   const pendingUnits = (evs) => evs.reduce((n, g) => n + (g.done ? 0 : g.total), 0);
 
@@ -16025,7 +16196,7 @@ function ClothingSoldView({ products }) {
 
   // Daily per-store lists first (the crew's actual work), aging Backlog last.
   const SCOPES = [
-    ...CLOTHING_SOLD_STORES.map(s => ({ key: s, label: SHOP_LABELS[s] || s })),
+    ...soldStores.map(s => ({ key: s, label: SHOP_LABELS[s] || s })),
     { key: "backlog", label: "Backlog" },
   ];
 
@@ -16272,7 +16443,21 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // A device may carry a persisted tab key that no longer exists (today /
   // history / onhold, removed 2026-08-08) — normalise it once so both layouts
   // and the content switch agree instead of rendering an empty pane.
-  const tab = SOURCE_TABS.some(([k]) => k === rawTab) ? rawTab : "hub1refill";
+  // SECTIONS. Central supplies both sections, so Source gets a lane for every
+  // hub and shop in the network registry — the four tabs above for Section 2,
+  // unchanged, then Section 1's (Hub 3, Concrete Stockroom, Pine, Concrete) —
+  // limited to the sections this viewer may work in. `sectionTabs` are the
+  // registry-added ones, keyed "loc:{id}": each mounts the same RefillQueue
+  // with dest = that location and no sale rows. Nothing AUTOMATIC fills them
+  // while the location is not live; a person can still work a row by hand.
+  const { canSee: canSeeSrc, registry: srcNet } = useMySections();
+  const sourceTabs = useMemo(() => sourceTabsFor(srcNet, canSeeSrc), [srcNet, canSeeSrc]);
+  const viewTabs = useMemo(() => sourceTabs.map((t) => [t.key, t.label]), [sourceTabs]);
+  const sectionTabLoc = useMemo(
+    () => Object.fromEntries(sourceTabs.filter((t) => t.key.startsWith("loc:")).map((t) => [t.key, t.loc])), [sourceTabs]);
+  const sectionShopLocs = useMemo(
+    () => new Set(sourceTabs.filter((t) => t.key.startsWith("loc:") && t.kind === "shop").map((t) => t.loc)), [sourceTabs]);
+  const tab = viewTabs.some(([k]) => k === rawTab) ? rawTab : viewTabs[0][0];
   // Hub 2's SNEAKERS / CLOTHING toggle. "Clothing" = everything that is not
   // footwear per the isFootwearLine classifier — never a category-name match.
   const [hub2Line, setHub2Line] = useState("sneakers");
@@ -16414,7 +16599,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     // entries used to default INTO hub1 (`|| "hub1"`) — they now surface
     // nowhere, which is the ordered behaviour: nothing reactive at hub1.
     REACTIVE_REFILL_HUBS.forEach((h) => {
-      out[h] = computeRestockCounts((restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h));
+      out[h] = computeRestockCounts((restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || fallbackHub(currentNetwork(), e.destShop, "hub1")) === h));
     });
     return out;
   }, [restockLogToday]);
@@ -16456,7 +16641,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [todayDate]);
   const saleRowsFor = useCallback((h, cellFilter) => {
-    const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
+    const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || fallbackHub(currentNetwork(), e.destShop, "hub1")) === h);
     const rows = pendingSaleRows({
       counts: rawCountsByHub[h],
       responses: allResponses[todayDate] || {},
@@ -16517,7 +16702,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
     const todayResponses = allResponses[todayDate] || {};
 
     REACTIVE_REFILL_HUBS.forEach(h => {
-      const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || "hub1") === h);
+      const hubEntries = (restockLogToday || []).filter((e) => e && (e.hub || e.placedAtHub || fallbackHub(currentNetwork(), e.destShop, "hub1")) === h);
       const counts2 = computeRestockCounts(hubEntries);
       Object.entries(counts2).forEach(([key, product]) => {
         const legacyKey = product.nameKey && product.nameKey !== key ? product.nameKey : null;
@@ -16556,9 +16741,16 @@ function SourceView({ onExit, orders, returnsLog, products }) {
       if (Object.prototype.hasOwnProperty.call(counts, r.requestingLocation) && countsTowardSourceQueue(r, SOURCE_SHOP_LOCS))
         counts[r.requestingLocation] += 1;
     });
+    // The registry-added lanes (Section 1), by the same one predicate: a shop
+    // counts its first-batch legs only, a hub its open requests.
+    const sectionLocs = new Set(Object.values(sectionTabLoc));
+    allRefillRequests.forEach((r) => {
+      if (sectionLocs.has(r.requestingLocation) && countsTowardSourceQueue(r, sectionShopLocs))
+        counts[r.requestingLocation] = (counts[r.requestingLocation] || 0) + 1;
+    });
 
     return counts;
-  }, [restockLogToday, allResponses, todayDate, insightsLog, returnsLog, allRefillRequests]);
+  }, [restockLogToday, allResponses, todayDate, insightsLog, returnsLog, allRefillRequests, sectionTabLoc, sectionShopLocs]);
 
   // DEBUG — paste in browser console to inspect counted vs leaked orders.
   // Removed once you've verified the math is right. Lives in useEffect so it
@@ -16668,6 +16860,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         {tab==="clothing" && hubTabContent("hub2")}
         {/* Shop tabs — first-batch requests from Central (request rows only). */}
         {SOURCE_SHOP_BY_TAB[tab] && <RefillQueue products={products} dest={SOURCE_SHOP_BY_TAB[tab]} fulfilCtx={fulfilCtx} />}
+        {/* Section tabs from the registry (Hub 3, Concrete Stockroom, Pine, Concrete) — request rows only. */}
+        {sectionTabLoc[tab] && <RefillQueue products={products} dest={sectionTabLoc[tab]} fulfilCtx={fulfilCtx} />}
         {/* Refill History (2026-08-07, redone 2026-08-08). Every outcome, both
             hubs and the shops, over a chosen date range. */}
         {tab==="refillhistory" && <RefillHistory products={products} />}
@@ -16677,12 +16871,12 @@ function SourceView({ onExit, orders, returnsLog, products }) {
   // ── DESKTOP WORKSPACE (>=1024px) — left rail of restock queues + main pane. ──
   if (isWide) {
     const activeTab = tab;                       // already normalised above
-    const activeLabel = (SOURCE_TABS.find(([k]) => k === activeTab) || [null, "Hub 1 Refill"])[1];
+    const activeLabel = (viewTabs.find(([k]) => k === activeTab) || [null, "Hub 1 Refill"])[1];
     const totalPending = Object.values(hubBadges).reduce((t, n) => t + (n || 0), 0);
     const navItem = ([key, label]) => {
       const on = activeTab === key;
       // Per-hub pending work (sold cells + stragglers + open requests) on its hub tab.
-      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : 0;
+      const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : sectionTabLoc[key] ? (hubBadges[sectionTabLoc[key]] || 0) : 0;
       return (
         <button key={key} onClick={() => setTab(key)}
           style={{ display:"flex", alignItems:"center", gap:11, width:"100%", textAlign:"left", cursor:"pointer", fontFamily:FONT, fontSize:13, fontWeight:600, borderRadius:10, padding:"9px 11px",
@@ -16706,7 +16900,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
           </div>
           <button onClick={onExit} style={{ display:"flex", alignItems:"center", gap:8, background:"rgba(255,255,255,.04)", border:"1px solid rgba(255,255,255,.08)", color:"rgba(233,238,255,.6)", borderRadius:10, padding:"9px 12px", fontSize:12.5, fontWeight:600, cursor:"pointer", fontFamily:FONT, marginBottom:8 }}>&larr; Exit</button>
           <div style={{ fontSize:9, letterSpacing:".2em", textTransform:"uppercase", color:"rgba(233,238,255,.3)", padding:"6px 9px", fontWeight:700 }}>Restock</div>
-          {SOURCE_TABS.map(navItem)}
+          {viewTabs.map(navItem)}
           <div style={{ flex:1 }} />
           <div style={{ display:"flex", gap:8 }}>
             <div style={{ flex:1, background:"rgba(255,255,255,.022)", border:"1px solid rgba(255,255,255,.08)", borderRadius:11, padding:"9px 10px" }}>
@@ -16756,8 +16950,8 @@ function SourceView({ onExit, orders, returnsLog, products }) {
             six tabs the labels compress and "Refill History" wraps on a 430px
             phone instead of the strip scrolling. Adding the sixth tab is what
             made this reachable. (CodeRabbit, PR #332.) */}
-        {SOURCE_TABS.map(([key, label]) => {
-          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : 0;
+        {viewTabs.map(([key, label]) => {
+          const badge = key === "hub1refill" ? (hubBadges.hub1 || 0) : key === "clothing" ? (hubBadges.hub2 || 0) : SOURCE_SHOP_BY_TAB[key] ? (hubBadges[SOURCE_SHOP_BY_TAB[key]] || 0) : sectionTabLoc[key] ? (hubBadges[sectionTabLoc[key]] || 0) : 0;
           return (
             <div key={key} onClick={() => setTab(key)}
                  style={{ flex:"0 0 auto", whiteSpace:"nowrap", padding:"10px 11px", fontSize:12, fontWeight:600, textAlign:"center", cursor:"pointer", borderBottom:"2px solid " + (tab===key ? "#4A7FFF" : "transparent"), color: tab===key ? "#4A7FFF" : "rgba(255,255,255,.35)" }}>
@@ -16915,7 +17109,7 @@ function ReturnsView({ orders, products = [], onExit }) {
       size:        order.size,
       customerName:order.customerName,
       reason:      null,
-      placedAtHub: order.placedAtHub || order.hub || "hub1",
+      placedAtHub: hubOfRecord(currentNetwork(), order, "hub1"),
       destShop: order.destShop ?? null,
       ledgered,
       ledgerNote,
@@ -18145,7 +18339,12 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
     return `${months}mo ago`;
   };
 
-  const hubLabel = (h) => h === "hub1" ? "Hub 1" : h === "hub2" ? "Hub 2" : h;
+  const hubLabel = (h) => HUB_LABELS[h] || h;
+  // Sections: the hub pills are the registry's hubs in this viewer's sections
+  // (Hub 1, Hub 2 for a Section 2 account, as before).
+  const { canSee: canSeeDepleted, registry: depletedNet } = useMySections();
+  const depletedHubOpts = [["all", "All"], ...warehouseHubGroups(depletedNet, canSeeDepleted)
+    .flatMap((g) => g.items).filter((h) => h.id !== TRIAL_HUB).map((h) => [h.id, h.label])];
   const totalEvents = events.length;
   const distinctSkus = rows.length;
 
@@ -18162,7 +18361,7 @@ function InsightStockDepletedTab({ orders, log, productPhotoMap, filterStart, fi
 
       {/* HUB FILTER + SEARCH */}
       <div style={{ display:"flex", gap:6, marginBottom:10, flexWrap:"wrap" }}>
-        {[["all","All"],["hub1","Hub 1"],["hub2","Hub 2"]].map(([val, label]) => {
+        {depletedHubOpts.map(([val, label]) => {
           const on = hubFilter === val;
           return (
             <button key={val} onClick={() => setHubFilter(val)}
@@ -18873,12 +19072,13 @@ function InsightsView({ onExit }) {
   // (hub1/hub2 = the central pair, hub3 = Pine) and newer ones a destShop. Pine =
   // hub3. Trophy = events explicitly tagged trophy. Marathon PE = the main store:
   // its own destShop OR the untagged central history (so nothing goes missing).
-  const matchesStore = useMemo(() => {
-    if (storeFilter === "all") return () => true;
-    if (storeFilter === "pine")   return (e) => e && (e.destShop === "marathon-pine" || e.placedAtHub === "hub3");
-    if (storeFilter === "trophy") return (e) => e && e.destShop === "trophy";
-    return (e) => e && (e.destShop === "marathon-pe" || (e.destShop == null && e.placedAtHub !== "hub3")); // marathon-pe
-  }, [storeFilter]);
+  // Sections: the SHOP decides now, not the hub — Hub 3 serves Pine and
+  // Concrete. The predicate is the day rollup's own storeBucketOf (through
+  // insightsStoreMatcher), so this filter and the stored per-store counts are
+  // one definition. Untagged history still reads: hub3 → Pine, the rest →
+  // Marathon PE.
+  const matchesStore = useMemo(() => insightsStoreMatcher(storeFilter), [storeFilter]);
+  const { canSee: canSeeIns, registry: insNet } = useMySections();
   const filteredLog        = useMemo(() => log.filter(matchesStore),         [log, matchesStore]);
   // ─── "N EVENTS IN VIEW" IS NOT THE WINDOW'S COUNT ────────────────────────
   // It never was: it counted every event this store has ever logged, sliced by
@@ -18897,7 +19097,7 @@ function InsightsView({ onExit }) {
   const allTimeEventCount = useMemo(() => {
     if (logTotals) {
       if (storeFilter === "all") return logTotals.n;
-      const key = storeFilter === "marathon-pe" ? "pe" : storeFilter;
+      const key = insightsBucketKey(storeFilter);
       return Number(logTotals[key]) || 0;
     }
     return filteredLog.filter(
@@ -18934,6 +19134,9 @@ function InsightsView({ onExit }) {
     // bogus numbers (R001-1 → 11) and fake duplicates/gaps in this sneaker audit.
     const todayNums = onTodayCreated
       .filter(o => o.customerName !== "Shop Refill")
+      // The SHARED 001–999 sequence only. A store with its own sequence keys
+      // its orders "P001": digit-stripped that is 1, a fake duplicate of "001".
+      .filter(o => isSharedSequenceOrderKey(o.id))
       .map(o => parseInt(String(o.id).replace(/[^0-9]/g, ""), 10))
       .filter(n => !isNaN(n));
     const minNum = todayNums.length ? Math.min(...todayNums) : null;
@@ -19042,7 +19245,7 @@ function InsightsView({ onExit }) {
 
   // Segmented control — one grouped track, active segment lit. Cleaner than a
   // row of separate pills, and reused for store + category.
-  const STORE_OPTS = [["all", "All"], ["marathon-pe", "Marathon PE"], ["trophy", "Trophy"], ["pine", "Pine"]];
+  const STORE_OPTS = insightsStoreOptions(insNet, canSeeIns, (s) => SHOP_LABELS[s] || s);
   const seg = (options, val, setVal) => (
     <div style={{ display: "inline-flex", background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.1)", borderRadius: 12, padding: 3, gap: 2 }}>
       {options.map(([v, l]) => {
@@ -19138,7 +19341,7 @@ function InsightsView({ onExit }) {
       {/* Store filter — All / Marathon PE / Trophy / Pine. Hidden on the AI
           Reorder tab (global analysis, not store-sliced). */}
       <div style={{ padding:"10px 14px 0", display:"flex", gap:6, overflowX:"auto", visibility: tab === "reorder" ? "hidden" : "visible" }}>
-        {[["all","All"],["marathon-pe","Marathon PE"],["trophy","Trophy"],["pine","Pine"]].map(([val, label]) => {
+        {STORE_OPTS.map(([val, label]) => {
           const on = storeFilter === val;
           return (
             <button key={val} onClick={() => setStoreFilter(val)}
@@ -20177,6 +20380,10 @@ function AppInner() {
   // Recognises the hash only; the mount below gates, and the callables are
   // what actually refuse.
   const wantNewArrivals = hash === "#new-arrivals" || hash === "#new-arrivals/";
+  // /#admin/network — NETWORK. Recognises the HASH only and grants nothing;
+  // authorization happens at the mount below, and the RTDB rule on /network
+  // is what actually refuses the write.
+  const wantNetwork = hash === "#admin/network" || hash === "#admin/network/";
   // /#admin/devices — DEVICE CODES. Recognises the HASH only and grants
   // nothing; the deviceEnrolmentAdmin callable is what actually refuses.
   const wantDeviceCodes = hash === "#admin/devices" || hash === "#admin/devices/";
@@ -20236,6 +20443,11 @@ function AppInner() {
     if (required && !hasPermission(required)) setRole(null);
   }, [role, hasPermission, canAccessStock, isSuperAdmin, displayChecksRouteOpen, hubCountRouteOpen, stockHoldRouteOpen, displayRegRouteOpen, stockAuditRouteOpen, shopifyRouteOpen, socialRouteOpen, tvAdRouteOpen, aiStudioRouteOpen, permRecord]);
 
+  // The network registry (/network): one small node, read here once so every
+  // writer outside React (applyMovement, order placement) asks the same
+  // registry the screens show. Section 2 runs on the built-in seed until it
+  // answers, exactly as before.
+  useNetwork();
   const products = useProducts();
   // Orders use the per-id map; mutations bypass setOrders entirely and write
   // straight to /orders/{id} via writeOrder() / updateOrder().
@@ -20289,6 +20501,7 @@ function AppInner() {
       // R{n}-{i} on their own counter; digit-stripping them fakes gaps/dupes).
       const todayNums = onTodayCreated
         .filter(o => o.customerName !== "Shop Refill")
+        .filter(o => isSharedSequenceOrderKey(o.id))   // shared sequence only — see the Insights audit
         .map(o => parseInt(String(o.id).replace(/[^0-9]/g, ""), 10))
         .filter(n => !isNaN(n));
       const minNum = todayNums.length ? Math.min(...todayNums) : null;
@@ -20444,6 +20657,11 @@ function AppInner() {
   } else if (wantNewArrivals) {
     view = (isSuperAdmin || hasPermission("shopify_publish"))
       ? <NewArrivalsScreen api={newArrivalsApi} onExit={() => (window.location.hash = "")} />
+      : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
+  } else if (wantNetwork) {
+    // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
+    view = isSuperAdmin
+      ? <NetworkSettingsCard authUser={authUser} products={products} onExit={() => (window.location.hash = "")} />
       : <AdminSignInScreen onCancel={() => (window.location.hash = "")} />;
   } else if (wantMirrorFleet) {
     // ── THE ROUTE GATE (layer 2 of 3) ──────────────────────────────────────
@@ -21063,6 +21281,12 @@ function TvOnlyShell() {
   return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
 }
 
+// The same shell for a Section 1 kiosk (?section=1#tv): its own stores' orders.
+function SectionTvShell({ section }) {
+  const orders = useSectionTvOrders(section);
+  return <TvWithAutoCollect orders={orders} onExit={() => { window.location.hash = ""; }} />;
+}
+
 // ─── MAIN APP ─────────────────────────────────────────────────────────────────
 // Default export wraps AppInner in AuthGate. The renderTv callback returns
 // the TV-only shell so it never mounts on non-TV routes. Privacy page is
@@ -21085,7 +21309,7 @@ export default function App() {
       <div style={{ position: "fixed", right: 10, top: 8, zIndex: 900 }}>
         <MirrorDot />
       </div>
-      <AuthGate renderTv={() => <TvOnlyShell />}>
+      <AuthGate renderTv={() => (tvSectionFromSearch(window.location.search) === 1 ? <SectionTvShell section={1} /> : <TvOnlyShell />)}>
         <AppErrorBoundary>
           <AppInner />
         </AppErrorBoundary>

@@ -52,6 +52,12 @@ vi.mock("firebase/database", () => ({
 }));
 vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: {} }) }));
 vi.mock("../firebase", () => ({ database: { fake: true }, functions: { fake: true } }));
+// The network registry (section names on the detail view) without the live
+// /network read behind it — that read is not what this file is about.
+vi.mock("../utils/useNetwork", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../utils/networkRegistry");
+  return { useNetwork: () => ({ registry: SEED_REGISTRY, settled: true, error: false }) };
+});
 
 const UserManagement = (await import("./UserManagement.jsx")).default;
 

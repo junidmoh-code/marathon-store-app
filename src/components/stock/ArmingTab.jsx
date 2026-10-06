@@ -39,6 +39,8 @@ import {
   BUCKET, BUCKET_ORDER, BUCKET_TITLE, FLAG, FLAG_LABEL, ARMING_HUBS,
 } from "./armingCore";
 import { readArmingContext, resolveUndecided } from "./armingStore";
+import { armingHubsFor, armingSections, bucketTitles } from "./armingCore";
+import { useMySections } from "../../utils/useMySections";
 import { readSeatingContext } from "./seatingStore";
 import { useLocations, useEngineConfigState } from "./useStock";
 import { labelFor, allLocationIds, transferTargets, IN_TRANSIT } from "./locations";
@@ -69,6 +71,19 @@ export default function ArmingTab({ products, viewer, flash }) {
   // true once the listener has answered at ALL, so an empty or unreadable node
   // degrades to a visible answer rather than a permanent spinner.
   const { value: config, settled: configSettled, error: configError } = useEngineConfigState();
+
+  // ── WHICH TWO HUBS ─────────────────────────────────────────────────────────
+  // One section's pair at a time (armingCore.armingHubsFor): Hub 1 + Hub 2 by
+  // default, exactly as before. A viewer who may see another section that has
+  // a pair of hubs gets a switch to it; nothing is compared across sections.
+  const { registry: network, sections: mySections } = useMySections();
+  const pairSections = useMemo(() => armingSections(network).filter((s) => mySections.includes(s)), [network, mySections]);
+  const [sectionPick, setSectionPick] = useState(null);
+  const section = sectionPick && pairSections.includes(sectionPick) ? sectionPick : (pairSections[0] ?? null);
+  const pairSig = (armingHubsFor(network, section) || ARMING_HUBS).join("|");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const pair = useMemo(() => pairSig.split("|"), [pairSig]);
+  const titles = useMemo(() => bucketTitles(pair, network), [pair, network]);
 
   const [ctx, setCtx] = useState(null);          // { stock, targets, bytes, readCount }
   const [loading, setLoading] = useState(false);
@@ -107,11 +122,11 @@ export default function ArmingTab({ products, viewer, flash }) {
     return {
       contextLocations: ctxIds,
       destinations: dest,
-      otherLocations: ctxIds.filter((l) => !ARMING_HUBS.includes(l)),
+      otherLocations: ctxIds.filter((l) => !pair.includes(l)),
     };
     // registry is deliberately not a dependency — locSig is its stable digest.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [locSig]);
+  }, [locSig, pair]);
 
   const byId = useMemo(() => Object.fromEntries((products || []).map((p) => [p.id, p])), [products]);
 
@@ -125,7 +140,7 @@ export default function ArmingTab({ products, viewer, flash }) {
     setSettling(null);
     setLoading(true); setError("");
     try {
-      const next = await readArmingContext(ARMING_HUBS);
+      const next = await readArmingContext(pair);
       if (mine !== seq.current) return;
       setResolvedPids((prev) => (prev.size ? new Set() : prev));
       setCtx(next);
@@ -135,7 +150,7 @@ export default function ArmingTab({ products, viewer, flash }) {
     } finally {
       if (mine === seq.current) setLoading(false);
     }
-  }, []);
+  }, [pair]);
 
   useEffect(() => { load(); }, [load]);
 
@@ -156,7 +171,7 @@ export default function ArmingTab({ products, viewer, flash }) {
     [ctx, configSettled, byId, config, resolvedPids],
   );
 
-  const index = useMemo(() => (full ? armingIndex(full, Object.keys(byId)) : null), [full, byId]);
+  const index = useMemo(() => (full ? armingIndex(full, Object.keys(byId), pair) : null), [full, byId, pair]);
 
   // ── SETTLING THE RESIDUE, AUTOMATICALLY ────────────────────────────────────
   // The engine suppresses a size holding no units ANYWHERE, and "anywhere" is
@@ -227,9 +242,9 @@ export default function ArmingTab({ products, viewer, flash }) {
   // paid for itself again on each edit. (Senior-architect review, PR #604.)
   const applyOne = useCallback((pid, fresh) => {
     if (!pid || !fresh) return;
-    setCtx((c) => (c ? applyProductRead(c, pid, fresh, ARMING_HUBS) : c));
+    setCtx((c) => (c ? applyProductRead(c, pid, fresh, pair) : c));
     setResolvedPids((prev) => new Set([...prev, pid]));
-  }, []);
+  }, [pair]);
 
   const rows = useMemo(() => (index ? sectionRows(index.rows, tab, query) : []), [index, tab, query]);
   const page = rows.slice(0, shown);
@@ -249,6 +264,17 @@ export default function ArmingTab({ products, viewer, flash }) {
 
   return (
     <div>
+      {/* ── WHICH SECTION'S HUBS (only when there is a choice) ── */}
+      {pairSections.length > 1 && (
+        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: ".6rem" }}>
+          {pairSections.map((s) => (
+            <button key={s} onClick={() => { setSectionPick(s); setCtx(null); setOpenPid(""); }} aria-pressed={section === s}
+                    style={section === s ? tabOn : tabOff}>
+              {network.sections?.[s]?.name || `Section ${s}`}
+            </button>
+          ))}
+        </div>
+      )}
       {/* ── FOUR CHIPS ── */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: ".8rem" }}>
         {BUCKET_ORDER.map((b) => (
@@ -259,7 +285,7 @@ export default function ArmingTab({ products, viewer, flash }) {
             style={{ ...(tab === b ? tabOn : tabOff),
               ...(b === BUCKET.BOTH_HUBS && index?.counts[b] ? { borderColor: "rgba(248,113,113,.55)" } : null) }}
           >
-            {`${BUCKET_TITLE[b]} ${index ? index.counts[b] : "…"}`}
+            {`${titles[b] || BUCKET_TITLE[b]} ${index ? index.counts[b] : "…"}`}
           </button>
         ))}
       </div>
@@ -315,6 +341,7 @@ export default function ArmingTab({ products, viewer, flash }) {
 
           {page.map((r) => (
             <ArmRow
+              hubNames={[titles.hub1_only, titles.hub2_only]}
               key={r.pid}
               row={r}
               product={byId[r.pid]}
@@ -345,7 +372,8 @@ export default function ArmingTab({ products, viewer, flash }) {
 // ── ONE PRODUCT ──────────────────────────────────────────────────────────────
 // Shut: photo, name, category, where it is armed, and any flag.
 // Open: the Seating tab's own rows for every location, with its own actions.
-export function ArmRow({ row, product, registry, locations, destinations, config, viewer, open, onToggle, onPhoto, onChanged, flash }) {
+// `hubNames` are the names of the pair's first and second hub, for the badges.
+export function ArmRow({ row, product, registry, locations, destinations, config, viewer, open, onToggle, onPhoto, onChanged, flash, hubNames = ["Hub 1", "Hub 2"] }) {
   return (
     <div style={{ ...GLASS, padding: "10px 12px", marginBottom: 8 }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -368,8 +396,8 @@ export function ArmRow({ row, product, registry, locations, destinations, config
         <div style={{ display: "flex", gap: 5, alignItems: "center", flexWrap: "wrap", justifyContent: "flex-end" }}>
           {/* WHERE, in two words. The tab already says which list this is, so
               the badge earns its place only by naming the units behind it. */}
-          {row.hub1.armed && <Badge tone={GREEN}>{`Hub 1 · ${row.hub1.units}`}</Badge>}
-          {row.hub2.armed && <Badge tone={GREEN}>{`Hub 2 · ${row.hub2.units}`}</Badge>}
+          {row.hub1.armed && <Badge tone={GREEN}>{`${hubNames[0]} · ${row.hub1.units}`}</Badge>}
+          {row.hub2.armed && <Badge tone={GREEN}>{`${hubNames[1]} · ${row.hub2.units}`}</Badge>}
           {row.flags.map((f) => <Badge key={f} tone={FLAG_TONE[f] || GRAY}>{FLAG_LABEL[f]}</Badge>)}
           <span style={{ color: GRAY, fontSize: 12 }}>{open ? "Close" : "Open"}</span>
         </div>

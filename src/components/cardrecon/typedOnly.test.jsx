@@ -28,6 +28,18 @@ const OWNER = "gunidmoh@gmail.com";
 const auth = { currentUser: null };
 const calls = [];
 vi.mock("../../firebase", () => ({ database: {}, functions: {}, storage: {}, get auth() { return auth; } }));
+// The network registry and the viewer's sections, without the live reads behind
+// them: the built-in registry, and (unless a test narrows it) a viewer who sees
+// both sections — which is every account there is before Junid scopes one.
+const viewer = vi.hoisted(() => ({ sections: [1, 2] }));
+vi.mock("../../utils/useNetwork", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../../utils/networkRegistry");
+  return { useNetwork: () => ({ registry: SEED_REGISTRY, settled: true, error: false }) };
+});
+vi.mock("../../utils/useMySections", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../../utils/networkRegistry");
+  return { useMySections: () => ({ sections: viewer.sections, both: viewer.sections.length === 2, registry: SEED_REGISTRY, canSee: () => true }) };
+});
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (refOrQuery, cb) => {

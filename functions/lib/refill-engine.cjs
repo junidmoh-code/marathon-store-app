@@ -25,10 +25,12 @@
 // Group and per-size resolution lives in a LEAF module (it requires nothing),
 // so this file can consume it without the module that reasons about this file
 // having to reach back in. See policy-resolve.cjs for the precedence order.
+const networkRegistry = require("./network-registry.cjs");
 const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 // The owner's shop-source rule (a shop never refills from Central once its hub
 // has held the product) — a leaf module, stated once. See shop-source-rule.cjs.
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
+const { withPolicyTemplates } = require("./policy-template.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -664,9 +666,115 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
 }
 
 // ── the plan ──────────────────────────────────────────────────────────────────
+// The legs of config.routes the engine may act on, and the ones it may not.
+// `network` is the normalised registry (lib/network-registry.cjs); absent, the
+// built-in seed applies: Section 2 live, Section 1 not, the wall up.
+function walledRoutes(routes, network) {
+  const out = {};
+  const withheld = [];
+  for (const dest of Object.keys(routes || {})) {
+    const source = routes[dest];
+    if (networkRegistry.autoRouteAllowed(network, source, dest)) { out[dest] = source; continue; }
+    const wall = networkRegistry.wallCheck(network, source, dest);
+    withheld.push({ dest, source, why: wall.ok ? "not_live" : wall.reason });
+  }
+  return { routes: out, withheld };
+}
+
+// ═══ WHO FEEDS WHOM — config.routes first, the network registry for the rest ═══
+// config.routes is one source per destination and blind to category. It stays
+// exactly what it is for every location it names: a location WITH an entry
+// there is routed by that entry and nothing else (Marathon PE, Trophy, Hub 1
+// and Hub 2 today — the registry's own "sneakers → Hub 1" line is NOT read
+// for them, which is what keeps their plan identical).
+//
+// A location with NO entry in config.routes is routed by the registry:
+//   • a hub is fed from Central;
+//   • a store is fed PER PRODUCT from the hub that holds its back stock for
+//     that product — the owner's per-product override, else the product's
+//     category, else the store's default (backStockFor). So Concrete can pull
+//     hoodies from the Concrete Stockroom and everything else from Hub 3 in
+//     the same scan.
+// Every leg is still gated by autoRouteAllowed: both ends LIVE and on one side
+// of the wall. A location that is not live is not in any of these lists — it
+// costs no stock read and gets no intent.
+//
+//   routes         dest → its ONE source (config legs + registry hubs)
+//   withheld       config legs the registry refused, as walledRoutes reports
+//   stores         Set of registry-routed stores (source is per product)
+//   registryRouted Set of every dest the registry routes (those stores + hubs)
+//   sourceFor(dest, product, pid)   the leg's source, or undefined
+//   sourcesOf(dest)                 every source the dest can pull from
+//   dests          every destination, a shop always before a hub it pulls from
+//   locs           every location whose stock the plan reads
+//   modeOf(dest)   a config.mode entry always wins; a registry-routed dest with
+//                  none acts "live" (it IS live, or it would not be here)
+function networkRouting(config, network) {
+  const cfgRoutes = config?.routes || {};
+  const { routes: walled, withheld } = walledRoutes(cfgRoutes, network);
+  const inConfig = (id) => Object.prototype.hasOwnProperty.call(cfgRoutes, id);
+  const central = networkRegistry.listLocations(network, { type: "central", liveOnly: true })[0]?.id || null;
+  const routes = { ...walled };
+  const registryRouted = new Set();
+  const regHubs = [];
+  // NO REGISTRY HANDED IN = config.routes and nothing else, the engine as it
+  // was before sections. The built-in seed has no live Section 1 location, so
+  // falling back to it here could only ever re-route a Section 2 location
+  // that config.routes had left out — never what an absent registry means.
+  const byRegistry = !!(network && network.locations && network.aliasIndex);
+  if (central && byRegistry) {
+    for (const h of networkRegistry.hubsOf(network, { liveOnly: true })) {
+      if (inConfig(h.id) || !networkRegistry.autoRouteAllowed(network, central, h.id)) continue;
+      routes[h.id] = central;
+      regHubs.push(h.id);
+      registryRouted.add(h.id);
+    }
+  }
+  const stores = new Set();
+  const storeHubs = new Map();   // store → the hubs it may pull from right now
+  for (const s of byRegistry ? networkRegistry.storesOf(network, { liveOnly: true }) : []) {
+    if (inConfig(s.id)) continue;
+    const hubs = networkRegistry.backStockHubsOf(network, s.id)
+      .filter((h) => networkRegistry.autoRouteAllowed(network, h, s.id));
+    if (!hubs.length) continue;   // no live hub on its side: nothing automatic
+    stores.add(s.id);
+    storeHubs.set(s.id, hubs);
+    registryRouted.add(s.id);
+  }
+  const memo = new Map();
+  const sourceFor = (dest, product, pid) => {
+    const fixed = routes[dest];
+    if (fixed !== undefined || !stores.has(dest)) return fixed;
+    const k = `${dest}|${pid}`;
+    if (memo.has(k)) return memo.get(k);
+    const hub = networkRegistry.backStockFor(network, dest, policyCategoryKey(product), pid);
+    const src = hub && storeHubs.get(dest).includes(hub) ? hub : undefined;
+    memo.set(k, src);
+    return src;
+  };
+  const sourcesOf = (dest) => (routes[dest] !== undefined ? [routes[dest]] : (storeHubs.get(dest) || []));
+  // The config destinations keep the order they have always had — a shop
+  // before its source, so pass-through demand lands first. Registry hubs
+  // follow; each registry store then goes in ahead of the first hub it can
+  // pull from, for the same reason.
+  const dests = Object.keys(walled).sort((a, b) => {
+    if (walled[a] === b) return -1;
+    if (walled[b] === a) return 1;
+    return a.localeCompare(b);
+  });
+  dests.push(...regHubs.sort());
+  for (const s of [...stores].sort()) {
+    const at = dests.findIndex((d) => storeHubs.get(s).includes(d));
+    if (at === -1) dests.push(s); else dests.splice(at, 0, s);
+  }
+  const locs = [...new Set([...dests, ...dests.flatMap(sourcesOf)])];
+  const modeOf = (dest) => config?.mode?.[dest] || (registryRouted.has(dest) ? "live" : "off");
+  return { routes, withheld, stores, registryRouted, sourceFor, sourcesOf, dests, locs, modeOf, central };
+}
+
 function computeRefillPlan(snapshot) {
   const {
-    nowMs, config, targets = {}, stock = {}, products = {},
+    nowMs, config: rawConfig, targets = {}, stock = {}, products = {},
     openIndex = {}, refillRequests = {}, orders = {}, movements = [],
     targetDecisions = {},   // /stock_targets_decisions — "keep as is" acks from the No Target queue
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
@@ -681,14 +789,48 @@ function computeRefillPlan(snapshot) {
   } = snapshot;
 
   const errors = [];
-  const routes = config?.routes || {};
-  // Dests ordered so downstream (stores) compute before their source when the
-  // source is itself a dest (hub2) — pass-through demand must land first.
-  const dests = Object.keys(routes).sort((a, b) => {
-    if (routes[a] === b) return -1;
-    if (routes[b] === a) return 1;
-    return a.localeCompare(b);
-  });
+  // ── SECTIONS: only LIVE routes on ONE side of the wall are routes ──────────
+  // config.routes is still the topology. The network registry decides which
+  // of its legs the engine may act on: both ends live, and never a Section 1
+  // location with a Section 2 one. A withheld route is simply absent below —
+  // its destination is never planned, read for demand, or asked on behalf of.
+  // With every leg allowed (Section 2 today) this is the same map, key for key.
+  //
+  // A live location config.routes does NOT name is routed by the registry (see
+  // networkRouting): a hub from Central, a store per product from its
+  // back-stock hub. `routes` therefore holds every dest with ONE source; for a
+  // registry-routed store the source is a per-product question — srcOf.
+  const network = snapshot.network;
+  const routing = networkRouting(rawConfig, network);
+  const { routes, withheld: routesWithheld, dests } = routing;
+  const srcOf = (dest, pid) => routing.sourceFor(dest, products?.[pid], pid);
+  const modeOf = routing.modeOf;
+  // POLICY TEMPLATES: a location with no numbers of its own follows the
+  // location the registry says it is like (lib/policy-template.cjs). Applied
+  // to the config once, here, so every resolver below reads it unchanged.
+  const config = withPolicyTemplates(rawConfig, network);
+  // A hub that SHOPS are fed through (Hub 2; Hub 3 for Section 1) — as opposed
+  // to one that only sells (Hub 1). Derived from the legs, never a name.
+  const destSet = new Set(dests);
+  const feederHubs = new Set(dests.flatMap((d) => routing.sourcesOf(d)).filter((s) => destSet.has(s)));
+  // ── POOLS: one side of the wall never answers for the other ────────────────
+  // Several judgements below pool evidence across locations (a size refused at
+  // both supply levels, a surplus held back for a deficit, stock "somewhere in
+  // the network"). Each is pooled per SECTION, so Hub 3 refusing a size says
+  // nothing about Hub 2, and a Pine deficit holds back none of Hub 2's surplus.
+  // A record from a location the plan is not acting on (a legacy row, a
+  // location not live) stays in the pool config.routes describes — exactly
+  // where it has always been read.
+  const sectionMemo = new Map();
+  const sectionOfLoc = (loc) => {
+    if (!sectionMemo.has(loc)) sectionMemo.set(loc, networkRegistry.sectionOf(network, loc));
+    return sectionMemo.get(loc);
+  };
+  const configPool = dests.map((d) => (routing.registryRouted.has(d) ? null : sectionOfLoc(d))).find((s) => s != null) ?? null;
+  const poolOf = (loc) => {
+    const s = destSet.has(loc) ? sectionOfLoc(loc) : null;
+    return s == null ? configPool : s;
+  };
 
   const ctx = { targets, config, products, stock };
 
@@ -713,7 +855,7 @@ function computeRefillPlan(snapshot) {
       for (const [sizeKey, entry] of Object.entries(bySize || {})) {
         if (!entry) continue;
         bump(inbound, `${dest}|${pid}|${sizeKey}`, lockQty(entry));
-        const s = entry.source || routes[dest];
+        const s = entry.source || srcOf(dest, pid);
         if (s) bump(sourceReserved, `${s}|${pid}|${sizeKey}`, lockQty(entry));
       }
     }
@@ -833,8 +975,17 @@ function computeRefillPlan(snapshot) {
   };
   const staleMs = (num(config?.staleIntentHours) || 48) * 3600e3;
   // Total on-hand for a (pid,size) across every location the scan can see.
-  const networkQtyOf = (pid, size) =>
-    Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
+  // …that `dest` could ever be sent from: a destination on the other side of
+  // the wall is not "somewhere in the network" for this cell. Only locations
+  // the plan is acting on are told apart — stock the snapshot happens to hold
+  // for anywhere else counts as it always has.
+  const reachableFrom = (loc, dest) => {
+    const a = destSet.has(loc) ? sectionOfLoc(loc) : null;
+    const b = destSet.has(dest) ? sectionOfLoc(dest) : null;
+    return a == null || b == null || a === b;
+  };
+  const networkQtyOf = (pid, size, dest) =>
+    Object.keys(stock).reduce((t, loc) => (reachableFrom(loc, dest) ? t + avail(cellQty(stock, loc, pid, size)) : t), 0);
   // ── WHAT A PASS-THROUGH HUB LEG IS STILL OWED (2026-09-23) ─────────────────
   // A pass-through leg (see "PASS-THROUGH" in the deficit loop) is a Central→
   // hub request raised FOR named shops, not for the hub's own buffer — so it
@@ -857,10 +1008,10 @@ function computeRefillPlan(snapshot) {
   const passThroughNeed = (hub, pid, sizeKey, size, entry) => {
     const shops = Array.isArray(entry.forDests) && entry.forDests.length
       ? entry.forDests
-      : Object.keys(routes).filter((d) => routes[d] === hub);
+      : dests.filter((d) => srcOf(d, pid) === hub);
     let need = 0;
     for (const shop of shops) {
-      if (routes[shop] !== hub) continue;
+      if (srcOf(shop, pid) !== hub) continue;
       const ts = resolveTarget(ctx, shop, pid, size);
       if (!ts || ts.target <= 0) continue;
       need += Math.max(ts.target - avail(cellQty(stock, shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
@@ -931,7 +1082,7 @@ function computeRefillPlan(snapshot) {
           : (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0));
         // Certainly-unfillable PURGE (owner rule 2026-07-13): zero stock
         // anywhere upstream → withdrawn; staff never see unpickable requests.
-        const unfillable = unresolvedOurs && networkQtyOf(pid, size) - destHave <= 0;
+        const unfillable = unresolvedOurs && networkQtyOf(pid, size, dest) - destHave <= 0;
         // ACTIONABLE-ONLY withdraw (owner v9, 2026-07-13): an open engine
         // request whose SOURCE can no longer fulfil it (sold out / never had
         // it) leaves the working queue — staff must never scroll past work
@@ -981,7 +1132,7 @@ function computeRefillPlan(snapshot) {
           });
           continue;
         }
-        const sourceLoc = entry.source || routes[dest];
+        const sourceLoc = entry.source || srcOf(dest, pid);
         const sourceEmpty = unresolvedOurs && !needGone && !unfillable && !inFlight &&
           sourceLoc && avail(cellQty(stock, sourceLoc, pid, size)) <= 0;
         // A claimed request (a pick in progress) is never planned for
@@ -1004,7 +1155,7 @@ function computeRefillPlan(snapshot) {
             // hub2 leg would recheck forever with no strike cap (review
             // blocker, PR #252 round 1).
             ...(rr.status === "cancelled" && !rr.cancelReason
-              ? { humanReject: true, denier: entry.source || routes[dest] } : {}),
+              ? { humanReject: true, denier: entry.source || srcOf(dest, pid) } : {}),
           });
         } else if (orderIsOurs && order.clothingRefillStatus != null) {
           const wasFulfilled = order.clothingRefillStatus === "available";
@@ -1014,7 +1165,7 @@ function computeRefillPlan(snapshot) {
             rrStatus: wasFulfilled ? "fulfilled" : "cancelled",
             // Human rejection (vs the engine's own withdrawals, which carry
             // cancelReason) — feeds the reject-streak loop guard below.
-            ...(wasFulfilled ? {} : { humanReject: true, denier: entry.source || routes[dest],
+            ...(wasFulfilled ? {} : { humanReject: true, denier: entry.source || srcOf(dest, pid),
               // The moment staff pressed "out of stock" (the order line holds
               // it; the order node recycles daily). The refusal write-off
               // counts calendar days, so the scan's close time is not enough.
@@ -1047,7 +1198,7 @@ function computeRefillPlan(snapshot) {
           noteSuppressed(inFlightPlanGen ? "in_flight_plan_gen" : "in_flight_ledger_link");
         }
         if (unresolvedOurs && !inFlight && !needGone && !unfillable && !sourceEmpty) {
-          const srcLoc2 = entry.source || routes[dest];
+          const srcLoc2 = entry.source || srcOf(dest, pid);
           const srcHave2 = srcLoc2 ? avail(cellQty(stock, srcLoc2, pid, size)) : 0;
           const ownQty = lockQty(entry);
           const srcKey2 = `${srcLoc2}|${pid}|${sizeKey}`;
@@ -1255,7 +1406,7 @@ function computeRefillPlan(snapshot) {
     if (left > 0) inbound.set(k, left); else inbound.delete(k);
     // Release the SOURCE reservation too — a closed lock frees its units for
     // siblings and new intents in this same pass (symmetric with inbound).
-    const sLoc = entry.source || routes[c.dest];
+    const sLoc = entry.source || srcOf(c.dest, c.pid);
     if (sLoc) {
       const sk = `${sLoc}|${c.pid}|${c.sizeKey}`;
       const sLeft = (sourceReserved.get(sk) || 0) - lockQty(entry);
@@ -1432,10 +1583,10 @@ function computeRefillPlan(snapshot) {
     if (!o || o.customerName !== "Shop Refill" || o.clothingRefillStatus !== "rejected") continue;
     if (!o.destShop || !o.productId || o.size == null) continue;
     const ts = Date.parse(o.clothingOutOfStockAt || o.updatedAt || 0) || 0;
-    const by = o.placedAtHub || o.hub || routes[o.destShop] || null;
+    const by = o.placedAtHub || o.hub || srcOf(o.destShop, o.productId) || null;
     const k = `${o.destShop}|${o.productId}|${encodeSizeKey(o.size)}`;
     setDenial(rejectedAt, k, ts, by);
-    const lk = `${o.productId}|${encodeSizeKey(o.size)}`;
+    const lk = `${poolOf(o.destShop)}|${o.productId}|${encodeSizeKey(o.size)}`;
     setDenial(rejShopLevel, lk, ts, by);
   }
   for (const [id, rr] of Object.entries(refillRequests)) {
@@ -1445,11 +1596,14 @@ function computeRefillPlan(snapshot) {
     // target again five minutes later, the engine may re-ask immediately.
     if (rr.cancelReason) continue;
     const ts = Date.parse(rr.resolvedAt || 0) || 0;
-    const by = rr.source || rr.createdFrom?.source || routes[rr.requestingLocation] || null;
+    const by = rr.source || rr.createdFrom?.source || srcOf(rr.requestingLocation, rr.productId) || null;
     const k = `${rr.requestingLocation}|${rr.productId}|${encodeSizeKey(rr.size)}`;
     setDenial(rejectedAt, k, ts, by);
-    const lk = `${rr.productId}|${encodeSizeKey(rr.size)}`;
-    const levelMap = rr.requestingLocation === "hub2" ? rejCentralLevel : rejShopLevel;
+    const lk = `${poolOf(rr.requestingLocation)}|${rr.productId}|${encodeSizeKey(rr.size)}`;
+    // A hub that shops are fed through was refused by ITS source — the Central
+    // level. Any other requester (a shop, or a hub that only sells) is the
+    // shop level.
+    const levelMap = feederHubs.has(rr.requestingLocation) ? rejCentralLevel : rejShopLevel;
     setDenial(levelMap, lk, ts, by);
   }
 
@@ -1469,7 +1623,9 @@ function computeRefillPlan(snapshot) {
   // adjustment, a receive into a deep oversell hole) created no pickable stock
   // and lifts nothing.
   const INBOUND_TYPES = new Set(["received", "opening", "return", "adjustment", "transfer_in", "transfer_out"]);
-  const deniedPairs = new Set([...rejShopLevel.keys(), ...rejCentralLevel.keys()]);
+  // (Every denial above is also filed in rejectedAt under its own cell, so its
+  // keys name every denied pair.)
+  const deniedPairs = new Set();
   for (const k of rejectedAt.keys()) deniedPairs.add(k.slice(k.indexOf("|") + 1));
   const arrivedAt = new Map();
   for (const m of movements) {
@@ -1513,10 +1669,24 @@ function computeRefillPlan(snapshot) {
   // Route-derived fallbacks for LEGACY denial records that carry no source of
   // their own: Central (hub2's source) denies hub2 asks; the stores' sources
   // deny store asks. Denials recorded with a `by` use that exact location.
-  const centralLevelLoc = routes["hub2"] || "central";
-  const shopLevelLocs = [...new Set(dests.filter((d) => d !== "hub2").map((d) => routes[d]).filter(Boolean))];
-  const confirmedOut = (pid, sizeKey) => {
-    const lk = `${pid}|${sizeKey}`;
+  // Per pool (see POOLS): the feeder hub's source, and the sources of every
+  // other destination on that side of the wall.
+  const levelLocsMemo = new Map();
+  const levelLocs = (pool) => {
+    if (!levelLocsMemo.has(pool)) {
+      const inPool = dests.filter((d) => poolOf(d) === pool);
+      const feeders = inPool.filter((d) => feederHubs.has(d));
+      levelLocsMemo.set(pool, {
+        feeders,
+        centralLevelLoc: (feeders.length ? routes[feeders[0]] : null) || routing.central || "central",
+        shopLevelLocs: [...new Set(inPool.filter((d) => !feederHubs.has(d)).flatMap((d) => routing.sourcesOf(d)).filter(Boolean))],
+      });
+    }
+    return levelLocsMemo.get(pool);
+  };
+  const confirmedOut = (dest, pid, sizeKey) => {
+    const lk = `${poolOf(dest)}|${pid}|${sizeKey}`;
+    const { centralLevelLoc, shopLevelLocs } = levelLocs(poolOf(dest));
     const c = rejCentralLevel.get(lk);
     const s = rejShopLevel.get(lk);
     if (!c || !s || nowMs - c.ts >= confirmedOutMs || nowMs - s.ts >= confirmedOutMs) return false;
@@ -1528,8 +1698,7 @@ function computeRefillPlan(snapshot) {
     return true;
   };
 
-  const networkQty = (pid, size) =>
-    Object.keys(stock).reduce((t, loc) => t + avail(cellQty(stock, loc, pid, size)), 0);
+  const networkQty = networkQtyOf;
 
   // ── streak flag evaluation (loop guard) ─────────────────────────────────────
   // A cell is PARKED by the guard when its streak is at limit AND the denier's
@@ -1571,7 +1740,7 @@ function computeRefillPlan(snapshot) {
       continue;
     }
     if (!c.humanReject) continue;
-    const cDenier = c.denier || routes[c.dest];
+    const cDenier = c.denier || srcOf(c.dest, c.pid);
     const cSize = rawSize(c.pid, c.sizeKey);
     const cDenierHas = cDenier ? avail(cellQty(stock, cDenier, c.pid, cSize)) : 0;
     const sPrev = streakOf(c.dest, c.pid, c.sizeKey);
@@ -1622,7 +1791,7 @@ function computeRefillPlan(snapshot) {
     const parked = !!(rej && nowMs - rej.ts < effWindowMs(denierHas) && !arrivedAfter(denier, pid, sizeKey, rej.ts)
         && !writtenOffAfter(denier, pid, sizeKey, rej.ts))
       || streakFlagged
-      || confirmedOut(pid, sizeKey);
+      || confirmedOut(hub, pid, sizeKey);
     return { parked, streakFlagged, denierHas };
   };
 
@@ -1668,7 +1837,7 @@ function computeRefillPlan(snapshot) {
   // existing label).
   const raisePassThrough = ({ shop, hub, pid, size, sizeKey, want, kind, high }) => {
     const upstream = routes[hub];
-    if (!upstream || !routes[shop] || routes[shop] !== hub) return null;
+    if (!upstream || !srcOf(shop, pid) || srcOf(shop, pid) !== hub) return null;
     // SNEAKERS ARE SALES-ONLY at the hubs (owner rule): no automatic
     // Central→hub footwear leg, ever, whatever a shop row says. The shop's
     // existing labels stand.
@@ -1697,16 +1866,22 @@ function computeRefillPlan(snapshot) {
   };
 
   for (const dest of dests) {
-    const mode = config?.mode?.[dest] || "off";
-    const src = routes[dest];
+    const mode = modeOf(dest);
     // A shop routed straight to Central is a refused route, never a plan: one
     // console edit would otherwise turn every refill of that shop into a
-    // Central request on the next scan (shop-source-rule.cjs).
-    if (forbiddenShopSource({ dest, source: src, routes, locations })) {
+    // Central request on the next scan (shop-source-rule.cjs). Judged on the
+    // CONFIG route: a registry-routed shop's source is its back-stock hub per
+    // product and is never Central.
+    if (forbiddenShopSource({ dest, source: routes[dest], routes, locations })) {
       errors.push(`route refused: ${dest} is a shop and config.routes names central — a shop refills from its hub`);
       continue;
     }
     for (const pid of managedPids(dest)) {
+      // The source is per product for a registry-routed store. A product whose
+      // back-stock hub is not live (or is not mapped at all) has no leg: the
+      // engine neither asks for it nor reports on it.
+      const src = srcOf(dest, pid);
+      if (!src) continue;
       // Defensive class filter (managedPids already admitted this pid). Footwear
       // is added here for the same reason it is added there: without it a shoe
       // with no explicit row is dropped before resolveTarget is consulted. Still
@@ -1760,7 +1935,7 @@ function computeRefillPlan(snapshot) {
         // cells may still show stock, but Central and the hub both physically
         // looked and said no — the shelves beat the database. Reorder list,
         // no request, regardless of destination.
-        if (confirmedOut(pid, sizeKey)) {
+        if (confirmedOut(dest, pid, sizeKey)) {
           // Both levels said no, yet a denying location's counted cell still
           // claims stock → the strongest count-vs-shelf mismatch there is.
           // The confirmed-out suppression stands (no requests), but the
@@ -1772,7 +1947,12 @@ function computeRefillPlan(snapshot) {
           // NOTE: a streak may keep accruing via closes while confirmedOut
           // masks this gate; the streak-staleness window (= confirmedOutMs)
           // bounds any pile-up when the mask lapses.
-          const lk = `${pid}|${sizeKey}`;
+          const lk = `${poolOf(dest)}|${pid}|${sizeKey}`;
+          const { feeders, centralLevelLoc, shopLevelLocs } = levelLocs(poolOf(dest));
+          // The hub level, by name: this shop's own hub — or, for a hub cell,
+          // the hub(s) shops on its side are fed through ("Hub 2" in Section 2).
+          const deniedHubName = (feederHubs.has(src) ? [src] : feeders)
+            .map((f) => networkRegistry.locationName(network, f)).join(" / ") || "Hub 2";
           // Legacy shop-level denials carry no `by` — fall back to the route-
           // derived shop-level locations, exactly as confirmedOut() itself does.
           const shopBy = rejShopLevel.get(lk)?.by;
@@ -1785,7 +1965,7 @@ function computeRefillPlan(snapshot) {
               note: `confirmed out at BOTH levels while ${showingLoc} still counts stock — recount ${showingLoc}: a count correction re-opens asks at once; if the count is right, move the stock manually (Transfer) — this card lifts on arrival or when the window lapses`,
             });
           }
-          missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "denied at both Hub 2 and Central — confirmed out, reorder candidate" });
+          missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: `denied at both ${deniedHubName} and Central — confirmed out, reorder candidate` });
           parked(dest, pid, sizeKey, "confirmed_out");
           continue;
         }
@@ -1795,7 +1975,7 @@ function computeRefillPlan(snapshot) {
         // exists nowhere, don't even start it — 1000s of unavailable requests
         // are a lot"). It goes straight to the Missing Sizes reorder list and
         // returns to the queue the moment inventory for it appears anywhere.
-        if (networkQty(pid, size) - have <= 0) {
+        if (networkQty(pid, size, dest) - have <= 0) {
           missingSizes.push({ loc: dest, pid, size, wanted: deficit, note: "zero stock upstream — reorder candidate" });
           parked(dest, pid, sizeKey, "nothing_anywhere");
           continue;
@@ -2001,7 +2181,7 @@ function computeRefillPlan(snapshot) {
       if (planned.has(`${pt.hub}|${pt.pid}|${pt.sizeKey}`)) continue;
       intents.push({
         dest: pt.hub, source: pt.upstream, productId: pt.pid, size: pt.size, sizeKey: pt.sizeKey,
-        qty: pt.qty, priority: pt.high ? "high" : "normal", mode: config?.mode?.[pt.hub] || "off",
+        qty: pt.qty, priority: pt.high ? "high" : "normal", mode: modeOf(pt.hub),
         passThrough: pt.kind, forDests: [...pt.forDests].sort(),
       });
     }
@@ -2164,7 +2344,7 @@ function computeRefillPlan(snapshot) {
     const plannedKeys = keysOf(plannedIntents);
     const computedKeys = keysOf(routedIntents);
     for (const b of belowTarget) {
-      const hub = routes[b.loc];
+      const hub = srcOf(b.loc, b.pid);
       const up = hub ? routes[hub] : null;
       if (!up) continue;                                   // a hub, not a shop
       const sk = encodeSizeKey(b.size);
@@ -2233,16 +2413,20 @@ function computeRefillPlan(snapshot) {
   // only what remains after every deficit is covered may leave the network arm.
   const deficitBySize = new Map();
   for (const b of belowTarget) {
-    const k = `${b.pid}|${encodeSizeKey(b.size)}`;
+    const k = `${poolOf(b.loc)}|${b.pid}|${encodeSizeKey(b.size)}`;
     deficitBySize.set(k, (deficitBySize.get(k) || 0) + b.deficit);
   }
   const sumLoc = (loc, pid) => Object.values(stock?.[loc]?.[pid] || {}).reduce((t, c) => t + avail(num(c?.qty)), 0);
   // Stores legitimately sell down their overage, so only SIGNIFICANT store
   // excess is flagged; hub2 is a strict buffer — any unit above target counts.
   const storeExcessMin = num(config?.storeExcessMinUnits) || 2;
+  // The registry-routed destinations bring their own products, so their
+  // excess is walked too. (The two "only in" lists below remain the Section 2
+  // view the Health screen draws — Central, Hub 2, Marathon PE, Trophy.)
   const allPids = new Set([
     ...Object.keys(stock?.central || {}), ...Object.keys(stock?.hub2 || {}),
     ...Object.keys(stock?.["marathon-pe"] || {}), ...Object.keys(stock?.trophy || {}),
+    ...[...routing.registryRouted].flatMap((d) => Object.keys(stock?.[d] || {})),
   ]);
   for (const pid of allPids) {
     if (!isClothing(products?.[pid])) continue;
@@ -2281,8 +2465,11 @@ function computeRefillPlan(snapshot) {
         //     allocate, so two over-target stores can never both be told to
         //     fill the same Hub 2 deficit (the resize-reservation lesson,
         //     applied at design time).
-        const dKey = `${pid}|${sizeKey}`;
-        if (loc === "hub2") {
+        // A FEEDER hub (shops are fed through it) takes the net-based rule; a
+        // deficit only ever holds back, or is filled by, a surplus on its own
+        // side of the wall.
+        const dKey = `${poolOf(loc)}|${pid}|${sizeKey}`;
+        if (feederHubs.has(loc)) {
           const heldForRefills = Math.min(Math.max(raw, 0), deficitBySize.get(dKey) || 0);
           const ex = raw - heldForRefills;
           if (ex >= 1) excess.push({ loc, pid, sizeKey, have: num(cell.qty), target: t.target, excess: ex, ...(heldForRefills > 0 ? { heldForRefills } : {}) });
@@ -2500,11 +2687,12 @@ function computeRefillPlan(snapshot) {
         const q = freeAt(loc, pid, sk, c);   // promised units are in transit, not a blind spot (see above)
         if (q > 0 && !sizeDecided(loc, pid, sk)) { units += q; seenSk.add(sk); }
       }
-      if (loc === "hub2") {
+      if (feederHubs.has(loc)) {
         const up = routes[loc];   // central — new sizes land there first
         for (const [sk, c] of Object.entries(stock?.[up]?.[pid] || {})) {
           if (seenSk.has(sk) || sizeDecided(loc, pid, sk)) continue;
-          if (avail(num(c?.qty)) > 0 && !dests.some((d) => sizeDecided(d, pid, sk))) units += avail(num(c?.qty));
+          // "Decided anywhere" means anywhere this hub's side of the wall.
+          if (avail(num(c?.qty)) > 0 && !dests.some((d) => poolOf(d) === poolOf(loc) && sizeDecided(d, pid, sk))) units += avail(num(c?.qty));
         }
       }
       if (units > 0) noTarget.push({ loc, pid, units, noStandard: true });
@@ -2645,7 +2833,9 @@ function computeRefillPlan(snapshot) {
   // costs nothing, and it is in the Health snapshot every 15 minutes: a
   // footwear category that grows its own numbers again (a console edit, a
   // revert) is flagged on the next scan without anyone going to look.
-  const footwearDrift = footwearPolicyDrift(config);
+  // The config AS STORED, and the registry: a hub following another's leg
+  // through its template carries no leg of its own to compare.
+  const footwearDrift = footwearPolicyDrift(rawConfig, network);
 
   const cap = (arr, n = 300) => ({ count: arr.length, items: uncapped ? arr : arr.slice(0, n) });
   return {
@@ -2658,6 +2848,9 @@ function computeRefillPlan(snapshot) {
     streakOps,
     retryOps,
     errors,
+    // Legs of config.routes the registry withheld this scan (a location not
+    // live, or a leg across the section wall). Absent when none were.
+    ...(routesWithheld.length ? { routesWithheld } : {}),
     // policy: the switch/throttle state THIS scan actually ran under, echoed
     // into /refill_engine/runs. During an incident nobody should have to guess
     // whether rule-based targeting was on — the run record states it.
@@ -2702,7 +2895,7 @@ function computeRefillPlan(snapshot) {
         byShop: tallyBy(shortNotRequested, (r) => r.loc),
         // Which shops this check covers — every destination fed through a hub.
         // A shop absent here (Pine today) has no route and no keep numbers.
-        shops: Object.keys(routes).filter((d) => routes[routes[d]] != null).sort(),
+        shops: dests.filter((d) => routing.sourcesOf(d).some((h) => routes[h] != null)).sort(),
       },
     },
   };
@@ -2760,4 +2953,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor, passThroughExcluded };
+module.exports = { walledRoutes, networkRouting, computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor, passThroughExcluded };

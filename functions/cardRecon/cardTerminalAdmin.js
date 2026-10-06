@@ -29,7 +29,8 @@ const { CARD_TERMINALS_PATH } = require("../lib/card-recon.cjs");
 const {
   planAdd, planEdit, planMove, planRetire, planReinstate, planReplace, readTypedTid,
 } = require("../lib/card-terminal-admin.cjs");
-const { posStores, POS_STORES } = require("../lib/pos-tills.cjs");
+const { posStores, posStoresOf } = require("../lib/pos-tills.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -49,15 +50,46 @@ function assertOwner(request) {
   }
 }
 
-// The POS's stores and tills — its own RTDB list per store where one is
-// seeded, its shipped fallback where not (lib/pos-tills.cjs). Three small
-// reads, never the /pos node.
+// The POS's stores and tills. The STORES are the network registry's (one small
+// cached node — lib/network-load.cjs), so Concrete and any store the owner adds
+// can be given a terminal; each store's TILLS are its own RTDB list where one
+// is seeded, the registry's where not (lib/pos-tills.cjs). One small read per
+// store, never the /pos node.
 async function readStores(db) {
+  const registry = await loadNetwork(db);
   const configured = {};
-  await Promise.all(POS_STORES.map(async (s) => {
+  await Promise.all(posStoresOf(registry).map(async (s) => {
     configured[s.storeId] = (await db.ref(`pos/config/${s.storeId}/tills`).once("value")).val();
   }));
-  return posStores(configured);
+  return posStores(configured, registry);
+}
+
+// ── "IN USE FROM" — THE DAY A NEW TERMINAL ENTERED THE ESTATE ────────────────
+// A terminal added today has activeFrom = now, which is right for a machine
+// that arrives today. A machine that has been trading for a week before anyone
+// registered it (Concrete's two tills, registered after the shop opened) needs
+// the day it really started, or every batch before today reads as "this machine
+// was not in the estate yet". So Add takes an optional picked DATE — a
+// calendar pick, never a typed stamp — and the row's activeFrom becomes the
+// start of that day in South Africa.
+//
+// Absent → exactly what Add always did. Malformed, impossible or in the future
+// → refused, nothing written.
+const SAST_OFFSET_MS = 2 * 3600e3;
+function readActiveFromDate(raw, nowMs) {
+  if (raw === undefined || raw === null || raw === "") return { ok: true, ms: null };
+  const m = typeof raw === "string" ? /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw) : null;
+  const bad = { ok: false, reason: "Pick the day this terminal came into use from the calendar." };
+  if (!m) return bad;
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  const utc = Date.UTC(y, mo - 1, d);
+  const back = new Date(utc);
+  // Date.UTC rolls 31 Feb into March; a date that does not survive the round
+  // trip is not a date.
+  if (back.getUTCFullYear() !== y || back.getUTCMonth() !== mo - 1 || back.getUTCDate() !== d) return bad;
+  const ms = utc - SAST_OFFSET_MS;
+  if (ms > nowMs) return { ok: false, reason: "A terminal cannot come into use on a day that has not started yet. Pick today or an earlier day." };
+  return { ok: true, ms };
 }
 
 /**
@@ -98,7 +130,7 @@ async function audit(db, request, entry) {
   }
 }
 
-async function handle(db, request) {
+async function handle(db, request, { nowMs = Date.now() } = {}) {
   const data = request.data || {};
   const now = admin.database.ServerValue.TIMESTAMP;
   const action = data.action;
@@ -109,15 +141,21 @@ async function handle(db, request) {
   const stores = action === "retire" || action === "reinstate" ? [] : await readStores(db);
   const input = data.terminal || {};
 
-  // The server's own clock, for the one decision that compares times (a
-  // move's effective-from). Never the phone's.
-  const nowMs = Date.now();
+  // nowMs (the parameter, Date.now() unless a test injects it) is the server's
+  // own clock, for the decisions that compare times: a move's effective-from
+  // and an Add's picked day. Never the phone's.
 
   if (action === "add" || action === "edit" || action === "move" || action === "retire" || action === "reinstate") {
     const tid = readTypedTid(input.tid);
     if (!tid) return { ok: false, reason: "A TID is 4 to 16 letters and digits, exactly as printed after TID: on the slip." };
+    // Only Add reads the picked day; an edit never moves activeFrom.
+    const from = action === "add" ? readActiveFromDate(input.activeFromDate, nowMs) : { ok: true, ms: null };
+    if (!from.ok) return from;
     const plan = {
-      add: (cur) => planAdd({ ...input, tid }, cur, { stores, now }),
+      add: (cur) => {
+        const p = planAdd({ ...input, tid }, cur, { stores, now });
+        return p.ok && from.ms !== null ? { ...p, row: { ...p.row, activeFrom: from.ms } } : p;
+      },
       edit: (cur) => planEdit({ ...input, tid }, cur, { stores, now, nowMs }),
       move: (cur) => planMove({ ...input, tid }, cur, { stores, now, nowMs, by: request.auth?.uid }),
       retire: (cur) => planRetire({ tid }, cur, { now }),
@@ -193,3 +231,4 @@ exports.cardTerminalAdmin = onCall(
 // Test seam: the whole handler against an injected database.
 exports._handle = handle;
 exports._assertOwner = assertOwner;
+exports._readActiveFromDate = readActiveFromDate;

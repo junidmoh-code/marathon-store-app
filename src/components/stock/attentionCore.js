@@ -15,6 +15,7 @@
 
 import { topCategory } from "../../utils/productCategory";
 import { decodeSizeKey } from "../../utils/sizeKey";
+import { nameOf, isStore } from "./sectionRouting";
 
 // LOCATION IS A PROPERTY OF THE ROW, NOT A FILTER (owner call). The LIST is
 // never split by building — a style is one line whose quantity is the total we
@@ -22,7 +23,8 @@ import { decodeSizeKey } from "../../utils/sizeKey";
 // can show WHERE that stock sits, and break a single location down into sizes
 // on demand.
 const SHOP_SET = new Set(["marathon-pe", "marathon-pine", "trophy"]);
-export const isShopLocation = (loc) => SHOP_SET.has(loc);
+// …and any other STORE the network registry knows (Concrete).
+export const isShopLocation = (loc) => SHOP_SET.has(loc) || isStore(loc);
 
 export const LOCATION_LABELS = Object.freeze({
   "marathon-pe": "Marathon PE", "marathon-pine": "Marathon Pine", trophy: "Trophy",
@@ -30,7 +32,7 @@ export const LOCATION_LABELS = Object.freeze({
   central: "Central", base: "Base", studio: "Studio", warehouse1: "Warehouse 1",
   in_transit: "In Transit",
 });
-export const locationLabel = (loc) => LOCATION_LABELS[loc] || loc;
+export const locationLabel = (loc) => LOCATION_LABELS[loc] || nameOf(loc);
 
 const NO_SIZE_KEY = "_";
 

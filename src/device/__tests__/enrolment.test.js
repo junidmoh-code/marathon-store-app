@@ -69,7 +69,7 @@ describe("the claims", () => {
   });
   it("reads the cached token, and falls back to decoding it when that throws (offline, expired)", async () => {
     const ok = { getIdTokenResult: async () => ({ claims: { deviceId: DEV, eid: "e1", personName: "Sipho", dkind: "shared" } }) };
-    expect(await readSessionClaims(ok)).toEqual({ deviceId: DEV, eid: "e1", personId: null, personName: "Sipho", kind: "shared", canManageCodes: false });
+    expect(await readSessionClaims(ok)).toEqual({ deviceId: DEV, eid: "e1", personId: null, personName: "Sipho", kind: "shared", canManageCodes: false, section: null });
     const offline = { getIdTokenResult: async () => { throw new Error("auth/network-request-failed"); }, accessToken: token({ deviceId: DEV, eid: "e9" }) };
     expect(await readSessionClaims(offline)).toMatchObject({ deviceId: DEV, eid: "e9" });
     expect(await readSessionClaims(null)).toMatchObject({ deviceId: null, eid: null });
@@ -80,7 +80,7 @@ describe("who is holding the device", () => {
   beforeEach(() => store.clear());
   it("an enrolled device is its person, under the id its token names", () => {
     const id = setDeviceIdentity({ claims: claims(), permRecord: flagged(), user: { email: "mc@marathon.internal" } });
-    expect(id).toEqual({ deviceId: DEV, personName: "Sipho", personId: "p1", enrolled: true, canManageCodes: false });
+    expect(id).toEqual({ deviceId: DEV, personName: "Sipho", personId: "p1", enrolled: true, canManageCodes: false, section: null });
     expect(getDeviceIdentity()).toBe(id);
   });
   it("the Device codes tile shows only for a LIVE enrolment whose token says code-maker", () => {
@@ -132,5 +132,40 @@ describe("last seen", () => {
     const refused = async () => { throw new Error("PERMISSION_DENIED"); };
     expect(await writeLastSeen({ deviceId: DEV, write: refused, nowMs: T + 99 * LAST_SEEN_EVERY_MS, storage })).toBe(false);
     expect(await writeLastSeen({ deviceId: null, write, nowMs: T, storage })).toBe(false);
+  });
+});
+
+// ── the device's section ─────────────────────────────────────────────────────
+describe("a device's section rides in its token", () => {
+  it("is read from the `section` claim — exactly 1 or 2, anything else is none", async () => {
+    const { pickDeviceClaims } = await import("../enrolment.js");
+    expect(pickDeviceClaims({ deviceId: "d", eid: "e", section: 1 }).section).toBe(1);
+    expect(pickDeviceClaims({ deviceId: "d", eid: "e", section: 2 }).section).toBe(2);
+    for (const bad of ["1", 3, 0, true, null, undefined, {}]) {
+      expect(pickDeviceClaims({ deviceId: "d", eid: "e", section: bad }).section, JSON.stringify(bad)).toBe(null);
+    }
+    expect(pickDeviceClaims(null).section).toBe(null);
+  });
+
+  it("is exposed as deviceIdentity.section for an ENROLLED device only", async () => {
+    const { identityFrom, pickDeviceClaims } = await import("../enrolment.js");
+    const claims = pickDeviceClaims({ deviceId: "dev-aaaaaaaa", eid: "e1", personId: "p1", personName: "Sipho", section: 1 });
+    expect(identityFrom({ claims, permRecord: null, user: null }).section).toBe(1);
+    // A section with no enrolment behind it (a hand-made token shape) is nothing.
+    expect(identityFrom({ claims: { section: 1 }, permRecord: null, user: null }).section).toBe(null);
+  });
+
+  it("AN EXISTING ENROLLED DEVICE WITH NO SECTION is the identity it always was, and is not scoped", async () => {
+    const { identityFrom, pickDeviceClaims, deviceGateVerdict } = await import("../enrolment.js");
+    const { sectionsFor, SEED_REGISTRY } = await import("../../utils/networkRegistry");
+    const claims = pickDeviceClaims({ deviceId: "dev-aaaaaaaa", eid: "e1", personId: "p1", personName: "Sipho" });
+    const permRecord = { deviceCodeRequired: true, deviceGate: { "dev-aaaaaaaa": "e1" } };
+    expect(deviceGateVerdict({ permRecord, claims, isSuperAdmin: false })).toBe("app");
+    const id = identityFrom({ claims, permRecord, user: null });
+    expect(id).toEqual({ deviceId: "dev-aaaaaaaa", personName: "Sipho", personId: "p1", enrolled: true, canManageCodes: false, section: null });
+    expect(sectionsFor(SEED_REGISTRY, permRecord, { deviceSection: id.section })).toEqual([1, 2]);
+    // …and one enrolled with a Section 1 code sees Section 1.
+    const s1 = identityFrom({ claims: { ...claims, section: 1 }, permRecord, user: null });
+    expect(sectionsFor(SEED_REGISTRY, permRecord, { deviceSection: s1.section })).toEqual([1]);
   });
 });

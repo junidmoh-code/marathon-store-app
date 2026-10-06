@@ -30,6 +30,8 @@
 const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
+const networkRegistry = require("./lib/network-registry.cjs");
+const { loadNetwork } = require("./lib/network-load.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
 const { requestUntouched, pickInProgress } = require("./lib/shop-source-rule.cjs");
 const { runStockAuditPass } = require("./stockAudit/dailyPass.cjs");
@@ -63,8 +65,17 @@ const LOCK_STEAL_MS = 10 * 60e3;
 const MOVEMENTS_WINDOW_DAYS = 45;      // confidence (30d) + confirmed-out gate + in-flight ledger evidence
 const RUNS_KEEP_DAYS = 7;
 
-// Universe → placedStore string the app writes on refill orders.
-const UNIVERSE_BY_SHOP = { "marathon-pe": "central", trophy: "central", "marathon-pine": "pine" };
+// Universe → placedStore string the app writes on refill orders. It is also
+// the "is this destination a SHOP?" test: a shop leg gets an R### order card,
+// a hub leg a /refill_requests row only. Read from the network registry
+// (location.universe, stores only) — Marathon PE and Trophy "central", Marathon
+// Pine "pine", exactly the three values this file used to list, and Concrete
+// "concrete". A hub, or a location the registry does not know, has none.
+function shopUniverse(network, dest) {
+  const reg = network && network.locations ? network : networkRegistry.SEED_REGISTRY;
+  const l = Object.prototype.hasOwnProperty.call(reg.locations, dest) ? reg.locations[dest] : null;
+  return l && l.type === "store" && l.universe ? l.universe : null;
+}
 
 // ── the ONE way this file writes a multi-path update ──────────────────────────
 // Every `db.ref().update(...)` goes through here. Two live outages (2026-07-22
@@ -384,7 +395,7 @@ function intentRecords({ intent, startedAt, runId, rrKey, orderId = null, orderC
   return { rr, lock };
 }
 
-function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt }) {
+function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network = null }) {
       const upd = {};
       const wantOrders = new Set();
       const wantRrs = new Set();
@@ -392,7 +403,7 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
         for (const [pid, bySize] of Object.entries(byPid)) {
           for (const [sizeKey, s] of Object.entries(bySize)) {
             const p = products[pid] || {};
-            if (!UNIVERSE_BY_SHOP[dest]) {
+            if (!shopUniverse(network, dest)) {
               // HUB legs (hub1 AND hub2) shadow as refill_requests rows in
               // their own queue tab — never as clothing-shaped store orders.
               // The pre-2026-08-25 predicate was `dest === "hub2"`, which sent
@@ -424,7 +435,7 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
                 size: sizeKey === "_" ? "" : String(sizeKey).replace(/(\d)_(\d)/g, "$1.$2"), sentSize: null, qty: s.qty,
                 customerName: "Shop Refill", customerPhone: null,
                 hub: s.source, placedAtHub: s.source,
-                placedStore: UNIVERSE_BY_SHOP[dest] || "central", destShop: dest,
+                placedStore: shopUniverse(network, dest) || "central", destShop: dest,
                 productType: "clothing", requestDisplay: false, requestDisplayPartner: false,
                 status: "incoming", createdAt, updatedAt: startedAt,
                 readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
@@ -555,7 +566,17 @@ async function runScan() {
       });
       return;
     }
-    const locs = [...new Set([...Object.keys(config.routes || {}), ...Object.values(config.routes || {})])];
+    // The network registry: sections, and which locations are LIVE. Only the
+    // legs it allows are read at all — a location that is not live costs no
+    // stock read and gets no routing (lib/network-registry.cjs).
+    const network = await loadNetwork(db, { nowMs });
+    // config.routes names today's legs; a live location it does not name is
+    // routed by the registry — a hub from Central, a store from every hub that
+    // holds any of its back stock (engine.networkRouting). The read list is
+    // the allowed legs' two ends and nothing else.
+    const routing = engine.networkRouting(config, network);
+    const liveRoutes = routing.routes;
+    const locs = [...new Set([...Object.keys(liveRoutes), ...Object.values(liveRoutes), ...routing.locs])];
     // The ledger window must cover the LONGEST lookback that reads it — the
     // confidence score (30d) and the config-adjustable confirmed-out window —
     // else arrivals older than the window silently stop counting as lift
@@ -599,7 +620,7 @@ async function runScan() {
     // refuser and the ledger row per write-off. A failure here is logged and
     // the scan carries on (the next run re-plans from the same records).
     try {
-      const woSnap = { nowMs, config, stock, products, refillRequests, movements, rejectStreak, cursors: writeoffCursors, windowStartMs: Date.parse(windowStart) };
+      const woSnap = { nowMs, config, stock, products, refillRequests, movements, rejectStreak, cursors: writeoffCursors, windowStartMs: Date.parse(windowStart), network };
       const wo = refusalWriteoff.planRefusalWriteoffs(woSnap);
       if (wo.writeoffs.length) {
         const r = await refusalWriteoff.applyRefusalWriteoffs({
@@ -619,6 +640,7 @@ async function runScan() {
 
     const plan = engine.computeRefillPlan({
       nowMs, config, targets, stock, products, openIndex, refillRequests, orders, movements, targetDecisions, rejectStreak, retryState, heldLines, locations,
+      network,
     });
     counts.errors.push(...plan.errors);
 
@@ -829,7 +851,9 @@ async function runScan() {
     const shadowNode = {};
     const liveByDest = new Map();
     for (const intent of plan.intents) {
-      const mode = config.mode?.[intent.dest] || "off";
+      // The plan carries each leg's mode: the config.mode entry, or — for a
+      // live location config.mode does not name — "live" (engine.networkRouting).
+      const mode = intent.mode || "off";
       if (mode === "shadow") {
         ((shadowNode[intent.dest] ||= {})[intent.productId] ||= {})[intent.sizeKey] = {
           qty: intent.qty, source: intent.source, priority: intent.priority, runId, computedAt: startedAt,
@@ -858,7 +882,7 @@ async function runScan() {
     // (autoRefill orders are excluded there). UI renders them read-only;
     // fulfillCRBatch refuses them outright as a second line of defence.
     {
-      const upd = shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt });
+      const upd = shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network });
       if (Object.keys(upd).length) await safeUpdate(db, upd, "shadow sweep");
     }
 
@@ -871,7 +895,7 @@ async function runScan() {
     let applyDeferred = 0;
     applyLoop:
     for (const [dest, intents] of liveByDest) {
-      const isStoreLeg = UNIVERSE_BY_SHOP[dest] != null;
+      const isStoreLeg = shopUniverse(network, dest) != null;
       // ONE R-number per destination per run (mirrors "one R### per cart"), and
       // ONE shared createdAt per destination — the warehouse Clothing tab groups
       // cards by (product, destShop, createdAt), so a shared stamp makes all of
@@ -888,6 +912,14 @@ async function runScan() {
           break applyLoop;
         }
         const { productId: pid, sizeKey, size, qty, source } = intent;
+        // THE SECTION WALL, re-checked at the write: the plan already holds
+        // only live, same-side legs, so this never fires — it is the guarantee
+        // that no request or order card is ever raised across the wall or for
+        // a location that is not live, whatever produced the intent.
+        if (!networkRegistry.autoRouteAllowed(network, source, dest)) {
+          counts.errors.push(`section wall: refused ${source}→${dest} for ${pid}/${sizeKey}`);
+          continue;
+        }
         // Idempotency lock FIRST — create-if-absent; a concurrent/manual intent wins.
         const lockPath = `refill_engine/open/${dest}/${pid}/${sizeKey}`;
         const claim = await db.ref(lockPath).transaction((cur) => (cur ? undefined : {
@@ -910,7 +942,7 @@ async function runScan() {
             productPhoto: p.photo || null, productPhotoUrl: p.photoUrl ?? null,
             size, sentSize: null, qty, customerName: "Shop Refill", customerPhone: null,
             hub: source, placedAtHub: source,
-            placedStore: UNIVERSE_BY_SHOP[dest] || "central", destShop: dest,
+            placedStore: shopUniverse(network, dest) || "central", destShop: dest,
             productType: "clothing", requestDisplay: false, requestDisplayPartner: false,
             status: "incoming", createdAt: orderCreatedAt, updatedAt: orderCreatedAt,
             readyAt: null, outOfStockAt: null, comingTomorrowAt: null, collectedAt: null,
@@ -975,7 +1007,7 @@ async function runScan() {
       const auditRes = await runStockAuditPass({
         db, app: admin.app(), nowMs,
         stock, products, orders, movements,
-        setFn: safeSet, updFn: safeUpdate,
+        setFn: safeSet, updFn: safeUpdate, network,
       });
       if (auditRes && !auditRes.skipped) counts.stockAudit = auditRes;
     } catch (e) {
@@ -1136,3 +1168,4 @@ exports._shadowSyncUpdates = shadowSyncUpdates; // pure — hub-leg vs store-leg
 exports._closeRequestTxn = closeRequestTxn; // pure — the request side of a plan close
 exports._dropIntentsForRefused = dropIntentsForRefused; // pure — a refused withdrawal never asks twice
 exports._intentRecords = intentRecords;     // pure — pass-through marking on the lock + request is testable
+exports._shopUniverse = shopUniverse;       // pure — which destinations are SHOP legs, and their placedStore

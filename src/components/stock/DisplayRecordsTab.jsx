@@ -40,11 +40,15 @@ import { classifyDisplayRecords, retirePlan, retireKey, retireEffectLine, CLEANU
 import { removeDisplayFact, recordDisplayFact } from "./displayRegistrationStore";
 import { useDisplaySlots, useDisplayRegister } from "./useStock";
 import { labelFor } from "./locations";
+import { cleanupHubs } from "./hubCleanupCore";
+import { useNetwork } from "../../utils/useNetwork";
+import { wallAllows } from "../../utils/networkRegistry";
 import { formatSize } from "../../utils/sizeLabel";
 import { rowSizeText } from "./displayRowCore";
 import { CARD, BORDER, BLUE, BLUE_L, GREEN, RED, GRAY, AMBER, FONT, bGray, bRed } from "./ui";
 
-const HUBS = ["hub1", "hub2"];
+// The hubs come from the network registry (hubCleanupCore.cleanupHubs): the
+// LIVE hubs — Hub 1 and Hub 2 on the seed, the list this tab always had.
 
 const CLASS_META = {
   replaced: { title: "Replaced", tone: AMBER, blurb: "A shop floor shows this product on display at a DIFFERENT size. This row is the pair that was replaced." },
@@ -87,7 +91,10 @@ function Evidence({ row }) {
 //                       registered": a display standing at a shop that no
 //                       register row describes.
 export default function DisplayRecordsTab({ products = [], isAdmin = false, mode = "records" }) {
-  const [hub, setHub] = useState("hub1");
+  const { registry: network } = useNetwork();
+  const HUBS = useMemo(() => cleanupHubs(network), [network]);
+  const [hubPick, setHub] = useState(null);
+  const hub = hubPick && HUBS.includes(hubPick) ? hubPick : (HUBS[0] || "hub1");
   const [open, setOpen] = useState(() => new Set(["replaced", "sold", "gone"]));
   const [confirm, setConfirm] = useState(null);     // retireKey awaiting a second tap
   const [bulk, setBulk] = useState(false);          // the bulk confirm is showing
@@ -100,7 +107,9 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
   // The unregistered lane judges every floor at once, so it needs the OTHER
   // hub's register too — a slot booked at hub2 must not read as unregistered
   // just because this screen is looking at hub1.
-  const otherHub = hub === "hub1" ? "hub2" : "hub1";
+  // "The other hub" is another live hub IN THE SAME SECTION — a display is
+  // never booked across the section wall.
+  const otherHub = HUBS.find((h) => h !== hub && wallAllows(network, hub, h)) || null;
   const otherRegister = useDisplayRegister(otherHub, mode === "unregistered");
 
   // EVERY product, deliberately NOT filtered to footwear. An earlier cut passed
@@ -133,7 +142,7 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
     if (mode !== "unregistered") return [];
     return findUnregisteredDisplays({
       slots,
-      registerByHub: { [hub]: register, [otherHub]: otherRegister },
+      registerByHub: { [hub]: register, ...(otherHub ? { [otherHub]: otherRegister } : {}) },
       productsById,
     });
   }, [mode, slots, register, otherRegister, hub, otherHub, productsById]);
@@ -227,7 +236,7 @@ export default function DisplayRecordsTab({ products = [], isAdmin = false, mode
   }
 
   if (mode === "unregistered") {
-    const loaded = register != null && otherRegister != null && slots != null;
+    const loaded = register != null && (!otherHub || otherRegister != null) && slots != null;
     const canAct = unregPending.filter((r) => r.registerable);
     return (
       <div style={{ fontFamily: FONT, display: "flex", flexDirection: "column", gap: 12 }}>

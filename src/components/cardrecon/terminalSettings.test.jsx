@@ -21,6 +21,18 @@ const STORES = [
 
 const fake = vi.hoisted(() => ({ auth: { currentUser: null }, calls: [] }));
 vi.mock("../../firebase", () => ({ database: {}, functions: {}, storage: {}, auth: fake.auth }));
+// The network registry and the viewer's sections, without the live reads behind
+// them: the built-in registry, and (unless a test narrows it) a viewer who sees
+// both sections — which is every account there is before Junid scopes one.
+const viewer = vi.hoisted(() => ({ sections: [1, 2] }));
+vi.mock("../../utils/useNetwork", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../../utils/networkRegistry");
+  return { useNetwork: () => ({ registry: SEED_REGISTRY, settled: true, error: false }) };
+});
+vi.mock("../../utils/useMySections", async () => {
+  const { SEED_REGISTRY } = await vi.importActual("../../utils/networkRegistry");
+  return { useMySections: () => ({ sections: viewer.sections, both: viewer.sections.length === 2, registry: SEED_REGISTRY, canSee: () => true }) };
+});
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (r, cb) => { cb({ val: () => (String(r?.path).includes("cardTerminals") ? ESTATE : {}) }); return () => {}; },
@@ -93,7 +105,10 @@ describe("the settings sheet", () => {
     const tree = await openSettings();
     await act(async () => { byText(tree.root, "Add a terminal").props.onClick(); });
     const store = tree.root.find((n) => n.type === "select" && n.props.id === "ts-store");
-    expect(store.findAll((n) => n.type === "option").map((o) => o.props.value)).toEqual(["", "pe", "pine", "trophy"]);
+    // The same three stores, grouped by section — Section 2 first.
+    expect(store.findAll((n) => n.type === "option").map((o) => o.props.value)).toEqual(["", "pe", "trophy", "pine"]);
+    expect(store.findAll((n) => n.type === "optgroup").map((g) => [g.props.label, g.findAll((n) => n.type === "option").map((o) => o.props.value)]))
+      .toEqual([["Section 2", ["pe", "trophy"]], ["Section 1", ["pine"]]]);
     await act(async () => { tree.root.find((n) => n.props.id === "ts-tid").props.onChange({ target: { value: "0000cd2e" } }); });
     expect(tree.root.find((n) => n.props.id === "ts-tid").props.value).toBe("0000CD2E");
     await act(async () => { store.props.onChange({ target: { value: "trophy" } }); });
@@ -154,5 +169,84 @@ describe("the settings sheet", () => {
     await act(async () => { yes.props.onClick(); });
     await flush();
     expect(fake.calls.at(-1).payload).toEqual({ action: "retire", terminal: { tid: "0000HP1X" } });
+  });
+});
+
+// ─── CONCRETE AND PINE, FROM THE REGISTRY — NOTHING TYPED BUT THE TID ────────
+describe("registering terminals for Concrete and Pine", () => {
+  const WITH_CONCRETE = [
+    ...STORES.map((s) => ({ ...s, section: s.storeId === "pine" ? 1 : 2 })),
+    { storeId: "concrete", label: "Concrete", section: 1, tills: [{ tillId: "till-1", name: "Till 1" }, { tillId: "till-2", name: "Till 2" }] },
+  ];
+  const openAdd = async () => {
+    STORES.splice(0, STORES.length, ...WITH_CONCRETE);
+    const tree = await openSettings();
+    await act(async () => { byText(tree.root, "Add a terminal").props.onClick(); });
+    return tree;
+  };
+  const set = async (tree, id, value) =>
+    act(async () => { tree.root.find((n) => n.props.id === id).props.onChange({ target: { value } }); });
+  const submit = async (tree) => {
+    await act(async () => { tree.root.find((n) => n.type === "form").props.onSubmit({ preventDefault() {} }); });
+    await flush();
+  };
+
+  it("the store picker offers Concrete under Section 1, and Concrete's two tills are picked — not typed", async () => {
+    const tree = await openAdd();
+    const store = tree.root.find((n) => n.type === "select" && n.props.id === "ts-store");
+    expect(store.findAll((n) => n.type === "optgroup").map((g) => [g.props.label, g.findAll((n) => n.type === "option").map((o) => o.props.children)]))
+      .toEqual([["Section 2", ["Marathon PE", "Trophy"]], ["Section 1", ["Marathon Pine", "Concrete"]]]);
+    await act(async () => { store.props.onChange({ target: { value: "concrete" } }); });
+    const till = tree.root.find((n) => n.type === "select" && n.props.id === "ts-till");
+    expect(till.findAll((n) => n.type === "option").map((o) => o.props.value)).toEqual(["", "till-1", "till-2"]);
+    // The only free-text identity on the form is the TID; store and till are selects.
+    expect(tree.root.findAll((n) => n.type === "select").map((n) => n.props.id)).toEqual(["ts-store", "ts-till"]);
+  });
+
+  it("Concrete Till 2, added today: the payload names the POS store and till and carries no date", async () => {
+    const tree = await openAdd();
+    await set(tree, "ts-tid", "0000cc2b");
+    await set(tree, "ts-store", "concrete");
+    await set(tree, "ts-till", "till-2");
+    await set(tree, "ts-label", "Concrete Till 2");
+    await submit(tree);
+    expect(fake.calls.at(-1)).toEqual({ name: "cardTerminalAdmin", payload: {
+      action: "add", terminal: { tid: "0000CC2B", storeId: "concrete", tillId: "till-2", label: "Concrete Till 2", mid: "", capture: "both" } } });
+  });
+
+  it("'In use from' is a calendar pick, capped at today; an earlier day rides on the add", async () => {
+    const tree = await openAdd();
+    const from = tree.root.find((n) => n.props.id === "ts-from");
+    expect(from.props.type).toBe("date");
+    expect(from.props.value).toBe("2026-09-21");
+    expect(from.props.max).toBe("2026-09-21");
+    await set(tree, "ts-tid", "0000PN1C");
+    await set(tree, "ts-store", "pine");
+    await set(tree, "ts-till", "till-1");
+    await set(tree, "ts-label", "Pine Till 1");
+    await set(tree, "ts-from", "2026-09-14");
+    await submit(tree);
+    expect(fake.calls.at(-1).payload).toEqual({
+      action: "add",
+      terminal: { tid: "0000PN1C", storeId: "pine", tillId: "till-1", label: "Pine Till 1", mid: "", capture: "both", activeFromDate: "2026-09-14" } });
+  });
+
+  it("picking today again sends no date — the server stamps the moment, as it always has", async () => {
+    const tree = await openAdd();
+    await set(tree, "ts-tid", "0000PN1C");
+    await set(tree, "ts-store", "pine");
+    await set(tree, "ts-till", "till-1");
+    await set(tree, "ts-label", "Pine Till 1");
+    await set(tree, "ts-from", "2026-09-14");
+    await set(tree, "ts-from", "2026-09-21");
+    await submit(tree);
+    expect("activeFromDate" in fake.calls.at(-1).payload.terminal).toBe(false);
+  });
+
+  it("an edit has no 'In use from' — that day is never moved from this sheet", async () => {
+    STORES.splice(0, STORES.length, ...WITH_CONCRETE);
+    const tree = await openSettings();
+    await act(async () => { tree.root.findAll((n) => n.type === "button" && n.props.children === "Edit")[0].props.onClick(); });
+    expect(tree.root.findAll((n) => n.props.id === "ts-from")).toHaveLength(0);
   });
 });

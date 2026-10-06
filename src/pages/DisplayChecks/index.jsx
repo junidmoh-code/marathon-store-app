@@ -24,9 +24,9 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { usePermissions } from "../../components/PermissionsContext";
-import { SHOP_LABELS } from "../../utils/stores";
+import { SHOP_LABELS, shopLabelOf } from "../../utils/stores";
 import {
-  DISPLAY_CHECKS_STORE_FLAGS,
+  displayChecksEnabledStores,
   canManageDisplayChecks,
   isDisplayChecksSuperAdmin,
 } from "../../config/displayChecks";
@@ -45,9 +45,9 @@ const TABS = [
   { key: "settings", label: "Settings", manager: true },
 ];
 
-const ENABLED_STORES = Object.keys(DISPLAY_CHECKS_STORE_FLAGS)
-  .filter((id) => DISPLAY_CHECKS_STORE_FLAGS[id] === true)
-  .map((id) => ({ id, label: SHOP_LABELS[id] || id }));
+// Sections: the enabled stores are the LIVE stores of the network registry
+// (config/displayChecks.js) — Marathon PE and Trophy today, as before.
+const enabledStores = () => displayChecksEnabledStores().map((id) => ({ id, label: shopLabelOf(id) }));
 
 // A second-resolution wall clock for the on-duty strip (§9.4). Presentational.
 function useTick() {
@@ -104,6 +104,7 @@ export default function DisplayChecks({ onExit, products }) {
   }), [user?.email, permRecord?.permissions, permRecord?.destShop]);
 
   const isSuper = isDisplayChecksSuperAdmin(gateUser);
+  const ENABLED_STORES = enabledStores();
   const [superStore, setSuperStore] = useState(ENABLED_STORES[0]?.id || null);
   const store = isSuper ? superStore : (permRecord?.destShop || null);
   const storeLabel = SHOP_LABELS[store] || store || "—";

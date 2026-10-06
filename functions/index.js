@@ -3715,6 +3715,10 @@ exports.orderPlacedPush = onValueWritten(
       // till in the loop at all.
       nowMs:     Date.now(),
       sleep:     (ms) => new Promise((r) => setTimeout(r, ms)),
+      // Hub names, which hubs a link may open and each hub's section come from
+      // the network registry — one small cached node, the built-in registry if
+      // it cannot be read.
+      registry:  await require("./lib/network-load.cjs").loadNetwork(db),
     });
     if (res.sent) {
       console.log(

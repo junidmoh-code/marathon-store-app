@@ -103,7 +103,7 @@ describe("non-arrivals never reactivate", () => {
   });
   it("transfer_out parks at in_transit — the flag waits for the transfer_in", async () => {
     seedCell("hub1", 5); seedCell("in_transit", 0);
-    const res = await mv({ type: "transfer_out", from: "hub1", to: "in_transit" });
+    const res = await mv({ type: "transfer_out", from: "hub1", to: "in_transit", transitTo: "trophy" });
     expect(res.ok).toBe(true);
     expect(res.reactivated).toBeUndefined();
     expect(getPath(`products/${PID}/deactivated`)).toEqual(DEACT);

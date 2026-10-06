@@ -1256,3 +1256,40 @@ above) and `/returns_log` through the shared Slow Movers engine. Those log paths
 are written by this app's order flow (`src/App.jsx`) and read by
 `functions/index.js`; `/returns_log` is not yet broken out as its own section in
 this file. The only path Marketing **writes** is `/marketing`.
+
+# SECTIONS — THE NETWORK REGISTRY
+
+## `/network` — Central + two sections (Sections PR)
+
+One small node, owner-written from Home → Network, read by both apps and the functions. When it is missing
+or unreadable the built-in seed applies (`src/utils/networkRegistry.js`): Section 2 as before, Section 1 not live.
+
+```text
+/network
+  creditScope                              "shared" (default) | "section"
+  updatedAt, updatedBy                     server-corrected ms, uid
+  locations/{locationId}                   { id, name, type: store|hub|central, section: 1|2, live, sort,
+                                             posId?, universe?, tills?, aliases?, serves?, policyLike?, numberPrefix?, retired? }
+  backStock/{storeId}/{categoryKey}        hub id; "_default" covers every category not named
+  productOverrides/{storeId}/{productId}   hub id
+  posStores/{posId}                        { location, section } — derived index for the database rules
+```
+
+## Other paths the sections work adds
+
+```text
+/central_dispatch/{movementId}             { productId, size, qty, unitCost, costValue, from, to, section, ts, actor, movementId }
+                                           append-only; written in the SAME update as the stock movement for every
+                                           Central-origin move to a sectioned location. Owner-read.
+/orderCounter_byStore/{shopId}             { day, counter } — a prefixed shop's own daily order sequence (Pine P001, Concrete C001)
+/refillCounter_byStore/{shopId}            { day, counter } — the same for refill requests (RP001-1, RC001-1)
+/sections_repair/returns/{key}             repair log (admin script only)
+/sections_repair/dropped_returns/{key}     repair log (admin script only)
+/users/{uid}/sections                      { "1": true } | { "2": true } — a MAP, never an array
+/users/{uid}/allSections                   true — an admin the owner lets see both sections
+/device_enrolment/devices/{id}/section     1 | 2, also the custom-token claim `section`
+/push_assignments/{uid}/concrete-stockroom boolean (the stockroom as an alert hub)
+```
+
+New `/orders` and refill-request records carry `section` (of `destShop`). A record without it is legacy;
+readers derive it from `destShop`. Rules for all of the above: `docs/SECTIONS-RULES.md`.

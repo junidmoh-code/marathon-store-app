@@ -22,6 +22,9 @@
 // If it is ever blank, registerPush() FAILS LOUDLY (console.error + a thrown
 // reason surfaced to the caller) rather than quietly registering nothing — a
 // silent no-op here means staff who believe they are covered are not.
+import { currentNetwork } from "../utils/networkStore";
+import { hubLabel as hubLabelIn } from "./pushHubs";
+
 export const VAPID_PUBLIC_KEY =
   "BJDsD4kzZfqM624Q0NqT9W7tmOW77vhcq1OsqL7uZwv5BYIHlGYpAGJR-dAP7kkd5oqxm1ShJbWX98Ol2A-H5n4";
 
@@ -94,21 +97,11 @@ export const AUDIENCE_BUCKETS = Object.freeze([
   "marathon-pine",
 ]);
 
-// Destination key → the words a human reads in the notification.
-export const HUB_LABEL = Object.freeze({
-  hub1: "Hub 1",
-  hub2: "Hub 2",
-  hub3: "Hub 3",
-  central: "Central",
-  "marathon-pe": "Marathon PE",
-  trophy: "Trophy",
-  "marathon-pine": "Marathon Pine",
-});
-
-/** Human label for a destination, falling back to the raw key rather than "" —
- *  an unknown hub must still produce a readable notification. */
-export function hubLabel(hub) {
-  return HUB_LABEL[hub] || String(hub || "a hub");
+/** Human label for a destination — the network registry's own name for it
+ *  (src/push/pushHubs.js), falling back to the raw key rather than "": an
+ *  unknown hub must still produce a readable notification. */
+export function hubLabel(hub, registry = currentNetwork()) {
+  return hubLabelIn(registry, hub, "a hub");
 }
 
 // Which WarehouseView tab an order's card lives on, for the deep link. A shop

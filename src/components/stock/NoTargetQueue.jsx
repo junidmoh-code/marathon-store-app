@@ -38,13 +38,38 @@ import { applyMovement } from "./applyMovement";
 import { encodeSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, SizeFactChip, CHIP_GRID } from "./healthWidgets";
-import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun } from "./introduceExistingCore";
+import { computeUnintroduced, stockedStandardSizes, destsFrom, effectiveRun, isBufferLike } from "./introduceExistingCore";
+import { currentNetwork } from "../../utils/networkStore";
+import { sectionOf, wallAllows } from "../../utils/networkRegistry";
+import { useMySections } from "../../utils/useMySections";
+import { nameOf, storeIds, solveHubsOfSection, solveHubFor, centralId, isCentral } from "./sectionRouting";
 import { categoryPolicyLocs } from "./solvePlan";
 import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
 
-const ALL_LOCS = ["marathon-pe", "trophy", "hub2", "central"];
-const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub2: "Hub 2", central: "Central" };
+// THE LOCATIONS A CARD SHOWS AND MAY MOVE TO come from the network registry:
+// the card's OWN section's shops and their back-stock hub, plus Central — for
+// a Hub 2 / Marathon PE / Trophy card exactly the four this list always held.
+// A card at Central shows both sections (Central supplies both). Nothing is
+// offered across the section wall.
+const locLabel = (l) => nameOf(l);
+function allLocsFor(loc, canSee) {
+  const N = currentNetwork();
+  const own = sectionOf(N, loc);
+  const home = sectionOf(N, "hub2");
+  const secs = own ? [own] : [1, 2].sort((a, b) => (a === home ? -1 : b === home ? 1 : a - b));
+  const out = [];
+  for (const sec of secs) out.push(...storeIds(N, { section: sec }), ...solveHubsOfSection(N, sec, null, null));
+  return [...out.filter((l) => (typeof canSee === "function" ? canSee(l) : true)), centralId(N)];
+}
+// Where a card's stock goes by default: a shop's to its own hub, a buffer
+// hub's back to Central, Central's to the first buffer hub (Hub 2).
+function defaultDestFor(loc) {
+  const N = currentNetwork();
+  if (isCentral(loc, N)) return solveHubsOfSection(N, sectionOf(N, "hub2"), null, null)[0] || "hub2";
+  if (isBufferLike(loc, N)) return centralId(N);
+  return solveHubFor(N, loc, null, null) || "hub2";
+}
 // Approved standard run (owner policy 2026-07-13, reduced) — single source of
 // truth is introduceExisting.js; this import keeps the wizard prefill aligned.
 const STANDARD_RUN = { S: 1, M: 2, L: 2, XL: 1, XXL: 1, XXXL: 1 };
@@ -86,6 +111,9 @@ export default function NoTargetQueue({ products = [] }) {
   const decisions = useTargetDecisions() || {};
   const engineConfig = useEngineConfig();
   const dests = useMemo(() => destsFrom(engineConfig), [engineConfig]);
+  // Which sections this viewer may see (the registry is read through the
+  // same hook, so a change to /network re-renders the cards).
+  const { canSee, registry: network } = useMySections();
   // Never classify against half-loaded data: with targets still null EVERY
   // product would render as a wrong card for a moment.
   const loading = allTargetsRaw == null || !allStock || !Object.keys(allStock).length;
@@ -150,7 +178,7 @@ export default function NoTargetQueue({ products = [] }) {
         key: `central|${pid}`, loc: "central", pid, isNew: true,
         name: p?.name || pid, photo: p?.photoUrl, sizes,
         units: sizes.reduce((t, s) => t + s.qty, 0),
-        network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
+        network: allLocsFor("central", canSee).map((l) => ({ loc: l, units: sumAt(l, pid) })),
       });
     }
     // Remaining GENUINE decisions at managed locations: numeric-size products
@@ -175,7 +203,7 @@ export default function NoTargetQueue({ products = [] }) {
           key: `${loc}|${pid}`, loc, pid, isNew: false, noStandard: !introducedElsewhere,
           name: p?.name || pid, photo: p?.photoUrl, sizes,
           units: sizes.reduce((t, s) => t + s.qty, 0),
-          network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
+          network: allLocsFor(loc, canSee).map((l) => ({ loc: l, units: sumAt(l, pid) })),
         });
       }
     }
@@ -199,12 +227,14 @@ export default function NoTargetQueue({ products = [] }) {
           // a one-size map entry decides the "_" cell — its letter cells stay
           // the run's business exactly as before.
           .filter((s) => !(mappedAt(pid, loc) && encodeSizeKey(s.size) === "_"));
-        if (loc === "hub2") {
+        // A BUFFER hub (Hub 2; Hub 3 for Section 1) also owns the sizes
+        // Central holds that no location on ITS side of the wall targets.
+        if (isBufferLike(loc)) {
           const seen = new Set(sizes.map((s) => encodeSizeKey(s.size)));
           for (const [size, c] of Object.entries(allStock?.central?.[pid] || {})) {
             const sk = encodeSizeKey(size);
             if (seen.has(sk) || byTarget[sk]) continue;
-            if ((Number(c?.qty) || 0) > 0 && !dests.some((d) => allTargets?.[d]?.[pid]?.[sk])) {
+            if ((Number(c?.qty) || 0) > 0 && !dests.some((d) => wallAllows(currentNetwork(), loc, d) && allTargets?.[d]?.[pid]?.[sk])) {
               sizes.push({ size, qty: Math.max(Number(c?.qty) || 0, 0), atCentral: true });
             }
           }
@@ -215,12 +245,12 @@ export default function NoTargetQueue({ products = [] }) {
           key: `${loc}|${pid}|sizes`, loc, pid, isNew: false, noStandard: true,
           name: p?.name || pid, photo: p?.photoUrl, sizes,
           units: sizes.reduce((t, s) => t + s.qty, 0),
-          network: ALL_LOCS.map((l) => ({ loc: l, units: sumAt(l, pid) })),
+          network: allLocsFor(loc, canSee).map((l) => ({ loc: l, units: sumAt(l, pid) })),
         });
       }
     }
     return out.sort((a, b) => (a.isNew === b.isNew ? b.units - a.units : a.isNew ? -1 : 1));
-  }, [loading, allStock, allTargets, decisions, byId, dests, engineConfig]);
+  }, [loading, allStock, allTargets, decisions, byId, dests, engineConfig, canSee, network]);
 
   // Pointer only — migration lives on the Health screen, not in this queue.
   const migratableCount = useMemo(
@@ -257,8 +287,8 @@ export default function NoTargetQueue({ products = [] }) {
   // Editing a stepper therefore never under-fills Hub 2.
   const targetOf = (card, size) => Math.max(0, Number(edits[`${card.key}|${size}`] ?? (STANDARD_RUN[size] ?? 1)) || 0);
   const targetFor = (card, size, loc) =>
-    (card.isNew && loc === "hub2")
-      ? Math.max(0, Number(effectiveRun(engineConfig, "hub2")[String(size).toUpperCase()] ?? 1) || 0)
+    (card.isNew && isBufferLike(loc))
+      ? Math.max(0, Number(effectiveRun(engineConfig, loc)[String(size).toUpperCase()] ?? 1) || 0)
       : targetOf(card, size);
   const locEnabled = (card, loc) => locsOn[`${card.key}|${loc}`] !== false;
 
@@ -300,7 +330,7 @@ export default function NoTargetQueue({ products = [] }) {
       await update(ref(database), upd);
     } catch (e) { return finish(card, `target write failed — ${String(e?.message || e)}`); }
 
-    if (!distribute) return finish(card, `targets set for ${locs.map((l) => LOC_LABEL[l]).join(", ")} — engine takes over`);
+    if (!distribute) return finish(card, `targets set for ${locs.map((l) => locLabel(l)).join(", ")} — engine takes over`);
 
     // Initial distribution: generate every Central→location transfer.
     const { perLoc } = distributionOf(card);
@@ -318,7 +348,7 @@ export default function NoTargetQueue({ products = [] }) {
             link: { transferId: batch },
           });
         } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
-        if (res.ok) moved += qty; else failed.push(`${LOC_LABEL[loc]} ${size}: ${res.reason}`);
+        if (res.ok) moved += qty; else failed.push(`${locLabel(loc)} ${size}: ${res.reason}`);
       }
     }
     finish(card, failed.length
@@ -341,13 +371,13 @@ export default function NoTargetQueue({ products = [] }) {
     }
     try {
       await update(ref(database), upd);
-      finish(card, `excluded from ${locs.map((l) => LOC_LABEL[l]).join(", ")} — surplus flows to Excess`);
+      finish(card, `excluded from ${locs.map((l) => locLabel(l)).join(", ")} — surplus flows to Excess`);
     } catch (e) { finish(card, `write failed — ${String(e?.message || e)}`); }
   };
 
   const transfer = async (card) => {
     if (busyKey || !canTransfer) return;
-    const dest = destPick[card.key] || (card.loc === "hub2" || card.loc === "central" ? (card.loc === "central" ? "hub2" : "central") : "hub2");
+    const dest = destPick[card.key] || defaultDestFor(card.loc);
     const lines = card.sizes
       .map((s) => ({ s, qty: Math.max(0, Math.min(Number(edits[`${card.key}|t|${s.size}`] ?? s.qty) || 0, s.qty)) }))
       .filter((l) => l.qty > 0);
@@ -368,7 +398,7 @@ export default function NoTargetQueue({ products = [] }) {
       } catch (e) { res = { ok: false, reason: String(e?.message || e) }; }
       if (res.ok) moved += qty; else failed.push(`${s.size}: ${res.reason}`);
     }
-    finish(card, failed.length ? `${moved} moved · failed: ${failed.join(" · ")}` : `${moved} units → ${LOC_LABEL[dest]} ✓`);
+    finish(card, failed.length ? `${moved} moved · failed: ${failed.join(" · ")}` : `${moved} units → ${locLabel(dest)} ✓`);
   };
 
   if (!cards.length) {
@@ -420,11 +450,11 @@ export default function NoTargetQueue({ products = [] }) {
               photo={card.photo} name={card.name}
               badges={<>
                 <Badge tone={card.isNew ? GREEN : card.noStandard ? AMBER : BLUE_L}>
-                  {card.isNew ? "NEW PRODUCT" : card.noStandard ? "NO STANDARD RUN" : LOC_LABEL[card.loc]}
+                  {card.isNew ? "NEW PRODUCT" : card.noStandard ? "NO STANDARD RUN" : locLabel(card.loc)}
                 </Badge>
                 <Badge tone={GRAY}>{card.isNew ? `CENTRAL · ${card.units} UNITS` : card.noStandard ? "SIZES NEED QUANTITIES" : "AWAITING TARGET"}</Badge>
               </>}
-              sub={card.network.filter((n) => n.units > 0).map((n) => `${LOC_LABEL[n.loc]} ${n.units}`).join(" · ")}
+              sub={card.network.filter((n) => n.units > 0).map((n) => `${locLabel(n.loc)} ${n.units}`).join(" · ")}
               right={
                 <button onClick={() => { setOpenKey(open ? null : card.key); setAction((a) => ({ ...a, [card.key]: card.isNew ? "wizard" : null })); }}
                         style={{ background: "rgba(60,110,255,.08)", border: "1px solid rgba(60,110,255,.3)", color: BLUE_L, borderRadius: 10, padding: "7px 12px", fontWeight: 700, fontSize: 12, cursor: "pointer", fontFamily: FONT }}>
@@ -435,7 +465,7 @@ export default function NoTargetQueue({ products = [] }) {
               {open && (
                 <>
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
-                    {card.sizes.map((s) => <SizeFactChip key={s.size} size={s.size} value={`×${s.qty} at ${LOC_LABEL[card.loc]}`} tone={BLUE_L} />)}
+                    {card.sizes.map((s) => <SizeFactChip key={s.size} size={s.size} value={`×${s.qty} at ${locLabel(card.loc)}`} tone={BLUE_L} />)}
                   </div>
 
                   <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 4 }}>
@@ -464,20 +494,20 @@ export default function NoTargetQueue({ products = [] }) {
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", margin: "10px 0 2px" }}>
                           {dests.map((l) => (
                             <button key={l} onClick={() => setLocsOn((o) => ({ ...o, [`${card.key}|${l}`]: !locEnabled(card, l) }))} style={pill(locEnabled(card, l))}>
-                              {locEnabled(card, l) ? "✓ " : ""}{LOC_LABEL[l]}
+                              {locEnabled(card, l) ? "✓ " : ""}{locLabel(l)}
                             </button>
                           ))}
                         </div>
                       )}
                       <div style={{ color: GRAY, fontSize: 11, margin: "8px 0 4px" }}>
-                        Target per size{card.isNew ? " (applied to every ticked shop — Hub 2 automatically gets its deeper buffer run)" : ` at ${LOC_LABEL[card.loc]}`} — prefilled with the standard run:
+                        Target per size{card.isNew ? " (applied to every ticked shop — Hub 2 automatically gets its deeper buffer run)" : ` at ${locLabel(card.loc)}`} — prefilled with the standard run:
                       </div>
                       <div style={CHIP_GRID}>
                         {card.sizes.map((s) => (
                           <SizeStepperChip key={s.size}
                             size={s.size} qty={targetOf(card, s.size)} max={20}
                             onChange={(v) => setEdits((e) => ({ ...e, [`${card.key}|${s.size}`]: v }))}
-                            hint={`${s.qty} at ${LOC_LABEL[card.loc]}`}
+                            hint={`${s.qty} at ${locLabel(card.loc)}`}
                             disabled={busyKey === card.key}
                           />
                         ))}
@@ -488,7 +518,7 @@ export default function NoTargetQueue({ products = [] }) {
                           <div style={{ fontSize: 10.5, color: GRAY, textTransform: "uppercase", letterSpacing: ".05em", marginBottom: 6 }}>Suggested initial distribution</div>
                           {dist.perLoc.map(({ loc, lines }) => (
                             <div key={loc} style={{ fontSize: 12.5, padding: "3px 0" }}>
-                              <span style={{ color: BLUE_L, fontWeight: 700 }}>{LOC_LABEL[loc]}: </span>
+                              <span style={{ color: BLUE_L, fontWeight: 700 }}>{locLabel(loc)}: </span>
                               <span>{lines.map((l) => `${l.size}×${l.qty}`).join(" · ")}</span>
                             </div>
                           ))}
@@ -527,9 +557,9 @@ export default function NoTargetQueue({ products = [] }) {
                         ))}
                       </div>
                       <div style={{ display: "flex", gap: 6, marginTop: 10, flexWrap: "wrap" }}>
-                        {ALL_LOCS.filter((l) => l !== card.loc).map((d) => (
+                        {allLocsFor(card.loc, canSee).filter((l) => l !== card.loc).map((d) => (
                           <button key={d} onClick={() => setDestPick((p) => ({ ...p, [card.key]: d }))}
-                                  style={pill((destPick[card.key] || (card.loc === "central" ? "hub2" : card.loc === "hub2" ? "central" : "hub2")) === d)}>→ {LOC_LABEL[d]}</button>
+                                  style={pill((destPick[card.key] || defaultDestFor(card.loc)) === d)}>→ {locLabel(d)}</button>
                         ))}
                       </div>
                       <button onClick={() => transfer(card)} disabled={busyKey === card.key}

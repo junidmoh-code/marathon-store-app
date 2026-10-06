@@ -73,6 +73,8 @@
 
 import { seatingAt, categoryPolicyEntry, engineSizeKey } from "./seatingCore";
 import { isDeactivated } from "../../utils/deactivation";
+import { sectionOf } from "../../utils/networkRegistry";
+import { net, hubIds, nameOf } from "./sectionRouting";
 
 // The two hubs this tab compares. Hub 3 is deliberately absent: it carries no
 // armed policy leg and is excluded from ONLINE availability (PR #583); adding
@@ -80,6 +82,40 @@ import { isDeactivated } from "../../utils/deactivation";
 export const HUB1 = "hub1";
 export const HUB2 = "hub2";
 export const ARMING_HUBS = [HUB1, HUB2];
+
+// ── THE PAIR IS A SECTION'S TWO HUBS ─────────────────────────────────────────
+// The question this tab asks — "which of these two hubs has the engine made
+// responsible for the product, and is any product armed at BOTH" — is a
+// question about ONE section's hubs: Hub 1 and Hub 2 for Section 2, Hub 3 and
+// the Concrete Stockroom for Section 1. It is never asked across the section
+// wall (a product armed at Hub 2 and at Hub 3 is two sections each stocking
+// it, not a defect). So the pair comes from the network registry, per
+// section; ARMING_HUBS above is what the registry's seed answers for Section 2
+// (pinned by test) and stays the default everywhere.
+//
+// A section with any other number of hubs has no pair, and the tab does not
+// offer it. A hub that is not live is still shown: this screen is a READING of
+// the policy, and reading is how the owner checks a section before it goes live.
+export function armingHubsFor(network, section) {
+  const hubs = hubIds(net(network), { section });
+  return hubs.length === 2 ? hubs : null;
+}
+// The sections that have a pair, the original pair's section first.
+export function armingSections(network) {
+  const N = net(network);
+  const home = sectionOf(N, HUB1);
+  return [1, 2].filter((s) => armingHubsFor(N, s)).sort((a, b) => (a === home ? -1 : b === home ? 1 : a - b));
+}
+// The four tab titles for a pair. For Hub 1 + Hub 2 these are BUCKET_TITLE's.
+export function bucketTitles(hubs, network) {
+  const [a, b] = hubs || ARMING_HUBS;
+  return {
+    both_hubs: "Both hubs",
+    hub1_only: nameOf(a, network),
+    hub2_only: nameOf(b, network),
+    nowhere: "Nowhere",
+  };
+}
 
 // ── FOUR PLACES A PRODUCT CAN BE, AND EVERY PRODUCT IS IN EXACTLY ONE ────────
 // Hub 1 · Hub 2 · Both · Nowhere. Exclusive and exhaustive, because that is what
@@ -287,7 +323,12 @@ export function suppressed(h) {
 //
 // `pids` is passed in rather than taken from ctx.products so a caller can scope
 // the pass (a test, or a future filter) without rebuilding the context.
-export function armingIndex(ctx, pids) {
+//
+// `hubs` is the pair being compared (armingHubsFor), first and second. The
+// row keeps its two answers under `hub1` / `hub2` — the FIRST and SECOND hub
+// of the pair, which for the default pair are Hub 1 and Hub 2 themselves.
+export function armingIndex(ctx, pids, hubs = ARMING_HUBS) {
+  const [first, second] = hubs;
   const rows = [];
   const counts = Object.fromEntries(BUCKET_ORDER.map((b) => [b, 0]));
   // Every undecided product, collected in the SAME pass as the count so the two
@@ -299,8 +340,8 @@ export function armingIndex(ctx, pids) {
   for (const pid of pids || []) {
     const p = ctx.products?.[pid];
     if (!p) continue;
-    const h1 = hubArming(ctx, HUB1, pid);
-    const h2 = hubArming(ctx, HUB2, pid);
+    const h1 = hubArming(ctx, first, pid);
+    const h2 = hubArming(ctx, second, pid);
     if (h1.undecided) undecided += 1;
     if (h2.undecided) undecided += 1;
     if (h1.undecided || h2.undecided) undecidedPids.push(pid);

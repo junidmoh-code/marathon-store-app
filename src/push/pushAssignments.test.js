@@ -7,9 +7,13 @@
 // more — a record carrying every one of those fields and no hub flag is still
 // off. They look redundant. They are the whole point.
 import { describe, it, expect } from "vitest";
+import { SEED_REGISTRY, normalizeNetwork } from "../utils/networkRegistry";
 import {
   PUSH_HUBS,
   PUSH_HUB_LABEL,
+  RECORD_HUBS,
+  pushHubsFor,
+  pushHubLabel,
   assignedHubs,
   assignmentUpdates,
   isAssigned,
@@ -110,8 +114,24 @@ describe("the three real answers", () => {
 });
 
 describe("the hubs an assignment may name", () => {
-  it("is all three picking hubs — Pine included since 2026-09-08", () => {
-    expect(PUSH_HUBS).toEqual(["hub1", "hub2", "hub3"]);
+  it("is every hub in the network registry — the three there always were, then the Concrete Stockroom", () => {
+    // hub1, hub2, hub3 first and in that order: the record shape and the card
+    // have always listed them so. Any other registry hub follows.
+    expect(PUSH_HUBS).toEqual(["hub1", "hub2", "hub3", "concrete-stockroom"]);
+    expect(RECORD_HUBS).toEqual(["hub1", "hub2", "hub3"]);
+    expect(pushHubsFor(SEED_REGISTRY)).toEqual(PUSH_HUBS);
+    expect(pushHubsFor(null)).toEqual(PUSH_HUBS);
+  });
+  it("a hub added on the Network card is assignable with no deploy", () => {
+    const R = normalizeNetwork({ locations: { hub4: { name: "Hub 4", type: "hub", section: 2, sort: 30 } } });
+    expect(pushHubsFor(R)).toEqual(["hub1", "hub2", "hub3", "concrete-stockroom", "hub4"]);
+    expect(pushHubLabel(R, "hub4")).toBe("Hub 4");
+    expect(assignedHubs({ hub4: true }, pushHubsFor(R))).toEqual(["hub4"]);
+    // …and is not one under the built-in registry.
+    expect(assignedHubs({ hub4: true })).toEqual([]);
+  });
+  it("labels are the registry's names — the words that were typed here before", () => {
+    expect(PUSH_HUB_LABEL).toEqual({ hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "concrete-stockroom": "Concrete Stockroom" });
   });
   it("does NOT include hubC — it is not a picking hub and has no audience", () => {
     expect(PUSH_HUBS).not.toContain("hubC");
@@ -138,13 +158,46 @@ describe("paths", () => {
 describe("the write keeps the decision and the index in step", () => {
   const NOW = 1_757_000_000_000;
 
-  it("assigning every hub writes the record AND every index entry", () => {
+  it("assigning the three original hubs writes the record AND every index entry", () => {
     expect(assignmentUpdates("u1", ["hub1", "hub2", "hub3"], NOW)).toEqual({
       "push_hub_audience/hub1/u1": { at: NOW },
       "push_hub_audience/hub2/u1": { at: NOW },
       "push_hub_audience/hub3/u1": { at: NOW },
+      // The one addition: the new hub's index entry is cleared like any other.
+      "push_hub_audience/concrete-stockroom/u1": null,
+      // THE RECORD IS THE RECORD IT ALWAYS WAS — no fourth child, so the rules
+      // published today still accept it.
       "push_assignments/u1": { hub1: true, hub2: true, hub3: true, updatedAt: NOW },
     });
+  });
+
+  it("assigning the Concrete Stockroom writes its index entry and `true` on the record", () => {
+    const upd = assignmentUpdates("u1", ["hub3", "concrete-stockroom"], NOW);
+    expect(upd).toEqual({
+      "push_hub_audience/hub1/u1": null,
+      "push_hub_audience/hub2/u1": null,
+      "push_hub_audience/hub3/u1": { at: NOW },
+      "push_hub_audience/concrete-stockroom/u1": { at: NOW },
+      "push_assignments/u1": { hub1: false, hub2: false, hub3: true, "concrete-stockroom": true, updatedAt: NOW },
+    });
+    // Read back, it is what was written.
+    expect(assignedHubs(upd["push_assignments/u1"])).toEqual(["hub3", "concrete-stockroom"]);
+  });
+
+  it("switching the Stockroom OFF again leaves no trace of it on the record", () => {
+    // The record is set whole, so the child is cleared by being left out —
+    // never written as false, which today's published rule would refuse.
+    const upd = assignmentUpdates("u1", ["hub3"], NOW);
+    expect(upd["push_assignments/u1"]).toEqual({ hub1: false, hub2: false, hub3: true, updatedAt: NOW });
+    expect(upd["push_hub_audience/concrete-stockroom/u1"]).toBe(null);
+  });
+
+  it("a registry with one more hub writes and clears that hub too", () => {
+    const R = normalizeNetwork({ locations: { hub4: { name: "Hub 4", type: "hub", section: 2, sort: 30 } } });
+    const upd = assignmentUpdates("u1", ["hub4"], NOW, pushHubsFor(R));
+    expect(upd["push_hub_audience/hub4/u1"]).toEqual({ at: NOW });
+    expect(upd["push_assignments/u1"]).toEqual({ hub1: false, hub2: false, hub3: false, hub4: true, updatedAt: NOW });
+    expect(assignmentUpdates("u1", [], NOW, pushHubsFor(R))["push_hub_audience/hub4/u1"]).toBe(null);
   });
 
   it("assigning ONE hub NULLS the others' index entries — otherwise they keep firing", () => {
@@ -177,9 +230,16 @@ describe("the write keeps the decision and the index in step", () => {
       for (const hub of PUSH_HUBS) {
         const indexed = upd[`push_hub_audience/${hub}/u1`] !== null;
         expect(indexed, `${hub} index for [${hubs}]`).toBe(hubs.includes(hub));
-        if (rec) expect(rec[hub], `${hub} record for [${hubs}]`).toBe(hubs.includes(hub));
+        // READ BACK, the record names exactly the hubs the index does. (A hub
+        // beyond the original three is absent rather than false when off.)
+        if (rec) expect(rec[hub] === true, `${hub} record for [${hubs}]`).toBe(hubs.includes(hub));
+        if (rec && RECORD_HUBS.includes(hub)) expect(rec[hub], `${hub} is always a boolean`).toBe(hubs.includes(hub));
       }
-      if (rec) expect(Object.keys(rec).sort()).toEqual([...PUSH_HUBS, "updatedAt"].sort());
+      if (rec) {
+        expect(assignedHubs(rec)).toEqual(PUSH_HUBS.filter((h) => hubs.includes(h)));
+        const extra = PUSH_HUBS.filter((h) => !RECORD_HUBS.includes(h) && hubs.includes(h));
+        expect(Object.keys(rec).sort()).toEqual([...RECORD_HUBS, ...extra, "updatedAt"].sort());
+      }
     }
   });
 
@@ -197,6 +257,7 @@ describe("the write keeps the decision and the index in step", () => {
       "push_hub_audience/hub1/u1": null,
       "push_hub_audience/hub2/u1": null,
       "push_hub_audience/hub3/u1": null,
+      "push_hub_audience/concrete-stockroom/u1": null,
       "push_assignments/u1": null,
     });
   });
@@ -205,6 +266,7 @@ describe("the write keeps the decision and the index in step", () => {
     const upd = assignmentUpdates("u1", ["hubC", "central", "hub1"], NOW);
     expect(Object.keys(upd).sort()).toEqual([
       "push_assignments/u1",
+      "push_hub_audience/concrete-stockroom/u1",
       "push_hub_audience/hub1/u1",
       "push_hub_audience/hub2/u1",
       "push_hub_audience/hub3/u1",

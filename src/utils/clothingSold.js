@@ -30,6 +30,7 @@
 
 import { inferProductType } from "./insights";
 import { saDateString } from "./serverTime";
+import { SHOP_IDS } from "./stores";
 
 // Marker on the refill transfer_out movement's `reason`, so refill replenishments
 // are distinguishable from any other transfer to a store (e.g. the sneaker
@@ -50,7 +51,10 @@ export const CLOTHING_SOLD_BACKLOG_DAYS = 14;
 // The stores the clothing-sold tabs cover. Each gets a per-store daily tab
 // (today + yesterday — see ClothingSoldView's perStoreCutoff); Sold Backlog
 // merges these.
-export const CLOTHING_SOLD_STORES = ["marathon-pe", "trophy", "marathon-pine"];
+// Read off the network registry seed (utils/stores.js): Marathon PE, Trophy,
+// Pine as before, then Concrete. The screen narrows it to the viewer's
+// sections and follows the live registry (ClothingSoldView).
+export const CLOTHING_SOLD_STORES = [...SHOP_IDS];
 
 // Hard cap on how far back the Backlog date picker may reach — bounds the
 // ts-windowed query so a big pick can't pull the whole ledger.

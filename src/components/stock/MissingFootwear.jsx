@@ -53,8 +53,14 @@ import { isDeactivated } from "../../utils/deactivation";
 import { useRefillRequests } from "./useStock";
 import { readPathOnce } from "../../offline/localReads";
 import { stampRecord } from "../../device/deviceStamp";
+import { useMySections } from "../../utils/useMySections";
+import { hubIds, liveSections, centralId, nameOf } from "./sectionRouting";
+import { policyKeyFor } from "../../utils/networkRegistry";
 
-const HUBS = ["hub1", "hub2"];   // DETECTION scope: "missing" = zero units at BOTH hubs
+// THE HUBS COME FROM THE NETWORK REGISTRY, ONE SECTION AT A TIME (see the
+// component): DETECTION scope is that section's hubs — "missing" = zero units
+// at every one of them (Hub 1 and Hub 2 for Section 2, as this list always
+// read; Hub 3 and the Concrete Stockroom for Section 1).
 // Where a human may RAISE a line. HUB 1 IS BACK (owner order 2026-08-26,
 // reversing the 2026-08-25 single-path narrowing FOR THIS SURFACE ONLY):
 // Missing Products seeds both hubs again, like before — the owner's picks
@@ -62,12 +68,13 @@ const HUBS = ["hub1", "hub2"];   // DETECTION scope: "missing" = zero units at B
 // decision silenced. The Tomorrow writer and sale-driven rows stay hub2-only
 // (see reactiveRefillHubs.js); the engine treats an open human hub1 row as
 // inbound, so no cell is ever double-asked.
-const REQUESTABLE_HUBS = HUBS;
+// REQUESTABLE = that section's LIVE hubs. A hub that is not live is shown in
+// the card's facts but takes no request from here: nothing is routed to a
+// location that has not been counted in.
 // Solve raises work into a hub's refill queue. Both hubs have one: the queue
 // component is now destination-parameterised (it was hub2-only because CLOTHING
 // is not kept at Hub 1, not because Hub 1 lacks refills — sneakers make Hub 1 the
 // bigger buffer at 3,967 units vs Hub 2's 3,288).
-const LOC_LABEL = { hub1: "Hub 1", hub2: "Hub 2", central: "Central" };
 const KIND_LABEL = { never_introduced: "NEVER INTRODUCED", sold_out: "SOLD OUT AT HUB" };
 
 const destChip = (on) => ({
@@ -93,6 +100,32 @@ export default function MissingFootwear({ products = [] }) {
   const [solveHub, setSolveHub] = useState({});   // pid → chosen hub for Solve
   const [solved, setSolved] = useState({});
 
+  // ── WHICH SECTION'S SNEAKERS ───────────────────────────────────────────────
+  // A section's list is its OWN stranded stock: shoes Central holds that none
+  // of that section's hubs do. The default is the first section with a live
+  // store (Section 2 on the registry's seed — the list this screen always
+  // showed); a viewer who may see the other section gets a switch to it.
+  const { registry: network, sections: mySections } = useMySections();
+  const sectionChoices = useMemo(
+    () => [...liveSections(network), ...[1, 2]].filter((s, i, a) => a.indexOf(s) === i && mySections.includes(s) && hubIds(network, { section: s }).length > 0),
+    [network, mySections],
+  );
+  const [sectionPick, setSectionPick] = useState(null);
+  const section = sectionPick && sectionChoices.includes(sectionPick) ? sectionPick : (sectionChoices[0] ?? 2);
+  const HUBS = useMemo(() => hubIds(network, { section }), [network, section]);
+  const REQUESTABLE_HUBS = useMemo(() => hubIds(network, { section, liveOnly: true }), [network, section]);
+  // Hubs a person may raise their OWN request for: every hub of the section,
+  // live or not. On Section 2 this is the same list as REQUESTABLE_HUBS.
+  const REQUEST_HUBS = HUBS;
+  // Central's shelf is shared by both sections, so what is already promised
+  // out of it is counted across this section's hubs AND every other live hub.
+  const RESERVING_HUBS = useMemo(() => [...new Set([...HUBS, ...hubIds(network, { liveOnly: true })])], [HUBS, network]);
+  const CENTRAL = centralId(network);
+  const LOC_LABEL = useMemo(() => Object.fromEntries([...HUBS, CENTRAL].map((l) => [l, nameOf(l, network)])), [HUBS, CENTRAL, network]);
+  const notLive = REQUESTABLE_HUBS.length === 0
+    ? `${HUBS.map((h) => nameOf(h, network)).join(" and ")} ${HUBS.length === 1 ? "is" : "are"} not live yet — counted stock first.`
+    : null;
+
   // The footwear standard, read ONCE. Absent until footwear targeting is
   // configured — Solve stays disabled until then rather than seeding cells the
   // engine would never refill.
@@ -111,8 +144,8 @@ export default function MissingFootwear({ products = [] }) {
   // not missing, and a Solve on it would double-send (count-integrity hold lane).
   const heldLines = useStockHeld();
   const cards = useMemo(
-    () => computeMissingFootwear({ allStock, products, hubs: HUBS, heldLines }),
-    [allStock, products, heldLines],
+    () => computeMissingFootwear({ allStock, products, hubs: HUBS, heldLines, central: CENTRAL }),
+    [allStock, products, heldLines, HUBS, CENTRAL],
   );
 
   const catalogSizes = (pid) => (byId.get(pid)?.sizes || []).map(String).filter((s) => s && s !== "_");
@@ -126,8 +159,11 @@ export default function MissingFootwear({ products = [] }) {
   // refill lane. Same write shape and same queue as Solve; only the number
   // differs. Stock does NOT move here — Central picks it from the queue.
   const request = async (card) => {
-    const dest = dests[card.pid] || REQUESTABLE_HUBS[0];
-    if (busyPid || !canAct || !dest) return;
+    const dest = dests[card.pid] || REQUEST_HUBS[0];
+    // A REQUEST is a person's own ask — their sizes, their quantities — so it
+    // works for a hub that is not live yet, like every manual action. (SOLVE,
+    // which raises the policy's numbers by itself, stays live-only below.)
+    if (busyPid || !canAct || !dest || !REQUEST_HUBS.includes(dest)) return;
     const picks = card.sizes.map((s) => ({ size: s.size, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
     if (!picks.length) return;
     // Same stale-screen guard as solve(): a finished line takes no requests.
@@ -148,7 +184,7 @@ export default function MissingFootwear({ products = [] }) {
         .map((r) => r.size);
       const fresh = footwearPickPlan({
         picks,
-        centralCells: allStock?.central?.[card.pid] || {},
+        centralCells: allStock?.[CENTRAL]?.[card.pid] || {},
         openSizes: liveOpen,
         reserved: reservedFor(card.pid, liveRequests),
       });
@@ -167,7 +203,7 @@ export default function MissingFootwear({ products = [] }) {
             requestingLocation: dest,
             status: "open",
             createdAt: now,
-            createdFrom: { manual: true, source: "central", via: "missing_sneakers_pick" },
+            createdFrom: { manual: true, source: CENTRAL, via: "missing_sneakers_pick" },
           };
           updates[`refill_requests/${id}`] = stampRecord(updates[`refill_requests/${id}`], "raise");
         }
@@ -197,7 +233,7 @@ export default function MissingFootwear({ products = [] }) {
   // Units already promised to ANY hub for this product. Central's shelf count is
   // not free stock: two hubs solving the same shoe would otherwise each claim it.
   const reservedFor = (pid, requests) => (requests || [])
-    .filter((r) => r && r.status === "open" && r.productId === pid && HUBS.includes(r.requestingLocation))
+    .filter((r) => r && r.status === "open" && r.productId === pid && RESERVING_HUBS.includes(r.requestingLocation))
     .reduce((acc, r) => {
       // sizeKeyOf, NOT encodeSizeKey: the plan keys `reserved` with sizeKeyOf,
       // which trims before encoding. encodeSizeKey does not, so a size stored as
@@ -212,10 +248,13 @@ export default function MissingFootwear({ products = [] }) {
     .filter((r) => r && r.status === "open" && r.requestingLocation === hub && r.productId === pid)
     .map((r) => r.size);
 
+  // The hub's footwear run — its own, or (the same policy for every hub
+  // unless it has its own) the run of the hub it is declared to be like.
+  const runAt = (hub) => footwearRun?.[policyKeyFor(network, footwearRun, hub)] || {};
   const planFor = (card, hub = hubFor(card)) => footwearSolvePlan({
     catalogSizes: catalogSizes(card.pid),
-    policy: footwearRun?.[hub] || {},
-    centralCells: allStock?.central?.[card.pid] || {},
+    policy: runAt(hub),
+    centralCells: allStock?.[CENTRAL]?.[card.pid] || {},
     openSizes: openSizesFor(card.pid, hub),
     reserved: reservedFor(card.pid, allRequests),
   });
@@ -227,7 +266,7 @@ export default function MissingFootwear({ products = [] }) {
   const solve = async (card) => {
     const hub = hubFor(card);
     const lines = planFor(card, hub);
-    if (solveBusy || !canAct || !lines.length) return;   // guarded by the disabled button
+    if (solveBusy || !canAct || !lines.length || !REQUESTABLE_HUBS.includes(hub)) return;   // guarded by the disabled button
     // A stale screen can hold a card deactivated since render — never raise a
     // request for a finished line (the row itself is filtered in the core).
     if (isDeactivated(byId.get(card.pid))) {
@@ -246,8 +285,8 @@ export default function MissingFootwear({ products = [] }) {
         .map((r) => r.size);
       const fresh = footwearSolvePlan({
         catalogSizes: catalogSizes(card.pid),
-        policy: footwearRun?.[hub] || {},
-        centralCells: allStock?.central?.[card.pid] || {},
+        policy: runAt(hub),
+        centralCells: allStock?.[CENTRAL]?.[card.pid] || {},
         openSizes: liveOpen,
         // Recomputed from the SAME fresh read, so a sibling hub's request raised
         // between render and click is subtracted too. Two people clicking in the
@@ -270,7 +309,7 @@ export default function MissingFootwear({ products = [] }) {
             requestingLocation: hub,
             status: "open",
             createdAt: now,
-            createdFrom: { manual: true, source: "central", via: "missing_sneakers" },
+            createdFrom: { manual: true, source: CENTRAL, via: "missing_sneakers" },
           };
           updates[`refill_requests/${id}`] = stampRecord(updates[`refill_requests/${id}`], "raise");
         }
@@ -292,17 +331,32 @@ export default function MissingFootwear({ products = [] }) {
     setSolveBusy(null);
   };
 
+  // The section switch — only when this viewer has more than one to look at.
+  const sectionSwitch = sectionChoices.length > 1 ? (
+    <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
+      {sectionChoices.map((s) => (
+        <button key={s} onClick={() => { setSectionPick(s); setOpenPid(null); setSolvePid(null); }} style={destChip(section === s)}>
+          {network.sections?.[s]?.name || `Section ${s}`} · {hubIds(network, { section: s }).map((h) => nameOf(h, network)).join(" + ")}
+        </button>
+      ))}
+    </div>
+  ) : null;
+
   if (!cards.length) {
-    return <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded sneakers — everything at Central is also held by a hub.</div>;
+    return <>
+      {sectionSwitch}
+      <div style={{ ...GLASS, padding: 18, color: GRAY, fontSize: 13 }}>No stranded sneakers — everything at Central is also held by a hub.</div>
+    </>;
   }
 
   return (
     <>
+      {sectionSwitch}
       {!canAct && <div style={{ color: AMBER, fontSize: 12, marginBottom: 10 }}>You need a stock role to raise requests — viewing only.</div>}
       {cards.map((card) => {
         const open = openPid === card.pid;
         const result = done[card.pid];
-        const dest = dests[card.pid] || REQUESTABLE_HUBS[0];
+        const dest = dests[card.pid] || REQUEST_HUBS[0];
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];
@@ -312,7 +366,7 @@ export default function MissingFootwear({ products = [] }) {
         // Same contract as the clothing list (actionReasons.js): a string means
         // disabled AND is the text shown on the row. These were `title=` only —
         // a hover tooltip, invisible on the warehouse tablets this runs on.
-        const solveBlocked = footwearSolveReason({ canAct, runLoaded: !!footwearRun, linesAtAnyHub: solvable });
+        const solveBlocked = notLive || footwearSolveReason({ canAct, runLoaded: !!footwearRun, linesAtAnyHub: solvable });
         const requestBlocked = footwearRequestReason({ canAct });
         // `busy` is the GLOBAL in-flight flag, not this row's, because the
         // buttons below are disabled by the global one. Passing the per-row test
@@ -329,7 +383,7 @@ export default function MissingFootwear({ products = [] }) {
             photo={card.photo} name={card.name}
             badges={<>
               <Badge tone={card.kind === "never_introduced" ? AMBER : BLUE_L}>{KIND_LABEL[card.kind]}</Badge>
-              <Badge tone={BLUE_L}>{card.centralUnits} units at Central</Badge>
+              <Badge tone={BLUE_L}>{card.centralUnits} units at {LOC_LABEL[CENTRAL]}</Badge>
               {card.duplicateOf && <Badge tone={AMBER}>SAME NAME ELSEWHERE</Badge>}
             </>}
             sub={[
@@ -339,7 +393,7 @@ export default function MissingFootwear({ products = [] }) {
               // OUT badge. (CodeRabbit #290.)
               card.missingFrom.length
                 ? `Not carried at ${card.missingFrom.map((h) => LOC_LABEL[h]).join(" + ")}`
-                : "Carried at both hubs, but both are empty",
+                : (HUBS.length === 2 ? "Carried at both hubs, but both are empty" : "Carried at every hub, but all are empty"),
               card.duplicateOf ? "Another record shares this name — confirm it is a different shoe before requesting." : null,
             ].filter(Boolean).join(" · ")}
             right={
@@ -413,7 +467,7 @@ export default function MissingFootwear({ products = [] }) {
                   ))}
                 </div>
                 <div style={{ display: "flex", gap: 8, flexWrap: "wrap", margin: "10px 0 8px" }}>
-                  {REQUESTABLE_HUBS.map((h) => (
+                  {REQUEST_HUBS.map((h) => (
                     <button key={h} onClick={() => setDests((d) => ({ ...d, [card.pid]: h }))} style={destChip(dest === h)}>
                       {LOC_LABEL[h]}
                     </button>

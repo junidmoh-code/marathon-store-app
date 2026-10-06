@@ -141,6 +141,10 @@
 // makes that possible and also makes the flush safely repeatable: a second
 // flush of an already-closed window finds nothing claimed and sends nothing.
 
+const { SEED_REGISTRY } = require("./network-registry.cjs");
+const { warehouseHubsOf, hubSectionOf, isCrHub, hubLabel: hubLabelIn } = require("./push-hubs.cjs");
+const { readAccountSections } = require("./section-access.cjs");
+
 // ── HOW A WINDOW IS JUDGED ABANDONED: A HEARTBEAT, NOT A STOPWATCH ──────────
 // The first version asked "has this window existed longer than WINDOW_MS?" and
 // treated a yes as "its claimer died". That question cannot tell a dead claimer
@@ -229,21 +233,13 @@ const DEAD_TOKEN_CODES = new Set([
   "messaging/invalid-argument",
 ]);
 
-// The words a person reads. Destination stores are what an order NAMES; the
-// hubs are here too because the same map answers "which hub queue" for the deep
-// link, and because a destShop this app does not recognise must still produce a
-// readable notification rather than an empty one.
-const HUB_LABEL = {
-  hub1: "Hub 1",
-  hub2: "Hub 2",
-  hub3: "Hub 3",
-  central: "Central",
-  "marathon-pe": "Marathon PE",
-  trophy: "Trophy",
-  "marathon-pine": "Marathon Pine",
-};
-
-const hubLabel = (hub) => HUB_LABEL[hub] || String(hub || "a store");
+// The words a person reads. Destination stores are what an order NAMES, and
+// the hubs are what its title names; both are the NETWORK REGISTRY's own names
+// (lib/push-hubs.cjs), so a location added or renamed on the Network card reads
+// correctly here with no deploy. A destShop the registry does not hold must
+// still produce a readable notification rather than an empty one, so it keeps
+// its own text.
+const hubLabel = (hub, registry) => hubLabelIn(registry, hub, "a store");
 
 // ── WHERE A TAP LANDS: THE ORDER, NOT A LIST ────────────────────────────────
 // An order is worked in the WAREHOUSE, on the queue of the hub that has to pick
@@ -259,17 +255,24 @@ const hubLabel = (hub) => HUB_LABEL[hub] || String(hub || "a store");
 //
 // A burst carries no order identity: several orders cannot be one card, so it
 // opens the queue they are all on.
-const CR_HUBS = new Set(["hub2", "hub3"]);
+//
+// WHICH HUBS HAVE A CR TAB is the registry's answer (isCrHub, lib/push-hubs.cjs):
+// every hub except one that holds only sneaker back stock. Hub 2 and Hub 3 as
+// before; the Concrete Stockroom the same way; Hub 1 and hubC not.
 
 // ── ONE HUB VOCABULARY, BOTH ENDS ───────────────────────────────────────────
 // These are the hubs the WAREHOUSE SELECTOR offers, which is a different set
 // from HUB_LABEL (that one also names the destination stores, because a
 // notification names a store). A link may only carry a hub the selector can
-// render: the client refuses any other (src/push/deepLink.js VALID_HUBS), so
-// emitting one here would produce a link that silently drops its hub and lands
-// the reader on whichever hub they last used. Pinned to the same four strings
-// on both ends.
-const WAREHOUSE_HUBS = new Set(["hub1", "hub2", "hub3", "hubC"]);
+// render: the client refuses any other (src/push/deepLink.js), so emitting one
+// here would produce a link that silently drops its hub and lands the reader on
+// whichever hub they last used.
+//
+// The set is every hub in the network registry plus "hubC" (warehouseHubsOf,
+// lib/push-hubs.cjs), and the client derives its own from the same registry —
+// src/push/pushHubs.test.js runs the two against each other. WAREHOUSE_HUBS is
+// that set on the built-in registry, kept for the tests that pin it.
+const WAREHOUSE_HUBS = new Set(warehouseHubsOf(SEED_REGISTRY));
 
 /** The hub whose warehouse queue this order is worked on. */
 function hubForOrder(rec) {
@@ -287,9 +290,9 @@ function isRefillOrder(rec) {
 }
 
 /** Which warehouse tab lists this order. */
-function warehouseTabFor(rec) {
+function warehouseTabFor(rec, registry) {
   const hub = hubForOrder(rec);
-  return isRefillOrder(rec) && CR_HUBS.has(hub) ? "clothing" : "queue";
+  return isRefillOrder(rec) && isCrHub(registry, hub) ? "clothing" : "queue";
 }
 
 /** The link a notification opens. `sample` is the first order of the window;
@@ -297,9 +300,9 @@ function warehouseTabFor(rec) {
  *  A destination with no usable hub opens the app plainly — a link to the
  *  wrong screen is worse than a link to no particular screen, because the
  *  reader concludes the ALERT was wrong rather than that the link was. */
-function orderLink(sample, count) {
+function orderLink(sample, count, registry) {
   const hub = sample && typeof sample.hub === "string" ? sample.hub : "";
-  if (!hub || !WAREHOUSE_HUBS.has(hub)) return "/";
+  if (!hub || !warehouseHubsOf(registry).includes(hub)) return "/";
   const tab = (sample && sample.tab) === "clothing" ? "clothing" : "queue";
   const base = `/?push=order&hub=${encodeURIComponent(hub)}&tab=${tab}`;
   if (count > 1 || !sample.orderId) return base;
@@ -473,6 +476,44 @@ async function dropMuted(db, uids) {
   return audible;
 }
 
+// ── THE SECTION WALL, FOR ALERTS ────────────────────────────────────────────
+// A third fact, and like the mute it can only take somebody OUT of a send: an
+// account Junid has scoped to one section never receives another section's
+// hub's alerts, whatever the assignment index says. The assignment card will
+// not offer such a switch, so this only ever bites on an assignment made
+// BEFORE the person was scoped, or on an index somebody edited by hand.
+//
+// The hub's section is the registry's. A hub the registry gives no section —
+// "hubC", or an id it has never heard of — belongs to nobody's section, so
+// nobody is filtered for it and it behaves exactly as it always has.
+//
+// THREE LEAVES PER RECIPIENT (sections, allSections, destShop — see
+// lib/section-access.cjs), never the /users record and never /users. Bounded by
+// MAX_RECIPIENTS like everything else here, and run AFTER the mute so a muted
+// person costs none of them.
+//
+// A SCOPE THAT CANNOT BE READ IS NOT A SCOPE. Same reasoning as the mute, in
+// the same words: failing the other way would let one RTDB blip silence a
+// whole hub, invisibly. An unreadable scope is treated as "both sections" and
+// says so in the log.
+async function dropOtherSections(db, registry, hub, uids) {
+  const section = hubSectionOf(registry, hub);
+  if (section === null) return uids;
+  const settled = await Promise.allSettled(
+    uids.map((uid) => readAccountSections(db, registry, uid)));
+  const inside = [];
+  settled.forEach((res, i) => {
+    if (res.status !== "fulfilled") {
+      console.error("PUSH_ALARM orderPlacedPush could not read a section scope (treated as both sections):",
+        res.reason && res.reason.message);
+      inside.push(uids[i]);
+      return;
+    }
+    if (res.value.includes(section)) inside.push(uids[i]);
+  });
+  return inside;
+}
+
 /** Every live token for those uids, each carrying enough to delete it again. */
 async function collectTokens(db, uids) {
   const rows = [];
@@ -492,14 +533,14 @@ async function collectTokens(db, uids) {
  *  still names the first thing, because "6 orders" is a number and "Nike Air
  *  Max 90 and 5 more" is something you can picture from a lock screen — which
  *  is what tells someone whether to walk to the back or finish their coffee. */
-async function composeMessage(db, hub, count, sample) {
+async function composeMessage(db, hub, count, sample, registry) {
   // The TITLE names the HUB, because the hub is what the reader is assigned to
   // and what the burst was collapsed by. The STORE goes in the body of a single
   // order, where it still tells the picker where the box is going; a burst can
   // span stores, so it does not claim one.
-  const where = hubLabel(hub);
+  const where = hubLabel(hub, registry);
   const store = sample && typeof sample.dest === "string" && sample.dest.trim()
-    ? `${hubLabel(sample.dest.trim())} · ` : "";
+    ? `${hubLabel(sample.dest.trim(), registry)} · ` : "";
   // The order node CARRIES productName (every producer writes it), so the
   // normal path costs no read at all. The /products fallback is for a record
   // written without one rather than the usual case.
@@ -589,8 +630,10 @@ function replayKey(orderId, createdAt) {
  * @param {function} [args.now]        wall clock for the wait ceiling; injected so a
  *        test can drive elapsed time instead of sleeping through it
  * @param {function} [args.newWindowId]
+ * @param {object} [args.registry]    the network registry (loadNetwork); the
+ *        built-in one when absent, which names and routes Section 2 as always
  */
-async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, nowMs, sleep, now = Date.now, newWindowId }) {
+async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, nowMs, sleep, now = Date.now, newWindowId, registry }) {
   const skip = shouldNotify(orderId, record, createdAt);
   if (skip) return { sent: false, skipped: skip };
 
@@ -611,7 +654,7 @@ async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, no
     // The destination STORE, carried so a single-order notification can still
     // say where the box is going. It is no longer a path segment anywhere.
     dest: record.destShop.trim(),
-    tab: warehouseTabFor(record),
+    tab: warehouseTabFor(record, registry),
   };
 
   // ── JOIN OR OPEN THE WINDOW ────────────────────────────────────────────────
@@ -743,7 +786,7 @@ async function notifyOrderPlaced({ db, messaging, orderId, record, createdAt, no
   // signal, which is strictly worse than a late one. Everything from here to
   // the send is therefore wrapped, and a failure PUTS THE COUNT BACK.
   try {
-    return await deliver({ db, messaging, hub, count, captured, closedAt });
+    return await deliver({ db, messaging, hub, count, captured, closedAt, registry });
   } catch (err) {
     await restoreBurst({ burstRef, count, captured, closedAt }).catch(() => {});
     // The house alarm pattern (CARD_RECON_ALARM, SOCIAL_ENGINE_ALARM): a log
@@ -786,7 +829,7 @@ async function restoreBurst({ burstRef, count, captured, closedAt }) {
 
 /** Resolve, compose and send. Separated so the caller above can treat every
  *  failure in here as one recoverable unit. */
-async function deliver({ db, messaging, hub, count, captured, closedAt }) {
+async function deliver({ db, messaging, hub, count, captured, closedAt, registry }) {
   const assigned = await resolveRecipients(db, hub);
   if (!assigned.length) return { sent: false, skipped: "no_recipients", count };
 
@@ -794,14 +837,18 @@ async function deliver({ db, messaging, hub, count, captured, closedAt }) {
   // token is never in the multicast, so it can never appear in `dead` and can
   // never be pruned for being muted — the row stays live and unmuting works
   // instantly, with nothing to re-register.
-  const recipients = await dropMuted(db, assigned);
-  if (!recipients.length) return { sent: false, skipped: "all_muted", count };
+  const audible = await dropMuted(db, assigned);
+  if (!audible.length) return { sent: false, skipped: "all_muted", count };
+
+  // …AND IN THIS HUB'S SECTION. See dropOtherSections.
+  const recipients = await dropOtherSections(db, registry, hub, audible);
+  if (!recipients.length) return { sent: false, skipped: "other_section", count };
 
   const rows = await collectTokens(db, recipients);
   if (!rows.length) return { sent: false, skipped: "no_tokens", count };
 
-  const { title, body } = await composeMessage(db, hub, count, captured.sample);
-  const link = orderLink(captured.sample, count);
+  const { title, body } = await composeMessage(db, hub, count, captured.sample, registry);
+  const link = orderLink(captured.sample, count, registry);
 
   // DATA-ONLY. A `notification` payload is displayed by the browser itself,
   // including while the app is open, which is precisely the double-fire the
@@ -878,6 +925,7 @@ module.exports = {
   composeMessage,
   replayKey,
   hubLabel,
+  dropOtherSections,
   WAREHOUSE_HUBS,
   hubForOrder,
   isRefillOrder,

@@ -200,3 +200,29 @@ describe("what the gate COSTS to read — bandwidth is a live problem", () => {
     expect(src("../stock/HubCleanup.jsx")).toContain("buildTwinIndex({ products, identityMap: identity.map })");
   });
 });
+
+// ─── SECTIONS: THE SHOP'S OWN HUBS DECIDE, NOT "HUB 3 MEANS PINE" ────────────
+describe("servedHubs — Hub 3 serves Pine and Concrete; the Stockroom serves Concrete", () => {
+  const h1 = { id: "h1", name: "Hub one shoe", productType: "sneaker", hubs: ["hub1"] };
+  const h3 = { id: "h3", name: "Hub three shoe", productType: "sneaker", hubs: ["hub3"] };
+  const cs = { id: "cs", name: "Stockroom shoe", productType: "sneaker", hubs: ["concrete-stockroom"] };
+  const untagged = { id: "u", name: "Untagged shoe", productType: "sneaker" };
+  const all = [h1, h3, cs, untagged];
+  const run = (opts) => assistantCatalogue({ products: all, wantsClothing: false, isDeactivated, ...opts }).map((p) => p.id);
+
+  it("Marathon PE / Trophy (servedHubs null): the hub1/hub2 rule, untagged allowed — unchanged", () => {
+    expect(run({ storeMode: "central", servedHubs: null })).toEqual(["h1", "u"]);
+    expect(run({ storeMode: "central" })).toEqual(["h1", "u"]);
+  });
+  it("Pine: hub3-tagged only — the same answer the old storeMode rule gave", () => {
+    expect(run({ storeMode: "pine", servedHubs: ["hub3"] })).toEqual(["h3"]);
+    expect(run({ storeMode: "pine" })).toEqual(["h3"]);
+  });
+  it("Concrete sees Hub 3's products, and the Stockroom's once a category is flipped to it", () => {
+    expect(run({ storeMode: "concrete", servedHubs: ["hub3"] })).toEqual(["h3"]);
+    expect(run({ storeMode: "concrete", servedHubs: ["concrete-stockroom", "hub3"] })).toEqual(["h3", "cs"]);
+  });
+  it("a shop with no hubs sees no sneakers — never Section 2's", () => {
+    expect(run({ storeMode: null, servedHubs: [] })).toEqual([]);
+  });
+});

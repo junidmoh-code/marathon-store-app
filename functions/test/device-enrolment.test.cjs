@@ -422,6 +422,8 @@ test("admin: list is sorted active-first and carries last seen and reject count"
   assert.deepEqual(
     { ...list.devices[0], enrolledAtMs: undefined },
     { deviceId: DEV_A, personId: "p-sipho", personName: "Sipho", kind: "person", status: "active", deviceType: "Android phone",
+      // A code made before sections: the device has none.
+      section: null,
       enrolledAtMs: undefined, lastSeenAtMs: NOW + 5000, rejectCount: 3, revokedAtMs: null, revokedBy: null },
   );
   assert.equal(list.people.find((p) => p.personId === "p-sipho").devices, 1);

@@ -36,6 +36,7 @@ const {
   completionFlipMutation,
 } = require("./lib.cjs");
 const { guardedMutate } = require("./guardedTransaction.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -194,7 +195,7 @@ exports.completeDisplayCheck = onCall(
     if (result !== "confirmed" && result !== "no_stock") {
       throw new HttpsError("invalid-argument", "result must be 'confirmed' or 'no_stock'.");
     }
-    if (!isTriggerStoreEnabled(store)) {
+    if (!isTriggerStoreEnabled(store, await loadNetwork(admin.database()))) {
       throw new HttpsError("failed-precondition", "Display Checks is not enabled for this store.");
     }
 

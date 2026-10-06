@@ -111,7 +111,9 @@ describe("the other lists a product can be requested or refilled from", () => {
     expect(read("./MissingFootwear.jsx")).toContain("isDeactivated(byId.get(card.pid))");
     expect(read("./missingProductsCore.js")).toContain("if (isDeactivated(p)) continue;");
     expect(read("./missingFootwearCore.js")).toContain("if (isDeactivated(p)) continue;");
-    expect(read("./MoveExcess.jsx")).toContain("if (isDeactivated(p)) continue;");
+    // Move Excess's card build lives in moveExcessCore.js (the screen calls it).
+    expect(read("./moveExcessCore.js")).toContain("if (isDeactivated(p)) continue;");
+    expect(read("./MoveExcess.jsx")).toContain("computeMoveExcessCards(");
   });
 });
 

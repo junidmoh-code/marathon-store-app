@@ -4,8 +4,10 @@
 // src/device/enrolment.js. Three things:
 //
 //   Make a code  — type a person's name (or a shop device's, e.g. "Hub 2
-//                  tablet"), get a random 4-digit code, hand it over. It is
-//                  shown ONCE: the list never carries it again.
+//                  tablet"), pick the SECTION the device works in, get a random
+//                  4-digit code, hand it over. It is shown ONCE: the list never
+//                  carries it again. The section rides in the device's token,
+//                  so it cannot be changed on the device.
 //   People       — each person or shared device, how many devices their code
 //                  is on, and one tap to revoke them (every device off, the
 //                  code dead).
@@ -24,6 +26,20 @@
 import { useCallback, useEffect, useState } from "react";
 import { httpsCallable } from "firebase/functions";
 import { functions } from "../firebase";
+import { usePermissions } from "../components/PermissionsContext";
+import { useNetwork } from "../utils/useNetwork";
+import { sectionOf } from "../utils/networkRegistry";
+import { sectionName } from "../components/sectionAccess";
+
+// The section a new code starts on. The code-maker's own device section if it
+// has one (MC on a Section 1 tablet makes Section 1 codes), else the section of
+// the shop their account is locked to, else Section 2 — which is every device
+// there is today, so making a code is the same taps it always was.
+export function defaultCodeSection(registry, { deviceSection, destShop } = {}) {
+  if (deviceSection === 1 || deviceSection === 2) return deviceSection;
+  const shop = destShop ? sectionOf(registry, destShop) : null;
+  return shop === 1 || shop === 2 ? shop : 2;
+}
 
 const adminCall = httpsCallable(functions, "deviceEnrolmentAdmin");
 const defaultCall = async (data) => (await adminCall(data)).data;
@@ -59,6 +75,14 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
   const [name, setName] = useState("");
   const [kind, setKind] = useState("person");
   const [maker, setMaker] = useState(false);
+  // The section is PICKED, never typed, and always sent: the server refuses
+  // anything but 1 or 2. null = "not touched yet", which shows the default.
+  const { registry } = useNetwork();
+  const { permRecord, deviceIdentity } = usePermissions();
+  const startSection = defaultCodeSection(registry, { deviceSection: deviceIdentity?.section, destShop: permRecord?.destShop });
+  const [pickedSection, setPickedSection] = useState(null);
+  const section = pickedSection || startSection;
+  const sectionLabel = (n) => (n === 1 || n === 2 ? sectionName(registry, n) : "Both sections");
   const [busy, setBusy] = useState(null);
   const [made, setMade] = useState(null);
   const [err, setErr] = useState(null);
@@ -79,8 +103,8 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
     if (!name.trim() || busy) return;
     setBusy("create"); setErr(null); setMade(null);
     try {
-      const r = await call({ action: "createCode", name, kind, canManageCodes: isOwner && kind === "person" && maker });
-      setMade({ code: r.code, name: r.person?.name || name.trim(), kind });
+      const r = await call({ action: "createCode", name, kind, canManageCodes: isOwner && kind === "person" && maker, section });
+      setMade({ code: r.code, name: r.person?.name || name.trim(), kind, section: r.person?.section || section });
       setName(""); setMaker(false);
       load();
     } catch (e2) {
@@ -141,6 +165,14 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
           aria-label={kind === "shared" ? "Device name" : "Person's name"}
           style={{ width: "100%", boxSizing: "border-box", marginTop: 10, padding: "10px 12px", fontSize: 16,
             background: "#000", color: "#fff", border: "1px solid #3a3a3c", borderRadius: 8 }} />
+        <div style={{ ...label, marginTop: 12 }}>Section this device works in</div>
+        <div role="radiogroup" aria-label="Section" style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+          {[1, 2].map((n) => (
+            <button key={n} type="button" role="radio" aria-checked={section === n} data-section-pick={n}
+              onClick={() => setPickedSection(n)}
+              style={{ ...btn, background: section === n ? "#0a84ff" : "#2c2c2e" }}>{sectionLabel(n)}</button>
+          ))}
+        </div>
         {isOwner && kind === "person" && (
           <label style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 10, fontSize: 14, color: "#d1d1d6" }}>
             <input type="checkbox" checked={maker} onChange={(e) => setMaker(e.target.checked)} />
@@ -160,6 +192,7 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
             <div style={{ fontSize: 13, color: "#a1a1a6", lineHeight: 1.45 }}>
               Give this to {made.name}. It is shown only now — write it down or hand it over before you leave this screen.
               {made.kind === "shared" ? " It works on one device." : " It works on up to 2 devices."}
+              {` The device will work in ${sectionLabel(made.section)}.`}
             </div>
             <button type="button" onClick={() => setMade(null)} style={{ ...btn, marginTop: 10 }}>Done</button>
           </div>
@@ -178,7 +211,7 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
           <div key={d.deviceId} data-device-row={d.deviceId} style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid #2c2c2e", flexWrap: "wrap" }}>
             <div style={{ minWidth: 0, flex: "1 1 220px" }}>
               <div style={{ fontSize: 16, fontWeight: 600 }}>{d.personName || "—"}{d.kind === "shared" ? " (shop device)" : ""}</div>
-              <div style={{ fontSize: 13, color: "#a1a1a6", marginTop: 2 }}>{d.deviceType || "Unknown device"}</div>
+              <div style={{ fontSize: 13, color: "#a1a1a6", marginTop: 2 }}>{d.deviceType || "Unknown device"} · {sectionLabel(d.section)}</div>
               <div style={{ fontSize: 12.5, color: "#8e8e93", marginTop: 2 }}>
                 Enrolled {when(d.enrolledAtMs, now)} · Last seen {when(d.lastSeenAtMs, now)} · {d.rejectCount} reject{d.rejectCount === 1 ? "" : "s"}
               </div>
@@ -198,7 +231,7 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
           <div key={p.personId} data-person-row={p.personId} style={{ display: "flex", gap: 12, alignItems: "center", justifyContent: "space-between", padding: "12px 0", borderTop: "1px solid #2c2c2e", flexWrap: "wrap", opacity: p.status === "active" ? 1 : 0.55 }}>
             <div style={{ minWidth: 0, flex: "1 1 220px" }}>
               <div style={{ fontSize: 16, fontWeight: 600 }}>
-                {p.name}{p.kind === "shared" ? " (shop device)" : ""}{p.canManageCodes ? " · makes codes" : ""}
+                {p.name}{p.kind === "shared" ? " (shop device)" : ""}{p.canManageCodes ? " · makes codes" : ""} · {sectionLabel(p.section)}
               </div>
               <div style={{ fontSize: 12.5, color: "#8e8e93", marginTop: 2 }}>
                 {p.status === "active"

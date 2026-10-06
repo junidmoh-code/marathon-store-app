@@ -67,6 +67,8 @@
 import { stockSizeKey, decodedCellKey } from "../../utils/sizeKey";
 import { serverNowMs } from "../../utils/serverTime";
 import { isFootwearProduct } from "./missingFootwearCore";
+import { wallAllows } from "../../utils/networkRegistry";
+import { net, hubIds } from "./sectionRouting";
 export { isFootwearProduct };
 
 // One key per cell in the promised map. Encoded size key space ("5.5" → "5_5"),
@@ -167,6 +169,30 @@ export function readyPromisedByCell(orders, loc, productsById, nowMs = serverNow
 // behaviour. (Adversarial review, PR #446.)
 export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 
+// ── THE GATED HUBS, FROM THE NETWORK REGISTRY ────────────────────────────────
+// "hub1 and hub2, and deliberately only two" was the network as it stood: the
+// two hubs that are LIVE. Pine's Hub 3 is NULL above because it has not been
+// counted in — which is exactly what the registry's live flag says. So the
+// gate asks the registry: every live hub is gated, and a hub that is not live
+// is "no gate, yesterday's behaviour", unchanged. On the seed this answers
+// the constant above (pinned by test), which stays for the callers that
+// import it. WHAT SWITCHES ON when the owner makes Hub 3 live: its sneaker
+// tiles are gated on its own cells, and a size it is out of can be rerouted
+// to another live hub IN ITS OWN SECTION (see resolveSneakerSourcing).
+export function gatedSneakerHubs(network) {
+  return hubIds(net(network), { liveOnly: true });
+}
+// The hubs a gated sneaker may be rerouted to from `taggedHub`: the other
+// gated hubs on the SAME side of the section wall, in registry order. Never
+// across it — a Section 1 shop's order cannot be picked at a Section 2 hub.
+// `forStore` (optional) is the ordering shop: when given, a candidate must be
+// on that shop's side too.
+export function sneakerAlternates(taggedHub, network, forStore = null) {
+  const N = net(network);
+  return gatedSneakerHubs(N).filter((h) => h !== taggedHub && wallAllows(N, taggedHub, h)
+    && (!forStore || wallAllows(N, forStore, h)));
+}
+
 // ── WHERE A DISPLAY PAIR LIVES ───────────────────────────────────────────────
 // The display PULL lane is hub1-scoped by construction: the pull is charged at
 // hub1 in allocateSneakerCart, the checkout pre-flight verifies it against
@@ -183,10 +209,10 @@ export const GATED_SNEAKER_HUBS = ["hub1", "hub2"];
 // and since 2026-09-08 the informational marker reads it per serving hub. Only
 // the pull is Hub 1's, and only the pull can refuse a sale.
 export const DISPLAY_PAIR_HUB = "hub1";
-export function gatedSneakerHub(product, routedHub) {
+export function gatedSneakerHub(product, routedHub, network) {
   if (!isFootwearProduct(product)) return null;
   if ((product?.productType || "sneaker") === "clothing") return null;
-  return GATED_SNEAKER_HUBS.includes(routedHub) ? routedHub : null;
+  return gatedSneakerHubs(network).includes(routedHub) ? routedHub : null;
 }
 
 // The resolver itself. `cellQty` is the raw booked quantity (may be negative);
@@ -320,7 +346,14 @@ export function cellBlockInfo({ cells, promised, productId, size }) {
 // Everything else is unchanged, and identical at cart depth 0 — verified
 // branch by branch. See resolveSneakerSourcingHub below for the original rule,
 // which still reads exactly as it did.
-export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumedByHub = null }) {
+// ── "THE OTHER HUB" IS "ANOTHER HUB IN THE SAME SECTION" ─────────────────────
+// With two gated hubs the alternate was simply the other one. The rule it
+// stood for is narrower than that and is now stated: the candidates are the
+// gated hubs on the tagged hub's side of the section wall (sneakerAlternates),
+// tried in registry order, and the first one that has been READ and has the
+// size answers. For Hub 1 ⇄ Hub 2 that is the same single candidate and the
+// same answer in every branch. A hub across the wall is never a candidate.
+export function resolveSneakerSourcing({ product, taggedHub, size, hubData, consumedByHub = null, network, forStore = null }) {
   // `available: null` means "this rule does not answer for it" — NOT zero. A
   // caller must test it with Number.isFinite, because `null <= 0` is true in
   // JavaScript and would turn "not our business" into "out of stock".
@@ -328,12 +361,11 @@ export function resolveSneakerSourcing({ product, taggedHub, size, hubData, cons
 
   // Not a gated sneaker, or tagged at a hub this rule does not cover (hub3,
   // hubC, anything new) — the tag is the answer, untouched.
-  if (!gatedSneakerHub(product, taggedHub)) return NO_ANSWER;
+  if (!gatedSneakerHub(product, taggedHub, network)) return NO_ANSWER;
   if (!size) return NO_ANSWER;                 // no size, no per-cell question
 
-  const alternate = GATED_SNEAKER_HUBS.find((h) => h !== taggedHub);
+  const alternates = sneakerAlternates(taggedHub, network, forStore);
   const tagged = hubData?.[taggedHub];
-  const alt = hubData?.[alternate];
   // Silence is not zero. A hub we have not read cannot be judged empty, and
   // cannot be chosen instead.
   if (!tagged?.ready) return NO_ANSWER;
@@ -355,12 +387,15 @@ export function resolveSneakerSourcing({ product, taggedHub, size, hubData, cons
   const taggedLeft = Math.max(taggedRaw - takenAt(taggedHub), 0);
   if (taggedLeft > 0) return { hub: taggedHub, available: taggedLeft };
 
-  // The tag is exhausted. Only now does the alternate matter — and only if we
-  // have actually read it.
-  if (!alt?.ready) return { hub: taggedHub, available: 0 };
-  const altRaw = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
-  const altLeft = Math.max(altRaw - takenAt(alternate), 0);
-  if (altLeft > 0) return { hub: alternate, available: altLeft };
+  // The tag is exhausted. Only now does an alternate matter — and only one we
+  // have actually read.
+  for (const alternate of alternates) {
+    const alt = hubData?.[alternate];
+    if (!alt?.ready) continue;
+    const altRaw = cellAvailability({ cells: alt.cells, promised: alt.promised, productId: product?.id, size });
+    const altLeft = Math.max(altRaw - takenAt(alternate), 0);
+    if (altLeft > 0) return { hub: alternate, available: altLeft };
+  }
 
   // BOTH EMPTY → THE TAGGED HUB, and a true ✕ that names the right shelf.
   return { hub: taggedHub, available: 0 };

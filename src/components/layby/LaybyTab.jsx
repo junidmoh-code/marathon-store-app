@@ -21,7 +21,7 @@ import QrScanner from "./QrScanner";
 import { receiveLayby, markPullSent, rejectPull, returnPullToStock } from "./useLayby";
 import { labelFor } from "../stock/locations";
 import {
-  LAYBY_STATUS, DEFAULT_STORAGE_HUB, DISPOSITION, dispositionOf,
+  LAYBY_STATUS, storageHubOf, DISPOSITION, dispositionOf,
   formatLaybyMoney, isLaybyException, isPullExpired, ageLabel, parseLaybyScan, normalizeInvoiceNo,
 } from "./contract";
 
@@ -33,7 +33,7 @@ const GREEN  = "#4ACA7A";
 const AMBER  = "#F59E0B";
 const MUTED  = "rgba(255,255,255,.4)";
 
-const hubOf = (x) => x?.storageHub || DEFAULT_STORAGE_HUB;
+const hubOf = (x) => storageHubOf(x);
 const invOf = (x) => x?.invoiceNo || "—";
 
 // ── Exceptions banner — rendered by WarehouseView above the tabs on every tab ──

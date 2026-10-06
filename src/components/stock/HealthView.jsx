@@ -46,6 +46,10 @@ import NetworkTransfer from "./NetworkTransfer";
 import MissingFootwear from "./MissingFootwear";
 import { computeMissingFootwear } from "./missingFootwearCore";
 import { computeMissingProducts, buildChips, pickActiveTab } from "./missingProductsCore";
+import { isBufferLike } from "./introduceExistingCore";
+import { nameOf, isStore, solveHubFor } from "./sectionRouting";
+import { isLive } from "../../utils/networkRegistry";
+import { currentNetwork } from "../../utils/networkStore";
 import { partitionHidden } from "./hiddenProductsCore";
 import HiddenProducts, { HoldSpot } from "./HiddenProducts";
 import NoTargetQueue from "./NoTargetQueue";
@@ -53,7 +57,17 @@ import { serverNowIso, serverNowMs } from "../../utils/serverTime";
 import { sizeRank } from "./hubSizeRank";
 
 const LOC_LABEL = { "marathon-pe": "Marathon PE", trophy: "Trophy", hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", "marathon-pine": "Pine", central: "Central" };
-const locLabel = (l) => LOC_LABEL[l] || l || "—";
+// A location this map does not name (Concrete, the Concrete Stockroom, any
+// location added later) is named by the network registry.
+const locLabel = (l) => LOC_LABEL[l] || nameOf(l);
+// A BUFFER hub is Hub 2 or a hub declared to be like it (Hub 3, the Concrete
+// Stockroom): Central restocks it and it feeds its section's shops. Hub 1 is
+// not one — it has always been counted with the shop legs here. LIVE only: a
+// hub that has not been counted in gets nothing automatic, so until it is
+// live its rows (if a person raised any) stay where they always were.
+const bufferDest = (d) => isBufferLike(d) && isLive(currentNetwork(), d);
+// The hub a shop's leg comes from: its own back-stock hub.
+const feederOf = (d) => (isStore(d) ? (solveHubFor(undefined, d, null, null) || "hub2") : "hub2");
 const MODE_COLOR = { off: GRAY, shadow: AMBER, live: GREEN };
 // Numeric-aware ordering via hubSizeRank (imported at top): letters keep their
 // historical ranks; shoe/waist sizes sort numerically after them instead of
@@ -104,8 +118,8 @@ function AutoRefillSummary({ shadow, openIndex, failedRefills, byId }) {
 
   const dests = [...new Set(rows.map((r) => r.dest))].sort();
   const shown = destFilter === "all" ? rows : rows.filter((r) => r.dest === destFilter);
-  const storeRows = shown.filter((r) => r.dest !== "hub2");
-  const hubRows = shown.filter((r) => r.dest === "hub2");
+  const storeRows = shown.filter((r) => !bufferDest(r.dest));
+  const hubRows = shown.filter((r) => bufferDest(r.dest));
 
   const pill = (on) => ({
     padding: "7px 14px", borderRadius: 999, fontSize: 12, fontWeight: 700, cursor: "pointer",
@@ -116,8 +130,8 @@ function AutoRefillSummary({ shadow, openIndex, failedRefills, byId }) {
 
   const summaryCard = (c) => {
     const p = byId.get(c.pid);
-    const route = c.dest === "hub2" ? "Central → Hub 2" : `Hub 2 → ${locLabel(c.dest)}`;
-    const queue = c.dest === "hub2" ? "Source → Hub 2 Refill" : "Warehouse → Clothing";
+    const route = bufferDest(c.dest) ? `Central → ${locLabel(c.dest)}` : `${locLabel(feederOf(c.dest))} → ${locLabel(c.dest)}`;
+    const queue = bufferDest(c.dest) ? `Source → ${locLabel(c.dest)} Refill` : "Warehouse → Clothing";
     return (
       <ProductCard key={c.key}
         photo={p?.photoUrl} name={p?.name || c.pid}
@@ -189,7 +203,7 @@ function NegativeFixChip({ row, actorRole }) {
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 7, border: `1px solid ${RED}55`, background: "rgba(150,20,20,.1)", borderRadius: 10, padding: "5px 6px 5px 10px", fontSize: 12 }}>
       <span style={{ fontWeight: 800, color: "#fff" }}>{row.size}</span>
-      <span style={{ fontWeight: 700, color: RED }}>{row.qty} · {LOC_LABEL[row.loc] || row.loc}</span>
+      <span style={{ fontWeight: 700, color: RED }}>{row.qty} · {locLabel(row.loc)}</span>
       {actorRole === "admin" && (
         <button onClick={fix} disabled={state === "busy"}
           style={{ border: "1px solid rgba(60,110,255,.35)", background: "rgba(60,110,255,.1)", color: BLUE_L, borderRadius: 7, padding: "2px 8px", fontSize: 10.5, fontWeight: 700, cursor: "pointer", fontFamily: FONT }}>
@@ -387,13 +401,13 @@ export default function HealthView({ products = [], onExit }) {
     let n = 0;
     for (const node of [shadow, openEngine]) {
       for (const [dest, byPid] of Object.entries(node || {})) {
-        if (dest === "hub2") continue;
+        if (bufferDest(dest)) continue;
         for (const bySize of Object.values(byPid || {})) n += Object.keys(bySize || {}).length;
       }
     }
     return n;
   }, [shadow, openEngine]);
-  const centralQueue = openRequests.filter((r) => r.requestingLocation === "hub2").length;
+  const centralQueue = openRequests.filter((r) => bufferDest(r.requestingLocation)).length;
   // Transit lanes (2026-07-19): cross-building sends parked in the in_transit
   // holding. Stale = unreceived past the threshold, or short-received awaiting
   // an admin resolution — either way someone should chase a physical box.
@@ -873,7 +887,7 @@ export default function HealthView({ products = [], onExit }) {
                 name={r.productName || nameOf(r.productId)}
                 badges={<Badge tone={r.kind === "pending" ? AMBER : RED}>{r.kind === "pending" ? "PENDING" : r.kind === "failed" ? "FAILED" : "NEEDS A DECISION"}</Badge>}>
                 <div style={{ fontSize: 12, color: "rgba(255,255,255,.75)", lineHeight: 1.5 }}>
-                  <div>Size {r.size || r.sizeKey} · {r.qty ?? r.inTransitQty ?? "?"} unit(s) · to {HUB_NAMES[r.dest] || r.dest || "—"}{r.shipmentId ? ` · shipment ${r.shipmentId}` : ""}</div>
+                  <div>Size {r.size || r.sizeKey} · {r.qty ?? r.inTransitQty ?? "?"} unit(s) · to {HUB_NAMES[r.dest] || nameOf(r.dest)}{r.shipmentId ? ` · shipment ${r.shipmentId}` : ""}</div>
                   <div style={{ color: "rgba(255,255,255,.55)" }}>{r.why || r.reason}</div>
                   <div style={{ color: "rgba(255,255,255,.35)", fontSize: 11 }}>{r.productId} · {r.lineId}</div>
                 </div>

@@ -44,3 +44,25 @@ describe("new contract constants", () => {
     expect(PULL_STATUS.REJECTED).toBe("rejected");
   });
 });
+
+// ─── SECTIONS: storageHubOf ──────────────────────────────────────────────────
+import { storageHubOf, DEFAULT_STORAGE_HUB as LEGACY_HUB } from "./contract";
+import { SEED_REGISTRY as NET } from "../../utils/networkRegistry";
+
+describe("storageHubOf — where a layby with no storageHub belongs", () => {
+  it("a stamped storageHub always wins", () => {
+    expect(storageHubOf({ storageHub: "hub3", storeId: "pe" }, NET)).toBe("hub3");
+  });
+  it("legacy records (no hub, no store) and Marathon PE / Trophy records stay on Hub 1", () => {
+    expect(LEGACY_HUB).toBe("hub1");
+    expect(storageHubOf({}, NET)).toBe("hub1");
+    expect(storageHubOf(null, NET)).toBe("hub1");
+    expect(storageHubOf({ storeId: "pe" }, NET)).toBe("hub1");
+    expect(storageHubOf({ storeId: "trophy" }, NET)).toBe("hub1");
+  });
+  it("a Section 1 store's record never defaults across the wall into Hub 1", () => {
+    expect(storageHubOf({ storeId: "pine" }, NET)).toBe("hub3");
+    expect(storageHubOf({ storeId: "concrete" }, NET)).toBe("hub3");
+    expect(storageHubOf({ storeId: "somewhere-new" }, NET)).toBe(null);
+  });
+});

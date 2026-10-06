@@ -161,3 +161,12 @@ test("a recount that raced somebody else is refused, not applied", async () => {
   assert.strictEqual(ok, false);
   assert.strictEqual(db.server.logTotals.n, 500);
 });
+
+test("sections: the running counter folds in Concrete, and totals stored before it existed read as 0", async () => {
+  const db = fakeDb({ cursor: "C0", logTotals: { n: 100, pe: 90, trophy: 10, pine: 0, other: 0 } });
+  const io = makeIo(db);
+  await io.advanceCursor({ cursor: "C1", expect: "C0", seen: { n: 2, pe: 0, trophy: 0, pine: 0, concrete: 2, other: 0 }, at: "2026-10-02T00:00:00.000Z" });
+  assert.strictEqual(db.server.logTotals.n, 102);
+  assert.strictEqual(db.server.logTotals.concrete, 2);
+  assert.strictEqual(db.server.logTotals.pe, 90);
+});

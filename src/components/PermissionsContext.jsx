@@ -20,8 +20,9 @@ export const PermissionsContext = createContext({
   storeIds:      [],
   hasPermission: () => false,
   signOut:       () => {},
-  // Which device this is and who holds it (src/device/enrolment.js).
-  deviceIdentity: { deviceId: null, personName: null, personId: null, enrolled: false, canManageCodes: false },
+  // Which device this is and who holds it (src/device/enrolment.js). `section`
+  // is the section an enrolled device's code was made for (1 | 2), else null.
+  deviceIdentity: { deviceId: null, personName: null, personId: null, enrolled: false, canManageCodes: false, section: null },
 });
 
 export function usePermissions() {

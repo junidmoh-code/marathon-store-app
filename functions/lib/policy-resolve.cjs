@@ -185,6 +185,19 @@ const FOOTWEAR_CATEGORY_KEYS = Object.freeze([
 // carries no target; no shop is armed through it.
 const FOOTWEAR_POLICY_HUBS = Object.freeze(["hub1", "hub2"]);
 
+// ── WHO FOLLOWS A FOOTWEAR HUB (sections, 2026-10-02) ────────────────────────
+// The network registry gives some locations a template — Hub 3 and the
+// Concrete Stockroom are "like" Hub 2 — and a location with no numbers of its
+// own resolves through its template's (lib/policy-template.cjs). Such a hub is
+// governed by the SAME one policy, so it is not a third location the policy
+// has wandered to. Read straight off the registry object so this stays a leaf
+// module; no registry handed in = nobody follows = the check as it always was.
+function footwearFollowers(network) {
+  const locs = isPlainObject(network?.locations) ? network.locations : {};
+  return Object.keys(locs).sort().filter((id) => !FOOTWEAR_POLICY_HUBS.includes(id)
+    && FOOTWEAR_POLICY_HUBS.includes(locs[id]?.policyLike));
+}
+
 // Canonical form of one location leg, for "are Hub 1 and Hub 2 the same".
 // Key order in RTDB is not stable across reads, so compare a sorted form.
 function legSignature(leg) {
@@ -212,7 +225,10 @@ function legSignature(leg) {
 //   group_disarmed     the group exists but armed !== true (not in the order)
 //   hub_not_armed      the group's Hub 1 or Hub 2 leg is absent or unusable
 //   hub_legs_differ    Hub 1 and Hub 2 legs are not identical
-//   extra_location     the group arms somewhere other than Hub 1 / Hub 2
+//   extra_location     the group arms somewhere other than Hub 1 / Hub 2 — or
+//                      a hub the registry says FOLLOWS one of them (Hub 3, the
+//                      Concrete Stockroom): a follower's leg, its template's or
+//                      its own, is the same policy reaching it, not drift
 //   member_missing     a footwear category is not in the group
 //   other_group        another ARMED group also claims a footwear category
 //   own_entry          a footwear category carries its own categoryPolicy
@@ -223,8 +239,9 @@ function legSignature(leg) {
 //
 // Returns an array, empty when footwear is one policy. Every item is
 // { kind, key?, loc?, detail } — plain strings, safe to store and render.
-function footwearPolicyDrift(config) {
+function footwearPolicyDrift(config, network) {
   const issues = [];
+  const followers = footwearFollowers(network);
   const groups = isPlainObject(config?.policyGroups) ? config.policyGroups : {};
   const g = groups[FOOTWEAR_GROUP_KEY];
   if (!isPlainObject(g)) {
@@ -246,7 +263,7 @@ function footwearPolicyDrift(config) {
       issues.push({ kind: "hub_legs_differ", detail: "Hub 1 and Hub 2 do not have the same footwear numbers" });
     }
     for (const loc of Object.keys(pol)) {
-      if (loc === "perSize" || FOOTWEAR_POLICY_HUBS.includes(loc)) continue;
+      if (loc === "perSize" || FOOTWEAR_POLICY_HUBS.includes(loc) || followers.includes(loc)) continue;
       if (locationEntryMode(pol[loc]) === "invalid") continue;
       issues.push({ kind: "extra_location", loc, detail: `the footwear policy also arms ${loc}` });
     }
@@ -269,8 +286,10 @@ function footwearPolicyDrift(config) {
     }
   }
   const fw = config?.footwearTargets;
-  for (const loc of FOOTWEAR_POLICY_HUBS) {
-    if (fw === true || (isPlainObject(fw) && fw[loc] === true)) {
+  for (const loc of [...FOOTWEAR_POLICY_HUBS, ...followers]) {
+    // `true` (every location) is reported once per footwear hub, as it always
+    // was; a follower is named only when the map switches it on by name.
+    if ((fw === true && FOOTWEAR_POLICY_HUBS.includes(loc)) || (isPlainObject(fw) && fw[loc] === true)) {
       issues.push({ kind: "footwear_rule_on", loc, detail: `the old footwear rule is switched on at ${loc}` });
     }
   }
@@ -279,5 +298,5 @@ function footwearPolicyDrift(config) {
 
 module.exports = {
   locationEntryMode, carriedOnlyOf, armedGroupForCategory, effectivePolicyFor, locationPolicyFor,
-  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_POLICY_HUBS, footwearPolicyDrift,
+  FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, FOOTWEAR_POLICY_HUBS, footwearPolicyDrift, footwearFollowers,
 };

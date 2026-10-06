@@ -709,25 +709,28 @@ test("SAME-SCAN REOPEN: a rejected lock releases its inbound so the re-ask lands
 });
 
 test("DENIER-PINNED: after a route change, only arrival at the location that SAID no lifts the rejection", () => {
-  const cfg = { ...CONFIG, routes: { "marathon-pe": "hub3", trophy: "hub2", hub2: "central" } };
+  // The new route's source is Hub 1 — a hub on Marathon PE's own side of the
+  // section wall. (This used Hub 3 as an arbitrary "other hub"; a PE←Hub 3
+  // route is now withheld by the network registry, see sections-wall.test.cjs.)
+  const cfg = { ...CONFIG, routes: { "marathon-pe": "hub1", trophy: "hub2", hub2: "central" } };
   const rejectedByHub2 = {
     config: cfg,
-    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub3: { p1: { M: cell(8) } }, hub2: {}, central: {}, trophy: {} },
+    stock: { "marathon-pe": { p1: { M: cell(1) } }, hub1: { p1: { M: cell(8) } }, hub2: {}, central: {}, trophy: {} },
     orders: { "R011-3": { customerName: "Shop Refill", autoRefill: true, destShop: "marathon-pe", productId: "p1", size: "M", placedAtHub: "hub2", clothingRefillStatus: "rejected", clothingOutOfStockAt: iso(5), status: "incoming", createdAt: iso(6) } },
   };
-  // Arrival at the NEW route source (hub3) is no evidence against hub2's "no".
+  // Arrival at the NEW route source (hub1) is no evidence against hub2's "no".
   const wrongLoc = computeRefillPlan(base({
     ...rejectedByHub2,
-    movements: [{ type: "received", to: "hub3", productId: "p1", size: "M", qty: 5, ts: iso(1) }],
+    movements: [{ type: "received", to: "hub1", productId: "p1", size: "M", qty: 5, ts: iso(1) }],
   }));
-  assert.equal(wrongLoc.intents.filter((x) => x.dest === "marathon-pe").length, 0, "hub3 arrival ≠ hub2 evidence");
+  assert.equal(wrongLoc.intents.filter((x) => x.dest === "marathon-pe").length, 0, "hub1 arrival ≠ hub2 evidence");
   assert.ok(wrongLoc.exceptions.waitingForStock.items.some((w) => w.source === "hub2"), "watches the denier, not today's route");
   // Arrival at the RECORDED denier (hub2) lifts it; the new route then supplies.
   const rightLoc = computeRefillPlan(base({
     ...rejectedByHub2,
     movements: [{ type: "received", to: "hub2", productId: "p1", size: "M", qty: 5, ts: iso(1) }],
   }));
-  assert.equal(rightLoc.intents.filter((x) => x.dest === "marathon-pe" && x.source === "hub3").length, 1, "hub2 arrival reopens; intent routed via hub3");
+  assert.equal(rightLoc.intents.filter((x) => x.dest === "marathon-pe" && x.source === "hub1").length, 1, "hub2 arrival reopens; intent routed via hub1");
 });
 
 test("ARRIVAL LIFT: confirmed-out clears when stock arrives at a denying level after its denial", () => {

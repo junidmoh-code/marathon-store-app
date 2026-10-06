@@ -37,7 +37,9 @@
 //
 // PURE — no firebase, no react. displayRequestStore.js is the only writer.
 
-import { availableUnits, promisedKey, GATED_SNEAKER_HUBS } from "./availabilityCore";
+import { availableUnits, promisedKey, gatedSneakerHubs } from "./availabilityCore";
+import { wallAllows } from "../../utils/networkRegistry";
+import { net } from "./sectionRouting";
 import { isOpenDisplayRequest, requestStoreFor } from "./displayRowCore";
 import { labelFor } from "./locations";
 
@@ -86,8 +88,17 @@ export function hubUnitsFor({ cells, promised, productId }) {
  * silence is not zero (the resolver's rule). If the tagged hub is unread the
  * answer is `{ hub: null, unread: true }`, which the caller reports as "still
  * loading", never as "none in any warehouse".
+ *
+ * THE SECTION WALL. `store` is the shop the display is for: the pair may only
+ * come from a hub on THAT shop's side of the wall, so the candidates are the
+ * gated hubs the wall allows from it (Hub 1 and Hub 2 for Marathon PE and
+ * Trophy — the list this always walked). A shoe held only across the wall is
+ * "none in any warehouse" for this shop; it goes back to Central first.
+ * Without `store` (an older caller) the list is not narrowed.
  */
-export function pickDisplaySourceHub({ product, hubData, hubs = GATED_SNEAKER_HUBS }) {
+export function pickDisplaySourceHub({ product, hubData, hubs: hubsIn, store = null, network }) {
+  const gated = hubsIn || gatedSneakerHubs(network);
+  const hubs = store ? gated.filter((h) => wallAllows(net(network), store, h)) : gated;
   const productId = product?.id;
   if (!productId) return { hub: null };
   const tag = (Array.isArray(product.hubs) && product.hubs[0]) || product.hub || null;

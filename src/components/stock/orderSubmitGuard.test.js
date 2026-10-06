@@ -157,7 +157,10 @@ describe("placeOrders wiring", () => {
     expect(guard).toBeGreaterThan(0);
     expect(guard).toBeLessThan(body.indexOf("resolveOrderCustomer("));
     expect(guard).toBeLessThan(body.indexOf("await writeOrder(order)"));
-    expect(guard).toBeLessThan(body.indexOf("getNextOrderNumber()"));
+    // Sections: the number is drawn for the order's shop (its own sequence
+    // for Pine / Concrete; the shared one for Marathon PE / Trophy).
+    expect(body.indexOf("getNextOrderNumber(effectiveShop)")).toBeGreaterThan(0);
+    expect(guard).toBeLessThan(body.indexOf("getNextOrderNumber(effectiveShop)"));
   });
   it("the guard and the write read the same hub function", () => {
     expect(body).toContain("hub: placedHubFor(item), productId: item.product.id, size: item.size");

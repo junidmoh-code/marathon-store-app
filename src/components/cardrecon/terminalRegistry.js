@@ -21,6 +21,7 @@
 //
 // Pure: no React, no Firebase, no clock. Fuzzed against its server half in
 // terminalRegistry.test.js.
+import { sectionOf } from "../../utils/networkRegistry.js";
 
 /** `retiredAt` — the stamp — IS the flag; a boolean beside it could disagree. */
 export function isRetiredTerminal(row) {
@@ -73,4 +74,49 @@ export function captureCards(terminals) {
     // an existing row, so a stray `tid` is not hypothetical. (CodeRabbit, #611.)
     .map(([tid, row]) => ({ ...row, tid }))
     .sort((a, b) => String(a.label || a.tid).localeCompare(String(b.label || b.tid)));
+}
+
+// ── WHOSE TILLS, AND UNDER WHICH SECTION ─────────────────────────────────────
+// A terminal row names its store by the POS's short id ("pe", "concrete"), and
+// the network registry knows which section that store is in. Two things follow,
+// and both are decided here so the screen only draws:
+//
+//   • A VIEWER SEES THE TILLS IN THEIR OWN SECTIONS. `sections` is the answer
+//     from useMySections — Junid and anyone he gives both see every till; an
+//     account or enrolled device scoped to one section sees that section's.
+//     The callable refuses the others regardless (sectionRefusalFor).
+//   • THE CARDS ARE GROUPED BY SECTION, Section 2 first so Marathon and Trophy
+//     stay at the top where they have always been. The screen prints a section
+//     heading only when there is more than one group to tell apart — so a
+//     viewer in one section sees the plain list this screen always was.
+//
+// A row whose store the registry does not know has no section: it is shown to
+// everyone, last, under no heading — a machine mapped in a hurry still has to
+// be capturable, and the server refuses nobody for it either.
+
+/**
+ * @param {object[]} cards     captureCards() output
+ * @param {object}   registry  the network registry
+ * @param {number[]} sections  the viewer's sections, e.g. [1, 2]
+ * @returns {{section:number|null, name:string|null, cards:object[]}[]}
+ */
+export function cardsBySection(cards, registry, sections) {
+  const mine = Array.isArray(sections) ? sections : [1, 2];
+  const groups = [];
+  for (const card of cards || []) {
+    const section = sectionOf(registry, card.storeId);
+    if (section !== null && !mine.includes(section)) continue;
+    let g = groups.find((x) => x.section === section);
+    if (!g) {
+      const name = section === null ? null
+        : (registry && registry.sections && registry.sections[section] && registry.sections[section].name) || `Section ${section}`;
+      g = { section, name, cards: [] };
+      groups.push(g);
+    }
+    g.cards.push(card);
+  }
+  // Section 2, then Section 1, then the unsectioned. Cards keep the order they
+  // arrived in (captureCards sorts by label).
+  const rank = (g) => (g.section === null ? 99 : -g.section);
+  return groups.sort((a, b) => rank(a) - rank(b));
 }

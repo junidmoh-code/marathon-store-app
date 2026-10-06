@@ -88,6 +88,9 @@ function prunableResultDays(keys, saDate, keepDays) {
 async function runStockAuditPass({
   db, app, nowMs, stock, products, orders, movements,
   setFn, updFn, shallowKeys = restShallowKeys, log = console,
+  // The network registry the scan already loaded. Absent = the built-in seed:
+  // Hub 1, Hub 2, Marathon PE and Trophy, the lists this pass has always walked.
+  network = null,
 }) {
   // 1. The kill switch. One tiny read on every run — the price of being able to
   //    switch the whole feature off from the console without a deploy.
@@ -123,7 +126,7 @@ async function runStockAuditPass({
   // ── the hubs: sneaker lines a customer was turned away from ───────────────
   // Pure from the snapshot — /orders, /stock and /products are all in memory,
   // so a hub list costs one write and no read at all.
-  for (const hub of audit.AUDIT_HUBS) {
+  for (const hub of audit.auditHubs(network)) {
     try {
       const snapshot = audit.buildHubSnapshot({ hub, nowMs, cfg, saDate, stock, products, orders });
       if (await setFn(db, `settings/stockAudit/hub/${hub}/latest`, snapshot, `stock-audit ${hub} snapshot`)) {
@@ -146,7 +149,7 @@ async function runStockAuditPass({
   }
 
   // ── the shops: the clothing rotation ──────────────────────────────────────
-  for (const store of audit.AUDIT_STORES) {
+  for (const store of audit.auditStores(network)) {
     try {
       const [rotationState, resultDays] = await Promise.all([
         db.ref(`settings/stockAudit/rotation/${store}`).once("value").then((s) => s.val() || {}),

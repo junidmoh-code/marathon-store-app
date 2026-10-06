@@ -65,6 +65,20 @@ const textOf = (tree) => flat(tree.toJSON());
 const buttonsOf = (tree) => tree.root.findAll((n) => n.type === "button");
 const buttonSaying = (tree, needle) => buttonsOf(tree).find((b) => (b.children || []).some((c) => typeof c === "string" && c.includes(needle)));
 const buttonExactly = (tree, label) => buttonsOf(tree).find((b) => (b.children || []).join("") === label);
+// THE PANEL IS TICK BOXES (one screen, both sections, since 2026-10): the
+// default store opens ticked ("✓ Trophy"). "Nominate X" — what tapping X's
+// chip used to mean — is: tick X, untick anything else.
+const storeBoxes = (tree) => buttonsOf(tree).filter((b) => b.props.role === "checkbox");
+const boxLabel = (b) => (b.children || []).join("").replace(/^✓ /, "");
+function tickOnly(tree, name) {
+  for (let guard = 0; guard < 8; guard++) {
+    const other = storeBoxes(tree).find((b) => b.props["aria-checked"] && boxLabel(b) !== name);
+    if (!other) break;
+    act(() => { other.props.onClick(); });
+  }
+  const box = storeBoxes(tree).find((b) => boxLabel(b) === name);
+  if (!box.props["aria-checked"]) act(() => { box.props.onClick(); });
+}
 
 function render({ products = PRODUCTS, stock = STOCK } = {}) {
   const cards = computeMissingProducts({ allStock: stock, products });
@@ -77,7 +91,7 @@ function render({ products = PRODUCTS, stock = STOCK } = {}) {
 }
 async function solve(tree, store) {
   await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
-  if (store) await act(async () => { buttonExactly(tree, store).props.onClick(); });
+  if (store) tickOnly(tree, store);
   const confirm = buttonSaying(tree, "Solve — ");
   await act(async () => { await confirm.props.onClick(); });
 }

@@ -120,7 +120,11 @@ vi.mock("./useStock", () => ({
   useLocations: () => ({ ...LOCATIONS }),
   useEngineConfig: () => CONFIG_STATE.value,
   useEngineConfigState: () => CONFIG_STATE,
+  // /network (the tab asks the registry which two hubs to compare): no node,
+  // so the registry is its seed — Hub 1 + Hub 2, as this suite assumes.
+  usePathState: () => NETWORK_STATE,
 }));
+const NETWORK_STATE = { value: null, settled: true, error: false };
 
 // sneakers is per-size and carriedOnly at BOTH hubs — the live shape, and the
 // one that produced the 34 both-hub rows this tab was built to surface.

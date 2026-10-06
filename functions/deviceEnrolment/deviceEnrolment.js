@@ -178,9 +178,13 @@ async function handleEnrol(request, deps) {
 
   // The token BEFORE the device record, so a signing failure (the service
   // account missing its Token Creator role) leaves nothing half-enrolled.
+  // The section the code was made for rides in the token and on the device
+  // record. A code made before sections has none, and its devices get neither.
+  const section = E.readSection(person.section);
   const claims = E.buildClaims({
     deviceId, eid, personId, personName: person.name, kind: person.kind,
     canManageCodes: person.kind !== "shared" && person.canManageCodes === true,
+    section,
   });
   let token;
   try {
@@ -203,6 +207,9 @@ async function handleEnrol(request, deps) {
     [`${dev}/kind`]: person.kind === "shared" ? "shared" : "person",
     [`${dev}/status`]: "active",
     [`${dev}/deviceType`]: deviceType,
+    // null clears a section left by an earlier enrolment of this same device
+    // under a code that had one.
+    [`${dev}/section`]: section,
     [`${dev}/userAgent`]: userAgent,
     [`${dev}/enrolledAtMs`]: now,
     [`${dev}/revokedAtMs`]: null,
@@ -233,7 +240,7 @@ async function handleEnrol(request, deps) {
 // codes (MC) — re-checked on the person record on every call, never trusted
 // from the token alone. Actions:
 //   list                       people + devices (never a code)
-//   createCode {name, kind, canManageCodes}   a unique random code, returned ONCE
+//   createCode {name, kind, canManageCodes, section}   a unique random code, returned ONCE
 //   revokeDevice {deviceId}    that device only; frees its slot on the code
 //   revokePerson {personId}    every device of theirs, and the code is dead
 // A revoke deletes /users/{uid}/deviceGate/{deviceId}: the device's next write
@@ -261,7 +268,9 @@ async function managerIdentity(db, auth) {
     ]);
     const p = person.val();
     if (gate.val() === t.eid && p && p.status === "active" && p.canManageCodes === true) {
-      return { owner: false, by: p.name || "MC", personId: t.personId, deviceId: t.deviceId };
+      // section: the code-maker's OWN section, from their person record (never
+      // from the token alone) — null when their code predates sections.
+      return { owner: false, by: p.name || "MC", personId: t.personId, deviceId: t.deviceId, section: E.readSection(p.section) };
     }
   }
   return null;
@@ -321,6 +330,28 @@ async function handleAdmin(request, deps) {
     const kind = request.data?.kind === "shared" ? "shared" : "person";
     // Only Junid may make another code-maker.
     const canManageCodes = who.owner && kind === "person" && request.data?.canManageCodes === true;
+    // ── THE SECTION THE CODE IS FOR ─────────────────────────────────────────
+    // Picked on the Device codes screen: 1 or 2, and nothing else — checked
+    // HERE because this value becomes a signed token claim. A request that
+    // carries no section at all is a browser still running the bundle from
+    // before sections; it makes the unscoped code it always made, so nobody is
+    // stopped mid-shift by the deploy.
+    const rawSection = request.data?.section;
+    let section = null;
+    if (rawSection !== undefined && rawSection !== null) {
+      section = E.readSection(rawSection);
+      if (!section) throw new HttpsError("invalid-argument", "Pick the device's section: Section 1 or Section 2.");
+    }
+    // A code-maker who is themselves scoped to a section makes codes for THAT
+    // section only — otherwise a Section 2 device could mint itself a way into
+    // Section 1. Junid, and a code-maker whose own code predates sections, may
+    // pick either.
+    if (!who.owner && who.section) {
+      if (section && section !== who.section) {
+        throw new HttpsError("permission-denied", `You can only make codes for Section ${who.section}. Junid makes the others.`);
+      }
+      section = who.section;
+    }
     const people = await readBounded(db, E.PATHS.people);
     if (E.nameTaken(people, name)) {
       throw new HttpsError("already-exists", `${name} already has a live code. Revoke it first, or use a different name.`);
@@ -342,9 +373,10 @@ async function handleAdmin(request, deps) {
       name, kind, status: "active", code, canManageCodes,
       maxDevices: kind === "shared" ? E.SHARED_MAX_DEVICES : E.PERSON_MAX_DEVICES,
       createdAtMs: now, createdBy: who.by,
+      ...(section ? { section } : {}),
     };
     await db.ref(`${E.PATHS.people}/${personId}`).set(person);
-    await audit(db, now, who, "createCode", { personId, name, kind, canManageCodes });
+    await audit(db, now, who, "createCode", { personId, name, kind, canManageCodes, section });
     return { ok: true, code, person: E.publicPerson(personId, person) };
   }
 

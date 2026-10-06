@@ -42,8 +42,11 @@ import { httpsCallable } from "firebase/functions";
 import { database, functions } from "../firebase";
 import { SHOP_IDS, SHOP_LABELS } from "../utils/stores";
 import { PERMISSION_GROUPS, ALL_PERMISSIONS, STOCK_PERM_KEYS, ROLE_DEFAULT_PERMS, permFlagsFor } from "./permissionCatalog";
-
-const ADMIN_EMAIL = "gunidmoh@gmail.com";
+// The one super-admin identity, shared with AuthGate and every admin card.
+import { ADMIN_EMAIL } from "./PermissionsContext";
+import { useNetwork } from "../utils/useNetwork";
+import { listLocations } from "../utils/networkRegistry";
+import { accountSections, sectionChoiceOf, sectionPatch, sectionName } from "./sectionAccess";
 
 // ─── Design tokens (iOS-Dark-Mode grouped-list aesthetic) ────────────────────
 const FONT       = "-apple-system, BlinkMacSystemFont, 'SF Pro Display', sans-serif";
@@ -531,6 +534,11 @@ function UserDetailView({ user, onBack }) {
   const roleF  = useOptimisticField(user.role || "");
   const stockF = useOptimisticField(user.stockRole || "");
   const destF  = useOptimisticField(user.destShop || "");
+  // "1" | "2" | "both" | "" (nothing set — the account follows its Store Access
+  // lock, or sees both). See sectionAccess.js for what each choice writes.
+  const sectionF = useOptimisticField(sectionChoiceOf(user));
+  const localSection = sectionF.value;
+  const { registry } = useNetwork();
   const localPerms     = permsF.value;
   const localRole      = roleF.value;
   const localStockRole = stockF.value;
@@ -676,6 +684,18 @@ function UserDetailView({ user, onBack }) {
     if (!ok) destF.revert(prev);
   }
 
+  // Section scope: Section 1, Section 2 or Both. One write, two fields, so the
+  // record can never say two things at once: a single section is the `sections`
+  // map with one key (allSections removed); Both is allSections (map removed).
+  async function chooseSection(choice) {
+    if (choice === localSection) return;
+    const prev = localSection;
+    sectionF.setOptimistic(choice);   // optimistic
+    haptic();
+    const ok = await writePatch(sectionPatch(choice), "sections");
+    if (!ok) sectionF.revert(prev);
+  }
+
   async function handleDelete() {
     setBusy(true);
     setError(null);
@@ -810,6 +830,28 @@ function UserDetailView({ user, onBack }) {
           {localDestShop
             ? <>Sees &amp; acts on <span style={{ color: BLUE_L }}>{SHOP_LABELS[localDestShop]}</span> orders only — enforced at the database. Keep warehouse &amp; admin on “All stores”.</>
             : "All stores — no restriction (correct for warehouse & admin). Pick a shop to lock a store assistant to one store."}
+        </div>
+
+        <SectionRow label="Section" hint="pick one" saved={savedKeys.has("sections")} saving={savingKey === "sections"} />
+        <RadioList
+          options={[1, 2].map((n) => ({
+            key: String(n),
+            label: sectionName(registry, n),
+            desc: listLocations(registry, { section: n }).map((l) => l.name).join(" · "),
+          })).concat([{ key: "both", label: "Both sections", desc: "For an admin who works across the whole network." }])}
+          value={localSection}
+          onChange={chooseSection}
+        />
+        <div style={{ fontSize: 11, color: TEXT_2, padding: "6px 4px 0", marginBottom: 22, lineHeight: 1.5 }}>
+          {localSection
+            ? <>Sees &amp; works in <span style={{ color: BLUE_L }}>{localSection === "both" ? "both sections" : sectionName(registry, Number(localSection))}</span>. Central is always visible.</>
+            : (() => {
+              // Nothing chosen yet: say what applies today, so "unset" is never a guess.
+              const now = accountSections(registry, { ...user, destShop: localDestShop || null });
+              return now.length === 1
+                ? <>Not set — follows Store Access above, so <span style={{ color: BLUE_L }}>{sectionName(registry, now[0])}</span> only.</>
+                : "Not set — sees both sections, as every account did before sections. Pick one to limit this account.";
+            })()}
         </div>
 
         <SectionRow label="Security" />

@@ -56,8 +56,9 @@ const { onValueCreated } = require("firebase-functions/v2/database");
 const admin = require("firebase-admin");
 const {
   classifyMovement, decideCloses, claimClose, resolveHubSale, hubSaleTooOld, splitByHub,
-  leaseDecision, rowIsOpen, ageRefusalReason, openRowsInOrder, rowSizeText, DISPLAY_STORES,
+  leaseDecision, rowIsOpen, ageRefusalReason, openRowsInOrder, rowSizeText, displayStoresForHub,
 } = require("./lib.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -80,13 +81,19 @@ exports.closeDisplayRowOnSale = onValueCreated(
   },
   async (event) => {
     const m = event.data.val();
-    const hit = classifyMovement(m);
+    // Only a sale can close a row (classifyMovement refuses everything else),
+    // so every other movement leaves here without a read. A sale then asks the
+    // network registry which stores and hubs are LIVE — one small node, cached
+    // per instance for a minute.
+    if (!m || m.type !== "sold") return;
+    const db = admin.database();
+    const nowMs = Date.now();               // the clock is read BEFORE the first await
+    const network = await loadNetwork(db, { nowMs });
+    const hit = classifyMovement(m, network);
     if (!hit) return;                       // not a sale this trigger acts on
 
-    const db = admin.database();
     const movementId = event.params.movementId;
     const { productId, sizeKey, qty, kind } = hit;
-    const nowMs = Date.now();
     let { store } = hit;
     let closes;
     let inferred = null;
@@ -158,7 +165,7 @@ exports.closeDisplayRowOnSale = onValueCreated(
       }
       const perStore = {};
       let candidates = 0, hublessCount = 0, postSaleCount = 0, unknownAgeCount = 0;
-      for (const s of DISPLAY_STORES) {
+      for (const s of displayStoresForHub(network, hit.hub)) {
         // eslint-disable-next-line no-await-in-loop
         const rows = (await db.ref(`${ROWS}/${s}/${productId}`).get()).val();
         // ── A ROW WITH NO HUB BLOCKS, BUT IS NEVER THE ONE CLOSED ────────────

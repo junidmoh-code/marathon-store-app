@@ -55,6 +55,7 @@ const {
   bumpTxn,
 } = require("./lib.cjs");
 const { guardedMutate, guardedCreate } = require("./guardedTransaction.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -130,9 +131,11 @@ exports.onClothingSale = onValueCreated(
 
     // ── Early returns, cheapest first (fires on EVERY stock movement) ──
     const store = m.from;
-    if (!isTriggerStoreEnabled(store)) return;      // store flag (also drops hubs)
     if (m.type !== "sold") return;                  // sale-type only
     if (!m.productId) return;
+    // Store flag (also drops hubs): a LIVE store in the network registry —
+    // one small node, cached per instance for a minute, read for sales only.
+    if (!isTriggerStoreEnabled(store, await loadNetwork(admin.database()))) return;
     const product = (await admin.database().ref(`products/${m.productId}`).get()).val();
     if (!isClothingSale(product, m.size)) return;   // clothing only (one product get)
 

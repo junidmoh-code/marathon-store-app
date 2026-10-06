@@ -14,6 +14,7 @@
 // So this writes the legacy triple derived from the chosen category, and only
 // ADDS `categoryKey` alongside. It never removes or rewrites a legacy field.
 
+import { SEED_REGISTRY, hubsOf } from "./networkRegistry";
 import { legacyFor, catByKey } from "./productTaxonomy.js";
 import { sizesForCat } from "./sizeRuns.js";
 import { normaliseStyleCode, formatStyleCodeForDisplay } from "./styleCode.js";
@@ -25,7 +26,10 @@ import { isPerfume } from "./productCategory.js";
 // the two can never disagree about what a valid code is.
 const isPrintedBarcode = (v) => normalisePrintedBarcode(v).ok;
 
-export const VALID_HUBS = ["hub1", "hub2", "hub3"];
+// Every hub in the network registry seed: Hub 1, Hub 2, Hub 3 as before, plus
+// the Concrete Stockroom (sections). Same order as the old literal, new last.
+export const VALID_HUBS = [...hubsOf(SEED_REGISTRY)]
+  .sort((a, b) => (b.section - a.section) || (a.sort - b.sort)).map((l) => l.id);
 
 /**
  * Phase 14A rule, unchanged: clothing cannot be stocked at Hub 1. Strips hub1

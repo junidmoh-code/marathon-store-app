@@ -32,6 +32,9 @@
 // was written, so a marker left behind by a tap nobody followed up on expires
 // instead of hijacking a later, unrelated visit to the warehouse.
 
+import { currentNetwork } from "../utils/networkStore";
+import { warehouseHubsOf } from "./pushHubs";
+
 const ROLE_KEY = "marathon_role";
 const SOURCE_TAB_KEY = "tabState:source";
 const SOURCE_ROLE = "source";
@@ -40,10 +43,18 @@ const VALID_TABS = new Set(["hub1refill", "clothing", "refillhistory"]);
 const WAREHOUSE_ROLE = "warehouse";
 const WAREHOUSE_HUB_KEY = "warehouseHub";
 const WAREHOUSE_TAB_KEY = "tabState:warehouse";
-// The hubs the warehouse selector actually offers. A hub outside this list is
-// dropped rather than written: a persisted `warehouseHub` the selector cannot
-// render is a blank screen, which reads as the app being broken.
-const VALID_HUBS = new Set(["hub1", "hub2", "hub3", "hubC"]);
+// A link may only set a hub that EXISTS IN THE NETWORK REGISTRY (plus the
+// "hubC" trial queue, which the selector has always offered) — warehouseHubsOf,
+// the same answer the server builds its links from. A hub outside it is dropped
+// rather than written: a persisted `warehouseHub` the selector cannot render is
+// a blank screen, which reads as the app being broken.
+//
+// This runs BEFORE React mounts, so on a cold open the registry is the
+// built-in one; a tap while the app is open sees the live one. Whether THIS
+// viewer may work as that hub cannot be decided here — nobody is signed in yet.
+// That is the warehouse screen's check on the persisted hub when it reads it
+// (hubAllowedForViewer, src/utils/sectionRouting.js).
+const validHub = (hub) => typeof hub === "string" && warehouseHubsOf(currentNetwork()).includes(hub);
 const VALID_WAREHOUSE_TABS = new Set(["queue", "clothing"]);
 
 /** Where a single-order link leaves the card to ring. Read (and cleared) by
@@ -93,7 +104,7 @@ export function orderCardKey(id, createdAt) {
 // paths so the two cannot drift apart.
 function applyOrderLink(params, store, nowMs) {
   const hubParam = params.get("hub");
-  const hub = VALID_HUBS.has(hubParam) ? hubParam : null;
+  const hub = validHub(hubParam) ? hubParam : null;
   const tabParam = params.get("tab");
   const tab = VALID_WAREHOUSE_TABS.has(tabParam) ? tabParam : "queue";
   try {

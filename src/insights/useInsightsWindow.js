@@ -156,7 +156,7 @@ export function useInsightsWindow({ startIso, endIso, allTime = false, enabled =
       // would render every all-time figure as zero.
       if (data === MISS) throw new Error("offline mirror: insights leg cannot answer");
       const rows = Object.values(data || {}).filter(Boolean);
-      const totals = { n: 0, pe: 0, trophy: 0, pine: 0, other: 0 };
+      const totals = { n: 0, pe: 0, trophy: 0, pine: 0, concrete: 0, other: 0 };
       for (const e of rows) {
         const b = storeBucketOf(e);
         totals.n += 1;

@@ -129,7 +129,7 @@ export async function raiseDisplayRequest({ orders, store, product, hubData }) {
         message: `Order #${blocker.id} already asks for a display of ${product.name} at ${labelFor(store)}.` });
     }
 
-    const pick = pickDisplaySourceHub({ product, hubData });
+    const pick = pickDisplaySourceHub({ product, hubData, store });
     if (!pick.hub) {
       return note(pick.unread
         ? { ok: false, message: "The warehouse stock has not loaded yet — try again in a moment. Nothing was requested." }

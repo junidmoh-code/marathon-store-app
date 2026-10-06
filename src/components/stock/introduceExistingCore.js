@@ -24,6 +24,8 @@ import { encodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 import { categoryPolicyLocs } from "./solvePlan";
 import { isDeactivated } from "../../utils/deactivation.js";
+import { policyKeyFor, wallAllows, isLive, sectionOf } from "../../utils/networkRegistry";
+import { net, isCentral } from "./sectionRouting";
 
 // Approved standard runs — owner policy 2026-07-13 (corrected same day):
 //   STORES (marathon-pe, trophy) — REDUCED run: both stores were full before
@@ -49,10 +51,22 @@ const validRun = (m) =>
 // The run the migration will actually apply for a location — exported so the
 // UI previews exactly what gets written (validated config or the per-location
 // fallback: hub2 keeps its deeper buffer, stores use the reduced run).
-export const effectiveRun = (config, loc) =>
-  (validRun(config?.defaultRunByStore?.[loc])
-    ? config.defaultRunByStore[loc]
-    : (loc === "hub2" ? HUB2_RUN : STANDARD_RUN));
+//
+// "THE SAME POLICY FOR EVERY STORE UNLESS IT HAS ITS OWN": a location with no
+// configured run of its own reads the run of the location it is declared to
+// be like (the registry's policyKeyFor — Pine and Concrete follow Marathon PE,
+// Hub 3 and the Concrete Stockroom follow Hub 2). A location WITH its own
+// run, and every location with no template (Marathon PE, Trophy, Hub 1,
+// Hub 2), reads exactly what it always read.
+// A BUFFER hub is Hub 2 or a hub declared to be like it: it holds back stock
+// for its section's shops, so it keeps the deeper fallback run.
+export const isBufferLike = (loc, network) => policyKeyFor(net(network), { hub2: true }, loc) === "hub2";
+export const effectiveRun = (config, loc, network) => {
+  const key = policyKeyFor(net(network), config?.defaultRunByStore, loc);
+  return validRun(config?.defaultRunByStore?.[key])
+    ? config.defaultRunByStore[key]
+    : (isBufferLike(loc, network) ? HUB2_RUN : STANDARD_RUN);
+};
 
 const isClothing = (p) =>
   p?.productType === "clothing" ||
@@ -127,11 +141,12 @@ export function computeUnintroduced(allStock, allTargets, productsById, dests = 
 // Bulk-apply the approved standard targets. Chunked so one huge multi-path
 // update can never trip RTDB limits; each chunk is atomic, and re-running after
 // a partial failure is safe (writing the same target twice is idempotent).
-export async function migrateToEngine(items, { config, approvedBy, onProgress } = {}) {
+export async function migrateToEngine(items, { config, approvedBy, onProgress, network } = {}) {
   const now = serverNowIso();
   const batchId = `introduce-existing-${now.slice(0, 10)}`;
   const dests = destsFrom(config);
-  const runFor = (loc) => effectiveRun(config, loc);
+  const N = net(network);
+  const runFor = (loc) => effectiveRun(config, loc, N);
   // FRESH conflict check (review 2026-07-13): the on-screen list may be stale —
   // another admin, a wizard introduction, or an earlier partial run may have
   // written targets since. Re-read /stock_targets once and skip any product
@@ -169,10 +184,19 @@ export async function migrateToEngine(items, { config, approvedBy, onProgress } 
     let chunkCells = 0;
     for (const item of chunk) {
       for (const loc of dests) {
+        // NOTHING AUTOMATIC FOR A LOCATION THAT IS NOT LIVE: a bulk write of
+        // standard-run rows arms the engine there, and an explicit row then
+        // outranks the template policy for good. A location that has not been
+        // counted in is introduced by hand once it is.
+        if (sectionOf(N, loc) !== null && !isLive(N, loc)) continue;
         // Stores follow their own assortment (evidence: the store carries the
-        // product). Hub 2 is the buffer for BOTH shops, so it targets every
-        // migrated product regardless — the union of the network's assortment.
-        if (loc !== "hub2" && item.carries && !item.carries[loc]) continue;
+        // product). A buffer hub (Hub 2; Hub 3 for Section 1) is the buffer
+        // for its section's shops, so it targets every migrated product a
+        // location IN ITS OWN SECTION carries — the union of that section's
+        // assortment, never the other section's.
+        if (isBufferLike(loc, N)) {
+          if (item.carries && !dests.some((d) => item.carries[d] && wallAllows(N, loc, d) && !isCentral(d, N))) continue;
+        } else if (item.carries && !item.carries[loc]) continue;
         const run = runFor(loc);
         for (const size of item.standardSizes) {
           const t = Number(run[String(size).toUpperCase()]) || 0;

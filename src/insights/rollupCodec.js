@@ -232,14 +232,24 @@ function expandDay(node) {
 // it, so the day node carries the three counts and the reader adds up the days
 // without downloading them.
 //
-// The predicates are `matchesStore` from App.jsx, transcribed. They partition:
-// every event falls in exactly one of the three, so "all" is their sum and the
-// reader never has to re-derive it.
+// App.jsx's store filter IS this function (it calls it), so the screen and the
+// stored counts cannot disagree. The buckets partition: every event falls in
+// exactly one, so "all" is their sum and the reader never has to re-derive it.
+//
+// THE SHOP DECIDES, NOT THE HUB. "Placed at Hub 3" used to mean Pine. Hub 3 now
+// serves Pine AND Concrete, so an event that names its shop is filed under that
+// shop whatever hub it went through, and Concrete has a bucket of its own.
+// Only an event with NO destShop — history from before orders carried one — is
+// still read off its hub: Hub 3 was Pine's alone then, everything else was the
+// main store's. pe / trophy / pine / other mean what they always meant; days
+// already rolled up are not rewritten (they hold no Concrete events to move).
 function storeBucketOf(e) {
   if (!e) return null;
-  if (e.destShop === "marathon-pine" || e.placedAtHub === "hub3") return "pine";
+  if (e.destShop === "marathon-pine") return "pine";
+  if (e.destShop === "concrete") return "concrete";
   if (e.destShop === "trophy") return "trophy";
-  if (e.destShop === "marathon-pe" || (e.destShop == null && e.placedAtHub !== "hub3")) return "pe";
+  if (e.destShop === "marathon-pe") return "pe";
+  if (e.destShop == null) return e.placedAtHub === "hub3" ? "pine" : "pe";
   // A destShop nobody listed. It belongs to no filter — which is exactly what
   // the screen does with it today — but it is still IN the "all" total, so it
   // is counted separately rather than dropped or folded into a store.
@@ -247,7 +257,7 @@ function storeBucketOf(e) {
 }
 
 function countByStore(events) {
-  const out = { pe: 0, trophy: 0, pine: 0, other: 0 };
+  const out = { pe: 0, trophy: 0, pine: 0, concrete: 0, other: 0 };
   for (const e of events || []) {
     const b = storeBucketOf(e);
     if (b) out[b] += 1;

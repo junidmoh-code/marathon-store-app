@@ -123,6 +123,7 @@ export default function InTransit({ products = [], registry: registryProp, actor
         const res = await applyMovement({
           type: "transfer_in", productId: r.pid, size, qty: want,
           from: IN_TRANSIT, to: t.to, actorRole,
+          transitFrom: t.from,                               // the real origin, for the section wall
           movementId: receiveMovementId(t.id, r.pid, size), // deterministic → re-confirm no-ops
           link: { transferId: t.id },
         }).catch(() => ({ ok: false }));

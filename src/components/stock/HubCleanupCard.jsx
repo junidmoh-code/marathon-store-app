@@ -10,12 +10,12 @@
 
 import React, { useEffect, useState } from "react";
 import { CARD, BORDER, GRAY, GREEN, BLUE_L, tabOn, tabOff } from "./ui";
-import { CLEANUP_HUBS, CLEANUP_HUB_LABELS } from "./hubCleanupCore";
+import { cleanupHubs, cleanupHubLabel } from "./hubCleanupCore";
 import { loadCardSummary, rememberHub } from "./hubCountStore";
 import { loadRegister } from "./hubCleanupStore";
 
 export default function HubCleanupCard({ onOpen }) {
-  const [hub, setHub] = useState(CLEANUP_HUBS[0]);
+  const [hub, setHub] = useState(() => cleanupHubs()[0]);
   const [summary, setSummary] = useState(null);
   const [regUnits, setRegUnits] = useState(null);
   const [loading, setLoading] = useState(false);
@@ -49,10 +49,10 @@ export default function HubCleanupCard({ onOpen }) {
       </div>
 
       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 9 }}>
-        {CLEANUP_HUBS.map((h) => (
+        {cleanupHubs().map((h) => (
           <button key={h} onClick={() => setHub(h)}
             style={{ ...(hub === h ? tabOn : tabOff), padding: "5px 11px", fontSize: "0.74rem" }}>
-            {CLEANUP_HUB_LABELS[h]}
+            {cleanupHubLabel(h)}
           </button>
         ))}
       </div>

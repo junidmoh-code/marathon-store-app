@@ -50,7 +50,7 @@ import { formatDuration, refillAgeTone } from "../../utils/duration";
 import { partitionSatisfied, lockedRefillIds } from "./refillSatisfied";
 import { parseReleaseTimes, partitionReleased, nextReleaseMs, saTimeLabel, releaseEarlyPatch } from "./releaseWindows";
 import { queueStatusLine, sortQueueRows, groupRowsByProduct } from "./refillQueueCore";
-import { warehouseLocations, labelFor, IN_TRANSIT } from "./locations";
+import { warehouseLocations, wallAllowedLocations, labelFor, IN_TRANSIT } from "./locations";
 import { stockCellPath, stockSizeKey } from "../../utils/sizeKey";
 import { checkSourceMovementDuplicate } from "./sourceMovementDedupe";
 import { sizeRank } from "./hubSizeRank";
@@ -70,6 +70,7 @@ import { deviceStamp, stampAt, stampPatch, stampTxn } from "../../device/deviceS
 import { countReject, thisDevicePaused } from "../../device/rejectCount";
 import { PAUSED_MESSAGE } from "../../device/deviceRejects";
 import { claimPickTxn, releasePickTxn, newPickToken, pickInProgress } from "./pickMarker";
+import { nameOf, isStore } from "./sectionRouting";
 
 const SOURCE_LOC = "central";
 // Destinations this queue serves: the three hubs, and — first batch direct to
@@ -84,7 +85,11 @@ const HUB_LABEL = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", trophy: "Trophy
 // engine's entire hub2→shop backlog (225 rows, 142 products all stocked at
 // Hub 2) as Central's picking list. Nothing was fulfilled from them; one tap
 // would have moved a Central unit for a request Hub 2 was meant to send.
-const SHOP_DESTS = new Set(["trophy", "marathon-pe"]);
+// EVERY STORE THE REGISTRY KNOWS, not a list of two: a shop missing from this
+// set and mounted as `dest` would list its whole hub→shop backlog as
+// Central's pick list (the 2026-09-17 incident shape). `has` is all the
+// callers use.
+const SHOP_DESTS = { has: (loc) => isStore(loc) };
 // Sale-row ledger reasons — the Source Transfer & Fulfil contract (#209).
 const SOURCE_REFILL_REASON = "source_refill";
 const SOURCE_UNCOUNTED_REASON = "source_uncounted_send";
@@ -321,7 +326,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
                                       onSaleResponse = null, onSaleProgress = null, onSaleUndo = null,
                                       fulfilCtx = null }) {
   const DEST_LOC = dest;
-  const destLabel = HUB_LABEL[dest] || dest;
+  const destLabel = HUB_LABEL[dest] || nameOf(dest);
   const { permRecord, isSuperAdmin } = usePermissions();
   const actorRole = isSuperAdmin ? "admin" : (permRecord?.stockRole || null);
   const canTransfer = ["store", "warehouse", "admin"].includes(actorRole);
@@ -500,6 +505,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         res = await applyMovement(counted ? {
           type: "transfer_out", productId: r.productId, size: r.size, qty: q,
           from: SOURCE_LOC, to: creditTo, actorRole,
+          ...(hold ? { transitTo: DEST_LOC } : {}),   // the real destination, for the section wall
           reason: `${DEST_LOC}_auto_refill`,
           movementId: mvId,
           link: { refillId: r.id, ...(hold ? { holdDest: DEST_LOC } : {}) },
@@ -713,6 +719,7 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
         res = await applyMovement(counted ? {
           type: "transfer_out", productId: row.resolvedId, size: row.size, qty,
           from: pickLoc, to: creditTo, actorRole,
+          ...(hold ? { transitTo: DEST_LOC } : {}),   // the real destination, for the section wall
           allowNegative: true,
           reason: SOURCE_REFILL_REASON,
           movementId: mvId, link: { refillId: row.movementIdSeed, ...(hold ? { holdDest: DEST_LOC } : {}) },
@@ -850,7 +857,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     const remaining = isReq ? (row.qty || 1) : Math.max(1, (row.qty || 1) - (row.sent || 0));
     const sources = isReq
       ? [{ id: SOURCE_LOC, label: "Central" }]
-      : warehouseLocations(fulfilCtx?.locationsReg).filter((l) => l.id !== DEST_LOC);
+      // Only locations on this destination's side of the section wall (and
+      // Central): a pick from the other section is refused by the writer, so
+      // it is not offered.
+      : wallAllowedLocations(warehouseLocations(fulfilCtx?.locationsReg), DEST_LOC).filter((l) => l.id !== DEST_LOC);
     const panel = (
       <SupplyPanel
         sources={sources}

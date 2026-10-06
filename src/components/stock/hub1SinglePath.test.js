@@ -14,6 +14,8 @@
 import { describe, it, expect } from "vitest";
 import { REACTIVE_REFILL_HUBS, isReactiveRefillHub } from "./reactiveRefillHubs.js";
 import { onHoldRefillPlan } from "./onHoldRefill.js";
+import { hubIds } from "./sectionRouting.js";
+import { SEED_REGISTRY } from "../../utils/networkRegistry.js";
 import { readFileSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -44,14 +46,26 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     // hub one and hub two like before"). The picker offers the full HUBS list;
     // the Tomorrow writer and sale rows stay reactive-hub-gated (tests below).
     const mf = src("./MissingFootwear.jsx");
-    expect(mf).toContain("REQUESTABLE_HUBS = HUBS");
+    // The lists are asked of the network registry now (one section at a
+    // time): HUBS = the section's hubs, REQUESTABLE_HUBS = its LIVE hubs. For
+    // Section 2 on the registry's seed both are Hub 1 + Hub 2 — both hubs are
+    // still offered, which is what this test protects.
+    expect(mf).toContain("const HUBS = useMemo(() => hubIds(network, { section }), [network, section]);");
+    expect(mf).toContain("const REQUESTABLE_HUBS = useMemo(() => hubIds(network, { section, liveOnly: true }), [network, section]);");
+    expect(hubIds(SEED_REGISTRY, { section: 2 })).toEqual(["hub1", "hub2"]);
+    expect(hubIds(SEED_REGISTRY, { section: 2, liveOnly: true })).toEqual(["hub1", "hub2"]);
     expect(mf).not.toContain("REACTIVE_REFILL_HUBS");
-    expect(mf.split("dests[card.pid] || REQUESTABLE_HUBS[0]").length - 1).toBe(2);
+    // A REQUEST (the operator's own sizes) is offered every hub of the section,
+    // live or not; SOLVE (the policy's numbers) only the live ones. On Section 2
+    // both lists are Hub 1 + Hub 2.
+    expect(mf).toContain("const REQUEST_HUBS = HUBS;");
+    expect(mf.split("dests[card.pid] || REQUEST_HUBS[0]").length - 1).toBe(2);
     expect(mf).toContain("solveHub[card.pid] || REQUESTABLE_HUBS[0]");
-    expect(mf.split("{REQUESTABLE_HUBS.map((h) => (").length - 1).toBe(2);
+    expect(mf.split("{REQUESTABLE_HUBS.map((h) => (").length - 1).toBe(1);
+    expect(mf.split("{REQUEST_HUBS.map((h) => (").length - 1).toBe(1);
     // Detection and Central-reservation math still span BOTH hubs.
     expect(mf).toContain('hubs: HUBS');
-    expect(mf).toContain("HUBS.includes(r.requestingLocation)");
+    expect(mf).toContain("RESERVING_HUBS.includes(r.requestingLocation)");
   });
   it("sale-driven rows and badges iterate REACTIVE hubs only (source pins)", () => {
     const app = src("../../App.jsx");

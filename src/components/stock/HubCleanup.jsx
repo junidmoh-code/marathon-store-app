@@ -44,12 +44,14 @@ import { formatStyleCodeForDisplay, normaliseStyleCode } from "../../utils/style
 import { perSizeAutoCandidate } from "../../utils/perSizeStyleCode";
 import { buildLinkSuggestions, codeSuggestions, TIER_SCORES } from "../../utils/linkSuggestions";
 import { isMergedAway } from "../../utils/mergedProducts";
+import { wallAllows } from "../../utils/networkRegistry";
+import { currentNetwork } from "../../utils/networkStore";
 import {
-  CLEANUP_HUBS, CLEANUP_HUB_LABELS, resolveCleanupScan, openDuplicateFor,
+  cleanupHubs, isCleanupHub, cleanupHubLabel, resolveCleanupScan, openDuplicateFor,
   buildLeftovers, buildFinishedLines, buildUnregisteredElsewhere, buildDeactivatedRows, locationsHolding, registrationProgress, realSizes,
   registerPanelFor, styleStepSatisfied, styleCodeOwners, collisionQuestion,
   STYLE_SKIP_REASONS, countPanelFor, resolveStyleNumber, registerSearchPool,
-  DISPLAY_STORES, DISPLAY_STORE_LABELS,
+  displayStores, displayStoreLabel,
   labelTokenSet, mergeTokenCandidates,
 } from "./hubCleanupCore";
 import {
@@ -239,7 +241,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
   const registry = useLocationRegistryOnce();
   const [hub, setHubRaw] = useState(() => {
     const h = rememberedHub();
-    return CLEANUP_HUBS.includes(h) ? h : "";
+    return isCleanupHub(h) ? h : "";
   });
   const setHub = useCallback((id) => { rememberHub(id); setHubRaw(id); }, []);
 
@@ -1136,7 +1138,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       setHubStock(await loadHubStock(hub));
       if (res.warning) flash("warn", res.warning, 9000);
       else if (res.already) flash("ok", `${product.name} — size ${size} was already registered.`);
-      else flash("ok", `${product.name} — size ${size}: ${qty} added to ${CLEANUP_HUB_LABELS[hub]}.`);
+      else flash("ok", `${product.name} — size ${size}: ${qty} added to ${cleanupHubLabel(hub)}.`);
       setPanel(null);
       setQuery("");
     } finally { setBusy(false); }
@@ -1286,7 +1288,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       </div>
       <div style={{ textAlign: "center" }}>
         <div style={{ fontSize: 10, color: "rgba(255,255,255,.4)", letterSpacing: ".5px" }}>Hub Stock Cleanup</div>
-        <div style={{ fontSize: 15, fontWeight: 800, color: BLUE_L }}>{hub ? CLEANUP_HUB_LABELS[hub] : "Choose hub"}</div>
+        <div style={{ fontSize: 15, fontWeight: 800, color: BLUE_L }}>{hub ? cleanupHubLabel(hub) : "Choose hub"}</div>
       </div>
       <div style={{ width: 78 }} />
     </div>
@@ -1298,16 +1300,16 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
       <div style={{ minHeight: "100vh", background: BG, color: "#fff", fontFamily: FONT }}>
         {header}
         <div style={{ maxWidth: 560, margin: "0 auto", padding: "20px 16px", display: "flex", flexDirection: "column", gap: 14 }}>
-          {CLEANUP_HUBS.map((h) => (
+          {cleanupHubs().map((h) => (
             <button key={h} type="button" onClick={() => setHub(h)}
               style={{ minHeight: 96, borderRadius: 18, fontSize: 26, fontWeight: 900, fontFamily: FONT, cursor: "pointer",
                        background: "rgba(74,127,255,.14)", border: "2px solid rgba(74,127,255,.5)", color: "#D7E3FF" }}>
-              {CLEANUP_HUB_LABELS[h]}
+              {cleanupHubLabel(h)}
             </button>
           ))}
           <div style={{ fontSize: 12.5, color: GRAY, lineHeight: 1.55, padding: "4px 2px" }}>
             Displays on the shop floor ARE hub stock. Register them here, then count the hub —
-            Pine is out of scope and is handled separately.
+            A hub that is not live yet is not offered here.
           </div>
         </div>
       </div>
@@ -1336,7 +1338,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
             : <>{leftovers.length} products hold stock here and carry no style code, claim or label alias</>)}
         </div>
 
-        {loading && <div style={{ color: GRAY, fontSize: 13, padding: "18px 2px" }}>Loading {CLEANUP_HUB_LABELS[hub]}…</div>}
+        {loading && <div style={{ color: GRAY, fontSize: 13, padding: "18px 2px" }}>Loading {cleanupHubLabel(hub)}…</div>}
         {loadError && <div style={{ color: RED, fontSize: 13, padding: "10px 2px" }}>Could not load: {loadError}</div>}
 
         {/* ── REGISTER — find the shoe FIRST (owner correction 2026-08-06) ──
@@ -1382,7 +1384,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               <div style={{ marginTop: 18 }}>
                 <div style={{ fontSize: 11.5, fontWeight: 800, letterSpacing: ".08em", textTransform: "uppercase",
                               color: "rgba(233,238,255,.55)", marginBottom: 8 }}>
-                  Not yet registered — holds stock at {CLEANUP_HUB_LABELS[hub]}
+                  Not yet registered — holds stock at {cleanupHubLabel(hub)}
                 </div>
                 {leftoversUnknown && (
                   <div style={{ fontSize: 13, color: AMBER, padding: "8px 2px" }}>
@@ -1547,7 +1549,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
               <div style={{ textAlign: "center", padding: "40px 16px", color: "rgba(233,238,255,.5)" }}>
                 <div style={{ fontSize: 30, marginBottom: 10 }}>✅</div>
                 <div style={{ fontSize: 15, fontWeight: 700 }}>Nothing left over.</div>
-                <div style={{ fontSize: 13, marginTop: 6 }}>Every product holding stock at {CLEANUP_HUB_LABELS[hub]} was seen on the floor.</div>
+                <div style={{ fontSize: 13, marginTop: 6 }}>Every product holding stock at {cleanupHubLabel(hub)} was seen on the floor.</div>
               </div>
             )}
             {leftovers.map(({ product, hubQty, locations }) => (
@@ -1558,7 +1560,7 @@ export default function HubCleanup({ products = [], actorRole, viewer, onExit })
                   <div style={{ minWidth: 0, flex: 1 }}>
                     <div style={{ fontSize: 17, fontWeight: 800, color: "#fff", lineHeight: 1.25 }}>{product.name}</div>
                     <div style={{ fontSize: 12.5, color: GRAY, marginTop: 4 }}>
-                      Holds <strong style={{ color: AMBER }}>{hubQty}</strong> at {CLEANUP_HUB_LABELS[hub]}, and carries no
+                      Holds <strong style={{ color: AMBER }}>{hubQty}</strong> at {cleanupHubLabel(hub)}, and carries no
                       style code, claim or label alias
                     </div>
                     {/* The spec line: style code and every label alias, on the
@@ -2489,7 +2491,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
         <Photo url={product.photoUrl} size={84} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{product.name}</div>
-          <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>Adds to {CLEANUP_HUB_LABELS[hub]} stock for the size you pick</div>
+          <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>Adds to {cleanupHubLabel(hub)} stock for the size you pick</div>
           {/* THE CODE, ON THE REGISTER PANEL (owner spec 2026-08-23) — what
               this product ALREADY answers to, before anything new is captured
               below. Copyable in one tap. */}
@@ -2728,13 +2730,14 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
             3 · WHICH SHOP IS THIS DISPLAY AT?
           </div>
           <div style={{ display: "flex", gap: 10 }}>
-            {DISPLAY_STORES.map((s) => (
+            {/* The shop floors on THIS hub's side of the section wall. */}
+            {displayStores().filter((s) => wallAllows(currentNetwork(), hub, s)).map((s) => (
               <button key={s} type="button" disabled={busy} onClick={() => setDispStore(s)}
                 style={{ flex: 1, minHeight: 56, borderRadius: 14, cursor: "pointer", fontSize: 16, fontWeight: 800, fontFamily: FONT,
                          background: dispStore === s ? "rgba(74,222,128,.22)" : "rgba(74,127,255,.13)",
                          border: dispStore === s ? "2px solid rgba(74,222,128,.9)" : "2px solid rgba(74,127,255,.45)",
                          color: dispStore === s ? "#B7F0CC" : "#D7E3FF" }}>
-                {DISPLAY_STORE_LABELS[s]}
+                {displayStoreLabel(s)}
               </button>
             ))}
           </div>
@@ -2790,7 +2793,7 @@ function RegisterPanel({ panel, hub, registered, duplicates, products, busy, all
               migration for pre-slot rows: no stock moves, only the slot files. */}
           <BigButton tone="blue" disabled={busy || !dispStore}
                      onClick={() => onRegister({ product, size, qty: existing.qty || 1, styleCode: styleCodePayload, store: dispStore })}>
-            Save which shop this display is at{dispStore ? ` — ${DISPLAY_STORE_LABELS[dispStore]}` : ""}
+            Save which shop this display is at{dispStore ? ` — ${displayStoreLabel(dispStore)}` : ""}
           </BigButton>
           <div style={{ height: 10 }} />
           <BigButton tone="ghost" disabled={busy} onClick={() => onExtra({ product, size, store: dispStore })}>
@@ -2876,7 +2879,7 @@ function CountPanel({ panel, hub, hubStock, counted, busy, canAdjust, offSources
         <Photo url={product.photoUrl} size={84} />
         <div style={{ minWidth: 0 }}>
           <div style={{ fontSize: 19, fontWeight: 800, lineHeight: 1.25 }}>{product.name}</div>
-          <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>{CLEANUP_HUB_LABELS[hub]} · scan, confirm, continue</div>
+          <div style={{ fontSize: 12.5, color: GRAY, marginTop: 3 }}>{cleanupHubLabel(hub)} · scan, confirm, continue</div>
           {/* THE CODE, ON THE COUNT PAGE (owner spec 2026-08-23). Without it
               there is no way to read a number off the screen and go find this
               shoe's twin. Every code it answers to, every label wording filed

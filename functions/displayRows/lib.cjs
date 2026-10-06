@@ -57,10 +57,26 @@
  *  Pine's displays are booked at hub3 and are out of scope by owner constraint
  *  (GATED_SNEAKER_HUBS). A store not in this list returns immediately, which is
  *  also what makes the trigger cheap on every unrelated stock movement. */
-const DISPLAY_STORES = ["marathon-pe", "trophy"];
+const { storesOf, hubsOf, sectionOf, SEED_REGISTRY } = require("../lib/network-registry.cjs");
+
+/** SECTIONS (2026-10-02): both lists are read from the network registry — the
+ *  LIVE stores and the LIVE hubs. Today that is Marathon PE + Trophy and
+ *  Hub 1 + Hub 2, the same four as ever; Pine, Concrete, Hub 3 and the Concrete
+ *  Stockroom stay out for as long as they are not live, and come in the day
+ *  the owner marks them live. No registry handed in = the built-in seed. */
+const displayStores = (network) => storesOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => l.id);
+const displayHubs = (network) => hubsOf(network || SEED_REGISTRY, { liveOnly: true }).map((l) => l.id);
+/** The walls a HUB's sale could have come off: the live stores on the hub's
+ *  own side of the section wall. A Hub 2 sale is never pinned on a Pine wall. */
+const displayStoresForHub = (network, hub) => {
+  const reg = network || SEED_REGISTRY;
+  const section = sectionOf(reg, hub);
+  return storesOf(reg, { liveOnly: true }).filter((l) => l.section === section).map((l) => l.id);
+};
+const DISPLAY_STORES = displayStores(SEED_REGISTRY);
 
 /** The hubs a display may be booked at. */
-const DISPLAY_HUBS = ["hub1", "hub2"];
+const DISPLAY_HUBS = displayHubs(SEED_REGISTRY);
 
 const LEASE_MS = 5 * 60 * 1000;
 
@@ -140,7 +156,7 @@ function stockSizeKey(size) {
  * Is this movement one that can close a display row, and at which store?
  * → { kind: "sold" | "sold_hub", store|hub, productId, sizeKey, qty } | null
  */
-function classifyMovement(m) {
+function classifyMovement(m, network) {
   if (!m || typeof m !== "object") return null;
   if (!m.productId) return null;
   const sizeKey = stockSizeKey(m.size);
@@ -153,7 +169,7 @@ function classifyMovement(m) {
   if (/^_+$/.test(sizeKey)) return null;
   const qty = Math.max(1, Number(m.qty) || 1);
 
-  if (m.type === "sold" && DISPLAY_STORES.includes(m.from)) {
+  if (m.type === "sold" && displayStores(network).includes(m.from)) {
     return { kind: "sold", store: m.from, productId: m.productId, sizeKey, qty };
   }
   // ── A SALE THAT CAME OUT OF A HUB CELL ─────────────────────────────────────
@@ -179,7 +195,7 @@ function classifyMovement(m) {
   // So it is returned as its own kind and the trigger must EARN the close from
   // evidence. See resolveHubSale below for the two conditions, and for why a
   // bare hub sale must never close anything.
-  if (m.type === "sold" && DISPLAY_HUBS.includes(m.from)) {
+  if (m.type === "sold" && displayHubs(network).includes(m.from)) {
     return { kind: "sold_hub", hub: m.from, store: null, productId: m.productId, sizeKey, qty };
   }
   // A shop→hub transfer is DELIBERATELY NOT a display return. A display unit
@@ -585,6 +601,6 @@ function leaseDecision({ cur, nowMs }) {
 }
 
 module.exports = {
-  DISPLAY_STORES, DISPLAY_HUBS, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
+  DISPLAY_STORES, DISPLAY_HUBS, displayStores, displayHubs, displayStoresForHub, LEASE_MS, HUB_INFERENCE_MAX_AGE_MS,
   encodeSizeKey, stockSizeKey, classifyMovement, rowIsOpen, decideCloses, closeUpdates, claimClose, resolveHubSale, hubSaleTooOld, splitByHub, rowPredatesSale, rowAgeVsSale, ageRefusalReason, openRowsInOrder, decodeSizeKey, rowSizeText, leaseDecision,
 };

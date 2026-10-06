@@ -304,7 +304,7 @@ describe("totals", () => {
       nowMs: NOW_MS, io,
     });
     // The cursor's own row is already inside the counter and is not counted twice.
-    expect(r.totals).toEqual({ n: 103, pe: 61, trophy: 31, pine: 10, other: 1 });
+    expect(r.totals).toEqual({ n: 103, pe: 61, trophy: 31, pine: 10, concrete: 0, other: 1 });
   });
 
   it("does not change with the window", async () => {

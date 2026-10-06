@@ -89,6 +89,22 @@ function cleanText(x, max) {
   return s ? s.slice(0, max) : null;
 }
 
+// ── THE DEVICE'S SECTION ─────────────────────────────────────────────────────
+// A code is made FOR a section (1 or 2): Junid or MC picks it when the code is
+// made, it is kept on the person record, and every device that enrols with the
+// code carries it — on its device record and as a `section` claim in its
+// token, where the app (deviceIdentity.section) and the database rules
+// (auth.token.section) can both read it and no client can forge it.
+//
+// A person record with NO section is one made before sections existed. Its
+// devices carry no claim and see both sections, exactly as they did.
+//
+// Exactly the numbers 1 and 2. Not "1", not true, not 3: this value ends up in
+// a signed token and a rules expression.
+function readSection(x) {
+  return x === 1 || x === 2 ? x : null;
+}
+
 // The name a person is known by, for "is there already an active person
 // called that?" — case- and spacing-blind.
 function nameKey(name) {
@@ -148,6 +164,7 @@ function attemptsLeft(rec, now, limit) {
 // ── PEOPLE AND THEIR DEVICES ─────────────────────────────────────────────────
 // Person: { name, kind: "person"|"shared", status: "active"|"revoked",
 //           maxDevices, code, canManageCodes, createdAtMs, createdBy,
+//           section: 1|2 (absent on a code made before sections),
 //           devices: { [deviceId]: { eid, atMs } } }
 
 function activeDeviceIds(person) {
@@ -192,12 +209,15 @@ function planEnrol(person, { deviceId, eid, now }) {
 // dmgr only decides whether the app SHOWS the Device codes tile; every admin
 // call re-checks the person record, so a flag removed later takes effect at
 // once even though the token still says true.
-function buildClaims({ deviceId, eid, personId, personName, kind, canManageCodes }) {
+// section is present ONLY for a device whose code was made for one; a token
+// without it is a device that predates sections and is scoped by nothing.
+function buildClaims({ deviceId, eid, personId, personName, kind, canManageCodes, section }) {
   return {
     deviceId, eid, personId,
     personName: String(personName || "").slice(0, 80),
     dkind: kind === "shared" ? "shared" : "person",
     ...(canManageCodes === true ? { dmgr: true } : {}),
+    ...(readSection(section) ? { section: readSection(section) } : {}),
   };
 }
 
@@ -212,6 +232,7 @@ function publicPerson(id, p) {
     kind: p?.kind === "shared" ? "shared" : "person",
     status: p?.status === "active" ? "active" : "revoked",
     canManageCodes: p?.canManageCodes === true,
+    section: readSection(p?.section),
     devices: active.length,
     maxDevices: maxDevicesFor(p),
     createdAtMs: Number(p?.createdAtMs) || null,
@@ -228,6 +249,7 @@ function publicDevice(id, d) {
     kind: d?.kind === "shared" ? "shared" : "person",
     status: d?.status === "active" ? "active" : "revoked",
     deviceType: d?.deviceType || null,
+    section: readSection(d?.section),
     enrolledAtMs: Number(d?.enrolledAtMs) || null,
     lastSeenAtMs: Number(d?.lastSeenAtMs) || null,
     rejectCount: Number(d?.rejectCount) || 0,
@@ -355,7 +377,7 @@ function ipKey(ip, sha256Hex) {
 
 module.exports = {
   ROOT, PATHS, OWNER_EMAIL, LIMITS, PERSON_MAX_DEVICES, SHARED_MAX_DEVICES,
-  readCode, readDeviceId, cleanText, nameKey, isWeakCode, pickCode,
+  readCode, readDeviceId, readSection, cleanText, nameKey, isWeakCode, pickCode,
   lockVerdict, afterFailure, attemptsLeft,
   activeDeviceIds, maxDevicesFor, planEnrol, buildClaims, describeDevice, ipKey,
   publicPerson, publicDevice, listView, nameTaken,

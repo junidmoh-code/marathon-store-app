@@ -26,6 +26,9 @@
 // valid and a rollback remain possible. Deleting them would invalidate every
 // movement that references them. `active: false` is enough to remove them from
 // every picker, since all pickers funnel through activeLocations() below.
+import { currentNetwork } from "../../utils/networkStore";
+import { wallAllows } from "../../utils/networkRegistry";
+
 export const DEFAULT_LOCATIONS = [
   { id: "studio",        label: "Studio",         kind: "warehouse", sellable: false, active: false },
   { id: "central",       label: "Central",        kind: "warehouse", sellable: false, active: true },
@@ -73,6 +76,18 @@ export const transferTargets    = (registry) => activeLocations(registry).filter
 export function allLocationIds(registry) {
   const ids = registry && typeof registry === "object" ? Object.keys(registry) : [];
   return ids.length ? ids : DEFAULT_LOCATIONS.map((l) => l.id);
+}
+
+// ── THE SECTION WALL, FOR PICKERS ─────────────────────────────────────────────
+// "any location may transfer to any other" stopped being true with sections:
+// nothing moves directly between Section 1 and Section 2. A picker that offers
+// the other end of a move shows only what the wall allows from `otherLoc` —
+// its own section, plus Central. The writer (applyMovement) and the database
+// rule refuse the rest regardless; this only keeps a refused choice off the
+// screen. `otherLoc` empty (nothing chosen yet) filters nothing.
+export function wallAllowedLocations(list, otherLoc, network = currentNetwork()) {
+  if (!otherLoc) return list;
+  return (list || []).filter((l) => l && (l.id === "in_transit" || wallAllows(network, otherLoc, l.id)));
 }
 
 export const IN_TRANSIT = "in_transit";

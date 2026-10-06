@@ -69,6 +69,8 @@ const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = requi
 const { matchLegs, MATCH_WINDOW_MARGIN_MS } = require("../lib/card-match.cjs");
 const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal } = require("../lib/card-terminals.cjs");
+const { loadNetwork } = require("../lib/network-load.cjs");
+const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -236,6 +238,42 @@ async function assertCardRecon(request) {
     throw new HttpsError("unavailable", "Could not check permissions. Try again.");
   }
   if (!granted) throw new HttpsError("permission-denied", "Card recon permission required.");
+}
+
+// ── THE SECTION WALL, FOR A HAND CAPTURE ─────────────────────────────────────
+// The capture screen only draws the tills in the viewer's own sections; this is
+// the half that holds when an old bundle or a direct call picks one anyway. A
+// terminal's store is a POS store id ("pe", "concrete"), which the network
+// registry resolves to its section. The caller's sections are the same answer
+// the screens use (sectionsFor): Junid and anyone he gives both see both, an
+// account scoped to a section — or an enrolled device whose code was made for
+// one — captures only that section's tills, and an account that predates
+// sections captures everything it always could.
+//
+// Returns the refusal SENTENCE, or null when the capture may go ahead.
+// FAIL CLOSED, like the permission gates above: a scope that cannot be read
+// throws rather than waving a capture through. A store the registry does not
+// know has no section and is refused to nobody — this check narrows by
+// section, it does not invent a second "is this store real" rule.
+//
+// The EMAIL channel does not come through here: it has no picked till and one
+// identity (the poller's), gated by assertEmailIntake.
+async function sectionRefusalFor(db, request, picked, terminal) {
+  const token = request.auth?.token || {};
+  if (token.email === ADMIN_EMAIL) return null;
+  const uid = request.auth?.uid;
+  if (!uid) throw new HttpsError("permission-denied", "Sign in required.");
+  let sections;
+  let registry;
+  try {
+    registry = await loadNetwork(db);
+    sections = await readAccountSections(db, registry, uid, { deviceSection: readSectionClaim(token.section) });
+  } catch (err) {
+    console.error("sectionRefusalFor: section read failed:", err && err.message);
+    throw new HttpsError("unavailable", "Could not check which section this account works in. Try again.");
+  }
+  if (locationInSections(registry, sections, terminal.storeId)) return null;
+  return `${terminal.label || picked} is not in your section, so it cannot be captured from this account. Ask Junid if this is your till.`;
 }
 
 // ── THE EMAIL CHANNEL'S OWN GATE — a SECOND flag, checked the same way ───────
@@ -878,6 +916,9 @@ async function handleExtract(db, request) {
   // against a machine that left. The screen does not offer the card; this is
   // the half that holds when someone calls the callable anyway.
   if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
+  // A TILL IN ANOTHER SECTION — before any OCR is paid for. See sectionRefusalFor.
+  const walled = await sectionRefusalFor(db, request, picked, terminal);
+  if (walled) return reject(walled);
   // AN EMAIL-ONLY MACHINE TAKES NO PHOTO. The screen shows it no camera; this
   // is the half that holds when an old bundle or a direct call sends one
   // anyway — before any OCR is paid for.
@@ -1191,6 +1232,10 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
     // NOT refuse — see lib/card-recon-email.cjs. A late final batch that
     // arrives by itself is money that still has to reconcile.
     if (isRetiredTerminal(pickedTerminal)) return reject(retiredCaptureRefusal(picked, pickedTerminal));
+    // A picked till in another section. The email path has no pick and is
+    // gated by its own flag — see sectionRefusalFor.
+    const walled = await sectionRefusalFor(db, request, picked, pickedTerminal);
+    if (walled) return reject(walled);
   }
 
   const text = await pdfToLines(buffer);
@@ -1681,6 +1726,9 @@ exports.cardBatchCapture = onCall(
         return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before anything can be captured.`);
       }
       if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
+      // A till in another section is not this account's to type a figure for.
+      const walled = await sectionRefusalFor(db, request, picked, terminal);
+      if (walled) { console.warn(refusalLogLine(picked, walled)); return reject(walled); }
       // THE REGISTRY DECIDES, NEVER THE CALLER. A machine that can produce a
       // readable slip must keep producing one: typing a figure for it would
       // put an unverifiable number on the record where evidence was available.
@@ -1698,6 +1746,7 @@ exports.cardBatchCapture = onCall(
 
 // Exported for tests (pure-ish seams).
 exports.toExtraction = toExtraction;
+exports.sectionRefusalFor = sectionRefusalFor;
 // The summary-first gate, exported so it can be tested directly: everything
 // else about it lives inside async handlers behind a database.
 exports.totalsAgree = totalsAgree;

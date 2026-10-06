@@ -18,6 +18,7 @@ import { productIsFootwear } from "../../utils/footwearLine.js";
 import { isRegistered } from "../../utils/labelIdentity.js";
 import { isDeactivated } from "../../utils/deactivation.js";
 import { claimOwnerIds, allRegisteredSiblings } from "../../utils/styleCodeSiblings.js";
+import { net, hubIds, storeIds, nameOf } from "./sectionRouting.js";
 
 // The ONLY hubs this feature touches. A closed list, deliberately NOT derived
 // from the location registry: the registry contains hub3 (Pine's lane), and
@@ -25,9 +26,27 @@ import { claimOwnerIds, allRegisteredSiblings } from "../../utils/styleCodeSibli
 export const CLEANUP_HUBS = Object.freeze(["hub1", "hub2"]);
 export const CLEANUP_HUB_LABELS = Object.freeze({ hub1: "Hub 1", hub2: "Hub 2" });
 
-export function isCleanupHub(hub) {
-  return CLEANUP_HUBS.includes(hub);
+// ── THE SAME DECISION, HELD BY THE LIVE FLAG ─────────────────────────────────
+// "Hub 3 / Pine is out" is the owner's recorded decision, and the network
+// registry now carries it as a flag rather than as a list: a location that is
+// not LIVE is out. On the registry's seed the live hubs are Hub 1 and Hub 2
+// and the live shops are Marathon PE and Trophy — the two constants here,
+// which are kept for the callers that import them (pinned equal by test).
+// WHAT SWITCHES ON when the owner makes Hub 3 (or Pine, or Concrete) live:
+// the hub is offered for cleanup and display registration, and the shop floor
+// can hold a display slot — with no code change.
+export function cleanupHubs(network) {
+  return hubIds(net(network), { liveOnly: true });
 }
+export function isCleanupHub(hub, network) {
+  return cleanupHubs(network).includes(hub);
+}
+export function displayStores(network) {
+  return storeIds(net(network), { liveOnly: true });
+}
+// Labels come from the registry, so a location that joins has a name.
+export const cleanupHubLabel = (hub, network) => nameOf(hub, network);
+export const displayStoreLabel = (store, network) => nameOf(store, network);
 
 // The shop floors a hub display can stand on (owner spec 2026-08-12: a display
 // is a SLOT per product per STORE). A closed list for the same reason as
