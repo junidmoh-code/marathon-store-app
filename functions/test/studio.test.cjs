@@ -633,6 +633,8 @@ test("an answer that is not a readable image is never stored or shown as a photo
   assert.equal(Object.keys(it.generations || {}).length, 0);
   assert.notEqual(it.status, "ready");
   assert.equal(w.uploads.filter((u) => /gen_\d+/.test(u.path)).length, 0);
+});
+
 // ── THE SECOND ENGINE: OpenAI's gpt-image-1, behind the same interface ───────
 test("Full OpenAI on a tap: the SAME prompt and images go to gpt-image-1; the record says which engine made it; nothing else differs", async () => {
   const gemini = await world();

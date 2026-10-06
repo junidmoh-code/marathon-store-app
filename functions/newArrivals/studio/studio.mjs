@@ -193,7 +193,7 @@ export async function generateOne({ item, product, genId, method = "full", provi
     // (A footwear photo the finishing step could not even resize is kept as Gemini made it — and the card says so.)
     if (kind === "footwear" && generation.footwearCorrection && finishNote) {
       correction = { applied: false, problem: "the finishing step failed" };
-      note = "Not placed on your backdrop — the finishing step failed. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.";
+      note = `Not placed on your backdrop — the finishing step failed. The photo shown is ${engine}'s own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
     }
     // THE PLATE LOCK (footwear): everything but the shoe and its box comes from the ONE fixed plate. The shoe
     // and box are lifted out of Gemini's photo, scaled uniformly to the measured layout and placed on the
@@ -214,12 +214,12 @@ export async function generateOne({ item, product, genId, method = "full", provi
         // Gemini was given a box but none could be found in its photo: the corrected photo has no box — said, never silent.
         if (boxMode !== "none" && !fixed.placed?.box) {
           correction.boxMissing = true;
-          note = "The box could not be found on its own in Gemini's photo, so it was not placed — check this photo. Gemini's own photo is the small one below; tap Regenerate to try again.";
+          note = `The box could not be found on its own in ${engine}'s photo, so it was not placed — check this photo. ${engine}'s own photo is the small one below; tap Regenerate to try again.`;
         }
       } else {
         const why = fixed?.problem || "the correction gave no photo";
         correction = { applied: false, problem: why };
-        note = `Not placed on your backdrop — ${why}. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
+        note = `Not placed on your backdrop — ${why}. The photo shown is ${engine}'s own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
       }
     }
     try {
@@ -229,7 +229,7 @@ export async function generateOne({ item, product, genId, method = "full", provi
       if (!uncorrected) throw e;
       generated = uncorrected; uncorrected = null; measured = gen.buffer; placedSpec = null;
       correction = { applied: false, problem: "the corrected photo could not be stored" };
-      note = "Not placed on your backdrop — the corrected photo could not be stored. The photo shown is Gemini's own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.";
+      note = `Not placed on your backdrop — the corrected photo could not be stored. The photo shown is ${engine}'s own, so its pedestal and background are not your fixed plate; tap Regenerate to try again.`;
     }
   } catch (e) {
     // The caller still counts what Gemini charged for it.

@@ -225,7 +225,7 @@ function Photos({ item, tab, stats, live, busy, h }) {
       {!live && main?.uncorrected?.url && (
         <a data-testid="uncorrected" href={main.uncorrected.url} target="_blank" rel="noreferrer" style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6, color: GRAY, fontSize: 11, textDecoration: "none" }}>
           <img src={main.uncorrected.url} alt="Before it was placed on your backdrop" loading="lazy" style={{ width: 54, height: 72, objectFit: "cover", borderRadius: 8, background: "#1c1c1e" }} />
-          <span>Shoe and box placed on your fixed backdrop. This is Gemini's photo before that.</span>
+          <span>Shoe and box placed on your fixed backdrop. This is {main.provider === "openai" ? "OpenAI" : "Gemini"}'s photo before that.</span>
         </a>
       )}
       {/* What Junid must know about this photo (e.g. Split could not place it): it stays on the card, not only in a passing message. */}
