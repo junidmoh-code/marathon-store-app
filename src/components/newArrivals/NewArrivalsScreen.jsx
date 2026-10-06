@@ -81,7 +81,7 @@ function Elapsed({ since }) {
 function LiveTile({ live }) {
   const draft = live.drafts[live.drafts.length - 1] || null;
   return (
-    <Tile testid="live-tile" url={draft} label={draft ? `Draft ${live.drafts.length} — Gemini is still working` : "Generating…"}>
+    <Tile testid="live-tile" url={draft} label={draft ? `Draft ${live.drafts.length} — ${live.engine || "Gemini"} is still working` : "Generating…"}>
       <div style={{ position: "absolute", left: 0, right: 0, bottom: 0, padding: "18px 10px 8px", fontSize: 12, color: "#fff",
         background: draft ? "linear-gradient(transparent, rgba(0,0,0,.75))" : "none", display: "flex", justifyContent: "space-between", gap: 8 }}>
         <span data-testid="live-status">{live.status}</span><Elapsed since={live.startedAt} />
