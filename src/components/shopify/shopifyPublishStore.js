@@ -21,7 +21,7 @@ import { serverNowMs } from "../../utils/serverTime";
 import { OFFERED_CONDITIONS } from "./shopifyPublishCore";
 import { APP_STORAGE_PREFIX, publishPhotoListProblem, precheck, approveNameMutator, applyProposalMutator,
          dismissProposalMutator, publishMutator, desiredStateMutator, photosMutator, conditionMutator,
-         mediaMutator } from "./publishMutators";
+         mediaMutator, appendMediaMutator } from "./publishMutators";
 import { storedMediaKey } from "./publishShared";
 
 // REJECT, never repair: silently rewriting an illegal key could make the card
@@ -377,6 +377,16 @@ export async function setPublishMedia(productId, node, items, { basisPhotos = nu
   const problem = precheck.media(items);
   if (problem) return { ok: false, message: problem };
   return decide(productId, node, mediaMutator, { media: items, basisKey: storedMediaKey(node), basisPhotos });
+}
+
+/**
+ * Append finished uploads (bytes already in Storage) to the product's media
+ * list, computed from the server's current list inside the transaction.
+ * `product` supplies the record photo for a product with no list yet.
+ */
+export async function appendPublishMedia(productId, node, items, product) {
+  return decide(productId, node, appendMediaMutator,
+    { items, product: { photoUrl: product?.photoUrl ?? null, gallery: product?.gallery ?? null } });
 }
 
 /** Set the condition grade. Unblocks a blocked product (blocked → awaiting). */

@@ -14,7 +14,8 @@
 import { CONDITIONS, checkCleanName, isOn, canGoLive, normalizedState, normalizedFields,
          NAME_PROPOSAL_KEY, PROPOSAL_APPROVED_SOURCE, proposalApplyBlocker } from "./shopifyPublishCore.js";
 import { MAX_PUBLISH_PHOTOS, APP_STORAGE_PREFIX, normalizePhotoList, normalizeMediaItems, cleanMediaItem,
-         mergePhotosIntoMedia, mediaListProblem, photoUrlsOf, storedMediaKey } from "./publishShared.js";
+         mergePhotosIntoMedia, mediaListProblem, photoUrlsOf, storedMediaKey, resolveMediaList,
+         MAX_PUBLISH_MEDIA } from "./publishShared.js";
 import { buildOffRecord, offAuditFields } from "./publishAudit.js";
 
 const stamp = (ctx) => ({ updatedAt: ctx.now, updatedBy: ctx.uid ?? null });
@@ -155,4 +156,32 @@ export function conditionMutator(base, { condition }, ctx) {
   const unblocking = normalizedState(base) === "blocked";
   return { next: { ...base, ...normalizedFields(base), condition,
                    ...(unblocking ? { state: "awaiting", blockedReason: null } : {}), ...stamp(ctx) } };
+}
+
+/**
+ * APPEND finished uploads to the CURRENT list — no basis check, because an
+ * append drops nobody's change: it is computed from the server's node inside
+ * the transaction. `product` = { photoUrl, gallery } for the lazy read of a
+ * node that has no list yet. Refused, adding nothing, when an item is already
+ * there (same id, file or hash) or Shopify's cap would be passed. A video can
+ * never land first: with no photo in the list yet, the append is refused.
+ */
+export function appendMediaMutator(base, { items, product = null }, ctx) {
+  const { items: current, source } = resolveMediaList(base, product);
+  const adding = (items || []).map(cleanMediaItem);
+  if (!adding.length || adding.some((m) => !m)) return { refusal: "Nothing to add." };
+  for (const m of adding) {
+    if (current.some((c) => c.id === m.id || c.url === m.url || (m.sha256 && c.sha256 === m.sha256))) {
+      return { refusal: "That file is already in this product's photos and videos." };
+    }
+  }
+  const next = [...current, ...adding];
+  if (next.length > MAX_PUBLISH_MEDIA) return { refusal: `Shopify takes at most ${MAX_PUBLISH_MEDIA} photos and videos per product.` };
+  if (next[0].type !== "photo") return { refusal: "Add a photo first — a video can never be the first item (the primary is always a photo)." };
+  const problem = mediaListProblem(next);
+  if (problem) return { refusal: problem };
+  const firstWrite = !normalizeMediaItems(base.media) && base.mediaBasis == null;
+  const basis = firstWrite && source !== "media" ? photoUrlsOf(current) : [];
+  return { next: { ...base, ...normalizedFields(base), media: next, photos: photoUrlsOf(next),
+                   ...(basis.length ? { mediaBasis: basis } : {}), ...stamp(ctx) } };
 }
