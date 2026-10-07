@@ -4,6 +4,11 @@
 // nobody else. Pinned against the fake RTDB, which deletes and refuses
 // undefined the way the real one does.
 "use strict";
+// NEVER PRODUCTION. These tests load modules that initialise the Admin SDK
+// against the live database; a test that slips past an injected fake (a
+// mutation that removed a gate did, 7 Oct 2026, and wrote a batch to
+// /card_batches) must hit a dead emulator and fail, not the shop's data.
+process.env.FIREBASE_DATABASE_EMULATOR_HOST = "127.0.0.1:9";
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
