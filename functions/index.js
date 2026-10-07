@@ -4212,10 +4212,11 @@ async function generateSocialScene(apiKey, prompt, productImages, refs, format =
   }
   const aspectRatio = format === "feed" ? "4:5" : "9:16";
   try {
-    return await geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
+    const gen = await geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
       outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
       imageConfig: { aspectRatio, imageSize: "2K" },
     });
+    return { ...gen, engine: "nbpro" };
   } catch (err) {
     // ── PRO IS OVERLOADED: THE SAME REQUEST ON FLASH ─────────────────────────
     // 7 Oct 2026: Nano Banana Pro answered 503 "experiencing high demand" for
@@ -4225,10 +4226,12 @@ async function generateSocialScene(apiKey, prompt, productImages, refs, format =
     // falls back. A 429 or a bad request would fail the same way on either.
     if (!socialRecovery.isUnbilledProviderError(err && err.message)) throw err;
     console.warn(`social: ${NBPRO_MODEL} unavailable (${String(err.message).slice(0, 60)}) — retrying on ${GEMINI_MODEL}`);
-    return geminiGenerateImage(apiKey, GEMINI_MODEL, parts, {
+    const gen = await geminiGenerateImage(apiKey, GEMINI_MODEL, parts, {
       outPerMtok: GEMINI_OUT_PER_MTOK, flatUsd: GEMINI_FLAT_IMAGE_USD,
       imageConfig: { aspectRatio },
     });
+    // Recorded on the post, so a softer Flash picture is traceable.
+    return { ...gen, engine: "nb2" };
   }
 }
 
@@ -4599,6 +4602,8 @@ async function generateOnePost(db, {
   // the model returns a picture. Only a 5xx inside that window gives it back
   // (see socialRecovery.releaseGeneration).
   let unitUnspent = false;
+  // Which model made the picture: "nbpro", or "nb2" after a Pro 5xx fallback.
+  let engine = spec.generates ? "nbpro" : "none";
   try {
     if (!spec.generates) {
       // New arrivals: a carousel of the products' EXISTING photographs.
@@ -4648,6 +4653,7 @@ async function generateOnePost(db, {
       const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
       unitUnspent = false;
       costUSD = gen.costUSD;
+      engine = gen.engine || engine;
       const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime, format);
       // The type goes on AFTER the normalise, so the design is laid out
       // against the exact pixels that ship rather than a larger original.
@@ -4743,7 +4749,7 @@ async function generateOnePost(db, {
       // labels say. The design layer needs the real one.
       products: picks.map((p) => ({ pid: p.pid, name: p.name, displayName: p.displayName || p.name, handle: p.handle, slot: p.slot || null })),
       style,
-      engine: spec.generates ? "nbpro" : "none",
+      engine,
       costUSD: +costUSD.toFixed(6),
       refsUsed: spec.generates ? refsSent : 0,
       generatedBy: "generator",

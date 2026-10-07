@@ -110,3 +110,10 @@ test("a failed publish carries its own reason into the alarm", () => {
   const v = day({ posts: [f, queued("story", 12), queued("reel", 19), queued("story", 19)] });
   assert.match(alarmMessage(v), /in failed \(latest: instagram: Error validating access token/);
 });
+
+test("slots are matched in time order, not label order, and every missed slot is counted", () => {
+  const v = day({ nowMs: at(12, 25), policy: { reels: ["9:00", "12:00"] },
+    posts: [landed("reel", 12, 1), landed("story", 12, 2)] });
+  assert.match(v.reasons[0], /the 9:00 reel has not landed; the 9:00 story has not landed/);
+  assert.equal(v.counts.missedSlots, 2);
+});

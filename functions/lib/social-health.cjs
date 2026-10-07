@@ -283,7 +283,8 @@ function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, sto
   add("story", policy && policy.stories);
   if (reelAlsoPostsToStory) add("story", policy && policy.reels);
   if (storyAlsoPostsToFeed) add("feed", policy && policy.stories);
-  for (const f of Object.keys(by)) by[f].sort();
+  // By time, not by label: "9:00" sorts after "12:00" as a string.
+  for (const f of Object.keys(by)) by[f].sort((a, b) => slotOffsetMs(a) - slotOffsetMs(b));
   return by;
 }
 
@@ -435,6 +436,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   // landed before every open slot, posted early, covers the earliest one.
   const slots = passedSlots(policy, dayStart, nowMs, twins || {});
   const missed = [];
+  let missedSlotCount = 0;
   for (const [format, times] of Object.entries(slots)) {
     if (!times.length) continue;
     const slotMs = times.map((t) => dayStart + slotOffsetMs(t));
@@ -451,6 +453,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
       covered[pick] = true;
     }
     const uncovered = times.filter((_, i) => !covered[i]);
+    missedSlotCount += uncovered.length;
     if (uncovered.length) {
       const label = format === "feed" ? "feed post" : format;
       const names = [...new Set(uncovered)];
@@ -533,7 +536,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
         story: madeToday.filter((p) => formatOfPost(p) === "story").length,
         feed: madeToday.filter((p) => formatOfPost(p) === "feed").length,
       },
-      missedSlots: missed.length,
+      missedSlots: missedSlotCount,
       dueToday: dueToday.length,
       publishedToday: publishedToday.length,
       overdue: overdue.length,
