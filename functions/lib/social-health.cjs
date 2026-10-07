@@ -58,6 +58,31 @@ const PUBLISH_GRACE_MS = 20 * 60 * 1000;
 // of an hour instead of at the end of a silent week.
 const HEARTBEAT_STALE_MS = 15 * 60 * 1000;
 
+// The 06:00 run normally finishes by 06:05. By 06:40 (its own 30 min timeout
+// plus margin) a missing record means it did not run, not that it is slow.
+const GENERATOR_DUE_BY_MS = (6 * 60 + 40) * 60 * 1000;
+
+// ── HOW FAR BACK THE SCAN READS ──────────────────────────────────────────────
+// socialHealthScan reads /social_posts by KEY RANGE, not the whole node. Push
+// keys sort by creation time, so "keys from three weeks ago onward" is a
+// bounded read that needs no .indexOn rule. The node has no index, so an
+// orderByChild query would download everything anyway. Three weeks covers
+// every post a day can owe: the autopilot slots at most a day ahead, and a
+// manual post is scheduled within the fortnight assignSlots walks.
+const SCAN_WINDOW_MS = 21 * DAY_MS;
+
+const PUSH_CHARS = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
+/**
+ * The 8-character time prefix of a Firebase push key made at `ms`. Every key
+ * pushed at or after `ms` sorts at or after it, so it is a startAt() bound.
+ */
+function pushKeyPrefixForMs(ms) {
+  let t = Math.max(0, Math.floor(ms));
+  let out = "";
+  for (let i = 0; i < 8; i++) { out = PUSH_CHARS.charAt(t % 64) + out; t = Math.floor(t / 64); }
+  return out;
+}
+
 /**
  * A heartbeat value, or null if it is not a timestamp.
  *
@@ -187,7 +212,8 @@ function dayObligation(policy, { reelAlsoPostsToStory = true, storyAlsoPostsToFe
  * @param {number}  a.nowMs             when the assessment is being made
  * @param {object}  a.policy            { reels:[], photos:[], stories:[] } — what the day was meant to produce
  * @param {object}  a.autopilotLog      the /social_autopilot_log/{saDate} record, or null if absent
- * @param {object[]}a.posts             every /social_posts record (with its id), unfiltered
+ * @param {object[]}a.posts             /social_posts records (with ids) created within SCAN_WINDOW_MS
+ * @param {boolean} a.autopilotEnabled  the deployed SOCIAL_AUTOPILOT_ENABLED; false says "switched off"
  * @param {number}  a.publisherTickAt   epoch ms of the publisher's last tick, or null if it has never written one
  *
  * @returns {{ ok, severity, reasons, counts, saDate }}
@@ -196,7 +222,44 @@ function dayObligation(policy, { reelAlsoPostsToStory = true, storyAlsoPostsToFe
  *   is what lets the alert say "the engine has stopped" rather than "something
  *   is a bit off" — two different messages for two genuinely different nights.
  */
-function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins }) {
+/** "19:00" -> ms after SAST midnight, or null for a malformed time. */
+function slotOffsetMs(hhmm) {
+  const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || "").trim());
+  if (!m) return null;
+  const h = Number(m[1]), mi = Number(m[2]);
+  if (h > 23 || mi > 59) return null;
+  return (h * 60 + mi) * 60000;
+}
+
+function listOf(v) {
+  return Array.isArray(v) ? v : v && typeof v === "object" ? Object.values(v) : [];
+}
+
+/**
+ * THE SLOTS THE DAY HAS ALREADY PASSED, PER SURFACE: the times a post was
+ * owed whose grace period is over. A reel slot also owes a story (its twin),
+ * and a story slot also owes a feed post. These are the same twin rules as
+ * dayObligation, laid out by time instead of counted.
+ */
+function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, storyAlsoPostsToFeed = true } = {}) {
+  const by = { reel: [], story: [], feed: [] };
+  const add = (format, list) => {
+    for (const t of listOf(list)) {
+      const off = slotOffsetMs(t);
+      if (off === null) continue;
+      if (dayStart + off + PUBLISH_GRACE_MS < nowMs) by[format].push(String(t).trim());
+    }
+  };
+  add("reel", policy && policy.reels);
+  add("feed", policy && policy.photos);
+  add("story", policy && policy.stories);
+  if (reelAlsoPostsToStory) add("story", policy && policy.reels);
+  if (storyAlsoPostsToFeed) add("feed", policy && policy.stories);
+  for (const f of Object.keys(by)) by[f].sort();
+  return by;
+}
+
+function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true }) {
   const saDate = saDateStringFromMs(nowMs);
   const dayStart = sastMidnight(nowMs);
   const dayEnd = dayStart + DAY_MS;
@@ -209,7 +272,14 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   const wanted = obligation.generations;
   const made = Number(autopilotLog && autopilotLog.created) || 0;
   const skipped = Number(autopilotLog && autopilotLog.skipped) || 0;
-  if (wanted > 0) {
+  // Switched off in the deployed build is its own reason, and it comes first.
+  // "No record of running" was all 4–7 Oct ever said, and it sends the reader
+  // to Cloud Scheduler when the answer is one line in functions/index.js.
+  const generatorOff = wanted > 0 && autopilotEnabled === false;
+  if (generatorOff) {
+    reasons.push("the 06:00 generator is switched OFF in the deployed functions (SOCIAL_AUTOPILOT_ENABLED) — nothing new is being made");
+  }
+  if (wanted > 0 && !generatorOff) {
     if (!autopilotLog) {
       reasons.push("the 06:00 generator has no record of running today");
     } else if (autopilotLog.error) {
@@ -322,6 +392,46 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
     reasons.push("nothing has published today");
   }
 
+  // ── 3b. EVERY SLOT, ONCE ITS TIME HAS PASSED ──────────────────────────────
+  // Check 3 asks whether ANYTHING published, and only about posts already in
+  // the queue. An empty queue owes it nothing, so a generator that stopped
+  // writing posts can never trip it (4–7 Oct). This asks the policy instead:
+  // the 12:00 reel slot has passed by 20 minutes, so has a reel landed today?
+  // A slot is only met by a post that actually landed on a platform.
+  //
+  // Matched by WHEN IT LANDED, not by scheduledAt: the autopilot rolls a slot
+  // forward when it is taken, and Post now moves one to the present, so
+  // scheduledAt is not a reliable label. Each landed post covers the latest
+  // still-open slot at or before the moment it landed (a late 12:00 reel at
+  // 13:10 covers 12:00, a 19:01 reel covers 19:00 and not 12:00). A post that
+  // landed before every open slot, posted early, covers the earliest one.
+  const slots = passedSlots(policy, dayStart, nowMs, twins || {});
+  const missed = [];
+  for (const [format, times] of Object.entries(slots)) {
+    if (!times.length) continue;
+    const slotMs = times.map((t) => dayStart + slotOffsetMs(t));
+    const covered = new Array(times.length).fill(false);
+    const landings = publishedToday
+      .filter((p) => formatOfPost(p) === format)
+      .map((p) => Number(p.postedAt))
+      .sort((a, b) => a - b);
+    for (const when of landings) {
+      let pick = -1;
+      for (let i = times.length - 1; i >= 0; i--) if (!covered[i] && slotMs[i] <= when) { pick = i; break; }
+      if (pick === -1) pick = covered.indexOf(false);
+      if (pick === -1) break;
+      covered[pick] = true;
+    }
+    const uncovered = times.filter((_, i) => !covered[i]);
+    if (uncovered.length) {
+      const label = format === "feed" ? "feed post" : format;
+      missed.push(`the ${uncovered.join(" and ")} ${label}${uncovered.length > 1 ? "s have" : " has"} not landed`);
+    }
+  }
+  if (missed.length) {
+    reasons.unshift(`${missed.join("; ")} (${Math.round(PUBLISH_GRACE_MS / 60000)} min past the slot)`);
+  }
+
   // ── 4. HEARTBEAT ──────────────────────────────────────────────────────────
   // The value is VALIDATED, not merely compared. Arithmetic against a
   // non-number yields NaN, every comparison with NaN is false, and the check
@@ -367,9 +477,15 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   // day's output, not a rounding error — and its story goes with it, because
   // the twin is made from the reel.
   const owesMore = short.length > 0;
+  // A generator with no record past 06:40 did not run. It is the same outage
+  // as one that ran and made nothing, so it pages the same way. Before this
+  // it was "degraded" and four silent days paged nobody.
+  const generatorMissing = wanted > 0 && !autopilotLog && nowMs - dayStart > GENERATOR_DUE_BY_MS;
+  const slotMissed = missed.length > 0;
   const severity = reasons.length === 0
     ? "ok"
-    : (nothingPublished || publisherDead || generatorProducedNothing || owesMore) ? "silent" : "degraded";
+    : (nothingPublished || publisherDead || generatorProducedNothing || owesMore ||
+       generatorOff || generatorMissing || slotMissed) ? "silent" : "degraded";
 
   return {
     saDate,
@@ -386,6 +502,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
         story: madeToday.filter((p) => formatOfPost(p) === "story").length,
         feed: madeToday.filter((p) => formatOfPost(p) === "feed").length,
       },
+      missedSlots: missed.length,
       dueToday: dueToday.length,
       publishedToday: publishedToday.length,
       overdue: overdue.length,
@@ -411,6 +528,6 @@ function alarmMessage(verdict) {
 
 module.exports = {
   assessSocialDay, alarmMessage,
-  policyTotal, dayObligation, landedSomewhere,
-  PUBLISH_GRACE_MS, HEARTBEAT_STALE_MS,
+  policyTotal, dayObligation, landedSomewhere, passedSlots, pushKeyPrefixForMs,
+  PUBLISH_GRACE_MS, HEARTBEAT_STALE_MS, GENERATOR_DUE_BY_MS, SCAN_WINDOW_MS,
 };

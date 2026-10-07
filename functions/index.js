@@ -5196,7 +5196,8 @@ function parseHHMM(s) {
 // comment on socialScheduleSlots). socialScheduleSlots below shares
 // sastMidnightUtc rather than re-deriving the day-boundary arithmetic too.
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
-const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
+const socialHealth = require("./lib/social-health.cjs");
+const { assessSocialDay, alarmMessage } = socialHealth;
 const socialTwin = require("./lib/social-twin.cjs");
 const socialBudget = require("./lib/social-budget.cjs");
 const socialLibrary = require("./lib/social-library.cjs");
@@ -5466,9 +5467,11 @@ exports.socialDailyAutopilot = onSchedule(
 // and a second one only if the day gets worse.
 exports.socialHealthScan = onSchedule(
   {
-    // :25 rather than :00 — nothing else in this project runs then, and an
-    // off-minute keeps it clear of every other scheduler's rush.
-    schedule: "25 7-22 * * *",
+    // Off-minutes, clear of every other scheduler's :00 rush. Every fifteen
+    // minutes (was hourly at :25) so that a missed slot pages within 35
+    // minutes of its time: the 20 minute grace plus at most one interval.
+    // Each run reads a bounded three-week key range, so the cost is small.
+    schedule: "10,25,40,55 7-22 * * *",
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     memory: "256MiB",
@@ -5482,15 +5485,16 @@ exports.socialHealthScan = onSchedule(
     const [policy, logSnap, postsSnap, tickSnap] = await Promise.all([
       loadSocialPolicy(db),
       db.ref(`social_autopilot_log/${saDate}`).once("value"),
-      // The WHOLE node, deliberately. Three of the four checks need a
-      // different slice of it — anything approved and overdue regardless of
-      // age, anything in failed, and today's due-and-published — and no
-      // single .orderByChild query answers all three, so a query-per-check
-      // would be three reads of overlapping data rather than one. The node
-      // held 47 records on 2026-08-27 and grows by a handful a day; if it
-      // ever reaches the tens of thousands this becomes the thing to revisit,
-      // with an .indexOn("scheduledAt") and a windowed read.
-      db.ref(SOCIAL_POSTS_PATH).once("value"),
+      // BOUNDED, by key range: every post CREATED in the last three weeks.
+      // This was a whole-node read, 16 times a day on a node that only grows.
+      // Push keys sort by creation time, so a startAt on the key prefix for
+      // three weeks ago is a window that needs no .indexOn rule. /social_posts
+      // has none, so an orderByChild query would download the whole node
+      // anyway. Three weeks covers every check: today's slots, today's
+      // landings, and anything still approved or failed that is recent enough
+      // to act on (see SCAN_WINDOW_MS in lib/social-health.cjs).
+      db.ref(SOCIAL_POSTS_PATH).orderByKey()
+        .startAt(socialHealth.pushKeyPrefixForMs(nowMs - socialHealth.SCAN_WINDOW_MS)).once("value"),
       db.ref("social_health/publisher/lastTickAt").once("value"),
     ]);
 
@@ -5501,6 +5505,9 @@ exports.socialHealthScan = onSchedule(
       autopilotLog: logSnap.val(),
       posts,
       publisherTickAt: tickSnap.val() ?? null,
+      // The generator's off switch is compiled into this same build, so the
+      // watchdog can say "switched off" rather than "no record of running".
+      autopilotEnabled: SOCIAL_AUTOPILOT_ENABLED,
       // ── THE OBLIGATION FOLLOWS THE TWINS ─────────────────────────────────
       // Two reel slots owe two reels AND two stories, because each reel is
       // also posted as a story from the same encoded file. Passed in rather
