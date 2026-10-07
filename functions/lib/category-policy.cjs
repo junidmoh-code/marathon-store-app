@@ -63,7 +63,7 @@
 // real engine alongside the model on the live snapshot — so the residual gap is
 // measured rather than assumed.
 
-const { resolveTarget, encodeSizeKey, policyCategoryKey, passThroughExcluded, networkRouting } = require("./refill-engine.cjs");
+const { resolveTarget, encodeSizeKey, policyCategoryKey, passThroughExcluded, networkRouting, maskUntrustedStock } = require("./refill-engine.cjs");
 const { withPolicyTemplates, policyTemplateKey, LOCATION_MAP_KEYS } = require("./policy-template.cjs");
 // Group and per-size resolution, from the leaf module the ENGINE consumes — so
 // "which policy speaks here" is answered once. A copy on this side would drift
@@ -423,9 +423,13 @@ function policyRouting(config, network) {
 // resolves it from (policyRouting above). Without it the model is the
 // config.mode / config.routes model it always was.
 function modelCategoryPolicy({
-  config, products, stock, targets, openIndex,
+  config, products, stock: rawStock, targets, openIndex,
   categoryKey, locations, maxIntentsPerRun, maxUnitsPerIntent, network,
 }) {
+  // TRUSTED CELLS ONLY at an Auto-refill "solved" location — the engine's own
+  // mask (refill-engine.cjs maskUntrustedStock), so the preview never shows
+  // legacy stock there as carried, as a source, or as a cell it would refill.
+  const { stock, trustedCell } = maskUntrustedStock(rawStock || {}, network);
   const pr = policyRouting(config, network);
   const { pids, byLocation: carriage } = carriageForCategory({ products, stock, categoryKey, locations });
   // ── THE POLICY THAT ACTUALLY SPEAKS FOR THIS CATEGORY ─────────────────────
@@ -646,6 +650,7 @@ function modelCategoryPolicy({
 
       let pidOverridden = false;
       for (const [sizeKey, size] of bySizeKey) {
+        if (!trustedCell(loc, pid, sizeKey)) continue;
         const t = resolveTarget(ctxOf(loc), loc, pid, size);
         if (!t || t.target <= 0) continue;
         cells += 1;
