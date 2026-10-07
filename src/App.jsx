@@ -3496,7 +3496,7 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
       // stock and the credit scope. Super-admin ONLY. GATE 1 of 3; the route
       // gate and the card's own check are the others, and the RTDB rule on
       // /network is what actually refuses the write.
-      isSuperAdmin && { key:"network", icon:RoleIcons.network, name:"Network", desc:"Sections · which locations are live · Concrete's back stock · credit scope", onClick:()=>(window.location.hash = "#admin/network") },
+      isSuperAdmin && { key:"network", icon:RoleIcons.network, name:"Network", desc:"Sections · Solve and Auto-refill per location · Concrete's back stock · credit scope", onClick:()=>(window.location.hash = "#admin/network") },
       // Device codes — the 4-digit code every phone on MC's login needs
       // (src/device/enrolment.js). Junid, or an enrolled device whose person may
       // make codes (MC). GATE 1 of 3; the route below and the deviceEnrolmentAdmin
