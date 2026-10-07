@@ -74,6 +74,6 @@ test("releaseGeneration lowers a positive count and leaves anything else alone",
   assert.equal(r.releaseGeneration(3), 2);
   assert.equal(r.releaseGeneration(1), 0);
   assert.equal(r.releaseGeneration(0), undefined);
-  assert.equal(r.releaseGeneration(null), undefined);
+  assert.equal(r.releaseGeneration(null), null, "cold cache: re-run against the server, never abort");
   assert.equal(r.releaseGeneration("3"), undefined);
 });

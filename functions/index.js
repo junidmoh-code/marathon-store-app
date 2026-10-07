@@ -4210,10 +4210,26 @@ async function generateSocialScene(apiKey, prompt, productImages, refs, format =
     parts.push({ text: "STYLE REFERENCES — match this exact scene, backdrop, lighting and mood:" });
     for (const r of refs) parts.push(inlineImagePart(r.buffer, r.contentType));
   }
-  return geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
-    outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
-    imageConfig: { aspectRatio: format === "feed" ? "4:5" : "9:16", imageSize: "2K" },
-  });
+  const aspectRatio = format === "feed" ? "4:5" : "9:16";
+  try {
+    return await geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
+      outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
+      imageConfig: { aspectRatio, imageSize: "2K" },
+    });
+  } catch (err) {
+    // ── PRO IS OVERLOADED: THE SAME REQUEST ON FLASH ─────────────────────────
+    // 7 Oct 2026: Nano Banana Pro answered 503 "experiencing high demand" for
+    // over an hour, and the day's reels went with it. The Flash image model
+    // takes the same parts (the references included) and is a separate pool.
+    // Its picture is a little softer, which is better than no post. Only a 5xx
+    // falls back. A 429 or a bad request would fail the same way on either.
+    if (!socialRecovery.isUnbilledProviderError(err && err.message)) throw err;
+    console.warn(`social: ${NBPRO_MODEL} unavailable (${String(err.message).slice(0, 60)}) — retrying on ${GEMINI_MODEL}`);
+    return geminiGenerateImage(apiKey, GEMINI_MODEL, parts, {
+      outPerMtok: GEMINI_OUT_PER_MTOK, flatUsd: GEMINI_FLAT_IMAGE_USD,
+      imageConfig: { aspectRatio },
+    });
+  }
 }
 
 // Fitting the photograph to its canvas, measuring it, and compositing the type

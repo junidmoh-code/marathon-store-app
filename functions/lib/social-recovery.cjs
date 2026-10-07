@@ -89,6 +89,11 @@ async function generateWithRecovery({ kind, format, rotation, run, sleep, backof
  * ours to lower.
  */
 function releaseGeneration(cur) {
+  // The cold-cache null must NOT abort (social-budget.cjs, reserveGeneration):
+  // returning it unchanged makes Firebase re-run this against the server's
+  // real value. Aborting on it meant the first release on 7 Oct gave nothing
+  // back, and three 503s used up the day's cap with no picture made.
+  if (cur === null || cur === undefined) return null;
   if (typeof cur !== "number" || !Number.isFinite(cur) || cur <= 0) return undefined;
   return cur - 1;
 }
