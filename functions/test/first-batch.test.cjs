@@ -28,7 +28,7 @@ const PRODUCTS = {
   p2: { id: "p2", name: "Essentials Tee", productType: "clothing", sizes: ["M"] },
 };
 const cell = (qty) => ({ qty, v: 1, mv: "m", lastType: "received" });
-const seed = () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live" });
+const seed = () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", trusted: true, trustedVia: "solve" });   // trusted from the start (lib/stock-trust.cjs)
 const SOLVE = "fb_p1_abc";
 const shopReq = (over = {}) => ({
   productId: "p1", size: "M", qty: 2, requestingLocation: "trophy", status: "open",
@@ -107,7 +107,7 @@ test("fulfil raises EXACTLY ONE Hub 2 request, sized from Central's remainder, w
   assert.equal(lock.refillId, key);
   assert.equal(lock.qty, 2);
   assert.equal(lock.pending, undefined, "finalised, never left pending");
-  assert.deepEqual({ ...db.state.root.stock.hub2.p1.M, updatedAt: null }, { ...seed(), updatedAt: null, updatedBy: "first_batch" });
+  assert.deepEqual({ ...db.state.root.stock.hub2.p1.M, updatedAt: null, trustedAt: null }, { ...seed(), updatedAt: null, trustedAt: null, updatedBy: "first_batch" });
   assert.equal(db.state.root.refill_requests.r1.firstBatch.hub2Leg.refillId, key);
   const before = JSON.stringify(db.state.root);
   const again = await run(db, "r1", "2026-09-17T11:00:00.000Z");

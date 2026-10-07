@@ -47,6 +47,7 @@
 // initialises the SDK itself.
 
 "use strict";
+const { trustStamp, arrivalTrust } = require("./stock-trust.cjs");
 
 const ADMITTED_TYPES = new Set(["transfer_in", "adjustment", "refusal_writeoff"]);
 
@@ -148,6 +149,9 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
         lastType: cellLastType(movement.type),
         updatedAt: nowIso,
         updatedBy: movement.actor,
+        // TRUST (stock-trust.cjs): a refill/order/hold-release leg landing HERE
+        // marks the cell trusted, in the same write; the cell it left is not.
+        ...(d.loc === movement.to && arrivalTrust(movement) ? trustStamp(arrivalTrust(movement), nowIso) : {}),
       };
     });
     const cur = seen;

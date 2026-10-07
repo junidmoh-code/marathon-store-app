@@ -36,7 +36,8 @@ import { serverNowMs, serverNowIso } from "../../utils/serverTime";
 import { seedLocations, solvePlan as computeSolvePlan, qualifyingSizes as computeQualifyingSizes, resolvedRun, ruleTargetsEnabledFor } from "./solvePlan";
 import { computeMissingProducts, isClothing, cardSection } from "./missingProductsCore";
 import { useMySections } from "../../utils/useMySections";
-import { isLive, sectionName } from "../../utils/networkRegistry";
+import { solveOn, sectionName } from "../../utils/networkRegistry";
+import { trustStamp } from "./stockTrust";
 import { centralId, isCentral, storeIds, solveHubFor, solveHubsOfSection } from "./sectionRouting";
 import { engineConfigView } from "./policyTemplate";
 import { solveBlocks, allocationOrder, planSectionSolve, mergeSolveUpdates, undoablePaths } from "./solveSections";
@@ -596,16 +597,17 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // re-reads them live, so a lock that lands while the panel is open is
   // still honoured at the moment of the write.
   const [openLocks, setOpenLocks] = useState({});   // pid → { loc: node|null } (undefined = not read yet)
-  // The engine's routed locations, plus any LIVE store or hub the routes do
-  // not name yet (a lock there can still be promising Central's units).
+  // The engine's routed locations, plus any store or hub with a switch on
+  // that the routes do not name yet (a lock there can still be promising
+  // Central's units).
   const routeLocs = useMemo(() => {
-    const live = Object.values(network.locations).filter((l) => l.type !== "central" && l.live === true).map((l) => l.id);
-    return [...new Set([...Object.keys(cfg?.routes || {}), ...live])];
+    const routed = Object.values(network.locations).filter((l) => l.type !== "central" && (l.solve === true || l.autoRefill !== "off")).map((l) => l.id);
+    return [...new Set([...Object.keys(cfg?.routes || {}), ...routed])];
   }, [cfg, network]);
   // The hubs whose presence a Solve of this product can turn on: the hub
-  // behind each LIVE store (Hub 2 while only Section 2 is live).
-  const presenceHubsFor = (pid) => [...new Set(storeIds(network, { liveOnly: true })
-    .map((st) => solveHubFor(network, st, byId.get(pid), pid)).filter((h) => h && isLive(network, h)))];
+  // behind each store with Solve on.
+  const presenceHubsFor = (pid) => [...new Set(storeIds(network, { solveOnly: true })
+    .map((st) => solveHubFor(network, st, byId.get(pid), pid)).filter((h) => h && solveOn(network, h)))];
   const readOpenLocks = async (pid) => {
     const raw = {};
     await Promise.all(routeLocs.map(async (loc) => {
@@ -720,7 +722,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     setSolveBusy(card.pid);
     const uid = auth.currentUser?.uid || null;
     const now = serverNowIso();
-    const seedCell = () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid });
+    // A Solve seed is TRUSTED from the start (stockTrust.js): Solve is the act
+    // that introduces the product here, so the engine may arm the cell at a
+    // "solved products only" location before its first batch has even landed.
+    const seedCell = () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: now, updatedBy: uid, ...trustStamp("solve", now) });
     const many = ticks.length > 1;
     try {
       // LIVE lock table first (one scoped read per routed location): the

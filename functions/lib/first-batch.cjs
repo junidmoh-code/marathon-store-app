@@ -52,6 +52,7 @@ const { hubPresenceSignals, pickInProgress } = require("./shop-source-rule.cjs")
 // CJS twins of the constants in src/components/stock/firstBatchCore.js — a
 // test pins them equal.
 const networkRegistry = require("./network-registry.cjs");
+const { trustStamp } = require("./stock-trust.cjs");
 const { loadNetwork } = require("./network-load.cjs");
 // ── "HUB 2" IS "THE SHOP'S BACK-STOCK HUB" (sections, 2026-10) ───────────────
 // This module was written when one hub stood behind every shop. The rule was
@@ -163,7 +164,7 @@ const avail = (q) => Math.max(num(q), 0);
 // The seed cell — byte-for-byte the Solve's shape (NetworkTransfer.jsx solve()),
 // so a later undo / count / audit reads it exactly like every other seed.
 function seedCell(nowIso) {
-  return { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: nowIso, updatedBy: "first_batch" };
+  return { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: nowIso, updatedBy: "first_batch", ...trustStamp("solve", nowIso) };
 }
 
 // Seed-if-absent, as a TRANSACTION — never a blind set. The "is there a cell?"
@@ -296,9 +297,10 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
       || !networkRegistry.autoRouteAllowed(network, SOURCE, HUB)) {
     return { skipped: "section_wall", store };
   }
-  // Live stores and hubs — Central's reservations are walked there as well
-  // as at the routed locations (centralReservations `alsoAt`).
-  const liveLocs = [...networkRegistry.storesOf(network, { liveOnly: true }), ...networkRegistry.hubsOf(network, { liveOnly: true })].map((l) => l.id);
+  // Every store and hub the engine routes (Auto-refill on) — Central's
+  // reservations are walked there as well as at the routed locations
+  // (centralReservations `alsoAt`).
+  const liveLocs = [...networkRegistry.storesOf(network, { autoRefillOnly: true }), ...networkRegistry.hubsOf(network, { autoRefillOnly: true })].map((l) => l.id);
 
   const resolved = rr.status !== "open";
   // "Untouched" must be CERTAIN before a row is withdrawn: a sentQty of an

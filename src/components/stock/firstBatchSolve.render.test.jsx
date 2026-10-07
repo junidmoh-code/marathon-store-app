@@ -145,7 +145,8 @@ describe("in scope — a Central-stranded tee solved at Marathon PE", () => {
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
     ]);
     expect(upd["refill_requests/req1"].createdFrom.hub2Seeded.slice().sort()).toEqual(["M", "S"]);
-    expect(upd["stock/marathon-pe/tee1/S"]).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: new Date(NOW).toISOString(), updatedBy: "u1" });
+    const at = new Date(NOW).toISOString();   // a Solve seed is trusted from the start (stockTrust.js)
+    expect(upd["stock/marathon-pe/tee1/S"]).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: at, updatedBy: "u1", trusted: true, trustedVia: "solve", trustedAt: at });
     for (const k of ["refill_requests/req1", "refill_requests/req2"]) {
       expect(upd[k]).toMatchObject({ productId: TEE, requestingLocation: "marathon-pe", status: "open", qty: 2, createdFrom: { firstBatch: true, source: "central", store: "marathon-pe", hub: "hub2", by: "u1" } });
       expect(upd[k].createdFrom.solveId).toBe(`fb_${TEE}_${NOW.toString(36)}`);

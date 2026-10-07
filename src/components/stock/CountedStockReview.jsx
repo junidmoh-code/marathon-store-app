@@ -140,7 +140,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       const res = await applyMovement({
         type: "adjustment", productId: g.pid, size: s.size, qty: Math.abs(delta),
         to: delta > 0 ? g.loc : null, from: delta < 0 ? g.loc : null,
-        reason: "recount: corrected on the spot", cellState: "live", actorRole,
+        reason: "recount: corrected on the spot", cellState: "live", trust: "count", actorRole,
       });
       if (res.ok) flash("ok", `Set ${g.name} · ${s.size} @ ${labelFor(g.loc, registry)} → ${target}.`);
       else flash("err", `Couldn't update: ${res.reason || res.error || "unknown"}`);
@@ -184,7 +184,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       try {
         const res = await applyMovement({
           type: "transfer_out", productId: g.pid, size: s.size, qty: s.qty,
-          from: g.loc, to, cellState: "live", actorRole, link: { reason: "recount: relocated" },
+          from: g.loc, to, cellState: "live", trust: "count", actorRole, link: { reason: "recount: relocated" },
         });
         res.ok ? ok++ : fail++;
       } catch { fail++; }
@@ -208,7 +208,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
         const res = await applyMovement({
           type: "adjustment", productId: it.pid, size: it.size, qty: Math.abs(it.qty),
           to: it.qty > 0 ? it.loc : null, from: it.qty < 0 ? it.loc : null,
-          reason: "recount: undo clear", cellState: "live", actorRole,
+          reason: "recount: undo clear", cellState: "live", trust: "count", actorRole,
         });
         res.ok ? ok++ : fail++;
       } catch { fail++; }

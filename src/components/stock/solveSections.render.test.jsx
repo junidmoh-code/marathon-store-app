@@ -45,6 +45,9 @@ const { __resetNetworkForTests } = await import("../../utils/networkStore.js");
 
 // /network with Section 1 counted in and live.
 const S1_LIVE = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true }, "concrete-stockroom": { live: true } } };
+// /network with Section 1's switches both OFF (the seed before 7 Oct 2026).
+const OFF = { solve: false, autoRefill: "off" };
+const S1_DARK = { locations: { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF } };
 // The engine config: Section 2 has its own numbers; Section 1 has NONE — it
 // follows its templates (Pine and Concrete like Marathon PE, Hub 3 like Hub 2).
 const CONFIG = {
@@ -120,17 +123,19 @@ describe("one screen: a block per section, a tick per store", () => {
     expect(boxes(tree).every((b) => !b.props.disabled)).toBe(true);
   });
 
-  it("NOT LIVE (the registry's seed): Pine and Concrete are shown, cannot be ticked, and say why", async () => {
-    const tree = render();          // no /network node → the seed: Section 1 not live
+  it("SOLVE OFF: Pine and Concrete are shown, cannot be ticked, and say why", async () => {
+    paths.network = S1_DARK;
+    const tree = render();
     await open(tree);
     expect(box(tree, "Marathon Pine").props.disabled).toBe(true);
     expect(box(tree, "Concrete").props.disabled).toBe(true);
     expect(box(tree, "Marathon PE").props.disabled).toBe(false);
-    expect(textOf(tree)).toMatch(/Marathon Pine: not live yet — counted stock first\./);
-    expect(textOf(tree)).toMatch(/Concrete: not live yet — counted stock first\./);
+    expect(textOf(tree)).toMatch(/Marathon Pine: Solve is off for this store \(Network card\)\./);
+    expect(textOf(tree)).toMatch(/Concrete: Solve is off for this store \(Network card\)\./);
   });
 
-  it("NOT LIVE: nothing is ever written for a store that is not live — the confirm is exactly Marathon PE's", async () => {
+  it("SOLVE OFF: nothing is ever written for a store whose Solve is off — the confirm is exactly Marathon PE's", async () => {
+    paths.network = S1_DARK;
     const tree = render();
     await open(tree);
     // a tap on the disabled tick changes nothing even if it were delivered
@@ -145,6 +150,34 @@ describe("one screen: a block per section, a tick per store", () => {
       "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
     ]);
+  });
+});
+
+describe("THE SEED (7 Oct 2026): Pine and Concrete are solvable before their counts are finished", () => {
+  it("no /network node: Pine is tickable; its Solve seeds Pine and Hub 3 TRUSTED and asks Central for Pine's first batch", async () => {
+    const tree = render();          // no /network node → the seed: Section 1 Solve on, Auto-refill solved
+    await open(tree);
+    expect(box(tree, "Marathon Pine").props.disabled).toBe(false);
+    expect(box(tree, "Concrete").props.disabled).toBe(false);
+    tick(tree, "Marathon Pine");
+    tick(tree, "Marathon PE");      // un-tick the default: Pine alone
+    expect(ticked(tree)).toEqual(["Marathon Pine"]);
+    await confirm(tree);
+    expect(updateMock).toHaveBeenCalledTimes(1);
+    const upd = written();
+    const stockKeys = Object.keys(upd).filter((k) => k.startsWith("stock/")).sort();
+    expect(stockKeys).toEqual([
+      "stock/hub3/tee1/L", "stock/hub3/tee1/M", "stock/hub3/tee1/S",
+      "stock/marathon-pine/tee1/L", "stock/marathon-pine/tee1/M", "stock/marathon-pine/tee1/S",
+    ]);
+    // every seed is trusted from the start (stockTrust.js) — the engine may arm it at a "solved" location
+    for (const k of stockKeys) expect(upd[k]).toMatchObject({ qty: 0, mv: "seed", trusted: true, trustedVia: "solve" });
+    const reqs = requests(upd);
+    expect(reqs).toHaveLength(3);
+    for (const r of reqs) expect(r).toMatchObject({ requestingLocation: "marathon-pine", status: "open", createdFrom: { firstBatch: true, source: "central", hub: "hub3", store: "marathon-pine" } });
+    // nothing for Marathon, nothing across the wall
+    expect(Object.keys(upd).some((k) => /hub1|hub2|marathon-pe\//.test(k))).toBe(false);
+    expect(applyMovementMock).not.toHaveBeenCalled();
   });
 });
 
@@ -369,7 +402,8 @@ describe("undo: two shops of one confirm share their hub's seeds", () => {
 });
 
 describe("the other section's list", () => {
-  it("a viewer who may see both sections can look at Section 1's stranded stock; Solve there routes nothing while it is not live", async () => {
+  it("a viewer who may see both sections can look at Section 1's stranded stock; Solve there routes nothing while its Solve is off", async () => {
+    paths.network = S1_DARK;
     // Marathon PE carries the tee → nothing stranded for Section 2; stranded for Section 1.
     const stock = { ...stockWith(PLENTY), "marathon-pe": { [TEE]: { M: cell(1) } } };
     const tree = render({ stock });

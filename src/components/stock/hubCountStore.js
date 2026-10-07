@@ -42,7 +42,7 @@ import { useEffect, useState } from "react";
 import { ref, child, get, update, push, runTransaction } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
-import { applyMovement } from "./applyMovement";
+import { applyMovement, setCellState } from "./applyMovement";
 import { stockCellPath, stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 import { getDeviceId } from "../../device/deviceId";
@@ -266,7 +266,12 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
   } catch (err) {
     return { ok: false, message: `Could not save the count: ${String(err?.message || err)}` };
   }
-  return { ok: true, record: rec };
+  // A confirmed cell is a COUNTED cell: mark it trusted (stockTrust.js) in a
+  // metadata-only write — qty untouched. The count stands whether or not this
+  // lands; the result says which.
+  let trusted = false;
+  try { trusted = (await setCellState(hub, productId, live.rawSize, "live", { trust: "count" })).ok === true; } catch { trusted = false; }
+  return { ok: true, record: rec, trusted };
 }
 
 /**
@@ -392,6 +397,7 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
       to: delta > 0 ? hub : null,
       from: delta < 0 ? hub : null,
       reason: "hub_sneaker_count",
+      trust: "count",   // a hub count confirms the cell (stockTrust.js)
       actorRole,
       // Provenance rides in `link`, which applyMovement spreads verbatim and the
       // live rules do not restrict (no $other deny under /stock_movements/$mvId).

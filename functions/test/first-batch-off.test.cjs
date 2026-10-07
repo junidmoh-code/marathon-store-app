@@ -46,7 +46,7 @@ test("an open, untouched first-batch shop request is withdrawn with a reason, Hu
   assert.equal(r.cancelReason, PATH_OFF_REASON);
   assert.equal(r.resolvedAt, T1);
   assert.deepEqual(r.firstBatch.hub2Leg, { none: "path_off", at: T1 });
-  assert.deepEqual(db.state.root.stock.hub2.p1.M, { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: T1, updatedBy: "first_batch" });
+  assert.deepEqual(db.state.root.stock.hub2.p1.M, { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: T1, updatedBy: "first_batch", trusted: true, trustedVia: "solve", trustedAt: T1 });   // a Solve seed is trusted
   assert.equal(db.state.root.stock.trophy.p1.M.qty, 0);            // the shop's seed stands
   assert.equal(db.state.root.stock.central.p1.M.qty, 5);           // nothing moved
   assert.equal(db.state.root.refill_engine, undefined);            // no shop lock, no hub2 lock

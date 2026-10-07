@@ -120,7 +120,9 @@ describe("Hub 2 presence → the old Solve, never a shop-from-Central request (t
       "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
     ]);
-    for (const k of Object.keys(upd)) expect(upd[k]).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: new Date(NOW).toISOString(), updatedBy: "u1" });
+    // a Solve seed is trusted from the start (stockTrust.js) — the only change to Marathon's seed shape
+    const at = new Date(NOW).toISOString();
+    for (const k of Object.keys(upd)) expect(upd[k]).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: at, updatedBy: "u1", trusted: true, trustedVia: "solve", trustedAt: at });
     expect(Object.keys(upd).some((k) => k.startsWith("refill_requests/"))).toBe(false);
     expect(pushN).toBe(0);
     expect(textOf(tree)).toMatch(/Carrying 3 sizes at Marathon PE \(via Hub 2\) — the engine will refill on its next scan/);
@@ -201,8 +203,14 @@ describe("Hub 2 presence → the old Solve, never a shop-from-Central request (t
     const tree = render({ products: only(TEE) });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
     await act(async () => {});
+    // Marathon's four, plus Section 1's four now that they are routed (the seed,
+    // 7 Oct 2026): Central is SHARED, so a Pine lock on Central's units must be
+    // netted before Marathon PE's first batch is sized. Reads only — one small
+    // path each; what is written for Marathon is unchanged.
     expect(readPaths.filter((p) => p.startsWith("refill_engine/open/")).sort()).toEqual([
-      "refill_engine/open/hub1/tee1", "refill_engine/open/hub2/tee1", "refill_engine/open/marathon-pe/tee1", "refill_engine/open/trophy/tee1",
+      "refill_engine/open/concrete-stockroom/tee1", "refill_engine/open/concrete/tee1",
+      "refill_engine/open/hub1/tee1", "refill_engine/open/hub2/tee1", "refill_engine/open/hub3/tee1",
+      "refill_engine/open/marathon-pe/tee1", "refill_engine/open/marathon-pine/tee1", "refill_engine/open/trophy/tee1",
     ]);
     expect(readPaths.filter((p) => p === "settings/stockHold/held/hub2")).toHaveLength(1);   // the hold lane, once
   });
