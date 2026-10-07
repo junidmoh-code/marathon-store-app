@@ -57,13 +57,27 @@ const FORBIDDEN = [
 ];
 
 test("every client response the callable makes is scanned (else these tests prove nothing)", () => {
-  // FOUR now: the photo extract, the PDF extract, the typed capture, and
-  // submit. This count is the thing that makes the checks below meaningful — a
-  // new response path that nobody added here would return whatever it liked,
-  // unscanned. It caught exactly that when the PDF path was added, and again
-  // when the typed-total path was (1 Oct 2026).
-  assert.equal(responsePayloads().length, 4,
+  // FIVE now: the photo extract, the PDF extract, the typed capture, submit,
+  // and the poller's notice list (7 Oct 2026 — it goes to the mailbox poller's
+  // identity only, and carries an email subject and body for Junid). This
+  // count is the thing that makes the checks below meaningful — a new response
+  // path that nobody added here would return whatever it liked, unscanned. It
+  // caught exactly that when the PDF path was added, again when the typed-total
+  // path was (1 Oct 2026), and again with the notice list.
+  assert.equal(responsePayloads().length, 5,
     "a response path was added or removed — scan it, then update this count");
+});
+
+test("RECEIVED is the whole answer: the manager's submit returns {ok, received} and nothing else", () => {
+  // Junid, 7 Oct 2026: "Show the manager no result either way." The receive
+  // runs before any read, so there is nothing it COULD say — and this pins that
+  // nobody later adds a figure, a verdict or a job id to it.
+  const body = SRC.slice(SRC.indexOf("async function handleReceive("), SRC.indexOf("async function loadJobPhotos("));
+  assert.ok(body.length > 100, "handleReceive is where this test expects it");
+  const oks = stripComments(body).match(/return\s*\{\s*ok:\s*true[^}]*\}/g) || [];
+  assert.deepEqual(oks, ["return { ok: true, received: true }"]);
+  // …and no read happens on that path: the OCR and the submit are the job's.
+  assert.doesNotMatch(stripComments(body), /runSlipOcr\(|handleExtract\(|handleSubmit\(|computeExpectedCard\(/);
 });
 
 for (const [what, pattern] of FORBIDDEN) {

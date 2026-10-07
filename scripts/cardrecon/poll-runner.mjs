@@ -35,7 +35,9 @@ const code = await runTick({
     // ledger, because the owner's phone marks mail read before the poller
     // sees it. The regex must track the poller's own line.
     const m = text.match(/·\s*(\d+)\s*unprocessed message/);
-    return !!(m && Number(m[1]) > 0);
+    // A tick that emailed Junid an Unread notice (or failed to) is worth its
+    // full log even when the mailbox was quiet.
+    return !!(m && Number(m[1]) > 0) || /card recon notice/.test(text);
   },
   idleLine: "tick: nothing unprocessed in the recon mailbox",
 });

@@ -237,20 +237,23 @@ test("a typed draft survives RTDB deleting its nulls and empty arrays", () => {
   assert.equal(record.slip.txnCount, null);
 });
 
-test("the typed action is open to card_recon, not the owner alone, and reads one terminal row", () => {
-  // Junid, 1 Oct 2026: anyone who can capture the till may type its total — it
-  // is the machine's only capture route. assertCardRecon guards every action;
-  // the owner-only mayDeclareTotal gate must NOT be on this path.
+test("the typed action is the OWNER's alone again, at dispatch and at submit, and reads one terminal row", () => {
+  // Junid, 7 Oct 2026: "Staff never type numbers. Manual entry is Junid-only."
+  // That supersedes the 1 Oct opening of this path to every card_recon holder
+  // (#658). A typed-only machine nobody types for is entered from the POS
+  // report (cardBatchManualEntry).
   const src = require("node:fs").readFileSync(require.resolve("../cardRecon/cardRecon.js"), "utf8");
   const callable = src.slice(src.indexOf("exports.cardBatchCapture = onCall"));
   assert.ok(callable.indexOf("assertCardRecon(request)") < callable.indexOf('if (action === "typed")'));
   const action = src.slice(src.indexOf('if (action === "typed")'), src.indexOf('if (action === "submit")'));
   assert.ok(action.length > 0);
-  assert.doesNotMatch(action, /mayDeclareTotal/);
+  // The gate comes BEFORE the registry is read or anything is typed in.
+  assert.ok(action.indexOf("mayDeclareTotal(request.auth?.token)") > -1);
+  assert.ok(action.indexOf("mayDeclareTotal(request.auth?.token)") < action.indexOf("normaliseTid("));
   assert.match(action, /db\.ref\(`\$\{CARD_TERMINALS_PATH\}\/\$\{picked\}`\)/);
   assert.doesNotMatch(action, /db\.ref\(CARD_TERMINALS_PATH\)/);
   const submit = src.slice(src.indexOf("const typedOnly = draft.typedOnly === true;"), src.indexOf("} else if (declaredTotal) {"));
-  assert.doesNotMatch(submit, /mayDeclareTotal/);
+  assert.match(submit, /mayDeclareTotal\(request\.auth\?\.token\)/, "a staff draft cannot be submitted either");
   // The registry still decides at submit.
   assert.match(submit, /typesTotal\(row\)/);
 });

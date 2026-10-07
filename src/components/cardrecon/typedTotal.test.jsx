@@ -39,7 +39,9 @@ vi.mock("firebase/functions", () => ({
   httpsCallable: () => async (payload) => {
     calls.push(payload);
     if (calls.hold) await calls.hold;
-    return { data: payload.action === "extract" ? { ok: true, draftId: "draft-0000001" } : { ok: true } };
+    if (calls.reply) return { data: calls.reply(payload) };
+    return { data: payload.action === "extract" ? { ok: true, draftId: "draft-0000001" }
+      : payload.action === "receive" ? { ok: true, received: true } : { ok: true } };
   },
 }));
 vi.mock("../../utils/serverTime", () => ({
@@ -74,6 +76,7 @@ const tap = (node) => act(() => { node.props.onClick(); });
 
 beforeEach(() => {
   calls.length = 0;
+  calls.reply = null;
   // The downscale draws on a canvas; the renderer has no DOM.
   // Each canvas remembers what was drawn on it: a file named "new.jpg" encodes
   // as TkVX, anything else as QUJDRA== — so a test can tell WHICH photo won.
@@ -116,15 +119,40 @@ describe("the card list is clean", () => {
     expect(labelNamed(tree, "Choose from gallery / file")[0].props.capture).toBeUndefined();
   });
 
-  it("a gallery pick sends straight away, with no typed figure — even for Junid", async () => {
+  it("a gallery pick is RECEIVED straight away, with no typed figure and no read — even for Junid", async () => {
+    // 7 Oct 2026: the photo is received, the read happens on the server later.
     auth.currentUser = { email: "gunidmoh@gmail.com" };
     const tree = render();
     tap(cards(tree)[0]);
     await pick(labelNamed(tree, "Choose from gallery / file")[0]);
-    const extract = calls.find((c) => c.action === "extract");
-    expect(extract.photos[0].base64).toBe("QUJDRA==");
-    expect("declaredTotal" in extract).toBe(false);
-    expect(calls.some((c) => c.action === "submit")).toBe(true);
+    const receive = calls.find((c) => c.action === "receive");
+    expect(receive.photos[0].base64).toBe("QUJDRA==");
+    expect("declaredTotal" in receive).toBe(false);
+    expect(calls.some((c) => c.action === "extract" || c.action === "submit")).toBe(false);
+  });
+});
+
+describe("Received — the whole of what a manager is told (7 Oct 2026)", () => {
+  const shown = (tree) => tree.root.findAll((n) => typeof n.props?.children === "string").map((n) => n.props.children).join(" | ");
+
+  it("after a photo is sent the card says Received and ticks — no figure, no verdict, no 'Reading'", async () => {
+    auth.currentUser = { email: "manager@marathon.co.za" };
+    const tree = render();
+    tap(cards(tree)[0]);
+    await pick(labelNamed(tree, "Photograph the slip")[0]);
+    expect(shown(tree)).toMatch(/Received/);
+    expect(shown(tree)).not.toMatch(/Reading|recorded|variance|R\d/i);
+    expect(tree.root.findAll((n) => n.props?.["aria-label"] === "today's report is in")).toHaveLength(1);
+  });
+
+  it("a till this account cannot capture is refused in the server's words — the one thing a manager can act on", async () => {
+    auth.currentUser = { email: "manager@marathon.co.za" };
+    calls.reply = (p) => (p.action === "receive" ? { ok: false, reason: "Marathon Till 2 is not in your section, so it cannot be captured from this account." } : { ok: true });
+    const tree = render();
+    tap(cards(tree)[0]);
+    await pick(labelNamed(tree, "Photograph the slip")[0]);
+    expect(shown(tree)).toMatch(/not in your section/);
+    expect(shown(tree)).not.toMatch(/Received/);
   });
 });
 

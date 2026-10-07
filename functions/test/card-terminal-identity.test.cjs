@@ -279,7 +279,9 @@ test("the HAND capture path refuses a retired terminal at extract AND at submit"
   // row for a typed-only draft. A typed capture is the one route with no
   // document behind it, so it gets the same two-ended treatment for the same
   // reason: the gap between the two calls is where a retirement lands.
-  assert.equal(guards.length, 5, "photo extract, picked-PDF extract, submit and the typed path's two each refuse a retired terminal");
+  // SIX since 7 Oct 2026: the background RECEIVE refuses one too, before the
+  // photo is stored — it runs the same setup gates the photo extract does.
+  assert.equal(guards.length, 6, "receive, photo extract, picked-PDF extract, submit and the typed path's two each refuse a retired terminal");
   assert.match(code, /retiredCaptureRefusal\(/, "and the refusal is the shared sentence, not a second wording");
   // The submit guard must sit against the registry as it stands NOW, not
   // against the terminal the draft remembers — the draft's copy was taken

@@ -148,6 +148,8 @@ function makeFakeDb(initial = {}, hooks = {}) {
           if (hooks.beforeRead) await hooks.beforeRead(path, state);
           return makeSnapshot(self.key, readAt(state.root, path));
         },
+        // get(): the same read — section-access.cjs uses it.
+        async get() { return self.once(); },
         async set(v) {
           state.root = writeAt(state.root, path, v);
           if (hooks.afterWrite) await hooks.afterWrite(path, v, state);
@@ -242,10 +244,13 @@ function makeFakeDb(initial = {}, hooks = {}) {
             ? keys.findIndex((k) => rtdbKeyCmp(k, self._startAfter) > 0)
             : self._startAt === undefined || self._startAt === null
               ? 0 : keys.findIndex((k) => rtdbKeyCmp(k, self._startAt) >= 0);
-          const from = i === -1 ? [] : keys.slice(i);
+          // endAt is INCLUSIVE, in the same key order (the card-read due queue).
+          const from = (i === -1 ? [] : keys.slice(i))
+            .filter((k) => self._endAt === undefined || self._endAt === null || rtdbKeyCmp(k, self._endAt) <= 0);
           return makeSnapshot(self.key, Object.fromEntries(from.slice(0, n).map((k) => [k, v[k]])));
-        }, startAt(k) { self._startAt = k; return this; } }; },
+        }, startAt(k) { self._startAt = k; return this; }, endAt(k) { self._endAt = k; return this; } }; },
         startAt(k) { self._startAt = k; return self; },
+        endAt(k) { self._endAt = k; return self; },
         startAfter(k) { self._startAfter = k; return self; },
         // orderByKey().limitToLast(n): the last n children in RTDB key order.
         limitToLast(n) { return { async once() {

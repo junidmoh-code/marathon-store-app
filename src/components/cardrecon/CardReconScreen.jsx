@@ -17,10 +17,13 @@
 // (todaysArrivals.js); which machines exist is read from the registry
 // (terminalRegistry.js). Neither answer is written into this file.
 //
-// THE READING IS INVISIBLE. Tapping a card opens the photo picker and that is
-// the whole interaction — the extraction, every validation and the variance all
-// run server-side exactly as before, and the manager is told one of two things:
-// recorded, or a plain sentence saying why not. No figures, no confidence, no
+// THE READING IS INVISIBLE — AND LATER. Tapping a card opens the photo picker
+// and that is the whole interaction. Since 7 Oct 2026 the photo is RECEIVED:
+// stored on the server at once, and read there afterwards with retries (the
+// extraction, every validation and the variance run exactly as before, in a
+// background job). The manager is told "Received" and nothing else — not even
+// whether it read; a slip that never reads is Junid's, in his POS report and
+// his inbox. Only a photo that did not reach the server is reported back. No figures, no confidence, no
 // review step, no "read the slip" button to press afterwards. The owner reads
 // the variance, the emailed slips and the EFT pool on his own reports tab; none
 // of that belongs on a screen a manager uses for ten seconds. This file no
@@ -202,6 +205,8 @@ const T = {
   submitOff: { opacity: 0.35, cursor: "default" },
   // What Submit is waiting for, said in words — a grey button alone did not.
   waiting: { fontSize: 13, fontWeight: 600, color: "#FFD479", textAlign: "center" },
+  // "Received" — the whole of what a manager is told about a photographed slip.
+  received: { fontSize: 13, fontWeight: 600, color: "#9BE7A7", padding: "2px 4px 6px" },
   typeNote: { fontSize: 12.5, lineHeight: 1.5, color: "rgba(233,238,255,.5)" },
   // The typed-total card's hint, where the camera glyph sits on the others.
   // Words rather than a glyph: there is no icon for "type a number" that a
@@ -348,6 +353,34 @@ export default function CardReconScreen({ onExit }) {
   // so there is nothing to confirm. The callable is untouched: the same two
   // actions, the same payload one photo makes, the same refusals.
   const send = async (tid, base64, correction, declaredTotal) => {
+    // ── A PHOTO IS RECEIVED, NOT READ, WHILE THE MANAGER WAITS ────────────────
+    // Junid, 7 Oct 2026: the submit answers "Received" at once and the reading
+    // happens on the server afterwards, with retries. The manager is told
+    // nothing about how it went — not a figure, not a verdict, not even whether
+    // it read. The ONE exception is Junid's typed total, which is checked
+    // against the photo while he holds the phone (below).
+    if (!declaredTotal) {
+      setPhase(tid, { phase: "busy", sending: true });
+      try {
+        const { data } = await cardBatchCaptureFn({ action: "receive", pickedTid: tid, photos: [{ base64 }] });
+        // A refusal here is never about the slip — it is a till this account
+        // cannot capture (another section, set to email only), said in the
+        // server's own words.
+        if (!data?.ok) { setPhase(tid, { phase: "failed", reason: reasonOf(data) }); return; }
+        rememberHandCapture(tid, today);
+        setMine((prev) => new Set(prev).add(tid));
+        setPhase(tid, { phase: "received" });
+        delete lastPhoto.current[tid];
+      } catch (err) {
+        // The photo did not reach the server — that, and only that, is worth
+        // telling the manager, because sending it again is the fix.
+        const online = typeof navigator === "undefined" ? true : navigator.onLine !== false;
+        const failure = describeCallableError(err, { online });
+        console.error(failure.logLine, err);
+        setPhase(tid, { phase: "failed", reason: failure.message });
+      }
+      return;
+    }
     setPhase(tid, { phase: "busy" });
     try {
       const { data } = await cardBatchCaptureFn({
@@ -568,7 +601,7 @@ export default function CardReconScreen({ onExit }) {
           const face = (
             <>
               <span style={T.name}>{t.label || `${t.storeId} · ${t.tillId}`}</span>
-              {busy ? <span style={T.working}>Reading…</span>
+              {busy ? <span style={T.working}>{state.sending ? "Sending…" : "Reading…"}</span>
                 : done ? <span style={T.tick} aria-label="today's report is in">✓</span>
                 /* Quiet on purpose: a till with nothing in raises no alarm,
                    only the hint that a photo is what it takes. Drawn rather
@@ -578,7 +611,7 @@ export default function CardReconScreen({ onExit }) {
                 /* A typed-total till says what it wants, because a camera
                    glyph would be a lie and a blank card reads as "nothing to
                    do here" — the one thing it must not say. */
-                : typedOnly ? <span style={T.typedHint}>Type total</span> : null}
+                : typedOnly ? <span style={T.typedHint}>{isOwner ? "Type total" : "Junid enters this"}</span> : null}
             </>
           );
           return (
@@ -590,7 +623,7 @@ export default function CardReconScreen({ onExit }) {
                         onClick={() => { setTyped(null); setChooserFor(chooserFor === t.tid ? null : t.tid); }}>
                   {face}
                 </button>
-              ) : typedOnly ? (
+              ) : typedOnly && isOwner ? (
                 <button type="button" style={{ ...cardStyle, ...T.cardButton }} disabled={busy}
                         aria-expanded={!!typed && typed.tid === t.tid}
                         onClick={() => { setChooserFor(null);
@@ -600,6 +633,7 @@ export default function CardReconScreen({ onExit }) {
               ) : (
                 <div style={{ ...cardStyle, ...T.cardStatic }}>{face}</div>
               )}
+              {state.phase === "received" && <div style={T.received} role="status">Received</div>}
               {state.phase === "failed" && <div style={T.fail}>{state.reason}</div>}
               {/* The mailbox's own refusal, when this card has no capture of
                   its own on screen to say something more current. */}
@@ -649,11 +683,11 @@ export default function CardReconScreen({ onExit }) {
                 </div>
               )}
               {/* A TYPED-TOTAL MACHINE — one box, one button, no photo step.
-                  Open to anyone who can reach this screen: it is the machine's
-                  ONLY capture route, so gating it on the owner would mean the
-                  till simply does not reconcile on an evening he is not here
-                  (Junid, 1 Oct 2026). The server holds the same line. */}
-              {typedOnly && typed && typed.tid === t.tid && (
+                  JUNID ONLY again (7 Oct 2026: "Staff never type numbers").
+                  Everyone else sees the card and who enters it, and nothing to
+                  tap; an evening he is not here is entered later from the POS
+                  report. The server holds the same line. */}
+              {typedOnly && isOwner && typed && typed.tid === t.tid && (
                 <div style={T.sheet} data-testid="typed-only">
                   <div style={T.step}>Total on the machine</div>
                   <input style={T.typeInput} inputMode="decimal" autoComplete="off" enterKeyHint="done"

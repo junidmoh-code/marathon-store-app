@@ -54,6 +54,8 @@ import { createRequire } from "node:module";
 
 import { ImapFlow } from "imapflow";
 import { simpleParser } from "mailparser";
+import nodemailer from "nodemailer";
+import { deliverNotices } from "./noticeCore.mjs";
 
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
@@ -206,6 +208,10 @@ function config() {
     // else, so there is no legitimate value this can damage.
     password: need("CARD_RECON_IMAP_PASSWORD", "a Gmail APP PASSWORD, not the account password — myaccount.google.com → Security → App passwords").replace(/\s+/g, ""),
     host: String(env.CARD_RECON_IMAP_HOST || "imap.gmail.com").trim(),
+    // The SAME mailbox sends Junid's "Unread – needs manual entry" emails
+    // (noticeCore.mjs) — a Gmail app password works for SMTP as for IMAP.
+    smtpHost: String(env.CARD_RECON_SMTP_HOST || "smtp.gmail.com").trim(),
+    smtpPort: number("CARD_RECON_SMTP_PORT", 465, { min: 1, max: 65535, what: "a port number" }),
     port: number("CARD_RECON_IMAP_PORT", 993, { min: 1, max: 65535, what: "a port number" }),
     mailbox: String(env.CARD_RECON_IMAP_MAILBOX || "INBOX").trim(),
     // The identity the callable sees. It holds `card_recon` and
@@ -601,6 +607,28 @@ async function run() {
     });
   } catch (err) {
     console.warn(`⚠ could not write the heartbeat (${err.message}) — the capture itself is unaffected`);
+  }
+
+  // ── JUNID'S UNREAD NOTICES — after the heartbeat, never instead of it ────
+  // A slip the server gave up reading is emailed to Junid from this mailbox.
+  // The server decides what and to whom; this only delivers (noticeCore.mjs).
+  // A failure here is logged and costs nothing else: the notice waits for the
+  // next tick, and the row is already in his report regardless.
+  if (!cfg.dryRun) {
+    try {
+      const transport = nodemailer.createTransport({
+        host: cfg.smtpHost, port: cfg.smtpPort, secure: cfg.smtpPort === 465,
+        auth: { user: cfg.user, pass: cfg.password },
+      });
+      const round = await deliverNotices({
+        call: async (data) => callCapture(await getToken(), data),
+        send: (mail) => transport.sendMail(mail),
+        from: cfg.user,
+      });
+      if (round.refusal) console.warn(`⚠ card recon notices: ${round.refusal}`);
+    } catch (err) {
+      console.warn(`⚠ card recon notices could not be collected (${err.message}) — they wait for the next tick`);
+    }
   }
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);

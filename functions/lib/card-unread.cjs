@@ -31,6 +31,11 @@ const OVERRIDES_PATH = "card_batch_overrides";
 const UNREAD_PATH = `${OVERRIDES_PATH}/unread`;
 const NOTICES_PATH = `${OVERRIDES_PATH}/notices`;
 const MANUAL_AUDIT_PATH = `${OVERRIDES_PATH}/manual_audit`;
+// Junid's own inbox — the address every card-recon alarm already goes to
+// (install-cardrecon-alarm.mjs). gunidmoh@ is his Firebase admin login, not a
+// mailbox he reads for alerts. Decided HERE, server-side: the poller only
+// delivers, so a typo in the mini's .env cannot send a notice elsewhere.
+const NOTIFY_TO = "junidmoh@gmail.com";
 
 const SAST_OFFSET_MS = 2 * 60 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -89,7 +94,7 @@ const asList = (v) => (Array.isArray(v) ? v : v && typeof v === "object" ? Objec
  * @returns {{marker:object, becameUnread:boolean}} becameUnread is true only
  *   on the transition into "unread" — that is when ONE notice is queued.
  */
-function addUnreadFailure(existing, { storeId, tid, tillId, label, dayYmd, reason, jobId = null, photos = [], source, nowMs }) {
+function addUnreadFailure(existing, { storeId, tid, tillId, placeStoreId = null, label, dayYmd, reason, jobId = null, photos = [], source, nowMs }) {
   const was = existing && typeof existing === "object" ? existing : null;
   const jobs = { ...(was && was.jobs && typeof was.jobs === "object" ? was.jobs : {}) };
   if (jobId) jobs[jobId] = { at: nowMs, reason: clip(reason) };
@@ -99,6 +104,10 @@ function addUnreadFailure(existing, { storeId, tid, tillId, label, dayYmd, reaso
   const resolved = !!(was && was.status === "resolved");
   const marker = {
     storeId, tid,
+    // WHERE THE MACHINE STOOD that day — a terminal filed under one store can
+    // stand in another (67325636 is filed pe and has stood at Trophy since 5
+    // Oct), and the report files the row under the store it stood in.
+    placeStoreId: placeStoreId || (was && was.placeStoreId) || storeId,
     tillId: tillId || (was && was.tillId) || null,
     label: label || (was && was.label) || null,
     dayYmd,
@@ -166,7 +175,7 @@ function noticeRecord(marker, nowMs) {
 }
 
 module.exports = {
-  OVERRIDES_PATH, UNREAD_PATH, NOTICES_PATH, MANUAL_AUDIT_PATH,
+  OVERRIDES_PATH, UNREAD_PATH, NOTICES_PATH, MANUAL_AUDIT_PATH, NOTIFY_TO,
   SAST_OFFSET_MS, DAY_MS,
   sastDayYmd, sastDayStartMs, isDayYmd, unreadPath, noticeKey,
   addUnreadFailure, resolveUnreadMarker, noticeFor, noticeRecord,
