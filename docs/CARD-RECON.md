@@ -536,6 +536,14 @@ cardBatchReadRetry (every 5 min)         — what is due: retries, dead runs
   the live rules, which already existed — no paste), with the reason, the
   kept photos and the jobs. One email notice is queued at
   `/card_batch_overrides/notices/{store~tid~day}`.
+- **The live rule the markers rely on** (read from `.settings/rules.json`,
+  7 Oct 2026 — the repo's `database.rules.json` is stale and was not touched):
+  `"card_batch_overrides": { ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'", ".write": "auth != null && auth.token.email === 'gunidmoh@gmail.com'" }`.
+  `/card_batch_jobs`, `/card_batch_jobs_due` and `/card_batch_jobs_count` are
+  not named in the rules at all, so no client can read or write them.
+- **On the Mac mini** after a poller change: `git pull` in
+  `~/marathon-store-app`, then `npm install --omit=dev` in `scripts/cardrecon`
+  (nodemailer). The notice round runs every tick, before the mailbox.
 - **The email** goes from the shop mailbox (marathon6631@) to
   **junidmoh@gmail.com**: the mailbox poller collects notices through the
   callable (`notices` / `noticeSent`, email-channel identity only), sends over

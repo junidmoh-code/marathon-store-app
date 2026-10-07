@@ -293,6 +293,9 @@ export default function CardReconScreen({ onExit }) {
   const [mine, setMine] = useState(() => handCaptures(saDateStringAt(serverNowMs())));
   useEffect(() => setMine(handCaptures(today)), [today]);
 
+  // Tills whose photo went in the background way this session — their tick
+  // means "received", never "read".
+  const [received, setReceived] = useState(() => new Set());
   // tid → { phase: "busy" | "failed", reason, canReplace }
   const [work, setWork] = useState({});
   // The photo of the last attempt, kept only so "replace the earlier capture"
@@ -369,6 +372,7 @@ export default function CardReconScreen({ onExit }) {
         if (!data?.ok) { setPhase(tid, { phase: "failed", reason: reasonOf(data) }); return; }
         rememberHandCapture(tid, today);
         setMine((prev) => new Set(prev).add(tid));
+        setReceived((prev) => new Set(prev).add(tid));
         setPhase(tid, { phase: "received" });
         delete lastPhoto.current[tid];
       } catch (err) {
@@ -602,7 +606,9 @@ export default function CardReconScreen({ onExit }) {
             <>
               <span style={T.name}>{t.label || `${t.storeId} · ${t.tillId}`}</span>
               {busy ? <span style={T.working}>{state.sending ? "Sending…" : "Reading…"}</span>
-                : done ? <span style={T.tick} aria-label="today's report is in">✓</span>
+                /* A photo is RECEIVED, not yet read — the tick says so, and
+                   says nothing about whether it read (that is Junid's). */
+                : done ? <span style={T.tick} aria-label={received.has(t.tid) ? "today's slip is received" : "today's report is in"}>✓</span>
                 /* Quiet on purpose: a till with nothing in raises no alarm,
                    only the hint that a photo is what it takes. Drawn rather
                    than typed — an emoji renders as a grey smudge at this

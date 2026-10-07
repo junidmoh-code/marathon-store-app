@@ -184,7 +184,8 @@ test("a reader outage reschedules the job, moving its queue entry; nothing is sh
   assert.equal(job.attempts, 1);
   assert.equal(job.dueAt, T0 + 1000 + RETRY_DELAYS_MS[0]);
   assert.equal(job.leaseUntil, undefined);
-  assert.equal(job.history.a1.outcome, "transient");
+  const hist = Object.values(job.history);
+  assert.deepEqual(hist.map((h) => [h.attempt, h.outcome]), [[1, "transient"]]);
   const due = (await db.ref(DUE_PATH).once("value")).val();
   assert.deepEqual(due, { [job.dueKey]: jobId }, "exactly one queue entry, at the new due time");
   assert.equal((await db.ref(UNREAD_PATH).once("value")).val(), null);
@@ -364,4 +365,80 @@ test("a job is read by handleExtract then handleSubmit — the same code the pho
   // The arrival trigger and the sweep are the only callers of the runner.
   const callers = src.match(/processReadJob\(admin\.database\(\)|processReadJob\(db, jobId, deps\)/g) || [];
   assert.equal(callers.length, 2);
+});
+
+
+// ── review fixes (#707) ───────────────────────────────────────────────────────
+
+test("a slip photographed before 06:00 SAST is filed on the evening before", async () => {
+  const db = world();
+  const { jobs, jobId } = await received(db, { now: Date.parse("2026-10-07T23:30:00Z") }); // 01:30 SAST on the 8th
+  assert.equal(jobs[jobId].dayYmd, "2026-10-07");
+});
+
+test("a till sends at most 8 slip photos a day — past that nothing is stored and the manager is told it is with Junid", async () => {
+  const db = world();
+  for (let i = 0; i < 8; i++) assert.equal((await received(db)).out.ok, true);
+  const { out, bucket } = await received(db);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /already sent 8 slip photos today/);
+  assert.deepEqual(bucket.saved, {});
+  assert.equal(Object.keys((await db.ref(JOBS_PATH).once("value")).val()).length, 8);
+});
+
+test("a job stranded between its claim and its queue move is put back in the queue, not lost", async () => {
+  const db = world();
+  const { jobId } = await received(db);
+  // The claim committed (job now points at its lease key) but the queue move never happened.
+  const txn = await db.ref(`${JOBS_PATH}/${jobId}`).transaction((cur) => (cur === null ? null : claimJob(cur, { nowMs: T0, nonce: "x", onArrival: true })));
+  const leased = txn.snapshot.val();
+  // The sweep meets the OLD key while the lease holds: it must re-point, never just delete.
+  await sweepReadJobs(db, { now: () => T0 + 3 * MIN, loadPhotos: noPhotos, read: async () => { throw new Error("must not run"); } });
+  const due = (await db.ref(DUE_PATH).once("value")).val();
+  assert.deepEqual(due, { [leased.dueKey]: jobId });
+  // …and after the lease, the sweep runs it.
+  const r = readAs([{ extract: { ok: true, draftId: "d" }, submit: { ok: true, batchKey: "537" } }]);
+  await sweepReadJobs(db, { now: () => T0 + LEASE_MS + MIN, loadPhotos: noPhotos, read: r.fn });
+  assert.equal((await db.ref(`${JOBS_PATH}/${jobId}/status`).once("value")).val(), "recorded");
+});
+
+test("an Unread marker without a notice gets one on the next run (the notice follows the marker)", async () => {
+  const db = world();
+  const where = { storeId: "pe", tid: "0000HP1X", dayYmd: "2026-10-07" };
+  // A run died after writing the marker and before queuing the notice.
+  await db.ref(unreadPath(where)).set(addUnreadFailure(null, { ...where, reason: "r", nowMs: T0 }).marker);
+  const { jobId } = await received(db);
+  const r = readAs([Object.assign(new Error("bad"), { code: "invalid-argument" })]);
+  for (let i = 0; i < 3; i++) await processReadJob(db, jobId, { now: () => T0 + (i + 1) * 10 * MIN, loadPhotos: noPhotos, read: r.fn, onArrival: true });
+  assert.ok((await db.ref(`${NOTICES_PATH}/pe~0000HP1X~2026-10-07`).once("value")).val());
+});
+
+test("a notice that keeps failing leaves the queue after 10 tries and the row says the email failed", async () => {
+  const db = world();
+  const where = { storeId: "pe", tid: "0000HP1X", dayYmd: "2026-10-07" };
+  await db.ref(unreadPath(where)).set({ ...where, status: "unread", reason: "r" });
+  await db.ref(`${NOTICES_PATH}/k1`).set({ unreadPath: unreadPath(where), subject: "S", text: "T", createdAt: T0, attempts: 9 });
+  await recordNoticeResults(db, [{ key: "k1", ok: false, error: "535 auth" }], T0 + MIN);
+  assert.equal((await db.ref(`${NOTICES_PATH}/k1`).once("value")).val(), null);
+  const m = (await db.ref(unreadPath(where)).once("value")).val();
+  assert.equal(m.notice.lastError, "535 auth");
+  assert.ok(m.notice.failedAt);
+});
+
+test("a sent notice for a row that no longer exists does not create a stub row", async () => {
+  const db = world();
+  const where = { storeId: "pe", tid: "0000HP1X", dayYmd: "2026-10-06" };
+  await db.ref(`${NOTICES_PATH}/k2`).set({ unreadPath: unreadPath(where), subject: "S", text: "T", attempts: 0 });
+  await recordNoticeResults(db, [{ key: "k2", ok: true }], T0);
+  assert.equal((await db.ref(unreadPath(where)).once("value")).val(), null);
+});
+
+test("a recorded read answers the Unread row on the day its batch CLOSED as well as the day it arrived", async () => {
+  const db = world({ card_batches: { pe: { "0000HP1X": { 536: { slip: { closedAt: Date.parse("2026-10-06T15:02:29Z") } } } } } });
+  const where6 = { storeId: "pe", tid: "0000HP1X", dayYmd: "2026-10-06" };
+  await db.ref(unreadPath(where6)).set(addUnreadFailure(null, { ...where6, reason: "r", nowMs: T0 }).marker);
+  const { jobId } = await received(db);
+  const r = readAs([{ extract: { ok: true, draftId: "d" }, submit: { ok: true, batchKey: "536" } }]);
+  await processReadJob(db, jobId, { now: () => T0 + 1000, loadPhotos: noPhotos, read: r.fn, onArrival: true });
+  assert.equal((await db.ref(`${unreadPath(where6)}/status`).once("value")).val(), "resolved");
 });

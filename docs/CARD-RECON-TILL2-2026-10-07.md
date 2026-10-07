@@ -35,6 +35,15 @@ callable's own `OCR failed:` / `photo read picked=0000HP1X` lines.
 
 ## Ruled out
 
+- **11–17 Sep captured somewhere else.** 0000HP1X was PE Till 1 then. A range
+  read on `slip/closedAt` (11–18 Sep) over every PE, Trophy and Pine terminal
+  found nothing filed for pe/till-1 under any TID; the emailing machines
+  recorded every evening (67365901 #72–#77, Pine #91–#96, Trophy #28/#29). The
+  photo-only machine was the only one silent.
+- **Paper.** An FNB terminal reprints only its LAST batch, so the 16 days'
+  figures exist only on the slips the shop kept. Junid enters them from those
+  in the POS report.
+
 - **Unmapped / mis-mapped TID.** The live registry row and its placement put
   `0000HP1X` on `pe/till-2` from 18 Sep 12:07Z through today. The 5 Oct
   12:46 SAST swap moved `67325636` and `67377843` only. Every successful read

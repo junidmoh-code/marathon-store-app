@@ -1769,6 +1769,18 @@ async function handleReceive(db, request, deps = {}) {
   }
 
   const nowMs = (deps.now || Date.now)();
+  // THE TRADING DAY. A slip photographed after midnight is the evening's batch
+  // (no shop opens before 06:00 SAST), so it is filed on the day before.
+  const dayYmd = sastDayYmd(nowMs - (sastHour(nowMs) < 6 ? 7 * 60 * 60 * 1000 : 0));
+  // A CEILING, not a gate a manager meets: one slip a day per till, retaken a
+  // few times at most. Past it the photos are not stored — and Junid already
+  // has the earlier ones. (Sonnet review, #707: every received photo can cost
+  // nine reads.)
+  const counted = await db.ref(`${JOBS_COUNT_PATH}/${picked}/${dayYmd}`)
+    .transaction((cur) => (Number.isInteger(cur) && cur >= MAX_JOBS_PER_TILL_DAY ? undefined : (Number.isInteger(cur) ? cur + 1 : 1)));
+  if (!counted.committed) {
+    return reject(`${terminal.label || picked} has already sent ${MAX_JOBS_PER_TILL_DAY} slip photos today. They are with Junid — nothing more is needed.`);
+  }
   const jobRef = db.ref(JOBS_PATH).push();
   const jobId = jobRef.key;
   const bucket = deps.bucket || admin.storage().bucket(STORAGE_BUCKET);
@@ -1808,7 +1820,7 @@ async function handleReceive(db, request, deps = {}) {
     photoPaths,
     summaryOnly: true,
     receivedAt: nowMs,
-    dayYmd: sastDayYmd(nowMs),
+    dayYmd,
     status: "queued",
     attempts: 0,
     refusedReads: 0,
@@ -1823,6 +1835,10 @@ async function handleReceive(db, request, deps = {}) {
   console.log(`cardBatchCapture: received picked=${picked} job=${jobId} photos=${photoPaths.length}`);
   return { ok: true, received: true };
 }
+
+const JOBS_COUNT_PATH = "card_batch_jobs_count";
+const MAX_JOBS_PER_TILL_DAY = 8;
+const sastHour = (ms) => new Date(ms + 2 * 60 * 60 * 1000).getUTCHours();
 
 /** A job's stored photos, as the base64 the extract path reads. */
 async function loadJobPhotos(paths) {
@@ -1887,19 +1903,26 @@ async function processReadJob(db, jobId, deps = {}) {
 
   const t = now();
   const { final, patch } = nextStep(job, outcome, t);
+  const done = { ...job, ...patch };
+  // THE CONSEQUENCES FIRST, THEN "FINISHED". Both are idempotent (a marker
+  // merges; a notice is queued only while the marker has none). If this run
+  // dies between them, the job is still "reading" under its lease, the sweep
+  // takes it again when the lease lapses, and they are simply done again —
+  // where the other order would leave a finished job and a day nobody hears
+  // about. (Sonnet architect review, #707.)
+  if (final === "unread") await markJobUnread(db, done, outcome, t);
+  if (final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
   const updates = { [`${DUE_PATH}/${job.dueKey}`]: null };
   for (const [k, v] of Object.entries(patch)) updates[`${JOBS_PATH}/${jobId}/${k}`] = v;
   updates[`${JOBS_PATH}/${jobId}/prevDueKey`] = null;
   if (patch.dueKey) updates[`${DUE_PATH}/${patch.dueKey}`] = jobId;
-  updates[`${JOBS_PATH}/${jobId}/history/a${job.attempts}`] = {
-    at: t, outcome: outcome.kind, reason: outcome.reason ? String(outcome.reason).slice(0, 300) : null,
+  // Keyed by time, not attempt number: a "reread" restarts the count and must
+  // not write over the first round's history. (Fable review, #707.)
+  updates[`${JOBS_PATH}/${jobId}/history/t${t}`] = {
+    at: t, attempt: job.attempts, outcome: outcome.kind, reason: outcome.reason ? String(outcome.reason).slice(0, 300) : null,
   };
   await db.ref().update(updates);
-  const done = { ...job, ...patch };
   console.log(`cardBatchReadJob: job ${jobId} picked=${job.pickedTid} attempt ${job.attempts} → ${outcome.kind}${final ? ` (${final})` : ` (retry ${new Date(patch.dueAt).toISOString()})`}`);
-
-  if (final === "unread") await markJobUnread(db, done, outcome, t);
-  if (final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
   return { outcome: outcome.kind, final };
 }
 
@@ -1907,19 +1930,19 @@ async function processReadJob(db, jobId, deps = {}) {
 async function markJobUnread(db, job, outcome, nowMs) {
   const where = { storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd };
   const path = unreadPath(where);
-  let result = null;
-  await db.ref(path).transaction((cur) => {
-    result = addUnreadFailure(cur, {
-      ...where, tillId: job.placeTillId || job.tillId, placeStoreId: job.placeStoreId || job.storeId,
-      label: job.label, reason: unreadReason(job, outcome), jobId: job.jobId, photos: job.photoPaths,
-      source: "photo-job", nowMs,
-    });
-    return result.marker;
-  });
-  // The marker that went in decides: a day already answered is not re-announced.
-  if (result && result.becameUnread) {
+  const txn = await db.ref(path).transaction((cur) => addUnreadFailure(cur, {
+    ...where, tillId: job.placeTillId || job.tillId, placeStoreId: job.placeStoreId || job.storeId,
+    label: job.label, reason: unreadReason(job, outcome), jobId: job.jobId, photos: job.photoPaths,
+    source: "photo-job", nowMs,
+  }).marker);
+  // THE MARKER THAT WENT IN DECIDES, not a flag from inside the transaction: an
+  // unread day with no notice on it gets one; a day already announced, or
+  // already answered, does not. A run that died after the marker and before
+  // the notice is put right by the next run of the same job.
+  const marker = txn && txn.snapshot ? txn.snapshot.val() : null;
+  if (marker && marker.status === "unread" && !marker.notice) {
     await db.ref().update({
-      [`${NOTICES_PATH}/${noticeKey(where)}`]: noticeRecord(result.marker, nowMs),
+      [`${NOTICES_PATH}/${noticeKey(where)}`]: noticeRecord(marker, nowMs),
       [`${path}/notice`]: { queuedAt: nowMs },
     });
   }
@@ -1927,11 +1950,21 @@ async function markJobUnread(db, job, outcome, nowMs) {
   console.warn(`CARD_RECON_UNREAD ${job.label || job.pickedTid} ${job.dayYmd}: ${unreadReason(job, outcome)}`);
 }
 
-/** A later read recorded the batch: an Unread row for that day is answered. */
+/**
+ * A later read recorded the batch: an Unread row is answered — on the day the
+ * photo arrived AND on the day the batch closed, which differ when a slip is
+ * photographed a day late. One leaf read for the close.
+ */
 async function resolveJobDay(db, job, batchKey, nowMs) {
-  const path = unreadPath({ storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd });
-  await db.ref(path).transaction((cur) => (cur === null ? null
-    : resolveUnreadMarker(cur, { via: "read", batchKey, nowMs })));
+  const days = new Set([job.dayYmd]);
+  if (batchKey && /^[0-9]{1,8}(-r[0-9]{1,3})?$/.test(batchKey)) {
+    const closedAt = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${batchKey}/slip/closedAt`).once("value")).val();
+    if (Number.isFinite(closedAt)) days.add(sastDayYmd(closedAt));
+  }
+  for (const dayYmd of days) {
+    await db.ref(unreadPath({ storeId: job.storeId, tid: job.pickedTid, dayYmd })).transaction((cur) => (cur === null ? null
+      : resolveUnreadMarker(cur, { via: "read", batchKey, nowMs })));
+  }
 }
 
 /**
@@ -1946,7 +1979,9 @@ async function sweepReadJobs(db, deps = {}) {
   const due = snap.val() || {};
   let ran = 0;
   for (const [key, jobId] of Object.entries(due)) {
-    if (now() - started > SWEEP_BUDGET_MS) break;
+    // A read can take ~5 min at worst (two model timeouts); none starts unless
+    // it can finish inside the function's 540 s.
+    if (now() - started > SWEEP_START_BY_MS) break;
     if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]{10,40}$/.test(jobId)) {
       await db.ref(`${DUE_PATH}/${key}`).set(null);
       continue;
@@ -1955,13 +1990,21 @@ async function sweepReadJobs(db, deps = {}) {
     if (r.skipped) {
       const job = (await db.ref(`${JOBS_PATH}/${jobId}`).once("value")).val();
       const finished = job && (job.status === "recorded" || job.status === "duplicate" || job.status === "unread");
-      if (!job || finished || job.dueKey !== key) await db.ref(`${DUE_PATH}/${key}`).set(null);
+      if (!job || finished || job.dueKey !== key) {
+        // A job still waiting or running must keep ONE queue entry, at its own
+        // key — the claim and the queue move are two writes, and a run that
+        // died between them left only this stale one. (Sonnet review, #707.)
+        if (job && !finished && typeof job.dueKey === "string" && job.dueKey !== key) {
+          await db.ref(`${DUE_PATH}/${job.dueKey}`).set(jobId);
+        }
+        await db.ref(`${DUE_PATH}/${key}`).set(null);
+      }
     } else ran++;
   }
   return { due: Object.keys(due).length, ran };
 }
-const SWEEP_BATCH = 10;
-const SWEEP_BUDGET_MS = 4 * 60 * 1000;
+const SWEEP_BATCH = 5;
+const SWEEP_START_BY_MS = 150 * 1000;
 
 // ─── THE EMAIL TO JUNID — collected and confirmed by the mailbox poller ──────
 // The poller on the Mac mini already holds the one identity allowed the email
@@ -2001,20 +2044,22 @@ async function recordNoticeResults(db, results, nowMs) {
     const ref = db.ref(`${NOTICES_PATH}/${key}`);
     const notice = (await ref.once("value")).val();
     if (!notice) continue;
-    if (r.ok === true) {
-      const updates = { [`${NOTICES_PATH}/${key}`]: null };
+    const error = typeof r.error === "string" ? r.error.slice(0, 300) : "send failed";
+    const attempts = (notice.attempts || 0) + (r.ok === true ? 0 : 1);
+    // SENT, or GIVEN UP: either way it leaves the queue (a dead notice left in
+    // place would sit at the front of every read and block the rest), and the
+    // Unread row says which — only if that row still exists.
+    if (r.ok === true || attempts >= NOTICE_MAX_ATTEMPTS) {
+      await ref.set(null);
       if (typeof notice.unreadPath === "string" && notice.unreadPath.startsWith("card_batch_overrides/unread/")) {
-        updates[`${notice.unreadPath}/notice`] = { queuedAt: notice.createdAt || null, sentAt: nowMs, to: NOTIFY_TO };
+        const stamp = r.ok === true
+          ? { queuedAt: notice.createdAt || null, sentAt: nowMs, to: NOTIFY_TO }
+          : { queuedAt: notice.createdAt || null, failedAt: nowMs, lastError: error };
+        await db.ref(notice.unreadPath).transaction((cur) => (cur === null ? null : { ...cur, notice: stamp }));
       }
-      await db.ref().update(updates);
-      sent++;
+      if (r.ok === true) sent++; else failed++;
     } else {
-      await ref.update({
-        attempts: (notice.attempts || 0) + 1,
-        lastError: typeof r.error === "string" ? r.error.slice(0, 300) : "send failed",
-        lastErrorAt: nowMs,
-        leaseUntil: null,
-      });
+      await ref.update({ attempts, lastError: error, lastErrorAt: nowMs, leaseUntil: null });
       failed++;
     }
   }

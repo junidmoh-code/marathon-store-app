@@ -76,7 +76,7 @@ const ms = (v) => (Number.isFinite(v) && v > 0 ? Math.floor(v) : null);
  * @returns {{ok:true, extraction:object, batchNo:number, correction:boolean, warnings:string[], manual:object}
  *          | {ok:false, reason:string}}
  */
-function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = true, prevClosedAt = null }) {
+function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = true, prevClosedAt = null, prevBatchNo = null, nextOpenedAt = null }) {
   const i = input || {};
   const tid = normaliseTid(i.tid);
   if (!tid) return { ok: false, reason: "Pick the till first." };
@@ -130,8 +130,14 @@ function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = tru
   // ── THE WINDOW ───────────────────────────────────────────────────────────
   const typedOpen = ms(i.openedAt);
   const typedClose = ms(i.closedAt);
+  // With no close typed: the batch it corrects keeps its close; otherwise the
+  // NEXT recorded batch's printed opening that day is exactly where this one
+  // settled (the machine closes one batch as it opens the next); failing that,
+  // 18:00 SAST. (Sonnet review, #707: real closes run 17:00–17:40.)
+  const nextOpenToday = Number.isFinite(nextOpenedAt) && sastDayYmd(nextOpenedAt) === i.dayYmd ? nextOpenedAt : null;
   let closedAt = typedClose
     ?? (correction && Number.isFinite(replaced.slip?.closedAt) ? replaced.slip.closedAt : null)
+    ?? nextOpenToday
     ?? Math.min(nowMs, dayStart + DEFAULT_CLOSE_HOUR_SAST * 60 * 60 * 1000);
   if (sastDayYmd(closedAt) !== i.dayYmd) {
     return { ok: false, reason: `The batch must close on ${i.dayYmd}, the day it is entered for — the report files a batch on the day it closed.` };
@@ -141,8 +147,10 @@ function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = tru
   let windowSource;
   const notes = [];
   if (typedOpen) {
+    // A typed Opened is his, stated — the report starts the window there
+    // (dayRows.ownStart reads "manual-times"), whatever the close was.
     openedAt = typedOpen;
-    windowSource = typedClose ? "manual-times" : "manual";
+    windowSource = "manual-times";
   } else if (correction && !typedClose && Number.isFinite(replaced.slip?.openedAt)) {
     // A correction keeps the window it corrects — only the figures change.
     openedAt = replaced.slip.openedAt;
@@ -189,6 +197,11 @@ function planManualEntry({ input, nowMs, replaced = null, replacedIsLatest = tru
     windowSource: replaced.slip?.windowSource ?? null,
     varianceCents: Number.isInteger(replaced.varianceCents) ? replaced.varianceCents : null,
   } : null;
+  // A NUMBER OUT OF SEQUENCE is said, not refused: terminals are replaced and
+  // numbers restart, but #5 typed for #50 is likelier. (Sonnet review, #707.)
+  if (!correction && Number.isInteger(prevBatchNo) && (batchNo <= prevBatchNo || batchNo > prevBatchNo + 30)) {
+    notes.push(`Batch #${batchNo} does not follow this terminal's previous batch (#${prevBatchNo}) — check the number against the slip.`);
+  }
   const why = { "no-slip": "no slip arrived", unread: "the slip could not be read", wrong: "the recorded figures were wrong" }[reason];
   const warnings = [
     `Entered by hand by Junid for ${i.dayYmd} (${why}). There is no slip reading behind these figures.`,

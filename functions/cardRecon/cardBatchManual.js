@@ -35,7 +35,7 @@ const { computeExpectedCard } = require("../lib/card-expected.cjs");
 const { placementAt } = require("../lib/card-terminal-placements.cjs");
 const { mayEnterManually, planManualEntry } = require("../lib/card-manual-entry.cjs");
 const {
-  MANUAL_AUDIT_PATH, unreadPath, resolveUnreadMarker, isDayYmd,
+  MANUAL_AUDIT_PATH, unreadPath, resolveUnreadMarker, isDayYmd, sastDayStartMs,
 } = require("../lib/card-unread.cjs");
 const { JOBS_PATH, DUE_PATH, dueKey } = require("../lib/card-read-jobs.cjs");
 // The capture path's own duplicate guard — the same function its submit calls.
@@ -93,10 +93,21 @@ async function handleManualEntry(db, request, deps = {}) {
   // known, so plan once for the close, then once more with the neighbour.
   const first = planManualEntry({ input, nowMs, replaced, replacedIsLatest });
   if (!first.ok) return first;
-  const prev = await prevRecord(db, storeId, tid, first.extraction.closedAt);
+  // The next recorded batch that day: its printed opening is where this one
+  // closed. One limit-1 read on the indexed close.
+  const dayStart = sastDayStartMs(input.dayYmd);
+  const nextSnap = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}`)
+    .orderByChild("slip/closedAt").startAt(dayStart).limitToFirst(1).once("value")).val();
+  const next = nextSnap ? Object.values(nextSnap)[0] : null;
+  const nextOpenedAt = next && (next.slip?.windowSource ?? "printed") === "printed" && Number.isFinite(next.slip?.openedAt)
+    ? next.slip.openedAt : null;
+  const first2 = planManualEntry({ input, nowMs, replaced, replacedIsLatest, nextOpenedAt });
+  if (!first2.ok) return first2;
+  const prev = await prevRecord(db, storeId, tid, first2.extraction.closedAt);
   const plan = planManualEntry({
-    input, nowMs, replaced, replacedIsLatest,
+    input, nowMs, replaced, replacedIsLatest, nextOpenedAt,
     prevClosedAt: prev && Number.isFinite(prev.slip?.closedAt) ? prev.slip.closedAt : null,
+    prevBatchNo: prev && Number.isInteger(Number(prev.batchNo)) ? Number(prev.batchNo) : null,
   });
   if (!plan.ok) return plan;
   const { extraction, batchNo, correction, warnings, manual } = plan;

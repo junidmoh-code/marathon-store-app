@@ -26,7 +26,9 @@ const expectedStub = (cents) => async (db, q) => ({ cardCents: cents, legs: 3, b
 
 // ── who ────────────────────────────────────────────────────────────────────────
 
-test("Junid's verified login only — an unverified token claiming the address, or anyone else, is refused", async () => {
+// A timeout: with the gate gone this would reach the real database and hang —
+// a missing gate must FAIL, not stall the suite.
+test("Junid's verified login only — an unverified token claiming the address, or anyone else, is refused", { timeout: 5000 }, async () => {
   assert.equal(mayEnterManually(OWNER.token), true);
   assert.equal(mayEnterManually({ email: "gunidmoh@gmail.com" }), false);
   assert.equal(mayEnterManually({ email: "junidmoh@gmail.com", email_verified: true }), false);
@@ -226,4 +228,25 @@ test("reread: an Unread day's kept photo goes back to the background reader", as
   const empty = world();
   await empty.ref(unreadPath(where)).set(addUnreadFailure(null, { ...where, reason: "no upload", nowMs: NOW }).marker);
   assert.match((await handleReread(empty, { auth: OWNER, data: { tid: "0000HP1X", dayYmd: "2026-10-07" } }, { now: () => NOW })).reason, /nothing to read again/);
+});
+
+test("no close typed: the next recorded batch's opening that day IS this batch's close", () => {
+  const p = plan({ dayYmd: "2026-09-24" }, { nextOpenedAt: SAST("2026-09-24T16:15:16"), prevClosedAt: SAST("2026-09-23T17:00:00") });
+  assert.equal(p.extraction.closedAt, SAST("2026-09-24T16:15:16"));
+  // A next batch that opened on ANOTHER day says nothing about this one.
+  const q = plan({ dayYmd: "2026-09-24" }, { nextOpenedAt: SAST("2026-09-25T09:00:00") });
+  assert.equal(q.extraction.closedAt, SAST("2026-09-24T18:00:00"));
+});
+
+test("a typed Opened alone is his window too ('manual-times')", () => {
+  const p = plan({ dayYmd: "2026-10-06", openedAt: SAST("2026-10-05T17:04:05") });
+  assert.equal(p.extraction.windowSource, "manual-times");
+  assert.equal(p.extraction.openedAt, SAST("2026-10-05T17:04:05"));
+});
+
+test("a batch number out of sequence is said on the record, never refused", () => {
+  const p = plan({ batchNo: "53" }, { prevBatchNo: 536 });
+  assert.equal(p.ok, true);
+  assert.match(p.warnings.join(" "), /does not follow this terminal's previous batch \(#536\)/);
+  assert.doesNotMatch(plan({ batchNo: "537" }, { prevBatchNo: 536 }).warnings.join(" "), /does not follow/);
 });

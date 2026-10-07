@@ -442,6 +442,29 @@ async function run() {
     fail(err.message);
   }
 
+  // ── JUNID'S UNREAD NOTICES — BEFORE the mailbox, so an IMAP outage ──────
+  // never holds them up (Sonnet review, #707).
+  // A slip the server gave up reading is emailed to Junid from this mailbox.
+  // The server decides what and to whom; this only delivers (noticeCore.mjs).
+  // A failure here is logged and costs nothing else: the notice waits for the
+  // next tick, and the row is already in his report regardless.
+  if (!cfg.dryRun) {
+    try {
+      const transport = nodemailer.createTransport({
+        host: cfg.smtpHost, port: cfg.smtpPort, secure: cfg.smtpPort === 465,
+        auth: { user: cfg.user, pass: cfg.password },
+      });
+      const round = await deliverNotices({
+        call: async (data) => callCapture(await getToken(), data),
+        send: (mail) => transport.sendMail(mail),
+        from: cfg.user,
+      });
+      if (round.refusal) console.warn(`⚠ card recon notices: ${round.refusal}`);
+    } catch (err) {
+      console.warn(`⚠ card recon notices could not be collected (${err.message}) — they wait for the next tick`);
+    }
+  }
+
   const client = new ImapFlow({
     host: cfg.host, port: cfg.port, secure: true,
     auth: { user: cfg.user, pass: cfg.password },
@@ -607,28 +630,6 @@ async function run() {
     });
   } catch (err) {
     console.warn(`⚠ could not write the heartbeat (${err.message}) — the capture itself is unaffected`);
-  }
-
-  // ── JUNID'S UNREAD NOTICES — after the heartbeat, never instead of it ────
-  // A slip the server gave up reading is emailed to Junid from this mailbox.
-  // The server decides what and to whom; this only delivers (noticeCore.mjs).
-  // A failure here is logged and costs nothing else: the notice waits for the
-  // next tick, and the row is already in his report regardless.
-  if (!cfg.dryRun) {
-    try {
-      const transport = nodemailer.createTransport({
-        host: cfg.smtpHost, port: cfg.smtpPort, secure: cfg.smtpPort === 465,
-        auth: { user: cfg.user, pass: cfg.password },
-      });
-      const round = await deliverNotices({
-        call: async (data) => callCapture(await getToken(), data),
-        send: (mail) => transport.sendMail(mail),
-        from: cfg.user,
-      });
-      if (round.refusal) console.warn(`⚠ card recon notices: ${round.refusal}`);
-    } catch (err) {
-      console.warn(`⚠ card recon notices could not be collected (${err.message}) — they wait for the next tick`);
-    }
   }
 
   console.log(`· ${scanned} scanned, ${processed} with slips · ${recorded} recorded, ${refused} REFUSED, ${unrelated} unrelated`);

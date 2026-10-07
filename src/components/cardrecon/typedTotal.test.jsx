@@ -142,7 +142,7 @@ describe("Received — the whole of what a manager is told (7 Oct 2026)", () => 
     await pick(labelNamed(tree, "Photograph the slip")[0]);
     expect(shown(tree)).toMatch(/Received/);
     expect(shown(tree)).not.toMatch(/Reading|recorded|variance|R\d/i);
-    expect(tree.root.findAll((n) => n.props?.["aria-label"] === "today's report is in")).toHaveLength(1);
+    expect(tree.root.findAll((n) => n.props?.["aria-label"] === "today's slip is received")).toHaveLength(1);
   });
 
   it("a till this account cannot capture is refused in the server's words — the one thing a manager can act on", async () => {
