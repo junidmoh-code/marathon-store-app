@@ -926,7 +926,8 @@ async function runScan() {
         // raised for an uncounted legacy cell there, whatever produced the intent.
         // A PASS-THROUGH leg is raised for trusted SHOP cells (forDests) and
         // passes through the hub's cell — it is checked against those, never the
-        // hub's own; the box trusts the hub cell when it lands (a refill leg).
+        // hub's own. The plan raises one only through an EMPTY hub cell, which
+        // the box then trusts when it lands (a refill leg onto nothing).
         const cellOk = intent.passThrough
           ? (Array.isArray(intent.forDests) && intent.forDests.length > 0
             && intent.forDests.every((d) => !networkRegistry.trustedCellsOnly(network, d) || stockTrust.cellTrusted(stock?.[d]?.[pid]?.[sizeKey])))

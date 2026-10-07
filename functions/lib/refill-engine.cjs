@@ -841,7 +841,8 @@ function computeRefillPlan(snapshot) {
   // an intent for a cell that is not in the masked view (a policy size with no
   // cell yet, say). A location in "all" mode, or with no registry at all, is
   // untouched — Marathon's plan is byte for byte what it was.
-  const { stock, trustedCell, maskedLocations } = maskUntrustedStock(snapshot.stock || {}, network);
+  const rawStock = snapshot.stock || {};
+  const { stock, trustedCell, maskedLocations } = maskUntrustedStock(rawStock, network);
   const routing = networkRouting(rawConfig, network);
   const { routes, withheld: routesWithheld, dests } = routing;
   const srcOf = (dest, pid) => routing.sourceFor(dest, products?.[pid], pid);
@@ -2150,10 +2151,22 @@ function computeRefillPlan(snapshot) {
           // (Sonnet HIGH, 2026-07-13). No target at the source = a CONFIG gap,
           // surfaced as blocked, not as flowing.
           // At a "solved products only" hub an UNTRUSTED cell is no buffer the
-          // engine will ever fill (maskUntrustedStock) — so it reads as "no
-          // target here": the shop's need is carried THROUGH the hub, never
-          // parked waiting on a leg that cannot form.
-          const srcTarget = upstreamOfSrc && trustedCell(src, pid, sizeKey) ? resolveTarget(ctx, src, pid, size) : null;
+          // engine will ever fill (maskUntrustedStock).
+          //   • EMPTY (qty ≤ 0): it reads as "no target here" — the shop's need
+          //     is carried THROUGH the hub; the box trusts the cell on landing.
+          //   • HOLDING UNCOUNTED UNITS: nothing is asked. A box sent through it
+          //     would land on units no one vouched for, stay untrusted, and the
+          //     next scan would ask again — Central drained into a cell nobody
+          //     reads. The shop waits, and the row says why: count the hub cell.
+          const srcUntrusted = !!upstreamOfSrc && !trustedCell(src, pid, sizeKey);
+          const srcUncounted = srcUntrusted ? avail(cellQty(rawStock, src, pid, size)) : 0;
+          if (srcUncounted > 0) {
+            parked(dest, pid, sizeKey, "upstream_blocked");
+            awaitingSupplier.push({ loc: dest, pid, size, deficit, source: src, uncountedAtSource: srcUncounted,
+              note: `${src} holds ${srcUncounted} uncounted unit${srcUncounted === 1 ? "" : "s"} of this size — count that cell and the shop is refilled from it` });
+            continue;
+          }
+          const srcTarget = upstreamOfSrc && !srcUntrusted ? resolveTarget(ctx, src, pid, size) : null;
           const srcCanPull = !!(srcTarget && srcTarget.target > 0);
           if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && srcCanPull && !srcParked)) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });

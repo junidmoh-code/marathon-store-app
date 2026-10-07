@@ -29,7 +29,7 @@ import { ref, get, update, onValue, runTransaction, push, query, orderByChild, e
 import { database, auth } from "../../firebase";
 import { usePermissions } from "../PermissionsContext";
 import { applyMovement } from "./applyMovement";
-import { encodeSizeKey, stockCellPath, decodedCellKey } from "../../utils/sizeKey";
+import { encodeSizeKey, stockCellPath, decodedCellKey, stockSizeKey } from "../../utils/sizeKey";
 import { GLASS, GRAY, GREEN, RED, AMBER, BLUE_L, bGreen, FONT } from "./ui";
 import { ProductCard, Badge, SizeStepperChip, CHIP_GRID } from "./healthWidgets";
 import { serverNowMs, serverNowIso } from "../../utils/serverTime";
@@ -790,7 +790,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
           const existing = await rowOf(loc);
           priorOpen[loc] = (await get(ref(database, `refill_engine/open/${loc}/${card.pid}`))).val();
           for (const sz of sizes) {
-            if (existing[encodeSizeKey(sz)] === undefined) updates[stockCellPath(loc, card.pid, sz)] = seedCell(loc);
+            if (existing[stockSizeKey(sz)] === undefined) updates[stockCellPath(loc, card.pid, sz)] = seedCell(loc);
           }
         }
         parts.push(updates);

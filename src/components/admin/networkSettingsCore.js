@@ -36,9 +36,10 @@ function switchUpdate(registry, id, { solve, autoRefill }, nowMs, uid) {
   return { ok: true, updates: {
     [`${NETWORK_PATH}/locations/${loc.id}/solve`]: s,
     [`${NETWORK_PATH}/locations/${loc.id}/autoRefill`]: a,
-    // The pre-split flag goes in the same write: no reader of an older build
-    // can act on a stale `live` once the owner has set the switches.
-    [`${NETWORK_PATH}/locations/${loc.id}/live`]: null,
+    // The pre-split flag, written as the DERIVED value in the same write, so a
+    // device still on an older build reads what the switches mean (fully live =
+    // Solve on + all). The new reader ignores it while the switches are stored.
+    [`${NETWORK_PATH}/locations/${loc.id}/live`]: s && a === "all",
     ...stamp(nowMs, uid),
   } };
 }

@@ -36,7 +36,7 @@ describe("the two switches", () => {
   it("Solve writes BOTH switch fields for that one location (the other as it stands) and the stamp, nothing else", () => {
     const u = solveUpdate(R, "hub3", false, NOW, "owner");
     expect(u).toEqual({ ok: true, updates: {
-      "network/locations/hub3/solve": false, "network/locations/hub3/autoRefill": "solved", "network/locations/hub3/live": null,
+      "network/locations/hub3/solve": false, "network/locations/hub3/autoRefill": "solved", "network/locations/hub3/live": false,
       "network/updatedAt": NOW, "network/updatedBy": "owner",
     } });
   });
@@ -44,7 +44,7 @@ describe("the two switches", () => {
   it("Auto-refill writes both fields too", () => {
     const u = autoRefillUpdate(R, "marathon-pine", "all", NOW, "owner");
     expect(u).toEqual({ ok: true, updates: {
-      "network/locations/marathon-pine/solve": true, "network/locations/marathon-pine/autoRefill": "all", "network/locations/marathon-pine/live": null,
+      "network/locations/marathon-pine/solve": true, "network/locations/marathon-pine/autoRefill": "all", "network/locations/marathon-pine/live": true,
       "network/updatedAt": NOW, "network/updatedBy": "owner",
     } });
   });

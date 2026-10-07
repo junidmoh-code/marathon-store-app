@@ -277,7 +277,10 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
   // they are counted in): a Marathon hub's confirm still writes NOTHING to /stock.
   let trusted = false;
   if (trustedCellsOnly(currentNetwork(), hub)) {
-    try { trusted = (await setCellState(hub, productId, live.rawSize, "live", { trust: "count", existingOnly: true })).ok === true; } catch { trusted = false; }
+    try {
+      const r = await setCellState(hub, productId, live.rawSize, "live", { trust: "count", existingOnly: true });
+      trusted = r.ok === true && !r.skipped;
+    } catch { trusted = false; }
   }
   return { ok: true, record: rec, trusted };
 }

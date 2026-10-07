@@ -65,10 +65,9 @@ test("UNTRUSTED legacy Hub 3 stock is no source, and the hub does not ask Centra
   stock.hub3[pid] = { M: legacy(9) };
   const p = plan({ network: SEED, stock });
   assert.deepEqual(s1(p).filter((i) => i.productId === pid && i.dest === "marathon-pine" && i.source === "hub3"), []);
-  // Hub 3 asks nothing for its OWN untrusted cell; the one Hub 3 leg is a
-  // pass-through raised FOR Pine's trusted cell (the box trusts Hub 3's cell on landing)
-  assert.deepEqual(s1(p).filter((i) => i.productId === pid && i.dest === "hub3").map((i) => [i.source, i.sizeKey, i.forDests, !!i.passThrough]),
-    [["central", "M", ["marathon-pine"], true]]);
+  // Hub 3 holds 9 uncounted: nothing goes to Hub 3 at all (no pass-through
+  // into a cell nobody vouches for) — Pine waits for Hub 3's count
+  assert.deepEqual(s1(p).filter((i) => i.productId === pid && i.dest === "hub3"), []);
   // and with Pine's cell untrusted too, nothing at all for the product in Section 1
   const none = clone(stock); none["marathon-pine"][pid] = { M: legacy(0) };
   assert.deepEqual(s1(plan({ network: SEED, stock: none })).filter((i) => i.productId === pid), []);
@@ -173,4 +172,17 @@ test("an UNTRUSTED empty Hub 3 cell never parks Pine as 'waiting for Hub 3' — 
   const legs = s1(p).filter((i) => i.productId === pid);
   assert.deepEqual(legs.map((i) => [i.source, i.dest, i.sizeKey, !!i.passThrough, i.forDests]), [["central", "hub3", "M", true, ["marathon-pine"]]]);
   assert.equal((p.awaitingUpstream || []).some((a) => a.loc === "marathon-pine" && a.pid === pid), false);
+});
+
+test("a Hub 3 cell holding UNCOUNTED units is never fed: no Central→Hub 3 leg; Pine waits with a reason to count it", () => {
+  const pid = "fx030";
+  for (const units of [1, 4, 10]) {
+    const stock = clone(FIXTURE.stock);
+    stock["marathon-pine"][pid] = { M: trusted(0) };
+    stock.hub3[pid] = { M: legacy(units) };
+    const p = plan({ network: SEED, stock });
+    assert.deepEqual(s1(p).filter((i) => i.productId === pid), [], `hub3 holds ${units}`);
+    const row = (p.exceptions?.awaitingSupplier?.items || []).find((a) => a.loc === "marathon-pine" && a.pid === pid);
+    assert.ok(row && row.uncountedAtSource === units && /count that cell/.test(row.note), JSON.stringify(row));
+  }
 });

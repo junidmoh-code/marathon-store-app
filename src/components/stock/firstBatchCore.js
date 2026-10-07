@@ -590,7 +590,9 @@ export function firstBatchSplit({ sizes, run, store, centralAvail, maxUnitsPerIn
 // never fill that cell, and the shop behind it would wait on it forever. A
 // cell holding units is left alone: those wait for a count. Metadata only
 // (state + trust + who/when) — qty, v, mv and lastType are not touched, which
-// is the shape the /stock rule's metadata branch accepts. Never part of an
+// is the shape the /stock rule's metadata branch accepts. Decided from the
+// rows Solve read a moment earlier: a hand edit landing in between is the one
+// window it cannot see (the same window every Solve seed has). Never part of an
 // undo (a trusted empty cell is harmless, and the rule refuses a state delete).
 export function trustExistingEmptyUpdates({ pid, locs, sizes, existing = {}, nowIso, uid, isSolvedLoc, cellTrusted }) {
   const out = {};
@@ -601,7 +603,9 @@ export function trustExistingEmptyUpdates({ pid, locs, sizes, existing = {}, now
       if (cell == null || typeof cell !== "object" || cellTrusted(cell)) continue;
       if (typeof cell.qty === "number" && cell.qty > 0) continue;
       const p = stockCellPath(loc, pid, sz);
-      out[`${p}/state`] = "live";
+      // A cell mid-count keeps its "counting" state; one with no state gets
+      // "live" (the /stock rule's metadata branch needs a state either way).
+      if (!cell.state) out[`${p}/state`] = "live";
       out[`${p}/trusted`] = true;
       out[`${p}/trustedVia`] = "solve";
       out[`${p}/trustedAt`] = nowIso;
