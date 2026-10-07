@@ -53,12 +53,16 @@ const META_MAX_INFRA_ATTEMPTS = parseInt(process.env.META_MAX_INFRA_ATTEMPTS, 10
 // functions:outboxInstantSend. No .env file exists today, so the default is
 // genuinely ON. (The other env flags above share this property.)
 const INSTANT_SEND_ENABLED   = process.env.INSTANT_SEND_ENABLED !== "false";
-// Switch for socialDailyAutopilot — DEFAULT OFF (Junid, 3 Oct: no image is
-// generated without his tap, and nothing posts until he has approved it; the
-// autopilot generates unattended and writes its posts "approved" itself). The
-// generator stays; it runs only if SOCIAL_AUTOPILOT_ENABLED=true is set in
-// functions/.env and functions:socialDailyAutopilot is redeployed — Junid's call.
-const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED === "true";
+// Switch for socialDailyAutopilot — DEFAULT ON again (owner brief, 7 Oct:
+// "automated or not at all", two reels a day, each also posted as a story,
+// and no fix that needs a hand on a schedule). It was default-OFF from 3 Oct
+// (#682, "no image without his tap") and the engine went silent for four days
+// with nothing in the queue to fail — docs/SOCIAL-OUTAGE-2026-10-04.md.
+// The off switch is SOCIAL_AUTOPILOT_ENABLED=false in functions/.env and a
+// redeploy of functions:socialDailyAutopilot and functions:socialHealthScan
+// (the watchdog reads this same flag, so an engine switched off says so in
+// its alarm rather than as "no record of running").
+const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED !== "false";
 
 // Normalise a South African number to E.164: +27XXXXXXXXX. Returns null when
 // the input is not a recognisable SA mobile or a "+"-prefixed international
@@ -4206,10 +4210,29 @@ async function generateSocialScene(apiKey, prompt, productImages, refs, format =
     parts.push({ text: "STYLE REFERENCES — match this exact scene, backdrop, lighting and mood:" });
     for (const r of refs) parts.push(inlineImagePart(r.buffer, r.contentType));
   }
-  return geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
-    outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
-    imageConfig: { aspectRatio: format === "feed" ? "4:5" : "9:16", imageSize: "2K" },
-  });
+  const aspectRatio = format === "feed" ? "4:5" : "9:16";
+  try {
+    const gen = await geminiGenerateImage(apiKey, NBPRO_MODEL, parts, {
+      outPerMtok: NBPRO_OUT_PER_MTOK, flatUsd: NBPRO_FLAT_IMAGE_USD,
+      imageConfig: { aspectRatio, imageSize: "2K" },
+    });
+    return { ...gen, engine: "nbpro" };
+  } catch (err) {
+    // ── PRO IS OVERLOADED: THE SAME REQUEST ON FLASH ─────────────────────────
+    // 7 Oct 2026: Nano Banana Pro answered 503 "experiencing high demand" for
+    // over an hour, and the day's reels went with it. The Flash image model
+    // takes the same parts (the references included) and is a separate pool.
+    // Its picture is a little softer, which is better than no post. Only a 5xx
+    // falls back. A 429 or a bad request would fail the same way on either.
+    if (!socialRecovery.isUnbilledProviderError(err && err.message)) throw err;
+    console.warn(`social: ${NBPRO_MODEL} unavailable (${String(err.message).slice(0, 60)}) — retrying on ${GEMINI_MODEL}`);
+    const gen = await geminiGenerateImage(apiKey, GEMINI_MODEL, parts, {
+      outPerMtok: GEMINI_OUT_PER_MTOK, flatUsd: GEMINI_FLAT_IMAGE_USD,
+      imageConfig: { aspectRatio },
+    });
+    // Recorded on the post, so a softer Flash picture is traceable.
+    return { ...gen, engine: "nb2" };
+  }
 }
 
 // Fitting the photograph to its canvas, measuring it, and compositing the type
@@ -4558,7 +4581,7 @@ async function generateOnePost(db, {
   signal, geminiApiKey, status, scheduledAt, updatedBy, saDate,
 }) {
   const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
-  if (!picks.length) return { ok: false, skipped: { kind, format, reason } };
+  if (!picks.length) return { ok: false, skipped: { kind, format, reason, noStock: true } };
 
   const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
   const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
@@ -4575,6 +4598,12 @@ async function generateOnePost(db, {
   // six Style Kit photographs was filed as refsUsed: 0, i.e. the audit
   // trail said it ran ungrounded when it had not.
   let refsSent = 0;
+  // A budget unit reserved and not yet used: true from the reservation until
+  // the model returns a picture. Only a 5xx inside that window gives it back
+  // (see socialRecovery.releaseGeneration).
+  let unitUnspent = false;
+  // Which model made the picture: "nbpro", or "nb2" after a Pro 5xx fallback.
+  let engine = spec.generates ? "nbpro" : "none";
   try {
     if (!spec.generates) {
       // New arrivals: a carousel of the products' EXISTING photographs.
@@ -4620,8 +4649,11 @@ async function generateOnePost(db, {
           ? socialBudget.unreadableBudgetReason(budgetDay)
           : socialBudget.capReachedReason(budgetDay, budget.cap));
       }
+      unitUnspent = true;
       const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
+      unitUnspent = false;
       costUSD = gen.costUSD;
+      engine = gen.engine || engine;
       const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime, format);
       // The type goes on AFTER the normalise, so the design is laid out
       // against the exact pixels that ship rather than a larger original.
@@ -4717,7 +4749,7 @@ async function generateOnePost(db, {
       // labels say. The design layer needs the real one.
       products: picks.map((p) => ({ pid: p.pid, name: p.name, displayName: p.displayName || p.name, handle: p.handle, slot: p.slot || null })),
       style,
-      engine: spec.generates ? "nbpro" : "none",
+      engine,
       costUSD: +costUSD.toFixed(6),
       refsUsed: spec.generates ? refsSent : 0,
       generatedBy: "generator",
@@ -4801,6 +4833,17 @@ async function generateOnePost(db, {
     };
   } catch (err) {
     console.warn(`social: ${kind} failed:`, err && err.message);
+    // A 5xx made no picture and was not billed, so the unit goes back.
+    // Otherwise the autopilot's retries could use up the day's cap on 503s
+    // alone. Best-effort: a failed release only leaves the cap one lower.
+    if (unitUnspent && socialRecovery.isUnbilledProviderError(err && err.message)) {
+      try {
+        await db.ref(`social_generation_budget/${saDate || saDateForUsage(Date.now())}/count`)
+          .transaction(socialRecovery.releaseGeneration);
+      } catch (releaseErr) {
+        console.warn("socialBudget: could not release an unbilled unit:", releaseErr && releaseErr.message);
+      }
+    }
     // Best-effort cleanup of an image that was paid for, uploaded, and then
     // orphaned by a failed record write. A failure here is logged and
     // ignored — an orphan costs pennies of storage; throwing would lose the
@@ -5126,7 +5169,9 @@ async function loadSocialPolicy(db) {
   if (total > socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY) {
     console.warn(`socialDailyAutopilot: the policy asks for ${total} generations a day but the daily cap is ${socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} — ${total - socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} will be skipped every day until one of the two changes`);
   }
-  return clamped;
+  // updatedAt goes with it, so the watchdog does not grade a slot that was
+  // already past when the policy was saved (lib/social-health.cjs passedSlots).
+  return { ...clamped, updatedAt: Number(v && v.updatedAt) || null };
 }
 
 // RTDB cannot store an empty array — a format with zero posts a day is
@@ -5159,10 +5204,12 @@ function parseHHMM(s) {
 // comment on socialScheduleSlots). socialScheduleSlots below shares
 // sastMidnightUtc rather than re-deriving the day-boundary arithmetic too.
 const SAST_OFFSET_MS = require("./lib/sa-time.cjs").SAST_OFFSET_MS;
-const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
+const socialHealth = require("./lib/social-health.cjs");
+const { assessSocialDay, alarmMessage } = socialHealth;
 const socialTwin = require("./lib/social-twin.cjs");
 const socialBudget = require("./lib/social-budget.cjs");
 const socialLibrary = require("./lib/social-library.cjs");
+const socialRecovery = require("./lib/social-recovery.cjs");
 const DAY_MS = 86400000;
 
 /** Midnight SAST of the day `dayOffset` days after `fromMs`, as epoch ms. */
@@ -5237,7 +5284,7 @@ exports.socialDailyAutopilot = onSchedule(
   },
   async () => {
     if (!SOCIAL_AUTOPILOT_ENABLED) {
-      console.log("socialDailyAutopilot: off (runs only when SOCIAL_AUTOPILOT_ENABLED=true)");
+      console.log("socialDailyAutopilot: disabled (SOCIAL_AUTOPILOT_ENABLED=false)");
       return;
     }
 
@@ -5322,12 +5369,22 @@ exports.socialDailyAutopilot = onSchedule(
       const created = [], skipped = [];
       let estCostUSD = 0;
       for (const req of requests) {
-        const result = await generateOnePost(db, {
-          kind: req.kind, format: req.format, style, platforms, styleKit, library, candidates, used,
-          signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
-          updatedBy: "cron:socialDailyAutopilot",
-          saDate,
+        // A 503 is retried and a kind the stock cannot make falls through to
+        // the next one — a once-a-day run cannot afford to lose a slot to a
+        // bad minute (lib/social-recovery.cjs; 7 Oct lost both reels that way).
+        const result = await socialRecovery.generateWithRecovery({
+          kind: req.kind, format: req.format, rotation: AUTOPILOT_KINDS,
+          // 1500 s of the 1800 s timeout, leaving room for the run record.
+          deadlineMs: nowMs + 1500 * 1000,
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+          run: (kind) => generateOnePost(db, {
+            kind, format: req.format, style, platforms, styleKit, library, candidates, used,
+            signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
+            updatedBy: "cron:socialDailyAutopilot",
+            saDate,
+          }),
         });
+        if (result.attempts.length > 1) console.log(`socialDailyAutopilot: ${req.format} slot took ${result.attempts.length} attempts: ${result.attempts.join(" → ")}`);
         if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
         else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
       }
@@ -5420,9 +5477,12 @@ exports.socialDailyAutopilot = onSchedule(
 // and a second one only if the day gets worse.
 exports.socialHealthScan = onSchedule(
   {
-    // :25 rather than :00 — nothing else in this project runs then, and an
-    // off-minute keeps it clear of every other scheduler's rush.
-    schedule: "25 7-22 * * *",
+    // Off-minutes, clear of every other scheduler's :00 rush. Every fifteen
+    // minutes (was hourly at :25) so that a missed slot pages within 35
+    // minutes of its time: the 20 minute grace plus at most one interval.
+    // 07:10 to 23:55, so any slot up to about 23:35 is graded the same day.
+    // Each run reads a bounded three-week key range, so the cost is small.
+    schedule: "10,25,40,55 7-23 * * *",
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     memory: "256MiB",
@@ -5436,15 +5496,16 @@ exports.socialHealthScan = onSchedule(
     const [policy, logSnap, postsSnap, tickSnap] = await Promise.all([
       loadSocialPolicy(db),
       db.ref(`social_autopilot_log/${saDate}`).once("value"),
-      // The WHOLE node, deliberately. Three of the four checks need a
-      // different slice of it — anything approved and overdue regardless of
-      // age, anything in failed, and today's due-and-published — and no
-      // single .orderByChild query answers all three, so a query-per-check
-      // would be three reads of overlapping data rather than one. The node
-      // held 47 records on 2026-08-27 and grows by a handful a day; if it
-      // ever reaches the tens of thousands this becomes the thing to revisit,
-      // with an .indexOn("scheduledAt") and a windowed read.
-      db.ref(SOCIAL_POSTS_PATH).once("value"),
+      // BOUNDED, by key range: every post CREATED in the last three weeks.
+      // This was a whole-node read, 16 times a day on a node that only grows.
+      // Push keys sort by creation time, so a startAt on the key prefix for
+      // three weeks ago is a window that needs no .indexOn rule. /social_posts
+      // has none, so an orderByChild query would download the whole node
+      // anyway. Three weeks covers every check: today's slots, today's
+      // landings, and anything still approved or failed that is recent enough
+      // to act on (see SCAN_WINDOW_MS in lib/social-health.cjs).
+      db.ref(SOCIAL_POSTS_PATH).orderByKey()
+        .startAt(socialHealth.pushKeyPrefixForMs(nowMs - socialHealth.SCAN_WINDOW_MS)).once("value"),
       db.ref("social_health/publisher/lastTickAt").once("value"),
     ]);
 
@@ -5455,6 +5516,9 @@ exports.socialHealthScan = onSchedule(
       autopilotLog: logSnap.val(),
       posts,
       publisherTickAt: tickSnap.val() ?? null,
+      // The generator's off switch is compiled into this same build, so the
+      // watchdog can say "switched off" rather than "no record of running".
+      autopilotEnabled: SOCIAL_AUTOPILOT_ENABLED,
       // ── THE OBLIGATION FOLLOWS THE TWINS ─────────────────────────────────
       // Two reel slots owe two reels AND two stories, because each reel is
       // also posted as a story from the same encoded file. Passed in rather

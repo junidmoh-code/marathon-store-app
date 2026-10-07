@@ -1,5 +1,8 @@
-// GENERATION ONLY ON JUNID'S TAP (3 Oct). Pins the switches in the source so
-// an automatic path cannot come back unnoticed.
+// GENERATION ONLY ON JUNID'S TAP (3 Oct) for the photo studio. Pins the
+// switches in the source so an automatic path cannot come back unnoticed.
+// The SOCIAL autopilot is the exception: back to default ON on 7 Oct (owner
+// brief, "automated or not at all" — docs/SOCIAL-OUTAGE-2026-10-04.md), and
+// pinned ON here so a refactor cannot quietly switch it off again.
 const test = require("node:test");
 const assert = require("node:assert/strict");
 const fs = require("node:fs");
@@ -8,8 +11,8 @@ const core = require("../newArrivals/core.cjs");
 
 const src = fs.readFileSync(path.join(__dirname, "..", "index.js"), "utf8");
 
-test("the daily social autopilot is OFF unless explicitly switched on", () => {
-  assert.match(src, /const SOCIAL_AUTOPILOT_ENABLED = process\.env\.SOCIAL_AUTOPILOT_ENABLED === "true";/);
+test("the daily social autopilot is ON unless explicitly switched off", () => {
+  assert.match(src, /const SOCIAL_AUTOPILOT_ENABLED = process\.env\.SOCIAL_AUTOPILOT_ENABLED !== "false";/);
   // The scheduled callback returns on the flag BEFORE any database or generation work.
   const i = src.indexOf("exports.socialDailyAutopilot = onSchedule(");
   assert.ok(i > 0);
