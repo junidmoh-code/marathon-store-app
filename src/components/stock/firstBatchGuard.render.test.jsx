@@ -201,8 +201,14 @@ describe("Hub 2 presence → the old Solve, never a shop-from-Central request (t
     const tree = render({ products: only(TEE) });
     await act(async () => { buttonExactly(tree, "Solve").props.onClick(); });
     await act(async () => {});
+    // Marathon's four, plus Section 1's four now that they are routed (the seed,
+    // 7 Oct 2026): Central is SHARED, so a Pine lock on Central's units must be
+    // netted before Marathon PE's first batch is sized. Reads only — one small
+    // path each; what is written for Marathon is unchanged.
     expect(readPaths.filter((p) => p.startsWith("refill_engine/open/")).sort()).toEqual([
-      "refill_engine/open/hub1/tee1", "refill_engine/open/hub2/tee1", "refill_engine/open/marathon-pe/tee1", "refill_engine/open/trophy/tee1",
+      "refill_engine/open/concrete-stockroom/tee1", "refill_engine/open/concrete/tee1",
+      "refill_engine/open/hub1/tee1", "refill_engine/open/hub2/tee1", "refill_engine/open/hub3/tee1",
+      "refill_engine/open/marathon-pe/tee1", "refill_engine/open/marathon-pine/tee1", "refill_engine/open/trophy/tee1",
     ]);
     expect(readPaths.filter((p) => p === "settings/stockHold/held/hub2")).toHaveLength(1);   // the hold lane, once
   });

@@ -1,7 +1,8 @@
 // ─── NETWORK CARD — THE GATE, THE CONFIRMATION, THE PATH ─────────────────────
 //   1. A viewer who is not the owner gets no control and both reads disabled.
-//   2. A live flip takes a confirmation, then writes that ONE location's flag.
-//   3. Going live with nothing confirmed writes nothing.
+//   2. A switch change (Solve on/off, Auto-refill off/solved/all) takes a
+//      confirmation, then writes that ONE location's pair of switch fields.
+//   3. Nothing confirmed writes nothing.
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
@@ -36,7 +37,10 @@ function mount(authUser, { raw = {}, write = vi.fn(async () => true) } = {}) {
 }
 const text = (n) => (typeof n === "string" ? n : (n.children || []).map(text).join(""));
 const buttons = (tree) => tree.root.findAll((n) => n.type === "button");
-const rowButton = (tree, loc) => tree.root.find((n) => n.props && n.props["data-loc"] === loc).find((n) => n.type === "button");
+const rowOf = (tree, loc) => tree.root.find((n) => n.props && n.props["data-loc"] === loc);
+// The Solve button of a location's row, and its Auto-refill choice buttons.
+const solveButton = (tree, loc) => rowOf(tree, loc).find((n) => n.type === "button" && /^Solve for /.test(n.props["aria-label"] || ""));
+const refillButton = (tree, loc, label) => rowOf(tree, loc).find((n) => n.props && n.props.role === "group").findAll((n) => n.type === "button").find((b) => text(b) === label);
 
 describe("the gate", () => {
   beforeEach(() => { useNetworkMock.mockReset(); usePathStateMock.mockReset(); });
@@ -59,33 +63,62 @@ describe("the gate", () => {
     expect(useNetworkMock).toHaveBeenCalledWith(true);
     const locs = tree.root.findAll((n) => n.props && n.props["data-loc"]).map((n) => n.props["data-loc"]);
     expect(locs).toEqual(["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3", "concrete-stockroom"]);
-    expect(text(rowButton(tree, "hub3"))).toBe("Not live");
-    expect(text(rowButton(tree, "hub2"))).toBe("Live");
+    // the seed: Section 1 Solve on + solved products only; Marathon Solve on + all
+    expect(rowOf(tree, "hub3").props["data-solve"]).toBe("on");
+    expect(rowOf(tree, "hub3").props["data-auto-refill"]).toBe("solved");
+    expect(rowOf(tree, "hub2").props["data-auto-refill"]).toBe("all");
+    expect(text(solveButton(tree, "hub2"))).toBe("On");
+    expect(refillButton(tree, "hub3", "Solved products only").props["aria-pressed"]).toBe(true);
+    expect(refillButton(tree, "hub2", "All products").props["aria-pressed"]).toBe(true);
   });
 });
 
-describe("the live switch", () => {
+describe("the two switches", () => {
   beforeEach(() => { useNetworkMock.mockReset(); usePathStateMock.mockReset(); });
 
   it("writes nothing on the first tap — it asks first", () => {
     const { tree, write } = mount(OWNER);
-    act(() => rowButton(tree, "hub3").props.onClick());
+    act(() => solveButton(tree, "hub3").props.onClick());
     expect(write).not.toHaveBeenCalled();
     expect(tree.root.findAll((n) => n.props && n.props.role === "alertdialog")).toHaveLength(1);
+    expect(text(tree.root.find((n) => n.props && n.props.role === "alertdialog"))).toMatch(/Switch Solve OFF for Hub 3/);
   });
 
-  it("writes that one location's flag once confirmed", async () => {
+  it("Solve: writes that one location's pair once confirmed", async () => {
     const { tree, write } = mount(OWNER);
-    act(() => rowButton(tree, "hub3").props.onClick());
-    const yes = buttons(tree).find((b) => /^Yes, go live/.test(text(b)));
-    await act(async () => { yes.props.onClick(); });
+    act(() => solveButton(tree, "hub3").props.onClick());
+    await act(async () => { buttons(tree).find((b) => text(b) === "Yes, change it").props.onClick(); });
     expect(write).toHaveBeenCalledTimes(1);
-    expect(write.mock.calls[0][0]).toEqual({ "network/locations/hub3/live": true, "network/updatedAt": NOW, "network/updatedBy": "owner-uid" });
+    expect(write.mock.calls[0][0]).toEqual({
+      "network/locations/hub3/solve": false, "network/locations/hub3/autoRefill": "solved", "network/locations/hub3/live": false,
+      "network/updatedAt": NOW, "network/updatedBy": "owner-uid",
+    });
+  });
+
+  it("Auto-refill: asks with the plain consequence, then writes the pair", async () => {
+    const { tree, write } = mount(OWNER);
+    act(() => refillButton(tree, "marathon-pine", "All products").props.onClick());
+    expect(write).not.toHaveBeenCalled();
+    expect(text(tree.root.find((n) => n.props && n.props.role === "alertdialog"))).toMatch(/ALL PRODUCTS for Marathon Pine.*counted or not/);
+    await act(async () => { buttons(tree).find((b) => text(b) === "Yes, change it").props.onClick(); });
+    expect(write.mock.calls[0][0]).toEqual({
+      "network/locations/marathon-pine/solve": true, "network/locations/marathon-pine/autoRefill": "all", "network/locations/marathon-pine/live": true,
+      "network/updatedAt": NOW, "network/updatedBy": "owner-uid",
+    });
+    // Marathon's rows are untouched by the write
+    expect(Object.keys(write.mock.calls[0][0]).some((p) => /marathon-pe|trophy|hub1|hub2/.test(p))).toBe(false);
+  });
+
+  it("tapping the mode a location is already on writes nothing and asks nothing", () => {
+    const { tree, write } = mount(OWNER);
+    act(() => refillButton(tree, "hub3", "Solved products only").props.onClick());
+    expect(write).not.toHaveBeenCalled();
+    expect(tree.root.findAll((n) => n.props && n.props.role === "alertdialog")).toHaveLength(0);
   });
 
   it("cancel writes nothing", () => {
     const { tree, write } = mount(OWNER);
-    act(() => rowButton(tree, "hub3").props.onClick());
+    act(() => solveButton(tree, "hub3").props.onClick());
     act(() => buttons(tree).find((b) => text(b) === "Cancel").props.onClick());
     expect(write).not.toHaveBeenCalled();
     expect(tree.root.findAll((n) => n.props && n.props.role === "alertdialog")).toHaveLength(0);
@@ -94,8 +127,8 @@ describe("the live switch", () => {
   it("says so when the write is refused, instead of showing it as saved", async () => {
     const write = vi.fn(async () => { throw new Error("PERMISSION_DENIED"); });
     const { tree } = mount(OWNER, { write });
-    act(() => rowButton(tree, "hub3").props.onClick());
-    await act(async () => { buttons(tree).find((b) => /^Yes, go live/.test(text(b))).props.onClick(); });
+    act(() => solveButton(tree, "hub3").props.onClick());
+    await act(async () => { buttons(tree).find((b) => text(b) === "Yes, change it").props.onClick(); });
     expect(text(tree.root.find((n) => n.props && n.props.role === "status"))).toMatch(/Not saved: PERMISSION_DENIED/);
   });
 });
@@ -128,7 +161,7 @@ describe("Concrete's mapping and credit scope", () => {
     const seeded = mount(OWNER, { raw: seedPayload() });
     expect(buttons(seeded.tree).map(text)).not.toContain("Set up the network");
     // a node that exists but lacks its sections (a flip made before set-up) still needs it
-    const partial = mount(OWNER, { raw: { creditScope: "shared", locations: { hub3: { live: true } } } });
+    const partial = mount(OWNER, { raw: { creditScope: "shared", locations: { hub3: { solve: true, autoRefill: "all" } } } });
     expect(buttons(partial.tree).map(text)).toContain("Set up the network");
     const fresh = mount(OWNER, { raw: null });
     expect(buttons(fresh.tree).map(text)).toContain("Set up the network");

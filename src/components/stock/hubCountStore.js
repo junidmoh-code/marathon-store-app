@@ -42,7 +42,9 @@ import { useEffect, useState } from "react";
 import { ref, child, get, update, push, runTransaction } from "firebase/database";
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
-import { applyMovement } from "./applyMovement";
+import { applyMovement, setCellState } from "./applyMovement";
+import { trustedCellsOnly } from "../../utils/networkRegistry";
+import { currentNetwork } from "../../utils/networkStore";
 import { stockCellPath, stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 import { getDeviceId } from "../../device/deviceId";
@@ -230,8 +232,10 @@ async function writeRecord(hub, sessionId, rec) {
 /**
  * CONFIRM — "the shelf agrees with the system".
  *
- * Records the count and touches /stock NOT AT ALL: no movement, no cell write,
- * not even a state flip. The existing Count tab flips the cell to `live` on a
+ * Records the count and, at Marathon's hubs, touches /stock NOT AT ALL: no
+ * movement, no cell write, not even a state flip. (Since 7 Oct 2026, at a
+ * "solved products only" hub — Hub 3, the Concrete Stockroom — a confirm also
+ * marks an EXISTING cell trusted, metadata only: stockTrust.js.) The existing Count tab flips the cell to `live` on a
  * matching count, but that is a rollout-gate concern for seeding tracked stock,
  * and this is a temporary audit — "records the count, no stock change" is taken
  * literally. The record itself is the evidence the cell was verified.
@@ -266,7 +270,19 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
   } catch (err) {
     return { ok: false, message: `Could not save the count: ${String(err?.message || err)}` };
   }
-  return { ok: true, record: rec };
+  // A confirmed cell is a COUNTED cell: mark it trusted (stockTrust.js) in a
+  // metadata-only write — qty untouched. The count stands whether or not this
+  // lands; the result says which.
+  // Only at a "solved products only" hub (Hub 3, the Concrete Stockroom while
+  // they are counted in): a Marathon hub's confirm still writes NOTHING to /stock.
+  let trusted = false;
+  if (trustedCellsOnly(currentNetwork(), hub)) {
+    try {
+      const r = await setCellState(hub, productId, live.rawSize, "live", { trust: "count", existingOnly: true });
+      trusted = r.ok === true && !r.skipped;
+    } catch { trusted = false; }
+  }
+  return { ok: true, record: rec, trusted };
 }
 
 /**
@@ -392,6 +408,7 @@ export async function adjustCell({ hub, sessionId, productId, sizeKey, expected,
       to: delta > 0 ? hub : null,
       from: delta < 0 ? hub : null,
       reason: "hub_sneaker_count",
+      trust: "count",   // a hub count confirms the cell (stockTrust.js)
       actorRole,
       // Provenance rides in `link`, which applyMovement spreads verbatim and the
       // live rules do not restrict (no $other deny under /stock_movements/$mvId).

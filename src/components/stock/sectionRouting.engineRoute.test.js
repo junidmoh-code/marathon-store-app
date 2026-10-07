@@ -18,7 +18,10 @@ const FIXTURE = require("../../../functions/test/fixtures/sections-routing-fixtu
 
 const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
 const S2 = ["marathon-pe", "trophy", "hub1", "hub2"];
-const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(ids.map((id) => [id, { live: true }])), ...extra });
+// Section 1 with both switches OFF (what the seed shipped as before 7 Oct 2026)…
+const dark = (extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, { solve: false, autoRefill: "off" }])), ...extra });
+// …and with only `ids` fully live (a legacy live:true, migrated to Solve on + Auto-refill all).
+const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, ids.includes(id) ? { live: true } : { solve: false, autoRefill: "off" }])), ...extra });
 const PROD_ROUTES = { hub1: "central", hub2: "central", trophy: "hub2", "marathon-pe": "hub2" };
 const TEE = { id: "tee", name: "Tee", productType: "clothing", categoryKey: "t-shirts", sizes: ["M"] };
 const PRODUCTS = [
@@ -84,8 +87,11 @@ describe("first batch: a LIVE Section 1 shop is on the path at its own hub (prod
       expect(firstBatchEligible({ ...base, network, store: "marathon-pine", hub: "hub3" })).toBe(true);   // Pine is untouched by Concrete's mapping
     }
   });
-  it("NOT live — the seed, the shop alone, or the hub alone — → never eligible: the old seed-only Solve", () => {
-    for (const network of [SEED_REGISTRY, live(["marathon-pine", "concrete"]), live(["hub3", "concrete-stockroom"])]) {
+  it("the SEED (7 Oct 2026): Section 1 is Solve on + Auto-refill solved — Pine and Concrete are on the first-batch path at Hub 3", () => {
+    for (const store of ["marathon-pine", "concrete"]) expect(firstBatchEligible({ ...base, network: SEED_REGISTRY, store, hub: "hub3" })).toBe(true);
+  });
+  it("NOT routed — Section 1 off, the shop alone on, or the hub alone on — → never eligible: the old seed-only Solve", () => {
+    for (const network of [dark(), live(["marathon-pine", "concrete"]), live(["hub3", "concrete-stockroom"])]) {
       for (const store of ["marathon-pine", "concrete"]) expect(firstBatchEligible({ ...base, network, store, hub: "hub3" })).toBe(false);
     }
     // and without a registry handed in at all, config.routes alone decides, as it always did

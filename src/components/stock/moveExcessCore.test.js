@@ -105,7 +105,14 @@ function decodeStock(stock) {
   return out;
 }
 
-const newCards = ({ allStock, allTargets, byId, openRequests, heldLines, routesCfg, storeMin, network = SEED_REGISTRY, canSee }) => {
+// Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
+// (the seed itself now holds Section 1 Solve on + Auto-refill "solved", so the
+// engine — and this screen, which mirrors its routes — treats it as routed).
+const OFF = { solve: false, autoRefill: "off" };
+const S1_OFF = { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF };
+const DARK = normalizeNetwork({ locations: S1_OFF });
+
+const newCards = ({ allStock, allTargets, byId, openRequests, heldLines, routesCfg, storeMin, network = DARK, canSee }) => {
   const { sources, routes } = excessSources(network, routesCfg, { canSee });
   return { cards: computeMoveExcessCards({ allStock, allTargets, byId, openRequests, heldLines, sources, routes, storeMin, network }), sources, routes };
 };
@@ -136,15 +143,18 @@ describe("Section 2 is exactly what it was", () => {
     // (engineConfig?.routes || {…}); the registry now answers the same map.
     const LITERAL_FALLBACK = { "marathon-pe": "hub2", trophy: "hub2", hub2: "central" };
     for (const [cfgName, routesCfg, oldRoutes] of [["the engine's routes", FIXTURE.config.routes, FIXTURE.config.routes], ["no routes read yet", undefined, LITERAL_FALLBACK]]) {
-      it(`${name}, ${cfgName}: every Section 2 card and number matches the old computation`, () => {
-        const args = { allStock: stock, allTargets: FIXTURE.targets, byId, openRequests, heldLines: null, storeMin: 2 };
-        const old = legacyCards({ ...args, routesCfg: oldRoutes });
-        const now = newCards({ ...args, routesCfg });
-        const s2 = (cards) => cards.filter((c) => SEED_REGISTRY.locations[c.loc]?.section === 2);
-        expect(s2(now.cards)).toEqual(old.cards);
-        // the configured locations keep their order, ahead of the registry's additions
-        expect(now.sources.slice(0, old.sources.length)).toEqual(old.sources);
-      });
+      for (const [netName, network] of [["Section 1 off", DARK], ["the seed (Section 1 Solve on + Auto-refill solved)", SEED_REGISTRY]]) {
+        it(`${name}, ${cfgName}, ${netName}: every Section 2 card and number matches the old computation`, () => {
+          const args = { allStock: stock, allTargets: FIXTURE.targets, byId, openRequests, heldLines: null, storeMin: 2 };
+          const old = legacyCards({ ...args, routesCfg: oldRoutes });
+          const now = newCards({ ...args, routesCfg, network });
+          const s2 = (cards) => cards.filter((c) => SEED_REGISTRY.locations[c.loc]?.section === 2);
+          expect(s2(now.cards)).toEqual(old.cards);
+          // the configured locations keep their order, ahead of the registry's additions
+          if (routesCfg) expect(now.sources.slice(0, old.sources.length)).toEqual(old.sources);
+          else expect(now.sources.filter((l) => SEED_REGISTRY.locations[l]?.section === 2)).toEqual(old.sources);
+        });
+      }
     }
   }
 
@@ -156,8 +166,10 @@ describe("Section 2 is exactly what it was", () => {
     expect(cards.some((c) => c.loc !== "hub2" && c.sizes.some((s) => s.toCentral > 0))).toBe(true);
   });
 
-  it("the fallback routes are the literal map this replaced, and Hub 2 is the only buffer", () => {
-    expect(registryRoutes(SEED_REGISTRY)).toEqual({ "marathon-pe": "hub2", trophy: "hub2", hub2: "central" });
+  it("the fallback routes are the literal map this replaced (Section 1 off), and Hub 2 is the only Section 2 buffer", () => {
+    expect(registryRoutes(DARK)).toEqual({ "marathon-pe": "hub2", trophy: "hub2", hub2: "central" });
+    // the seed: Section 1's Auto-refill is on, so the engine's routes — and this screen's — include it
+    expect(registryRoutes(SEED_REGISTRY)).toEqual({ "marathon-pe": "hub2", trophy: "hub2", hub2: "central", "marathon-pine": "hub3", concrete: "hub3", hub3: "central" });
     const { sources, routes } = excessSources(SEED_REGISTRY, FIXTURE.config.routes);
     expect(sources.filter((l) => isBufferHub(l, sources, routes) && SEED_REGISTRY.locations[l].section === 2)).toEqual(["hub2"]);
     expect(isBufferHub("hub1", sources, routes)).toBe(false);
@@ -170,7 +182,7 @@ const byId = new Map([[P.id, P]]);
 const T = (target) => ({ tee: { M: { target } } });
 const cell = (qty) => ({ tee: { M: { qty, v: 1 } } });
 const ROUTES = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
-const LIVE1 = normalizeNetwork({ locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } });
+const LIVE1 = normalizeNetwork({ locations: { ...S1_OFF, "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } });
 const card = (cards, loc) => cards.find((c) => c.loc === loc)?.sizes[0] || null;
 
 describe("a surplus covers needs only in its own section", () => {
@@ -211,21 +223,29 @@ describe("a surplus covers needs only in its own section", () => {
   });
 });
 
-describe("a location that is not live", () => {
+describe("a location whose Auto-refill is off", () => {
   it("is listed, and its whole excess goes back to Central — its hub's need attracts nothing", () => {
     const allTargets = { "marathon-pine": T(1), hub3: T(9) };
     const allStock = { "marathon-pine": cell(5), hub3: cell(0) };
-    const { cards, sources } = newCards({ allStock, allTargets, byId, routesCfg: ROUTES, storeMin: 2 });   // the seed: Section 1 not live
+    const { cards, sources } = newCards({ allStock, allTargets, byId, routesCfg: ROUTES, storeMin: 2, network: DARK });
     expect(sources).toContain("marathon-pine");
     expect(sources).toContain("hub3");
     expect(card(cards, "marathon-pine")).toMatchObject({ excess: 4, toHub: 0, toCentral: 4 });
   });
 
-  it("a non-live hub's own excess is visible in full", () => {
+  it("an off hub's own excess is visible in full", () => {
     const allTargets = { hub3: T(1), "marathon-pine": T(6) };
     const allStock = { hub3: cell(5), "marathon-pine": cell(0) };
-    const { cards } = newCards({ allStock, allTargets, byId, routesCfg: ROUTES, storeMin: 2 });
+    const { cards } = newCards({ allStock, allTargets, byId, routesCfg: ROUTES, storeMin: 2, network: DARK });
     expect(card(cards, "hub3")).toMatchObject({ excess: 4, toCentral: 4 });
+  });
+
+  it("the SEED (7 Oct 2026): Section 1 is routed — Pine's excess serves Hub 3's need first, like any routed store", () => {
+    const allTargets = { "marathon-pine": T(1), hub3: T(9) };
+    const allStock = { "marathon-pine": cell(5), hub3: cell(0) };
+    const { cards, routes } = newCards({ allStock, allTargets, byId, routesCfg: ROUTES, storeMin: 2, network: SEED_REGISTRY });
+    expect(routes["marathon-pine"]).toBe("hub3");
+    expect(card(cards, "marathon-pine")).toMatchObject({ excess: 4, toHub: 4, toCentral: 0 });
   });
 
   it("a viewer who cannot see Section 1 is not shown its locations; the configured ones are untouched", () => {

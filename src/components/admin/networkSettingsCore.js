@@ -7,7 +7,7 @@
 // `nowMs` is serverNowMs() at the call site — never Date.now(): updatedAt is a
 // rules-validated field.
 import {
-  NETWORK_PATH, DEFAULT_CATEGORY, CREDIT_SCOPES, locationOf, seedPayload, normalizeNetwork,
+  NETWORK_PATH, DEFAULT_CATEGORY, CREDIT_SCOPES, AUTO_REFILL_MODES, locationOf, seedPayload, normalizeNetwork,
 } from "../../utils/networkRegistry";
 
 const stamp = (nowMs, uid) => ({ [`${NETWORK_PATH}/updatedAt`]: nowMs, [`${NETWORK_PATH}/updatedBy`]: uid || null });
@@ -17,12 +17,41 @@ const fail = (error) => ({ ok: false, error });
 export const SWITCHABLE_STORE = "concrete";
 export const SWITCHABLE_HUBS = Object.freeze(["hub3", "concrete-stockroom"]);
 
-export function liveUpdate(registry, id, live, nowMs, uid) {
+// ── THE TWO SWITCHES ─────────────────────────────────────────────────────────
+// Solve (on/off) and Auto-refill (off / solved / all), one location at a time.
+// EVERY switch write carries BOTH fields — the one changed and the other as the
+// registry currently resolves it — so the stored record never holds half a
+// pair, and a legacy `live` left on the record can never be read again
+// (normLocation reads `live` only when neither new field is present).
+export const AUTO_REFILL_LABELS = Object.freeze({ off: "Off", solved: "Solved products only", all: "All products" });
+
+function switchUpdate(registry, id, { solve, autoRefill }, nowMs, uid) {
   const loc = locationOf(registry, id);
   if (!loc) return fail("That location is not in the registry.");
   if (loc.type === "central" || loc.retired) return fail("Central is always on.");
-  if (typeof live !== "boolean") return fail("Live is on or off.");
-  return { ok: true, updates: { [`${NETWORK_PATH}/locations/${loc.id}/live`]: live, ...stamp(nowMs, uid) } };
+  const s = solve === undefined ? loc.solve === true : solve;
+  const a = autoRefill === undefined ? loc.autoRefill : autoRefill;
+  if (typeof s !== "boolean") return fail("Solve is on or off.");
+  if (!AUTO_REFILL_MODES.includes(a)) return fail("Auto-refill is off, solved products only, or all products.");
+  return { ok: true, updates: {
+    [`${NETWORK_PATH}/locations/${loc.id}/solve`]: s,
+    [`${NETWORK_PATH}/locations/${loc.id}/autoRefill`]: a,
+    // The pre-split flag, written as the DERIVED value in the same write, so a
+    // device still on an older build reads what the switches mean (fully live =
+    // Solve on + all). The new reader ignores it while the switches are stored.
+    [`${NETWORK_PATH}/locations/${loc.id}/live`]: s && a === "all",
+    ...stamp(nowMs, uid),
+  } };
+}
+
+export function solveUpdate(registry, id, solve, nowMs, uid) {
+  if (typeof solve !== "boolean") return fail("Solve is on or off.");
+  return switchUpdate(registry, id, { solve }, nowMs, uid);
+}
+
+export function autoRefillUpdate(registry, id, mode, nowMs, uid) {
+  if (!AUTO_REFILL_MODES.includes(mode)) return fail("Auto-refill is off, solved products only, or all products.");
+  return switchUpdate(registry, id, { autoRefill: mode }, nowMs, uid);
 }
 
 export function categoryHubUpdate(registry, categoryKey, hub, nowMs, uid) {
@@ -93,9 +122,15 @@ export function seedUpdate(rawNetwork, stockLocations, nowMs, uid) {
   const fill = (root, have, want) => {
     for (const id of Object.keys(want)) {
       if (!isObj(have?.[id])) { updates[`${NETWORK_PATH}/${root}/${id}`] = want[id]; continue; }
+      // A record written before the switch split carries a boolean `live` and
+      // neither switch: fill the switches with ITS migrated meaning (true → on
+      // + all, false → off + off), never the seed's — the seed must not undo it.
+      const legacy = root === "locations" && typeof have[id].live === "boolean"
+        && typeof have[id].solve !== "boolean" && !AUTO_REFILL_MODES.includes(have[id].autoRefill)
+        ? { solve: have[id].live, autoRefill: have[id].live ? "all" : "off" } : null;
       for (const field of Object.keys(want[id])) {
         const cur = have[id][field];
-        if (cur === undefined || cur === null) updates[`${NETWORK_PATH}/${root}/${id}/${field}`] = want[id][field];
+        if (cur === undefined || cur === null) updates[`${NETWORK_PATH}/${root}/${id}/${field}`] = legacy && field in legacy ? legacy[field] : want[id][field];
       }
     }
   };

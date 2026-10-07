@@ -16,6 +16,10 @@ const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/sectio
 const NOW_MS = Date.parse("2026-10-01T10:00:00.000Z");
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const S1 = ["hub3", "marathon-pine", "concrete", "concrete-stockroom"];
+// Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
+// (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
+const DARK = reg.normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+
 const TODAY = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
 
 const plan = (over = {}) => computeRefillPlan({
@@ -24,7 +28,7 @@ const plan = (over = {}) => computeRefillPlan({
 });
 
 test("today's routes pass whole, in the same key order, with nothing withheld", () => {
-  const w = walledRoutes(TODAY, reg.SEED_REGISTRY);
+  const w = walledRoutes(TODAY, DARK);
   assert.deepEqual(w.routes, TODAY);
   assert.deepEqual(Object.keys(w.routes), Object.keys(TODAY));
   assert.deepEqual(w.withheld, []);
@@ -33,7 +37,7 @@ test("today's routes pass whole, in the same key order, with nothing withheld", 
 
 test("a Section 1 leg is withheld while its locations are not live, and says why", () => {
   const routes = { ...TODAY, hub3: "central", "marathon-pine": "hub3", concrete: "hub3" };
-  const w = walledRoutes(routes, reg.SEED_REGISTRY);
+  const w = walledRoutes(routes, DARK);
   assert.deepEqual(w.routes, TODAY);
   assert.deepEqual(w.withheld, [
     { dest: "hub3", source: "central", why: "not_live" },
@@ -42,11 +46,13 @@ test("a Section 1 leg is withheld while its locations are not live, and says why
   ]);
 });
 
-test("a leg opens only when BOTH ends are live", () => {
+const OFF = { solve: false, autoRefill: "off" };
+const S1_OFF = Object.fromEntries(S1.map((id) => [id, OFF]));
+test("a leg opens only when BOTH ends have Auto-refill on", () => {
   const routes = { hub3: "central", "marathon-pine": "hub3", concrete: "hub3" };
-  const hubOnly = reg.normalizeNetwork({ locations: { hub3: { live: true } } });
+  const hubOnly = reg.normalizeNetwork({ locations: { ...S1_OFF, hub3: { live: true } } });
   assert.deepEqual(walledRoutes(routes, hubOnly).routes, { hub3: "central" });
-  const hubAndPine = reg.normalizeNetwork({ locations: { hub3: { live: true }, "marathon-pine": { live: true } } });
+  const hubAndPine = reg.normalizeNetwork({ locations: { ...S1_OFF, hub3: { live: true }, "marathon-pine": { live: true } } });
   assert.deepEqual(walledRoutes(routes, hubAndPine).routes, { hub3: "central", "marathon-pine": "hub3" });
 });
 
@@ -59,12 +65,12 @@ test("a leg across the wall is withheld even when everything is live", () => {
 });
 
 test("a route naming a location the registry does not know is withheld", () => {
-  const w = walledRoutes({ hubC: "central", "marathon-pe": "hub9" }, reg.SEED_REGISTRY);
+  const w = walledRoutes({ hubC: "central", "marathon-pe": "hub9" }, DARK);
   assert.deepEqual(w.routes, {});
 });
 
-test("ENGINE: Section 1 routes in config raise nothing while Section 1 is not live — and Section 2's plan is untouched", () => {
-  const before = plan();
+test("ENGINE: Section 1 routes in config raise nothing while Section 1's Auto-refill is off — and Section 2's plan is untouched", () => {
+  const before = plan({ network: DARK });
   const config = clone(FIXTURE.config);
   Object.assign(config.routes, { hub3: "central", "marathon-pine": "hub3", concrete: "hub3" });
   config.mode = { ...config.mode, hub3: "live", "marathon-pine": "live", concrete: "live" };
@@ -72,7 +78,7 @@ test("ENGINE: Section 1 routes in config raise nothing while Section 1 is not li
   const targets = clone(FIXTURE.targets);
   targets["marathon-pine"] = clone(FIXTURE.targets["marathon-pe"]);
   targets.hub3 = clone(FIXTURE.targets.hub2);
-  const after = plan({ config, targets });
+  const after = plan({ config, targets, network: DARK });
   for (const i of after.intents) assert.ok(!S1.includes(i.dest) && !S1.includes(i.source), `${i.source}→${i.dest}`);
   assert.deepEqual(after.intents, before.intents);
   assert.equal(after.routesWithheld.length, 3);
@@ -129,10 +135,10 @@ const fbRequest = (store) => ({
   createdFrom: { firstBatch: true, solveId: "fb_p1_x", source: "central" },
 });
 
-test("FIRST BATCH: a request for a Section 1 shop that is NOT live writes nothing at all — no seed, no leg, no lock", async () => {
+test("FIRST BATCH: a request for a Section 1 shop whose Auto-refill is OFF writes nothing at all — no seed, no leg, no lock", async () => {
   for (const store of ["marathon-pine", "concrete"]) {
     __resetNetworkCacheForTests();
-    const db = fakeDb({ refill_requests: { r1: fbRequest(store) }, config: { refillEngine: { routes: { [store]: "hub2" } } } });
+    const db = fakeDb({ refill_requests: { r1: fbRequest(store) }, config: { refillEngine: { routes: { [store]: "hub2" } } }, network: { locations: S1_OFF } });
     const res = await processFirstBatchRequest({ db, requestId: "r1", nowIso: "2026-10-02T09:00:00.000Z", pathEnabled: true });
     assert.deepEqual(res, { skipped: "section_wall", store });
     assert.deepEqual(db.writes, []);

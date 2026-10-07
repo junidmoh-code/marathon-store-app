@@ -19,6 +19,10 @@ const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/sectio
 const NOW_MS = Date.parse("2026-10-01T10:00:00.000Z");
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const S1 = ["hub3", "marathon-pine", "concrete", "concrete-stockroom"];
+// Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
+// (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
+const DARK = reg.normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+
 const S2 = ["hub1", "hub2", "marathon-pe", "trophy"];
 const TODAY = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
 
@@ -34,7 +38,7 @@ const OVERRIDE_PID = Object.values(FIXTURE.products).find((p) => {
   return Object.keys(rows).some((k) => rows[k].target > 0 && hub[k] && hub[k].qty > 0);
 }).id;
 const liveNetwork = (ids = S1, extra = {}) => reg.normalizeNetwork({
-  locations: Object.fromEntries(ids.map((id) => [id, { live: true }])),
+  locations: Object.fromEntries(S1.map((id) => [id, ids.includes(id) ? { live: true } : { solve: false, autoRefill: "off" }])),
   backStock: { concrete: { hoodies: "concrete-stockroom" } },
   productOverrides: { concrete: { [OVERRIDE_PID]: "concrete-stockroom" } },
   ...extra,
@@ -69,7 +73,7 @@ const lanesOf = (plan) => {
 // ── the routing table itself ────────────────────────────────────────────────
 
 test("ROUTING: on the seed, the routes are today's four and nothing else", () => {
-  for (const network of [undefined, null, reg.SEED_REGISTRY]) {
+  for (const network of [undefined, null, DARK]) {
     const r = networkRouting({ routes: TODAY, mode: FIXTURE.config.mode }, network);
     assert.deepEqual(r.routes, TODAY);
     assert.deepEqual(Object.keys(r.routes), Object.keys(TODAY), "same key order");
@@ -82,7 +86,7 @@ test("ROUTING: on the seed, the routes are today's four and nothing else", () =>
 
 test("ROUTING: the destination order for today's routes is the order the engine has always used", () => {
   const before = Object.keys(TODAY).sort((a, b) => (TODAY[a] === b ? -1 : TODAY[b] === a ? 1 : a.localeCompare(b)));
-  assert.deepEqual(networkRouting({ routes: TODAY }, reg.SEED_REGISTRY).dests, before);
+  assert.deepEqual(networkRouting({ routes: TODAY }, DARK).dests, before);
   // …and Section 1 going live does not reorder them: they still come first.
   assert.deepEqual(networkRouting({ routes: TODAY }, liveNetwork()).dests.slice(0, before.length), before);
 });
@@ -155,13 +159,13 @@ test("ROUTING: a store whose hub is not live has no leg; a hub that is not live 
 
 test("SECTION 2: the plan is identical with no registry, the seed, and Section 1 stock present", () => {
   const none = computeRefillPlan(world({ uncapped: false }));
-  const seed = computeRefillPlan(world({ uncapped: false, network: reg.SEED_REGISTRY }));
+  const seed = computeRefillPlan(world({ uncapped: false, network: DARK }));
   assert.deepEqual(seed, none);
   for (const i of seed.intents) assert.ok(S2.includes(i.dest), `${i.source}→${i.dest}`);
 });
 
 test("NOT LIVE: Section 1 targets, stock and deficits raise nothing while it is not live", () => {
-  const plan = computeRefillPlan(world({ network: reg.SEED_REGISTRY }));
+  const plan = computeRefillPlan(world({ network: DARK }));
   assert.ok(plan.intents.length > 0);
   for (const i of plan.intents) assert.ok(!S1.includes(i.dest) && !S1.includes(i.source), `${i.source}→${i.dest}`);
   for (const k of Object.keys(plan.exceptions)) {
@@ -236,7 +240,7 @@ test("LIVE: a shop's shortfall its hub cannot cover is carried through — Centr
 });
 
 test("LIVE: Section 2's legs are the same legs whether or not Section 1 is live", () => {
-  const off = computeRefillPlan(world({ network: reg.SEED_REGISTRY }));
+  const off = computeRefillPlan(world({ network: DARK }));
   const on = computeRefillPlan(world({ network: liveNetwork() }));
   assert.deepEqual(section2Only(on.intents), section2Only(off.intents));
   // Section 2 destinations are still planned FIRST, so Central's units are
@@ -284,7 +288,8 @@ test("WALL: no intent ever crosses it, or touches a location that is not live �
   let sawSection1 = 0;
   for (let n = 0; n < 40; n++) {
     const raw = { locations: {}, backStock: {}, productOverrides: {} };
-    for (const id of [...S1, ...S2]) if (rnd() < 0.8) raw.locations[id] = { live: rnd() < 0.7 };
+    // a legacy live flag, or the two switches in any combination; some absent (the seed decides)
+    for (const id of [...S1, ...S2]) if (rnd() < 0.8) raw.locations[id] = rnd() < 0.4 ? { live: rnd() < 0.7 } : { solve: rnd() < 0.7, autoRefill: pick(["off", "solved", "all"]) };
     for (const store of ["marathon-pine", "concrete", "marathon-pe", "trophy"]) {
       raw.backStock[store] = {};
       for (const c of cats) if (rnd() < 0.5) raw.backStock[store][c] = pick(hubs);          // may name the wrong side
@@ -305,8 +310,8 @@ test("WALL: no intent ever crosses it, or touches a location that is not live �
       for (const d of i.forDests || []) assert.ok(reg.autoRouteAllowed(net, i.dest, d), `run ${n}: pass-through ${i.dest}→${d}`);
       if (S1.includes(i.dest)) sawSection1 += 1;
     }
-    // …and the scan reads no stock for a location that is not live
-    for (const loc of networkRouting(cfg, net).locs) assert.ok(reg.isLive(net, loc), `run ${n}: ${loc} is read but not live`);
+    // …and the scan reads no stock for a location whose Auto-refill is off
+    for (const loc of networkRouting(cfg, net).locs) assert.ok(reg.autoRefillOn(net, loc), `run ${n}: ${loc} is read but its Auto-refill is off`);
   }
   assert.ok(sawSection1 > 50, `the generator raised only ${sawSection1} Section 1 legs — it would prove nothing`);
 });
@@ -353,7 +358,7 @@ test("POOLS: a size refused at both levels is confirmed out on THAT side of the 
 });
 
 test("POOLS: a Section 1 deficit holds back none of Hub 2's surplus", () => {
-  const off = computeRefillPlan(world({ network: reg.SEED_REGISTRY }));
+  const off = computeRefillPlan(world({ network: DARK }));
   const on = computeRefillPlan(world({ network: liveNetwork() }));
   const hub2 = (plan) => plan.exceptions.excess.items.filter((r) => S2.includes(r.loc));
   assert.deepEqual(hub2(on), hub2(off));
@@ -363,7 +368,7 @@ test("POOLS: a Section 1 deficit holds back none of Hub 2's surplus", () => {
 
 test("SCAN: the three shop universes are the values the literal list held, and Concrete is a shop", () => {
   const u = scan._shopUniverse;
-  for (const network of [null, undefined, reg.SEED_REGISTRY, liveNetwork()]) {
+  for (const network of [null, undefined, DARK, liveNetwork()]) {
     assert.equal(u(network, "marathon-pe"), "central");
     assert.equal(u(network, "trophy"), "central");
     assert.equal(u(network, "marathon-pine"), "pine");
@@ -404,7 +409,7 @@ test("SCAN: the read list, the mode and the write-time wall check come from the 
   assert.doesNotMatch(SRC, /UNIVERSE_BY_SHOP\[/);
   // The read list for today's config is the five locations it always was, in
   // the order it always was (stock key order reaches the stored snapshot).
-  const r = networkRouting({ routes: TODAY }, reg.SEED_REGISTRY);
+  const r = networkRouting({ routes: TODAY }, DARK);
   assert.deepEqual([...new Set([...Object.keys(r.routes), ...Object.values(r.routes), ...r.locs])],
     ["hub1", "hub2", "marathon-pe", "trophy", "central"]);
 });

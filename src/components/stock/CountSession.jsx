@@ -76,7 +76,7 @@ export default function CountSession({ products, registry, actorRole }) {
       const delta = counted - cur;
       let res;
       if (delta === 0) {
-        res = await setCellState(loc, product.id, size, "live");
+        res = await setCellState(loc, product.id, size, "live", { trust: "count" });
       } else {
         res = await applyMovement({
           type: "adjustment",
@@ -85,6 +85,7 @@ export default function CountSession({ products, registry, actorRole }) {
           from: delta < 0 ? loc : null,
           reason: cur === 0 ? "initial_count" : "recount",
           cellState: "live",
+          trust: "count",
           actorRole,
         });
       }

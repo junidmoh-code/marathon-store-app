@@ -920,6 +920,22 @@ async function runScan() {
           counts.errors.push(`section wall: refused ${source}→${dest} for ${pid}/${sizeKey}`);
           continue;
         }
+        // TRUSTED CELLS ONLY, re-checked at the write (lib/stock-trust.cjs): at a
+        // "solved products only" destination the plan holds only trusted cells,
+        // so this never fires — it is the guarantee that no request is ever
+        // raised for an uncounted legacy cell there, whatever produced the intent.
+        // A PASS-THROUGH leg is raised for trusted SHOP cells (forDests) and
+        // passes through the hub's cell — it is checked against those, never the
+        // hub's own. The plan raises one only through an EMPTY hub cell, which
+        // the box then trusts when it lands (a refill leg onto nothing).
+        const cellOk = intent.passThrough
+          ? (Array.isArray(intent.forDests) && intent.forDests.length > 0
+            && intent.forDests.every((d) => !networkRegistry.trustedCellsOnly(network, d) || stockTrust.cellTrusted(stock?.[d]?.[pid]?.[sizeKey])))
+          : stockTrust.cellTrusted(stock?.[dest]?.[pid]?.[sizeKey]);
+        if (networkRegistry.trustedCellsOnly(network, dest) && !cellOk) {
+          counts.errors.push(`untrusted cell: refused ${source}→${dest} for ${pid}/${sizeKey}`);
+          continue;
+        }
         // Idempotency lock FIRST — create-if-absent; a concurrent/manual intent wins.
         const lockPath = `refill_engine/open/${dest}/${pid}/${sizeKey}`;
         const claim = await db.ref(lockPath).transaction((cur) => (cur ? undefined : {

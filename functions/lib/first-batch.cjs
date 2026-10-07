@@ -52,6 +52,8 @@ const { hubPresenceSignals, pickInProgress } = require("./shop-source-rule.cjs")
 // CJS twins of the constants in src/components/stock/firstBatchCore.js — a
 // test pins them equal.
 const networkRegistry = require("./network-registry.cjs");
+const stockTrust = require("./stock-trust.cjs");
+const { trustStamp } = stockTrust;
 const { loadNetwork } = require("./network-load.cjs");
 // ── "HUB 2" IS "THE SHOP'S BACK-STOCK HUB" (sections, 2026-10) ───────────────
 // This module was written when one hub stood behind every shop. The rule was
@@ -162,8 +164,9 @@ const avail = (q) => Math.max(num(q), 0);
 
 // The seed cell — byte-for-byte the Solve's shape (NetworkTransfer.jsx solve()),
 // so a later undo / count / audit reads it exactly like every other seed.
-function seedCell(nowIso) {
-  return { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: nowIso, updatedBy: "first_batch" };
+// Trusted (lib/stock-trust.cjs) only at a "solved products only" location.
+function seedCell(nowIso, trusted = false) {
+  return { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: nowIso, updatedBy: "first_batch", ...(trusted ? trustStamp("solve", nowIso) : {}) };
 }
 
 // Seed-if-absent, as a TRANSACTION — never a blind set. The "is there a cell?"
@@ -172,8 +175,17 @@ function seedCell(nowIso) {
 // size, a count), and a blind set would overwrite it back to qty 0 — stock
 // deleted. The same create-if-absent shape the lock claims use. (Senior-
 // architect review, PR #607 — HIGH.)
-async function seedIfAbsent(db, path, nowIso) {
-  const res = await db.ref(path).transaction((cur) => (cur ? undefined : seedCell(nowIso)));
+async function seedIfAbsent(db, path, nowIso, network = null) {
+  const loc = String(path).split("/")[1];
+  const trusted = !!network && networkRegistry.trustedCellsOnly(network, loc);
+  // An EXISTING empty untrusted cell at a "solved" hub is trusted in place
+  // (the client's trustExistingEmptyUpdates, server side): a cell holding
+  // units is left for a count.
+  const res = await db.ref(path).transaction((cur) => {
+    if (!cur) return seedCell(nowIso, trusted);
+    if (!trusted || stockTrust.cellTrusted(cur) || (typeof cur.qty === "number" && cur.qty > 0)) return undefined;
+    return { ...cur, state: "live", ...trustStamp("solve", nowIso), updatedAt: nowIso, updatedBy: "first_batch" };
+  });
   return res.committed;
 }
 
@@ -296,9 +308,10 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
       || !networkRegistry.autoRouteAllowed(network, SOURCE, HUB)) {
     return { skipped: "section_wall", store };
   }
-  // Live stores and hubs — Central's reservations are walked there as well
-  // as at the routed locations (centralReservations `alsoAt`).
-  const liveLocs = [...networkRegistry.storesOf(network, { liveOnly: true }), ...networkRegistry.hubsOf(network, { liveOnly: true })].map((l) => l.id);
+  // Every store and hub the engine routes (Auto-refill on) — Central's
+  // reservations are walked there as well as at the routed locations
+  // (centralReservations `alsoAt`).
+  const liveLocs = [...networkRegistry.storesOf(network, { autoRefillOnly: true }), ...networkRegistry.hubsOf(network, { autoRefillOnly: true })].map((l) => l.id);
 
   const resolved = rr.status !== "open";
   // "Untouched" must be CERTAIN before a row is withdrawn: a sentQty of an
@@ -330,7 +343,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // cancel so the re-fire this cancel causes is a no-op (`hub2_leg_done`).
     // No resolvedBy: to Refill History a reasoned cancel with no actor IS an
     // engine withdrawal; a synthetic actor string would render as neither.
-    if (product) await seedIfAbsent(db, `stock/${HUB}/${pid}/${clientCellKey(size)}`, now);
+    if (product) await seedIfAbsent(db, `stock/${HUB}/${pid}/${clientCellKey(size)}`, now, network);
     // COLD-NULL TRAP (admin-movement.cjs): the first callback runs on null in
     // a Cloud Function; judge it against the row already read (`rr`) — the
     // proposal then CASes against the server value and re-runs on a mismatch.
@@ -474,7 +487,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // acts live — exactly what the scan does with it.
   const routing = networkRouting(config, network);
   if (config.enabled !== true || (config.mode && routing.modeOf(HUB) !== "live")) {
-    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now, network);
     await reqRef.update({ "firstBatch/hub2Leg": { none: "engine_off", at: now }, ...declineStamp });
     return { raised: false, none: "engine_off", seeded: seedNeeded };
   }
@@ -488,7 +501,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // units ANYWHERE, and a Hub 2-only view answered 0 for a size Central held
   // nine of. (Adversarial review, PR #607.)
   const hub2CellsAfterSeed = { ...(hub2Cells || {}) };
-  if (hub2CellsAfterSeed[cellKey] == null) hub2CellsAfterSeed[cellKey] = seedCell(now);
+  if (hub2CellsAfterSeed[cellKey] == null) hub2CellsAfterSeed[cellKey] = seedCell(now, networkRegistry.trustedCellsOnly(network, HUB));
   // The numbers are the TEMPLATED policy's, as in the scan (computeRefillPlan
   // applies the same step): a hub with no numbers of its own follows the
   // location the registry says it is like — Hub 3 and the Concrete Stockroom
@@ -509,7 +522,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // size). Not a request — but the seed still lands, so Hub 2 carries the
     // size and the engine raises hub2←central itself when a target returns.
     // Without the seed the marker would be terminal with no way back.
-    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now, network);
     await reqRef.update({ "firstBatch/hub2Leg": { none: "no_hub2_target", at: now }, ...declineStamp });
     return { raised: false, none: "no_hub2_target", seeded: seedNeeded };
   }
@@ -531,7 +544,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     // record; once it exists nothing re-fires for this row. A crash between
     // the two therefore leaves a seed with no marker (the next fire finishes),
     // never a marker with no seed (an orphaned size). (Sonnet, PR #607 — HIGH.)
-    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now, network);
     await reqRef.update(upd);
     return { raised: false, deferredTo: upd["firstBatch/hub2Leg"].deferredTo, refillId: held.refillId || null };
   }
@@ -552,7 +565,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
     const upd = { "firstBatch/hub2Leg": { none, at: now, target: t.target, hub2Have, centralHave, reserved }, ...declineStamp };
     // The seed still lands (first): from here the ENGINE manages Hub 2 for
     // this size and raises hub2←central itself the moment Central has units.
-    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now, network);
     await reqRef.update(upd);
     return { raised: false, none, seeded: seedNeeded };
   }
@@ -573,7 +586,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
       },
       ...declineStamp,
     };
-    if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+    if (seedNeeded) await seedIfAbsent(db, seedPath, now, network);
     await reqRef.update(upd);
     return { raised: false, deferredTo: upd["firstBatch/hub2Leg"].deferredTo, refillId: (cur && cur.refillId) || null };
   }
@@ -598,7 +611,7 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // lock and marker land together or not at all. A failure leaves our pending
   // lock, which the next fire (or the engine's orphaned-pending self-heal
   // after an hour) resolves.
-  if (seedNeeded) await seedIfAbsent(db, seedPath, now);
+  if (seedNeeded) await seedIfAbsent(db, seedPath, now, network);
   const upd = {
     [`refill_requests/${key}`]: hubRequest,
     [lockPath]: { qty, source: SOURCE, createdAt: now, runId, refillId: key, orderId: null, orderCreatedAt: null },

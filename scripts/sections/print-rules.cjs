@@ -38,8 +38,17 @@ const step1 = {
     ".read": SIGNED_IN,
     ".write": OWNER,
     creditScope: { ".validate": "newData.val() === 'shared' || newData.val() === 'section'" },
+    // The two divisions' names (#701): fixed ids, an owner-named 1–40 char name.
+    sections: { $n: {
+      ".validate": "$n === '1' || $n === '2'",
+      name: { ".validate": "newData.isString() && newData.val().length >= 1 && newData.val().length <= 40" },
+    } },
     updatedAt: { ".validate": "newData.isNumber() && newData.val() <= now + 60000" },
     locations: { $id: {
+      // The two switches (7 Oct 2026). `live` stays accepted for a record written
+      // before the split; the apps read it only when neither new field is stored.
+      solve: { ".validate": "newData.isBoolean()" },
+      autoRefill: { ".validate": "newData.val() === 'off' || newData.val() === 'solved' || newData.val() === 'all'" },
       live: { ".validate": "newData.isBoolean()" },
       type: { ".validate": "newData.val() === 'store' || newData.val() === 'hub' || newData.val() === 'central'" },
       section: { ".validate": "newData.val() === 1 || newData.val() === 2" },
@@ -123,7 +132,7 @@ these keys is edited in the console later, regenerate before pasting.
 
 | missing | effect |
 |---|---|
-| block A, \`network\` | The Network card cannot save. Both apps run on the built-in seed: Section 2 as today, Section 1 not live. Nothing breaks. |
+| block A, \`network\` | The Network card cannot save. Both apps run on the built-in seed: Section 2 as today; Section 1 Solve ON with Auto-refill "solved products only" (7 Oct 2026). Nothing breaks. |
 | block A, \`orderCounter_byStore\` / \`refillCounter_byStore\` | Pine and Concrete orders keep drawing from the SHARED sequence, exactly as Pine does today. Once pasted, Pine's order keys become \`P001\` and Pine's TV board must be opened at \`?section=1#tv\`. |
 | block A, \`central_dispatch\` | Stock still moves. The dispatch cost row is dropped (one refused attempt, then the move lands without it) and is not back-filled. |
 | block A, \`push_assignments\` | Only switching the Concrete Stockroom on as an alert hub is refused. |
@@ -170,8 +179,9 @@ ${body(step4)}
   written before the paste can still be worked and closed.
 - The admin SDK (Cloud Functions, the repair scripts) bypasses rules. The
   functions carry their own checks: the engine acts only on live, same-side
-  routes; the first-batch trigger writes nothing for a shop that is not live;
-  the stranded-transit sweep releases nothing into a location that is not live.
+  routes (both ends with Auto-refill on); the first-batch trigger writes nothing
+  for a shop whose Auto-refill is off; the stranded-transit sweep releases nothing
+  into a location with both switches off.
 - These expressions have not been run against an emulator. They are checked
   for JSON validity, balanced brackets and guarded lookups by
   \`src/utils/sectionsRulesDoc.test.js\`.

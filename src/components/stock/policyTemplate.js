@@ -105,11 +105,12 @@ export function policyTemplateKey(network, map, loc) {
 // ── WHICH LOCATIONS THE ENGINE PLANS ─────────────────────────────────────────
 // The engine templates the whole config, but it only ever RESOLVES a target
 // for a destination it plans (refill-engine.cjs networkRouting `dests`): a
-// location config.routes names whose leg is open (both ends live, one side of
-// the wall), a live hub the registry feeds from Central, a live store with at
-// least one live back-stock hub. A location that is not live is planned for
-// nothing — so on a screen it must read exactly what it read before templates
-// existed, never "armed" off numbers the engine will not act on.
+// location config.routes names whose leg is open (Auto-refill on at both ends,
+// one side of the wall), a hub with Auto-refill on the registry feeds from
+// Central, a store with Auto-refill on and at least one such back-stock hub. A
+// location whose Auto-refill is off is planned for nothing — so on a screen it
+// must read exactly what it read before templates existed, never "armed" off
+// numbers the engine will not act on.
 // Pinned to networkRouting(...).dests by policyTemplate.parity.test.js.
 export function enginePlannedLocations(config, network) {
   const byRegistry = !!(network && network.locations && network.aliasIndex);
@@ -118,8 +119,8 @@ export function enginePlannedLocations(config, network) {
   for (const dest of Object.keys(routes)) if (autoRouteAllowed(network, routes[dest], dest)) out.add(dest);
   if (!byRegistry) return out;
   const named = (id) => Object.prototype.hasOwnProperty.call(routes, id);
-  const central = listLocations(network, { type: "central", liveOnly: true })[0]?.id || null;
-  for (const l of listLocations(network, { liveOnly: true })) {
+  const central = listLocations(network, { type: "central", autoRefillOnly: true })[0]?.id || null;
+  for (const l of listLocations(network, { autoRefillOnly: true })) {
     if (named(l.id)) continue;
     if (l.type === "hub" && central && autoRouteAllowed(network, central, l.id)) out.add(l.id);
     if (l.type === "store" && backStockHubsOf(network, l.id).some((h) => autoRouteAllowed(network, h, l.id))) out.add(l.id);

@@ -46,6 +46,8 @@ import { reactivateUpdates, REACTIVATED_EVENT } from "../../utils/deactivation";
 import { notePendingUpdate } from "../../offline/pendingWrites";
 import { deviceStamp } from "../../device/deviceStamp";
 import { currentNetwork } from "../../utils/networkStore";
+import { trustStamp, arrivalTrust, arrivalMayTrust } from "./stockTrust";
+import { trustedCellsOnly } from "../../utils/networkRegistry";
 import { wallCheck, wallMessage, locationOf, TRANSIT_ID } from "../../utils/networkRegistry";
 
 const VALID_TYPES = new Set(["received", "opening", "sold", "transfer_in", "transfer_out", "adjustment", "return"]);
@@ -406,10 +408,25 @@ export async function applyMovement(movement, opts = {}) {
       ...(shortfall > 0 ? { shortfall } : {}),
     };
 
+    // TRUST (stockTrust.js): the cell this movement lands IN is marked trusted
+    // when the movement is a refill/order leg (link.refillId / link.orderId) or
+    // the caller is a COUNT confirming the cell (`trust: "count"`). In the same
+    // atomic write as the quantity, never on its own; a manual edit (Adjust,
+    // Set Quantity, a hand transfer) carries neither and leaves the marker as
+    // it was. Only the destination cell: the cell stock LEFT is not confirmed
+    // by its leaving.
+    // Only at a "solved products only" location (Marathon's cells never carry
+    // it), and an arrival only onto a cell holding no uncounted stock.
+    // The cell trusted: an arrival's destination; a count's own cell (a count
+    // that LOWERS stock is written `from` it).
+    const isCount = movement.trust === "count";
+    const trustLoc = isCount ? (movement.to || movement.from) : movement.to;
+    const trustHere = !!trustLoc && trustedCellsOnly(currentNetwork(), trustLoc);
+    const trustVia = !trustHere ? null : (isCount ? "count" : arrivalTrust(movement));
     const updates = {};
     if (reactivation) Object.assign(updates, reactivation);   // same atomic write as the stock
     updates[`stock_movements/${mvId}`] = mv;
-    for (const c of cells) {
+    cells.forEach((c, i) => {
       const newV = c.cell && typeof c.cell.v === "number" ? c.cell.v + 1 : 0;
       updates[`${c.path}/qty`] = c.newQty;
       updates[`${c.path}/v`] = newV;
@@ -418,7 +435,10 @@ export async function applyMovement(movement, opts = {}) {
       updates[`${c.path}/updatedAt`] = now;
       updates[`${c.path}/updatedBy`] = user.uid;
       if (movement.cellState) updates[`${c.path}/state`] = movement.cellState;
-    }
+      if (trustVia && deltas[i].loc === trustLoc && (trustVia === "count" || arrivalMayTrust(c.cell))) {
+        for (const [k, v] of Object.entries(trustStamp(trustVia, now))) updates[`${c.path}/${k}`] = v;
+      }
+    });
     const dispatchRow = dispatch ? {
       productId: movement.productId,
       size: movement.size,
@@ -484,20 +504,27 @@ export async function applyMovement(movement, opts = {}) {
 // /stock still has exactly one writer module. It writes ONLY `state` (qty/v/mv
 // untouched) on an existing cell, or seeds a fresh qty:0 cell for a counted-zero
 // size. The security rule's metadata-only branch permits exactly this shape.
-export async function setCellState(loc, productId, size, state) {
+// `opts.trust === "count"` with state "live": a COUNT confirmed the cell as it
+// stands, so the trust marker (stockTrust.js) rides in the same write.
+export async function setCellState(loc, productId, size, state, opts = {}) {
   const user = auth.currentUser;
   if (!user) return { ok: false, reason: "not_authenticated" };
   if (!["untracked", "counting", "live"].includes(state)) return { ok: false, reason: "invalid_state" };
   const cellPath = stockCellPath(loc, productId, size);   // encoded size key (half-size safe)
   const now = serverNowIso();
   const snap = await get(child(ref(database), cellPath));
+  const trust = opts.trust === "count" && state === "live" && trustedCellsOnly(currentNetwork(), loc) ? trustStamp("count", now) : null;
+  // `opts.existingOnly`: never create a cell (a hub count confirming "none
+  // here" must not introduce the product at that hub).
+  if (!snap.exists() && opts.existingOnly === true) return { ok: true, skipped: "no_cell" };
   const updates = {};
   if (snap.exists()) {
     updates[`${cellPath}/state`] = state;
     updates[`${cellPath}/updatedAt`] = now;
     updates[`${cellPath}/updatedBy`] = user.uid;
+    if (trust) for (const [k, v] of Object.entries(trust)) updates[`${cellPath}/${k}`] = v;
   } else {
-    updates[`${cellPath}`] = { qty: 0, v: 0, mv: "seed", lastType: "count", state, updatedAt: now, updatedBy: user.uid };
+    updates[`${cellPath}`] = { qty: 0, v: 0, mv: "seed", lastType: "count", state, updatedAt: now, updatedBy: user.uid, ...(trust || {}) };
   }
   try {
     await update(ref(database), updates);

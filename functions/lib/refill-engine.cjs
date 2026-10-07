@@ -26,6 +26,7 @@
 // so this file can consume it without the module that reasons about this file
 // having to reach back in. See policy-resolve.cjs for the precedence order.
 const networkRegistry = require("./network-registry.cjs");
+const stockTrust = require("./stock-trust.cjs");
 const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 // The owner's shop-source rule (a shop never refills from Central once its hub
 // has held the product) — a leaf module, stated once. See shop-source-rule.cjs.
@@ -695,9 +696,10 @@ function walledRoutes(routes, network) {
 //     category, else the store's default (backStockFor). So Concrete can pull
 //     hoodies from the Concrete Stockroom and everything else from Hub 3 in
 //     the same scan.
-// Every leg is still gated by autoRouteAllowed: both ends LIVE and on one side
-// of the wall. A location that is not live is not in any of these lists — it
-// costs no stock read and gets no intent.
+// Every leg is still gated by autoRouteAllowed: Auto-refill ON at both ends
+// ("solved" or "all") and on one side of the wall. A location whose Auto-refill
+// is off is not in any of these lists — it costs no stock read and gets no
+// intent. At a "solved" end only TRUSTED cells are planned (see computeRefillPlan).
 //
 //   routes         dest → its ONE source (config legs + registry hubs)
 //   withheld       config legs the registry refused, as walledRoutes reports
@@ -713,7 +715,7 @@ function networkRouting(config, network) {
   const cfgRoutes = config?.routes || {};
   const { routes: walled, withheld } = walledRoutes(cfgRoutes, network);
   const inConfig = (id) => Object.prototype.hasOwnProperty.call(cfgRoutes, id);
-  const central = networkRegistry.listLocations(network, { type: "central", liveOnly: true })[0]?.id || null;
+  const central = networkRegistry.listLocations(network, { type: "central", autoRefillOnly: true })[0]?.id || null;
   const routes = { ...walled };
   const registryRouted = new Set();
   const regHubs = [];
@@ -723,7 +725,7 @@ function networkRouting(config, network) {
   // that config.routes had left out — never what an absent registry means.
   const byRegistry = !!(network && network.locations && network.aliasIndex);
   if (central && byRegistry) {
-    for (const h of networkRegistry.hubsOf(network, { liveOnly: true })) {
+    for (const h of networkRegistry.hubsOf(network, { autoRefillOnly: true })) {
       if (inConfig(h.id) || !networkRegistry.autoRouteAllowed(network, central, h.id)) continue;
       routes[h.id] = central;
       regHubs.push(h.id);
@@ -732,11 +734,11 @@ function networkRouting(config, network) {
   }
   const stores = new Set();
   const storeHubs = new Map();   // store → the hubs it may pull from right now
-  for (const s of byRegistry ? networkRegistry.storesOf(network, { liveOnly: true }) : []) {
+  for (const s of byRegistry ? networkRegistry.storesOf(network, { autoRefillOnly: true }) : []) {
     if (inConfig(s.id)) continue;
     const hubs = networkRegistry.backStockHubsOf(network, s.id)
       .filter((h) => networkRegistry.autoRouteAllowed(network, h, s.id));
-    if (!hubs.length) continue;   // no live hub on its side: nothing automatic
+    if (!hubs.length) continue;   // no routed hub on its side: nothing automatic
     stores.add(s.id);
     storeHubs.set(s.id, hubs);
     registryRouted.add(s.id);
@@ -772,9 +774,36 @@ function networkRouting(config, network) {
   return { routes, withheld, stores, registryRouted, sourceFor, sourcesOf, dests, locs, modeOf, central };
 }
 
+// The stock view a plan reads at a "solved" location: trusted cells only. A
+// product node left with no trusted cell is dropped altogether (storeCarries
+// then says no). Returns the predicate too, over the ORIGINAL cells.
+function maskUntrustedStock(stock, network) {
+  const byRegistry = !!(network && network.locations && network.aliasIndex);
+  // EVERY "solved" location the registry knows — not only those the stock
+  // view happens to hold: a location with no stock node yet still arms only
+  // trusted cells (it has none, so it arms nothing).
+  const masked = byRegistry ? Object.keys(network.locations).filter((loc) => networkRegistry.trustedCellsOnly(network, loc)) : [];
+  if (!masked.length) return { stock, trustedCell: () => true, maskedLocations: masked };
+  const out = { ...stock };
+  for (const loc of masked) {
+    if (!(loc in (stock || {}))) continue;
+    const node = {};
+    for (const [pid, sizes] of Object.entries(stock[loc] || {})) {
+      if (!sizes || typeof sizes !== "object") continue;
+      const keep = {};
+      for (const [k, cell] of Object.entries(sizes)) if (stockTrust.cellTrusted(cell)) keep[k] = cell;
+      if (Object.keys(keep).length) node[pid] = keep;
+    }
+    out[loc] = node;
+  }
+  const maskedSet = new Set(masked);
+  const trustedCell = (loc, pid, sizeKey) => !maskedSet.has(loc) || stockTrust.cellTrusted(stock?.[loc]?.[pid]?.[sizeKey]);
+  return { stock: out, trustedCell, maskedLocations: masked };
+}
+
 function computeRefillPlan(snapshot) {
   const {
-    nowMs, config: rawConfig, targets = {}, stock = {}, products = {},
+    nowMs, config: rawConfig, targets = {}, products = {},
     openIndex = {}, refillRequests = {}, orders = {}, movements = [],
     targetDecisions = {},   // /stock_targets_decisions — "keep as is" acks from the No Target queue
     rejectStreak = {},      // /refill_engine/rejectStreak — persisted reject-while-stock-shown counters (loop guard)
@@ -801,6 +830,19 @@ function computeRefillPlan(snapshot) {
   // back-stock hub. `routes` therefore holds every dest with ONE source; for a
   // registry-routed store the source is a per-product question — srcOf.
   const network = snapshot.network;
+  // ── TRUSTED CELLS ONLY (Auto-refill "solved products only") ────────────────
+  // At such a location the engine believes only cells that are TRUSTED
+  // (lib/stock-trust.cjs): arrived through Solve or a refill, or confirmed by a
+  // count. Every other cell there — uncounted legacy stock — is INVISIBLE to
+  // this plan: not carried, not counted as units anywhere, not available as a
+  // source, and never armed. The stock view below is masked once, here, so
+  // every reader of `stock` sees the same network; `trustedCell` is the
+  // predicate the deficit loop and the reconcile ask before raising or keeping
+  // an intent for a cell that is not in the masked view (a policy size with no
+  // cell yet, say). A location in "all" mode, or with no registry at all, is
+  // untouched — Marathon's plan is byte for byte what it was.
+  const rawStock = snapshot.stock || {};
+  const { stock, trustedCell, maskedLocations } = maskUntrustedStock(rawStock, network);
   const routing = networkRouting(rawConfig, network);
   const { routes, withheld: routesWithheld, dests } = routing;
   const srcOf = (dest, pid) => routing.sourceFor(dest, products?.[pid], pid);
@@ -1012,6 +1054,7 @@ function computeRefillPlan(snapshot) {
     let need = 0;
     for (const shop of shops) {
       if (srcOf(shop, pid) !== hub) continue;
+      if (!trustedCell(shop, pid, sizeKey)) continue;   // an untrusted shop cell is owed nothing
       const ts = resolveTarget(ctx, shop, pid, size);
       if (!ts || ts.target <= 0) continue;
       need += Math.max(ts.target - avail(cellQty(stock, shop, pid, size)) - (inbound.get(`${shop}|${pid}|${sizeKey}`) || 0), 0);
@@ -1077,9 +1120,12 @@ function computeRefillPlan(snapshot) {
         // A pass-through leg answers to the shops it carries, never to the
         // hub's own target (see passThroughNeed).
         const ptNeed = unresolvedOurs && entry.passThrough ? passThroughNeed(dest, pid, sizeKey, size, entry) : null;
-        const needGone = unresolvedOurs && (ptNeed != null
+        // An untrusted cell at a "solved" location is owed nothing of its own —
+        // but a PASS-THROUGH leg answers to the trusted shop cells it carries
+        // (passThroughNeed skips the untrusted ones), never to the hub's cell.
+        const needGone = unresolvedOurs && ((!entry.passThrough && !trustedCell(dest, pid, sizeKey)) || (ptNeed != null
           ? ptNeed <= 0
-          : (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0));
+          : (!t || t.target <= 0 || t.target - destHave - otherInbound <= 0)));
         // Certainly-unfillable PURGE (owner rule 2026-07-13): zero stock
         // anywhere upstream → withdrawn; staff never see unpickable requests.
         const unfillable = unresolvedOurs && networkQtyOf(pid, size, dest) - destHave <= 0;
@@ -1893,6 +1939,8 @@ function computeRefillPlan(snapshot) {
       if (!isClothing(products?.[pid]) && !isFootwear(products?.[pid]) && !targets?.[dest]?.[pid]
           && !categoryPolicyEntry(config, products, stock, pid, dest)) continue;
       for (const sizeKey of sizesFor(dest, pid)) {
+        // A "solved" location arms TRUSTED cells only (maskUntrustedStock).
+        if (!trustedCell(dest, pid, sizeKey)) continue;
         const size = rawSize(pid, sizeKey);
         const t = resolveTarget(ctx, dest, pid, size);
         if (!t || t.target <= 0) continue;
@@ -2102,7 +2150,23 @@ function computeRefillPlan(snapshot) {
           // the demand would starve silently behind a self-healing label
           // (Sonnet HIGH, 2026-07-13). No target at the source = a CONFIG gap,
           // surfaced as blocked, not as flowing.
-          const srcTarget = upstreamOfSrc ? resolveTarget(ctx, src, pid, size) : null;
+          // At a "solved products only" hub an UNTRUSTED cell is no buffer the
+          // engine will ever fill (maskUntrustedStock).
+          //   • EMPTY (qty ≤ 0): it reads as "no target here" — the shop's need
+          //     is carried THROUGH the hub; the box trusts the cell on landing.
+          //   • HOLDING UNCOUNTED UNITS: nothing is asked. A box sent through it
+          //     would land on units no one vouched for, stay untrusted, and the
+          //     next scan would ask again — Central drained into a cell nobody
+          //     reads. The shop waits, and the row says why: count the hub cell.
+          const srcUntrusted = !!upstreamOfSrc && !trustedCell(src, pid, sizeKey);
+          const srcUncounted = srcUntrusted ? avail(cellQty(rawStock, src, pid, size)) : 0;
+          if (srcUncounted > 0) {
+            parked(dest, pid, sizeKey, "upstream_blocked");
+            awaitingSupplier.push({ loc: dest, pid, size, deficit, source: src, uncountedAtSource: srcUncounted,
+              note: `${src} holds ${srcUncounted} uncounted unit${srcUncounted === 1 ? "" : "s"} of this size — count that cell and the shop is refilled from it` });
+            continue;
+          }
+          const srcTarget = upstreamOfSrc && !srcUntrusted ? resolveTarget(ctx, src, pid, size) : null;
           const srcCanPull = !!(srcTarget && srcTarget.target > 0);
           if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && srcCanPull && !srcParked)) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });
@@ -2257,8 +2321,17 @@ function computeRefillPlan(snapshot) {
   const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i));
   const footwearIntents = routedIntents.filter(isFootwearIntent);
   const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
-  const plannedClothing = dealFairly(clothingIntents, maxIntents);
-  const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
+  // THE CAP IS MARATHON'S FIRST. Intents for a "solved products only"
+  // destination (the Concrete division while it is being counted in) are
+  // dealt only from what the run's cap leaves over — so Marathon's share of
+  // every run is exactly what it was before Section 1 was routed.
+  const isSolvedDest = (i) => !!(network && network.locations && network.aliasIndex) && networkRegistry.trustedCellsOnly(network, i.dest);
+  const dealMarathonFirst = (list, cap) => {
+    const first = dealFairly(list.filter((i) => !isSolvedDest(i)), cap);
+    return [...first, ...dealFairly(list.filter(isSolvedDest), Math.max(0, cap - first.length))];
+  };
+  const plannedClothing = dealMarathonFirst(clothingIntents, maxIntents);
+  const plannedFootwear = dealMarathonFirst(footwearIntents, maxFootwearIntents);
   const plannedIntents = [...plannedClothing, ...plannedFootwear];
   // ═══ A ROUTED-ROUND COUNT DISPUTE STAYS ON RECOUNT NEEDED (2026-09-23) ═════
   // A DISPUTED pass-through lands at the hub, and that arrival is — correctly
@@ -2953,4 +3026,4 @@ function computeConfidence({ nowMs, stock = {}, movements = [], openIndex = {}, 
   return out;
 }
 
-module.exports = { walledRoutes, networkRouting, computeRefillPlan, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor, passThroughExcluded };
+module.exports = { walledRoutes, networkRouting, computeRefillPlan, maskUntrustedStock, computeConfidence, resolveTarget, subcategoryRun, encodeSizeKey, retryHistoryKey, saTodayKey, isClothing, stockFingerprint, sanitizeUpdate, categoryPolicyTarget, categoryPolicyEntry, policyCategoryKey, armedGroupForCategory, effectivePolicyFor, passThroughExcluded };

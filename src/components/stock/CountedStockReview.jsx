@@ -140,7 +140,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       const res = await applyMovement({
         type: "adjustment", productId: g.pid, size: s.size, qty: Math.abs(delta),
         to: delta > 0 ? g.loc : null, from: delta < 0 ? g.loc : null,
-        reason: "recount: corrected on the spot", cellState: "live", actorRole,
+        reason: "recount: corrected on the spot", cellState: "live", trust: "count", actorRole,
       });
       if (res.ok) flash("ok", `Set ${g.name} · ${s.size} @ ${labelFor(g.loc, registry)} → ${target}.`);
       else flash("err", `Couldn't update: ${res.reason || res.error || "unknown"}`);

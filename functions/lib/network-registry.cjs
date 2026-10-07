@@ -8,6 +8,7 @@
 const NETWORK_PATH = "network";
 const DEFAULT_CATEGORY = "_default";
 const CREDIT_SCOPES = Object.freeze(["shared", "section"]);
+const AUTO_REFILL_MODES = Object.freeze(["off", "solved", "all"]);
 
 const DEFAULT_NETWORK = Object.freeze({
   creditScope: "shared",
@@ -20,27 +21,27 @@ const DEFAULT_NETWORK = Object.freeze({
   }),
   locations: Object.freeze({
     central: Object.freeze({
-      id: "central", name: "Central", type: "central", section: null, live: true, sort: 0,
+      id: "central", name: "Central", type: "central", section: null, solve: true, autoRefill: "all", sort: 0,
       aliases: Object.freeze(["Central"]),
     }),
     // Merged into Central on 2026-07-26 and deactivated. Still registered
     // because historic movements name them; both were Central's own building.
     studio: Object.freeze({
-      id: "studio", name: "Studio", type: "central", section: null, live: false, retired: true, sort: 1,
+      id: "studio", name: "Studio", type: "central", section: null, solve: false, autoRefill: "off", retired: true, sort: 1,
       aliases: Object.freeze(["Studio"]),
     }),
     base: Object.freeze({
-      id: "base", name: "Base", type: "central", section: null, live: false, retired: true, sort: 2,
+      id: "base", name: "Base", type: "central", section: null, solve: false, autoRefill: "off", retired: true, sort: 2,
       aliases: Object.freeze(["Base"]),
     }),
     "marathon-pine": Object.freeze({
-      id: "marathon-pine", name: "Marathon Pine", type: "store", section: 1, live: false, sort: 10,
+      id: "marathon-pine", name: "Marathon Pine", type: "store", section: 1, solve: true, autoRefill: "solved", sort: 10,
       posId: "pine", universe: "pine", policyLike: "marathon-pe", numberPrefix: "P",
       aliases: Object.freeze(["pine", "Pine", "Marathon Pine", "marathon pine", "Pinetown"]),
       tills: Object.freeze([Object.freeze({ tillId: "till-1", name: "Till 1" })]),
     }),
     concrete: Object.freeze({
-      id: "concrete", name: "Concrete", type: "store", section: 1, live: false, sort: 11,
+      id: "concrete", name: "Concrete", type: "store", section: 1, solve: true, autoRefill: "solved", sort: 11,
       posId: "concrete", universe: "concrete", policyLike: "marathon-pe", numberPrefix: "C",
       aliases: Object.freeze(["Concrete", "marathon-concrete", "Marathon Concrete"]),
       tills: Object.freeze([
@@ -49,16 +50,16 @@ const DEFAULT_NETWORK = Object.freeze({
       ]),
     }),
     hub3: Object.freeze({
-      id: "hub3", name: "Hub 3", type: "hub", section: 1, live: false, sort: 12, policyLike: "hub2",
+      id: "hub3", name: "Hub 3", type: "hub", section: 1, solve: true, autoRefill: "solved", sort: 12, policyLike: "hub2",
       aliases: Object.freeze(["Hub 3", "hub 3", "Hub3"]),
     }),
     "concrete-stockroom": Object.freeze({
-      id: "concrete-stockroom", name: "Concrete Stockroom", type: "hub", section: 1, live: false, sort: 13, policyLike: "hub2",
+      id: "concrete-stockroom", name: "Concrete Stockroom", type: "hub", section: 1, solve: true, autoRefill: "solved", sort: 13, policyLike: "hub2",
       serves: Object.freeze(["concrete"]),
       aliases: Object.freeze(["Concrete Stockroom", "concrete stockroom", "concreteStockroom"]),
     }),
     "marathon-pe": Object.freeze({
-      id: "marathon-pe", name: "Marathon PE", type: "store", section: 2, live: true, sort: 20,
+      id: "marathon-pe", name: "Marathon PE", type: "store", section: 2, solve: true, autoRefill: "all", sort: 20,
       posId: "pe", universe: "central",
       aliases: Object.freeze(["pe", "PE", "Marathon PE", "marathon pe", "Marathon", "marathon"]),
       tills: Object.freeze([
@@ -68,7 +69,7 @@ const DEFAULT_NETWORK = Object.freeze({
       ]),
     }),
     trophy: Object.freeze({
-      id: "trophy", name: "Trophy", type: "store", section: 2, live: true, sort: 21,
+      id: "trophy", name: "Trophy", type: "store", section: 2, solve: true, autoRefill: "all", sort: 21,
       posId: "trophy", universe: "central",
       aliases: Object.freeze(["Trophy"]),
       tills: Object.freeze([
@@ -77,11 +78,11 @@ const DEFAULT_NETWORK = Object.freeze({
       ]),
     }),
     hub1: Object.freeze({
-      id: "hub1", name: "Hub 1", type: "hub", section: 2, live: true, sort: 22,
+      id: "hub1", name: "Hub 1", type: "hub", section: 2, solve: true, autoRefill: "all", sort: 22,
       aliases: Object.freeze(["Hub 1", "hub 1", "Hub1"]),
     }),
     hub2: Object.freeze({
-      id: "hub2", name: "Hub 2", type: "hub", section: 2, live: true, sort: 23,
+      id: "hub2", name: "Hub 2", type: "hub", section: 2, solve: true, autoRefill: "all", sort: 23,
       aliases: Object.freeze(["Hub 2", "hub 2", "Hub2"]),
     }),
   }),
@@ -131,9 +132,11 @@ function normTills(v) {
 
 const LOCATION_TYPES = Object.freeze(["store", "hub", "central"]);
 
-// One location, raw overlaid on its seed. `live` is true ONLY when something
-// says true: an unknown location, or a raw record with no live field and no
-// seed, is not live.
+// One location, raw overlaid on its seed. Switches are ON only when something
+// says so: an unknown location, or a raw record with no switch fields and no
+// seed, is solve off + autoRefill "off". A legacy `live` is read ONLY when the
+// record carries neither new field, so a half-written pair can never keep a
+// stale `live` alive.
 function normLocation(id, raw, seed) {
   const r = isObj(raw) ? raw : {};
   const s = isObj(seed) ? seed : {};
@@ -143,14 +146,26 @@ function normLocation(id, raw, seed) {
   // rather than drop a known location or leave it unwalled.
   const section = type === "central" ? null : (normSection(r.section) !== null ? normSection(r.section) : normSection(s.section));
   if (type !== "central" && section === null) return null;
-  const live = typeof r.live === "boolean" ? r.live : s.live === true;
+  const hasNew = typeof r.solve === "boolean" || AUTO_REFILL_MODES.includes(r.autoRefill);
+  let solve, autoRefill;
+  if (hasNew) {
+    solve = typeof r.solve === "boolean" ? r.solve : s.solve === true;
+    autoRefill = AUTO_REFILL_MODES.includes(r.autoRefill) ? r.autoRefill : (AUTO_REFILL_MODES.includes(s.autoRefill) ? s.autoRefill : "off");
+  } else if (typeof r.live === "boolean") {
+    solve = r.live;
+    autoRefill = r.live ? "all" : "off";
+  } else {
+    solve = s.solve === true;
+    autoRefill = AUTO_REFILL_MODES.includes(s.autoRefill) ? s.autoRefill : "off";
+  }
+  const live = solve && autoRefill === "all";
   const aliases = [...new Set([...asList(s.aliases), ...asList(r.aliases)].filter((a) => typeof a === "string" && a.trim()))];
   const tills = r.tills !== undefined && normTills(r.tills).length ? normTills(r.tills) : normTills(s.tills);
   const serves = asList(r.serves !== undefined ? r.serves : s.serves).filter((x) => typeof x === "string");
   const out = {
     id,
     name: typeof r.name === "string" && r.name.trim() ? r.name.trim() : (s.name || id),
-    type, section, live,
+    type, section, solve, autoRefill, live,
     sort: Number.isFinite(Number(r.sort)) && r.sort !== null && r.sort !== undefined ? Number(r.sort) : (Number.isFinite(s.sort) ? s.sort : 999),
     aliases,
   };
@@ -274,9 +289,41 @@ function sectionOf(registry, anyName) {
   return l ? l.section : null;
 }
 
+// Fully live (solve ON and autoRefill "all") — the pre-split meaning, for every
+// reader that joins a location to the stock audit, display checks, write-offs,
+// clean-up and totals only once it is wholly trusted.
 function isLive(registry, anyName) {
   const l = locationOf(registry, anyName);
   return !!l && l.live === true;
+}
+
+// The Solve switch: may Solve seed this location and route stock to it.
+function solveOn(registry, anyName) {
+  const l = locationOf(registry, anyName);
+  return !!l && l.solve === true;
+}
+
+// The Auto-refill switch: "off" | "solved" | "all" ("off" for an unknown id).
+function autoRefillMode(registry, anyName) {
+  const l = locationOf(registry, anyName);
+  return l && AUTO_REFILL_MODES.includes(l.autoRefill) ? l.autoRefill : "off";
+}
+
+function autoRefillOn(registry, anyName) {
+  return autoRefillMode(registry, anyName) !== "off";
+}
+
+// Trusted cells only: the engine arms and refills a cell here only if it is
+// trusted (stockTrust.js). False under "all" and under "off".
+function trustedCellsOnly(registry, anyName) {
+  return autoRefillMode(registry, anyName) === "solved";
+}
+
+// Does anything — Solve or the engine — send stock here by itself? The hold
+// lane releases into such a location; it keeps holding for one with both
+// switches off.
+function receivesRoutedStock(registry, anyName) {
+  return solveOn(registry, anyName) || autoRefillOn(registry, anyName);
 }
 
 function listLocations(registry, filter) {
@@ -286,6 +333,8 @@ function listLocations(registry, filter) {
     .filter((l) => (f.type ? l.type === f.type : true))
     .filter((l) => (f.section ? l.section === f.section : true))
     .filter((l) => (f.liveOnly ? l.live === true : true))
+    .filter((l) => (f.solveOnly ? l.solve === true : true))
+    .filter((l) => (f.autoRefillOnly ? l.autoRefill !== "off" : true))
     .sort((a, b) => a.sort - b.sort || a.id.localeCompare(b.id));
 }
 
@@ -370,9 +419,18 @@ function storesServedBy(registry, anyHub) {
   return Object.keys(R.backStock).filter((s) => backStockHubsOf(R, s).includes(hub)).sort();
 }
 
-// Routing gate for anything AUTOMATIC: both ends live, and the wall holds.
+// Routing gate for the ENGINE (and everything that follows its plan): both
+// ends have Auto-refill on ("solved" or "all"), and the wall holds. Which
+// cells it may then arm at a "solved" end is trustedCellsOnly's question.
 function autoRouteAllowed(registry, from, to) {
-  if (!isLive(registry, from) || !isLive(registry, to)) return false;
+  if (!autoRefillOn(registry, from) || !autoRefillOn(registry, to)) return false;
+  return wallAllows(registry, from, to);
+}
+
+// Routing gate for SOLVE (a person's Solve, the first batch it raises): both
+// ends have Solve on, and the wall holds.
+function solveRouteAllowed(registry, from, to) {
+  if (!solveOn(registry, from) || !solveOn(registry, to)) return false;
   return wallAllows(registry, from, to);
 }
 
@@ -489,7 +547,7 @@ function seedPayload() {
   const locations = {};
   for (const id of Object.keys(DEFAULT_NETWORK.locations)) {
     const l = DEFAULT_NETWORK.locations[id];
-    const o = { id: l.id, name: l.name, type: l.type, live: l.live, sort: l.sort };
+    const o = { id: l.id, name: l.name, type: l.type, solve: l.solve, autoRefill: l.autoRefill, sort: l.sort };
     if (l.section !== null) o.section = l.section;
     if (l.posId) o.posId = l.posId;
     if (l.universe) o.universe = l.universe;
@@ -526,11 +584,12 @@ function posStoreIndex(locations) {
 // ── END SHARED BODY ──────────────────────────────────────────────────────────
 
 module.exports = {
-  NETWORK_PATH, DEFAULT_CATEGORY, CREDIT_SCOPES, DEFAULT_NETWORK, TRANSIT_ID, SEED_REGISTRY,
+  NETWORK_PATH, DEFAULT_CATEGORY, CREDIT_SCOPES, AUTO_REFILL_MODES, DEFAULT_NETWORK, TRANSIT_ID, SEED_REGISTRY,
   normalizeNetwork, resolveLocationId, locationOf, locationName, sectionOf, isLive,
+  solveOn, autoRefillMode, autoRefillOn, trustedCellsOnly, receivesRoutedStock,
   listLocations, storesOf, hubsOf, tillsFor,
   wallCheck, wallAllows, wallMessage,
-  backStockFor, backStockHubsOf, storesServedBy, autoRouteAllowed,
+  backStockFor, backStockHubsOf, storesServedBy, autoRouteAllowed, solveRouteAllowed,
   creditScopeOf, creditSpendableAt, issuingStamp, seedPayload, posStoreIndex,
   policyKeyFor, numberPrefixFor, sectionsFor, canSeeLocation,
   sectionName, sectionsInOrder,

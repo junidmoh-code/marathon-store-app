@@ -24,7 +24,7 @@ function body(file) {
 // The POS repo's src/shared/networkRegistry.parity.test.js holds the same
 // constant. Changing the body means running scripts/sync-network-registry.mjs
 // and updating BOTH.
-export const SHARED_BODY_SHA256 = "460ff303f3ca00c711ba616f3f6c42dd04e9356acd075f7988a6e91bebb0b084";
+export const SHARED_BODY_SHA256 = "fac8d4c7735a0b1c917a35314045c56dcdbfe203a5b50325b7ebb471f9b1c6ce";
 
 describe("network registry parity", () => {
   it("functions copy carries the same body, byte for byte", () => {

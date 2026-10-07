@@ -135,6 +135,8 @@ export function suggestInitialDistribution({ product, dests = DISTRIBUTION_DESTS
     suggestions[dest] = perSize;
     defaultOn[dest] = original
       ? any && !NEVER_DEFAULT_ON.has(dest)
+      // Pre-ticked only at a FULLY live store: a wizard send is a hand transfer
+      // (it lands untrusted), so Pine and Concrete are offered, never pre-ticked.
       : any && isStore(dest, N) && isLive(N, dest);
   }
   return { family, suggestions, defaultOn };

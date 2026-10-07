@@ -46,6 +46,9 @@ function world(overrides = {}) {
       visors: { key: "visors", label: "Visors", sizeMode: "one" },
     } } },
     locations: { central: { kind: "hub" }, hub2: { kind: "hub" }, "marathon-pe": { kind: "shop" }, trophy: { kind: "shop" } },
+    // Section 1 with both switches off: this world is about Section 2's two
+    // destinations (the seed itself now routes Section 1 — trusted cells only).
+    network: { locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) },
     products: {
       c1: { name: "Black Cap", categoryKey: "caps-beanies", sizes: ["_"], productType: "clothing" },
       c2: { name: "Grey Beanie", categoryKey: "caps-beanies", sizes: ["_"], productType: "clothing" },

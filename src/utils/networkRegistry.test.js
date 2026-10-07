@@ -4,9 +4,7 @@
 import { describe, it, expect } from "vitest";
 import * as registryApi from "./networkRegistry";
 import {
-  normalizeNetwork, resolveLocationId, sectionOf, isLive, listLocations, storesOf, hubsOf, tillsFor,
-  wallCheck, wallAllows, wallMessage, backStockFor, backStockHubsOf, storesServedBy, autoRouteAllowed,
-  creditSpendableAt, issuingStamp, seedPayload, locationName, SEED_REGISTRY,
+  normalizeNetwork, resolveLocationId, sectionOf, isLive, listLocations, storesOf, hubsOf, tillsFor, wallCheck, wallAllows, wallMessage, backStockFor, backStockHubsOf, storesServedBy, autoRouteAllowed, creditSpendableAt, issuingStamp, seedPayload, locationName, SEED_REGISTRY, solveOn, autoRefillMode, autoRefillOn, trustedCellsOnly, receivesRoutedStock, solveRouteAllowed,
 } from "./networkRegistry";
 
 // What real RTDB does to a written value: empty arrays and empty objects are
@@ -182,16 +180,106 @@ describe("back stock", () => {
   });
 });
 
+// Section 1 with both switches off — what the seed shipped as before 7 Oct 2026.
+const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+const dark = (extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, { solve: false, autoRefill: "off" }])), ...extra });
+
+describe("the two switches", () => {
+  it("the seed: Marathon's four are Solve on + Auto-refill all; Section 1 is Solve on + solved products only", () => {
+    for (const id of ["marathon-pe", "trophy", "hub1", "hub2"]) {
+      expect(SEED.locations[id]).toMatchObject({ solve: true, autoRefill: "all", live: true });
+      expect(autoRefillMode(SEED, id)).toBe("all");
+      expect(trustedCellsOnly(SEED, id)).toBe(false);
+    }
+    for (const id of S1) {
+      expect(SEED.locations[id]).toMatchObject({ solve: true, autoRefill: "solved", live: false });
+      expect(solveOn(SEED, id)).toBe(true);
+      expect(autoRefillOn(SEED, id)).toBe(true);
+      expect(trustedCellsOnly(SEED, id)).toBe(true);
+      expect(isLive(SEED, id)).toBe(false);
+    }
+    expect(SEED.locations.central).toMatchObject({ solve: true, autoRefill: "all", live: true });
+    expect(autoRefillMode(SEED, "nope")).toBe("off");
+    expect(solveOn(SEED, "nope")).toBe(false);
+  });
+
+  it("`live` is DERIVED: true only for Solve on + Auto-refill all", () => {
+    const R = normalizeNetwork({ locations: {
+      hub3: { solve: true, autoRefill: "all" }, "marathon-pine": { solve: false, autoRefill: "all" },
+      concrete: { solve: true, autoRefill: "solved" }, hub2: { solve: true, autoRefill: "off" },
+    } });
+    expect(isLive(R, "hub3")).toBe(true);
+    expect(isLive(R, "marathon-pine")).toBe(false);
+    expect(isLive(R, "concrete")).toBe(false);
+    expect(isLive(R, "hub2")).toBe(false);
+    expect(autoRefillOn(R, "hub2")).toBe(false);
+  });
+
+  it("MIGRATES a stored legacy `live`: true → on + all, false → off + off — only when neither new field is stored", () => {
+    const R = normalizeNetwork({ locations: { hub3: { live: true }, hub2: { live: false }, concrete: { live: false } } });
+    expect(R.locations.hub3).toMatchObject({ solve: true, autoRefill: "all", live: true });
+    expect(R.locations.hub2).toMatchObject({ solve: false, autoRefill: "off", live: false });
+    expect(R.locations.concrete).toMatchObject({ solve: false, autoRefill: "off", live: false });
+    // a new field present → the legacy flag is dead, whatever it says
+    const M = normalizeNetwork({ locations: { hub3: { live: true, solve: false }, hub2: { live: true, autoRefill: "solved" } } });
+    expect(M.locations.hub3).toMatchObject({ solve: false, autoRefill: "solved" });   // the SEED's autoRefill fills the gap, never the legacy flag
+    expect(M.locations.hub2).toMatchObject({ solve: true, autoRefill: "solved", live: false });
+    // junk in both new fields is no new field at all: the legacy flag still decides, else the seed
+    const J = normalizeNetwork({ locations: { hub2: { live: false, solve: "yes", autoRefill: "sometimes" } } });
+    expect(J.locations.hub2).toMatchObject({ solve: false, autoRefill: "off" });
+    const K = normalizeNetwork({ locations: { hub2: { solve: "yes", autoRefill: "sometimes" } } });
+    expect(K.locations.hub2).toMatchObject({ solve: true, autoRefill: "all" });
+  });
+
+  it("list filters: liveOnly (fully live), solveOnly, autoRefillOnly", () => {
+    expect(storesOf(SEED, { liveOnly: true }).map((l) => l.id)).toEqual(["marathon-pe", "trophy"]);
+    expect(storesOf(SEED, { solveOnly: true }).map((l) => l.id)).toEqual(["marathon-pine", "concrete", "marathon-pe", "trophy"]);
+    expect(storesOf(SEED, { autoRefillOnly: true }).map((l) => l.id)).toEqual(["marathon-pine", "concrete", "marathon-pe", "trophy"]);
+    expect(storesOf(dark(), { solveOnly: true }).map((l) => l.id)).toEqual(["marathon-pe", "trophy"]);
+    expect(storesOf(dark(), { autoRefillOnly: true }).map((l) => l.id)).toEqual(["marathon-pe", "trophy"]);
+  });
+
+  it("seedPayload writes the two switches and never `live`", () => {
+    const p = seedPayload();
+    for (const id of Object.keys(p.locations)) expect("live" in p.locations[id]).toBe(false);
+    expect(p.locations.hub3).toMatchObject({ solve: true, autoRefill: "solved" });
+    expect(p.locations.hub2).toMatchObject({ solve: true, autoRefill: "all" });
+    expect(p.locations.studio).toMatchObject({ solve: false, autoRefill: "off" });
+    expect(normalizeNetwork(p)).toEqual(SEED);
+  });
+
+  it("receivesRoutedStock: either switch on", () => {
+    const R = normalizeNetwork({ locations: { hub3: { solve: true, autoRefill: "off" }, "marathon-pine": { solve: false, autoRefill: "solved" }, concrete: { solve: false, autoRefill: "off" } } });
+    expect(receivesRoutedStock(R, "hub3")).toBe(true);
+    expect(receivesRoutedStock(R, "marathon-pine")).toBe(true);
+    expect(receivesRoutedStock(R, "concrete")).toBe(false);
+  });
+});
+
 describe("live and automatic routing", () => {
-  it("routes automatically only between live locations on the same side of the wall", () => {
+  it("the ENGINE routes between locations with Auto-refill on, on the same side of the wall", () => {
     expect(autoRouteAllowed(SEED, "hub2", "trophy")).toBe(true);
     expect(autoRouteAllowed(SEED, "central", "hub1")).toBe(true);
-    expect(autoRouteAllowed(SEED, "central", "hub3")).toBe(false);
-    expect(autoRouteAllowed(SEED, "hub3", "marathon-pine")).toBe(false);
-    const R = normalizeNetwork({ locations: { hub3: { live: true }, "marathon-pine": { live: true } } });
+    // Section 1 on the seed: Auto-refill "solved" is ON — the engine routes it (trusted cells only)
+    expect(autoRouteAllowed(SEED, "central", "hub3")).toBe(true);
+    expect(autoRouteAllowed(SEED, "hub3", "marathon-pine")).toBe(true);
+    expect(autoRouteAllowed(dark(), "central", "hub3")).toBe(false);
+    expect(autoRouteAllowed(dark(), "hub3", "marathon-pine")).toBe(false);
+    const R = normalizeNetwork({ locations: { hub3: { live: true }, "marathon-pine": { live: true }, concrete: { solve: true, autoRefill: "off" } } });
     expect(autoRouteAllowed(R, "hub3", "marathon-pine")).toBe(true);
-    expect(autoRouteAllowed(R, "hub3", "concrete")).toBe(false);
-    expect(autoRouteAllowed(R, "hub3", "hub2")).toBe(false);
+    expect(autoRouteAllowed(R, "hub3", "concrete")).toBe(false);   // Solve on, Auto-refill off: not the engine's
+    expect(autoRouteAllowed(R, "hub3", "hub2")).toBe(false);       // the wall, whatever the switches
+  });
+
+  it("SOLVE routes between locations with Solve on, on the same side of the wall", () => {
+    expect(solveRouteAllowed(SEED, "central", "hub3")).toBe(true);
+    expect(solveRouteAllowed(SEED, "hub3", "marathon-pine")).toBe(true);
+    expect(solveRouteAllowed(SEED, "hub2", "trophy")).toBe(true);
+    expect(solveRouteAllowed(dark(), "hub3", "marathon-pine")).toBe(false);
+    const R = normalizeNetwork({ locations: { hub3: { solve: false, autoRefill: "all" } } });
+    expect(solveRouteAllowed(R, "hub3", "marathon-pine")).toBe(false);   // Auto-refill on, Solve off: not Solve's
+    expect(autoRouteAllowed(R, "hub3", "marathon-pine")).toBe(true);
+    expect(solveRouteAllowed(SEED, "hub3", "hub2")).toBe(false);          // the wall
   });
 
   it("flips one location without touching another", () => {
