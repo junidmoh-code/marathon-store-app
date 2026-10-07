@@ -12,6 +12,11 @@
 //     up by the sweep when its lease lapses;
 //   • the notice is queued once, leased while out, and closed on the poller's word.
 "use strict";
+// NEVER PRODUCTION. These tests load modules that initialise the Admin SDK
+// against the live database; a test that slips past an injected fake (a
+// mutation that removed a gate did, 7 Oct 2026, and wrote a batch to
+// /card_batches) must hit a dead emulator and fail, not the shop's data.
+process.env.FIREBASE_DATABASE_EMULATOR_HOST = "127.0.0.1:9";
 
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
