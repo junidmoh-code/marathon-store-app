@@ -359,9 +359,22 @@ async function runSlipOcr(photos, apiKey, deps = {}) {
     made++;
     try {
       const out = await runSlipOcrOnce(photos, apiKey, plan[i], deps.fetch || fetch);
-      return { ...out, model: plan[i], attempts: i + 1 };
+      return { ...out, model: plan[i], attempts: made };
     } catch (err) {
       last = err;
+      // A MODEL THAT HUNG OR FELL OVER GOES STRAIGHT TO THE OTHER TIER. On 7 Oct
+      // 2026 Marathon Till 2's slip was sent twice and gemini-3.6-flash held
+      // both requests until the 120 s timeout fired — and a timeout used to
+      // end the read on the spot, with the fallback model never asked. A hang
+      // is not worth a second two-minute wait on the same model, so it (and a
+      // 500/502/504) skips the short 503 retries and takes the one fallback
+      // attempt, budget permitting.
+      if (isHungOrBroken(err)) {
+        const fallback = plan.indexOf(OCR_FALLBACK_MODEL);
+        if (plan[i] === OCR_FALLBACK_MODEL || fallback < 0) break;
+        i = fallback - 1; // the loop's i++ lands on the fallback
+        continue;
+      }
       if (err.httpStatus !== 503) throw err;
       const wait = OCR_503_BACKOFF_MS[i];
       if (wait && plan[i + 1] === OCR_MODEL) await sleep(wait);
@@ -369,6 +382,12 @@ async function runSlipOcr(photos, apiKey, deps = {}) {
   }
   last.attempts = made;
   throw last;
+}
+
+/** A read that timed out, or a server-side failure other than "overloaded". */
+function isHungOrBroken(err) {
+  return !!err && (err.name === "TimeoutError" || err.name === "AbortError"
+    || err.httpStatus === 500 || err.httpStatus === 502 || err.httpStatus === 504);
 }
 
 async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
