@@ -4578,7 +4578,7 @@ async function generateOnePost(db, {
   signal, geminiApiKey, status, scheduledAt, updatedBy, saDate,
 }) {
   const { picks, reason } = socialSelect.pickForKind(kind, candidates, { used });
-  if (!picks.length) return { ok: false, skipped: { kind, format, reason } };
+  if (!picks.length) return { ok: false, skipped: { kind, format, reason, noStock: true } };
 
   const postId = db.ref(SOCIAL_POSTS_PATH).push().key;
   const spec = socialSelect.POST_KINDS.find((k) => k.key === kind);
@@ -5163,7 +5163,9 @@ async function loadSocialPolicy(db) {
   if (total > socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY) {
     console.warn(`socialDailyAutopilot: the policy asks for ${total} generations a day but the daily cap is ${socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} — ${total - socialBudget.MAX_IMAGE_GENERATIONS_PER_DAY} will be skipped every day until one of the two changes`);
   }
-  return clamped;
+  // updatedAt goes with it, so the watchdog does not grade a slot that was
+  // already past when the policy was saved (lib/social-health.cjs passedSlots).
+  return { ...clamped, updatedAt: Number(v && v.updatedAt) || null };
 }
 
 // RTDB cannot store an empty array — a format with zero posts a day is
@@ -5366,6 +5368,8 @@ exports.socialDailyAutopilot = onSchedule(
         // bad minute (lib/social-recovery.cjs; 7 Oct lost both reels that way).
         const result = await socialRecovery.generateWithRecovery({
           kind: req.kind, format: req.format, rotation: AUTOPILOT_KINDS,
+          // 1500 s of the 1800 s timeout, leaving room for the run record.
+          deadlineMs: nowMs + 1500 * 1000,
           sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
           run: (kind) => generateOnePost(db, {
             kind, format: req.format, style, platforms, styleKit, library, candidates, used,
@@ -5470,8 +5474,9 @@ exports.socialHealthScan = onSchedule(
     // Off-minutes, clear of every other scheduler's :00 rush. Every fifteen
     // minutes (was hourly at :25) so that a missed slot pages within 35
     // minutes of its time: the 20 minute grace plus at most one interval.
+    // 07:10 to 23:55, so any slot up to about 23:35 is graded the same day.
     // Each run reads a bounded three-week key range, so the cost is small.
-    schedule: "10,25,40,55 7-22 * * *",
+    schedule: "10,25,40,55 7-23 * * *",
     timeZone: "Africa/Johannesburg",
     region: "europe-west1",
     memory: "256MiB",

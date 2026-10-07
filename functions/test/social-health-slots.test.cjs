@@ -96,3 +96,17 @@ test("a late reel covers its own slot; an early Post now covers the first open s
   const early = day({ nowMs: at(12, 25), posts: [landed("reel", 10), landed("story", 10, 1), queued("reel", 19), queued("story", 19)] });
   assert.equal(early.ok, true, JSON.stringify(early.reasons));
 });
+
+test("a slot already past when the policy was saved is not owed", () => {
+  const v = day({ nowMs: at(14, 25), policy: { reels: ["10:00", "12:00"], updatedAt: at(14) },
+    // The run made two; the 10:00 one was slotted for tomorrow.
+    posts: [landed("reel", 12, 5), landed("story", 12, 6), queued("reel", 34), queued("story", 34)] });
+  assert.equal(v.ok, true, JSON.stringify(v.reasons));
+});
+
+test("a failed publish carries its own reason into the alarm", () => {
+  const f = { status: "failed", format: "reel", createdAt: at(6), scheduledAt: at(12),
+    results: { instagram: { state: "error", error: "Error validating access token: Session has expired" } } };
+  const v = day({ posts: [f, queued("story", 12), queued("reel", 19), queued("story", 19)] });
+  assert.match(alarmMessage(v), /in failed \(latest: instagram: Error validating access token/);
+});

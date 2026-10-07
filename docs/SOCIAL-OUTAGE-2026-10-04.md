@@ -78,3 +78,33 @@ a story, and no fix that needs a manual step on a schedule. A daily
 tap-to-approve is that manual step. The fix therefore restores the default-ON
 autopilot for social. The other parts of #682 (the new-arrivals photo studio
 needs a tap, no unattended "generate next N" sweep) are not touched.
+
+## Fix (7 Oct, PR #706)
+
+- `SOCIAL_AUTOPILOT_ENABLED` is back to default ON (`!== "false"`), and a test pins it.
+- The first run after re-enabling made nothing. Nano Banana Pro answered 503 "high demand", and an outfit found no bottom in stock. The generator now:
+  - retries a 5xx (30 s, then 90 s) within a run deadline;
+  - falls through to the other kinds when stock can't make the requested one;
+  - falls back to the Flash image model when Pro returns 5xx;
+  - gives back a budget unit that a 5xx never spent.
+- 7 Oct 18:19 run: 2 reels + 2 story twins, slotted 19:00 today and 12:00 on 8 Oct.
+- Captions fell back to the template line: the Anthropic API credit balance is too low (https://console.anthropic.com/settings/billing).
+
+## The alarm
+
+`socialHealthScan` runs at :10/:25/:40/:55, 07:10–23:55 SAST. Every policy slot (and its story twin) must be matched by a post that actually landed on a platform by 20 minutes after the slot. If one isn't, the day is graded **silent** and the scan logs `SOCIAL_ENGINE_ALARM …`. The message names the missed slot and the cause:
+- the generator is switched off;
+- no run record by 06:40;
+- the generator's own error or skip reasons;
+- the publisher heartbeat is stale;
+- the newest failed publish's own error text.
+
+Cloud Monitoring policy "Social engine alarm" matches the marker and emails junidmoh@gmail.com. That is email only, delivered by Google, and independent of the Mac mini. Each distinct problem is emailed once per day. Check the setup with `node scripts/social/install-social-alarm.mjs --verify`. Verified live on 7 Oct 18:24: `Social engine SILENT on 2026-10-07. the 12:00 reel has not landed; the 12:00 story has not landed`.
+
+Known limits:
+- Posts created more than 21 days ago are outside the scan's key-range read.
+- The alert policy auto-closes after 30 min. A second distinct problem inside that window is folded into the open incident rather than emailed again.
+
+## Reboot
+
+The `com.marathon.socialpublish` LaunchAgent is enabled, with KeepAlive and a ThrottleInterval of 120 s. Auto-login (`marathonclub`) and `pmset autorestart 1` bring it back after a power cut. Proven on 6 Oct, when it resumed 53 s after the 11:42 reboot. If it ever stops, the heartbeat check emails within about 30 min.

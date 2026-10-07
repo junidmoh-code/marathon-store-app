@@ -69,6 +69,12 @@ const GENERATOR_DUE_BY_MS = (6 * 60 + 40) * 60 * 1000;
 // orderByChild query would download everything anyway. Three weeks covers
 // every post a day can owe: the autopilot slots at most a day ahead, and a
 // manual post is scheduled within the fortnight assignSlots walks.
+// KNOWN LIMIT: a post created more than three weeks ago is not seen. If an
+// old draft is approved and published today it does not cover its slot (a
+// false page), and an old post stuck in approved or failed stops being
+// reported. Reading by status instead would need .indexOn, which
+// /social_posts does not have. Without it an orderByChild query downloads
+// the whole node. Suggested rule: "social_posts": { ".indexOn": ["status", "scheduledAt"] }
 const SCAN_WINDOW_MS = 21 * DAY_MS;
 
 const PUSH_CHARS = "-0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ_abcdefghijklmnopqrstuvwxyz";
@@ -222,6 +228,23 @@ function dayObligation(policy, { reelAlsoPostsToStory = true, storyAlsoPostsToFe
  *   is what lets the alert say "the engine has stopped" rather than "something
  *   is a bit off" — two different messages for two genuinely different nights.
  */
+/**
+ * The newest failure's own words, so an alarm about a rejected publish says
+ * WHY (an expired Meta token, a rejected container) instead of only a count.
+ * Uses failedReason, else the first platform error in results.
+ */
+function latestFailureCause(failed) {
+  const newest = [...failed].sort((a, b) =>
+    (Number(b.postedAt || b.scheduledAt) || 0) - (Number(a.postedAt || a.scheduledAt) || 0))[0];
+  if (!newest) return "";
+  let why = newest.failedReason;
+  if (!why && newest.results && typeof newest.results === "object") {
+    const bad = Object.entries(newest.results).find(([, r]) => r && r.state !== "ok" && r.error);
+    if (bad) why = `${bad[0]}: ${bad[1].error}`;
+  }
+  return why ? ` (latest: ${String(why).slice(0, 160)})` : "";
+}
+
 /** "19:00" -> ms after SAST midnight, or null for a malformed time. */
 function slotOffsetMs(hhmm) {
   const m = /^(\d{1,2}):(\d{2})$/.exec(String(hhmm || "").trim());
@@ -243,11 +266,16 @@ function listOf(v) {
  */
 function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, storyAlsoPostsToFeed = true } = {}) {
   const by = { reel: [], story: [], feed: [] };
+  // A slot whose time was already past when the policy was saved was never
+  // owed. Adding a 10:00 slot at 14:00 must not page about 10:00.
+  const savedAt = Number(policy && policy.updatedAt) || 0;
   const add = (format, list) => {
     for (const t of listOf(list)) {
       const off = slotOffsetMs(t);
       if (off === null) continue;
-      if (dayStart + off + PUBLISH_GRACE_MS < nowMs) by[format].push(String(t).trim());
+      const slot = dayStart + off;
+      if (slot < savedAt) continue;
+      if (slot + PUBLISH_GRACE_MS < nowMs) by[format].push(String(t).trim());
     }
   };
   add("reel", policy && policy.reels);
@@ -358,7 +386,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
 
   const failed = all.filter((p) => p.status === "failed");
   if (failed.length) {
-    reasons.push(`${failed.length} post(s) are in failed`);
+    reasons.push(`${failed.length} post(s) are in failed${latestFailureCause(failed)}`);
   }
 
   // ── 3. SILENCE ────────────────────────────────────────────────────────────
@@ -425,7 +453,10 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
     const uncovered = times.filter((_, i) => !covered[i]);
     if (uncovered.length) {
       const label = format === "feed" ? "feed post" : format;
-      missed.push(`the ${uncovered.join(" and ")} ${label}${uncovered.length > 1 ? "s have" : " has"} not landed`);
+      const names = [...new Set(uncovered)];
+      const n = uncovered.length;
+      const plural = n > 1 ? `s${names.length < n ? ` (${n})` : ""} have` : " has";
+      missed.push(`the ${names.join(" and ")} ${label}${plural} not landed`);
     }
   }
   if (missed.length) {

@@ -7,7 +7,9 @@ const r = require("../lib/social-recovery.cjs");
 const ROT = ["single", "pairing", "outfit", "flatlay"];
 const ok = (k) => ({ ok: true, created: { kind: k } });
 const s503 = (k) => ({ ok: false, skipped: { kind: k, reason: "AI service error (5xx) — try again", costUSD: 0 } });
-const noStock = (k) => ({ ok: false, skipped: { kind: k, reason: "not enough of an outfit in live stock — nothing available for: bottom" } });
+const noStock = (k) => ({ ok: false, skipped: { kind: k, reason: "not enough of an outfit in live stock — nothing available for: bottom", noStock: true } });
+const timedOut = (k) => ({ ok: false, skipped: { kind: k, reason: "AI request timed out", costUSD: 0 } });
+const paidThenFailed = (k) => ({ ok: false, skipped: { kind: k, reason: "AI service error (5xx) — try again", costUSD: 0.134 } });
 const s429 = (k) => ({ ok: false, skipped: { kind: k, reason: "AI credits depleted or rate-limited (429) — check Gemini billing", costUSD: 0 } });
 
 function harness(script) {
@@ -59,9 +61,35 @@ test("kindsToTry: requested first, single last, no duplicates; a story is single
   assert.deepEqual(r.kindsToTry("single", "story", ROT), ["single"]);
 });
 
-test("a skip that spent money is never treated as no-stock", () => {
+test("no-stock is the explicit flag, never inferred", () => {
   assert.equal(r.isNoStockSkip({ reason: "caption write failed", costUSD: 0.134 }), false);
-  assert.equal(r.isNoStockSkip({ reason: "nothing available for: bottom" }), true);
+  assert.equal(r.isNoStockSkip({ reason: "nothing available for: bottom" }), false);
+  assert.equal(r.isNoStockSkip({ reason: "nothing available for: bottom", noStock: true }), true);
+});
+
+test("a timeout is not retried (it may have been billed and keeps its unit)", async () => {
+  const h = harness([timedOut]);
+  const res = await r.generateWithRecovery({ kind: "single", format: "reel", rotation: ROT, run: h.run, sleep: h.sleep });
+  assert.equal(res.ok, false);
+  assert.deepEqual(h.calls, ["single"]);
+});
+
+test("a skip that already paid for an image is never retried", async () => {
+  const h = harness([paidThenFailed]);
+  await r.generateWithRecovery({ kind: "single", format: "reel", rotation: ROT, run: h.run, sleep: h.sleep });
+  assert.deepEqual(h.calls, ["single"]);
+});
+
+test("no retry is started that could not finish before the deadline", async () => {
+  const h = harness([s503, s503]);
+  let t = 0;
+  const res = await r.generateWithRecovery({
+    kind: "single", format: "reel", rotation: ROT, run: h.run, sleep: async (ms) => { h.sleeps.push(ms); t += ms; },
+    now: () => t, deadlineMs: 30000 + r.WORST_ATTEMPT_MS + 1000,
+  });
+  assert.deepEqual(h.calls, ["single", "single"], "the first retry fits, the second does not");
+  assert.deepEqual(h.sleeps, [30000]);
+  assert.match(res.attempts.at(-1), /no time left/);
 });
 
 test("only a Gemini 5xx is an unbilled provider error", () => {

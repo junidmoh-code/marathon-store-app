@@ -21,15 +21,26 @@
 
 "use strict";
 
-// Two retries, 30 s then 90 s. Each attempt is bounded by the 180 s Gemini
-// timeout, so a reel's worst case is 3 × 180 + 120 = 660 s, and two reels
-// stay inside socialDailyAutopilot's 1800 s ceiling. A 503 comes back in
-// about a second, so the usual cost of a retry is the backoff alone.
+// Two retries, 30 s then 90 s. A 503 comes back in about a second, so the
+// usual cost of a retry is the backoff alone. The worst case is NOT bounded by
+// arithmetic here: with the Flash fallback one attempt can take two 180 s
+// timeouts. So the run passes a deadline, and a retry that could not finish
+// before it is not started (see generateWithRecovery).
 const RETRY_BACKOFF_MS = [30000, 90000];
+// The longest one attempt can take: Pro then Flash, each at GEMINI_FETCH_TIMEOUT_MS,
+// plus a minute for photographs, render, caption and upload.
+const WORST_ATTEMPT_MS = 2 * 180000 + 60000;
 
-/** A skip worth repeating as-is: the provider failed, not the request. */
-function isTransientSkip(reason) {
-  return /AI service error \(5xx\)|AI request timed out/i.test(String(reason || ""));
+/**
+ * A skip worth repeating as-is: the provider answered 5xx and nothing was
+ * charged. A TIMEOUT is not retried, because a timed-out request may have been
+ * billed and its unit is kept, so retrying could spend three of the day's four
+ * units on one slot. A skip that spent money (costUSD > 0, an image made and a
+ * later step failed) is never retried either: that would pay for it twice.
+ */
+function isTransientSkip(skipped) {
+  return Boolean(skipped) && skipped.costUSD === 0 &&
+    /AI service error \(5xx\)/i.test(String(skipped.reason || ""));
 }
 
 /** An error message from the provider that charged nothing (a 5xx makes no image). */
@@ -37,9 +48,9 @@ function isUnbilledProviderError(message) {
   return /gemini HTTP 5\d\d/i.test(String(message || ""));
 }
 
-/** A skip from pickForKind: nothing was picked, so nothing was spent. */
+/** A skip from pickForKind: nothing was picked, so nothing was spent. generateOnePost marks it. */
 function isNoStockSkip(skipped) {
-  return Boolean(skipped) && skipped.costUSD === undefined && !isTransientSkip(skipped.reason);
+  return Boolean(skipped) && skipped.noStock === true;
 }
 
 /**
@@ -65,14 +76,20 @@ function kindsToTry(kind, format, rotation) {
  * @param {function} a.sleep      (ms) => Promise
  * @returns the last result, with `attempts` (what was tried, in order) added
  */
-async function generateWithRecovery({ kind, format, rotation, run, sleep, backoffMs = RETRY_BACKOFF_MS }) {
+async function generateWithRecovery({
+  kind, format, rotation, run, sleep, backoffMs = RETRY_BACKOFF_MS,
+  deadlineMs = Infinity, now = Date.now,
+}) {
   const attempts = [];
   let result = null;
   for (const k of kindsToTry(kind, format, rotation)) {
     for (let i = 0; ; i++) {
       result = await run(k);
       attempts.push(result.ok ? `${k}:ok` : `${k}:${String(result.skipped && result.skipped.reason || "skipped").slice(0, 60)}`);
-      if (result.ok || !isTransientSkip(result.skipped && result.skipped.reason) || i >= backoffMs.length) break;
+      if (result.ok || !isTransientSkip(result.skipped) || i >= backoffMs.length) break;
+      // A retry that could not finish before the run's deadline is not started.
+      // A killed run leaves a claim with no finishedAt and loses the whole day.
+      if (now() + backoffMs[i] + WORST_ATTEMPT_MS > deadlineMs) { attempts.push("no time left to retry"); break; }
       await sleep(backoffMs[i]);
     }
     if (result.ok || !isNoStockSkip(result.skipped)) break;
@@ -99,6 +116,6 @@ function releaseGeneration(cur) {
 }
 
 module.exports = {
-  RETRY_BACKOFF_MS, isTransientSkip, isUnbilledProviderError, isNoStockSkip,
+  RETRY_BACKOFF_MS, WORST_ATTEMPT_MS, isTransientSkip, isUnbilledProviderError, isNoStockSkip,
   kindsToTry, generateWithRecovery, releaseGeneration,
 };
