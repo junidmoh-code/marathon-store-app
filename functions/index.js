@@ -53,12 +53,16 @@ const META_MAX_INFRA_ATTEMPTS = parseInt(process.env.META_MAX_INFRA_ATTEMPTS, 10
 // functions:outboxInstantSend. No .env file exists today, so the default is
 // genuinely ON. (The other env flags above share this property.)
 const INSTANT_SEND_ENABLED   = process.env.INSTANT_SEND_ENABLED !== "false";
-// Switch for socialDailyAutopilot — DEFAULT OFF (Junid, 3 Oct: no image is
-// generated without his tap, and nothing posts until he has approved it; the
-// autopilot generates unattended and writes its posts "approved" itself). The
-// generator stays; it runs only if SOCIAL_AUTOPILOT_ENABLED=true is set in
-// functions/.env and functions:socialDailyAutopilot is redeployed — Junid's call.
-const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED === "true";
+// Switch for socialDailyAutopilot — DEFAULT ON again (owner brief, 7 Oct:
+// "automated or not at all", two reels a day, each also posted as a story,
+// and no fix that needs a hand on a schedule). It was default-OFF from 3 Oct
+// (#682, "no image without his tap") and the engine went silent for four days
+// with nothing in the queue to fail — docs/SOCIAL-OUTAGE-2026-10-04.md.
+// The off switch is SOCIAL_AUTOPILOT_ENABLED=false in functions/.env and a
+// redeploy of functions:socialDailyAutopilot and functions:socialHealthScan
+// (the watchdog reads this same flag, so an engine switched off says so in
+// its alarm rather than as "no record of running").
+const SOCIAL_AUTOPILOT_ENABLED = process.env.SOCIAL_AUTOPILOT_ENABLED !== "false";
 
 // Normalise a South African number to E.164: +27XXXXXXXXX. Returns null when
 // the input is not a recognisable SA mobile or a "+"-prefixed international
@@ -5237,7 +5241,7 @@ exports.socialDailyAutopilot = onSchedule(
   },
   async () => {
     if (!SOCIAL_AUTOPILOT_ENABLED) {
-      console.log("socialDailyAutopilot: off (runs only when SOCIAL_AUTOPILOT_ENABLED=true)");
+      console.log("socialDailyAutopilot: disabled (SOCIAL_AUTOPILOT_ENABLED=false)");
       return;
     }
 
