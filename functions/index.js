@@ -4579,6 +4579,10 @@ async function generateOnePost(db, {
   // six Style Kit photographs was filed as refsUsed: 0, i.e. the audit
   // trail said it ran ungrounded when it had not.
   let refsSent = 0;
+  // A budget unit reserved and not yet used: true from the reservation until
+  // the model returns a picture. Only a 5xx inside that window gives it back
+  // (see socialRecovery.releaseGeneration).
+  let unitUnspent = false;
   try {
     if (!spec.generates) {
       // New arrivals: a carousel of the products' EXISTING photographs.
@@ -4624,7 +4628,9 @@ async function generateOnePost(db, {
           ? socialBudget.unreadableBudgetReason(budgetDay)
           : socialBudget.capReachedReason(budgetDay, budget.cap));
       }
+      unitUnspent = true;
       const gen = await generateSocialScene(geminiApiKey.value(), prompt, images, refs, format);
+      unitUnspent = false;
       costUSD = gen.costUSD;
       const { buffer: normBuf, mime } = await normalizeSocialImage(gen.buffer, gen.mime, format);
       // The type goes on AFTER the normalise, so the design is laid out
@@ -4805,6 +4811,17 @@ async function generateOnePost(db, {
     };
   } catch (err) {
     console.warn(`social: ${kind} failed:`, err && err.message);
+    // A 5xx made no picture and was not billed, so the unit goes back.
+    // Otherwise the autopilot's retries could use up the day's cap on 503s
+    // alone. Best-effort: a failed release only leaves the cap one lower.
+    if (unitUnspent && socialRecovery.isUnbilledProviderError(err && err.message)) {
+      try {
+        await db.ref(`social_generation_budget/${saDate || saDateForUsage(Date.now())}/count`)
+          .transaction(socialRecovery.releaseGeneration);
+      } catch (releaseErr) {
+        console.warn("socialBudget: could not release an unbilled unit:", releaseErr && releaseErr.message);
+      }
+    }
     // Best-effort cleanup of an image that was paid for, uploaded, and then
     // orphaned by a failed record write. A failure here is logged and
     // ignored — an orphan costs pennies of storage; throwing would lose the
@@ -5167,6 +5184,7 @@ const { assessSocialDay, alarmMessage } = require("./lib/social-health.cjs");
 const socialTwin = require("./lib/social-twin.cjs");
 const socialBudget = require("./lib/social-budget.cjs");
 const socialLibrary = require("./lib/social-library.cjs");
+const socialRecovery = require("./lib/social-recovery.cjs");
 const DAY_MS = 86400000;
 
 /** Midnight SAST of the day `dayOffset` days after `fromMs`, as epoch ms. */
@@ -5326,12 +5344,20 @@ exports.socialDailyAutopilot = onSchedule(
       const created = [], skipped = [];
       let estCostUSD = 0;
       for (const req of requests) {
-        const result = await generateOnePost(db, {
-          kind: req.kind, format: req.format, style, platforms, styleKit, library, candidates, used,
-          signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
-          updatedBy: "cron:socialDailyAutopilot",
-          saDate,
+        // A 503 is retried and a kind the stock cannot make falls through to
+        // the next one — a once-a-day run cannot afford to lose a slot to a
+        // bad minute (lib/social-recovery.cjs; 7 Oct lost both reels that way).
+        const result = await socialRecovery.generateWithRecovery({
+          kind: req.kind, format: req.format, rotation: AUTOPILOT_KINDS,
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+          run: (kind) => generateOnePost(db, {
+            kind, format: req.format, style, platforms, styleKit, library, candidates, used,
+            signal, geminiApiKey, status: "approved", scheduledAt: req.scheduledAt,
+            updatedBy: "cron:socialDailyAutopilot",
+            saDate,
+          }),
         });
+        if (result.attempts.length > 1) console.log(`socialDailyAutopilot: ${req.format} slot took ${result.attempts.length} attempts: ${result.attempts.join(" → ")}`);
         if (result.ok) { created.push(result.created); estCostUSD += result.created.costUSD; }
         else { skipped.push(result.skipped); estCostUSD += result.skipped.costUSD || 0; }
       }
