@@ -78,7 +78,7 @@ test("bags (one-size map, hub2 4 / trophy 2): fulfil raises ONE Hub 2 request fo
   assert.equal(hr.qty, 4, "Hub 2's map target, Central has 10");
   assert.equal(hr.size, "_");
   assert.equal(hr.requestingLocation, "hub2");
-  assert.deepEqual(db.state.root.stock.hub2.bag1._ , { ...seed(), updatedAt: T1, updatedBy: "first_batch", trusted: true, trustedVia: "solve", trustedAt: T1 });   // a Solve seed is trusted
+  assert.deepEqual(db.state.root.stock.hub2.bag1._ , { ...seed(), updatedAt: T1, updatedBy: "first_batch" });
   assert.equal(lockAt(db, "hub2", "bag1", "_").refillId, key);
   assert.equal(db.state.root.refill_requests.r1.firstBatch.hub2Leg.refillId, key);
   // The REAL engine: our lock is inbound — no second hub2 intent; the shop holds its map target — no trophy intent.

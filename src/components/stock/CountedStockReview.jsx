@@ -184,7 +184,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
       try {
         const res = await applyMovement({
           type: "transfer_out", productId: g.pid, size: s.size, qty: s.qty,
-          from: g.loc, to, cellState: "live", trust: "count", actorRole, link: { reason: "recount: relocated" },
+          from: g.loc, to, cellState: "live", actorRole, link: { reason: "recount: relocated" },
         });
         res.ok ? ok++ : fail++;
       } catch { fail++; }
@@ -208,7 +208,7 @@ export default function CountedStockReview({ products = [], registry, actorRole 
         const res = await applyMovement({
           type: "adjustment", productId: it.pid, size: it.size, qty: Math.abs(it.qty),
           to: it.qty > 0 ? it.loc : null, from: it.qty < 0 ? it.loc : null,
-          reason: "recount: undo clear", cellState: "live", trust: "count", actorRole,
+          reason: "recount: undo clear", cellState: "live", actorRole,
         });
         res.ok ? ok++ : fail++;
       } catch { fail++; }

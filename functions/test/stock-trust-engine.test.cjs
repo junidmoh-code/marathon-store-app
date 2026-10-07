@@ -115,17 +115,62 @@ const { applyMovementAdmin } = require("../lib/admin-movement.cjs");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
 
 test("SERVER WRITER: a hold-lane release (link.refillId) trusts the destination cell; a write-off adjustment never does", async () => {
-  const db = makeFakeDb({ stock: { in_transit: { p1: { M: { qty: 2, v: 1, mv: "m", lastType: "transfer_out" } } }, hub3: { p1: { M: { qty: 1, v: 1, mv: "m", lastType: "adjustment" } } } } });
+  const db = makeFakeDb({ stock: { in_transit: { p1: { M: { qty: 2, v: 1, mv: "m", lastType: "transfer_out" } } }, hub3: { p1: { M: { qty: 0, v: 1, mv: "m", lastType: "adjustment" } } } } });
   const res = await applyMovementAdmin(db, {
     type: "transfer_in", productId: "p1", size: "M", qty: 2, from: "in_transit", to: "hub3", actor: "sweep", actorRole: "admin",
     reason: "stock_hold_release", movementId: "rel_x", link: { refillId: "r1", holdLineId: "x" },
-  }, { nowIso: T });
+  }, { nowIso: T, network: SEED });
   assert.equal(res.ok, true);
   const hub3 = db.state.root.stock.hub3.p1.M;
-  assert.equal(hub3.qty, 3);
+  assert.equal(hub3.qty, 2);
   assert.deepEqual([hub3.trusted, hub3.trustedVia, hub3.trustedAt], [true, "refill", T]);
   assert.equal(db.state.root.stock.in_transit.p1?.M?.trusted, undefined);
   const db2 = makeFakeDb({ stock: { hub3: { p2: { M: { qty: 4, v: 1, mv: "m", lastType: "adjustment" } } } } });
   await applyMovementAdmin(db2, { type: "adjustment", productId: "p2", size: "M", qty: 1, from: "hub3", actor: "x", reason: "w", movementId: "wo_1" }, { nowIso: T });
   assert.equal(db2.state.root.stock.hub3.p2.M.trusted, undefined);
+});
+
+test("SERVER WRITER: no trust at a Marathon hub, none without a registry, none over legacy units", async () => {
+  const rel = (to, extra = {}) => ({ type: "transfer_in", productId: "p1", size: "M", qty: 1, from: "in_transit", to, actor: "sweep", actorRole: "admin", reason: "stock_hold_release", movementId: `rel_${to}`, link: { refillId: "r1" }, ...extra });
+  const start = (to, qty) => makeFakeDb({ stock: { in_transit: { p1: { M: { qty: 1, v: 1, mv: "m", lastType: "transfer_out" } } }, [to]: { p1: { M: { qty, v: 1, mv: "m", lastType: "adjustment" } } } } });
+  let db = start("hub2", 0); await applyMovementAdmin(db, rel("hub2"), { nowIso: T, network: SEED });
+  assert.deepEqual(Object.keys(db.state.root.stock.hub2.p1.M).filter((k) => k.startsWith("trust")), []);
+  db = start("hub3", 0); await applyMovementAdmin(db, rel("hub3"), { nowIso: T });
+  assert.equal(db.state.root.stock.hub3.p1.M.trusted, undefined);
+  db = start("hub3", 7); await applyMovementAdmin(db, rel("hub3"), { nowIso: T, network: SEED });
+  assert.equal(db.state.root.stock.hub3.p1.M.qty, 8);
+  assert.equal(db.state.root.stock.hub3.p1.M.trusted, undefined);
+});
+
+test("FIRST BATCH seeds: trusted at a Section 1 hub, Marathon's seed shape untouched", () => {
+  const { seedCell } = require("../lib/first-batch.cjs");
+  assert.deepEqual(seedCell(T), { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: T, updatedBy: "first_batch" });
+  assert.deepEqual(seedCell(T, true), { qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: T, updatedBy: "first_batch", trusted: true, trustedVia: "solve", trustedAt: T });
+});
+
+test("THE CAP IS MARATHON'S FIRST: a flood of Section 1 work never shrinks Marathon's share of a run", () => {
+  // many trusted Pine cells, all short, Hub 3 holding trusted stock for each
+  const stock = clone(FIXTURE.stock);
+  const pids = Object.values(FIXTURE.products).filter((p) => p.productType === "clothing" && !p.deactivated).map((p) => p.id);
+  for (const pid of pids) {
+    stock["marathon-pine"][pid] = { M: trusted(0), L: trusted(0) };
+    stock.hub3[pid] = { M: trusted(9), L: trusted(9) };
+  }
+  const cfg = clone(FIXTURE.config); cfg.maxIntentsPerRun = 20;
+  const run = (network) => computeRefillPlan({ nowMs: NOW_MS, config: cfg, targets: clone(FIXTURE.targets), stock: clone(stock), products: clone(FIXTURE.products), openIndex: {}, refillRequests: {}, orders: {}, movements: [], network });
+  const seed = run(SEED), off = run(DARK);
+  assert.ok(s1(seed).length >= 0);
+  const clothingS2 = (p) => p.intents.filter((i) => !S1.includes(i.dest) && FIXTURE.products[i.productId]?.productType === "clothing").map((i) => JSON.stringify(i)).sort();
+  assert.deepEqual(clothingS2(seed), clothingS2(off));
+});
+
+test("an UNTRUSTED empty Hub 3 cell never parks Pine as 'waiting for Hub 3' — the need is carried through Hub 3", () => {
+  const pid = "fx030";
+  const stock = clone(FIXTURE.stock);
+  stock["marathon-pine"][pid] = { M: trusted(0) };
+  stock.hub3[pid] = { M: legacy(0) };
+  const p = plan({ network: SEED, stock });
+  const legs = s1(p).filter((i) => i.productId === pid);
+  assert.deepEqual(legs.map((i) => [i.source, i.dest, i.sizeKey, !!i.passThrough, i.forDests]), [["central", "hub3", "M", true, ["marathon-pine"]]]);
+  assert.equal((p.awaitingUpstream || []).some((a) => a.loc === "marathon-pine" && a.pid === pid), false);
 });

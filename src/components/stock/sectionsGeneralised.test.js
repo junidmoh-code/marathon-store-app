@@ -174,9 +174,9 @@ describe("initial distribution — destinations from the registry", () => {
     expect(d.suggestions.concrete).toEqual(base.suggestions["marathon-pe"]);            // Concrete follows Marathon PE
     expect(d.suggestions.hub3).toEqual(base.suggestions.hub2);                          // Hub 3 follows Hub 2
     expect(d.suggestions["concrete-stockroom"]).toEqual(base.suggestions.hub2);
-    // The seed (7 Oct 2026): Concrete has Solve ON — pre-ticked like any store. A hub is never pre-ticked.
-    expect([d.defaultOn.concrete, d.defaultOn.hub3, d.defaultOn["concrete-stockroom"]]).toEqual([true, false, false]);
-    // SOLVE OFF: offered, never pre-ticked.
+    // NOT FULLY LIVE (the seed, 7 Oct 2026, and Section 1 off alike): offered, never
+    // pre-ticked — a wizard send is a hand transfer and lands untrusted. A hub is never pre-ticked.
+    expect([d.defaultOn.concrete, d.defaultOn.hub3, d.defaultOn["concrete-stockroom"]]).toEqual([false, false, false]);
     const OFF = { solve: false, autoRefill: "off" };
     const dark = normalizeNetwork({ locations: { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF } });
     const off = suggestInitialDistribution({ product: tee, dests, network: dark });

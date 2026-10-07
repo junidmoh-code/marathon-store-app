@@ -90,7 +90,7 @@ describe("the two switches", () => {
     await act(async () => { buttons(tree).find((b) => text(b) === "Yes, change it").props.onClick(); });
     expect(write).toHaveBeenCalledTimes(1);
     expect(write.mock.calls[0][0]).toEqual({
-      "network/locations/hub3/solve": false, "network/locations/hub3/autoRefill": "solved",
+      "network/locations/hub3/solve": false, "network/locations/hub3/autoRefill": "solved", "network/locations/hub3/live": null,
       "network/updatedAt": NOW, "network/updatedBy": "owner-uid",
     });
   });
@@ -102,7 +102,7 @@ describe("the two switches", () => {
     expect(text(tree.root.find((n) => n.props && n.props.role === "alertdialog"))).toMatch(/ALL PRODUCTS for Marathon Pine.*counted or not/);
     await act(async () => { buttons(tree).find((b) => text(b) === "Yes, change it").props.onClick(); });
     expect(write.mock.calls[0][0]).toEqual({
-      "network/locations/marathon-pine/solve": true, "network/locations/marathon-pine/autoRefill": "all",
+      "network/locations/marathon-pine/solve": true, "network/locations/marathon-pine/autoRefill": "all", "network/locations/marathon-pine/live": null,
       "network/updatedAt": NOW, "network/updatedBy": "owner-uid",
     });
     // Marathon's rows are untouched by the write

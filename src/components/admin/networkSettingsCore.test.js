@@ -36,7 +36,7 @@ describe("the two switches", () => {
   it("Solve writes BOTH switch fields for that one location (the other as it stands) and the stamp, nothing else", () => {
     const u = solveUpdate(R, "hub3", false, NOW, "owner");
     expect(u).toEqual({ ok: true, updates: {
-      "network/locations/hub3/solve": false, "network/locations/hub3/autoRefill": "solved",
+      "network/locations/hub3/solve": false, "network/locations/hub3/autoRefill": "solved", "network/locations/hub3/live": null,
       "network/updatedAt": NOW, "network/updatedBy": "owner",
     } });
   });
@@ -44,7 +44,7 @@ describe("the two switches", () => {
   it("Auto-refill writes both fields too", () => {
     const u = autoRefillUpdate(R, "marathon-pine", "all", NOW, "owner");
     expect(u).toEqual({ ok: true, updates: {
-      "network/locations/marathon-pine/solve": true, "network/locations/marathon-pine/autoRefill": "all",
+      "network/locations/marathon-pine/solve": true, "network/locations/marathon-pine/autoRefill": "all", "network/locations/marathon-pine/live": null,
       "network/updatedAt": NOW, "network/updatedBy": "owner",
     } });
   });
@@ -188,6 +188,18 @@ describe("first-time seed", () => {
     for (const id of ["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3", "concrete-stockroom"]) {
       expect(stored.locations[id].section, id).toBe(after.locations[id].section);
     }
+  });
+
+  it("A LEGACY live FLAG ON A RECORD: Set up fills the switches with its migrated meaning, never the seed's", () => {
+    const early = { locations: { hub2: { live: false }, "marathon-pine": { live: true } } };
+    const { updates } = seedUpdate(early, { ...LIVE_LOCATIONS, concrete: {}, "concrete-stockroom": {} }, NOW, "o");
+    expect(updates["network/locations/hub2/solve"]).toBe(false);
+    expect(updates["network/locations/hub2/autoRefill"]).toBe("off");
+    expect(updates["network/locations/marathon-pine/solve"]).toBe(true);
+    expect(updates["network/locations/marathon-pine/autoRefill"]).toBe("all");
+    const after = normalizeNetwork(applyUpdate({ network: early }, updates).network);
+    expect(after.locations.hub2).toMatchObject({ solve: false, autoRefill: "off", live: false });
+    expect(after.locations["marathon-pine"]).toMatchObject({ solve: true, autoRefill: "all" });
   });
 
   it("registers a missing stock location without touching a complete registry", () => {

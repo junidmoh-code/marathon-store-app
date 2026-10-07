@@ -51,6 +51,26 @@ const seed = (loc, qty, extra = {}, size = "M") => setPath(stockCellPath(loc, PI
 
 beforeEach(() => { store = {}; pushN = 0; });
 
+describe("trust only where it is read, and never over uncounted stock", () => {
+  it("a MARATHON arrival writes no trust fields at all — Marathon's cells are byte for byte as before", async () => {
+    seed("hub2", 5);
+    await applyMovement({ type: "transfer_out", productId: PID, size: "M", qty: 2, from: "hub2", to: "marathon-pe", reason: "marathon-pe_auto_refill", link: { refillId: "r1" } }, { maxRetries: 1 });
+    expect(Object.keys(cell("marathon-pe")).sort()).toEqual(["lastType", "mv", "qty", "updatedAt", "updatedBy", "v"]);
+    await applyMovement({ type: "adjustment", productId: PID, size: "M", qty: 1, to: "hub2", reason: "recount", cellState: "live", trust: "count" }, { maxRetries: 1 });
+    expect(cell("hub2").trusted).toBeUndefined();
+  });
+
+  it("a refill landing on LEGACY uncounted units does not vouch for them — the cell waits for a count", async () => {
+    seed("hub3", 5); seed("marathon-pine", 12);   // Lightspeed-era 12, never counted
+    await applyMovement({ type: "transfer_out", productId: PID, size: "M", qty: 3, from: "hub3", to: "marathon-pine", reason: "x", link: { refillId: "r1" } }, { maxRetries: 1 });
+    expect(cell("marathon-pine").qty).toBe(15);
+    expect(cell("marathon-pine").trusted).toBeUndefined();
+    // the count then trusts it
+    await applyMovement({ type: "adjustment", productId: PID, size: "M", qty: 13, from: "marathon-pine", reason: "recount", cellState: "live", trust: "count" }, { maxRetries: 1 });
+    expect(cell("marathon-pine")).toMatchObject({ qty: 2, trusted: true, trustedVia: "count" });
+  });
+});
+
 describe("trust on arrival", () => {
   it("a refill fulfilment (link.refillId) trusts the DESTINATION cell only", async () => {
     seed("hub3", 5); seed("marathon-pine", 0);

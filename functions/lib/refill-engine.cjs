@@ -2149,7 +2149,11 @@ function computeRefillPlan(snapshot) {
           // the demand would starve silently behind a self-healing label
           // (Sonnet HIGH, 2026-07-13). No target at the source = a CONFIG gap,
           // surfaced as blocked, not as flowing.
-          const srcTarget = upstreamOfSrc ? resolveTarget(ctx, src, pid, size) : null;
+          // At a "solved products only" hub an UNTRUSTED cell is no buffer the
+          // engine will ever fill (maskUntrustedStock) — so it reads as "no
+          // target here": the shop's need is carried THROUGH the hub, never
+          // parked waiting on a leg that cannot form.
+          const srcTarget = upstreamOfSrc && trustedCell(src, pid, sizeKey) ? resolveTarget(ctx, src, pid, size) : null;
           const srcCanPull = !!(srcTarget && srcTarget.target > 0);
           if ((inbound.get(`${src}|${pid}|${sizeKey}`) || 0) > 0 || (upstreamAvail > 0 && srcCanPull && !srcParked)) {
             awaitingUpstream.push({ loc: dest, pid, size, deficit, source: src, note: `waiting for ${src} to receive stock${upstreamOfSrc ? ` from ${upstreamOfSrc}` : ""}` });
@@ -2304,8 +2308,17 @@ function computeRefillPlan(snapshot) {
   const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i));
   const footwearIntents = routedIntents.filter(isFootwearIntent);
   const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
-  const plannedClothing = dealFairly(clothingIntents, maxIntents);
-  const plannedFootwear = dealFairly(footwearIntents, maxFootwearIntents);
+  // THE CAP IS MARATHON'S FIRST. Intents for a "solved products only"
+  // destination (the Concrete division while it is being counted in) are
+  // dealt only from what the run's cap leaves over — so Marathon's share of
+  // every run is exactly what it was before Section 1 was routed.
+  const isSolvedDest = (i) => !!(network && network.locations && network.aliasIndex) && networkRegistry.trustedCellsOnly(network, i.dest);
+  const dealMarathonFirst = (list, cap) => {
+    const first = dealFairly(list.filter((i) => !isSolvedDest(i)), cap);
+    return [...first, ...dealFairly(list.filter(isSolvedDest), Math.max(0, cap - first.length))];
+  };
+  const plannedClothing = dealMarathonFirst(clothingIntents, maxIntents);
+  const plannedFootwear = dealMarathonFirst(footwearIntents, maxFootwearIntents);
   const plannedIntents = [...plannedClothing, ...plannedFootwear];
   // ═══ A ROUTED-ROUND COUNT DISPUTE STAYS ON RECOUNT NEEDED (2026-09-23) ═════
   // A DISPUTED pass-through lands at the hub, and that arrival is — correctly

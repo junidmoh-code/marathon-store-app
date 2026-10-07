@@ -26,7 +26,7 @@
 //             fed shoes from the hubs, not from Central directly).
 // ============================================================================
 
-import { policyKeyFor, solveOn } from "../../utils/networkRegistry";
+import { policyKeyFor, isLive } from "../../utils/networkRegistry";
 import { net, storeIds, hubIds, isStore, nameOf } from "./sectionRouting";
 
 // Every operational destination the wizard offers, in display/deal order.
@@ -135,7 +135,9 @@ export function suggestInitialDistribution({ product, dests = DISTRIBUTION_DESTS
     suggestions[dest] = perSize;
     defaultOn[dest] = original
       ? any && !NEVER_DEFAULT_ON.has(dest)
-      : any && isStore(dest, N) && solveOn(N, dest);
+      // Pre-ticked only at a FULLY live store: a wizard send is a hand transfer
+      // (it lands untrusted), so Pine and Concrete are offered, never pre-ticked.
+      : any && isStore(dest, N) && isLive(N, dest);
   }
   return { family, suggestions, defaultOn };
 }

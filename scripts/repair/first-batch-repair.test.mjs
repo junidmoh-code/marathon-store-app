@@ -107,7 +107,7 @@ describe("buildPlan + applyPlan over the fake", () => {
     for (const id of ["b", "c", "d", "f", "eng", "hub"]) expect(rr[id].status).toBe("open");
     expect(rr.h.status).toBe("fulfilled");
     const h2 = db.state.root.stock.hub2;
-    expect(h2.p2.M).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: T, updatedBy: "first_batch", trusted: true, trustedVia: "solve", trustedAt: T });   // a Solve seed is trusted (stock-trust.cjs)
+    expect(h2.p2.M).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: T, updatedBy: "first_batch" });
     expect(h2.p3._).toMatchObject({ qty: 0 });
     expect(h2.p1.M.qty).toBe(3);                 // never overwritten
     // every pre-existing quantity is byte-identical; new cells are qty 0 only

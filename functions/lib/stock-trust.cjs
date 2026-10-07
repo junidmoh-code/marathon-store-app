@@ -10,6 +10,8 @@
 // Trust is an explicit marker on the cell, written IN THE SAME WRITE as the
 // stock it describes and never on its own:
 //   trusted: true, trustedAt: <ISO>, trustedVia: "solve" | "refill" | "count"
+// Written ONLY at a location whose Auto-refill is "solved products only" (at
+// any other location trust is never read, so Marathon's cells are untouched).
 // Written by: the Solve seed (client NetworkTransfer, server first-batch), an
 // inbound refill/order/hold-release leg (client applyMovement, server
 // admin-movement — the movement carries link.refillId or link.orderId), and a
@@ -47,6 +49,17 @@ function arrivalTrust(movement) {
   return null;
 }
 
+// May an ARRIVAL trust the cell it lands in? Only when the cell holds no
+// uncounted stock already: absent, at or below zero, or trusted. An arrival
+// onto 12 Lightspeed-era units must not vouch for those 12 — that cell
+// waits for a count. (A count trusts whatever it confirms.)
+function arrivalMayTrust(priorCell) {
+  if (!priorCell || typeof priorCell !== "object") return true;
+  if (cellTrusted(priorCell)) return true;
+  const q = priorCell.qty;
+  return !(typeof q === "number" && q > 0);
+}
+
 // A product node (/stock/{loc}/{pid}) → is ANY size trusted here? The till's
 // question: a trusted PRODUCT deducts, whichever size sells.
 function productTrustedAt(node) {
@@ -62,4 +75,4 @@ function trustedSizeKeys(node) {
 }
 // ── END SHARED BODY ──────────────────────────────────────────────────────────
 
-module.exports = { TRUST_SOURCES, cellTrusted, trustStamp, arrivalTrust, productTrustedAt, trustedSizeKeys };
+module.exports = { TRUST_SOURCES, cellTrusted, trustStamp, arrivalTrust, arrivalMayTrust, productTrustedAt, trustedSizeKeys };

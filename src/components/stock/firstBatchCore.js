@@ -583,6 +583,35 @@ export function firstBatchSplit({ sizes, run, store, centralAvail, maxUnitsPerIn
 // `hub` is the store's back-stock hub (default Hub 2) — the hub seeded here
 // and named on the request, where the server trigger reads it back and
 // checks it against the registry before raising that hub's own leg.
+// ── SOLVE TRUSTS WHAT IT INTRODUCES ──────────────────────────────────────────
+// At a "solved products only" location an EXISTING cell for a solved size —
+// one that holds nothing (qty ≤ 0) and is not trusted yet — is marked trusted
+// in the same write as the Solve (stockTrust.js). Without it the engine would
+// never fill that cell, and the shop behind it would wait on it forever. A
+// cell holding units is left alone: those wait for a count. Metadata only
+// (state + trust + who/when) — qty, v, mv and lastType are not touched, which
+// is the shape the /stock rule's metadata branch accepts. Never part of an
+// undo (a trusted empty cell is harmless, and the rule refuses a state delete).
+export function trustExistingEmptyUpdates({ pid, locs, sizes, existing = {}, nowIso, uid, isSolvedLoc, cellTrusted }) {
+  const out = {};
+  for (const loc of locs || []) {
+    if (!isSolvedLoc(loc)) continue;
+    for (const sz of sizes || []) {
+      const cell = existing?.[loc]?.[stockSizeKey(sz)];
+      if (cell == null || typeof cell !== "object" || cellTrusted(cell)) continue;
+      if (typeof cell.qty === "number" && cell.qty > 0) continue;
+      const p = stockCellPath(loc, pid, sz);
+      out[`${p}/state`] = "live";
+      out[`${p}/trusted`] = true;
+      out[`${p}/trustedVia`] = "solve";
+      out[`${p}/trustedAt`] = nowIso;
+      out[`${p}/updatedAt`] = nowIso;
+      out[`${p}/updatedBy`] = uid;
+    }
+  }
+  return out;
+}
+
 export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, seedCell, nowIso, uid, solveId, newKey, hub = FIRST_BATCH_HUB } = {}) {
   const updates = {};
   const paths = [];
@@ -595,7 +624,7 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
   const seed = (loc, sz) => {
     if (has(loc, sz)) return false;
     const p = stockCellPath(loc, pid, sz);
-    updates[p] = seedCell();
+    updates[p] = seedCell(loc);
     paths.push(p);
     return true;
   };

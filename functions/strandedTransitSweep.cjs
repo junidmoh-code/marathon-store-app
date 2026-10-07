@@ -32,8 +32,9 @@ async function runSweep(db = admin.database(), nowMs = Date.now()) {
   for (const pid of candidates.lookups.productIds) productExists[pid] = (await read(`products/${pid}/id`)) != null || (await read(`products/${pid}/name`)) != null;
 
   const planned = planTransitSweep({ candidates, movements, productExists, config: hold && hold.config, nowMs });
-  const plan = holdNonLiveReleases(planned, await loadNetwork(db, { nowMs }));
-  const applied = await applyTransitSweep(db, plan, { nowIso, nowMs });
+  const network = await loadNetwork(db, { nowMs });
+  const plan = holdNonLiveReleases(planned, network);
+  const applied = await applyTransitSweep(db, plan, { nowIso, nowMs, network });
 
   const summary = {
     computedAt: nowIso,

@@ -21,8 +21,7 @@ function prng(seed) {
 const pick = (r, arr) => arr[Math.floor(r() * arr.length)];
 const int = (r, lo, hi) => lo + Math.floor(r() * (hi - lo + 1));
 const cell = (qty) => ({ qty, v: 1, mv: "m", lastType: "received" });
-// A seed is TRUSTED from the start (lib/stock-trust.cjs): Solve introduced it.
-const seed = () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", trusted: true, trustedVia: "solve" });
+const seed = () => ({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live" });
 
 // One random world around ONE shop request for (p1, size) at `store`.
 // Since 2026-09-17 a third of the worlds are MAPPED categories — the class

@@ -181,6 +181,23 @@ describe("THE SEED (7 Oct 2026): Pine and Concrete are solvable before their cou
   });
 });
 
+describe("SOLVE TRUSTS WHAT IT INTRODUCES at a \"solved\" location", () => {
+  it("an existing EMPTY untrusted Hub 3 cell is trusted in the same write; a Hub 3 cell holding legacy units is left for a count", async () => {
+    paths["stock/hub3/tee1"] = { S: { qty: 0, v: 3, mv: "old", lastType: "sold" }, M: { qty: 4, v: 2, mv: "old2", lastType: "adjustment" } };
+    gets["stock/hub3/tee1"] = paths["stock/hub3/tee1"];
+    const tree = render();
+    await open(tree);
+    tick(tree, "Marathon Pine");
+    tick(tree, "Marathon PE");
+    await confirm(tree);
+    const upd = written();
+    expect(upd["stock/hub3/tee1/S/trusted"]).toBe(true);
+    expect(upd["stock/hub3/tee1/S/state"]).toBe("live");
+    expect(Object.keys(upd).some((k) => k === "stock/hub3/tee1/S" || /stock\/hub3\/tee1\/S\/(qty|v|mv|lastType)$/.test(k))).toBe(false);
+    expect(Object.keys(upd).some((k) => k.startsWith("stock/hub3/tee1/M"))).toBe(false);
+  });
+});
+
 describe("both sections in ONE confirm — each store's excess goes to its own hub", () => {
   it("Marathon PE + Pine: ONE update; Marathon PE's seeds at Hub 2, Pine's at Hub 3, each shop's own request naming its hub", async () => {
     paths.network = S1_LIVE;

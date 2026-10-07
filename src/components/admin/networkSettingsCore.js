@@ -36,6 +36,9 @@ function switchUpdate(registry, id, { solve, autoRefill }, nowMs, uid) {
   return { ok: true, updates: {
     [`${NETWORK_PATH}/locations/${loc.id}/solve`]: s,
     [`${NETWORK_PATH}/locations/${loc.id}/autoRefill`]: a,
+    // The pre-split flag goes in the same write: no reader of an older build
+    // can act on a stale `live` once the owner has set the switches.
+    [`${NETWORK_PATH}/locations/${loc.id}/live`]: null,
     ...stamp(nowMs, uid),
   } };
 }
@@ -118,9 +121,15 @@ export function seedUpdate(rawNetwork, stockLocations, nowMs, uid) {
   const fill = (root, have, want) => {
     for (const id of Object.keys(want)) {
       if (!isObj(have?.[id])) { updates[`${NETWORK_PATH}/${root}/${id}`] = want[id]; continue; }
+      // A record written before the switch split carries a boolean `live` and
+      // neither switch: fill the switches with ITS migrated meaning (true → on
+      // + all, false → off + off), never the seed's — the seed must not undo it.
+      const legacy = root === "locations" && typeof have[id].live === "boolean"
+        && typeof have[id].solve !== "boolean" && !AUTO_REFILL_MODES.includes(have[id].autoRefill)
+        ? { solve: have[id].live, autoRefill: have[id].live ? "all" : "off" } : null;
       for (const field of Object.keys(want[id])) {
         const cur = have[id][field];
-        if (cur === undefined || cur === null) updates[`${NETWORK_PATH}/${root}/${id}/${field}`] = want[id][field];
+        if (cur === undefined || cur === null) updates[`${NETWORK_PATH}/${root}/${id}/${field}`] = legacy && field in legacy ? legacy[field] : want[id][field];
       }
     }
   };

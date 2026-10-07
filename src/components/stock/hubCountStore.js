@@ -43,6 +43,8 @@ import { ref, child, get, update, push, runTransaction } from "firebase/database
 import { onAuthStateChanged } from "firebase/auth";
 import { database, auth } from "../../firebase";
 import { applyMovement, setCellState } from "./applyMovement";
+import { trustedCellsOnly } from "../../utils/networkRegistry";
+import { currentNetwork } from "../../utils/networkStore";
 import { stockCellPath, stockSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { serverNowIso } from "../../utils/serverTime";
 import { getDeviceId } from "../../device/deviceId";
@@ -230,8 +232,10 @@ async function writeRecord(hub, sessionId, rec) {
 /**
  * CONFIRM — "the shelf agrees with the system".
  *
- * Records the count and touches /stock NOT AT ALL: no movement, no cell write,
- * not even a state flip. The existing Count tab flips the cell to `live` on a
+ * Records the count and, at Marathon's hubs, touches /stock NOT AT ALL: no
+ * movement, no cell write, not even a state flip. (Since 7 Oct 2026, at a
+ * "solved products only" hub — Hub 3, the Concrete Stockroom — a confirm also
+ * marks an EXISTING cell trusted, metadata only: stockTrust.js.) The existing Count tab flips the cell to `live` on a
  * matching count, but that is a rollout-gate concern for seeding tracked stock,
  * and this is a temporary audit — "records the count, no stock change" is taken
  * literally. The record itself is the evidence the cell was verified.
@@ -269,8 +273,12 @@ export async function confirmCell({ hub, sessionId, productId, sizeKey, expected
   // A confirmed cell is a COUNTED cell: mark it trusted (stockTrust.js) in a
   // metadata-only write — qty untouched. The count stands whether or not this
   // lands; the result says which.
+  // Only at a "solved products only" hub (Hub 3, the Concrete Stockroom while
+  // they are counted in): a Marathon hub's confirm still writes NOTHING to /stock.
   let trusted = false;
-  try { trusted = (await setCellState(hub, productId, live.rawSize, "live", { trust: "count" })).ok === true; } catch { trusted = false; }
+  if (trustedCellsOnly(currentNetwork(), hub)) {
+    try { trusted = (await setCellState(hub, productId, live.rawSize, "live", { trust: "count", existingOnly: true })).ok === true; } catch { trusted = false; }
+  }
   return { ok: true, record: rec, trusted };
 }
 

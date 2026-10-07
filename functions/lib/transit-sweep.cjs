@@ -259,7 +259,7 @@ function holdNonLiveReleases(plan, network) {
   };
 }
 
-async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
+async function applyTransitSweep(db, plan, { nowIso, nowMs, network = null }) {
   const out = { released: 0, releasedUnits: 0, failures: [] };
   const read = async (p) => (await db.ref(p).once("value")).val();
   // Retirements first: bookkeeping for stock that already moved.
@@ -292,7 +292,7 @@ async function applyTransitSweep(db, plan, { nowIso, nowMs }) {
         from: IN_TRANSIT, to: r.dest, actor: ACTOR, actorRole: "admin",
         reason: "stock_hold_release", movementId: relId,
         link: { refillId: r.refillId || null, holdShipmentId: r.shipmentId || UNFILED_SHIPMENT, holdLineId: r.lineId, autoReleased: true },
-      }, { nowIso });
+      }, { nowIso, network });
     } catch (err) {
       // One line's RTDB failure must not stop the rest or lose the run's
       // report; the deterministic id and the in-flight stamps let the next

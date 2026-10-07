@@ -47,7 +47,8 @@
 // initialises the SDK itself.
 
 "use strict";
-const { trustStamp, arrivalTrust } = require("./stock-trust.cjs");
+const { trustStamp, arrivalTrust, arrivalMayTrust } = require("./stock-trust.cjs");
+const networkRegistry = require("./network-registry.cjs");
 
 const ADMITTED_TYPES = new Set(["transfer_in", "adjustment", "refusal_writeoff"]);
 
@@ -97,7 +98,7 @@ function cellDeltas(m) {
  *             expectQty? — the cell must hold exactly this qty, else refused }
  * → { ok:true, movementId, idempotent?, newQty? } | { ok:false, reason, … }
  */
-async function applyMovementAdmin(db, movement, { nowIso }) {
+async function applyMovementAdmin(db, movement, { nowIso, network: trustNetwork = null }) {
   if (!movement || !ADMITTED_TYPES.has(movement.type)) return { ok: false, reason: "invalid_type" };
   if (!movement.productId || movement.size == null || movement.size === "") return { ok: false, reason: "missing_product_or_size" };
   if (!(Number(movement.qty) > 0)) return { ok: false, reason: "qty_must_be_positive" };
@@ -151,7 +152,10 @@ async function applyMovementAdmin(db, movement, { nowIso }) {
         updatedBy: movement.actor,
         // TRUST (stock-trust.cjs): a refill/order/hold-release leg landing HERE
         // marks the cell trusted, in the same write; the cell it left is not.
-        ...(d.loc === movement.to && arrivalTrust(movement) ? trustStamp(arrivalTrust(movement), nowIso) : {}),
+        // Only at a "solved products only" location (opts.network), and only
+        // onto a cell holding no uncounted stock (arrivalMayTrust).
+        ...(d.loc === movement.to && trustNetwork && networkRegistry.trustedCellsOnly(trustNetwork, d.loc) && arrivalTrust(movement) && arrivalMayTrust(cur)
+          ? trustStamp(arrivalTrust(movement), nowIso) : {}),
       };
     });
     const cur = seen;

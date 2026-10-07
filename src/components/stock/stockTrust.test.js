@@ -14,7 +14,7 @@ const END = "// ── END SHARED BODY";
 const body = (file) => { const t = readFileSync(join(process.cwd(), file), "utf8"); return t.slice(t.indexOf(BEGIN), t.indexOf("\n", t.indexOf(END)) + 1); };
 
 // The POS repo's src/stock/stockTrust.parity.test.js pins the same constant.
-export const TRUST_BODY_SHA256 = "e73cd75a5133345b32063faa8153d6d547b454d61d49fb7db7ac1dffc0b92022";
+export const TRUST_BODY_SHA256 = "c76670f94dcccb925f0971b855d9a70f4b54b9826fa2c3027354c2a540f91a71";
 
 describe("three copies, one body", () => {
   it("the functions copy is byte for byte this one, and the hash is the POS copy's", () => {

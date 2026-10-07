@@ -120,9 +120,7 @@ describe("Hub 2 presence → the old Solve, never a shop-from-Central request (t
       "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
     ]);
-    // a Solve seed is trusted from the start (stockTrust.js) — the only change to Marathon's seed shape
-    const at = new Date(NOW).toISOString();
-    for (const k of Object.keys(upd)) expect(upd[k]).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: at, updatedBy: "u1", trusted: true, trustedVia: "solve", trustedAt: at });
+    for (const k of Object.keys(upd)) expect(upd[k]).toEqual({ qty: 0, v: 0, mv: "seed", lastType: "count", state: "live", updatedAt: new Date(NOW).toISOString(), updatedBy: "u1" });
     expect(Object.keys(upd).some((k) => k.startsWith("refill_requests/"))).toBe(false);
     expect(pushN).toBe(0);
     expect(textOf(tree)).toMatch(/Carrying 3 sizes at Marathon PE \(via Hub 2\) — the engine will refill on its next scan/);
