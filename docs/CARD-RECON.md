@@ -502,6 +502,74 @@ ownership is structural and the per-user expired-draft sweep stays bounded);
 between the two shows what the OCR read — it offers **no way to edit a
 figure**.
 
+## Received, then read — the background reader (7 Oct 2026)
+
+**The manager submits, sees "Received", and leaves.** Junid, 7 Oct 2026, after
+Marathon Till 2 lost sixteen batches to reader outages
+(`docs/CARD-RECON-TILL2-2026-10-07.md`): the old photo path read the slip while
+the manager waited, and a failed read threw the photo away.
+
+```
+phone ──receive──▶ cardBatchCapture { action: "receive", pickedTid, photos }
+                    · same setup gates as the photo extract (one registry row)
+                    · photos STORED FIRST at cardRecon/jobs/{jobId}/photo-N.jpg
+                    · job at /card_batch_jobs/{jobId}, queue entry at
+                      /card_batch_jobs_due/{13-digit due ms}_{jobId}
+                    · answers { ok: true, received: true } — nothing else
+cardBatchReadJob   (RTDB onValueCreated) — the read, on arrival
+cardBatchReadRetry (every 5 min)         — what is due: retries, dead runs
+   └─ handleExtract → handleSubmit, as the submitter, with the stored photos
+```
+
+- **Nothing about reading or filing is new**: the job runs the phone's own
+  `handleExtract` and `handleSubmit`. `lib/card-read-jobs.cjs` only decides
+  what an outcome means.
+- **Retries**: a reader outage (402, 429, 503, a timeout) is retried at
+  2/5/10/20/40/60/120/240 min (~8 h). A read that comes back REFUSED (low
+  confidence, wrong TID, sums that do not add) is tried 3 times. "Already
+  captured" is a duplicate, done quietly.
+- **A lease** (10 min) stops two runs of one job; a run that dies is taken
+  over by the sweep when its lease lapses. The queue is keyed by due time, so
+  the sweep is an `orderByKey().endAt(now)` read — no `.indexOn`, no rules.
+- **When it gives up**: that till/day becomes **Unread – needs manual entry**
+  at `/card_batch_overrides/unread/{filed store}/{tid}/{day}` (owner-only by
+  the live rules, which already existed — no paste), with the reason, the
+  kept photos and the jobs. One email notice is queued at
+  `/card_batch_overrides/notices/{store~tid~day}`.
+- **The email** goes from the shop mailbox (marathon6631@) to
+  **junidmoh@gmail.com**: the mailbox poller collects notices through the
+  callable (`notices` / `noticeSent`, email-channel identity only), sends over
+  Gmail SMTP with the same app password, and reports back. A notice is leased
+  while out; a failed send is offered again next tick. `scripts/cardrecon/noticeCore.mjs`.
+- **A later read that records the batch** resolves that day's Unread marker.
+- Junid's typed total beside a photo stays on the synchronous `extract` path
+  (he checks it while holding the phone). The typed-only machine route is
+  **Junid's alone again** ("Staff never type numbers", 7 Oct 2026; supersedes #658).
+
+## Manual entry — Junid, any till, any day (7 Oct 2026)
+
+`cardBatchManualEntry` (callable; Junid's verified Google login only) writes an
+**ordinary `/card_batches` record** — same `buildBatchRecord`, same duplicate
+guard, same append-only transaction — marked `capturedVia: "manual"`,
+`slip.format: "manual"`, `declaredTotal` (who/when) and
+`manual { reason, note, dayYmd, original, unreadPath, typed }`. The POS report
+reads it like any capture, so **a zero variance is clean** whatever the source.
+
+- **No slip / unread**: a new batch number (the POS suggests the next in
+  sequence). The close is the typed time, else 18:00 SAST that day (or now);
+  the open is the typed time ("manual-times", his window) else the previous
+  settlement ("manual", an estimate).
+- **Wrong**: a correction `{batchNo}-rN` of the batch he opened — refused
+  unless it is the latest revision. The original record is never touched;
+  its figures are copied into `manual.original`.
+- **Audit**: every entry also lands in `/card_batch_overrides/manual_audit`
+  with `before` and `after`.
+- Before a terminal's first placement the record stamps the till the machine
+  stood on then (0000HP1X was PE Till 1 until 18 Sep), because that stamp is
+  what the report reads there.
+- `action: "reread"` sends an Unread day's kept photo back to the reader (for
+  a credit or overload outage that has passed).
+
 ## Two ways in: the PDF and the photos
 
 An FNB terminal can email its batch report as a **PDF**, and that is the fast

@@ -301,3 +301,40 @@ test("CONTRACT: the active window answers exactly this table, in both repos", ()
   assert.equal(wasActiveAt(null, 1), false);
   assert.equal(wasActiveAt({}, NaN), false);
 });
+
+// ── 7 Oct 2026: the manual record and the Unread marker ──────────────────────
+// marathon-pos-app reads these (src/reports/cardrecon/dayRows.js unreadRows +
+// ownStart, cardReconText.provenanceLabel, CardReconTab Provenance/UnreadDetail,
+// manualTarget.js). Renaming one fails here, not as a silent "—" over there.
+test("CONTRACT: a manual record — the fields the POS names it by", () => {
+  const { planManualEntry } = require("../lib/card-manual-entry.cjs");
+  const p = planManualEntry({
+    input: { tid: "0000HP1X", dayYmd: "2026-10-06", total: "100.00", batchNo: "537", openedAt: Date.parse("2026-10-05T17:00:00+02:00"), closedAt: Date.parse("2026-10-06T17:00:00+02:00") },
+    nowMs: Date.parse("2026-10-07T12:00:00+02:00"),
+  });
+  const r = record({
+    extraction: p.extraction, summaryOnly: true, capturedVia: "manual",
+    declaredTotal: { cents: 10000, ocrReadCents: null, byUid: "j", byEmail: "gunidmoh@gmail.com", at: 1 },
+  });
+  assert.equal(r.capturedVia, "manual");                    // provenanceLabel, Provenance
+  assert.equal(r.slip.windowSource, "manual-times");         // dayRows.ownStart
+  assert.equal(r.slip.format, "manual");
+  assert.equal(typeof r.declaredTotal.byEmail, "string");    // Provenance "by …"
+  assert.equal(r.linesCaptured, false);
+  assert.ok(["no-slip", "unread", "wrong"].includes(p.manual.reason)); // Provenance REASON text
+  assert.ok("original" in p.manual && "note" in p.manual);
+});
+
+test("CONTRACT: an Unread marker — the fields the POS row is built from", () => {
+  const { addUnreadFailure } = require("../lib/card-unread.cjs");
+  const { marker } = addUnreadFailure(null, {
+    storeId: "pe", tid: "0000HP1X", tillId: "till-2", placeStoreId: "pe", label: "Marathon Till 2",
+    dayYmd: "2026-10-07", reason: "r", jobId: "-J", photos: ["a.jpg"], nowMs: 1,
+  });
+  for (const [k, type] of [["status", "string"], ["storeId", "string"], ["placeStoreId", "string"], ["tid", "string"],
+    ["tillId", "string"], ["label", "string"], ["dayYmd", "string"], ["reason", "string"], ["failures", "number"]]) {
+    assert.equal(typeof marker[k], type, k);
+  }
+  assert.equal(marker.status, "unread");                     // unreadRows draws only "unread"
+  assert.ok(Array.isArray(marker.photos));                   // UnreadDetail SlipPhotos
+});
