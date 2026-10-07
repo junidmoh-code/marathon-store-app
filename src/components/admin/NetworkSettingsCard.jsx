@@ -2,9 +2,14 @@
 //
 // Junid's card for the network registry (/network, src/utils/networkRegistry.js).
 //
-//   Live            one switch per store and hub. OFF = visible, countable and
-//                   reportable, but nothing automatic routes stock to or from
-//                   it. Flip it on after the location's count. No deploy.
+//   Solve           on/off per store and hub. ON = Solve may seed it, send
+//                   it a first batch and route stock to it by hand. OFF =
+//                   visible, countable and reportable only.
+//   Auto-refill     off / solved products only / all products, per store
+//                   and hub. "Solved products only" = the engine arms and
+//                   refills TRUSTED cells only (arrived through Solve or a
+//                   refill, or confirmed by a count). "All" = every cell, as
+//                   Marathon's four always were. No deploy for either.
 //   Concrete        per category: Hub 3 or the Concrete Stockroom. Plus an
 //                   optional override for one product.
 //   Credit scope    shared (credit spendable anywhere) or section (only in the
@@ -29,7 +34,7 @@ import { listLocations, locationName, sectionName, sectionsInOrder } from "../..
 import { allCategories } from "../../utils/productTaxonomy";
 import { useTaxonomy } from "./useTaxonomy";
 import {
-  liveUpdate, categoryHubUpdate, productOverrideUpdate, creditScopeUpdate, seedUpdate, categoryRows,
+  solveUpdate, autoRefillUpdate, AUTO_REFILL_LABELS, categoryHubUpdate, productOverrideUpdate, creditScopeUpdate, seedUpdate, categoryRows,
   sectionNameUpdate, SECTION_NAME_MAX, SWITCHABLE_STORE, SWITCHABLE_HUBS,
   POS_FLAGS, posSwitchState, posFlagUpdate, recyclerTillUpdate,
 } from "./networkSettingsCore";
@@ -42,6 +47,22 @@ const on = { ...btn, background: "#123a1e", color: "#30d158" };
 const row = { display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 0", borderTop: "1px solid #2c2c2e" };
 
 const defaultWrite = (updates) => update(ref(database), updates);
+
+// The one plain question asked before a switch moves.
+export function switchQuestion({ name, kind, to }) {
+  if (kind === "solve") {
+    return to
+      ? `Switch Solve ON for ${name}? Solve may then seed products here, send it their first batch from Central, and route stock to it by hand. The engine is a separate switch (Auto-refill).`
+      : `Switch Solve OFF for ${name}? Solve will no longer offer it. Stock already there stays, and Auto-refill is unchanged.`;
+  }
+  if (to === "all") {
+    return `Auto-refill ALL PRODUCTS for ${name}? The engine arms and refills every cell here, counted or not, and the location joins everything that runs for fully live locations: the stock audit, display checks, the refusal write-off (which can erase a count that keeps being refused), hub clean-up and the network totals. Only do this after its count.`;
+  }
+  if (to === "solved") {
+    return `Auto-refill SOLVED PRODUCTS ONLY for ${name}? The engine arms and refills only trusted cells — stock that arrived through Solve or a refill, or was confirmed by a count. Uncounted legacy stock is ignored until it is counted.`;
+  }
+  return `Auto-refill OFF for ${name}? The engine will not arm or refill anything here. Stock already there stays.`;
+}
 
 function Choice({ value, options, onPick, busy }) {
   return (
@@ -63,7 +84,8 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
   const { registry: taxonomy } = useTaxonomy();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
-  const [confirmLive, setConfirmLive] = useState(null);
+  // A switch change awaiting confirmation: { id, name, kind: "solve"|"autoRefill", to } or null.
+  const [confirmSwitch, setConfirmSwitch] = useState(null);
   const [search, setSearch] = useState("");
   // The division whose name is being edited: { section, text } or null.
   const [naming, setNaming] = useState(null);
@@ -147,32 +169,45 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
             </div>
           )}
           {listLocations(registry, { section }).map((l) => (
-            <div style={row} key={l.id} data-loc={l.id}>
+            <div style={{ ...row, flexWrap: "wrap" }} key={l.id} data-loc={l.id} data-solve={l.solve ? "on" : "off"} data-auto-refill={l.autoRefill}>
               <span>
                 <strong>{l.name}</strong>
                 <span style={{ color: "#8e8e93" }}> · {l.type === "store" ? `store · ${l.tills.length} till${l.tills.length === 1 ? "" : "s"}` : "hub"}</span>
               </span>
-              <button type="button" disabled={busy} aria-pressed={l.live} style={l.live ? on : btn}
-                onClick={() => setConfirmLive({ id: l.id, name: l.name, to: !l.live })}>
-                {l.live ? "Live" : "Not live"}
-              </button>
+              <span style={{ display: "inline-flex", gap: 10, alignItems: "center", flexWrap: "wrap" }}>
+                <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ ...label, fontSize: 11 }}>Solve</span>
+                  <button type="button" disabled={busy} aria-pressed={l.solve} aria-label={`Solve for ${l.name}`} style={l.solve ? on : btn}
+                    onClick={() => setConfirmSwitch({ id: l.id, name: l.name, kind: "solve", to: !l.solve })}>
+                    {l.solve ? "On" : "Off"}
+                  </button>
+                </span>
+                <span style={{ display: "inline-flex", gap: 6, alignItems: "center" }}>
+                  <span style={{ ...label, fontSize: 11 }}>Auto-refill</span>
+                  <span role="group" aria-label={`Auto-refill for ${l.name}`}>
+                    <Choice value={l.autoRefill} busy={busy}
+                      options={["off", "solved", "all"].map((m) => ({ value: m, label: AUTO_REFILL_LABELS[m] }))}
+                      onPick={(m) => setConfirmSwitch({ id: l.id, name: l.name, kind: "autoRefill", to: m })} />
+                  </span>
+                </span>
+              </span>
             </div>
           ))}
         </div>
       ))}
 
-      {confirmLive && (
+      {confirmSwitch && (
         <div style={{ ...box, borderColor: "#ff9f0a" }} role="alertdialog">
-          <p>
-            {confirmLive.to
-              ? `Switch ${confirmLive.name} LIVE? Refills, Solve and automatic orders will start routing stock to and from it. It also joins everything else that only runs for live locations: the stock audit, display checks, the refusal write-off (which can erase a count that keeps being refused), hub clean-up, and the network totals. Only do this after its count.`
-              : `Switch ${confirmLive.name} off? Nothing automatic will route stock to or from it. Stock already there stays.`}
-          </p>
+          <p>{switchQuestion(confirmSwitch)}</p>
           <button type="button" style={on} disabled={busy}
-            onClick={() => { const c = confirmLive; setConfirmLive(null); send(liveUpdate(registry, c.id, c.to, now(), uid), `${c.name} is ${c.to ? "live" : "not live"}.`); }}>
-            Yes, {confirmLive.to ? "go live" : "switch off"}
+            onClick={() => {
+              const c = confirmSwitch; setConfirmSwitch(null);
+              const built = c.kind === "solve" ? solveUpdate(registry, c.id, c.to, now(), uid) : autoRefillUpdate(registry, c.id, c.to, now(), uid);
+              send(built, c.kind === "solve" ? `${c.name}: Solve ${c.to ? "on" : "off"}.` : `${c.name}: Auto-refill ${AUTO_REFILL_LABELS[c.to].toLowerCase()}.`);
+            }}>
+            Yes, change it
           </button>{" "}
-          <button type="button" style={btn} onClick={() => setConfirmLive(null)}>Cancel</button>
+          <button type="button" style={btn} onClick={() => setConfirmSwitch(null)}>Cancel</button>
         </div>
       )}
 

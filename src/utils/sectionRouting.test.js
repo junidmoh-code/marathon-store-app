@@ -242,17 +242,22 @@ describe("order placement and the wall", () => {
     expect(orderPlacementCheck(NET, { hub: "hub3", destShop: "kloof" })).toMatchObject({ ok: false, reason: "unknown_shop" });
     expect(orderPlacementCheck(NET, { hub: "hub3", destShop: "hub2" })).toMatchObject({ ok: false, reason: "unknown_shop" });
   });
-  it("NOTHING AUTOMATIC is raised to or from a location that is not live", () => {
-    expect(orderPlacementCheck(NET, { hub: "hub3", destShop: "marathon-pine", auto: true })).toMatchObject({ ok: false, reason: "not_live" });
-    expect(orderPlacementCheck(NET, { hub: "concrete-stockroom", destShop: "concrete", auto: true })).toMatchObject({ ok: false, reason: "not_live" });
+  it("NOTHING AUTOMATIC is raised to or from a location whose Auto-refill is off", () => {
+    const off = (ids) => normalizeNetwork({ locations: Object.fromEntries(ids.map((id) => [id, { solve: true, autoRefill: "off" }])) });
+    const dark = off(["marathon-pine", "concrete", "hub3", "concrete-stockroom"]);
+    expect(orderPlacementCheck(dark, { hub: "hub3", destShop: "marathon-pine", auto: true })).toMatchObject({ ok: false, reason: "not_live" });
+    expect(orderPlacementCheck(dark, { hub: "concrete-stockroom", destShop: "concrete", auto: true })).toMatchObject({ ok: false, reason: "not_live" });
     // Section 2 is live: automatic orders are raised as they always were.
-    expect(orderPlacementCheck(NET, { hub: "hub2", destShop: "trophy", auto: true }).ok).toBe(true);
-    // The owner marks Pine and Hub 3 live: automatic is allowed from that moment.
-    const live = normalizeNetwork({ locations: { "marathon-pine": { live: true }, hub3: { live: true } } });
-    expect(orderPlacementCheck(live, { hub: "hub3", destShop: "marathon-pine", auto: true }).ok).toBe(true);
-    // …but only when BOTH ends are.
-    const half = normalizeNetwork({ locations: { "marathon-pine": { live: true } } });
+    expect(orderPlacementCheck(dark, { hub: "hub2", destShop: "trophy", auto: true }).ok).toBe(true);
+    // The seed (7 Oct 2026): Section 1 is Auto-refill "solved" — on, so the engine's legs are open.
+    expect(orderPlacementCheck(NET, { hub: "hub3", destShop: "marathon-pine", auto: true }).ok).toBe(true);
+    // Solve ON alone does not open an AUTOMATIC leg…
+    expect(orderPlacementCheck(off(["marathon-pine"]), { hub: "hub3", destShop: "marathon-pine", auto: true }).ok).toBe(false);
+    // …and a legacy live:true still does (migrated to on + all), only when BOTH ends are on.
+    const half = normalizeNetwork({ locations: { "marathon-pine": { live: true }, hub3: { solve: true, autoRefill: "off" } } });
     expect(orderPlacementCheck(half, { hub: "hub3", destShop: "marathon-pine", auto: true }).ok).toBe(false);
+    const both = normalizeNetwork({ locations: { "marathon-pine": { live: true }, hub3: { live: true } } });
+    expect(orderPlacementCheck(both, { hub: "hub3", destShop: "marathon-pine", auto: true }).ok).toBe(true);
   });
 });
 

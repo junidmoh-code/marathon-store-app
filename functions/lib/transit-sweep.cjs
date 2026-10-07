@@ -239,23 +239,23 @@ function planTransitSweep({ candidates, movements, productExists, config, nowMs 
  * order; the archive is only ever written on the strength of a movement that
  * is actually in the ledger.
  */
-// ── SECTIONS: THE SWEEP RELEASES NOTHING INTO A LOCATION THAT IS NOT LIVE ────
-// A release here is AUTOMATIC — nobody tapped it. A location that is not live
-// gets no automatic stock (network registry), so a line parked for one stays
-// parked and is reported as pending; a person releases it from the Stock Hold
-// screen when they mean to. Every Section 2 destination is live, so for them
-// the plan is returned untouched (the same object).
+// ── SECTIONS: THE SWEEP RELEASES NOTHING INTO A LOCATION WITH BOTH SWITCHES OFF
+// A release here is AUTOMATIC — nobody tapped it. A location with Solve off and
+// Auto-refill off gets no routed stock (network registry), so a line parked for
+// one stays parked and is reported as pending; a person releases it from the
+// Stock Hold screen when they mean to. Every Section 2 destination has both on,
+// so for them the plan is returned untouched (the same object).
 function holdNonLiveReleases(plan, network) {
   // A RESUMED release is not a new one: its transit debit already landed and
   // only the credit is owed. Holding it would strand units that have already
   // left in_transit, so it is always completed.
-  const blocked = (r) => !r.resumed && !networkRegistry.isLive(network, r.dest);
+  const blocked = (r) => !r.resumed && !networkRegistry.receivesRoutedStock(network, r.dest);
   const held = plan.releases.filter(blocked);
   if (!held.length) return plan;
   return {
     ...plan,
     releases: plan.releases.filter((r) => !blocked(r)),
-    pending: [...plan.pending, ...held.map((r) => ({ ...r, why: `${networkRegistry.locationName(network, r.dest)} is not live — the sweep releases nothing there; release it by hand` }))],
+    pending: [...plan.pending, ...held.map((r) => ({ ...r, why: `${networkRegistry.locationName(network, r.dest)} has Solve and Auto-refill off — the sweep releases nothing there; release it by hand` }))],
   };
 }
 

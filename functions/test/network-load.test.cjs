@@ -52,12 +52,15 @@ test("fresh:true bypasses the cache", async () => {
   assert.equal(R.creditScope, "section");
 });
 
-test("a missing node is the seed: Section 2 live, Section 1 not, wall up", async () => {
+test("a missing node is the seed: Section 2 fully live, Section 1 Solve on + Auto-refill solved (trusted cells only), wall up", async () => {
   __resetNetworkCacheForTests();
   const R = await loadNetwork(fakeDb([null]), { nowMs: 1 });
   assert.deepEqual(R, reg.SEED_REGISTRY);
   assert.equal(reg.autoRouteAllowed(R, "hub2", "trophy"), true);
-  assert.equal(reg.autoRouteAllowed(R, "central", "hub3"), false);
+  assert.equal(reg.isLive(R, "hub3"), false);
+  assert.equal(reg.autoRouteAllowed(R, "central", "hub3"), true);
+  assert.equal(reg.trustedCellsOnly(R, "hub3"), true);
+  assert.equal(reg.trustedCellsOnly(R, "hub2"), false);
   assert.equal(reg.wallAllows(R, "hub2", "hub3"), false);
 });
 
