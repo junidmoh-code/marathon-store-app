@@ -116,7 +116,10 @@ function addUnreadFailure(existing, { storeId, tid, tillId, placeStoreId = null,
     source: source || (was && was.source) || "photo-job",
     firstAt: (was && Number.isFinite(was.firstAt)) ? was.firstAt : nowMs,
     lastAt: nowMs,
-    failures: ((was && Number.isInteger(was.failures)) ? was.failures : 0) + 1,
+    // A job already listed is a re-run of the same failure (a run that died
+    // part-way), not another capture.
+    failures: ((was && Number.isInteger(was.failures)) ? was.failures : 0)
+      + (jobId && was && was.jobs && was.jobs[jobId] ? 0 : 1),
     jobs: Object.keys(keptJobs).length ? keptJobs : null,
     photos: photoList.length ? photoList : null,
     notice: (was && was.notice) || null,

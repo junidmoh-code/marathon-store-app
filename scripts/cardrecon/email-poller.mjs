@@ -453,6 +453,9 @@ async function run() {
       const transport = nodemailer.createTransport({
         host: cfg.smtpHost, port: cfg.smtpPort, secure: cfg.smtpPort === 465,
         auth: { user: cfg.user, pass: cfg.password },
+        // Short, because this runs BEFORE the mailbox: a dead SMTP host must
+        // cost seconds, not the tick. (Sonnet review, #707.)
+        connectionTimeout: 15000, greetingTimeout: 15000, socketTimeout: 30000,
       });
       const round = await deliverNotices({
         call: async (data) => callCapture(await getToken(), data),

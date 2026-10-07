@@ -1785,6 +1785,7 @@ async function handleReceive(db, request, deps = {}) {
   const jobId = jobRef.key;
   const bucket = deps.bucket || admin.storage().bucket(STORAGE_BUCKET);
   const photoPaths = [];
+  try {
   for (let i = 0; i < decoded.length; i++) {
     const path = `${JOB_PHOTO_PREFIX}/${jobId}/photo-${i}.jpg`;
     await bucket.file(path).save(decoded[i].buffer, {
@@ -1832,6 +1833,12 @@ async function handleReceive(db, request, deps = {}) {
     [`${JOBS_PATH}/${jobId}`]: job,
     [`${DUE_PATH}/${job.dueKey}`]: jobId,
   });
+  } catch (err) {
+    // Nothing was kept, so the photo must not count against the day's ceiling.
+    await db.ref(`${JOBS_COUNT_PATH}/${picked}/${dayYmd}`)
+      .transaction((cur) => (Number.isInteger(cur) && cur > 0 ? cur - 1 : cur)).catch(() => {});
+    throw err;
+  }
   console.log(`cardBatchCapture: received picked=${picked} job=${jobId} photos=${photoPaths.length}`);
   return { ok: true, received: true };
 }
