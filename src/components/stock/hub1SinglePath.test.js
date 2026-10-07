@@ -51,9 +51,10 @@ describe("CHANGE 1 — every reactive writer is off at hub1, untouched at hub2",
     // Section 2 on the registry's seed both are Hub 1 + Hub 2 — both hubs are
     // still offered, which is what this test protects.
     expect(mf).toContain("const HUBS = useMemo(() => hubIds(network, { section }), [network, section]);");
-    expect(mf).toContain("const REQUESTABLE_HUBS = useMemo(() => hubIds(network, { section, liveOnly: true }), [network, section]);");
+    // (since 7 Oct 2026: the hubs with SOLVE on — Hub 1 and Hub 2 for Section 2, as before)
+    expect(mf).toContain("const REQUESTABLE_HUBS = useMemo(() => hubIds(network, { section, solveOnly: true }), [network, section]);");
     expect(hubIds(SEED_REGISTRY, { section: 2 })).toEqual(["hub1", "hub2"]);
-    expect(hubIds(SEED_REGISTRY, { section: 2, liveOnly: true })).toEqual(["hub1", "hub2"]);
+    expect(hubIds(SEED_REGISTRY, { section: 2, solveOnly: true })).toEqual(["hub1", "hub2"]);
     expect(mf).not.toContain("REACTIVE_REFILL_HUBS");
     // A REQUEST (the operator's own sizes) is offered every hub of the section,
     // live or not; SOLVE (the policy's numbers) only the live ones. On Section 2

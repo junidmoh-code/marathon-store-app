@@ -25,6 +25,10 @@ const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/first-batch.cjs");
 
 const S1_LIVE = normalizeNetwork({ locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true }, "concrete-stockroom": { live: true } } });
+// Section 1 with both switches OFF (the seed before 7 Oct 2026).
+const OFF = { solve: false, autoRefill: "off" };
+const S1_OFF = { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF };
+const DARK = normalizeNetwork({ locations: S1_OFF });
 const TEE = { id: "tee", name: "Tee", productType: "clothing", categoryKey: "t-shirts", sizes: ["S", "M", "L"] };
 
 describe("the hub behind a store comes from the registry", () => {
@@ -81,8 +85,10 @@ describe("the hub behind a store comes from the registry", () => {
     expect(hubIds(SEED_REGISTRY, { section: 1 })).toEqual(["hub3", "concrete-stockroom"]);
     expect(storeIds(SEED_REGISTRY, { liveOnly: true })).toEqual(["marathon-pe", "trophy"]);
     expect(hubIds(SEED_REGISTRY, { liveOnly: true })).toEqual(["hub1", "hub2"]);
-    expect(liveSections(SEED_REGISTRY)).toEqual([2]);
-    expect(liveSections(S1_LIVE)).toEqual([1, 2]);
+    expect(storeIds(SEED_REGISTRY, { solveOnly: true })).toEqual(["marathon-pine", "concrete", "marathon-pe", "trophy"]);
+    expect(liveSections(DARK)).toEqual([2]);
+    expect(liveSections(SEED_REGISTRY)).toEqual([2, 1]);   // the seed (7 Oct 2026): Section 1 Solve on — Marathon first
+    expect(liveSections(S1_LIVE)).toEqual([2, 1]);
     expect(centralId(SEED_REGISTRY)).toBe("central");
     // a careless second argument (an index from .map) is not a registry
     expect(net(3)).toBe(net(undefined));
@@ -90,12 +96,22 @@ describe("the hub behind a store comes from the registry", () => {
 });
 
 describe("the live gate and the wall, per store", () => {
-  it("a store that is not live cannot be routed to, with a plain reason", () => {
-    expect(solveStoreBlock(SEED_REGISTRY, { source: "central", store: "marathon-pine", hub: "hub3" })).toBe("not live yet — counted stock first");
-    expect(solveStoreBlock(SEED_REGISTRY, { source: "central", store: "concrete", hub: "hub3" })).toBe("not live yet — counted stock first");
-    // the shop live but its hub not
-    const shopOnly = normalizeNetwork({ locations: { "marathon-pine": { live: true } } });
-    expect(solveStoreBlock(shopOnly, { source: "central", store: "marathon-pine", hub: "hub3" })).toBe("its hub (Hub 3) is not live yet — counted stock first");
+  it("a store with Solve OFF cannot be routed to, with a plain reason", () => {
+    expect(solveStoreBlock(DARK, { source: "central", store: "marathon-pine", hub: "hub3" })).toBe("Solve is off for this store (Network card)");
+    expect(solveStoreBlock(DARK, { source: "central", store: "concrete", hub: "hub3" })).toBe("Solve is off for this store (Network card)");
+    // the shop on but its hub off
+    const shopOnly = normalizeNetwork({ locations: { ...S1_OFF, "marathon-pine": { solve: true, autoRefill: "off" } } });
+    expect(solveStoreBlock(shopOnly, { source: "central", store: "marathon-pine", hub: "hub3" })).toBe("Solve is off for its hub (Hub 3) (Network card)");
+    // Solve is its OWN switch: Auto-refill on with Solve off still blocks Solve
+    const refillOnly = normalizeNetwork({ locations: { ...S1_OFF, "marathon-pine": { solve: false, autoRefill: "all" }, hub3: { solve: false, autoRefill: "all" } } });
+    expect(solveStoreBlock(refillOnly, { source: "central", store: "marathon-pine", hub: "hub3" })).toBe("Solve is off for this store (Network card)");
+  });
+
+  it("THE SEED (7 Oct 2026): Pine and Concrete have Solve ON — open at Hub 3, before their counts are finished", () => {
+    for (const store of ["marathon-pine", "concrete"]) expect(solveStoreBlock(SEED_REGISTRY, { source: "central", store, hub: "hub3" })).toBeNull();
+    // Concrete's category flipped to the stockroom: open there too
+    const flipped = normalizeNetwork({ backStock: { concrete: { "t-shirts": "concrete-stockroom" } } });
+    expect(solveStoreBlock(flipped, { source: "central", store: "concrete", hub: "concrete-stockroom" })).toBeNull();
   });
 
   it("Section 2 is open, as it always was; Section 1 is open once live", () => {
@@ -113,12 +129,14 @@ describe("the live gate and the wall, per store", () => {
   });
 
   it("the blocks: Marathon (Marathon PE, Trophy) then Concrete (Pine, Concrete), each store with its hub and its reason", () => {
-    const blocks = solveBlocks({ network: SEED_REGISTRY, sections: [1, 2], source: "central", product: TEE, productId: "tee" });
+    const blocks = solveBlocks({ network: DARK, sections: [1, 2], source: "central", product: TEE, productId: "tee" });
     expect(blocks.map((b) => [b.section, b.name, b.stores.map((s) => s.id)])).toEqual([
       [2, "Marathon", ["marathon-pe", "trophy"]],
       [1, "Concrete", ["marathon-pine", "concrete"]],
     ]);
-    expect(blocks[1].stores.map((s) => [s.hub, s.blocked])).toEqual([["hub3", "not live yet — counted stock first"], ["hub3", "not live yet — counted stock first"]]);
+    expect(blocks[1].stores.map((s) => [s.hub, s.blocked])).toEqual([["hub3", "Solve is off for this store (Network card)"], ["hub3", "Solve is off for this store (Network card)"]]);
+    // the seed: Section 1 open
+    expect(solveBlocks({ network: SEED_REGISTRY, sections: [1, 2], source: "central", product: TEE, productId: "tee" })[1].stores.map((s) => [s.hub, s.blocked])).toEqual([["hub3", null], ["hub3", null]]);
     expect(blocks[0].stores.map((s) => [s.name, s.hub, s.hubName, s.blocked])).toEqual([["Marathon PE", "hub2", "Hub 2", null], ["Trophy", "hub2", "Hub 2", null]]);
     // a viewer who may see one section gets one block
     expect(solveBlocks({ network: SEED_REGISTRY, sections: [2], source: "central" }).map((b) => b.section)).toEqual([2]);
@@ -240,10 +258,12 @@ describe("the same policy for every store unless it has its own (policyTemplate.
     expect(t.ruleBasedTargets).toMatchObject({ "marathon-pine": true, hub3: true, concrete: false });   // an explicit false is its own entry
     expect(t.routes).toBe(cfg.routes);                                                                  // routes are not a policy
     expect(JSON.stringify(cfg)).toBe(before);                                                           // a view: the stored node is not touched
-    // Section 1 NOT live (the seed): the very same object — nothing follows anything
-    expect(engineConfigView(cfg, SEED_REGISTRY)).toBe(cfg);
-    // only Hub 3 live: Hub 3 follows, Pine (not live) reads what is stored — nothing
-    const part = engineConfigView(cfg, normalizeNetwork({ locations: { hub3: { live: true } } }));
+    // Section 1 OFF: the very same object — nothing follows anything
+    expect(engineConfigView(cfg, DARK)).toBe(cfg);
+    // the seed (7 Oct 2026): Section 1 is planned (Auto-refill "solved") — it follows, as when live
+    expect(engineConfigView(cfg, SEED_REGISTRY).defaultRunByStore["marathon-pine"]).toEqual({ M: 2 });
+    // only Hub 3 routed: Hub 3 follows, Pine (off) reads what is stored — nothing
+    const part = engineConfigView(cfg, normalizeNetwork({ locations: { ...S1_OFF, hub3: { live: true } } }));
     expect(part.defaultRunByStore.hub3).toEqual({ M: 3 });
     expect(part.defaultRunByStore["marathon-pine"]).toBeUndefined();
     expect(part.categoryPolicy.bags["marathon-pine"]).toBeUndefined();
@@ -393,8 +413,9 @@ describe("Missing Products is evaluated per section", () => {
     expect(computeMissingProducts({ allStock: stock, products, network: SEED_REGISTRY, section: 1 }).map((c) => c.pid)).toEqual(["bag"]);
   });
 
-  it("the lists a screen builds by itself are the sections with a live shop", () => {
-    expect(missingProductSections(SEED_REGISTRY)).toEqual([2]);
-    expect(missingProductSections(S1_LIVE)).toEqual([1, 2]);
+  it("the lists a screen builds by itself are the sections with a routed shop (Solve or Auto-refill on)", () => {
+    expect(missingProductSections(DARK)).toEqual([2]);
+    expect(missingProductSections(SEED_REGISTRY)).toEqual([2, 1]);
+    expect(missingProductSections(S1_LIVE)).toEqual([2, 1]);
   });
 });

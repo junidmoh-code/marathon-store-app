@@ -17,14 +17,18 @@ const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const { computeRefillPlan, networkRouting } = require("../lib/refill-engine.cjs");
 const rule = require("../lib/shop-source-rule.cjs");
-const { normalizeNetwork, SEED_REGISTRY } = require("../lib/network-registry.cjs");
+const { normalizeNetwork } = require("../lib/network-registry.cjs");
 
 const NOW = Date.parse("2026-10-03T10:00:00.000Z");
 const C0 = "2026-09-25T14:25:29.087Z";
 const BEFORE = "2026-09-20T08:00:00.000Z";
 const AFTER = "2026-09-26T08:00:00.000Z";
 const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
-const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(ids.map((id) => [id, { live: true }])), ...extra });
+// Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
+// (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
+const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+
+const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, ids.includes(id) ? { live: true } : { solve: false, autoRefill: "off" }])), ...extra });
 // Production-shaped: only Section 2 is named.
 const CONFIG = {
   enabled: true,
@@ -118,8 +122,8 @@ test("CONCRETE: a product mapped to the Concrete Stockroom is judged against the
 });
 
 test("NOT LIVE: nothing automatic touches a request at a shop that is not live, or whose hub is not", () => {
-  for (const network of [SEED_REGISTRY, live(["marathon-pine"]), live(["hub3"]), null]) {
-    const s = snap({ network: network || SEED_REGISTRY, at: { hub3: cell(4) } });
+  for (const network of [DARK, live(["marathon-pine"]), live(["hub3"]), null]) {
+    const s = snap({ network: network || DARK, at: { hub3: cell(4) } });
     if (!network) delete s.network;                 // no registry handed in at all
     const plan = computeRefillPlan(s);
     assert.equal(withdrawal(plan), undefined);
@@ -145,7 +149,7 @@ test("the functions: a registry-routed shop is a shop, its hub is per product, a
   assert.equal(rule.isShopLoc("marathon-pine", { routes: routing.routes }), false);
   assert.equal(rule.shopHubFor("marathon-pine", { routes: routing.routes, product: TEE, pid: "tee" }), null);
   // not live → not in the engine's routing → not covered
-  const cold = networkRouting(CONFIG, SEED_REGISTRY);
+  const cold = networkRouting(CONFIG, DARK);
   assert.equal(rule.isShopLoc("marathon-pine", { routes: cold.routes, routing: cold }), false);
 });
 
@@ -211,7 +215,7 @@ function genCase(r) {
   }
   const locations = r() < 0.3 ? null : Object.fromEntries(IDS.filter(() => r() < 0.7).map((id) => [id, r() < 0.1 ? "junk" : { kind: pick(KINDS) }]));
   const liveIds = S1.filter(() => r() < 0.6);
-  const network = pick([undefined, SEED_REGISTRY, live(liveIds), live(liveIds, { backStock: { concrete: { "t-shirts": "concrete-stockroom" } } }),
+  const network = pick([undefined, DARK, live(liveIds), live(liveIds, { backStock: { concrete: { "t-shirts": "concrete-stockroom" } } }),
     normalizeNetwork({ locations: { ...Object.fromEntries(liveIds.map((id) => [id, { live: true }])), [pick(S2)]: { live: r() < 0.5 } } })]);
   const hubHas = pick([null, "units", "later_seed", "lock", "held"]);
   const hubLoc = pick(["hub1", "hub2", "hub3"]);
@@ -267,7 +271,7 @@ test("SECTION 2 DIFFERENTIAL: for Marathon PE, Trophy, Hub 1 and Hub 2 the rule 
 
 test("SECTION 2, the one input class the reference does not cover: a shop config.routes does not name at all is the engine's registry-routed shop, and the rule follows the engine", () => {
   const routes = { hub1: "central", hub2: "central", "marathon-pe": "hub2" };          // trophy's entry deleted
-  const routing = networkRouting({ routes }, SEED_REGISTRY);
+  const routing = networkRouting({ routes }, DARK);
   assert.equal(routing.stores.has("trophy"), true);                                    // the engine routes it by the registry
   assert.equal(routing.sourceFor("trophy", TEE, "tee"), "hub2");
   assert.equal(OLD.isShopLoc("trophy", { routes: routing.routes }), false);            // before: not covered

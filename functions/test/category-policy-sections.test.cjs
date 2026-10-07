@@ -23,7 +23,7 @@ const path = require("node:path");
 const { computeRefillPlan, policyCategoryKey } = require("../lib/refill-engine.cjs");
 const { modelCategoryPolicy, policyRouting } = require("../lib/category-policy.cjs");
 const { applyCategoryPolicy, invalidateCensusCache } = require("../lib/category-policy-write.cjs");
-const { normalizeNetwork, SEED_REGISTRY } = require("../lib/network-registry.cjs");
+const { normalizeNetwork } = require("../lib/network-registry.cjs");
 const { __resetNetworkCacheForTests } = require("../lib/network-load.cjs");
 const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
 
@@ -33,8 +33,12 @@ const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/sectio
 const NOW = Date.parse("2026-10-01T10:00:00.000Z");
 const clone = (v) => JSON.parse(JSON.stringify(v));
 const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+// Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
+// (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
+const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+
 const S2 = ["hub1", "hub2", "marathon-pe", "trophy"];
-const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(ids.map((id) => [id, { live: true }])), ...extra });
+const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, ids.includes(id) ? { live: true } : { solve: false, autoRefill: "off" }])), ...extra });
 const MAPPED = Object.keys(FIXTURE.config.categoryPolicy);
 
 // The fixture world with Section 1 stocked: Hub 3 and the stockroom hold what
@@ -73,7 +77,7 @@ test("policyRouting: live Section 1 followers are destinations, mode live, sourc
   const none = policyRouting(cfg, undefined);
   assert.deepEqual(none.destinations, Object.keys(cfg.mode));
   assert.equal(none.configFor("hub3"), cfg);
-  const seed = policyRouting(cfg, SEED_REGISTRY);
+  const seed = policyRouting(cfg, DARK);
   assert.deepEqual(seed.destinations, Object.keys(cfg.mode));
   assert.deepEqual(seed.added, []);
   for (const loc of [...S1, ...S2]) { assert.equal(seed.modeOf(loc), cfg.mode[loc] || "off"); assert.deepEqual(seed.sourcesOf(loc), cfg.routes[loc] ? [cfg.routes[loc]] : []); }
@@ -105,7 +109,7 @@ test("SECTION 2: with the seed registry (Section 1 not live) the model is the no
   assert.ok(keys.length > MAPPED.length);
   for (const key of keys) {
     const a = modelOf(w, key, undefined);
-    assert.deepEqual(modelOf(w, key, SEED_REGISTRY), a, key);
+    assert.deepEqual(modelOf(w, key, DARK), a, key);
     assert.deepEqual(modelOf(w, key, live(["marathon-pine"])), a, key);   // a shop alone, its hub not live: still nothing
     assert.deepEqual(a.follows, {});
     for (const l of a.legs) assert.equal(l.follows, null);
@@ -152,7 +156,7 @@ test("SECTION 1 LIVE: each follower is listed as an armed destination with the f
 test("NOT LIVE is never armed: seed registry, and a registry with only some of Section 1 live", () => {
   const w = world();
   for (const key of MAPPED) {
-    assert.deepEqual(modelOf(w, key, SEED_REGISTRY).armedLocations.filter((l) => S1.includes(l)), [], key);
+    assert.deepEqual(modelOf(w, key, DARK).armedLocations.filter((l) => S1.includes(l)), [], key);
     const part = modelOf(w, key, live(["hub3"]));     // Hub 3 live, nothing else
     assert.deepEqual(part.armedLocations.filter((l) => S1.includes(l) && l !== "hub3"), [], key);
     assert.deepEqual(Object.keys(part.follows).filter((l) => l !== "hub3"), [], key);
@@ -230,9 +234,9 @@ test("CALLABLE census: live Section 1 followers are destinations with `follows`;
   assert.deepEqual(cb.entry, w.config.refillEngine.categoryPolicy["caps-beanies"]);
   assert.deepEqual(cb.effectiveEntry, w.config.refillEngine.categoryPolicy["caps-beanies"]);
   assert.deepEqual(cb.armed.sort(), ["hub2", "marathon-pe"]);
-  // and with Section 1 NOT live nothing follows and nothing is added
+  // and with Section 1's Auto-refill OFF nothing follows and nothing is added
   __resetNetworkCacheForTests(); invalidateCensusCache();
-  const cold = callableWorld(); delete cold.network;
+  const cold = callableWorld(); cold.network = { locations: Object.fromEntries(S1.map((id) => [id, { solve: false, autoRefill: "off" }])) };
   const res2 = await call(makeFakeDb(cold), { action: "census" });
   assert.deepEqual(res2.categories.find((c) => c.key === "caps-beanies").follows, {});
   assert.deepEqual(res2.destinations.filter((l) => S1.includes(l)), []);

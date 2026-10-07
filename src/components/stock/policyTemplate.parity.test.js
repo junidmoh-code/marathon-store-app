@@ -28,7 +28,10 @@ const FIXTURE = require("../../../functions/test/fixtures/sections-routing-fixtu
 const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
 const S2 = ["marathon-pe", "trophy", "hub1", "hub2"];
 const ALL = [...S1, ...S2];
-const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(ids.map((id) => [id, { live: true }])), ...extra });
+// Section 1 with both switches off (the seed before 7 Oct 2026), and with only `ids` fully live.
+const OFF = { solve: false, autoRefill: "off" };
+const DARK = normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, OFF])) });
+const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, ids.includes(id) ? { live: true } : OFF])), ...extra });
 const clone = (v) => JSON.parse(JSON.stringify(v));
 
 function rng(seedN) { let a = seedN >>> 0; return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
@@ -36,7 +39,7 @@ function genRegistry(r) {
   const pick = (a) => a[Math.floor(r() * a.length)];
   const locations = {};
   for (const id of ALL) {
-    if (r() < 0.75) locations[id] = { live: r() < 0.7 };
+    if (r() < 0.75) locations[id] = r() < 0.4 ? { live: r() < 0.7 } : { solve: r() < 0.7, autoRefill: pick(["off", "solved", "all"]) };
     if (locations[id] && r() < 0.25) locations[id].policyLike = pick([...ALL, "ghost", id, ""]);
   }
   if (r() < 0.15) locations.newshop = { type: "store", section: pick([1, 2]), live: r() < 0.7, policyLike: pick(["trophy", "marathon-pe"]) };
@@ -108,7 +111,9 @@ describe("enginePlannedLocations is the engine's destination list", () => {
       sizes.add(want.length);
     }
     expect(sizes.size).toBeGreaterThan(4);
-    expect([...enginePlannedLocations(FIXTURE.config, SEED_REGISTRY)].sort()).toEqual([...S2].sort());
+    expect([...enginePlannedLocations(FIXTURE.config, DARK)].sort()).toEqual([...S2].sort());
+    // the seed (7 Oct 2026): Section 1's Auto-refill is "solved" — the engine plans it (trusted cells only)
+    expect([...enginePlannedLocations(FIXTURE.config, SEED_REGISTRY)].sort()).toEqual([...ALL].sort());
     expect([...enginePlannedLocations(FIXTURE.config, live())].sort()).toEqual([...ALL].sort());
   });
 });
@@ -148,8 +153,8 @@ describe("engineConfigView — the config every stock screen loads", () => {
     expect(unplannedFollowers).toBeGreaterThan(300);                    // the engine's config fills them; the view must not
   });
 
-  it("Section 2 only (the seed registry, or no registry): the stored node itself, the same object", () => {
-    expect(engineConfigView(FIXTURE.config, SEED_REGISTRY)).toBe(FIXTURE.config);
+  it("Section 2 only (Section 1 off, or no registry): the stored node itself, the same object", () => {
+    expect(engineConfigView(FIXTURE.config, DARK)).toBe(FIXTURE.config);
     expect(engineConfigView(FIXTURE.config, undefined)).toBe(FIXTURE.config);
     expect(engineConfigView(null, live())).toBeNull();
   });
@@ -186,7 +191,9 @@ describe("engineConfigView — the config every stock screen loads", () => {
   it("followersIn: who follows whom in one map — live followers only, and only where the template has an entry", () => {
     const run = FIXTURE.config.defaultRunByStore;
     expect(followersIn(FIXTURE.config, live(), run)).toEqual({ "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2", "concrete-stockroom": "hub2" });
-    expect(followersIn(FIXTURE.config, SEED_REGISTRY, run)).toEqual({});
+    expect(followersIn(FIXTURE.config, DARK, run)).toEqual({});
+    // the seed: Section 1 is planned, so its followers follow
+    expect(followersIn(FIXTURE.config, SEED_REGISTRY, run)).toEqual({ "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2", "concrete-stockroom": "hub2" });
     expect(followersIn(FIXTURE.config, live(["hub3"]), run)).toEqual({ hub3: "hub2" });
     expect(followersIn(FIXTURE.config, live(), { ...run, hub3: { M: 1 } }).hub3).toBeUndefined();
     expect(followersIn(FIXTURE.config, live(), { trophy: { M: 1 } })).toEqual({});

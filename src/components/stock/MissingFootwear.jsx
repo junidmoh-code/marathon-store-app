@@ -68,9 +68,8 @@ import { policyKeyFor, sectionName } from "../../utils/networkRegistry";
 // decision silenced. The Tomorrow writer and sale-driven rows stay hub2-only
 // (see reactiveRefillHubs.js); the engine treats an open human hub1 row as
 // inbound, so no cell is ever double-asked.
-// REQUESTABLE = that section's LIVE hubs. A hub that is not live is shown in
-// the card's facts but takes no request from here: nothing is routed to a
-// location that has not been counted in.
+// REQUESTABLE = that section's hubs with SOLVE on (Network card). A hub with
+// Solve off is shown in the card's facts but takes no Solve from here.
 // Solve raises work into a hub's refill queue. Both hubs have one: the queue
 // component is now destination-parameterised (it was hub2-only because CLOTHING
 // is not kept at Hub 1, not because Hub 1 lacks refills — sneakers make Hub 1 the
@@ -113,17 +112,18 @@ export default function MissingFootwear({ products = [] }) {
   const [sectionPick, setSectionPick] = useState(null);
   const section = sectionPick && sectionChoices.includes(sectionPick) ? sectionPick : (sectionChoices[0] ?? 2);
   const HUBS = useMemo(() => hubIds(network, { section }), [network, section]);
-  const REQUESTABLE_HUBS = useMemo(() => hubIds(network, { section, liveOnly: true }), [network, section]);
+  const REQUESTABLE_HUBS = useMemo(() => hubIds(network, { section, solveOnly: true }), [network, section]);
   // Hubs a person may raise their OWN request for: every hub of the section,
   // live or not. On Section 2 this is the same list as REQUESTABLE_HUBS.
   const REQUEST_HUBS = HUBS;
   // Central's shelf is shared by both sections, so what is already promised
-  // out of it is counted across this section's hubs AND every other live hub.
-  const RESERVING_HUBS = useMemo(() => [...new Set([...HUBS, ...hubIds(network, { liveOnly: true })])], [HUBS, network]);
+  // out of it is counted across this section's hubs AND every other hub that
+  // anything routes to (Solve or Auto-refill on).
+  const RESERVING_HUBS = useMemo(() => [...new Set([...HUBS, ...hubIds(network, { solveOnly: true }), ...hubIds(network, { autoRefillOnly: true })])], [HUBS, network]);
   const CENTRAL = centralId(network);
   const LOC_LABEL = useMemo(() => Object.fromEntries([...HUBS, CENTRAL].map((l) => [l, nameOf(l, network)])), [HUBS, CENTRAL, network]);
   const notLive = REQUESTABLE_HUBS.length === 0
-    ? `${HUBS.map((h) => nameOf(h, network)).join(" and ")} ${HUBS.length === 1 ? "is" : "are"} not live yet — counted stock first.`
+    ? `Solve is off for ${HUBS.map((h) => nameOf(h, network)).join(" and ")} (Network card).`
     : null;
 
   // The footwear standard, read ONCE. Absent until footwear targeting is

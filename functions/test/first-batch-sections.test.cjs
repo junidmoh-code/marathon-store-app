@@ -60,6 +60,10 @@ function world(store, { network = S1_LIVE, req = {}, extra = {} } = {}) {
 const run = (db, id = "r1", nowIso = T1) => processFirstBatchRequest({ db, requestId: id, nowIso, pathEnabled: true });
 const root = (db) => db.state.root;
 const requestsAt = (db, loc) => Object.entries(root(db).refill_requests || {}).filter(([, r]) => r.requestingLocation === loc);
+// Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
+// (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
+const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+
 const lockAt = (db, loc) => root(db).refill_engine?.open?.[loc]?.p1?.M ?? null;
 // Fulfil the shop's request the way Source does, then fire the trigger again.
 async function fulfilAndFire(db) {
@@ -165,18 +169,21 @@ test("SECTION 1, LIVE: presence is judged at the shop's OWN hub — Hub 3 alread
   assert.equal(root(here).stock.hub2, undefined);
 });
 
-test("NOT LIVE: a Pine or Concrete request writes nothing at all — the seed registry holds Section 1 not live", async () => {
+// The raw /network node with Section 1's switches both OFF.
+const S1_DARK = { locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) };
+
+test("AUTO-REFILL OFF: a Pine or Concrete request writes nothing at all", async () => {
   for (const store of ["marathon-pine", "concrete"]) {
     __resetNetworkCacheForTests();
-    const db = world(store, { network: null });
+    const db = world(store, { network: S1_DARK });
     const before = JSON.stringify(root(db));
     assert.deepEqual(await run(db), { skipped: "section_wall", store });
     assert.equal(JSON.stringify(root(db)), before);
   }
 });
 
-test("NOT LIVE: a live shop whose HUB is not live gets nothing either", async () => {
-  const db = world("marathon-pine", { network: { locations: { "marathon-pine": { live: true } } } });
+test("AUTO-REFILL OFF at the HUB: a routed shop whose hub is off gets nothing either", async () => {
+  const db = world("marathon-pine", { network: { locations: { ...S1_DARK.locations, "marathon-pine": { live: true } } } });
   const before = JSON.stringify(root(db));
   assert.deepEqual(await run(db), { skipped: "section_wall", store: "marathon-pine" });
   assert.equal(JSON.stringify(root(db)), before);

@@ -19,7 +19,7 @@
 
 import { encodeSizeKey, decodeSizeKey } from "../../utils/sizeKey";
 import { isDeactivated } from "../../utils/deactivation";
-import { wallAllows, isLive, sectionOf } from "../../utils/networkRegistry";
+import { wallAllows, autoRefillOn, sectionOf } from "../../utils/networkRegistry";
 import { sizeRank } from "./hubSizeRank";
 import { net, storeIds, solveHubFor, centralId, isCentral } from "./sectionRouting";
 
@@ -28,15 +28,15 @@ const isClothing = (p) =>
   (!p?.productType && (p?.sizes || []).some((s) => /^(XS|S|M|L|XL|XXL|XXXL)$/i.test(String(s))));
 
 // The engine's routes when its config has not answered (or names none): each
-// LIVE store behind its default back-stock hub, each of those hubs behind
-// Central. On the seed registry: Marathon PE → Hub 2, Trophy → Hub 2,
-// Hub 2 → Central — the literal map this replaced.
+// store with Auto-refill on behind its default back-stock hub, each of those
+// hubs behind Central. `liveOnly` (the engine's view) keeps to Auto-refill on;
+// false lists every store.
 export function registryRoutes(network, { liveOnly = true } = {}) {
   const N = net(network);
   const out = {};
-  for (const s of storeIds(N, { liveOnly })) {
+  for (const s of storeIds(N, liveOnly ? { autoRefillOnly: true } : {})) {
     const h = solveHubFor(N, s, null, null);
-    if (!h || (liveOnly && !isLive(N, h))) continue;
+    if (!h || (liveOnly && !autoRefillOn(N, h))) continue;
     out[s] = h;
     out[h] = centralId(N);
   }
@@ -107,9 +107,10 @@ export function computeMoveExcessCards({
     }
   }
   for (const loc of sources || []) {
-    // Only a LIVE location's need holds stock back. (A location the registry
-    // does not know is left as it was: counted.)
-    if (sectionOf(N, loc) !== null && !isLive(N, loc)) continue;
+    // Only the need of a location the ENGINE refills (Auto-refill on) holds
+    // stock back. (A location the registry does not know is left as it was:
+    // counted.)
+    if (sectionOf(N, loc) !== null && !autoRefillOn(N, loc)) continue;
     for (const [pid, bySize] of Object.entries(allTargets?.[loc] || {})) {
       for (const [sizeKey, t] of Object.entries(bySize || {})) {
         if (!t || typeof t.target !== "number") continue;

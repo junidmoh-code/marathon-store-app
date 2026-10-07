@@ -11,14 +11,17 @@
 // routes Section 2 exactly as the literal lists did: Marathon PE and Trophy
 // behind Hub 2 (sneakers Hub 1), Section 1 present but NOT live.
 //
-// LIVE vs VISIBLE. "liveOnly" lists are for anything automatic (a request the
-// screen raises, a route it follows by itself). The plain lists are for
-// anything a person does by hand: viewing, counting, a manual move inside the
-// wall. A location that is not live appears in the second and never the first.
+// SWITCHES vs VISIBLE. Each location carries two switches (networkRegistry.js):
+// Solve (on/off) and Auto-refill (off / solved / all). "solveOnly" lists are
+// for Solve and the first batch it raises; "autoRefillOnly" lists for anything
+// the ENGINE does or a screen does on its behalf; "liveOnly" (both on, "all")
+// for the readers that predate the split. The plain lists are for anything a
+// person does by hand: viewing, counting, a manual move inside the wall.
 
 import { currentNetwork } from "../../utils/networkStore";
 import {
   storesOf, hubsOf, listLocations, locationOf, locationName, sectionOf, isLive,
+  solveOn, autoRefillOn, solveRouteAllowed, sectionsInOrder,
   backStockFor, backStockHubsOf, autoRouteAllowed, wallAllows, resolveLocationId,
 } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
@@ -43,18 +46,24 @@ export const sectionOfLoc = (loc, network) => sectionOf(net(network), loc);
 const ids = (list) => list.map((l) => l.id);
 
 // Store / hub ids, registry sort order. `section` omitted = every section.
-export function storeIds(network, { section, liveOnly } = {}) {
-  return ids(storesOf(net(network), { ...(section ? { section } : {}), ...(liveOnly ? { liveOnly: true } : {}) }));
+const filters = ({ section, liveOnly, solveOnly, autoRefillOnly } = {}) => ({
+  ...(section ? { section } : {}), ...(liveOnly ? { liveOnly: true } : {}),
+  ...(solveOnly ? { solveOnly: true } : {}), ...(autoRefillOnly ? { autoRefillOnly: true } : {}),
+});
+export function storeIds(network, opts = {}) {
+  return ids(storesOf(net(network), filters(opts)));
 }
-export function hubIds(network, { section, liveOnly } = {}) {
-  return ids(hubsOf(net(network), { ...(section ? { section } : {}), ...(liveOnly ? { liveOnly: true } : {}) }));
+export function hubIds(network, opts = {}) {
+  return ids(hubsOf(net(network), filters(opts)));
 }
 
-// The section numbers that have at least one LIVE store — the sections whose
-// work lists a screen builds by itself. On the seed: [2].
+// The section numbers that have at least one ROUTED store — Solve on or
+// Auto-refill on — the sections whose work lists a screen builds by itself,
+// in the registry's division order (Marathon first, so a screen that opens on
+// the first of these still opens on Marathon). On the seed (7 Oct 2026): [2, 1].
 export function liveSections(network) {
   const N = net(network);
-  return [...new Set(storesOf(N, { liveOnly: true }).map((l) => l.section))].sort((a, b) => a - b);
+  return sectionsInOrder(N, [...new Set(storesOf(N).filter((l) => l.solve === true || l.autoRefill !== "off").map((l) => l.section))]);
 }
 
 // ── THE HUB BEHIND A STORE, FOR THE "EVERYTHING EXCEPT SNEAKERS" FLOWS ───────
@@ -75,13 +84,14 @@ export function solveHubFor(network, store, product, productId) {
 }
 
 // The hubs a section's stores keep this product's back stock at (registry
-// store order, no repeats). Section 2 on the seed: ["hub2"].
-export function solveHubsOfSection(network, section, product, productId, { liveOnly } = {}) {
+// store order, no repeats). Section 2 on the seed: ["hub2"]. `solveOnly`
+// keeps to stores and hubs with Solve on.
+export function solveHubsOfSection(network, section, product, productId, { solveOnly } = {}) {
   const N = net(network);
   const out = [];
-  for (const s of storeIds(N, { section, liveOnly })) {
+  for (const s of storeIds(N, { section, solveOnly })) {
     const h = solveHubFor(N, s, product, productId);
-    if (h && !out.includes(h) && (!liveOnly || isLive(N, h))) out.push(h);
+    if (h && !out.includes(h) && (!solveOnly || solveOn(N, h))) out.push(h);
   }
   return out;
 }
@@ -90,11 +100,11 @@ export function solveHubsOfSection(network, section, product, productId, { liveO
 // The engine's own answer (functions/lib/refill-engine.cjs networkRouting
 // sourceFor), for a screen that must only start what the engine will carry on:
 //   • a store config.routes NAMES is routed by that entry and nothing else —
-//     when the leg is open (both ends live, one side of the wall);
-//   • a LIVE store it does not name (Pine, Concrete) is routed by the registry,
-//     per product: the hub holding its back stock for that product, when that
-//     hub is live. The category asked is the product's real one — a sneaker
-//     asks the sneakers mapping, as the engine does.
+//     when the leg is open (Auto-refill on at both ends, one side of the wall);
+//   • a store it does not name with Auto-refill on (Pine, Concrete) is routed
+//     by the registry, per product: the hub holding its back stock for that
+//     product, when that hub's Auto-refill is on. The category asked is the
+//     product's real one — a sneaker asks the sneakers mapping, as the engine does.
 // undefined = the engine has no leg into this store for this product.
 // Pinned equal to the engine by sectionRouting.engineRoute.test.js.
 export function engineSourceFor(network, routes, store, product, productId) {
@@ -104,10 +114,10 @@ export function engineSourceFor(network, routes, store, product, productId) {
     return autoRouteAllowed(N, cfg[store], store) ? cfg[store] : undefined;
   }
   const loc = N.locations[store];
-  if (!loc || loc.live !== true || loc.retired === true) return undefined;
-  // (asked of a hub: a live hub config.routes does not name is fed from Central)
+  if (!loc || !autoRefillOn(N, store) || loc.retired === true) return undefined;
+  // (asked of a hub: a routed hub config.routes does not name is fed from Central)
   if (loc.type === "hub") {
-    const central = listLocations(N, { type: "central", liveOnly: true })[0]?.id;
+    const central = listLocations(N, { type: "central", autoRefillOnly: true })[0]?.id;
     return central && autoRouteAllowed(N, central, store) ? central : undefined;
   }
   if (loc.type !== "store") return undefined;
@@ -121,20 +131,19 @@ export function engineSourceFor(network, routes, store, product, productId) {
 // ── MAY SOLVE ROUTE THIS STORE BY ITSELF? ────────────────────────────────────
 // null = yes. Otherwise the one plain sentence the screen shows beside the
 // disabled tick. `source` is where the product is stranded (Central, or a hub).
-//   • the store, and the hub behind it, must be live — a location that has
-//     not been counted in gets nothing automatic;
+//   • the store, and the hub behind it, must have SOLVE on (the Network card);
 //   • a product stranded at a hub can only be solved into the stores that hub
 //     is the back stock for: across the wall it must go back to Central first.
 export function solveStoreBlock(network, { source, store, hub }) {
   const N = net(network);
-  if (!isLive(N, store)) return "not live yet — counted stock first";
+  if (!solveOn(N, store)) return "Solve is off for this store (Network card)";
   if (!hub) return "no back-stock hub is set for this store";
-  if (!isLive(N, hub)) return `its hub (${locationName(N, hub)}) is not live yet — counted stock first`;
+  if (!solveOn(N, hub)) return `Solve is off for its hub (${locationName(N, hub)}) (Network card)`;
   if (!isCentral(source, N)) {
     if (!wallAllows(N, source, store)) return `the stock is at ${locationName(N, source)}, in the other section — send it back to Central first`;
     if (resolveLocationId(N, source) !== hub) return `the stock is at ${locationName(N, source)}; ${locationName(N, store)} is fed from ${locationName(N, hub)}`;
   }
-  if (!autoRouteAllowed(N, centralId(N), hub) || !autoRouteAllowed(N, hub, store)) return "this route is not open";
+  if (!solveRouteAllowed(N, centralId(N), hub) || !solveRouteAllowed(N, hub, store)) return "this route is not open";
   return null;
 }
 
