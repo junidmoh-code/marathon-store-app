@@ -393,14 +393,15 @@ describe("what must NOT have changed behind the upload", () => {
     // that says nothing about a slip that was in fact recorded. Caught by
     // driving the real screen; pinned here because the two calls are written
     // differently and only one of them was wrong.
-    // FOUR calls since 1 Oct 2026: the photo path's extract + submit, and the
-    // typed-total path's typed + submit. The count is the lesser half of this
-    // check — what actually matters is that EVERY call is destructured, so the
-    // two numbers are compared to each other as well as to the expected total.
-    // A new call written the wrong way moves one and not the other.
+    // FIVE calls since 7 Oct 2026: the photo path's receive; Junid's typed
+    // total beside a photo, extract + submit; and the typed-total path's typed
+    // + submit. The count is the lesser half of this check — what actually
+    // matters is that EVERY call is destructured, so the two numbers are
+    // compared to each other as well as to the expected total. A new call
+    // written the wrong way moves one and not the other.
     const calls = [...code.matchAll(/await cardBatchCaptureFn\(/g)];
     const unwrapped = [...code.matchAll(/\{ data[^}]*\} = await cardBatchCaptureFn/g)];
-    expect(calls, "photo extract + submit, typed + submit, and nothing else").toHaveLength(4);
+    expect(calls, "receive; extract + submit; typed + submit; and nothing else").toHaveLength(5);
     expect(unwrapped.length, "every call to the callable is destructured from its envelope")
       .toBe(calls.length);
   });

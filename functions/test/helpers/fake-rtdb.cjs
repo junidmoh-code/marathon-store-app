@@ -148,6 +148,8 @@ function makeFakeDb(initial = {}, hooks = {}) {
           if (hooks.beforeRead) await hooks.beforeRead(path, state);
           return makeSnapshot(self.key, readAt(state.root, path));
         },
+        // get(): the same read — section-access.cjs uses it.
+        async get() { return self.once(); },
         async set(v) {
           state.root = writeAt(state.root, path, v);
           if (hooks.afterWrite) await hooks.afterWrite(path, v, state);
@@ -195,7 +197,34 @@ function makeFakeDb(initial = {}, hooks = {}) {
         // way RTDB does — the caller is responsible for reversing, and a fake
         // that pre-reversed would hide a caller that forgot to.
         orderByChild(field) {
-          return {
+          // A nested child path ("slip/closedAt") reads through the record.
+          const val = (r) => String(field).split("/").reduce((o, k) => (o == null ? undefined : o[k]), r);
+          // RTDB orders by the child value — absent first — and startAt/endAt
+          // are INCLUSIVE bounds that exclude absent values. Enough for the
+          // numeric ranges this repo queries (slip/closedAt).
+          const cmp = (a, b) => {
+            const av = val(a[1]), bv = val(b[1]);
+            if (av === bv) return a[0] < b[0] ? -1 : 1;
+            if (av === undefined || av === null) return -1;
+            if (bv === undefined || bv === null) return 1;
+            return av < bv ? -1 : 1;
+          };
+          const range = {};
+          const rows = async () => {
+            if (hooks.beforeRead) await hooks.beforeRead(path, state);
+            const v = readAt(state.root, path);
+            if (!v || typeof v !== "object") return [];
+            return Object.entries(v).filter(([, r]) => {
+              const x = val(r);
+              if ("start" in range && (x === undefined || x === null || x < range.start)) return false;
+              if ("end" in range && (x === undefined || x === null || x > range.end)) return false;
+              return true;
+            }).sort(cmp);
+          };
+          const snap = (list) => makeSnapshot(parts(path).pop() || null, list.length ? Object.fromEntries(list) : null);
+          const query = {
+            startAt(k) { range.start = k; return query; },
+            endAt(k) { range.end = k; return query; },
             // orderByChild(field).equalTo(v): the indexed per-product read
             // (first-batch.cjs openHub2RequestIds). Equality on the child
             // field, RTDB key order.
@@ -204,26 +233,18 @@ function makeFakeDb(initial = {}, hooks = {}) {
                 if (hooks.beforeRead) await hooks.beforeRead(path, state);
                 const v = readAt(state.root, path);
                 if (!v || typeof v !== "object") return makeSnapshot(parts(path).pop() || null, null);
-                const hits = Object.entries(v).filter(([, r]) => r && typeof r === "object" && r[field] === value);
+                const hits = Object.entries(v).filter(([, r]) => r && typeof r === "object" && val(r) === value);
                 return makeSnapshot(parts(path).pop() || null, hits.length ? Object.fromEntries(hits) : null);
               } };
             },
-            limitToLast(n) {
-              return { async once() {
-                if (hooks.beforeRead) await hooks.beforeRead(path, state);
-                const v = readAt(state.root, path);
-                if (!v || typeof v !== "object") return makeSnapshot(parts(path).pop() || null, null);
-                const sorted = Object.entries(v).sort((a, b) => {
-                  const av = a[1]?.[field], bv = b[1]?.[field];
-                  if (av === bv) return a[0] < b[0] ? -1 : 1;
-                  if (av === undefined || av === null) return -1;
-                  if (bv === undefined || bv === null) return 1;
-                  return av < bv ? -1 : 1;
-                });
-                return makeSnapshot(parts(path).pop() || null, Object.fromEntries(sorted.slice(-n)));
-              } };
-            },
+            // limitToLast(n): the last n by the child value, handed back in
+            // ASCENDING order the way RTDB does — a caller that forgot to
+            // reverse is not hidden by a fake that pre-reversed.
+            limitToLast(n) { return { async once() { return snap((await rows()).slice(-n)); } }; },
+            limitToFirst(n) { return { async once() { return snap((await rows()).slice(0, n)); } }; },
+            async once() { return snap(await rows()); },
           };
+          return query;
         },
         limitToFirst(n) { return { ...self, async once() {
           // The read hook fires on QUERIES too. A drift test has to be able to
@@ -242,10 +263,13 @@ function makeFakeDb(initial = {}, hooks = {}) {
             ? keys.findIndex((k) => rtdbKeyCmp(k, self._startAfter) > 0)
             : self._startAt === undefined || self._startAt === null
               ? 0 : keys.findIndex((k) => rtdbKeyCmp(k, self._startAt) >= 0);
-          const from = i === -1 ? [] : keys.slice(i);
+          // endAt is INCLUSIVE, in the same key order (the card-read due queue).
+          const from = (i === -1 ? [] : keys.slice(i))
+            .filter((k) => self._endAt === undefined || self._endAt === null || rtdbKeyCmp(k, self._endAt) <= 0);
           return makeSnapshot(self.key, Object.fromEntries(from.slice(0, n).map((k) => [k, v[k]])));
-        }, startAt(k) { self._startAt = k; return this; } }; },
+        }, startAt(k) { self._startAt = k; return this; }, endAt(k) { self._endAt = k; return this; } }; },
         startAt(k) { self._startAt = k; return self; },
+        endAt(k) { self._endAt = k; return self; },
         startAfter(k) { self._startAfter = k; return self; },
         // orderByKey().limitToLast(n): the last n children in RTDB key order.
         limitToLast(n) { return { async once() {

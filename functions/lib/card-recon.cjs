@@ -488,7 +488,9 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   // (the total, the window, the TID) is still checked below exactly as it is
   // for every other source; only the question OCR answers is not asked.
   const gated = declaredTotal ? KEY_FIELDS.filter((f) => !DECLARED_EXEMPT_FIELDS.includes(f)) : KEY_FIELDS;
-  if (source !== "pdf" && source !== "typed") {
+  // A MANUAL ENTRY (Junid, from the POS report — lib/card-manual-entry.cjs)
+  // has no reading at all, exactly like a typed capture.
+  if (source !== "pdf" && source !== "typed" && source !== "manual") {
     const conf = ex.confidence || {};
     for (const f of gated) {
       const c = Number(conf[f]);

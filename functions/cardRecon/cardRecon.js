@@ -49,6 +49,8 @@
 "use strict";
 
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
+const { onValueCreated } = require("firebase-functions/v2/database");
+const { onSchedule } = require("firebase-functions/v2/scheduler");
 const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 
@@ -71,6 +73,14 @@ const { STORAGE_BUCKET } = require("../lib/photo-scope.cjs");
 const { isRetiredTerminal, retiredCaptureRefusal, tillMoveWarning, takesPhoto, typesTotal } = require("../lib/card-terminals.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
+const { tillAt } = require("../lib/card-terminal-placements.cjs");
+const {
+  JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
+} = require("../lib/card-read-jobs.cjs");
+const {
+  NOTICES_PATH, NOTIFY_TO, sastDayYmd, unreadPath, noticeKey,
+  addUnreadFailure, resolveUnreadMarker, noticeRecord,
+} = require("../lib/card-unread.cjs");
 
 if (!admin.apps.length) {
   admin.initializeApp({
@@ -359,9 +369,22 @@ async function runSlipOcr(photos, apiKey, deps = {}) {
     made++;
     try {
       const out = await runSlipOcrOnce(photos, apiKey, plan[i], deps.fetch || fetch);
-      return { ...out, model: plan[i], attempts: i + 1 };
+      return { ...out, model: plan[i], attempts: made };
     } catch (err) {
       last = err;
+      // A MODEL THAT HUNG OR FELL OVER GOES STRAIGHT TO THE OTHER TIER. On 7 Oct
+      // 2026 Marathon Till 2's slip was sent twice and gemini-3.6-flash held
+      // both requests until the 120 s timeout fired — and a timeout used to
+      // end the read on the spot, with the fallback model never asked. A hang
+      // is not worth a second two-minute wait on the same model, so it (and a
+      // 500/502/504) skips the short 503 retries and takes the one fallback
+      // attempt, budget permitting.
+      if (isHungOrBroken(err)) {
+        const fallback = plan.indexOf(OCR_FALLBACK_MODEL);
+        if (plan[i] === OCR_FALLBACK_MODEL || fallback < 0) break;
+        i = fallback - 1; // the loop's i++ lands on the fallback
+        continue;
+      }
       if (err.httpStatus !== 503) throw err;
       const wait = OCR_503_BACKOFF_MS[i];
       if (wait && plan[i + 1] === OCR_MODEL) await sleep(wait);
@@ -369,6 +392,12 @@ async function runSlipOcr(photos, apiKey, deps = {}) {
   }
   last.attempts = made;
   throw last;
+}
+
+/** A read that timed out, or a server-side failure other than "overloaded". */
+function isHungOrBroken(err) {
+  return !!err && (err.name === "TimeoutError" || err.name === "AbortError"
+    || err.httpStatus === 500 || err.httpStatus === 502 || err.httpStatus === 504);
 }
 
 async function runSlipOcrOnce(photos, apiKey, model, fetchImpl) {
@@ -851,7 +880,7 @@ async function handleTypedCapture(db, request, { picked, terminal }) {
 
 // [typed-capture:end]
 
-async function handleExtract(db, request) {
+async function handleExtract(db, request, opts = {}) {
   const { photos, pdf, pickedTid, channel } = request.data || {};
 
   // ── A TOTAL DECLARED BY HAND — Junid's alone, and never without the paper ──
@@ -1107,9 +1136,15 @@ async function handleExtract(db, request) {
   // ── PHOTOS, IMMUTABLY — a fresh draft id IS the never-overwrite guarantee ──
   const draftRef = userDraftsRef.push();
   const draftId = draftRef.key;
-  const bucket = admin.storage().bucket(STORAGE_BUCKET);
   const photoPaths = [];
-  for (let i = 0; i < decoded.length; i++) {
+  // A BACKGROUND READ (processReadJob) hands over the paths its photos were
+  // stored under the moment they arrived — they are the same bytes, so they are
+  // not stored a second time under the draft.
+  const stored = Array.isArray(opts.storedPhotoPaths) && opts.storedPhotoPaths.length === decoded.length
+    ? opts.storedPhotoPaths : null;
+  if (stored) photoPaths.push(...stored);
+  const bucket = stored ? null : admin.storage().bucket(STORAGE_BUCKET);
+  for (let i = 0; !stored && i < decoded.length; i++) {
     const path = `${PHOTO_STORAGE_PREFIX}/${draftId}/photo-${i}.jpg`;
     await bucket.file(path).save(decoded[i].buffer, {
       resumable: false,
@@ -1495,7 +1530,7 @@ async function handleSubmit(db, request) {
       && draft.summaryOnly === true && draft.capturedVia !== "pdf" && !draft.intake
       && extraction.format === "typed"
       && (!Array.isArray(draft.photoPaths) || draft.photoPaths.length === 0);
-    if (!row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
+    if (!mayDeclareTotal(request.auth?.token) || !row || !typesTotal(row) || isRetiredTerminal(row) || !intact) {
       await draftRef.remove().catch(() => {});
       return reject("This typed total could not be verified against the machine it was typed for — nothing was recorded. Try again.");
     }
@@ -1688,6 +1723,356 @@ async function handleSubmit(db, request) {
   };
 }
 
+// ─── RECEIVED: THE SLIP IS KEPT, THE READ HAPPENS LATER ──────────────────────
+// Junid, 7 Oct 2026: "Submission returns Received immediately and the manager
+// can leave." This is the whole of what the manager's submit does now — the
+// SAME gates the photo path always ran before any OCR was paid for (a
+// registered terminal, not retired, in the caller's section, one that takes a
+// photo), then the photos are STORED and a job is queued. The answer is
+// `{ ok: true, received: true }` and nothing else: no figure, no verdict, and
+// no hint of whether the slip will read. What happens to it is the owner's
+// business (processReadJob, the POS Card recon report, an email to Junid).
+//
+// THE PHOTO IS STORED FIRST. The path this replaces stored it only after a
+// successful read, so every reader outage threw the evidence away with the
+// attempt — sixteen Marathon Till 2 batches were lost that way and cannot be
+// re-read (docs/CARD-RECON-TILL2-2026-10-07.md).
+//
+// A typed total is NOT received here: it is Junid's, it is checked against the
+// photo while he holds the phone, and it stays on the synchronous extract path.
+// The receive takes PHOTOS only, which is all the capture screen sends.
+async function handleReceive(db, request, deps = {}) {
+  const data = request.data || {};
+  if (hasDeclaredTotal(data.declaredTotal)) {
+    throw new HttpsError("invalid-argument", "A typed total is checked while you wait — send it with action \"extract\".");
+  }
+  const chosen = chooseCaptureSource({ photos: data.photos, pdf: data.pdf, maxPhotos: MAX_PHOTOS });
+  if (chosen.err) throw new HttpsError("invalid-argument", chosen.err);
+  if (chosen.source !== "photo") throw new HttpsError("invalid-argument", "Only a photographed slip is received this way.");
+  const picked = normaliseTid(data.pickedTid);
+  if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
+  const decoded = data.photos.map(decodePhoto);
+
+  // THE SAME SETUP GATES the extract path runs before OCR — one registry row,
+  // never the whole registry. These are not results of a read: they are "this
+  // till cannot be captured from here", and the capture screen never offers
+  // such a card, so only an old bundle or a direct call can meet them.
+  const terminal = (await db.ref(`${CARD_TERMINALS_PATH}/${picked}`).once("value")).val();
+  if (!terminal || !terminal.storeId || !terminal.tillId) {
+    return reject(`Terminal ${picked} is not registered under /config/cardTerminals — an admin must map it to its till before slips can be captured.`);
+  }
+  if (isRetiredTerminal(terminal)) return reject(retiredCaptureRefusal(picked, terminal));
+  const walled = await sectionRefusalFor(db, request, picked, terminal);
+  if (walled) return reject(walled);
+  if (!takesPhoto(terminal)) {
+    return reject(`${terminal.label || picked} is set to Email only, so its report is not photographed — it ticks when the email arrives. Junid can change this in Card machines → settings.`);
+  }
+
+  const nowMs = (deps.now || Date.now)();
+  // THE TRADING DAY. A slip photographed after midnight is the evening's batch
+  // (no shop opens before 06:00 SAST), so it is filed on the day before.
+  const dayYmd = sastDayYmd(nowMs - (sastHour(nowMs) < 6 ? 7 * 60 * 60 * 1000 : 0));
+  // A CEILING, not a gate a manager meets: one slip a day per till, retaken a
+  // few times at most. Past it the photos are not stored — and Junid already
+  // has the earlier ones. (Sonnet review, #707: every received photo can cost
+  // nine reads.)
+  const counted = await db.ref(`${JOBS_COUNT_PATH}/${picked}/${dayYmd}`)
+    .transaction((cur) => (Number.isInteger(cur) && cur >= MAX_JOBS_PER_TILL_DAY ? undefined : (Number.isInteger(cur) ? cur + 1 : 1)));
+  if (!counted.committed) {
+    return reject(`${terminal.label || picked} has already sent ${MAX_JOBS_PER_TILL_DAY} slip photos today. They are with Junid — nothing more is needed.`);
+  }
+  const jobRef = db.ref(JOBS_PATH).push();
+  const jobId = jobRef.key;
+  const bucket = deps.bucket || admin.storage().bucket(STORAGE_BUCKET);
+  const photoPaths = [];
+  try {
+  for (let i = 0; i < decoded.length; i++) {
+    const path = `${JOB_PHOTO_PREFIX}/${jobId}/photo-${i}.jpg`;
+    await bucket.file(path).save(decoded[i].buffer, {
+      resumable: false,
+      contentType: "image/jpeg",
+      metadata: { cacheControl: "private, max-age=31536000, immutable" },
+    });
+    photoPaths.push(path);
+  }
+  // Where the machine stands as the slip arrives (its placement, else its
+  // registry row) — the till an Unread row would be shown against.
+  const here = tillAt(terminal, nowMs);
+  const token = request.auth.token || {};
+  const section = readSectionClaim(token.section);
+  const job = {
+    jobId,
+    pickedTid: picked,
+    // The FILING store: where /card_batches and the Unread marker file it.
+    storeId: terminal.storeId,
+    tillId: terminal.tillId,
+    placeStoreId: here.storeId || terminal.storeId,
+    placeTillId: here.tillId || terminal.tillId,
+    label: here.label || terminal.label || null,
+    by: request.auth.uid,
+    byEmail: token.email || null,
+    // The claims the read will need to act as this person: the owner bypass
+    // (email + verified) and an enrolled device's section. Nothing else.
+    token: {
+      email: token.email || null,
+      email_verified: token.email_verified === true,
+      ...(section ? { section } : {}),
+    },
+    photoPaths,
+    summaryOnly: true,
+    receivedAt: nowMs,
+    dayYmd,
+    status: "queued",
+    attempts: 0,
+    refusedReads: 0,
+    // The arrival trigger takes it at once; the sweep only if that never ran.
+    dueAt: nowMs + 2 * 60 * 1000,
+  };
+  job.dueKey = dueKey(job.dueAt, jobId);
+  await db.ref().update({
+    [`${JOBS_PATH}/${jobId}`]: job,
+    [`${DUE_PATH}/${job.dueKey}`]: jobId,
+  });
+  } catch (err) {
+    // Nothing was kept, so the photo must not count against the day's ceiling.
+    await db.ref(`${JOBS_COUNT_PATH}/${picked}/${dayYmd}`)
+      .transaction((cur) => (Number.isInteger(cur) && cur > 0 ? cur - 1 : cur)).catch(() => {});
+    throw err;
+  }
+  console.log(`cardBatchCapture: received picked=${picked} job=${jobId} photos=${photoPaths.length}`);
+  return { ok: true, received: true };
+}
+
+const JOBS_COUNT_PATH = "card_batch_jobs_count";
+const MAX_JOBS_PER_TILL_DAY = 8;
+const sastHour = (ms) => new Date(ms + 2 * 60 * 60 * 1000).getUTCHours();
+
+/** A job's stored photos, as the base64 the extract path reads. */
+async function loadJobPhotos(paths) {
+  const bucket = admin.storage().bucket(STORAGE_BUCKET);
+  const list = Array.isArray(paths) ? paths : Object.values(paths || {});
+  const out = [];
+  for (const p of list) {
+    const [buf] = await bucket.file(p).download();
+    out.push({ base64: buf.toString("base64") });
+  }
+  return out;
+}
+
+/**
+ * ONE READ OF A JOB through the phone's own pipeline: handleExtract, then
+ * handleSubmit, as the person who submitted it. Throws what they throw.
+ */
+async function readJobOnce(db, job, photos) {
+  const auth = { uid: job.by, token: { ...(job.token || {}) } };
+  const extract = await handleExtract(db, {
+    auth,
+    data: { action: "extract", pickedTid: job.pickedTid, photos, summaryOnly: true, correction: false },
+  }, { storedPhotoPaths: Array.isArray(job.photoPaths) ? job.photoPaths : Object.values(job.photoPaths || {}) });
+  if (!extract || extract.ok !== true) {
+    if (extract && extract.ok === false) console.warn(refusalLogLine(job.pickedTid, extract.reason));
+    return { extract };
+  }
+  const submit = await handleSubmit(db, { auth, data: { action: "submit", draftId: extract.draftId } });
+  return { extract, submit };
+}
+
+/**
+ * RUN ONE JOB, ONCE: claim it, read it, decide what the outcome means
+ * (lib/card-read-jobs.cjs), write that down. Never throws for a failed read —
+ * a failure is an outcome. `deps` is the test seam: now, loadPhotos, read.
+ */
+async function processReadJob(db, jobId, deps = {}) {
+  const now = deps.now || Date.now;
+  const nonce = `${now()}-${Math.random().toString(36).slice(2, 10)}`;
+  const jobRef = db.ref(`${JOBS_PATH}/${jobId}`);
+  // Null first, then the real value: returning null for null proposes nothing
+  // and lets the server hand over the stored job (the cold-null rule).
+  const txn = await jobRef.transaction((cur) => (cur === null ? null
+    : claimJob(cur, { nowMs: now(), nonce, onArrival: deps.onArrival === true })));
+  const job = txn.committed && txn.snapshot ? txn.snapshot.val() : null;
+  if (!job || job.claimNonce !== nonce) return { skipped: true };
+
+  // The queue entry follows the job to its lease.
+  await db.ref().update({
+    ...(job.prevDueKey && job.prevDueKey !== job.dueKey ? { [`${DUE_PATH}/${job.prevDueKey}`]: null } : {}),
+    [`${DUE_PATH}/${job.dueKey}`]: jobId,
+  });
+
+  let outcome;
+  try {
+    const photos = await (deps.loadPhotos || loadJobPhotos)(job.photoPaths);
+    outcome = classifyRun(await (deps.read || readJobOnce)(db, job, photos));
+  } catch (err) {
+    console.error(`cardBatchReadJob: job ${jobId} run failed: ${err && err.message}`);
+    outcome = classifyRun({ thrown: err });
+  }
+
+  const t = now();
+  const { final, patch } = nextStep(job, outcome, t);
+  const done = { ...job, ...patch };
+  // THE CONSEQUENCES FIRST, THEN "FINISHED". Both are idempotent (a marker
+  // merges; a notice is queued only while the marker has none). If this run
+  // dies between them, the job is still "reading" under its lease, the sweep
+  // takes it again when the lease lapses, and they are simply done again —
+  // where the other order would leave a finished job and a day nobody hears
+  // about. (Sonnet architect review, #707.)
+  if (final === "unread") await markJobUnread(db, done, outcome, t);
+  if (final === "recorded") await resolveJobDay(db, done, outcome.batchKey, t);
+  const updates = { [`${DUE_PATH}/${job.dueKey}`]: null };
+  for (const [k, v] of Object.entries(patch)) updates[`${JOBS_PATH}/${jobId}/${k}`] = v;
+  updates[`${JOBS_PATH}/${jobId}/prevDueKey`] = null;
+  if (patch.dueKey) updates[`${DUE_PATH}/${patch.dueKey}`] = jobId;
+  // Keyed by time, not attempt number: a "reread" restarts the count and must
+  // not write over the first round's history. (Fable review, #707.)
+  updates[`${JOBS_PATH}/${jobId}/history/t${t}`] = {
+    at: t, attempt: job.attempts, outcome: outcome.kind, reason: outcome.reason ? String(outcome.reason).slice(0, 300) : null,
+  };
+  await db.ref().update(updates);
+  console.log(`cardBatchReadJob: job ${jobId} picked=${job.pickedTid} attempt ${job.attempts} → ${outcome.kind}${final ? ` (${final})` : ` (retry ${new Date(patch.dueAt).toISOString()})`}`);
+  return { outcome: outcome.kind, final };
+}
+
+/** The read gave up: that till/day is Unread in Junid's report, and he is emailed once. */
+async function markJobUnread(db, job, outcome, nowMs) {
+  const where = { storeId: job.storeId, tid: job.pickedTid, dayYmd: job.dayYmd };
+  const path = unreadPath(where);
+  const txn = await db.ref(path).transaction((cur) => addUnreadFailure(cur, {
+    ...where, tillId: job.placeTillId || job.tillId, placeStoreId: job.placeStoreId || job.storeId,
+    label: job.label, reason: unreadReason(job, outcome), jobId: job.jobId, photos: job.photoPaths,
+    source: "photo-job", nowMs,
+  }).marker);
+  // THE MARKER THAT WENT IN DECIDES, not a flag from inside the transaction: an
+  // unread day with no notice on it gets one; a day already announced, or
+  // already answered, does not. A run that died after the marker and before
+  // the notice is put right by the next run of the same job.
+  const marker = txn && txn.snapshot ? txn.snapshot.val() : null;
+  if (marker && marker.status === "unread" && !marker.notice) {
+    await db.ref().update({
+      [`${NOTICES_PATH}/${noticeKey(where)}`]: noticeRecord(marker, nowMs),
+      [`${path}/notice`]: { queuedAt: nowMs },
+    });
+  }
+  // The log keeps it too — the house alarm shape, greppable by marker.
+  console.warn(`CARD_RECON_UNREAD ${job.label || job.pickedTid} ${job.dayYmd}: ${unreadReason(job, outcome)}`);
+}
+
+/**
+ * A later read recorded the batch: an Unread row is answered — on the day the
+ * photo arrived AND on the day the batch closed, which differ when a slip is
+ * photographed a day late. One leaf read for the close.
+ */
+async function resolveJobDay(db, job, batchKey, nowMs) {
+  const days = new Set([job.dayYmd]);
+  if (batchKey && /^[0-9]{1,8}(-r[0-9]{1,3})?$/.test(batchKey)) {
+    const closedAt = (await db.ref(`${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}/${batchKey}/slip/closedAt`).once("value")).val();
+    if (Number.isFinite(closedAt)) days.add(sastDayYmd(closedAt));
+  }
+  for (const dayYmd of days) {
+    await db.ref(unreadPath({ storeId: job.storeId, tid: job.pickedTid, dayYmd })).transaction((cur) => (cur === null ? null
+      : resolveUnreadMarker(cur, { via: "read", batchKey, nowMs })));
+  }
+}
+
+/**
+ * THE SWEEP: every job whose due time has passed, oldest first — a retry, or
+ * one whose arrival trigger never ran, or one whose run died under its lease.
+ * A queue entry that no longer matches its job is stale and removed.
+ */
+async function sweepReadJobs(db, deps = {}) {
+  const now = deps.now || Date.now;
+  const started = now();
+  const snap = await db.ref(DUE_PATH).orderByKey().endAt(dueCutoff(started)).limitToFirst(SWEEP_BATCH).once("value");
+  const due = snap.val() || {};
+  let ran = 0;
+  for (const [key, jobId] of Object.entries(due)) {
+    // A read can take ~5 min at worst (two model timeouts); none starts unless
+    // it can finish inside the function's 540 s.
+    if (now() - started > SWEEP_START_BY_MS) break;
+    if (typeof jobId !== "string" || !/^[A-Za-z0-9_-]{10,40}$/.test(jobId)) {
+      await db.ref(`${DUE_PATH}/${key}`).set(null);
+      continue;
+    }
+    const r = await processReadJob(db, jobId, deps);
+    if (r.skipped) {
+      const job = (await db.ref(`${JOBS_PATH}/${jobId}`).once("value")).val();
+      const finished = job && (job.status === "recorded" || job.status === "duplicate" || job.status === "unread");
+      if (!job || finished || job.dueKey !== key) {
+        // A job still waiting or running must keep ONE queue entry, at its own
+        // key — the claim and the queue move are two writes, and a run that
+        // died between them left only this stale one. (Sonnet review, #707.)
+        if (job && !finished && typeof job.dueKey === "string" && job.dueKey !== key) {
+          await db.ref(`${DUE_PATH}/${job.dueKey}`).set(jobId);
+        }
+        await db.ref(`${DUE_PATH}/${key}`).set(null);
+      }
+    } else ran++;
+  }
+  return { due: Object.keys(due).length, ran };
+}
+const SWEEP_BATCH = 5;
+const SWEEP_START_BY_MS = 150 * 1000;
+
+// ─── THE EMAIL TO JUNID — collected and confirmed by the mailbox poller ──────
+// The poller on the Mac mini already holds the one identity allowed the email
+// channel (assertEmailIntake) and the shop mailbox's credentials; it sends what
+// this hands it over SMTP and reports back. A notice it has taken is leased for
+// ten minutes, so two ticks never send the same one, and one that failed to
+// send is offered again. Nothing here sends mail itself.
+const NOTICE_LEASE_MS = 10 * 60 * 1000;
+const NOTICE_MAX_ATTEMPTS = 10;
+const NOTICE_KEY_RE = /^[A-Za-z0-9_~-]{1,120}$/;
+
+async function listNotices(db, nowMs) {
+  const snap = await db.ref(NOTICES_PATH).orderByKey().limitToFirst(20).once("value");
+  const all = snap.val() || {};
+  const take = Object.entries(all)
+    .filter(([k, n]) => NOTICE_KEY_RE.test(k) && n && typeof n === "object"
+      && typeof n.subject === "string" && typeof n.text === "string"
+      && !(Number.isFinite(n.leaseUntil) && n.leaseUntil > nowMs)
+      && !((n.attempts || 0) >= NOTICE_MAX_ATTEMPTS))
+    .slice(0, 10);
+  if (take.length) {
+    await db.ref().update(Object.fromEntries(take.map(([k]) => [`${NOTICES_PATH}/${k}/leaseUntil`, nowMs + NOTICE_LEASE_MS])));
+  }
+  return {
+    ok: true,
+    to: NOTIFY_TO,
+    notices: take.map(([key, n]) => ({ key, subject: n.subject.slice(0, 200), text: n.text.slice(0, 4000) })),
+  };
+}
+
+async function recordNoticeResults(db, results, nowMs) {
+  if (!Array.isArray(results) || results.length > 20) throw new HttpsError("invalid-argument", "results must be a list of at most 20.");
+  let sent = 0, failed = 0;
+  for (const r of results) {
+    const key = r && r.key;
+    if (typeof key !== "string" || !NOTICE_KEY_RE.test(key)) continue;
+    const ref = db.ref(`${NOTICES_PATH}/${key}`);
+    const notice = (await ref.once("value")).val();
+    if (!notice) continue;
+    const error = typeof r.error === "string" ? r.error.slice(0, 300) : "send failed";
+    const attempts = (notice.attempts || 0) + (r.ok === true ? 0 : 1);
+    // SENT, or GIVEN UP: either way it leaves the queue (a dead notice left in
+    // place would sit at the front of every read and block the rest), and the
+    // Unread row says which — only if that row still exists.
+    if (r.ok === true || attempts >= NOTICE_MAX_ATTEMPTS) {
+      await ref.set(null);
+      if (typeof notice.unreadPath === "string" && notice.unreadPath.startsWith("card_batch_overrides/unread/")) {
+        const stamp = r.ok === true
+          ? { queuedAt: notice.createdAt || null, sentAt: nowMs, to: NOTIFY_TO }
+          : { queuedAt: notice.createdAt || null, failedAt: nowMs, lastError: error };
+        await db.ref(notice.unreadPath).transaction((cur) => (cur === null ? null : { ...cur, notice: stamp }));
+      }
+      if (r.ok === true) sent++; else failed++;
+    } else {
+      await ref.update({ attempts, lastError: error, lastErrorAt: nowMs, leaseUntil: null });
+      failed++;
+    }
+  }
+  return { ok: true, sent, failed };
+}
+
 exports.cardBatchCapture = onCall(
   {
     region: "europe-west1",
@@ -1699,6 +2084,21 @@ exports.cardBatchCapture = onCall(
     await assertCardRecon(request);
     const db = admin.database();
     const action = request.data?.action;
+    // ── THE MANAGER'S SUBMIT: kept, queued, "Received" — see handleReceive ──
+    if (action === "receive") {
+      const out = await handleReceive(db, request);
+      if (out && out.ok === false) console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
+      return out;
+    }
+    // ── THE POLLER'S MAIL ROUND: notices to Junid, then what became of them ──
+    if (action === "notices") {
+      await assertEmailIntake(request);
+      return listNotices(db, Date.now());
+    }
+    if (action === "noticeSent") {
+      await assertEmailIntake(request);
+      return recordNoticeResults(db, request.data?.results, Date.now());
+    }
     if (action === "extract") {
       const out = await handleExtract(db, request);
       // Every refusal leaves its reason in the log, not only on the phone —
@@ -1715,9 +2115,14 @@ exports.cardBatchCapture = onCall(
     // for a document. This one reads the registry, confirms the machine really
     // is set to typed entry, and goes straight to the draft `submit` records.
     if (action === "typed") {
-      // OPEN TO ANYONE assertCardRecon (above) already lets capture this till's
-      // money — not the owner alone (Junid, 1 Oct 2026). It is the machine's
-      // only capture route and has to work on an evening he is not there.
+      // OWNER ONLY AGAIN (Junid, 7 Oct 2026: "Staff never type numbers. Manual
+      // entry is Junid-only."). This supersedes the 1 Oct opening (#658). A
+      // typed-only machine that nobody types for is not lost: its card money
+      // waits in the POS report, where Junid enters the figure
+      // (cardBatchManualEntry) for that till and day.
+      if (!mayDeclareTotal(request.auth?.token)) {
+        throw new HttpsError("permission-denied", "Only Junid can type in a machine's total.");
+      }
       const picked = normaliseTid(request.data?.pickedTid);
       if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
       // This one terminal's row, never the whole registry.
@@ -1740,11 +2145,48 @@ exports.cardBatchCapture = onCall(
       return out;
     }
     if (action === "submit") return handleSubmit(db, request);
-    throw new HttpsError("invalid-argument", "action must be 'extract', 'typed' or 'submit'.");
+    throw new HttpsError("invalid-argument", "action must be 'receive', 'extract', 'typed' or 'submit'.");
+  },
+);
+
+// ─── THE BACKGROUND READ — on arrival, and the sweep behind it ───────────────
+// DEPLOY BY NAME: functions:cardBatchReadJob and functions:cardBatchReadRetry.
+// Same secret, same memory class as the callable (a job holds the photos).
+exports.cardBatchReadJob = onValueCreated(
+  {
+    ref: `/${JOBS_PATH}/{jobId}`,
+    instance: "marathon-club-default-rtdb",
+    region: "europe-west1",
+    secrets: [geminiApiKey],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async (event) => {
+    await processReadJob(admin.database(), event.params.jobId, { onArrival: true });
+  },
+);
+
+exports.cardBatchReadRetry = onSchedule(
+  {
+    schedule: "*/5 * * * *",
+    timeZone: "Africa/Johannesburg",
+    region: "europe-west1",
+    secrets: [geminiApiKey],
+    timeoutSeconds: 540,
+    memory: "1GiB",
+  },
+  async () => {
+    const r = await sweepReadJobs(admin.database());
+    if (r.due) console.log(`cardBatchReadRetry: ${r.due} due, ${r.ran} run`);
   },
 );
 
 // Exported for tests (pure-ish seams).
+exports.handleReceive = handleReceive;
+exports.processReadJob = processReadJob;
+exports.sweepReadJobs = sweepReadJobs;
+exports.listNotices = listNotices;
+exports.recordNoticeResults = recordNoticeResults;
 exports.toExtraction = toExtraction;
 exports.sectionRefusalFor = sectionRefusalFor;
 // The summary-first gate, exported so it can be tested directly: everything

@@ -3930,6 +3930,15 @@ exports.storefrontSearch = require("./storefrontSearch/storefrontSearch.js").sto
 // lib/card-expected.cjs, docs/CARD-RECON.md.
 //   firebase deploy --only functions:cardBatchCapture
 exports.cardBatchCapture = require("./cardRecon/cardRecon.js").cardBatchCapture;
+// The manager's slip is RECEIVED by the callable and READ here, in the
+// background, with retries (Junid, 7 Oct 2026) — see handleReceive/processReadJob.
+//   firebase deploy --only functions:cardBatchReadJob,functions:cardBatchReadRetry
+exports.cardBatchReadJob = require("./cardRecon/cardRecon.js").cardBatchReadJob;
+exports.cardBatchReadRetry = require("./cardRecon/cardRecon.js").cardBatchReadRetry;
+// Junid types a till's batch figures by hand, from the POS report — any till,
+// any day; owner-only; an ordinary record marked capturedVia "manual".
+//   firebase deploy --only functions:cardBatchManualEntry
+exports.cardBatchManualEntry = require("./cardRecon/cardBatchManual.js").cardBatchManualEntry;
 
 // ─── CARD RECON — cardTerminalAdmin (the terminal settings sheet) ────────────
 // Owner-only add / edit / retire / reinstate / replace of /config/cardTerminals,

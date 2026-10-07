@@ -127,6 +127,54 @@ test("402 (no credit) is NOT retried — asking twice does not top up the accoun
   assert.equal(f.calls.length, 1);
 });
 
+// ── 7 OCT 2026: MARATHON TILL 2'S READER HUNG, TWICE ─────────────────────────
+// Both captures sat until the 120 s timeout and then failed outright — the
+// fallback tier was never asked. A hang now goes straight to it.
+function hangingFetch(plan) {
+  const calls = [];
+  const fn = async (url) => {
+    calls.push(url);
+    const step = plan[calls.length - 1] ?? 200;
+    if (step === "hang") { const e = new Error("The operation was aborted due to timeout"); e.name = "TimeoutError"; throw e; }
+    return { ok: step === 200, status: step, json: async () => okBody, text: async () => `{"error":{"code":${step}}}` };
+  };
+  return { fn, calls };
+}
+
+test("a primary read that times out goes straight to the fallback model, which answers", async () => {
+  const f = hangingFetch(["hang", 200]);
+  const out = await runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep });
+  assert.equal(out.model, OCR_FALLBACK_MODEL);
+  assert.equal(out.attempts, 2, "attempts counts the calls made, not the plan position");
+  assert.equal(f.calls.length, 2);
+  assert.ok(f.calls[0].includes(OCR_MODEL) && f.calls[1].includes(OCR_FALLBACK_MODEL));
+});
+
+test("a 500/502/504 also skips the 503 retries and takes the fallback", async () => {
+  for (const status of [500, 502, 504]) {
+    const f = hangingFetch([status, 200]);
+    const out = await runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep });
+    assert.equal(out.model, OCR_FALLBACK_MODEL, String(status));
+    assert.equal(f.calls.length, 2, String(status));
+  }
+});
+
+test("both tiers hang: the timeout surfaces after two calls, never a third", async () => {
+  const f = hangingFetch(["hang", "hang"]);
+  await assert.rejects(runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep }),
+    (err) => err.name === "TimeoutError" && err.attempts === 2);
+  assert.equal(f.calls.length, 2);
+});
+
+test("a hang with no time left for the fallback ends there", async () => {
+  let t = 0;
+  const f = hangingFetch(["hang", 200]);
+  await assert.rejects(
+    runSlipOcr([{ base64: "AA==" }], "k", { fetch: f.fn, sleep: noSleep, now: () => (t += 160000) }),
+    (err) => err.name === "TimeoutError");
+  assert.equal(f.calls.length, 1);
+});
+
 test("no attempt starts that could not finish inside the callable's timeout", async () => {
   // A clock that jumps 100 s per call: after the first attempt, starting a
   // second would overrun the 270 s budget with a 120 s timeout in hand.
