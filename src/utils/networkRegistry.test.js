@@ -479,3 +479,12 @@ describe("every seeded Section 1 store and hub declares the location it follows"
     }
   });
 });
+
+describe("the removed Concrete Stockroom cannot come back as an alias", () => {
+  it("a stored alias naming it on another location resolves to nothing", () => {
+    const R = normalizeNetwork({ locations: { hub3: { aliases: ["concrete-stockroom", "Concrete Stockroom", "concretestockroom", "Hub Three"] } } });
+    for (const a of ["concrete-stockroom", "Concrete Stockroom", "concretestockroom", "concreteStockroom"]) expect(resolveLocationId(R, a), a).toBe(null);
+    expect(resolveLocationId(R, "Hub Three")).toBe("hub3");
+    expect(wallCheck(R, "central", "concrete-stockroom")).toEqual({ ok: false, reason: "unknown_location" });
+  });
+});
