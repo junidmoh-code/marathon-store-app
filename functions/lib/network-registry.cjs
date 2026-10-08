@@ -101,6 +101,9 @@ const TRANSIT_ID = "in_transit";
 // any id or alias of it resolves to nothing, and the wall refuses a move
 // naming it ("not in the network registry").
 const REMOVED_LOCATION_IDS = Object.freeze(["concrete-stockroom"]);
+// …and every spelling of one is reserved: no stored alias on another location
+// can claim it, so it never resolves to (say) Hub 3 either.
+const REMOVED_ALIAS_SPELLINGS = Object.freeze(["concrete-stockroom", "Concrete Stockroom", "concreteStockroom"]);
 
 function isObj(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -214,9 +217,10 @@ function normalizeNetwork(raw) {
   }
 
   const aliasIndex = {};
+  const reserved = new Set(REMOVED_ALIAS_SPELLINGS.map(aliasKey));
   const claim = (alias, id) => {
     const k = aliasKey(alias);
-    if (k && !(k in aliasIndex)) aliasIndex[k] = id;
+    if (k && !reserved.has(k) && !(k in aliasIndex)) aliasIndex[k] = id;
   };
   // Canonical ids first, so an alias can never shadow another location's id.
   for (const id of Object.keys(locations)) claim(id, id);
