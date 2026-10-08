@@ -29,7 +29,7 @@ const SEED = normalizeNetwork(null);
 
 describe("the model", () => {
   it("puts every location in the section the owner named", () => {
-    expect(listLocations(SEED, { section: 1 }).map((l) => l.id)).toEqual(["marathon-pine", "concrete", "hub3", "concrete-stockroom"]);
+    expect(listLocations(SEED, { section: 1 }).map((l) => l.id)).toEqual(["marathon-pine", "concrete", "hub3"]);
     expect(listLocations(SEED, { section: 2 }).map((l) => l.id)).toEqual(["marathon-pe", "trophy", "hub1", "hub2"]);
     expect(sectionOf(SEED, "central")).toBe(null);
     expect(listLocations(SEED, { type: "central" }).map((l) => l.id)).toEqual(["central"]);
@@ -37,7 +37,7 @@ describe("the model", () => {
 
   it("ships Section 2 live and every Section 1 location NOT live", () => {
     for (const id of ["marathon-pe", "trophy", "hub1", "hub2", "central"]) expect(isLive(SEED, id), id).toBe(true);
-    for (const id of ["marathon-pine", "concrete", "hub3", "concrete-stockroom"]) expect(isLive(SEED, id), id).toBe(false);
+    for (const id of ["marathon-pine", "concrete", "hub3"]) expect(isLive(SEED, id), id).toBe(false);
   });
 
   it("gives Concrete two tills and keeps the tills the POS has today", () => {
@@ -50,7 +50,7 @@ describe("the model", () => {
 
   it("lists stores and hubs separately, in sort order", () => {
     expect(storesOf(SEED).map((l) => l.id)).toEqual(["marathon-pine", "concrete", "marathon-pe", "trophy"]);
-    expect(hubsOf(SEED).map((l) => l.id)).toEqual(["hub3", "concrete-stockroom", "hub1", "hub2"]);
+    expect(hubsOf(SEED).map((l) => l.id)).toEqual(["hub3", "hub1", "hub2"]);
     expect(storesOf(SEED, { liveOnly: true }).map((l) => l.id)).toEqual(["marathon-pe", "trophy"]);
   });
 });
@@ -62,7 +62,7 @@ describe("aliases", () => {
       trophy: "trophy", Trophy: "trophy",
       pine: "marathon-pine", Pine: "marathon-pine", "Marathon Pine": "marathon-pine",
       hub1: "hub1", "Hub 1": "hub1", "Hub 2": "hub2", "hub 3": "hub3",
-      Concrete: "concrete", "Concrete Stockroom": "concrete-stockroom",
+      Concrete: "concrete",
       central: "central", Central: "central", in_transit: "in_transit",
     };
     for (const [alias, id] of Object.entries(cases)) expect(resolveLocationId(SEED, alias), alias).toBe(id);
@@ -87,7 +87,7 @@ describe("aliases", () => {
 });
 
 describe("the wall", () => {
-  const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+  const S1 = ["marathon-pine", "concrete", "hub3"];
   const S2 = ["marathon-pe", "trophy", "hub1", "hub2"];
 
   it("refuses every direct pair across the sections, both ways", () => {
@@ -143,24 +143,21 @@ describe("back stock", () => {
     for (const s of ["marathon-pine", "concrete"]) for (const c of ["sneakers", "hoodies", null]) expect(backStockFor(SEED, s, c)).toBe("hub3");
   });
 
-  it("flips one Concrete category to the stockroom, and one product over the category", () => {
+  it("THERE IS NO CONCRETE STOCKROOM: a stored record or mapping naming it is ignored; Concrete's back stock is Hub 3", () => {
     const R = normalizeNetwork({
-      backStock: { concrete: { hoodies: "concrete-stockroom" } },
-      productOverrides: { concrete: { p1: "concrete-stockroom", p2: "hub3" } },
+      locations: { "concrete-stockroom": { id: "concrete-stockroom", name: "Concrete Stockroom", type: "hub", section: 1, solve: true, autoRefill: "all", serves: ["concrete"] } },
+      backStock: { concrete: { hoodies: "concrete-stockroom", _default: "concrete-stockroom" }, "marathon-pine": { _default: "concrete-stockroom" } },
+      productOverrides: { concrete: { p1: "concrete-stockroom" } },
     });
-    expect(backStockFor(R, "concrete", "hoodies")).toBe("concrete-stockroom");
-    expect(backStockFor(R, "concrete", "t-shirts")).toBe("hub3");
-    expect(backStockFor(R, "concrete", "t-shirts", "p1")).toBe("concrete-stockroom");
-    expect(backStockFor(R, "concrete", "hoodies", "p2")).toBe("hub3");
-    expect(backStockHubsOf(R, "concrete")).toEqual(["concrete-stockroom", "hub3"]);
-    expect(storesServedBy(R, "concrete-stockroom")).toEqual(["concrete"]);
-    expect(storesServedBy(R, "hub3")).toEqual(["concrete", "marathon-pine"]);
-  });
-
-  it("refuses the stockroom for Pine: it serves only Concrete", () => {
-    const R = normalizeNetwork({ backStock: { "marathon-pine": { _default: "concrete-stockroom", hoodies: "concrete-stockroom" } } });
+    expect(R.locations["concrete-stockroom"]).toBeUndefined();
+    for (const alias of ["concrete-stockroom", "Concrete Stockroom", "concreteStockroom"]) expect(resolveLocationId(R, alias)).toBe(null);
+    expect(backStockFor(R, "concrete", "hoodies")).toBe("hub3");
+    expect(backStockFor(R, "concrete", "t-shirts", "p1")).toBe("hub3");
     expect(backStockFor(R, "marathon-pine", "hoodies")).toBe("hub3");
-    expect(backStockFor(R, "marathon-pine", "x")).toBe("hub3");
+    expect(backStockHubsOf(R, "concrete")).toEqual(["hub3"]);
+    expect(storesServedBy(R, "hub3")).toEqual(["concrete", "marathon-pine"]);
+    expect(wallCheck(R, "concrete-stockroom", "concrete")).toEqual({ ok: false, reason: "unknown_location" });
+    expect(SEED.locations["concrete-stockroom"]).toBeUndefined();
   });
 
   it("refuses a cross-section hub in the node and falls back to the seed", () => {
@@ -181,7 +178,7 @@ describe("back stock", () => {
 });
 
 // Section 1 with both switches off — what the seed shipped as before 7 Oct 2026.
-const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+const S1 = ["marathon-pine", "concrete", "hub3"];
 const dark = (extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, { solve: false, autoRefill: "off" }])), ...extra });
 
 describe("the two switches", () => {
@@ -394,11 +391,10 @@ describe("policy template", () => {
     for (const loc of ["marathon-pe", "trophy", "hub2", "hub1"]) expect(policyKeyFor(SEED, runs, loc)).toBe(loc);
   });
 
-  it("Pine and Concrete follow Marathon PE; Hub 3 and the stockroom follow Hub 2", () => {
+  it("Pine and Concrete follow Marathon PE; Hub 3 follows Hub 2", () => {
     expect(policyKeyFor(SEED, runs, "marathon-pine")).toBe("marathon-pe");
     expect(policyKeyFor(SEED, runs, "concrete")).toBe("marathon-pe");
     expect(policyKeyFor(SEED, runs, "hub3")).toBe("hub2");
-    expect(policyKeyFor(SEED, runs, "concrete-stockroom")).toBe("hub2");
   });
 
   it("a store-specific policy, once it exists, wins over the template", () => {
@@ -460,7 +456,8 @@ describe("section access", () => {
     expect(canSeeLocation(SEED, [2], "central")).toBe(true);
     expect(canSeeLocation(SEED, [2], "hub2")).toBe(true);
     expect(canSeeLocation(SEED, [2], "hub3")).toBe(false);
-    expect(canSeeLocation(SEED, [1], "Concrete Stockroom")).toBe(true);
+    expect(canSeeLocation(SEED, [1], "Hub 3")).toBe(true);
+    expect(canSeeLocation(SEED, [1], "Concrete Stockroom")).toBe(false);   // there is no such location
     expect(canSeeLocation(SEED, [], "central")).toBe(true);
     expect(canSeeLocation(SEED, [1, 2], "nowhere")).toBe(false);
   });
@@ -473,7 +470,7 @@ describe("section access", () => {
 describe("every seeded Section 1 store and hub declares the location it follows", () => {
   it("has policyLike naming a Section 2 location of the same type", () => {
     const s1 = Object.values(SEED.locations).filter((l) => l.section === 1 && (l.type === "store" || l.type === "hub"));
-    expect(s1.map((l) => l.id).sort()).toEqual(["concrete", "concrete-stockroom", "hub3", "marathon-pine"]);
+    expect(s1.map((l) => l.id).sort()).toEqual(["concrete", "hub3", "marathon-pine"]);
     for (const l of s1) {
       const like = SEED.locations[l.policyLike];
       expect(like, `${l.id} follows a known location`).toBeTruthy();

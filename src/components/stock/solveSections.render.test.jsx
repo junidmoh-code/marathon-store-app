@@ -1,14 +1,14 @@
-// ─── The Solve, rendered: ONE screen, both sections, one confirm ─────────────
+// ─── The Solve, rendered: ONE division per list, one confirm ─────────────────
 // Mounts the real NetworkTransfer over the real card build and presses the
 // real buttons; the assertion is the ONE multi-path update the confirm writes.
-//   • a Section 1 block and a Section 2 block, a tick per store;
-//   • each ticked store's excess goes to ITS OWN hub — Hub 2 for Marathon PE
-//     and Trophy, Hub 3 for Pine and Concrete (or the Concrete Stockroom
-//     where the owner mapped the category);
-//   • a store that is not live is shown, cannot be ticked, and nothing is
-//     written for it;
-//   • Central short across two sections: dealt in tick order, shown before
-//     the confirm, never the same unit twice.
+//   • "Missing from Marathon" offers Marathon PE and Trophy only; "Missing from
+//     Concrete" offers Marathon Pine and Concrete only (owner rule 8 Oct 2026);
+//   • each ticked store's excess goes to ITS division's hub — Hub 2 for
+//     Marathon PE and Trophy, Hub 3 for Pine and Concrete (there is no
+//     Concrete Stockroom);
+//   • a store with Solve off is shown, cannot be ticked, nothing is written;
+//   • Central short across two stores: dealt in tick order, shown before the
+//     confirm, never the same unit twice.
 // (firstBatchSolve.render.test.jsx proves the single Section 2 store is,
 // write for write, the Solve this replaced.)
 import { describe, it, expect, beforeEach, vi } from "vitest";
@@ -44,10 +44,10 @@ const { computeMissingProducts } = await import("./missingProductsCore.js");
 const { __resetNetworkForTests } = await import("../../utils/networkStore.js");
 
 // /network with Section 1 counted in and live.
-const S1_LIVE = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true }, "concrete-stockroom": { live: true } } };
+const S1_LIVE = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } };
 // /network with Section 1's switches both OFF (the seed before 7 Oct 2026).
 const OFF = { solve: false, autoRefill: "off" };
-const S1_DARK = { locations: { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF } };
+const S1_DARK = { locations: { "marathon-pine": OFF, concrete: OFF, hub3: OFF } };
 // The engine config: Section 2 has its own numbers; Section 1 has NONE — it
 // follows its templates (Pine and Concrete like Marathon PE, Hub 3 like Hub 2).
 const CONFIG = {
@@ -83,17 +83,26 @@ const box = (tree, name) => boxes(tree).find((b) => boxLabel(b) === name);
 const tick = (tree, name) => act(() => { box(tree, name).props.onClick(); });
 const ticked = (tree) => boxes(tree).filter((b) => b.props["aria-checked"]).map(boxLabel);
 
-function render({ stock = stockWith(PLENTY), products = PRODUCTS, cards } = {}) {
-  const list = cards || computeMissingProducts({ allStock: stock, products });
+// The Marathon list (HealthView's default), or — with `division: 1` — the
+// "Missing from Concrete" list's own cards (computeMissingProducts section 1).
+function render({ stock = stockWith(PLENTY), products = PRODUCTS, cards, division = 2, category = "clothing" } = {}) {
+  const list = cards || computeMissingProducts({ allStock: stock, products, ...(division === 1 ? { section: 1 } : {}) });
   let tree;
   act(() => {
     tree = TestRenderer.create(
-      <NetworkTransfer products={products} category="clothing" allStock={stock} cards={list}
+      <NetworkTransfer products={products} category={category} allStock={stock} cards={list}
         targets={{}} targetsSettled={true} targetsError={false} />
     );
   });
   return tree;
 }
+const renderConcrete = (opts = {}) => render({ ...opts, division: 1 });
+// Tick exactly these stores, in this order (untick the rest first).
+const setTicks = (tree, names) => {
+  for (const b of boxes(tree)) if (b.props["aria-checked"]) act(() => { b.props.onClick(); });
+  for (const n of names) tick(tree, n);
+};
+const destsOf = (tree) => buttonsOf(tree).map((b) => (b.children || []).join("")).filter((x) => x.startsWith("→ "));
 const open = async (tree) => { await act(async () => { buttonExactly(tree, "Solve").props.onClick(); }); };
 const confirm = async (tree) => { await act(async () => { await buttonSaying(tree, "Solve — ").props.onClick(); }); };
 const written = () => updateMock.mock.calls[0][1];
@@ -111,41 +120,49 @@ beforeEach(() => {
   paths["config/refillEngine"] = CONFIG;
 });
 
-describe("one screen: a block per section, a tick per store", () => {
-  it("shows the Section 1 block (Pine, Concrete) and the Section 2 block (Marathon PE, Trophy); the default store is ticked", async () => {
+describe("ONE DIVISION PER LIST — Solve offers only the list's own stores", () => {
+  it("Missing from Marathon offers Marathon PE and Trophy only; the default store is ticked", async () => {
     paths.network = S1_LIVE;
     const tree = render();
     await open(tree);
-    const text = textOf(tree);
-    expect(text).toMatch(/Carry atMarathon.*Marathon PE.*Trophy.*Concrete.*Marathon Pine.*Concrete/);
-    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon PE", "Trophy", "Marathon Pine", "Concrete"]);
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon PE", "Trophy"]);
+    expect(textOf(tree)).not.toMatch(/Marathon Pine|Hub 3/);
     expect(ticked(tree)).toEqual(["Marathon PE"]);
-    expect(boxes(tree).every((b) => !b.props.disabled)).toBe(true);
   });
 
-  it("SOLVE OFF: Pine and Concrete are shown, cannot be ticked, and say why", async () => {
+  it("Missing from Concrete offers Marathon Pine and Concrete only — never Marathon PE or Trophy", async () => {
+    paths.network = S1_LIVE;
+    const tree = renderConcrete();
+    await open(tree);
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete"]);
+    expect(textOf(tree)).not.toMatch(/Marathon PE|Trophy|Hub 2/);
+    expect(ticked(tree)).toHaveLength(1);
+    expect(["Marathon Pine", "Concrete"]).toContain(ticked(tree)[0]);
+  });
+
+  it("SOLVE OFF: on the Concrete list Pine and Concrete are shown, cannot be ticked, say why, and nothing is written", async () => {
     paths.network = S1_DARK;
-    const tree = render();
+    const tree = renderConcrete();
     await open(tree);
     expect(box(tree, "Marathon Pine").props.disabled).toBe(true);
     expect(box(tree, "Concrete").props.disabled).toBe(true);
-    expect(box(tree, "Marathon PE").props.disabled).toBe(false);
     expect(textOf(tree)).toMatch(/Marathon Pine: Solve is off for this store \(Network card\)\./);
     expect(textOf(tree)).toMatch(/Concrete: Solve is off for this store \(Network card\)\./);
+    act(() => { box(tree, "Marathon Pine").props.onClick(); });
+    expect(ticked(tree)).toEqual([]);
+    const go = buttonSaying(tree, "Solve — ");
+    expect(!go || go.props.disabled === true).toBe(true);
+    if (go) await act(async () => { await go.props.onClick(); });
+    expect(updateMock).not.toHaveBeenCalled();
   });
 
-  it("SOLVE OFF: nothing is ever written for a store whose Solve is off — the confirm is exactly Marathon PE's", async () => {
+  it("SOLVE OFF for Concrete changes nothing on the Marathon list — the confirm is exactly Marathon PE's", async () => {
     paths.network = S1_DARK;
     const tree = render();
     await open(tree);
-    // a tap on the disabled tick changes nothing even if it were delivered
-    act(() => { box(tree, "Marathon Pine").props.onClick(); });
-    expect(ticked(tree)).toEqual(["Marathon PE"]);
     await confirm(tree);
     expect(updateMock).toHaveBeenCalledTimes(1);
-    const keys = Object.keys(written());
-    expect(keys.some((k) => /marathon-pine|concrete|hub3/.test(k))).toBe(false);
-    expect(keys.sort()).toEqual([
+    expect(Object.keys(written()).sort()).toEqual([
       "refill_requests/req1", "refill_requests/req2", "refill_requests/req3",
       "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
@@ -154,13 +171,12 @@ describe("one screen: a block per section, a tick per store", () => {
 });
 
 describe("THE SEED (7 Oct 2026): Pine and Concrete are solvable before their counts are finished", () => {
-  it("no /network node: Pine is tickable; its Solve seeds Pine and Hub 3 TRUSTED and asks Central for Pine's first batch", async () => {
-    const tree = render();          // no /network node → the seed: Section 1 Solve on, Auto-refill solved
+  it("no /network node: on the Concrete list Pine's Solve seeds Pine and Hub 3 TRUSTED and asks Central for Pine's first batch", async () => {
+    const tree = renderConcrete();          // no /network node → the seed: Section 1 Solve on, Auto-refill solved
     await open(tree);
     expect(box(tree, "Marathon Pine").props.disabled).toBe(false);
     expect(box(tree, "Concrete").props.disabled).toBe(false);
-    tick(tree, "Marathon Pine");
-    tick(tree, "Marathon PE");      // un-tick the default: Pine alone
+    setTicks(tree, ["Marathon Pine"]);
     expect(ticked(tree)).toEqual(["Marathon Pine"]);
     await confirm(tree);
     expect(updateMock).toHaveBeenCalledTimes(1);
@@ -185,10 +201,9 @@ describe("SOLVE TRUSTS WHAT IT INTRODUCES at a \"solved\" location", () => {
   it("an existing EMPTY untrusted Hub 3 cell is trusted in the same write; a Hub 3 cell holding legacy units is left for a count", async () => {
     paths["stock/hub3/tee1"] = { S: { qty: 0, v: 3, mv: "old", lastType: "sold" }, M: { qty: 4, v: 2, mv: "old2", lastType: "adjustment" } };
     gets["stock/hub3/tee1"] = paths["stock/hub3/tee1"];
-    const tree = render();
+    const tree = renderConcrete();
     await open(tree);
-    tick(tree, "Marathon Pine");
-    tick(tree, "Marathon PE");
+    setTicks(tree, ["Marathon Pine"]);
     await confirm(tree);
     const upd = written();
     expect(upd["stock/hub3/tee1/S/trusted"]).toBe(true);
@@ -198,59 +213,58 @@ describe("SOLVE TRUSTS WHAT IT INTRODUCES at a \"solved\" location", () => {
   });
 });
 
-describe("both sections in ONE confirm — each store's excess goes to its own hub", () => {
-  it("Marathon PE + Pine: ONE update; Marathon PE's seeds at Hub 2, Pine's at Hub 3, each shop's own request naming its hub", async () => {
+describe("two stores of ONE division in one confirm — the division's hub is seeded once", () => {
+  it("Pine + Concrete: ONE update; Hub 3 seeded once, each shop's own request naming Hub 3", async () => {
     paths.network = S1_LIVE;
-    const tree = render();
+    const tree = renderConcrete();
     await open(tree);
-    tick(tree, "Marathon Pine");
-    expect(ticked(tree)).toEqual(["Marathon PE", "Marathon Pine"]);
-    // the panel says what each store gets, and in which order Central is dealt
+    setTicks(tree, ["Marathon Pine", "Concrete"]);
     const text = textOf(tree);
-    expect(text).toMatch(/Central's stock is dealt in the order ticked: Marathon PE → Marathon Pine\./);
-    expect(text).toMatch(/6 units \(S×2 · M×2 · L×2\) go to Marathon PE first/);
-    expect(text).toMatch(/Hub 2 is seeded now; its own ~8 units follow/);
+    expect(text).toMatch(/Central's stock is dealt in the order ticked: Marathon Pine → Concrete\./);
     expect(text).toMatch(/6 units \(S×2 · M×2 · L×2\) go to Marathon Pine first — requested from Central now; Central picks it from Source › Marathon Pine/);
+    expect(text).toMatch(/6 units \(S×2 · M×2 · L×2\) go to Concrete first/);
     expect(text).toMatch(/Hub 3 is seeded now; its own ~8 units follow/);
     expect(buttonSaying(tree, "Solve — 2 stores")).toBeTruthy();
-
     await confirm(tree);
-    expect(updateMock).toHaveBeenCalledTimes(1);          // ONE confirm, ONE atomic update
+    expect(updateMock).toHaveBeenCalledTimes(1);
     const upd = written();
-    const stockKeys = Object.keys(upd).filter((k) => k.startsWith("stock/")).sort();
-    expect(stockKeys).toEqual([
-      "stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S",
+    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual([
+      "stock/concrete/tee1/L", "stock/concrete/tee1/M", "stock/concrete/tee1/S",
       "stock/hub3/tee1/L", "stock/hub3/tee1/M", "stock/hub3/tee1/S",
-      "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
       "stock/marathon-pine/tee1/L", "stock/marathon-pine/tee1/M", "stock/marathon-pine/tee1/S",
     ]);
     const reqs = requests(upd);
     expect(reqs).toHaveLength(6);
     for (const r of reqs) {
-      expect(r).toMatchObject({ productId: TEE, status: "open", qty: 2, createdFrom: { firstBatch: true, source: "central" } });
-      // THE WALL: a shop's hub is on its own side
-      expect(r.createdFrom.hub).toBe(r.requestingLocation === "marathon-pe" ? "hub2" : "hub3");
+      expect(r).toMatchObject({ productId: TEE, status: "open", qty: 2, createdFrom: { firstBatch: true, source: "central", hub: "hub3" } });
       expect(r.createdFrom.store).toBe(r.requestingLocation);
+      expect(["marathon-pine", "concrete"]).toContain(r.requestingLocation);
     }
-    expect(reqs.filter((r) => r.requestingLocation === "marathon-pe")).toHaveLength(3);
-    expect(reqs.filter((r) => r.requestingLocation === "marathon-pine")).toHaveLength(3);
-    // one solve id per store, so the server can net one shop's lock against the other's hub leg
     const ids = new Set(reqs.map((r) => `${r.requestingLocation}|${r.createdFrom.solveId}`));
     expect([...ids].sort()).toEqual([
-      `marathon-pe|fb_${TEE}_${NOW.toString(36)}_marathon-pe`,
+      `concrete|fb_${TEE}_${NOW.toString(36)}_concrete`,
       `marathon-pine|fb_${TEE}_${NOW.toString(36)}_marathon-pine`,
     ]);
-    // nothing moved: Solve never calls the stock writer
     expect(applyMovementMock).not.toHaveBeenCalled();
+  });
+
+  it("Marathon PE + Trophy: Hub 2 seeded once; nothing for Section 1", async () => {
+    paths.network = S1_LIVE;
+    const tree = render();
+    await open(tree);
+    setTicks(tree, ["Marathon PE", "Trophy"]);
+    await confirm(tree);
+    const upd = written();
+    expect(Object.keys(upd).filter((k) => k.startsWith("stock/hub2/")).sort()).toEqual(["stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S"]);
+    expect(Object.keys(upd).some((k) => /hub3|marathon-pine|\/concrete\//.test(k))).toBe(false);
+    expect(requests(upd).map((r) => r.requestingLocation).sort()).toEqual(["marathon-pe", "marathon-pe", "marathon-pe", "trophy", "trophy", "trophy"]);
   });
 
   it("Pine and Concrete follow the same policy as Marathon PE (no numbers of their own), and Hub 3 follows Hub 2", async () => {
     paths.network = S1_LIVE;
-    const tree = render();
+    const tree = renderConcrete();
     await open(tree);
-    tick(tree, "Marathon PE");                 // untick the default
-    tick(tree, "Concrete");
-    expect(ticked(tree)).toEqual(["Concrete"]);
+    setTicks(tree, ["Concrete"]);
     expect(textOf(tree)).toMatch(/6 units \(S×2 · M×2 · L×2\) go to Concrete first/);
     await confirm(tree);
     const upd = written();
@@ -259,135 +273,116 @@ describe("both sections in ONE confirm — each store's excess goes to its own h
       "stock/hub3/tee1/L", "stock/hub3/tee1/M", "stock/hub3/tee1/S",
     ]);
     expect(requests(upd).every((r) => r.requestingLocation === "concrete" && r.createdFrom.hub === "hub3")).toBe(true);
-    // a single ticked store keeps the single-store solve id
     expect(requests(upd)[0].createdFrom.solveId).toBe(`fb_${TEE}_${NOW.toString(36)}`);
   });
 
-  it("the owner mapped Concrete's t-shirts to the Concrete Stockroom: Concrete's excess goes THERE, Pine's still to Hub 3", async () => {
-    paths.network = { ...S1_LIVE, backStock: { concrete: { "t-shirts": "concrete-stockroom" } } };
-    paths["config/refillEngine"] = { ...CONFIG, routes: { ...CONFIG.routes, concrete: "concrete-stockroom", "concrete-stockroom": "central" } };
-    const tree = render();
+  it("THERE IS NO CONCRETE STOCKROOM: a stale /network mapping to it is ignored — Concrete's excess goes to Hub 3, like Pine's", async () => {
+    paths.network = { ...S1_LIVE, backStock: { concrete: { "t-shirts": "concrete-stockroom" } }, locations: { ...S1_LIVE.locations, "concrete-stockroom": { type: "hub", section: 1, live: true } } };
+    const tree = renderConcrete();
     await open(tree);
-    tick(tree, "Marathon PE");
-    tick(tree, "Concrete");
-    tick(tree, "Marathon Pine");
+    setTicks(tree, ["Concrete", "Marathon Pine"]);
     await confirm(tree);
     const upd = written();
     const hubOfReq = Object.fromEntries(requests(upd).map((r) => [r.requestingLocation, r.createdFrom.hub]));
-    expect(hubOfReq).toEqual({ concrete: "concrete-stockroom", "marathon-pine": "hub3" });
-    expect(Object.keys(upd).some((k) => k.startsWith("stock/concrete-stockroom/tee1/"))).toBe(true);
-    expect(Object.keys(upd).some((k) => k.startsWith("stock/hub2/"))).toBe(false);
-  });
-
-  it("all four stores at once: Hub 2 is seeded once for both Section 2 shops, Hub 3 once for both Section 1 shops", async () => {
-    paths.network = S1_LIVE;
-    const tree = render();
-    await open(tree);
-    for (const name of ["Trophy", "Marathon Pine", "Concrete"]) tick(tree, name);
-    expect(buttonSaying(tree, "Solve — 4 stores")).toBeTruthy();
-    await confirm(tree);
-    expect(updateMock).toHaveBeenCalledTimes(1);
-    const upd = written();
-    expect(Object.keys(upd).filter((k) => k.startsWith("stock/hub2/")).sort()).toEqual(["stock/hub2/tee1/L", "stock/hub2/tee1/M", "stock/hub2/tee1/S"]);
-    expect(Object.keys(upd).filter((k) => k.startsWith("stock/hub3/")).sort()).toEqual(["stock/hub3/tee1/L", "stock/hub3/tee1/M", "stock/hub3/tee1/S"]);
-    expect(requests(upd)).toHaveLength(12);
+    expect(hubOfReq).toEqual({ concrete: "hub3", "marathon-pine": "hub3" });
+    expect(Object.keys(upd).some((k) => k.includes("concrete-stockroom"))).toBe(false);
   });
 });
 
-describe("Central runs short across two sections", () => {
+describe("Central runs short across two stores of one division", () => {
   // 3 S, 2 M, 0 L. Every shop's policy is 2 of each.
   const SHORT = { S: cell(3), M: cell(2), L: cell(0) };
 
   it("shows what each store will actually get BEFORE the confirm — dealt in tick order — and writes exactly that", async () => {
     paths.network = S1_LIVE;
-    const tree = render({ stock: stockWith(SHORT) });
+    const tree = renderConcrete({ stock: stockWith(SHORT) });
     await open(tree);
-    tick(tree, "Marathon Pine");               // ticked second: Marathon PE is served first
+    setTicks(tree, ["Marathon Pine", "Concrete"]);
     const text = textOf(tree);
-    expect(text).toMatch(/4 units \(S×2 · M×2\) go to Marathon PE first/);
-    expect(text).toMatch(/1 unit \(S×1\) go to Marathon Pine first/);
+    expect(text).toMatch(/4 units \(S×2 · M×2\) go to Marathon Pine first/);
+    expect(text).toMatch(/1 unit \(S×1\) go to Concrete first/);
     expect(text).toMatch(/Central is short: S 1 of 2\./);
     await confirm(tree);
     const reqs = requests(written()).map((r) => [r.requestingLocation, r.size, r.qty]).sort();
-    expect(reqs).toEqual([["marathon-pe", "M", 2], ["marathon-pe", "S", 2], ["marathon-pine", "S", 1]]);
-    // NEVER THE SAME UNIT TWICE
+    expect(reqs).toEqual([["concrete", "S", 1], ["marathon-pine", "M", 2], ["marathon-pine", "S", 2]]);
     const dealt = (sz) => requests(written()).filter((r) => r.size === sz).reduce((t, r) => t + r.qty, 0);
     expect(dealt("S")).toBe(3);
     expect(dealt("M")).toBe(2);
-    // the sizes Central could not send still get their carriage seeds at the store and ITS hub
-    expect(Object.keys(written())).toEqual(expect.arrayContaining(["stock/marathon-pine/tee1/M", "stock/hub3/tee1/M", "stock/marathon-pine/tee1/L", "stock/hub3/tee1/L"]));
+    expect(Object.keys(written())).toEqual(expect.arrayContaining(["stock/concrete/tee1/M", "stock/concrete/tee1/L", "stock/hub3/tee1/M", "stock/hub3/tee1/L"]));
   });
 
-  it("the order ticked decides who is served first: Pine ticked first, Marathon PE gets the remainder", async () => {
+  it("the order ticked decides who is served first: Concrete ticked first, Pine gets the remainder", async () => {
     paths.network = S1_LIVE;
-    const tree = render({ stock: stockWith(SHORT) });
+    const tree = renderConcrete({ stock: stockWith(SHORT) });
     await open(tree);
-    tick(tree, "Marathon PE");                 // untick the default…
-    tick(tree, "Marathon Pine");               // …Pine first…
-    tick(tree, "Marathon PE");                 // …then Marathon PE
-    expect(textOf(tree)).toMatch(/dealt in the order ticked: Marathon Pine → Marathon PE\./);
+    setTicks(tree, ["Concrete", "Marathon Pine"]);
+    expect(textOf(tree)).toMatch(/dealt in the order ticked: Concrete → Marathon Pine\./);
     await confirm(tree);
     const reqs = requests(written()).map((r) => [r.requestingLocation, r.size, r.qty]).sort();
-    expect(reqs).toEqual([["marathon-pe", "S", 1], ["marathon-pine", "M", 2], ["marathon-pine", "S", 2]]);
+    expect(reqs).toEqual([["concrete", "M", 2], ["concrete", "S", 2], ["marathon-pine", "S", 1]]);
   });
 
-  it("an engine lock already promising Central's units is netted before anything is dealt", async () => {
+  it("an engine lock already promising Central's units — at a MARATHON hub — is netted before Concrete's are dealt (Central is shared)", async () => {
     paths.network = S1_LIVE;
-    // Hub 1 holds an open lock on 2 of Central's S (it reserves; it is not Hub 2 or Hub 3 presence).
     gets[`refill_engine/open/hub1/${TEE}`] = { S: { qty: 2, source: "central", createdAt: "2026-10-02T08:00:00.000Z", runId: "scan1" } };
-    const tree = render({ stock: stockWith(SHORT) });
+    const tree = renderConcrete({ stock: stockWith(SHORT) });
     await open(tree);
-    tick(tree, "Marathon Pine");
+    setTicks(tree, ["Marathon Pine", "Concrete"]);
     await confirm(tree);
     const reqs = requests(written()).map((r) => [r.requestingLocation, r.size, r.qty]).sort();
-    // S: 3 − 2 reserved = 1 free → Marathon PE takes it; Pine gets no S request.
-    expect(reqs).toEqual([["marathon-pe", "M", 2], ["marathon-pe", "S", 1]]);
+    // S: 3 − 2 reserved = 1 free → Pine takes it; Concrete gets no S request.
+    expect(reqs).toEqual([["marathon-pine", "M", 2], ["marathon-pine", "S", 1]]);
   });
 });
 
-describe("the hub's own presence, and the wall, per store", () => {
-  it("Hub 3 already holds the product: Pine takes the old seed-only Solve (no request from Central); Marathon PE, behind Hub 2, still gets its first batch", async () => {
+describe("the hub's own presence, and the wall, per list", () => {
+  it("Hub 3 already holds the product: on the Concrete list it is an 'only in Hub 3' card solved into Pine/Concrete with no Central request; on the Marathon list Marathon PE still gets its first batch and nothing is written for Section 1", async () => {
     paths.network = S1_LIVE;
     const stock = { ...stockWith(PLENTY), hub3: { [TEE]: { M: cell(1) } } };
-    // (the Section 2 list: stranded for Section 2 — the default list handed in)
+    const s1 = computeMissingProducts({ allStock: stock, products: PRODUCTS, section: 1 });
+    expect(s1.map((c) => [c.pid, c.source])).toEqual([[TEE, "hub3"]]);
+    const cTree = renderConcrete({ stock });
+    await open(cTree);
+    expect(boxes(cTree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete"]);
+    setTicks(cTree, ["Marathon Pine"]);
+    await confirm(cTree);
+    const cUpd = updateMock.mock.calls[0][1];
+    expect(requests(cUpd)).toEqual([]);
+    expect(Object.keys(cUpd).some((k) => /hub2|marathon-pe\/|trophy/.test(k))).toBe(false);
+    updateMock.mockClear();
     const tree = render({ stock });
     await open(tree);
-    tick(tree, "Marathon Pine");
-    const text = textOf(tree);
-    expect(text).toMatch(/→ seeds Hub 3 \+ Marathon Pine at qty 0/);
-    expect(text).toMatch(/go to Marathon PE first/);
     await confirm(tree);
     const upd = written();
     expect(requests(upd).every((r) => r.requestingLocation === "marathon-pe")).toBe(true);
-    expect(Object.keys(upd)).toEqual(expect.arrayContaining(["stock/marathon-pine/tee1/S", "stock/marathon-pine/tee1/M", "stock/marathon-pine/tee1/L", "stock/hub3/tee1/S", "stock/hub3/tee1/L"]));
+    expect(Object.keys(upd).some((k) => /hub3|marathon-pine|\/concrete\//.test(k))).toBe(false);
   });
 
-  it("a product stranded at Hub 2 can be solved into Marathon PE and Trophy only — Pine and Concrete say it must go back to Central", async () => {
+  it("a product stranded at Hub 2 is a Marathon card: Marathon PE and Trophy only — Section 1 is not even offered", async () => {
     paths.network = S1_LIVE;
     const stock = { hub2: { [TEE]: { M: cell(4) } } };
     const tree = render({ stock });
     await open(tree);
-    expect(box(tree, "Marathon Pine").props.disabled).toBe(true);
-    expect(box(tree, "Concrete").props.disabled).toBe(true);
-    expect(textOf(tree)).toMatch(/Marathon Pine: the stock is at Hub 2, in the other section — send it back to Central first\./);
-    tick(tree, "Trophy");
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon PE", "Trophy"]);
+    setTicks(tree, ["Marathon PE", "Trophy"]);
     await confirm(tree);
-    // hub-stranded: seeds the shops only, exactly as the old Solve did
     expect(Object.keys(written()).sort()).toEqual([
       "stock/marathon-pe/tee1/L", "stock/marathon-pe/tee1/M", "stock/marathon-pe/tee1/S",
       "stock/trophy/tee1/L", "stock/trophy/tee1/M", "stock/trophy/tee1/S",
     ]);
   });
 
-  it("Move manually from Central offers the card's own section first, then the other; from Hub 2 only Section 2's shops", async () => {
+  it("Move manually offers the list's own division only: Marathon → Hub 2 / Marathon PE / Trophy; Concrete → Hub 3 / Marathon Pine / Concrete; from Hub 2 Marathon's shops", async () => {
     paths.network = S1_LIVE;
     const tree = render();
     await act(async () => { buttonExactly(tree, "Move manually").props.onClick(); });
-    const dests = buttonsOf(tree).map((b) => (b.children || []).join("")).filter((t) => t.startsWith("→ "));
-    expect(dests).toEqual(["→ Hub 2", "→ Marathon PE", "→ Trophy", "→ Hub 3", "→ Marathon Pine", "→ Concrete"]);
+    expect(destsOf(tree)).toEqual(["→ Hub 2", "→ Marathon PE", "→ Trophy"]);
+    const cTree = renderConcrete();
+    await act(async () => { buttonExactly(cTree, "Move manually").props.onClick(); });
+    expect(destsOf(cTree)).toEqual(["→ Hub 3", "→ Marathon Pine", "→ Concrete"]);
     const hubTree = render({ stock: { hub2: { [TEE]: { M: cell(4) } } } });
     await act(async () => { buttonExactly(hubTree, "Move manually").props.onClick(); });
-    expect(buttonsOf(hubTree).map((b) => (b.children || []).join("")).filter((t) => t.startsWith("→ "))).toEqual(["→ Marathon PE", "→ Trophy"]);
+    expect(destsOf(hubTree)).toEqual(["→ Marathon PE", "→ Trophy"]);
   });
 });
 
@@ -418,22 +413,56 @@ describe("undo: two shops of one confirm share their hub's seeds", () => {
   });
 });
 
-describe("the other section's list", () => {
-  it("a viewer who may see both sections can look at Section 1's stranded stock; Solve there routes nothing while its Solve is off", async () => {
+describe("the other division's list", () => {
+  it("a viewer who may see both divisions switches with \"Missing from Concrete\"; with Solve off there it routes nothing, and Move offers only Concrete's", async () => {
     paths.network = S1_DARK;
-    // Marathon PE carries the tee → nothing stranded for Section 2; stranded for Section 1.
+    // Marathon PE carries the tee → nothing missing from Marathon; missing from Concrete.
     const stock = { ...stockWith(PLENTY), "marathon-pe": { [TEE]: { M: cell(1) } } };
     const tree = render({ stock });
     expect(textOf(tree)).toMatch(/No stranded products/);
-    await act(async () => { buttonSaying(tree, "Concrete").props.onClick(); });
+    const chip = (label) => buttonsOf(tree).find((b) => (b.children || []).join("") === label);
+    expect(chip("Missing from Marathon")).toBeTruthy();
+    await act(async () => { chip("Missing from Concrete").props.onClick(); });
     expect(textOf(tree)).toMatch(/Essentials Tee Olive/);
     await open(tree);
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete"]);
     expect(box(tree, "Marathon Pine").props.disabled).toBe(true);
     expect(box(tree, "Concrete").props.disabled).toBe(true);
-    // by hand it can still be moved: Central → Hub 3 / Pine / Concrete are offered
     await act(async () => { buttonExactly(tree, "Move manually").props.onClick(); });
-    const dests = buttonsOf(tree).map((b) => (b.children || []).join("")).filter((t) => t.startsWith("→ "));
-    expect(dests.slice(0, 3)).toEqual(["→ Hub 3", "→ Marathon Pine", "→ Concrete"]);
+    expect(destsOf(tree)).toEqual(["→ Hub 3", "→ Marathon Pine", "→ Concrete"]);
     expect(updateMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("PERFUME follows the same per-division rule", () => {
+  const SCENT = "scent1";
+  const SCENTS = [{ id: SCENT, name: "Gentleman Givenchy perfume", category: "Perfume", subcategory: "Perfume", categoryKey: "perfumes", sizes: ["_"] }];
+  const SCENT_STOCK = { central: { [SCENT]: { _: cell(48) } } };
+  // The live perfume policy (hub2 + Marathon PE); Section 1 follows it by template.
+  const PERFUME_CONFIG = { ...CONFIG, categoryPolicy: { perfumes: { hub2: { target: 10, minQty: 5, reorderPoint: 5 }, "marathon-pe": { target: 8, minQty: 4, reorderPoint: 3 } } } };
+
+  it("Missing from Concrete: a perfume solves only into Pine / Concrete with Hub 3 seeded — Marathon PE and Trophy are never offered or written", async () => {
+    paths["config/refillEngine"] = PERFUME_CONFIG;
+    const tree = renderConcrete({ products: SCENTS, stock: SCENT_STOCK, category: "perfume" });
+    await open(tree);
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon Pine", "Concrete"]);
+    setTicks(tree, ["Marathon Pine", "Concrete"]);
+    await confirm(tree);
+    const upd = written();
+    const keys = Object.keys(upd);
+    expect(keys.filter((k) => k.startsWith("stock/")).sort()).toEqual([`stock/concrete/${SCENT}/_`, `stock/hub3/${SCENT}/_`, `stock/marathon-pine/${SCENT}/_`]);
+    expect(keys.some((k) => /hub2|hub1|marathon-pe\/|trophy/.test(k))).toBe(false);
+    for (const r of requests(upd)) expect(["marathon-pine", "concrete"]).toContain(r.requestingLocation);
+  });
+
+  it("Missing from Marathon: the same perfume offers Marathon PE and Trophy only, and seeds Hub 2", async () => {
+    paths["config/refillEngine"] = PERFUME_CONFIG;
+    const tree = render({ products: SCENTS, stock: SCENT_STOCK, category: "perfume" });
+    await open(tree);
+    expect(boxes(tree).map(boxLabel)).toEqual(["Marathon PE", "Trophy"]);
+    await confirm(tree);
+    const keys = Object.keys(written());
+    expect(keys).toEqual(expect.arrayContaining([`stock/hub2/${SCENT}/_`, `stock/marathon-pe/${SCENT}/_`]));
+    expect(keys.some((k) => /hub3|marathon-pine|\/concrete\//.test(k))).toBe(false);
   });
 });

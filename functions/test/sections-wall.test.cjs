@@ -15,10 +15,10 @@ const { __resetNetworkCacheForTests } = require("../lib/network-load.cjs");
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/sections-routing-fixture.json"), "utf8"));
 const NOW_MS = Date.parse("2026-10-01T10:00:00.000Z");
 const clone = (v) => JSON.parse(JSON.stringify(v));
-const S1 = ["hub3", "marathon-pine", "concrete", "concrete-stockroom"];
+const S1 = ["hub3", "marathon-pine", "concrete"];
 // Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
 // (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
-const DARK = reg.normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+const DARK = reg.normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
 
 const TODAY = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
 
@@ -58,10 +58,12 @@ test("a leg opens only when BOTH ends have Auto-refill on", () => {
 
 test("a leg across the wall is withheld even when everything is live", () => {
   const allLive = reg.normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, { live: true }])) });
-  const routes = { "marathon-pe": "hub3", "marathon-pine": "hub2", hub3: "hub2", concrete: "concrete-stockroom" };
+  const routes = { "marathon-pe": "hub3", "marathon-pine": "hub2", hub3: "hub2", concrete: "hub3" };
   const w = walledRoutes(routes, allLive);
-  assert.deepEqual(w.routes, { concrete: "concrete-stockroom" });
+  assert.deepEqual(w.routes, { concrete: "hub3" });
   assert.deepEqual(w.withheld.map((x) => x.why), ["cross_section", "cross_section", "cross_section"]);
+  // a leg naming the removed Concrete Stockroom is refused as an unknown location (8 Oct 2026)
+  assert.deepEqual(walledRoutes({ concrete: "concrete-stockroom" }, allLive).withheld.map((x) => x.why), ["unknown_location"]);
 });
 
 test("a route naming a location the registry does not know is withheld", () => {

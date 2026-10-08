@@ -32,23 +32,22 @@ beforeEach(() => { __resetNetworkCacheForTests(); invalidateCensusCache(); });
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/sections-routing-fixture.json"), "utf8"));
 const NOW = Date.parse("2026-10-01T10:00:00.000Z");
 const clone = (v) => JSON.parse(JSON.stringify(v));
-const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+const S1 = ["marathon-pine", "concrete", "hub3"];
 // Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
 // (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
-const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
 
 const S2 = ["hub1", "hub2", "marathon-pe", "trophy"];
 const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, ids.includes(id) ? { live: true } : { solve: false, autoRefill: "off" }])), ...extra });
 const MAPPED = Object.keys(FIXTURE.config.categoryPolicy);
 
-// The fixture world with Section 1 stocked: Hub 3 and the stockroom hold what
+// The fixture world with Section 1 stocked: Hub 3 holds what
 // Hub 2 holds; Pine and Concrete hold a qty-0 cell for what Marathon PE
 // carries (a category policy arms a store only for what it carries when
 // carriedOnly, and a size run only where a cell exists).
 function world() {
   const stock = clone(FIXTURE.stock);
   stock.hub3 = clone(FIXTURE.stock.hub2);
-  stock["concrete-stockroom"] = clone(FIXTURE.stock.hub2);
   const empty = (row) => Object.fromEntries(Object.keys(row).map((k) => [k, { ...row[k], qty: 0 }]));
   for (const s of ["marathon-pine", "concrete"]) stock[s] = Object.fromEntries(Object.entries(FIXTURE.stock["marathon-pe"]).map(([pid, row]) => [pid, empty(row)]));
   const config = clone(FIXTURE.config);
@@ -58,7 +57,7 @@ function world() {
   // location), so a follower with neither would be a leg the model never walks.
   const targets = clone(FIXTURE.targets);
   for (const s of ["marathon-pine", "concrete"]) targets[s] = clone(FIXTURE.targets["marathon-pe"]);
-  for (const h of ["hub3", "concrete-stockroom"]) targets[h] = clone(FIXTURE.targets.hub2);
+  targets.hub3 = clone(FIXTURE.targets.hub2);
   return { config, stock, targets, products: clone(FIXTURE.products) };
 }
 const modelOf = (w, key, network) => modelCategoryPolicy({
@@ -87,8 +86,9 @@ test("policyRouting: live Section 1 followers are destinations, mode live, sourc
   for (const loc of S1) assert.equal(on.modeOf(loc), "live");
   assert.equal(on.sourceFor("hub3", null, "x"), "central");
   assert.equal(on.sourceFor("marathon-pine", { categoryKey: "hoodies" }, "x"), "hub3");
-  assert.equal(on.sourceFor("concrete", { categoryKey: "hoodies" }, "x"), "concrete-stockroom");
-  assert.deepEqual(on.sourcesOf("concrete"), ["concrete-stockroom", "hub3"]);
+  // a stored mapping to the removed Concrete Stockroom is ignored: Concrete is served by Hub 3
+  assert.equal(on.sourceFor("concrete", { categoryKey: "hoodies" }, "x"), "hub3");
+  assert.deepEqual(on.sourcesOf("concrete"), ["hub3"]);
   // whose numbers: the template for a follower, nothing for a location with its own
   assert.equal(on.followsIn(cfg.defaultRunByStore, "marathon-pine"), "marathon-pe");
   assert.equal(on.followsIn(cfg.defaultRunByStore, "hub3"), "hub2");
@@ -137,7 +137,7 @@ test("SECTION 1 LIVE: each follower is listed as an armed destination with the f
     const raw = w.config.categoryPolicy[key];
     const m = modelOf(w, key, live());
     const expectFollows = {};
-    if (raw.hub2) { expectFollows.hub3 = "hub2"; expectFollows["concrete-stockroom"] = "hub2"; }
+    if (raw.hub2) expectFollows.hub3 = "hub2";
     if (raw["marathon-pe"]) { expectFollows["marathon-pine"] = "marathon-pe"; expectFollows.concrete = "marathon-pe"; }
     assert.deepEqual(m.follows, expectFollows, key);
     for (const [loc, from] of Object.entries(expectFollows)) {
@@ -171,7 +171,7 @@ test("a follower with an entry of its OWN reads its own and is not reported as f
   assert.equal(m.follows.hub3, undefined);
   const leg = m.legs.find((l) => l.loc === "hub3");
   assert.deepEqual({ armed: leg.armed, target: leg.target, follows: leg.follows }, { armed: true, target: 1, follows: null });
-  assert.equal(m.follows["concrete-stockroom"], "hub2");
+  assert.equal(m.follows["concrete-stockroom"], undefined);   // the Concrete Stockroom does not exist
 });
 
 test("MODEL vs ENGINE with Section 1 live: requests and units per destination equal computeRefillPlan's, for every mapped category", () => {
@@ -228,7 +228,7 @@ test("CALLABLE census: live Section 1 followers are destinations with `follows`;
   const db = makeFakeDb(w);
   const res = await call(db, { action: "census" });
   const cb = res.categories.find((c) => c.key === "caps-beanies");
-  assert.deepEqual(cb.follows, { "concrete-stockroom": "hub2", hub3: "hub2", "marathon-pine": "marathon-pe", concrete: "marathon-pe" });
+  assert.deepEqual(cb.follows, { hub3: "hub2", "marathon-pine": "marathon-pe", concrete: "marathon-pe" });
   for (const loc of S1) assert.ok(res.destinations.includes(loc), loc);
   // what the card edits and saves: exactly what is stored
   assert.deepEqual(cb.entry, w.config.refillEngine.categoryPolicy["caps-beanies"]);

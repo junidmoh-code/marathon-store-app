@@ -13,7 +13,7 @@ const writeoff = require("../lib/refusal-writeoff.cjs");
 const rows = require("../displayRows/lib.cjs");
 const checks = require("../displayChecks/lib.cjs");
 
-const S1 = ["hub3", "marathon-pine", "concrete", "concrete-stockroom"];
+const S1 = ["hub3", "marathon-pine", "concrete"];
 const SEED = reg.SEED_REGISTRY;
 const live = (...ids) => reg.normalizeNetwork({ locations: Object.fromEntries(ids.map((id) => [id, { live: true }])) });
 const allLive = live(...S1);
@@ -56,11 +56,11 @@ test("TODAY: every list holds exactly what its literal held — with no registry
 
 test("LIVE: each list takes a Section 1 location in by the rule Section 2 is in by", () => {
   assert.deepEqual(audit.auditStores(allLive), ["marathon-pine", "concrete", "marathon-pe", "trophy"]);
-  assert.deepEqual(audit.auditHubs(allLive), ["hub3", "concrete-stockroom", "hub1", "hub2"]);
-  assert.deepEqual(writeoff.writeoffLocations(allLive), ["hub3", "concrete-stockroom", "hub1", "hub2", "central"]);
+  assert.deepEqual(audit.auditHubs(allLive), ["hub3", "hub1", "hub2"]);
+  assert.deepEqual(writeoff.writeoffLocations(allLive), ["hub3", "hub1", "hub2", "central"]);
   assert.deepEqual(writeoff.excludedRequesters(allLive), []);
   assert.deepEqual(rows.displayStores(allLive), ["marathon-pine", "concrete", "marathon-pe", "trophy"]);
-  assert.deepEqual(rows.displayHubs(allLive), ["hub3", "concrete-stockroom", "hub1", "hub2"]);
+  assert.deepEqual(rows.displayHubs(allLive), ["hub3", "hub1", "hub2"]);
   assert.deepEqual(checks.triggerStores(allLive), ["marathon-pine", "concrete", "marathon-pe", "trophy"]);
   assert.equal(checks.isTriggerStoreEnabled("marathon-pine", allLive), true);
   assert.equal(checks.isTriggerStoreEnabled("hub3", allLive), false, "a hub is never a trigger store");
@@ -92,7 +92,7 @@ test("DISPLAY ROWS: a hub sale is only ever attributed to a wall on the hub's ow
   assert.deepEqual(rows.displayStoresForHub(allLive, "hub2"), ["marathon-pe", "trophy"]);
   assert.deepEqual(rows.displayStoresForHub(allLive, "hub1"), ["marathon-pe", "trophy"]);
   assert.deepEqual(rows.displayStoresForHub(allLive, "hub3"), ["marathon-pine", "concrete"]);
-  assert.deepEqual(rows.displayStoresForHub(allLive, "concrete-stockroom"), ["marathon-pine", "concrete"]);
+  assert.deepEqual(rows.displayStoresForHub(allLive, "concrete-stockroom"), [], "the Concrete Stockroom does not exist (8 Oct 2026)");
   assert.deepEqual(rows.displayStoresForHub(live("hub3", "concrete"), "hub3"), ["concrete"], "Pine is not live");
   assert.deepEqual(rows.displayStoresForHub(allLive, "nowhere"), []);
 });

@@ -10,8 +10,8 @@
 //                   refills TRUSTED cells only (arrived through Solve or a
 //                   refill, or confirmed by a count). "All" = every cell, as
 //                   Marathon's four always were. No deploy for either.
-//   Concrete        per category: Hub 3 or the Concrete Stockroom. Plus an
-//                   optional override for one product.
+//   Concrete        its back stock is Hub 3, like Pine's (there is no
+//                   Concrete Stockroom — removed 8 Oct 2026).
 //   Credit scope    shared (credit spendable anywhere) or section (only in the
 //                   section that issued it).
 //   Concrete at the till   takes cash, cashier price edits, which till is the
@@ -23,19 +23,17 @@
 // check — and the RTDB rule on /network is what actually refuses the write.
 // A refused viewer reads nothing under /network or /locations: both hooks
 // below are disabled for them.
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ref, update } from "firebase/database";
 import { database } from "../../firebase";
 import { ADMIN_EMAIL } from "../PermissionsContext";
 import { useNetwork } from "../../utils/useNetwork";
 import { usePathState } from "../stock/useStock";
 import { serverNowMs } from "../../utils/serverTime";
-import { listLocations, locationName, sectionName, sectionsInOrder } from "../../utils/networkRegistry";
-import { allCategories } from "../../utils/productTaxonomy";
-import { useTaxonomy } from "./useTaxonomy";
+import { listLocations, sectionName, sectionsInOrder } from "../../utils/networkRegistry";
 import {
-  solveUpdate, autoRefillUpdate, AUTO_REFILL_LABELS, categoryHubUpdate, productOverrideUpdate, creditScopeUpdate, seedUpdate, categoryRows,
-  sectionNameUpdate, SECTION_NAME_MAX, SWITCHABLE_STORE, SWITCHABLE_HUBS,
+  solveUpdate, autoRefillUpdate, AUTO_REFILL_LABELS, creditScopeUpdate, seedUpdate,
+  sectionNameUpdate, SECTION_NAME_MAX,
   POS_FLAGS, posSwitchState, posFlagUpdate, recyclerTillUpdate,
 } from "./networkSettingsCore";
 
@@ -81,18 +79,13 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
   const isOwner = !!authUser && authUser.email === ADMIN_EMAIL;
   const { registry, settled, error, raw } = useNetwork(isOwner);
   const stockLocs = usePathState("locations", isOwner);
-  const { registry: taxonomy } = useTaxonomy();
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
   // A switch change awaiting confirmation: { id, name, kind: "solve"|"autoRefill", to } or null.
   const [confirmSwitch, setConfirmSwitch] = useState(null);
-  const [search, setSearch] = useState("");
   // The division whose name is being edited: { section, text } or null.
   const [naming, setNaming] = useState(null);
 
-  const categories = useMemo(() => allCategories(taxonomy), [taxonomy]);
-  const hubOptions = SWITCHABLE_HUBS.map((h) => ({ value: h, label: locationName(registry, h) }));
-  const byId = useMemo(() => Object.fromEntries((products || []).filter((p) => p && p.id).map((p) => [p.id, p])), [products]);
 
   if (!isOwner) {
     return (
@@ -123,12 +116,7 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
   const needsSeed = settled && !error && stockLocs.settled && !stockLocs.error
     && !seedUpdate(raw, stockLocs.value, 0, uid).nothingToDo;
 
-  const overrides = registry.productOverrides[SWITCHABLE_STORE] || {};
   const pos = posSwitchState(registry, raw);
-  const q = search.trim().toLowerCase();
-  const matches = q.length >= 2
-    ? products.filter((p) => p && p.id && !overrides[p.id] && String(p.name || "").toLowerCase().includes(q)).slice(0, 8)
-    : [];
 
   return (
     <div style={page}>
@@ -142,7 +130,7 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
       {needsSeed && (
         <div style={box}>
           <div style={label}>First-time setup</div>
-          <p>Something the apps need is not registered yet (Concrete, the Concrete Stockroom, or the two division names). This adds only what is missing — new locations switched off — and changes nothing for Marathon PE, Trophy, Hub 1 or Hub 2.</p>
+          <p>Something the apps need is not registered yet (Concrete, or the two division names). This adds only what is missing — new locations switched off — and changes nothing for Marathon PE, Trophy, Hub 1 or Hub 2.</p>
           <button type="button" style={btn} disabled={busy}
             onClick={() => send(seedUpdate(raw, stockLocs.value, now(), uid), "Network registered.")}>
             Set up the network
@@ -210,37 +198,6 @@ export default function NetworkSettingsCard({ authUser, products = [], onExit, w
           <button type="button" style={btn} onClick={() => setConfirmSwitch(null)}>Cancel</button>
         </div>
       )}
-
-      <div style={box}>
-        <div style={label}>Concrete — where each category's back stock sits</div>
-        {categoryRows(registry, categories).map((r) => (
-          <div style={row} key={r.key} data-cat={r.key}>
-            <span>{r.label}{r.inherits && <span style={{ color: "#8e8e93" }}> · follows the default</span>}</span>
-            <Choice value={r.hub} options={hubOptions} busy={busy}
-              onPick={(hub) => send(categoryHubUpdate(registry, r.key, hub, now(), uid), `${r.label}: ${locationName(registry, hub)}.`)} />
-          </div>
-        ))}
-      </div>
-
-      <div style={box}>
-        <div style={label}>Concrete — one product kept somewhere else</div>
-        {Object.keys(overrides).map((pid) => (
-          <div style={row} key={pid} data-override={pid}>
-            <span>{byId[pid]?.name || pid} · {locationName(registry, overrides[pid])}</span>
-            <button type="button" style={btn} disabled={busy}
-              onClick={() => send(productOverrideUpdate(registry, pid, null, now(), uid), "Override removed.")}>Remove</button>
-          </div>
-        ))}
-        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Find a product"
-          style={{ ...btn, width: "100%", boxSizing: "border-box", marginTop: 10, cursor: "text" }} />
-        {matches.map((p) => (
-          <div style={row} key={p.id}>
-            <span>{p.name}</span>
-            <Choice value={null} options={hubOptions} busy={busy}
-              onPick={(hub) => { setSearch(""); send(productOverrideUpdate(registry, p.id, hub, now(), uid), `${p.name}: ${locationName(registry, hub)}.`); }} />
-          </div>
-        ))}
-      </div>
 
       <div style={box}>
         <div style={label}>Concrete — at the till</div>

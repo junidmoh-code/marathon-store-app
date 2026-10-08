@@ -4,7 +4,7 @@
 // Three things, each pinned for BOTH sections:
 //   1. Section 2 (Hub 1, Hub 2) sends exactly what it sent before the hub lists
 //      came out of the code: same audience node, same title, body, link, tag.
-//   2. Section 1 (Hub 3, Concrete Stockroom) is served by the same code path.
+//   2. Section 1 (Hub 3 — there is no Concrete Stockroom) is served by the same code path.
 //   3. An account scoped to one section never receives the other section's
 //      hub's alerts, read from three leaves and never from /users.
 "use strict";
@@ -95,12 +95,14 @@ const run = (db, messaging, record, over = {}) => notifyOrderPlaced({
 
 // ── 1. THE VOCABULARY ────────────────────────────────────────────────────────
 
-test("the hubs come from the registry: Hub 3 and the Concrete Stockroom beside Hub 1 and Hub 2", () => {
-  assert.deepEqual([...pushHubsOf(SEED_REGISTRY)].sort(), ["concrete-stockroom", "hub1", "hub2", "hub3"]);
+test("the hubs come from the registry: Hub 3 beside Hub 1 and Hub 2 (no Concrete Stockroom)", () => {
+  assert.deepEqual([...pushHubsOf(SEED_REGISTRY)].sort(), ["hub1", "hub2", "hub3"]);
   // hubC is not a registry location; it stays linkable and is never assignable.
-  assert.deepEqual([...warehouseHubsOf(SEED_REGISTRY)].sort(), ["concrete-stockroom", "hub1", "hub2", "hub3", "hubC"]);
+  assert.deepEqual([...warehouseHubsOf(SEED_REGISTRY)].sort(), ["hub1", "hub2", "hub3", "hubC"]);
   assert.equal(pushHubsOf(SEED_REGISTRY).includes("hubC"), false);
-  assert.deepEqual([...WAREHOUSE_HUBS].sort(), ["concrete-stockroom", "hub1", "hub2", "hub3", "hubC"]);
+  assert.deepEqual([...WAREHOUSE_HUBS].sort(), ["hub1", "hub2", "hub3", "hubC"]);
+  // a stored record for the removed Stockroom never makes it notifiable again
+  assert.equal(pushHubsOf(normalizeNetwork({ locations: { "concrete-stockroom": { type: "hub", section: 1, name: "Concrete Stockroom" } } })).includes("concrete-stockroom"), false);
   // No registry at all is the built-in one, never an empty list.
   assert.deepEqual(pushHubsOf(null), pushHubsOf(SEED_REGISTRY));
 });
@@ -128,22 +130,21 @@ test("SECTION 2 LABELS ARE THE WORDS THEY ALWAYS WERE", () => {
   assert.equal(hubLabel(""), "a store");
   // An alias is NOT quietly renamed: only the exact id the order carries.
   assert.equal(hubLabel("pe"), "pe");
-  // Section 1's new locations read by name.
-  assert.equal(hubLabel("concrete-stockroom"), "Concrete Stockroom");
+  // Section 1's new location reads by name; the removed Stockroom id is unknown text.
   assert.equal(hubLabel("concrete"), "Concrete");
+  assert.equal(hubLabel("concrete-stockroom"), "concrete-stockroom");
 });
 
-test("which hubs have a CR Orders tab: Hub 2 and Hub 3 as before, the Stockroom too, Hub 1 and hubC not", () => {
+test("which hubs have a CR Orders tab: Hub 2 and Hub 3 as before, Hub 1, hubC and the removed Stockroom not", () => {
   assert.equal(isCrHub(SEED_REGISTRY, "hub2"), true);
   assert.equal(isCrHub(SEED_REGISTRY, "hub3"), true);
   assert.equal(isCrHub(SEED_REGISTRY, "hub1"), false);
   assert.equal(isCrHub(SEED_REGISTRY, "hubC"), false);
-  assert.equal(isCrHub(SEED_REGISTRY, "concrete-stockroom"), true);
+  assert.equal(isCrHub(SEED_REGISTRY, "concrete-stockroom"), false);
   for (const notAHub of ["marathon-pe", "central", "", null, "nonsense"]) assert.equal(isCrHub(SEED_REGISTRY, notAHub), false, String(notAHub));
 
   assert.equal(warehouseTabFor(REFILL({ hub: "hub2", placedAtHub: "hub2" })), "clothing");
   assert.equal(warehouseTabFor(REFILL({ hub: "hub3", placedAtHub: "hub3" })), "clothing");
-  assert.equal(warehouseTabFor(REFILL({ hub: "concrete-stockroom", placedAtHub: "concrete-stockroom" })), "clothing");
   assert.equal(warehouseTabFor(REFILL({ hub: "hub1", placedAtHub: "hub1" })), "queue");
   assert.equal(warehouseTabFor(REFILL({ hub: "hubC", placedAtHub: "hubC" })), "queue");
   assert.equal(warehouseTabFor(ORDER({ hub: "hub2", placedAtHub: "hub2" })), "queue", "a customer order is on the queue");
@@ -153,8 +154,7 @@ test("a hub's section is the registry's; hubC and unknown ids have none", () => 
   assert.equal(hubSectionOf(SEED_REGISTRY, "hub1"), 2);
   assert.equal(hubSectionOf(SEED_REGISTRY, "hub2"), 2);
   assert.equal(hubSectionOf(SEED_REGISTRY, "hub3"), 1);
-  assert.equal(hubSectionOf(SEED_REGISTRY, "concrete-stockroom"), 1);
-  for (const none of ["hubC", "central", "marathon-pe", "nonsense", null]) assert.equal(hubSectionOf(SEED_REGISTRY, none), null, String(none));
+  for (const none of ["hubC", "central", "marathon-pe", "concrete-stockroom", "nonsense", null]) assert.equal(hubSectionOf(SEED_REGISTRY, none), null, String(none));
 });
 
 // ── 2. THE SEND, BOTH SECTIONS ───────────────────────────────────────────────
@@ -202,18 +202,19 @@ test("the seed registry and no registry at all send the same thing", async () =>
   assert.deepEqual(a.calls, b.calls);
 });
 
-test("SECTION 1: a Concrete Stockroom order notifies the Stockroom's recipients, and only them", async () => {
-  const { ref, reads, state } = fakeDb(WORLD({ "concrete-stockroom": ["u_stock"], hub3: ["u_pine"], hub2: ["u_two"] }));
+test("THE CONCRETE STOCKROOM DOES NOT EXIST (8 Oct 2026): an order naming it is an UNKNOWN hub — never Hub 3's recipients, no deep link, no section", async () => {
+  // (No such order or audience exists in production; this pins that the old
+  // id is treated like any id the registry has never heard of.)
+  const { ref } = fakeDb(WORLD({ "concrete-stockroom": ["u_stock"], hub3: ["u_pine"], hub2: ["u_two"] }));
   const m = fakeMessaging();
-  const res = await run({ ref }, m, ORDER({ hub: "concrete-stockroom", placedAtHub: "concrete-stockroom", destShop: "concrete" }));
-  assert.equal(res.sent, true);
-  assert.deepEqual(m.calls[0].tokens, ["tok-u_stock"]);
-  assert.equal(m.calls[0].data.title, "Concrete Stockroom — new order");
-  assert.equal(m.calls[0].data.body, "Concrete · #005 · Nike Air Max 90 · size 9");
-  assert.equal(m.calls[0].data.link, `/?push=order&hub=concrete-stockroom&tab=queue&order=005&at=${encodeURIComponent(AT)}`);
-  assert.equal(m.calls[0].data.tag, "order-concrete-stockroom");
-  assert.ok(reads.includes("push_hub_audience/concrete-stockroom"));
-  assert.ok(state.push_bursts["concrete-stockroom"], "its own burst window, keyed by the hub");
+  await run({ ref }, m, ORDER({ hub: "concrete-stockroom", placedAtHub: "concrete-stockroom", destShop: "concrete" }));
+  for (const c of m.calls) {
+    assert.equal(c.tokens.includes("tok-u_pine"), false);
+    assert.equal(c.tokens.includes("tok-u_two"), false);
+    assert.equal(c.data.link, "/");
+    assert.equal(c.data.title, "concrete-stockroom — new order");
+  }
+  assert.equal(hubSectionOf(SEED_REGISTRY, "concrete-stockroom"), null);
 });
 
 test("SECTION 1: Hub 3 is treated exactly like Hub 1 and Hub 2", async () => {
@@ -227,7 +228,7 @@ test("SECTION 1: Hub 3 is treated exactly like Hub 1 and Hub 2", async () => {
 });
 
 test("a hub that is NOT LIVE still notifies — an alert tells a person, it routes no stock", async () => {
-  // Hub 3 and the Stockroom ship live:false. An order a person placed there by
+  // Hub 3 is not fully live (Auto-refill "solved"). An order a person placed there by
   // hand is real work for whoever Junid assigned to it.
   assert.equal(SEED_REGISTRY.locations.hub3.live, false);
   const { ref } = fakeDb(WORLD({ hub3: ["u_pine"] }));
@@ -267,8 +268,8 @@ test("an account scoped to Section 1 never receives a Section 2 hub's alert, wha
   assert.deepEqual(m.calls[0].tokens.sort(), ["tok-u_legacy", "tok-u_s2"]);
 });
 
-test("…and the other way: a Section 2 account never hears Hub 3 or the Concrete Stockroom", async () => {
-  for (const hub of ["hub3", "concrete-stockroom"]) {
+test("…and the other way: a Section 2 account never hears Hub 3", async () => {
+  for (const hub of ["hub3"]) {
     const world = WORLD({ [hub]: ["u_s1", "u_s2"] }, { u_s1: { sections: { 1: true } }, u_s2: { sections: { 2: true } } });
     const m = fakeMessaging();
     await run({ ref: fakeDb(world).ref }, m, ORDER({ hub, placedAtHub: hub, destShop: "concrete" }));

@@ -17,7 +17,8 @@ const NET = SEED_REGISTRY;
 const see = (sections) => (loc) => canSeeLocation(NET, sections, loc);
 const SNEAKER = { id: "s1", categoryKey: "sneakers" };
 const TEE = { id: "t1", categoryKey: "tshirts" };
-// The owner flips Concrete's sneakers, and one tee, to the Concrete Stockroom.
+// A stored node still naming the removed Concrete Stockroom (8 Oct 2026):
+// every such mapping is ignored — Concrete's back stock is Hub 3.
 const FLIPPED = normalizeNetwork({
   backStock: { concrete: { sneakers: "concrete-stockroom" } },
   productOverrides: { concrete: { t9: "concrete-stockroom" } },
@@ -60,7 +61,7 @@ describe("Section 2 keeps the old literal — every fallback, every shop", () =>
   });
   it("the dispatch hold is Hub 2's alone, six minutes", () => {
     expect(dispatchHoldMs("hub2")).toBe(360000);
-    for (const h of ["hub1", "hub3", "concrete-stockroom", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
+    for (const h of ["hub1", "hub3", "hubC", undefined]) expect(dispatchHoldMs(h)).toBe(0);
   });
   it("Hub 2's CR pills are Marathon PE and Trophy, in that order", () => {
     expect(shopsOfHub(NET, "hub2")).toEqual(["marathon-pe", "trophy"]);
@@ -76,12 +77,11 @@ describe("Section 1 resolves through its own shop — never into Section 2", () 
     expect(servingHubFor(NET, "marathon-pine", "hub2")).toBe("hub3");
     expect(usesSection2Hubs(NET, "marathon-pine")).toBe(false);
   });
-  it("Concrete → Hub 3 by default; the Stockroom for a flipped category or product", () => {
+  it("Concrete → Hub 3, always — a stored mapping to the removed Stockroom is ignored", () => {
     expect(placementHub(NET, "concrete", SNEAKER, () => "hub1")).toBe("hub3");
-    expect(placementHub(FLIPPED, "concrete", SNEAKER, () => "hub1")).toBe("concrete-stockroom");
+    expect(placementHub(FLIPPED, "concrete", SNEAKER, () => "hub1")).toBe("hub3");
     expect(placementHub(FLIPPED, "concrete", TEE, () => "hub2")).toBe("hub3");
-    expect(placementHub(FLIPPED, "concrete", { id: "t9", categoryKey: "tshirts" }, () => "hub2")).toBe("concrete-stockroom");
-    // Pine is not served by the Stockroom, whatever Concrete does.
+    expect(placementHub(FLIPPED, "concrete", { id: "t9", categoryKey: "tshirts" }, () => "hub2")).toBe("hub3");
     expect(placementHub(FLIPPED, "marathon-pine", SNEAKER, () => "hub1")).toBe("hub3");
     expect(usesSection2Hubs(NET, "concrete")).toBe(false);
   });
@@ -94,7 +94,6 @@ describe("Section 1 resolves through its own shop — never into Section 2", () 
       expect(orderIsAtHub(NET, { destShop: shop }, "hub1")).toBe(false);
       expect(orderIsAtHub(NET, { destShop: shop }, "hub2")).toBe(false);
     }
-    expect(orderIsAtHub(NET, { destShop: "concrete", placedAtHub: "concrete-stockroom" }, "concrete-stockroom")).toBe(true);
     expect(orderIsAtHub(NET, { destShop: "concrete", placedAtHub: "hub3" }, "hub3")).toBe(true);
   });
   it("a shop the registry does not know gets NO hub — not Hub 1, not Hub 2", () => {
@@ -114,24 +113,23 @@ describe("Section 1 resolves through its own shop — never into Section 2", () 
       }
     }
   });
-  it("Hub 3 sends to Pine and Concrete; the Stockroom only to Concrete", () => {
+  it("Hub 3 sends to Pine and Concrete; the removed Stockroom sends to no one", () => {
     expect(shopsOfHub(NET, "hub3")).toEqual(["marathon-pine", "concrete"]);
-    expect(shopsOfHub(NET, "concrete-stockroom")).toEqual(["concrete"]);
+    expect(shopsOfHub(NET, "concrete-stockroom")).toEqual([]);
     expect(shopsOfHub(NET, "hubC")).toEqual([]);
   });
 });
 
 describe("hub lists come from the registry", () => {
   it("stock hubs and CR hubs", () => {
-    expect(stockHubIds(NET).sort()).toEqual(["concrete-stockroom", "hub1", "hub2", "hub3"]);
+    expect(stockHubIds(NET).sort()).toEqual(["hub1", "hub2", "hub3"]);
     // was [hub2, hub3]: every hub that is not sneakers-only. Hub 1 never.
-    expect(crHubIds(NET).sort()).toEqual(["concrete-stockroom", "hub2", "hub3"]);
+    expect(crHubIds(NET).sort()).toEqual(["hub2", "hub3"]);
     expect(crHubIds(FLIPPED)).not.toContain("hub1");
   });
   it("labels, including the retired trial hub", () => {
     expect(hubLabel(NET, "hub1")).toBe("Hub 1");
     expect(hubLabel(NET, "hub3")).toBe("Hub 3");
-    expect(hubLabel(NET, "concrete-stockroom")).toBe("Concrete Stockroom");
     expect(hubLabel(NET, "hubC")).toBe("Hub C");
     expect(hubLabel(NET, "hub9")).toBe("hub9");
   });
@@ -142,15 +140,15 @@ describe("the warehouse hub picker and the persisted hub", () => {
   it("the owner sees both sections, Section 2 first with Hub C where it was", () => {
     expect(ids(warehouseHubGroups(NET, see([1, 2])))).toEqual([
       [2, ["hub1", "hub2", "hubC"]],
-      [1, ["hub3", "concrete-stockroom"]],
+      [1, ["hub3"]],
     ]);
   });
   it("a Section 2 account is offered exactly today's Section 2 hubs", () => {
     expect(ids(warehouseHubGroups(NET, see([2])))).toEqual([[2, ["hub1", "hub2", "hubC"]]]);
   });
-  it("a Section 1 account is offered Hub 3 and the Concrete Stockroom — not live, still workable by hand", () => {
+  it("a Section 1 account is offered Hub 3 — not fully live, still workable by hand", () => {
     const groups = warehouseHubGroups(NET, see([1]));
-    expect(ids(groups)).toEqual([[1, ["hub3", "concrete-stockroom"]]]);
+    expect(ids(groups)).toEqual([[1, ["hub3"]]]);
     expect(groups[0].items.every((i) => i.live === false)).toBe(true);
   });
   it("localStorage.warehouseHub / a push deep link is honoured only inside the viewer's sections", () => {
@@ -161,7 +159,7 @@ describe("the warehouse hub picker and the persisted hub", () => {
     expect(hubAllowedForViewer(NET, s2, "hub3")).toBe(false);
     expect(hubAllowedForViewer(NET, s2, "concrete-stockroom")).toBe(false);
     expect(hubAllowedForViewer(NET, s1, "hub3")).toBe(true);
-    expect(hubAllowedForViewer(NET, s1, "concrete-stockroom")).toBe(true);
+    expect(hubAllowedForViewer(NET, s1, "concrete-stockroom")).toBe(false);   // removed 8 Oct 2026
     expect(hubAllowedForViewer(NET, s1, "hub1")).toBe(false);
     expect(hubAllowedForViewer(NET, s1, "hubC")).toBe(false);
   });
@@ -181,7 +179,7 @@ describe("the warehouse hub picker and the persisted hub", () => {
     for (const answered of [true, false]) {
       expect(storedHubVerdict(NET, s2, "hub2", answered)).toBe("keep");
       expect(storedHubVerdict(NET, s2, "hubC", answered)).toBe("keep");
-      expect(storedHubVerdict(NET, s1, "concrete-stockroom", answered)).toBe("keep");
+      expect(storedHubVerdict(NET, s1, "hub3", answered)).toBe("keep");
     }
     // the other section's hub, and things that are not hubs
     for (const [canSee, hub] of [[s2, "hub3"], [s2, "concrete-stockroom"], [s1, "hub1"], [s1, "hubC"], [s2, "marathon-pe"], [s2, "hub9"], [s2, "../../evil"]]) {
@@ -199,7 +197,7 @@ describe("the warehouse hub picker and the persisted hub", () => {
     expect(warehouseTabKeys(NET, "hub1")).toEqual(["queue", "refills", "layby"]);       // sneakers-only: no CR Orders
     expect(warehouseTabKeys(NET, "hub2")).toEqual(all);
     expect(warehouseTabKeys(NET, "hub3")).toEqual(all);
-    expect(warehouseTabKeys(NET, "concrete-stockroom")).toEqual(all);                    // the same screen Hub 3 gets
+    expect(warehouseTabKeys(NET, "concrete-stockroom")).toEqual([]);                     // removed 8 Oct 2026
     expect(warehouseTabKeys(NET, TRIAL_HUB)).toEqual(["queue"]);
     for (const bad of ["marathon-pe", "central", "hub9", "Hub 3", "", null, undefined]) expect(warehouseTabKeys(NET, bad)).toEqual([]);
     // "CR Orders" is exactly the CR hubs
@@ -226,10 +224,9 @@ describe("order placement and the wall", () => {
   it("a hand-placed order for a NON-LIVE shop is allowed inside its section", () => {
     expect(orderPlacementCheck(NET, { hub: "hub3", destShop: "marathon-pine" }).ok).toBe(true);
     expect(orderPlacementCheck(NET, { hub: "hub3", destShop: "concrete" }).ok).toBe(true);
-    expect(orderPlacementCheck(NET, { hub: "concrete-stockroom", destShop: "concrete" }).ok).toBe(true);
   });
   it("hub and shop on opposite sides are refused, both ways, with words a person can act on", () => {
-    for (const [hub, destShop] of [["hub1", "marathon-pine"], ["hub2", "concrete"], ["hubC", "concrete"], ["hub3", "trophy"], ["concrete-stockroom", "marathon-pe"]]) {
+    for (const [hub, destShop] of [["hub1", "marathon-pine"], ["hub2", "concrete"], ["hubC", "concrete"], ["hub3", "trophy"]]) {
       const r = orderPlacementCheck(NET, { hub, destShop });
       expect(r.ok).toBe(false);
       expect(r.reason).toBe("cross_section");
@@ -244,9 +241,9 @@ describe("order placement and the wall", () => {
   });
   it("NOTHING AUTOMATIC is raised to or from a location whose Auto-refill is off", () => {
     const off = (ids) => normalizeNetwork({ locations: Object.fromEntries(ids.map((id) => [id, { solve: true, autoRefill: "off" }])) });
-    const dark = off(["marathon-pine", "concrete", "hub3", "concrete-stockroom"]);
+    const dark = off(["marathon-pine", "concrete", "hub3"]);
     expect(orderPlacementCheck(dark, { hub: "hub3", destShop: "marathon-pine", auto: true })).toMatchObject({ ok: false, reason: "not_live" });
-    expect(orderPlacementCheck(dark, { hub: "concrete-stockroom", destShop: "concrete", auto: true })).toMatchObject({ ok: false, reason: "not_live" });
+    expect(orderPlacementCheck(dark, { hub: "hub3", destShop: "concrete", auto: true })).toMatchObject({ ok: false, reason: "not_live" });
     // Section 2 is live: automatic orders are raised as they always were.
     expect(orderPlacementCheck(dark, { hub: "hub2", destShop: "trophy", auto: true }).ok).toBe(true);
     // The seed (7 Oct 2026): Section 1 is Auto-refill "solved" — on, so the engine's legs are open.
@@ -294,17 +291,17 @@ describe("Source tabs", () => {
   });
   it("sourceTabKeys: every key the registry yields, for a link that cannot know the viewer", () => {
     expect(sourceTabKeys(NET)).toEqual(keys(sourceTabsFor(NET, see([1, 2]))));
-    expect(sourceTabKeys(NET)).toContain("loc:concrete-stockroom");
+    expect(sourceTabKeys(NET)).not.toContain("loc:concrete-stockroom");
     expect(sourceTabKeys(NET)).not.toContain("loc:hub9");
   });
   it("both sections: Section 2's, then Section 1's hubs and shops, then history", () => {
     expect(keys(sourceTabsFor(NET, see([1, 2])))).toEqual([
       "hub1refill", "clothing", "trophy", "marathonpe",
-      "loc:hub3", "loc:concrete-stockroom", "loc:marathon-pine", "loc:concrete", "refillhistory",
+      "loc:hub3", "loc:marathon-pine", "loc:concrete", "refillhistory",
     ]);
   });
   it("a Section 1 account sees only Section 1's lanes", () => {
-    expect(keys(sourceTabsFor(NET, see([1])))).toEqual(["loc:hub3", "loc:concrete-stockroom", "loc:marathon-pine", "loc:concrete", "refillhistory"]);
+    expect(keys(sourceTabsFor(NET, see([1])))).toEqual(["loc:hub3", "loc:marathon-pine", "loc:concrete", "refillhistory"]);
   });
 });
 

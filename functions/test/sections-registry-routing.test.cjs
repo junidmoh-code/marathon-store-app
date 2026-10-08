@@ -18,16 +18,18 @@ const { computeRefillPlan, networkRouting, policyCategoryKey } = engine;
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/sections-routing-fixture.json"), "utf8"));
 const NOW_MS = Date.parse("2026-10-01T10:00:00.000Z");
 const clone = (v) => JSON.parse(JSON.stringify(v));
-const S1 = ["hub3", "marathon-pine", "concrete", "concrete-stockroom"];
+const S1 = ["hub3", "marathon-pine", "concrete"];
 // Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
 // (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
-const DARK = reg.normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+const DARK = reg.normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
 
 const S2 = ["hub1", "hub2", "marathon-pe", "trophy"];
 const TODAY = { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" };
 
-// The registry with the named Section 1 locations live. Concrete's hoodies sit
-// in the Concrete Stockroom, and ONE tracksuit is flipped there by product.
+// The registry with the named Section 1 locations live. It also carries a
+// STORED mapping of Concrete's hoodies, and of ONE tracksuit, to the Concrete
+// Stockroom — which does not exist (8 Oct 2026): every test below pins that
+// such a record is ignored and Concrete is served by Hub 3 for everything.
 // Chosen from the fixture, not hardcoded: a tracksuit Marathon PE has a
 // positive explicit row for and Hub 2 holds — so in the world() below Concrete
 // wants it and the stockroom can supply it.
@@ -44,7 +46,7 @@ const liveNetwork = (ids = S1, extra = {}) => reg.normalizeNetwork({
   ...extra,
 });
 
-// A Section 1 world on the fixture: Hub 3 and the stockroom hold what Hub 2
+// A Section 1 world on the fixture: Hub 3 holds what Hub 2
 // holds, Pine keeps its own fixture stock, Concrete is new and empty and keeps
 // what Marathon PE keeps.
 function world({ network, config, uncapped = true } = {}) {
@@ -52,7 +54,6 @@ function world({ network, config, uncapped = true } = {}) {
   if (uncapped) { cfg.maxIntentsPerRun = 100000; cfg.maxFootwearIntentsPerRun = 100000; }
   const stock = clone(FIXTURE.stock);
   stock.hub3 = clone(FIXTURE.stock.hub2);
-  stock["concrete-stockroom"] = clone(FIXTURE.stock.hub2);
   stock.concrete = {};
   const targets = clone(FIXTURE.targets);
   targets.concrete = clone(FIXTURE.targets["marathon-pe"]);
@@ -94,7 +95,7 @@ test("ROUTING: the destination order for today's routes is the order the engine 
 test("ROUTING: live Section 1 — hubs from Central, stores per product from their back-stock hub", () => {
   const r = networkRouting({ routes: TODAY, mode: FIXTURE.config.mode }, liveNetwork());
   assert.equal(r.routes.hub3, "central");
-  assert.equal(r.routes["concrete-stockroom"], "central");
+  assert.equal(r.routes["concrete-stockroom"], undefined, "the Concrete Stockroom does not exist");
   assert.equal(r.routes["marathon-pine"], undefined, "a registry store has no single source");
   assert.deepEqual([...r.stores].sort(), ["concrete", "marathon-pine"]);
   // Section 2 keeps config.routes — NOT the registry's "sneakers → Hub 1".
@@ -105,13 +106,12 @@ test("ROUTING: live Section 1 — hubs from Central, stores per product from the
   // Pine: Hub 3 for everything.
   assert.equal(r.sourceFor("marathon-pine", { categoryKey: "hoodies" }, "p1"), "hub3");
   assert.equal(r.sourceFor("marathon-pine", sneaker, "p2"), "hub3");
-  // Concrete: the flipped category and the flipped product come from the
-  // stockroom, everything else from Hub 3 — in the same scan.
-  assert.equal(r.sourceFor("concrete", { categoryKey: "hoodies" }, "p3"), "concrete-stockroom");
-  assert.equal(r.sourceFor("concrete", { categoryKey: "tracksuits" }, OVERRIDE_PID), "concrete-stockroom");
+  // Concrete: Hub 3 for everything — the stored Stockroom mappings are ignored.
+  assert.equal(r.sourceFor("concrete", { categoryKey: "hoodies" }, "p3"), "hub3");
+  assert.equal(r.sourceFor("concrete", { categoryKey: "tracksuits" }, OVERRIDE_PID), "hub3");
   assert.equal(r.sourceFor("concrete", { categoryKey: "tracksuits" }, "p4"), "hub3");
   assert.equal(r.sourceFor("concrete", { category: "Footwear", subcategory: "Sneakers" }, "p5"), "hub3", "keyless legacy sneaker → the default hub");
-  assert.deepEqual(r.sourcesOf("concrete").sort(), ["concrete-stockroom", "hub3"]);
+  assert.deepEqual(r.sourcesOf("concrete"), ["hub3"]);
   assert.deepEqual(r.sourcesOf("marathon-pine"), ["hub3"]);
   // a shop is planned before every hub it can pull from
   for (const shop of ["concrete", "marathon-pine"]) {
@@ -138,7 +138,7 @@ test("ROUTING: mode — a config.mode entry always wins; a registry-routed locat
   assert.equal(r.modeOf("hub3"), "shadow");
   assert.equal(r.modeOf("concrete"), "off");
   assert.equal(r.modeOf("marathon-pine"), "live");
-  assert.equal(r.modeOf("concrete-stockroom"), "live");
+  assert.equal(r.modeOf("concrete-stockroom"), "off", "not a location: never routed");
   // A config-routed destination with no mode entry is OFF, as it always was.
   assert.equal(networkRouting({ routes: TODAY, mode: {} }, net).modeOf("hub2"), "off");
 });
@@ -147,11 +147,10 @@ test("ROUTING: a store whose hub is not live has no leg; a hub that is not live 
   const pineOnly = networkRouting({ routes: TODAY }, liveNetwork(["marathon-pine"]));
   assert.deepEqual([...pineOnly.stores], []);
   assert.ok(!pineOnly.locs.includes("marathon-pine") && !pineOnly.locs.includes("hub3"));
-  // Concrete + its stockroom live, Hub 3 not: only what is mapped to the stockroom moves.
-  const r = networkRouting({ routes: TODAY }, liveNetwork(["concrete", "concrete-stockroom"]));
-  assert.deepEqual(r.sourcesOf("concrete"), ["concrete-stockroom"]);
-  assert.equal(r.sourceFor("concrete", { categoryKey: "hoodies" }, "p1"), "concrete-stockroom");
-  assert.equal(r.sourceFor("concrete", { categoryKey: "pants" }, "p2"), undefined, "Hub 3 is not live");
+  // Concrete live, Hub 3 not: Concrete has no other hub, so nothing moves for it.
+  const r = networkRouting({ routes: TODAY }, liveNetwork(["concrete"]));
+  assert.deepEqual([...r.stores], []);
+  assert.equal(r.sourceFor("concrete", { categoryKey: "hoodies" }, "p1"), undefined, "Hub 3 is not live");
   assert.ok(!r.locs.includes("hub3"));
 });
 
@@ -175,17 +174,17 @@ test("NOT LIVE: Section 1 targets, stock and deficits raise nothing while it is 
   assert.deepEqual(Object.keys(plan.policy.ruleBasedTargets).sort(), [...S2].sort());
 });
 
-test("LIVE: Pine, Concrete, Hub 3 and the stockroom raise the right legs from the right hubs", () => {
+test("LIVE: Pine, Concrete and Hub 3 raise the right legs from the right hub (Hub 3 for both shops)", () => {
   const net = liveNetwork();
   const snap = world({ network: net });
   const plan = computeRefillPlan(snap);
   const lanes = lanesOf(plan);
-  for (const lane of ["hub3→marathon-pine", "hub3→concrete", "concrete-stockroom→concrete"]) {
+  for (const lane of ["hub3→marathon-pine", "hub3→concrete"]) {
     assert.ok(lanes[lane] > 0, `no ${lane} leg: ${JSON.stringify(lanes)}`);
   }
   const allowed = new Set([
     "central→hub1", "central→hub2", "hub2→marathon-pe", "hub2→trophy",
-    "central→hub3", "central→concrete-stockroom", "hub3→marathon-pine", "hub3→concrete", "concrete-stockroom→concrete",
+    "central→hub3", "hub3→marathon-pine", "hub3→concrete",
   ]);
   for (const lane of Object.keys(lanes)) assert.ok(allowed.has(lane), `unexpected lane ${lane}`);
 
@@ -195,15 +194,15 @@ test("LIVE: Pine, Concrete, Hub 3 and the stockroom raise the right legs from th
     const want = reg.backStockFor(net, "concrete", policyCategoryKey(snap.products[i.productId]), i.productId);
     assert.equal(i.source, want, `${i.productId} (${policyCategoryKey(snap.products[i.productId])})`);
     if (i.source === "concrete-stockroom") fromStockroom += 1; else fromHub3 += 1;
-    if (i.productId === OVERRIDE_PID) { overridden += 1; assert.equal(i.source, "concrete-stockroom"); }
+    if (i.productId === OVERRIDE_PID) { overridden += 1; assert.equal(i.source, "hub3"); }
   }
-  assert.ok(fromStockroom > 0 && fromHub3 > 0, "Concrete pulls from BOTH hubs in one scan");
-  assert.ok(overridden > 0, "the per-product override raised a leg");
-  // the flipped category: every hoodie leg is a stockroom leg, at Concrete only
+  assert.ok(fromStockroom === 0 && fromHub3 > 0, "Concrete pulls from Hub 3 only");
+  assert.ok(overridden > 0, "the product a stored record flipped is still refilled — from Hub 3");
+  // the category a stored record flipped: every hoodie leg is a Hub 3 leg
   const hoodie = (i) => policyCategoryKey(snap.products[i.productId]) === "hoodies";
   assert.ok(plan.intents.some((i) => i.dest === "concrete" && hoodie(i)), "the fixture raises a Concrete hoodie leg");
   for (const i of plan.intents.filter(hoodie)) {
-    if (i.dest === "concrete") assert.equal(i.source, "concrete-stockroom");
+    if (i.dest === "concrete") assert.equal(i.source, "hub3");
     if (i.dest === "marathon-pine") assert.equal(i.source, "hub3", "Pine's hoodies still come from Hub 3");
   }
   // Pine: Hub 3 for everything
@@ -217,22 +216,22 @@ test("LIVE: Pine, Concrete, Hub 3 and the stockroom raise the right legs from th
 test("LIVE: a shop's shortfall its hub cannot cover is carried through — Central → its OWN hub", () => {
   const net = liveNetwork();
   const snap = world({ network: net });
-  // Concrete's stockroom and Hub 3 hold nothing: every Concrete need must be
-  // asked of Central, FOR the hub the registry names for that product.
+  // Hub 3 holds nothing: every Concrete need must be asked of Central, FOR
+  // the hub the registry names for that product — Hub 3, always.
   snap.stock.hub3 = {};
-  snap.stock["concrete-stockroom"] = {};
   snap.targets["marathon-pine"] = {};
   const plan = computeRefillPlan(snap);
   const pts = plan.intents.filter((i) => i.passThrough);
   assert.ok(pts.length > 0, "no pass-through leg raised");
-  let stockroomLegs = 0;
+  let hub3Legs = 0;
   for (const i of pts.filter((x) => (x.forDests || []).includes("concrete"))) {
     assert.equal(i.source, "central");
     const want = reg.backStockFor(net, "concrete", policyCategoryKey(snap.products[i.productId]), i.productId);
     assert.equal(i.dest, want, `${i.productId} carried through ${i.dest}, its hub is ${want}`);
-    if (i.dest === "concrete-stockroom") stockroomLegs += 1;
+    assert.equal(i.dest, "hub3");
+    hub3Legs += 1;
   }
-  assert.ok(stockroomLegs > 0, "a flipped product is carried through the stockroom, not Hub 3");
+  assert.ok(hub3Legs > 0, "Concrete's need is carried through Hub 3");
   // and never through a Section 2 hub
   for (const i of pts) if (S2.includes(i.dest)) for (const d of i.forDests) assert.ok(S2.includes(d), `${d} via ${i.dest}`);
   // sneakers are sales-only at the hubs: never a pass-through
@@ -262,18 +261,9 @@ test("PARTLY LIVE: Pine live with Hub 3 not live raises nothing for Pine", () =>
   for (const i of plan.intents) assert.ok(S2.includes(i.dest), `${i.source}→${i.dest}`);
 });
 
-test("PARTLY LIVE: Concrete + stockroom live, Hub 3 not — only stockroom-mapped products move", () => {
-  const net = liveNetwork(["concrete", "concrete-stockroom"]);
-  const snap = world({ network: net });
-  const plan = computeRefillPlan(snap);
-  const concrete = plan.intents.filter((i) => i.dest === "concrete");
-  assert.ok(concrete.length > 0);
-  for (const i of concrete) {
-    assert.equal(i.source, "concrete-stockroom");
-    const key = policyCategoryKey(snap.products[i.productId]);
-    assert.ok(key === "hoodies" || i.productId === OVERRIDE_PID, `${i.productId} (${key}) is mapped to Hub 3`);
-  }
-  for (const i of plan.intents) assert.ok(i.dest !== "hub3" && i.source !== "hub3");
+test("PARTLY LIVE: Concrete live, Hub 3 not — nothing moves for Concrete (Hub 3 is its only hub)", () => {
+  const plan = computeRefillPlan(world({ network: liveNetwork(["concrete"]) }));
+  for (const i of plan.intents) assert.ok(S2.includes(i.dest), `${i.source}→${i.dest}`);
 });
 
 test("WALL: no intent ever crosses it, or touches a location that is not live — over many registries", () => {

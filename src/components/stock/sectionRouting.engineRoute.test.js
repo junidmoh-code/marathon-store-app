@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url);
 const { networkRouting } = require("../../../functions/lib/refill-engine.cjs");
 const FIXTURE = require("../../../functions/test/fixtures/sections-routing-fixture.json");
 
-const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+const S1 = ["marathon-pine", "concrete", "hub3"];
 const S2 = ["marathon-pe", "trophy", "hub1", "hub2"];
 // Section 1 with both switches OFF (what the seed shipped as before 7 Oct 2026)…
 const dark = (extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, { solve: false, autoRefill: "off" }])), ...extra });
@@ -52,8 +52,10 @@ describe("engineSourceFor is the engine's sourceFor", () => {
         n++; seen.add(String(want));
       }
     }
-    expect(n).toBe(1500 * 8 * 8);
-    for (const src of ["undefined", "central", "hub1", "hub2", "hub3", "concrete-stockroom"]) expect(seen.has(src), src).toBe(true);
+    expect(n).toBe(1500 * ALL.length * PRODUCTS.length);
+    for (const src of ["undefined", "central", "hub1", "hub2", "hub3"]) expect(seen.has(src), src).toBe(true);
+    // a stored mapping or override naming the removed Concrete Stockroom is never a source
+    expect(seen.has("concrete-stockroom")).toBe(false);
   });
   it("on the routing fixture's own config, seed registry and Section 1 live", () => {
     for (const network of [SEED_REGISTRY, live()]) {
@@ -77,21 +79,23 @@ describe("first batch: a LIVE Section 1 shop is on the path at its own hub (prod
       expect(firstBatchEligible({ ...base, network, store, hub, hub2Present: true })).toBe(false); // Hub 3 already holds it
     }
   });
-  it("Concrete's category or product mapped to the Concrete Stockroom → eligible THERE, not at Hub 3", () => {
-    for (const extra of [{ backStock: { concrete: { "t-shirts": "concrete-stockroom" } } }, { productOverrides: { concrete: { tee: "concrete-stockroom" } } }]) {
-      const network = live(S1, extra);
+  it("THERE IS NO CONCRETE STOCKROOM: a stored mapping or override naming it is ignored — Concrete's back stock stays Hub 3, like Pine's", () => {
+    for (const extra of [{ backStock: { concrete: { "t-shirts": "concrete-stockroom" } } }, { productOverrides: { concrete: { tee: "concrete-stockroom" } } },
+      { locations: { "concrete-stockroom": { type: "hub", section: 1, solve: true, autoRefill: "all" } }, backStock: { concrete: { _default: "concrete-stockroom" } } }]) {
+      const network = normalizeNetwork({ ...extra, locations: { ...(extra.locations || {}), ...Object.fromEntries(S1.map((id) => [id, { live: true }])) } });
+      expect(network.locations["concrete-stockroom"]).toBeUndefined();
       const hub = solveHubFor(network, "concrete", TEE, "tee");
-      expect(hub).toBe("concrete-stockroom");
+      expect(hub).toBe("hub3");
       expect(firstBatchEligible({ ...base, network, store: "concrete", hub })).toBe(true);
-      expect(firstBatchEligible({ ...base, network, store: "concrete", hub: "hub3" })).toBe(false);
-      expect(firstBatchEligible({ ...base, network, store: "marathon-pine", hub: "hub3" })).toBe(true);   // Pine is untouched by Concrete's mapping
+      expect(firstBatchEligible({ ...base, network, store: "concrete", hub: "concrete-stockroom" })).toBe(false);
+      expect(firstBatchEligible({ ...base, network, store: "marathon-pine", hub: "hub3" })).toBe(true);
     }
   });
   it("the SEED (7 Oct 2026): Section 1 is Solve on + Auto-refill solved — Pine and Concrete are on the first-batch path at Hub 3", () => {
     for (const store of ["marathon-pine", "concrete"]) expect(firstBatchEligible({ ...base, network: SEED_REGISTRY, store, hub: "hub3" })).toBe(true);
   });
   it("NOT routed — Section 1 off, the shop alone on, or the hub alone on — → never eligible: the old seed-only Solve", () => {
-    for (const network of [dark(), live(["marathon-pine", "concrete"]), live(["hub3", "concrete-stockroom"])]) {
+    for (const network of [dark(), live(["marathon-pine", "concrete"]), live(["hub3"])]) {
       for (const store of ["marathon-pine", "concrete"]) expect(firstBatchEligible({ ...base, network, store, hub: "hub3" })).toBe(false);
     }
     // and without a registry handed in at all, config.routes alone decides, as it always did

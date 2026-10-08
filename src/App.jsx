@@ -8078,7 +8078,7 @@ function AdminProductDetail({ product: listProduct, allProducts = [], insightsLo
       <div style={{ breakInside:"avoid" }}>
       <div style={sectionTitle}>Hubs</div>
       <div style={card}>
-        {/* Sections: every hub in the network registry (Hub 3 serves Pine and Concrete; the Concrete Stockroom is one too). */}
+        {/* Sections: every hub in the network registry (Hub 3 serves Pine and Concrete). */}
         {warehouseHubGroups(currentNetwork()).flatMap((g) => g.items).filter((h) => h.id !== TRIAL_HUB).map(({ id: val, label }, i) => {
           const disabled = isClothing && val === "hub1";
           const on       = productHubs.includes(val) && !disabled;
@@ -16976,7 +16976,7 @@ function SourceView({ onExit, orders, returnsLog, products }) {
         {tab==="clothing" && hubTabContent("hub2")}
         {/* Shop tabs — first-batch requests from Central (request rows only). */}
         {SOURCE_SHOP_BY_TAB[tab] && <RefillQueue products={products} dest={SOURCE_SHOP_BY_TAB[tab]} fulfilCtx={fulfilCtx} />}
-        {/* Section tabs from the registry (Hub 3, Concrete Stockroom, Pine, Concrete) — request rows only. */}
+        {/* Section tabs from the registry (Hub 3, Pine, Concrete) — request rows only. */}
         {sectionTabLoc[tab] && (sectionReactiveHub
           ? hubTabContent(sectionReactiveHub)
           : <RefillQueue products={products} dest={sectionTabLoc[tab]} fulfilCtx={fulfilCtx} />)}

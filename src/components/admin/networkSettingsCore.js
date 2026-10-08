@@ -13,9 +13,10 @@ import {
 const stamp = (nowMs, uid) => ({ [`${NETWORK_PATH}/updatedAt`]: nowMs, [`${NETWORK_PATH}/updatedBy`]: uid || null });
 const fail = (error) => ({ ok: false, error });
 
-// The store whose category mapping is switchable, and its two choices.
+// The store the "Concrete — at the till" switches apply to. (Its back stock is
+// Hub 3, like Pine's — there is no Concrete Stockroom, so nothing on this card
+// maps a category or a product to another hub any more.)
 export const SWITCHABLE_STORE = "concrete";
-export const SWITCHABLE_HUBS = Object.freeze(["hub3", "concrete-stockroom"]);
 
 // ── THE TWO SWITCHES ─────────────────────────────────────────────────────────
 // Solve (on/off) and Auto-refill (off / solved / all), one location at a time.
@@ -54,22 +55,6 @@ export function autoRefillUpdate(registry, id, mode, nowMs, uid) {
   return switchUpdate(registry, id, { autoRefill: mode }, nowMs, uid);
 }
 
-export function categoryHubUpdate(registry, categoryKey, hub, nowMs, uid) {
-  if (typeof categoryKey !== "string" || !categoryKey || /[.#$/[\]]/.test(categoryKey)) return fail("That is not a category.");
-  if (!SWITCHABLE_HUBS.includes(hub)) return fail("Concrete's back stock is Hub 3 or the Concrete Stockroom.");
-  // Prove the registry would accept it — same section, and the hub serves Concrete.
-  const probe = normalizeNetwork({ backStock: { [SWITCHABLE_STORE]: { [categoryKey]: hub } } });
-  if (probe.backStock[SWITCHABLE_STORE][categoryKey] !== hub) return fail("That hub cannot hold Concrete's back stock.");
-  return { ok: true, updates: { [`${NETWORK_PATH}/backStock/${SWITCHABLE_STORE}/${categoryKey}`]: hub, ...stamp(nowMs, uid) } };
-}
-
-// hub === null clears the override; the category mapping then decides again.
-export function productOverrideUpdate(registry, productId, hub, nowMs, uid) {
-  if (typeof productId !== "string" || !productId || /[.#$/[\]]/.test(productId)) return fail("Pick a product.");
-  if (hub !== null && !SWITCHABLE_HUBS.includes(hub)) return fail("Concrete's back stock is Hub 3 or the Concrete Stockroom.");
-  return { ok: true, updates: { [`${NETWORK_PATH}/productOverrides/${SWITCHABLE_STORE}/${productId}`]: hub, ...stamp(nowMs, uid) } };
-}
-
 // A division's name (/network/sections/{n}/name). The number is the section —
 // fixed, it is what the wall and every stamp key on; only the name is the
 // owner's. Trimmed; 1–40 characters.
@@ -103,7 +88,6 @@ export function creditScopeUpdate(scope, nowMs, uid, currentScope = null) {
 // Concrete until they exist. Existing /locations records are never touched.
 const NEW_STOCK_LOCATIONS = Object.freeze({
   concrete: { id: "concrete", label: "Concrete", kind: "store", sellable: true, active: true },
-  "concrete-stockroom": { id: "concrete-stockroom", label: "Concrete Stockroom", kind: "warehouse", sellable: false, active: true },
 });
 
 export function seedUpdate(rawNetwork, stockLocations, nowMs, uid) {
@@ -143,18 +127,6 @@ export function seedUpdate(rawNetwork, stockLocations, nowMs, uid) {
   }
   if (!Object.keys(updates).length) return { ok: true, updates: {}, nothingToDo: true };
   return { ok: true, updates: { ...updates, ...stamp(nowMs, uid) } };
-}
-
-// Rows for the category control: the default first, then every category.
-export function categoryRows(registry, categories) {
-  const map = registry.backStock[SWITCHABLE_STORE] || {};
-  const dflt = map[DEFAULT_CATEGORY] || SWITCHABLE_HUBS[0];
-  const rows = [{ key: DEFAULT_CATEGORY, label: "Every other category", hub: dflt, isDefault: true }];
-  for (const c of categories || []) {
-    if (!c || !c.key) continue;
-    rows.push({ key: c.key, label: c.label || c.key, hub: map[c.key] || dflt, inherits: !map[c.key] });
-  }
-  return rows;
 }
 
 // ── CONCRETE AT THE TILL — THE POS SWITCHES ──────────────────────────────────

@@ -93,17 +93,17 @@ describe("applyPushDeepLink — an order", () => {
     expect(f.store.get("tabState:warehouse")).toBe("queue");
   });
 
-  it("opens the Concrete Stockroom like any other registry hub — queue, CR Orders, Display Refills, Layby", () => {
+  it("opens Hub 3 like any other registry hub — queue, CR Orders, Display Refills, Layby", () => {
     for (const tab of ["queue", "clothing", "refills", "layby"]) {
-      const f = fakeIo(`?push=order&hub=concrete-stockroom&tab=${tab}&order=C005&at=${encodeURIComponent(AT)}`);
-      expect(applyPushDeepLink(f.io)).toEqual({ role: "warehouse", hub: "concrete-stockroom", tab, order: "C005" });
-      expect(f.store.get("warehouseHub")).toBe("concrete-stockroom");
+      const f = fakeIo(`?push=order&hub=hub3&tab=${tab}&order=C005&at=${encodeURIComponent(AT)}`);
+      expect(applyPushDeepLink(f.io)).toEqual({ role: "warehouse", hub: "hub3", tab, order: "C005" });
+      expect(f.store.get("warehouseHub")).toBe("hub3");
       expect(f.store.get("tabState:warehouse")).toBe(tab);
     }
   });
 
   it("every registry hub is accepted, and hubC exactly as before", () => {
-    for (const hub of ["hub1", "hub2", "hub3", "concrete-stockroom", "hubC"]) {
+    for (const hub of ["hub1", "hub2", "hub3", "hubC"]) {
       const f = fakeIo(`?push=order&hub=${hub}&tab=queue`);
       expect(applyPushDeepLink(f.io).hub).toBe(hub);
       expect(f.store.get("warehouseHub")).toBe(hub);
@@ -111,7 +111,7 @@ describe("applyPushDeepLink — an order", () => {
   });
 
   it("refuses a hub that is not in the registry — a shop, Central, a display name, a made-up id", () => {
-    for (const hub of ["hub4", "hub9", "concrete", "marathon-pe", "central", "Concrete Stockroom", "Hub 3", "concrete_stockroom", "__proto__", ""]) {
+    for (const hub of ["hub4", "hub9", "concrete", "marathon-pe", "central", "concrete-stockroom", "Concrete Stockroom", "Hub 3", "concrete_stockroom", "__proto__", ""]) {
       const f = fakeIo(`?push=order&hub=${encodeURIComponent(hub)}&tab=queue&order=005`);
       expect(applyPushDeepLink(f.io).hub, hub).toBe(null);
       expect(f.store.has("warehouseHub"), hub).toBe(false);
@@ -174,8 +174,8 @@ describe("applyPushDeepLink — Source tabs come from the registry", () => {
       expect(f.store.get("tabState:source")).toBe(tab);
     }
   });
-  it("Section 1's lanes are keyed by location — Hub 3, the Concrete Stockroom, Pine, Concrete", () => {
-    for (const loc of ["hub3", "concrete-stockroom", "marathon-pine", "concrete"]) {
+  it("Section 1's lanes are keyed by location — Hub 3, Pine, Concrete", () => {
+    for (const loc of ["hub3", "marathon-pine", "concrete"]) {
       const f = fakeIo(`?push=refill&hub=${loc}&tab=${encodeURIComponent(`loc:${loc}`)}`);
       expect(applyPushDeepLink(f.io)).toEqual({ role: "source", tab: `loc:${loc}`, hub: loc });
       expect(f.store.get("tabState:source")).toBe(`loc:${loc}`);

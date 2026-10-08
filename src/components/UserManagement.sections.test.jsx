@@ -68,7 +68,7 @@ beforeEach(() => {
 describe("the section control writes the scope, and only the scope", () => {
   it("offers Section 1, Section 2 and Both — each named by the registry, with its locations", async () => {
     const tree = await render(ADMIN);
-    expect(instText(option(tree, "Concrete"))).toBe("ConcreteMarathon Pine · Concrete · Hub 3 · Concrete Stockroom");
+    expect(instText(option(tree, "Concrete"))).toBe("ConcreteMarathon Pine · Concrete · Hub 3");
     expect(instText(option(tree, "Marathon"))).toBe("MarathonMarathon PE · Trophy · Hub 1 · Hub 2");
     expect(option(tree, "Both divisions")).toBeTruthy();
   });

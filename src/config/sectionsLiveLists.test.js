@@ -29,7 +29,7 @@ describe("stock audit lists", () => {
   it("labels never come back blank", () => {
     expect(locationLabel("hub2")).toBe("Hub 2");
     expect(locationLabel("hub3")).toBe("Hub 3");
-    expect(locationLabel("concrete-stockroom")).toBe("Concrete Stockroom");
+    expect(locationLabel("concrete-stockroom")).toBe("concrete-stockroom");   // removed 8 Oct 2026: not a known location
     expect(locationLabel("mystery")).toBe("mystery");
     expect(locationLabel(null)).toBe("—");
   });
@@ -59,11 +59,11 @@ describe("the other seed-derived lists", () => {
   it("Clothing Sold stores: the three as before, then Concrete", () => {
     expect(CLOTHING_SOLD_STORES).toEqual(["marathon-pe", "trophy", "marathon-pine", "concrete"]);
   });
-  it("product hub tags: hub1, hub2, hub3 as before, then the Concrete Stockroom; the clothing rule is unchanged", () => {
-    expect(VALID_HUBS).toEqual(["hub1", "hub2", "hub3", "concrete-stockroom"]);
+  it("product hub tags: hub1, hub2, hub3 — no Concrete Stockroom; the clothing rule is unchanged", () => {
+    expect(VALID_HUBS).toEqual(["hub1", "hub2", "hub3"]);
     expect(cleanHubs(["hub1", "hub2"], true)).toEqual(["hub2"]);
     expect(cleanHubs([], true)).toEqual(["hub2"]);
     expect(cleanHubs([], false)).toEqual(["hub1"]);
-    expect(cleanHubs(["concrete-stockroom", "bogus"], true)).toEqual(["concrete-stockroom"]);
+    expect(cleanHubs(["hub3", "concrete-stockroom", "bogus"], true)).toEqual(["hub3"]);
   });
 });

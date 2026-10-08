@@ -48,7 +48,7 @@ export const SHORT_TO_CANONICAL = Object.freeze({
 // A change record naming anything else is recorded and skipped rather than
 // stored under a location that no screen will ever ask for.
 export const CANONICAL_LOCATION_IDS = Object.freeze([
-  "base", "central", "concrete", "concrete-stockroom", "hub1", "hub2", "hub3", "in_transit",
+  "base", "central", "concrete", "hub1", "hub2", "hub3", "in_transit",
   "marathon-pe", "marathon-pine", "studio", "trophy",
 ]);
 

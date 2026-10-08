@@ -109,7 +109,7 @@ function decodeStock(stock) {
 // (the seed itself now holds Section 1 Solve on + Auto-refill "solved", so the
 // engine — and this screen, which mirrors its routes — treats it as routed).
 const OFF = { solve: false, autoRefill: "off" };
-const S1_OFF = { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF };
+const S1_OFF = { "marathon-pine": OFF, concrete: OFF, hub3: OFF };
 const DARK = normalizeNetwork({ locations: S1_OFF });
 
 const newCards = ({ allStock, allTargets, byId, openRequests, heldLines, routesCfg, storeMin, network = DARK, canSee }) => {
@@ -258,7 +258,7 @@ describe("a location whose Auto-refill is off", () => {
 describe("the hub → Central screen's hubs come from the registry", () => {
   it("the live hubs are the list it always had; the rest follow, visible", () => {
     expect(excessHubLocations(SEED_REGISTRY, { liveOnly: true })).toEqual([...EXCESS_HUB_LOCATIONS]);
-    expect(excessHubLocations(SEED_REGISTRY)).toEqual(["hub1", "hub2", "hub3", "concrete-stockroom"]);
+    expect(excessHubLocations(SEED_REGISTRY)).toEqual(["hub1", "hub2", "hub3"]);
     expect(excessHubLocations(LIVE1, { liveOnly: true })).toEqual(["hub3", "hub1", "hub2"]);
   });
 

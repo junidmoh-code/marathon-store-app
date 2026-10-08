@@ -159,7 +159,7 @@ export default function MissingFootwear({ products = [] }) {
   // refill lane. Same write shape and same queue as Solve; only the number
   // differs. Stock does NOT move here — Central picks it from the queue.
   const request = async (card) => {
-    const dest = dests[card.pid] || REQUEST_HUBS[0];
+    const dest = (REQUEST_HUBS.includes(dests[card.pid]) ? dests[card.pid] : REQUEST_HUBS[0]);
     // A REQUEST is a person's own ask — their sizes, their quantities — so it
     // works for a hub that is not live yet, like every manual action. (SOLVE,
     // which raises the policy's numbers by itself, stays live-only below.)
@@ -229,7 +229,8 @@ export default function MissingFootwear({ products = [] }) {
   // Sizes already queued for this product at Hub 2 — the queue groups open
   // requests per product, so a duplicate would show one size twice on a card and
   // could be picked twice.
-  const hubFor = (card) => solveHub[card.pid] || REQUESTABLE_HUBS[0];
+  // A hub chosen on the other division's list is not this list's: first option instead.
+  const hubFor = (card) => (REQUESTABLE_HUBS.includes(solveHub[card.pid]) ? solveHub[card.pid] : REQUESTABLE_HUBS[0]);
   // Units already promised to ANY hub for this product. Central's shelf count is
   // not free stock: two hubs solving the same shoe would otherwise each claim it.
   const reservedFor = (pid, requests) => (requests || [])
@@ -336,7 +337,7 @@ export default function MissingFootwear({ products = [] }) {
     <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 10 }}>
       {sectionChoices.map((s) => (
         <button key={s} onClick={() => { setSectionPick(s); setOpenPid(null); setSolvePid(null); }} style={destChip(section === s)}>
-          {sectionName(network, s)} · {hubIds(network, { section: s }).map((h) => nameOf(h, network)).join(" + ")}
+          Missing from {sectionName(network, s)} · {hubIds(network, { section: s }).map((h) => nameOf(h, network)).join(" + ")}
         </button>
       ))}
     </div>
@@ -356,7 +357,7 @@ export default function MissingFootwear({ products = [] }) {
       {cards.map((card) => {
         const open = openPid === card.pid;
         const result = done[card.pid];
-        const dest = dests[card.pid] || REQUEST_HUBS[0];
+        const dest = (REQUEST_HUBS.includes(dests[card.pid]) ? dests[card.pid] : REQUEST_HUBS[0]);
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const sOpen = solvePid === card.pid;
         const sResult = solved[card.pid];

@@ -20,14 +20,14 @@ const { __resetNetworkCacheForTests } = require("../lib/network-load.cjs");
 beforeEach(() => __resetNetworkCacheForTests());
 
 const T1 = "2026-10-02T10:00:00.000Z";
-const S1_LIVE = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true }, "concrete-stockroom": { live: true } } };
+const S1_LIVE = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } };
 // PRODUCTION-SHAPED: /config/refillEngine names ONLY the Section 2 locations —
 // their modes, their routes, their size runs. Section 1 has no entry in any
 // of them: Pine and Concrete are routed by the registry (back-stock hub per
 // product), Hub 3 and the Concrete Stockroom are fed from Central by the
 // registry, a live registry-routed location with no mode entry acts live, and
 // the numbers are the template's (Pine/Concrete follow Marathon PE, Hub 3 and
-// the stockroom follow Hub 2). Hub 2's run is deliberately not Marathon PE's,
+// Hub 3 follows Hub 2). Hub 2's run is deliberately not Marathon PE's,
 // so a leg sized 3 can only have come from Hub 2's numbers.
 const CONFIG = {
   enabled: true,
@@ -62,7 +62,7 @@ const root = (db) => db.state.root;
 const requestsAt = (db, loc) => Object.entries(root(db).refill_requests || {}).filter(([, r]) => r.requestingLocation === loc);
 // Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
 // (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
-const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
 
 const lockAt = (db, loc) => root(db).refill_engine?.open?.[loc]?.p1?.M ?? null;
 // Fulfil the shop's request the way Source does, then fire the trigger again.
@@ -85,12 +85,12 @@ test("the hub is the registry's answer: Hub 2 for Marathon PE and Trophy, Hub 3 
   assert.deepEqual([...NON_HUB_FLOW_KEYS], ["sneakers", "slides"]);
   assert.equal(hubForShop(SEED_REGISTRY, "marathon-pine", PRODUCTS.p1, "p1"), "hub3");
   assert.equal(hubForShop(SEED_REGISTRY, "concrete", PRODUCTS.p1, "p1"), "hub3");
-  // the owner flips a category, or one product, to the Concrete Stockroom
+  // A STORED mapping to the Concrete Stockroom (which does not exist, 8 Oct
+  // 2026) is ignored: Concrete's back stock is Hub 3, for a category and a product alike
   const flipped = normalizeNetwork({ backStock: { concrete: { "t-shirts": "concrete-stockroom" } }, productOverrides: { concrete: { p9: "concrete-stockroom" } } });
-  assert.equal(hubForShop(flipped, "concrete", PRODUCTS.p1, "p1"), "concrete-stockroom");
+  assert.equal(hubForShop(flipped, "concrete", PRODUCTS.p1, "p1"), "hub3");
   assert.equal(hubForShop(flipped, "concrete", { categoryKey: "bags" }, "p2"), "hub3");
-  assert.equal(hubForShop(flipped, "concrete", { categoryKey: "bags" }, "p9"), "concrete-stockroom");
-  // …and it never reaches Pine, which the stockroom does not serve
+  assert.equal(hubForShop(flipped, "concrete", { categoryKey: "bags" }, "p9"), "hub3");
   assert.equal(hubForShop(flipped, "marathon-pine", PRODUCTS.p1, "p1"), "hub3");
 });
 
@@ -141,15 +141,15 @@ test("SECTION 1, LIVE: Hub 3's own leg does not raise a leg of its own, and a re
   assert.equal(requestsAt(db, "hub3").length, 1);
 });
 
-test("SECTION 1, LIVE: Concrete's category flipped to the Concrete Stockroom — the leg is raised there, not at Hub 3", async () => {
+test("SECTION 1, LIVE: a stored mapping of Concrete's category to the (removed) Concrete Stockroom is ignored — the leg is raised at Hub 3", async () => {
   const network = { ...S1_LIVE, backStock: { concrete: { "t-shirts": "concrete-stockroom" } } };
   const db = world("concrete", { network });
   const res = await fulfilAndFire(db);
   assert.equal(res.raised, true);
-  assert.equal(requestsAt(db, "concrete-stockroom").length, 1);
-  assert.ok(root(db).stock["concrete-stockroom"].p1.M);
-  assert.equal(requestsAt(db, "hub3").length, 0);
-  assert.equal(root(db).stock.hub3, undefined);
+  assert.equal(requestsAt(db, "hub3").length, 1);
+  assert.ok(root(db).stock.hub3.p1.M);
+  assert.equal(requestsAt(db, "concrete-stockroom").length, 0);
+  assert.equal(root(db).stock["concrete-stockroom"], undefined);
   assert.equal(root(db).stock.hub2, undefined);
 });
 
@@ -170,7 +170,7 @@ test("SECTION 1, LIVE: presence is judged at the shop's OWN hub — Hub 3 alread
 });
 
 // The raw /network node with Section 1's switches both OFF.
-const S1_DARK = { locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) };
+const S1_DARK = { locations: Object.fromEntries(["marathon-pine", "concrete", "hub3"].map((id) => [id, { solve: false, autoRefill: "off" }])) };
 
 test("AUTO-REFILL OFF: a Pine or Concrete request writes nothing at all", async () => {
   for (const store of ["marathon-pine", "concrete"]) {
@@ -208,7 +208,7 @@ test("CENTRAL IS SHARED: a live Section 1 shop's open Central lock is a reservat
 
 // ── THE PRODUCTION SHAPE, SAID OUT LOUD ──────────────────────────────────────
 test("the test world is production-shaped: the engine config names no Section 1 location anywhere", () => {
-  const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+  const S1 = ["marathon-pine", "concrete", "hub3"];
   const text = JSON.stringify(CONFIG);
   for (const id of S1) assert.equal(text.includes(`"${id}"`), false, id);
 });

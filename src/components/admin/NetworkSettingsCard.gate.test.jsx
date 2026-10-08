@@ -28,7 +28,7 @@ const NOW = 1790000000000;
 
 function mount(authUser, { raw = {}, write = vi.fn(async () => true) } = {}) {
   useNetworkMock.mockImplementation(() => ({ registry: normalizeNetwork(raw), settled: true, error: false, raw }));
-  usePathStateMock.mockImplementation(() => ({ value: { concrete: {}, "concrete-stockroom": {} }, settled: true, error: false }));
+  usePathStateMock.mockImplementation(() => ({ value: { concrete: {} }, settled: true, error: false }));
   let tree;
   act(() => {
     tree = TestRenderer.create(<Card authUser={authUser} products={[{ id: "p1", name: "Campus Black" }]} onExit={() => {}} write={write} now={() => NOW} />);
@@ -58,11 +58,11 @@ describe("the gate", () => {
     expect(buttons(tree).map(text)).toEqual(["Back"]);
   });
 
-  it("enables the reads for the owner and shows all eight sectioned locations", () => {
+  it("enables the reads for the owner and shows all seven sectioned locations (no Concrete Stockroom)", () => {
     const { tree } = mount(OWNER);
     expect(useNetworkMock).toHaveBeenCalledWith(true);
     const locs = tree.root.findAll((n) => n.props && n.props["data-loc"]).map((n) => n.props["data-loc"]);
-    expect(locs).toEqual(["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3", "concrete-stockroom"]);
+    expect(locs).toEqual(["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3"]);
     // the seed: Section 1 Solve on + solved products only; Marathon Solve on + all
     expect(rowOf(tree, "hub3").props["data-solve"]).toBe("on");
     expect(rowOf(tree, "hub3").props["data-auto-refill"]).toBe("solved");
@@ -133,22 +133,15 @@ describe("the two switches", () => {
   });
 });
 
-describe("Concrete's mapping and credit scope", () => {
+describe("no back-stock mapping, and credit scope", () => {
   beforeEach(() => { useNetworkMock.mockReset(); usePathStateMock.mockReset(); });
 
-  it("flips a category to the stockroom with one path", async () => {
-    const { tree, write } = mount(OWNER);
-    const rowEl = tree.root.find((n) => n.props && n.props["data-cat"] === "hoodies");
-    const stockroom = rowEl.findAll((n) => n.type === "button").find((b) => text(b) === "Concrete Stockroom");
-    await act(async () => { stockroom.props.onClick(); });
-    expect(write.mock.calls[0][0]["network/backStock/concrete/hoodies"]).toBe("concrete-stockroom");
-  });
-
-  it("tapping the hub a category is already on writes nothing", async () => {
-    const { tree, write } = mount(OWNER);
-    const rowEl = tree.root.find((n) => n.props && n.props["data-cat"] === "hoodies");
-    await act(async () => { rowEl.findAll((n) => n.type === "button").find((b) => text(b) === "Hub 3").props.onClick(); });
-    expect(write).not.toHaveBeenCalled();
+  it("offers no category or product back-stock mapping and never names a Concrete Stockroom — even with one stored", () => {
+    const { tree } = mount(OWNER, { raw: { locations: { "concrete-stockroom": { type: "hub", section: 1, solve: true, autoRefill: "all" } }, backStock: { concrete: { hoodies: "concrete-stockroom" } } } });
+    expect(tree.root.findAll((n) => n.props && (n.props["data-cat"] !== undefined || n.props["data-override"] !== undefined))).toHaveLength(0);
+    expect(text(tree.root)).toMatch(/Hub 3/);   // the text helper reads the whole card
+    expect(text(tree.root)).not.toMatch(/Stockroom/);
+    expect(text(tree.root)).not.toMatch(/where each category's back stock sits|one product kept somewhere else/);
   });
 
   it("sets the credit scope", async () => {

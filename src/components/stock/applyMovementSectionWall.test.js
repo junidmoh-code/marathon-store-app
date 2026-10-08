@@ -48,7 +48,7 @@ const { applyMovement, movementWallCheck } = await import("./applyMovement.js");
 const { setCurrentNetworkFromRaw, __resetNetworkForTests } = await import("../../utils/networkStore.js");
 const { SEED_REGISTRY } = await import("../../utils/networkRegistry.js");
 
-const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+const S1 = ["marathon-pine", "concrete", "hub3"];
 const S2 = ["marathon-pe", "trophy", "hub1", "hub2"];
 const PID = "p1";
 const seed = (loc, qty = 5) => setPath(stockCellPath(loc, PID, "M"), { qty, v: 1 });

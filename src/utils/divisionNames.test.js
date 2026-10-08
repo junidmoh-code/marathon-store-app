@@ -8,12 +8,12 @@ import {
 import { sectionNameUpdate, seedUpdate } from "../components/admin/networkSettingsCore";
 
 describe("division names", () => {
-  it("seeds Marathon = PE, Trophy, Hub 1, Hub 2 and Concrete = Pine, Concrete, Hub 3, the Stockroom", () => {
+  it("seeds Marathon = PE, Trophy, Hub 1, Hub 2 and Concrete = Pine, Concrete, Hub 3", () => {
     expect(sectionName(SEED_REGISTRY, 2)).toBe("Marathon");
     expect(sectionName(SEED_REGISTRY, 1)).toBe("Concrete");
     const ids = (n) => Object.values(SEED_REGISTRY.locations).filter((l) => l.section === n).map((l) => l.id).sort();
     expect(ids(2)).toEqual(["hub1", "hub2", "marathon-pe", "trophy"]);
-    expect(ids(1)).toEqual(["concrete", "concrete-stockroom", "hub3", "marathon-pine"]);
+    expect(ids(1)).toEqual(["concrete", "hub3", "marathon-pine"]);
   });
 
   it("reads the stored names, and falls back to the seed for a blank or junk one", () => {
@@ -43,7 +43,7 @@ describe("division names", () => {
 
   it("the seed writes the names; a stored name is never overwritten", () => {
     expect(seedPayload().sections).toEqual({ 1: { id: 1, name: "Concrete", sort: 2 }, 2: { id: 2, name: "Marathon", sort: 1 } });
-    const fresh = seedUpdate({ creditScope: "shared" }, { concrete: {}, "concrete-stockroom": {} }, 1, "o").updates;
+    const fresh = seedUpdate({ creditScope: "shared" }, { concrete: {} }, 1, "o").updates;
     expect(fresh["network/sections/2"]).toEqual({ id: 2, name: "Marathon", sort: 1 });
     const kept = seedUpdate({ sections: { 1: { id: 1, name: "Mine", sort: 2 }, 2: { id: 2, name: "Marathon", sort: 1 } } }, {}, 1, "o").updates;
     expect(Object.keys(kept).filter((k) => k.startsWith("network/sections"))).toEqual([]);
