@@ -88,6 +88,8 @@ const {
   isStaleTombstone,
   resolveAssignment,
 } = require("./lib.cjs");
+const { storesOf } = require("../lib/network-registry.cjs");
+const { loadSettingsFor } = require("./settings.cjs");
 const { guardedMutate } = require("./guardedTransaction.cjs");
 const { loadNetwork } = require("../lib/network-load.cjs");
 
@@ -195,8 +197,11 @@ async function reapTombstone(db, store, saDate, key, preRead) {
 async function runWakeSweep({ db, nowMs }) {
   const now = nowMs ?? Date.now();
   const saDate = saDateStringFromMs(now);
-  // The LIVE stores of the network registry (PE + Trophy on the seed).
-  const stores = triggerStores(await loadNetwork(db, { nowMs: now }));
+  // The stores display checks run at: each store's own switch
+  // (/displayChecks_settings/{store}/enabled) when set, else the registry's
+  // live rule (PE + Trophy on the seed).
+  const network = await loadNetwork(db, { nowMs: now });
+  const stores = triggerStores(network, await loadSettingsFor(db, storesOf(network).map((l) => l.id), { nowMs: now }));
   let stockSeen = 0, activated = 0, reHeld = 0, reaped = 0;
 
   for (const store of stores) {

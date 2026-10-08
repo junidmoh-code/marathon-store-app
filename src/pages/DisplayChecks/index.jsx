@@ -27,8 +27,13 @@ import { usePermissions } from "../../components/PermissionsContext";
 import { SHOP_LABELS, shopLabelOf } from "../../utils/stores";
 import {
   displayChecksEnabledStores,
+  displayChecksAllStores,
   canManageDisplayChecks,
   isDisplayChecksSuperAdmin,
+  primeDisplayCheckSwitches,
+  currentDisplayCheckSwitches,
+  onDisplayCheckSwitchesChange,
+  noteDisplayCheckSwitches,
 } from "../../config/displayChecks";
 import { FONT, BLUE, BLUE_SOFT, INK, GLASS_BG, GLASS_BORDER, META } from "./tokens";
 import TodayView from "./TodayView";
@@ -45,9 +50,9 @@ const TABS = [
   { key: "settings", label: "Settings", manager: true },
 ];
 
-// Sections: the enabled stores are the LIVE stores of the network registry
-// (config/displayChecks.js) — Marathon PE and Trophy today, as before.
-const enabledStores = () => displayChecksEnabledStores().map((id) => ({ id, label: shopLabelOf(id) }));
+// The enabled stores: each store's own switch (/displayChecks_settings/{store}/
+// enabled) when Junid has set one, else its LIVE flag (config/displayChecks.js).
+const enabledStores = (switches) => displayChecksEnabledStores(undefined, switches).map((id) => ({ id, label: shopLabelOf(id) }));
 
 // A second-resolution wall clock for the on-duty strip (§9.4). Presentational.
 function useTick() {
@@ -104,7 +109,20 @@ export default function DisplayChecks({ onExit, products }) {
   }), [user?.email, permRecord?.permissions, permRecord?.destShop]);
 
   const isSuper = isDisplayChecksSuperAdmin(gateUser);
-  const ENABLED_STORES = enabledStores();
+  // The per-store switches, read once on mount (two small fields per store).
+  const [switches, setSwitches] = useState(() => currentDisplayCheckSwitches());
+  useEffect(() => {
+    const off = onDisplayCheckSwitchesChange(setSwitches);
+    primeDisplayCheckSwitches().catch(() => {});
+    return off;
+  }, []);
+  const ENABLED_STORES = enabledStores(switches);
+  // The owner's picker lists EVERY store — one that is switched off can be
+  // opened and switched on from its Settings tab; it is marked "off".
+  const enabledIds = new Set(ENABLED_STORES.map((s) => s.id));
+  const PICKER_STORES = isSuper
+    ? displayChecksAllStores().map((id) => ({ id, label: enabledIds.has(id) ? shopLabelOf(id) : `${shopLabelOf(id)} (off)` }))
+    : ENABLED_STORES;
   const [superStore, setSuperStore] = useState(ENABLED_STORES[0]?.id || null);
   const store = isSuper ? superStore : (permRecord?.destShop || null);
   const storeLabel = SHOP_LABELS[store] || store || "—";
@@ -174,8 +192,8 @@ export default function DisplayChecks({ onExit, products }) {
   const activeLabel = visibleTabs.find((t) => t.key === tab)?.label || "Today";
 
   // Store-toggle buttons, shared by both chromes.
-  const storeToggle = isSuper && ENABLED_STORES.length > 1
-    ? ENABLED_STORES.map((s) => {
+  const storeToggle = isSuper && PICKER_STORES.length > 1
+    ? PICKER_STORES.map((s) => {
         const on = s.id === store;
         return (
           <button key={s.id} type="button" onClick={() => setSuperStore(s.id)}
@@ -206,7 +224,7 @@ export default function DisplayChecks({ onExit, products }) {
       )}
       {canManage && (
         <div style={{ display: tab === "settings" ? "block" : "none" }}>
-          <SettingsView store={store} wide={wide} active={tab === "settings"} />
+          <SettingsView store={store} wide={wide} active={tab === "settings"} isSuper={isSuper} />
         </div>
       )}
     </>

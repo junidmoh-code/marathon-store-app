@@ -631,7 +631,10 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
       // stamps it too, but a scan landing between the two writes would have
       // read the bare cancel (Sonnet round 2, PR #607). Hub 2's own leg keeps
       // the human shape: that "no" is the Central-level answer.
-      cancelReason: isFirstBatchShopLeg(row._r) ? CENTRAL_DECLINED_REASON : null,
+      // A DIRECT first batch (a central-fed store — centralFed.js) is the
+      // exception to the exception: Central IS that store's real source, so its
+      // "no" takes the normal cooldown like any engine row.
+      cancelReason: isFirstBatchShopLeg(row._r) && row._r?.createdFrom?.direct !== true ? CENTRAL_DECLINED_REASON : null,
       ...(auth.currentUser?.uid ? { resolvedBy: auth.currentUser.uid } : {}),
     };
     // MID-SEND: Fulfil records the tranche's movement before it marks the

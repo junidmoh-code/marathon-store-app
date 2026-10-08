@@ -86,8 +86,18 @@ function shopHubFor(loc, ctx = {}) {
 // True when a request INTO `dest` FROM `source` is one the engine may never
 // create: a shop asking Central. (The first-batch Solve is not the engine and
 // is guarded by its own Hub-presence precondition.)
-function forbiddenShopSource({ dest, source, routes, locations, routing } = {}) {
-  return source === CENTRAL && isShopLoc(dest, { routes, locations, routing });
+//
+// ONE EXCEPTION, product-aware: a shop the ENGINE itself routes to Central for
+// this product (central-fed clothing — Concrete, lib/central-fed.cjs). Asked
+// with `product`/`pid`, a Central source is allowed exactly when the engine's
+// own routing answers Central for that product; asked without them, the
+// predicate keeps its old meaning ("a shop ← Central row").
+function forbiddenShopSource({ dest, source, routes, locations, routing, product, pid } = {}) {
+  if (source !== CENTRAL) return false;
+  if ((product !== undefined || pid !== undefined) && routing && typeof routing.sourceFor === "function"
+      && routing.centralFed instanceof Set && routing.centralFed.has(dest)
+      && routing.sourceFor(dest, product, pid) === CENTRAL) return false;
+  return isShopLoc(dest, { routes, locations, routing });
 }
 
 // ── PRESENCE: has the hub held this product? ────────────────────────────────

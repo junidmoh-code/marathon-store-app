@@ -685,6 +685,7 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
     // onto somebody's later change without noticing is the one outcome a
     // history with a revert button must never produce.
     if (h.kind === "targets") return revertTargets(h);
+    if (h.kind === "centralFed") return revertCentralFed(h);
     const what = h.kind === "group" ? h.groupKey : h.categoryKey;
     const ok = window.confirm(
       `Put ${what} back to how it was before this change?\n\n` +
@@ -709,6 +710,36 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
       }
       flash("ok", `${what} put back to how it was on ${fmtWhen(h.at)}.`);
       closeAll();
+      await load(true);
+    } catch (e) {
+      flash("bad", e?.message || String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+
+  // ── CENTRAL-FED CLOTHING (centralFed.js) — Concrete keeps its clothing in
+  // the shop, N of every size, straight from Central. One number per store,
+  // through the same callable, history and revert as every write here.
+  const saveCentralFed = async (location, perSize) => {
+    setBusy("centralFed");
+    try {
+      const before = census?.centralFedClothing?.[location] ?? null;
+      await setCategoryPolicyFn()({ action: "setCentralFed", location, perSize, expectedBefore: before });
+      flash("ok", perSize === null ? `${location}: clothing no longer kept in the shop from Central.` : `${location}: clothing kept in the shop, ${perSize} per size, from Central.`);
+      await load(true);
+    } catch (e) {
+      flash("bad", e?.message || String(e));
+    } finally {
+      setBusy("");
+    }
+  };
+  const revertCentralFed = async (h) => {
+    if (!window.confirm(`Put ${h.location} back to ${h.before ?? "off"} per size (it is ${h.after ?? "off"})?`)) return;
+    setBusy("revert");
+    try {
+      await setCategoryPolicyFn()({ action: "setCentralFed", location: h.location, perSize: h.before ?? null, expectedBefore: h.after ?? null });
+      flash("ok", `${h.location} put back to how it was on ${fmtWhen(h.at)}.`);
       await load(true);
     } catch (e) {
       flash("bad", e?.message || String(e));
@@ -907,6 +938,11 @@ function EnginePolicyAuthed({ viewer, products, onExit }) {
                 <button onClick={() => load(true)} style={{ ...bGray, marginTop: ".8rem" }}>Try again</button>
               </div>
             )}
+
+            {!loading && !error && (census?.centralFedStores || []).map((loc) => (
+              <CentralFedPanel key={loc} location={loc} perSize={census?.centralFedClothing?.[loc] ?? null}
+                busy={busy} onSave={(n) => saveCentralFed(loc, n)} />
+            ))}
 
             {!loading && !error && categories.map((c) => (
               <CategoryRow key={c.key} category={c} onOpen={() => openCategory(c)} />
@@ -1639,7 +1675,7 @@ function History({ entries, onRevert, busy }) {
         <div key={h.id} style={{ ...GLASS, padding: ".7rem 1rem", marginBottom: 6, display: "flex", alignItems: "center", gap: 10 }}>
           <div style={{ flex: 1, minWidth: 0 }}>
             <div style={{ fontSize: ".86rem", fontWeight: 600 }}>
-              {h.kind === "targets" ? (h.productName || h.pid) : (h.categoryKey || h.groupKey || "rows")}
+              {h.kind === "targets" ? (h.productName || h.pid) : h.kind === "centralFed" ? `${locLabel(h.location)} clothing per size` : (h.categoryKey || h.groupKey || "rows")}
               {h.kind === "group" && <Chip tone="blue">group</Chip>}
               {h.kind === "rows" && <Chip tone="amber">{h.rowCount} rows</Chip>}
               {/* A product override names the shop it was made at: the same
@@ -1661,7 +1697,7 @@ function History({ entries, onRevert, busy }) {
                   yields no label would otherwise print a bare separator with a
                   blank name after it. (CodeRabbit, PR #469.) */}
               {fmtWhen(h.at)}{whoLabel(h.by) ? ` · ${whoLabel(h.by)}` : ""} · {(h.changes || []).slice(0, 3).map((ch) =>
-                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : "no field changes")}
+                `${ch.loc || ""}${ch.sizeKey ? `${sizeLabel(ch.sizeKey)}` : ""}${ch.size ? ` ${sizeLabel(ch.size)}` : ""} ${ch.field} ${ch.from ?? "not set"} -> ${ch.to ?? "not set"}`).join(", ") || (h.kind === "group" ? "group" : h.kind === "centralFed" ? `${h.before ?? "off"} -> ${h.after ?? "off"}` : "no field changes")}
               {(h.changes || []).length > 3 && ` +${h.changes.length - 3}`}
             </div>
           </div>
@@ -1676,3 +1712,35 @@ function History({ entries, onRevert, busy }) {
 }
 
 export { defaultMinQty };
+
+// ── CENTRAL-FED CLOTHING PANEL ───────────────────────────────────────────────
+// "Concrete — clothing kept in the shop": N of every size the product has,
+// refilled straight from Central (never through Hub 3). Off = Concrete's
+// clothing follows the normal route like Pine's.
+export function CentralFedPanel({ location, perSize, busy, onSave }) {
+  const [draft, setDraft] = useState(perSize === null ? "" : String(perSize));
+  useEffect(() => { setDraft(perSize === null ? "" : String(perSize)); }, [perSize]);
+  const n = Number(draft);
+  const valid = Number.isInteger(n) && n >= 1 && n <= 99;
+  const name = location === "concrete" ? "Concrete" : location;
+  return (
+    <div data-central-fed-panel={location} style={{ ...GLASS, padding: ".9rem 1rem", marginBottom: "1rem" }}>
+      <div style={{ fontWeight: 700, color: "#fff", marginBottom: ".3rem" }}>{name} — clothing kept in the shop</div>
+      <div style={{ color: GRAY, fontSize: ".85rem", marginBottom: ".6rem" }}>
+        {perSize === null
+          ? `Off — ${name}'s clothing follows the normal route.`
+          : `${perSize} of every size, refilled straight from Central. Nothing goes to Hub 3 for ${name} clothing.`}
+      </div>
+      <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+        <label style={{ color: GRAY, fontSize: ".85rem" }}>
+          Per size{" "}
+          <input aria-label={`${name} clothing per size`} inputMode="numeric" value={draft}
+            onChange={(e) => setDraft(e.target.value.replace(/[^0-9]/g, "").slice(0, 2))}
+            style={{ width: 56, padding: "6px 8px", borderRadius: 8, border: "1px solid rgba(255,255,255,.2)", background: "transparent", color: "#fff" }} />
+        </label>
+        <button disabled={!!busy || !valid || n === perSize} onClick={() => onSave(n)} style={{ ...bGray, opacity: !busy && valid && n !== perSize ? 1 : .5 }}>Save</button>
+        {perSize !== null && <button disabled={!!busy} onClick={() => onSave(null)} style={bGhost}>Switch off</button>}
+      </div>
+    </div>
+  );
+}

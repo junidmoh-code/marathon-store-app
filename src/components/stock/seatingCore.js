@@ -58,6 +58,8 @@
 // encoder is the one that answers it. Pinned by the same differential test.
 
 import { decodeSizeKey } from "../../utils/sizeKey";
+import { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } from "./centralFed";
+import { SEED_REGISTRY, autoRouteAllowed } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
 // ── engine primitives, mirrored ──────────────────────────────────────────────
@@ -299,7 +301,7 @@ export function storeCarries(stock, loc, pid) {
 }
 
 // refill-engine.cjs:467 — the whole precedence, in its load-bearing order.
-export function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+export function resolveTarget({ targets, config, products, stock, network }, dest, pid, size) {
   const explicit = targets?.[dest]?.[pid]?.[engineSizeKey(size)];
   if (explicit && typeof explicit.target === "number") {
     const rp = explicit.reorderPoint;
@@ -309,6 +311,18 @@ export function resolveTarget({ targets, config, products, stock }, dest, pid, s
       reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
       source: "explicit",
     };
+  }
+  // CENTRAL-FED CLOTHING (centralFed.js; engine twin refill-engine.cjs): a
+  // store keeping its clothing in the shop answers N for every declared size,
+  // above the category policy and the kill switch. With no registry handed
+  // in, the seed answers (as the engine does); the Central route must be open.
+  {
+    const cfNet = network || SEED_REGISTRY;
+    const cfN = centralFedPerSize(config, cfNet, dest);
+    if (cfN !== null && centralFedIsClothing(products?.[pid]) && autoRouteAllowed(cfNet, "central", dest)) {
+      const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
+      return centralFedSizes(products[pid]).includes(key) ? centralFedTarget(cfN) : null;
+    }
   }
   const catT = categoryPolicyTarget(config, products, stock, dest, pid, size);
   if (catT) return catT;

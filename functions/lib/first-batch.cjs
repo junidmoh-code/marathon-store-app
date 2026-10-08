@@ -54,6 +54,7 @@ const { hubPresenceSignals, pickInProgress } = require("./shop-source-rule.cjs")
 const networkRegistry = require("./network-registry.cjs");
 const stockTrust = require("./stock-trust.cjs");
 const { trustStamp } = stockTrust;
+const { isCentralFedProduct } = require("./central-fed.cjs");
 const { loadNetwork } = require("./network-load.cjs");
 // ── "HUB 2" IS "THE SHOP'S BACK-STOCK HUB" (sections, 2026-10) ───────────────
 // This module was written when one hub stood behind every shop. The rule was
@@ -301,6 +302,38 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   if (requester && requester.type === "hub" && rr.createdFrom.via === "first_batch_hub2_leg") return { skipped: "hub_leg" };
   // One scoped read, reused by every branch below.
   const productRead = (await db.ref(`products/${pid}`).once("value")).val();
+  // ── CENTRAL-FED CLOTHING (lib/central-fed.cjs, owner 8 Oct 2026) ──────────
+  // A store that keeps its clothing in the shop (Concrete) gets its first
+  // batch straight from Central and NOTHING at any hub: no hub seed, no hub
+  // leg, and no withdrawal because a hub (Pine's Hub 3) happens to hold the
+  // product. Decided from the SERVER's config and the registry — never from a
+  // field on the row. While the row is open the trigger only claims the
+  // shop's Central lock (the engine then bookkeeps it like its own refills);
+  // once resolved it records that there is no hub leg. Central's "no" is NOT
+  // re-labelled: Central IS this cell's source, so its refusal is the shop's.
+  if (requester && requester.type === "store") {
+    // Two small keyed reads — never the whole engine config — and only the
+    // central-fed map first: a store with no entry (every Marathon shop) costs
+    // one tiny read and nothing else.
+    const cfMap = (await db.ref("config/refillEngine/centralFedClothing").once("value")).val();
+    const cfConfig = cfMap && typeof cfMap === "object" && cfMap[store] != null
+      ? { centralFedClothing: cfMap, routes: (await db.ref("config/refillEngine/routes").once("value")).val() || {} }
+      : {};
+    if (isCentralFedProduct(cfConfig, network, store, productRead)) {
+      if (!networkRegistry.autoRouteAllowed(network, SOURCE, store)) return { skipped: "section_wall", store, centralFed: true };
+      const cfResolved = rr.status !== "open";
+      const cfTouched = (num(rr.sentQty) || 0) > 0 || (rr.sentQty != null && typeof rr.sentQty !== "number");
+      if (!cfResolved && !cfTouched) {
+        const held = ((await db.ref(`refill_engine/open/${store}/${pid}/${sizeKey}`).once("value")).val() || {}).refillId === requestId;
+        if (held) return { skipped: "open_untouched", centralFed: true };
+        const lock = await claimShopLock({ db, rr, requestId, pid, sizeKey, store, runId, now });
+        return { skipped: "open_untouched", lock, centralFed: true };
+      }
+      if (rr.firstBatch && rr.firstBatch.hub2Leg) return { skipped: "hub2_leg_done", hub2Leg: rr.firstBatch.hub2Leg, centralFed: true };
+      await reqRef.child("firstBatch/hub2Leg").set({ none: "central_fed", at: now });
+      return { raised: false, none: "central_fed", centralFed: true };
+    }
+  }
   // A requester that is not a store has no back-stock hub; it is judged
   // against Hub 2 exactly as it always was.
   const HUB = requester && requester.type === "store" ? hubForShop(network, store, productRead, pid) : FIRST_BATCH_HUB;

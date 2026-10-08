@@ -32,6 +32,7 @@ const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
 const networkRegistry = require("./lib/network-registry.cjs");
 const stockTrust = require("./lib/stock-trust.cjs");
+const { isCentralFedProduct } = require("./lib/central-fed.cjs");
 const { loadNetwork } = require("./lib/network-load.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
 const { requestUntouched, pickInProgress } = require("./lib/shop-source-rule.cjs");
@@ -396,7 +397,7 @@ function intentRecords({ intent, startedAt, runId, rrKey, orderId = null, orderC
   return { rr, lock };
 }
 
-function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network = null }) {
+function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network = null, config = null }) {
       const upd = {};
       const wantOrders = new Set();
       const wantRrs = new Set();
@@ -404,7 +405,9 @@ function shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId
         for (const [pid, bySize] of Object.entries(byPid)) {
           for (const [sizeKey, s] of Object.entries(bySize)) {
             const p = products[pid] || {};
-            if (!shopUniverse(network, dest)) {
+            // (A store leg FROM CENTRAL — central-fed clothing — shadows as a
+            // request row too, never as an order card at a hub.)
+            if (!shopUniverse(network, dest) || (s.source === "central" && isCentralFedProduct(config, network, dest, p))) {
               // HUB legs (hub1 AND hub2) shadow as refill_requests rows in
               // their own queue tab — never as clothing-shaped store orders.
               // The pre-2026-08-25 predicate was `dest === "hub2"`, which sent
@@ -883,7 +886,7 @@ async function runScan() {
     // (autoRefill orders are excluded there). UI renders them read-only;
     // fulfillCRBatch refuses them outright as a second line of defence.
     {
-      const upd = shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network });
+      const upd = shadowSyncUpdates({ shadowNode, products, orders, refillRequests, runId, startedAt, network, config });
       if (Object.keys(upd).length) await safeUpdate(db, upd, "shadow sweep");
     }
 
@@ -946,7 +949,11 @@ async function runScan() {
 
         const rrKey = db.ref("refill_requests").push().key;
         let orderId = null, orderCreatedAt = null, order = null, insight = null;
-        if (isStoreLeg) {
+        // A store leg FROM CENTRAL (central-fed clothing, lib/central-fed.cjs)
+        // is a /refill_requests row only — Central picks it from the shop's
+        // Source tab, like a first batch. An R### order card would sit at a hub
+        // that is not its source, where no queue would ever show it.
+        if (isStoreLeg && !(source === "central" && isCentralFedProduct(config, network, dest, products[pid]))) {
           if (!refillNum) refillNum = await drawRefillNumber(db, nowMs);
           lineIdx += 1;
           orderId = `${refillNum}-${lineIdx}`;

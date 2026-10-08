@@ -112,9 +112,13 @@ export const isFirstBatchShopLeg = (r, network) => !!r && r.createdFrom?.firstBa
 // ordinary hub2→shop rows are Hub 2's work, and counting them put 112/113 on
 // the Trophy/Marathon tabs for a picking list Central never had (incident
 // 2026-09-17). One predicate, one number, one list.
+// …plus a CENTRAL-FED store's engine rows from Central (centralFed.js —
+// Concrete's clothing is refilled straight from Central, so Central picks it
+// from that shop's tab). Marathon's engine shop rows come from Hub 2: unlisted.
+export const isCentralShopEngineRow = (r) => !!r && r.createdFrom?.engine === true && r.createdFrom?.source === "central";
 export const sourceQueueLists = (r, shopLocs) =>
   !!r && r.status === "open" && !!r.productId
-  && (shopLocs && (typeof shopLocs.has === "function" ? shopLocs.has(r.requestingLocation) : shopLocs.includes?.(r.requestingLocation)) ? isFirstBatchShopLeg(r) : true);
+  && (shopLocs && (typeof shopLocs.has === "function" ? shopLocs.has(r.requestingLocation) : shopLocs.includes?.(r.requestingLocation)) ? (isFirstBatchShopLeg(r) || isCentralShopEngineRow(r)) : true);
 // The badge counts what the list shows, minus shadow rows (listed as previews,
 // never counted as work).
 export const countsTowardSourceQueue = (r, shopLocs) => sourceQueueLists(r, shopLocs) && !r.shadow;
@@ -255,8 +259,11 @@ export const hubPresenceSignals = ({ hubNode, hubLocks, hubOpenRequestIds, since
 // store it does not name (Pine, Concrete), the registry's back-stock hub for
 // this product. A store that is not live has no route and takes the old
 // seed-only Solve. Without a registry the answer is config.routes alone.
-export function firstBatchEligible({ source, store, product, productId, routes, network, enabled = FIRST_BATCH_ENABLED, hub2Present: present, hub = FIRST_BATCH_HUB } = {}) {
+// `centralFed` (centralFed.js — Concrete's clothing): the DIRECT first batch —
+// Central straight to the store, no hub, so no hub route or presence test.
+export function firstBatchEligible({ source, store, product, productId, routes, network, enabled = FIRST_BATCH_ENABLED, hub2Present: present, hub = FIRST_BATCH_HUB, centralFed = false } = {}) {
   if (enabled !== true) return false;
+  if (centralFed === true) return source === "central" && !!store && !!product && !isSneakerOrSlide(product);
   if (present !== false) return false;
   if (source !== "central") return false;
   if (!store || !hub) return false;
@@ -616,7 +623,11 @@ export function trustExistingEmptyUpdates({ pid, locs, sizes, existing = {}, now
   return out;
 }
 
+// hub === null: a CENTRAL-FED store's DIRECT first batch (centralFed.js) — the
+// store alone is seeded, and only for the sizes Central sends; nothing at a
+// hub, and the request says so (createdFrom.direct).
 export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, seedCell, nowIso, uid, solveId, newKey, hub = FIRST_BATCH_HUB } = {}) {
+  const direct = hub === null;
   const updates = {};
   const paths = [];
   // stockSizeKey, the SAME encoder stockCellPath uses for the path — never
@@ -635,8 +646,12 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
   // Hub 2 AND the shop for EVERY qualifying size — first-batch sizes
   // included (Hub 2 is always a valid source; see the header).
   const hub2Seeded = [];
-  for (const l of split.firstBatch) { if (seed(hub, l.size)) hub2Seeded.push(stockSizeKey(l.size)); seed(store, l.size); }
-  for (const sz of split.normal) { seed(hub, sz); seed(store, sz); }
+  if (direct) {
+    for (const l of split.firstBatch) seed(store, l.size);
+  } else {
+    for (const l of split.firstBatch) { if (seed(hub, l.size)) hub2Seeded.push(stockSizeKey(l.size)); seed(store, l.size); }
+    for (const sz of split.normal) { seed(hub, sz); seed(store, sz); }
+  }
   const requestIds = [];
   for (const l of split.firstBatch) {
     const id = newKey();
@@ -650,6 +665,7 @@ export function buildFirstBatchSolveUpdate({ pid, store, split, existing = {}, s
       createdAt: nowIso,
       createdFrom: {
         firstBatch: true, solveId, source: "central", store, hub,
+        ...(direct ? { direct: true } : {}),
         via: "missing_products_solve",
         // the Hub 2 seeds THIS solve writes — information for the audit trail
         // (the guard judges its own seeds by their stamp, not by this list).

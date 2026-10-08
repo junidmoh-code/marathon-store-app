@@ -58,7 +58,7 @@ import { useSpecials } from "./components/TvSpecialsRail";
 import LabelPrintView from "./components/LabelPrintView";
 import AppErrorBoundary from "./AppErrorBoundary";
 import DisplayChecks from "./pages/DisplayChecks";
-import { displayChecksVisibleForViewer } from "./config/displayChecks";
+import { displayChecksVisibleForViewer, primeDisplayCheckSwitches } from "./config/displayChecks";
 import StockView from "./components/stock/StockView";
 // TEMPORARY — hub sneaker stock-take. Both of these render nothing once
 // HUB_SNEAKER_COUNT_ENABLED is flipped off; removing the feature is deleting
@@ -3336,6 +3336,16 @@ function RoleSelector({ onSelect, orders, returnsLog, products, hasPermission, c
   const assistantBadge = orders ? orders.filter(o =>
     o.createdAt && o.createdAt.slice(0,10) === today && o.wallWalk !== true
   ).length : 0;
+
+  // The per-store display-check switches (/displayChecks_settings/{store}/enabled)
+  // are read once here, so a store switched on by the owner (Concrete) shows its
+  // tile without anyone opening the module first. Re-renders when they land.
+  const [, setDcPrimed] = useState(0);
+  useEffect(() => {
+    let alive = true;
+    primeDisplayCheckSwitches().then(() => { if (alive) setDcPrimed((n) => n + 1); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   // Display Checks card — behind the master flag + the module's own access gate
   // (super-admin, or a store-scoped display_checks grant). Dark by default. The

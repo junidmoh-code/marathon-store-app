@@ -131,13 +131,12 @@ function grouped(network, locs, canSee, toRow) {
 }
 
 // The warehouse hub picker: registry hubs grouped by section, filtered to what
-// the viewer may see, with the trial hub last in Section 2's group.
+// the viewer may see — exactly Hub 1, Hub 2, Hub 3 (owner, 8 Oct 2026).
+// Hub C is NOT offered here; it is untouched everywhere else (a device already
+// on it keeps it; its queue, labels, alerts and deep links still work).
 //   [{ section, name, items: [{ id, label, live }] }]
 export function warehouseHubGroups(network, canSee) {
-  const groups = grouped(network, hubsOf(network), canSee, (l) => ({ id: l.id, label: l.name, live: l.live === true }));
-  const s2 = groups.find((g) => g.section === 2);
-  if (s2) s2.items.push({ id: TRIAL_HUB, label: TRIAL_HUB_LABEL, live: true });
-  return groups;
+  return grouped(network, hubsOf(network), canSee, (l) => ({ id: l.id, label: l.name, live: l.live === true }));
 }
 
 // May this viewer work as this hub? The persisted localStorage.warehouseHub

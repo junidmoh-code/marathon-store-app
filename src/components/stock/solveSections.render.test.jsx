@@ -85,13 +85,13 @@ const ticked = (tree) => boxes(tree).filter((b) => b.props["aria-checked"]).map(
 
 // The Marathon list (HealthView's default), or — with `division: 1` — the
 // "Missing from Concrete" list's own cards (computeMissingProducts section 1).
-function render({ stock = stockWith(PLENTY), products = PRODUCTS, cards, division = 2, category = "clothing" } = {}) {
+function render({ stock = stockWith(PLENTY), products = PRODUCTS, cards, division = 2, category = "clothing", targets = {} } = {}) {
   const list = cards || computeMissingProducts({ allStock: stock, products, ...(division === 1 ? { section: 1 } : {}) });
   let tree;
   act(() => {
     tree = TestRenderer.create(
       <NetworkTransfer products={products} category={category} allStock={stock} cards={list}
-        targets={{}} targetsSettled={true} targetsError={false} />
+        targets={targets} targetsSettled={true} targetsError={false} />
     );
   });
   return tree;
@@ -464,5 +464,98 @@ describe("PERFUME follows the same per-division rule", () => {
     const keys = Object.keys(written());
     expect(keys).toEqual(expect.arrayContaining([`stock/hub2/${SCENT}/_`, `stock/marathon-pe/${SCENT}/_`]));
     expect(keys.some((k) => /hub3|marathon-pine|\/concrete\//.test(k))).toBe(false);
+  });
+});
+
+// ── CENTRAL-FED CLOTHING (Concrete, owner 8 Oct 2026; centralFed.js) ─────────
+// Production-shaped routes: config.routes names only Marathon. With
+// centralFedClothing { concrete: 4 } a clothing Solve to Concrete asks Central
+// for 4 of EVERY size, straight to the shop — nothing at Hub 3.
+describe("Concrete clothing kept in the shop — 4 per size, straight from Central", () => {
+  const PROD_CFG = {
+    ruleBasedTargets: true, maxUnitsPerIntent: 20,
+    routes: { hub1: "central", hub2: "central", "marathon-pe": "hub2", trophy: "hub2" },
+    defaultRunByStore: { hub2: { L: 3, M: 3, S: 2 }, "marathon-pe": { L: 2, M: 2, S: 2 }, trophy: { L: 2, M: 2, S: 2 } },
+  };
+  const FULL = [{ id: TEE, name: "Essentials Tee Olive", productType: "clothing", categoryKey: "t-shirts", subcategory: "T-Shirts", sizes: ["S", "M", "L", "XL", "XXL"] }];
+  const CENTRAL_ALL = { S: cell(9), M: cell(9), L: cell(9), XL: cell(9), XXL: cell(2) };
+
+  it("Solve to Concrete: 4 of every size from Central to the shop, trusted Concrete seeds only, NOTHING at Hub 3, and the panel never names a hub", async () => {
+    paths["config/refillEngine"] = { ...PROD_CFG, centralFedClothing: { concrete: 4 } };
+    const tree = render({ division: 1, products: FULL, stock: stockWith(CENTRAL_ALL) });
+    await open(tree);
+    setTicks(tree, ["Concrete"]);
+    expect(textOf(tree)).toMatch(/keeps this clothing in the shop: 4 of every size, refilled straight from Central/);
+    expect(textOf(tree)).not.toMatch(/Hub 3 is seeded|seeded at Hub 3/);
+    await confirm(tree);
+    const upd = written();
+    const stockKeys = Object.keys(upd).filter((k) => k.startsWith("stock/")).sort();
+    expect(stockKeys.every((k) => k.startsWith(`stock/concrete/${TEE}/`))).toBe(true);
+    expect(stockKeys).toEqual(["L", "M", "S", "XL", "XXL"].map((s) => `stock/concrete/${TEE}/${s}`));
+    for (const k of stockKeys) expect(upd[k]).toMatchObject({ trusted: true, trustedVia: "solve" });
+    const reqs = requests(upd);
+    expect(reqs.map((r) => [r.size, r.qty]).sort()).toEqual([["L", 4], ["M", 4], ["S", 4], ["XL", 4], ["XXL", 2]]);
+    for (const r of reqs) expect(r).toMatchObject({ requestingLocation: "concrete", createdFrom: { firstBatch: true, source: "central", store: "concrete", direct: true } });
+    expect(Object.keys(upd).some((k) => /hub3|hub2|marathon/.test(k))).toBe(false);
+  });
+
+  it("a size Central has none of is neither requested nor seeded — it stays on Missing from Concrete", async () => {
+    paths["config/refillEngine"] = { ...PROD_CFG, centralFedClothing: { concrete: 4 } };
+    const tree = render({ division: 1, products: FULL, stock: stockWith({ S: cell(9), M: cell(9) }) });
+    await open(tree);
+    setTicks(tree, ["Concrete"]);
+    expect(textOf(tree)).toMatch(/L · XL · XXL: Central has none — they stay on the Missing list until it does/);
+    await confirm(tree);
+    const upd = written();
+    expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual([`stock/concrete/${TEE}/M`, `stock/concrete/${TEE}/S`]);
+    expect(requests(upd).map((r) => r.size).sort()).toEqual(["M", "S"]);
+  });
+
+  it("REVIEW FIX: an UNTRUSTED Concrete cell holding nothing is requested and trusted in place (metadata only); one holding units is left for a count", async () => {
+    paths["config/refillEngine"] = { ...PROD_CFG, centralFedClothing: { concrete: 4 } };
+    const stock = { ...stockWith(CENTRAL_ALL), concrete: { [TEE]: { S: { qty: 0, v: 5, mv: "old", lastType: "sold" }, M: { qty: 3, v: 2, mv: "old2", lastType: "adjustment" } } } };
+    gets[`stock/concrete/${TEE}`] = stock.concrete[TEE];
+    const cards = computeMissingProducts({ allStock: stock, products: FULL, section: 1, centralFed: { ...PROD_CFG, centralFedClothing: { concrete: 4 } } });
+    const tree = render({ division: 1, products: FULL, stock, cards });
+    await open(tree);
+    setTicks(tree, ["Concrete"]);
+    await confirm(tree);
+    const upd = written();
+    expect(requests(upd).map((r) => r.size).sort()).toEqual(["L", "S", "XL", "XXL"]);       // never M (holds 3 uncounted)
+    expect(upd[`stock/concrete/${TEE}/S/trusted`]).toBe(true);                          // trusted in place
+    for (const f of ["qty", "v", "mv", "lastType"]) expect(`stock/concrete/${TEE}/S/${f}` in upd).toBe(false);
+    expect(`stock/concrete/${TEE}/S` in upd).toBe(false);                                 // no whole-cell overwrite
+    expect(Object.keys(upd).some((k) => k.startsWith(`stock/concrete/${TEE}/M`))).toBe(false);
+  });
+
+  it("REVIEW FIX: an explicit /stock_targets row for a size wins over N (0 = excluded), as in the engine", async () => {
+    paths["config/refillEngine"] = { ...PROD_CFG, centralFedClothing: { concrete: 4 } };
+    const targets = { concrete: { [TEE]: { L: { target: 0, minQty: 0 }, XL: { target: 2, minQty: 1 } } } };
+    const tree = render({ division: 1, products: FULL, stock: stockWith(CENTRAL_ALL), targets });
+    await open(tree);
+    setTicks(tree, ["Concrete"]);
+    await confirm(tree);
+    expect(requests(written()).map((r) => [r.size, r.qty]).sort()).toEqual([["M", 4], ["S", 4], ["XL", 2], ["XXL", 2]]);
+  });
+
+  it("Pine is unchanged on the same list: its Solve still seeds Hub 3 + Pine and its batch follows at Hub 3", async () => {
+    paths["config/refillEngine"] = { ...PROD_CFG, centralFedClothing: { concrete: 4 } };
+    const tree = render({ division: 1, products: FULL, stock: stockWith(CENTRAL_ALL) });
+    await open(tree);
+    setTicks(tree, ["Marathon Pine"]);
+    await confirm(tree);
+    const keys = Object.keys(written()).filter((k) => k.startsWith("stock/"));
+    expect(keys.some((k) => k.startsWith(`stock/hub3/${TEE}/`))).toBe(true);
+    expect(keys.some((k) => k.startsWith(`stock/marathon-pine/${TEE}/`))).toBe(true);
+  });
+
+  it("with the setting off, Concrete's clothing Solve is exactly the Hub 3 Solve it was", async () => {
+    paths["config/refillEngine"] = PROD_CFG;
+    const tree = render({ division: 1, products: FULL, stock: stockWith(CENTRAL_ALL) });
+    await open(tree);
+    setTicks(tree, ["Concrete"]);
+    await confirm(tree);
+    expect(Object.keys(written()).some((k) => k.startsWith(`stock/hub3/${TEE}/`))).toBe(true);
+    for (const r of requests(written())) expect(r.createdFrom.direct).toBeUndefined();
   });
 });

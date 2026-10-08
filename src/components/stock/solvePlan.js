@@ -66,8 +66,9 @@ export function ruleTargetsEnabledFor(ruleBasedTargets, dest) {
 // meant before there was a second section.
 export const SOLVE_CENTRAL = "central";
 export const DEFAULT_SOLVE_HUB = "hub2";
+// A CENTRAL-FED store (centralFed.js) passes hub null: the store alone.
 export function seedLocations(source, store, hub = DEFAULT_SOLVE_HUB) {
-  return source === SOLVE_CENTRAL ? [hub, store] : [store];
+  return source === SOLVE_CENTRAL && hub ? [hub, store] : [store];
 }
 
 // Fold the two standard sources into one { loc: { SIZE: target } } map for ONE
