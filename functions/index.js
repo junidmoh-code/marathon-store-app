@@ -3744,6 +3744,11 @@ exports.orderPlacedPush = onValueWritten(
 // docs/display-checks-sale-source.md. Deploy scoped:
 //   firebase deploy --only functions:onClothingSale
 exports.onClothingSale = require("./displayChecks/onClothingSale.js").onClothingSale;
+// A sale at a store whose shelf does not deduct yet (Concrete, Pine) writes no
+// movement for an untrusted line — this puts those lines on the display check
+// from the sale itself (displayChecks/onDisplaySale.js, owner 8 Oct 2026).
+//   firebase deploy --only functions:onDisplaySale
+exports.onDisplaySale = require("./displayChecks/onDisplaySale.js").onDisplaySale;
 
 // ─── closeDisplayRowOnSale — the display record closes itself at the till ─────
 // Gen-2 RTDB onCreate on /stock_movements/{movementId}, the SAME node

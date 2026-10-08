@@ -44,6 +44,7 @@ import { solveBlocks, allocationOrder, planSectionSolve, mergeSolveUpdates, undo
 import { HIDDEN_ROOT, HIDE_REASONS, hideEntry, bulkHideUpdate } from "./hiddenProductsCore";
 import { undoCellTxn, solveUndoBlockers } from "./solveUndo";
 // FIRST BATCH DIRECT TO SHOP (owner spec 2026-09-17) — see firstBatchCore.js.
+import { isCentralFedProduct, centralFedPerSize, centralFedSizes } from "./centralFed";
 import { firstBatchEligible, buildFirstBatchSolveUpdate, trustExistingEmptyUpdates, firstBatchEstimate, firstBatchUndoBlockers, firstBatchUndoCancelTxn, solveIdFor, firstBatchRunId, buildPlacementIndex, firstBatchHistory, firstBatchStoreChoice, firstBatchSizeHints, centralReservedBySize, centralFreeFor, pruneClosedLocks, lockRefillIds, isSneakerOrSlide, hub2PresenceSignals } from "./firstBatchCore";
 import { solveReason, solveConfirmReason, moveReason } from "./actionReasons";
 import { setUpdateBusy } from "../../update/updateChecker";
@@ -357,10 +358,10 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // function (it is not HealthView's to count while that section has no
     // live shop).
     const all = listSection
-      ? computeMissingProducts({ allStock, products, network, section: listSection })
+      ? computeMissingProducts({ allStock, products, network, section: listSection, centralFed: cfg })
       : (allCards || computeMissingProducts({ allStock, products }));
     return category && category !== "all" ? all.filter((c) => c.group === category) : all;
-  }, [allCards, allStock, products, category, listSection, network]);
+  }, [allCards, allStock, products, category, listSection, network, cfg]);
 
   // Typed quantities on a card still in the list, or a move going through,
   // are a job in hand — see Transfer.jsx's transfer-basket for why this is
@@ -469,8 +470,27 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // (sectionRouting.solveHubFor): Hub 2 for Marathon PE and Trophy, Hub 3 for
   // Pine, Hub 3 or the Concrete Stockroom for Concrete. Staff never choose it.
   const hubOf = (card, store) => solveHubFor(network, store, byId.get(card.pid), card.pid);
+  // CENTRAL-FED CLOTHING (centralFed.js — Concrete, owner 8 Oct 2026): the
+  // store keeps this clothing in the shop, N of EVERY declared size, straight
+  // from Central — no hub, no hub seed, no hub leg. Read from the engine
+  // config the owner sets on the Engine Policy card; absent ⇒ off.
+  const cfAt = (card, store) => isCentralFedProduct(cfg, network, store, byId.get(card.pid));
+  // The run a store's lines are planned from: the policy run, with a
+  // central-fed store's row replaced by N per declared size.
+  const runAt = (card, stores) => {
+    const run = runFor(card.pid);
+    for (const st of stores || []) {
+      if (!cfAt(card, st)) continue;
+      const n = centralFedPerSize(cfg, network, st);
+      run[st] = Object.fromEntries(centralFedSizes(byId.get(card.pid)).map((sz) => [String(sz).toUpperCase(), n]));
+    }
+    return run;
+  };
   const qualifyingSizes = (card, store) => {
     if (!targetsReady) return [];
+    // Every declared size the store has no cell for yet (a size it already
+    // carries is the engine's to top up — never asked for twice).
+    if (cfAt(card, store)) return centralFedSizes(byId.get(card.pid)).filter((sz) => allStock?.[store]?.[card.pid]?.[decodedCellKey(sz)] == null);
     const hub = hubOf(card, store);
     if (!hub) return [];
     return computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid), hub);
@@ -531,7 +551,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // sentence that says why and cannot be ticked (solveSections.solveBlocks).
   // The card's division — the list it is on — is the only block offered.
   const divisionOf = (card) => cardSection(card, network);
-  const blocksFor = (card) => solveBlocks({ network, sections: [divisionOf(card)].filter((s) => mySections.includes(s)), source: card.source, product: byId.get(card.pid), productId: card.pid });
+  const blocksFor = (card) => solveBlocks({ network, sections: [divisionOf(card)].filter((s) => mySections.includes(s)), source: card.source, product: byId.get(card.pid), productId: card.pid, engineConfig: cfg });
   const tickableStores = (card) => blocksFor(card).flatMap((b) => b.stores).filter((st) => !st.blocked).map((st) => st.id);
   // HUB PRESENCE (the hard precondition — firstBatchCore.hub2PresenceSignals),
   // judged at the STORE'S OWN hub. From the /stock node this screen already
@@ -556,6 +576,11 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // registry, as the engine routes it (firstBatchEligible). A store with no
   // engine route takes the old seed-only Solve.
   const eligibleAt = (card, store, openByLoc) => {
+    if (cfAt(card, store)) {
+      // The DIRECT first batch: Central → the store, no hub presence test.
+      return !!cfg && !targetsError
+        && firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), productId: card.pid, centralFed: true });
+    }
     const hub = hubOf(card, store);
     return !!cfg && !targetsError && !!hub
       && firstBatchEligible({ source: card.source, store, product: byId.get(card.pid), productId: card.pid, hub,
@@ -682,13 +707,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     const reserved = cfg ? centralReservedBySize({ openByLoc: openByLoc || {}, routes: cfg.routes }) : {};
     return planSectionSolve({
       stores: ticks,
-      run: runFor(card.pid),
+      run: runAt(card, ticks),
       maxUnitsPerIntent: cfg?.maxUnitsPerIntent,
       centralFree: (sz) => centralFreeFor({ qtyAt: (x) => qtyAt(CENTRAL, card.pid, x), reserved, size: sz }),
       storeInfo: (store) => {
-        const hub = hubOf(card, store);
+        const cf = cfAt(card, store);
+        const hub = cf ? null : hubOf(card, store);
         const sizes = qualifyingSizes(card, store);
         const eligible = firstBatchOk && eligibleAt(card, store, openByLoc);
+        if (cf) return { hub: null, sizes, eligible, centralFed: true };
         return {
           hub, sizes, eligible,
           // LOCATION HISTORY informs the split (firstBatchCore.
@@ -706,7 +733,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
     // (or a hub across the wall) is refused here, whatever the panel offered.
     const division = divisionOf(card);
-    const stray = ticks.find((st) => sectionOfStore(st) !== division || sectionOfStore(hubOf(card, st) || st) !== division);
+    const stray = ticks.find((st) => sectionOfStore(st) !== division || (!cfAt(card, st) && sectionOfStore(hubOf(card, st) || st) !== division));
     if (stray) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: stray, sizes: [], msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}. Solve from the "Missing from ${sectionName(network, sectionOfStore(stray))}" list instead.` } }));
       return;
@@ -764,8 +791,15 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       for (const line of plan.lines) {
         const { store, hub, sizes } = line;
         const key = many ? `${card.pid}_${now}_${store}` : `${card.pid}_${now}`;
+        const direct = cfAt(card, store);
+        // CENTRAL-FED with nothing Central can send: nothing to write — the
+        // sizes stay on "Missing from" until Central has them.
+        if (direct && !line.firstBatch) {
+          msgs.push(`Nothing sent to ${LOC_LABEL[store]} — Central has none of ${sizes.map(sizeLabel).join(" · ")}; they stay on the Missing list until it does.`);
+          continue;
+        }
         if (line.firstBatch) {
-          const locs = [hub, store];
+          const locs = direct ? [store] : [hub, store];
           const existing = {};
           const priorOpen = {};
           for (const loc of locs) {
@@ -786,9 +820,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
             if (updates[k] && typeof updates[k] === "object") updates[k] = stampRecord(updates[k], "raise");
           }
           parts.push(updates);
-          parts.push(trustExistingEmptyUpdates({ pid: card.pid, locs, sizes, existing, nowIso: now, uid, isSolvedLoc: (l) => trustedCellsOnly(network, l), cellTrusted }));
+          // A direct batch trusts only the store cells of the sizes Central sends.
+          const trustSizes = direct ? line.split.firstBatch.map((l) => l.size) : sizes;
+          parts.push(trustExistingEmptyUpdates({ pid: card.pid, locs, sizes: trustSizes, existing, nowIso: now, uid, isSolvedLoc: (l) => trustedCellsOnly(network, l), cellTrusted }));
           entries.push({ key, pid: card.pid, name: card.name, store, locs, paths, priorOpen, firstBatch: { solveId, requestIds, store, units: line.units } });
-          msgs.push(`${line.units} unit${line.units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${sourceTab(store)} at the next release; ${LOC_LABEL[hub]} is seeded now and its own batch follows from Central's remainder.`);
+          msgs.push(direct
+            ? `${line.units} unit${line.units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${sourceTab(store)} at the next release; it stays in the shop and refills straight from Central.`
+            : `${line.units} unit${line.units === 1 ? "" : "s"} requested from Central for ${LOC_LABEL[store]} — Central picks it from Source › ${sourceTab(store)} at the next release; ${LOC_LABEL[hub]} is seeded now and its own batch follows from Central's remainder.`);
           continue;
         }
         const locs = seedLocations(card.source, store, hub);
@@ -1039,7 +1077,8 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         // tablet is no explanation at all. `solveBlocked` is both the reason string
         // and the disabled test, so the button cannot go grey without the row
         // saying why.
-        const armed = tickable.some((st) => seedLocations(card.source, st, hubOf(card, st)).every(ruleOn));
+        // (A central-fed store answers N itself — above the kill switch, like the engine.)
+        const armed = tickable.some((st) => cfAt(card, st) || seedLocations(card.source, st, hubOf(card, st)).every(ruleOn));
         // The kill switch is only a REMEDY for products the rule branches can
         // serve — and those are nested inside isClothing (see runFor). For a
         // perfume the switch's position changes nothing: on or off, only an
@@ -1176,6 +1215,25 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     + what the engine will then want. */}
                 {sPlan.lines.map((line) => {
                   const sStore = line.store;
+                  // CENTRAL-FED (centralFed.js): no hub — the panel never names one.
+                  if (cfAt(card, sStore)) {
+                    const cfSplit = line.split;
+                    const sent = cfSplit ? cfSplit.firstBatch : [];
+                    const none = cfSplit ? cfSplit.normal : line.sizes;
+                    return (
+                      <div key={sStore} data-central-fed={sStore} style={{ ...GLASS, padding: "10px 12px", marginTop: 10, fontSize: 12.5, color: "rgba(255,255,255,.75)" }}>
+                        {sent.length > 0
+                          ? <><b style={{ color: "#fff" }}>{line.units} unit{line.units === 1 ? "" : "s"}</b> ({sent.map((l) => `${sizeLabel(l.size)}×${l.qty}`).join(" · ")}) go to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> — requested from Central now; Central picks it from Source › {sourceTab(sStore)} at the next release.</>
+                          : <>Central has none of this product's sizes — nothing to send to <b style={{ color: "#fff" }}>{LOC_LABEL[sStore]}</b> yet.</>}
+                        {sent.length > 0 && none.length > 0 && (
+                          <div style={{ marginTop: 5, color: AMBER }}>{none.map(sizeLabel).join(" · ")}: Central has none — they stay on the Missing list until it does.</div>
+                        )}
+                        <div style={{ marginTop: 5, color: GRAY }}>
+                          {LOC_LABEL[sStore]} keeps this clothing in the shop: {centralFedPerSize(cfg, network, sStore)} of every size, refilled straight from Central.
+                        </div>
+                      </div>
+                    );
+                  }
                   const hubName = LOC_LABEL[line.hub] || line.hub;
                   const fbSplit = line.split;
                   const fb = line.firstBatch ? firstBatchEstimate({ split: fbSplit, run: runFor(card.pid), hub: line.hub }) : null;
@@ -1254,7 +1312,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
                     <SizeStepperChip key={s.size}
                       size={s.size} qty={qtyOf(card, s)} max={s.avail}
                       onChange={(v) => setEdits((e) => ({ ...e, [`${card.pid}|${s.size}`]: v }))}
-                      hint={`${s.avail} at ${LOC_LABEL[card.source]}`}
+                      hint={s.centralNone ? "Central has none" : `${s.avail} at ${LOC_LABEL[card.source]}`}
                       disabled={!canAct || busyPid === card.pid}
                     />
                   ))}

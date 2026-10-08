@@ -25,6 +25,7 @@ import {
   backStockFor, backStockHubsOf, autoRouteAllowed, wallAllows, resolveLocationId,
 } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy.js";
+import { isCentralFedProduct } from "./centralFed";
 
 // A caller may hand over a registry, nothing, or (through a careless
 // `.map(fn)`) an index — only a real registry is used; anything else means
@@ -107,7 +108,10 @@ export function solveHubsOfSection(network, section, product, productId, { solve
 //     product's real one — a sneaker asks the sneakers mapping, as the engine does.
 // undefined = the engine has no leg into this store for this product.
 // Pinned equal to the engine by sectionRouting.engineRoute.test.js.
-export function engineSourceFor(network, routes, store, product, productId) {
+// `engineConfig` (optional): the engine config, for CENTRAL-FED CLOTHING
+// (centralFed.js) — a store keeping its clothing in the shop is fed that
+// clothing straight from Central. Absent ⇒ exactly the answer it always gave.
+export function engineSourceFor(network, routes, store, product, productId, engineConfig) {
   const N = net(network);
   const cfg = routes && typeof routes === "object" ? routes : {};
   if (Object.prototype.hasOwnProperty.call(cfg, store)) {
@@ -115,6 +119,10 @@ export function engineSourceFor(network, routes, store, product, productId) {
   }
   const loc = N.locations[store];
   if (!loc || !autoRefillOn(N, store) || loc.retired === true) return undefined;
+  if (loc.type === "store" && engineConfig && isCentralFedProduct(engineConfig, N, store, product)) {
+    const central = listLocations(N, { type: "central", autoRefillOnly: true })[0]?.id;
+    return central && autoRouteAllowed(N, central, store) ? central : undefined;
+  }
   // (asked of a hub: a routed hub config.routes does not name is fed from Central)
   if (loc.type === "hub") {
     const central = listLocations(N, { type: "central", autoRefillOnly: true })[0]?.id;
@@ -134,9 +142,16 @@ export function engineSourceFor(network, routes, store, product, productId) {
 //   • the store, and the hub behind it, must have SOLVE on (the Network card);
 //   • a product stranded at a hub can only be solved into the stores that hub
 //     is the back stock for: across the wall it must go back to Central first.
-export function solveStoreBlock(network, { source, store, hub }) {
+//   • CENTRAL-FED (centralFed.js — Concrete's clothing): no hub at all; the
+//     product must be at Central, and Central → store must be open.
+export function solveStoreBlock(network, { source, store, hub, centralFed = false }) {
   const N = net(network);
   if (!solveOn(N, store)) return "Solve is off for this store (Network card)";
+  if (centralFed) {
+    if (!isCentral(source, N)) return `${locationName(N, store)} clothing comes from Central — send it back to Central first`;
+    if (!solveRouteAllowed(N, centralId(N), store)) return "this route is not open";
+    return null;
+  }
   if (!hub) return "no back-stock hub is set for this store";
   if (!solveOn(N, hub)) return `Solve is off for its hub (${locationName(N, hub)}) (Network card)`;
   if (!isCentral(source, N)) {

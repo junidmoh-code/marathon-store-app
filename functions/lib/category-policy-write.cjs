@@ -63,6 +63,8 @@ const { effectivePolicyFor, locationEntryMode, armedGroupForCategory, carriedOnl
   FOOTWEAR_GROUP_KEY, FOOTWEAR_CATEGORY_KEYS, footwearPolicyDrift } = require("./policy-resolve.cjs");
 const { encodeSizeKey, resolveTarget, policyCategoryKey } = require("./refill-engine.cjs");
 const { loadNetwork } = require("./network-load.cjs");
+const { CENTRAL_FED_KEY, CENTRAL_FED_MAX, centralFedPerSize } = require("./central-fed.cjs");
+const CENTRAL_FED_PATH = `config/refillEngine/${CENTRAL_FED_KEY}`;
 
 const isPlainObject = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 
@@ -937,6 +939,13 @@ async function readHistory(db, limit = 25) {
 }
 
 // ── THE ENTRY POINT ──────────────────────────────────────────────────────────
+// The stores central-fed clothing may be set for: registry stores that
+// config.routes does not name (never Marathon PE or Trophy).
+function centralFedCandidates(cfg, network) {
+  const locs = network && network.locations ? network.locations : {};
+  return Object.keys(locs).filter((id) => centralFedPerSize({ ...cfg, [CENTRAL_FED_KEY]: { [id]: 1 } }, network, id) !== null).sort();
+}
+
 async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, data, nowMs }) {
   await assertEnginePolicyCaller({ db, callerEmail, callerUid, adminEmail });
 
@@ -984,9 +993,58 @@ async function applyCategoryPolicy({ db, callerEmail, adminEmail, callerUid, dat
       locations: knownLocations,
       cap: cfg.maxIntentsPerRun ?? null,
       maxUnitsPerIntent: cfg.maxUnitsPerIntent ?? null,
+      // Central-fed clothing (lib/central-fed.cjs): the stored map, and the
+      // stores it may be set for (registry stores config.routes does not name).
+      centralFedClothing: isPlainObject(cfg[CENTRAL_FED_KEY]) ? cfg[CENTRAL_FED_KEY] : null,
+      centralFedStores: centralFedCandidates(cfg, network),
       history: await readHistory(db),
       serverNowMs: nowMs,
     };
+  }
+
+  // ── CENTRAL-FED CLOTHING — N per size, kept in the shop, from Central ─────
+  // (owner, 8 Oct 2026; lib/central-fed.cjs). One number per store:
+  //   config/refillEngine/centralFedClothing/{location} = N  (1..99), or null
+  // to switch the rule off there. Same discipline as every write on this card:
+  // history first (holding `before`), drift check against the live value,
+  // write, read back. The card's Revert sends the history entry's `before`.
+  if (d.action === "setCentralFed") {
+    const loc = d.location;
+    if (!centralFedCandidates(cfg, network).includes(loc)) {
+      throw httpsError("invalid-argument", "Central-fed clothing can only be set for a store the registry routes (not Marathon PE or Trophy).");
+    }
+    if (!("perSize" in d)) {
+      throw httpsError("invalid-argument", "perSize is required — send `perSize: null` to switch it off.");
+    }
+    const after = d.perSize === null ? null : d.perSize;
+    if (after !== null && !(Number.isInteger(after) && after >= 1 && after <= CENTRAL_FED_MAX)) {
+      throw httpsError("invalid-argument", `Per size must be a whole number from 1 to ${CENTRAL_FED_MAX}.`);
+    }
+    const before = isPlainObject(cfg[CENTRAL_FED_KEY]) && cfg[CENTRAL_FED_KEY][loc] !== undefined ? cfg[CENTRAL_FED_KEY][loc] : null;
+    if (dryRun) return { ok: true, dryRun: true, action: "setCentralFed", location: loc, before, after };
+    if (sameValue(before, after)) return { ok: true, action: "setCentralFed", noChange: true, location: loc, before, after };
+    if (d.expectedBefore !== undefined && !sameValue(before, d.expectedBefore)) {
+      throw httpsError("failed-precondition", "The number changed while this was open. Close and re-open it to see the current value.",
+        { drift: true, live: before });
+    }
+    const historyRef = db.ref(HISTORY_PATH).push();
+    await historyRef.set({ kind: "centralFed", location: loc, at: nowMs, by: callerEmail, byUid: callerUid || null,
+      before, after, status: "pending" });
+    const liveNow = await val(db, `${CENTRAL_FED_PATH}/${loc}`);
+    if (!sameValue(liveNow ?? null, before)) {
+      await historyRef.update({ status: "aborted_on_drift", liveAtAbort: liveNow ?? null });
+      throw httpsError("failed-precondition", "The number changed while this was being saved. Nothing was written.",
+        { drift: true, live: liveNow ?? null, historyId: historyRef.key });
+    }
+    await db.ref(`${CENTRAL_FED_PATH}/${loc}`).set(after);
+    invalidateCensusCache();
+    const written = await val(db, `${CENTRAL_FED_PATH}/${loc}`);
+    const verified = sameValue(written ?? null, after);
+    await historyRef.update({ status: verified ? "applied" : "unverified", verifiedAt: nowMs });
+    if (!verified) {
+      throw httpsError("internal", "The number was written but did not read back as expected.", { historyId: historyRef.key, written: written ?? null });
+    }
+    return { ok: true, action: "setCentralFed", location: loc, before, after, historyId: historyRef.key, history: await readHistory(db) };
   }
 
   // ── THE EXPLICIT-ROW LIST — "N with their own rows", opened for editing ───

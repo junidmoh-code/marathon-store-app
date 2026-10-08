@@ -32,16 +32,46 @@ function triggerStoreFlags(network) {
 // The seed's answer, for a caller with no registry to hand.
 const TRIGGER_STORE_FLAGS = Object.freeze(triggerStoreFlags(SEED_REGISTRY));
 
-function isTriggerStoreEnabled(storeId, network) {
-  if (typeof storeId !== "string" || !storeId) return false;
-  const flags = network ? triggerStoreFlags(network) : TRIGGER_STORE_FLAGS;
-  return Object.prototype.hasOwnProperty.call(flags, storeId) && flags[storeId] === true;
+// ── PER-STORE SETTINGS (owner, 8 Oct 2026) ───────────────────────────────────
+// /displayChecks_settings/{store}/enabled (boolean) and /scope. When `enabled`
+// is a boolean it DECIDES for that store (a registry STORE only — a hub,
+// Central or an unknown id stays off); when it is absent the store follows the
+// rule above (fully live). Scope absent ⇒ "clothing", today's classifier
+// exactly. So a store with neither field — Marathon PE — behaves as it always
+// has.
+const DISPLAY_SCOPES = Object.freeze(["clothing", "all_but_sneakers"]);
+const DEFAULT_SCOPE = "clothing";
+
+function normStoreSettings(raw) {
+  const r = raw && typeof raw === "object" ? raw : {};
+  return {
+    enabled: typeof r.enabled === "boolean" ? r.enabled : null,
+    scope: DISPLAY_SCOPES.includes(r.scope) ? r.scope : DEFAULT_SCOPE,
+  };
 }
 
-// The stores the trigger is on for, in registry order.
-function triggerStores(network) {
+// Is this id a STORE in the registry (the only kind display checks ever run at)?
+function isRegistryStore(storeId, network) {
+  if (typeof storeId !== "string" || !storeId) return false;
   const flags = network ? triggerStoreFlags(network) : TRIGGER_STORE_FLAGS;
-  return Object.keys(flags).filter((id) => flags[id] === true);
+  return Object.prototype.hasOwnProperty.call(flags, storeId);
+}
+
+// settings: this store's normalised settings, or nothing (= the live rule).
+function isTriggerStoreEnabled(storeId, network, settings) {
+  if (typeof storeId !== "string" || !storeId) return false;
+  const flags = network ? triggerStoreFlags(network) : TRIGGER_STORE_FLAGS;
+  if (!Object.prototype.hasOwnProperty.call(flags, storeId)) return false;   // not a registry store
+  const s = settings ? normStoreSettings(settings) : null;
+  if (s && s.enabled !== null) return s.enabled;
+  return flags[storeId] === true;
+}
+
+// The stores the trigger is on for, in registry order. settingsByStore:
+// { storeId: rawSettings } for the stores whose settings were read.
+function triggerStores(network, settingsByStore) {
+  const flags = network ? triggerStoreFlags(network) : TRIGGER_STORE_FLAGS;
+  return Object.keys(flags).filter((id) => isTriggerStoreEnabled(id, network, settingsByStore ? settingsByStore[id] : null));
 }
 
 // ── Size-key mirror ───────────────────────────────────────────────────────────
@@ -69,6 +99,60 @@ function stockSizeKey(size) {
 // Known bound (inherited, not new): a legacy product with no productType and a
 // size outside S..XXXL (e.g. "4XL", "Free Size") classifies sneaker → skipped.
 // Explicit productType covers current catalog entries.
+// SCOPE "all_but_sneakers" (Concrete, Trophy — owner 8 Oct 2026): every sold
+// item except footwear (sneakers, slides: category "Footwear" or productType
+// "sneaker"), a price product (no real item) or a synthetic charge line
+// (SYNTH_* — the shoebox). Caps, t-shirts, all clothing, accessories, perfume
+// and untyped items all count.
+function isDisplaySale(product, rawSize, scope, productId) {
+  if ((scope || DEFAULT_SCOPE) !== "all_but_sneakers") return isClothingSale(product, rawSize);
+  if (typeof productId === "string" && productId.startsWith("SYNTH_")) return false;
+  if (!product || typeof product !== "object") return false;
+  if (product.priceProduct === true) return false;
+  if (product.category === "Footwear" || product.productType === "sneaker") return false;
+  return true;
+}
+
+// ── A SALE AT A STORE THAT DOES NOT DEDUCT (onDisplaySale) ───────────────────
+// At a store that is not fully live (Concrete, Pine) the till writes NO `sold`
+// movement for a line it cannot trust (marathon-pos-app saleStockMovements:
+// "non_deducting_store") — so the movement trigger never hears of it. This
+// picks the /pos/sales lines that need a check from the sale itself:
+//   • a completed sale or exchange (never a refund, a lay-by, a void);
+//   • at a registry STORE that is not fully live (a live store's lines all
+//     write movements — the movement trigger owns them);
+//   • a line that wrote no movement: not stamped trustedAtShop for this
+//     store's location (a trusted line deducts → onClothingSale), not sold
+//     from a partner shop (soldLoc), not a return half, not a price product,
+//     not a synthetic charge, qty > 0.
+// Returns [{ lineId, productId, size, qty, loc }] — the product-scope test
+// (isDisplaySale) is the caller's, after one product read per line.
+function saleLinesForDisplay({ sale, network }) {
+  const s = sale && typeof sale === "object" ? sale : null;
+  if (!s || s.status !== "completed" || (s.type !== "sale" && s.type !== "exchange")) return [];
+  const reg = require("../lib/network-registry.cjs");
+  const loc = reg.locationOf(network || SEED_REGISTRY, s.storeId);
+  if (!loc || loc.type !== "store" || loc.live === true) return [];
+  const out = [];
+  for (const [lineId, l] of Object.entries(s.lineItems || {})) {
+    if (!l || typeof l !== "object" || !l.productId) continue;
+    if (l.sourceType === "return") continue;
+    if (l.priceProduct === true) continue;
+    if (String(l.productId).startsWith("SYNTH_")) continue;
+    if (l.trustedAtShop === loc.id) continue;
+    if (l.soldLoc) continue;
+    const qty = Number(l.qty);
+    if (!(qty > 0)) continue;
+    out.push({ lineId, productId: l.productId, size: l.size ?? null, qty, loc: loc.id });
+  }
+  return out;
+}
+
+// The idempotency key of one sale line (RTDB-key safe).
+function saleLineLeaseId(saleId, lineId) {
+  return `sale_${String(saleId).replace(/[.#$[\]/]/g, "_")}_${String(lineId).replace(/[.#$[\]/]/g, "_")}`;
+}
+
 function isClothingSale(product, rawSize) {
   // Perfume also generates a display check: the shop holds 1 on display, so a
   // perfume sale means the display needs replacing from backstock. Perfume is
@@ -534,6 +618,13 @@ module.exports = {
   processedClaimDecision,
   bumpTxn,
   isTriggerStoreEnabled,
+  DISPLAY_SCOPES,
+  DEFAULT_SCOPE,
+  normStoreSettings,
+  isDisplaySale,
+  isRegistryStore,
+  saleLinesForDisplay,
+  saleLineLeaseId,
   encodeSizeKey,
   stockSizeKey,
   isClothingSale,

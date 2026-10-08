@@ -63,10 +63,67 @@ const flagsOf = (network) => Object.fromEntries(
   [...storesOf(network)].sort((a, b) => (b.section - a.section) || (a.sort - b.sort)).map((l) => [l.id, l.live === true]));
 export const DISPLAY_CHECKS_STORE_FLAGS = flagsOf(SEED_REGISTRY);
 
-// The enabled stores, in order, from the live registry.
-export function displayChecksEnabledStores(network = currentNetwork()) {
+// ── PER-STORE SWITCH + SCOPE (owner, 8 Oct 2026) ────────────────────────────
+// /displayChecks_settings/{store}/enabled (boolean) and /scope ("clothing" |
+// "all_but_sneakers"). An explicit `enabled` DECIDES for a registry store;
+// absent, the store follows its LIVE flag (above). Scope absent = "clothing".
+// Server mirror: functions/displayChecks/lib.cjs isTriggerStoreEnabled.
+export const DISPLAY_SCOPES = Object.freeze(["clothing", "all_but_sneakers"]);
+export const DISPLAY_SCOPE_LABELS = Object.freeze({ clothing: "Clothing and perfume", all_but_sneakers: "Everything except sneakers" });
+
+// The switches as last read: { storeId: { enabled, scope } }. Filled by
+// primeDisplayCheckSwitches (the Display Checks screen; App may call it too).
+let switchCache = {};
+const switchListeners = new Set();
+export function currentDisplayCheckSwitches() { return switchCache; }
+export function noteDisplayCheckSwitches(map) {
+  switchCache = { ...switchCache, ...(map || {}) };
+  for (const fn of switchListeners) fn(switchCache);
+}
+export function onDisplayCheckSwitchesChange(fn) { switchListeners.add(fn); return () => switchListeners.delete(fn); }
+export function __resetDisplayCheckSwitchesForTests() { switchCache = {}; }
+
+// Read each registry store's two small fields (never the roster). A store the
+// viewer may not read (the rule scopes staff to their own store) is skipped.
+export async function primeDisplayCheckSwitches(network = currentNetwork(), readField) {
+  const read = readField || (async (path) => {
+    const [{ ref, get }, { database }] = await Promise.all([import("firebase/database"), import("../firebase")]);
+    return (await get(ref(database, path))).val();
+  });
+  const out = {};
+  await Promise.all(storesOf(network).map(async (l) => {
+    try {
+      const [enabled, scope] = await Promise.all([
+        read(`displayChecks_settings/${l.id}/enabled`), read(`displayChecks_settings/${l.id}/scope`),
+      ]);
+      out[l.id] = { enabled, scope };
+    } catch { /* not readable by this viewer: the live rule decides */ }
+  }));
+  noteDisplayCheckSwitches(out);
+  return out;
+}
+
+export function displayCheckSwitchOf(storeId, switches = currentDisplayCheckSwitches()) {
+  const s = switches && switches[storeId];
+  return {
+    enabled: s && typeof s.enabled === "boolean" ? s.enabled : null,
+    scope: s && DISPLAY_SCOPES.includes(s.scope) ? s.scope : "clothing",
+  };
+}
+
+// The enabled stores, in order, from the live registry and the switches.
+export function displayChecksEnabledStores(network = currentNetwork(), switches = currentDisplayCheckSwitches()) {
   const flags = flagsOf(network);
-  return Object.keys(flags).filter((id) => flags[id] === true);
+  return Object.keys(flags).filter((id) => {
+    const s = displayCheckSwitchOf(id, switches);
+    return s.enabled !== null ? s.enabled : flags[id] === true;
+  });
+}
+
+// Every registry store, in the same order — the owner's picker, so a store
+// that is switched off can be opened and switched on.
+export function displayChecksAllStores(network = currentNetwork()) {
+  return Object.keys(flagsOf(network));
 }
 
 // Permission strings the gate looks for. Neither is seeded yet (inert today).
@@ -74,9 +131,11 @@ export const DISPLAY_CHECKS_PERMISSION = "display_checks";   // base access
 export const DISPLAY_MANAGER_PERMISSION = "display_manager"; // Analytics + Settings
 
 // Is a given shop turned on for Display Checks? Unknown/absent shop → false.
-export function isDisplayChecksStoreEnabled(storeId, network = currentNetwork()) {
+export function isDisplayChecksStoreEnabled(storeId, network = currentNetwork(), switches = currentDisplayCheckSwitches()) {
   const l = locationOf(network, storeId);
-  return !!l && l.type === "store" && l.id === storeId && l.live === true;
+  if (!l || l.type !== "store" || l.id !== storeId) return false;
+  const s = displayCheckSwitchOf(storeId, switches);
+  return s.enabled !== null ? s.enabled : l.live === true;
 }
 
 // ── GATES ─────────────────────────────────────────────────────────────────────

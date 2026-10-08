@@ -28,6 +28,8 @@ import { FOOTWEAR_CATEGORY_KEYS } from "../../utils/footwearLine.js";
 
 import { sectionOf, locationName } from "../../utils/networkRegistry";
 import { net, storeIds, solveHubsOfSection, centralId, liveSections } from "./sectionRouting";
+import { centralFedPerSize, centralFedIsClothing, centralFedSizes } from "./centralFed";
+import { decodedCellKey } from "../../utils/sizeKey";
 
 // ── ONE SECTION AT A TIME ────────────────────────────────────────────────────
 // "Stranded" is a statement about ONE section: stock that sits upstream of
@@ -135,7 +137,17 @@ export const admitsMissingProduct = (p) => !!p && !inFootwearGroup(p);
 // `products` is an array of catalogue records. `section` (default 2) is the
 // section the list is for; `network` is the registry (default: the current
 // one). A card built for an explicitly named section carries it as `section`.
-export function computeMissingProducts({ allStock, products, network, section } = {}) {
+// `centralFed` (optional): the engine config. For a section named explicitly,
+// a CENTRAL-FED store (centralFed.js — Concrete's clothing, kept in the shop
+// and refilled straight from Central) adds, for its clothing:
+//   • a product the store does not carry that Central has — even when another
+//     store or the hub of the section carries it (that is not where this
+//     store gets its clothing);
+//   • a product the store carries with declared sizes it has no cell for —
+//     the sizes Central has can be solved; those it lacks read "Central has
+//     none" (`centralNone`) and stay here until Central has them.
+// Absent ⇒ the list is exactly what it always was.
+export function computeMissingProducts({ allStock, products, network, section, centralFed } = {}) {
   const N = net(network);
   const sec = section || DEFAULT_SECTION;
   const central = centralId(N);
@@ -194,7 +206,44 @@ export function computeMissingProducts({ allStock, products, network, section } 
       ...(section ? { section: sec } : {}),
     });
   }
+  if (section && centralFed) addCentralFedCards({ out, N, sec, central, allStock, byId, centralFed, sumAt, carries });
   return out.sort((a, b) => b.units - a.units);
+}
+
+function addCentralFedCards({ out, N, sec, central, allStock, byId, centralFed, sumAt, carries }) {
+  const fedStores = storeIds(N, { section: sec }).filter((s) => centralFedPerSize(centralFed, N, s) !== null);
+  if (!fedStores.length) return;
+  const at = (loc, pid, sz) => Math.max(Number(allStock?.[loc]?.[pid]?.[decodedCellKey(sz)]?.qty) || 0, 0);
+  const hasCell = (loc, pid, sz) => allStock?.[loc]?.[pid]?.[decodedCellKey(sz)] != null;
+  const byPid = new Map(out.map((c, i) => [c.pid, i]));
+  const pids = new Set([...Object.keys(allStock?.[central] || {}), ...fedStores.flatMap((s) => Object.keys(allStock?.[s] || {}))]);
+  for (const pid of pids) {
+    const p = byId.get(pid);
+    if (!admitsMissingProduct(p) || isDeactivated(p) || !centralFedIsClothing(p)) continue;
+    for (const store of fedStores) {
+      const declared = centralFedSizes(p);
+      const gap = carries(store, pid) ? declared.filter((sz) => !hasCell(store, pid, sz)) : declared;
+      if (!gap.length) continue;
+      const sizes = gap.map((sz) => ({ size: decodedCellKey(sz), avail: at(central, pid, sz), ...(at(central, pid, sz) > 0 ? {} : { centralNone: true }) }))
+        .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
+      const has = sizes.some((s) => s.avail > 0);
+      // A product the store does not carry is offered only when Central has
+      // some of it; a size gap is listed either way (the owner sees it).
+      if (!carries(store, pid) && !has) continue;
+      const kind = carries(store, pid) ? `Sizes missing at ${locationName(N, store)}` : `Not at ${locationName(N, store)}`;
+      const i = byPid.get(pid);
+      if (i !== undefined && out[i].source === central) {
+        if (!out[i].missing.includes(store)) out[i].missing = [...out[i].missing, store];
+        continue;
+      }
+      const card = {
+        pid, name: p?.name || pid, photo: p?.photoUrl, source: central, kind, sizes, missing: [store],
+        group: groupOf(p).key, groupLabel: groupOf(p).label,
+        units: sizes.reduce((t, s) => t + s.avail, 0), section: sec, centralFed: store,
+      };
+      if (i !== undefined) out[i] = card; else { byPid.set(pid, out.length); out.push(card); }
+    }
+  }
 }
 
 // The lists a screen builds BY ITSELF: one per section that has a LIVE shop

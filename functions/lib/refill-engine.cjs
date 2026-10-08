@@ -32,6 +32,7 @@ const { locationPolicyFor, armedGroupForCategory, effectivePolicyFor, FOOTWEAR_C
 // has held the product) — a leaf module, stated once. See shop-source-rule.cjs.
 const { forbiddenShopSource, shopCentralWithdrawal, requestUntouched, pickInProgress, SHOP_HUB_PRESENT_REASON } = require("./shop-source-rule.cjs");
 const { withPolicyTemplates } = require("./policy-template.cjs");
+const { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } = require("./central-fed.cjs");
 
 // RTDB keys can't contain . # $ / [ ] — mirror of src/utils/sizeKey.js.
 function encodeSizeKey(size) {
@@ -547,7 +548,7 @@ function categoryPolicyTarget(config, products, stock, dest, pid, size) {
   return shaped(sizeUnitsAnywhere(stock, pid, size) > 0 ? entry.target : 0);
 }
 
-function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
+function resolveTarget({ targets, config, products, stock, network }, dest, pid, size) {
   // Deactivated products resolve NOTHING — before the explicit row, so no
   // stored policy of any kind can raise a request for a finished line.
   if (isDeactivated(products?.[pid])) return null;
@@ -563,6 +564,18 @@ function resolveTarget({ targets, config, products, stock }, dest, pid, size) {
       reorderPoint: typeof rp === "number" && Number.isFinite(rp) && rp >= 0 ? rp : null,
       source: "explicit",
     };
+  }
+  // ── CENTRAL-FED CLOTHING (owner, 8 Oct 2026) — lib/central-fed.cjs ─────────
+  // A store keeping its clothing in the shop (Concrete): N of EVERY declared
+  // size, above the category policy and the templated runs it would otherwise
+  // follow, and above the kill switch (it is an owner-set number, like an
+  // explicit row). A size the product does not declare resolves nothing.
+  if (network) {
+    const cfN = centralFedPerSize(config, network, dest);
+    if (cfN !== null && centralFedIsClothing(products?.[pid])) {
+      const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
+      return centralFedSizes(products[pid]).includes(key) ? centralFedTarget(cfN) : null;
+    }
   }
   // ── CATEGORY POLICY — /config/refillEngine/categoryPolicy (2026-08-13) ─────
   // The owner's standing rule: THE CATEGORY A PRODUCT IS GIVEN IS WHAT ARMS IT.
@@ -734,13 +747,18 @@ function networkRouting(config, network) {
   }
   const stores = new Set();
   const storeHubs = new Map();   // store → the hubs it may pull from right now
+  // CENTRAL-FED CLOTHING (lib/central-fed.cjs): a registry-routed store whose
+  // clothing the owner keeps in the shop, refilled straight from Central.
+  const centralFed = new Set();
   for (const s of byRegistry ? networkRegistry.storesOf(network, { autoRefillOnly: true }) : []) {
     if (inConfig(s.id)) continue;
     const hubs = networkRegistry.backStockHubsOf(network, s.id)
       .filter((h) => networkRegistry.autoRouteAllowed(network, h, s.id));
-    if (!hubs.length) continue;   // no routed hub on its side: nothing automatic
+    const cf = !!central && centralFedPerSize(config, network, s.id) !== null && networkRegistry.autoRouteAllowed(network, central, s.id);
+    if (!hubs.length && !cf) continue;   // no routed hub on its side: nothing automatic
     stores.add(s.id);
     storeHubs.set(s.id, hubs);
+    if (cf) centralFed.add(s.id);
     registryRouted.add(s.id);
   }
   const memo = new Map();
@@ -749,12 +767,14 @@ function networkRouting(config, network) {
     if (fixed !== undefined || !stores.has(dest)) return fixed;
     const k = `${dest}|${pid}`;
     if (memo.has(k)) return memo.get(k);
+    if (centralFed.has(dest) && centralFedIsClothing(product)) { memo.set(k, central); return central; }
     const hub = networkRegistry.backStockFor(network, dest, policyCategoryKey(product), pid);
     const src = hub && storeHubs.get(dest).includes(hub) ? hub : undefined;
     memo.set(k, src);
     return src;
   };
-  const sourcesOf = (dest) => (routes[dest] !== undefined ? [routes[dest]] : (storeHubs.get(dest) || []));
+  const sourcesOf = (dest) => (routes[dest] !== undefined ? [routes[dest]]
+    : [...(storeHubs.get(dest) || []), ...(centralFed.has(dest) ? [central] : [])]);
   // The config destinations keep the order they have always had — a shop
   // before its source, so pass-through demand lands first. Registry hubs
   // follow; each registry store then goes in ahead of the first hub it can
@@ -771,7 +791,7 @@ function networkRouting(config, network) {
   }
   const locs = [...new Set([...dests, ...dests.flatMap(sourcesOf)])];
   const modeOf = (dest) => config?.mode?.[dest] || (registryRouted.has(dest) ? "live" : "off");
-  return { routes, withheld, stores, registryRouted, sourceFor, sourcesOf, dests, locs, modeOf, central };
+  return { routes, withheld, stores, registryRouted, sourceFor, sourcesOf, dests, locs, modeOf, central, centralFed };
 }
 
 // The stock view a plan reads at a "solved" location: trusted cells only. A
@@ -874,7 +894,9 @@ function computeRefillPlan(snapshot) {
     return s == null ? configPool : s;
   };
 
-  const ctx = { targets, config, products, stock };
+  // `network` lets resolveTarget answer central-fed clothing (central-fed.cjs);
+  // with no registry, or the key absent, it changes nothing.
+  const ctx = { targets, config, products, stock, network };
 
   // ── inbound & reservations from EXISTING open intents ──────────────────────
   // inbound[dest|pid|size] = qty already on its way. Manual (human-placed) Shop
@@ -1473,8 +1495,15 @@ function computeRefillPlan(snapshot) {
   // clothing-only form (see the tests pinning deep-equality of the clothing plan).
   // A product that somehow satisfied BOTH predicates would be treated as
   // clothing, matching resolveTarget's branch order.
+  // CENTRAL-FED CLOTHING: every clothing product the store CARRIES (masked
+  // stock — trusted cells only at a "solved" store) is managed there, in every
+  // size it declares, whatever the clothing switches say (central-fed.cjs).
+  const centralFedHere = (dest) => !!routing.centralFed && routing.centralFed.has(dest);
   const managedPids = (dest) => {
     const out = new Set(Object.keys(targets?.[dest] || {}));
+    if (centralFedHere(dest)) {
+      for (const pid of Object.keys(stock?.[dest] || {})) if (centralFedIsClothing(products?.[pid]) && storeCarries(stock, dest, pid)) out.add(pid);
+    }
     const ruleOn = ruleTargetsEnabled(config, dest);
     const footOn = footwearTargetsEnabled(config, dest);
     // CATEGORY POLICY (2026-08-13): a mapped category's products are managed at
@@ -1498,6 +1527,9 @@ function computeRefillPlan(snapshot) {
   };
   const sizesFor = (dest, pid) => {
     const out = new Set(Object.keys(targets?.[dest]?.[pid] || {}));
+    if (centralFedHere(dest) && centralFedIsClothing(products?.[pid])) {
+      for (const s of centralFedSizes(products[pid])) out.add(s === "_" ? "_" : encodeSizeKey(s));
+    }
     const ruleOn = ruleTargetsEnabled(config, dest);
     const footOn = footwearTargetsEnabled(config, dest);
     // Mapped sizes ride along regardless of the switches, mirroring
@@ -2314,7 +2346,7 @@ function computeRefillPlan(snapshot) {
   // THE BACKSTOP — every engine intent leaves through here, so no planning
   // branch (deficit, pass-through, a future one) can emit shop ← Central.
   const routedIntents = intents.filter((i) => {
-    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing })) return true;
+    if (!forbiddenShopSource({ dest: i.dest, source: i.source, routes, locations, routing, product: products?.[i.productId], pid: i.productId })) return true;
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;
   });

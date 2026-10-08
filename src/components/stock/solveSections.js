@@ -29,19 +29,23 @@
 import { firstBatchSplit } from "./firstBatchCore";
 import { net, storeIds, nameOf, solveHubFor, solveStoreBlock } from "./sectionRouting";
 import { sectionName, sectionsInOrder } from "../../utils/networkRegistry";
+import { isCentralFedProduct } from "./centralFed";
 
 // The blocks the panel renders: one per section the viewer may see, each with
 // its stores in registry order.
 //   { section, name, stores: [{ id, name, hub, hubName, blocked }] }
 // `blocked` is null (tickable) or the plain sentence shown beside the tick.
-export function solveBlocks({ network, sections = [1, 2], source, product, productId } = {}) {
+// `engineConfig` (optional): a CENTRAL-FED store (centralFed.js) has no hub
+// for this product — its clothing comes straight from Central.
+export function solveBlocks({ network, sections = [1, 2], source, product, productId, engineConfig } = {}) {
   const N = net(network);
   return sectionsInOrder(N, sections).map((section) => ({
     section,
     name: sectionName(N, section),
     stores: storeIds(N, { section }).map((id) => {
-      const hub = solveHubFor(N, id, product, productId);
-      return { id, name: nameOf(id, N), hub, hubName: hub ? nameOf(hub, N) : null, blocked: solveStoreBlock(N, { source, store: id, hub }) };
+      const centralFed = !!engineConfig && isCentralFedProduct(engineConfig, N, id, product);
+      const hub = centralFed ? null : solveHubFor(N, id, product, productId);
+      return { id, name: nameOf(id, N), hub, hubName: hub ? nameOf(hub, N) : null, centralFed, blocked: solveStoreBlock(N, { source, store: id, hub, centralFed }) };
     }),
   })).filter((b) => b.stores.length > 0);
 }
