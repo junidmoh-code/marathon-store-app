@@ -65,6 +65,9 @@ describe("the pause switch (Junid, 8 Oct)", () => {
     assert.equal(v.counts.wanted, 0);
     // The same day, not paused, is silent.
     assert.equal(day({ autopilotLog: null, posts: [] }).severity, "silent");
+    // Posting is NOT paused by this switch: a dead publisher still pages on a paused day.
+    const dead = day({ autopilotLog: null, posts: [], generationPaused: true, publisherTickAt: NOW - 6 * 60 * MIN });
+    assert.notEqual(dead.severity, "ok"); assert.equal(dead.paused, true);
   });
 });
 
