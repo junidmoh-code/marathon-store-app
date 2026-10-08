@@ -54,8 +54,22 @@ function day(over = {}) {
     posts: has("posts") ? over.posts : healthyDayPosts(),
     twins: has("twins") ? over.twins : undefined,
     publisherTickAt: has("publisherTickAt") ? over.publisherTickAt : NOW - 2 * MIN,
+    ...(has("generationPaused") ? { generationPaused: over.generationPaused } : {}),
   });
 }
+
+describe("the pause switch (Junid, 8 Oct)", () => {
+  test("a paused day with no generator record and nothing published is OK — quiet by decision, never silent", () => {
+    const v = day({ autopilotLog: null, posts: [], generationPaused: true });
+    assert.equal(v.severity, "ok"); assert.equal(v.ok, true); assert.equal(v.paused, true); assert.deepEqual(v.reasons, []);
+    assert.equal(v.counts.wanted, 0);
+    // The same day, not paused, is silent.
+    assert.equal(day({ autopilotLog: null, posts: [] }).severity, "silent");
+    // Posting is NOT paused by this switch: a dead publisher still pages on a paused day.
+    const dead = day({ autopilotLog: null, posts: [], generationPaused: true, publisherTickAt: NOW - 6 * 60 * MIN });
+    assert.notEqual(dead.severity, "ok"); assert.equal(dead.paused, true);
+  });
+});
 
 describe("a healthy day says nothing", () => {
   test("everything generated, something published, publisher ticking", () => {

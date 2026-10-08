@@ -220,6 +220,7 @@ function dayObligation(policy, { reelAlsoPostsToStory = true, storyAlsoPostsToFe
  * @param {object}  a.autopilotLog      the /social_autopilot_log/{saDate} record, or null if absent
  * @param {object[]}a.posts             /social_posts records (with ids) created within SCAN_WINDOW_MS
  * @param {boolean} a.autopilotEnabled  the deployed SOCIAL_AUTOPILOT_ENABLED; false says "switched off"
+ * @param {boolean} a.generationPaused  the pause switch on the New Arrivals card (Junid, 8 Oct): a paused day owes NO generation and is never "silent"
  * @param {number}  a.publisherTickAt   epoch ms of the publisher's last tick, or null if it has never written one
  *
  * @returns {{ ok, severity, reasons, counts, saDate }}
@@ -288,7 +289,7 @@ function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, sto
   return by;
 }
 
-function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true }) {
+function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true, generationPaused = false }) {
   const saDate = saDateStringFromMs(nowMs);
   const dayStart = sastMidnight(nowMs);
   const dayEnd = dayStart + DAY_MS;
@@ -297,7 +298,10 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   const reasons = [];
 
   // ── 1. GENERATION ─────────────────────────────────────────────────────────
-  const obligation = dayObligation(policy, twins || {});
+  // THE PAUSE SWITCH (Junid, 8 Oct): a paused day owes NO generation — quiet by decision, never "silent".
+  // Posting is not paused by this switch: the publisher's heartbeat and any post already due are still judged.
+  const paused = generationPaused === true;
+  const obligation = paused ? { generations: 0, byFormat: { reel: 0, story: 0, feed: 0 } } : dayObligation(policy, twins || {});
   const wanted = obligation.generations;
   const made = Number(autopilotLog && autopilotLog.created) || 0;
   const skipped = Number(autopilotLog && autopilotLog.skipped) || 0;
@@ -434,7 +438,8 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   // still-open slot at or before the moment it landed (a late 12:00 reel at
   // 13:10 covers 12:00, a 19:01 reel covers 19:00 and not 12:00). A post that
   // landed before every open slot, posted early, covers the earliest one.
-  const slots = passedSlots(policy, dayStart, nowMs, twins || {});
+  // (A paused day has no slots to fill: nothing was made for them. A post already due is still judged above.)
+  const slots = paused ? {} : passedSlots(policy, dayStart, nowMs, twins || {});
   const missed = [];
   let missedSlotCount = 0;
   for (const [format, times] of Object.entries(slots)) {
@@ -526,6 +531,7 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
     ok: reasons.length === 0,
     severity,
     reasons,
+    ...(paused ? { paused: true } : {}),
     counts: {
       wanted, made, skipped,
       // What each surface owed and what it got — the numbers the new rhythm

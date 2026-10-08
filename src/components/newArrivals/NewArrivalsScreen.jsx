@@ -290,7 +290,7 @@ function ItemCard({ item, tab, live, h, stats }) {
       {PRICE_TABS.includes(tab) && h.onSavePrices && <PriceFields item={item} onSavePrices={h.onSavePrices} needNote={hasPhotoNow && needsStockPrice(p)} />}
       {tab === "new" && (
         <div data-testid="actions" style={{ display: "flex", gap: 8, marginTop: 12, alignItems: "stretch" }}>
-          <button disabled={working} onClick={() => h.onGenerate(item)} style={{ ...bBlue, ...big, opacity: working ? 0.5 : 1 }}>{working ? "Generating…" : hasPhotoNow ? "Regenerate" : "Generate"}</button>
+          <button disabled={working || h.generationPaused} onClick={() => h.onGenerate(item)} style={{ ...bBlue, ...big, opacity: working || h.generationPaused ? 0.5 : 1 }}>{h.generationPaused ? "Paused" : working ? "Generating…" : hasPhotoNow ? "Regenerate" : "Generate"}</button>
           {hasPhotoNow && (
             <button disabled={!approveOn} onClick={() => h.onApprove(item)} style={{ ...bGreen, ...big, opacity: approveOn ? 1 : 0.4 }}>Approve</button>
           )}
@@ -357,7 +357,8 @@ function GroupSwitcher({ group, count, onStep }) {
   );
 }
 
-const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null, defaultMethod: null };
+const PAUSE_SWITCHES = Object.freeze([{ key: "generation", label: "Photo generation" }, { key: "posting", label: "WhatsApp posting" }]);
+const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null, defaultMethod: null, pause: null, canPause: false };
 const deviceStorage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 const ask = (text) => (typeof window !== "undefined" && window.confirm ? window.confirm(text) : true);
 
@@ -480,6 +481,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
           items: res.items || [], total: Number.isFinite(res.total) ? res.total : (res.items || []).length, nextCursor: res.nextCursor || null,
           tabCounts: res.tabCounts || {}, groupCounts: res.groupCounts || null, stats: res.stats || null,
           defaultMethod: res.defaultMethod === "split" ? "split" : res.defaultMethod === "full" ? "full" : dataRef.current.defaultMethod || null,
+          // The pause switches, as the server has them now; whether this account may flip them (Junid only).
+          pause: res.pause && typeof res.pause === "object" ? { generation: res.pause.generation === true, posting: res.pause.posting === true } : dataRef.current.pause || null,
+          canPause: res.canPause === true,
         };
         for (const [pid, e] of gone.current) next = withoutItem(next, pid, { group: e.group, toTab: e.toTab });
         setData(next);
@@ -571,7 +575,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
 
   // The function's own default (it comes with the list); Full Gemini until the list has said.
   const defaultMethod = data.defaultMethod || DEFAULT_METHOD;
-  const h = { defaultMethod };
+  const h = { defaultMethod, generationPaused: data.pause?.generation === true };
 
   // PRICES — the admin price save. "Retail below stock price" asks first, as the admin editor does.
   h.onSavePrices = api.savePrices ? (item, drafts) => {
@@ -711,7 +715,24 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
   };
 
   // GENERATE / REGENERATE — live, on the card. Its own lane: nothing else waits for it.
+  // THE PAUSE SWITCHES: flip, then show what the server says (never a guess).
+  const [pauseBusy, setPauseBusy] = useState(null);
+  const onPause = async (which, paused) => {
+    if (!api.pause || pauseBusy) return;
+    setPauseBusy(which);
+    try {
+      const res = await api.pause(which, paused);
+      const pause = res?.pause && typeof res.pause === "object" ? { generation: res.pause.generation === true, posting: res.pause.posting === true } : null;
+      // A flip counts as a tap: a list read that started before it is overtaken and may not put the old state back.
+      taps.current += 1;
+      if (pause) { dataRef.current = { ...dataRef.current, pause }; setData((d) => ({ ...d, pause })); }
+      say(null, `${PAUSE_SWITCHES.find((s) => s.key === which).label}: ${paused ? "paused" : "on"}`);
+    } catch (e) {
+      say(null, `Not changed — ${reason(e)}`);
+    } finally { setPauseBusy(null); }
+  };
   h.onGenerate = (item) => {
+    if (h.generationPaused) { say(item, "Paused — photo generation is switched off."); return; }
     const pid = item.pid;
     if (liveRef.current[pid] || isGenerating(item)) return;
     taps.current += 1;
@@ -786,6 +807,27 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
           <div style={{ fontSize: 20, fontWeight: 800, flex: 1 }}>New Arrivals</div>
           <div data-testid="spent" style={{ color: GRAY, fontSize: 11 }}>{spentText(stats)}</div>
         </div>
+        {/* THE PAUSE SWITCHES (Junid only): photo generation and WhatsApp posting. Paused = every image-model call is refused
+            on the server and the Mac mini poster sends nothing. Everyone else sees the state as a line. */}
+        {data.pause && (
+          <div data-testid="pause" style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
+            {PAUSE_SWITCHES.map((sw) => {
+              const paused = data.pause[sw.key] === true;
+              return (
+                <div key={sw.key} data-testid={`pause-${sw.key}`} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+                  <span style={{ flex: 1 }}>{sw.label}: <b data-testid={`pause-${sw.key}-state`}>{paused ? "Paused" : "On"}</b></span>
+                  {data.canPause && (
+                    <button role="switch" aria-checked={!paused} aria-label={`${sw.label}: ${paused ? "resume" : "pause"}`} disabled={pauseBusy === sw.key}
+                      onClick={() => onPause(sw.key, !paused)}
+                      style={{ ...(paused ? bGray : bBlue), minHeight: 36, padding: "0 12px", borderRadius: 999, fontSize: 12, opacity: pauseBusy === sw.key ? 0.5 : 1 }}>
+                      {paused ? "Switch on" : "Pause"}
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
         <div role="tablist" style={{ display: "flex", gap: 8, marginBottom: 12 }}>
           {TABS.map((t) => (
             <button key={t.key} role="tab" aria-selected={tab === t.key} onClick={() => setTab(t.key)} style={{ ...(tab === t.key ? tabOn : tabOff), flex: 1, minHeight: 40, padding: "0 14px" }}>

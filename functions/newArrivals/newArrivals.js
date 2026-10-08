@@ -26,6 +26,7 @@ const { onValueCreated } = require("firebase-functions/v2/database");
 const { onCall, HttpsError } = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const core = require("./core.cjs");
+const pauseSwitch = require("./pause.cjs");
 const { ONLINE_EXCLUDED_LOCATIONS } = require("../lib/social-select.cjs");
 
 if (!admin.apps.length) {
@@ -285,10 +286,32 @@ async function listTab(db, tabAsked, { cursor = null, limit, filter = null, grou
 
 const callableOpts = { region: "europe-west1", memory: "256MiB", timeoutSeconds: 120 };
 
+const isJunid = (request) => request.auth?.token?.email === ADMIN_EMAIL;
+
 const newArrivalsList = onCall(callableOpts, async (request) => {
   await assertNewArrivalsAccess(request);
   const d = request.data || {};
-  return listTab(admin.database(), String(d.tab || "new"), { cursor: d.cursor || null, limit: d.limit, filter: d.filter || null, group: d.group || null });
+  const db = admin.database();
+  const [page, pause] = await Promise.all([
+    listTab(db, String(d.tab || "new"), { cursor: d.cursor || null, limit: d.limit, filter: d.filter || null, group: d.group || null }),
+    pauseSwitch.readPause(db),
+  ]);
+  // THE PAUSE SWITCHES: what they say, and whether this account may flip them (Junid only).
+  return { ...page, pause, canPause: isJunid(request) };
+});
+
+// ── the pause switches (Junid only) ──────────────────────────────────────────
+async function setPause(db, { which, paused }, uid, nowMs) {
+  if (!pauseSwitch.SWITCHES.includes(which)) throw new HttpsError("invalid-argument", "Which switch: generation or posting.");
+  if (typeof paused !== "boolean") throw new HttpsError("invalid-argument", "Say paused: true or false.");
+  const rec = await pauseSwitch.setPause(db, { which, paused, by: uid }, nowMs);
+  return { ok: true, which, paused: rec.paused, pause: await pauseSwitch.readPause(db) };
+}
+
+const newArrivalsPause = onCall(callableOpts, async (request) => {
+  if (!isJunid(request)) throw new HttpsError("permission-denied", "Only Junid can pause or resume.");
+  const d = request.data || {};
+  return setPause(admin.database(), { which: d.which, paused: d.paused }, request.auth?.uid, Date.now());
 });
 
 // ── moves + the ledger ───────────────────────────────────────────────────────
@@ -682,7 +705,7 @@ const newArrivalsRetry = onCall(callableOpts, async (request) => {
 module.exports = {
   newArrivalsEnqueue, newArrivalsList, newArrivalsApprove, newArrivalsRetry,
   newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect, newArrivalsLove,
-  newArrivalsHow, newArrivalsMethod,
+  newArrivalsHow, newArrivalsMethod, newArrivalsPause,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
+  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, setPause, isJunid, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
 };

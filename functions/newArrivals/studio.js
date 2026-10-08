@@ -24,6 +24,7 @@ const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const crypto = require("node:crypto");
 const core = require("./core.cjs");
+const pauseSwitch = require("./pause.cjs");
 const na = require("./newArrivals.js");
 const { CONDITION_CLAUSE } = require("../lib/photo-prompt.cjs");
 
@@ -249,7 +250,15 @@ async function addSpend(db, zar, { estimated = false } = {}) {
  * emit(ev): progress chunks for the card.
  * → { ok, pid, genId, code, seconds, item (as the card shows it) }
  */
+/** The image call, refused if the switch was flipped since the tap was accepted. */
+const atModelCall = (db, image) => async (...args) => {
+  if (await pauseSwitch.isPaused(db, "generation")) { const e = new Error(pauseSwitch.PAUSED_MESSAGE); e.studioRefusal = true; throw e; }
+  return image(...args);
+};
+
 async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = () => {}) {
+  // THE PAUSE SWITCH (Junid, 8 Oct): while generation is paused no image model is called, whoever taps.
+  if (await pauseSwitch.isPaused(db, "generation")) throw new HttpsError("failed-precondition", pauseSwitch.PAUSED_MESSAGE);
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== undefined && method !== null && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full or split.");
   if (provider !== undefined && provider !== null && !core.PROVIDERS.includes(provider)) throw new HttpsError("invalid-argument", "Provider is gemini or openai.");
@@ -284,9 +293,11 @@ async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = (
         // The footwear correction (studio/correct.mjs unless a test supplies its own).
         ...(deps.correct ? { correct: deps.correct } : {}),
         // The ONE interface both engines sit behind: (model, parts, imageConfig, { onEvent }) → { buffer, usage, … }.
-        image: deps.image || (engine === "openai"
+        // THE PAUSE SWITCH is read again HERE, at the model-call boundary: a pause flipped while the photo was being
+        // prepared stops the call that would have followed.
+        image: atModelCall(db, deps.image || (engine === "openai"
           ? (m, parts, imageConfig, opts) => openai.openaiImage(m, parts, imageConfig, { ...opts, apiKey: deps.openaiKey })
-          : (m, parts, imageConfig, opts) => gemini.streamImage(m, parts, imageConfig, { ...opts, apiKey: deps.apiKey })),
+          : (m, parts, imageConfig, opts) => gemini.streamImage(m, parts, imageConfig, { ...opts, apiKey: deps.apiKey }))),
         upload: (p, buf, mime) => uploadImmutable(bucket, p, buf, mime),
         now,
         log: (m) => console.warn(`newArrivalsStudio: ${pid} — ${m}`),

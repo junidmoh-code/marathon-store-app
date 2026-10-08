@@ -729,3 +729,38 @@ test("OpenAI gets the SAME steam layer on a hoodie and the SAME box rule + shoe 
   assert.equal(gen.provider, "openai");
   assert.equal(gen.layers.footwearBox, true); assert.equal(gen.layers.footwearPose, true);
 });
+
+// ── THE PAUSE SWITCH (Junid, 8 Oct) ───────────────────────────────────────────
+test("generation is paused: the tap is refused BEFORE any model call, on either engine; the item is untouched; nothing is spent", async () => {
+  for (const provider of [undefined, "openai"]) {
+    const w = await world();
+    await w.db.ref("new_arrivals/pause/generation").set({ paused: true, at: 1, by: "junid" });
+    let called = 0;
+    w.deps.image = async () => { called += 1; throw new Error("never"); };
+    await assert.rejects(studio.studioGenerate(w.db, { pid: PID, provider }, "junid", w.deps), /Paused — photo generation is switched off on the New Arrivals card\./);
+    assert.equal(called, 0);
+    const it = await itemOf(w.db);
+    assert.equal(it.generateRequest, undefined);
+    assert.equal(Object.keys(it.generations || {}).length, 0);
+    assert.equal((await w.db.ref(`${core.ROOT}/stats/totalSpentZar`).once()).val(), null);
+  }
+  // Switched back on: it generates.
+  const w = await world();
+  await w.db.ref("new_arrivals/pause/generation").set({ paused: false, at: 2, by: "junid" });
+  const out = await studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps);
+  assert.ok(out.genId);
+});
+
+test("paused AFTER the tap was accepted, while the photo was being prepared: the model call itself is refused; the item is given back", async () => {
+  const w = await world();
+  const fetchBytes = w.deps.fetchBytes;
+  // The switch flips while the original photo is being read.
+  w.deps.fetchBytes = async (...a) => { await w.db.ref("new_arrivals/pause/generation").set({ paused: true, at: 9, by: "junid" }); return fetchBytes(...a); };
+  let called = 0;
+  w.deps.image = async () => { called += 1; throw new Error("never"); };
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /Paused — photo generation is switched off/);
+  assert.equal(called, 0);
+  const it = await itemOf(w.db);
+  assert.equal(it.generateRequest, undefined, "the claim is released");
+  assert.equal(Object.keys(it.generations || {}).length, 0);
+});

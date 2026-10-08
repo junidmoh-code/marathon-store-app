@@ -35,6 +35,27 @@ How the first version worked, and why it was slow, is in
   `admin/productPriceSave.js` — the same save the admin price editor uses.
 - **Paging**: 30 at a time through `newArrivalsList` ("Load more").
 
+## The pause switches (Junid, 8 Oct)
+
+Two switches at the top of the card, flipped by Junid only (`newArrivalsPause`;
+everyone else sees the state):
+
+| Switch | Stored at | While paused |
+|---|---|---|
+| **Photo generation** | `new_arrivals/pause/generation` | every Cloud Function that makes an image refuses before any model call — `newArrivalsStudio`, `generateSocialPosts`, the 06:00 `socialDailyAutopilot`, `generateProductPhotos` (`functions/newArrivals/pause.cjs`). Generate / Regenerate show **Paused**. |
+| **WhatsApp posting** | `new_arrivals/pause/posting` | the Mac mini poster (`marathon-group-poster` `bin/post-window.mjs`) reads the switch at the start of a window and again before EVERY send, and sends nothing. A `PAUSE` file in that repo's root is a second lock. |
+
+Absent = on (deleting the node switches everything back on); a switch that cannot be read counts as paused. The social watchdog treats a paused day as quiet by decision, never as an outage. Browsing, prices,
+Approve, Skip and the Shopify chain keep working while paused. Both were set to
+Paused at go-live (8 Oct 2026) until the quality in `PHOTO-QUALITY-NEXT.md` is
+met. Each flip is logged at `new_arrivals/pause/log/{time}`.
+
+**What was generating by itself (found 8 Oct):** the social autopilot — a
+Cloud Function on a 06:00 schedule that makes the day's Instagram/Facebook
+photos with `gemini-3-pro-image`. The New Arrivals card made nothing by
+itself since 4 Oct; the two generations since 5 Oct (G-0121, G-0122) were
+live tests of #693 and #698.
+
 ## Data — `/new_arrivals`
 
 | Path | What |
@@ -77,6 +98,7 @@ nothing.
 | `newArrivalsReject` | a feedback chip, logged against the photo shown |
 | `newArrivalsHow` | "How Gemini did it" for one generation |
 | `newArrivalsMethod` | the next photo's engine + method for one item (`items/{pid}/method`, `/provider`) |
+| `newArrivalsPause` | the two pause switches (Junid only) |
 | `newArrivalsEnqueue` | trigger: an upload lands in New |
 
 All are gated to the super-admin or `permFlags/shopify_publish`. The client
