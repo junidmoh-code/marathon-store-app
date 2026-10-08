@@ -5308,9 +5308,11 @@ exports.socialDailyAutopilot = onSchedule(
     const saDate = saDateForUsage(nowMs);
     // THE PAUSE SWITCH (Junid, 8 Oct — newArrivals/pause.cjs): the morning run makes nothing while photo
     // generation is paused. Said in the day's log so the silence has a reason.
+    // Written to its OWN node — never into the day's claim record, which the claim transaction and the
+    // watchdog (lib/social-health.cjs) read by shape.
     if (await photoPause.isPaused(db, "generation")) {
       console.log("socialDailyAutopilot: paused (new_arrivals/pause/generation)");
-      await db.ref(`social_autopilot_log/${saDate}`).update({ paused: true, pausedAt: nowMs }).catch(() => {});
+      await db.ref(`social_autopilot_paused/${saDate}`).set({ at: nowMs }).catch(() => {});
       return;
     }
 
@@ -5532,6 +5534,7 @@ exports.socialHealthScan = onSchedule(
     ]);
 
     const posts = Object.entries(postsSnap.val() || {}).map(([id, p]) => ({ id, ...(p || {}) }));
+    const paused = await photoPause.isPaused(db, "generation");
     const verdict = assessSocialDay({
       nowMs,
       policy,
@@ -5541,6 +5544,8 @@ exports.socialHealthScan = onSchedule(
       // The generator's off switch is compiled into this same build, so the
       // watchdog can say "switched off" rather than "no record of running".
       autopilotEnabled: SOCIAL_AUTOPILOT_ENABLED,
+      // THE PAUSE SWITCH (Junid, 8 Oct): a paused day owes nothing — quiet by decision, not an outage.
+      generationPaused: paused,
       // ── THE OBLIGATION FOLLOWS THE TWINS ─────────────────────────────────
       // Two reel slots owe two reels AND two stories, because each reel is
       // also posted as a story from the same encoded file. Passed in rather

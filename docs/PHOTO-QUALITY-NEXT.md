@@ -26,8 +26,8 @@ met. This file is the brief to build against when they resume.
 - Every piece of text, every logo, label, print, stitch line and seam
   **exactly unchanged**. Any change to these fails the photo, however
   beautiful the rest.
-- Footwear stays on the one fixed plate at the measured layout (the plate
-  lock, #693); clothing on its fence.
+- (Already in force, not in this brief: footwear stays on the one fixed
+  plate at the measured layout — the plate lock, #693.)
 
 ## What exists today (so nothing is rebuilt)
 
@@ -43,8 +43,9 @@ met. This file is the brief to build against when they resume.
 
 Use the three test items of 4 Oct (the black long-sleeve tee, the denim
 shirt, the Adidas F50 boot) plus one white sneaker and one hoodie. One photo
-per option per item; Junid judges on the card; the cost column is real
-(from the API's own token counts), not estimated.
+per option per item; Junid judges on the card. In the cost column, A and D
+are MEASURED (from the API's own token counts, 4–6 Oct); B, C, E and F are
+projections to be replaced by the first real photo's figure.
 
 | # | Option | What changes | Cost per photo (rand, at R16.73/$) | Time |
 |---|---|---|---|---|
@@ -56,9 +57,11 @@ per option per item; Junid judges on the card; the cost column is real
 | F | **Retouch pass by OpenAI** (C, but the second call to gpt-image-1 with `input_fidelity: high`) | as C | about **R2.35 + R7.70 = R10.05** | +70 s |
 
 Notes for whoever builds the test:
-- Options B and C can be switched on in config with no new code path: B is
-  a config value; C is one new layer in `prompt.mjs` plus one more call in
-  `studio.mjs`, recorded on the generation as `retouch`.
+- B is a config value (`imageSize`) with no new code. C needs code: one new
+  layer in `prompt.mjs` plus one more call in `studio.mjs`, recorded on the
+  generation as `retouch`.
+- OpenAI makes 1024 px photos: D, E and F cannot meet "high resolution" as
+  they stand.
 - Keep the text/logo rule in EVERY prompt of every option; a retouch pass
   that is told only "clean" will "clean" a logo.
 - Judge with Junid's ❤ and "Not right" chips on the card so the weekly

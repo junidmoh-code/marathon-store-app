@@ -7,8 +7,9 @@
 //   pause/posting    { paused, at, by }   the Mac mini poster sends nothing while true
 //
 // ABSENT = NOT PAUSED, except that the switches are set to Paused at go-live.
-// EVERY generator reads this before it calls a model: newArrivalsStudio,
-// generateSocialPosts, socialDailyAutopilot, generateProductPhotos. A read
+// EVERY Cloud Function that makes an image reads this before it calls a
+// model: newArrivalsStudio, generateSocialPosts, socialDailyAutopilot,
+// generateProductPhotos. (A hand-run script with its own key is not gated.) A read
 // that fails counts as PAUSED — a switch that cannot be read never lets a
 // model be called.
 const PAUSE = "new_arrivals/pause";
@@ -29,18 +30,17 @@ async function isPaused(db, which) {
 
 /** Both switches, as the card shows them. A failed read reads as paused. */
 async function readPause(db) {
-  const out = {};
-  for (const w of SWITCHES) out[w] = await isPaused(db, w);
-  return out;
+  const vals = await Promise.all(SWITCHES.map((w) => isPaused(db, w)));
+  return Object.fromEntries(SWITCHES.map((w, i) => [w, vals[i]]));
 }
 
 /** Flip one switch. by: the uid; nowMs: the server's clock. Pure write; the caller has checked who. */
 async function setPause(db, { which, paused, by }, nowMs) {
   if (!SWITCHES.includes(which)) throw new Error(`no such switch: ${which}`);
   const rec = { paused: paused === true, at: nowMs, by: by || null };
-  await db.ref(`${PAUSE}/${which}`).set(rec);
-  // A small log of flips (keyed by time: one entry per flip, never a scan).
-  await db.ref(`${PAUSE}/log/${nowMs}`).set({ which, ...rec });
+  // The switch and its log line in ONE write: never a switch that moved with no record, or a record of a
+  // switch that did not move. (The log is keyed by time: one entry per flip, never a scan.)
+  await db.ref(PAUSE).update({ [which]: rec, [`log/${nowMs}`]: { which, ...rec } });
   return rec;
 }
 

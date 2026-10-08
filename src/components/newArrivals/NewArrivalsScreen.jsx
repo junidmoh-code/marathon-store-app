@@ -723,6 +723,8 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     try {
       const res = await api.pause(which, paused);
       const pause = res?.pause && typeof res.pause === "object" ? { generation: res.pause.generation === true, posting: res.pause.posting === true } : null;
+      // A flip counts as a tap: a list read that started before it is overtaken and may not put the old state back.
+      taps.current += 1;
       if (pause) { dataRef.current = { ...dataRef.current, pause }; setData((d) => ({ ...d, pause })); }
       say(null, `${PAUSE_SWITCHES.find((s) => s.key === which).label}: ${paused ? "paused" : "on"}`);
     } catch (e) {

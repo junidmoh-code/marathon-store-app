@@ -707,5 +707,5 @@ module.exports = {
   newArrivalsGenerate, newArrivalsSkip, newArrivalsRestore, newArrivalsReject, newArrivalsSelect, newArrivalsLove,
   newArrivalsHow, newArrivalsMethod, newArrivalsPause,
   // for tests
-  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, setPause, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
+  _internals: { enqueue, listTab, approve, retry, generate, skip, restore, reject, select, love, how, setMethod, setPause, isJunid, assertNewArrivalsAccess, decisionPaths, NEW_LAP },
 };

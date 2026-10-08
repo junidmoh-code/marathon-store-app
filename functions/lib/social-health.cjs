@@ -220,6 +220,7 @@ function dayObligation(policy, { reelAlsoPostsToStory = true, storyAlsoPostsToFe
  * @param {object}  a.autopilotLog      the /social_autopilot_log/{saDate} record, or null if absent
  * @param {object[]}a.posts             /social_posts records (with ids) created within SCAN_WINDOW_MS
  * @param {boolean} a.autopilotEnabled  the deployed SOCIAL_AUTOPILOT_ENABLED; false says "switched off"
+ * @param {boolean} a.generationPaused  the pause switch on the New Arrivals card (Junid, 8 Oct): a paused day owes NO generation and is never "silent"
  * @param {number}  a.publisherTickAt   epoch ms of the publisher's last tick, or null if it has never written one
  *
  * @returns {{ ok, severity, reasons, counts, saDate }}
@@ -288,7 +289,7 @@ function passedSlots(policy, dayStart, nowMs, { reelAlsoPostsToStory = true, sto
   return by;
 }
 
-function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true }) {
+function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, twins, autopilotEnabled = true, generationPaused = false }) {
   const saDate = saDateStringFromMs(nowMs);
   const dayStart = sastMidnight(nowMs);
   const dayEnd = dayStart + DAY_MS;
@@ -297,6 +298,16 @@ function assessSocialDay({ nowMs, policy, autopilotLog, posts, publisherTickAt, 
   const reasons = [];
 
   // ── 1. GENERATION ─────────────────────────────────────────────────────────
+  // THE PAUSE SWITCH (Junid, 8 Oct): a paused day owes no generation and no posts — quiet by decision.
+  // Said once, as "ok", so the watchdog never pages for the silence Junid asked for.
+  if (generationPaused === true) {
+    const zero = { reel: 0, story: 0, feed: 0 };
+    return {
+      saDate, ok: true, severity: "ok", paused: true,
+      reasons: [], note: "photo generation is PAUSED on the New Arrivals card — nothing is owed today",
+      counts: { wanted: 0, made: 0, skipped: 0, owed: zero, madeByFormat: zero, missedSlots: 0, dueToday: 0, publishedToday: 0, overdue: 0, failed: 0 },
+    };
+  }
   const obligation = dayObligation(policy, twins || {});
   const wanted = obligation.generations;
   const made = Number(autopilotLog && autopilotLog.created) || 0;

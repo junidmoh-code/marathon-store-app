@@ -1047,4 +1047,8 @@ test("the list carries the pause switches and who may flip them; setPause flips 
   await assert.rejects(na.setPause(db, { which: "email", paused: true }, "u", 1), /generation or posting/);
   await assert.rejects(na.setPause(db, { which: "posting", paused: "yes" }, "u", 1), /paused: true or false/);
   assert.equal((await db.ref("new_arrivals/pause/generation/by").once()).val(), "uid-junid");
+  // Only Junid's account may flip a switch (the same email gate as the rest of the admin functions).
+  assert.equal(na.isJunid({ auth: { token: { email: "gunidmoh@gmail.com" } } }), true);
+  assert.equal(na.isJunid({ auth: { token: { email: "someone@else.com" } } }), false);
+  assert.equal(na.isJunid({}), false);
 });

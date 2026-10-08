@@ -42,10 +42,10 @@ everyone else sees the state):
 
 | Switch | Stored at | While paused |
 |---|---|---|
-| **Photo generation** | `new_arrivals/pause/generation` | EVERY image generator refuses before any model call — `newArrivalsStudio`, `generateSocialPosts`, the 06:00 `socialDailyAutopilot`, `generateProductPhotos` (`functions/newArrivals/pause.cjs`). Generate / Regenerate show **Paused**. |
+| **Photo generation** | `new_arrivals/pause/generation` | every Cloud Function that makes an image refuses before any model call — `newArrivalsStudio`, `generateSocialPosts`, the 06:00 `socialDailyAutopilot`, `generateProductPhotos` (`functions/newArrivals/pause.cjs`). Generate / Regenerate show **Paused**. |
 | **WhatsApp posting** | `new_arrivals/pause/posting` | the Mac mini poster (`marathon-group-poster` `bin/post-window.mjs`) reads the switch at the start of a window and again before EVERY send, and sends nothing. A `PAUSE` file in that repo's root is a second lock. |
 
-Absent = on; a switch that cannot be read counts as paused. Browsing, prices,
+Absent = on (deleting the node switches everything back on); a switch that cannot be read counts as paused. The social watchdog treats a paused day as quiet by decision, never as an outage. Browsing, prices,
 Approve, Skip and the Shopify chain keep working while paused. Both were set to
 Paused at go-live (8 Oct 2026) until the quality in `PHOTO-QUALITY-NEXT.md` is
 met. Each flip is logged at `new_arrivals/pause/log/{time}`.
