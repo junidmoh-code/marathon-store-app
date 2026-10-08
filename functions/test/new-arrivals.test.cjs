@@ -1036,3 +1036,15 @@ test("the provider is set beside the method: openai / gemini / null (default); a
   assert.deepEqual(await na.setMethod(db, { pid: PID, method: null, provider: null }, NOW), { ok: true, method: null, provider: null, unchanged: true });
   await assert.rejects(na.setMethod(db, { pid: PID, method: "full", provider: "dalle" }, NOW), /gemini, openai or null/);
 });
+
+test("the list carries the pause switches and who may flip them; setPause flips one switch and answers with both", async () => {
+  const db = withGens("ready");
+  const page = await na.listTab(db, "new", {});
+  assert.equal(page.pause, undefined, "listTab itself does not read the switches — the callable adds them with canPause");
+  assert.deepEqual(await na.setPause(db, { which: "posting", paused: true }, "uid-junid", 5000), { ok: true, which: "posting", paused: true, pause: { generation: false, posting: true } });
+  assert.deepEqual(await na.setPause(db, { which: "generation", paused: true }, "uid-junid", 6000), { ok: true, which: "generation", paused: true, pause: { generation: true, posting: true } });
+  assert.deepEqual(await na.setPause(db, { which: "generation", paused: false }, "uid-junid", 7000), { ok: true, which: "generation", paused: false, pause: { generation: false, posting: true } });
+  await assert.rejects(na.setPause(db, { which: "email", paused: true }, "u", 1), /generation or posting/);
+  await assert.rejects(na.setPause(db, { which: "posting", paused: "yes" }, "u", 1), /paused: true or false/);
+  assert.equal((await db.ref("new_arrivals/pause/generation/by").once()).val(), "uid-junid");
+});

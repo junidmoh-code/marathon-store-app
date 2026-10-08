@@ -15,6 +15,8 @@ export const newArrivalsApi = {
   // { items, total, nextCursor, tabCounts, groupCounts, stats, defaultMethod }.
   list: (tab, { cursor = null, limit = 30, group = null } = {}) =>
     call("newArrivalsList")({ tab, limit, ...(cursor ? { cursor } : {}), ...(group ? { group } : {}) }),
+  // THE PAUSE SWITCHES (Junid only): which = "generation" | "posting". → { ok, which, paused, pause }
+  pause: (which, paused) => call("newArrivalsPause")({ which, paused: paused === true }),
   // Approve one item — with `genId`, exactly that photo (the one the card shows).
   approve: (pids, { anyway = false, genId = null } = {}) => call("newArrivalsApprove")({ pids, ...(anyway ? { anyway: true } : {}), ...(genId ? { genId } : {}) }),
   // GENERATE / REGENERATE ONE PHOTO — the streaming photo studio function. It

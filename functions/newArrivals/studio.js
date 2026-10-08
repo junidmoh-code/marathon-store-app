@@ -24,6 +24,7 @@ const { defineSecret } = require("firebase-functions/params");
 const admin = require("firebase-admin");
 const crypto = require("node:crypto");
 const core = require("./core.cjs");
+const pauseSwitch = require("./pause.cjs");
 const na = require("./newArrivals.js");
 const { CONDITION_CLAUSE } = require("../lib/photo-prompt.cjs");
 
@@ -250,6 +251,8 @@ async function addSpend(db, zar, { estimated = false } = {}) {
  * → { ok, pid, genId, code, seconds, item (as the card shows it) }
  */
 async function studioGenerate(db, { pid, method, provider }, uid, deps, emit = () => {}) {
+  // THE PAUSE SWITCH (Junid, 8 Oct): while generation is paused no image model is called, whoever taps.
+  if (await pauseSwitch.isPaused(db, "generation")) throw new HttpsError("failed-precondition", pauseSwitch.PAUSED_MESSAGE);
   if (!core.PID_RE.test(String(pid || ""))) throw new HttpsError("invalid-argument", "Not a product id.");
   if (method !== undefined && method !== null && !core.METHODS.includes(method)) throw new HttpsError("invalid-argument", "Method is full or split.");
   if (provider !== undefined && provider !== null && !core.PROVIDERS.includes(provider)) throw new HttpsError("invalid-argument", "Provider is gemini or openai.");

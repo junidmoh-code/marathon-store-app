@@ -1,6 +1,8 @@
 const { onRequest, onCall, HttpsError } = require("firebase-functions/v2/https");
 const { applyCategoryPolicy } = require("./lib/category-policy-write.cjs");
 const { onSchedule } = require("firebase-functions/v2/scheduler");
+// The photo-generation pause switch (Junid, 8 Oct): read by every image generator before it calls a model.
+const photoPause = require("./newArrivals/pause.cjs");
 const { onValueWritten } = require("firebase-functions/v2/database");
 const { onDocumentCreated } = require("firebase-functions/v2/firestore");
 const { defineSecret } = require("firebase-functions/params");
@@ -2745,6 +2747,8 @@ exports.generateProductPhotos = onCall(
     // Its OWN permission, not the blanket admin gate — see assertPhotoGeneration.
     await assertPhotoGeneration(request);
     const db = admin.database();
+    // THE PAUSE SWITCH (Junid, 8 Oct — newArrivals/pause.cjs): no image model is called while generation is paused.
+    if (await photoPause.isPaused(db, "generation")) throw new HttpsError("failed-precondition", photoPause.PAUSED_MESSAGE);
     const data = request.data || {};
     // Hard cap so a large/duplicated request can't fan out a huge, expensive run.
     const wanted = Number.isFinite(+data.limit) && +data.limit > 0 ? Math.floor(+data.limit) : PHOTO_DEFAULT_LIMIT;
@@ -4883,6 +4887,8 @@ exports.generateSocialPosts = onCall(
   async (request) => {
     assertAdmin(request);
     const db = admin.database();
+    // THE PAUSE SWITCH (Junid, 8 Oct — newArrivals/pause.cjs): no image model is called while generation is paused.
+    if (await photoPause.isPaused(db, "generation")) throw new HttpsError("failed-precondition", photoPause.PAUSED_MESSAGE);
     const data = request.data || {};
     const nowMs = Date.now();
 
@@ -5300,6 +5306,13 @@ exports.socialDailyAutopilot = onSchedule(
     const db = admin.database();
     const nowMs = Date.now();
     const saDate = saDateForUsage(nowMs);
+    // THE PAUSE SWITCH (Junid, 8 Oct — newArrivals/pause.cjs): the morning run makes nothing while photo
+    // generation is paused. Said in the day's log so the silence has a reason.
+    if (await photoPause.isPaused(db, "generation")) {
+      console.log("socialDailyAutopilot: paused (new_arrivals/pause/generation)");
+      await db.ref(`social_autopilot_log/${saDate}`).update({ paused: true, pausedAt: nowMs }).catch(() => {});
+      return;
+    }
 
     // ── ONE RUN PER DAY, CLAIMED — WITH A STALENESS ESCAPE ────────────────────
     // A Cloud Scheduler retry or a manual re-invoke from the console must not
@@ -5750,6 +5763,7 @@ exports.insightsRollupSweep = onSchedule(
   exports.newArrivalsSelect = na.newArrivalsSelect;
   exports.newArrivalsLove = na.newArrivalsLove;
   exports.newArrivalsHow = na.newArrivalsHow;
+  exports.newArrivalsPause = na.newArrivalsPause;
   exports.newArrivalsMethod = na.newArrivalsMethod;
   // The photo studio: ONE streaming callable that calls Gemini directly on Junid's tap.
   //   firebase deploy --only functions:newArrivalsStudio

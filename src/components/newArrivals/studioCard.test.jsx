@@ -1151,3 +1151,41 @@ describe("footwear placed on the fixed backdrop: Gemini's own photo is kept as a
     expect(byId(card(tree, P(3)), "gen-note")).toHaveLength(0);
   });
 });
+
+describe("the pause switches (Junid, 8 Oct)", () => {
+  const listWith = (items, pause, canPause) => vi.fn(async (tab) => ({ tab, items: tab === "new" ? items : [], total: items.length, tabCounts: { new: items.length, done: 0 }, groupCounts: { sneakers: items.length, clothing: 0 }, defaultMethod: "full", pause, canPause }));
+  it("everyone sees the state; only Junid gets the switches; a flip shows what the server answers", async () => {
+    const api = fakeApi([bare(1)], { list: listWith([bare(1)], { generation: true, posting: true }, true), pause: vi.fn(async (which, paused) => ({ ok: true, which, paused, pause: { generation: which === "generation" ? paused : true, posting: which === "posting" ? paused : true } })) });
+    const tree = await render(api);
+    expect(label(byId(tree.root, "pause-generation-state")[0])).toBe("Paused");
+    expect(label(byId(tree.root, "pause-posting-state")[0])).toBe("Paused");
+    const switches = tree.root.findAll((n) => n.props && n.props.role === "switch");
+    expect(switches.map((s) => s.props["aria-label"])).toEqual(["Photo generation: resume", "WhatsApp posting: resume"]);
+    // Generate shows Paused and is off.
+    const gen = btn(card(tree, P(1)), "Paused");
+    expect(gen.props.disabled).toBe(true);
+    await tap(switches[0]);
+    await settle(() => {});
+    expect(api.pause).toHaveBeenCalledWith("generation", false);
+    expect(label(byId(tree.root, "pause-generation-state")[0])).toBe("On");
+    expect(label(byId(tree.root, "pause-posting-state")[0])).toBe("Paused");
+    expect(btn(card(tree, P(1)), "Generate").props.disabled).toBe(false);
+  });
+  it("not Junid: the state is shown, no switch is offered, and Generate is Paused", async () => {
+    const api = fakeApi([bare(1)], { list: listWith([bare(1)], { generation: true, posting: false }, false) });
+    const tree = await render(api);
+    expect(label(byId(tree.root, "pause-generation-state")[0])).toBe("Paused");
+    expect(label(byId(tree.root, "pause-posting-state")[0])).toBe("On");
+    expect(tree.root.findAll((n) => n.props && n.props.role === "switch")).toHaveLength(0);
+    expect(btn(card(tree, P(1)), "Paused").props.disabled).toBe(true);
+    expect(api.generate).not.toHaveBeenCalled();
+  });
+  it("a refused flip leaves the state as it was and says why", async () => {
+    const api = fakeApi([bare(1)], { list: listWith([bare(1)], { generation: false, posting: false }, true), pause: vi.fn(async () => { throw refusal("Only Junid can pause or resume."); }) });
+    const tree = await render(api);
+    await tap(tree.root.findAll((n) => n.props && n.props.role === "switch")[1]);
+    await settle(() => {});
+    expect(label(byId(tree.root, "pause-posting-state")[0])).toBe("On");
+    expect(lastToast(tree)).toMatch(/Not changed — Only Junid can pause or resume/);
+  });
+});
