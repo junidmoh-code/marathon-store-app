@@ -170,3 +170,48 @@ test("POLICY WRITE: setCentralFed validates, writes with history, reads back, an
   await call({ action: "setCentralFed", location: "concrete", perSize: 3 });
   await assert.rejects(() => call({ action: "setCentralFed", location: "concrete", perSize: 5, expectedBefore: 4 }));
 });
+
+// ── review round (PR #715) ───────────────────────────────────────────────────
+test("REVIEW: resolveTarget with NO registry answers from the seed (every caller agrees with the engine)", () => {
+  const config = { ...clone(FIXTURE.config), centralFedClothing: { concrete: 4 } };
+  const pid = Object.values(FIXTURE.products).find((p) => p.productType === "clothing" && !p.deactivated).id;
+  const size = FIXTURE.products[pid].sizes[0];
+  const t = resolveTarget({ targets: {}, config, products: FIXTURE.products, stock: {} }, "concrete", pid, size);
+  assert.equal(t && t.source, "central_fed");
+  assert.equal(t.target, 4);
+});
+
+test("REVIEW: the central-fed target needs the Central → store route open (Auto-refill off ⇒ not central-fed)", () => {
+  const config = { ...clone(FIXTURE.config), centralFedClothing: { concrete: 4 } };
+  const pid = Object.values(FIXTURE.products).find((p) => p.productType === "clothing" && !p.deactivated).id;
+  const size = FIXTURE.products[pid].sizes[0];
+  const off = reg.normalizeNetwork({ locations: { concrete: { solve: true, autoRefill: "off" } } });
+  const t = resolveTarget({ targets: {}, config, products: FIXTURE.products, stock: {}, network: off }, "concrete", pid, size);
+  assert.notEqual(t && t.source, "central_fed");
+});
+
+test("REVIEW: the run's cap goes to config-routed (Marathon) destinations first, whatever Concrete's mode", () => {
+  const stock = clone(FIXTURE.stock);
+  stock.concrete = stock.concrete || {};
+  for (const p of Object.values(FIXTURE.products).filter((x) => x.productType === "clothing" && !x.deactivated)) {
+    stock.concrete[p.id] = Object.fromEntries((p.sizes || []).map((s) => [String(s), trusted(0)]));
+  }
+  const run = (network, extra = {}) => computeRefillPlan({
+    nowMs: NOW_MS, config: { ...clone(FIXTURE.config), maxIntentsPerRun: 20, ...extra }, targets: clone(FIXTURE.targets),
+    stock: clone(stock), products: clone(FIXTURE.products), openIndex: {}, refillRequests: {}, orders: {}, movements: [], network,
+  });
+  const marathon = (p) => p.intents.filter((i) => !["concrete", "marathon-pine", "hub3"].includes(i.dest) && FIXTURE.products[i.productId]?.productType === "clothing").map((i) => JSON.stringify(i)).sort();
+  const dark = reg.normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+  const base = marathon(run(dark));
+  // Concrete fully live AND central-fed: still dealt only from what Marathon leaves
+  const live = reg.normalizeNetwork({ locations: { concrete: { solve: true, autoRefill: "all" }, hub3: { solve: true, autoRefill: "all" } } });
+  assert.deepEqual(marathon(run(live, { centralFedClothing: { concrete: 4 } })), base);
+  assert.deepEqual(marathon(run(SEED, { centralFedClothing: { concrete: 4 } })), base);
+});
+
+test("REVIEW: the first-batch trigger never reads the whole engine config", () => {
+  const src = fs.readFileSync(path.join(__dirname, "../lib/first-batch.cjs"), "utf8");
+  const cfBlock = src.slice(src.indexOf("CENTRAL-FED CLOTHING (lib/central-fed.cjs"), src.indexOf("A requester that is not a store has no back-stock hub"));
+  assert.doesNotMatch(cfBlock, /db\.ref\("config\/refillEngine"\)/);
+  assert.match(cfBlock, /config\/refillEngine\/centralFedClothing/);
+});

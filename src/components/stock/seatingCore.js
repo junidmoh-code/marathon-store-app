@@ -59,6 +59,7 @@
 
 import { decodeSizeKey } from "../../utils/sizeKey";
 import { centralFedPerSize, centralFedIsClothing, centralFedSizes, centralFedTarget } from "./centralFed";
+import { SEED_REGISTRY, autoRouteAllowed } from "../../utils/networkRegistry";
 import { effectiveCategoryKey } from "../../utils/productTaxonomy";
 
 // ── engine primitives, mirrored ──────────────────────────────────────────────
@@ -313,10 +314,12 @@ export function resolveTarget({ targets, config, products, stock, network }, des
   }
   // CENTRAL-FED CLOTHING (centralFed.js; engine twin refill-engine.cjs): a
   // store keeping its clothing in the shop answers N for every declared size,
-  // above the category policy and the kill switch. Inert without a registry.
-  if (network) {
-    const cfN = centralFedPerSize(config, network, dest);
-    if (cfN !== null && centralFedIsClothing(products?.[pid])) {
+  // above the category policy and the kill switch. With no registry handed
+  // in, the seed answers (as the engine does); the Central route must be open.
+  {
+    const cfNet = network || SEED_REGISTRY;
+    const cfN = centralFedPerSize(config, cfNet, dest);
+    if (cfN !== null && centralFedIsClothing(products?.[pid]) && autoRouteAllowed(cfNet, "central", dest)) {
       const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
       return centralFedSizes(products[pid]).includes(key) ? centralFedTarget(cfN) : null;
     }

@@ -570,9 +570,14 @@ function resolveTarget({ targets, config, products, stock, network }, dest, pid,
   // size, above the category policy and the templated runs it would otherwise
   // follow, and above the kill switch (it is an owner-set number, like an
   // explicit row). A size the product does not declare resolves nothing.
-  if (network) {
-    const cfN = centralFedPerSize(config, network, dest);
-    if (cfN !== null && centralFedIsClothing(products?.[pid])) {
+  // Every caller agrees with the engine: with no registry handed in (the
+  // excess screen, the census, the impact preview, overrides) the seed answers.
+  // And the route must actually be open (Central → this store), or the store
+  // would be asked for N per size through a hub instead.
+  {
+    const cfNet = network || networkRegistry.SEED_REGISTRY;
+    const cfN = centralFedPerSize(config, cfNet, dest);
+    if (cfN !== null && centralFedIsClothing(products?.[pid]) && networkRegistry.autoRouteAllowed(cfNet, "central", dest)) {
       const key = size === null || size === undefined || String(size).trim() === "" ? "_" : String(size);
       return centralFedSizes(products[pid]).includes(key) ? centralFedTarget(cfN) : null;
     }
@@ -2353,11 +2358,16 @@ function computeRefillPlan(snapshot) {
   const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i));
   const footwearIntents = routedIntents.filter(isFootwearIntent);
   const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
-  // THE CAP IS MARATHON'S FIRST. Intents for a "solved products only"
-  // destination (the Concrete division while it is being counted in) are
-  // dealt only from what the run's cap leaves over — so Marathon's share of
-  // every run is exactly what it was before Section 1 was routed.
-  const isSolvedDest = (i) => !!(network && network.locations && network.aliasIndex) && networkRegistry.trustedCellsOnly(network, i.dest);
+  // THE CAP IS MARATHON'S FIRST. The destinations config.routes names
+  // (Marathon PE, Trophy, Hub 1, Hub 2) are dealt the run's cap first; every
+  // registry-routed destination (the Concrete division — whatever its
+  // Auto-refill mode, so this holds after it goes fully live too) is dealt
+  // only from what that leaves. Marathon's share of every run is exactly what
+  // it was before Section 1 was routed. With no registry, every destination is
+  // a config one: the deal is the old one.
+  const cfgRouteKeys = rawConfig?.routes && typeof rawConfig.routes === "object" ? rawConfig.routes : {};
+  const hasRegistry = !!(network && network.locations && network.aliasIndex);
+  const isSolvedDest = (i) => hasRegistry && !Object.prototype.hasOwnProperty.call(cfgRouteKeys, i.dest);
   const dealMarathonFirst = (list, cap) => {
     const first = dealFairly(list.filter((i) => !isSolvedDest(i)), cap);
     return [...first, ...dealFairly(list.filter(isSolvedDest), Math.max(0, cap - first.length))];

@@ -312,7 +312,13 @@ async function processFirstBatchRequest({ db, requestId, nowIso, pathEnabled = F
   // once resolved it records that there is no hub leg. Central's "no" is NOT
   // re-labelled: Central IS this cell's source, so its refusal is the shop's.
   if (requester && requester.type === "store") {
-    const cfConfig = (await db.ref("config/refillEngine").once("value")).val() || {};
+    // Two small keyed reads — never the whole engine config — and only the
+    // central-fed map first: a store with no entry (every Marathon shop) costs
+    // one tiny read and nothing else.
+    const cfMap = (await db.ref("config/refillEngine/centralFedClothing").once("value")).val();
+    const cfConfig = cfMap && typeof cfMap === "object" && cfMap[store] != null
+      ? { centralFedClothing: cfMap, routes: (await db.ref("config/refillEngine/routes").once("value")).val() || {} }
+      : {};
     if (isCentralFedProduct(cfConfig, network, store, productRead)) {
       if (!networkRegistry.autoRouteAllowed(network, SOURCE, store)) return { skipped: "section_wall", store, centralFed: true };
       const cfResolved = rr.status !== "open";

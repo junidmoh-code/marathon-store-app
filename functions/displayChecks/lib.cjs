@@ -118,7 +118,10 @@ function isDisplaySale(product, rawSize, scope, productId) {
 // movement for a line it cannot trust (marathon-pos-app saleStockMovements:
 // "non_deducting_store") — so the movement trigger never hears of it. This
 // picks the /pos/sales lines that need a check from the sale itself:
-//   • a completed sale or exchange (never a refund, a lay-by, a void);
+//   • a completed sale or exchange. A lay-by COLLECTION is included — its
+//     completion is written as a completed sale, as at Marathon PE, where the
+//     completion's sold movement creates a check. Only an OPEN lay-by, a
+//     refund and a void are excluded;
 //   • at a registry STORE that is not fully live (a live store's lines all
 //     write movements — the movement trigger owns them);
 //   • a line that wrote no movement: not stamped trustedAtShop for this

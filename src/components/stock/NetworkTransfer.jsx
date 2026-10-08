@@ -477,20 +477,33 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const cfAt = (card, store) => isCentralFedProduct(cfg, network, store, byId.get(card.pid));
   // The run a store's lines are planned from: the policy run, with a
   // central-fed store's row replaced by N per declared size.
+  // An explicit /stock_targets row for the size wins (0 = excluded) — the
+  // engine's own precedence (resolveTarget: explicit row before central-fed).
+  const cfTargetAt = (card, st, sz) => {
+    const row = targetRows?.[st]?.[card.pid]?.[encodeSizeKey(sz)];
+    return row && typeof row.target === "number" ? row.target : centralFedPerSize(cfg, network, st);
+  };
   const runAt = (card, stores) => {
     const run = runFor(card.pid);
     for (const st of stores || []) {
       if (!cfAt(card, st)) continue;
-      const n = centralFedPerSize(cfg, network, st);
-      run[st] = Object.fromEntries(centralFedSizes(byId.get(card.pid)).map((sz) => [String(sz).toUpperCase(), n]));
+      run[st] = Object.fromEntries(centralFedSizes(byId.get(card.pid)).map((sz) => [String(sz).toUpperCase(), cfTargetAt(card, st, sz)]));
     }
     return run;
+  };
+  // A central-fed size is a GAP when the store has no cell, or an UNTRUSTED
+  // cell holding nothing (sold-out legacy stock — Solve trusts that cell in
+  // place, metadata only). An untrusted cell holding units waits for a count.
+  const cfGap = (card, store, sz) => {
+    const c = allStock?.[store]?.[card.pid]?.[decodedCellKey(sz)];
+    if (c == null) return true;
+    return !cellTrusted(c) && !(Number(c?.qty) > 0);
   };
   const qualifyingSizes = (card, store) => {
     if (!targetsReady) return [];
     // Every declared size the store has no cell for yet (a size it already
     // carries is the engine's to top up — never asked for twice).
-    if (cfAt(card, store)) return centralFedSizes(byId.get(card.pid)).filter((sz) => allStock?.[store]?.[card.pid]?.[decodedCellKey(sz)] == null);
+    if (cfAt(card, store)) return centralFedSizes(byId.get(card.pid)).filter((sz) => cfGap(card, store, sz) && cfTargetAt(card, store, sz) > 0);
     const hub = hubOf(card, store);
     if (!hub) return [];
     return computeQualifyingSizes(catalogSizes(card.pid), card.source, store, runFor(card.pid), hub);

@@ -30,6 +30,7 @@ import { sectionOf, locationName } from "../../utils/networkRegistry";
 import { net, storeIds, solveHubsOfSection, centralId, liveSections } from "./sectionRouting";
 import { centralFedPerSize, centralFedIsClothing, centralFedSizes } from "./centralFed";
 import { decodedCellKey } from "../../utils/sizeKey";
+import { cellTrusted } from "./stockTrust";
 
 // ── ONE SECTION AT A TIME ────────────────────────────────────────────────────
 // "Stranded" is a statement about ONE section: stock that sits upstream of
@@ -214,15 +215,35 @@ function addCentralFedCards({ out, N, sec, central, allStock, byId, centralFed, 
   const fedStores = storeIds(N, { section: sec }).filter((s) => centralFedPerSize(centralFed, N, s) !== null);
   if (!fedStores.length) return;
   const at = (loc, pid, sz) => Math.max(Number(allStock?.[loc]?.[pid]?.[decodedCellKey(sz)]?.qty) || 0, 0);
-  const hasCell = (loc, pid, sz) => allStock?.[loc]?.[pid]?.[decodedCellKey(sz)] != null;
-  const byPid = new Map(out.map((c, i) => [c.pid, i]));
+  const cellOf = (loc, pid, sz) => allStock?.[loc]?.[pid]?.[decodedCellKey(sz)];
+  // A size is a GAP at a central-fed store when it has no cell, or an
+  // UNTRUSTED cell holding nothing (sold-out legacy stock: neither Solve nor
+  // the engine would otherwise ever feed it). An untrusted cell holding units
+  // is not a gap — it waits for a count.
+  const isGap = (loc, pid, sz) => {
+    const c = cellOf(loc, pid, sz);
+    if (c == null) return true;
+    return !cellTrusted(c) && !(Number(c?.qty) > 0);
+  };
+  // A TRUSTED cell below N whose size Central has none of: the engine cannot
+  // top it up, so it is listed too ("Central has none").
+  const isShortCentralNone = (loc, pid, sz, perSize) => {
+    const c = cellOf(loc, pid, sz);
+    return c != null && cellTrusted(c) && (Number(c?.qty) || 0) < perSize && at(central, pid, sz) === 0;
+  };
+  // Central-sourced cards by pid (the only ones a central-fed store may join).
+  const byPid = new Map();
+  out.forEach((c, i) => { if (c.source === central) byPid.set(c.pid, i); });
   const pids = new Set([...Object.keys(allStock?.[central] || {}), ...fedStores.flatMap((s) => Object.keys(allStock?.[s] || {}))]);
   for (const pid of pids) {
     const p = byId.get(pid);
     if (!admitsMissingProduct(p) || isDeactivated(p) || !centralFedIsClothing(p)) continue;
     for (const store of fedStores) {
       const declared = centralFedSizes(p);
-      const gap = carries(store, pid) ? declared.filter((sz) => !hasCell(store, pid, sz)) : declared;
+      const perSize = centralFedPerSize(centralFed, N, store);
+      const gap = carries(store, pid)
+        ? declared.filter((sz) => isGap(store, pid, sz) || isShortCentralNone(store, pid, sz, perSize))
+        : declared;
       if (!gap.length) continue;
       const sizes = gap.map((sz) => ({ size: decodedCellKey(sz), avail: at(central, pid, sz), ...(at(central, pid, sz) > 0 ? {} : { centralNone: true }) }))
         .sort((a, b) => sizeRank(a.size) - sizeRank(b.size));
@@ -232,16 +253,25 @@ function addCentralFedCards({ out, N, sec, central, allStock, byId, centralFed, 
       if (!carries(store, pid) && !has) continue;
       const kind = carries(store, pid) ? `Sizes missing at ${locationName(N, store)}` : `Not at ${locationName(N, store)}`;
       const i = byPid.get(pid);
-      if (i !== undefined && out[i].source === central) {
+      if (i !== undefined) {
         if (!out[i].missing.includes(store)) out[i].missing = [...out[i].missing, store];
         continue;
       }
+      // A NON-Central card (e.g. "Only in Hub 3" for Pine) is never replaced:
+      // the store comes off ITS missing list (the card goes only if that
+      // leaves nothing) and gets a Central card of its own.
+      for (let j = out.length - 1; j >= 0; j--) {
+        if (out[j].pid !== pid || out[j].source === central || !out[j].missing.includes(store)) continue;
+        const rest = out[j].missing.filter((m) => m !== store);
+        if (rest.length) out[j] = { ...out[j], missing: rest }; else out.splice(j, 1);
+      }
+      byPid.clear(); out.forEach((c, k) => { if (c.source === central) byPid.set(c.pid, k); });
       const card = {
         pid, name: p?.name || pid, photo: p?.photoUrl, source: central, kind, sizes, missing: [store],
         group: groupOf(p).key, groupLabel: groupOf(p).label,
         units: sizes.reduce((t, s) => t + s.avail, 0), section: sec, centralFed: store,
       };
-      if (i !== undefined) out[i] = card; else { byPid.set(pid, out.length); out.push(card); }
+      byPid.set(pid, out.length); out.push(card);
     }
   }
 }

@@ -87,8 +87,8 @@ describe("targets: N of every declared size at Concrete", () => {
     for (const sz of TEE.sizes) expect(resolveTarget(ctx(ON, NET), "concrete", "tee", sz)).toMatchObject({ target: 4, minQty: 3, source: "central_fed" });
     expect(resolveTarget(ctx(ON, NET), "concrete", "tee", "XS")).toBe(null);
   });
-  it("without a registry or without the setting: unchanged; Pine and sneakers unaffected", () => {
-    expect(resolveTarget(ctx(ON, undefined), "concrete", "tee", "M")?.source).not.toBe("central_fed");
+  it("without the setting: unchanged; Pine and sneakers unaffected (with no registry the SEED answers — every caller agrees with the engine)", () => {
+    expect(resolveTarget(ctx(ON, undefined), "concrete", "tee", "M")?.source).toBe("central_fed");
     expect(resolveTarget(ctx(OFF, NET), "concrete", "tee", "M")?.source).not.toBe("central_fed");
     expect(resolveTarget(ctx(ON, NET), "marathon-pine", "tee", "M")?.source).not.toBe("central_fed");
     expect(resolveTarget(ctx(ON, NET), "concrete", "shoe", "8")?.source).not.toBe("central_fed");
@@ -113,6 +113,29 @@ describe("Missing from Concrete", () => {
     expect(c.kind).toBe("Sizes missing at Concrete");
     expect(c.sizes.map((s) => [s.size, s.avail, !!s.centralNone])).toEqual([["XL", 3, false], ["XXL", 0, true]]);
   });
+  it("an 'Only in Hub 3' card Pine needs SURVIVES; Concrete gets its own Central card (review fix)", () => {
+    const allStock = { central: { tee: { S: cell(5) } }, hub3: { tee: { M: cell(3) } } };
+    const off = computeMissingProducts({ allStock, products, network: NET, section: 1 });
+    expect(off.map((c) => [c.source, c.missing])).toEqual([["hub3", ["marathon-pine", "concrete"]]]);
+    const on = computeMissingProducts({ allStock, products, network: NET, section: 1, centralFed: ON });
+    const hub3Card = on.find((c) => c.source === "hub3");
+    const cf = on.find((c) => c.source === "central");
+    expect(hub3Card.missing).toEqual(["marathon-pine"]);          // Pine still solvable from Hub 3
+    expect(cf).toMatchObject({ missing: ["concrete"], centralFed: "concrete" });
+  });
+  it("a TRUSTED Concrete cell below N whose size Central has none of is listed 'Central has none'", () => {
+    const trusted = (qty) => ({ qty, v: 1, mv: "m", trusted: true, trustedVia: "refill" });
+    const allStock = { central: { tee: { S: cell(9), M: cell(9), L: cell(9), XL: cell(9) } },
+      concrete: { tee: { S: trusted(4), M: trusted(4), L: trusted(4), XL: trusted(2), XXL: trusted(1) } } };
+    const [c] = computeMissingProducts({ allStock, products, network: NET, section: 1, centralFed: ON });
+    // XL is short but Central has it (the engine tops it up): not listed. XXL is short and Central has none: listed.
+    expect(c.sizes.map((s) => [s.size, !!s.centralNone])).toEqual([["XXL", true]]);
+  });
+  it("an UNTRUSTED Concrete cell holding nothing is a gap; one holding units waits for a count", () => {
+    const allStock = { central: { tee: { S: cell(9), M: cell(9) } }, concrete: { tee: { S: cell(0), M: cell(3), L: cell(4), XL: cell(4), XXL: cell(4) } } };
+    const [c] = computeMissingProducts({ allStock, products, network: NET, section: 1, centralFed: ON });
+    expect(c.sizes.map((s) => s.size)).toEqual(["S"]);
+  });
   it("sneakers never take this list; the Marathon list is untouched", () => {
     const allStock = { central: { shoe: { 8: cell(3) }, tee: { S: cell(5) } } };
     const cards = computeMissingProducts({ allStock, products, network: NET, section: 1, centralFed: ON });
@@ -126,5 +149,20 @@ describe("Source: Central's \"no\" to a DIRECT first batch", () => {
     const { readFileSync } = await import("node:fs");
     const src = readFileSync(new URL("./RefillQueue.jsx", import.meta.url), "utf8");
     expect(src).toContain('cancelReason: isFirstBatchShopLeg(row._r) && row._r?.createdFrom?.direct !== true ? CENTRAL_DECLINED_REASON : null,');
+  });
+});
+
+describe("resolveTarget agrees with the engine in every caller (review fix)", () => {
+  const ctx = (extra = {}) => ({ targets: {}, config: ON, products: { tee: TEE }, stock: {}, ...extra });
+  it("with NO registry handed in, the seed answers: Concrete clothing is N per declared size", () => {
+    expect(resolveTarget(ctx(), "concrete", "tee", "M")).toMatchObject({ target: 4, source: "central_fed" });
+  });
+  it("the Central route must be open: Concrete with Auto-refill off is not central-fed", () => {
+    const dark = normalizeNetwork({ locations: { concrete: { solve: true, autoRefill: "off" } } });
+    const t = resolveTarget(ctx({ network: dark }), "concrete", "tee", "M");
+    expect(t?.source).not.toBe("central_fed");
+  });
+  it("Marathon PE is never central-fed", () => {
+    expect(resolveTarget(ctx(), "marathon-pe", "tee", "M")?.source).not.toBe("central_fed");
   });
 });

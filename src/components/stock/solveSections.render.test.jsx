@@ -85,13 +85,13 @@ const ticked = (tree) => boxes(tree).filter((b) => b.props["aria-checked"]).map(
 
 // The Marathon list (HealthView's default), or — with `division: 1` — the
 // "Missing from Concrete" list's own cards (computeMissingProducts section 1).
-function render({ stock = stockWith(PLENTY), products = PRODUCTS, cards, division = 2, category = "clothing" } = {}) {
+function render({ stock = stockWith(PLENTY), products = PRODUCTS, cards, division = 2, category = "clothing", targets = {} } = {}) {
   const list = cards || computeMissingProducts({ allStock: stock, products, ...(division === 1 ? { section: 1 } : {}) });
   let tree;
   act(() => {
     tree = TestRenderer.create(
       <NetworkTransfer products={products} category={category} allStock={stock} cards={list}
-        targets={{}} targetsSettled={true} targetsError={false} />
+        targets={targets} targetsSettled={true} targetsError={false} />
     );
   });
   return tree;
@@ -509,6 +509,33 @@ describe("Concrete clothing kept in the shop — 4 per size, straight from Centr
     const upd = written();
     expect(Object.keys(upd).filter((k) => k.startsWith("stock/")).sort()).toEqual([`stock/concrete/${TEE}/M`, `stock/concrete/${TEE}/S`]);
     expect(requests(upd).map((r) => r.size).sort()).toEqual(["M", "S"]);
+  });
+
+  it("REVIEW FIX: an UNTRUSTED Concrete cell holding nothing is requested and trusted in place (metadata only); one holding units is left for a count", async () => {
+    paths["config/refillEngine"] = { ...PROD_CFG, centralFedClothing: { concrete: 4 } };
+    const stock = { ...stockWith(CENTRAL_ALL), concrete: { [TEE]: { S: { qty: 0, v: 5, mv: "old", lastType: "sold" }, M: { qty: 3, v: 2, mv: "old2", lastType: "adjustment" } } } };
+    gets[`stock/concrete/${TEE}`] = stock.concrete[TEE];
+    const cards = computeMissingProducts({ allStock: stock, products: FULL, section: 1, centralFed: { ...PROD_CFG, centralFedClothing: { concrete: 4 } } });
+    const tree = render({ division: 1, products: FULL, stock, cards });
+    await open(tree);
+    setTicks(tree, ["Concrete"]);
+    await confirm(tree);
+    const upd = written();
+    expect(requests(upd).map((r) => r.size).sort()).toEqual(["L", "S", "XL", "XXL"]);       // never M (holds 3 uncounted)
+    expect(upd[`stock/concrete/${TEE}/S/trusted`]).toBe(true);                          // trusted in place
+    for (const f of ["qty", "v", "mv", "lastType"]) expect(`stock/concrete/${TEE}/S/${f}` in upd).toBe(false);
+    expect(`stock/concrete/${TEE}/S` in upd).toBe(false);                                 // no whole-cell overwrite
+    expect(Object.keys(upd).some((k) => k.startsWith(`stock/concrete/${TEE}/M`))).toBe(false);
+  });
+
+  it("REVIEW FIX: an explicit /stock_targets row for a size wins over N (0 = excluded), as in the engine", async () => {
+    paths["config/refillEngine"] = { ...PROD_CFG, centralFedClothing: { concrete: 4 } };
+    const targets = { concrete: { [TEE]: { L: { target: 0, minQty: 0 }, XL: { target: 2, minQty: 1 } } } };
+    const tree = render({ division: 1, products: FULL, stock: stockWith(CENTRAL_ALL), targets });
+    await open(tree);
+    setTicks(tree, ["Concrete"]);
+    await confirm(tree);
+    expect(requests(written()).map((r) => [r.size, r.qty]).sort()).toEqual([["M", 4], ["S", 4], ["XL", 2], ["XXL", 2]]);
   });
 
   it("Pine is unchanged on the same list: its Solve still seeds Hub 3 + Pine and its batch follows at Hub 3", async () => {
