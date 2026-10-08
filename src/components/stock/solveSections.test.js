@@ -24,10 +24,10 @@ import { computeMissingProducts, missingProductSections, cardSection } from "./m
 const require = createRequire(import.meta.url);
 const server = require("../../../functions/lib/first-batch.cjs");
 
-const S1_LIVE = normalizeNetwork({ locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true }, "concrete-stockroom": { live: true } } });
+const S1_LIVE = normalizeNetwork({ locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } });
 // Section 1 with both switches OFF (the seed before 7 Oct 2026).
 const OFF = { solve: false, autoRefill: "off" };
-const S1_OFF = { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF };
+const S1_OFF = { "marathon-pine": OFF, concrete: OFF, hub3: OFF };
 const DARK = normalizeNetwork({ locations: S1_OFF });
 const TEE = { id: "tee", name: "Tee", productType: "clothing", categoryKey: "t-shirts", sizes: ["S", "M", "L"] };
 
@@ -45,15 +45,15 @@ describe("the hub behind a store comes from the registry", () => {
     expect(FIRST_BATCH_HUB).toBe("hub2");
   });
 
-  it("Section 1: Hub 3 for Pine and Concrete; Concrete's flipped category, or one product, goes to the Concrete Stockroom", () => {
+  it("Section 1: Hub 3 for Pine and Concrete — always; a stored mapping to the removed Concrete Stockroom is ignored", () => {
     expect(solveHubFor(SEED_REGISTRY, "marathon-pine", TEE)).toBe("hub3");
     expect(solveHubFor(SEED_REGISTRY, "concrete", TEE)).toBe("hub3");
-    const flipped = normalizeNetwork({ backStock: { concrete: { "t-shirts": "concrete-stockroom" } }, productOverrides: { concrete: { bag9: "concrete-stockroom" } } });
-    expect(solveHubFor(flipped, "concrete", TEE)).toBe("concrete-stockroom");
-    expect(solveHubFor(flipped, "concrete", { id: "bag1", categoryKey: "bags" })).toBe("hub3");
-    expect(solveHubFor(flipped, "concrete", { id: "bag9", categoryKey: "bags" })).toBe("concrete-stockroom");
-    expect(solveHubFor(flipped, "marathon-pine", TEE)).toBe("hub3");          // the stockroom serves Concrete only
-    expect(solveHubsOfSection(flipped, 1, TEE)).toEqual(["hub3", "concrete-stockroom"]);
+    const stale = normalizeNetwork({ backStock: { concrete: { "t-shirts": "concrete-stockroom" } }, productOverrides: { concrete: { bag9: "concrete-stockroom" } } });
+    expect(solveHubFor(stale, "concrete", TEE)).toBe("hub3");
+    expect(solveHubFor(stale, "concrete", { id: "bag9", categoryKey: "bags" })).toBe("hub3");
+    expect(solveHubFor(stale, "marathon-pine", TEE)).toBe("hub3");
+    expect(solveHubsOfSection(stale, 1, TEE)).toEqual(["hub3"]);
+    expect(solveHubsOfSection(SEED_REGISTRY, 1, TEE)).toEqual(["hub3"]);
   });
 
   it("the wall holds by construction: no store is ever mapped to a hub of the other section, whatever /network says", () => {
@@ -82,7 +82,7 @@ describe("the hub behind a store comes from the registry", () => {
     expect(storeIds(SEED_REGISTRY, { section: 2 })).toEqual(["marathon-pe", "trophy"]);
     expect(hubIds(SEED_REGISTRY, { section: 2 })).toEqual(["hub1", "hub2"]);
     expect(storeIds(SEED_REGISTRY, { section: 1 })).toEqual(["marathon-pine", "concrete"]);
-    expect(hubIds(SEED_REGISTRY, { section: 1 })).toEqual(["hub3", "concrete-stockroom"]);
+    expect(hubIds(SEED_REGISTRY, { section: 1 })).toEqual(["hub3"]);
     expect(storeIds(SEED_REGISTRY, { liveOnly: true })).toEqual(["marathon-pe", "trophy"]);
     expect(hubIds(SEED_REGISTRY, { liveOnly: true })).toEqual(["hub1", "hub2"]);
     expect(storeIds(SEED_REGISTRY, { solveOnly: true })).toEqual(["marathon-pine", "concrete", "marathon-pe", "trophy"]);
@@ -109,9 +109,8 @@ describe("the live gate and the wall, per store", () => {
 
   it("THE SEED (7 Oct 2026): Pine and Concrete have Solve ON — open at Hub 3, before their counts are finished", () => {
     for (const store of ["marathon-pine", "concrete"]) expect(solveStoreBlock(SEED_REGISTRY, { source: "central", store, hub: "hub3" })).toBeNull();
-    // Concrete's category flipped to the stockroom: open there too
-    const flipped = normalizeNetwork({ backStock: { concrete: { "t-shirts": "concrete-stockroom" } } });
-    expect(solveStoreBlock(flipped, { source: "central", store: "concrete", hub: "concrete-stockroom" })).toBeNull();
+    // the removed Concrete Stockroom is never a hub Solve can open
+    expect(solveStoreBlock(SEED_REGISTRY, { source: "central", store: "concrete", hub: "concrete-stockroom" })).not.toBeNull();
   });
 
   it("Section 2 is open, as it always was; Section 1 is open once live", () => {
@@ -124,8 +123,8 @@ describe("the live gate and the wall, per store", () => {
     expect(solveStoreBlock(S1_LIVE, { source: "hub2", store: "marathon-pine", hub: "hub3" })).toMatch(/in the other section — send it back to Central first/);
     expect(solveStoreBlock(S1_LIVE, { source: "hub3", store: "trophy", hub: "hub2" })).toMatch(/in the other section — send it back to Central first/);
     expect(solveStoreBlock(S1_LIVE, { source: "hub3", store: "concrete", hub: "hub3" })).toBeNull();
-    // same section, but this store is fed from another hub
-    expect(solveStoreBlock(S1_LIVE, { source: "hub3", store: "concrete", hub: "concrete-stockroom" })).toMatch(/Concrete is fed from Concrete Stockroom/);
+    // same section, Pine from Hub 3 as well — Hub 3 is the back stock for both
+    expect(solveStoreBlock(S1_LIVE, { source: "hub3", store: "marathon-pine", hub: "hub3" })).toBeNull();
   });
 
   it("the blocks: Marathon (Marathon PE, Trophy) then Concrete (Pine, Concrete), each store with its hub and its reason", () => {
@@ -214,7 +213,6 @@ describe("the Solve functions take the hub — Hub 2 by default, so Section 2 is
     expect(isFirstBatchShopLeg(leg("hub2"))).toBe(false);
     expect(isFirstBatchShopLeg(leg("marathon-pine"))).toBe(true);
     expect(isFirstBatchShopLeg(leg("hub3"))).toBe(false);
-    expect(isFirstBatchShopLeg(leg("concrete-stockroom"))).toBe(false);
     expect([leg("trophy"), leg("hub3")].filter(isFirstBatchShopLeg)).toHaveLength(1);   // .filter passes an index — ignored
     expect(isFirstBatchShopLeg({ requestingLocation: "trophy", createdFrom: {} })).toBe(false);
   });
@@ -235,7 +233,7 @@ describe("the same policy for every store unless it has its own (policyTemplate.
   it("the template step: Section 1 locations read their template; a store-specific entry always wins; a config with nothing to fill is the same object", () => {
     const cfg = { defaultRunByStore: run };
     const t = withPolicyTemplates(cfg, SEED_REGISTRY).defaultRunByStore;
-    expect(t).toEqual({ ...run, "marathon-pine": { M: 2 }, concrete: { M: 2 }, hub3: { M: 3 }, "concrete-stockroom": { M: 3 } });
+    expect(t).toEqual({ ...run, "marathon-pine": { M: 2 }, concrete: { M: 2 }, hub3: { M: 3 }, });
     expect(withPolicyTemplates({ defaultRunByStore: { ...run, concrete: { M: 9 } } }, SEED_REGISTRY).defaultRunByStore.concrete).toEqual({ M: 9 });
     expect(withPolicyTemplates(null, SEED_REGISTRY)).toBeNull();
     const none = { routes: ROUTES, enabled: true };
@@ -254,7 +252,7 @@ describe("the same policy for every store unless it has its own (policyTemplate.
     const t = engineConfigView(cfg, S1_LIVE);
     expect(t.defaultRunByStore["marathon-pine"]).toEqual({ M: 2 });
     expect(t.subcategoryRunByLocation.concrete).toEqual({ Watches: 2 });
-    expect(t.categoryPolicy.bags).toEqual({ perSize: false, "marathon-pe": { target: 2 }, hub2: { target: 4 }, "marathon-pine": { target: 2 }, concrete: { target: 2 }, hub3: { target: 4 }, "concrete-stockroom": { target: 4 } });
+    expect(t.categoryPolicy.bags).toEqual({ perSize: false, "marathon-pe": { target: 2 }, hub2: { target: 4 }, "marathon-pine": { target: 2 }, concrete: { target: 2 }, hub3: { target: 4 } });
     expect(t.ruleBasedTargets).toMatchObject({ "marathon-pine": true, hub3: true, concrete: false });   // an explicit false is its own entry
     expect(t.routes).toBe(cfg.routes);                                                                  // routes are not a policy
     expect(JSON.stringify(cfg)).toBe(before);                                                           // a view: the stored node is not touched
@@ -405,17 +403,32 @@ describe("Missing Products is evaluated per section", () => {
     expect(cardSection(s1[0], SEED_REGISTRY)).toBe(1);
   });
 
-  it("a section's hubs follow the mapping: a category Concrete keeps at the Concrete Stockroom is 'carried' there", () => {
-    const flipped = normalizeNetwork({ backStock: { concrete: { bags: "concrete-stockroom" } } });
-    const stock = { central: { bag: { _: cell(3) } }, "concrete-stockroom": { bag: { _: cell(0) } } };
-    // the stockroom carries it (a qty-0 cell is carriage) → not "only in Central" for Section 1
-    expect(computeMissingProducts({ allStock: stock, products, network: flipped, section: 1 })).toEqual([]);
-    expect(computeMissingProducts({ allStock: stock, products, network: SEED_REGISTRY, section: 1 }).map((c) => c.pid)).toEqual(["bag"]);
+  it("a section's hub is Hub 3: a cell at Hub 3 is 'carried' for Concrete; a stale stockroom node is not a Concrete hub", () => {
+    const atHub3 = { central: { bag: { _: cell(3) } }, hub3: { bag: { _: cell(0) } } };
+    expect(computeMissingProducts({ allStock: atHub3, products, network: SEED_REGISTRY, section: 1 })).toEqual([]);
+    const stale = { central: { bag: { _: cell(3) } }, "concrete-stockroom": { bag: { _: cell(0) } } };
+    expect(computeMissingProducts({ allStock: stale, products, network: normalizeNetwork({ backStock: { concrete: { bags: "concrete-stockroom" } } }), section: 1 }).map((c) => c.pid)).toEqual(["bag"]);
   });
 
   it("the lists a screen builds by itself are the sections with a routed shop (Solve or Auto-refill on)", () => {
     expect(missingProductSections(DARK)).toEqual([2]);
     expect(missingProductSections(SEED_REGISTRY)).toEqual([2, 1]);
     expect(missingProductSections(S1_LIVE)).toEqual([2, 1]);
+  });
+});
+
+describe("ONE DIVISION PER LIST (owner rule 8 Oct 2026) — the pure layer", () => {
+  it("the Concrete list's blocks hold Pine and Concrete only; a stale Marathon tick is dropped before anything is planned", () => {
+    const blocks = solveBlocks({ network: SEED_REGISTRY, sections: [1], source: "central", product: TEE, productId: "tee" });
+    expect(blocks.map((b) => [b.section, b.stores.map((s) => s.id)])).toEqual([[1, ["marathon-pine", "concrete"]]]);
+    const tickable = new Set(blocks.flatMap((b) => b.stores).filter((s) => !s.blocked).map((s) => s.id));
+    expect(allocationOrder({ network: SEED_REGISTRY, ticked: ["marathon-pe", "marathon-pine", "trophy", "concrete"], tickable: (st) => tickable.has(st) }))
+      .toEqual(["marathon-pine", "concrete"]);
+  });
+  it("…and the mirror for Marathon", () => {
+    const blocks = solveBlocks({ network: SEED_REGISTRY, sections: [2], source: "central", product: TEE, productId: "tee" });
+    expect(blocks.map((b) => [b.section, b.stores.map((s) => s.id)])).toEqual([[2, ["marathon-pe", "trophy"]]]);
+    const tickable = new Set(blocks.flatMap((b) => b.stores).filter((s) => !s.blocked).map((s) => s.id));
+    expect(allocationOrder({ network: SEED_REGISTRY, ticked: ["marathon-pine", "trophy", "concrete"], tickable: (st) => tickable.has(st) })).toEqual(["trophy"]);
   });
 });

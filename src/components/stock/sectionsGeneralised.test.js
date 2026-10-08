@@ -5,7 +5,7 @@
 // Each now asks the registry. For every one of them:
 //   1. on the registry's SEED the answer is exactly the list it replaced —
 //      Section 2 behaves as it did (the constants are kept and pinned here);
-//   2. Section 1 (Pine, Concrete, Hub 3, Concrete Stockroom) is served by the
+//   2. Section 1 (Pine, Concrete, Hub 3 — there is no Concrete Stockroom) is served by the
 //      same code once it is live;
 //   3. a location that is NOT live gets nothing automatic.
 import { describe, it, expect, beforeEach } from "vitest";
@@ -29,7 +29,7 @@ import { pickDisplaySourceHub } from "./displayRequestCore";
 import { EXCESS_HUB_LOCATIONS, excessHubLocations } from "./excessComputation";
 import { isShopLocation, locationLabel } from "./attentionCore";
 
-const S1_LIVE_RAW = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true }, "concrete-stockroom": { live: true } } };
+const S1_LIVE_RAW = { locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } };
 const S1_LIVE = normalizeNetwork(S1_LIVE_RAW);
 const HUB3_LIVE = normalizeNetwork({ locations: { "marathon-pine": { live: true }, hub3: { live: true } } });
 
@@ -47,7 +47,7 @@ describe("on the seed, every registry answer is the list it replaced", () => {
     expect(distributionDests(SEED_REGISTRY).slice(0, DISTRIBUTION_DESTS.length)).toEqual(DISTRIBUTION_DESTS);
     // the network total: Pine and Hub 3 stay out (plus the two new, empty Section 1 locations)
     for (const id of EXCLUDED_LOCATIONS) expect(excludedLocations(SEED_REGISTRY)).toContain(id);
-    expect(excludedLocations(SEED_REGISTRY)).toEqual(["concrete", "concrete-stockroom", "hub3", "marathon-pine"]);
+    expect(excludedLocations(SEED_REGISTRY)).toEqual(["concrete", "hub3", "marathon-pine"]);
     expect(MIGRATION_DESTS).toEqual(["marathon-pe", "trophy", "hub2"]);
   });
 
@@ -63,12 +63,12 @@ describe("on the seed, every registry answer is the list it replaced", () => {
 });
 
 describe("reactive refill hubs — the hub behind a shop's everyday stock, live only", () => {
-  it("Section 2: Hub 2, never Hub 1; Section 1: Hub 3 once live, never the Concrete Stockroom by default", () => {
+  it("Section 2: Hub 2, never Hub 1; Section 1: Hub 3 once live (its only hub)", () => {
     expect(isReactiveRefillHub("hub2", SEED_REGISTRY)).toBe(true);
     expect(isReactiveRefillHub("hub1", SEED_REGISTRY)).toBe(false);
     expect(isReactiveRefillHub("hub3", SEED_REGISTRY)).toBe(false);          // not live
     expect(reactiveRefillHubs(S1_LIVE)).toEqual(["hub2", "hub3"]);
-    expect(isReactiveRefillHub("concrete-stockroom", S1_LIVE)).toBe(false);
+    expect(isReactiveRefillHub("concrete-stockroom", S1_LIVE)).toBe(false);   // does not exist
     // the shop live but its hub not: nothing reactive is routed to that hub
     expect(reactiveRefillHubs(normalizeNetwork({ locations: { "marathon-pine": { live: true } } }))).toEqual(["hub2"]);
   });
@@ -102,10 +102,11 @@ describe("sneaker sourcing — 'the other hub' is another hub IN THE SAME SECTIO
   });
 
   it("NEVER ACROSS THE WALL: with Hub 3 live and empty, a Hub 3 shoe is not rerouted to Hub 1 or Hub 2 — and a Hub 1 shoe never to Hub 3", () => {
-    const all = { hub1: hub(4), hub2: hub(4), hub3: hub(0), "concrete-stockroom": hub(6) };
-    expect(sneakerAlternates("hub3", S1_LIVE)).toEqual(["concrete-stockroom"]);
+    const all = { hub1: hub(4), hub2: hub(4), hub3: hub(0) };
+    // Hub 3 is Section 1's ONLY hub: it has no alternate — never Hub 1 or Hub 2
+    expect(sneakerAlternates("hub3", S1_LIVE)).toEqual([]);
     expect(sneakerAlternates("hub1", S1_LIVE)).toEqual(["hub2"]);
-    expect(resolveSneakerSourcing({ product: shoe, taggedHub: "hub3", size: "8", hubData: all, network: S1_LIVE })).toEqual({ hub: "concrete-stockroom", available: 6 });
+    expect(resolveSneakerSourcing({ product: shoe, taggedHub: "hub3", size: "8", hubData: all, network: S1_LIVE })).toEqual({ hub: "hub3", available: 0 });
     // only Hub 3 live in Section 1: no alternate at all — the tag answers, empty
     expect(resolveSneakerSourcing({ product: shoe, taggedHub: "hub3", size: "8", hubData: all, network: HUB3_LIVE })).toEqual({ hub: "hub3", available: 0 });
     expect(resolveSneakerSourcing({ product: shoe, taggedHub: "hub1", size: "8", hubData: { hub1: hub(0), hub2: hub(0), hub3: hub(9) }, network: S1_LIVE })).toEqual({ hub: "hub1", available: 0 });
@@ -162,9 +163,9 @@ describe("initial distribution — destinations from the registry", () => {
     expect(d.suggestions.hub2).toEqual({ S: 2, M: 3, L: 3 });
     expect(d.defaultOn).toEqual({ "marathon-pe": true, trophy: true, "marathon-pine": true, hub1: false, hub2: false });
   });
-  it("the wizard's list adds Concrete, Hub 3 and the Concrete Stockroom, on their templates; the first five are untouched", () => {
+  it("the wizard's list adds Concrete and Hub 3, on their templates; the first five are untouched", () => {
     const dests = distributionDests(SEED_REGISTRY);
-    expect(dests).toEqual(["marathon-pe", "trophy", "marathon-pine", "hub1", "hub2", "concrete", "hub3", "concrete-stockroom"]);
+    expect(dests).toEqual(["marathon-pe", "trophy", "marathon-pine", "hub1", "hub2", "concrete", "hub3"]);
     const d = suggestInitialDistribution({ product: tee, dests, network: SEED_REGISTRY });
     const base = suggestInitialDistribution({ product: tee });
     for (const k of DISTRIBUTION_DESTS) {
@@ -173,16 +174,15 @@ describe("initial distribution — destinations from the registry", () => {
     }
     expect(d.suggestions.concrete).toEqual(base.suggestions["marathon-pe"]);            // Concrete follows Marathon PE
     expect(d.suggestions.hub3).toEqual(base.suggestions.hub2);                          // Hub 3 follows Hub 2
-    expect(d.suggestions["concrete-stockroom"]).toEqual(base.suggestions.hub2);
     // NOT FULLY LIVE (the seed, 7 Oct 2026, and Section 1 off alike): offered, never
     // pre-ticked — a wizard send is a hand transfer and lands untrusted. A hub is never pre-ticked.
-    expect([d.defaultOn.concrete, d.defaultOn.hub3, d.defaultOn["concrete-stockroom"]]).toEqual([false, false, false]);
+    expect([d.defaultOn.concrete, d.defaultOn.hub3]).toEqual([false, false]);
     const OFF = { solve: false, autoRefill: "off" };
-    const dark = normalizeNetwork({ locations: { "marathon-pine": OFF, concrete: OFF, hub3: OFF, "concrete-stockroom": OFF } });
+    const dark = normalizeNetwork({ locations: { "marathon-pine": OFF, concrete: OFF, hub3: OFF } });
     const off = suggestInitialDistribution({ product: tee, dests, network: dark });
-    expect([off.defaultOn.concrete, off.defaultOn.hub3, off.defaultOn["concrete-stockroom"]]).toEqual([false, false, false]);
+    expect([off.defaultOn.concrete, off.defaultOn.hub3]).toEqual([false, false]);
     const live = suggestInitialDistribution({ product: tee, dests, network: S1_LIVE });
-    expect([live.defaultOn.concrete, live.defaultOn.hub3, live.defaultOn["concrete-stockroom"]]).toEqual([true, false, false]);
+    expect([live.defaultOn.concrete, live.defaultOn.hub3]).toEqual([true, false]);
     expect(destLabel("concrete", SEED_REGISTRY)).toBe("Concrete");
     expect(destLabel("marathon-pine", SEED_REGISTRY)).toBe("Pine");                     // the original label is kept
   });
@@ -199,7 +199,7 @@ describe("introduce existing — the run a location follows", () => {
     expect(effectiveRun(null, "hub2")).toBe(HUB2_RUN);
     expect(destsFrom({ routes: { a: "b" } })).toEqual(["a"]);
   });
-  it("Section 1 follows its template: Pine and Concrete read Marathon PE's run, Hub 3 and the stockroom Hub 2's", () => {
+  it("Section 1 follows its template: Pine and Concrete read Marathon PE's run, Hub 3 Hub 2's", () => {
     expect(effectiveRun(cfg, "marathon-pine", SEED_REGISTRY)).toBe(cfg.defaultRunByStore["marathon-pe"]);
     expect(effectiveRun(cfg, "concrete", SEED_REGISTRY)).toBe(cfg.defaultRunByStore["marathon-pe"]);
     expect(effectiveRun(cfg, "hub3", SEED_REGISTRY)).toBe(cfg.defaultRunByStore.hub2);
@@ -208,14 +208,15 @@ describe("introduce existing — the run a location follows", () => {
     // a location with its own run uses its own
     const own = { defaultRunByStore: { ...cfg.defaultRunByStore, concrete: { S: 2, M: 2, L: 2, XL: 2, XXL: 2, XXXL: 2 } } };
     expect(effectiveRun(own, "concrete", SEED_REGISTRY)).toBe(own.defaultRunByStore.concrete);
-    expect(["hub2", "hub3", "concrete-stockroom"].map((l) => isBufferLike(l, SEED_REGISTRY))).toEqual([true, true, true]);
+    expect(["hub2", "hub3"].map((l) => isBufferLike(l, SEED_REGISTRY))).toEqual([true, true]);
+    expect(isBufferLike("concrete-stockroom", SEED_REGISTRY)).toBe(false);   // does not exist
     expect(["hub1", "marathon-pe", "trophy", "marathon-pine", "concrete", "central"].map((l) => isBufferLike(l, SEED_REGISTRY))).toEqual([false, false, false, false, false, false]);
   });
 });
 
 describe("cleanup hubs, display stores, arming pairs, the network total — held by the live flag", () => {
   it("what switches on when Section 1 goes live", () => {
-    expect(cleanupHubs(S1_LIVE)).toEqual(["hub3", "concrete-stockroom", "hub1", "hub2"]);
+    expect(cleanupHubs(S1_LIVE)).toEqual(["hub3", "hub1", "hub2"]);
     expect(displayStores(S1_LIVE)).toEqual(["marathon-pine", "concrete", "marathon-pe", "trophy"]);
     expect(excludedLocations(S1_LIVE)).toEqual([]);
     expect(cleanupHubLabel("hub3", SEED_REGISTRY)).toBe("Hub 3");
@@ -227,19 +228,18 @@ describe("cleanup hubs, display stores, arming pairs, the network total — held
     expect(countedLocations(ids, registry, SEED_REGISTRY)).toEqual(["central", "hub1", "hub2", "in_transit", "marathon-pe", "trophy"]);
     expect(countedLocations(ids, registry, HUB3_LIVE)).toEqual(["central", "hub1", "hub2", "hub3", "in_transit", "marathon-pe", "marathon-pine", "trophy"]);
   });
-  it("arming compares ONE section's two hubs — never across the wall", () => {
-    expect(armingHubsFor(SEED_REGISTRY, 1)).toEqual(["hub3", "concrete-stockroom"]);
-    expect(armingSections(SEED_REGISTRY)).toEqual([2, 1]);
+  it("arming compares ONE section's two hubs — never across the wall; Concrete has one hub (Hub 3), so no pair", () => {
+    expect(armingHubsFor(SEED_REGISTRY, 2)).toEqual(ARMING_HUBS);
+    expect(armingHubsFor(SEED_REGISTRY, 1)).toBeNull();
+    expect(armingSections(SEED_REGISTRY)).toEqual([2]);
     expect(bucketTitles(ARMING_HUBS, SEED_REGISTRY)).toEqual(BUCKET_TITLE);
-    expect(bucketTitles(["hub3", "concrete-stockroom"], SEED_REGISTRY)).toEqual({ both_hubs: "Both hubs", hub1_only: "Hub 3", hub2_only: "Concrete Stockroom", nowhere: "Nowhere" });
-    // a section with one hub has no pair to compare
-    const oneHub = normalizeNetwork({ locations: { "concrete-stockroom": { section: 2 } } });
-    expect(armingHubsFor(oneHub, 1)).toBeNull();
-    expect(armingSections(oneHub)).toEqual([]);
+    // a stored record for the removed Concrete Stockroom brings no second hub back
+    const stale = normalizeNetwork({ locations: { "concrete-stockroom": { type: "hub", section: 1, live: true } } });
+    expect(armingHubsFor(stale, 1)).toBeNull();
+    expect(armingSections(stale)).toEqual([2]);
   });
   it("labels: a location the old maps did not name is named by the registry", () => {
     expect(locationLabel("concrete")).toBe("Concrete");
-    expect(locationLabel("concrete-stockroom")).toBe("Concrete Stockroom");
     expect(isShopLocation("concrete")).toBe(true);
     expect(isShopLocation("marathon-pe")).toBe(true);
     expect(isShopLocation("hub3")).toBe(false);
@@ -259,9 +259,9 @@ describe("Missing Sneakers is one section's list", () => {
     expect(computeMissingFootwear({ allStock, products }).map((c) => c.pid)).toEqual(["b", "c"]);
     expect(computeMissingFootwear({ allStock, products, hubs: ["hub1", "hub2"], central: "central" })).toEqual(computeMissingFootwear({ allStock, products }));
   });
-  it("Section 1: zero at Hub 3 AND the Concrete Stockroom — Hub 1's stock does not hide a Section 1 gap", () => {
-    const s1 = computeMissingFootwear({ allStock, products, hubs: ["hub3", "concrete-stockroom"] });
+  it("Section 1: zero at Hub 3 — Hub 1's stock does not hide a Section 1 gap", () => {
+    const s1 = computeMissingFootwear({ allStock, products, hubs: ["hub3"] });
     expect(s1.map((c) => c.pid)).toEqual(["a", "c"]);
-    expect(s1[0].missingFrom).toEqual(["hub3", "concrete-stockroom"]);
+    expect(s1[0].missingFrom).toEqual(["hub3"]);
   });
 });

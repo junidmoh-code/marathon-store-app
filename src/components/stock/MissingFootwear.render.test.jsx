@@ -103,3 +103,24 @@ describe("every disabled button on the sneaker list carries its reason", () => {
     expect(solve.props.title).toMatch(/Request/);
   });
 });
+
+describe("SNEAKERS: the Concrete list solves to Hub 3 — and only to Hub 3", () => {
+  it("\"Missing from Concrete · Hub 3\": Solve raises refill_requests for hub3 only, never Hub 1 or Hub 2", async () => {
+    const { update } = await import("firebase/database");
+    update.mockClear();
+    const tree = mount();
+    const chip = (label) => buttonsOf(tree).find((b) => (b.children || []).join("") === label);
+    expect(chip("Missing from Marathon · Hub 1 + Hub 2")).toBeDefined();
+    const concrete = chip("Missing from Concrete · Hub 3");
+    expect(concrete).toBeDefined();
+    await act(async () => { concrete.props.onClick(); });
+    // the hub choices on this list are Hub 3's alone
+    expect(buttonsOf(tree).some((b) => /Hub 1|Hub 2/.test((b.children || []).join("")) && !/Missing from/.test((b.children || []).join("")))).toBe(false);
+    await act(async () => { buttonSaying(tree, "Solve")[0].props.onClick(); });
+    await act(async () => { await buttonSaying(tree, "Confirm")[0].props.onClick(); });
+    expect(update).toHaveBeenCalledTimes(1);
+    const reqs = Object.entries(update.mock.calls[0][1]).filter(([k]) => k.startsWith("refill_requests/")).map(([, v]) => v);
+    expect(reqs.length).toBeGreaterThan(0);
+    for (const r of reqs) expect(r).toMatchObject({ requestingLocation: "hub3", status: "open", createdFrom: { source: "central" } });
+  });
+});

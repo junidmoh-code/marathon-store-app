@@ -2,8 +2,9 @@
 // whole node — and what it refuses.
 import { describe, it, expect } from "vitest";
 import { normalizeNetwork } from "../../utils/networkRegistry";
+import * as core from "./networkSettingsCore";
 import {
-  solveUpdate, autoRefillUpdate, categoryHubUpdate, productOverrideUpdate, creditScopeUpdate, seedUpdate, categoryRows,
+  solveUpdate, autoRefillUpdate, creditScopeUpdate, seedUpdate,
   POS_FLAGS, posSwitchState, posFlagUpdate, recyclerTillUpdate,
 } from "./networkSettingsCore";
 
@@ -64,10 +65,10 @@ describe("the two switches", () => {
   });
 
   it("flipping one location leaves every other as it was", () => {
-    const tree = applyUpdate({}, seedUpdate(null, { concrete: {}, "concrete-stockroom": {} }, NOW, "o").updates);
+    const tree = applyUpdate({}, seedUpdate(null, { concrete: {} }, NOW, "o").updates);
     const after = normalizeNetwork(applyUpdate(tree, autoRefillUpdate(R, "hub3", "all", NOW, "o").updates).network);
     expect(after.locations.hub3).toMatchObject({ solve: true, autoRefill: "all", live: true });
-    for (const id of ["marathon-pine", "concrete", "concrete-stockroom"]) expect(after.locations[id]).toMatchObject({ solve: true, autoRefill: "solved", live: false });
+    for (const id of ["marathon-pine", "concrete"]) expect(after.locations[id]).toMatchObject({ solve: true, autoRefill: "solved", live: false });
     for (const id of ["marathon-pe", "trophy", "hub1", "hub2"]) expect(after.locations[id]).toMatchObject({ solve: true, autoRefill: "all", live: true });
   });
 
@@ -81,52 +82,20 @@ describe("the two switches", () => {
   });
 });
 
-describe("Concrete's category mapping", () => {
-  it("writes one category under Concrete", () => {
-    expect(categoryHubUpdate(R, "hoodies", "concrete-stockroom", NOW, "o").updates["network/backStock/concrete/hoodies"]).toBe("concrete-stockroom");
-    expect(categoryHubUpdate(R, "_default", "concrete-stockroom", NOW, "o").ok).toBe(true);
+describe("no back-stock mapping — Concrete's back stock is Hub 3 (8 Oct 2026)", () => {
+  it("the card has no category or product mapping control any more", () => {
+    for (const name of ["categoryHubUpdate", "productOverrideUpdate", "categoryRows", "SWITCHABLE_HUBS"]) expect(core[name], name).toBeUndefined();
+    expect(core.SWITCHABLE_STORE).toBe("concrete");   // the till switches still apply to Concrete
   });
-
-  it("refuses a Section 2 hub, an unknown hub and a key RTDB cannot hold", () => {
-    for (const hub of ["hub2", "hub1", "central", "nope", null]) expect(categoryHubUpdate(R, "hoodies", hub, NOW, "o").ok).toBe(false);
-    for (const key of ["", "a/b", "a.b", "a#b", "a$b", "a[b", null]) expect(categoryHubUpdate(R, key, "hub3", NOW, "o").ok).toBe(false);
-  });
-
-  it("the written value is what the registry then resolves", () => {
-    const tree = applyUpdate({}, categoryHubUpdate(R, "hoodies", "concrete-stockroom", NOW, "o").updates);
-    const after = normalizeNetwork(tree.network);
-    expect(after.backStock.concrete).toEqual({ _default: "hub3", hoodies: "concrete-stockroom" });
-    expect(after.backStock["marathon-pe"]).toEqual({ _default: "hub2", sneakers: "hub1" });
-  });
-
-  it("lists the default first and marks categories that follow it", () => {
-    const reg = normalizeNetwork({ backStock: { concrete: { hoodies: "concrete-stockroom" } } });
-    const rows = categoryRows(reg, [{ key: "hoodies", label: "Hoodies" }, { key: "tees", label: "Tees" }, null, {}]);
-    expect(rows).toEqual([
-      { key: "_default", label: "Every other category", hub: "hub3", isDefault: true },
-      { key: "hoodies", label: "Hoodies", hub: "concrete-stockroom", inherits: false },
-      { key: "tees", label: "Tees", hub: "hub3", inherits: true },
-    ]);
-  });
-});
-
-describe("product override", () => {
-  it("sets and clears one product", () => {
-    expect(productOverrideUpdate(R, "p1", "concrete-stockroom", NOW, "o").updates["network/productOverrides/concrete/p1"]).toBe("concrete-stockroom");
-    expect(productOverrideUpdate(R, "p1", null, NOW, "o").updates["network/productOverrides/concrete/p1"]).toBe(null);
-  });
-
-  it("clearing the last override leaves a node the registry still reads (RTDB deletes the empty parent)", () => {
-    let tree = applyUpdate({}, productOverrideUpdate(R, "p1", "concrete-stockroom", NOW, "o").updates);
-    tree = applyUpdate(tree, productOverrideUpdate(R, "p1", null, NOW, "o").updates);
-    expect(tree.network.productOverrides).toBeUndefined();
-    expect(normalizeNetwork(tree.network).productOverrides.concrete).toEqual({});
-  });
-
-  it("refuses a bad product id or a hub outside Section 1", () => {
-    expect(productOverrideUpdate(R, "", "hub3", NOW, "o").ok).toBe(false);
-    expect(productOverrideUpdate(R, "a/b", "hub3", NOW, "o").ok).toBe(false);
-    expect(productOverrideUpdate(R, "p1", "hub2", NOW, "o").ok).toBe(false);
+  it("a stored Concrete Stockroom record or mapping is ignored: Hub 3 answers", () => {
+    const reg = normalizeNetwork({
+      locations: { "concrete-stockroom": { type: "hub", section: 1, solve: true, autoRefill: "all" } },
+      backStock: { concrete: { hoodies: "concrete-stockroom" } },
+      productOverrides: { concrete: { p1: "concrete-stockroom" } },
+    });
+    expect(reg.locations["concrete-stockroom"]).toBeUndefined();
+    expect(reg.backStock.concrete).toEqual({ _default: "hub3" });
+    expect(reg.productOverrides.concrete).toEqual({});
   });
 });
 
@@ -141,19 +110,19 @@ describe("credit scope", () => {
 describe("first-time seed", () => {
   const LIVE_LOCATIONS = { central: {}, hub1: {}, hub2: {}, hub3: {}, "marathon-pe": {}, "marathon-pine": {}, trophy: {}, in_transit: {}, studio: {}, base: {} };
 
-  it("writes the registry and registers ONLY the two new stock locations", () => {
+  it("writes the registry and registers ONLY the one new stock location (Concrete — no Stockroom)", () => {
     const { updates } = seedUpdate(null, LIVE_LOCATIONS, NOW, "o");
     const stockLocPaths = Object.keys(updates).filter((p) => p.startsWith("locations/"));
-    expect(stockLocPaths.sort()).toEqual(["locations/concrete", "locations/concrete-stockroom"]);
+    expect(stockLocPaths.sort()).toEqual(["locations/concrete"]);
     expect(updates["locations/concrete"]).toEqual({ id: "concrete", label: "Concrete", kind: "store", sellable: true, active: true });
-    expect(updates["locations/concrete-stockroom"].kind).toBe("warehouse");
+    expect(updates["network/locations/concrete-stockroom"]).toBeUndefined();
     const after = normalizeNetwork(applyUpdate({}, updates).network);
     expect(after).toEqual(R);
   });
 
   it("seeds Section 1 Solve on + solved products only, Section 2 Solve on + all — and never writes `live`", () => {
     const { updates } = seedUpdate(null, LIVE_LOCATIONS, NOW, "o");
-    for (const id of ["marathon-pine", "concrete", "hub3", "concrete-stockroom"]) expect(updates[`network/locations/${id}`]).toMatchObject({ solve: true, autoRefill: "solved" });
+    for (const id of ["marathon-pine", "concrete", "hub3"]) expect(updates[`network/locations/${id}`]).toMatchObject({ solve: true, autoRefill: "solved" });
     for (const id of ["marathon-pe", "trophy", "hub1", "hub2"]) expect(updates[`network/locations/${id}`]).toMatchObject({ solve: true, autoRefill: "all" });
     for (const p of Object.keys(updates)) if (updates[p] && typeof updates[p] === "object") expect("live" in updates[p], p).toBe(false);
   });
@@ -168,7 +137,7 @@ describe("first-time seed", () => {
   it("A LIVE FLIP MADE BEFORE SET-UP: the missing sections are filled in and the flip is kept", () => {
     // the owner tapped Hub 3 live and changed the credit scope first — /network exists, with no sections
     const early = { creditScope: "section", locations: { hub3: { solve: true, autoRefill: "all" } }, updatedAt: 1 };
-    const { updates, nothingToDo } = seedUpdate(early, { ...LIVE_LOCATIONS, concrete: {}, "concrete-stockroom": {} }, NOW, "o");
+    const { updates, nothingToDo } = seedUpdate(early, { ...LIVE_LOCATIONS, concrete: {} }, NOW, "o");
     expect(nothingToDo).toBeUndefined();
     // never touched
     expect("network/creditScope" in updates).toBe(false);
@@ -185,14 +154,14 @@ describe("first-time seed", () => {
     expect(after.locations.hub3.live).toBe(true);
     expect(after.creditScope).toBe("section");
     // every sectioned location now has its section STORED, which is what the rules read
-    for (const id of ["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3", "concrete-stockroom"]) {
+    for (const id of ["marathon-pe", "trophy", "hub1", "hub2", "marathon-pine", "concrete", "hub3"]) {
       expect(stored.locations[id].section, id).toBe(after.locations[id].section);
     }
   });
 
   it("A LEGACY live FLAG ON A RECORD: Set up fills the switches with its migrated meaning, never the seed's", () => {
     const early = { locations: { hub2: { live: false }, "marathon-pine": { live: true } } };
-    const { updates } = seedUpdate(early, { ...LIVE_LOCATIONS, concrete: {}, "concrete-stockroom": {} }, NOW, "o");
+    const { updates } = seedUpdate(early, { ...LIVE_LOCATIONS, concrete: {} }, NOW, "o");
     expect(updates["network/locations/hub2/solve"]).toBe(false);
     expect(updates["network/locations/hub2/autoRefill"]).toBe("off");
     expect(updates["network/locations/marathon-pine/solve"]).toBe(true);
@@ -204,8 +173,8 @@ describe("first-time seed", () => {
 
   it("registers a missing stock location without touching a complete registry", () => {
     const stored = applyUpdate({}, seedUpdate(null, LIVE_LOCATIONS, NOW, "o").updates);
-    const { updates } = seedUpdate(stored.network, { ...LIVE_LOCATIONS, concrete: {} }, NOW, "o");
-    expect(Object.keys(updates).sort()).toEqual(["locations/concrete-stockroom", "network/updatedAt", "network/updatedBy"]);
+    const { updates } = seedUpdate(stored.network, LIVE_LOCATIONS, NOW, "o");
+    expect(Object.keys(updates).sort()).toEqual(["locations/concrete", "network/updatedAt", "network/updatedBy"]);
   });
 
   it("writes no ancestor together with its descendant (RTDB rejects that update)", () => {
@@ -234,7 +203,7 @@ describe("Concrete at the till — the POS switches", () => {
   });
 
   it("what is written is what the card then shows, and the location's own record is untouched", () => {
-    let tree = applyUpdate({}, seedUpdate(null, { concrete: {}, "concrete-stockroom": {} }, NOW, "o").updates);
+    let tree = applyUpdate({}, seedUpdate(null, { concrete: {} }, NOW, "o").updates);
     tree = applyUpdate(tree, posFlagUpdate(R, "cashRecon", true, NOW, "o").updates);
     tree = applyUpdate(tree, recyclerTillUpdate(R, "till-1", NOW, "o").updates);
     const after = normalizeNetwork(tree.network);

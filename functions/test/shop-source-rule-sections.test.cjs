@@ -23,10 +23,10 @@ const NOW = Date.parse("2026-10-03T10:00:00.000Z");
 const C0 = "2026-09-25T14:25:29.087Z";
 const BEFORE = "2026-09-20T08:00:00.000Z";
 const AFTER = "2026-09-26T08:00:00.000Z";
-const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+const S1 = ["marathon-pine", "concrete", "hub3"];
 // Section 1 with BOTH switches off — what the seed shipped as before 7 Oct 2026
 // (the seed itself now holds Section 1 Solve on + Auto-refill "solved").
-const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3", "concrete-stockroom"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
+const DARK = normalizeNetwork({ locations: Object.fromEntries(["marathon-pine", "concrete", "hub3"].map((id) => [id, { solve: false, autoRefill: "off" }])) });
 
 const live = (ids = S1, extra = {}) => normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, ids.includes(id) ? { live: true } : { solve: false, autoRefill: "off" }])), ...extra });
 // Production-shaped: only Section 2 is named.
@@ -105,20 +105,15 @@ test("SECTION 1, LIVE: a request Central has started, or one a picker has claime
   }
 });
 
-test("CONCRETE: a product mapped to the Concrete Stockroom is judged against the STOCKROOM — by category and by product override", () => {
-  for (const extra of [{ backStock: { concrete: { "t-shirts": "concrete-stockroom" } } }, { productOverrides: { concrete: { tee: "concrete-stockroom" } } }]) {
+test("CONCRETE: its back stock is Hub 3 — a stored mapping to the (removed) Concrete Stockroom is ignored, by category and by product override", () => {
+  for (const extra of [{}, { backStock: { concrete: { "t-shirts": "concrete-stockroom" } } }, { productOverrides: { concrete: { tee: "concrete-stockroom" } } }]) {
     const network = live(S1, extra);
-    // Hub 3 holding it says nothing: this product's back stock is not there.
-    assert.equal(withdrawal(computeRefillPlan(snap({ shop: "concrete", network, at: { hub3: cell(4) } }))), undefined);
-    const w = withdrawal(computeRefillPlan(snap({ shop: "concrete", network, at: { "concrete-stockroom": cell(4) } })));
-    assert.equal(w.hub, "concrete-stockroom");
+    // Hub 3 holding it IS presence for Concrete, whatever a stored record says
+    assert.equal(withdrawal(computeRefillPlan(snap({ shop: "concrete", network, at: { hub3: cell(4) } }))).hub, "hub3", JSON.stringify(extra));
+    // and units at the old Stockroom id are no presence anywhere (it is not a location)
+    assert.equal(withdrawal(computeRefillPlan(snap({ shop: "concrete", network, at: { "concrete-stockroom": cell(4) } }))), undefined);
   }
-  // …and unmapped, Concrete's hub for it is Hub 3; the stockroom holding it is not presence.
   assert.equal(withdrawal(computeRefillPlan(snap({ shop: "concrete", at: { hub3: cell(4) } }))).hub, "hub3");
-  assert.equal(withdrawal(computeRefillPlan(snap({ shop: "concrete", at: { "concrete-stockroom": cell(4) } }))), undefined);
-  // Pine is never judged against the stockroom (it does not serve Pine).
-  const network = live(S1, { backStock: { concrete: { "t-shirts": "concrete-stockroom" } } });
-  assert.equal(withdrawal(computeRefillPlan(snap({ network, at: { "concrete-stockroom": cell(4) } }))), undefined);
 });
 
 test("NOT LIVE: nothing automatic touches a request at a shop that is not live, or whose hub is not", () => {
@@ -132,7 +127,7 @@ test("NOT LIVE: nothing automatic touches a request at a shop that is not live, 
 });
 
 test("the functions: a registry-routed shop is a shop, its hub is per product, and Central is a forbidden source for it", () => {
-  const network = live(S1, { backStock: { concrete: { hoodies: "concrete-stockroom" } } });
+  const network = live(S1, { backStock: { concrete: { hoodies: "concrete-stockroom" } } });   // a stored mapping to the removed Stockroom: ignored
   const routing = networkRouting(CONFIG, network);
   const ctx = { routes: routing.routes, locations: null, routing };
   for (const shop of ["marathon-pine", "concrete"]) {
@@ -142,9 +137,10 @@ test("the functions: a registry-routed shop is a shop, its hub is per product, a
   }
   assert.equal(rule.shopHubFor("marathon-pine", { ...ctx, product: TEE, pid: "tee" }), "hub3");
   assert.equal(rule.shopHubFor("concrete", { ...ctx, product: TEE, pid: "tee" }), "hub3");
-  assert.equal(rule.shopHubFor("concrete", { ...ctx, product: { categoryKey: "hoodies" }, pid: "h" }), "concrete-stockroom");
+  assert.equal(rule.shopHubFor("concrete", { ...ctx, product: { categoryKey: "hoodies" }, pid: "h" }), "hub3");
   // hubs are never shops, with or without the routing
-  for (const hub of ["hub3", "concrete-stockroom", "hub1", "hub2"]) assert.equal(rule.isShopLoc(hub, ctx), false);
+  for (const hub of ["hub3", "hub1", "hub2"]) assert.equal(rule.isShopLoc(hub, ctx), false);
+  assert.equal(rule.isShopLoc("concrete-stockroom", ctx), false);
   // without the routing the rule is exactly the config.routes rule
   assert.equal(rule.isShopLoc("marathon-pine", { routes: routing.routes }), false);
   assert.equal(rule.shopHubFor("marathon-pine", { routes: routing.routes, product: TEE, pid: "tee" }), null);

@@ -73,6 +73,8 @@ const UNSELLABLE_LOCATIONS = sealedSet(["in_transit"]);
 // other section, and nothing online picks from them. Their stock is not
 // promised to a web customer until the owner says so; take them off this list
 // (all three copies) when he does.
+// ("concrete-stockroom" no longer exists — 8 Oct 2026 — and is kept here as a
+// TOMBSTONE: a stray /stock cell under that id must never count as sellable online.)
 const UNTRUSTED_LOCATIONS = sealedSet(["hub3", "marathon-pine", "concrete", "concrete-stockroom"]);
 const ONLINE_EXCLUDED_LOCATIONS = sealedSet([
   ...UNSELLABLE_LOCATIONS, ...UNTRUSTED_LOCATIONS,

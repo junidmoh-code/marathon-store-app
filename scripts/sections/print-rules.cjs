@@ -26,8 +26,6 @@ const sec = (expr) => `root.child('network').child('locations').child(${expr}).c
 const sameSide = (a, b) => `(!${sec(a)}.exists() || !${sec(b)}.exists() || ${sec(a)}.val() === ${sec(b)}.val())`;
 
 // ── STEP 1: additive keys and children — safe before the deploy ──────────────
-const NL = "newData.parent().parent().parent().child('locations')";
-const hubOk = `newData.isString() && ${NL}.child(newData.val()).child('type').val() === 'hub' && ${NL}.child(newData.val()).child('section').val() === ${NL}.child($store).child('section').val()`;
 const counter = {
   ".read": SIGNED_IN,
   ".write": SIGNED_IN,
@@ -53,8 +51,10 @@ const step1 = {
       type: { ".validate": "newData.val() === 'store' || newData.val() === 'hub' || newData.val() === 'central'" },
       section: { ".validate": "newData.val() === 1 || newData.val() === 2" },
     } },
-    backStock: { $store: { $category: { ".validate": hubOk } } },
-    productOverrides: { $store: { $pid: { ".validate": hubOk } } },
+    // (No backStock / productOverrides clauses: the only control that wrote
+    // them was the Network card's Hub 3 / Concrete Stockroom choice, removed
+    // 8 Oct 2026 with the Stockroom. "Set up the network" still copies the
+    // built-in seed's backStock, which the owner-only .write above covers.)
     posStores: { $posId: { section: { ".validate": "newData.val() === 1 || newData.val() === 2" } } },
   },
   orderCounter_byStore: { $shop: counter },
@@ -70,9 +70,8 @@ const step1 = {
   },
   sections_repair: { ".read": OWNER, ".write": false },
 };
-// push_assignments: one more optional hub child (the existing $other refuses it today).
-const push = clone(live.push_assignments);
-if (push && push.$uid) push.$uid["concrete-stockroom"] = { ".validate": "newData.isBoolean()" };
+// (No push_assignments change: its only addition was a Concrete Stockroom
+// alert child, and the Stockroom does not exist.)
 // users: the section fields. /users is owner-write at its root today and has
 // no child .write, so nobody can write their own record; these only shape it.
 const users = clone(live.users);
@@ -80,7 +79,6 @@ users.$uid = { ...(users.$uid || {}),
   sections: { $n: { ".validate": "($n === '1' || $n === '2') && newData.val() === true" } },
   allSections: { ".validate": "newData.val() === true" },
 };
-step1.push_assignments = push;
 step1.users = users;
 
 // ── STEP 4: the wall — after the deploy and after Set up the network ─────────
@@ -135,7 +133,6 @@ these keys is edited in the console later, regenerate before pasting.
 | block A, \`network\` | The Network card cannot save. Both apps run on the built-in seed: Section 2 as today; Section 1 Solve ON with Auto-refill "solved products only" (7 Oct 2026). Nothing breaks. |
 | block A, \`orderCounter_byStore\` / \`refillCounter_byStore\` | Pine and Concrete orders keep drawing from the SHARED sequence, exactly as Pine does today. Once pasted, Pine's order keys become \`P001\` and Pine's TV board must be opened at \`?section=1#tv\`. |
 | block A, \`central_dispatch\` | Stock still moves. The dispatch cost row is dropped (one refused attempt, then the move lands without it) and is not back-filled. |
-| block A, \`push_assignments\` | Only switching the Concrete Stockroom on as an alert hub is refused. |
 | block A, \`users\` | Nothing: /users is owner-write already. The children only constrain the shape of the section fields. |
 | step 3 | Block B's clauses read each location's section from \`/network\`. Until it is set up they judge nothing and pass everything. The apps enforce the wall from their built-in seed regardless. |
 | block B | The wall is enforced by the apps and the functions only, not by the database. |

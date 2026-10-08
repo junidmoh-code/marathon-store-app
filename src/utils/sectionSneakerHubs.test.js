@@ -16,13 +16,14 @@ import {
 const LIVE_RAW = {
   locations: {
     "marathon-pine": { live: true }, concrete: { live: true },
-    hub3: { live: true }, "concrete-stockroom": { live: true },
+    hub3: { live: true },
   },
 };
 const LIVE = normalizeNetwork(LIVE_RAW);
-// Hub 3 live, the Stockroom not yet.
+// Pine, Concrete and Hub 3 live (the same as LIVE since the Stockroom was removed, 8 Oct 2026).
 const HUB3_ONLY = normalizeNetwork({ locations: { "marathon-pine": { live: true }, concrete: { live: true }, hub3: { live: true } } });
-// Concrete's sneakers flipped to the Stockroom on the Network card.
+// A stored node still mapping Concrete's sneakers and tees to the removed
+// Concrete Stockroom: ignored — Concrete's back stock is Hub 3.
 const FLIPPED_RAW = { ...LIVE_RAW, backStock: { concrete: { sneakers: "concrete-stockroom", tshirts: "concrete-stockroom" } } };
 const FLIPPED = normalizeNetwork(FLIPPED_RAW);
 
@@ -58,9 +59,10 @@ describe("sectionSneakerHubs", () => {
     expect(sectionSneakerHubs(SEED_REGISTRY, "marathon-pine")).toEqual([]);
     expect(sectionSneakerHubs(SEED_REGISTRY, "concrete")).toEqual([]);
   });
-  it("live: Pine → Hub 3 only; Concrete → Hub 3 and its Stockroom", () => {
+  it("live: Pine → Hub 3; Concrete → Hub 3 (there is no Stockroom)", () => {
     expect(sectionSneakerHubs(LIVE, "marathon-pine")).toEqual(["hub3"]);
-    expect(sectionSneakerHubs(LIVE, "concrete")).toEqual(["hub3", "concrete-stockroom"]);
+    expect(sectionSneakerHubs(LIVE, "concrete")).toEqual(["hub3"]);
+    expect(sectionSneakerHubs(FLIPPED, "concrete")).toEqual(["hub3"]);
     // any spelling of the shop
     expect(sectionSneakerHubs(LIVE, "pine")).toEqual(["hub3"]);
   });
@@ -81,7 +83,7 @@ describe("sectionSneakerHubs", () => {
       hub8: { type: "hub", section: 1, live: true, name: "Hub 8", sort: 15 },
     } });
     expect(sectionSneakerHubs(wide, "concrete")).toHaveLength(SECTION_SNEAKER_HUB_SLOTS);
-    expect(sectionSneakerHubs(wide, "concrete")).toEqual(["hub3", "concrete-stockroom"]);
+    expect(sectionSneakerHubs(wide, "concrete")).toEqual(["hub3", "hub9"]);
   });
 });
 
@@ -98,8 +100,8 @@ describe("sneakerPlacementHub", () => {
     // an allocation naming a hub that is not gated for the shop is not followed
     expect(sneakerPlacementHub(SEED_REGISTRY, "concrete", SHOE, "concrete-stockroom", () => "hub1")).toBe("hub3");
   });
-  it("live: the allocation's hub when it is one of the shop's own", () => {
-    expect(sneakerPlacementHub(LIVE, "concrete", SHOE, "concrete-stockroom", () => "hub1")).toBe("concrete-stockroom");
+  it("live: the allocation's hub when it is one of the shop's own — the removed Stockroom never is", () => {
+    expect(sneakerPlacementHub(LIVE, "concrete", SHOE, "concrete-stockroom", () => "hub1")).toBe("hub3");
     expect(sneakerPlacementHub(LIVE, "concrete", SHOE, "hub3", () => "hub1")).toBe("hub3");
     expect(sneakerPlacementHub(LIVE, "concrete", SHOE, undefined, () => "hub1")).toBe("hub3");
   });
@@ -107,12 +109,12 @@ describe("sneakerPlacementHub", () => {
     for (const bad of ["hub1", "hub2", "hubC", "concrete-stockroom", "nowhere"]) {
       expect(sneakerPlacementHub(LIVE, "marathon-pine", SHOE, bad, () => "hub1")).toBe("hub3");
     }
-    for (const bad of ["hub1", "hub2", "hubC"]) {
+    for (const bad of ["hub1", "hub2", "hubC", "concrete-stockroom"]) {
       expect(sneakerPlacementHub(LIVE, "concrete", SHOE, bad, () => "hub1")).toBe("hub3");
     }
   });
-  it("a flipped category books an unallocated line at the Stockroom; an unknown shop gets no hub", () => {
-    expect(sneakerPlacementHub(FLIPPED, "concrete", SHOE, undefined, () => "hub1")).toBe("concrete-stockroom");
+  it("a stored mapping to the removed Stockroom books at Hub 3; an unknown shop gets no hub", () => {
+    expect(sneakerPlacementHub(FLIPPED, "concrete", SHOE, undefined, () => "hub1")).toBe("hub3");
     expect(sneakerPlacementHub(LIVE, "nowhere", SHOE, "hub3", () => "hub1")).toBe(null);
   });
 });
@@ -139,24 +141,25 @@ describe("the order screen's sneaker lane for a Section 1 shop (real resolver, r
       .toEqual({ hub: "hub3", available: 0 });
   });
 
-  it("live, Concrete: a size Hub 3 is out of is served by the Stockroom", () => {
+  it("live, Concrete: Hub 3 is its only sneaker hub — a size Hub 3 is out of is a true ✕", () => {
     setCurrentNetworkFromRaw(LIVE_RAW);
     const data = screenHubData(LIVE, "concrete", { hub3: hub({ 8: 1, 9: 0 }), "concrete-stockroom": hub({ 9: 5 }) });
+    expect(Object.keys(data)).not.toContain("concrete-stockroom");
     expect(resolveSneakerSourcing({ product: SHOE, taggedHub: "hub3", size: "9", hubData: data }))
-      .toEqual({ hub: "concrete-stockroom", available: 5 });
+      .toEqual({ hub: "hub3", available: 0 });
     // the tag still wins whenever it can supply
     expect(resolveSneakerSourcing({ product: SHOE, taggedHub: "hub3", size: "8", hubData: data }))
       .toEqual({ hub: "hub3", available: 1 });
   });
 
-  it("live, Concrete: a cart spills from Hub 3 to the Stockroom and nowhere else", () => {
+  it("live, Concrete: a cart never leaves Hub 3", () => {
     setCurrentNetworkFromRaw(LIVE_RAW);
     const data = screenHubData(LIVE, "concrete", { hub3: hub({ 8: 1 }), "concrete-stockroom": hub({ 8: 1 }) });
     const lines = [1, 2, 3].map(() => ({ product: SHOE, size: "8" }));
     const { hubOf } = allocateSneakerCart({ lines, hubData: data, taggedHubFor: (p) => tagged(LIVE, "concrete", p) });
-    expect(lines.map((l) => hubOf.get(l))).toEqual(["hub3", "concrete-stockroom", "hub3"]);
+    expect(lines.map((l) => hubOf.get(l))).toEqual(["hub3", "hub3", "hub3"]);
     expect(lines.map((l) => sneakerPlacementHub(LIVE, "concrete", SHOE, hubOf.get(l), () => "hub1")))
-      .toEqual(["hub3", "concrete-stockroom", "hub3"]);
+      .toEqual(["hub3", "hub3", "hub3"]);
   });
 
   it("live, Pine: a cart never leaves Hub 3 — not to the Stockroom, not across the wall", () => {
@@ -202,18 +205,18 @@ describe("clothing grey-out: the product's own back-stock hub", () => {
       expect(extraClothingHub(SEED_REGISTRY, shop, "hub3")).toBe(null);
     }
   });
-  it("Concrete with T-shirts flipped: T-shirts read the Stockroom, everything else Hub 3", () => {
-    expect(extraClothingHub(FLIPPED, "concrete", "hub3")).toBe("concrete-stockroom");
-    expect(clothingHubFor(FLIPPED, "concrete", TEE, "hub3")).toBe("concrete-stockroom");
+  it("a stored T-shirt mapping to the removed Stockroom is ignored: everything reads Hub 3", () => {
+    expect(extraClothingHub(FLIPPED, "concrete", "hub3")).toBe(null);
+    expect(clothingHubFor(FLIPPED, "concrete", TEE, "hub3")).toBe("hub3");
     expect(clothingHubFor(FLIPPED, "concrete", { id: "h1", categoryKey: "hoodies" }, "hub3")).toBe("hub3");
     // Pine is untouched by Concrete's flip
     expect(extraClothingHub(FLIPPED, "marathon-pine", "hub3")).toBe(null);
     expect(clothingHubFor(FLIPPED, "marathon-pine", TEE, "hub3")).toBe("hub3");
   });
-  it("a single flipped PRODUCT is followed too", () => {
+  it("a single product override to the removed Stockroom is ignored too", () => {
     const one = normalizeNetwork({ productOverrides: { concrete: { t1: "concrete-stockroom" } } });
-    expect(extraClothingHub(one, "concrete", "hub3")).toBe("concrete-stockroom");
-    expect(clothingHubFor(one, "concrete", TEE, "hub3")).toBe("concrete-stockroom");
+    expect(extraClothingHub(one, "concrete", "hub3")).toBe(null);
+    expect(clothingHubFor(one, "concrete", TEE, "hub3")).toBe("hub3");
     expect(clothingHubFor(one, "concrete", { ...TEE, id: "t2" }, "hub3")).toBe("hub3");
   });
   it("no product in hand, or a shop the registry does not know: the serving hub", () => {

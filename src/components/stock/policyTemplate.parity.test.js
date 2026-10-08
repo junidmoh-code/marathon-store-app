@@ -25,7 +25,7 @@ const server = require("../../../functions/lib/policy-template.cjs");
 const engine = require("../../../functions/lib/refill-engine.cjs");
 const FIXTURE = require("../../../functions/test/fixtures/sections-routing-fixture.json");
 
-const S1 = ["marathon-pine", "concrete", "hub3", "concrete-stockroom"];
+const S1 = ["marathon-pine", "concrete", "hub3"];
 const S2 = ["marathon-pe", "trophy", "hub1", "hub2"];
 const ALL = [...S1, ...S2];
 // Section 1 with both switches off (the seed before 7 Oct 2026), and with only `ids` fully live.
@@ -190,10 +190,10 @@ describe("engineConfigView — the config every stock screen loads", () => {
 
   it("followersIn: who follows whom in one map — live followers only, and only where the template has an entry", () => {
     const run = FIXTURE.config.defaultRunByStore;
-    expect(followersIn(FIXTURE.config, live(), run)).toEqual({ "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2", "concrete-stockroom": "hub2" });
+    expect(followersIn(FIXTURE.config, live(), run)).toEqual({ "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2" });
     expect(followersIn(FIXTURE.config, DARK, run)).toEqual({});
     // the seed: Section 1 is planned, so its followers follow
-    expect(followersIn(FIXTURE.config, SEED_REGISTRY, run)).toEqual({ "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2", "concrete-stockroom": "hub2" });
+    expect(followersIn(FIXTURE.config, SEED_REGISTRY, run)).toEqual({ "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2" });
     expect(followersIn(FIXTURE.config, live(["hub3"]), run)).toEqual({ hub3: "hub2" });
     expect(followersIn(FIXTURE.config, live(), { ...run, hub3: { M: 1 } }).hub3).toBeUndefined();
     expect(followersIn(FIXTURE.config, live(), { trophy: { M: 1 } })).toEqual({});

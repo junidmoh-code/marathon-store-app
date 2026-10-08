@@ -101,10 +101,13 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
     [network],
   );
   const sourceTab = (store) => SOURCE_TAB_LABEL[store] || LOC_LABEL[store] || store;
-  // WHICH SECTION'S LIST. The default is the list HealthView hands over
-  // (Section 2's); a viewer who may see the other section can look at its
-  // stranded stock too — look, and move by hand; Solve only ever routes to
-  // live stores.
+  // WHICH DIVISION'S LIST. "Missing from Marathon" (the default, the list
+  // HealthView hands over) is every product held at Central or at a Marathon
+  // hub that no Marathon shop or Marathon back-stock hub carries yet; "Missing
+  // from Concrete" is the same question for Pine, Concrete and Hub 3. A viewer
+  // who may see both divisions can switch. EACH LIST SOLVES AND MOVES INTO ITS
+  // OWN DIVISION ONLY (owner rule 8 Oct 2026) — enforced in solve() and
+  // transfer() below, not only in what is offered.
   const sectionChoices = useMemo(
     () => [HOME_SECTION, ...[1, 2].filter((x) => x !== HOME_SECTION)].filter((x) => mySections.includes(x) && storeIds(network, { section: x }).length > 0),
     [network, mySections],
@@ -526,7 +529,9 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   // Every store is listed; a store that may not be routed to (not live, its
   // hub not live, or across the wall from a hub-stranded card) carries the
   // sentence that says why and cannot be ticked (solveSections.solveBlocks).
-  const blocksFor = (card) => solveBlocks({ network, sections: mySections, source: card.source, product: byId.get(card.pid), productId: card.pid });
+  // The card's division — the list it is on — is the only block offered.
+  const divisionOf = (card) => cardSection(card, network);
+  const blocksFor = (card) => solveBlocks({ network, sections: [divisionOf(card)].filter((s) => mySections.includes(s)), source: card.source, product: byId.get(card.pid), productId: card.pid });
   const tickableStores = (card) => blocksFor(card).flatMap((b) => b.stores).filter((st) => !st.blocked).map((st) => st.id);
   // HUB PRESENCE (the hard precondition — firstBatchCore.hub2PresenceSignals),
   // judged at the STORE'S OWN hub. From the /stock node this screen already
@@ -698,6 +703,14 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   const solve = async (card) => {
     const ticks = ticksFor(card);
     if (solveBusy || !canAct || !ticks.length) return;
+    // ONE DIVISION PER SOLVE — the list's own. A tick from the other division
+    // (or a hub across the wall) is refused here, whatever the panel offered.
+    const division = divisionOf(card);
+    const stray = ticks.find((st) => sectionOfStore(st) !== division || sectionOfStore(hubOf(card, st) || st) !== division);
+    if (stray) {
+      setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: stray, sizes: [], msg: `Not solved — ${LOC_LABEL[stray] || stray} is not in ${sectionName(network, division)}. Solve from the "Missing from ${sectionName(network, sectionOfStore(stray))}" list instead.` } }));
+      return;
+    }
     // Never a hub seed for a sneaker or slide (see `offTab` in the render).
     if (isSneakerOrSlide(byId.get(card.pid))) {
       setSolved((d) => ({ ...d, [card.pid]: { ok: false, store: ticks[0], sizes: [], msg: "Not seeded — sneakers and slides are refilled from the Sneakers tab." } }));
@@ -823,16 +836,18 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   };
 
   // MOVE MANUALLY — by hand, inside the wall. From Central: the hubs and
-  // stores of every section this viewer may see (the card's own section
-  // first; Central supplies both). From a hub: that hub's own section's
-  // stores. A location that is not live can be sent to by hand.
+  // hubs and stores of the LIST'S OWN division (owner rule 8 Oct 2026 — the
+  // other division moves from its own list). From a hub: that hub's own
+  // division's stores. A location with its switches off can be sent to by hand.
   const destOptions = (card) => {
     const p = byId.get(card.pid);
     if (!isCentral(card.source, network)) return storeIds(network, { section: sectionOfStore(card.source) });
-    const home = cardSection(card, network);
-    return [home, ...[1, 2].filter((x) => x !== home)].filter((sec) => mySections.includes(sec))
-      .flatMap((sec) => [...solveHubsOfSection(network, sec, p, card.pid), ...storeIds(network, { section: sec })]);
+    const home = divisionOf(card);
+    return mySections.includes(home) ? [...solveHubsOfSection(network, home, p, card.pid), ...storeIds(network, { section: home })] : [];
   };
+  // The stored choice counts only while it is one of THIS list's options — a
+  // choice made on the other division's list falls back to the first option.
+  const chosenDest = (card) => { const opts = destOptions(card); return opts.includes(dests[card.pid]) ? dests[card.pid] : opts[0]; };
   const qtyOf = (card, s) => {
     const v = edits[`${card.pid}|${s.size}`];
     // Default: seed the destination with a sensible starter (up to 2 per size).
@@ -840,8 +855,12 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
   };
 
   const transfer = async (card) => {
-    const dest = dests[card.pid] || destOptions(card)[0];
+    const dest = chosenDest(card);
     if (busyPid || !canAct || !dest) return;
+    if (!destOptions(card).includes(dest)) {       // the list's own division only
+      setDone((d) => ({ ...d, [card.pid]: { moved: 0, dest, failed: [`${LOC_LABEL[dest] || dest} is not in ${sectionName(network, divisionOf(card))}`] } }));
+      return;
+    }
     const lines = card.sizes.map((s) => ({ s, qty: qtyOf(card, s) })).filter((l) => l.qty > 0);
     if (!lines.length) return;
     setBusyPid(card.pid);
@@ -891,7 +910,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
       {sectionChoices.map((sec) => (
         <button key={sec} onClick={() => { setSectionPick(sec); setOpenPid(null); setSolvePid(null); setHidePid(null); exitSelect(); }}
                 style={destChip((listSection || HOME_SECTION) === sec)}>
-          {sectionName(network, sec)}: stranded
+          Missing from {sectionName(network, sec)}
         </button>
       ))}
     </div>
@@ -961,7 +980,7 @@ export default function NetworkTransfer({ products = [], category = "all", allSt
         }
         const open = openPid === card.pid;
         const result = done[card.pid];
-        const dest = dests[card.pid] || destOptions(card)[0];
+        const dest = chosenDest(card);
         const total = card.sizes.reduce((t, s) => t + qtyOf(card, s), 0);
         const moveBlocked = moveReason({ canAct, busy: busyPid === card.pid, units: total });
         const sOpen = solvePid === card.pid;

@@ -239,10 +239,10 @@ describe("the roster it shows", () => {
     const ayanda = rowSwitches(tree).filter((n) => n.props["aria-label"].includes("Ayanda"));
     // hub1 on; hub2 explicitly false; hub3 ABSENT from this legacy-shaped
     // record and therefore off — not unset-and-therefore-on.
-    // The Concrete Stockroom, a hub the record has never heard of, is off too.
-    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false, false, false]);
+    expect(ayanda.map((n) => n.props["aria-checked"])).toEqual([true, false, false]);
+    // three hubs — there is no Concrete Stockroom (removed 8 Oct 2026)
     expect(ayanda.map((n) => n.props["aria-label"])).toEqual([
-      "Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda", "Hub 3 alerts for Ayanda", "Concrete Stockroom alerts for Ayanda",
+      "Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda", "Hub 3 alerts for Ayanda",
     ]);
   });
 
@@ -284,9 +284,6 @@ describe("what a tap actually writes", () => {
       "push_hub_audience/hub1/u1": { at: 1_757_000_000_000 },
       "push_hub_audience/hub2/u1": null,
       "push_hub_audience/hub3/u1": null,
-      // The registry's fourth hub is cleared in the index like the rest; the
-      // RECORD above is unchanged, so today's published rule still accepts it.
-      "push_hub_audience/concrete-stockroom/u1": null,
     });
   });
 
@@ -832,14 +829,14 @@ describe("hubs from the registry, by section", () => {
   const switchesFor = (tree, name) =>
     tree.root.findAll((n) => n.props && n.props.role === "switch" && n.props["aria-label"].endsWith(`for ${name}`));
 
-  it("groups Hub 1 and Hub 2 under Section 2, Hub 3 and the Concrete Stockroom under Section 1", async () => {
+  it("groups Hub 1 and Hub 2 under Section 2, Hub 3 under Section 1", async () => {
     getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     const tree = await render({ authUser: ADMIN });
     const groups = tree.root.findAll((n) => n.type === "span" && n.props["data-hub-group"] !== undefined);
     expect(groups.map((g) => g.props["data-hub-group"])).toEqual([2, 1]);
     const labelsIn = (g) => g.findAll((n) => n.props && n.props.role === "switch").map((n) => n.props["aria-label"]);
     expect(labelsIn(groups[0])).toEqual(["Hub 1 alerts for Ayanda", "Hub 2 alerts for Ayanda"]);
-    expect(labelsIn(groups[1])).toEqual(["Hub 3 alerts for Ayanda", "Concrete Stockroom alerts for Ayanda"]);
+    expect(labelsIn(groups[1])).toEqual(["Hub 3 alerts for Ayanda"]);
     const t = flattenTree(tree);
     expect(t).toContain("Marathon");
     expect(t).toContain("Concrete");
@@ -853,17 +850,17 @@ describe("hubs from the registry, by section", () => {
     expect(switchesFor(tree, "Ayanda").map((n) => n.props["aria-label"])).toContain("Hub 4 alerts for Ayanda");
   });
 
-  it("assigning the Concrete Stockroom writes its index entry and the record child", async () => {
+  it("there is no Concrete Stockroom switch, and assigning Hub 3 writes only the three hubs", async () => {
     getMock.mockImplementation(worldReader({ users: { u1: { displayName: "Ayanda" } } }));
     const tree = await render({ authUser: ADMIN });
-    const stockroom = switchesFor(tree, "Ayanda").find((n) => n.props["aria-label"].startsWith("Concrete Stockroom"));
-    await act(async () => { stockroom.props.onClick(); });
+    expect(switchesFor(tree, "Ayanda").some((n) => n.props["aria-label"].startsWith("Concrete Stockroom"))).toBe(false);
+    const hub3 = switchesFor(tree, "Ayanda").find((n) => n.props["aria-label"].startsWith("Hub 3"));
+    await act(async () => { hub3.props.onClick(); });
     expect(updateMock.mock.calls[0][1]).toEqual({
-      "push_assignments/u1": { hub1: false, hub2: false, hub3: false, "concrete-stockroom": true, updatedAt: 1_757_000_000_000 },
+      "push_assignments/u1": { hub1: false, hub2: false, hub3: true, updatedAt: 1_757_000_000_000 },
       "push_hub_audience/hub1/u1": null,
       "push_hub_audience/hub2/u1": null,
-      "push_hub_audience/hub3/u1": null,
-      "push_hub_audience/concrete-stockroom/u1": { at: 1_757_000_000_000 },
+      "push_hub_audience/hub3/u1": { at: 1_757_000_000_000 },
     });
   });
 
@@ -874,7 +871,6 @@ describe("hubs from the registry, by section", () => {
     expect(by["Hub 1"].props.disabled).toBe(true);
     expect(by["Hub 2"].props.disabled).toBe(true);
     expect(by["Hub 3"].props.disabled).toBe(false);
-    expect(by["Concrete Stockroom"].props.disabled).toBe(false);
     expect(flattenTree(tree)).toContain("Concrete only");
     // The guard is in the handler too — a disabled attribute is not enforcement.
     await act(async () => { by["Hub 1"].props.onClick(); });
@@ -904,8 +900,8 @@ describe("hubs from the registry, by section", () => {
     } }));
     const tree = await render({ authUser: ADMIN });
     const disabled = (name) => switchesFor(tree, name).map((n) => n.props.disabled);
-    expect(disabled("Petra")).toEqual([true, true, false, false]);
-    expect(disabled("Wally")).toEqual([false, false, false, false]);
-    expect(disabled("Bothy")).toEqual([false, false, false, false]);
+    expect(disabled("Petra")).toEqual([true, true, false]);
+    expect(disabled("Wally")).toEqual([false, false, false]);
+    expect(disabled("Bothy")).toEqual([false, false, false]);
   });
 });

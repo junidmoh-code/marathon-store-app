@@ -25,7 +25,7 @@ const all = expressions(block);
 describe("the printed rules block", () => {
   it("is two valid JSON blocks with exactly the keys the document describes", () => {
     expect(blocks).toHaveLength(2);
-    expect(Object.keys(blockA)).toEqual(["network", "orderCounter_byStore", "refillCounter_byStore", "central_dispatch", "sections_repair", "push_assignments", "users"]);
+    expect(Object.keys(blockA)).toEqual(["network", "orderCounter_byStore", "refillCounter_byStore", "central_dispatch", "sections_repair", "users"]);
     expect(Object.keys(blockB)).toEqual(["stock_movements", "transfers", "orders", "refill_requests"]);
   });
 
@@ -33,10 +33,9 @@ describe("the printed rules block", () => {
     // /users keeps its owner-only root write and gains no child .write
     expect(blockA.users[".write"]).toBe("auth.token.email === 'gunidmoh@gmail.com'");
     expect(JSON.stringify(blockA.users.$uid)).not.toContain(".write");
-    // push_assignments keeps its required children and its catch-all
-    expect(blockA.push_assignments.$uid[".validate"]).toBe("newData.hasChildren(['hub1','hub2','updatedAt'])");
-    expect(blockA.push_assignments.$uid.$other[".validate"]).toBe(false);
-    expect(blockA.push_assignments.$uid["concrete-stockroom"][".validate"]).toBe("newData.isBoolean()");
+    // push_assignments is not touched at all: its only addition was a Concrete
+    // Stockroom child, and the Stockroom was removed (8 Oct 2026)
+    expect(blockA.push_assignments).toBeUndefined();
   });
 
   it("the per-store counters accept exactly what the app writes", () => {
@@ -113,9 +112,13 @@ describe("the printed rules block", () => {
     expect(v).toContain("(!newData.child('to').exists() || (auth.token.section === null");
   });
 
-  it("/network is owner-write, and back stock must be a hub in the store's own section", () => {
+  it("/network is owner-write; no back-stock or override clauses (their only writer, the Stockroom choice, is gone); the two switches are validated", () => {
     expect(block.network[".write"]).toBe("auth != null && auth.token.email === 'gunidmoh@gmail.com'");
-    expect(block.network.backStock.$store.$category[".validate"]).toContain("child('section').val() === newData.parent().parent().parent().child('locations').child($store).child('section').val()");
+    expect(block.network.backStock).toBeUndefined();
+    expect(block.network.productOverrides).toBeUndefined();
+    expect(block.network.locations.$id.solve[".validate"]).toBe("newData.isBoolean()");
+    expect(block.network.locations.$id.autoRefill[".validate"]).toBe("newData.val() === 'off' || newData.val() === 'solved' || newData.val() === 'all'");
+    expect(JSON.stringify(block)).not.toContain("stockroom");
     expect(block.sections_repair[".write"]).toBe(false);
   });
 });

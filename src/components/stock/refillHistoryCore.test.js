@@ -493,11 +493,11 @@ describe("stepHub — cycles All / Hub 1 / Hub 2 / Shops", () => {
 });
 
 describe("hubStepsFor — the stops, from the network registry", () => {
-  it("on the seed registry Concrete and the Concrete Stockroom join All and Shops; Hub 1 and Hub 2 keep their own stops; the original lists lead, in order", () => {
+  it("on the seed registry Concrete joins All and Shops; Hub 1 and Hub 2 keep their own stops; the original lists lead, in order", () => {
     const steps = hubStepsFor(SEED_REGISTRY);
     expect(steps.map((h) => h.label)).toEqual(["All", "Hub 1", "Hub 2", "Shops"]);
-    expect(steps[0].locs).toEqual([...HUB_STEPS[0].locs, "concrete", "concrete-stockroom"]);
-    expect(steps[3].locs).toEqual([...HUB_STEPS[3].locs, "concrete", "concrete-stockroom"]);
+    expect(steps[0].locs).toEqual([...HUB_STEPS[0].locs, "concrete"]);
+    expect(steps[3].locs).toEqual([...HUB_STEPS[3].locs, "concrete"]);
     expect(steps[1]).toBe(HUB_STEPS[1]);
     expect(steps[2]).toBe(HUB_STEPS[2]);
   });

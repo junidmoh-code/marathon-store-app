@@ -22,7 +22,7 @@ const REGISTRIES = {
   none: null,
   "one more hub": normalizeNetwork({ locations: { hub4: { name: "Hub 4", type: "hub", section: 2, sort: 30 } } }),
   "a renamed hub": normalizeNetwork({ locations: { hub2: { name: "Hub Two" } } }),
-  "the Stockroom given clothing": normalizeNetwork({ backStock: { concrete: { clothing: "concrete-stockroom" } } }),
+  "a stored mapping to the removed Stockroom": normalizeNetwork({ backStock: { concrete: { clothing: "concrete-stockroom" } } }),
   "Hub 1 given clothing": normalizeNetwork({ backStock: { trophy: { clothing: "hub1" } } }),
 };
 const IDS = ["hub1", "hub2", "hub3", "hub4", "hubC", "concrete-stockroom", "central", "marathon-pe", "trophy",
@@ -48,13 +48,13 @@ describe("the client and the server agree, registry by registry", () => {
 
 describe("what the registry says, on the built-in network", () => {
   it("every hub is a push hub; hubC is linkable and never assignable", () => {
-    expect([...client.pushHubsOf(SEED_REGISTRY)].sort()).toEqual(["concrete-stockroom", "hub1", "hub2", "hub3"]);
+    expect([...client.pushHubsOf(SEED_REGISTRY)].sort()).toEqual(["hub1", "hub2", "hub3"]);
     expect(client.warehouseHubsOf(SEED_REGISTRY)).toContain("hubC");
     expect(client.pushHubsOf(SEED_REGISTRY)).not.toContain("hubC");
   });
-  it("CR tab: Hub 2 and Hub 3 as before, the Stockroom too; Hub 1 and hubC not", () => {
+  it("CR tab: Hub 2 and Hub 3 as before; Hub 1, hubC and the removed Stockroom not", () => {
     expect(["hub1", "hub2", "hub3", "hubC", "concrete-stockroom"].map((h) => client.isCrHub(SEED_REGISTRY, h)))
-      .toEqual([false, true, true, false, true]);
+      .toEqual([false, true, true, false, false]);
     // A hub stops being sneakers-only the moment the registry gives it anything else.
     expect(client.isCrHub(REGISTRIES["Hub 1 given clothing"], "hub1")).toBe(true);
   });
@@ -62,7 +62,7 @@ describe("what the registry says, on the built-in network", () => {
     const was = { hub1: "Hub 1", hub2: "Hub 2", hub3: "Hub 3", central: "Central",
       "marathon-pe": "Marathon PE", trophy: "Trophy", "marathon-pine": "Marathon Pine" };
     for (const [id, words] of Object.entries(was)) expect(configLabel(id), id).toBe(words);
-    expect(configLabel("concrete-stockroom")).toBe("Concrete Stockroom");
+    expect(configLabel("concrete-stockroom")).toBe("concrete-stockroom");   // removed 8 Oct 2026: unknown, shown as its id
   });
 });
 
@@ -106,11 +106,11 @@ describe("EVERY LINK THE SERVER CAN BUILD IS ONE THIS APP OPENS, and no other hu
     __resetNetworkForTests();
   });
 
-  it("the Concrete Stockroom opens; a store, Central or an alias never sets a warehouse hub", () => {
+  it("Hub 3 opens; the removed Stockroom, a store, Central or an alias never sets a warehouse hub", () => {
     __resetNetworkForTests();
-    expect(applyPushDeepLink(io("?push=order&hub=concrete-stockroom&tab=clothing").io))
-      .toEqual({ role: "warehouse", hub: "concrete-stockroom", tab: "clothing", order: null });
-    for (const notAHub of ["marathon-pe", "concrete", "central", "Hub 2", "hub 2", "pe", "in_transit"]) {
+    expect(applyPushDeepLink(io("?push=order&hub=hub3&tab=clothing").io))
+      .toEqual({ role: "warehouse", hub: "hub3", tab: "clothing", order: null });
+    for (const notAHub of ["concrete-stockroom", "marathon-pe", "concrete", "central", "Hub 2", "hub 2", "pe", "in_transit"]) {
       const f = io(`?push=order&hub=${encodeURIComponent(notAHub)}&tab=queue`);
       expect(applyPushDeepLink(f.io).hub, notAHub).toBe(null);
       expect(f.store.has("warehouseHub")).toBe(false);

@@ -45,7 +45,7 @@ describe("what is set aside, never forced", () => {
   });
 
   it("footwear whose sale deducted a shop, Central, or a hub across the wall", () => {
-    for (const soldFrom of ["marathon-pe", "trophy", "central", "hub3", "concrete-stockroom"]) {
+    for (const soldFrom of ["marathon-pe", "trophy", "central", "hub3"]) {
       const p = plan([shoe({ soldFrom })]);
       expect(p.restocks, soldFrom).toEqual([]);
       expect(p.setAside[0].why).toMatch(/not a hub in the returning shop's section/);
@@ -53,7 +53,7 @@ describe("what is set aside, never forced", () => {
   });
 
   it("NEVER restocks a Marathon PE / Trophy return into Section 1, or a Section 1 return into Section 2", () => {
-    const s1 = ["hub3", "concrete-stockroom", "marathon-pine", "concrete"];
+    const s1 = ["hub3", "marathon-pine", "concrete"];
     const s2 = ["hub1", "hub2", "marathon-pe", "trophy"];
     for (const storeId of ["pe", "trophy"]) for (const soldFrom of [...s1, ...s2, "central", null]) for (const d of [shoe({ storeId, soldFrom }), shirt({ storeId, soldFrom })]) {
       for (const r of plan([d]).restocks) expect(s1.includes(r.to), `${storeId} ← ${soldFrom}`).toBe(false);

@@ -21,16 +21,17 @@ const { computeRefillPlan, resolveTarget } = engine;
 const FIXTURE = JSON.parse(fs.readFileSync(path.join(__dirname, "fixtures/sections-routing-fixture.json"), "utf8"));
 const NOW_MS = Date.parse("2026-10-01T10:00:00.000Z");
 const clone = (v) => JSON.parse(JSON.stringify(v));
-const S1 = ["hub3", "marathon-pine", "concrete", "concrete-stockroom"];
+const S1 = ["hub3", "marathon-pine", "concrete"];
 const S2 = ["hub1", "hub2", "marathon-pe", "trophy"];
-const LIKE = { "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2", "concrete-stockroom": "hub2" };
+const LIKE = { "marathon-pine": "marathon-pe", concrete: "marathon-pe", hub3: "hub2" };
 const SEED = reg.SEED_REGISTRY;
 const allLive = reg.normalizeNetwork({ locations: Object.fromEntries(S1.map((id) => [id, { live: true }])) });
 
 // ── the template itself ─────────────────────────────────────────────────────
 
-test("the registry's templates are the four the owner named", () => {
+test("the registry's templates are the three the owner named (no Concrete Stockroom)", () => {
   for (const id of S1) assert.equal(SEED.locations[id].policyLike, LIKE[id], id);
+  assert.equal(SEED.locations["concrete-stockroom"], undefined);
   for (const id of S2) assert.equal(SEED.locations[id].policyLike, undefined, `${id} follows nobody`);
 });
 
@@ -76,7 +77,6 @@ test("a location with no numbers of its own gets its template's entry, map by ma
   assert.equal(out.defaultRunByStore["marathon-pine"], cfg.defaultRunByStore["marathon-pe"]);
   assert.equal(out.defaultRunByStore.concrete, cfg.defaultRunByStore["marathon-pe"]);
   assert.equal(out.defaultRunByStore.hub3, cfg.defaultRunByStore.hub2);
-  assert.equal(out.defaultRunByStore["concrete-stockroom"], cfg.defaultRunByStore.hub2);
   for (const k of ["footwearRunByLocation", "subcategoryRunByLocation", "footwearReorderPoint"]) {
     for (const [loc, like] of Object.entries(LIKE)) {
       assert.deepEqual(out[k]?.[loc], cfg[k]?.[like], `${k}.${loc} follows ${like}`);
@@ -91,7 +91,6 @@ test("a location with no numbers of its own gets its template's entry, map by ma
   }
   const g = out.policyGroups[FOOTWEAR_GROUP_KEY].policy;
   assert.equal(g.hub3, cfg.policyGroups[FOOTWEAR_GROUP_KEY].policy.hub2);
-  assert.equal(g["concrete-stockroom"], cfg.policyGroups[FOOTWEAR_GROUP_KEY].policy.hub2);
   assert.deepEqual(locationPolicyFor(out, "sneakers", "hub3"), locationPolicyFor(cfg, "sneakers", "hub2"));
   assert.equal(locationPolicyFor(cfg, "sneakers", "hub3"), null, "the stored config names no Hub 3 — nothing is written");
 });
@@ -104,19 +103,18 @@ test("a store-specific policy that already exists is never overridden", () => {
       perfumes: { hub2: { target: 8, minQty: 4 }, hub3: { target: 1, minQty: 1 }, "marathon-pe": { target: 2 } },
       belts: { hub2: { target: 5 }, hub3: "not here" },          // present but unusable = Hub 3's own "no"
     },
-    policyGroups: { g: { armed: true, memberCategoryKeys: ["bags"], policy: { hub2: { target: 4 }, "concrete-stockroom": { target: 6 } } } },
+    policyGroups: { g: { armed: true, memberCategoryKeys: ["bags"], policy: { hub2: { target: 4 }, concrete: { target: 6 } } } },
   };
   const out = withPolicyTemplates(cfg, SEED);
   assert.deepEqual(out.defaultRunByStore["marathon-pine"], { M: 9 }, "Pine's own run stands");
   assert.deepEqual(out.defaultRunByStore.concrete, { M: 2 }, "Concrete has none → Marathon PE's");
   assert.deepEqual(out.categoryPolicy.perfumes.hub3, { target: 1, minQty: 1 });
-  assert.deepEqual(out.categoryPolicy.perfumes["concrete-stockroom"], { target: 8, minQty: 4 });
+  assert.deepEqual(out.categoryPolicy.perfumes.concrete, { target: 2 }, "Concrete has none → Marathon PE's");
   assert.equal(locationPolicyFor(out, "perfumes", "hub3").target, 1);
   assert.equal(locationPolicyFor(out, "perfumes", "marathon-pine").target, 2);
   assert.equal(out.categoryPolicy.belts.hub3, "not here");
   assert.equal(locationPolicyFor(out, "belts", "hub3"), null, "an unusable own entry arms nothing — it does not fall back to Hub 2");
-  assert.equal(locationPolicyFor(out, "belts", "concrete-stockroom").target, 5);
-  assert.deepEqual(out.policyGroups.g.policy["concrete-stockroom"], { target: 6 });
+  assert.deepEqual(out.policyGroups.g.policy.concrete, { target: 6 }, "Concrete's own group entry stands");
   assert.deepEqual(out.policyGroups.g.policy.hub3, { target: 4 });
   assert.equal(policyTemplateKey(SEED, cfg.defaultRunByStore, "marathon-pine"), "marathon-pine");
   assert.equal(policyTemplateKey(SEED, cfg.defaultRunByStore, "concrete"), "marathon-pe");
@@ -131,7 +129,6 @@ test("the per-destination switches follow the template only in their map form", 
   // a map: Hub 3 follows Hub 2, Pine follows Marathon PE, an own entry wins
   const map = { ruleBasedTargets: { hub2: true, "marathon-pe": false, concrete: true } };
   assert.equal(on(map, "hub3"), true);
-  assert.equal(on(map, "concrete-stockroom"), true);
   assert.equal(on(map, "marathon-pine"), false, "Marathon PE is off → Pine is off");
   assert.equal(on(map, "concrete"), true, "Concrete's own entry wins");
   assert.equal(withPolicyTemplates(map, SEED).ruleBasedTargets.hub2, true);
@@ -266,12 +263,12 @@ test("DRIFT: the live footwear policy reads clean with and without a registry", 
   assert.deepEqual(kinds(FIXTURE.config), []);
   assert.deepEqual(kinds(FIXTURE.config, SEED), []);
   assert.deepEqual(kinds(FIXTURE.config, allLive), []);
-  assert.deepEqual(footwearFollowers(SEED), ["concrete-stockroom", "hub3"]);
+  assert.deepEqual(footwearFollowers(SEED), ["hub3"]);
   assert.deepEqual(footwearFollowers(undefined), []);
   assert.deepEqual([...FOOTWEAR_POLICY_HUBS], ["hub1", "hub2"]);
 });
 
-test("DRIFT: Hub 3 and the Concrete Stockroom following Hub 2 — by template or by their own leg — are not drift", () => {
+test("DRIFT: Hub 3 following Hub 2 — by template or by its own leg — is not drift", () => {
   // by template: the config the engine actually resolves with
   assert.deepEqual(kinds(withPolicyTemplates(clone(FIXTURE.config), SEED), SEED), []);
   // by its own leg (a store-specific policy)
@@ -280,7 +277,7 @@ test("DRIFT: Hub 3 and the Concrete Stockroom following Hub 2 — by template or
   assert.deepEqual(kinds(own, SEED), []);
   // …but with NO registry the same config is what it always was: an extra location
   assert.deepEqual(kinds(own), ["extra_location@hub3"]);
-  assert.deepEqual(kinds(withPolicyTemplates(clone(FIXTURE.config), SEED)), ["extra_location@concrete-stockroom", "extra_location@hub3"]);
+  assert.deepEqual(kinds(withPolicyTemplates(clone(FIXTURE.config), SEED)), ["extra_location@hub3"]);
 });
 
 test("DRIFT: a genuine difference between Hub 1 and Hub 2 is still drift, registry or not", () => {

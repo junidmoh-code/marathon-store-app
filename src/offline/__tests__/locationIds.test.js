@@ -64,12 +64,11 @@ describe("the mirror's closed list matches the registry seed", () => {
     const registry = listLocations(SEED_REGISTRY, { includeRetired: true }).map((l) => l.id);
     expect([...CANONICAL_LOCATION_IDS].sort()).toEqual([...registry, TRANSIT_ID].sort());
   });
-  test("Concrete and the Concrete Stockroom are accepted", () => {
+  test("Concrete is accepted; the removed Concrete Stockroom is not", () => {
     expect(isCanonicalLocationId("concrete")).toBe(true);
-    expect(isCanonicalLocationId("concrete-stockroom")).toBe(true);
+    expect(isCanonicalLocationId("concrete-stockroom")).toBe(false);
     expect(canonicalLocationId("concrete")).toBe("concrete");
     expect(shortLocationId("concrete")).toBe("concrete");
-    expect(shortLocationId("concrete-stockroom")).toBe("concrete-stockroom");
   });
   test("every store's POS id resolves to that store, and only stores have one", () => {
     const stores = listLocations(SEED_REGISTRY, { type: "store" });

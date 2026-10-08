@@ -22,8 +22,8 @@ describe("what gets moved", () => {
     expect(p.undetermined).toEqual([]);
   });
 
-  it("covers Trophy, and Hub 3 / Concrete / the stockroom as the wrong destination", () => {
-    for (const to of ["hub3", "concrete", "concrete-stockroom"]) {
+  it("covers Trophy, and Hub 3 / Concrete as the wrong destination", () => {
+    for (const to of ["hub3", "concrete"]) {
       const p = planRepair(base({ returns: [ret({ to, mvId: `return:RET1:${to}:p1:9` })], records: { RET1: rec("trophy") }, soldCells: { [soldKey("SALE1", "p1", "9")]: "hub1" }, cells: { [cellKey(to, "p1", "9")]: 3 } }));
       expect(p.moves[0]).toMatchObject({ from: to, toHub: "hub1", takenAt: "trophy" });
     }

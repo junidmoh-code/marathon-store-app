@@ -5,7 +5,7 @@
 // whether it is LIVE, and where each store's back stock sits per category.
 //
 //   Central     its own entity; supplies both sections.
-//   Section 1   "Concrete": Marathon Pine, Concrete, Hub 3, Concrete Stockroom.
+//   Section 1   "Concrete": Marathon Pine, Concrete, Hub 3 (back stock for both).
 //   Section 2   "Marathon": Marathon PE, Trophy, Hub 1, Hub 2.
 //   (The names are the owner's — /network/sections/{n}/name.)
 //
@@ -86,11 +86,6 @@ const DEFAULT_NETWORK = Object.freeze({
       id: "hub3", name: "Hub 3", type: "hub", section: 1, solve: true, autoRefill: "solved", sort: 12, policyLike: "hub2",
       aliases: Object.freeze(["Hub 3", "hub 3", "Hub3"]),
     }),
-    "concrete-stockroom": Object.freeze({
-      id: "concrete-stockroom", name: "Concrete Stockroom", type: "hub", section: 1, solve: true, autoRefill: "solved", sort: 13, policyLike: "hub2",
-      serves: Object.freeze(["concrete"]),
-      aliases: Object.freeze(["Concrete Stockroom", "concrete stockroom", "concreteStockroom"]),
-    }),
     "marathon-pe": Object.freeze({
       id: "marathon-pe", name: "Marathon PE", type: "store", section: 2, solve: true, autoRefill: "all", sort: 20,
       posId: "pe", universe: "central",
@@ -132,6 +127,13 @@ const DEFAULT_NETWORK = Object.freeze({
 });
 
 const TRANSIT_ID = "in_transit";
+
+// Locations that do not exist (8 Oct 2026: there is no Concrete Stockroom —
+// Concrete's back stock is Hub 3, like Pine's). A record for one in a stored
+// /network node is ignored, so no build, picker or rule can bring it back;
+// any id or alias of it resolves to nothing, and the wall refuses a move
+// naming it ("not in the network registry").
+const REMOVED_LOCATION_IDS = Object.freeze(["concrete-stockroom"]);
 
 function isObj(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -239,7 +241,7 @@ function normalizeNetwork(raw) {
   const locations = {};
   const ids = [...new Set([...Object.keys(DEFAULT_NETWORK.locations), ...Object.keys(rawLocs)])];
   for (const id of ids) {
-    if (id === TRANSIT_ID) continue;
+    if (id === TRANSIT_ID || REMOVED_LOCATION_IDS.includes(id)) continue;
     const loc = normLocation(id, rawLocs[id], DEFAULT_NETWORK.locations[id]);
     if (loc) locations[id] = loc;
   }
@@ -499,7 +501,7 @@ function issuingStamp(registry, anyStore) {
 // "The same size policy applies to all stores unless a store-specific policy
 // already exists." A location with NO numbers of its own in a policy map
 // follows the location it is declared to be like: Pine and Concrete follow
-// Marathon PE; Hub 3 and the Concrete Stockroom follow Hub 2. A location WITH
+// Marathon PE; Hub 3 follows Hub 2. A location WITH
 // its own entry always uses its own — so Marathon PE, Trophy, Hub 1 and Hub 2,
 // which all have entries today, resolve exactly as they always have.
 //
