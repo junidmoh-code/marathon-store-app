@@ -31,6 +31,7 @@ const { onSchedule } = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const engine = require("./lib/refill-engine.cjs");
 const networkRegistry = require("./lib/network-registry.cjs");
+const stockTrust = require("./lib/stock-trust.cjs");
 const { loadNetwork } = require("./lib/network-load.cjs");
 const refusalWriteoff = require("./lib/refusal-writeoff.cjs");
 const { requestUntouched, pickInProgress } = require("./lib/shop-source-rule.cjs");
