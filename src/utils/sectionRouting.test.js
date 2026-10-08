@@ -137,14 +137,15 @@ describe("hub lists come from the registry", () => {
 
 describe("the warehouse hub picker and the persisted hub", () => {
   const ids = (groups) => groups.map((g) => [g.section, g.items.map((i) => i.id)]);
-  it("the owner sees both sections, Section 2 first with Hub C where it was", () => {
+  it("the owner sees exactly Hub 1, Hub 2, Hub 3 — no Hub C on the picker (owner, 8 Oct 2026)", () => {
     expect(ids(warehouseHubGroups(NET, see([1, 2])))).toEqual([
-      [2, ["hub1", "hub2", "hubC"]],
+      [2, ["hub1", "hub2"]],
       [1, ["hub3"]],
     ]);
   });
-  it("a Section 2 account is offered exactly today's Section 2 hubs", () => {
-    expect(ids(warehouseHubGroups(NET, see([2])))).toEqual([[2, ["hub1", "hub2", "hubC"]]]);
+  it("a Section 2 account is offered Hub 1 and Hub 2 — Hub C stays usable but is not listed", () => {
+    expect(ids(warehouseHubGroups(NET, see([2])))).toEqual([[2, ["hub1", "hub2"]]]);
+    expect(hubAllowedForViewer(NET, see([2]), "hubC")).toBe(true);   // a device already on Hub C keeps it
   });
   it("a Section 1 account is offered Hub 3 — not fully live, still workable by hand", () => {
     const groups = warehouseHubGroups(NET, see([1]));
