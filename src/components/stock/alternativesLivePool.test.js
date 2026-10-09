@@ -85,6 +85,17 @@ describe("each tier, and the fall-through between them", () => {
     expect(r.rows.map((x) => x.tier)).toEqual(["a", "b", "c", "d", "d"]);
     expect(r.tiers).toEqual({ a: 1, b: 1, c: 1, d: 2 });
   });
+  it("inside the family the colourway leads even when another member is more alike overall", () => {
+    // Same material, pattern, sole, finish, closure, tags and price as the
+    // source — but black. Versus: white, and otherwise nothing in common.
+    const full = { upperMaterial: "leather", pattern: "solid", soleType: "cup", finish: "plain", closure: "laced", soleColour: "white", toeShape: "round", styleTags: ["retro", "basketball", "casual"] };
+    const s2 = indexed(shoe("Nike Air Force 1 Low White", "Nike", { id: "s2" }), A("low-top", "white", full));
+    const alike = indexed(shoe("Nike Air Force 1 Low Black", "Nike", { id: "alike" }), A("low-top", "black", full));
+    const sameColour = indexed(shoe("Nike Air Force 1 Low White Suede", "Nike", { id: "white", retailPrice: 2500 }),
+      A("low-top", "white", { upperMaterial: "nubuck", pattern: "two-tone", soleType: "gum", finish: "matte", closure: "strap", soleColour: "brown", toeShape: "square", styleTags: ["luxury"] }));
+    const r = world([s2, alike, sameColour])(s2);
+    expect(r.rows.map((x) => x.product.id)).toEqual(["white", "alike"]);
+  });
   it("no same model in the size → same brand and shape lead", () => {
     const r = world([src, af1, dunk, samba], { stock: (p) => p.id !== "af1" })(src);
     expect(r.rows[0].product.id).toBe("dunk");
