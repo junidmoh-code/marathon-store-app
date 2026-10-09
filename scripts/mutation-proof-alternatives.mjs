@@ -85,15 +85,15 @@ const MUTATIONS = [
     guard: "Only the sizes that are ACTUALLY available are listed",
     file: ALT,
     kind: "behavioural",
-    from: `    const sizes = grid.filter((s) => sizeAvailable(product, s));`,
-    to: `    const sizes = grid;`,
+    from: `      const sizes = grid.filter((s) => s === matchedSize || sizeAvailable(product, s));`,
+    to: `      const sizes = grid;`,
   },
   {
     id: "G4",
-    guard: "A product with no available size is not an alternative at all",
+    guard: "A product not sellable in the requested size is not an alternative at all",
     file: ALT,
     kind: "behavioural",
-    from: `    if (!sizes.length) continue;`,
+    from: `    if (!sizeAvailable(product, matchedSize)) continue;\n`,
     to: ``,
   },
   {
@@ -510,7 +510,7 @@ const MUTATIONS = [
     guard: "THE SIZE GATE: every row is sellable in the size that was tapped (Junid, 2026-10-01: a 3\u20136 Air Force offered for an 8)",
     file: ALT,
     kind: "behavioural",
-    from: "    if (matchedSize === undefined) { sizeGateRemoved += 1; continue; }",
+    from: "    if (matchedSize === undefined) continue;\n",
     to: "",
   },
   {
@@ -518,8 +518,8 @@ const MUTATIONS = [
     guard: "Sizes are compared through the normaliser, never by raw label",
     file: ALT,
     kind: "behavioural",
-    from: "    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s, { kidsGrid }) === wantKey) : undefined;",
-    to: "    const matchedSize = sizes.find((s) => s === requestedSize);",
+    from: "  const i = keys.indexOf(wantKey);",
+    to: "  const i = labels.indexOf(wantKey);",
   },
   {
     id: "G26c",
@@ -547,10 +547,10 @@ const MUTATIONS = [
   },
   {
     id: "G26f",
-    guard: "Zero survivors says so in words \u2014 \"No similar styles in size X\"",
+    guard: "Zero survivors says so in words \u2014 \"Nothing in size X is available anywhere right now\"",
     file: STRIP,
     kind: "behavioural",
-    from: "        No similar styles in size {formatSize(requestedSize)}",
+    from: "        Nothing in size {formatSize(requestedSize)} is available anywhere right now",
     to: "",
   },
   {
@@ -574,8 +574,8 @@ const MUTATIONS = [
     guard: "Telemetry counts what the size gate removed",
     file: ALT,
     kind: "behavioural",
-    from: "    if (matchedSize === undefined) { sizeGateRemoved += 1; continue; }",
-    to: "    if (matchedSize === undefined) { continue; }",
+    from: "    if ((sizesOf(p) || []).some((s) => sizeAvailable(p, s))) sizeGateRemoved += 1;",
+    to: "    if (false) sizeGateRemoved += 1;",
   },
   {
     id: "G26j",
