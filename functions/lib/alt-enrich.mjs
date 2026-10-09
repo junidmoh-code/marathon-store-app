@@ -43,6 +43,8 @@ export const ENRICH_ROOT = "alt_enrich";
 export const ENRICH_SWITCH_PATH = "config/alternatives/autoEnrich";
 export const DAILY_VISION_CAP = 200;
 export const CLAIM_MS = 10 * 60 * 1000;
+/** A photo that fails this many times is left for a person to look at. */
+export const MAX_ATTEMPTS = 5;
 
 // The product fields the profile (or the vision record) is built from. A write
 // that changes none of them — the trigger's own altProfile write, a neighbour
@@ -63,6 +65,15 @@ export function inAlternativesScope(p) {
   return !!(p && p.id && !p.mergedInto && productIsFootwear(p) && (p.productType || "sneaker") !== "clothing");
 }
 
+/**
+ * The photo's identity: its URL without the query string. A Storage download
+ * token can be rotated (or a bulk URL rewrite run) without the picture
+ * changing, and that must not re-bill a vision read (architect review).
+ */
+export function photoIdentity(url) {
+  return String(url || "").trim().split("?")[0];
+}
+
 /** Does this product need a (new) vision read? */
 export function needsVision(product, node) {
   const photo = String(product?.photoUrl || "").trim();
@@ -71,7 +82,7 @@ export function needsVision(product, node) {
   // Records written before 2026-10-09 carry no photo stamp: they are trusted
   // as they are — re-reading 1,400 photos to find the few that changed would
   // re-bill the whole catalogue.
-  return !!node.photo && node.photo !== photo;
+  return !!node.photo && photoIdentity(node.photo) !== photoIdentity(photo);
 }
 
 /** The SAST calendar day of a ms timestamp, for the daily cap. */
@@ -181,7 +192,10 @@ export async function refreshAltProfile(deps, pid, { allowVision = true } = {}) 
     } else {
       try {
         let parsed = parseAttributeResponse(await vision(photo, ATTRIBUTE_PROMPT, []));
-        if (!parsed.ok) parsed = parseAttributeResponse(await vision(photo, ATTRIBUTE_PROMPT, [attributeRetryNote(parsed)]));
+        // The retry is a second paid call, so it takes its own unit of the cap.
+        if (!parsed.ok && (await takeBudget(db, t, cap))) {
+          parsed = parseAttributeResponse(await vision(photo, ATTRIBUTE_PROMPT, [attributeRetryNote(parsed)]));
+        }
         if (!parsed.ok) throw new Error(`unusable answer: ${parsed.error}`);
         const record = buildAttributeRecord({
           vision: parsed.vision, product, model, at: serverTimestamp ?? t, previousVersion: node?.v ?? null,
@@ -198,9 +212,18 @@ export async function refreshAltProfile(deps, pid, { allowVision = true } = {}) 
       } catch (e) {
         visionOutcome = "failed";
         log(`alternativesProfile ${pid}: vision failed: ${String(e?.message || e)}`);
-        await db.ref(`${ENRICH_ROOT}/failures/${pid}`).set({ at: t, photo, error: String(e?.message || e).slice(0, 300) });
+        const prev = await val(db, `${ENRICH_ROOT}/failures/${pid}`);
+        const n = (prev && prev.photo === photo ? Number(prev.n) || 1 : 0) + 1;
+        await db.ref(`${ENRICH_ROOT}/failures/${pid}`).set({ at: t, photo, n, error: String(e?.message || e).slice(0, 300) });
       }
     }
+  }
+
+  // A failure record outlives its reason once vision is not needed any more
+  // (current by another route, photo removed) — clear it so the sweep does not
+  // keep spending its slots on it (architect review).
+  if (visionOutcome === "not-needed" && allowVision) {
+    if (await val(db, `${ENRICH_ROOT}/failures/${pid}/at`)) await db.ref(`${ENRICH_ROOT}/failures/${pid}`).remove();
   }
 
   const attrs = usableAttributes(node);
@@ -216,5 +239,13 @@ export async function refreshAltProfile(deps, pid, { allowVision = true } = {}) 
   if (product[ALT_PROFILE_FIELD] === encoded) return { status: "unchanged", wrote: false, vision: visionOutcome };
   if (!(await val(db, `products/${pid}/id`))) return { status: "gone", wrote: false, vision: visionOutcome };
   await db.ref(`products/${pid}/${ALT_PROFILE_FIELD}`).set(encoded);
+  // RTDB has no conditional write, so a delete landing between the check and
+  // the write would leave a record holding only `altProfile` — no `id`,
+  // invisible to every list. Look again and take it back out if so; removing
+  // the last child removes the stub (architect review).
+  if (!(await val(db, `products/${pid}/id`))) {
+    await db.ref(`products/${pid}/${ALT_PROFILE_FIELD}`).remove();
+    return { status: "gone", wrote: false, vision: visionOutcome };
+  }
   return { status: "written", wrote: true, vision: visionOutcome, profile: encoded };
 }

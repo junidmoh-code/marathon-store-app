@@ -146,6 +146,17 @@ describe("size keys are compared in ONE place", () => {
   });
 });
 
+describe("a fallback family is not a model", () => {
+  it("'Nike Air Rift' and 'Nike Air Tuned' share a fallback word, not a model — never 'Same model'", () => {
+    const src = shoe("Nike Air Tuned Black", "Nike", { id: "src" });
+    const rift = shoe("Nike Air Rift Black", "Nike", { id: "rift" });
+    expect(profileOfProduct(src).famSrc).toBe("fallback");
+    const r = world([src, rift])(src);
+    expect(r.rows[0].tier).not.toBe("a");
+    expect(r.rows[0].why).not.toMatch(/Same model/);
+  });
+});
+
 describe("a product with no enrichment", () => {
   it("is offered, and ranks by what its name says", () => {
     const src = shoe("Nike Air Force 1 Low Ducks of a Feather", "Nike", { id: "src" });

@@ -76,18 +76,37 @@ exports.alternativesEnrichSweep = onSchedule(
     timeoutSeconds: 540, secrets: [geminiApiKey] },
   async () => {
     const c = await core();
-    const failures = (await admin.database().ref(`${c.ENRICH_ROOT}/failures`).limitToFirst(60).get()).val() || {};
+    const db = admin.database();
+    const started = Date.now();
+    // The failures node is bounded by the catalogue and small; read it whole
+    // and take the OLDEST retryable entries, so a permanently bad photo (n at
+    // the cap) can never hold the head of the queue.
+    const failures = (await db.ref(`${c.ENRICH_ROOT}/failures`).get()).val() || {};
+    const queue = Object.entries(failures)
+      .filter(([, f]) => (Number(f?.n) || 1) < c.MAX_ATTEMPTS)
+      .sort((a, b) => (Number(a[1]?.at) || 0) - (Number(b[1]?.at) || 0))
+      .slice(0, 60).map(([pid]) => pid);
     const d = deps(c, true);
     let done = 0;
-    for (const pid of Object.keys(failures)) {
+    for (const pid of queue) {
+      // Leave room inside the 540 s limit: a vision read can take ~2 minutes.
+      if (Date.now() - started > 360 * 1000) break;
       try {
         const r = await c.refreshAltProfile(d, pid);
-        if (r.status === "gone" || r.status === "out-of-scope") await admin.database().ref(`${c.ENRICH_ROOT}/failures/${pid}`).remove();
+        if (r.status === "gone" || r.status === "out-of-scope") await db.ref(`${c.ENRICH_ROOT}/failures/${pid}`).remove();
         done += 1;
       } catch (e) {
         console.error(`alternativesEnrichSweep ${pid}: ${String(e?.message || e)}`);
       }
     }
-    console.log(`alternativesEnrichSweep: retried ${done} of ${Object.keys(failures).length}`);
+    // Housekeeping: claims older than a day, budget days older than a week.
+    const claims = (await db.ref(`${c.ENRICH_ROOT}/claims`).get()).val() || {};
+    const prune = {};
+    for (const [pid, cl] of Object.entries(claims)) if (Number(cl?.at) < started - 86400000) prune[`claims/${pid}`] = null;
+    const weekAgo = c.sastDay(started - 7 * 86400000);
+    const budget = (await db.ref(`${c.ENRICH_ROOT}/budget`).get()).val() || {};
+    for (const day of Object.keys(budget)) if (day < weekAgo) prune[`budget/${day}`] = null;
+    if (Object.keys(prune).length) await db.ref(c.ENRICH_ROOT).update(prune);
+    console.log(`alternativesEnrichSweep: retried ${done} of ${queue.length} (${Object.keys(failures).length} recorded)`);
   }
 );

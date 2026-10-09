@@ -10418,7 +10418,22 @@ function AssistantView({ products, onExit, orders = [] }) {
   // `rows` now means NOTHING in that size is sellable from this shop's hubs,
   // and the strip says so. NULL renders nothing — before /orders and the gated
   // hubs have answered, that would be a claim this screen cannot yet make.
+  // ONE WALK PER CHANGE, NOT PER RENDER. The pool is the whole catalogue, and
+  // this is called from render while the note is open — every /orders or hub
+  // cell update re-renders the screen. The answer depends only on the inputs
+  // below, so it is kept until one of them changes (architect review).
+  const altMemo = useRef({ deps: null, out: null });
   const alternativesFor = (product, size) => {
+    const deps = [product, size, products, ordersSettled, cartAllocation, hub1CellsState, hub2CellsState,
+      hub1Promised, hub2ReadyPromised, sectionCellsA, sectionCellsB, sectionPromisedA, sectionPromisedB, effectiveShop,
+      sectionNet, effectiveStoreMode];
+    const m = altMemo.current;
+    if (m.deps && m.deps.length === deps.length && m.deps.every((d, i) => d === deps[i])) return m.out;
+    const out = computeAlternatives(product, size);
+    altMemo.current = { deps, out };
+    return out;
+  };
+  const computeAlternatives = (product, size) => {
     if (!product || !size) return null;
     // Sneakers only. Clothing and perfume are out of scope for this build, and
     // a clothing tile's grey-out reads its cell by a different rule

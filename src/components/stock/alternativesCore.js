@@ -59,12 +59,15 @@ export const TIER_REASON = Object.freeze({
 // size, and a "6Y" is not a "6". Cached per product object — the walk below
 // visits the whole catalogue on every open.
 const sizeKeyCache = new WeakMap();
+const sameLabels = (a, b) => a.length === b.length && a.every((x, i) => x === b[i]);
 function sizeKeysOf(product, labels) {
-  let hit = sizeKeyCache.get(product);
-  if (hit && hit.labels === labels) return hit.keys;
+  // Compared by CONTENT: the screen's sizesOf returns a fresh filtered array on
+  // every call, so an identity check would never hit (architect review).
+  const hit = sizeKeyCache.get(product);
+  if (hit && sameLabels(hit.labels, labels)) return hit.keys;
   const kidsGrid = productIsKidsGrid(product);
   const keys = labels.map((s) => shoeSizeKey(s, { kidsGrid }));
-  sizeKeyCache.set(product, { labels, keys });
+  sizeKeyCache.set(product, { labels: [...labels], keys });
   return keys;
 }
 
@@ -112,9 +115,15 @@ function sameKind(src, c) {
   return !!src.categoryKey && src.categoryKey === c.categoryKey;
 }
 
+// A family read from a rule (name, vision namer, box label, style-code
+// sibling) is a MODEL. A fallback family is only "brand + first word" —
+// "Nike Air Rift" and "Nike Air Tuned" share one — so it may never claim
+// "Same model" (architect review); it only nudges the order inside a tier.
+const isModelFamily = (p) => !!p.fam && p.famSrc !== "fallback";
+
 /** Which tier a candidate belongs to for this source. */
 export function tierOf(src, c) {
-  if (src.fam && src.fam === c.fam) return "a";
+  if (isModelFamily(src) && src.fam === c.fam) return "a";
   if (src.brand && src.brand === c.brand) {
     if (src.sil && c.sil ? src.sil === c.sil : sameKind(src, c)) return "b";
   }
@@ -218,7 +227,8 @@ export function alternativesForSize({
       const shape = scoringShape(prof);
       return {
         entry, prof, tier,
-        sim: scorePair(srcShape, shape).score,
+        // Same fallback line ("lacoste-gripshot") is worth a brand-sized nudge.
+        sim: scorePair(srcShape, shape).score + (src.fam && src.fam === prof.fam && !isModelFamily(src) ? 10 : 0),
         cw: colourwayCloseness(src, prof),
         rank: storedRank.has(entry.product.id) ? storedRank.get(entry.product.id) : Infinity,
       };

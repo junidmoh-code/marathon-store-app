@@ -191,3 +191,48 @@ test("empty style tags never reach the database as []", async () => {
   assert.equal(attrs.a.styleTags, undefined);
   assert.deepEqual(decodeAltProfile(db.read(`products/${DUCKS.id}/altProfile`)).tags, []);
 });
+
+test("a product deleted between the check and the write is not resurrected", async () => {
+  const db = fakeDb({ products: { [DUCKS.id]: DUCKS } });
+  // Delete the product the moment the pre-write existence check has passed.
+  let idReads = 0;
+  const realRef = db.ref;
+  db.ref = (p) => {
+    const r = realRef(p);
+    if (p !== `products/${DUCKS.id}/id`) return r;
+    return { ...r, get: async () => { const s = await r.get(); idReads += 1; if (idReads === 1) await realRef(`products/${DUCKS.id}`).remove(); return s; } };
+  };
+  const res = await refreshAltProfile(deps(db), DUCKS.id);
+  assert.equal(res.status, "gone");
+  assert.equal(db.read(`products/${DUCKS.id}`), null);
+});
+
+test("a rotated download token is not a new photo", async () => {
+  const { photoIdentity } = await import("../lib/alt-enrich.mjs");
+  const node = { v: EXTRACTOR_VERSION, a: {}, photo: "https://x/o/p%2Fphoto.jpg?alt=media&token=aaa" };
+  assert.equal(needsVision({ ...DUCKS, photoUrl: "https://x/o/p%2Fphoto.jpg?alt=media&token=bbb" }, node), false);
+  assert.equal(needsVision({ ...DUCKS, photoUrl: "https://x/o/p%2Fphoto2.jpg?alt=media&token=aaa" }, node), true);
+  assert.equal(photoIdentity(" https://a/b.jpg?x=1 "), "https://a/b.jpg");
+});
+
+test("failures count their attempts; a no-longer-needed failure is cleared", async () => {
+  const db = fakeDb({ products: { [DUCKS.id]: DUCKS } });
+  const fail = async () => { throw new Error("Gemini HTTP 503"); };
+  for (let i = 0; i < 3; i++) {
+    await db.ref(`${ENRICH_ROOT}/claims/${DUCKS.id}`).remove();
+    await refreshAltProfile(deps(db, { vision: fail }), DUCKS.id);
+  }
+  assert.equal(db.read(`${ENRICH_ROOT}/failures/${DUCKS.id}`).n, 3);
+  // The record became current some other way: the failure goes.
+  await db.ref(`product_attributes/${DUCKS.id}`).set({ v: EXTRACTOR_VERSION, a: { silhouette: "low-top" }, photo: DUCKS.photoUrl });
+  await refreshAltProfile(deps(db, { vision: fail }), DUCKS.id);
+  assert.equal(db.read(`${ENRICH_ROOT}/failures/${DUCKS.id}`), null);
+});
+
+test("the refused-answer retry is a second paid call and takes its own unit of the cap", async () => {
+  const db = fakeDb({ products: { [DUCKS.id]: DUCKS }, [ENRICH_ROOT]: { budget: { [sastDay(1790000000000)]: DAILY_VISION_CAP - 1 } } });
+  let calls = 0;
+  const r = await refreshAltProfile(deps(db, { vision: async () => { calls += 1; return "not json"; } }), DUCKS.id);
+  assert.equal(calls, 1);
+  assert.equal(r.vision, "failed");
+});

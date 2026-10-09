@@ -8,6 +8,8 @@
 //
 //   node scripts/alternatives/backfill-alt-profiles.mjs            DRY RUN — counts only
 //   node scripts/alternatives/backfill-alt-profiles.mjs --apply    stamp them, 20 at a time
+//   ... --all   stamp EVERY in-scope sneaker (after a change to the family rules:
+//               a stored family is frozen until something re-runs the trigger)
 //
 // Reads /products and /product_attributes once, paged (an admin one-off, never
 // a per-tap read). Writes one child per product and never onto a product that
@@ -20,6 +22,7 @@ import { productIsFootwear } from "../../src/utils/footwearLine.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
 
 const APPLY = process.argv.includes("--apply");
+const ALL = process.argv.includes("--all");
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
 const admin = require("firebase-admin");
 admin.initializeApp({
@@ -41,7 +44,7 @@ for (const [pid, p] of Object.entries(products)) {
   const missingProfile = !decodeAltProfile(p[ALT_PROFILE_FIELD]);
   if (missingAttrs) noAttrs += 1;
   if (missingProfile) noProfile += 1;
-  if (missingAttrs || missingProfile) todo.push(pid);
+  if (ALL || missingAttrs || missingProfile) todo.push(pid);
 }
 console.log(`footwear in scope: ${scope} · missing attributes (vision will run): ${noAttrs} · missing profile: ${noProfile}`);
 console.log(`to stamp: ${todo.length}`);
@@ -58,6 +61,12 @@ for (let i = 0; i < todo.length; i += BATCH) {
     patch[`${pid}/altRefreshAt`] = admin.database.ServerValue.TIMESTAMP;
   }
   if (Object.keys(patch).length) await db.ref("products").update(patch);
+  // A delete between the key check and the write would leave a stub holding
+  // only altRefreshAt. Look again; take any such stub back out.
+  for (const k of Object.keys(patch)) {
+    const pid = k.split("/")[0];
+    if (!(await db.ref(`products/${pid}/id`).get()).val()) { await db.ref(`products/${pid}/altRefreshAt`).remove(); vanished += 1; }
+  }
   stamped += Object.keys(patch).length;
   console.log(`  … ${stamped}/${todo.length}`);
   // Let the triggers (and their vision calls) drain before the next batch.
