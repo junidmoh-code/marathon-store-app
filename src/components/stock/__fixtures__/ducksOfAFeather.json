@@ -1,0 +1,5558 @@
+{
+ "attributes": {
+  "p1777895620932": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "bone",
+    "secondaryColour": "grey",
+    "silhouette": "low-top",
+    "soleColour": "cream",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "outdoor"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777895684767": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "textured",
+    "pattern": "print",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "secondaryColour": "grey",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "luxury",
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "denim"
+   },
+   "v": 2
+  },
+  "p1777895745473": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "yellow",
+    "finish": "perforated",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "yellow",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777895787590": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "plain",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777895826628": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "perforated",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "retro",
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777895938746": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "blue",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "light-blue",
+    "secondaryColour": "black",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777896002434": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "green",
+    "finish": "plain",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "green",
+    "silhouette": "low-top",
+    "soleColour": "green",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777896054649": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "red",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777896117122": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "solid",
+    "priceBand": "budget",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777896385209": {
+   "a": {
+    "brand": "A",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "glossy",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "secondaryColour": "red",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "skate",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "patent"
+   },
+   "v": 2
+  },
+  "p1777896503209": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "matte",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "skate",
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "nubuck"
+   },
+   "v": 2
+  },
+  "p1777896769530": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "print",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "olive",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777897007208": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "retro",
+     "minimal",
+     "basketball"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777897047939": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "yellow",
+    "finish": "plain",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "yellow",
+    "silhouette": "low-top",
+    "soleColour": "yellow",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777897278123": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "mid",
+    "primaryColour": "black",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "chunky",
+    "styleTags": [
+     "chunky",
+     "basketball",
+     "technical"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777897370070": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "textured",
+    "pattern": "print",
+    "priceBand": "mid",
+    "primaryColour": "black",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "chunky",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "chunky"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777897471528": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "mid",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "chunky",
+    "styleTags": [
+     "chunky",
+     "technical",
+     "retro"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777898265684": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "grey",
+    "finish": "matte",
+    "pattern": "print",
+    "priceBand": "core",
+    "primaryColour": "light-grey",
+    "secondaryColour": "blue",
+    "silhouette": "low-top",
+    "soleColour": "light-grey",
+    "soleType": "chunky",
+    "styleTags": [
+     "technical",
+     "chunky",
+     "skate"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "synthetic"
+   },
+   "v": 2
+  },
+  "p1777898350156": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "grey",
+    "finish": "matte",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "light-grey",
+    "secondaryColour": "silver",
+    "silhouette": "low-top",
+    "soleColour": "light-grey",
+    "soleType": "chunky",
+    "styleTags": [
+     "technical",
+     "chunky",
+     "skate"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777898520632": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "yellow",
+    "finish": "textured",
+    "pattern": "multi",
+    "priceBand": "mid",
+    "primaryColour": "mustard",
+    "secondaryColour": "orange",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "retro",
+     "outdoor",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777898900857": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "woven",
+    "pattern": "multi",
+    "priceBand": "mid",
+    "primaryColour": "black",
+    "secondaryColour": "multicolour",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777900475634": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "matte",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "retro",
+     "outdoor",
+     "running"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777901852685": {
+   "a": {
+    "brand": "Jordan",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "matte",
+    "pattern": "solid",
+    "priceBand": "mid",
+    "primaryColour": "black",
+    "silhouette": "mid",
+    "soleColour": "black",
+    "soleType": "cushioned",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "chunky"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "nubuck"
+   },
+   "v": 2
+  },
+  "p1777904532367": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "quilted",
+    "pattern": "solid",
+    "priceBand": "mid",
+    "primaryColour": "black",
+    "silhouette": "low-top",
+    "soleColour": "charcoal",
+    "soleType": "cup",
+    "styleTags": [
+     "skate",
+     "chunky",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "nubuck"
+   },
+   "v": 2
+  },
+  "p1777905466361": {
+   "a": {
+    "brand": "Jordan",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "brown",
+    "finish": "textured",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "beige",
+    "secondaryColour": "brown",
+    "silhouette": "low-top",
+    "soleColour": "cream",
+    "soleType": "cup",
+    "styleTags": [
+     "retro",
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777906494244": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "brown",
+    "finish": "plain",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "chocolate",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777906553465": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "olive",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777966912596": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "navy",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "mesh"
+   },
+   "v": 2
+  },
+  "p1777967160850": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "grey",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "light-grey",
+    "secondaryColour": "charcoal",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "mesh"
+   },
+   "v": 2
+  },
+  "p1777967433668": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "slip-on",
+    "colourFamily": "black",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "secondaryColour": "silver",
+    "silhouette": "runner",
+    "soleColour": "black",
+    "soleType": "rocker",
+    "styleTags": [
+     "running",
+     "technical",
+     "minimal"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "knit"
+   },
+   "v": 2
+  },
+  "p1777967510293": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "slip-on",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "black",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "rocker",
+    "styleTags": [
+     "running",
+     "technical",
+     "minimal"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "knit"
+   },
+   "v": 2
+  },
+  "p1777970246706": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "grey",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "light-grey",
+    "secondaryColour": "white",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "rocker",
+    "styleTags": [
+     "running",
+     "technical",
+     "chunky"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "knit"
+   },
+   "v": 2
+  },
+  "p1777970275854": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "green",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "mint",
+    "secondaryColour": "coral",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "mesh"
+   },
+   "v": 2
+  },
+  "p1777970317179": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "knit"
+   },
+   "v": 2
+  },
+  "p1777971095766": {
+   "a": {
+    "brand": "Under Armour",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "black",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical",
+     "chunky"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "knit"
+   },
+   "v": 2
+  },
+  "p1777971473341": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "chunky",
+     "technical"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777971963402": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical",
+     "minimal"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "mesh"
+   },
+   "v": 2
+  },
+  "p1777972868051": {
+   "a": {
+    "brand": "Adidas",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "two-tone",
+    "priceBand": "budget",
+    "primaryColour": "bone",
+    "secondaryColour": "pink",
+    "silhouette": "runner",
+    "soleColour": "bone",
+    "soleType": "rocker",
+    "styleTags": [
+     "running",
+     "technical"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "mesh"
+   },
+   "v": 2
+  },
+  "p1777973394147": {
+   "a": {
+    "brand": "The North Face",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "chunky",
+    "styleTags": [
+     "outdoor",
+     "chunky",
+     "technical"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777973699838": {
+   "a": {
+    "brand": "Adidas",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "black",
+    "silhouette": "low-top",
+    "soleColour": "tan",
+    "soleType": "gum",
+    "styleTags": [
+     "retro",
+     "casual",
+     "skate"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777973871259": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "bone",
+    "silhouette": "runner",
+    "soleColour": "bone",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical",
+     "minimal"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "mesh"
+   },
+   "v": 2
+  },
+  "p1777974019392": {
+   "a": {
+    "brand": "On",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "black",
+    "silhouette": "runner",
+    "soleColour": "white",
+    "soleType": "cushioned",
+    "styleTags": [
+     "running",
+     "technical"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1777978080532": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "perforated",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "blue",
+    "silhouette": "low-top",
+    "soleColour": "multicolour",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777979694047": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "perforated",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "minimal"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1777991082100": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "elastic",
+    "colourFamily": "grey",
+    "finish": "matte",
+    "pattern": "two-tone",
+    "priceBand": "mid",
+    "primaryColour": "light-grey",
+    "secondaryColour": "brown",
+    "silhouette": "high-top",
+    "soleColour": "cream",
+    "soleType": "cup",
+    "styleTags": [
+     "technical",
+     "outdoor",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "synthetic"
+   },
+   "v": 2
+  },
+  "p1777991143468": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "green",
+    "finish": "matte",
+    "pattern": "solid",
+    "priceBand": "mid",
+    "primaryColour": "olive",
+    "secondaryColour": "black",
+    "silhouette": "high-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "technical",
+     "outdoor",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "synthetic"
+   },
+   "v": 2
+  },
+  "p1777991180935": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "zip",
+    "colourFamily": "black",
+    "finish": "matte",
+    "pattern": "solid",
+    "priceBand": "mid",
+    "primaryColour": "black",
+    "silhouette": "high-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "technical",
+     "outdoor",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "synthetic"
+   },
+   "v": 2
+  },
+  "p1777991583998": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "grey",
+    "finish": "matte",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "grey",
+    "secondaryColour": "olive",
+    "silhouette": "low-top",
+    "soleColour": "grey",
+    "soleType": "cup",
+    "styleTags": [
+     "skate",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "nubuck"
+   },
+   "v": 2
+  },
+  "p1777991981146": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "plain",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "secondaryColour": "cream",
+    "silhouette": "low-top",
+    "soleColour": "brown",
+    "soleType": "gum",
+    "styleTags": [
+     "retro",
+     "skate",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1778491589277": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "green",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "retro",
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1778841686399": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "budget",
+    "primaryColour": "cream",
+    "secondaryColour": "lilac",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "chunky",
+    "styleTags": [
+     "chunky",
+     "running",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1778916558601": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "grey",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1781084175824": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "brown",
+    "finish": "textured",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "beige",
+    "secondaryColour": "bone",
+    "silhouette": "low-top",
+    "soleColour": "cream",
+    "soleType": "platform",
+    "styleTags": [
+     "chunky",
+     "casual",
+     "basketball"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1781530128019": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "plain",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "secondaryColour": "green",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "retro",
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1781530222899": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "budget",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "platform",
+    "styleTags": [
+     "chunky",
+     "casual",
+     "basketball"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1781530290392": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "textured",
+    "pattern": "multi",
+    "priceBand": "core",
+    "primaryColour": "cream",
+    "secondaryColour": "brown",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1781646983315": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "purple",
+    "finish": "perforated",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "lilac",
+    "silhouette": "low-top",
+    "soleColour": "grey",
+    "soleType": "chunky",
+    "styleTags": [
+     "chunky",
+     "technical",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "synthetic"
+   },
+   "v": 2
+  },
+  "p1784215024196": {
+   "a": {
+    "brand": "Air",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "white",
+    "finish": "glossy",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "minimal"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "synthetic"
+   },
+   "v": 2
+  },
+  "p1784292446260": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "matte",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1784298749623": {
+   "a": {
+    "brand": "Air",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "blue",
+    "finish": "metallic",
+    "pattern": "two-tone",
+    "priceBand": "core",
+    "primaryColour": "blue",
+    "secondaryColour": "black",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "synthetic"
+   },
+   "v": 2
+  },
+  "p1784718771573": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "multicolour",
+    "finish": "textured",
+    "pattern": "print",
+    "priceBand": "core",
+    "primaryColour": "multicolour",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "luxury",
+     "basketball",
+     "retro"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "textile-mix"
+   },
+   "v": 2
+  },
+  "p1784726757890": {
+   "a": {
+    "brand": "Airforce",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "textured",
+    "pattern": "print",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "secondaryColour": "white",
+    "silhouette": "low-top",
+    "soleColour": "white",
+    "soleType": "cup",
+    "styleTags": [
+     "luxury",
+     "basketball",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "leather"
+   },
+   "v": 2
+  },
+  "p1785936765299": {
+   "a": {
+    "brand": "Nike",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "black",
+    "finish": "glossy",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "black",
+    "silhouette": "low-top",
+    "soleColour": "black",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "retro",
+     "casual"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "patent"
+   },
+   "v": 2
+  },
+  "p1787218274779": {
+   "a": {
+    "brand": "Supreme",
+    "category": "Footwear",
+    "closure": "laced",
+    "colourFamily": "red",
+    "finish": "textured",
+    "pattern": "solid",
+    "priceBand": "core",
+    "primaryColour": "burgundy",
+    "silhouette": "mid",
+    "soleColour": "burgundy",
+    "soleType": "cup",
+    "styleTags": [
+     "basketball",
+     "skate",
+     "retro"
+    ],
+    "toeShape": "round",
+    "upperMaterial": "nubuck"
+   },
+   "v": 2
+  }
+ },
+ "capturedAt": "2026-10-09T09:26:00+02:00",
+ "cells": {
+  "hub1": {
+   "p1777895620932": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777895684767": {
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    }
+   },
+   "p1777895745473": {
+    "10": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 1
+    }
+   },
+   "p1777895787590": {
+    "10": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777895826628": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 0
+    },
+    "3": {
+     "qty": 0
+    },
+    "4": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777895938746": {
+    "10": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777896002434": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777896054649": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777896117122": {
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777896385209": {
+    "10": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 1
+    }
+   },
+   "p1777896503209": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777896769530": {
+    "11": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 1
+    }
+   },
+   "p1777897007208": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 0
+    },
+    "4": {
+     "qty": 1
+    },
+    "5": {
+     "qty": 0
+    },
+    "5_5": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777897047939": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "3": {
+     "qty": 1
+    },
+    "4": {
+     "qty": 1
+    },
+    "5": {
+     "qty": 2
+    },
+    "5_5": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777897278123": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777897370070": {
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777897471528": {
+    "10": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777898265684": {
+    "10": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777898350156": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777898520632": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777898900857": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777900475634": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777904532367": {
+    "10": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777906494244": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777906553465": {
+    "10": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777966912596": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777967160850": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777967433668": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777967510293": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 3
+    }
+   },
+   "p1777970246706": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777970275854": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777970317179": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 1
+    }
+   },
+   "p1777971473341": {
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 2
+    }
+   },
+   "p1777971963402": {
+    "3": {
+     "qty": 1
+    },
+    "5": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    }
+   },
+   "p1777972868051": {
+    "8": {
+     "qty": 0
+    }
+   },
+   "p1777973871259": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "3": {
+     "qty": 2
+    },
+    "4": {
+     "qty": 2
+    },
+    "5": {
+     "qty": 2
+    },
+    "5_5": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777974019392": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "3": {
+     "qty": 2
+    },
+    "4": {
+     "qty": 1
+    },
+    "5": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777978080532": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "5_5": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777979694047": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 2
+    },
+    "3": {
+     "qty": 2
+    },
+    "4": {
+     "qty": 1
+    },
+    "5": {
+     "qty": 0
+    },
+    "5_5": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777991082100": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777991143468": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777991180935": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 3
+    }
+   },
+   "p1777991583998": {
+    "6": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 2
+    }
+   },
+   "p1777991981146": {
+    "10": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1778491589277": {
+    "10": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1778841686399": {
+    "3": {
+     "qty": 2
+    },
+    "4": {
+     "qty": 2
+    },
+    "5": {
+     "qty": 2
+    },
+    "5_5": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    }
+   },
+   "p1778916558601": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1781084175824": {
+    "10": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1781530128019": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1781530222899": {
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1781530290392": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1781646983315": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 2
+    },
+    "4": {
+     "qty": 2
+    },
+    "5": {
+     "qty": 1
+    },
+    "5_5": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1784215024196": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1784292446260": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1784298749623": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1784718771573": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 4
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 4
+    },
+    "9": {
+     "qty": 3
+    }
+   },
+   "p1784726757890": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1785936765299": {
+    "10": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1787218274779": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1789136571693": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1789137553443": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1789140518914": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 3
+    }
+   },
+   "p1790003312947": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1790089163917": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 3
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1790157727504": {
+    "10": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1790164209800": {
+    "10": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1790247357203": {
+    "10": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   }
+  },
+  "hub2": {
+   "p1777895938746": {
+    "10": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777901852685": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 0
+    },
+    "12": {
+     "qty": 1
+    },
+    "5": {
+     "qty": 0
+    },
+    "5_5": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 6
+    },
+    "7": {
+     "qty": 7
+    },
+    "8": {
+     "qty": 3
+    },
+    "9": {
+     "qty": 4
+    }
+   },
+   "p1777904532367": {
+    "6": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1777905466361": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 3
+    },
+    "12": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 7
+    },
+    "8": {
+     "qty": 8
+    },
+    "9": {
+     "qty": 5
+    }
+   },
+   "p1777971095766": {
+    "10": {
+     "qty": 1
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 2
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 1
+    }
+   },
+   "p1777972868051": {
+    "10": {
+     "qty": 3
+    },
+    "11": {
+     "qty": 2
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 4
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777973394147": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 3
+    },
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 2
+    },
+    "9": {
+     "qty": 2
+    }
+   },
+   "p1777973699838": {
+    "10": {
+     "qty": 2
+    },
+    "11": {
+     "qty": 1
+    },
+    "6": {
+     "qty": 1
+    },
+    "8": {
+     "qty": 2
+    }
+   },
+   "p1777979694047": {
+    "10": {
+     "qty": 0
+    },
+    "11": {
+     "qty": 0
+    },
+    "3": {
+     "qty": 0
+    },
+    "4": {
+     "qty": 0
+    },
+    "5": {
+     "qty": 0
+    },
+    "5_5": {
+     "qty": 0
+    },
+    "6": {
+     "qty": 0
+    },
+    "7": {
+     "qty": 0
+    },
+    "8": {
+     "qty": 0
+    },
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1784215024196": {
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1784718771573": {
+    "9": {
+     "qty": 0
+    }
+   },
+   "p1789140518914": {
+    "7": {
+     "qty": 2
+    },
+    "8": {
+     "qty": 1
+    },
+    "9": {
+     "qty": 2
+    }
+   }
+  }
+ },
+ "note": "Read-only slice of live /products, /product_attributes and /stock/hub1|hub2 for the Ducks of a Feather size 8 report (2026-10-08 14:36). Photo URLs replaced; staff ids and movement ids stripped.",
+ "products": {
+  "p1777895620932": {
+   "alternatives": [
+    "p1777978080532:a",
+    "p1779784106208:a",
+    "p1780735692089:a",
+    "p1777895826628:a",
+    "p1777897007208:a",
+    "p1777979694047:a",
+    "p1781649460930:h",
+    "p1778841686399:a",
+    "p1778139909700:s",
+    "p1785937096595:h",
+    "p1785937525867:h",
+    "p1785937781350:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777895620932",
+   "name": "Nike Air Force 1 Cream Black Grey",
+   "photoUrl": "https://example.invalid/p1777895620932.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "8",
+    "9",
+    "10",
+    "11",
+    "4",
+    "5",
+    "5.5",
+    "3",
+    "7"
+   ],
+   "styleCodeNormalised": "DO2760206",
+   "subcategory": "Sneakers"
+  },
+  "p1777895684767": {
+   "alternatives": [
+    "p1785937096595:a",
+    "p1777895787590:a",
+    "p1777896503209:a",
+    "p1780740402191:a",
+    "p1784292446260:a",
+    "p1785936765299:a",
+    "p1785937290663:a",
+    "p1783497582555:a",
+    "p1784645609357:a",
+    "p1781648199935:a",
+    "p1781649807901:a",
+    "p1784726757890:s"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777895684767",
+   "name": "Nike Air Force 1 Louis Vuitton Black",
+   "photoUrl": "https://example.invalid/p1777895684767.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "W818",
+   "subcategory": "Sneakers"
+  },
+  "p1777895745473": {
+   "alternatives": [
+    "p1777896913363:a",
+    "p1777897047939:a",
+    "p1779784106208:h",
+    "p1777978080532:h",
+    "p1777895826628:h",
+    "p1777896688393:h",
+    "p1778916464923:h",
+    "p1781530128019:h",
+    "p1781530290392:h",
+    "p1779528822199:h",
+    "p1780740402191:h",
+    "p1784718275050:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777895745473",
+   "name": "Nike Air Force 1 Low Retro QS Kobe Bryant Yellow",
+   "photoUrl": "https://example.invalid/p1777895745473.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "314192151",
+   "subcategory": "Sneakers"
+  },
+  "p1777895787590": {
+   "alternatives": [
+    "p1780740402191:a",
+    "p1785937096595:a",
+    "p1785937290663:a",
+    "p1781648199935:a",
+    "p1781649807901:a",
+    "p1785936765299:a",
+    "p1777896503209:a",
+    "p1777991981146:a",
+    "p1777895684767:a",
+    "p1784292446260:a",
+    "p1777972545153:s",
+    "p1778844810609:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub2"
+   ],
+   "id": "p1777895787590",
+   "name": "Nike Air Force 1 black with blue laces",
+   "photoUrl": "https://example.invalid/p1777895787590.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "315122001",
+   "subcategory": "Sneakers"
+  },
+  "p1777895826628": {
+   "alternatives": [
+    "p1777979694047:a",
+    "p1779784106208:a",
+    "p1780735692089:a",
+    "p1777978080532:a",
+    "p1777897007208:a",
+    "p1778139909700:s",
+    "p1777904061544:s",
+    "p1777981957810:s",
+    "p1780740402191:h",
+    "p1777896688393:a",
+    "p1777897047939:h",
+    "p1785937096595:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777895826628",
+   "name": "Nike Air Force 1 '07 LX White Metallic Swoosh Pins",
+   "photoUrl": "https://example.invalid/p1777895826628.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "3",
+    "4",
+    "5",
+    "5.5"
+   ],
+   "styleCodeNormalised": "CT1990100",
+   "subcategory": "Sneakers"
+  },
+  "p1777895938746": {
+   "alternatives": [
+    "p1777906553465:h",
+    "p1778916558601:h",
+    "p1777896558219:a",
+    "p1777896913363:h",
+    "p1777906920419:h",
+    "p1777896054649:h",
+    "p1777906494244:h",
+    "p1778491589277:h",
+    "p1778916464923:h",
+    "p1780735692089:h",
+    "p1781530290392:h",
+    "p1781648199935:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777895938746",
+   "name": "Nike Air Force 1 Tiffany & Co. 1837",
+   "photoUrl": "https://example.invalid/p1777895938746.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777896002434": {
+   "alternatives": [
+    "p1781648943606:a",
+    "p1785937781350:a",
+    "p1786368340440:a",
+    "p1777897047939:h",
+    "p1777897007208:h",
+    "p1777895826628:h",
+    "p1780735692089:h",
+    "p1780740402191:h",
+    "p1781648199935:h",
+    "p1785937096595:h",
+    "p1785937290663:h",
+    "p1781649332106:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777896002434",
+   "name": "Nike Air Force 1 Low Cactus Plant Flea Market Moss",
+   "photoUrl": "https://example.invalid/p1777896002434.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "3"
+   ],
+   "styleCodeNormalised": "DD7069300",
+   "subcategory": "Sneakers"
+  },
+  "p1777896054649": {
+   "alternatives": [
+    "p1778491589277:a",
+    "p1777896769530:a",
+    "p1777906553465:a",
+    "p1778916464923:a",
+    "p1778916558601:a",
+    "p1781530128019:a",
+    "p1777897007208:a",
+    "p1777895826628:a",
+    "p1779784106208:a",
+    "p1780735692089:a",
+    "p1777896117122:a",
+    "p1777978080532:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777896054649",
+   "name": "Nike Air Force 1 Low CPFM White Red Flea",
+   "photoUrl": "https://example.invalid/p1777896054649.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DD7050003",
+   "subcategory": "Sneakers"
+  },
+  "p1777896117122": {
+   "alternatives": [
+    "p1777897007208:a",
+    "p1777895826628:a",
+    "p1777896054649:a",
+    "p1777896769530:a",
+    "p1778491589277:a",
+    "p1780735692089:a",
+    "p1781530128019:a",
+    "p1781530222899:a",
+    "p1777979694047:a",
+    "p1777906553465:a",
+    "p1778916464923:a",
+    "p1778916558601:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1",
+    "hub2"
+   ],
+   "id": "p1777896117122",
+   "name": "Nike Air Force 1 Low Cactus Plant Flea Market White",
+   "photoUrl": "https://example.invalid/p1777896117122.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "10",
+    "11",
+    "9"
+   ],
+   "styleCodeNormalised": "DD7050100",
+   "subcategory": "Sneakers"
+  },
+  "p1777896385209": {
+   "alternatives": [
+    "p1785936765299:s",
+    "p1781649807901:s",
+    "p1781649732579:s",
+    "p1785937290663:s",
+    "p1777972545153:s",
+    "p1777974590262:s",
+    "p1778142338746:s",
+    "p1778160601753:s",
+    "p1778139620221:s",
+    "p1777979684653:s",
+    "p1786365394488:s",
+    "p1777895787590:s"
+   ],
+   "brand": "BAPE",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777896385209",
+   "name": "A Bathing Ape Bape Sta Low Shark Black",
+   "photoUrl": "https://example.invalid/p1777896385209.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "11"
+   ],
+   "styleCodeNormalised": "1H70191045",
+   "subcategory": "Sneakers"
+  },
+  "p1777896503209": {
+   "alternatives": [
+    "p1781649732579:a",
+    "p1778844810609:a",
+    "p1783758362530:a",
+    "p1777895787590:a",
+    "p1780740402191:a",
+    "p1784292446260:a",
+    "p1785936765299:a",
+    "p1785937096595:a",
+    "p1785937290663:a",
+    "p1778140251640:s",
+    "p1777904532367:a",
+    "p1777895684767:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1",
+    "hub2"
+   ],
+   "id": "p1777896503209",
+   "name": "Nike Air Force 1 Supreme Black",
+   "photoUrl": "https://example.invalid/p1777896503209.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "7",
+    "6",
+    "9",
+    "10",
+    "11",
+    "8"
+   ],
+   "styleCodeNormalised": "DF0188119",
+   "subcategory": "Sneakers"
+  },
+  "p1777896769530": {
+   "alternatives": [
+    "p1777896054649:a",
+    "p1778491589277:a",
+    "p1781530128019:a",
+    "p1777897007208:a",
+    "p1777895826628:a",
+    "p1777906553465:a",
+    "p1778916464923:a",
+    "p1778916558601:a",
+    "p1779784106208:a",
+    "p1780735692089:a",
+    "p1777896117122:a",
+    "p1777978080532:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777896769530",
+   "name": "Nike Air Force 1 White Olive Bape Camo Swoosh",
+   "photoUrl": "https://example.invalid/p1777896769530.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DF0180007",
+   "subcategory": "Sneakers"
+  },
+  "p1777897007208": {
+   "alternatives": [
+    "p1777979694047:a",
+    "p1777895826628:a",
+    "p1780735692089:a",
+    "p1779784106208:a",
+    "p1777978080532:a",
+    "p1777904061544:s",
+    "p1778139909700:s",
+    "p1777981957810:s",
+    "p1777897047939:h",
+    "p1777974810579:s",
+    "p1778144384397:s",
+    "p1781648199935:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777897007208",
+   "name": "Nike Air Force 1 Low Drake NOCTA Certified Lover Boy Palest Purple",
+   "photoUrl": "https://example.invalid/p1777897007208.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "3",
+    "4",
+    "5",
+    "5.5"
+   ],
+   "styleCodeNormalised": "CZ8065500",
+   "subcategory": "Sneakers"
+  },
+  "p1777897047939": {
+   "alternatives": [
+    "p1777897007208:h",
+    "p1777895826628:h",
+    "p1780735692089:h",
+    "p1780740402191:h",
+    "p1781648199935:h",
+    "p1785937096595:h",
+    "p1785937290663:h",
+    "p1777979694047:h",
+    "p1781648943606:h",
+    "p1777978080532:h",
+    "p1779784106208:h",
+    "p1785936765299:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777897047939",
+   "name": "Nike Air Force 1 Low Certified Lover Boy Yellow",
+   "photoUrl": "https://example.invalid/p1777897047939.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "5.5",
+    "5",
+    "4",
+    "3"
+   ],
+   "styleCodeNormalised": "CZ8065800",
+   "subcategory": "Sneakers"
+  },
+  "p1777897278123": {
+   "alternatives": [
+    "p1777897427900:a",
+    "p1784101984001:a",
+    "p1777897370070:a",
+    "p1777898452572:a",
+    "p1777989787125:s",
+    "p1777897324247:a",
+    "p1785937096595:a",
+    "p1777904532367:a",
+    "p1777897471528:h",
+    "p1777898900857:a",
+    "p1781543054359:s",
+    "p1784292446260:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777897278123",
+   "name": "Nike Air Max Tailwind IV Black White",
+   "photoUrl": "https://example.invalid/p1777897278123.jpg",
+   "retailPrice": 800,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DM0879106",
+   "subcategory": "Sneakers"
+  },
+  "p1777897370070": {
+   "alternatives": [
+    "p1777897427900:a",
+    "p1784101984001:a",
+    "p1777897278123:a",
+    "p1777897324247:a",
+    "p1777898452572:a",
+    "p1777898900857:a",
+    "p1784645609357:a",
+    "p1777900475634:a",
+    "p1783497582555:a",
+    "p1777895684767:a",
+    "p1777897471528:h",
+    "p1785937096595:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777897370070",
+   "name": "Nike Air Max Glide Black White",
+   "photoUrl": "https://example.invalid/p1777897370070.jpg",
+   "retailPrice": 800,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DM0879108",
+   "subcategory": "Sneakers"
+  },
+  "p1777897471528": {
+   "alternatives": [
+    "p1784633513949:a",
+    "p1784640231134:a",
+    "p1783855884648:a",
+    "p1777973394147:s",
+    "p1780735692089:a",
+    "p1784642393629:a",
+    "p1777897113164:a",
+    "p1777897278123:h",
+    "p1777897427900:h",
+    "p1778841686399:a",
+    "p1784101984001:h",
+    "p1777897370070:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777897471528",
+   "name": "Nike Air Max Glide White",
+   "photoUrl": "https://example.invalid/p1777897471528.jpg",
+   "retailPrice": 800,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DM0579100",
+   "subcategory": "Sneakers"
+  },
+  "p1777898265684": {
+   "alternatives": [
+    "p1777898350156:a",
+    "p1782055077934:a",
+    "p1785937936741:a",
+    "p1777991583998:a",
+    "p1777896597672:a",
+    "p1781646983315:h",
+    "p1784645325553:a",
+    "p1781647052738:m",
+    "p1777974344855:s",
+    "p1779528822199:a",
+    "p1778162339303:s",
+    "p1777897113164:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777898265684",
+   "name": "Nike Air Zoom RTFKT White Photo Blue",
+   "photoUrl": "https://example.invalid/p1777898265684.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "HF0438001",
+   "subcategory": "Sneakers"
+  },
+  "p1777898350156": {
+   "alternatives": [
+    "p1777898265684:a",
+    "p1782055077934:a",
+    "p1777896597672:a",
+    "p1777991583998:a",
+    "p1778162339303:s",
+    "p1785937936741:a",
+    "p1784645325553:a",
+    "p1784638232508:s",
+    "p1777974344855:s",
+    "p1777973935724:s",
+    "p1779528822199:a",
+    "p1784292446260:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3"
+   ],
+   "id": "p1777898350156",
+   "name": "Nike Air Zoom RTFKT White Gray",
+   "photoUrl": "https://example.invalid/p1777898350156.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "HF0438001",
+   "subcategory": "Sneakers"
+  },
+  "p1777898520632": {
+   "alternatives": [
+    "p1777896913363:a",
+    "p1777898570372:h",
+    "p1777897047939:a",
+    "p1781530018866:h",
+    "p1781649460930:h",
+    "p1781649646205:h",
+    "p1777974005928:s",
+    "p1777898900857:h",
+    "p1777897427900:h",
+    "p1784101984001:h",
+    "p1777895745473:a",
+    "p1777896597672:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777898520632",
+   "name": "Nike Air Force 1 Wild Yellow",
+   "photoUrl": "https://example.invalid/p1777898520632.jpg",
+   "retailPrice": 800,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "FB2348700",
+   "subcategory": "Sneakers"
+  },
+  "p1777898900857": {
+   "alternatives": [
+    "p1777900475634:a",
+    "p1777897370070:a",
+    "p1777897427900:a",
+    "p1784101984001:a",
+    "p1777991981146:a",
+    "p1777897278123:a",
+    "p1777898452572:a",
+    "p1783497582555:a",
+    "p1784645609357:a",
+    "p1783855884648:h",
+    "p1781649732579:a",
+    "p1781649807901:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777898900857",
+   "name": "Nike Footscape Woven Rainbow",
+   "photoUrl": "https://example.invalid/p1777898900857.jpg",
+   "retailPrice": 800,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "FB1959002",
+   "subcategory": "Sneakers"
+  },
+  "p1777900475634": {
+   "alternatives": [
+    "p1777898900857:a",
+    "p1781649732579:a",
+    "p1784292446260:a",
+    "p1777991981146:a",
+    "p1784645609357:a",
+    "p1781649807901:a",
+    "p1785069165041:s",
+    "p1777897324247:a",
+    "p1777897370070:a",
+    "p1781648199935:a",
+    "p1783497582555:a",
+    "p1777896503209:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777900475634",
+   "name": "Nike Air Max 1 Escape Blue Black",
+   "photoUrl": "https://example.invalid/p1777900475634.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "FJ0698",
+   "subcategory": "Sneakers"
+  },
+  "p1777901852685": {
+   "alternatives": [
+    "p1784719581830:a",
+    "p1785158942026:a",
+    "p1778680483192:a",
+    "p1780749389578:h",
+    "p1778143219401:h",
+    "p1777902440854:h",
+    "p1778491661888:a",
+    "p1778166373332:h",
+    "p1778143527367:h",
+    "p1780741990887:h",
+    "p1778143673816:h",
+    "p1778142551915:a"
+   ],
+   "brand": "Jordan",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub2"
+   ],
+   "id": "p1777901852685",
+   "name": "Air Jordan 4 Retro Black Cat",
+   "photoUrl": "https://example.invalid/p1777901852685.jpg",
+   "productType": "sneaker",
+   "retailPrice": 800,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "808709001",
+   "subcategory": "Sneakers"
+  },
+  "p1777904532367": {
+   "alternatives": [
+    "p1777896503209:a",
+    "p1781649732579:a",
+    "p1783758362530:a",
+    "p1777897278123:a",
+    "p1777897427900:a",
+    "p1777898452572:a",
+    "p1784101984001:a",
+    "p1777895787590:a",
+    "p1780740402191:a",
+    "p1785936765299:a",
+    "p1785937096595:a",
+    "p1785937290663:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777904532367",
+   "name": "Nike Cactus Plant Flea Market Force 1 Low Black",
+   "photoUrl": "https://example.invalid/p1777904532367.jpg",
+   "retailPrice": 850,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DM0430009",
+   "subcategory": "Sneakers"
+  },
+  "p1777905466361": {
+   "alternatives": [
+    "p1778139786750:a",
+    "p1781649460930:s",
+    "p1778140077213:h",
+    "p1778140291773:a",
+    "p1783847749661:s",
+    "p1778139984873:h",
+    "p1778139849823:h",
+    "p1781015992789:s",
+    "p1778141042060:h",
+    "p1777974404100:s",
+    "p1778141510625:m",
+    "p1778141599422:m"
+   ],
+   "brand": "Jordan",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub2"
+   ],
+   "id": "p1777905466361",
+   "name": "Air Jordan 1 Low Zion Williamson Brown and Green",
+   "photoUrl": "https://example.invalid/p1777905466361.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12"
+   ],
+   "styleCodeNormalised": "DZ7292200",
+   "subcategory": "Sneakers"
+  },
+  "p1777906494244": {
+   "alternatives": [
+    "p1777896950572:a",
+    "p1782136794468:a",
+    "p1777896054649:h",
+    "p1778491589277:h",
+    "p1781015992789:a",
+    "p1781084175824:a",
+    "p1781648199935:h",
+    "p1781648943606:h",
+    "p1777895938746:h",
+    "p1777896769530:h",
+    "p1777906553465:h",
+    "p1778916464923:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777906494244",
+   "name": "Nike Air Force 1 Low Chocolate",
+   "photoUrl": "https://example.invalid/p1777906494244.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "FD7039200",
+   "subcategory": "Sneakers"
+  },
+  "p1777906553465": {
+   "alternatives": [
+    "p1778916558601:a",
+    "p1777896054649:a",
+    "p1778491589277:a",
+    "p1778916464923:a",
+    "p1780735692089:a",
+    "p1777895826628:a",
+    "p1777896769530:a",
+    "p1777906920419:a",
+    "p1779784106208:a",
+    "p1781530128019:a",
+    "p1781530290392:a",
+    "p1777978080532:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777906553465",
+   "name": "Nike Air Force 1 White Green Year Of The Snake",
+   "photoUrl": "https://example.invalid/p1777906553465.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "HV5979130",
+   "subcategory": "Sneakers"
+  },
+  "p1777966912596": {
+   "alternatives": [
+    "p1778916750404:a",
+    "p1777972826888:a",
+    "p1777971963402:a",
+    "p1777971352918:a",
+    "p1777973871259:a",
+    "p1777970188714:a",
+    "p1777971473341:a",
+    "p1777974019392:a",
+    "p1779610819310:s",
+    "p1777967510293:a",
+    "p1777897752183:s",
+    "p1777906347653:s"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777966912596",
+   "name": "On Cloudzone White Navy",
+   "photoUrl": "https://example.invalid/p1777966912596.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777967160850": {
+   "alternatives": [
+    "p1777972295510:a",
+    "p1777971805766:a",
+    "p1777971328016:a",
+    "p1777970246706:a",
+    "p1787218920061:s",
+    "p1777897827663:s",
+    "p1777966912596:h",
+    "p1777972826888:h",
+    "p1777974272407:s",
+    "p1784211746981:a",
+    "p1778916750404:h",
+    "p1777970275854:h"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777967160850",
+   "name": "On Cloudzone Kith Grey",
+   "photoUrl": "https://example.invalid/p1777967160850.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777967433668": {
+   "alternatives": [
+    "p1777971789273:a",
+    "p1777971724502:a",
+    "p1784212842924:a",
+    "p1777970317179:a",
+    "p1777976214499:s",
+    "p1777970370344:a",
+    "p1777902966177:s",
+    "p1777906210767:s",
+    "p1777967510293:h",
+    "p1777971497846:a",
+    "p1777971508405:a",
+    "p1777973641925:s"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777967433668",
+   "name": "On Cloudboom Strike LS Black",
+   "photoUrl": "https://example.invalid/p1777967433668.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777967510293": {
+   "alternatives": [
+    "p1777971352918:a",
+    "p1777970188714:a",
+    "p1777966912596:a",
+    "p1777972826888:a",
+    "p1777902858575:s",
+    "p1777903042450:s",
+    "p1777971963402:a",
+    "p1778916750404:a",
+    "p1777902809280:s",
+    "p1777973871259:a",
+    "p1777967433668:h",
+    "p1777971473341:a"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1777967510293",
+   "name": "On Cloudboom Strike LS White",
+   "photoUrl": "https://example.invalid/p1777967510293.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777970246706": {
+   "alternatives": [
+    "p1777972295510:a",
+    "p1777967160850:a",
+    "p1777971805766:a",
+    "p1784211746981:a",
+    "p1777971328016:a",
+    "p1777970188714:h",
+    "p1777970317179:h",
+    "p1777971352918:h",
+    "p1777967510293:h",
+    "p1777971724502:h",
+    "p1781647052738:s",
+    "p1777971473341:h"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777970246706",
+   "name": "On Cloudsurfer Light Grey",
+   "photoUrl": "https://example.invalid/p1777970246706.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777970275854": {
+   "alternatives": [
+    "p1779874779790:a",
+    "p1777971607774:a",
+    "p1777971580042:h",
+    "p1777971805766:h",
+    "p1777971963402:h",
+    "p1777972295510:h",
+    "p1777971497846:h",
+    "p1777971508405:h",
+    "p1777973172598:h",
+    "p1777973871259:h",
+    "p1777971632734:h",
+    "p1777966912596:h"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777970275854",
+   "name": "On Cloudsurfer Sky Blue",
+   "photoUrl": "https://example.invalid/p1777970275854.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777970317179": {
+   "alternatives": [
+    "p1777971724502:a",
+    "p1777971789273:a",
+    "p1777971497846:a",
+    "p1777971508405:a",
+    "p1777971359562:a",
+    "p1777971632734:a",
+    "p1777973172598:a",
+    "p1784212842924:a",
+    "p1777971838346:a",
+    "p1777902692033:s",
+    "p1777967433668:a",
+    "p1777971198810:s"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777970317179",
+   "name": "On Cloudsurfer Black White",
+   "photoUrl": "https://example.invalid/p1777970317179.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777971095766": {
+   "alternatives": [
+    "p1777971352918:s",
+    "p1777897877051:s",
+    "p1777970188714:s",
+    "p1777902858575:s",
+    "p1777903042450:s",
+    "p1777966912596:s",
+    "p1777972826888:s",
+    "p1779610819310:s",
+    "p1777897752183:s",
+    "p1777902809280:s",
+    "p1777906347653:s",
+    "p1777971473341:s"
+   ],
+   "brand": "Under Armour",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "id": "p1777971095766",
+   "name": "Under Armour HOVR Phantom 4 White",
+   "photoUrl": "https://example.invalid/p1777971095766.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777971473341": {
+   "alternatives": [
+    "p1777974019392:a",
+    "p1777970188714:a",
+    "p1777971963402:a",
+    "p1777971352918:a",
+    "p1777973871259:a",
+    "p1777966912596:a",
+    "p1777972826888:a",
+    "p1787216576605:s",
+    "p1777897877051:s",
+    "p1778916750404:a",
+    "p1777905846572:s",
+    "p1777897752183:s"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1777971473341",
+   "name": "On Cloudhorizon 2 White",
+   "photoUrl": "https://example.invalid/p1777971473341.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "9",
+    "10",
+    "8",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777971963402": {
+   "alternatives": [
+    "p1777973871259:a",
+    "p1777972826888:a",
+    "p1777971352918:a",
+    "p1777974019392:a",
+    "p1782056766007:s",
+    "p1779610819310:s",
+    "p1777971580042:h",
+    "p1777971805766:h",
+    "p1777972295510:h",
+    "p1777971497846:h",
+    "p1777973172598:h",
+    "p1777974120586:a"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3",
+    "hub2"
+   ],
+   "id": "p1777971963402",
+   "name": "On Cloud 6 White",
+   "photoUrl": "https://example.invalid/p1777971963402.jpg",
+   "retailPrice": 450,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777972868051": {
+   "alternatives": [
+    "p1786362331357:a",
+    "p1786370002960:a",
+    "p1777974061927:a",
+    "p1778858152415:h",
+    "p1784645806403:s",
+    "p1786362852087:h",
+    "p1786363370857:h",
+    "p1784644950734:s",
+    "p1778841460437:s",
+    "p1777966912596:s",
+    "p1777972826888:s",
+    "p1777975164620:s"
+   ],
+   "brand": "Adidas",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1",
+    "hub2"
+   ],
+   "id": "p1777972868051",
+   "name": "Adidas Adizero Evo SL Off-White Maroon",
+   "photoUrl": "https://example.invalid/p1777972868051.jpg",
+   "retailPrice": 450,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "JS1182",
+   "subcategory": "Sneakers"
+  },
+  "p1777973394147": {
+   "alternatives": [
+    "p1777897471528:s",
+    "p1785069324028:s",
+    "p1784633513949:s",
+    "p1784640231134:s",
+    "p1778916854779:h",
+    "p1777973357520:h",
+    "p1784638232508:h",
+    "p1777976773369:s",
+    "p1784642393629:s",
+    "p1777897113164:s",
+    "p1777973304071:h",
+    "p1778234289618:s"
+   ],
+   "brand": "The North Face",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "id": "p1777973394147",
+   "name": "The North Face Never Stop White",
+   "photoUrl": "https://example.invalid/p1777973394147.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777973699838": {
+   "alternatives": [
+    "p1777974732558:a",
+    "p1777974810579:a",
+    "p1778143563693:a",
+    "p1777974765700:a",
+    "p1777974854269:a",
+    "p1778144384397:a",
+    "p1778144674359:a",
+    "p1777972588893:a",
+    "p1778144541007:s",
+    "p1783340443160:s",
+    "p1777896054649:s",
+    "p1777904061544:s"
+   ],
+   "brand": "Adidas",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub2"
+   ],
+   "id": "p1777973699838",
+   "name": "Adidas Benito Gazelle Indoor Core White Black Gum",
+   "photoUrl": "https://example.invalid/p1777973699838.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "IF9770",
+   "subcategory": "Sneakers"
+  },
+  "p1777973871259": {
+   "alternatives": [
+    "p1777971963402:a",
+    "p1777972826888:a",
+    "p1777971352918:a",
+    "p1777974019392:a",
+    "p1782056766007:s",
+    "p1779610819310:s",
+    "p1777971497846:h",
+    "p1777971580042:h",
+    "p1777971805766:h",
+    "p1777972295510:h",
+    "p1777973172598:h",
+    "p1777974120586:a"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777973871259",
+   "name": "On Cloudventure 2 White",
+   "photoUrl": "https://example.invalid/p1777973871259.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777974019392": {
+   "alternatives": [
+    "p1777971352918:a",
+    "p1777971963402:a",
+    "p1777972826888:a",
+    "p1777973871259:a",
+    "p1777974120586:a",
+    "p1777967656857:s",
+    "p1781941263779:s",
+    "p1782003502677:s",
+    "p1779610819310:s",
+    "p1782056766007:s",
+    "p1777980273314:s",
+    "p1781636114748:s"
+   ],
+   "brand": "On",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777974019392",
+   "name": "On Cloudvista 2 White Navy Grey",
+   "photoUrl": "https://example.invalid/p1777974019392.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1777978080532": {
+   "alternatives": [
+    "p1779784106208:a",
+    "p1777895826628:a",
+    "p1777979694047:a",
+    "p1780735692089:a",
+    "p1777897007208:a",
+    "p1778139909700:s",
+    "p1777904061544:s",
+    "p1783687716025:s",
+    "p1777895620932:a",
+    "p1780740402191:h",
+    "p1777981957810:s",
+    "p1778143563693:s"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777978080532",
+   "name": "Nike Air Force 1 Low Multicolor Swooshes",
+   "photoUrl": "https://example.invalid/p1777978080532.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "9",
+    "13",
+    "8",
+    "11",
+    "7",
+    "10"
+   ],
+   "styleCodeNormalised": "DM7597100",
+   "subcategory": "Sneakers"
+  },
+  "p1777979694047": {
+   "alternatives": [
+    "p1777895826628:a",
+    "p1777897007208:a",
+    "p1779784106208:a",
+    "p1780735692089:a",
+    "p1777978080532:a",
+    "p1778139909700:s",
+    "p1777981957810:s",
+    "p1777904061544:s",
+    "p1780740402191:h",
+    "p1777896688393:a",
+    "p1777897047939:h",
+    "p1785937096595:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1777979694047",
+   "name": "Nike Air Force 1 White",
+   "photoUrl": "https://example.invalid/p1777979694047.jpg",
+   "productType": "sneaker",
+   "retailPrice": 650,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "315122111",
+   "subcategory": "Sneakers"
+  },
+  "p1777991082100": {
+   "alternatives": [
+    "p1777991143468:h",
+    "p1777991180935:h",
+    "p1779610079819:s",
+    "p1777982664749:s",
+    "p1777981905299:s",
+    "p1777991230306:h",
+    "p1777991266016:h",
+    "p1782055077934:c",
+    "p1784215415512:h",
+    "p1784275470646:h",
+    "p1784636653248:h",
+    "p1784637548157:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1777991082100",
+   "name": "Nike Air Force 1 shell  Cream Brown",
+   "photoUrl": "https://example.invalid/p1777991082100.jpg",
+   "retailPrice": 850,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DO7450213",
+   "subcategory": "Sneakers"
+  },
+  "p1777991143468": {
+   "alternatives": [
+    "p1777991180935:h",
+    "p1777991082100:h",
+    "p1779185587062:s",
+    "p1777989306216:s",
+    "p1777991266016:h",
+    "p1786197554841:s",
+    "p1779543774441:k",
+    "p1784215415512:h",
+    "p1784275470646:h",
+    "p1784636653248:h",
+    "p1784637548157:h",
+    "p1778483018448:c"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1777991143468",
+   "name": "Nike Air Force 1  Shell Green",
+   "photoUrl": "https://example.invalid/p1777991143468.jpg",
+   "retailPrice": 850,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "BQ6096301",
+   "subcategory": "Boots"
+  },
+  "p1777991180935": {
+   "alternatives": [
+    "p1777991143468:h",
+    "p1784275470646:a",
+    "p1784636653248:a",
+    "p1779543774441:s",
+    "p1777991082100:h",
+    "p1777991294643:a",
+    "p1778917183049:s",
+    "p1787227682335:m",
+    "p1777897161827:m",
+    "p1777991266016:h",
+    "p1778141548169:s",
+    "p1777984161331:s"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1777991180935",
+   "name": "Nike Air Force 1 Shell Black",
+   "photoUrl": "https://example.invalid/p1777991180935.jpg",
+   "retailPrice": 850,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "BQ6096001",
+   "subcategory": "Sneakers"
+  },
+  "p1777991583998": {
+   "alternatives": [
+    "p1782055077934:a",
+    "p1777974484197:s",
+    "p1785937936741:a",
+    "p1777974344855:s",
+    "p1779528822199:a",
+    "p1777896597672:a",
+    "p1777898350156:a",
+    "p1778844810609:h",
+    "p1781649732579:h",
+    "p1777973935724:s",
+    "p1784645325553:a",
+    "p1783758362530:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1777991583998",
+   "name": "Nike SB Dunk Low Supreme Yellow Grey Black",
+   "photoUrl": "https://example.invalid/p1777991583998.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "HQ8487300",
+   "subcategory": "Sneakers"
+  },
+  "p1777991981146": {
+   "alternatives": [
+    "p1777895787590:a",
+    "p1781649807901:a",
+    "p1784645609357:a",
+    "p1777896503209:a",
+    "p1780740402191:a",
+    "p1781648199935:a",
+    "p1785936765299:a",
+    "p1785937096595:a",
+    "p1785937290663:a",
+    "p1777900475634:a",
+    "p1781649732579:a",
+    "p1784292446260:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1777991981146",
+   "name": "Nike Killshot 2 Black Gum",
+   "photoUrl": "https://example.invalid/p1777991981146.jpg",
+   "retailPrice": 700,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "HQ3489010",
+   "subcategory": "Sneakers"
+  },
+  "p1778491589277": {
+   "alternatives": [
+    "p1777896054649:a",
+    "p1777896769530:a",
+    "p1777906553465:a",
+    "p1778916464923:a",
+    "p1778916558601:a",
+    "p1781530128019:a",
+    "p1777897007208:a",
+    "p1777895826628:a",
+    "p1779784106208:a",
+    "p1780735692089:a",
+    "p1777896117122:a",
+    "p1777978080532:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1778491589277",
+   "name": "Nike Air Force 1 '07 White Chlorophyll",
+   "photoUrl": "https://example.invalid/p1778491589277.jpg",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DH7561105",
+   "subcategory": "Sneakers"
+  },
+  "p1778841686399": {
+   "alternatives": [
+    "p1778841498271:m",
+    "p1780735692089:a",
+    "p1783340596465:a",
+    "p1777895620932:a",
+    "p1777895826628:a",
+    "p1779784106208:a",
+    "p1777968276041:a",
+    "p1783245119000:s",
+    "p1777978080532:a",
+    "p1777897007208:a",
+    "p1777979694047:a",
+    "p1778841460437:m"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1778841686399",
+   "name": "Nike Air Max Fly Pink White",
+   "photoUrl": "https://example.invalid/p1778841686399.jpg",
+   "productType": "sneaker",
+   "retailPrice": 450,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "subcategory": "Sneakers"
+  },
+  "p1778916558601": {
+   "alternatives": [
+    "p1777906553465:a",
+    "p1777896054649:a",
+    "p1778491589277:a",
+    "p1778916464923:a",
+    "p1780735692089:a",
+    "p1777895826628:a",
+    "p1777896769530:a",
+    "p1777906920419:a",
+    "p1779784106208:a",
+    "p1781530128019:a",
+    "p1781530290392:a",
+    "p1777978080532:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub3",
+    "hub1"
+   ],
+   "id": "p1778916558601",
+   "name": "Nike Air Force 1 Cream Dark Grey",
+   "photoUrl": "https://example.invalid/p1778916558601.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DF0188036",
+   "subcategory": "Sneakers"
+  },
+  "p1781084175824": {
+   "alternatives": [
+    "p1782136794468:a",
+    "p1782550510031:a",
+    "p1777896950572:a",
+    "p1777906494244:a",
+    "p1781649460930:a",
+    "p1781015992789:a",
+    "p1777895938746:h",
+    "p1777896913363:h",
+    "p1777906553465:h",
+    "p1778916558601:h",
+    "p1777905466361:s",
+    "p1777979647724:s"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1781084175824",
+   "name": "Nike Air Force 1 Cream Brown Gum",
+   "photoUrl": "https://example.invalid/p1781084175824.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DB4109200",
+   "subcategory": "Sneakers"
+  },
+  "p1781530128019": {
+   "alternatives": [
+    "p1777896054649:a",
+    "p1777896769530:a",
+    "p1778491589277:a",
+    "p1779784106208:a",
+    "p1777978080532:a",
+    "p1777897007208:a",
+    "p1777895826628:a",
+    "p1777906553465:a",
+    "p1778916464923:a",
+    "p1778916558601:a",
+    "p1780735692089:a",
+    "p1781530290392:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1781530128019",
+   "name": "Nike Air Force 1 Low Ducks Of A Feather",
+   "photoUrl": "https://example.invalid/p1781530128019.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "FV7613100",
+   "subcategory": "Sneakers"
+  },
+  "p1781530222899": {
+   "alternatives": [
+    "p1777896117122:a",
+    "p1780735692089:a",
+    "p1777895826628:a",
+    "p1777906553465:a",
+    "p1778916558601:a",
+    "p1784633513949:a",
+    "p1777897007208:a",
+    "p1777979694047:a",
+    "p1777896054649:a",
+    "p1777896769530:a",
+    "p1778491589277:a",
+    "p1778916464923:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1781530222899",
+   "name": "Nike Air Force 1 Fontanka White",
+   "photoUrl": "https://example.invalid/p1781530222899.jpg",
+   "productType": "sneaker",
+   "retailPrice": 450,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DB4109100",
+   "subcategory": "Sneakers"
+  },
+  "p1781530290392": {
+   "alternatives": [
+    "p1777906920419:a",
+    "p1777906553465:a",
+    "p1778916558601:a",
+    "p1779784106208:a",
+    "p1780735692089:a",
+    "p1781530128019:a",
+    "p1784718275050:a",
+    "p1777978080532:a",
+    "p1777895826628:a",
+    "p1777896054649:a",
+    "p1777896688393:a",
+    "p1777896769530:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1781530290392",
+   "name": "Nike Air Force 1 Tan Bling",
+   "photoUrl": "https://example.invalid/p1781530290392.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "001051095",
+   "subcategory": "Sneakers"
+  },
+  "p1781646983315": {
+   "alternatives": [
+    "p1785937525867:a",
+    "p1777895826628:h",
+    "p1780740402191:h",
+    "p1777979694047:h",
+    "p1777897047939:h",
+    "p1777978080532:h",
+    "p1779784106208:h",
+    "p1780735692089:h",
+    "p1785936765299:h",
+    "p1785937096595:h",
+    "p1785937290663:h",
+    "p1785937936741:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1781646983315",
+   "name": "Nike Mind 002 Brown",
+   "photoUrl": "https://example.invalid/p1781646983315.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "HQ4310200",
+   "subcategory": "Sneakers"
+  },
+  "p1784215024196": {
+   "alternatives": [
+    "p1777897007208:s",
+    "p1777979694047:s",
+    "p1777895826628:s",
+    "p1777979312198:s",
+    "p1777979525848:s",
+    "p1778140322300:s",
+    "p1780735692089:s",
+    "p1781014115669:s",
+    "p1777897113164:s",
+    "p1777992020231:s",
+    "p1778244007912:s",
+    "p1784214175819:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1784215024196",
+   "name": "Air force white",
+   "photoUrl": "https://example.invalid/p1784215024196.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "AJ3664100",
+   "subcategory": "Sneakers"
+  },
+  "p1784292446260": {
+   "alternatives": [
+    "p1784645609357:a",
+    "p1777896503209:a",
+    "p1778844810609:a",
+    "p1781648199935:a",
+    "p1783497582555:a",
+    "p1777895684767:a",
+    "p1777895787590:a",
+    "p1780740402191:a",
+    "p1785936765299:a",
+    "p1785937096595:a",
+    "p1785937290663:a",
+    "p1783758362530:a"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1784292446260",
+   "name": "Nike Air Force black ",
+   "photoUrl": "https://example.invalid/p1784292446260.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "AQ4606001",
+   "subcategory": "Sneakers"
+  },
+  "p1784298749623": {
+   "alternatives": [
+    "p1784551107750:a",
+    "p1777895938746:s",
+    "p1784214175819:h",
+    "p1777974689357:s",
+    "p1784215024196:h",
+    "p1778140999550:s",
+    "p1778659712559:s",
+    "p1777896558219:s",
+    "p1777979782782:s",
+    "p1778139849823:s",
+    "p1778915544987:s",
+    "p1777973797045:s"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1784298749623",
+   "name": "Air force blue ",
+   "photoUrl": "https://example.invalid/p1784298749623.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "AJ3664500",
+   "subcategory": "Sneakers"
+  },
+  "p1784718771573": {
+   "alternatives": [
+    "p1781530018866:a",
+    "p1777896597672:h",
+    "p1783497582555:h",
+    "p1785937781350:h",
+    "p1781649646205:h",
+    "p1784633513949:h",
+    "p1777895684767:h",
+    "p1781649460930:h",
+    "p1777895938746:h",
+    "p1777896769530:h",
+    "p1777906553465:h",
+    "p1777906920419:h"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1784718771573",
+   "name": "Nike Air force LV blue ",
+   "photoUrl": "https://example.invalid/p1784718771573.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "OOKP9PWG60BQB",
+   "subcategory": "Sneakers"
+  },
+  "p1784726757890": {
+   "alternatives": [
+    "p1777895684767:s",
+    "p1785937096595:s",
+    "p1778139620221:s",
+    "p1781648199935:s",
+    "p1777972545153:s",
+    "p1777895787590:s",
+    "p1780740402191:s",
+    "p1785937290663:s",
+    "p1777979684653:s",
+    "p1778236481808:s",
+    "p1778236722624:s",
+    "p1783948464550:s"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1784726757890",
+   "name": "Airforce Nike Louis Vuitton black end white ",
+   "photoUrl": "https://example.invalid/p1784726757890.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "XL1979120",
+   "subcategory": "Sneakers"
+  },
+  "p1785936765299": {
+   "alternatives": [
+    "p1785937290663:a",
+    "p1780740402191:a",
+    "p1785937096595:a",
+    "p1781648199935:a",
+    "p1778142338746:s",
+    "p1777895826628:h",
+    "p1777897047939:h",
+    "p1780735692089:h",
+    "p1785937525867:h",
+    "p1785937936741:h",
+    "p1777895787590:a",
+    "p1778148090145:s"
+   ],
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1",
+    "hub3"
+   ],
+   "id": "p1785936765299",
+   "name": "Nike airforce black",
+   "photoUrl": "https://example.invalid/p1785936765299.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "3",
+    "4",
+    "5",
+    "5.5",
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "CW2288002",
+   "subcategory": "Sneakers"
+  },
+  "p1787218274779": {
+   "alternatives": [
+    "p1778143121652:s",
+    "p1778143219401:s",
+    "p1778141405110:k",
+    "p1778142998049:s",
+    "p1777902212548:k",
+    "p1780749389578:k",
+    "p1778141471990:k",
+    "p1778142292606:k",
+    "p1777901852685:k",
+    "p1778143418641:k",
+    "p1780993237459:k",
+    "p1777984287015:k"
+   ],
+   "brand": "Supreme",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1787218274779",
+   "name": "Supreme x Nike air force 1 purple",
+   "photoUrl": "https://example.invalid/p1787218274779.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DV0788003",
+   "subcategory": "Sneakers"
+  },
+  "p1789136571693": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1789136571693",
+   "name": "Nike airforce 1 cream white end red  play",
+   "photoUrl": "https://example.invalid/p1789136571693.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "DF0188003",
+   "subcategory": "Sneakers"
+  },
+  "p1789137553443": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1789137553443",
+   "name": "Nike airforce 1 Green",
+   "photoUrl": "https://example.invalid/p1789137553443.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "D65VRL2VN9NGW",
+   "subcategory": "Sneakers"
+  },
+  "p1789140518914": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1789140518914",
+   "name": "Nike airforce 1 cream white",
+   "photoUrl": "https://example.invalid/p1789140518914.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "6"
+   ],
+   "styleCodeNormalised": "CW2288111",
+   "subcategory": "Sneakers"
+  },
+  "p1790003312947": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1790003312947",
+   "name": "Nike Air Force 1 07 'Black Dark Smoke Grey'",
+   "photoUrl": "https://example.invalid/p1790003312947.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13"
+   ],
+   "styleCodeNormalised": "IQ9791001",
+   "subcategory": "Sneakers"
+  },
+  "p1790089163917": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1790089163917",
+   "name": "Nike air\u00a0force1\u00a0x\u00a0nocta\u00a0red",
+   "photoUrl": "https://example.invalid/p1790089163917.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11"
+   ],
+   "styleCodeNormalised": "HF6999600",
+   "subcategory": "Sneakers"
+  },
+  "p1790157727504": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1790157727504",
+   "name": "Nike Air Force 1 Low Ducks of a Feather University of Oregon Duck or Egg",
+   "photoUrl": "https://example.invalid/p1790157727504.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12",
+    "13"
+   ],
+   "styleCodeNormalised": "IU7612700",
+   "subcategory": "Sneakers"
+  },
+  "p1790164209800": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1790164209800",
+   "name": "Nike Air Force 1 Low '07 PRM Tweed Midnight Navy Corduroy",
+   "photoUrl": "https://example.invalid/p1790164209800.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12"
+   ],
+   "styleCodeNormalised": "FQ8744410",
+   "subcategory": "Sneakers"
+  },
+  "p1790247357203": {
+   "brand": "Nike",
+   "category": "Footwear",
+   "categoryKey": "sneakers",
+   "hubs": [
+    "hub1"
+   ],
+   "id": "p1790247357203",
+   "name": "Nike Air Force 1 Low '07 LV8 Panda",
+   "photoUrl": "https://example.invalid/p1790247357203.jpg",
+   "productType": "sneaker",
+   "retailPrice": 750,
+   "sizes": [
+    "6",
+    "7",
+    "8",
+    "9",
+    "10",
+    "11",
+    "12"
+   ],
+   "styleCodeNormalised": "DX3115100",
+   "subcategory": "Sneakers"
+  }
+ }
+}
