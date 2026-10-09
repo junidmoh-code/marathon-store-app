@@ -233,7 +233,12 @@ export function alternativesForSize({
         rank: storedRank.has(entry.product.id) ? storedRank.get(entry.product.id) : Infinity,
       };
     });
+    // Inside the family a KNOWN different cut (a Jordan 1 High for a Jordan 1
+    // Low) goes after every same-or-unknown cut — "Air Force 1 Low" is the
+    // owner's own example of a family (Fable spec review).
+    const cutOff = (p) => (src.cut && p.cut && src.cut !== p.cut ? 1 : 0);
     scored.sort((x, y) => (TIER_ORDER[x.tier] - TIER_ORDER[y.tier])
+      || (x.tier === "a" ? cutOff(x.prof) - cutOff(y.prof) : 0)
       // Inside the model family the COLOURWAY leads; elsewhere overall likeness.
       || (x.tier === "a" ? (y.cw - x.cw) || (y.sim - x.sim) : (y.sim - x.sim) || (y.cw - x.cw))
       || (x.rank - y.rank)

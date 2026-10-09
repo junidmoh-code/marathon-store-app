@@ -96,6 +96,16 @@ describe("each tier, and the fall-through between them", () => {
     const r = world([s2, alike, sameColour])(s2);
     expect(r.rows.map((x) => x.product.id)).toEqual(["white", "alike"]);
   });
+  it("inside the family a known different cut comes after the same cut, whatever the colour", () => {
+    const lo = shoe("Air Jordan 1 Low Black", "Jordan", { id: "lo" });
+    const hiWhite = shoe("Air Jordan 1 High White", "Jordan", { id: "hi" });
+    const loRed = shoe("Air Jordan 1 Low Red", "Jordan", { id: "lored" });
+    const plain = shoe("Air Jordan 1 Blue", "Jordan", { id: "plain" });
+    const src2 = shoe("Air Jordan 1 Low White", "Jordan", { id: "src2" });
+    const r = world([src2, hiWhite, lo, loRed, plain])(src2);
+    expect(r.rows.map((x) => x.product.id).at(-1)).toBe("hi");
+    expect(r.rows.every((x) => x.tier === "a")).toBe(true);
+  });
   it("no same model in the size → same brand and shape lead", () => {
     const r = world([src, af1, dunk, samba], { stock: (p) => p.id !== "af1" })(src);
     expect(r.rows[0].product.id).toBe("dunk");
