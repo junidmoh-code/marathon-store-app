@@ -10389,13 +10389,17 @@ function AssistantView({ products, onExit, orders = [] }) {
   // out. It now opens a sheet that keeps the reason UNCHANGED and adds, below
   // it, the alternatives that can actually be sold this minute.
   //
-  // THE READ PATH IS THE WHOLE DESIGN. The ranking was computed offline
-  // (scripts/shopify/build-neighbours.mjs) and stored on the product record, so
-  // this does no similarity arithmetic, opens no subscription and scans no
-  // catalogue: it reads at most twelve pids out of a list the screen already
-  // holds, and checks each one against the SAME maps the grid behind it is
-  // already using. 1,410 sneakers is ~1M pairs; scoring that at tap time is a
-  // frozen phone in front of a customer.
+  // THE POOL IS EVERYTHING SELLABLE IN THAT SIZE, RIGHT NOW (2026-10-09).
+  // It used to be the twelve neighbours the offline build stored on the
+  // product, filtered by size at tap time — and a colourful shoe's twelve were
+  // other colourful shoes, none in an 8, so Junid's Ducks of a Feather said "No
+  // similar styles in size 8" with thirty Air Force 1s on the Hub 1 shelf in an
+  // 8. Now the whole catalogue THIS SCREEN ALREADY HOLDS (`products`, streamed
+  // for the grid) is walked against the hub cells it ALREADY HOLDS — no read,
+  // no subscription — and ranked in tiers: same model family, same brand and
+  // shape, same colour, then anything (alternativesCore.js). The stored list
+  // only breaks ties. The facts the ranking needs ride on each product as one
+  // short `altProfile` string kept current by a trigger (altProfile.js).
   //
   // EVERY GATE FAILS CLOSED. A suggestion an assistant reads out that turns out
   // not to exist is worse than the bare refusal it replaced — it costs the
@@ -10409,13 +10413,27 @@ function AssistantView({ products, onExit, orders = [] }) {
   //   • sneakerOut, not a second availability test. One definition of
   //     "available" on this screen, the same one that drew the chip.
   //
-  // RETURNS { rows, candidates, sizeGateRemoved }, or NULL for "not answered
-  // yet". Every row is sellable in the tapped size (alternativesForSize, the
-  // size gate of 2026-10-01); an empty `rows` is a real answer and the strip
-  // says "No similar styles in size X". NULL renders nothing — before /orders
-  // and both gated hubs have answered, "no similar styles" would be a claim
-  // this screen cannot yet make.
+  // RETURNS { rows, candidates, inSize, sizeGateRemoved, tiers }, or NULL for
+  // "not answered yet". Every row is sellable in the tapped size; an empty
+  // `rows` now means NOTHING in that size is sellable from this shop's hubs,
+  // and the strip says so. NULL renders nothing — before /orders and the gated
+  // hubs have answered, that would be a claim this screen cannot yet make.
+  // ONE WALK PER CHANGE, NOT PER RENDER. The pool is the whole catalogue, and
+  // this is called from render while the note is open — every /orders or hub
+  // cell update re-renders the screen. The answer depends only on the inputs
+  // below, so it is kept until one of them changes (architect review).
+  const altMemo = useRef({ deps: null, out: null });
   const alternativesFor = (product, size) => {
+    const deps = [product, size, products, ordersSettled, cartAllocation, hub1CellsState, hub2CellsState,
+      hub1Promised, hub2ReadyPromised, sectionCellsA, sectionCellsB, sectionPromisedA, sectionPromisedB, effectiveShop,
+      sectionNet, effectiveStoreMode];
+    const m = altMemo.current;
+    if (m.deps && m.deps.length === deps.length && m.deps.every((d, i) => d === deps[i])) return m.out;
+    const out = computeAlternatives(product, size);
+    altMemo.current = { deps, out };
+    return out;
+  };
+  const computeAlternatives = (product, size) => {
     if (!product || !size) return null;
     // Sneakers only. Clothing and perfume are out of scope for this build, and
     // a clothing tile's grey-out reads its cell by a different rule
@@ -10426,6 +10444,10 @@ function AssistantView({ products, onExit, orders = [] }) {
       sourceProduct: product,
       neighbours: product[NEIGHBOURS_FIELD],
       requestedSize: size,
+      // THE POOL: the catalogue this screen already holds. useProducts has
+      // dropped merged-away records; availabilityKnown below drops everything
+      // that is not a gated sneaker.
+      candidates: products,
       // FOLLOWS MERGES. A pid in a list written last week may since have been
       // merged away; resolveProductById lands on the survivor, and
       // alternativesForSize de-duplicates when two entries land on the same
@@ -10509,8 +10531,8 @@ function AssistantView({ products, onExit, orders = [] }) {
     // when the shoe has it, otherwise the first size actually on offer.
     });
     // AN EMPTY ANSWER IS ONLY CLAIMED ONCE BOTH GATED HUBS HAVE ANSWERED. While
-    // one is still loading, its candidates were dropped as "unknown", so "no
-    // similar styles" would be premature. A hub that ERRORED has answered, so
+    // one is still loading, its candidates were dropped as "unknown", so
+    // "nothing in this size" would be premature. A hub that ERRORED has answered, so
     // it cannot hold the sheet hostage for good (architect review, PR #660);
     // the other hub's shoes still show.
     // "Both" = this shop's own gated hubs (Hub 1 / Hub 2, or a Section 1 shop's).

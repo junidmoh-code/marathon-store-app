@@ -14,9 +14,15 @@
 // the Insights "Recent activity" and "Order History" lists, and a sheet open is
 // not an order event.
 //
-// SHAPE NOTE: RTDB deletes an empty array, so `shownIds` is ABSENT (not []) on
-// a sheet that showed nothing. Read it as `row.shownIds || []`; `shown` carries
-// the count either way.
+// `shownTiers` (2026-10-09) runs parallel to `shownIds`: which ranking tier each
+// row came from — a same model family, b same brand and shape, c same colour,
+// d anything else in the size. `pickedTier` is the tier of the row taken, and
+// `inSize` how many shoes were sellable in that size at all. Recorded so
+// Junid's review can see whether the tiers earn their order. STILL LOG ONLY.
+//
+// SHAPE NOTE: RTDB deletes an empty array, so `shownIds` and `shownTiers` are
+// ABSENT (not []) on a sheet that showed nothing. Read them as
+// `row.shownIds || []`; `shown` carries the count either way.
 
 export const ALTERNATIVES_LOG_PATH = "alternatives_log";
 
@@ -29,7 +35,9 @@ export function shownEntry({ ts, shop, surface, product, size, result }) {
     candidates: result.candidates,
     shown: result.rows.length,
     sizeGateRemoved: result.sizeGateRemoved,
+    ...(Number.isFinite(result.inSize) ? { inSize: result.inSize } : {}),
     shownIds: result.rows.map((r) => r.product.id),
+    shownTiers: result.rows.map((r) => r.tier || ""),
   };
 }
 
@@ -41,5 +49,6 @@ export function pickedEntry({ ts, shop, surface, product, size, row }) {
     productId: product.id, size: String(size ?? ""),
     pickedId: row.product.id,
     pickedSize: String(row.matchedSize ?? ""),
+    pickedTier: row.tier || "",
   };
 }

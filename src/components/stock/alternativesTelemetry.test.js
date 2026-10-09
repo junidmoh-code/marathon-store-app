@@ -32,7 +32,7 @@ describe("the sheet-open row", () => {
     const e = shownEntry({ ts: 1, shop: "marathon-pe", surface: "sheet", product: { id: "af" }, size: "8", result: run(products, "8") });
     expect(e).toEqual({
       ts: 1, shop: "marathon-pe", event: "shown", surface: "sheet", productId: "af", size: "8",
-      candidates: 2, shown: 1, sizeGateRemoved: 1, shownIds: ["ok"],
+      candidates: 2, inSize: 1, shown: 1, sizeGateRemoved: 1, shownIds: ["ok"], shownTiers: ["d"],
     });
   });
   it("an empty sheet survives the store: the zeros stay, the empty id list is gone", () => {
@@ -42,6 +42,7 @@ describe("the sheet-open row", () => {
     expect(stored.sizeGateRemoved).toBe(1);
     expect(stored.shownIds).toBeUndefined();
     expect(stored.shownIds || []).toEqual([]);
+    expect(stored.shownTiers).toBeUndefined();
   });
   it("nothing is written for a sheet that has not answered", () => {
     expect(shownEntry({ ts: 1, surface: "sheet", product: { id: "af" }, size: "8", result: null })).toBe(null);
