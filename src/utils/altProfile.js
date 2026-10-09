@@ -37,6 +37,9 @@ import {
   FINISHES, STYLE_TAGS, MAX_STYLE_TAGS, colourFamily, priceBandOf,
 } from "./productAttributes.js";
 import { silhouetteGroup } from "./productNeighbours.js";
+import { modelFamilyOf, cutFromName } from "./modelFamily.js";
+
+export { cutFromName };
 
 /** Where the string lives on the product record. */
 export const ALT_PROFILE_FIELD = "altProfile";
@@ -150,15 +153,6 @@ export function coloursFromName(name) {
 
 const SIL_BY_CATEGORY = Object.freeze({ slides: "slide", "soccer-boots": "soccer-boot", boots: "boot", loafers: "loafer", "running-shoes": "runner" });
 
-/** low / mid / high from the words of a name, or "". */
-export function cutFromName(name) {
-  const s = ` ${String(name ?? "").toLowerCase().replace(/[^a-z0-9]+/g, " ")} `;
-  if (/ (high|hi) /.test(s)) return "high";
-  if (/ mid /.test(s)) return "mid";
-  if (/ low /.test(s)) return "low";
-  return "";
-}
-
 /** A silhouette the NAME or category states plainly, or "". */
 export function silhouetteFromName(product) {
   const key = String(product?.categoryKey || "").trim();
@@ -238,8 +232,9 @@ export function profileOfProduct(product) {
   return out;
 }
 
-// The model-family deriver plugs in here (modelFamily.js). Until it does, a
-// product with no stored profile has no family.
-function deriveFamilyHook() {
-  return null;
+// A record with no stored profile reads its family from what it carries: the
+// name and the box label's model name. (The trigger also has the vision
+// namer's model and style-code siblings, and stores the result.)
+function deriveFamilyHook(product) {
+  return modelFamilyOf({ name: product?.name, brand: product?.brand, labelModelName: product?.labelModelName });
 }
