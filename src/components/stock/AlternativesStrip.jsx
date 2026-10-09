@@ -8,11 +8,13 @@ import { MirroredImg } from "../../offline/MirroredImg.jsx";
 // now. Photo, name, the sizes actually available, the price, and one short line
 // saying why it matched.
 //
-// EVERY ROW IS SELLABLE IN THE SIZE THAT WAS TAPPED (2026-10-01). When none
-// is, the strip says so in words — "No similar styles in size 8" — instead of
-// padding the row with shoes that do not come in an 8. An assistant reading out
-// a suggestion that cannot be sold is worse than the bare refusal, because it
-// spends the customer's patience twice.
+// EVERY ROW IS SELLABLE IN THE SIZE THAT WAS TAPPED (2026-10-01), and since
+// 2026-10-09 the rows are drawn from EVERY shoe sellable in that size, best
+// match first — so an empty list means nothing in that size can be ordered
+// from anywhere this shop orders from, and the strip says exactly that:
+// "Nothing in size 8 is available anywhere right now". It used to say "No
+// similar styles in size 8", which was false whenever the twelve stored
+// neighbours happened not to come in an 8 (Junid's Ducks of a Feather report).
 //
 // `rows` null/undefined means "not answered yet" (availability still settling)
 // and renders NOTHING — no skeleton, and never the empty state, which would be
@@ -49,7 +51,7 @@ export function AlternativesStrip({ rows, requestedSize, onPick, onShown, compac
       <div role="status" style={{ marginBottom: compact ? 8 : "0.9rem", padding: compact ? "8px 10px" : "10px 12px",
                                   borderRadius: 10, border: "1px dashed rgba(255,255,255,.16)",
                                   color: "rgba(233,238,255,.62)", fontSize: compact ? 11.5 : 12.5, fontWeight: 700 }}>
-        No similar styles in size {formatSize(requestedSize)}
+        Nothing in size {formatSize(requestedSize)} is available anywhere right now
       </div>
     );
   }

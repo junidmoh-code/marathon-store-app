@@ -1,9 +1,9 @@
 // ─── "NOT THAT ONE — BUT THESE, RIGHT NOW" ───────────────────────────────────
 //
-// The join between the PRECOMPUTED neighbour list (productNeighbours.js, built
-// offline) and LIVE availability (availabilityCore.js, the resolver merged in
-// #562). The list says what is ALIKE; this says what can actually be sold to
-// the customer standing at the counter, and only the intersection is shown.
+// The join between what the catalogue knows about each shoe and LIVE
+// availability (availabilityCore.js, the resolver the size chips use). It says
+// what can actually be sold to the customer standing at the counter, best
+// match first.
 //
 // ── THE RULE THAT MATTERS MOST ───────────────────────────────────────────────
 // NEVER SHOW A SUGGESTION THAT CANNOT BE SOLD. A row an assistant reads out
@@ -12,98 +12,248 @@
 // trust the screen. So every gate here fails CLOSED — if availability is not
 // known for a candidate, the candidate is dropped, not shown with a caveat.
 //
-// And an empty result is a real answer. Since 2026-10-01 the sheet says so in
-// words — "No similar styles in size 8" — rather than padding the row with
-// shoes that do not come in an 8.
+// ── AND THE SECOND: NEVER "NOTHING" WHILE SOMETHING IS ON THE SHELF ──────────
+// (2026-10-09, Junid's Ducks of a Feather report.) The sheet used to join only
+// the twelve neighbours the offline build had stored on the product, chosen by
+// LOOK, and then drop every one not sellable in the tapped size. A colourful
+// shoe's twelve were other colourful shoes; none came in an 8; the sheet said
+// "No similar styles in size 8" while thirty Air Force 1s sat at Hub 1 in an 8.
+// Measured that morning: 154 sneakers showed that empty sheet for a size that
+// other shoes had in stock.
 //
-// ── THE READ PATH ────────────────────────────────────────────────────────────
-// The stored list (already on the product record the app holds in memory) plus
-// availability checks on THOSE products only. No catalogue scan, no similarity
-// arithmetic, no new subscription — at most twelve candidates are looked up in
-// maps the screen is already streaming for its own grid.
+// So the POOL is now every shoe sellable in the asked size right now — the
+// screen already holds the catalogue and both hubs' cells, so this is a walk
+// over memory, not a read — and the stored neighbours only break ties. The
+// pool is ranked in tiers, each filling before the next is reached:
+//
+//   a  SAME MODEL FAMILY (Air Force 1 for an Air Force 1), closest colourway first
+//   b  same brand AND same silhouette (other Nike lows)
+//   c  same colour family, any brand, same kind of shoe
+//   d  anything else sellable in that size, by overall attribute similarity
+//
+// An empty result therefore means the size is not sellable ANYWHERE this
+// screen can order from, and the strip says exactly that.
 //
 // PURE. Every live fact arrives as a callback from the screen that already
 // holds it, so the whole thing is testable without mounting anything or
 // touching firebase.
 
-import { parseNeighbours } from "../../utils/productNeighbours";
+import { parseNeighbours, scorePair, matchReasonCode, matchReasonText } from "../../utils/productNeighbours";
 import { shoeSizeKey, productIsKidsGrid } from "../../utils/shoeSize";
+import { profileOfProduct } from "../../utils/altProfile";
+import { familyLabel } from "../../utils/modelFamily";
 
 /** How many alternatives the sheet shows. Owner spec: up to 8. */
 export const MAX_ALTERNATIVES_SHOWN = 8;
 
+/** The tiers, best first. Logged per row (telemetry) — never read back. */
+export const ALT_TIERS = Object.freeze(["a", "b", "c", "d"]);
+
+export const TIER_REASON = Object.freeze({
+  b: "Same brand, same shape",
+  c: "Same colour",
+});
+
+// THE ONE SIZE COMPARISON. A label is compared through shoeSize.js, never by
+// raw text: "8", "8.0", "UK 8", 8 and the cell-key form "8_5"/"8.5" are each one
+// size, and a "6Y" is not a "6". Cached per product object — the walk below
+// visits the whole catalogue on every open.
+const sizeKeyCache = new WeakMap();
+function sizeKeysOf(product, labels) {
+  let hit = sizeKeyCache.get(product);
+  if (hit && hit.labels === labels) return hit.keys;
+  const kidsGrid = productIsKidsGrid(product);
+  const keys = labels.map((s) => shoeSizeKey(s, { kidsGrid }));
+  sizeKeyCache.set(product, { labels, keys });
+  return keys;
+}
+
 /**
- * The sellable alternatives to (product, size), best first, plus what the size
- * gate did — `{ rows, candidates, sizeGateRemoved }`.
+ * The label in THIS shoe's own grid that is the requested size, or undefined.
+ * The label returned is the candidate's own spelling — the one its cells, its
+ * size chip and its cart line are keyed by.
+ */
+export function matchingSizeLabel(product, labels, wantKey) {
+  if (!wantKey || !Array.isArray(labels)) return undefined;
+  const keys = sizeKeysOf(product, labels);
+  const i = keys.indexOf(wantKey);
+  return i === -1 ? undefined : labels[i];
+}
+
+/** The requested size's comparison key, read on the SOURCE shoe's scale. */
+export function requestedSizeKey(requestedSize, sourceProduct) {
+  return shoeSizeKey(requestedSize, { kidsGrid: productIsKidsGrid(sourceProduct) });
+}
+
+const eq = (a, b) => (a && b && a === b ? 1 : 0);
+
+// The profile shape scorePair (productNeighbours.js) scores — the same weights
+// the offline build ranks by, so "overall similarity" means one thing.
+function scoringShape(p) {
+  return {
+    pid: p.pid, group: p.grp, silhouette: p.sil, categoryKey: p.categoryKey, brand: p.brand,
+    colourFamily: p.cf, primaryColour: p.col, priceBand: p.band, upperMaterial: p.mat,
+    pattern: p.pat, soleType: p.sole, closure: p.clo, finish: p.fin, soleColour: p.soleCol,
+    toeShape: p.toe, styleTags: p.tags || [],
+  };
+}
+
+// "Closest colourway": same colour, same family, same second colour, same sole
+// colour, same cut — in that order of weight.
+function colourwayCloseness(src, c) {
+  return 4 * eq(src.col, c.col) + 3 * eq(src.cf, c.cf) + 2 * eq(src.col2, c.col2)
+    + eq(src.soleCol, c.soleCol) + 2 * eq(src.cut, c.cut);
+}
+
+// Same kind of shoe: the silhouette wall when both sides know their group, the
+// catalogue's own category line when either does not.
+function sameKind(src, c) {
+  if (src.grp && c.grp) return src.grp === c.grp;
+  return !!src.categoryKey && src.categoryKey === c.categoryKey;
+}
+
+/** Which tier a candidate belongs to for this source. */
+export function tierOf(src, c) {
+  if (src.fam && src.fam === c.fam) return "a";
+  if (src.brand && src.brand === c.brand) {
+    if (src.sil && c.sil ? src.sil === c.sil : sameKind(src, c)) return "b";
+  }
+  if (src.cf && src.cf === c.cf && sameKind(src, c)) return "c";
+  return "d";
+}
+
+// Every line must be TRUE of the pair — the assistant reads it out.
+function reasonFor(tier, src, c, storedCode) {
+  if (tier === "a") {
+    const label = familyLabel(src.fam);
+    return label ? `Same model — ${label}` : "Same model";
+  }
+  if (tier === "b" || tier === "c") return TIER_REASON[tier];
+  // The offline build's code was written from both shoes' full attributes.
+  if (storedCode) return matchReasonText(storedCode);
+  if (!sameKind(src, c)) return "Also in this size";
+  return matchReasonText(matchReasonCode(scoringShape(src), scoringShape(c)));
+}
+
+/**
+ * The sellable alternatives to (product, size), best first —
+ * `{ rows, candidates, inSize, sizeGateRemoved, tiers }`.
  *
- * @param neighbours       the raw stored value from product[NEIGHBOURS_FIELD]
- * @param requestedSize    the size the customer actually asked for
- * @param sourceProduct    the shoe that size was tapped on — a bare "10" on a
- *                         kids shoe is a kids 10 (shoeSize.productIsKidsGrid)
- * @param resolveProduct   pid -> product record (or null). MUST follow merges —
- *                         a merged-away pid still sits in an older stored list.
+ * @param sourceProduct    the shoe the size was tapped on
+ * @param requestedSize    the size the customer asked for, as that shoe labels it
+ * @param candidates       the products to choose from — the catalogue the
+ *                         screen already holds. Omitted ⇒ the stored
+ *                         neighbours alone (the pre-2026-10-09 pool).
+ * @param neighbours       product[NEIGHBOURS_FIELD]: the offline list. Breaks
+ *                         ties inside a tier; never decides membership.
+ * @param resolveProduct   pid -> product record (or null). MUST follow merges.
  * @param sizesOf          product -> the sizes on its record
- * @param availabilityKnown product -> can this screen actually answer for it?
- *                         FALSE for a Pine/hub3 shoe (never gated) and for a
- *                         hub whose cells have not settled. A candidate we
- *                         cannot answer for is dropped, never assumed available.
- * @param sizeAvailable    (product, size) -> is a unit sellable right now. The
- *                         SAME sneakerOut test that greys the chip, PLUS
- *                         fail-closed readiness (hub settled, /orders settled).
- *                         So the sheet only ever offers a size the chip would
- *                         also show as available — a strict subset, never more.
+ * @param availabilityKnown product -> can this screen answer for it at all?
+ *                         FALSE for a Pine/hub3 shoe and a non-footwear line.
+ * @param sizeAvailable    (product, ownLabel) -> sellable right now. The SAME
+ *                         sneakerOut test that greys the size chip, plus
+ *                         fail-closed readiness — so the sheet only offers a
+ *                         size that shoe's own chip would show as available.
  * @param isSellable       product -> not deactivated, has a photo, has a price
+ * @param profileOf        product -> profile (altProfile.profileOfProduct)
  * @param limit            default MAX_ALTERNATIVES_SHOWN
  *
- * rows: [{ product, sizes, why, code, hasRequestedSize, matchedSize }] — every
- *   row is sellable in the requested size (hasRequestedSize is always true);
- *   `matchedSize` is THAT SHOE'S OWN label for it, which is what its cells and
- *   its grid are keyed by. `sizes` is every size it can sell right now.
- * candidates: how many stored neighbours were looked at.
- * sizeGateRemoved: how many passed every other gate and had stock in SOME size,
- *   but could not sell the requested one — the rows this gate used to let
- *   through as padding (telemetry, log only).
+ * rows: [{ product, sizes, why, code, tier, hasRequestedSize, matchedSize }].
+ *   Every row is sellable in the requested size; `matchedSize` is that shoe's
+ *   own label for it; `sizes` every size it can sell right now.
+ * candidates: how many products were looked at.
+ * inSize: how many were sellable in the requested size (the whole pool).
+ * sizeGateRemoved: stored neighbours that could sell SOME size but not this
+ *   one (telemetry, log only — the measure of the old failure).
+ * tiers: { a, b, c, d } — how many rows each tier supplied.
  */
 export function alternativesForSize({
-  neighbours, requestedSize, sourceProduct = null, resolveProduct, sizesOf, availabilityKnown,
-  sizeAvailable, isSellable, limit = MAX_ALTERNATIVES_SHOWN,
+  neighbours, requestedSize, sourceProduct = null, candidates = null, resolveProduct, sizesOf,
+  availabilityKnown, sizeAvailable, isSellable, profileOf = profileOfProduct, limit = MAX_ALTERNATIVES_SHOWN,
 }) {
-  const rows = [];
-  const seen = new Set();
   const parsed = parseNeighbours(neighbours);
-  let sizeGateRemoved = 0;
-  // ── THE SIZE GATE (2026-10-01) ─────────────────────────────────────────────
-  // Every row must be sellable in the size that was tapped. Before this, a
-  // shoe with stock in ANY size was a row, and the size-holders were merely
-  // sorted to the front — so an Air Force running 3–6 was offered to a
-  // customer who asked for an 8 (Junid's report). A row that cannot be sold in
-  // the asked-for size is the refusal again, one tap later.
-  //
-  // Compared through shoeSize.js, never by raw label: the candidate's "8.5"
-  // and the tapped "8_5" are one size, a "6Y" and a "6" are not. A requested
-  // size that cannot be classified matches NOTHING — the sheet says so rather
-  // than guessing.
-  const wantKey = shoeSizeKey(requestedSize, { kidsGrid: productIsKidsGrid(sourceProduct) });
-  for (const n of parsed) {
-    // A merged-away neighbour resolves to its SURVIVOR, which may already be in
-    // the list under its own pid — and the same shoe twice is a worse list than
-    // a shorter one.
-    const product = resolveProduct(n.pid);
+  const wantKey = requestedSizeKey(requestedSize, sourceProduct);
+  const sourceId = sourceProduct?.id || null;
+  const tiers = { a: 0, b: 0, c: 0, d: 0 };
+
+  // Stored-neighbour rank: a tie-break inside a tier, nothing more.
+  const storedRank = new Map();
+  const storedCode = new Map();
+  parsed.forEach((n, i) => {
+    const p = resolveProduct(n.pid);
+    if (p && !storedRank.has(p.id)) { storedRank.set(p.id, i); storedCode.set(p.id, n.code); }
+  });
+
+  // ── THE POOL ───────────────────────────────────────────────────────────────
+  const list = Array.isArray(candidates) ? candidates : parsed.map((n) => resolveProduct(n.pid));
+  const seen = new Set(sourceId ? [sourceId] : []);
+  const pool = [];
+  let looked = 0;
+  for (const raw of list) {
+    if (!raw) continue;
+    looked += 1;
+    // A merged-away record resolves to its survivor, which may already be in
+    // the pool under its own pid — the same shoe twice is a worse list.
+    const product = raw.mergedInto ? resolveProduct(raw.id) : raw;
     if (!product || seen.has(product.id)) continue;
-    if (!isSellable(product)) continue;
-    if (!availabilityKnown(product)) continue;
-    const grid = sizesOf(product) || [];
-    const sizes = grid.filter((s) => sizeAvailable(product, s));
-    if (!sizes.length) continue;
     seen.add(product.id);
-    const kidsGrid = productIsKidsGrid(product);
-    const matchedSize = wantKey ? sizes.find((s) => shoeSizeKey(s, { kidsGrid }) === wantKey) : undefined;
-    if (matchedSize === undefined) { sizeGateRemoved += 1; continue; }
-    rows.push({ product, sizes, why: n.why, code: n.code, hasRequestedSize: true, matchedSize });
+    if (!isSellable(product)) continue;
+    const grid = sizesOf(product) || [];
+    const matchedSize = matchingSizeLabel(product, grid, wantKey);
+    if (matchedSize === undefined) continue;
+    if (!availabilityKnown(product)) continue;
+    if (!sizeAvailable(product, matchedSize)) continue;
+    pool.push({ product, grid, matchedSize });
   }
-  // The stored order IS the ranking and is not second-guessed here: the
-  // survivors keep exactly the order the neighbour build wrote.
-  return { rows: rows.slice(0, limit), candidates: parsed.length, sizeGateRemoved };
+
+  // ── THE RANKING ────────────────────────────────────────────────────────────
+  let rows = [];
+  if (pool.length) {
+    const src = (sourceProduct && profileOf(sourceProduct)) || profileOf({ id: sourceId || "" });
+    const srcShape = scoringShape(src);
+    const TIER_ORDER = { a: 0, b: 1, c: 2, d: 3 };
+    const scored = pool.map((entry) => {
+      const prof = profileOf(entry.product);
+      const tier = tierOf(src, prof);
+      const shape = scoringShape(prof);
+      return {
+        entry, prof, tier,
+        sim: scorePair(srcShape, shape).score,
+        cw: colourwayCloseness(src, prof),
+        rank: storedRank.has(entry.product.id) ? storedRank.get(entry.product.id) : Infinity,
+      };
+    });
+    scored.sort((x, y) => (TIER_ORDER[x.tier] - TIER_ORDER[y.tier])
+      // Inside the model family the COLOURWAY leads; elsewhere overall likeness.
+      || (x.tier === "a" ? (y.cw - x.cw) || (y.sim - x.sim) : (y.sim - x.sim) || (y.cw - x.cw))
+      || (x.rank - y.rank)
+      || String(x.entry.product.id).localeCompare(String(y.entry.product.id)));
+    rows = scored.slice(0, limit).map(({ entry, prof, tier }) => {
+      tiers[tier] += 1;
+      const { product, grid, matchedSize } = entry;
+      // The card prints every size it can sell — computed for the shown rows
+      // only, so a catalogue walk does not cost a resolver call per size.
+      const sizes = grid.filter((s) => s === matchedSize || sizeAvailable(product, s));
+      return {
+        product, sizes, tier,
+        why: reasonFor(tier, src, prof, storedCode.get(product.id)),
+        code: storedCode.get(product.id) || matchReasonCode(srcShape, scoringShape(prof)),
+        hasRequestedSize: true, matchedSize,
+      };
+    });
+  }
+
+  // ── TELEMETRY ONLY: what the old twelve-neighbour pool would have lost ─────
+  let sizeGateRemoved = 0;
+  const pooled = new Set(pool.map((e) => e.product.id));
+  for (const pid of storedRank.keys()) {
+    if (pooled.has(pid)) continue;
+    const p = resolveProduct(pid);
+    if (!p || !isSellable(p) || !availabilityKnown(p)) continue;
+    if ((sizesOf(p) || []).some((s) => sizeAvailable(p, s))) sizeGateRemoved += 1;
+  }
+
+  return { rows, candidates: looked, inSize: pool.length, sizeGateRemoved, tiers };
 }
 
 /** The rows alone — see alternativesForSize. */

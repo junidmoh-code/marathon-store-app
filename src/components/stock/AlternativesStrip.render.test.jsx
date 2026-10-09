@@ -58,7 +58,8 @@ test("renders NOTHING while availability has not answered", () => {
 // said in words, never padded with shoes that do not come in the size.
 test("an empty answer says there is nothing in that size", () => {
   const tree = render({ rows: [] });
-  expect(textOf(tree)).toContain("No similar styles in size 8");
+  expect(textOf(tree)).toContain("Nothing in size 8 is available anywhere right now");
+  expect(textOf(tree)).not.toContain("No similar styles");
   expect(tree.root.findAllByType("button")).toHaveLength(0);
 });
 test("…and still renders nothing when no size was asked for", () => {
