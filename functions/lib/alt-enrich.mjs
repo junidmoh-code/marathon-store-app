@@ -188,7 +188,10 @@ export async function refreshAltProfile(deps, pid, { allowVision = true } = {}) 
     else if (!(await takeClaim(db, pid, photo, t))) visionOutcome = "claimed";
     else if (!(await takeBudget(db, t, cap))) {
       visionOutcome = "over-budget";
-      await db.ref(`${ENRICH_ROOT}/failures/${pid}`).set({ at: t, photo, error: "daily vision cap reached" });
+      // Not an attempt: the photo was never read. Keep (never add to) the count.
+      const prev = await val(db, `${ENRICH_ROOT}/failures/${pid}`);
+      const n = prev && prev.photo === photo ? Number(prev.n) || 0 : 0;
+      await db.ref(`${ENRICH_ROOT}/failures/${pid}`).set({ at: t, photo, n, error: "daily vision cap reached" });
     } else {
       try {
         let parsed = parseAttributeResponse(await vision(photo, ATTRIBUTE_PROMPT, []));
@@ -213,7 +216,7 @@ export async function refreshAltProfile(deps, pid, { allowVision = true } = {}) 
         visionOutcome = "failed";
         log(`alternativesProfile ${pid}: vision failed: ${String(e?.message || e)}`);
         const prev = await val(db, `${ENRICH_ROOT}/failures/${pid}`);
-        const n = (prev && prev.photo === photo ? Number(prev.n) || 1 : 0) + 1;
+        const n = (prev && prev.photo === photo ? Number(prev.n) || 0 : 0) + 1;
         await db.ref(`${ENRICH_ROOT}/failures/${pid}`).set({ at: t, photo, n, error: String(e?.message || e).slice(0, 300) });
       }
     }

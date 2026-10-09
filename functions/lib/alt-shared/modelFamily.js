@@ -147,7 +147,7 @@ export const FAMILY_RULES = Object.freeze([
   R("dior-b23", "B23", / b23 /, "high-top"),
   R("dior-b22", "B22", / b22 /, "runner"),
   R("dior-b30", "B30", / b30 /, "runner"),
-  R("dior-walk-n-dior", "Walk'n'Dior", / walk n( dior)? /, "low-top"),
+  R("dior-walk-n-dior", "Walk'n'Dior", / (walk ?n ?dior|walk n) /, "low-top"),
   R("balenciaga-triple-s", "Triple S", / triple s /, "runner"),
   R("balenciaga-track", "Track", / balenciaga track /, "runner"),
   R("gucci-ace", "Ace", / gucci ace /, "low-top"),

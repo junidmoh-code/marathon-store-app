@@ -22,6 +22,7 @@ describe("one model, every spelling the catalogue uses", () => {
     ["Nike SB Dunk Low Supreme", "nike-dunk"], ["Nike Air Max Plus TN Black", "nike-air-max-plus"], ["Nike Air Max 90 White", "nike-air-max-90"],
     ["Adidas Samba OG White", "adidas-samba"], ["Adidas Sambarose", "adidas-samba"], ["New Balance 9060 Grey", "nb-9060"],
     ["On Cloudsurfer Black", "on-cloudsurfer"], ["Lacoste L-Guard Breaker", "lacoste-l-guard"], ["Nike Zoom Vomero 5 Triple White", "nike-vomero"],
+    ["Dior Walk'n'Dior Sneaker", "dior-walk-n-dior"], ["Dior Walk n Dior Black", "dior-walk-n-dior"], ["Dior walkndior", "dior-walk-n-dior"],
   ])("%s → %s", (name, id) => {
     expect(fam(name, "")).toBe(id);
   });

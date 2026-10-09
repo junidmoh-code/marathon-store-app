@@ -236,3 +236,14 @@ test("the refused-answer retry is a second paid call and takes its own unit of t
   assert.equal(calls, 1);
   assert.equal(r.vision, "failed");
 });
+
+test("an over-budget skip is not counted as an attempt", async () => {
+  const day = sastDay(1790000000000);
+  const db = fakeDb({ products: { [DUCKS.id]: DUCKS }, [ENRICH_ROOT]: { budget: { [day]: DAILY_VISION_CAP } } });
+  await refreshAltProfile(deps(db, { vision: async () => VISION_JSON }), DUCKS.id);
+  assert.equal(db.read(`${ENRICH_ROOT}/failures/${DUCKS.id}`).n ?? 0, 0);
+  await db.ref(`${ENRICH_ROOT}/budget/${day}`).set(0);
+  await db.ref(`${ENRICH_ROOT}/claims/${DUCKS.id}`).remove();
+  await refreshAltProfile(deps(db, { vision: async () => { throw new Error("Gemini HTTP 503"); } }), DUCKS.id);
+  assert.equal(db.read(`${ENRICH_ROOT}/failures/${DUCKS.id}`).n, 1);
+});

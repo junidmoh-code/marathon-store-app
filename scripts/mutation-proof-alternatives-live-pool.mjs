@@ -83,7 +83,7 @@ const MUTATIONS = [
   { id: "E8", kind: B, file: ENRICH, guard: "the refused-answer retry takes its own unit of the daily cap",
     from: "        if (!parsed.ok && (await takeBudget(db, t, cap))) {", to: "        if (!parsed.ok) {" },
   { id: "E9", kind: B, file: ENRICH, guard: "failures count their attempts (the sweep gives up at the cap)",
-    from: "        const n = (prev && prev.photo === photo ? Number(prev.n) || 1 : 0) + 1;", to: "        const n = 1;" },
+    from: "        const n = (prev && prev.photo === photo ? Number(prev.n) || 0 : 0) + 1;", to: "        const n = 1;" },
   { id: "E10", kind: B, file: ENRICH, guard: "a failure no longer needed is cleared (the sweep does not starve)",
     from: '  if (visionOutcome === "not-needed" && allowVision) {', to: "  if (false) {" },
   { id: "E1", kind: B, file: ENRICH, guard: "a current record is never re-read (no re-billing)",

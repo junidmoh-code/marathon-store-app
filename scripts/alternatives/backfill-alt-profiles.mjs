@@ -23,10 +23,10 @@
 // never a per-tap read.
 import { createRequire } from "module";
 import { readMapPaged } from "../lib/rtdbPaged.mjs";
-import { ATTRIBUTES_PATH, isCurrentExtraction } from "../../src/utils/productAttributes.js";
+import { ATTRIBUTES_PATH } from "../../src/utils/productAttributes.js";
 import { ALT_PROFILE_FIELD, decodeAltProfile } from "../../src/utils/altProfile.js";
 import { assertSafeSegment } from "../../src/utils/sizeKey.js";
-import { refreshAltProfile, makeVisionCall, inAlternativesScope } from "../../functions/lib/alt-enrich.mjs";
+import { refreshAltProfile, makeVisionCall, inAlternativesScope, needsVision } from "../../functions/lib/alt-enrich.mjs";
 
 const APPLY = process.argv.includes("--apply");
 const ALL = process.argv.includes("--all");
@@ -46,7 +46,8 @@ let scope = 0, noAttrs = 0, noProfile = 0;
 for (const [pid, p] of Object.entries(products)) {
   if (!inAlternativesScope(p)) continue;
   scope += 1;
-  const missingAttrs = !!String(p.photoUrl || "").trim() && !isCurrentExtraction(attrs[pid]);
+  // The trigger's own test — a replaced photo counts too.
+  const missingAttrs = needsVision(p, attrs[pid]);
   const missingProfile = !decodeAltProfile(p[ALT_PROFILE_FIELD]);
   if (missingAttrs) noAttrs += 1;
   if (missingProfile) noProfile += 1;
