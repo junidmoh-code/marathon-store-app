@@ -5779,3 +5779,13 @@ exports.insightsRollupSweep = onSchedule(
   //   firebase deploy --only functions:newArrivalsStudio
   exports.newArrivalsStudio = require("./newArrivals/studio.js").newArrivalsStudio;
 }
+
+// ── ALTERNATIVES: automatic enrichment + per-product profile (2026-10-09) ────
+// See alternativesProfile.js. Deploy by name:
+//   firebase deploy --only functions:alternativesProfile,functions:alternativesProfileFromAttributes,functions:alternativesEnrichSweep
+{
+  const alt = require("./alternativesProfile.js");
+  exports.alternativesProfile = alt.alternativesProfile;
+  exports.alternativesProfileFromAttributes = alt.alternativesProfileFromAttributes;
+  exports.alternativesEnrichSweep = alt.alternativesEnrichSweep;
+}
