@@ -122,7 +122,7 @@ export function createHandoff({
   function timeout(promise, ms, what) {
     return new Promise((resolve, reject) => {
       let done = false;
-      setTimer(() => { if (!done) { done = true; reject(new Error(`${what} timed out`)); } }, ms);
+      setTimer(() => { if (!done) { done = true; reject(Object.assign(new Error(`${what} timed out`), { timedOut: true })); } }, ms);
       Promise.resolve(promise).then(
         (v) => { if (!done) { done = true; resolve(v); } },
         (e) => { if (!done) { done = true; reject(e); } },
@@ -130,13 +130,31 @@ export function createHandoff({
     });
   }
 
+  // Drop the GATT link: Chrome rejects every pending operation on disconnect,
+  // so nothing is left half-running on the radio.
+  function dropLink() {
+    chars = null;
+    try { device?.gatt?.disconnect?.(); } catch { /* already gone */ }
+  }
+
   // Android Chrome runs ONE GATT operation at a time and rejects a second
   // ("GATT operation already in progress"), so every call queues behind the
-  // last, each with its own deadline.
+  // last. The slot is freed when the call REALLY settles, not when its
+  // deadline passes; a call that outlives its deadline drops the link first.
   function gatt(fn, what, ms = GATT_TIMEOUT_MS) {
-    const run = gattChain.then(() => timeout(fn(), ms, what));
-    gattChain = run.catch(() => {});
-    return run;
+    let release;
+    const prev = gattChain;
+    gattChain = new Promise((r) => { release = r; });
+    return prev.then(() => {
+      let freed = false;
+      const free = () => { if (!freed) { freed = true; release(); } };
+      const op = Promise.resolve().then(fn);
+      op.then(free, free);
+      return timeout(op, ms, what).catch((e) => {
+        if (e?.timedOut) { dropLink(); free(); }
+        throw e;
+      });
+    });
   }
 
   function adopt(d) {

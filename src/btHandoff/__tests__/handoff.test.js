@@ -60,7 +60,7 @@ async function fakeTill({ key, dropAcks = 0, failConnect = 0, hangConnect = 0, s
   const op = async (fn) => {
     if (strictGatt && inFlight > 0) { collisions++; throw new Error("GATT operation already in progress"); }
     inFlight++;
-    try { await new Promise((r) => setTimeout(r, 0)); return await fn(); } finally { inFlight--; }
+    try { await new Promise((r) => setTimeout(r, 0)); return await fn(); } finally { inFlight = Math.max(0, inFlight - 1); }
   };
   const journal = new Map();
   const pending = new Map();
@@ -117,6 +117,8 @@ async function fakeTill({ key, dropAcks = 0, failConnect = 0, hangConnect = 0, s
     addEventListener() {},
     gatt: {
       connected: false,
+      // Chrome rejects every pending operation on disconnect.
+      disconnect() { this.connected = false; inFlight = 0; },
       async connect() {
         connects++;
         if (hangConnect > 0) { hangConnect--; return new Promise(() => {}); }
@@ -159,7 +161,7 @@ function rig({ till, getDevices = true, storage = memoryStorage(), paired = true
       if (!next || next.at > until) break;
       timers.shift();
       t = next.at;
-      await next.fn();
+      next.fn(); // real timers do not wait for an async callback
       await new Promise((r) => setTimeout(r, 0));
     }
     t = until;
