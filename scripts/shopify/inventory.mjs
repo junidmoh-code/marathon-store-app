@@ -182,6 +182,47 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
   return out;
 }
 
+// ── EVERY VARIANT ON THE PRODUCT, AND WHETHER SHOPIFY IS COUNTING IT ─────────
+// A quantity is only a limit while `tracked` is true and the policy is DENY.
+// On 2026-10-11 Junid found a listing selling sizes the app held none of: the
+// app had pushed 0 to every size, correctly, and Shopify ignored it because
+// tracking was off on all five variants (docs/SHOPIFY-STOCK-TRUTH.md — 66
+// products created untracked on 24 Aug by a mini still on pre-#373 code).
+// Tracking used to be checked ONLY when a product was published, so a listing
+// that was wrong after its publish stayed wrong for good.
+//
+// This is the read the continuous sync takes so it can check, every time it
+// touches a product, that its numbers are actually being obeyed. It lists the
+// WHOLE product rather than the mapped inventory items, because a variant that
+// is not in the id map (added by hand in the admin, left over from a size the
+// record dropped) is just as sellable as one that is.
+//
+// → [{ variantId, title, inventoryItemId, tracked, inventoryPolicy }], or null
+//   when Shopify has no such product. Null is "nothing to check", never "fine":
+//   the caller already has its own answer for a product Shopify has lost.
+export async function readProductVariants(graphql, productId) {
+  if (!productId) return null;
+  const data = await graphql(
+    `query ($id: ID!) {
+      product(id: $id) {
+        id
+        variants(first: 100) {
+          nodes { id title inventoryPolicy inventoryItem { id tracked } }
+        }
+      }
+    }`,
+    { id: productId }
+  );
+  if (!data?.product) return null;
+  return (data.product.variants?.nodes ?? []).map((v) => ({
+    variantId: v.id,
+    title: v.title,
+    inventoryItemId: v.inventoryItem?.id ?? null,
+    tracked: v.inventoryItem?.tracked,
+    inventoryPolicy: v.inventoryPolicy,
+  }));
+}
+
 // Thrown when Shopify's quantity moved between the caller's baseline read and
 // this write. It is its own class because the CALLER must be able to tell it
 // apart from a transport failure: a transport failure means "try again", this

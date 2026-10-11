@@ -37,11 +37,32 @@
 
 import {
   networkTotals, requireSingleLocation, setAvailable, readAvailable,
+  readProductVariants, untrackedVariants, enforceTracking,
   ONLINE_EXCLUDED_LOCATIONS,
 } from "./inventory.mjs";
 
 // The node the trigger writes to and this sweep drains.
 export const DIRTY_PATH = "shopify_inventory_dirty";
+
+// The heartbeat and the nightly sweep's report. Written by the reconciler
+// (lastPassAt — a movement pass with no failures) and stock-truth-sweep.mjs
+// (lastSweep); read by shopifyInventoryHealthScan (functions/index.js), which
+// emails Junid when either says the storefront may be selling what the app
+// does not hold. Server-only: Admin SDK on both sides, no client rule needed.
+export const HEALTH_PATH = "shopify_inventory_health";
+
+/**
+ * Does this product have a Shopify listing whose quantities must be kept true?
+ *
+ * `state: "live"` means the reconciler created it on Shopify. `liveState` only
+ * says whether it is on the ONLINE STORE: switching a product off unpublishes
+ * that one channel, and on 2026-10-11 33 switched-off products were still
+ * published to Facebook & Instagram — buyable, and skipped by every inventory
+ * path because they were not "on". A listing that exists is kept true.
+ */
+export function isListedOnShopify(node) {
+  return node?.state === "live";
+}
 
 // A ceiling per run, the same shape as the search-index sweep's. A count that
 // touches a thousand products must not turn one tick into a twenty-minute
@@ -124,13 +145,46 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   if (!mapped.length) return { pid, skipped: "no mapped inventory items" };
 
   const locId = locationId || await requireSingleLocation(graphql);
-  const baseline = await readAvailable(graphql, locId, mapped.map((i) => i.inventoryItemId));
+
+  // ── A NUMBER IS ONLY A LIMIT WHILE SHOPIFY IS COUNTING ────────────────────
+  // Every variant on the product, with its tracking state, read BEFORE the
+  // baseline so the baseline can cover the variants the id map does not name.
+  // Until 2026-10-11 this function wrote correct quantities to 337 variants
+  // that had tracking OFF — Shopify ignored every one of them and sold those
+  // sizes without limit (docs/SHOPIFY-STOCK-TRUTH.md). Tracking was checked
+  // only at publish; it is now checked every time a product is synced.
+  // A failed tracking read does not stop the quantities being corrected — they
+  // are still the truth — but the product is then NOT reported done (ok:false
+  // below), so every path that queues it retries until tracking is checked.
+  let variants = null;
+  let trackingError = null;
+  try {
+    variants = await readProductVariants(graphql, map.shopifyProductId);
+  } catch (e) {
+    trackingError = String(e?.message || e);
+  }
+  const mappedIds = new Set(mapped.map((i) => i.inventoryItemId));
+  // A variant on OUR product that the id map does not name is still buyable.
+  // The app holds no stock against it by definition, so its truth is 0 —
+  // which also fails toward unbuyable when the map is stale for that size.
+  const unmapped = (variants || [])
+    .filter((v) => v.inventoryItemId && !mappedIds.has(v.inventoryItemId))
+    .map((v) => ({ sizeKey: `unmapped:${v.title}`, inventoryItemId: v.inventoryItemId, unmapped: true }));
+
+  const baseline = await readAvailable(
+    graphql, locId, [...mapped, ...unmapped].map((i) => i.inventoryItemId),
+  );
 
   // NOW the stock snapshot, strictly after the baseline.
   const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map" };
   const { totals } = desired;
-  const items = mapped.map((i) => ({ ...i, quantity: totals[i.sizeKey] ?? 0 }));
+  const items = [
+    ...mapped.map((i) => ({ ...i, quantity: totals[i.sizeKey] ?? 0 })),
+    // An unmapped item Shopify did not answer for is simply not written: it is
+    // not one of ours to report as stale, and it cannot be compare-and-set.
+    ...unmapped.filter((i) => baseline.has(i.inventoryItemId)).map((i) => ({ ...i, quantity: 0 })),
+  ];
 
   // ── AN ID SHOPIFY DOES NOT KNOW COSTS ONE VARIANT, NOT THE PRODUCT ────────
   // One live product's id map points at inventory items that no longer exist
@@ -149,7 +203,27 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
     .map((i) => ({ ...i, shopify: baseline.get(i.inventoryItemId) }))
     .filter((i) => i.shopify !== i.quantity);
 
+  // Variants Shopify is NOT limiting by quantity, named by size so a report
+  // can say which sizes were unlimited and what the app actually held there.
+  const sizeByItem = new Map(items.map((i) => [i.inventoryItemId, i]));
+  const untracked = untrackedVariants(variants || []).map((v) => ({
+    variantId: v.variantId,
+    inventoryItemId: v.inventoryItemId,
+    sizeKey: sizeByItem.get(v.inventoryItemId)?.sizeKey ?? `unmapped:${v.title}`,
+    app: sizeByItem.get(v.inventoryItemId)?.quantity ?? 0,
+    shopify: baseline.get(v.inventoryItemId) ?? null,
+    tracked: v.tracked ?? null,
+    inventoryPolicy: v.inventoryPolicy ?? null,
+  }));
+
   const stale = unknown.length ? { staleVariants: unknown.map((i) => i.sizeKey) } : {};
+  // What each side holds for this product, for the nightly sweep's report and
+  // its "would this correction zero most of the shop?" guard.
+  const meta = {
+    gid: map.shopifyProductId ?? null,
+    shopifyUnits: known.reduce((n, i) => n + Math.max(0, baseline.get(i.inventoryItemId) || 0), 0),
+    appUnits: known.reduce((n, i) => n + i.quantity, 0),
+  };
   // ── AN ENTIRELY UNKNOWN ID MAP HAS TWO VERY DIFFERENT CAUSES ──────────────
   // "The id map is stale" was the whole diagnosis, and it is the less
   // interesting half. The 2026-09-05 correction run refused 7 products this
@@ -163,24 +237,37 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
   // should do to its publish node is a separate question with a separate
   // answer, and guessing it here would be a third way this file could quietly
   // disagree with the storefront.
-  if (!known.length) {
+  if (!known.some((i) => !i.unmapped)) {
     let gone = null;   // null = could not be established — NOT "present"
     try {
       const probe = await graphql(`query ($id: ID!) { product(id: $id) { id } }`, { id: map.shopifyProductId });
       gone = probe?.product == null;
     } catch { /* a probe that fails answers nothing, and must not mask the real refusal */ }
     return {
-      pid, ok: false, productGone: gone,
+      pid, gid: map.shopifyProductId ?? null, ok: false, productGone: gone,
       why: gone
         ? `DELETED FROM SHOPIFY (${map.shopifyProductId}) — the app still records this product as live and on, and it is not on the storefront at all`
         : `every mapped inventory item is unknown to Shopify — the id map is stale`,
       ...stale,
     };
   }
-  if (!drift.length) return { pid, ok: true, drift: [], changed: 0, ...stale };
-  if (!commit) return { pid, ok: true, drift, changed: 0, dryRun: true, ...stale };
+  const unchecked = trackingError
+    ? { ok: false, why: `inventory tracking could not be read (${trackingError}) — quantities ${commit ? "written" : "compared"}, tracking unchecked; retried` }
+    : {};
+  if (!drift.length && !untracked.length) return { pid, ok: true, drift: [], untracked: [], changed: 0, ...meta, ...stale, ...unchecked };
+  if (!commit) return { pid, ok: true, drift, untracked, changed: 0, dryRun: true, ...meta, ...stale, ...unchecked };
 
-  // Write EVERY mapped item, not just the drifted ones. inventorySetQuantities
+  // Tracking FIRST, then the numbers. Switching tracking on makes the
+  // quantities Shopify already holds binding for the few hundred milliseconds
+  // until the write below lands — strictly safer than the unlimited state it
+  // replaces — and the write then sets every size to the app's truth. A
+  // failure here throws: the caller keeps the product queued and retries,
+  // because an untracked variant is the oversell this module exists to end.
+  if (untracked.length) {
+    await enforceTracking(graphql, map.shopifyProductId, untracked.map((u) => u.variantId));
+  }
+
+  // Write EVERY known item, not just the drifted ones. inventorySetQuantities
   // is absolute, and sending the full set means one call whose result is the
   // whole truth for this product rather than a patch whose correctness depends
   // on the baseline still being current — which the compare-and-set decides.
@@ -189,7 +276,7 @@ export async function syncProduct(db, graphql, pid, { commit = false, locationId
     known.map(({ inventoryItemId, quantity }) => ({ inventoryItemId, quantity })),
     baseline,
   );
-  return { pid, ok: true, drift, changed: drift.length, ...stale };
+  return { pid, ok: true, drift, untracked, trackingFixed: untracked.length, changed: drift.length + untracked.length, ...meta, ...stale, ...unchecked };
 }
 
 // ─── CLEARING A MARKER IS THE DANGEROUS HALF ─────────────────────────────────
@@ -479,4 +566,38 @@ export async function sweepBacklog(db, graphql, { livePids, cursor = null, commi
     wrapped,
     results,
   };
+}
+
+// ─── A LISTING THE APP DOES NOT KNOW ─────────────────────────────────────────
+// A product that is ACTIVE and published on Shopify, but that no listed app
+// product maps to, has no stock in the app by definition — so under Junid's
+// rule (the app is the only source of truth for what can be sold online) its
+// truth is 0 in every size. On 2026-10-11 three hand-made "Men's tracksuits
+// tech fleece" listings from May and July were on the Online Store with 6
+// units each and no app record at all.
+//
+// Same discipline as syncProduct: Shopify's numbers are read first as the
+// compare-and-set baseline, tracking is switched on before the write, and the
+// write is absolute. Nothing is deleted, unpublished or renamed — only the
+// quantity, which the sweep's rollback file can put back.
+export async function zeroUnmanagedListing(graphql, productGid, { commit = false, locationId = null } = {}) {
+  const variants = await readProductVariants(graphql, productGid);
+  if (!variants) return { gid: productGid, ok: false, why: "Shopify has no such product" };
+  const locId = locationId || await requireSingleLocation(graphql);
+  const ids = variants.map((v) => v.inventoryItemId).filter(Boolean);
+  const baseline = await readAvailable(graphql, locId, ids);
+  const drift = variants
+    .filter((v) => baseline.has(v.inventoryItemId) && baseline.get(v.inventoryItemId) !== 0)
+    .map((v) => ({ sizeKey: `unmanaged:${v.title}`, inventoryItemId: v.inventoryItemId, quantity: 0, shopify: baseline.get(v.inventoryItemId) }));
+  const untracked = untrackedVariants(variants).map((v) => ({
+    variantId: v.variantId, inventoryItemId: v.inventoryItemId, sizeKey: `unmanaged:${v.title}`,
+    app: 0, shopify: baseline.get(v.inventoryItemId) ?? null, tracked: v.tracked ?? null, inventoryPolicy: v.inventoryPolicy ?? null,
+  }));
+  const shopifyUnits = [...baseline.values()].reduce((n, q) => n + Math.max(0, q || 0), 0);
+  const base = { gid: productGid, ok: true, unmanaged: true, drift, untracked, shopifyUnits, appUnits: 0 };
+  if (!drift.length && !untracked.length) return { ...base, changed: 0 };
+  if (!commit) return { ...base, changed: 0, dryRun: true };
+  if (untracked.length) await enforceTracking(graphql, productGid, untracked.map((u) => u.variantId));
+  await setAvailable(graphql, locId, ids.filter((id) => baseline.has(id)).map((id) => ({ inventoryItemId: id, quantity: 0 })), baseline);
+  return { ...base, trackingFixed: untracked.length, changed: drift.length + untracked.length };
 }
