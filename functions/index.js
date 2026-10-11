@@ -4063,6 +4063,44 @@ exports.cardReconHealthScan = onSchedule(
   },
 );
 
+// ─── SHOPIFY STOCK TRUTH — shopifyInventoryHealthScan (the sync's dead-man switch)
+// On 2026-10-11 Junid found the website selling sizes the app holds none of
+// (docs/SHOPIFY-STOCK-TRUTH.md). The sync on the Mac mini now stamps
+// /shopify_inventory_health/lastPassAt after every clean inventory pass, and
+// the nightly stock-truth sweep writes /shopify_inventory_health/lastSweep.
+// This scan runs on Google's scheduler — never on the mini it watches — and
+// prints the SHOPIFY_STOCK_ALARM marker, which Cloud Monitoring emails to
+// Junid with the line's text (scripts/shopify/install-stock-alarm.mjs), when:
+//   · no clean pass for 15+ minutes during the reconciler's day, or
+//   · the nightly sweep found anything oversellable (and says what it fixed), or
+//   · the nightly sweep has not reported for 26+ hours.
+// One email per incident, a reminder every six hours while it lasts; the
+// decision is pure and tested (lib/shopify-inventory-health.cjs,
+// test/shopify-inventory-health.test.cjs). Email only — never WhatsApp.
+//
+// THE MARKER IS LOAD-BEARING: the installer's --verify pins it to this file.
+//   firebase deploy --only functions:shopifyInventoryHealthScan
+const shopifyInventoryHealth = require("./lib/shopify-inventory-health.cjs");
+
+exports.shopifyInventoryHealthScan = onSchedule(
+  { schedule: "*/5 * * * *", timeZone: "Africa/Johannesburg", region: "europe-west1", memory: "256MiB", timeoutSeconds: 60 },
+  async () => {
+    const db = admin.database();
+    const health = (await db.ref("shopify_inventory_health").once("value")).val() || {};
+    const nowMs = Date.now();
+    const verdict = shopifyInventoryHealth.assessInventoryHealth({ nowMs, health });
+    // Written on EVERY run, healthy or not — a watchdog that only writes when
+    // it is unhappy is indistinguishable from one that has stopped.
+    await db.ref("shopify_inventory_health/watchdog").set({
+      ...verdict.state, ok: verdict.ok, passAgeMinutes: verdict.passAgeMinutes, inWindow: verdict.inWindow,
+    });
+    for (const alarm of verdict.alarms) console.error(shopifyInventoryHealth.alarmLine(alarm));
+    if (!verdict.alarms.length) {
+      console.log(`shopifyInventoryHealthScan: ${verdict.ok ? "ok" : "not ok (already alerted)"} · last pass ${verdict.passAgeMinutes ?? "never"} min ago`);
+    }
+  },
+);
+
 // ─── EFT POOL — the till's window on an owner-only node ──────────────────────
 // /eft_pool (payment notifications the mailbox poller verified) is owner-only
 // by rule; the POS settles EFT sales against it through these callables, which

@@ -34,6 +34,7 @@ import { FONT, BG, BLUE_L, GRAY, BORDER, input, bGray, tabOn, tabOff } from "./u
 import { searchProducts } from "../../utils/productSearch";
 import { sortRows, visibleProducts, countedLocations } from "./networkTotalsCore";
 import { loadTotals, cachedTotals, totalsFailed, totalsReadAt, forgetTotals } from "./networkTotalsStore";
+import { onlineUnits } from "../../utils/onlinePool";
 
 const PAGE = 25;
 
@@ -167,7 +168,8 @@ export default function NetworkTotals({ products = [], registry, onExit }) {
         {/* The scope of the number, in one line. Not a panel, not a warning — but
             never absent: a total whose scope is invisible gets misread. */}
         <div style={{ fontSize: 11, color: "rgba(233,238,255,.34)", marginBottom: 12, lineHeight: 1.5 }}>
-          All sizes at {counted}.
+          All sizes at {counted}. <span style={{ color: "rgba(233,238,255,.5)" }}>Online</span> is what the
+          website may sell — the exact number sent to Shopify: the sizes the product lists, never In Transit, Pine, Hub 3 or Concrete.
         </div>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
@@ -213,6 +215,9 @@ export default function NetworkTotals({ products = [], registry, onExit }) {
 function Row({ row, onRetry }) {
   const t = row.totals;
   const total = t ? t.total : null;
+  // The same reads, the Shopify push's rule (onlinePool.js). Only the counted
+  // locations were read; every one the online pool excludes is skipped by name.
+  const online = t?.cells ? onlineUnits(t.cells, row.product?.sizes) : null;
 
   return (
     <div className="ts-row" style={{ background: "rgba(255,255,255,.022)", border: BORDER, borderRadius: 13, padding: 11, display: "flex", alignItems: "center", gap: 12 }}>
@@ -228,6 +233,11 @@ function Row({ row, onRetry }) {
         ) : (
           <div style={{ fontSize: 26, fontWeight: 800, lineHeight: 1, fontVariantNumeric: "tabular-nums", color: total === 0 ? GRAY : "#fff" }}>
             {total == null ? "·" : total}
+          </div>
+        )}
+        {online != null && (
+          <div data-online style={{ fontSize: 10.5, marginTop: 3, color: online === 0 ? GRAY : "rgba(233,238,255,.55)", fontVariantNumeric: "tabular-nums", whiteSpace: "nowrap" }}>
+            online {online}
           </div>
         )}
       </div>

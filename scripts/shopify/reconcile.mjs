@@ -95,7 +95,8 @@ import { indexProductLive, unindexProduct, sweepSearchIndex } from "./searchInde
 // shopifyInventoryDirty trigger writes, so a product that is ALREADY live keeps
 // its storefront quantity in step with the shops. Without it the shop was
 // offering 220 variants it had none of. See inventorySync.mjs.
-import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog } from "./inventorySync.mjs";
+import { sweepDirty as sweepInventoryDirty, sweepBacklog as sweepInventoryBacklog, syncProduct as syncInventoryProduct, isListedOnShopify, HEALTH_PATH, locationNames as inventoryLocationNames } from "./inventorySync.mjs";
+import { sweepMovements } from "./movementSync.mjs";
 import { sweepReviewStock, REVIEW_DIRTY_PATH } from "./reviewStock.mjs";
 import { drainAutoPublish } from "./autoPublish.mjs";
 import { SEARCH_IDENTITY_PATH } from "../../src/utils/searchIdentity.js";
@@ -283,6 +284,71 @@ if (!COMMIT) {
   }
   console.log(`\ndry run — nothing written, Shopify untouched. Re-run with --commit to apply (cap ${MAX_APPLY}/run).`);
   process.exit(0);
+}
+
+// Answered per pid (one small read each), never from a whole-node read.
+// LISTED, not merely on: see isListedOnShopify.
+const listed = async (pid) => {
+  assertSafeSegment(pid, "productId");
+  return isListedOnShopify((await db.ref(`shopify_publish/${pid}`).get()).val());
+};
+
+// ── THE MOVEMENT LEDGER — every product that moved, every tick ──────────────
+// movementSync.mjs: reads /stock_movements from a stored cursor (a ts range
+// query — never the whole ledger) and pushes exactly the products that moved.
+// It needs no Cloud Function to have fired, which is what makes it the path
+// the watchdog measures: a pass with zero failures stamps
+// /shopify_inventory_health/lastPassAt, and shopifyInventoryHealthScan
+// (functions/index.js) emails Junid when that goes stale in trading hours.
+// The cursor only moves past products that were pushed.
+//
+// It runs FIRST in the tick, before any publish is applied: a batch of
+// publishes can take many minutes, and the watchdog's 15-minute clock must
+// measure whether stock is reaching Shopify, not how long a publish took.
+if (!ONLY) try {
+  const passStartedAt = await serverNowMs(db);
+  // Resolved on first use, so a tick on which nothing moved mints no Shopify
+  // token and reads no /locations.
+  let locIdForPass = null;
+  let locNamesForPass = null;
+  const mv = await sweepMovements(db, {
+    commit: true,
+    nowMs: passStartedAt,
+    isListed: listed,
+    push: async (pid) => {
+      locIdForPass ??= await requireSingleLocation(graphql);
+      locNamesForPass ??= await inventoryLocationNames(db);
+      return syncInventoryProduct(db, graphql, pid, { commit: true, locationId: locIdForPass, locNames: locNamesForPass });
+    },
+    log: (line) => console.error(line),
+    meter,
+  });
+  if (mv.products || mv.failed) {
+    console.log(`\nmovements: ${mv.rows} row(s) in window · ${mv.products} product(s) moved · ${mv.pushed} corrected on Shopify` +
+      (mv.notListed ? ` · ${mv.notListed} not listed` : "") +
+      (mv.failed ? ` · ${mv.failed} FAILED (kept, the cursor waits for them)` : "") +
+      (mv.deferred ? ` · ${mv.deferred} deferred to the next tick` : "") +
+      (mv.permanent.length ? ` · ${mv.permanent.length} cannot be pushed (see ‼)` : ""));
+    for (const r of mv.results) {
+      if (r?.trackingFixed) console.log(`  ✓ ${r.pid}: inventory tracking switched ON for ${r.trackingFixed} variant(s) that Shopify was not limiting`);
+    }
+    for (const p of mv.permanent) console.error(`  ‼ inventory ${p.pid}: ${p.why} — not retried; the nightly sweep reports it`);
+  }
+  // The heartbeat: written by a pass with no RETRYABLE failure left holding
+  // the cursor. Deferred work (past the per-tick cap) still stamps it — that
+  // work is scheduled, not stuck — and so do permanent answers, which no tick
+  // can change and which are reported above instead.
+  if (!mv.failed) {
+    await db.ref(HEALTH_PATH).update({
+      lastPassAt: await serverNowMs(db),
+      // `abandoned`: products that failed for 6 h and stopped holding the
+      // cursor. The watchdog emails Junid about them — they are not reaching
+      // Shopify, and only the nightly sweep is left to correct them.
+      lastPass: { rows: mv.rows, products: mv.products, pushed: mv.pushed, deferred: mv.deferred, cursorMs: mv.cursorMs, abandoned: mv.abandoned.length ? mv.abandoned : null },
+    });
+  }
+} catch (e) {
+  console.error(`  ⚠ movement sync failed (${String(e?.message || e)}) — the cursor is unchanged, the next tick retries`);
 }
 
 // Does Shopify agree this product is gone? Asked ONLY to decide whether a
@@ -1446,11 +1512,12 @@ if (!ONLY) try {
     // MAX_PER_RUN products, so this is at most 40 small reads, against the
     // 747 KB the live-set query costs. On a quiet tick there are no markers and
     // this is never called at all.
-    isLive: async (pid) => {
-      assertSafeSegment(pid, "productId");
-      const node = (await db.ref(`shopify_publish/${pid}`).get()).val();
-      return node?.state === "live" && node?.liveState === "on";
-    },
+    // LISTED, not merely on. A product switched off in the app comes off the
+    // Online Store but keeps its Shopify listing — and 33 of them were still
+    // published to Facebook & Instagram on 2026-10-11, selling at quantities
+    // nothing corrected (docs/SHOPIFY-STOCK-TRUTH.md). A listing that exists
+    // is kept true, whatever channel it is on.
+    isLive: listed,
     log: (line) => console.error(line),
   });
   if (inv.seen) {

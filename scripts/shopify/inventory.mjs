@@ -156,9 +156,29 @@ export async function requireSingleLocation(graphql) {
 // Split out of setAvailable on purpose, because WHEN this read happens is the
 // whole correctness argument — see the block on setAvailable below. Callers
 // must take it BEFORE they snapshot /stock.
-// → Map(inventoryItemId → available quantity). An id Shopify does not know is
+// → Map(inventoryItemId → ON_HAND quantity — see below). An id Shopify does not know is
 //   absent from the map rather than defaulted to 0: "unknown" and "zero" are
 //   different facts and the caller has to be able to tell them apart.
+//
+// ── ON HAND, NOT AVAILABLE (2026-10-11) ──────────────────────────────────────
+// The number the app owns is ON_HAND — what is physically held. Shopify's
+// `available` is on_hand minus `committed`, and `committed` is a web order
+// taken but not yet fulfilled. The app does not know about that order until
+// staff ring it through the POS (no order webhook, deliberately — it would
+// double-deduct). Writing the app's count to `available` therefore handed the
+// committed unit straight back to the storefront: the app holds 2, one sells
+// online, Shopify shows available 1 / committed 1 — and a push of "available
+// 2" offers two pairs while one is left. (Reviewer finding on PR #718, found
+// the moment tracking started being enforced.) Writing ON_HAND leaves
+// available = app − committed: the web order stays reserved until the POS sale
+// lands in the app. What it does NOT close, stated plainly: if staff FULFIL
+// the web order before ringing it through the POS, Shopify lowers on_hand
+// itself and the next push writes the app's not-yet-lowered count, offering
+// that unit again until the POS sale lands. And if the POS sale lands first,
+// Shopify is one short until the order ships. Both settle on the next push.
+// The read and the compare-and-set are on the same quantity, on_hand.
+export const PUSHED_QUANTITY = "on_hand";
+
 export async function readAvailable(graphql, locationId, inventoryItemIds) {
   const out = new Map();
   if (!inventoryItemIds.length) return out;
@@ -168,7 +188,7 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
         ... on InventoryItem {
           id
           inventoryLevel(locationId: $loc) {
-            quantities(names: ["available"]) { name quantity }
+            quantities(names: ["available", "on_hand"]) { name quantity }
           }
         }
       }
@@ -177,9 +197,72 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
   );
   for (const n of data.nodes ?? []) {
     if (!n?.id) continue;
-    out.set(n.id, n.inventoryLevel?.quantities?.find((x) => x.name === "available")?.quantity ?? 0);
+    // An item with NO inventory level at the location is not stocked there:
+    // it cannot be written, so it is unknown — never a baseline of 0. The bulk
+    // snapshot (bulkSnapshot.mjs) treats it the same way.
+    if (!n.inventoryLevel) continue;
+    const qs = n.inventoryLevel.quantities ?? [];
+    // on_hand is always answered when asked; the `available` fallback exists
+    // for older test doubles that only model one quantity, where the two are
+    // the same number (nothing committed).
+    const q = qs.find((x) => x.name === PUSHED_QUANTITY) ?? qs.find((x) => x.name === "available");
+    out.set(n.id, q?.quantity ?? 0);
   }
   return out;
+}
+
+// ── EVERY VARIANT ON THE PRODUCT, AND WHETHER SHOPIFY IS COUNTING IT ─────────
+// A quantity is only a limit while `tracked` is true and the policy is DENY.
+// On 2026-10-11 Junid found a listing selling sizes the app held none of: the
+// app had pushed 0 to every size, correctly, and Shopify ignored it because
+// tracking was off on all five variants (docs/SHOPIFY-STOCK-TRUTH.md — 66
+// products created untracked on 24 Aug by a mini still on pre-#373 code).
+// Tracking used to be checked ONLY when a product was published, so a listing
+// that was wrong after its publish stayed wrong for good.
+//
+// This is the read the continuous sync takes so it can check, every time it
+// touches a product, that its numbers are actually being obeyed. It lists the
+// WHOLE product rather than the mapped inventory items, because a variant that
+// is not in the id map (added by hand in the admin, left over from a size the
+// record dropped) is just as sellable as one that is.
+//
+// → [{ variantId, title, inventoryItemId, tracked, inventoryPolicy }], or null
+//   when Shopify has no such product. Null is "nothing to check", never "fine":
+//   the caller already has its own answer for a product Shopify has lost.
+export async function readProductVariants(graphql, productId) {
+  if (!productId) return null;
+  const out = [];
+  let after = null;
+  // PAGED: Shopify allows more than 100 variants a product, and a variant
+  // this never read would never be checked for tracking or zeroed.
+  for (let page = 0; page < 50; page++) {
+    const data = await graphql(
+      `query ($id: ID!, $after: String) {
+        product(id: $id) {
+          id
+          variants(first: 100, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id title inventoryPolicy inventoryItem { id tracked } }
+          }
+        }
+      }`,
+      { id: productId, after }
+    );
+    if (!data?.product) return page === 0 ? null : out;
+    for (const v of data.product.variants?.nodes ?? []) {
+      out.push({
+        variantId: v.id,
+        title: v.title,
+        inventoryItemId: v.inventoryItem?.id ?? null,
+        tracked: v.inventoryItem?.tracked,
+        inventoryPolicy: v.inventoryPolicy,
+      });
+    }
+    const info = data.product.variants?.pageInfo;
+    if (!info?.hasNextPage) return out;
+    after = info.endCursor;
+  }
+  throw new Error(`readProductVariants: ${productId} has more than 5,000 variants — refusing to call it checked`);
 }
 
 // Thrown when Shopify's quantity moved between the caller's baseline read and
@@ -224,11 +307,12 @@ export class InventoryMovedError extends Error {
 // fails it. There is no default and no internal re-read, because either would
 // let a caller opt back into the bug without saying so.
 //
-// WHAT THIS DOES NOT FIX, stated plainly so nobody reads it as more than it
-// is: /stock never learns about an online sale (there is no order webhook), so
-// the number computed from it is systematically high by whatever has sold
-// online. This makes that collision VISIBLE and refuses the write; it does not
-// make the app's count right. See scripts/shopify/README.md.
+// /stock never learns about an online sale until staff ring it through the POS
+// (there is no order webhook, by design). Until then the app's count includes
+// the unit sold online — which is why the write is to ON_HAND (see
+// PUSHED_QUANTITY above): Shopify keeps that unit committed, so it is not
+// offered again. The compare-and-set additionally refuses a write when a sale
+// lands between the baseline read and the write.
 export async function setAvailable(graphql, locationId, items, baseline) {
   if (!items.length) return { set: 0 };
   if (!(baseline instanceof Map)) {
@@ -258,7 +342,7 @@ export async function setAvailable(graphql, locationId, items, baseline) {
     {
       key: randomUUID(),
       input: {
-        name: "available",
+        name: PUSHED_QUANTITY,
         reason: "correction",
         quantities: items.map(({ inventoryItemId, quantity }) => ({
           inventoryItemId,
