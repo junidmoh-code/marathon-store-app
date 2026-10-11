@@ -480,12 +480,16 @@ describe("hand-off — spec review", () => {
   it("a device from getDevices is woken with watchAdvertisements before connecting", async () => {
     const till = await fakeTill({ key: key() });
     let watched = 0;
+    const advListeners = new Set();
     till.device.watchAdvertisements = async () => { watched++; };
+    till.device.addEventListener = (type, l) => { if (type === "advertisementreceived") advListeners.add(l); };
+    till.device.removeEventListener = (type, l) => { if (type === "advertisementreceived") advListeners.delete(l); };
     const storage = memoryStorage();
     storage.setItem("granted", "1");
     const r = rig({ till, storage });
     r.h.handOff([ORDER]);
     await r.until(() => till.journal.size === 1);
     expect(watched).toBe(1);
+    expect(advListeners.size).toBe(0); // the timer won; its listener was removed
   });
 });

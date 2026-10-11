@@ -101,7 +101,14 @@ export function createHandoff({
     try {
       ctl = typeof AbortController === "function" ? new AbortController() : null;
       await new Promise((resolve) => {
-        const done = () => resolve();
+        let settled = false;
+        const done = () => {
+          if (settled) return;
+          settled = true;
+          // Whichever wins, nothing is left listening on the device.
+          d.removeEventListener?.("advertisementreceived", done);
+          resolve();
+        };
         d.addEventListener?.("advertisementreceived", done, { once: true });
         setTimer(done, ADVERT_WAIT_MS);
         Promise.resolve(d.watchAdvertisements(ctl ? { signal: ctl.signal } : undefined)).catch(done);
