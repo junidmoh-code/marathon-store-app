@@ -119,17 +119,22 @@ async function rollback(file) {
   let restored = 0;
   for (const [gid, entries] of byProduct) {
     const baseline = await readAvailable(graphql, locId, entries.map((e) => e.inventoryItemId));
-    // Only items still holding what the sweep wrote — a sale since then wins.
-    const items = entries.filter((e) => baseline.get(e.inventoryItemId) === e.after && e.before != null)
+    // Only items still holding what the sweep wrote — a sale since then wins,
+    // for the quantity AND the tracking flag: switching tracking off on an
+    // item that has since sold out would make it unlimited again.
+    const unchanged = entries.filter((e) => baseline.get(e.inventoryItemId) === e.after);
+    const items = unchanged.filter((e) => e.before != null)
       .map((e) => ({ inventoryItemId: e.inventoryItemId, quantity: e.before }));
     if (items.length) { await setAvailable(graphql, locId, items, baseline); restored += items.length; }
-    const untrack = entries.filter((e) => e.trackedBefore === false && e.variantId);
+    const untrack = unchanged.filter((e) => e.trackedBefore === false && e.variantId);
     if (untrack.length) {
       // Deliberately the inverse of enforceTracking, used ONLY by a rollback.
-      await graphql(`mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
+      const res = await graphql(`mutation ($productId: ID!, $variants: [ProductVariantsBulkInput!]!) {
         productVariantsBulkUpdate(productId: $productId, variants: $variants) { userErrors { field message } } }`,
       { productId: gid, variants: untrack.map((e) => ({ id: e.variantId, inventoryItem: { tracked: false }, ...(e.policyBefore ? { inventoryPolicy: e.policyBefore } : {}) })) },
       { mutation: true });
+      const errs = res?.productVariantsBulkUpdate?.userErrors || [];
+      if (errs.length) throw new Error(`rollback: restoring tracking on ${gid} was refused: ${JSON.stringify(errs)}`);
     }
   }
   log(`rollback: ${restored} quantity(ies) restored from ${file}`);

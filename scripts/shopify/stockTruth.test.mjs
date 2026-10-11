@@ -84,7 +84,7 @@ function fakeRtdb(store) {
 
 // ── Fake Shopify ─────────────────────────────────────────────────────────────
 // products: { gid: [{ variantId, title, itemId, tracked, policy, qty }] }
-function fakeShopify(products, { failSetFor = new Set() } = {}) {
+function fakeShopify(products, { failSetFor = new Set(), pageSize = 100 } = {}) {
   const items = () => Object.values(products).flat();
   const calls = [];
   const graphql = async (query, vars = {}) => {
@@ -111,10 +111,16 @@ function fakeShopify(products, { failSetFor = new Set() } = {}) {
       }
       return { productVariantsBulkUpdate: { productVariants: out, userErrors: [] } };
     }
-    if (query.includes("variants(first: 100)")) {
+    if (query.includes("variants(first: 100")) {
       const vs = products[vars.id];
       if (!vs) return { product: null };
-      return { product: { id: vars.id, variants: { nodes: vs.map((v) => ({ id: v.variantId, title: v.title, inventoryPolicy: v.policy, inventoryItem: { id: v.itemId, tracked: v.tracked } })) } } };
+      // Pages of `pageSize` (100 on the real shop), so paging is exercised.
+      const from = vars.after ? Number(vars.after) : 0;
+      const page = vs.slice(from, from + pageSize);
+      return { product: { id: vars.id, variants: {
+        pageInfo: { hasNextPage: from + pageSize < vs.length, endCursor: String(from + pageSize) },
+        nodes: page.map((v) => ({ id: v.variantId, title: v.title, inventoryPolicy: v.policy, inventoryItem: { id: v.itemId, tracked: v.tracked } })),
+      } } };
     }
     if (query.includes("product(id: $id) { id }")) return { product: products[vars.id] ? { id: vars.id } : null };
     if (query.includes("nodes(ids: $ids)")) {
@@ -562,5 +568,21 @@ describe("an ACTIVE listing on no sales channel cannot be bought", () => {
     expect(s.oversellableUnits).toBe(0);
     expect(s.hiddenDrifted).toBe(1);
     expect(s.removedUnits).toBe(5);
+  });
+});
+
+describe("a listing with more variants than one page", () => {
+  it("every page is read — a variant on page two is still tracked and zeroed", async () => {
+    const store = {
+      locations: LOCS,
+      stock: { hub1: { p1: { 6: { qty: 1 } } } },
+      shopify_sync: { p1: { shopifyProductId: GID, variants: { 6: { shopifyInventoryItemId: "gid://shopify/InventoryItem/6" } } } },
+    };
+    const rtdb = fakeRtdb(store);
+    const shopify = fakeShopify({ [GID]: [variant("6", 1), variant("7", 0), variant("8", 4, { tracked: false })] }, { pageSize: 2 });
+    const r = await syncProduct(rtdb.db, shopify.graphql, "p1", { commit: true });
+    expect(r.ok).toBe(true);
+    expect(shopify.buyable("gid://shopify/InventoryItem/8")).toBe(0);
+    expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(1);
   });
 });

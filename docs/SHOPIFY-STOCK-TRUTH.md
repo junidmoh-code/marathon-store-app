@@ -141,14 +141,133 @@ both read 0), so its pool was not changed; section 3 says how the two relate.
 
 ---
 
-## 2. Correction (one-off)
+## 2. Correction (one-off, 2026-10-11 22:45 SAST)
 
-_Filled in by the correction commit._
+Run on the Mac mini: `node scripts/shopify/stock-truth-sweep.mjs --commit`
+(section 3 describes the tool, which is also the nightly sweep).
+
+**What a correction is.** For every Shopify listing the app knows (all 1,832
+with `state: "live"`, on the Online Store or switched off), every size is SET
+to the app's online pool, tracking is switched on and the policy is DENY.
+Variants the id map does not name are set to 0. The three listings with no
+app product behind them are set to 0.
+
+**Measured with the final definition** (Shopify `on_hand` against the app,
+see "on hand, not available" below). The dry run just before the commit:
+
+| | |
+|---|---|
+| Listings checked | 1,830 (1,807 ACTIVE on Shopify; 25 not active: deleted, archived or draft) |
+| Listings out of step | 99 published + 43 unpublished (142 corrected) |
+| Sizes Shopify was not limiting (tracking off) | **406** |
+| Tracked units on Shopify above the app, on published listings | **75** |
+| Listings with no app product | 3 (the "tech fleece" listings, 18 units) |
+| Units taken off sale | 384 of 20,409 on hand (**1.9%**, far below the 25% stop) |
+
+The 406 is higher than §1's 337 because this pass also reads the variants the
+id map does not name (sizes like `5.5` and `11` that were on the listing but
+not in the map) and the switched-off listings.
+
+- Rollback file: `~/marathon-rollbacks/stock-truth-2026-10-11T20-45-00-596Z.json`
+  on the mini (165 KB — the quantity and tracking state of every item
+  changed). `--rollback <file>` restores it, compare-and-set against what the
+  correction wrote, so a sale since then is never overwritten.
+- Re-read of the 142 corrected listings straight after: **0** oversellable
+  units, **0** unlimited sizes.
+- A fresh full read afterwards: **0 drifted, 0 oversellable, 0 unlimited**;
+  Shopify on hand 20,099 = the app's online pool 20,099.
+
+**John Richmond, before and after.** Before: all five sizes untracked (sold
+without limit). After: all five tracked and DENY, on hand 0; the live product
+JSON on marathonclub.co.za reports every size `available: false` (sold out).
+Size 6 shows available −1 because web order #1682 is still committed against
+it — staff must decide what to do about that order; nothing here touches
+orders.
+
+### On hand, not available
+
+The push writes Shopify's **on_hand**, not `available`. `available` is
+on_hand minus `committed`, and committed is a web order taken but not yet
+fulfilled — which the app does not know about until staff ring it through
+the POS (there is deliberately no order webhook). Writing the app's count to
+`available` hands the committed unit back to the storefront: the app holds 2,
+one sells online, Shopify shows available 1 / committed 1, and "available 2"
+offers two pairs while one is left. Writing on_hand keeps available = app −
+committed. The cost, stated plainly: if staff ring the POS sale **before**
+fulfilling the web order, Shopify is one unit short for that size until the
+order ships and the next sync lands — under-selling, never over-selling.
 
 ## 3. Continuous sync
 
-_Filled in by the sync commit._
+Three paths now keep every listing true; all of them SET absolute
+quantities through `syncProduct` and none reads a whole node.
+
+| Path | Trigger | What it reads | Fixes |
+|---|---|---|---|
+| **Movement ledger** (new, `movementSync.mjs`) | every reconciler tick, first thing in the tick | `/stock_movements` by its `ts` index from a stored cursor (90-min lookback for offline tills — worst lag measured over 7 days was 61 min); then per moved product: its id map + one cell set per counted location | every product that moved since the last clean pass |
+| Dirty markers (existing, `inventorySync.mjs`) | every tick | the marker node | products the Cloud Function marked on a `/stock` write |
+| **Nightly sweep** (new, `stock-truth-sweep.mjs`) | 02:30 SAST, `com.marathon.shopifystocksweep` | one bulk read of every ACTIVE Shopify product, the listed set, per-product app stock | anything the per-tick paths missed — late rows, a trigger that never fired, a hand edit in the Shopify admin, tracking switched off |
+
+The existing 40-per-sweep backstop still runs too.
+
+**The cursor** (`/shopify_sync/_movementCursor`) never advances on a failure:
+with a retryable failure (a transport error, a sale landing mid-push, a
+tracking read that failed) it stays put, and the rows are read and pushed
+again next tick. A permanent answer — product deleted from Shopify, an id map
+Shopify does not recognise — is not a failure a tick can fix: it is counted
+done, reported every time the product moves, and the nightly sweep reports
+it. A product that keeps failing stops holding the cursor 6 hours after its
+first failure (the nightly sweep owns it from there), so one stuck product
+can never make every tick re-read a growing window.
+
+**Every listing, not only "on".** Both per-tick paths now cover every product
+with a Shopify listing. Switching a product off removes it from the Online
+Store only; on 2026-10-11, 33 switched-off products were still on Facebook &
+Instagram with quantities nothing corrected.
+
+**Tracking on every touch.** `syncProduct` reads every variant on the listing
+(paged) and switches tracking on / DENY wherever Shopify was not limiting a
+size, before it writes the numbers. A stale id map on a listing that still
+exists holds every variant at 0 until it is re-mapped (5 such listings today).
+
+**One definition.** What may be sold online is `networkTotals` in
+`scripts/shopify/inventory.mjs`: Central, Hub 1, Hub 2, Marathon PE and
+Trophy; never In Transit (not pickable) or Hub 3, Pine and Concrete (counts
+not trusted online — Junid's decision of 2026-09-08); only the sizes the
+product lists; negatives count 0. The trigger, the social generator and the
+app's screens (`src/utils/onlinePool.js`) carry copies pinned to it by tests.
+**The Total Stock card** keeps its own number — Junid's reorder total, which
+deliberately includes In Transit and every cell — and now shows **"online N"**
+beside it: the exact number Shopify is told, from the same reads. Pine and
+Hub 3 are excluded from both, so the card was not "wrongly" excluding them;
+Concrete has no `/stock` location of its own (its stock is Hub 3's).
+
+**Cost.** The nightly sweep read 6.0–7.0 MB of RTDB per run (measured, four
+runs) and finishes in about 2 minutes (one Shopify bulk read, ~20 s). The
+per-tick figures are in §5.
 
 ## 4. Watchdog
 
-_Filled in by the watchdog commit._
+`shopifyInventoryHealthScan` — a named Cloud Function on Google's scheduler,
+every 5 minutes, so it keeps working when the mini or its reconciler is dead.
+It reads `/shopify_inventory_health` and prints `SHOPIFY_STOCK_ALARM …`, which
+a Cloud Monitoring log-match policy (`scripts/shopify/install-stock-alarm.mjs`)
+emails to Junid **with the line's own text**. Email only.
+
+It alarms when:
+- **no clean inventory pass for 15 minutes** while the reconciler is meant to
+  be working (07:15–19:02 SAST). A clean pass is a movement-ledger pass with
+  no retryable failure; the reconciler stamps `lastPassAt` after each one.
+  Outside those hours the reconciler is idle by design (and shop movements
+  stop by 19:00 — measured), so silence at night is not an outage;
+- **the nightly sweep found anything oversellable**, was refused by its 25%
+  guard, could not read or correct a listing, or left anything wrong after
+  correcting — the email names what it found, how many listings it corrected,
+  the worst offenders and the rollback file;
+- **no sweep has reported for 26 hours** (the nightly job is dead).
+
+One email per incident; a reminder every 6 hours while it lasts.
+
+No database rule is needed: `/shopify_inventory_health`,
+`/shopify_inventory_sweeps` and `/shopify_sync/_movementCursor` are written
+and read only with the Admin SDK.

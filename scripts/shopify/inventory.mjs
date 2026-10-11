@@ -223,25 +223,38 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
 //   the caller already has its own answer for a product Shopify has lost.
 export async function readProductVariants(graphql, productId) {
   if (!productId) return null;
-  const data = await graphql(
-    `query ($id: ID!) {
-      product(id: $id) {
-        id
-        variants(first: 100) {
-          nodes { id title inventoryPolicy inventoryItem { id tracked } }
+  const out = [];
+  let after = null;
+  // PAGED: Shopify allows more than 100 variants a product, and a variant
+  // this never read would never be checked for tracking or zeroed.
+  for (let page = 0; page < 50; page++) {
+    const data = await graphql(
+      `query ($id: ID!, $after: String) {
+        product(id: $id) {
+          id
+          variants(first: 100, after: $after) {
+            pageInfo { hasNextPage endCursor }
+            nodes { id title inventoryPolicy inventoryItem { id tracked } }
+          }
         }
-      }
-    }`,
-    { id: productId }
-  );
-  if (!data?.product) return null;
-  return (data.product.variants?.nodes ?? []).map((v) => ({
-    variantId: v.id,
-    title: v.title,
-    inventoryItemId: v.inventoryItem?.id ?? null,
-    tracked: v.inventoryItem?.tracked,
-    inventoryPolicy: v.inventoryPolicy,
-  }));
+      }`,
+      { id: productId, after }
+    );
+    if (!data?.product) return page === 0 ? null : out;
+    for (const v of data.product.variants?.nodes ?? []) {
+      out.push({
+        variantId: v.id,
+        title: v.title,
+        inventoryItemId: v.inventoryItem?.id ?? null,
+        tracked: v.inventoryItem?.tracked,
+        inventoryPolicy: v.inventoryPolicy,
+      });
+    }
+    const info = data.product.variants?.pageInfo;
+    if (!info?.hasNextPage) return out;
+    after = info.endCursor;
+  }
+  throw new Error(`readProductVariants: ${productId} has more than 5,000 variants — refusing to call it checked`);
 }
 
 // Thrown when Shopify's quantity moved between the caller's baseline read and
