@@ -157,7 +157,7 @@ see "on hand, not available" below). The dry run just before the commit:
 
 | | |
 |---|---|
-| Listings checked | 1,830 (1,807 ACTIVE on Shopify; 25 not active: deleted, archived or draft) |
+| Listings checked | 1,832 (1,807 ACTIVE on Shopify; 25 not active: deleted, archived or draft; 5 of them with a stale or missing id map) |
 | Listings out of step | 99 published + 43 unpublished (142 corrected) |
 | Sizes Shopify was not limiting (tracking off) | **406** |
 | Tracked units on Shopify above the app, on published listings | **75** |
@@ -241,9 +241,11 @@ not trusted online — Junid's decision of 2026-09-08); only the sizes the
 product lists; negatives count 0. The trigger, the social generator and the
 app's screens (`src/utils/onlinePool.js`) carry copies pinned to it by tests.
 **The Total Stock card** keeps its own number — Junid's reorder total, which
-deliberately includes In Transit and every cell — and now shows **"online N"**
+deliberately includes In Transit and every cell at its counted locations — and now shows **"online N"**
 beside it: the exact number Shopify is told, from the same reads. Pine and
-Hub 3 are excluded from both, so the card was not "wrongly" excluding them;
+Hub 3 are left out of the card's reorder total (Junid's decision of
+2026-08-22) AND out of the online figure (2026-09-08), so the card was not
+"wrongly" excluding them;
 Concrete has no `/stock` location of its own (its stock is Hub 3's).
 
 **Cost.** The nightly sweep read 6.0–7.0 MB of RTDB per run (measured, four
