@@ -279,3 +279,47 @@ One email per incident; a reminder every 6 hours while it lasts.
 No database rule is needed: `/shopify_inventory_health`,
 `/shopify_inventory_sweeps` and `/shopify_sync/_movementCursor` are written
 and read only with the Admin SDK.
+
+## 5. Live proof and measured cost (2026-10-11, after deploy)
+
+**Deployed.** PR #718 merged as `c9767c17`. Mac mini checkout pulled to
+`c9767c1`; `com.marathon.shopifyreconcile` restarted and
+`com.marathon.shopifystocksweep` installed (its first run, 23:06 SAST: 1,832
+listings, 0 drifted, 0 oversellable, report stored). Cloud Function
+`shopifyInventoryHealthScan` created by name (its first runs: `ok`). Alert
+policy "Shopify stock truth alarm" created and verified; a test alarm was
+sent to Junid's inbox. Hosting deployed at `c9767c17` (the Total Stock card's
+online figure) after the preflight showed it carried only #718 beyond the
+live build.
+
+**End-to-end, on a real listing.** "Cream and crimson lightweight mesh
+running shoe" (`p1777972868051`), size 7. A −1 adjustment at Central (10 → 9,
+written like an app adjustment: the cell plus a `/stock_movements` row) reached
+Shopify — on hand 14 → 13 — **11.2 s** after it was written. Reversed (+1,
+9 → 10): Shopify 13 → 14 in **8.8 s**. Both ticks logged
+`movements: … 1 product(s) moved · 1 corrected on Shopify`. It was 23:12 SAST,
+outside the reconciler's 07:00–19:00 day, so the two ticks were started by
+hand (`SHOPIFY_RECONCILE_ALWAYS=1`, the same runner, lock and log as the
+scheduled ones). In trading hours a tick starts every 2 minutes, so a stock
+change reaches the website within about **2 minutes 15 seconds** at worst.
+
+**RTDB cost per tick (measured).**
+- A quiet tick: ~1 KB (the cursor and an empty ledger window).
+- The ledger window (90-minute lookback) at 12:00 SAST: 10 KB on 9 and 10 Oct
+  (19–24 rows); 72 KB on 11 Oct (183 rows, a receiving day).
+- Each product that moved: ~5.3 KB (id map 1.0 KB, its cells 3.5 KB, its
+  publish node 0.8 KB).
+- About **7 MB a day** on an ordinary trading day, up to ~30 MB on a heavy
+  receiving day — under US$1 a month.
+
+**Nightly sweep (measured, five runs):** 6.0–7.0 MB of RTDB and one Shopify
+bulk read; about 2 minutes.
+
+**Left for Junid to know, not to do.** Web order #1682 (John Richmond size 6)
+was sold against an app count of zero and is still unfulfilled. The 13
+products the app calls live that Shopify no longer has, and the 5 listings
+with a stale or missing id map, are reported by every sweep and held at 0.
+Someone's uncommitted theme edits in the mini's checkout (nav "Best Sellers"
+and "Slip-on Offer") were preserved before the pull — `git stash` entry
+"mini-theme-wip-20261011" and a copy plus patch in
+`~/marathon-rollbacks/mini-theme-wip-20261011/` on the mini.
