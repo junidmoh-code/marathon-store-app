@@ -555,3 +555,12 @@ describe("the nightly sweep's bulk snapshot", async () => {
     expect(plan.drift.map((d) => [d.sizeKey, d.shopify, d.quantity])).toEqual([["6", 1, 0]]);
   });
 });
+
+describe("an ACTIVE listing on no sales channel cannot be bought", () => {
+  it("is corrected but never counted as oversell", () => {
+    const s = summarize([{ ok: true, pid: "p", published: false, shopifyUnits: 5, appUnits: 0, drift: [{ inventoryItemId: "i", sizeKey: "6", shopify: 5, quantity: 0 }], untracked: [] }]);
+    expect(s.oversellableUnits).toBe(0);
+    expect(s.hiddenDrifted).toBe(1);
+    expect(s.removedUnits).toBe(5);
+  });
+});

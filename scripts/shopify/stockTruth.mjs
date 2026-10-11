@@ -34,7 +34,7 @@ export function oversell(result) {
 /** Summarise a sweep's dry-run results into the report the watchdog reads. */
 export function summarize(results) {
   let checked = 0, drifted = 0, units = 0, unlimitedVariants = 0, removedUnits = 0;
-  let shopifyUnits = 0, appUnits = 0, gone = 0, failed = 0, unmanaged = 0, permanent = 0;
+  let shopifyUnits = 0, appUnits = 0, gone = 0, failed = 0, unmanaged = 0, permanent = 0, hiddenDrifted = 0;
   const offenders = [];
   const failures = [];
   for (const r of results || []) {
@@ -47,6 +47,15 @@ export function summarize(results) {
     if (r?.permanent) permanent++;
     if (r?.permanent && !r?.drift) continue;
     checked++;
+    // On no sales channel: nothing can be bought from it. Its numbers are
+    // still corrected (and count toward the guard), never toward oversell.
+    if (r.published === false) {
+      if ((r.drift?.length || 0) + (r.untracked?.length || 0) > 0) hiddenDrifted++;
+      removedUnits += oversell(r).removedUnits;
+      shopifyUnits += Number(r.shopifyUnits) || 0;
+      appUnits += Number(r.appUnits) || 0;
+      continue;
+    }
     if (r.unmanaged) unmanaged++;
     shopifyUnits += Number(r.shopifyUnits) || 0;
     appUnits += Number(r.appUnits) || 0;
@@ -70,7 +79,7 @@ export function summarize(results) {
   // Unlimited sizes first — any number of them can be sold — then by units.
   offenders.sort((a, b) => b.unlimitedVariants - a.unlimitedVariants || b.units - a.units);
   return {
-    checked, drifted, gone, failed, unmanaged, permanent, failures,
+    checked, drifted, gone, failed, unmanaged, permanent, failures, hiddenDrifted,
     oversellableUnits: units, unlimitedVariants, removedUnits,
     shopifyUnits, appUnits,
     zeroShare: shopifyUnits > 0 ? removedUnits / shopifyUnits : 0,

@@ -138,7 +138,7 @@ async function rollback(file) {
 // ── Pass 1 for one listed product, from the bulk snapshot ────────────────────
 // The SAME comparison syncProduct makes (planProduct), fed by the snapshot
 // instead of two live queries. Nothing here is a write baseline.
-async function judgeFromSnapshot(pid, snapshot, locNames) {
+async function judgeFromSnapshot(pid, snapshot, locNames, published) {
   const desired = await desiredFor(db, pid, locNames);
   if (!desired) return { pid, skipped: "no shopify_sync id map", permanent: true };
   const { map, totals } = desired;
@@ -148,7 +148,9 @@ async function judgeFromSnapshot(pid, snapshot, locNames) {
   // nothing can be bought from it, so there is nothing to correct.
   if (!shop) return { pid, gid, ok: true, inactive: true, drift: [], untracked: [], shopifyUnits: 0, appUnits: 0 };
   const plan = planProduct({ map, variants: shop.variants, baseline: shop.baseline, totals });
-  const base = { pid, gid, drift: plan.drift, untracked: plan.untracked, ...plan.meta, ...plan.stale };
+  // `published`: on at least one sales channel. An ACTIVE product on none
+  // cannot be bought, so its drift is corrected but never counted as oversell.
+  const base = { pid, gid, published: published ? published.has(gid) : true, drift: plan.drift, untracked: plan.untracked, ...plan.meta, ...plan.stale };
   if (plan.allUnknown && !shop.variants.length) return { ...base, ok: false, permanent: true, why: "the listing has no variants" };
   if (plan.allUnknown) return { ...base, ok: false, permanent: true, why: "every mapped inventory item is unknown to Shopify — the id map is stale" };
   return { ...base, ok: true };
@@ -195,13 +197,13 @@ async function main() {
   // ── Pass 1: measure, from one bulk snapshot of every active listing ────────
   const snapshot = await readShopSnapshot(graphql, locId, { log });
   log(`Shopify snapshot: ${snapshot.size} active product(s) in ${Math.round((Date.now() - t0) / 1000)} s`);
-  const dry = await pool(pids, safe((pid) => judgeFromSnapshot(pid, snapshot, locNames)));
+  const published = await activePublishedGids();
+  const dry = await pool(pids, safe((pid) => judgeFromSnapshot(pid, snapshot, locNames, published)));
   const inactive = dry.filter((r) => r?.inactive).length;
 
   // Listings with no app product behind them (skipped for a --pids run).
   let unmanagedGids = [];
   if (!ONLY) {
-    const published = await activePublishedGids();
     const candidates = [...published.keys()].filter((g) => !dry.some((r) => r?.gid === g));
     if (candidates.length) {
       const mapped = await everyMappedGid(dry.map((r) => r?.gid).filter(Boolean));
@@ -218,7 +220,7 @@ async function main() {
   log(`checked ${before.checked} · ${before.drifted} drifted · ${before.oversellableUnits} oversellable unit(s) · ` +
     `${before.unlimitedVariants} size(s) Shopify was not limiting · ${before.gone} deleted from Shopify · ` +
     `${before.permanent} with a stale or missing id map · ${before.failed} could not be read · ${inactive} not active on Shopify · ` +
-    `${unmanagedGids.length} listing(s) with no app product`);
+    `${unmanagedGids.length} listing(s) with no app product · ${before.hiddenDrifted} unpublished listing(s) out of step (corrected, not buyable)`);
   log(`Shopify holds ${before.shopifyUnits} unit(s) on hand; the app's online pool holds ${before.appUnits}; the correction takes ${before.removedUnits} off sale (${(before.zeroShare * 100).toFixed(1)}%)`);
   for (const w of before.worst) log(`  ${w.pid || w.gid}: ${w.unlimitedVariants ? `${w.unlimitedVariants} unlimited size(s)` : ""}${w.units ? ` ${w.units} unit(s) over` : ""} — ${w.sizes.join("; ")}`);
   for (const f of before.failures) log(`  ⚠ ${f}`);
