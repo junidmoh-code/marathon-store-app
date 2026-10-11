@@ -18,7 +18,7 @@ import { ONLINE_EXCLUDED_LOCATIONS } from "./inventory.mjs";
 import {
   sweepMovements, planMovementPass, nextCursorState, CURSOR_PATH, LOOKBACK_MS, MAX_HOLD_MS,
 } from "./movementSync.mjs";
-import { summarize, oversell, exceedsZeroGuard, rollbackEntries } from "./stockTruth.mjs";
+import { summarize, oversell, exceedsZeroGuard, rollbackEntries, keysNeedingGidLookup } from "./stockTruth.mjs";
 
 const require = createRequire(import.meta.url);
 
@@ -322,10 +322,11 @@ describe("the cursor does not advance on failure", () => {
     const now = 10 * 3600e3;
     const failed = [{ pid: "a", keys: [["k1", now - 2000]], earliest: now - 2000, latest: now - 2000 }];
     const done = [{ pid: "b", keys: [["k2", now - 1000]], earliest: now - 1000, latest: now - 1000 }];
-    const held = nextCursorState({ cursorMs: now - 5000, failing: { a: now - MAX_HOLD_MS + 1 } }, { done, failed, nowMs: now });
+    const streak = (since) => ({ a: { since, last: now - 120000 } });
+    const held = nextCursorState({ cursorMs: now - 5000, failing: streak(now - MAX_HOLD_MS + 1) }, { done, failed, nowMs: now });
     expect(held.cursorMs).toBe(now - 5000);
     expect(held.abandoned).toEqual([]);
-    const gone = nextCursorState({ cursorMs: now - 5000, failing: { a: now - MAX_HOLD_MS } }, { done, failed, nowMs: now });
+    const gone = nextCursorState({ cursorMs: now - 5000, failing: streak(now - MAX_HOLD_MS) }, { done, failed, nowMs: now });
     expect(gone.abandoned).toEqual(["a"]);
     expect(gone.cursorMs).toBe(now - 1000);
     // Abandoned rows are marked seen, so they are not pushed again every tick.
@@ -333,12 +334,20 @@ describe("the cursor does not advance on failure", () => {
     expect(gone.failing).toEqual({});
   });
 
+  it("an old failure that went quiet starts a NEW streak — one fresh failure is never abandoned on it", () => {
+    const now = 10 * 3600e3;
+    const failed = [{ pid: "a", keys: [["k1", now - 2000]], earliest: now - 2000, latest: now - 2000 }];
+    const s = nextCursorState({ cursorMs: now - 5000, failing: { a: { since: now - 8 * 3600e3, last: now - 2 * 3600e3 } } }, { failed, nowMs: now });
+    expect(s.abandoned).toEqual([]);
+    expect(s.failing).toEqual({ a: { since: now, last: now } });
+  });
+
   it("an OLD row's first failure still gets its full retries (the mini was off for hours)", () => {
     const now = 20 * 3600e3;
     const failed = [{ pid: "a", keys: [["k1", now - 10 * 3600e3]], earliest: now - 10 * 3600e3, latest: now - 10 * 3600e3 }];
     const s = nextCursorState({ cursorMs: now - 11 * 3600e3 }, { failed, nowMs: now });
     expect(s.abandoned).toEqual([]);
-    expect(s.failing).toEqual({ a: now });
+    expect(s.failing).toEqual({ a: { since: now, last: now } });
   });
 
   it("a cursor is never carried ahead of the server clock by a fast till", () => {
@@ -584,5 +593,43 @@ describe("a listing with more variants than one page", () => {
     expect(r.ok).toBe(true);
     expect(shopify.buyable("gid://shopify/InventoryItem/8")).toBe(0);
     expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(1);
+  });
+});
+
+describe("a listing is only 'no app product' when no id map anywhere names it", () => {
+  it("re-reads the gid of a LISTED product whose judgement threw — its listing must not be zeroed", () => {
+    const results = [
+      { pid: "p1", gid: "g1", ok: true },
+      { pid: "p2", gid: null, ok: false, why: "RTDB blip" },   // listed, threw
+    ];
+    expect(keysNeedingGidLookup(["p1", "p2", "p3", "_movementCursor"], results)).toEqual(["p2", "p3"]);
+  });
+});
+
+describe("readAvailable: an item not stocked at the location is unknown, never 0", async () => {
+  const { readAvailable } = await import("./inventory.mjs");
+  it("leaves it out of the baseline, as the bulk snapshot does", async () => {
+    const g = async () => ({ nodes: [
+      { id: "A", inventoryLevel: { quantities: [{ name: "on_hand", quantity: 3 }, { name: "available", quantity: 2 }] } },
+      { id: "B", inventoryLevel: null },
+    ] });
+    const m = await readAvailable(g, "L", ["A", "B"]);
+    expect(m.get("A")).toBe(3);
+    expect(m.has("B")).toBe(false);
+  });
+});
+
+describe("the nightly runner", async () => {
+  const { sweepDue, MAX_ATTEMPTS_PER_DAY } = await import("./stock-truth-runner.mjs");
+  const at0300 = Date.parse("2026-10-12T01:00:00Z");
+  it("is due from 02:30 SAST once a day", () => {
+    expect(sweepDue(Date.parse("2026-10-12T00:20:00Z"), {}).due).toBe(false);
+    expect(sweepDue(at0300, {}).due).toBe(true);
+    expect(sweepDue(at0300, { lastRunDate: "2026-10-12" }).due).toBe(false);
+  });
+  it("stops after a few attempts that died before reporting", () => {
+    expect(sweepDue(at0300, { attemptDate: "2026-10-12", attempts: MAX_ATTEMPTS_PER_DAY - 1 }).due).toBe(true);
+    expect(sweepDue(at0300, { attemptDate: "2026-10-12", attempts: MAX_ATTEMPTS_PER_DAY }).due).toBe(false);
+    expect(sweepDue(at0300, { attemptDate: "2026-10-11", attempts: 9 }).due).toBe(true);
   });
 });

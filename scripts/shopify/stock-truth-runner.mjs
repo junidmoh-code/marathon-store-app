@@ -31,11 +31,17 @@ const LOCK_FILE = join(LOG_DIR, "shopify-stock-sweep.lock");
 export const DUE_MINUTE = 2 * 60 + 30;
 
 /** Pure: should a sweep run now? */
+// A sweep that keeps dying before it reports (bulk read failing, auth gone)
+// is tried this many times a night, not every 10 minutes until morning. The
+// watchdog's 26-hour "no sweep" alarm then tells Junid.
+export const MAX_ATTEMPTS_PER_DAY = 3;
+
 export function sweepDue(nowMs, state = {}) {
   const d = new Date(nowMs + 2 * 3600e3);
   const date = d.toISOString().slice(0, 10);
   const minute = d.getUTCHours() * 60 + d.getUTCMinutes();
-  return { due: minute >= DUE_MINUTE && state.lastRunDate !== date, date };
+  const attempts = state.attemptDate === date ? Number(state.attempts) || 0 : 0;
+  return { due: minute >= DUE_MINUTE && state.lastRunDate !== date && attempts < MAX_ATTEMPTS_PER_DAY, date, attempts };
 }
 
 function log(line) {
@@ -65,10 +71,12 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
   mkdirSync(LOG_DIR, { recursive: true });
   let state = {};
   try { state = JSON.parse(readFileSync(STATE_FILE, "utf8")); } catch { /* first run */ }
-  const { due, date } = sweepDue(Date.now(), state);
+  const { due, date, attempts } = sweepDue(Date.now(), state);
   if (!due) process.exit(0);
   if (!takeLock()) process.exit(0);
   try {
+    state = { ...state, attemptDate: date, attempts: attempts + 1 };
+    writeFileSync(STATE_FILE, JSON.stringify(state));
     log(`── nightly stock-truth sweep for ${date} ──`);
     const r = spawnSync(process.execPath, [join(HERE, "stock-truth-sweep.mjs"), "--commit"], {
       cwd: REPO, env: process.env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,

@@ -341,7 +341,10 @@ if (!ONLY) try {
   if (!mv.failed) {
     await db.ref(HEALTH_PATH).update({
       lastPassAt: await serverNowMs(db),
-      lastPass: { rows: mv.rows, products: mv.products, pushed: mv.pushed, deferred: mv.deferred, cursorMs: mv.cursorMs },
+      // `abandoned`: products that failed for 6 h and stopped holding the
+      // cursor. The watchdog emails Junid about them — they are not reaching
+      // Shopify, and only the nightly sweep is left to correct them.
+      lastPass: { rows: mv.rows, products: mv.products, pushed: mv.pushed, deferred: mv.deferred, cursorMs: mv.cursorMs, abandoned: mv.abandoned.length ? mv.abandoned : null },
     });
   }
 } catch (e) {

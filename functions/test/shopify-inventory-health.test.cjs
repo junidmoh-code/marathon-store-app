@@ -104,3 +104,12 @@ test("listings the sweep could not READ alarm — they were never judged", () =>
   assert.deepEqual(v.alarms.map((a) => a.kind), ["sweep"]);
   assert.match(v.alarms[0].message, /4 listing\(s\) could not be checked \(p1: HTTP 502\)/);
 });
+
+test("products the sync gave up on after 6 hours are named — once", () => {
+  const health = { lastPassAt: DAY, lastPass: { abandoned: ["p9", "p2"] }, lastSweep: freshSweep() };
+  const v = assessInventoryHealth({ nowMs: DAY, health });
+  assert.deepEqual(v.alarms.map((a) => a.kind), ["stuck"]);
+  assert.match(v.alarms[0].message, /2 product\(s\): p9, p2/);
+  const again = assessInventoryHealth({ nowMs: DAY + 60000, health: { ...health, watchdog: { lastAlarms: v.state.lastAlarms } } });
+  assert.deepEqual(again.alarms, []);
+});

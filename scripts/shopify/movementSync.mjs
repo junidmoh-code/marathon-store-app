@@ -83,6 +83,7 @@ export function planMovementPass(rows, state = {}) {
 // (stock-truth-sweep.mjs), which reads every listing whatever the ledger says,
 // so one stuck product cannot make every tick re-read a growing window.
 export const MAX_HOLD_MS = 6 * 60 * 60 * 1000;
+export const STREAK_GAP_MS = 60 * 60 * 1000;
 
 /**
  * Pure: the state to store after a pass.
@@ -104,9 +105,18 @@ export function nextCursorState(state = {}, { done = [], failed = [], deferred =
   for (const p of done) delete failing[p.pid];
   const holding = [];
   const abandoned = [];
+  const now = Number.isFinite(nowMs) ? nowMs : 0;
   for (const p of failed) {
-    const since = Number(failing[p.pid]) || (Number.isFinite(nowMs) ? nowMs : 0);
-    failing[p.pid] = since;
+    // { since, last }. A failure streak is only continuous while the product
+    // keeps being attempted: an entry not refreshed for an hour (the product
+    // went quiet, or was deferred) starts a new streak, so one fresh failure
+    // is never abandoned on the strength of an old one.
+    const prevF = failing[p.pid];
+    const prevSince = typeof prevF === "object" ? Number(prevF?.since) : Number(prevF);
+    const prevLast = typeof prevF === "object" ? Number(prevF?.last) : Number(prevF);
+    const continuous = Number.isFinite(prevLast) && now - prevLast < STREAK_GAP_MS;
+    const since = continuous && Number.isFinite(prevSince) ? prevSince : now;
+    failing[p.pid] = { since, last: now };
     if (Number.isFinite(nowMs) && nowMs - since >= MAX_HOLD_MS) abandoned.push(p);
     else holding.push(p);
   }

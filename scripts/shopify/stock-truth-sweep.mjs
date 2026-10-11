@@ -50,7 +50,7 @@ import {
 import { readShopSnapshot } from "./bulkSnapshot.mjs";
 import { shallowKeys } from "../lib/rtdbPaged.mjs";
 import { requireSingleLocation, readAvailable, setAvailable, enforceTracking } from "./inventory.mjs";
-import { summarize, exceedsZeroGuard, exceedsFailureGuard, rollbackEntries, MAX_ZERO_SHARE } from "./stockTruth.mjs";
+import { summarize, exceedsZeroGuard, exceedsFailureGuard, rollbackEntries, keysNeedingGidLookup, MAX_ZERO_SHARE } from "./stockTruth.mjs";
 import { serverNowMs } from "./publishNode.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -163,14 +163,15 @@ async function judgeFromSnapshot(pid, snapshot, locNames, published) {
 
 // Every Shopify product gid ANY app product maps to — not only the listed set.
 // A product mid-publish, or one whose publish failed and left a listing
-// behind, has an id map but no "live" publish node; it must never be mistaken
-// for a listing the app does not know and zeroed (reviewer finding, PR #718).
-// Shallow keys (one small REST read), then one small read per id map.
-async function everyMappedGid(knownGids) {
-  const out = new Set(knownGids);
-  const keys = (await shallowKeys(admin.app(), "shopify_sync")).filter((k) => !k.startsWith("_"));
-  const rest = keys.filter((k) => !listedPidSet.has(k));
-  await pool(rest, async (pid) => {
+// behind, has an id map but no "live" publish node; and a LISTED product
+// whose judgement threw this run carries no gid in its result. Neither must
+// ever be mistaken for a listing the app does not know and zeroed (reviewer
+// findings, PR #718). Shallow keys (one small REST read), then one small read
+// per id map whose gid this run does not already hold.
+async function everyMappedGid(dry) {
+  const out = new Set(dry.map((r) => r?.gid).filter(Boolean));
+  const keys = await shallowKeys(admin.app(), "shopify_sync");
+  await pool(keysNeedingGidLookup(keys, dry), async (pid) => {
     const g = measure((await rawDb.ref(`shopify_sync/${pid}/shopifyProductId`).get()).val());
     if (g) out.add(g);
   });
@@ -203,15 +204,27 @@ async function main() {
   const snapshot = await readShopSnapshot(graphql, locId, { log });
   log(`Shopify snapshot: ${snapshot.size} active product(s) in ${Math.round((Date.now() - t0) / 1000)} s`);
   const published = await activePublishedGids();
+  // ── AN EMPTY OR SHORT SNAPSHOT IS A FAILURE, NOT A CLEAN SHOP ──────────────
+  // Every product published somewhere is ACTIVE, so it must be in the
+  // snapshot. A snapshot missing them would make every listing look inactive
+  // and the sweep report a clean bill of health — the original silence.
+  const missing = [...published.keys()].filter((g) => !snapshot.has(g));
+  if ((pids.length && snapshot.size === 0) || missing.length > Math.max(2, published.size * 0.01)) {
+    throw new Error(`the Shopify snapshot is incomplete: ${snapshot.size} active product(s), ${missing.length} of ${published.size} published product(s) missing from it`);
+  }
   const dry = await pool(pids, safe((pid) => judgeFromSnapshot(pid, snapshot, locNames, published)));
   const inactive = dry.filter((r) => r?.inactive).length;
+  // On the Online Store in the app, but not ACTIVE on Shopify (deleted,
+  // archived or draft): not an oversell — the opposite — and named so the
+  // report says which.
+  const onButInactive = dry.filter((r) => r?.inactive && listedNodes[r.pid]?.liveState === "on").map((r) => r.pid);
 
   // Listings with no app product behind them (skipped for a --pids run).
   let unmanagedGids = [];
   if (!ONLY) {
     const candidates = [...published.keys()].filter((g) => !dry.some((r) => r?.gid === g));
     if (candidates.length) {
-      const mapped = await everyMappedGid(dry.map((r) => r?.gid).filter(Boolean));
+      const mapped = await everyMappedGid(dry);
       unmanagedGids = candidates.filter((g) => !mapped.has(g));
     }
   }
@@ -241,7 +254,10 @@ async function main() {
       log(`✗ REFUSED: ${refused}`);
     } else {
       const todo = dry.filter((r) => (r?.ok === true || r?.permanent) && (r.drift?.length || r.untracked?.length));
-      const todoUnmanaged = dryUnmanaged.filter((r) => r.drift?.length || r.untracked?.length);
+      // A listing is only zeroed as "no app product" when every listed
+      // product was judged: one that failed might be the very one it maps to.
+      const todoUnmanaged = before.failed ? [] : dryUnmanaged.filter((r) => r.drift?.length || r.untracked?.length);
+      if (before.failed && dryUnmanaged.length) log(`  ⚠ ${dryUnmanaged.length} listing(s) with no app product NOT zeroed this run — ${before.failed} listed product(s) could not be judged`);
       if (todo.length || todoUnmanaged.length) {
         mkdirSync(ROLLBACK_DIR, { recursive: true });
         rollbackFile = join(ROLLBACK_DIR, `stock-truth-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
@@ -272,6 +288,7 @@ async function main() {
     listed: pids.length,
     liveOn,
     inactive,
+    onButInactive: onButInactive.slice(0, 50),
     unmanagedListings: unmanagedGids.length,
     found: { ...before, worst: before.worst.slice(0, 20), failures: before.failures.slice(0, 20) },
     corrected,
@@ -280,7 +297,6 @@ async function main() {
     refused,
     rollbackFile,
   };
-  log(`rtdb read: ${rtdbBytes.toLocaleString()} B in ${Math.round((Date.now() - t0) / 1000)} s`);
   // A --pids run is a surgical human command: it must not tell the watchdog
   // the whole shop was checked. A DRY run is recorded under its own key and
   // never as lastSweep — the watchdog judges sweeps that could have corrected.
@@ -290,6 +306,9 @@ async function main() {
     if (COMMIT) await rawDb.ref(`${HEALTH_PATH}/lastSweep`).set(stored);
     await rawDb.ref(`shopify_inventory_sweeps/${day}${COMMIT ? "" : "-dry"}`).set(stored);
   }
+  // Printed AFTER the report is stored: stock-truth-runner.mjs treats this
+  // line as "the night reported".
+  log(`rtdb read: ${rtdbBytes.toLocaleString()} B in ${Math.round((Date.now() - t0) / 1000)} s`);
   return refused || commitFailures.length || before.failed ? 1 : 0;
 }
 

@@ -54,6 +54,8 @@ export function parseSnapshot(jsonl) {
       variantId: v.id, title: v.title, inventoryItemId: itemId,
       tracked: v.inventoryItem?.tracked, inventoryPolicy: v.inventoryPolicy,
     });
+    // No inventory level at the location = UNKNOWN, exactly as readAvailable
+    // treats it: such an item cannot be written, so it is never a baseline.
     const qs = v.inventoryItem?.inventoryLevel?.quantities;
     if (itemId && Array.isArray(qs)) {
       const q = qs.find((x) => x.name === "on_hand") ?? qs.find((x) => x.name === "available");
@@ -86,9 +88,13 @@ export async function readShopSnapshot(graphql, locationId, { fetchImpl = fetch,
     const r = await graphql(`query ($id: ID!) { node(id: $id) { ... on BulkOperation { id status errorCode objectCount url } } }`, { id: op.id });
     const n = r.node;
     if (n.status === "COMPLETED") {
-      if (!n.url) return new Map(); // nothing matched: an empty shop
-      const body = await (await fetchImpl(n.url)).text();
-      return parseSnapshot(body);
+      // No file means nothing matched. The CALLER decides whether an empty
+      // shop is believable (it checks against the published products).
+      if (!n.url) return new Map();
+      const res = await fetchImpl(n.url);
+      if (!res.ok) throw new Error(`bulk snapshot download failed: HTTP ${res.status}`);
+      const snap = parseSnapshot(await res.text());
+      return snap;
     }
     if (["FAILED", "CANCELED", "EXPIRED"].includes(n.status)) throw new Error(`bulk snapshot ${n.status} (${n.errorCode || "no code"})`);
     if (Date.now() - started > BULK_TIMEOUT_MS) throw new Error(`bulk snapshot still ${n.status} after ${BULK_TIMEOUT_MS / 60000} min`);

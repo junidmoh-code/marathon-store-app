@@ -193,9 +193,13 @@ the POS (there is deliberately no order webhook). Writing the app's count to
 `available` hands the committed unit back to the storefront: the app holds 2,
 one sells online, Shopify shows available 1 / committed 1, and "available 2"
 offers two pairs while one is left. Writing on_hand keeps available = app −
-committed. The cost, stated plainly: if staff ring the POS sale **before**
-fulfilling the web order, Shopify is one unit short for that size until the
-order ships and the next sync lands — under-selling, never over-selling.
+committed. What it does not close, stated plainly: if staff **fulfil** the
+web order in Shopify before ringing it through the POS, Shopify lowers on
+hand itself and the next push writes the app's not-yet-lowered count — that
+unit is offered again until the POS sale lands (minutes, if the order is rung
+as it is packed). And if the POS sale lands **first**, Shopify is one unit
+short for that size until the order ships. Ringing web orders through the POS
+before fulfilling them in Shopify keeps the window closed.
 
 ## 3. Continuous sync
 
@@ -255,6 +259,8 @@ a Cloud Monitoring log-match policy (`scripts/shopify/install-stock-alarm.mjs`)
 emails to Junid **with the line's own text**. Email only.
 
 It alarms when:
+- **a product has failed to sync for 6+ hours** (the per-tick path has
+  stopped retrying it; the email names the products);
 - **no clean inventory pass for 15 minutes** while the reconciler is meant to
   be working (07:15–19:02 SAST). A clean pass is a movement-ledger pass with
   no retryable failure; the reconciler stamps `lastPassAt` after each one.

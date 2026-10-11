@@ -122,3 +122,15 @@ export function rollbackEntries(results) {
   }
   return out;
 }
+
+/**
+ * Which /shopify_sync keys must have their gid read before any listing may be
+ * called "no app product"? Every key whose gid this run's results do not
+ * already carry — listed or not. A listed product whose judgement THREW has
+ * no gid in its result, and skipping it would let its own live listing be
+ * zeroed as unmanaged (reviewer finding, PR #718).
+ */
+export function keysNeedingGidLookup(keys, results) {
+  const have = new Set((results || []).filter((r) => r?.gid && r?.pid).map((r) => r.pid));
+  return (keys || []).filter((k) => !String(k).startsWith("_") && !have.has(k));
+}

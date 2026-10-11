@@ -171,8 +171,12 @@ export async function requireSingleLocation(graphql) {
 // 2" offers two pairs while one is left. (Reviewer finding on PR #718, found
 // the moment tracking started being enforced.) Writing ON_HAND leaves
 // available = app − committed: the web order stays reserved until the POS sale
-// lands in the app, and then the numbers meet. The read and the
-// compare-and-set are on the same quantity, on_hand.
+// lands in the app. What it does NOT close, stated plainly: if staff FULFIL
+// the web order before ringing it through the POS, Shopify lowers on_hand
+// itself and the next push writes the app's not-yet-lowered count, offering
+// that unit again until the POS sale lands. And if the POS sale lands first,
+// Shopify is one short until the order ships. Both settle on the next push.
+// The read and the compare-and-set are on the same quantity, on_hand.
 export const PUSHED_QUANTITY = "on_hand";
 
 export async function readAvailable(graphql, locationId, inventoryItemIds) {
@@ -193,7 +197,11 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
   );
   for (const n of data.nodes ?? []) {
     if (!n?.id) continue;
-    const qs = n.inventoryLevel?.quantities ?? [];
+    // An item with NO inventory level at the location is not stocked there:
+    // it cannot be written, so it is unknown — never a baseline of 0. The bulk
+    // snapshot (bulkSnapshot.mjs) treats it the same way.
+    if (!n.inventoryLevel) continue;
+    const qs = n.inventoryLevel.quantities ?? [];
     // on_hand is always answered when asked; the `available` fallback exists
     // for older test doubles that only model one quantity, where the two are
     // the same number (nothing committed).

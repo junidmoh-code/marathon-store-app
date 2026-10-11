@@ -100,6 +100,26 @@ function assessInventoryHealth({ nowMs, health }) {
     lastAlarms.pass = null; // recovered — the next outage is a new one
   }
 
+  // ── stuck ─────────────────────────────────────────────────────────────────
+  // Products the per-tick sync gave up on after six hours of failing. The
+  // pass is otherwise healthy, so the "pass" alarm stays quiet; this one says
+  // which products are not reaching Shopify.
+  const stuck = Array.isArray(h.lastPass?.abandoned) ? h.lastPass.abandoned : [];
+  if (stuck.length) {
+    const signature = [...stuck].sort().join(",");
+    if (shouldFire(prev.stuck, signature, nowMs)) {
+      alarms.push({
+        kind: "stuck", signature,
+        message: `The Shopify inventory sync has been failing for 6+ hours on ${stuck.length} product(s): ${stuck.slice(0, 10).join(", ")}.` +
+          " Their stock changes are not reaching the website; the nightly check will try again." +
+          " The reason is in ~/marathon-store-app/logs/shopify-reconcile.log on the Mac mini.",
+      });
+      lastAlarms.stuck = { at: nowMs, signature };
+    }
+  } else if (prev.stuck) {
+    lastAlarms.stuck = null;
+  }
+
   // ── sweep ─────────────────────────────────────────────────────────────────
   const sweep = h.lastSweep || null;
   const problems = sweepProblems(sweep);
@@ -145,7 +165,7 @@ function assessInventoryHealth({ nowMs, health }) {
 
   return {
     alarms,
-    ok: !passStale && !problems.length && sweepAge !== null && sweepAge < SWEEP_STALE_MS,
+    ok: !passStale && !stuck.length && !problems.length && sweepAge !== null && sweepAge < SWEEP_STALE_MS,
     passAgeMinutes: passAge === null ? null : Math.round(passAge / 60000),
     inWindow,
     state: { checkedAt: nowMs, lastAlarms },
