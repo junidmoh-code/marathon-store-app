@@ -92,11 +92,11 @@ export async function desiredFor(db, pid, locNames = null) {
   // passes nothing gets the same FILTERED list as the sweep that passes one —
   // otherwise the cheap path and the convenient path read different shelves.
   const locs = locNames || (await locationNames(db));
+  // One point read per location, issued together: the same bytes as reading
+  // them in turn, at one round trip's latency instead of eight.
   const tree = {};
-  for (const loc of locs) {
-    const cells = (await db.ref(`stock/${loc}/${pid}`).get()).val();
-    if (cells) tree[loc] = { [pid]: cells };
-  }
+  const cellSets = await Promise.all(locs.map((loc) => db.ref(`stock/${loc}/${pid}`).get().then((s) => s.val())));
+  locs.forEach((loc, i) => { if (cellSets[i]) tree[loc] = { [pid]: cellSets[i] }; });
   return { map, totals: networkTotals(tree, pid, sizes) };
 }
 

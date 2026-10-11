@@ -159,6 +159,16 @@ describe("the number itself", () => {
     expect(totalFor(tree, "New Balance")).toBe(7);
   });
 
+  it("shows beside it the ONLINE figure the Shopify push sends — declared sizes, trusted locations only", async () => {
+    const tree = await mount([PRODUCTS[0], PRODUCTS[2]]);
+    const onlineOf = (frag) => rowTexts(tree).find((r) => r.includes(frag)).match(/online (\d+)/)?.[1];
+    // wide, declared sizes only: central S40 M30 · hub2 S20 M10 · marathon-pe S2 = 102
+    // (the undeclared XXXL is not offered; retired Base is not a counted shelf).
+    expect(onlineOf("Air Force")).toBe("102");
+    // drag: Pine's 700 and Hub 3's 500 are never sold online; hub2's negatives add 0.
+    expect(onlineOf("Puma Suede")).toBe("10");
+  });
+
   it("counts a size the product record does not declare, and an inactive location", async () => {
     const tree = await mount([PRODUCTS[0]]);
     // 107 only holds if XXXL (not in sizes[]) counts AND base (retired, holds 3),
@@ -292,11 +302,13 @@ describe("a product with no stock anywhere", () => {
     expect(totalFor(tree, "Chuck 70")).toBe(0);
   });
 
-  // The row is a name and a number. Nothing else belongs on it.
-  it("carries no diagnostics — just the name and the number", async () => {
+  // The row is a name and its numbers. Nothing else belongs on it. The second
+  // number is the online figure (docs/SHOPIFY-STOCK-TRUTH.md) — what the
+  // website may sell, from the same reads, by the Shopify push's own rule.
+  it("carries no diagnostics — just the name, the total and the online figure", async () => {
     const tree = await mount();
     const row = rowTexts(tree).find((r) => r.includes("Chuck 70"));
-    expect(row).toBe("Converse Chuck 70 Parchment0");
+    expect(row).toBe("Converse Chuck 70 Parchment0online 0");
   });
 });
 

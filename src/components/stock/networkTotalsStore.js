@@ -107,7 +107,9 @@ async function readOne(productId, locationIds) {
   }));
   const rejected = results.find((r) => r.status === "rejected");
   if (rejected) throw rejected.reason;
-  return sumProduct(byLoc);
+  // The cells ride along so the card can show the ONLINE figure (onlinePool.js)
+  // from the same reads — no second read for the second number.
+  return { ...sumProduct(byLoc), cells: byLoc };
 }
 
 // Totals for one product, memoised. Concurrent callers share one read.

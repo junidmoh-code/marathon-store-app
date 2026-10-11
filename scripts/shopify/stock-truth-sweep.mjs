@@ -41,7 +41,7 @@ import { homedir } from "os";
 import { join } from "path";
 import { graphql } from "./client.mjs";
 import {
-  syncProduct, zeroUnmanagedListing, locationNames, HEALTH_PATH,
+  syncProduct, zeroUnmanagedListing, locationNames, isListedOnShopify, HEALTH_PATH,
 } from "./inventorySync.mjs";
 import { requireSingleLocation, readAvailable, setAvailable, enforceTracking } from "./inventory.mjs";
 import { summarize, exceedsZeroGuard, rollbackEntries, MAX_ZERO_SHARE } from "./stockTruth.mjs";
@@ -135,9 +135,12 @@ async function main() {
   const t0 = Date.now();
 
   // ── The listed set: one filtered query ──────────────────────────────────────
-  const listedNodes = measure((await rawDb.ref("shopify_publish").orderByChild("state").equalTo("live").get()).val() || {});
-  let pids = Object.keys(listedNodes).sort();
-  if (ONLY) pids = pids.filter((p) => ONLY.has(p));
+  // A --pids run reads only its own nodes.
+  const listedNodes = ONLY
+    ? Object.fromEntries((await Promise.all([...ONLY].map(async (p) => [p, measure((await rawDb.ref(`shopify_publish/${p}`).get()).val())])))
+      .filter(([, n]) => isListedOnShopify(n)))
+    : measure((await rawDb.ref("shopify_publish").orderByChild("state").equalTo("live").get()).val() || {});
+  const pids = Object.keys(listedNodes).sort();
   const liveOn = pids.filter((p) => listedNodes[p]?.liveState === "on").length;
   log(`listed on Shopify: ${pids.length} (${liveOn} on the Online Store, ${pids.length - liveOn} switched off)`);
 
