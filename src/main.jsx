@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import App from "./App.jsx";
 import { startUpdateChecker } from "./update/updateChecker.js";
 import { applyPushDeepLink } from "./push/deepLink.js";
+import { consumePairingHash } from "./btHandoff/handoff.js";
 import { MirrorGate } from "./offline/MirrorGate.jsx";
 import DeviceQuarantine from "./device/DeviceQuarantine.jsx";
 import { auth, storage } from "./firebase.js";
@@ -41,6 +42,17 @@ if (typeof window !== "undefined") {
 // first is what makes the deep link work with no route, no parser and no second
 // source of truth about where a screen lives. See src/push/deepLink.js.
 applyPushDeepLink();
+
+// Bluetooth order hand-off: the pairing QR on Till 1 opens this app with
+// #bt-pair=<code>. Stored once on this tablet, then taken out of the URL.
+{
+  const paired = consumePairingHash();
+  if (paired) {
+    setTimeout(() => alert(paired.ok
+      ? `This tablet now sends ${paired.shop} orders to ${paired.till} over Bluetooth.\n\nThe first time you place an order, pick the till in the Bluetooth list.`
+      : "That pairing code is not valid. Scan the QR on the till again."), 0);
+  }
+}
 
 // Long-lived warehouse/TV tabs: poll /version.json and pick up new deploys on
 // their own (banner + idle auto-reload; never mid-count — see updateChecker.js).
