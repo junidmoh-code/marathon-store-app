@@ -5163,6 +5163,8 @@ import { buildBulkFillPlan } from "./utils/bulkPricing";
 import BulkPricePreview from "./components/admin/BulkPricePreview";
 import BulkPricingTab from "./components/admin/BulkPricingTab";
 import SpecialsTab from "./components/admin/SpecialsTab";
+import { btHandoff } from "./btHandoff/handoff.js";
+import BtHandoffStatus from "./btHandoff/BtHandoffStatus.jsx";
 
 // Missing-Prices category chips: All + the real top-levels (so a new category
 // appears automatically) + an Uncategorized catch-all. Keys match typeOf()
@@ -10900,6 +10902,11 @@ function AssistantView({ products, onExit, orders = [] }) {
         return;
       }
     }
+    // Bluetooth hand-off to Till 1 (src/btHandoff): Chrome opens its device
+    // chooser only inside a tap, so the one-time "which till?" rides THIS tap,
+    // before the first await. No-op on an unpaired tablet or once the till is
+    // known; never blocks or fails the order.
+    btHandoff().prepareFromGesture();
     setSubmitting(true);
     setSubmitRefusal("");
     try {
@@ -11121,6 +11128,10 @@ function AssistantView({ products, onExit, orders = [] }) {
           displayRefilledBy:           null,
         };
         await writeOrder(order);
+        // Push it to Till 1 over Bluetooth the moment it exists, so the till can
+        // sell it by number with no internet. Queued + retried in the background
+        // until the till acks; only orders for the paired till's shop.
+        btHandoff().handOff([order]);
         // A display-partner order means the DISPLAYED pair is being sold — the
         // display is leaving the shop floor, so its slot clears now (the
         // replacement send sets the new size later via setDisplayRefillStatus).
@@ -11388,6 +11399,7 @@ function AssistantView({ products, onExit, orders = [] }) {
           + CR fall through to the existing layout below. The shared Checkout
           sheet and photo lightbox (rendered later) surface over it. */}
       {/* The tongue-label finder overlay — surfaces over BOTH layouts. */}
+      <BtHandoffStatus />
       {labelFinderOpen && (
         <AssistantLabelFinder products={base}
           onFound={(p) => { setLabelFinderOpen(false); resetSheet(); setSelected(p); }}
