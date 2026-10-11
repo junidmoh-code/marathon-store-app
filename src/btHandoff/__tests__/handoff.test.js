@@ -460,9 +460,18 @@ describe("hand-off — review findings", () => {
 
 describe("hand-off — spec review", () => {
   const key = () => parsePairingCode(vector.pairingCode);
+  // A till that is on and in range: watching it delivers an advertisement.
+  const advertises = (device) => {
+    const ls = new Set();
+    device.addEventListener = (type, l) => { if (type === "advertisementreceived") ls.add(l); };
+    device.removeEventListener = (type, l) => { if (type === "advertisementreceived") ls.delete(l); };
+    device.watchAdvertisements = async () => { for (const l of [...ls]) l({ type: "advertisementreceived" }); };
+    return ls;
+  };
 
-  it("a remembered till that keeps refusing to connect is forgotten: the next tap opens the chooser", async () => {
+  it("a remembered till that advertises but keeps refusing to connect is forgotten: the next tap opens the chooser", async () => {
     const till = await fakeTill({ key: key(), failConnect: 3 });
+    advertises(till.device);
     const storage = memoryStorage();
     storage.setItem("granted", "1");
     const r = rig({ till, storage });
@@ -479,6 +488,7 @@ describe("hand-off — spec review", () => {
 
   it("forgotten even while Chrome still lists it: getDevices keeps returning it, the next tap opens the chooser", async () => {
     const till = await fakeTill({ key: key(), failConnect: 3 });
+    advertises(till.device);
     let forgets = 0;
     till.device.forget = async () => { forgets++; };
     const storage = memoryStorage();
@@ -490,6 +500,21 @@ describe("hand-off — spec review", () => {
     r.h.prepareFromGesture();
     await r.until(() => till.journal.size === 1);
     expect(r.chooserCalls()).toBe(1);
+  });
+
+  it("a till that is off or out of range (no advertisements) is retried, never forgotten", async () => {
+    const till = await fakeTill({ key: key(), failConnect: 6 });
+    till.device.watchAdvertisements = async () => {};   // silent: off / out of range
+    let forgets = 0;
+    till.device.forget = async () => { forgets++; };
+    const storage = memoryStorage();
+    storage.setItem("granted", "1");
+    const r = rig({ till, storage });
+    r.h.handOff([ORDER]);
+    await r.until(() => till.journal.size === 1);
+    expect(till.journal.size).toBe(1);
+    expect(forgets).toBe(0);
+    expect(r.chooserCalls()).toBe(0);
   });
 
   it("a device from getDevices is woken with watchAdvertisements before connecting", async () => {

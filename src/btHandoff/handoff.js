@@ -97,26 +97,30 @@ export function createHandoff({
 
   // Bounded: resolves on the first advertisement or after a few seconds,
   // whichever is first; connect() is attempted either way.
+  // -> true when the till was seen advertising (it is on and in range).
   async function seenAdvertising(d) {
     let ctl = null;
+    let seen = false;
     try {
       ctl = typeof AbortController === "function" ? new AbortController() : null;
       await new Promise((resolve) => {
         let settled = false;
-        const done = () => {
+        const done = (ev) => {
           if (settled) return;
           settled = true;
+          if (ev?.type === "advertisementreceived") seen = true;
           // Whichever wins, nothing is left listening on the device.
           d.removeEventListener?.("advertisementreceived", done);
           resolve();
         };
         d.addEventListener?.("advertisementreceived", done, { once: true });
-        setTimer(done, ADVERT_WAIT_MS);
-        Promise.resolve(d.watchAdvertisements(ctl ? { signal: ctl.signal } : undefined)).catch(done);
+        setTimer(() => done(), ADVERT_WAIT_MS);
+        Promise.resolve(d.watchAdvertisements(ctl ? { signal: ctl.signal } : undefined)).catch(() => done());
       });
     } catch { /* connect anyway */ } finally {
       try { ctl?.abort(); } catch { /* stopped */ }
     }
+    return seen;
   }
 
   const pairing = () => readPairing(storage);
@@ -228,20 +232,24 @@ export function createHandoff({
       needsGesture = true;
       throw new Error("Till 1 not chosen yet");
     }
+    let advertising = false;
     if (!d.gatt.connected && fromGetDevices.has(d) && typeof d.watchAdvertisements === "function") {
       // A device handed back by getDevices() after a restart: Chrome connects
       // to it reliably only once it has been seen advertising again.
-      await seenAdvertising(d);
+      advertising = await seenAdvertising(d);
     }
     let server;
     try {
       server = d.gatt.connected ? d.gatt : await gatt(() => d.gatt.connect(), "connect");
       connectFailures = 0;
     } catch (e) {
-      // A remembered till that will not connect, again and again (Chrome
-      // forgot the pairing, the till got a new radio): forget it, so the next
-      // Place order tap opens the chooser instead of "still trying" for ever.
-      connectFailures += 1;
+      // A remembered till that is ADVERTISING (on, in range) yet will not
+      // connect, again and again, has a stale pairing (Chrome forgot it, the
+      // till got a new radio): forget it, so the next Place order tap opens the
+      // chooser instead of "still trying" for ever. A till that is simply off
+      // or out of range does not advertise, and is retried, never forgotten.
+      if (advertising) connectFailures += 1;
+      else connectFailures = 0;
       if (connectFailures >= FORGET_AFTER_FAILURES) {
         // Chrome may still list it (getDevices), so revoke it there too and
         // skip it for this session; only the chooser brings a till back.
