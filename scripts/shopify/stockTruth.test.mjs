@@ -16,7 +16,7 @@ import { createRequire } from "node:module";
 import { syncProduct, zeroUnmanagedListing, isListedOnShopify } from "./inventorySync.mjs";
 import { ONLINE_EXCLUDED_LOCATIONS } from "./inventory.mjs";
 import {
-  sweepMovements, planMovementPass, nextCursorState, CURSOR_PATH, LOOKBACK_MS,
+  sweepMovements, planMovementPass, nextCursorState, CURSOR_PATH, LOOKBACK_MS, MAX_HOLD_MS,
 } from "./movementSync.mjs";
 import { summarize, oversell, exceedsZeroGuard, rollbackEntries } from "./stockTruth.mjs";
 
@@ -54,7 +54,11 @@ function fakeRtdb(store) {
     n[ps.at(-1)] = JSON.parse(JSON.stringify(v));
     // Nested empties and nulls inside the value are dropped too — RTDB never stores either.
     const strip = (o) => { for (const [k, x] of Object.entries(o)) { if (x === null) delete o[k]; else if (typeof x === "object") { strip(x); if (isEmpty(x)) delete o[k]; } } };
-    if (typeof n[ps.at(-1)] === "object") strip(n[ps.at(-1)]);
+    if (typeof n[ps.at(-1)] === "object") {
+      strip(n[ps.at(-1)]);
+      // A value that was nothing but empties is itself a delete.
+      if (isEmpty(n[ps.at(-1)])) { delete n[ps.at(-1)]; prune([...ps, "x"]); }
+    }
   };
   const ref = (path) => {
     const node = {
@@ -87,6 +91,9 @@ function fakeShopify(products, { failSetFor = new Set() } = {}) {
     calls.push(query.replace(/\s+/g, " ").slice(0, 60));
     if (query.includes("locations(first: 2)")) return { locations: { nodes: [{ id: "gid://shopify/Location/1", name: "Shop" }] } };
     if (query.includes("inventorySetQuantities")) {
+      // The app's count is written to ON_HAND; a test that sees "available"
+      // here has found the re-opened-web-order bug.
+      if (vars.input.name !== "on_hand") throw new Error(`fake Shopify: push wrote ${vars.input.name}, not on_hand`);
       for (const q of vars.input.quantities) {
         const it = items().find((i) => i.itemId === q.inventoryItemId);
         if (failSetFor.has(q.inventoryItemId)) throw new Error("Shopify unavailable");
@@ -111,12 +118,13 @@ function fakeShopify(products, { failSetFor = new Set() } = {}) {
     }
     if (query.includes("product(id: $id) { id }")) return { product: products[vars.id] ? { id: vars.id } : null };
     if (query.includes("nodes(ids: $ids)")) {
-      return { nodes: vars.ids.map((id) => { const it = items().find((i) => i.itemId === id); return it ? { id, inventoryLevel: { quantities: [{ name: "available", quantity: it.qty }] } } : null; }) };
+      return { nodes: vars.ids.map((id) => { const it = items().find((i) => i.itemId === id); return it ? { id, inventoryLevel: { quantities: [{ name: "available", quantity: it.qty - (it.committed || 0) }, { name: "on_hand", quantity: it.qty }] } } : null; }) };
     }
     throw new Error(`fake Shopify: unexpected query ${query.slice(0, 80)}`);
   };
   // What a customer can buy of one item: unlimited when Shopify is not counting.
-  const buyable = (itemId) => { const it = items().find((i) => i.itemId === itemId); return !it.tracked || it.policy !== "DENY" ? Infinity : Math.max(0, it.qty); };
+  // `qty` is on_hand; `committed` is web orders taken and not yet fulfilled.
+  const buyable = (itemId) => { const it = items().find((i) => i.itemId === itemId); return !it.tracked || it.policy !== "DENY" ? Infinity : Math.max(0, it.qty - (it.committed || 0)); };
   return { graphql, calls, buyable, products };
 }
 
@@ -212,6 +220,10 @@ describe("a transfer between locations leaves the total unchanged", () => {
     });
     const r = await pass();
     expect(r.failed).toBe(0);
+    // The product WAS visited and judged — not skipped by a missing path.
+    expect(r.products).toBe(1);
+    expect(r.notListed).toBe(0);
+    expect(r.results[0]).toMatchObject({ pid: "p1", ok: true, changed: 0 });
     expect(r.pushed).toBe(0);
     expect(shopify.calls.some((c) => c.includes("inventorySetQuantities"))).toBe(false);
     expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(2);
@@ -300,13 +312,27 @@ describe("the cursor does not advance on failure", () => {
     expect(nextCursorState({ cursorMs: 50 }, { done, deferred: failed }).cursorMs).toBe(100);
   });
 
-  it("a product failing for longer than the hold limit stops holding the cursor", () => {
+  it("a product failing for longer than the hold limit — timed from its FIRST failure — stops holding the cursor", () => {
     const now = 10 * 3600e3;
-    const failed = [{ pid: "a", keys: [["k1", 1]], earliest: 1, latest: 1 }];
+    const failed = [{ pid: "a", keys: [["k1", now - 2000]], earliest: now - 2000, latest: now - 2000 }];
     const done = [{ pid: "b", keys: [["k2", now - 1000]], earliest: now - 1000, latest: now - 1000 }];
-    const s = nextCursorState({ cursorMs: 1 }, { done, failed, nowMs: now });
-    expect(s.cursorMs).toBe(now - 1000);
-    expect(s.abandoned).toBe(1);
+    const held = nextCursorState({ cursorMs: now - 5000, failing: { a: now - MAX_HOLD_MS + 1 } }, { done, failed, nowMs: now });
+    expect(held.cursorMs).toBe(now - 5000);
+    expect(held.abandoned).toEqual([]);
+    const gone = nextCursorState({ cursorMs: now - 5000, failing: { a: now - MAX_HOLD_MS } }, { done, failed, nowMs: now });
+    expect(gone.abandoned).toEqual(["a"]);
+    expect(gone.cursorMs).toBe(now - 1000);
+    // Abandoned rows are marked seen, so they are not pushed again every tick.
+    expect(gone.seen).toEqual({ k1: now - 2000, k2: now - 1000 });
+    expect(gone.failing).toEqual({});
+  });
+
+  it("an OLD row's first failure still gets its full retries (the mini was off for hours)", () => {
+    const now = 20 * 3600e3;
+    const failed = [{ pid: "a", keys: [["k1", now - 10 * 3600e3]], earliest: now - 10 * 3600e3, latest: now - 10 * 3600e3 }];
+    const s = nextCursorState({ cursorMs: now - 11 * 3600e3 }, { failed, nowMs: now });
+    expect(s.abandoned).toEqual([]);
+    expect(s.failing).toEqual({ a: now });
   });
 
   it("a cursor is never carried ahead of the server clock by a fast till", () => {
@@ -314,15 +340,16 @@ describe("the cursor does not advance on failure", () => {
     expect(nextCursorState({ cursorMs: 0 }, { done, nowMs: 5_000 }).cursorMs).toBe(5_000);
   });
 
-  it("a product Shopify has deleted does not hold the cursor for ever", async () => {
+  it("a PERMANENT answer (deleted from Shopify) is reported, not retried, and does not hold the cursor", async () => {
     const { rtdb, pass } = world({
       stock: { hub1: { p1: { 6: { qty: 1 } } } },
       shop: [variant("6", 1), variant("7", 0)],
       movements: mv("received:x", { type: "received", size: "6", to: "hub1", ts: "2026-10-11T09:59:00.000Z" }),
       cursor: { cursorMs: Date.parse("2026-10-11T09:50:00Z") },
     });
-    const r = await pass({ push: async (pid) => ({ pid, ok: false, productGone: true, why: "DELETED FROM SHOPIFY" }) });
+    const r = await pass({ push: async (pid) => ({ pid, ok: false, productGone: true, permanent: true, why: "DELETED FROM SHOPIFY" }) });
     expect(r.failed).toBe(0);
+    expect(r.permanent).toEqual([{ pid: "p1", why: "DELETED FROM SHOPIFY" }]);
     expect(rtdb.store.shopify_sync._movementCursor.cursorMs).toBe(Date.parse("2026-10-11T09:59:00Z"));
   });
 });
@@ -444,5 +471,87 @@ describe("a switched-off product is still a listing", () => {
     });
     await pass();
     expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(0);
+  });
+});
+
+describe("a web order taken but not yet rung through the POS stays reserved", () => {
+  it("the push writes ON HAND, so Shopify's committed unit is not offered again", async () => {
+    // The app still holds 2 (the POS has not rung the web sale yet); Shopify
+    // has 2 on hand with 1 committed, i.e. 1 available. A push of "available 2"
+    // would offer two pairs while one is left.
+    const v6 = { ...variant("6", 2), committed: 1 };
+    const { shopify, pass } = world({
+      stock: { hub1: { p1: { 6: { qty: 2 } } } },
+      shop: [v6, variant("7", 0)],
+      movements: mv("adjustment:w1", { type: "adjustment", size: "7", to: "hub1", ts: "2026-10-11T09:59:00.000Z" }),
+      cursor: { cursorMs: Date.parse("2026-10-11T09:50:00Z") },
+    });
+    await pass();
+    expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(1);
+  });
+
+  it("…and once the POS rings it, the app's count and Shopify meet", async () => {
+    const v6 = { ...variant("6", 2), committed: 1 };
+    const { shopify, pass } = world({
+      stock: { hub1: { p1: { 6: { qty: 1 } } } },
+      shop: [v6, variant("7", 0)],
+      movements: mv("sold:pos1:hub1:p1:6", { type: "sold", size: "6", from: "hub1", ts: "2026-10-11T09:59:00.000Z" }),
+      cursor: { cursorMs: Date.parse("2026-10-11T09:50:00Z") },
+    });
+    await pass();
+    // on hand 1, committed 1 until it ships: nothing more for sale.
+    expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(0);
+  });
+});
+
+describe("a stale id map on a product that is still listed", () => {
+  it("holds every variant at 0 and reports a PERMANENT refusal", async () => {
+    const store = {
+      locations: LOCS,
+      stock: { hub1: { p1: { 6: { qty: 3 } } } },
+      shopify_sync: { p1: { shopifyProductId: GID, variants: { 6: { shopifyInventoryItemId: "gid://shopify/InventoryItem/OLD" } } } },
+    };
+    const rtdb = fakeRtdb(store);
+    const shopify = fakeShopify({ [GID]: [variant("6", 2), variant("7", 1, { tracked: false })] });
+    const r = await syncProduct(rtdb.db, shopify.graphql, "p1", { commit: true });
+    expect(r.ok).toBe(false);
+    expect(r.permanent).toBe(true);
+    expect(r.why).toMatch(/id map is stale/);
+    expect(shopify.buyable("gid://shopify/InventoryItem/6")).toBe(0);
+    expect(shopify.buyable("gid://shopify/InventoryItem/7")).toBe(0);
+  });
+});
+
+describe("the RTDB fake deletes empty arrays like the real server", () => {
+  it("removing the last element of an array child removes the parent key", async () => {
+    const rtdb = fakeRtdb({});
+    await rtdb.db.ref("a/list").set(["x"]);
+    expect(rtdb.store.a.list).toEqual(["x"]);
+    await rtdb.db.ref("a/list/0").set(null);
+    expect(rtdb.store.a).toBeUndefined();
+    await rtdb.db.ref("b").set({ list: [] });
+    expect(rtdb.store.b).toBeUndefined();
+  });
+});
+
+describe("the nightly sweep's bulk snapshot", async () => {
+  const { parseSnapshot } = await import("./bulkSnapshot.mjs");
+  const { planProduct } = await import("./inventorySync.mjs");
+  it("parses Shopify's JSONL into planProduct's inputs — on_hand is the baseline", () => {
+    const jsonl = [
+      { id: "gid://shopify/Product/1" },
+      { id: "gid://shopify/ProductVariant/6", title: "6", inventoryPolicy: "DENY", inventoryItem: { id: "I6", tracked: false, inventoryLevel: { quantities: [{ name: "available", quantity: 0 }, { name: "on_hand", quantity: 1 }] } }, __parentId: "gid://shopify/Product/1" },
+      { id: "gid://shopify/ProductVariant/7", title: "7", inventoryPolicy: "DENY", inventoryItem: { id: "I7", tracked: true, inventoryLevel: { quantities: [{ name: "available", quantity: 2 }, { name: "on_hand", quantity: 2 }] } }, __parentId: "gid://shopify/Product/1" },
+    ].map((o) => JSON.stringify(o)).join("\n");
+    const snap = parseSnapshot(jsonl);
+    const p = snap.get("gid://shopify/Product/1");
+    expect(p.baseline.get("I6")).toBe(1);
+    expect(p.variants.map((v) => v.tracked)).toEqual([false, true]);
+    const plan = planProduct({
+      map: { shopifyProductId: "gid://shopify/Product/1", variants: { 6: { shopifyInventoryItemId: "I6" }, 7: { shopifyInventoryItemId: "I7" } } },
+      variants: p.variants, baseline: p.baseline, totals: { 6: 0, 7: 2 },
+    });
+    expect(plan.untracked.map((u) => u.sizeKey)).toEqual(["6"]);
+    expect(plan.drift.map((d) => [d.sizeKey, d.shopify, d.quantity])).toEqual([["6", 1, 0]]);
   });
 });

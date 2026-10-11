@@ -156,9 +156,25 @@ export async function requireSingleLocation(graphql) {
 // Split out of setAvailable on purpose, because WHEN this read happens is the
 // whole correctness argument — see the block on setAvailable below. Callers
 // must take it BEFORE they snapshot /stock.
-// → Map(inventoryItemId → available quantity). An id Shopify does not know is
+// → Map(inventoryItemId → ON_HAND quantity — see below). An id Shopify does not know is
 //   absent from the map rather than defaulted to 0: "unknown" and "zero" are
 //   different facts and the caller has to be able to tell them apart.
+//
+// ── ON HAND, NOT AVAILABLE (2026-10-11) ──────────────────────────────────────
+// The number the app owns is ON_HAND — what is physically held. Shopify's
+// `available` is on_hand minus `committed`, and `committed` is a web order
+// taken but not yet fulfilled. The app does not know about that order until
+// staff ring it through the POS (no order webhook, deliberately — it would
+// double-deduct). Writing the app's count to `available` therefore handed the
+// committed unit straight back to the storefront: the app holds 2, one sells
+// online, Shopify shows available 1 / committed 1 — and a push of "available
+// 2" offers two pairs while one is left. (Reviewer finding on PR #718, found
+// the moment tracking started being enforced.) Writing ON_HAND leaves
+// available = app − committed: the web order stays reserved until the POS sale
+// lands in the app, and then the numbers meet. The read and the
+// compare-and-set are on the same quantity, on_hand.
+export const PUSHED_QUANTITY = "on_hand";
+
 export async function readAvailable(graphql, locationId, inventoryItemIds) {
   const out = new Map();
   if (!inventoryItemIds.length) return out;
@@ -168,7 +184,7 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
         ... on InventoryItem {
           id
           inventoryLevel(locationId: $loc) {
-            quantities(names: ["available"]) { name quantity }
+            quantities(names: ["available", "on_hand"]) { name quantity }
           }
         }
       }
@@ -177,7 +193,12 @@ export async function readAvailable(graphql, locationId, inventoryItemIds) {
   );
   for (const n of data.nodes ?? []) {
     if (!n?.id) continue;
-    out.set(n.id, n.inventoryLevel?.quantities?.find((x) => x.name === "available")?.quantity ?? 0);
+    const qs = n.inventoryLevel?.quantities ?? [];
+    // on_hand is always answered when asked; the `available` fallback exists
+    // for older test doubles that only model one quantity, where the two are
+    // the same number (nothing committed).
+    const q = qs.find((x) => x.name === PUSHED_QUANTITY) ?? qs.find((x) => x.name === "available");
+    out.set(n.id, q?.quantity ?? 0);
   }
   return out;
 }
@@ -265,11 +286,12 @@ export class InventoryMovedError extends Error {
 // fails it. There is no default and no internal re-read, because either would
 // let a caller opt back into the bug without saying so.
 //
-// WHAT THIS DOES NOT FIX, stated plainly so nobody reads it as more than it
-// is: /stock never learns about an online sale (there is no order webhook), so
-// the number computed from it is systematically high by whatever has sold
-// online. This makes that collision VISIBLE and refuses the write; it does not
-// make the app's count right. See scripts/shopify/README.md.
+// /stock never learns about an online sale until staff ring it through the POS
+// (there is no order webhook, by design). Until then the app's count includes
+// the unit sold online — which is why the write is to ON_HAND (see
+// PUSHED_QUANTITY above): Shopify keeps that unit committed, so it is not
+// offered again. The compare-and-set additionally refuses a write when a sale
+// lands between the baseline read and the write.
 export async function setAvailable(graphql, locationId, items, baseline) {
   if (!items.length) return { set: 0 };
   if (!(baseline instanceof Map)) {
@@ -299,7 +321,7 @@ export async function setAvailable(graphql, locationId, items, baseline) {
     {
       key: randomUUID(),
       input: {
-        name: "available",
+        name: PUSHED_QUANTITY,
         reason: "correction",
         quantities: items.map(({ inventoryItemId, quantity }) => ({
           inventoryItemId,

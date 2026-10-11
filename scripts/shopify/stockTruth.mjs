@@ -34,11 +34,18 @@ export function oversell(result) {
 /** Summarise a sweep's dry-run results into the report the watchdog reads. */
 export function summarize(results) {
   let checked = 0, drifted = 0, units = 0, unlimitedVariants = 0, removedUnits = 0;
-  let shopifyUnits = 0, appUnits = 0, gone = 0, failed = 0, unmanaged = 0;
+  let shopifyUnits = 0, appUnits = 0, gone = 0, failed = 0, unmanaged = 0, permanent = 0;
   const offenders = [];
+  const failures = [];
   for (const r of results || []) {
     if (r?.productGone) { gone++; continue; }
-    if (r?.ok !== true) { failed++; continue; }
+    // A retryable failure (a read that threw, tracking that could not be
+    // read): the listing was NOT judged. Counted, named, and alarmed on.
+    if (r?.ok !== true && !r?.permanent) { failed++; failures.push(`${r?.pid || r?.gid}: ${r?.why || r?.skipped || "not checked"}`); continue; }
+    // A permanent refusal (stale or missing id map) is still judged on what
+    // Shopify shows — its variants are held at 0 — and counted separately.
+    if (r?.permanent) permanent++;
+    if (r?.permanent && !r?.drift) continue;
     checked++;
     if (r.unmanaged) unmanaged++;
     shopifyUnits += Number(r.shopifyUnits) || 0;
@@ -63,7 +70,7 @@ export function summarize(results) {
   // Unlimited sizes first — any number of them can be sold — then by units.
   offenders.sort((a, b) => b.unlimitedVariants - a.unlimitedVariants || b.units - a.units);
   return {
-    checked, drifted, gone, failed, unmanaged,
+    checked, drifted, gone, failed, unmanaged, permanent, failures,
     oversellableUnits: units, unlimitedVariants, removedUnits,
     shopifyUnits, appUnits,
     zeroShare: shopifyUnits > 0 ? removedUnits / shopifyUnits : 0,
@@ -75,6 +82,15 @@ export function summarize(results) {
 /** True when committing this correction would trip Junid's 25% guard. */
 export function exceedsZeroGuard(summary, max = MAX_ZERO_SHARE) {
   return summary.zeroShare > max;
+}
+
+// Listings that could not be read add nothing to either side of the 25%
+// guard, so with many of them the guard is measuring a sample. Above this
+// share the sweep refuses to commit rather than trust it.
+export const MAX_FAILED_SHARE = 0.1;
+export function exceedsFailureGuard(summary, max = MAX_FAILED_SHARE) {
+  const total = summary.checked + summary.failed;
+  return total > 0 && summary.failed / total > max;
 }
 
 /**

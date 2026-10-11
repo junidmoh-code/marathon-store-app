@@ -55,6 +55,9 @@ function sweepProblems(sweep) {
     out.push(`STILL WRONG after correcting: ${r.oversellableUnits || 0} unit(s), ${r.unlimitedVariants || 0} unlimited size(s)`);
   }
   if ((sweep.commitFailures || []).length) out.push(`${sweep.commitFailures.length} listing(s) could not be corrected`);
+  // A listing the sweep could not READ was never judged — it may be the one
+  // overselling. Silence here would rebuild the original bug inside its check.
+  if ((f.failed || 0) > 0) out.push(`${f.failed} listing(s) could not be checked (${(f.failures || []).slice(0, 3).join("; ")})`);
   return out;
 }
 

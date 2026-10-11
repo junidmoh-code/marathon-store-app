@@ -20,16 +20,20 @@
 // whatever they missed — a row later than the lookback, a trigger that never
 // fired, a hand edit in the Shopify admin — is put right here every night.
 //
-// HOW IT READS. One filtered query for the listed set (state = "live"), then
-// per product: its id map and one /stock cell set per counted location — never
-// a whole node. Shopify is read per product too, through syncProduct, whose
-// compare-and-set makes a sale landing mid-sweep fail that product's write
-// rather than be overwritten. The bytes it read are printed and recorded.
+// HOW IT READS. One query on /shopify_publish's `state` index for the listed
+// set, then per product: its id map and one /stock cell set per counted
+// location — never a whole node. Shopify is read ONCE, as a bulk operation
+// (bulkSnapshot.mjs) — per-product queries are throttled to ~2 s each — and
+// judged with the same planProduct the per-tick push uses. Every WRITE goes
+// through syncProduct, which re-reads that product and compare-and-sets
+// against the fresh read, so a sale landing mid-sweep fails the write rather
+// than being overwritten. The bytes it read are printed and recorded.
 //
 // GUARDS. A commit is refused when the correction would take more than 25% of
 // the units Shopify is offering off sale (stockTruth.mjs MAX_ZERO_SHARE) —
-// that pattern means the quantity definition is wrong, not the website. The
-// refusal is recorded, so the watchdog emails Junid about it.
+// that pattern means the quantity definition is wrong, not the website — or
+// when more than 10% of listings could not be read (the 25% guard would be
+// measuring a sample). The refusal is recorded, so the watchdog emails Junid.
 //
 // ROLLBACK. Every committed run writes ~/marathon-rollbacks/stock-truth-<ts>.json
 // first: the quantity and tracking state of every item it is about to change.
@@ -41,10 +45,12 @@ import { homedir } from "os";
 import { join } from "path";
 import { graphql } from "./client.mjs";
 import {
-  syncProduct, zeroUnmanagedListing, locationNames, isListedOnShopify, HEALTH_PATH,
+  syncProduct, zeroUnmanagedListing, locationNames, isListedOnShopify, HEALTH_PATH, planProduct, desiredFor,
 } from "./inventorySync.mjs";
+import { readShopSnapshot } from "./bulkSnapshot.mjs";
+import { shallowKeys } from "../lib/rtdbPaged.mjs";
 import { requireSingleLocation, readAvailable, setAvailable, enforceTracking } from "./inventory.mjs";
-import { summarize, exceedsZeroGuard, rollbackEntries, MAX_ZERO_SHARE } from "./stockTruth.mjs";
+import { summarize, exceedsZeroGuard, exceedsFailureGuard, rollbackEntries, MAX_ZERO_SHARE } from "./stockTruth.mjs";
 import { serverNowMs } from "./publishNode.mjs";
 
 const require = createRequire(new URL("../../functions/package.json", import.meta.url));
@@ -58,7 +64,7 @@ const argOf = (n) => { const i = flags.indexOf(n); return i >= 0 ? flags[i + 1] 
 const ONLY = argOf("--pids") ? new Set(argOf("--pids").split(",").map((s) => s.trim()).filter(Boolean)) : null;
 const ROLLBACK = argOf("--rollback");
 const ROLLBACK_DIR = argOf("--rollback-dir") || join(homedir(), "marathon-rollbacks");
-const CONCURRENCY = 4;
+const CONCURRENCY = 8;
 const log = (s) => console.log(s);
 
 // ── Bytes read, measured rather than estimated ───────────────────────────────
@@ -129,18 +135,56 @@ async function rollback(file) {
   log(`rollback: ${restored} quantity(ies) restored from ${file}`);
 }
 
+// ── Pass 1 for one listed product, from the bulk snapshot ────────────────────
+// The SAME comparison syncProduct makes (planProduct), fed by the snapshot
+// instead of two live queries. Nothing here is a write baseline.
+async function judgeFromSnapshot(pid, snapshot, locNames) {
+  const desired = await desiredFor(db, pid, locNames);
+  if (!desired) return { pid, skipped: "no shopify_sync id map", permanent: true };
+  const { map, totals } = desired;
+  const gid = map.shopifyProductId ?? null;
+  const shop = gid ? snapshot.get(gid) : null;
+  // Not in the snapshot = not ACTIVE on Shopify (draft, archived or deleted):
+  // nothing can be bought from it, so there is nothing to correct.
+  if (!shop) return { pid, gid, ok: true, inactive: true, drift: [], untracked: [], shopifyUnits: 0, appUnits: 0 };
+  const plan = planProduct({ map, variants: shop.variants, baseline: shop.baseline, totals });
+  const base = { pid, gid, drift: plan.drift, untracked: plan.untracked, ...plan.meta, ...plan.stale };
+  if (plan.allUnknown && !shop.variants.length) return { ...base, ok: false, permanent: true, why: "the listing has no variants" };
+  if (plan.allUnknown) return { ...base, ok: false, permanent: true, why: "every mapped inventory item is unknown to Shopify — the id map is stale" };
+  return { ...base, ok: true };
+}
+
+// Every Shopify product gid ANY app product maps to — not only the listed set.
+// A product mid-publish, or one whose publish failed and left a listing
+// behind, has an id map but no "live" publish node; it must never be mistaken
+// for a listing the app does not know and zeroed (reviewer finding, PR #718).
+// Shallow keys (one small REST read), then one small read per id map.
+async function everyMappedGid(knownGids) {
+  const out = new Set(knownGids);
+  const keys = (await shallowKeys(admin.app(), "shopify_sync")).filter((k) => !k.startsWith("_"));
+  const rest = keys.filter((k) => !listedPidSet.has(k));
+  await pool(rest, async (pid) => {
+    const g = measure((await rawDb.ref(`shopify_sync/${pid}/shopifyProductId`).get()).val());
+    if (g) out.add(g);
+  });
+  return out;
+}
+let listedPidSet = new Set();
+
 async function main() {
   if (ROLLBACK) return rollback(ROLLBACK);
   const startedAt = await serverNowMs(rawDb);
   const t0 = Date.now();
 
-  // ── The listed set: one filtered query ──────────────────────────────────────
-  // A --pids run reads only its own nodes.
+  // ── The listed set ──────────────────────────────────────────────────────────
+  // One query on /shopify_publish's `state` index (the reconciler's own
+  // readLivePids uses it); a --pids run reads only its own nodes.
   const listedNodes = ONLY
     ? Object.fromEntries((await Promise.all([...ONLY].map(async (p) => [p, measure((await rawDb.ref(`shopify_publish/${p}`).get()).val())])))
       .filter(([, n]) => isListedOnShopify(n)))
     : measure((await rawDb.ref("shopify_publish").orderByChild("state").equalTo("live").get()).val() || {});
   const pids = Object.keys(listedNodes).sort();
+  listedPidSet = new Set(pids);
   const liveOn = pids.filter((p) => listedNodes[p]?.liveState === "on").length;
   log(`listed on Shopify: ${pids.length} (${liveOn} on the Online Store, ${pids.length - liveOn} switched off)`);
 
@@ -148,48 +192,63 @@ async function main() {
   const locNames = await locationNames(db);
   const check = (commit) => safe((pid) => syncProduct(db, graphql, pid, { commit, locationId: locId, locNames }));
 
-  // ── Pass 1: measure ──────────────────────────────────────────────────────────
-  const dry = await pool(pids, check(false));
+  // ── Pass 1: measure, from one bulk snapshot of every active listing ────────
+  const snapshot = await readShopSnapshot(graphql, locId, { log });
+  log(`Shopify snapshot: ${snapshot.size} active product(s) in ${Math.round((Date.now() - t0) / 1000)} s`);
+  const dry = await pool(pids, safe((pid) => judgeFromSnapshot(pid, snapshot, locNames)));
+  const inactive = dry.filter((r) => r?.inactive).length;
+
   // Listings with no app product behind them (skipped for a --pids run).
-  const mappedGids = new Set(dry.map((r) => r?.gid).filter(Boolean));
-  // A result without a gid (a refusal, a throw) must NOT let its product be
-  // mistaken for one the app does not know — that would zero a real listing.
-  // Its id map is read directly, one small read each.
-  for (const [i, r] of dry.entries()) {
-    if (r?.gid) continue;
-    const gid = measure((await rawDb.ref(`shopify_sync/${pids[i]}/shopifyProductId`).get()).val());
-    if (gid) mappedGids.add(gid);
+  let unmanagedGids = [];
+  if (!ONLY) {
+    const published = await activePublishedGids();
+    const candidates = [...published.keys()].filter((g) => !dry.some((r) => r?.gid === g));
+    if (candidates.length) {
+      const mapped = await everyMappedGid(dry.map((r) => r?.gid).filter(Boolean));
+      unmanagedGids = candidates.filter((g) => !mapped.has(g));
+    }
   }
-  const unmanagedGids = ONLY ? [] : [...(await activePublishedGids()).keys()].filter((g) => !mappedGids.has(g));
-  const dryUnmanaged = await pool(unmanagedGids, safe((gid) => zeroUnmanagedListing(graphql, gid, { commit: false, locationId: locId })));
+  const dryUnmanaged = unmanagedGids.map((gid) => {
+    const shop = snapshot.get(gid);
+    if (!shop) return { gid, ok: true, unmanaged: true, drift: [], untracked: [], shopifyUnits: 0, appUnits: 0 };
+    const plan = planProduct({ map: { shopifyProductId: gid, variants: {} }, variants: shop.variants, baseline: shop.baseline, totals: {} });
+    return { gid, ok: true, unmanaged: true, drift: plan.drift, untracked: plan.untracked, ...plan.meta };
+  });
   const before = summarize([...dry, ...dryUnmanaged]);
   log(`checked ${before.checked} · ${before.drifted} drifted · ${before.oversellableUnits} oversellable unit(s) · ` +
-    `${before.unlimitedVariants} size(s) Shopify was not limiting · ${before.gone} deleted from Shopify · ${before.failed} failed · ` +
+    `${before.unlimitedVariants} size(s) Shopify was not limiting · ${before.gone} deleted from Shopify · ` +
+    `${before.permanent} with a stale or missing id map · ${before.failed} could not be read · ${inactive} not active on Shopify · ` +
     `${unmanagedGids.length} listing(s) with no app product`);
-  log(`Shopify offers ${before.shopifyUnits} unit(s); the app's online pool holds ${before.appUnits}; the correction takes ${before.removedUnits} off sale (${(before.zeroShare * 100).toFixed(1)}%)`);
+  log(`Shopify holds ${before.shopifyUnits} unit(s) on hand; the app's online pool holds ${before.appUnits}; the correction takes ${before.removedUnits} off sale (${(before.zeroShare * 100).toFixed(1)}%)`);
   for (const w of before.worst) log(`  ${w.pid || w.gid}: ${w.unlimitedVariants ? `${w.unlimitedVariants} unlimited size(s)` : ""}${w.units ? ` ${w.units} unit(s) over` : ""} — ${w.sizes.join("; ")}`);
-  for (const r of dry.filter((x) => x?.ok === false && !x.productGone)) log(`  ⚠ ${r.pid}: ${r.why}`);
+  for (const f of before.failures) log(`  ⚠ ${f}`);
 
   let after = null, corrected = 0, refused = null, rollbackFile = null, commitFailures = [];
   if (COMMIT) {
     if (exceedsZeroGuard(before)) {
       refused = `the correction would take ${(before.zeroShare * 100).toFixed(1)}% of Shopify's units off sale (limit ${MAX_ZERO_SHARE * 100}%) — the quantity definition is suspect, nothing was written`;
+    } else if (exceedsFailureGuard(before)) {
+      refused = `${before.failed} of ${pids.length} listings could not be read — too many to trust the 25% guard, nothing was written`;
+    }
+    if (refused) {
       log(`✗ REFUSED: ${refused}`);
     } else {
-      const todo = dry.filter((r) => r?.ok === true && (r.drift?.length || r.untracked?.length));
-      const todoUnmanaged = dryUnmanaged.filter((r) => r?.ok === true && (r.drift?.length || r.untracked?.length));
+      const todo = dry.filter((r) => (r?.ok === true || r?.permanent) && (r.drift?.length || r.untracked?.length));
+      const todoUnmanaged = dryUnmanaged.filter((r) => r.drift?.length || r.untracked?.length);
       if (todo.length || todoUnmanaged.length) {
         mkdirSync(ROLLBACK_DIR, { recursive: true });
         rollbackFile = join(ROLLBACK_DIR, `stock-truth-${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
         writeFileSync(rollbackFile, JSON.stringify({ at: new Date().toISOString(), kind: "shopify-stock-truth", entries: rollbackEntries([...todo, ...todoUnmanaged]) }, null, 1));
         log(`rollback file: ${rollbackFile}`);
       }
+      // Every write re-reads the product first (syncProduct) and
+      // compare-and-sets against that fresh read, never the snapshot.
       const done = await pool(todo.map((r) => r.pid), check(true));
       const doneUnmanaged = await pool(todoUnmanaged.map((r) => r.gid), safe((gid) => zeroUnmanagedListing(graphql, gid, { commit: true, locationId: locId })));
-      corrected = [...done, ...doneUnmanaged].filter((r) => r?.ok === true && r.changed).length;
-      commitFailures = [...done, ...doneUnmanaged].filter((r) => r?.ok !== true).map((r) => `${r.pid || r.gid}: ${r.why}`);
+      corrected = [...done, ...doneUnmanaged].filter((r) => r?.changed).length;
+      commitFailures = [...done, ...doneUnmanaged].filter((r) => r?.ok !== true && !r?.permanent).map((r) => `${r.pid || r.gid}: ${r.why}`);
       for (const f of commitFailures) log(`  ⚠ not corrected: ${f}`);
-      // ── Verify by reading back what was corrected ──────────────────────────
+      // ── Verify by reading back, product by product, what was corrected ─────
       const reread = await pool(todo.map((r) => r.pid), check(false));
       const rereadUnmanaged = await pool(todoUnmanaged.map((r) => r.gid), safe((gid) => zeroUnmanagedListing(graphql, gid, { commit: false, locationId: locId })));
       after = summarize([...reread, ...rereadUnmanaged]);
@@ -205,8 +264,9 @@ async function main() {
     scope: ONLY ? "pids" : "all",
     listed: pids.length,
     liveOn,
+    inactive,
     unmanagedListings: unmanagedGids.length,
-    found: { ...before, worst: before.worst.slice(0, 20) },
+    found: { ...before, worst: before.worst.slice(0, 20), failures: before.failures.slice(0, 20) },
     corrected,
     residual: after ? { oversellableUnits: after.oversellableUnits, unlimitedVariants: after.unlimitedVariants, worst: after.worst.slice(0, 5) } : null,
     commitFailures: commitFailures.slice(0, 20),
@@ -215,14 +275,15 @@ async function main() {
   };
   log(`rtdb read: ${rtdbBytes.toLocaleString()} B in ${Math.round((Date.now() - t0) / 1000)} s`);
   // A --pids run is a surgical human command: it must not tell the watchdog
-  // the whole shop was checked.
+  // the whole shop was checked. A DRY run is recorded under its own key and
+  // never as lastSweep — the watchdog judges sweeps that could have corrected.
   if (!ONLY) {
     const day = new Date(startedAt + 2 * 3600e3).toISOString().slice(0, 10);
     const stored = JSON.parse(JSON.stringify(report)); // drop undefined
-    await rawDb.ref(`${HEALTH_PATH}/lastSweep`).set(stored);
-    await rawDb.ref(`shopify_inventory_sweeps/${day}`).set(stored);
+    if (COMMIT) await rawDb.ref(`${HEALTH_PATH}/lastSweep`).set(stored);
+    await rawDb.ref(`shopify_inventory_sweeps/${day}${COMMIT ? "" : "-dry"}`).set(stored);
   }
-  return refused || commitFailures.length ? 1 : 0;
+  return refused || commitFailures.length || before.failed ? 1 : 0;
 }
 
 main().then((code) => process.exit(code ?? 0)).catch((e) => {

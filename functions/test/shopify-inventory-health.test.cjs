@@ -98,3 +98,9 @@ test("a fractional serverNowMs heartbeat is still a heartbeat", () => {
   const v = assessInventoryHealth({ nowMs: DAY, health: { lastPassAt: DAY - 60000.37, lastSweep: freshSweep() } });
   assert.equal(v.ok, true);
 });
+
+test("listings the sweep could not READ alarm — they were never judged", () => {
+  const v = assessInventoryHealth({ nowMs: DAY, health: { lastPassAt: DAY, lastSweep: freshSweep({ found: { oversellableUnits: 0, unlimitedVariants: 0, failed: 4, failures: ["p1: HTTP 502"], worst: [] } }) } });
+  assert.deepEqual(v.alarms.map((a) => a.kind), ["sweep"]);
+  assert.match(v.alarms[0].message, /4 listing\(s\) could not be checked \(p1: HTTP 502\)/);
+});

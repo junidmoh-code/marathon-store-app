@@ -74,11 +74,14 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
       cwd: REPO, env: process.env, encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     });
     for (const l of `${r.stdout || ""}${r.stderr || ""}`.split("\n")) if (l.trim()) log(`   ${l}`);
-    // Stamped whatever the exit code: a sweep that ran and REFUSED or could
-    // not correct something has reported that at /shopify_inventory_health,
-    // and the watchdog emails it. Re-running every 10 minutes would only
-    // repeat it. A sweep that could not start at all (no exit code) retries.
-    if (r.status !== null) writeFileSync(STATE_FILE, JSON.stringify({ ...state, lastRunDate: date, lastExit: r.status, lastRunAt: Date.now() }));
+    // Stamped only when the sweep got as far as its REPORT ("rtdb read:" is
+    // printed just before it is written): a sweep that refused or could not
+    // correct something has said so at /shopify_inventory_health and the
+    // watchdog emails it, so re-running every 10 minutes would only repeat
+    // it. A sweep that died before reporting (auth, network) retries on the
+    // next wake instead of losing the night.
+    const reported = /rtdb read: /.test(r.stdout || "");
+    if (reported) writeFileSync(STATE_FILE, JSON.stringify({ ...state, lastRunDate: date, lastExit: r.status, lastRunAt: Date.now() }));
     log(`── sweep end: exit ${r.status ?? r.signal ?? r.error?.message} ──`);
   } finally {
     try { unlinkSync(LOCK_FILE); } catch {}

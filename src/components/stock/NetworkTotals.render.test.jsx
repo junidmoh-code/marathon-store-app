@@ -37,6 +37,10 @@ const reads = {
   "stock/base/wide":          { S: cell(3) },                                 // active:false, still counted
   "stock/marathon-pe/wide":   { S: cell(2) },
   "stock/central/mid":        { S: cell(12) },
+  // In Transit is counted in the TOTAL (it is ours) but never sold ONLINE.
+  // Its own product, outside PRODUCTS, so no other test's numbers move.
+  "stock/central/transit":    { S: cell(3) },
+  "stock/in_transit/transit": { S: cell(4) },
   "stock/trophy/mid":         { S: cell(6) },
   // "drag" holds a big negative and units in BOTH excluded locations — the
   // strongest fixture for "negatives add nothing" and "Pine and Hub 3 are out".
@@ -160,12 +164,17 @@ describe("the number itself", () => {
   });
 
   it("shows beside it the ONLINE figure the Shopify push sends — declared sizes, trusted locations only", async () => {
-    const tree = await mount([PRODUCTS[0], PRODUCTS[2]]);
+    const TRANSIT = { id: "transit", name: "Asics Gel Kayano In Transit", sizes: ["S"], photoUrl: null };
+    const tree = await mount([PRODUCTS[0], PRODUCTS[2], TRANSIT]);
     const onlineOf = (frag) => rowTexts(tree).find((r) => r.includes(frag)).match(/online (\d+)/)?.[1];
     // wide, declared sizes only: central S40 M30 · hub2 S20 M10 · marathon-pe S2 = 102
     // (the undeclared XXXL is not offered; retired Base is not a counted shelf).
     expect(onlineOf("Air Force")).toBe("102");
-    // drag: Pine's 700 and Hub 3's 500 are never sold online; hub2's negatives add 0.
+    // transit: total 7, online 3 — the 4 in transit are ours but not
+    // pickable, and onlinePool is what drops them (the card DOES read In Transit).
+    expect(totalFor(tree, "Kayano")).toBe(7);
+    expect(onlineOf("Kayano")).toBe("3");
+    // drag: hub2's negatives add 0 (Pine and Hub 3 are not read by this card).
     expect(onlineOf("Puma Suede")).toBe("10");
   });
 

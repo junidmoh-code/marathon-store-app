@@ -26,9 +26,12 @@
 // and by the nightly sweep (stock-truth-sweep.mjs).
 //
 // ── THE CURSOR ONLY MOVES PAST WHAT WAS PUSHED ───────────────────────────────
-// A product whose push fails keeps its rows out of `seen`, and the cursor is
-// held at the earliest of them, so the next tick reads them again. A failed
-// push can never look like a done one — the same rule the markers live by.
+// A product whose push fails (a transport error, a sale landing mid-push, a
+// tracking read that failed) keeps its rows out of `seen`, and the cursor is
+// held at the earliest of them, so the next tick reads them again — for up to
+// MAX_HOLD_MS. A PERMANENT answer (deleted from Shopify, an id map Shopify
+// does not recognise) is not a failure the next tick can fix: it is counted
+// done, reported every time the product moves, and left to the nightly sweep.
 //
 // State lives at /shopify_sync/_movementCursor (beside _reconcileState, which
 // this directory already keeps there). It is server-only: the Admin SDK
@@ -73,30 +76,43 @@ export function planMovementPass(rows, state = {}) {
   return [...byPid.values()].sort((a, b) => a.earliest - b.earliest || (a.pid < b.pid ? -1 : 1));
 }
 
-// A product that keeps failing holds the cursor for at most this long. After
-// that its rows are left to the nightly sweep (stock-truth-sweep.mjs), which
-// reads every listing whatever the ledger says, so one permanently stuck
-// product cannot make every tick re-read an ever-growing window for ever.
+// A product that keeps failing holds the cursor for at most this long, timed
+// from its FIRST failure (not from its row's ts — a row that was already old
+// when the mini came back from an outage must still get its full retries).
+// After that its rows are marked seen and left to the nightly sweep
+// (stock-truth-sweep.mjs), which reads every listing whatever the ledger says,
+// so one stuck product cannot make every tick re-read a growing window.
 export const MAX_HOLD_MS = 6 * 60 * 60 * 1000;
 
 /**
  * Pure: the state to store after a pass.
  *
- *   done      products whose rows may be marked seen (pushed, or nothing to push)
- *   failed    products whose push failed this tick
+ *   done      products whose rows may be marked seen (pushed, nothing to push,
+ *             or a PERMANENT answer retrying cannot change)
+ *   failed    products whose push failed this tick (retryable)
  *   deferred  products past the per-tick cap (not attempted)
  *
  * THE CURSOR NEVER ADVANCES ON A FAILURE: with anything failed it stays where
  * it was (or moves BACK to the failed row, if that row arrived late). With
  * only deferred work it advances to the oldest deferred row. With everything
  * done it moves to the latest row. `seen` keeps only rows still inside the
- * next tick's window. A failure older than MAX_HOLD_MS no longer holds it.
+ * next tick's window. `failing` remembers when each product first failed.
  */
 export function nextCursorState(state = {}, { done = [], failed = [], deferred = [], nowMs = null } = {}) {
   const seen = { ...(state.seen || {}) };
-  for (const p of done) for (const [key, at] of p.keys) seen[key] = at;
+  const failing = { ...(state.failing || {}) };
+  for (const p of done) delete failing[p.pid];
+  const holding = [];
+  const abandoned = [];
+  for (const p of failed) {
+    const since = Number(failing[p.pid]) || (Number.isFinite(nowMs) ? nowMs : 0);
+    failing[p.pid] = since;
+    if (Number.isFinite(nowMs) && nowMs - since >= MAX_HOLD_MS) abandoned.push(p);
+    else holding.push(p);
+  }
+  for (const p of [...done, ...abandoned]) for (const [key, at] of p.keys) seen[key] = at;
+  for (const p of abandoned) delete failing[p.pid];
   const prev = Number(state.cursorMs) || null;
-  const holding = Number.isFinite(nowMs) ? failed.filter((p) => p.earliest >= nowMs - MAX_HOLD_MS) : failed;
   let cursorMs;
   if (holding.length) {
     const oldest = Math.min(...holding.map((p) => p.earliest));
@@ -104,7 +120,7 @@ export function nextCursorState(state = {}, { done = [], failed = [], deferred =
   } else if (deferred.length) {
     cursorMs = Math.min(...deferred.map((p) => p.earliest));
   } else {
-    const latest = done.length ? Math.max(...done.map((p) => p.latest)) : null;
+    const latest = [...done, ...abandoned].length ? Math.max(...[...done, ...abandoned].map((p) => p.latest)) : null;
     cursorMs = latest === null ? prev : Math.max(prev ?? latest, latest);
   }
   // A till whose clock runs FAST stamps rows in the future. A cursor that
@@ -115,23 +131,27 @@ export function nextCursorState(state = {}, { done = [], failed = [], deferred =
     const floor = cursorMs - LOOKBACK_MS;
     for (const [k, at] of Object.entries(seen)) if (at < floor) delete seen[k];
   }
-  return { cursorMs, seen, abandoned: failed.length - holding.length };
+  return { cursorMs, seen, failing, abandoned: abandoned.map((p) => p.pid) };
 }
 
 /**
  * One pass of the movement path.
  *
  * deps:
- *   db          Admin SDK database (or a fake)
- *   push(pid)   pushes one product → { ok, ... }; may throw
+ *   db            Admin SDK database (or a fake)
+ *   push(pid)     pushes one product → { ok, ... }; may throw
  *   isListed(pid) → whether the product has a Shopify listing to correct
- *   nowMs       server clock, for a first run with no cursor
- *   commit      false = plan and report, store nothing
- *   skip        pids already pushed successfully this tick by another path
+ *   nowMs         server clock, for a first run with no cursor
+ *   commit        false = plan and report, store nothing
+ *
+ * No product is skipped because another path pushed it earlier in the tick:
+ * a sale landing between that push's stock read and this query would then be
+ * marked seen without ever being pushed (reviewer finding, PR #718). A second
+ * push of an unchanged product is one Shopify read and no write.
  */
 export async function sweepMovements(db, {
   push, isListed, nowMs, commit = false, max = MAX_PRODUCTS_PER_TICK,
-  skip = new Set(), log = () => {}, meter = () => {},
+  log = () => {}, meter = () => {},
 } = {}) {
   const state = (await db.ref(CURSOR_PATH).get()).val() || {};
   // A first run starts one lookback ago: it catches the recent past and never
@@ -146,49 +166,58 @@ export async function sweepMovements(db, {
   const failedP = [];
   const deferred = [];
   const results = [];
-  let pushed = 0, failed = 0, notListed = 0;
+  const permanent = [];
+  let pushed = 0, notListed = 0;
   for (const [i, p] of plan.entries()) {
     if (i >= max) { deferred.push(p); continue; }
-    if (skip.has(p.pid)) { done.push(p); continue; }
     try {
       if (!(await isListed(p.pid))) { notListed++; done.push(p); continue; }
       const r = await push(p.pid);
       results.push(r);
-      // ── WHAT COUNTS AS DONE ────────────────────────────────────────────
-      // ok:true — pushed or already right. A product Shopify has DELETED is
-      // also done: retrying cannot change it, and holding the cursor behind it
-      // would stall every product after it for ever (the zombie failure the
-      // marker sweep had to rotate around). It is reported every time it moves.
-      if (r?.ok === true || r?.productGone === true) {
+      if (r?.ok === true) {
         done.push(p);
         if (r?.changed) pushed++;
+      } else if (r?.permanent === true) {
+        // ── A PERMANENT ANSWER IS DONE, AND SAID OUT LOUD ────────────────
+        // Deleted from Shopify, an id map Shopify does not recognise, no id
+        // map at all: retrying cannot change any of them, and holding the
+        // cursor behind them would stall every product after them and stop
+        // the watchdog's heartbeat for a reason no tick can fix. They are
+        // reported every time they move, and the nightly sweep reports them.
+        done.push(p);
+        permanent.push({ pid: p.pid, why: r?.why || r?.skipped });
       } else {
-        failed++;
         failedP.push(p);
         log(`  ⚠ movement sync ${p.pid}: ${r?.why || r?.skipped || "not pushed"} — rows kept, the next tick retries`);
       }
     } catch (e) {
-      failed++;
       failedP.push(p);
       results.push({ pid: p.pid, ok: false, why: String(e?.message || e) });
       log(`  ⚠ movement sync ${p.pid}: ${String(e?.message || e)} — rows kept, the next tick retries`);
     }
   }
   const next = nextCursorState({ ...state, cursorMs }, { done, failed: failedP, deferred, nowMs });
-  if (next.abandoned) log(`  ⚠ movement sync: ${next.abandoned} product(s) failing for over ${MAX_HOLD_MS / 3600e3} h no longer hold the cursor — the nightly sweep owns them`);
+  if (next.abandoned.length) log(`  ⚠ movement sync: ${next.abandoned.join(", ")} failing for over ${MAX_HOLD_MS / 3600e3} h — no longer holding the cursor; the nightly sweep owns them`);
   if (commit) {
+    // RTDB stores no empty object; null says "nothing here" honestly.
+    const orNull = (o) => (Object.keys(o).length ? o : null);
     await db.ref(CURSOR_PATH).set({
       cursorMs: next.cursorMs,
-      // RTDB stores no empty object; null says "nothing seen" honestly.
-      seen: Object.keys(next.seen).length ? next.seen : null,
+      seen: orNull(next.seen),
+      failing: orNull(next.failing),
       updatedAt: nowMs,
     });
   }
   return {
     rows: Object.keys(rows).length,
     products: plan.length,
-    pushed, failed, notListed,
-    deferred: Math.max(0, plan.length - max),
+    pushed, notListed,
+    // Retryable failures still holding the cursor. Only these make a pass
+    // "not clean" for the watchdog.
+    failed: failedP.length - next.abandoned.length,
+    permanent,
+    abandoned: next.abandoned,
+    deferred: deferred.length,
     cursorMs: next.cursorMs,
     advanced: next.cursorMs !== (Number(state.cursorMs) || null),
     results,
