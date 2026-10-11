@@ -67,6 +67,8 @@ export function consumePairingHash(loc = globalThis.location, history = globalTh
 // Every Web Bluetooth call is time-boxed: a GATT promise that never settles
 // (the till walked out of range mid-write) must not wedge the sender.
 export const GATT_TIMEOUT_MS = 10_000;
+export const FORGET_AFTER_FAILURES = 3;
+const ADVERT_WAIT_MS = 5_000;
 
 export function createHandoff({
   bluetooth = globalThis.navigator?.bluetooth,
@@ -89,6 +91,25 @@ export function createHandoff({
   const listeners = new Set();
   const ackWaiters = new Map(); // msgId -> finish
   const listening = new WeakSet(); // ack characteristics that already have our listener
+  const fromGetDevices = new WeakSet();
+  let connectFailures = 0;
+
+  // Bounded: resolves on the first advertisement or after a few seconds,
+  // whichever is first; connect() is attempted either way.
+  async function seenAdvertising(d) {
+    let ctl = null;
+    try {
+      ctl = typeof AbortController === "function" ? new AbortController() : null;
+      await new Promise((resolve) => {
+        const done = () => resolve();
+        d.addEventListener?.("advertisementreceived", done, { once: true });
+        setTimer(done, ADVERT_WAIT_MS);
+        Promise.resolve(d.watchAdvertisements(ctl ? { signal: ctl.signal } : undefined)).catch(done);
+      });
+    } catch { /* connect anyway */ } finally {
+      try { ctl?.abort(); } catch { /* stopped */ }
+    }
+  }
 
   const pairing = () => readPairing(storage);
   const enabled = () => Boolean(bluetooth && pairing());
@@ -179,7 +200,7 @@ export function createHandoff({
       const devices = await timeout(bluetooth.getDevices(), GATT_TIMEOUT_MS, "getDevices");
       const want = pairing()?.deviceId;
       const d = devices.find((x) => x.id === want) ?? (want ? null : devices[0]);
-      if (d) adopt(d);
+      if (d) { adopt(d); fromGetDevices.add(d); }
       return d ?? null;
     } catch {
       return null;
@@ -198,7 +219,29 @@ export function createHandoff({
       needsGesture = true;
       throw new Error("Till 1 not chosen yet");
     }
-    const server = d.gatt.connected ? d.gatt : await gatt(() => d.gatt.connect(), "connect");
+    if (!d.gatt.connected && fromGetDevices.has(d) && typeof d.watchAdvertisements === "function") {
+      // A device handed back by getDevices() after a restart: Chrome connects
+      // to it reliably only once it has been seen advertising again.
+      await seenAdvertising(d);
+    }
+    let server;
+    try {
+      server = d.gatt.connected ? d.gatt : await gatt(() => d.gatt.connect(), "connect");
+      connectFailures = 0;
+    } catch (e) {
+      // A remembered till that will not connect, again and again (Chrome
+      // forgot the pairing, the till got a new radio): forget it, so the next
+      // Place order tap opens the chooser instead of "still trying" for ever.
+      connectFailures += 1;
+      if (connectFailures >= FORGET_AFTER_FAILURES) {
+        device = null;
+        chars = null;
+        connectFailures = 0;
+        needsGesture = true;
+        try { const p = pairing(); if (p?.deviceId) { const { deviceId: _gone, ...rest } = p; savePairing(rest, storage); } } catch { /* next tap re-saves */ }
+      }
+      throw e;
+    }
     const service = await gatt(() => server.getPrimaryService(SERVICE_UUID), "service");
     const write = await gatt(() => service.getCharacteristic(WRITE_UUID), "write characteristic");
     const ack = await gatt(() => service.getCharacteristic(ACK_UUID), "ack characteristic");

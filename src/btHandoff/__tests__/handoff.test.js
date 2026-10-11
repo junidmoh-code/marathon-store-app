@@ -457,3 +457,35 @@ describe("hand-off — review findings", () => {
     expect(till.journal.size).toBe(1);
   });
 });
+
+describe("hand-off — spec review", () => {
+  const key = () => parsePairingCode(vector.pairingCode);
+
+  it("a remembered till that keeps refusing to connect is forgotten: the next tap opens the chooser", async () => {
+    const till = await fakeTill({ key: key(), failConnect: 3 });
+    const storage = memoryStorage();
+    storage.setItem("granted", "1");
+    const r = rig({ till, storage });
+    r.h.handOff([ORDER]);
+    await r.until(() => r.h.status().needsGesture === true);
+    expect(r.h.status().needsGesture).toBe(true);
+    expect(r.chooserCalls()).toBe(0);
+    storage.setItem("granted", "");   // Chrome forgot it: only the chooser can bring it back
+    r.h.prepareFromGesture();
+    await r.until(() => till.journal.size === 1);
+    expect(r.chooserCalls()).toBe(1);
+    expect(till.journal.size).toBe(1);
+  });
+
+  it("a device from getDevices is woken with watchAdvertisements before connecting", async () => {
+    const till = await fakeTill({ key: key() });
+    let watched = 0;
+    till.device.watchAdvertisements = async () => { watched++; };
+    const storage = memoryStorage();
+    storage.setItem("granted", "1");
+    const r = rig({ till, storage });
+    r.h.handOff([ORDER]);
+    await r.until(() => till.journal.size === 1);
+    expect(watched).toBe(1);
+  });
+});
