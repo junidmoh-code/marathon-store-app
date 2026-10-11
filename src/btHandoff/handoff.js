@@ -92,6 +92,7 @@ export function createHandoff({
   const ackWaiters = new Map(); // msgId -> finish
   const listening = new WeakSet(); // ack characteristics that already have our listener
   const fromGetDevices = new WeakSet();
+  const forgotten = new Set(); // device ids given up on this session
   let connectFailures = 0;
 
   // Bounded: resolves on the first advertisement or after a few seconds,
@@ -193,6 +194,7 @@ export function createHandoff({
   }
 
   function rememberDevice(d) {
+    forgotten.delete(d.id); // picked in the chooser: trusted again
     adopt(d);
     needsGesture = false;
     try { savePairing({ ...pairing(), deviceId: d.id }, storage); } catch { /* remembered for this session */ }
@@ -204,7 +206,7 @@ export function createHandoff({
     if (device) return device;
     if (typeof bluetooth?.getDevices !== "function") return null;
     try {
-      const devices = await timeout(bluetooth.getDevices(), GATT_TIMEOUT_MS, "getDevices");
+      const devices = (await timeout(bluetooth.getDevices(), GATT_TIMEOUT_MS, "getDevices")).filter((x) => !forgotten.has(x.id));
       const want = pairing()?.deviceId;
       const d = devices.find((x) => x.id === want) ?? (want ? null : devices[0]);
       if (d) { adopt(d); fromGetDevices.add(d); }
@@ -241,6 +243,10 @@ export function createHandoff({
       // Place order tap opens the chooser instead of "still trying" for ever.
       connectFailures += 1;
       if (connectFailures >= FORGET_AFTER_FAILURES) {
+        // Chrome may still list it (getDevices), so revoke it there too and
+        // skip it for this session; only the chooser brings a till back.
+        forgotten.add(d.id);
+        try { Promise.resolve(d.forget?.()).catch(() => {}); } catch { /* best effort */ }
         device = null;
         chars = null;
         connectFailures = 0;

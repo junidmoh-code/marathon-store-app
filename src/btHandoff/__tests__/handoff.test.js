@@ -477,6 +477,21 @@ describe("hand-off — spec review", () => {
     expect(till.journal.size).toBe(1);
   });
 
+  it("forgotten even while Chrome still lists it: getDevices keeps returning it, the next tap opens the chooser", async () => {
+    const till = await fakeTill({ key: key(), failConnect: 3 });
+    let forgets = 0;
+    till.device.forget = async () => { forgets++; };
+    const storage = memoryStorage();
+    storage.setItem("granted", "1");           // getDevices() keeps handing it back
+    const r = rig({ till, storage });
+    r.h.handOff([ORDER]);
+    await r.until(() => r.h.status().needsGesture === true);
+    expect(forgets).toBe(1);
+    r.h.prepareFromGesture();
+    await r.until(() => till.journal.size === 1);
+    expect(r.chooserCalls()).toBe(1);
+  });
+
   it("a device from getDevices is woken with watchAdvertisements before connecting", async () => {
     const till = await fakeTill({ key: key() });
     let watched = 0;
