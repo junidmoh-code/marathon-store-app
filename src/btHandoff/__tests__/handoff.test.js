@@ -517,6 +517,33 @@ describe("hand-off — spec review", () => {
     expect(r.chooserCalls()).toBe(0);
   });
 
+  it("connect timeouts on an advertising till never count toward forgetting it", async () => {
+    const till = await fakeTill({ key: key(), hangConnect: 4 });
+    advertises(till.device);
+    let forgets = 0;
+    till.device.forget = async () => { forgets++; };
+    const storage = memoryStorage();
+    storage.setItem("granted", "1");
+    const r = rig({ till, storage });
+    r.h.handOff([ORDER]);
+    await r.until(() => till.journal.size === 1);
+    expect(forgets).toBe(0);
+    expect(r.chooserCalls()).toBe(0);
+  });
+
+  it("a till picked in the chooser this session is forgotten too when it advertises but refuses", async () => {
+    const till = await fakeTill({ key: key(), failConnect: 3 });
+    advertises(till.device);
+    const r = rig({ till, getDevices: false });
+    r.h.prepareFromGesture();
+    await r.settle();
+    r.h.handOff([ORDER]);
+    await r.until(() => r.h.status().needsGesture === true);
+    r.h.prepareFromGesture();
+    await r.until(() => till.journal.size === 1);
+    expect(r.chooserCalls()).toBe(2);
+  });
+
   it("a device from getDevices is woken with watchAdvertisements before connecting", async () => {
     const till = await fakeTill({ key: key() });
     let watched = 0;

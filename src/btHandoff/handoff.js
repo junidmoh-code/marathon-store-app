@@ -233,9 +233,11 @@ export function createHandoff({
       throw new Error("Till 1 not chosen yet");
     }
     let advertising = false;
-    if (!d.gatt.connected && fromGetDevices.has(d) && typeof d.watchAdvertisements === "function") {
-      // A device handed back by getDevices() after a restart: Chrome connects
-      // to it reliably only once it has been seen advertising again.
+    if (!d.gatt.connected && typeof d.watchAdvertisements === "function") {
+      // Seen advertising = on and in range. A device handed back by
+      // getDevices() after a restart also needs this before Chrome connects
+      // reliably; for a device picked this session it tells an absent till
+      // apart from a stale pairing.
       advertising = await seenAdvertising(d);
     }
     let server;
@@ -248,8 +250,9 @@ export function createHandoff({
       // till got a new radio): forget it, so the next Place order tap opens the
       // chooser instead of "still trying" for ever. A till that is simply off
       // or out of range does not advertise, and is retried, never forgotten.
-      if (advertising) connectFailures += 1;
-      else connectFailures = 0;
+      // A timeout is a busy or slow radio, not a refusal: it never counts.
+      if (advertising && !e?.timedOut) connectFailures += 1;
+      else if (!advertising) connectFailures = 0;
       if (connectFailures >= FORGET_AFTER_FAILURES) {
         // Chrome may still list it (getDevices), so revoke it there too and
         // skip it for this session; only the chooser brings a till back.
