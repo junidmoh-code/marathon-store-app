@@ -52,7 +52,7 @@ describe("protocol — the bytes Till 1's receiver expects", () => {
 });
 
 // A Till 1 in JS: reassembles, checks the HMAC, dedupes, acks.
-async function fakeTill({ key, dropAcks = 0, failConnect = 0, hangConnect = 0, strictGatt = false, noNotify = false } = {}) {
+async function fakeTill({ key, dropAcks = 0, failConnect = 0, hangConnect = 0, strictGatt = false, noNotify = false, slowRead = false, failWrites = 0 } = {}) {
   let inFlight = 0;
   let collisions = 0;
   let ackListenerAdds = 0;
@@ -98,11 +98,19 @@ async function fakeTill({ key, dropAcks = 0, failConnect = 0, hangConnect = 0, s
     listeners.forEach((l) => l({ target: { value } }));
   }
 
-  const writeChar = { writeValueWithResponse: (f) => op(() => onWrite(f)) };
+  const writeChar = {
+    writeValueWithResponse: (f) => op(async () => {
+      if (failWrites > 0) { failWrites--; throw new Error("GATT write failed"); }
+      return onWrite(f);
+    }),
+  };
   const ackChar = {
     startNotifications: async () => { if (noNotify) throw new Error("notifications not supported"); },
     addEventListener: (_, l) => { ackListenerAdds++; listeners.add(l); },
-    readValue: () => op(async () => new DataView(lastAck.buffer)),
+    readValue: () => op(async () => {
+      if (slowRead) await new Promise((r) => setTimeout(r, 30));
+      return new DataView(lastAck.buffer);
+    }),
   };
   const device = {
     id: "till-1",
@@ -330,13 +338,15 @@ describe("hand-off — review findings", () => {
   });
 
   it("GATT calls never overlap (Android allows one at a time), even on the read-back path", async () => {
-    const till = await fakeTill({ key: key(), strictGatt: true, noNotify: true });
+    // The first ack is lost, so the till is polled; the read is slow and still
+    // in flight when the deadline passes and the next order starts writing.
+    const till = await fakeTill({ key: key(), strictGatt: true, slowRead: true, dropAcks: 1 });
     const r = rig({ till });
     r.h.prepareFromGesture();
     await r.settle();
-    r.h.handOff([ORDER]);
+    r.h.handOff([ORDER, { ...ORDER, id: "043" }]);
     await r.until(() => r.h.status().pending === 0);
-    expect(till.journal.size).toBe(1);
+    expect(till.journal.size).toBe(2);
     expect(till.collisions()).toBe(0);
   });
 
@@ -387,12 +397,13 @@ describe("hand-off — review findings", () => {
   });
 
   it("reconnecting never stacks a second ack listener", async () => {
-    const till = await fakeTill({ key: key(), dropAcks: 2 });
+    const till = await fakeTill({ key: key(), failWrites: 2 });
     const r = rig({ till });
     r.h.prepareFromGesture();
     await r.settle();
     r.h.handOff([ORDER]);
     await r.until(() => r.h.status().pending === 0);
+    expect(till.journal.size).toBe(1);
     expect(till.ackListenerAdds()).toBe(1);
   });
 
@@ -400,15 +411,15 @@ describe("hand-off — review findings", () => {
     const till = await fakeTill({ key: key() });
     const storage = memoryStorage();
     const r = rig({ till, getDevices: false, storage });
-    r.h.handOff([ORDER]); // queued; no till chosen yet
-    await r.settle();
+    r.h.handOff([ORDER]); // queued; no till chosen yet (its retry is 15 s away)
+    for (let i = 0; i < 10; i++) await new Promise((res) => setTimeout(res, 0));
     const realSet = storage.setItem;
     storage.setItem = (k, v) => { if (k === PAIRING_KEY) throw new Error("QuotaExceededError"); return realSet(k, v); };
     const t0 = r.time();
     r.h.prepareFromGesture();
     await r.until(() => till.journal.size === 1);
     expect(till.journal.size).toBe(1);
-    expect(r.time() - t0).toBeLessThan(RETRY_MS);
+    expect(r.time() - t0).toBeLessThan(8000);
   });
 
   it("re-paired to another shop: the old shop's queued orders are not sent to the new till", async () => {
