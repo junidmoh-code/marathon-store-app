@@ -46,17 +46,27 @@ export function savePairing(pairing, storage = globalThis.localStorage) {
 // The pairing QR on Till 1 opens  https://<store-app>/#bt-pair=CODE&shop=marathon-pe&till=Marathon%20PE%20Till%201
 // on the tablet. Store it once and take it out of the address bar.
 export function consumePairingHash(loc = globalThis.location, history = globalThis.history, storage = globalThis.localStorage) {
-  const m = (loc?.hash || "").match(/^#bt-pair=([^&]+)(.*)$/);
-  if (!m) return null;
-  const params = new URLSearchParams(m[2].replace(/^&/, ""));
-  const code = decodeURIComponent(m[1]);
-  const shop = params.get("shop") || "marathon-pe";
-  const till = params.get("till") || "Till 1";
-  history?.replaceState?.(null, "", loc.pathname + loc.search);
-  if (!parsePairingCode(code)) return { ok: false };
-  savePairing({ code, shop, till, pairedAt: Date.now() }, storage);
-  return { ok: true, shop, till };
+  // Runs at module load, before React mounts: it must never throw, or the
+  // app never starts (a stray "%" in a typed link, storage blocked).
+  try {
+    const m = (loc?.hash || "").match(/^#bt-pair=([^&]+)(.*)$/);
+    if (!m) return null;
+    try { history?.replaceState?.(null, "", loc.pathname + loc.search); } catch { /* leave the hash */ }
+    const params = new URLSearchParams(m[2].replace(/^&/, ""));
+    const code = decodeURIComponent(m[1]);
+    const shop = params.get("shop") || "marathon-pe";
+    const till = params.get("till") || "Till 1";
+    if (!parsePairingCode(code)) return { ok: false };
+    savePairing({ code, shop, till, pairedAt: Date.now() }, storage);
+    return { ok: true, shop, till };
+  } catch {
+    return { ok: false };
+  }
 }
+
+// Every Web Bluetooth call is time-boxed: a GATT promise that never settles
+// (the till walked out of range mid-write) must not wedge the sender.
+export const GATT_TIMEOUT_MS = 10_000;
 
 export function createHandoff({
   bluetooth = globalThis.navigator?.bluetooth,
@@ -69,29 +79,64 @@ export function createHandoff({
   let device = null;
   let chars = null; // { write, ack }
   let sending = false;
+  let dirty = false;
   let retryArmed = false;
+  let asking = null;
   let needsGesture = false;
   let needsRepair = false;
   let lastError = null;
+  let gattChain = Promise.resolve();
   const listeners = new Set();
-  const ackWaiters = new Map(); // msgId -> resolve
+  const ackWaiters = new Map(); // msgId -> finish
+  const listening = new WeakSet(); // ack characteristics that already have our listener
 
   const pairing = () => readPairing(storage);
   const enabled = () => Boolean(bluetooth && pairing());
+  // Only entries for the CURRENT pairing's shop are sent: a tablet re-paired
+  // to another till keeps the old shop's entries for when it is paired back.
+  const mine = () => {
+    const shop = pairing()?.shop;
+    return shop ? queue.list().filter((e) => e?.payload?.order?.destShop === shop) : [];
+  };
 
   function status() {
-    const pending = queue.list();
+    const pending = mine();
     const oldest = pending.reduce((m, e) => Math.min(m, e.queuedAt), Infinity);
-    const failing = needsRepair || (pending.length > 0 && now() - oldest > FAIL_AFTER_MS);
-    return { enabled: enabled(), pending: pending.length, failing, needsGesture, needsRepair, lastError, till: pairing()?.till ?? null };
+    const failing = needsRepair || queue.persistFailed() || (pending.length > 0 && now() - oldest > FAIL_AFTER_MS);
+    return {
+      enabled: enabled(), pending: pending.length, failing, needsGesture, needsRepair,
+      lastError: queue.persistFailed() ? "this tablet cannot save its queue (storage full)" : lastError,
+      till: pairing()?.till ?? null,
+    };
   }
-  const emit = () => { const s = status(); listeners.forEach((l) => l(s)); };
+  const emit = () => { const s = status(); listeners.forEach((l) => { try { l(s); } catch { /* a listener's problem */ } }); };
 
   function nextMsgId() {
-    let n = Number(storage.getItem(MSGID_KEY)) || 0;
+    let n = 0;
+    try { n = Number(storage.getItem(MSGID_KEY)) || 0; } catch { n = Math.floor(Math.random() * 0xffff); }
     n = (n + 1) & 0xffff;
     try { storage.setItem(MSGID_KEY, String(n)); } catch { /* counter only needs to differ */ }
     return n;
+  }
+
+  function timeout(promise, ms, what) {
+    return new Promise((resolve, reject) => {
+      let done = false;
+      setTimer(() => { if (!done) { done = true; reject(new Error(`${what} timed out`)); } }, ms);
+      Promise.resolve(promise).then(
+        (v) => { if (!done) { done = true; resolve(v); } },
+        (e) => { if (!done) { done = true; reject(e); } },
+      );
+    });
+  }
+
+  // Android Chrome runs ONE GATT operation at a time and rejects a second
+  // ("GATT operation already in progress"), so every call queues behind the
+  // last, each with its own deadline.
+  function gatt(fn, what, ms = GATT_TIMEOUT_MS) {
+    const run = gattChain.then(() => timeout(fn(), ms, what));
+    gattChain = run.catch(() => {});
+    return run;
   }
 
   function adopt(d) {
@@ -101,13 +146,19 @@ export function createHandoff({
     d.addEventListener?.("gattserverdisconnected", () => { chars = null; });
   }
 
+  function rememberDevice(d) {
+    adopt(d);
+    needsGesture = false;
+    try { savePairing({ ...pairing(), deviceId: d.id }, storage); } catch { /* remembered for this session */ }
+  }
+
   // Find the till without a gesture: the device we already hold, or one this
   // origin was granted before (getDevices).
   async function rememberedDevice() {
     if (device) return device;
     if (typeof bluetooth?.getDevices !== "function") return null;
     try {
-      const devices = await bluetooth.getDevices();
+      const devices = await timeout(bluetooth.getDevices(), GATT_TIMEOUT_MS, "getDevices");
       const want = pairing()?.deviceId;
       const d = devices.find((x) => x.id === want) ?? (want ? null : devices[0]);
       if (d) adopt(d);
@@ -117,6 +168,11 @@ export function createHandoff({
     }
   }
 
+  function onAck(ev) {
+    const a = parseAck(bytesOf(ev.target.value));
+    if (a && ackWaiters.has(a.m)) ackWaiters.get(a.m)(a);
+  }
+
   async function connect() {
     if (chars && device?.gatt?.connected) return chars;
     const d = await rememberedDevice();
@@ -124,16 +180,16 @@ export function createHandoff({
       needsGesture = true;
       throw new Error("Till 1 not chosen yet");
     }
-    const server = d.gatt.connected ? d.gatt : await d.gatt.connect();
-    const service = await server.getPrimaryService(SERVICE_UUID);
-    const write = await service.getCharacteristic(WRITE_UUID);
-    const ack = await service.getCharacteristic(ACK_UUID);
+    const server = d.gatt.connected ? d.gatt : await gatt(() => d.gatt.connect(), "connect");
+    const service = await gatt(() => server.getPrimaryService(SERVICE_UUID), "service");
+    const write = await gatt(() => service.getCharacteristic(WRITE_UUID), "write characteristic");
+    const ack = await gatt(() => service.getCharacteristic(ACK_UUID), "ack characteristic");
     try {
-      await ack.startNotifications();
-      ack.addEventListener("characteristicvaluechanged", (ev) => {
-        const a = parseAck(bytesOf(ev.target.value));
-        if (a && ackWaiters.has(a.m)) ackWaiters.get(a.m)(a);
-      });
+      await gatt(() => ack.startNotifications(), "notifications");
+      if (!listening.has(ack)) {
+        ack.addEventListener("characteristicvaluechanged", onAck);
+        listening.add(ack);
+      }
     } catch {
       // Notifications refused: waitAck falls back to reading the value.
     }
@@ -143,12 +199,12 @@ export function createHandoff({
   }
 
   // Registered BEFORE the first write: the till acks inside the last write's
-  // response, so a waiter set up afterwards could miss the notification.
+  // response, so a waiter set up afterwards could miss the notification. The
+  // deadline is its own timer, so a hung read cannot stretch it.
   function waitAck(msgId) {
-    const started = now();
     let finish;
+    let done = false;
     const promise = new Promise((resolve) => {
-      let done = false;
       finish = (a) => {
         if (done) return;
         done = true;
@@ -156,78 +212,97 @@ export function createHandoff({
         resolve(a);
       };
       ackWaiters.set(msgId, finish);
-      // Poll the value too: covers a radio that drops the notification.
-      const poll = async () => {
-        if (done) return;
-        if (now() - started > ACK_TIMEOUT_MS) return finish(null);
-        try {
-          const v = await chars?.ack.readValue();
-          const a = v && parseAck(bytesOf(v));
-          if (a && a.m === msgId) return finish(a);
-        } catch { /* keep polling until the timeout */ }
-        setTimer(poll, 400);
-      };
-      setTimer(poll, 250);
+      setTimer(() => finish(null), ACK_TIMEOUT_MS);
     });
-    return { promise, cancel: () => finish(null) };
+    // Polling the value covers a radio that drops the notification. It starts
+    // only once every chunk is written (never alongside a write).
+    const poll = async () => {
+      if (done) return;
+      try {
+        const v = await gatt(() => chars.ack.readValue(), "ack read", ACK_TIMEOUT_MS);
+        const a = v && parseAck(bytesOf(v));
+        if (a && a.m === msgId) return finish(a);
+      } catch { /* the deadline decides */ }
+      if (!done) setTimer(poll, 400);
+    };
+    return { promise, startPolling: () => setTimer(poll, 250), cancel: () => finish(null) };
   }
 
-  async function sendOne(entry, key) {
+  // frames are built (and can fail) BEFORE the radio is touched, so a bad
+  // entry is never mistaken for a dead link.
+  async function sendOne(msgId, frames) {
     const { write } = await connect();
-    const msgId = nextMsgId();
-    const message = await buildMessage(key, entry.payload);
     const ack = waitAck(msgId);
     try {
-      for (const frame of encodeFrames(msgId, message)) {
-        if (typeof write.writeValueWithResponse === "function") await write.writeValueWithResponse(frame);
-        else await write.writeValue(frame);
+      for (const frame of frames) {
+        await gatt(() => (typeof write.writeValueWithResponse === "function" ? write.writeValueWithResponse(frame) : write.writeValue(frame)), "write");
       }
     } catch (e) {
       ack.cancel();
       throw e;
     }
+    ack.startPolling();
     return ack.promise;
   }
 
   function armRetry() {
-    if (retryArmed || queue.list().length === 0) return;
+    if (retryArmed || mine().length === 0) return;
     retryArmed = true;
     setTimer(() => { retryArmed = false; flush().catch(() => {}); }, RETRY_MS);
   }
 
   async function flush() {
-    if (sending || !enabled()) return;
+    if (sending) { dirty = true; return; } // the running pass goes round again
+    if (!enabled()) return;
     sending = true;
+    let linkDown = false;
     try {
-      for (const gone of queue.expire()) log(`gave up on order ${gone.orderId}: never acked by the till`, gone.lastError);
-      const key = parsePairingCode(pairing().code);
-      for (const entry of queue.list()) {
-        let ack = null;
-        try {
-          ack = await sendOne(entry, key);
-        } catch (e) {
-          lastError = e?.message || String(e);
-          chars = null;
-          queue.noteFailure(entry.key, lastError);
-          break; // the link is down: everything behind it would fail the same way
+      do {
+        dirty = false;
+        for (const gone of queue.expire()) log(`gave up on order ${gone.orderId}: never acked by the till`, gone.lastError);
+        const key = parsePairingCode(pairing()?.code);
+        if (!key) break;
+        for (const entry of mine()) {
+          const msgId = nextMsgId();
+          let frames;
+          try {
+            frames = encodeFrames(msgId, await buildMessage(key, entry.payload));
+          } catch (e) {
+            // This entry cannot be built (too big, no WebCrypto): skip it, the
+            // link is fine and the rest of the queue must still go.
+            lastError = e?.message || String(e);
+            queue.noteFailure(entry.key, lastError);
+            continue;
+          }
+          let ack = null;
+          try {
+            ack = await sendOne(msgId, frames);
+          } catch (e) {
+            lastError = e?.message || String(e);
+            chars = null;
+            queue.noteFailure(entry.key, lastError);
+            linkDown = true;
+            break; // the link is down: everything behind it would fail the same way
+          }
+          if (ack && (ack.s === "ok" || ack.s === "dup")) {
+            queue.remove(entry.key);
+            lastError = null;
+            needsRepair = false;
+          } else if (ack?.s === "mac") {
+            // Wrong pairing code: retrying cannot help until it is re-paired.
+            needsRepair = true;
+            lastError = "Till 1 refused the pairing code";
+            queue.noteFailure(entry.key, lastError);
+            break;
+          } else {
+            lastError = ack ? `till answered ${ack.s}${ack.o ? " (" + ack.o + ")" : ""}` : "no answer from the till";
+            queue.noteFailure(entry.key, lastError);
+          }
         }
-        if (ack && (ack.s === "ok" || ack.s === "dup")) {
-          queue.remove(entry.key);
-          lastError = null;
-          needsRepair = false;
-        } else if (ack?.s === "mac") {
-          // Wrong pairing code: retrying cannot help until it is re-paired.
-          needsRepair = true;
-          lastError = "Till 1 refused the pairing code";
-          queue.noteFailure(entry.key, lastError);
-          break;
-        } else {
-          lastError = ack ? `till answered ${ack.s}${ack.o ? " (" + ack.o + ")" : ""}` : "no answer from the till";
-          queue.noteFailure(entry.key, lastError);
-        }
-      }
+      } while (dirty && !linkDown && !needsRepair);
     } finally {
       sending = false;
+      dirty = false;
       emit();
       if (!needsRepair) armRetry();
     }
@@ -240,23 +315,23 @@ export function createHandoff({
 
     // Call SYNCHRONOUSLY at the top of the Place order tap handler, before any
     // await: Chrome only opens the device chooser inside a user gesture. It is
-    // a no-op once the till is known, and never blocks or fails the order.
+    // a no-op once the till is known (or while the chooser is already open),
+    // and never blocks or fails the order.
     prepareFromGesture() {
-      if (!enabled() || device) return;
-      const ask = async () => {
+      if (!enabled() || device || asking) return;
+      asking = (async () => {
         if (await rememberedDevice()) return;
+        let d;
         try {
-          const d = await bluetooth.requestDevice({ filters: [{ services: [SERVICE_UUID] }] });
-          adopt(d);
-          savePairing({ ...pairing(), deviceId: d.id }, storage);
-          needsGesture = false;
-          flush().catch(() => {});
+          d = await bluetooth.requestDevice({ filters: [{ services: [SERVICE_UUID] }] });
         } catch (e) {
           lastError = e?.message || String(e); // chooser cancelled, or Bluetooth off
           emit();
+          return;
         }
-      };
-      ask().catch(() => {});
+        rememberDevice(d);
+        flush().catch(() => {});
+      })().catch(() => {}).finally(() => { asking = null; });
     },
 
     // After the orders are written to /orders. Queues those bound for the

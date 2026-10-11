@@ -25,44 +25,54 @@ function load(storage) {
 function save(storage, list) {
   try {
     storage.setItem(QUEUE_KEY, JSON.stringify(list));
+    return true;
   } catch {
-    // Storage full or blocked: the in-flight send still happens; only the
-    // after-restart resume is lost.
+    return false;
   }
 }
 
 export function createQueue(storage = globalThis.localStorage, now = () => Date.now()) {
+  // When storage refuses a write (full, blocked) the queue carries on in
+  // memory for this app session, so the order still goes; only the resume
+  // after a restart is lost, and persistFailed() lets the screen say so.
+  let memory = null;
+  const read = () => (memory ?? load(storage));
+  const write = (list) => {
+    if (save(storage, list)) memory = null;
+    else memory = list;
+  };
   return {
+    persistFailed: () => memory !== null,
     list() {
-      return load(storage);
+      return read();
     },
     // payload is protocol.orderPayload(order); returns true when newly queued.
     enqueue(order, payload) {
-      const list = load(storage);
+      const list = read();
       const key = orderKeyOf(order);
       if (list.some((e) => e.key === key)) return false;
       list.push({ key, orderId: String(order.id), payload, queuedAt: now(), attempts: 0, lastError: null });
-      save(storage, list);
+      write(list);
       return true;
     },
     remove(key) {
-      save(storage, load(storage).filter((e) => e.key !== key));
+      write(read().filter((e) => e.key !== key));
     },
     noteFailure(key, error) {
-      const list = load(storage);
+      const list = read();
       const e = list.find((x) => x.key === key);
       if (!e) return;
       e.attempts += 1;
       e.lastError = String(error ?? "unknown");
       e.lastTryAt = now();
-      save(storage, list);
+      write(list);
     },
     // Drop what can no longer help; returns what was dropped.
     expire() {
-      const list = load(storage);
+      const list = read();
       const cutoff = now() - MAX_AGE_MS;
       const keep = list.filter((e) => e.queuedAt >= cutoff);
-      if (keep.length !== list.length) save(storage, keep);
+      if (keep.length !== list.length) write(keep);
       return list.filter((e) => e.queuedAt < cutoff);
     },
   };

@@ -4,7 +4,7 @@ import { resolve } from "node:path";
 import {
   crc32, encodeFrames, seal, parsePairingCode, orderPayload, orderKeyOf, HEADER_SIZE,
 } from "../protocol.js";
-import { createHandoff, consumePairingHash, readPairing, PAIRING_KEY, FAIL_AFTER_MS } from "../handoff.js";
+import { createHandoff, consumePairingHash, readPairing, PAIRING_KEY, FAIL_AFTER_MS, RETRY_MS } from "../handoff.js";
 import { createQueue, MAX_AGE_MS } from "../queue.js";
 
 const vector = JSON.parse(readFileSync(resolve(import.meta.dirname, "test-vector.json"), "utf8"));
@@ -52,7 +52,16 @@ describe("protocol — the bytes Till 1's receiver expects", () => {
 });
 
 // A Till 1 in JS: reassembles, checks the HMAC, dedupes, acks.
-async function fakeTill({ key, dropAcks = 0, failConnect = 0 } = {}) {
+async function fakeTill({ key, dropAcks = 0, failConnect = 0, hangConnect = 0, strictGatt = false, noNotify = false } = {}) {
+  let inFlight = 0;
+  let collisions = 0;
+  let ackListenerAdds = 0;
+  // Android Chrome: one GATT operation at a time, a second one rejects.
+  const op = async (fn) => {
+    if (strictGatt && inFlight > 0) { collisions++; throw new Error("GATT operation already in progress"); }
+    inFlight++;
+    try { await new Promise((r) => setTimeout(r, 0)); return await fn(); } finally { inFlight--; }
+  };
   const journal = new Map();
   const pending = new Map();
   const listeners = new Set();
@@ -89,6 +98,12 @@ async function fakeTill({ key, dropAcks = 0, failConnect = 0 } = {}) {
     listeners.forEach((l) => l({ target: { value } }));
   }
 
+  const writeChar = { writeValueWithResponse: (f) => op(() => onWrite(f)) };
+  const ackChar = {
+    startNotifications: async () => { if (noNotify) throw new Error("notifications not supported"); },
+    addEventListener: (_, l) => { ackListenerAdds++; listeners.add(l); },
+    readValue: () => op(async () => new DataView(lastAck.buffer)),
+  };
   const device = {
     id: "till-1",
     addEventListener() {},
@@ -96,6 +111,7 @@ async function fakeTill({ key, dropAcks = 0, failConnect = 0 } = {}) {
       connected: false,
       async connect() {
         connects++;
+        if (hangConnect > 0) { hangConnect--; return new Promise(() => {}); }
         if (failConnect > 0) { failConnect--; throw new Error("GATT connect failed"); }
         this.connected = true;
         return this;
@@ -103,27 +119,23 @@ async function fakeTill({ key, dropAcks = 0, failConnect = 0 } = {}) {
       async getPrimaryService() {
         return {
           async getCharacteristic(uuid) {
-            if (uuid.includes("-0002-")) return { writeValueWithResponse: (f) => onWrite(f) };
-            return {
-              startNotifications: async () => {},
-              addEventListener: (_, l) => listeners.add(l),
-              readValue: async () => new DataView(lastAck.buffer),
-            };
+            if (uuid.includes("-0002-")) return writeChar;
+            return ackChar;
           },
         };
       },
     },
   };
-  return { device, journal, connects: () => connects };
+  return { device, journal, connects: () => connects, collisions: () => collisions, ackListenerAdds: () => ackListenerAdds };
 }
 
-function rig({ till, getDevices = true, storage = memoryStorage(), paired = true } = {}) {
+function rig({ till, getDevices = true, storage = memoryStorage(), paired = true, chooserGate = null } = {}) {
   let t = 1_000_000;
   const timers = [];
   if (paired) storage.setItem(PAIRING_KEY, JSON.stringify({ code: vector.pairingCode, shop: "marathon-pe", till: "Marathon PE Till 1" }));
   let chooserCalls = 0;
   const bluetooth = {
-    requestDevice: async () => { chooserCalls++; return till.device; },
+    requestDevice: async () => { chooserCalls++; if (chooserGate) await chooserGate; return till.device; },
     ...(getDevices ? { getDevices: async () => (chooserCalls > 0 || storage.getItem("granted") ? [till.device] : []) } : {}),
   };
   const h = createHandoff({
@@ -149,7 +161,7 @@ function rig({ till, getDevices = true, storage = memoryStorage(), paired = true
   const until = async (cond, rounds = 200) => {
     for (let i = 0; i < rounds && !cond(); i++) { await new Promise((r) => setTimeout(r, 0)); await runTimers(1000); }
   };
-  return { h, storage, chooserCalls: () => chooserCalls, runTimers, settle, until, advance: (ms) => { t += ms; } };
+  return { h, storage, chooserCalls: () => chooserCalls, runTimers, settle, until, advance: (ms) => { t += ms; }, time: () => t };
 }
 
 describe("hand-off — tablet to Till 1", () => {
@@ -223,8 +235,7 @@ describe("hand-off — tablet to Till 1", () => {
     expect(r.h.status()).toMatchObject({ pending: 1, failing: false });
     await r.runTimers(FAIL_AFTER_MS + 1000);
     expect(r.h.status().failing).toBe(true);
-    await r.runTimers(120_000);
-    await r.settle();
+    await r.until(() => r.h.status().pending === 0);
     expect(till.journal.size).toBe(1);
     expect(r.h.status()).toMatchObject({ pending: 0, failing: false });
   });
@@ -302,5 +313,134 @@ describe("pairing link", () => {
     expect(consumePairingHash({ hash: "#admin/users" }, null, storage)).toBeNull();
     expect(consumePairingHash({ hash: "#bt-pair=NOPE", pathname: "/", search: "" }, null, storage)).toEqual({ ok: false });
     expect(readPairing(storage)).toBeNull();
+  });
+});
+
+// One test per review finding (PR #717): each fails with its fix reverted.
+describe("hand-off — review findings", () => {
+  const key = () => parsePairingCode(vector.pairingCode);
+
+  it("a malformed pairing link or blocked storage never throws at startup", () => {
+    const loc = { hash: "#bt-pair=%E0%A4%A&shop=x", pathname: "/", search: "" };
+    expect(() => consumePairingHash(loc, null, memoryStorage())).not.toThrow();
+    expect(consumePairingHash(loc, null, memoryStorage())).toEqual({ ok: false });
+    const blocked = { getItem: () => null, setItem: () => { throw new Error("QuotaExceededError"); } };
+    const good = { hash: `#bt-pair=${vector.pairingCode}`, pathname: "/", search: "" };
+    expect(consumePairingHash(good, null, blocked)).toEqual({ ok: false });
+  });
+
+  it("GATT calls never overlap (Android allows one at a time), even on the read-back path", async () => {
+    const till = await fakeTill({ key: key(), strictGatt: true, noNotify: true });
+    const r = rig({ till });
+    r.h.prepareFromGesture();
+    await r.settle();
+    r.h.handOff([ORDER]);
+    await r.until(() => r.h.status().pending === 0);
+    expect(till.journal.size).toBe(1);
+    expect(till.collisions()).toBe(0);
+  });
+
+  it("a GATT call that never settles does not wedge the sender", async () => {
+    const till = await fakeTill({ key: key(), hangConnect: 1 });
+    const r = rig({ till });
+    r.h.prepareFromGesture();
+    await r.settle();
+    r.h.handOff([ORDER]);
+    await r.until(() => r.h.status().pending === 0);
+    expect(till.journal.size).toBe(1);
+    expect(till.connects()).toBeGreaterThanOrEqual(2);
+  });
+
+  it("an order placed while another is sending goes in the same pass, not 15 s later", async () => {
+    const till = await fakeTill({ key: key() });
+    const r = rig({ till });
+    r.h.prepareFromGesture();
+    await r.settle();
+    const t0 = r.time();
+    r.h.handOff([ORDER]);
+    r.h.handOff([{ ...ORDER, id: "043" }]); // flush already running
+    await r.until(() => till.journal.size === 2);
+    expect(r.time() - t0).toBeLessThan(RETRY_MS);
+  });
+
+  it("an entry that cannot be built is skipped; the rest of the queue still goes", async () => {
+    const till = await fakeTill({ key: key() });
+    const r = rig({ till });
+    r.h.prepareFromGesture();
+    await r.settle();
+    r.h.handOff([{ ...ORDER, id: "041", customerName: "x".repeat(20_000) }, ORDER]);
+    await r.until(() => till.journal.size === 1);
+    expect([...till.journal.keys()]).toEqual(["042|2026-10-11T08:01:02.345Z"]);
+    expect(r.h.status().pending).toBe(1);
+  });
+
+  it("two quick taps open the chooser once", async () => {
+    const till = await fakeTill({ key: key() });
+    let open;
+    const gate = new Promise((res) => { open = res; });
+    const r = rig({ till, getDevices: false, chooserGate: gate });
+    r.h.prepareFromGesture();
+    r.h.prepareFromGesture();
+    open();
+    await r.settle();
+    expect(r.chooserCalls()).toBe(1);
+  });
+
+  it("reconnecting never stacks a second ack listener", async () => {
+    const till = await fakeTill({ key: key(), dropAcks: 2 });
+    const r = rig({ till });
+    r.h.prepareFromGesture();
+    await r.settle();
+    r.h.handOff([ORDER]);
+    await r.until(() => r.h.status().pending === 0);
+    expect(till.ackListenerAdds()).toBe(1);
+  });
+
+  it("a storage error while remembering the till still sends at once (no 15 s wait)", async () => {
+    const till = await fakeTill({ key: key() });
+    const storage = memoryStorage();
+    const r = rig({ till, getDevices: false, storage });
+    r.h.handOff([ORDER]); // queued; no till chosen yet
+    await r.settle();
+    const realSet = storage.setItem;
+    storage.setItem = (k, v) => { if (k === PAIRING_KEY) throw new Error("QuotaExceededError"); return realSet(k, v); };
+    const t0 = r.time();
+    r.h.prepareFromGesture();
+    await r.until(() => till.journal.size === 1);
+    expect(till.journal.size).toBe(1);
+    expect(r.time() - t0).toBeLessThan(RETRY_MS);
+  });
+
+  it("re-paired to another shop: the old shop's queued orders are not sent to the new till", async () => {
+    const storage = memoryStorage();
+    const down = await fakeTill({ key: key(), failConnect: 99 });
+    storage.setItem(PAIRING_KEY, JSON.stringify({ code: vector.pairingCode, shop: "trophy", till: "Trophy Till 1" }));
+    const r1 = rig({ till: down, storage, paired: false });
+    r1.h.prepareFromGesture();
+    await r1.settle();
+    r1.h.handOff([{ ...ORDER, id: "040", destShop: "trophy" }]);
+    await r1.settle();
+    const up = await fakeTill({ key: key() });
+    storage.setItem("granted", "1");
+    const r2 = rig({ till: up, storage }); // paired to marathon-pe now
+    r2.h.handOff([ORDER]);
+    await r2.until(() => up.journal.size >= 1);
+    await r2.settle();
+    expect([...up.journal.values()].map((o) => o.destShop)).toEqual(["marathon-pe"]);
+    expect(createQueue(storage).list().map((e) => e.payload.order.destShop)).toEqual(["trophy"]);
+  });
+
+  it("storage refusing the queue: the order still goes, and the screen says the queue is not saved", async () => {
+    const till = await fakeTill({ key: key(), failConnect: 1 });
+    const storage = memoryStorage();
+    const realSet = storage.setItem;
+    storage.setItem = (k, v) => { if (k === "marathon.btHandoff.queue.v1") throw new Error("QuotaExceededError"); return realSet(k, v); };
+    const r = rig({ till, storage });
+    r.h.prepareFromGesture();
+    await r.settle();
+    r.h.handOff([ORDER]);
+    expect(r.h.status()).toMatchObject({ failing: true });
+    await r.until(() => till.journal.size === 1);
+    expect(till.journal.size).toBe(1);
   });
 });
