@@ -35,17 +35,17 @@ How the first version worked, and why it was slow, is in
   `admin/productPriceSave.js` — the same save the admin price editor uses.
 - **Paging**: 30 at a time through `newArrivalsList` ("Load more").
 
-## The pause switches (Junid, 8 Oct)
+## The pause switches (Junid, 8 Oct; scope narrowed 12 Oct)
 
 Two switches at the top of the card, flipped by Junid only (`newArrivalsPause`;
 everyone else sees the state):
 
 | Switch | Stored at | While paused |
 |---|---|---|
-| **Photo generation** | `new_arrivals/pause/generation` | every Cloud Function that makes an image refuses before any model call — `newArrivalsStudio`, `generateSocialPosts`, the 06:00 `socialDailyAutopilot`, `generateProductPhotos` (`functions/newArrivals/pause.cjs`). Generate / Regenerate show **Paused**. |
+| **New Arrivals generation** | `new_arrivals/pause/generation` | `newArrivalsStudio` — everything this card calls to make a photo — refuses before any model call, at the tap and again at the model-call boundary (`functions/newArrivals/pause.cjs`). Generate / Regenerate show **Paused**. **Nothing else is on this switch:** Marathon Social (`generateSocialPosts`, the 06:00 `socialDailyAutopilot`, the `socialHealthScan` watchdog) and the Shopify Publisher's AI Studio (`generateProductPhotos`) generate normally. #711 had gated those four too; that was wider than Junid asked for and was removed on 12 Oct (the three `social_autopilot_paused/{date}` markers it wrote on 10–12 Oct are history, nothing reads them). |
 | **WhatsApp posting** | `new_arrivals/pause/posting` | the Mac mini poster (`marathon-group-poster` `bin/post-window.mjs`) reads the switch at the start of a window and again before EVERY send, and sends nothing. A `PAUSE` file in that repo's root is a second lock. |
 
-Absent = on (deleting the node switches everything back on); a switch that cannot be read counts as paused. The social watchdog treats a paused day as quiet by decision, never as an outage. Browsing, prices,
+Absent = on (deleting the node switches everything back on); a switch that cannot be read counts as paused. Browsing, prices,
 Approve, Skip and the Shopify chain keep working while paused. Both were set to
 Paused at go-live (8 Oct 2026) until the quality in `PHOTO-QUALITY-NEXT.md` is
 met. Each flip is logged at `new_arrivals/pause/log/{time}`.

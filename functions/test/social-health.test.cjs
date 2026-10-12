@@ -58,16 +58,18 @@ function day(over = {}) {
   });
 }
 
-describe("the pause switch (Junid, 8 Oct)", () => {
-  test("a paused day with no generator record and nothing published is OK — quiet by decision, never silent", () => {
-    const v = day({ autopilotLog: null, posts: [], generationPaused: true });
-    assert.equal(v.severity, "ok"); assert.equal(v.ok, true); assert.equal(v.paused, true); assert.deepEqual(v.reasons, []);
-    assert.equal(v.counts.wanted, 0);
-    // The same day, not paused, is silent.
-    assert.equal(day({ autopilotLog: null, posts: [] }).severity, "silent");
-    // Posting is NOT paused by this switch: a dead publisher still pages on a paused day.
-    const dead = day({ autopilotLog: null, posts: [], generationPaused: true, publisherTickAt: NOW - 6 * 60 * MIN });
-    assert.notEqual(dead.severity, "ok"); assert.equal(dead.paused, true);
+describe("the New Arrivals pause switch is not the social watchdog's business (Junid, 12 Oct — #711 scoped too wide)", () => {
+  test("a day with no generator record and nothing published is SILENT, whatever a caller says about the New Arrivals switch", () => {
+    const quiet = day({ autopilotLog: null, posts: [] });
+    assert.equal(quiet.severity, "silent");
+    // Pre-#711 shape: no `paused` key, the full obligation is owed.
+    assert.equal("paused" in quiet, false);
+    assert.equal(quiet.counts.wanted, 6);
+    // A caller still passing the old flag changes nothing — the parameter is gone.
+    const withOldFlag = day({ autopilotLog: null, posts: [], generationPaused: true });
+    assert.equal(withOldFlag.severity, "silent");
+    assert.equal(withOldFlag.counts.wanted, 6);
+    assert.equal("paused" in withOldFlag, false);
   });
 });
 

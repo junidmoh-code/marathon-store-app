@@ -357,7 +357,7 @@ function GroupSwitcher({ group, count, onStep }) {
   );
 }
 
-const PAUSE_SWITCHES = Object.freeze([{ key: "generation", label: "Photo generation" }, { key: "posting", label: "WhatsApp posting" }]);
+const PAUSE_SWITCHES = Object.freeze([{ key: "generation", label: "New Arrivals generation" }, { key: "posting", label: "WhatsApp posting" }]);
 const EMPTY = { items: null, total: null, nextCursor: null, tabCounts: {}, groupCounts: null, stats: null, defaultMethod: null, pause: null, canPause: false };
 const deviceStorage = () => { try { return globalThis.localStorage || null; } catch { return null; } };
 const ask = (text) => (typeof window !== "undefined" && window.confirm ? window.confirm(text) : true);
@@ -732,7 +732,7 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
     } finally { setPauseBusy(null); }
   };
   h.onGenerate = (item) => {
-    if (h.generationPaused) { say(item, "Paused — photo generation is switched off."); return; }
+    if (h.generationPaused) { say(item, "Paused — New Arrivals generation is switched off."); return; }
     const pid = item.pid;
     if (liveRef.current[pid] || isGenerating(item)) return;
     taps.current += 1;
@@ -807,8 +807,9 @@ export default function NewArrivalsScreen({ api, onExit, initialTab = "new", sto
           <div style={{ fontSize: 20, fontWeight: 800, flex: 1 }}>New Arrivals</div>
           <div data-testid="spent" style={{ color: GRAY, fontSize: 11 }}>{spentText(stats)}</div>
         </div>
-        {/* THE PAUSE SWITCHES (Junid only): photo generation and WhatsApp posting. Paused = every image-model call is refused
-            on the server and the Mac mini poster sends nothing. Everyone else sees the state as a line. */}
+        {/* THE PAUSE SWITCHES (Junid only): New Arrivals generation and WhatsApp posting. Paused = this card's Generate is
+            refused on the server (newArrivalsStudio) and the Mac mini poster sends nothing. Marathon Social and the
+            Shopify Publisher's AI Studio are NOT on this switch (12 Oct). Everyone else sees the state as a line. */}
         {data.pause && (
           <div data-testid="pause" style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 12 }}>
             {PAUSE_SWITCHES.map((sw) => {
