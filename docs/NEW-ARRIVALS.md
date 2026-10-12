@@ -50,7 +50,7 @@ the 06:00 `socialDailyAutopilot`, the `socialHealthScan` watchdog) and the Shopi
 Publisher's AI Studio (`generateProductPhotos`) generate normally whatever it says.
 #711 had gated those four too — wider than Junid asked for — and that was removed
 on 12 Oct. The three `social_autopilot_paused/{date}` markers it wrote on 10–12 Oct
-were deleted with that fix; nothing reads or writes that node any more.
+are still in RTDB as history; nothing reads or writes that node any more.
 
 Absent = on (deleting the node switches everything back on); a switch that cannot be read counts as paused. Browsing, prices,
 Approve, Skip and the Shopify chain keep working while paused. Both were set to
