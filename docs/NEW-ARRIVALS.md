@@ -42,8 +42,15 @@ everyone else sees the state):
 
 | Switch | Stored at | While paused |
 |---|---|---|
-| **New Arrivals generation** | `new_arrivals/pause/generation` | `newArrivalsStudio` — everything this card calls to make a photo — refuses before any model call, at the tap and again at the model-call boundary (`functions/newArrivals/pause.cjs`). Generate / Regenerate show **Paused**. **Nothing else is on this switch:** Marathon Social (`generateSocialPosts`, the 06:00 `socialDailyAutopilot`, the `socialHealthScan` watchdog) and the Shopify Publisher's AI Studio (`generateProductPhotos`) generate normally. #711 had gated those four too; that was wider than Junid asked for and was removed on 12 Oct (the three `social_autopilot_paused/{date}` markers it wrote on 10–12 Oct are history, nothing reads them). |
+| **New Arrivals generation** | `new_arrivals/pause/generation` | `newArrivalsStudio` — everything this card calls to make a photo — refuses before any model call, at the tap and again at the model-call boundary (`functions/newArrivals/pause.cjs`). Generate / Regenerate show **Paused**. Nothing else is on this switch. |
 | **WhatsApp posting** | `new_arrivals/pause/posting` | the Mac mini poster (`marathon-group-poster` `bin/post-window.mjs`) reads the switch at the start of a window and again before EVERY send, and sends nothing. A `PAUSE` file in that repo's root is a second lock. |
+
+**Not on the generation switch (12 Oct):** Marathon Social (`generateSocialPosts`,
+the 06:00 `socialDailyAutopilot`, the `socialHealthScan` watchdog) and the Shopify
+Publisher's AI Studio (`generateProductPhotos`) generate normally whatever it says.
+#711 had gated those four too — wider than Junid asked for — and that was removed
+on 12 Oct. The three `social_autopilot_paused/{date}` markers it wrote on 10–12 Oct
+were deleted with that fix; nothing reads or writes that node any more.
 
 Absent = on (deleting the node switches everything back on); a switch that cannot be read counts as paused. Browsing, prices,
 Approve, Skip and the Shopify chain keep working while paused. Both were set to

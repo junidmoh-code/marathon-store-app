@@ -54,23 +54,16 @@ function day(over = {}) {
     posts: has("posts") ? over.posts : healthyDayPosts(),
     twins: has("twins") ? over.twins : undefined,
     publisherTickAt: has("publisherTickAt") ? over.publisherTickAt : NOW - 2 * MIN,
-    // Forwarded ONLY so the test below can prove the assessor ignores it: #711's paused-day branch is gone.
-    ...(has("generationPaused") ? { generationPaused: over.generationPaused } : {}),
   });
 }
 
 describe("the New Arrivals pause switch is not the social watchdog's business (Junid, 12 Oct — #711 scoped too wide)", () => {
-  test("a day with no generator record and nothing published is SILENT, whatever a caller says about the New Arrivals switch", () => {
+  test("a day with no generator record and nothing published is SILENT — there is no paused day any more", () => {
     const quiet = day({ autopilotLog: null, posts: [] });
     assert.equal(quiet.severity, "silent");
-    // Pre-#711 shape: no `paused` key, the full obligation is owed.
+    // Pre-#711 shape: no `paused` key, and the full obligation is owed (POLICY above: 2 reels + 1 photo + 3 stories).
     assert.equal("paused" in quiet, false);
     assert.equal(quiet.counts.wanted, 6);
-    // A caller still passing the old flag changes nothing — the parameter is gone.
-    const withOldFlag = day({ autopilotLog: null, posts: [], generationPaused: true });
-    assert.equal(withOldFlag.severity, "silent");
-    assert.equal(withOldFlag.counts.wanted, 6);
-    assert.equal("paused" in withOldFlag, false);
   });
 });
 

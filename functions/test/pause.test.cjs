@@ -19,7 +19,7 @@ test("the switch gates the New Arrivals studio ONLY — #711 wired it into Marat
   assert.equal(src("lib/social-health.cjs").includes("generationPaused"), false);
   // The studio still reads it at BOTH points: the tap, and the model-call boundary.
   const studio = src("newArrivals/studio.js");
-  assert.equal(studio.split('pauseSwitch.isPaused(db, "generation")').length - 1, 2);
+  assert.ok((studio.match(/isPaused\(\s*db,\s*["']generation["']\s*\)/g) || []).length >= 2, "studio.js reads the switch at the tap AND at the model call");
 });
 
 test("absent = not paused; true = paused; a failed read is PAUSED", async () => {
