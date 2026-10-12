@@ -54,6 +54,7 @@ function day(over = {}) {
     posts: has("posts") ? over.posts : healthyDayPosts(),
     twins: has("twins") ? over.twins : undefined,
     publisherTickAt: has("publisherTickAt") ? over.publisherTickAt : NOW - 2 * MIN,
+    // Forwarded ONLY so the test below can prove the assessor ignores it: #711's paused-day branch is gone.
     ...(has("generationPaused") ? { generationPaused: over.generationPaused } : {}),
   });
 }
