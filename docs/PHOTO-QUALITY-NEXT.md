@@ -1,9 +1,11 @@
 # Photo quality — the brief for when generation resumes
 
-**Status: PARKED (Junid, 8 Oct 2026). Nothing here is built.** Photo
+**Status: PARKED (Junid, 8 Oct 2026). Nothing here is built.** New Arrivals
 generation and WhatsApp posting are paused from the New Arrivals card
 (`docs/NEW-ARRIVALS.md` → "The pause switches") until the quality below is
-met. This file is the brief to build against when they resume.
+met. Marathon Social and the Shopify Publisher's AI Studio are not paused
+(scope narrowed 12 Oct). This file is the brief to build against when New
+Arrivals generation resumes.
 
 ## What Junid wants
 

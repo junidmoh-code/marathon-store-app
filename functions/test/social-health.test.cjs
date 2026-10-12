@@ -54,20 +54,16 @@ function day(over = {}) {
     posts: has("posts") ? over.posts : healthyDayPosts(),
     twins: has("twins") ? over.twins : undefined,
     publisherTickAt: has("publisherTickAt") ? over.publisherTickAt : NOW - 2 * MIN,
-    ...(has("generationPaused") ? { generationPaused: over.generationPaused } : {}),
   });
 }
 
-describe("the pause switch (Junid, 8 Oct)", () => {
-  test("a paused day with no generator record and nothing published is OK — quiet by decision, never silent", () => {
-    const v = day({ autopilotLog: null, posts: [], generationPaused: true });
-    assert.equal(v.severity, "ok"); assert.equal(v.ok, true); assert.equal(v.paused, true); assert.deepEqual(v.reasons, []);
-    assert.equal(v.counts.wanted, 0);
-    // The same day, not paused, is silent.
-    assert.equal(day({ autopilotLog: null, posts: [] }).severity, "silent");
-    // Posting is NOT paused by this switch: a dead publisher still pages on a paused day.
-    const dead = day({ autopilotLog: null, posts: [], generationPaused: true, publisherTickAt: NOW - 6 * 60 * MIN });
-    assert.notEqual(dead.severity, "ok"); assert.equal(dead.paused, true);
+describe("the New Arrivals pause switch is not the social watchdog's business (Junid, 12 Oct — #711 scoped too wide)", () => {
+  test("a day with no generator record and nothing published is SILENT — there is no paused day any more", () => {
+    const quiet = day({ autopilotLog: null, posts: [] });
+    assert.equal(quiet.severity, "silent");
+    // Pre-#711 shape: no `paused` key, and the full obligation is owed (POLICY above: 2 reels + 1 photo + 3 stories).
+    assert.equal("paused" in quiet, false);
+    assert.equal(quiet.counts.wanted, 6);
   });
 });
 

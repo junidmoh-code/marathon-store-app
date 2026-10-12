@@ -1160,7 +1160,7 @@ describe("the pause switches (Junid, 8 Oct)", () => {
     expect(label(byId(tree.root, "pause-generation-state")[0])).toBe("Paused");
     expect(label(byId(tree.root, "pause-posting-state")[0])).toBe("Paused");
     const switches = tree.root.findAll((n) => n.props && n.props.role === "switch");
-    expect(switches.map((s) => s.props["aria-label"])).toEqual(["Photo generation: resume", "WhatsApp posting: resume"]);
+    expect(switches.map((s) => s.props["aria-label"])).toEqual(["New Arrivals generation: resume", "WhatsApp posting: resume"]);
     // Generate shows Paused and is off.
     const gen = btn(card(tree, P(1)), "Paused");
     expect(gen.props.disabled).toBe(true);

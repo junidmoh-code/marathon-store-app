@@ -1,21 +1,24 @@
-// ── THE PAUSE SWITCHES (Junid, 8 Oct): photo generation and WhatsApp posting ──
+// ── THE PAUSE SWITCHES (Junid, 8 Oct; scope narrowed 12 Oct): New Arrivals generation and WhatsApp posting ──
 // Two switches, on the New Arrivals card, Junid only. Stored under
 // /new_arrivals/pause (a server-only node: the client never reads or writes
 // /new_arrivals, so no database rule is needed):
 //
-//   pause/generation { paused, at, by }   every image-model call refuses while true
+//   pause/generation { paused, at, by }   the New Arrivals studio refuses while true
 //   pause/posting    { paused, at, by }   the Mac mini poster sends nothing while true
 //
 // ABSENT = NOT PAUSED, except that the switches are set to Paused at go-live.
-// EVERY Cloud Function that makes an image reads this before it calls a
-// model: newArrivalsStudio, generateSocialPosts, socialDailyAutopilot,
-// generateProductPhotos. (A hand-run script with its own key is not gated.) A read
-// that fails counts as PAUSED — a switch that cannot be read never lets a
-// model be called.
+// THE GENERATION SWITCH GATES THE NEW ARRIVALS STUDIO ONLY (newArrivalsStudio —
+// everything the New Arrivals card calls to make a photo). #711 first wired it
+// into generateSocialPosts, socialDailyAutopilot, socialHealthScan and
+// generateProductPhotos too; Junid (12 Oct) only ever wanted New Arrivals and the
+// WhatsApp poster paused, so those gates are gone and Marathon Social and the
+// Shopify Publisher's AI Studio generate normally whatever this switch says.
+// A read that fails counts as PAUSED — a switch that cannot be read never lets
+// the studio call a model.
 const PAUSE = "new_arrivals/pause";
 const SWITCHES = Object.freeze(["generation", "posting"]);
-const LABEL = Object.freeze({ generation: "Photo generation", posting: "WhatsApp posting" });
-const PAUSED_MESSAGE = "Paused — photo generation is switched off on the New Arrivals card.";
+const LABEL = Object.freeze({ generation: "New Arrivals generation", posting: "WhatsApp posting" });
+const PAUSED_MESSAGE = "Paused — New Arrivals generation is switched off on the New Arrivals card.";
 
 /** Is `which` paused? A failed read is "paused". */
 async function isPaused(db, which) {

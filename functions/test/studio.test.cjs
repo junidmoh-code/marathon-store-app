@@ -737,7 +737,7 @@ test("generation is paused: the tap is refused BEFORE any model call, on either 
     await w.db.ref("new_arrivals/pause/generation").set({ paused: true, at: 1, by: "junid" });
     let called = 0;
     w.deps.image = async () => { called += 1; throw new Error("never"); };
-    await assert.rejects(studio.studioGenerate(w.db, { pid: PID, provider }, "junid", w.deps), /Paused — photo generation is switched off on the New Arrivals card\./);
+    await assert.rejects(studio.studioGenerate(w.db, { pid: PID, provider }, "junid", w.deps), /Paused — New Arrivals generation is switched off on the New Arrivals card\./);
     assert.equal(called, 0);
     const it = await itemOf(w.db);
     assert.equal(it.generateRequest, undefined);
@@ -758,7 +758,7 @@ test("paused AFTER the tap was accepted, while the photo was being prepared: the
   w.deps.fetchBytes = async (...a) => { await w.db.ref("new_arrivals/pause/generation").set({ paused: true, at: 9, by: "junid" }); return fetchBytes(...a); };
   let called = 0;
   w.deps.image = async () => { called += 1; throw new Error("never"); };
-  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /Paused — photo generation is switched off/);
+  await assert.rejects(studio.studioGenerate(w.db, { pid: PID }, "junid", w.deps), /Paused — New Arrivals generation is switched off/);
   assert.equal(called, 0);
   const it = await itemOf(w.db);
   assert.equal(it.generateRequest, undefined, "the claim is released");
