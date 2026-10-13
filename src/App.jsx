@@ -21421,9 +21421,11 @@ function TvWithAutoCollect({ orders: ordersRaw, onExit }) {
           style={{
             position: "fixed", left: "50%", bottom: 22, transform: "translateX(-50%)", zIndex: 400,
             display: "flex", alignItems: "center", gap: 9,
-            background: "rgba(74,127,255,.94)", color: "#fff", border: "none", borderRadius: 999,
-            padding: "13px 24px", fontSize: 15, fontWeight: 800, letterSpacing: 0.3, cursor: "pointer",
+            // Glass pill to sit on the queue board's floor (TvDisplayMockup).
+            background: "rgba(40,36,32,.78)", color: "#F7F3EE", border: "1px solid rgba(255,244,230,.28)", borderRadius: 999,
+            padding: "13px 24px", fontSize: 15, fontWeight: 700, letterSpacing: 0.3, cursor: "pointer",
             fontFamily: FONT, boxShadow: "0 8px 28px rgba(0,0,0,.55)",
+            backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
           }}
         >
           🔊 Tap once to enable pickup voice

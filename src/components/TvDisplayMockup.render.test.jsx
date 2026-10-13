@@ -1,0 +1,88 @@
+// Pins the queue board's contract with the outside world:
+//  1. the ONLY database read the board itself makes is `.info/connected`
+//     (client-side metadata, no download) — orders arrive as a prop from the
+//     bandwidth-scoped listener upstream;
+//  2. live orders land in their column, newest five, full total as the count;
+//  3. ?demo=1 draws the mockup's dummy orders whatever the live list holds;
+//  4. the footer follows .info/connected: green when connected, red
+//     "Reconnecting" only after a drop has lasted the grace period.
+// Firebase is fully mocked — no test touches live data.
+import { test, expect, vi, beforeEach, afterEach } from "vitest";
+import { create, act } from "react-test-renderer";
+
+const listeners = [];
+vi.mock("../firebase", () => ({ database: { __mockDb: true } }));
+vi.mock("firebase/database", () => ({
+  ref: (_db, path) => ({ path }),
+  onValue: (r, cb, errCb) => {
+    listeners.push({ path: r.path, cb, errCb });
+    return () => {};
+  },
+}));
+// Ads + specials have their own tests; keep their reads out of this one.
+vi.mock("./TvAdOverlay", () => ({ default: () => null }));
+
+import TvDisplayMockup from "./TvDisplayMockup.jsx";
+
+const snap = (v) => ({ val: () => v });
+const text = (node) => (typeof node === "string" ? node : (node.children || []).map(text).join(""));
+const byClass = (tree, cls) => tree.root.findAll((n) => typeof n.type === "string" && String(n.props.className || "").split(" ").includes(cls));
+
+// No DOM in this repo's test env: the board needs only a viewport size, resize
+// listeners and the URL.
+const setUrl = (search) => {
+  vi.stubGlobal("window", {
+    innerWidth: 1920, innerHeight: 1080,
+    location: { search, hash: "#tv" },
+    addEventListener: () => {}, removeEventListener: () => {},
+  });
+};
+beforeEach(() => { listeners.length = 0; setUrl(""); });
+afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
+
+test("the board's own reads are .info/connected only", () => {
+  act(() => { create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  expect(listeners.map((l) => l.path)).toEqual([".info/connected"]);
+});
+
+test("live orders fill their columns: newest five, full total", () => {
+  const now = Date.now();
+  const orders = Array.from({ length: 7 }, (_, i) => ({
+    id: String(10 + i).padStart(3, "0"), status: "incoming", createdAt: new Date(now - i * 60000).toISOString(),
+  })).concat([{ id: "099", status: "ready", createdAt: new Date(now).toISOString(), readyAt: new Date(now - 120000).toISOString() }]);
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={orders} specials={[]} />); });
+  const counts = byClass(tree, "qb-col-count").map(text);
+  expect(counts).toEqual(["7", "1", "0", "0"]);
+  const nums = byClass(tree, "qb-num").map(text);
+  expect(nums).toEqual(["010", "011", "012", "013", "014", "099"]);
+  expect(byClass(tree, "qb-demo")).toHaveLength(0);
+});
+
+test("?demo=1 draws the mockup's dummy orders over the live list", () => {
+  setUrl("?demo=1");
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[{ id: "001", status: "incoming", createdAt: new Date().toISOString() }]} specials={[]} />); });
+  expect(byClass(tree, "qb-col-count").map(text)).toEqual(["12", "8", "3", "5"]);
+  const nums = byClass(tree, "qb-num").map(text);
+  expect(nums).toEqual(["L-366", "L-365", "L-364", "L-363", "L-362", "071", "064", "065", "047", "039",
+    "L-358", "L-352", "L-349", "L-371", "L-370", "L-369", "L-368", "L-367"]);
+  expect(byClass(tree, "qb-demo")).toHaveLength(1);
+});
+
+test("the footer follows .info/connected, with a grace period on drops", () => {
+  vi.useFakeTimers();
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  const conn = () => byClass(tree, "qb-conn")[0];
+  expect(text(conn())).toBe("Connecting");
+  const l = listeners.find((x) => x.path === ".info/connected");
+  act(() => { l.cb(snap(true)); });
+  expect(text(conn())).toBe("System connected");
+  act(() => { l.cb(snap(false)); });
+  expect(text(conn())).toBe("System connected");   // a blip is not an outage
+  act(() => { vi.advanceTimersByTime(3000); });
+  expect(text(conn())).toBe("Reconnecting");
+  act(() => { l.cb(snap(true)); });
+  expect(text(conn())).toBe("System connected");
+});

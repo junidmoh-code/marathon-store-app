@@ -14,10 +14,13 @@
 // column's full total. Row shaping lives in ./tv/queueBoardRows.js.
 
 import { useEffect, useMemo, useState } from "react";
+import { onValue, ref } from "firebase/database";
+import { database } from "../firebase";
 import TvSpecialsRail from "./TvSpecialsRail";
 import TvAdOverlay from "./TvAdOverlay";
 import { serverNowMs } from "../utils/serverTime";
 import { buildBoard, clockText, dateText } from "./tv/queueBoardRows";
+import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
 
 const STAGE_W = 1920;
 const STAGE_H = 1080;
@@ -165,11 +168,32 @@ function useStageScale() {
   return scale;
 }
 
-function ConnectionStatus() {
+// RTDB's own `.info/connected` — client-side metadata, no download, no rules.
+// The SDK reports false before its first handshake and on every blip, so a drop
+// only turns the footer red once it has lasted RECONNECT_GRACE_MS; until the
+// first answer it says "Connecting".
+const RECONNECT_GRACE_MS = 3000;
+export function useRtdbConnected() {
+  const [connected, setConnected] = useState(null);
+  useEffect(() => {
+    let timer = null;
+    const unsub = onValue(ref(database, ".info/connected"), (snap) => {
+      clearTimeout(timer);
+      if (snap.val() === true) { setConnected(true); return; }
+      timer = setTimeout(() => setConnected(false), RECONNECT_GRACE_MS);
+    }, () => setConnected(false));
+    return () => { clearTimeout(timer); unsub(); };
+  }, []);
+  return connected;
+}
+
+function ConnectionStatus({ connected }) {
+  const color = connected === true ? COLORS.green : connected === false ? COLORS.red : COLORS.faint;
+  const label = connected === true ? "System connected" : connected === false ? "Reconnecting" : "Connecting";
   return (
-    <span className="qb-conn">
-      <span className="qb-dot" style={{ background: COLORS.green, boxShadow: `0 0 10px ${COLORS.green}aa` }} />
-      System connected
+    <span className="qb-conn" data-connected={String(connected)}>
+      <span className="qb-dot" style={{ background: color, boxShadow: `0 0 10px ${color}aa` }} />
+      {label}
     </span>
   );
 }
@@ -184,7 +208,14 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
     return () => clearInterval(t);
   }, []);
 
-  const board = useMemo(() => buildBoard(orders || [], nowMs), [orders, nowMs]);
+  // ?demo=1 draws the mockup's dummy orders instead of the live ones. Read once
+  // per page load; it changes nothing but what is drawn.
+  const [demo] = useState(() => isDemoMode());
+  const board = useMemo(
+    () => (demo ? DEMO_BOARD : buildBoard(orders || [], nowMs)),
+    [demo, orders, nowMs]
+  );
+  const connected = useRtdbConnected();
 
   // Exit TV mode: drop out of browser fullscreen if we're in it, then leave the TV
   // view (onExit clears the #tv hash / returns to the picker). Reachable by the
@@ -252,8 +283,9 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
 
           <footer className="qb-footer">
             <span className="qb-footer-brand">MARATHON</span>
+            {demo && <span className="qb-demo">DEMO</span>}
             <span className="qb-footer-line" />
-            <ConnectionStatus />
+            <ConnectionStatus connected={connected} />
           </footer>
 
           {/* Specials advertising, when any is running, sits on the floor band
@@ -411,6 +443,8 @@ const BOARD_CSS = `
   background: linear-gradient(180deg, rgba(255,240,220,0.06), rgba(255,240,220,0.02));
   border-top: 1px solid rgba(255,240,220,0.10); }
 .qb-footer-brand { font-weight: 500; font-size: 13px; letter-spacing: 6px; color: rgba(251,247,241,0.85); }
+.qb-demo { font-size: 11px; font-weight: 700; letter-spacing: 3px; color: ${COLORS.amber};
+  border: 1px solid ${COLORS.amber}88; border-radius: 3px; padding: 3px 7px 3px 10px; }
 .qb-footer-line { flex: 1; height: 1px; background: rgba(255,244,230,0.28); }
 .qb-conn { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 500;
   color: rgba(251,247,241,0.88); white-space: nowrap; }
