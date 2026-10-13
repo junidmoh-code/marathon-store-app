@@ -11,6 +11,7 @@ import { useEffect, useState } from "react";
 import { push, ref, remove, update } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../firebase";
+import { serverNowMs } from "../utils/serverTime";
 import {
   useTvBackgrounds, pickTvBackground,
   TV_BACKGROUNDS_PATH, TV_BACKGROUNDS_STORAGE_DIR, MAX_TV_BACKGROUNDS, MIN_ROTATE_SECONDS,
@@ -46,6 +47,14 @@ export default function TvBackgroundsSection() {
   const [error, setError] = useState("");
   const [minInput, setMinInput] = useState("");
   const [secInput, setSecInput] = useState("");
+  // "ON TV NOW" uses the same server clock and 5 s tick as the TV itself.
+  const [nowMs, setNowMs] = useState(() => serverNowMs());
+  const rotating = cfg?.mode === "rotate" && (cfg?.photos.length || 0) > 1;
+  useEffect(() => {
+    if (!rotating) return undefined;
+    const t = setInterval(() => setNowMs(serverNowMs()), 5000);
+    return () => clearInterval(t);
+  }, [rotating]);
 
   useEffect(() => {
     if (!cfg) return;
@@ -58,7 +67,7 @@ export default function TvBackgroundsSection() {
   const stamp = () => ({ updatedAt: Date.now(), updatedBy: who() });
   const save = (patch) => update(ref(database, TV_BACKGROUNDS_PATH), { ...patch, ...stamp() })
     .catch((err) => setError(err?.message || "Save failed."));
-  const onScreen = pickTvBackground(cfg, Date.now());
+  const onScreen = pickTvBackground(cfg, nowMs);
   const room = MAX_TV_BACKGROUNDS - cfg.photos.length;
 
   const onFiles = async (e) => {
@@ -96,9 +105,14 @@ export default function TvBackgroundsSection() {
     setConfirmId("");
     setError("");
     try {
+      // File first: if that fails (network, permission) the photo stays listed
+      // so the remove can be retried, rather than leaving an orphan in Storage.
+      if (p.path) {
+        try { await deleteObject(storageRef(storage, p.path)); }
+        catch (err) { if (err?.code !== "storage/object-not-found") throw err; }
+      }
       await remove(ref(database, `${TV_BACKGROUNDS_PATH}/photos/${p.id}`));
       if (cfg.defaultId === p.id) await save({ defaultId: "" });
-      if (p.path) { try { await deleteObject(storageRef(storage, p.path)); } catch { /* already gone */ } }
     } catch (err) {
       setError(err?.message || "Remove failed.");
     }
