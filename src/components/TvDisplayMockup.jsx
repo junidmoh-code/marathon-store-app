@@ -129,7 +129,7 @@ function Column({ column, data, pageTick }) {
     <section className="qb-col" aria-label={column.title}
              style={{ "--qb-i": COLUMNS.indexOf(column), "--qb-accent": column.accent }}>
       <header className="qb-col-head">
-        <Icon color={column.accent} size={46} strokeWidth={1.6} />
+        <Icon color={column.accent} size={52} strokeWidth={1.5} />
         <div className="qb-col-titles">
           <div className="qb-col-title">{column.title}</div>
           <div className="qb-col-sub">{column.subtitle}</div>
@@ -289,15 +289,17 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
     <>
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-      <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
+      <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&display=swap" rel="stylesheet" />
       <style>{BOARD_CSS}</style>
       <div className="qb-viewport">
-        {/* Letterbox fill for a viewport that isn't 16:9: the same wall, blurred. */}
-        <div className="qb-letterbox" aria-hidden="true" style={{ backgroundImage: `url(${wallPhoto})` }} />
+        {/* The wall fills the WHOLE screen edge to edge whatever its shape
+            (cover); the board on top is scaled to fit (contain), so on a 16:9 TV
+            the two line up exactly and on any other shape nothing is cut off. */}
+        <div className="qb-wall" aria-hidden="true" style={{ backgroundImage: `url(${wallPhoto})` }} />
 
         <div
           className="qb-stage"
-          style={{ transform: `translate(-50%, -50%) scale(${scale})`, backgroundImage: `url(${wallPhoto})` }}
+          style={{ transform: `translate(-50%, -50%) scale(${scale})` }}
         >
           {/* The sign is part of the photo; this heading is for screen readers. */}
           <h1 className="qb-sr">Marathon store operations</h1>
@@ -358,13 +360,18 @@ const BOARD_CSS = `
   font-family: ${FONT_BODY};
   -webkit-font-smoothing: antialiased;
 }
-.qb-letterbox { position: absolute; inset: -40px; background-size: cover; background-position: center;
-  filter: blur(24px) brightness(0.55); }
+.qb-wall { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
 .qb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
 
+/* Glass: FROSTED neutral-grey (the mockup's panels are grey, R≈B). A heavy
+   blur diffuses the photo's sunlight into a soft glow where it sits behind a
+   panel, desaturated so it reads pale rather than orange; a faint white frost
+   gives the milky look. Tuned side by side against the mockup. */
+.qb-stage { --qb-blur: 44px; --qb-sat: 0.35; --qb-bri: 1;
+  --qb-glass-top: rgba(52,52,52,0.54); --qb-glass-mid: rgba(40,40,40,0.58); --qb-glass-bot: rgba(44,44,44,0.44);
+  --qb-frost: rgba(255,252,248,0.085); }
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
-  transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat;
-  box-shadow: 0 0 120px rgba(0,0,0,0.6); }
+  transform-origin: 50% 50%; }
 
 .qb-clock { position: absolute; right: 152px; top: 64px; text-align: right; }
 .qb-clock-time { font-family: ${FONT_BODY}; font-weight: 300; font-size: 60px; line-height: 1;
@@ -378,10 +385,11 @@ const BOARD_CSS = `
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .qb-col { position: relative; min-width: 0; border-radius: 6px; padding: 32px 24px 0;
   background:
-    linear-gradient(180deg, rgba(255,240,220,0.10) 0%, rgba(255,240,220,0) 14%),
-    linear-gradient(162deg, rgba(120,110,100,0.30) 0%, rgba(58,52,47,0.42) 30%, rgba(30,27,25,0.62) 68%, rgba(22,20,18,0.70) 100%);
-  -webkit-backdrop-filter: blur(16px) saturate(120%) brightness(0.8);
-          backdrop-filter: blur(16px) saturate(120%) brightness(0.8);
+    linear-gradient(180deg, rgba(255,250,244,0.08) 0%, rgba(255,250,244,0) 14%),
+    linear-gradient(var(--qb-frost), var(--qb-frost)),
+    linear-gradient(170deg, var(--qb-glass-top) 0%, var(--qb-glass-mid) 40%, var(--qb-glass-bot) 100%);
+  -webkit-backdrop-filter: blur(var(--qb-blur)) saturate(var(--qb-sat)) brightness(var(--qb-bri));
+          backdrop-filter: blur(var(--qb-blur)) saturate(var(--qb-sat)) brightness(var(--qb-bri));
   box-shadow:
     0 0 0 1px rgba(255,236,214,0.28),
     0 0 14px rgba(255,214,160,0.35),
@@ -398,8 +406,8 @@ const BOARD_CSS = `
 }
 /* Lit rim: a gradient border, brightest on the top-left edges facing the window. */
 .qb-col::after { content: ""; position: absolute; inset: 0; border-radius: 6px; padding: 1.5px; pointer-events: none;
-  background: linear-gradient(165deg, rgba(255,246,228,1) 0%, rgba(255,228,190,0.75) 14%,
-              rgba(255,214,170,0.30) 42%, rgba(255,214,170,0.20) 72%, rgba(255,232,204,0.65) 100%);
+  background: linear-gradient(170deg, rgba(255,248,234,1) 0%, rgba(255,240,220,0.80) 16%,
+              rgba(255,236,214,0.55) 45%, rgba(255,236,214,0.50) 75%, rgba(255,240,222,0.75) 100%);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude;
   animation: qb-rim 7s ease-in-out infinite; animation-delay: calc(var(--qb-i) * -1.6s); }
@@ -411,14 +419,14 @@ const BOARD_CSS = `
 @keyframes qb-rim   { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
 @keyframes qb-sheen { 0% { transform: translateX(0) rotate(14deg); } 55%, 100% { transform: translateX(560%) rotate(14deg); } }
 
-.qb-col-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 16px; height: 62px; padding: 0 4px; }
+.qb-col-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 14px; height: 62px; padding: 0 4px; }
 .qb-col-head svg { flex-shrink: 0; filter: drop-shadow(0 0 8px var(--qb-accent)); }
 .qb-col-titles { flex: 1; min-width: 0; }
-.qb-col-title { font-weight: 700; font-size: 16px; letter-spacing: 0.2px; line-height: 1.15; white-space: nowrap;
+.qb-col-title { font-weight: 700; font-size: 18px; letter-spacing: 0.2px; font-stretch: 86%; line-height: 1.15; white-space: nowrap;
   overflow: hidden; text-overflow: clip; color: #FBF7F1; }
-.qb-col-sub { margin-top: 9px; font-weight: 500; font-size: 11px; letter-spacing: 2.4px; white-space: nowrap;
+.qb-col-sub { margin-top: 10px; font-weight: 500; font-size: 12px; letter-spacing: 2.6px; font-stretch: 92%; white-space: nowrap;
   overflow: hidden; text-overflow: clip; color: ${COLORS.soft}; }
-.qb-col-count { font-weight: 600; font-size: 46px; line-height: 1; color: #FBF7F1;
+.qb-col-count { font-weight: 600; font-size: 50px; line-height: 1; color: #FBF7F1;
   font-variant-numeric: tabular-nums; padding-left: 4px; flex-shrink: 0;
   text-shadow: 0 0 16px rgba(255,236,214,0.25); }
 .qb-rule { position: relative; z-index: 1; height: 3px; margin: 26px 0 6px; border-radius: 2px; overflow: hidden; }
