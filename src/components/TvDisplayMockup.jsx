@@ -23,6 +23,7 @@ import { serverNowMs } from "../utils/serverTime";
 import { buildBoard, clockText, dateText, pageRows } from "./tv/queueBoardRows";
 import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
 import { showBlackFridayTape } from "./tv/blackFridayTape";
+import { useTvBackgrounds, pickTvBackground } from "../utils/tvBackgrounds";
 // The wall: Junid's sneaker-room photo (Nike box walls, the reader in the
 // middle), 1920×1080. It carries no sign, so the lit MARATHON / STORE
 // OPERATIONS sign is drawn on top, and the photo is dimmed so the glass and
@@ -262,9 +263,50 @@ function BlackFridayTape() {
   );
 }
 
+// The wall behind the glass: the photo the TV Ad card picked (/settings/
+// tvBackgrounds — one default, or a rotation on server time so every TV
+// agrees), else the built-in sneaker room. Rotation is checked every 5 s.
+function useBoardBackground() {
+  const cfg = useTvBackgrounds();
+  const [nowMs, setNowMs] = useState(() => serverNowMs());
+  const rotating = cfg?.mode === "rotate" && cfg.photos.length > 1;
+  useEffect(() => {
+    if (!rotating) return undefined;
+    const t = setInterval(() => setNowMs(serverNowMs()), 5000);
+    return () => clearInterval(t);
+  }, [rotating]);
+  const picked = cfg ? pickTvBackground(cfg, nowMs) : null;
+  return picked?.url || wallPhoto;
+}
+
+// Two layers only (a TV has little memory to spare for full-HD photos): the
+// photo on screen, and the next one fading in over it. The next photo is
+// loaded BEFORE it starts to fade, so a change is a 1.5 s crossfade and never a
+// flash of half-loaded image; a photo that fails to load is skipped and the
+// current one stays.
+function BoardBackground({ url }) {
+  const [layers, setLayers] = useState(() => ({ under: null, top: url }));
+  useEffect(() => {
+    if (url === layers.top) return undefined;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => { if (!cancelled) setLayers((l) => ({ under: l.top, top: url })); };
+    img.src = url;
+    return () => { cancelled = true; img.onload = null; };
+  }, [url, layers.top]);
+  return (
+    <div className="qb-bg" aria-hidden="true">
+      {layers.under && <div key={`u:${layers.under}`} className="qb-bg-photo" style={{ backgroundImage: `url(${layers.under})` }} />}
+      <div key={`t:${layers.top}`} className="qb-bg-photo qb-bg-in" style={{ backgroundImage: `url(${layers.top})` }} />
+      <div className="qb-bg-dim" />
+    </div>
+  );
+}
+
 export default function TvDisplayMockup({ orders, specials, onExit }) {
   const hasSpecials = !!(specials && specials.length > 0);
   const scale = useStageScale(hasSpecials);
+  const backgroundUrl = useBoardBackground();
 
   // "2h ago" ages against server time; re-derived every 30 s.
   const [nowMs, setNowMs] = useState(() => serverNowMs());
@@ -332,12 +374,13 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
       <div className="qb-viewport">
         {/* Only visible on an extreme screen shape (see stageScale): the same
             wall, blurred, filling whatever the stage does not cover. */}
-        <div className="qb-wall" aria-hidden="true" style={{ backgroundImage: `url(${wallPhoto})` }} />
+        <div className="qb-wall" aria-hidden="true" style={{ backgroundImage: `url(${backgroundUrl})` }} />
 
         <div
           className="qb-stage"
-          style={{ transform: `translate(-50%, -50%) scale(${scale})`, backgroundImage: `${WALL_DIM}, url(${wallPhoto})` }}
+          style={{ transform: `translate(-50%, -50%) scale(${scale})` }}
         >
+          <BoardBackground url={backgroundUrl} />
           {/* The sign is part of the photo; this heading is for screen readers. */}
           <h1 className="qb-sign">
             <span className="qb-sign-main">MARATHON</span>
@@ -410,6 +453,11 @@ const BOARD_CSS = `
   font-family: ${FONT_BODY};
   -webkit-font-smoothing: antialiased;
 }
+.qb-bg { position: absolute; inset: 0; overflow: hidden; }
+.qb-bg-photo { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.qb-bg-in { animation: qb-bg-in 1.5s ease both; }
+@keyframes qb-bg-in { from { opacity: 0; } to { opacity: 1; } }
+.qb-bg-dim { position: absolute; inset: 0; background: ${WALL_DIM}; }
 .qb-wall { position: absolute; inset: -40px; background-size: cover; background-position: center; background-repeat: no-repeat;
   filter: blur(28px) brightness(0.5); }
 .qb-sign { position: absolute; left: 0; right: 0; top: 46px; margin: 0; text-align: center; pointer-events: none; }
@@ -576,6 +624,6 @@ const BOARD_CSS = `
 
 @media (prefers-reduced-motion: reduce) {
   .qb-col::before, .qb-rule::after, .qb-dot-live::after { animation: none; display: none; }
-  .qb-col::after, .qb-row, .qb-tape-strip { animation: none; }
+  .qb-col::after, .qb-row, .qb-tape-strip, .qb-bg-in { animation: none; }
 }
 `;

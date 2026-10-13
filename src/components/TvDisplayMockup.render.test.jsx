@@ -41,9 +41,29 @@ const setUrl = (search) => {
 beforeEach(() => { listeners.length = 0; setUrl(""); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-test("the board's own reads are .info/connected only", () => {
+test("the board's own reads are the background settings and .info/connected only", () => {
   act(() => { create(<TvDisplayMockup orders={[]} specials={[]} />); });
-  expect(listeners.map((l) => l.path)).toEqual([".info/connected"]);
+  expect(listeners.map((l) => l.path).sort()).toEqual([".info/connected", "settings/tvBackgrounds"]);
+});
+
+test("the chosen background fades in only once it has loaded; a missing node keeps the built-in wall", () => {
+  const loads = [];
+  vi.stubGlobal("Image", class { set src(v) { this._src = v; loads.push(this); } get src() { return this._src; } });
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  const bg = () => byClass(tree, "qb-bg-photo").map((n) => n.props.style.backgroundImage);
+  const builtIn = bg();
+  expect(builtIn).toHaveLength(1);
+  const feed = listeners.find((l) => l.path === "settings/tvBackgrounds");
+  act(() => { feed.cb(snap(null)); });
+  expect(bg()).toEqual(builtIn);
+  act(() => { feed.cb(snap({ defaultId: "b", photos: {
+    a: { url: "https://x/a.jpg", addedAt: 1 }, b: { url: "https://x/b.jpg", addedAt: 2 },
+  } })); });
+  expect(bg()).toEqual(builtIn);                          // still loading — no switch yet
+  expect(loads.map((i) => i.src)).toEqual(["https://x/b.jpg"]);
+  act(() => { loads[0].onload(); });
+  expect(bg()).toEqual([builtIn[0], "url(https://x/b.jpg)"]); // old under, new fading in on top
 });
 
 test("live orders fill their columns: newest five first, full total, then the next page", () => {
