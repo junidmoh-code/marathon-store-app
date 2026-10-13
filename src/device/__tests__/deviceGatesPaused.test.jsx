@@ -154,6 +154,8 @@ describe("paused: every phone on MC's login logs straight in — no code screen"
 
 describe("paused: quarantine is released, its flags are kept", () => {
   it("a phone with a live flag AND a cached flag sees no overlay, and nothing listens", async () => {
+    // Signed in, non-anonymous — the only session the overlay would ever cover.
+    fb.user = mcUser();
     writeCachedQuarantine(DEV, true);
     const subscribe = vi.fn((_p, onAnswer) => { onAnswer({ on: true }); return () => {}; });
     const auth = {};
