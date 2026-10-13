@@ -432,9 +432,9 @@ const BOARD_CSS = `
              0 0 50px 8px rgba(220,128,56,0.36), 0 0 95px 14px rgba(200,112,46,0.18);
   --qb-neon-soft: 0 0 0 1px rgba(255,210,148,0.70), 0 0 6px rgba(255,186,110,0.45),
              0 0 18px rgba(240,150,70,0.28), 0 0 40px rgba(220,128,56,0.14); }
-.qb-stage { --qb-blur: 14px; --qb-sat: 1.05; --qb-bri: 0.92;
-  --qb-glass-top: rgba(255,255,255,0.10); --qb-glass-mid: rgba(255,255,255,0.04); --qb-glass-bot: rgba(255,255,255,0.03);
-  --qb-frost: rgba(14,13,12,0.16); }
+.qb-stage { --qb-blur: 4px; --qb-sat: 1.05; --qb-bri: 0.9;
+  --qb-glass-top: rgba(255,255,255,0.10); --qb-glass-mid: rgba(255,255,255,0.03); --qb-glass-bot: rgba(255,255,255,0.02);
+  --qb-frost: rgba(14,13,12,0.12); }
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
   transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat; }
 
