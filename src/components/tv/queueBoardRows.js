@@ -30,6 +30,7 @@ export function columnStamp(o, columnId) {
 export function stampMs(ts) {
   if (ts == null || ts === "") return NaN;
   if (typeof ts === "number") return ts;
+  if (typeof ts === "string" && /^\d{10,}$/.test(ts)) return Number(ts); // epoch ms held as a string
   return new Date(ts).getTime();
 }
 
@@ -48,14 +49,17 @@ export function clockText(ts) {
   return `${get("hour")}:${get("minute")}`;
 }
 
-// "TUESDAY 13 OCT 2026" in SAST.
+// "TUESDAY 13 OCT 2026" in SAST. Month from a fixed list: ICU's en-GB short
+// month is "Sept" for September on newer engines and "Sep" on older ones.
+const MONTHS = ["JAN", "FEB", "MAR", "APR", "MAY", "JUN", "JUL", "AUG", "SEP", "OCT", "NOV", "DEC"];
 export function dateText(ms) {
   if (!Number.isFinite(ms)) return "";
   const parts = new Intl.DateTimeFormat("en-GB", {
-    timeZone: BOARD_TZ, weekday: "long", day: "numeric", month: "short", year: "numeric",
+    timeZone: BOARD_TZ, weekday: "long", day: "numeric", month: "numeric", year: "numeric",
   }).formatToParts(new Date(ms));
   const get = (t) => parts.find((p) => p.type === t)?.value || "";
-  return `${get("weekday")} ${get("day")} ${get("month").replace(".", "")} ${get("year")}`.toUpperCase();
+  const month = MONTHS[Number(get("month")) - 1] || "";
+  return `${get("weekday")} ${Number(get("day"))} ${month} ${get("year")}`.toUpperCase();
 }
 
 // "just now" · "4m ago" · "2h ago". A stamp a little in the future (device clock
@@ -84,7 +88,11 @@ export function rowMeta(o, columnId, nowMs) {
   return agoText(ts, nowMs);
 }
 
-// One column's rows + total from the live list.
+// One column from the live list: EVERY row, newest first, and the total. The
+// board draws them a page of VISIBLE_ROWS at a time (pageRows) — the first page
+// is the five newest, and a busy column rotates so that the customer whose
+// order is sixth still sees their number (the old board scrolled for the same
+// reason).
 export function buildColumn(orders, columnId, nowMs) {
   const status = COLUMN_STATUS[columnId];
   const inColumn = (orders || []).filter((o) => o && o.status === status);
@@ -93,12 +101,24 @@ export function buildColumn(orders, columnId, nowMs) {
     .sort((a, b) => (Number.isFinite(b.ms) ? b.ms : -Infinity) - (Number.isFinite(a.ms) ? a.ms : -Infinity));
   return {
     total: inColumn.length,
-    rows: sorted.slice(0, VISIBLE_ROWS).map(({ o }) => ({
-      key: `${o.id}:${o.createdAt || ""}:${o.isLayby ? "L" : ""}`,
+    rows: sorted.map(({ o }, i) => ({
+      key: `${o.id}:${o.createdAt || ""}:${o.isLayby ? "L" : ""}:${i}`,
       number: String(o.id ?? ""),
       meta: rowMeta(o, columnId, nowMs),
     })),
   };
+}
+
+export function pageCount(column) {
+  return Math.max(1, Math.ceil((column?.rows?.length || 0) / VISIBLE_ROWS));
+}
+
+// The rows on screen for a board-wide page tick. Each column wraps on its own
+// page count, so a 2-page column and a 3-page column both keep turning.
+export function pageRows(column, tick) {
+  const pages = pageCount(column);
+  const page = ((tick % pages) + pages) % pages;
+  return { page, pages, rows: (column?.rows || []).slice(page * VISIBLE_ROWS, (page + 1) * VISIBLE_ROWS) };
 }
 
 export function buildBoard(orders, nowMs) {

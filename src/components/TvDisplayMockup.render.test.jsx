@@ -4,8 +4,9 @@
 //     bandwidth-scoped listener upstream;
 //  2. live orders land in their column, newest five, full total as the count;
 //  3. ?demo=1 draws the mockup's dummy orders whatever the live list holds;
-//  4. the footer follows .info/connected: green when connected, red
-//     "Reconnecting" only after a drop has lasted the grace period.
+//  4. the footer follows .info/connected: "Connecting" through the SDK's
+//     pre-handshake false, green when connected, red "Reconnecting" only after
+//     a drop has lasted the grace period (or a boot never connects in 15 s).
 // Firebase is fully mocked — no test touches live data.
 import { test, expect, vi, beforeEach, afterEach } from "vitest";
 import { create, act } from "react-test-renderer";
@@ -45,7 +46,8 @@ test("the board's own reads are .info/connected only", () => {
   expect(listeners.map((l) => l.path)).toEqual([".info/connected"]);
 });
 
-test("live orders fill their columns: newest five, full total", () => {
+test("live orders fill their columns: newest five first, full total, then the next page", () => {
+  vi.useFakeTimers();
   const now = Date.now();
   const orders = Array.from({ length: 7 }, (_, i) => ({
     id: String(10 + i).padStart(3, "0"), status: "incoming", createdAt: new Date(now - i * 60000).toISOString(),
@@ -57,6 +59,9 @@ test("live orders fill their columns: newest five, full total", () => {
   const nums = byClass(tree, "qb-num").map(text);
   expect(nums).toEqual(["010", "011", "012", "013", "014", "099"]);
   expect(byClass(tree, "qb-demo")).toHaveLength(0);
+  expect(byClass(tree, "qb-page-dot")).toHaveLength(2);       // incoming has 2 pages; ready has none
+  act(() => { vi.advanceTimersByTime(8000); });
+  expect(byClass(tree, "qb-num").map(text)).toEqual(["015", "016", "099"]);
 });
 
 test("?demo=1 draws the mockup's dummy orders over the live list", () => {
@@ -77,6 +82,8 @@ test("the footer follows .info/connected, with a grace period on drops", () => {
   const conn = () => byClass(tree, "qb-conn")[0];
   expect(text(conn())).toBe("Connecting");
   const l = listeners.find((x) => x.path === ".info/connected");
+  act(() => { l.cb(snap(false)); vi.advanceTimersByTime(5000); });
+  expect(text(conn())).toBe("Connecting");          // the SDK's pre-handshake false is not an outage
   act(() => { l.cb(snap(true)); });
   expect(text(conn())).toBe("System connected");
   act(() => { l.cb(snap(false)); });
@@ -85,4 +92,15 @@ test("the footer follows .info/connected, with a grace period on drops", () => {
   expect(text(conn())).toBe("Reconnecting");
   act(() => { l.cb(snap(true)); });
   expect(text(conn())).toBe("System connected");
+});
+
+test("a boot that never connects goes red after 15 s", () => {
+  vi.useFakeTimers();
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  const l = listeners.find((x) => x.path === ".info/connected");
+  act(() => { l.cb(snap(false)); vi.advanceTimersByTime(14000); });
+  expect(text(byClass(tree, "qb-conn")[0])).toBe("Connecting");
+  act(() => { vi.advanceTimersByTime(1000); });
+  expect(text(byClass(tree, "qb-conn")[0])).toBe("Reconnecting");
 });

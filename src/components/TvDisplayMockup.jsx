@@ -19,11 +19,12 @@ import { database } from "../firebase";
 import TvSpecialsRail from "./TvSpecialsRail";
 import TvAdOverlay from "./TvAdOverlay";
 import { serverNowMs } from "../utils/serverTime";
-import { buildBoard, clockText, dateText } from "./tv/queueBoardRows";
+import { buildBoard, clockText, dateText, pageRows } from "./tv/queueBoardRows";
 import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
 
 const STAGE_W = 1920;
 const STAGE_H = 1080;
+const PAGE_MS = 8000;
 
 const FONT_BODY    = "'Archivo', 'Helvetica Neue', Arial, sans-serif";
 const FONT_DISPLAY = "'Oswald', 'Arial Narrow', 'Helvetica Neue', sans-serif";
@@ -116,8 +117,9 @@ function Row({ row, column }) {
   );
 }
 
-function Column({ column, data }) {
+function Column({ column, data, pageTick }) {
   const { Icon } = column;
+  const { page, pages, rows } = pageRows(data, pageTick);
   return (
     <section className="qb-col" aria-label={column.title}>
       <header className="qb-col-head">
@@ -130,8 +132,16 @@ function Column({ column, data }) {
       </header>
       <div className="qb-rule" style={{ background: column.accent, boxShadow: `0 0 14px ${column.accent}66` }} />
       <div className="qb-rows">
-        {data.rows.map((row) => <Row key={row.key} row={row} column={column} />)}
+        {rows.map((row) => <Row key={row.key} row={row} column={column} />)}
       </div>
+      {pages > 1 && (
+        <div className="qb-pages" aria-hidden="true">
+          {Array.from({ length: pages }, (_, i) => (
+            <span key={i} className="qb-page-dot"
+                  style={i === page ? { background: column.accent, boxShadow: `0 0 8px ${column.accent}88` } : null} />
+          ))}
+        </div>
+      )}
     </section>
   );
 }
@@ -169,19 +179,29 @@ function useStageScale() {
 }
 
 // RTDB's own `.info/connected` — client-side metadata, no download, no rules.
-// The SDK reports false before its first handshake and on every blip, so a drop
-// only turns the footer red once it has lasted RECONNECT_GRACE_MS; until the
-// first answer it says "Connecting".
+// The SDK answers false before its first handshake as well as on a drop, so:
+//  • until the first true the footer says "Connecting" — red only if a boot
+//    has gone BOOT_GRACE_MS without ever connecting (slow store link);
+//  • after that, a drop turns it red once it has lasted RECONNECT_GRACE_MS, so
+//    a blip never flashes red at customers.
 const RECONNECT_GRACE_MS = 3000;
+const BOOT_GRACE_MS = 15000;
 export function useRtdbConnected() {
   const [connected, setConnected] = useState(null);
   useEffect(() => {
-    let timer = null;
+    let everConnected = false;
+    let timer = setTimeout(() => setConnected(false), BOOT_GRACE_MS);
     const unsub = onValue(ref(database, ".info/connected"), (snap) => {
+      if (snap.val() === true) {
+        clearTimeout(timer);
+        everConnected = true;
+        setConnected(true);
+        return;
+      }
+      if (!everConnected) return;            // still booting — the boot timer stands
       clearTimeout(timer);
-      if (snap.val() === true) { setConnected(true); return; }
       timer = setTimeout(() => setConnected(false), RECONNECT_GRACE_MS);
-    }, () => setConnected(false));
+    }, () => { clearTimeout(timer); setConnected(false); });
     return () => { clearTimeout(timer); unsub(); };
   }, []);
   return connected;
@@ -211,6 +231,13 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
   // ?demo=1 draws the mockup's dummy orders instead of the live ones. Read once
   // per page load; it changes nothing but what is drawn.
   const [demo] = useState(() => isDemoMode());
+  // Busy columns page through every order, a page of five every PAGE_MS.
+  const [pageTick, setPageTick] = useState(0);
+  useEffect(() => {
+    const t = setInterval(() => setPageTick((n) => n + 1), PAGE_MS);
+    return () => clearInterval(t);
+  }, []);
+
   const board = useMemo(
     () => (demo ? DEMO_BOARD : buildBoard(orders || [], nowMs)),
     [demo, orders, nowMs]
@@ -278,7 +305,7 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
           <BoardClock />
 
           <main className="qb-cols">
-            {COLUMNS.map((c) => <Column key={c.id} column={c} data={board[c.id]} />)}
+            {COLUMNS.map((c) => <Column key={c.id} column={c} data={board[c.id]} pageTick={pageTick} />)}
           </main>
 
           <footer className="qb-footer">
@@ -431,10 +458,12 @@ const BOARD_CSS = `
 .qb-col-head svg { flex-shrink: 0; }
 .qb-col-titles { flex: 1; min-width: 0; }
 .qb-col-title { font-weight: 700; font-size: 16.5px; letter-spacing: 0.4px; line-height: 1.15; white-space: nowrap;
+  overflow: hidden; text-overflow: clip;
   color: #FBF7F1; }
 .qb-col-sub { margin-top: 9px; font-weight: 500; font-size: 11px; letter-spacing: 2.4px; white-space: nowrap;
+  overflow: hidden; text-overflow: clip;
   color: ${COLORS.soft}; }
-.qb-col-count { font-weight: 500; font-size: 46px; line-height: 1; color: #FBF7F1;
+.qb-col-count { font-weight: 600; font-size: 46px; line-height: 1; color: #FBF7F1;
   font-variant-numeric: tabular-nums; padding-left: 4px; flex-shrink: 0; }
 .qb-rule { height: 3px; margin: 26px 0 6px; border-radius: 2px; }
 .qb-rows { position: relative; }
@@ -447,6 +476,8 @@ const BOARD_CSS = `
 .qb-meta svg { flex-shrink: 0; }
 .qb-meta-text { font-weight: 500; font-size: 16.5px; color: ${COLORS.soft}; white-space: nowrap;
   font-variant-numeric: tabular-nums; }
+.qb-pages { position: absolute; left: 0; right: 0; bottom: 22px; display: flex; justify-content: center; gap: 10px; }
+.qb-page-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,244,230,0.25); }
 .qb-dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
 
 .qb-footer { position: absolute; left: 101px; top: 883px; width: 1732px; height: 52px;
