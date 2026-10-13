@@ -65,6 +65,7 @@ test("live orders fill their columns: newest five first, full total, then the ne
 });
 
 test("?demo=1 draws the mockup's dummy orders over the live list", () => {
+  vi.useFakeTimers();
   setUrl("?demo=1");
   let tree;
   act(() => { tree = create(<TvDisplayMockup orders={[{ id: "001", status: "incoming", createdAt: new Date().toISOString() }]} specials={[]} />); });
@@ -73,6 +74,8 @@ test("?demo=1 draws the mockup's dummy orders over the live list", () => {
   expect(nums).toEqual(["L-366", "L-365", "L-364", "L-363", "L-362", "071", "064", "065", "047", "039",
     "L-358", "L-352", "L-349", "L-371", "L-370", "L-369", "L-368", "L-367"]);
   expect(byClass(tree, "qb-demo")).toHaveLength(1);
+  // The busy demo columns page like live ones (12 → 3 pages, 8 → 2).
+  expect(byClass(tree, "qb-page-dot")).toHaveLength(5);
 });
 
 test("the footer follows .info/connected, with a grace period on drops", () => {
