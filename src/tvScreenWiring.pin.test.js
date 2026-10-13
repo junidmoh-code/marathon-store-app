@@ -5,7 +5,7 @@
 //     465 KB per sync, 2026-08-13) — NOT the full-node useOrders;
 //  2. useTvOrders really queries by key with the shared range constants;
 //  3. both TV mounts hand the live specials to the board, and the board
-//     gives the specials rail the conveyor's band only when specials exist.
+//     draws the specials rail only when specials exist.
 import { test, expect } from "vitest";
 import { readFileSync } from "node:fs";
 
@@ -45,8 +45,9 @@ test("TvWithAutoCollect passes live specials into the board", () => {
   expect(app).toMatch(/<TvDisplayMockup orders=\{filteredOrders\} specials=\{specials\}/);
 });
 
-test("the board hands the conveyor band to the specials rail only when specials exist", () => {
-  expect(tv).toMatch(/\{\(specials && specials\.length > 0\)\s*\?\s*<TvSpecialsRail specials=\{specials\}/);
-  // Empty state: the long-standing conveyor/spacer fallback must survive.
-  expect(tv).toContain("<ShoeConveyor wcSkin={wcSkin} />");
+test("the board draws the specials rail only when specials exist", () => {
+  // The queue-board redesign dropped the decorative shoe conveyor: with no
+  // specials the floor band under the board is simply empty.
+  expect(tv).toContain("const hasSpecials = !!(specials && specials.length > 0);");
+  expect(tv).toMatch(/\{hasSpecials && \([\s\S]{0,200}<TvSpecialsRail specials=\{specials\} \/>/);
 });
