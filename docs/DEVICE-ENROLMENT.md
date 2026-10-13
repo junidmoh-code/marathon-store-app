@@ -10,6 +10,15 @@
 > admin screens are intact. The passive device stamps on every order and request
 > action keep running.
 >
+> **Rules:** the pause is complete only because the LIVE console rules carry no
+> device condition. Pulled 2026-10-13 from `.settings/rules.json`: no reference
+> to `deviceGate`, `deviceCodeRequired`, `quarantine`, `auth.token.deviceId`,
+> `auth.token.section` or `/device_rejects` (the #647/#648 pastes below were
+> never applied). **Do not paste those files while paused.** If they are ever
+> pasted, an unenrolled phone would open the app and then be refused every
+> read and write. The fix then is to remove `/users/{mcUid}/deviceCodeRequired`
+> (the rules' own off switch) or paste back the pre-#647 rules.
+>
 > **To revive:**
 > 1. Audit first — reviving re-arms everything that was kept, at once:
 >    `/mirror_switch/quarantine/*` (Mirror Fleet lists them; flags may have been
