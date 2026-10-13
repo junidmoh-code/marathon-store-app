@@ -1,5 +1,34 @@
 # Device enrolment — runbook
 
+> **PAUSED 2026-10-13.** The code screen was stopping MC from working. One code
+> switch, `DEVICE_GATES_ENABLED = false`, turns off the code screen, the device
+> quarantine (overlay and the "This phone has been paused" refusal), and the
+> section an enrolled device's code carries. It lives in two places:
+> `src/device/deviceGatesSwitch.js` (app) and `functions/lib/device-gates-switch.cjs`
+> (card capture's section wall), and a test fails if the two differ. Nothing was
+> deleted: codes, enrolments, `deviceCodeRequired`, quarantine flags and both
+> admin screens are intact. The passive device stamps on every order and request
+> action keep running.
+>
+> **Rules:** the pause is complete only because the LIVE console rules carry no
+> device condition. Pulled 2026-10-13 from `.settings/rules.json`: no reference
+> to `deviceGate`, `deviceCodeRequired`, `quarantine`, `auth.token.deviceId`,
+> `auth.token.section` or `/device_rejects` (the #647/#648 pastes below were
+> never applied). **Do not paste those files while paused.** If they are ever
+> pasted, an unenrolled phone would open the app and then be refused every
+> read and write. The fix then is to remove `/users/{mcUid}/deviceCodeRequired`
+> (the rules' own off switch) or paste back the pre-#647 rules.
+>
+> **To revive:**
+> 1. Audit first — reviving re-arms everything that was kept, at once:
+>    `/mirror_switch/quarantine/*` (Mirror Fleet lists them; flags may have been
+>    set while paused) and every `/users/{uid}/deviceCodeRequired`. Release or
+>    remove what should not bite.
+> 2. Set both constants to `true`.
+> 3. Deploy `functions:cardBatchCapture,functions:cardBatchReadJob,functions:cardBatchReadRetry`
+>    FIRST, then `hosting:marathon-club` (functions-first is also the order used to pause).
+> Every device on a login with `deviceCodeRequired` then needs its code again.
+
 Every device on MC's shared login needs a personal 4-digit code (PR #647).
 Design: `functions/lib/device-enrolment.cjs` (top of file) and `src/device/enrolment.js`.
 
@@ -12,7 +41,7 @@ Design: `functions/lib/device-enrolment.cjs` (top of file) and `src/device/enrol
 | People, devices, codes, attempts, email queue | `/device_enrolment/*` — no client read; the admin screen goes through `deviceEnrolmentAdmin` |
 | Admin screen | store app → **Device Codes** tile (`#admin/devices`) — Junid, or MC's device if MC's code was made with "Can make and revoke codes" |
 
-**Off switch:** remove `/users/{mcUid}/deviceCodeRequired`. Every device on MC's login works as before at once, with or without the rules below.
+**Off switch (per login, while the feature is live):** remove `/users/{mcUid}/deviceCodeRequired`. Every device on MC's login works as before at once, with or without the rules below.
 
 ## One-time setup (done at deploy, 2026-09-25)
 

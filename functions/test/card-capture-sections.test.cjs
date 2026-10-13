@@ -7,6 +7,7 @@ const { test, beforeEach } = require("node:test");
 const assert = require("node:assert/strict");
 const { sectionRefusalFor } = require("../cardRecon/cardRecon.js");
 const { __resetNetworkCacheForTests } = require("../lib/network-load.cjs");
+const { setDeviceGatesForTest } = require("../lib/device-gates-switch.cjs");
 
 beforeEach(() => __resetNetworkCacheForTests());
 
@@ -56,7 +57,9 @@ test("allSections and Junid capture both; a shop lock scopes to that shop's sect
   assert.equal(db.reads.length, before);
 });
 
-test("an enrolled device's section claim scopes the shared login it is on", async () => {
+test("an enrolled device's section claim scopes the shared login it is on (device gates ON)", async (t) => {
+  setDeviceGatesForTest(true);
+  t.after(() => setDeviceGatesForTest(null));
   const db = fakeDb({ users: { mc: { deviceCodeRequired: true } } });
   assert.equal(await sectionRefusalFor(db, as("mc", { section: 1 }), "A", T.concreteTill), null);
   assert.match(await sectionRefusalFor(db, as("mc", { section: 1 }), "A", T.peTill), /not in your section/);
@@ -65,6 +68,18 @@ test("an enrolled device's section claim scopes the shared login it is on", asyn
   assert.equal(await sectionRefusalFor(db, as("mc", { section: "1" }), "A", T.peTill), null);
   // A device from before sections is not scoped.
   assert.equal(await sectionRefusalFor(db, as("mc"), "A", T.concreteTill), null);
+});
+
+test("DEVICE GATES PAUSED (the shipped default): a section claim narrows nothing, MC captures every till", async () => {
+  const db = fakeDb({ users: { mc: { deviceCodeRequired: true } } });
+  for (const section of [1, 2]) {
+    for (const till of Object.values(T)) {
+      assert.equal(await sectionRefusalFor(db, as("mc", { section }), "A", till), null, `section ${section} · ${till.label}`);
+    }
+  }
+  // The ACCOUNT's own sections still apply — only the device's claim is paused.
+  const scoped = fakeDb({ users: { u: { sections: { 2: true } } } });
+  assert.match(await sectionRefusalFor(scoped, as("u", { section: 2 }), "A", T.pineTill), /not in your section/);
 });
 
 test("it reads /network and three leaves — never the /users record", async () => {

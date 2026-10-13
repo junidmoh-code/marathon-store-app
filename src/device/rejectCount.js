@@ -17,6 +17,7 @@ import { getDeviceIdentity } from "./enrolment";
 import { deviceStamp } from "./deviceStamp";
 import { deviceRejectsPath, deviceRejectRecord, isThisDeviceQuarantined } from "./deviceRejects";
 import { readCachedQuarantine } from "./quarantine";
+import { deviceGatesOn } from "./deviceGatesSwitch";
 
 /**
  * @param {{kind?: string, ref?: string, hub?: string, productId?: string, size?: string}} [what]
@@ -51,7 +52,12 @@ export function countReject(what = {}) {
 // active listener's data without a round trip (repoGetValue). A flag already
 // heard is also cached in localStorage and answers first. Only a phone with no
 // live listener waits, and never longer than 1.5 s before going ahead.
+//
+// PAUSED (2026-10-13): while the device gates are off (deviceGatesSwitch.js)
+// the answer is always false, with no read and no cache check — every device,
+// flagged or not, rejects and sends normally. The flags are kept.
 export async function thisDevicePaused() {
+  if (!deviceGatesOn()) return false;
   const deviceId = deviceStamp().deviceId;
   if (readCachedQuarantine(deviceId)) return true;
   return isThisDeviceQuarantined({

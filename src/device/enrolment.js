@@ -21,6 +21,7 @@
 // the life of an enrolment, so a stale token names the device just as well.
 
 import { getDeviceId } from "./deviceId";
+import { deviceGatesOn } from "./deviceGatesSwitch";
 
 // ── the claims ───────────────────────────────────────────────────────────────
 
@@ -72,9 +73,11 @@ export async function readSessionClaims(user) {
  * "app"     — use the app (not a login that needs a code, or a live enrolment)
  * "code"    — show the code screen and nothing else
  * "loading" — the claims are still being read; show nothing yet
- * Junid never needs a code; nor does an account whose flag is absent.
+ * Junid never needs a code; nor does an account whose flag is absent; nor does
+ * ANY device while the device gates are paused (deviceGatesSwitch.js).
  */
 export function deviceGateVerdict({ permRecord, claims, isSuperAdmin, readError = false, knownRequired = false }) {
+  if (!deviceGatesOn()) return "app";
   if (isSuperAdmin) return "app";
   // The /users record could not be read, so whether this login needs a code
   // is unknown. A login THIS device has seen flagged stays shut — never opened
@@ -112,8 +115,9 @@ export function identityFrom({ claims, permRecord, user }) {
     enrolled,
     canManageCodes: enrolled && c.canManageCodes === true && isLiveEnrolment(permRecord, c),
     // Which section this DEVICE works in (useMySections reads it). Only an
-    // enrolled device has one; null is "not scoped by its device".
-    section: enrolled && (c.section === 1 || c.section === 2) ? c.section : null,
+    // enrolled device has one; null is "not scoped by its device" — and so is
+    // every device while the device gates are paused (deviceGatesSwitch.js).
+    section: deviceGatesOn() && enrolled && (c.section === 1 || c.section === 2) ? c.section : null,
   };
 }
 

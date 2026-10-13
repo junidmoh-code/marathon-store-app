@@ -615,9 +615,12 @@ export default function RefillQueue({ products = [], dest = "hub2", lineFilter =
     // WHICH PHONE said no (2026-09-25), beside resolvedBy's account: the
     // refusal write-off copies both into its record. Same id the stamp and the
     // Mirror Fleet screen use.
-    const refusingDeviceId = deviceStamp().deviceId || null;
+    // …and WHEN, on the server's clock (serverNowMs). Passive: written with
+    // every reject whether or not the device gates are on; it never blocks.
+    const refusing = deviceStamp();
+    const refusingDeviceId = refusing.deviceId || null;
     const fields = {
-      ...(refusingDeviceId ? { resolvedDeviceId: refusingDeviceId } : {}),
+      ...(refusingDeviceId ? { resolvedDeviceId: refusingDeviceId, resolvedDeviceAtMs: refusing.atMs } : {}),
       status: "cancelled",
       resolvedAt: serverNowIso(),
       rejectedBy: actorRole || "unknown",

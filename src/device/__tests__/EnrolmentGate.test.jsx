@@ -3,7 +3,7 @@
 // is the app opening (children mounted) for a device that has no live
 // enrolment, so those cases assert the children were NEVER rendered, not just
 // that the screen is on top.
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 
@@ -79,6 +79,12 @@ async function type(r, digits) {
   }
   await flush();
 }
+
+// The gated behaviour, tested with the device gates ON. They ship paused
+// (src/device/deviceGatesSwitch.js); the paused behaviour is pinned in
+// deviceGatesPaused.test.jsx.
+beforeAll(async () => (await import("../deviceGatesSwitch.js")).setDeviceGatesForTest(true));
+afterAll(async () => (await import("../deviceGatesSwitch.js")).setDeviceGatesForTest(null));
 
 beforeEach(() => {
   store.clear();

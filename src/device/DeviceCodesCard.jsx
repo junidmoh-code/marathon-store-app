@@ -30,6 +30,7 @@ import { usePermissions } from "../components/PermissionsContext";
 import { useNetwork } from "../utils/useNetwork";
 import { sectionOf } from "../utils/networkRegistry";
 import { sectionName } from "../components/sectionAccess";
+import { deviceGatesOn } from "./deviceGatesSwitch";
 
 // The section a new code starts on. The code-maker's own device section if it
 // has one (MC on a Section 1 tablet makes Section 1 codes), else the section of
@@ -144,6 +145,12 @@ export default function DeviceCodesCard({ isOwner, onExit, call = defaultCall })
         Every phone on MC's login needs its own code. A person's code works on up to 2 devices;
         a shop device's code on 1.
       </div>
+      {!deviceGatesOn() && (
+        <div data-testid="device-codes-paused" style={{ fontSize: 13, color: "#ffd60a", marginTop: 8, lineHeight: 1.45 }}>
+          Device codes are paused. No phone is asked for a code, so codes made or revoked here change nothing
+          until the feature is revived (src/device/deviceGatesSwitch.js).
+        </div>
+      )}
       {list.email && (
         <div data-email-status="" style={{ fontSize: 12.5, color: "#8e8e93", marginTop: 6 }}>
           Emails to Junid: last sent {when(list.email.lastSentAtMs, now)}

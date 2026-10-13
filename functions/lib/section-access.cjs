@@ -16,6 +16,7 @@
 "use strict";
 
 const { sectionsFor, sectionOf, SEED_REGISTRY } = require("./network-registry.cjs");
+const { deviceGatesOn } = require("./device-gates-switch.cjs");
 
 function isObj(v) {
   return v !== null && typeof v === "object" && !Array.isArray(v);
@@ -43,8 +44,11 @@ function sectionRecord({ sections, allSections, destShop } = {}) {
   return rec;
 }
 
-/** A custom-token `section` claim (1 or 2), or null. */
+/** A custom-token `section` claim (1 or 2), or null. Always null while the
+ *  device gates are paused (lib/device-gates-switch.cjs): the claim comes from
+ *  an enrolment code, and a paused enrolment narrows nothing. */
 function readSectionClaim(v) {
+  if (!deviceGatesOn()) return null;
   return v === 1 || v === 2 ? v : null;
 }
 

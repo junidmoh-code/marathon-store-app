@@ -17,6 +17,9 @@
 //                           and this device is not enrolled, or its enrolment
 //                           was revoked → the code screen INSTEAD of the app
 //                           (src/device/EnrolmentGate.jsx, src/device/enrolment.js).
+//                           PAUSED since 2026-10-13: while DEVICE_GATES_ENABLED
+//                           is false (src/device/deviceGatesSwitch.js) no device
+//                           is ever shown the code screen.
 //
 // hasPermission(name) returns true for the super-admin email regardless of
 // /users/{uid} contents, so Junid's existing Google sign-in path keeps working.

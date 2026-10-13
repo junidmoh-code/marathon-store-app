@@ -12766,6 +12766,10 @@ function WarehouseView({ products = [], orders, onExit }) {
       const rej = countReject({ kind: "order", ref: order.id, hub: hubOfRecord(whNet, order, "hub1"), productId: order.productId, size: order.size });
       patch.outOfStockByUid = rej.uid;
       patch.outOfStockDeviceId = rej.deviceId;
+      // WHEN, on the server's clock (serverNowMs — taken by countReject's own
+      // deviceStamp, so it can differ from the stamps/ entry by a few ms). Passive: written with every reject whether or not the device
+      // gates are on (src/device/deviceGatesSwitch.js); it never blocks.
+      patch.outOfStockDeviceAtMs = rej.atMs;
     }
     // A FAILED display-pair pull reinstates the slot it tombstoned at order
     // creation: the pair never left the floor, and without this the marker
@@ -13558,7 +13562,7 @@ function WarehouseView({ products = [], orders, onExit }) {
           // function returns — the engine's scan treats an unresolved order
           // whose source just emptied as withdrawable, and a fire-and-forget
           // write here widens that race for no benefit.
-          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
+          await updateOrder(it.orderId, { clothingRefillStatus: "available", clothingRefilledQty: sent, clothingRefilledCountedQty: sentCounted, clothingRefilledUncountedQty: sentUncounted, clothingRefilledAt: now, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingOutOfStockDeviceAtMs: null, clothingRefilledBy: selectedHub, clothingUncounted: sentUncounted > 0, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, updatedAt: now });
           logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: sent, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "ready", placedAtHub: it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2"), destShop: batch.destShop ?? null });
           if (sent < qty) errors.push(`${formatSize(it.size)}: only ${sent}/${qty} sent — re-request the remaining ${qty - sent}`);
         } else {
@@ -13578,7 +13582,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         // request it closes, so the write-off names the phone as well.
         ok++;
         const rej = countReject({ kind: "clothing", ref: it.orderId, hub: it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2"), productId: batch.productId, size: it.size });
-        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingOutOfStockDeviceId: rej.deviceId, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
+        updateOrder(it.orderId, { clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingOutOfStockDeviceId: rej.deviceId, clothingOutOfStockDeviceAtMs: rej.atMs, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledBy: selectedHub, updatedAt: now });
         logInsight({ timestamp: now, productId: batch.productId ?? null, productName: batch.productName, productCategory: "", productType: "clothing", size: it.size, qty: it.qty, customerName: "Shop Refill", customerPhone: null, orderNumber: it.orderId, action: "out_of_stock", placedAtHub: it.placedAtHub || fallbackHub(whNet, batch.destShop, "hub2"), destShop: batch.destShop ?? null, byUid: rej.uid, deviceId: rej.deviceId });
       }
       // qty 0 & not rejected → left pending for a later pass.
@@ -13625,7 +13629,7 @@ function WarehouseView({ products = [], orders, onExit }) {
         }
       }
       ok++;
-      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
+      updateOrder(it.orderId, { clothingRefillStatus: null, clothingRefilledAt: null, clothingRefilledQty: null, clothingRefilledCountedQty: null, clothingRefilledUncountedQty: null, clothingUncounted: null, clothingPlanGen: null, clothingPlanCountedQty: null, clothingPlanUncountedQty: null, clothingOutOfStockAt: null, clothingOutOfStockByUid: null, clothingOutOfStockDeviceId: null, clothingOutOfStockDeviceAtMs: null, clothingRefilledBy: null, clothingRefillGen: (it.gen || 0) + 1, updatedAt: now });
     }
     return { ok, fail, errors };
   };
