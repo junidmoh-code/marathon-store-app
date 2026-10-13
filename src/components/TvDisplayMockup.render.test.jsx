@@ -107,3 +107,19 @@ test("a boot that never connects goes red after 15 s", () => {
   act(() => { vi.advanceTimersByTime(1000); });
   expect(text(byClass(tree, "qb-conn")[0])).toBe("Reconnecting");
 });
+
+test("the stage fills the screen edge to edge without ever cutting off the board", async () => {
+  const { stageScale } = await import("./TvDisplayMockup.jsx");
+  // 16:9 TV: exact fit, no crop.
+  expect(stageScale(1920, 1080)).toBeCloseTo(1);
+  expect(stageScale(3840, 2160)).toBeCloseTo(2);
+  // A wider browser window: full bleed (cover), photo cropped top/bottom only.
+  const wide = stageScale(2000, 1060);
+  expect(wide).toBeCloseTo(2000 / 1920);
+  // ...and the board still fits: 1060 px tall viewport holds y 50…940 around centre.
+  expect(500 * wide * 2).toBeLessThanOrEqual(1060 + 1e-9);
+  // A portrait window: capped so the columns fit the width (gap filled by the blurred wall).
+  const tall = stageScale(581, 649);
+  expect(880 * 2 * tall).toBeLessThanOrEqual(581 + 1e-9);
+  expect(tall).toBeLessThan(649 / 1080);
+});

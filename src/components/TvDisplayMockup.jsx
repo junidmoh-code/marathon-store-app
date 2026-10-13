@@ -172,11 +172,21 @@ function BoardClock() {
   );
 }
 
-// Fit the fixed 1920×1080 stage into the viewport (letterboxed, never scrolling).
+// How big to draw the 1920×1080 stage (photo + board, scaled TOGETHER so the
+// photo's sign always sits above the columns). As big as "cover" — the photo
+// filling the screen edge to edge — but never so big that the board itself is
+// cut off: the content (columns, footer, clock) spans x 101…1833 and y 50…940,
+// i.e. at most 873 px from the centre sideways, 490 px up. On a 16:9 TV, and
+// on a moderately wider or taller window, that IS cover (full bleed); only an
+// extreme shape (a portrait window) leaves a gap, filled by the blurred wall.
+export function stageScale(vw, vh) {
+  const cover = Math.max(vw / STAGE_W, vh / STAGE_H);
+  return Math.min(cover, vw / (2 * 880), vh / (2 * 500));
+}
 function useStageScale() {
   const read = () => (typeof window === "undefined"
     ? 1
-    : Math.min(window.innerWidth / STAGE_W, window.innerHeight / STAGE_H));
+    : stageScale(window.innerWidth, window.innerHeight));
   const [scale, setScale] = useState(read);
   useEffect(() => {
     const onResize = () => setScale(read());
@@ -292,14 +302,13 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
       <link href="https://fonts.googleapis.com/css2?family=Archivo:wdth,wght@62..125,300..800&display=swap" rel="stylesheet" />
       <style>{BOARD_CSS}</style>
       <div className="qb-viewport">
-        {/* The wall fills the WHOLE screen edge to edge whatever its shape
-            (cover); the board on top is scaled to fit (contain), so on a 16:9 TV
-            the two line up exactly and on any other shape nothing is cut off. */}
+        {/* Only visible on an extreme screen shape (see stageScale): the same
+            wall, blurred, filling whatever the stage does not cover. */}
         <div className="qb-wall" aria-hidden="true" style={{ backgroundImage: `url(${wallPhoto})` }} />
 
         <div
           className="qb-stage"
-          style={{ transform: `translate(-50%, -50%) scale(${scale})` }}
+          style={{ transform: `translate(-50%, -50%) scale(${scale})`, backgroundImage: `url(${wallPhoto})` }}
         >
           {/* The sign is part of the photo; this heading is for screen readers. */}
           <h1 className="qb-sr">Marathon store operations</h1>
@@ -360,7 +369,8 @@ const BOARD_CSS = `
   font-family: ${FONT_BODY};
   -webkit-font-smoothing: antialiased;
 }
-.qb-wall { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.qb-wall { position: absolute; inset: -40px; background-size: cover; background-position: center; background-repeat: no-repeat;
+  filter: blur(28px) brightness(0.5); }
 .qb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
 
 /* Glass: FROSTED neutral-grey (the mockup's panels are grey, R≈B). A heavy
@@ -371,7 +381,7 @@ const BOARD_CSS = `
   --qb-glass-top: rgba(52,52,52,0.54); --qb-glass-mid: rgba(40,40,40,0.58); --qb-glass-bot: rgba(44,44,44,0.44);
   --qb-frost: rgba(255,252,248,0.085); }
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
-  transform-origin: 50% 50%; }
+  transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat; }
 
 .qb-clock { position: absolute; right: 152px; top: 64px; text-align: right; }
 .qb-clock-time { font-family: ${FONT_BODY}; font-weight: 300; font-size: 60px; line-height: 1;
