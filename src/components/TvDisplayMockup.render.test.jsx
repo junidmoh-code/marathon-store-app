@@ -122,4 +122,10 @@ test("the stage fills the screen edge to edge without ever cutting off the board
   const tall = stageScale(581, 649);
   expect(880 * 2 * tall).toBeLessThanOrEqual(581 + 1e-9);
   expect(tall).toBeLessThan(649 / 1080);
+  // With a special running, its band reaches the stage's bottom edge (y 1080):
+  // on a wide screen the whole stage height must then fit, never cropped.
+  for (const [vw, vh] of [[2560, 1080], [2000, 1060], [1920, 1080], [3440, 1440]]) {
+    expect(1080 * stageScale(vw, vh, true)).toBeLessThanOrEqual(vh + 1e-9);
+  }
+  expect(stageScale(1920, 1080, true)).toBeCloseTo(1);   // a 16:9 TV is unchanged
 });

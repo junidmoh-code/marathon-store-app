@@ -179,20 +179,26 @@ function BoardClock() {
 // i.e. at most 873 px from the centre sideways, 490 px up. On a 16:9 TV, and
 // on a moderately wider or taller window, that IS cover (full bleed); only an
 // extreme shape (a portrait window) leaves a gap, filled by the blurred wall.
-export function stageScale(vw, vh) {
+// When a special is running its band sits on the floor down to the stage's
+// bottom edge (y 1080), so the vertical bound becomes the full half-height and
+// the band is never cropped (CodeRabbit, PR #722).
+export function stageScale(vw, vh, withSpecials = false) {
   const cover = Math.max(vw / STAGE_W, vh / STAGE_H);
-  return Math.min(cover, vw / (2 * 880), vh / (2 * 500));
+  const halfH = withSpecials ? STAGE_H / 2 : 500;
+  return Math.min(cover, vw / (2 * 880), vh / (2 * halfH));
 }
-function useStageScale() {
+function useStageScale(withSpecials) {
   const read = () => (typeof window === "undefined"
     ? 1
-    : stageScale(window.innerWidth, window.innerHeight));
+    : stageScale(window.innerWidth, window.innerHeight, withSpecials));
   const [scale, setScale] = useState(read);
   useEffect(() => {
     const onResize = () => setScale(read());
+    onResize();                                  // re-read when specials come or go
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [withSpecials]);
   return scale;
 }
 
@@ -237,7 +243,8 @@ function ConnectionStatus({ connected }) {
 }
 
 export default function TvDisplayMockup({ orders, specials, onExit }) {
-  const scale = useStageScale();
+  const hasSpecials = !!(specials && specials.length > 0);
+  const scale = useStageScale(hasSpecials);
 
   // "2h ago" ages against server time; re-derived every 30 s.
   const [nowMs, setNowMs] = useState(() => serverNowMs());
@@ -292,8 +299,6 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
     window.addEventListener("mousemove", onMove);
     return () => { clearTimeout(timer); window.removeEventListener("mousemove", onMove); };
   }, [onExit]);
-
-  const hasSpecials = !!(specials && specials.length > 0);
 
   return (
     <>
