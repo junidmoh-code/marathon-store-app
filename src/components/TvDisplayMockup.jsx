@@ -375,8 +375,8 @@ const BOARD_CSS = `
 
 /* Glass: Apple-style clear glass. The wall stays visible through each panel,
    blurred and neutral (colour held near 0.8 so the sunlight doesn't turn
-   orange); a white tint, brightest at the top, gives it a glassy lift, and a
-   thin dark veil keeps white text legible over the sunlit corners. Tuned side
+   orange); a faint white lift at the top, and a dark veil inside (Junid: not
+   washed-out white) keeps it deep and the white text crisp. Tuned side
    by side against the mockup. */
 .qb-stage {
   --qb-neon: 0 0 0 2px rgba(255,222,176,0.95), 0 0 4px 2px rgba(255,196,122,0.85),
@@ -384,9 +384,9 @@ const BOARD_CSS = `
              0 0 50px 8px rgba(220,128,56,0.36), 0 0 95px 14px rgba(200,112,46,0.18);
   --qb-neon-soft: 0 0 0 1px rgba(255,210,148,0.70), 0 0 6px rgba(255,186,110,0.45),
              0 0 18px rgba(240,150,70,0.28), 0 0 40px rgba(220,128,56,0.14); }
-.qb-stage { --qb-blur: 28px; --qb-sat: 0.8; --qb-bri: 0.78;
-  --qb-glass-top: rgba(255,255,255,0.16); --qb-glass-mid: rgba(255,255,255,0.07); --qb-glass-bot: rgba(255,255,255,0.06);
-  --qb-frost: rgba(22,22,24,0.30); }
+.qb-stage { --qb-blur: 28px; --qb-sat: 0.8; --qb-bri: 0.72;
+  --qb-glass-top: rgba(255,255,255,0.07); --qb-glass-mid: rgba(255,255,255,0.02); --qb-glass-bot: rgba(255,255,255,0.015);
+  --qb-frost: rgba(14,13,12,0.44); }
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
   transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat; }
 
@@ -402,7 +402,7 @@ const BOARD_CSS = `
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .qb-col { position: relative; min-width: 0; border-radius: 6px; padding: 32px 24px 0;
   background:
-    linear-gradient(180deg, rgba(255,250,244,0.08) 0%, rgba(255,250,244,0) 14%),
+    linear-gradient(180deg, rgba(255,250,244,0.05) 0%, rgba(255,250,244,0) 14%),
     linear-gradient(var(--qb-frost), var(--qb-frost)),
     linear-gradient(170deg, var(--qb-glass-top) 0%, var(--qb-glass-mid) 40%, var(--qb-glass-bot) 100%);
   -webkit-backdrop-filter: blur(var(--qb-blur)) saturate(var(--qb-sat)) brightness(var(--qb-bri));
