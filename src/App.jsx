@@ -12766,8 +12766,8 @@ function WarehouseView({ products = [], orders, onExit }) {
       const rej = countReject({ kind: "order", ref: order.id, hub: hubOfRecord(whNet, order, "hub1"), productId: order.productId, size: order.size });
       patch.outOfStockByUid = rej.uid;
       patch.outOfStockDeviceId = rej.deviceId;
-      // WHEN, on the server's clock (serverNowMs, the same instant as the
-      // stamp). Passive: written with every reject whether or not the device
+      // WHEN, on the server's clock (serverNowMs — taken by countReject's own
+      // deviceStamp, so it can differ from the stamps/ entry by a few ms). Passive: written with every reject whether or not the device
       // gates are on (src/device/deviceGatesSwitch.js); it never blocks.
       patch.outOfStockDeviceAtMs = rej.atMs;
     }

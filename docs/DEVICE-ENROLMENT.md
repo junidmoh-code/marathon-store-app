@@ -10,10 +10,15 @@
 > admin screens are intact. The passive device stamps on every order and request
 > action keep running.
 >
-> **To revive:** set both constants to `true`, then deploy `hosting:marathon-club`
-> and `functions:cardBatchCapture,functions:cardBatchReadJob,functions:cardBatchReadRetry`.
-> Every device on a login with `deviceCodeRequired` then needs its code again,
-> and a quarantine flag that is still set takes effect again (check Mirror Fleet first).
+> **To revive:**
+> 1. Audit first — reviving re-arms everything that was kept, at once:
+>    `/mirror_switch/quarantine/*` (Mirror Fleet lists them; flags may have been
+>    set while paused) and every `/users/{uid}/deviceCodeRequired`. Release or
+>    remove what should not bite.
+> 2. Set both constants to `true`.
+> 3. Deploy `functions:cardBatchCapture,functions:cardBatchReadJob,functions:cardBatchReadRetry`
+>    FIRST, then `hosting:marathon-club` (functions-first is also the order used to pause).
+> Every device on a login with `deviceCodeRequired` then needs its code again.
 
 Every device on MC's shared login needs a personal 4-digit code (PR #647).
 Design: `functions/lib/device-enrolment.cjs` (top of file) and `src/device/enrolment.js`.
