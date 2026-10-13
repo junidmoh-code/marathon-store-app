@@ -16,7 +16,7 @@
 //
 // Fixed clock: serverNowMs = 2026-08-07T10:00:00Z = 12:00 SA. Default windows
 // 06:00/14:00 SA → last release 04:00Z, next 14:00 SA.
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 
@@ -62,6 +62,8 @@ vi.mock("../../utils/serverTime", () => ({ serverNowIso: () => new Date(NOW).toI
 
 const { default: RefillQueue } = await import("./RefillQueue.jsx");
 const { pendingSaleRows } = await import("./refillQueueCore.js");
+const { setDeviceGatesForTest } = await import("../../device/deviceGatesSwitch.js");
+const { setDeviceIdentity } = await import("../../device/enrolment.js");
 
 // 05:00 SA — before the 06:00 release → pickable. 07:00+ SA — waiting for 14:00.
 const RELEASED_AT = "2026-08-07T03:00:00.000Z";
@@ -656,10 +658,14 @@ describe("a hub's picking list names no shop", () => {
 // A quarantined phone: no transaction, no movement, no log — and a message.
 // A healthy phone's Out of Stock names the phone on the request and logs the
 // reject to /device_rejects under that phone.
-describe("device quarantine and the phone on the refusal", () => {
+describe("device quarantine and the phone on the refusal (device gates ON)", () => {
   const PHONE = "2964c145-ecad-4f61-9f7a-304231af0e01";
   const store = new Map();
+  // The gated behaviour. The gates ship paused (src/device/deviceGatesSwitch.js);
+  // the paused behaviour is pinned in the describe below.
+  afterEach(() => setDeviceGatesForTest(null));
   beforeEach(() => {
+    setDeviceGatesForTest(true);
     store.clear();
     store.set("marathon.deviceId", PHONE);
     globalThis.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
@@ -740,3 +746,75 @@ describe("device quarantine and the phone on the refusal", () => {
   });
 });
 
+// ─── DEVICE GATES PAUSED (2026-10-13) — THE SHIPPED DEFAULT ──────────────────
+// The device gates are off (src/device/deviceGatesSwitch.js): an unenrolled
+// phone, an enrolled phone and a phone Junid quarantined all reject (Out of
+// Stock = the request is cancelled) and fulfil exactly as before #640/#647 —
+// and each reject still carries the passive record of which phone, and when.
+describe("device gates PAUSED: every phone rejects, cancels and fulfils", () => {
+  const PHONE = "57070bab-8813-4164-9165-2f16fd7f9244";
+  const store = new Map();
+  const DEVICES = {
+    unenrolled: () => setDeviceIdentity({ claims: null, permRecord: { username: "mc", deviceCodeRequired: true }, user: { email: "mc@marathon.internal" } }),
+    enrolled: () => setDeviceIdentity({
+      claims: { deviceId: PHONE, eid: "e1", personName: "Sipho", personId: "p1", section: 2 },
+      permRecord: { username: "mc", deviceCodeRequired: true, deviceGate: { [PHONE]: "e1" } },
+      user: { email: "mc@marathon.internal" },
+    }),
+    quarantined: () => {
+      setDeviceIdentity({ claims: null, permRecord: { username: "mc" }, user: { email: "mc@marathon.internal" } });
+      gets[`mirror_switch/quarantine/${PHONE}`] = { on: true, at: 1, by: "gunidmoh@gmail.com" };
+      // …and the cached "you are quarantined" a phone keeps for three days.
+      store.set("marathon.deviceQuarantine", JSON.stringify({ deviceId: PHONE, on: true, heardAt: NOW }));
+    },
+  };
+  beforeEach(() => {
+    setDeviceGatesForTest(null);   // the shipped switch, not an override
+    store.clear();
+    store.set("marathon.deviceId", PHONE);
+    globalThis.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)), removeItem: (k) => store.delete(k) };
+    pushMock.mockClear();
+  });
+  afterEach(() => setDeviceIdentity({ claims: null, permRecord: null, user: null }));
+
+  for (const [kind, setUp] of Object.entries(DEVICES)) {
+    it(`${kind} phone: Out of Stock cancels the request and records the phone + server time`, async () => {
+      setUp();
+      const tree = renderQueue();
+      await act(async () => { await lineButton(rowLineOf(tree, "req:bootreq"), "Out of Stock").props.onClick(); });
+      const out = textOf(tree.toJSON());
+      tree.unmount();
+      expect(out).not.toContain("paused by Junid");
+      expect(txnWrites).toHaveLength(1);
+      const rec = txnWrites[0].value;
+      expect(rec.status).toBe("cancelled");
+      expect(rec.resolvedDeviceId).toBe(PHONE);
+      expect(rec.resolvedDeviceAtMs).toBe(NOW);   // serverNowMs, never Date.now
+      const stamps = Object.values(rec.stamps || {});
+      expect(stamps).toHaveLength(1);
+      expect(stamps[0]).toMatchObject({ deviceId: PHONE, atMs: NOW, action: "reject" });
+    });
+
+    it(`${kind} phone: Fulfil moves the stock`, async () => {
+      setUp();
+      const tree = renderQueue();
+      await act(async () => { lineButton(rowLineOf(tree, "req:bootreq"), "Fulfil").props.onClick(); });
+      const confirm = tree.root.findAll((n) => n.type === "button").find((n) => textOf(n.props.children).includes("Transfer & Fulfil"));
+      await act(async () => { await confirm.props.onClick(); });
+      const out = textOf(tree.toJSON());
+      tree.unmount();
+      expect(out).not.toContain("paused by Junid");
+      expect(applyMovementMock).toHaveBeenCalled();
+    });
+
+    it(`${kind} phone: a SALE row's Out of Stock goes through`, async () => {
+      setUp();
+      const onSaleResponse = vi.fn();
+      const tree = renderQueue({ onSaleResponse });
+      await act(async () => { await lineButton(sizeLineOf(tree, "5", "sale"), "Out of Stock").props.onClick(); });
+      tree.unmount();
+      expect(onSaleResponse).toHaveBeenCalledTimes(1);
+      expect(onSaleResponse.mock.calls[0][1]).toBe("out_of_stock");
+    });
+  }
+});

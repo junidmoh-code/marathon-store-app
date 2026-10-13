@@ -55,9 +55,13 @@ describe("the reject records the phone", () => {
     const b = body(APP, "const updateStatus = async (order, status, extraPatch = {}, { gateChecked = false } = {}) => {", 4000);
     expect(b).toContain("patch.outOfStockByUid = rej.uid;");
     expect(b).toContain("patch.outOfStockDeviceId = rej.deviceId;");
+    // …and WHEN (2026-10-13): the stamp's own serverNowMs instant.
+    expect(b).toContain("patch.outOfStockDeviceAtMs = rej.atMs;");
   });
   it("a clothing Reject stamps clothingOutOfStockDeviceId, and Send/Undo clear it", () => {
     expect(APP).toContain('clothingRefillStatus: "rejected", clothingOutOfStockAt: now, clothingOutOfStockByUid: auth.currentUser?.uid || null, clothingOutOfStockDeviceId: rej.deviceId');
     expect(APP.match(/clothingOutOfStockDeviceId: null/g)).toHaveLength(2);
+    expect(APP).toContain("clothingOutOfStockDeviceId: rej.deviceId, clothingOutOfStockDeviceAtMs: rej.atMs");
+    expect(APP.match(/clothingOutOfStockDeviceId: null, clothingOutOfStockDeviceAtMs: null/g)).toHaveLength(2);
   });
 });
