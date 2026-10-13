@@ -129,3 +129,24 @@ test("the stage fills the screen edge to edge without ever cutting off the board
   }
   expect(stageScale(1920, 1080, true)).toBeCloseTo(1);   // a 16:9 TV is unchanged
 });
+
+test("until Black Friday the tape crosses the floor and the connection status moves under the clock", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-20T10:00:00Z"));
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  expect(byClass(tree, "qb-tape")).toHaveLength(1);
+  expect(byClass(tree, "qb-tape-band")).toHaveLength(2);
+  expect(byClass(tree, "qb-footer")).toHaveLength(0);
+  expect(byClass(tree, "qb-status-top")[0].findAll((n) => n.props.className === "qb-conn")).toHaveLength(1);
+});
+
+test("from Black Friday the tape is gone and the footer is back", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-27T08:00:00Z"));
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  expect(byClass(tree, "qb-tape")).toHaveLength(0);
+  expect(byClass(tree, "qb-status-top")).toHaveLength(0);
+  expect(byClass(tree, "qb-footer")[0].findAll((n) => n.props.className === "qb-conn")).toHaveLength(1);
+});
