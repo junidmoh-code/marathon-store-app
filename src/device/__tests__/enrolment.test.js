@@ -1,7 +1,7 @@
 // The device-enrolment verdict and the claims it reads. The failure that
 // matters here is an app that opens for a device it should not — so every
 // shape of "not quite enrolled" is pinned as "code".
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, afterAll } from "vitest";
 
 const store = new Map();
 globalThis.localStorage = {
@@ -10,6 +10,13 @@ globalThis.localStorage = {
   removeItem: (k) => store.delete(k),
   clear: () => store.clear(),
 };
+
+// The gated behaviour, tested with the device gates ON. They ship paused
+// (src/device/deviceGatesSwitch.js); the paused behaviour is pinned in
+// deviceGatesPaused.test.jsx.
+const { setDeviceGatesForTest } = await import("../deviceGatesSwitch.js");
+beforeAll(() => setDeviceGatesForTest(true));
+afterAll(() => setDeviceGatesForTest(null));
 
 const {
   deviceGateVerdict, isLiveEnrolment, pickDeviceClaims, decodeJwtClaims, readSessionClaims,

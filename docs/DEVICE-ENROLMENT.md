@@ -1,5 +1,20 @@
 # Device enrolment — runbook
 
+> **PAUSED 2026-10-13.** The code screen was stopping MC from working. One code
+> switch, `DEVICE_GATES_ENABLED = false`, turns off the code screen, the device
+> quarantine (overlay and the "This phone has been paused" refusal), and the
+> section an enrolled device's code carries. It lives in two places:
+> `src/device/deviceGatesSwitch.js` (app) and `functions/lib/device-gates-switch.cjs`
+> (card capture's section wall), and a test fails if the two differ. Nothing was
+> deleted: codes, enrolments, `deviceCodeRequired`, quarantine flags and both
+> admin screens are intact. The passive device stamps on every order and request
+> action keep running.
+>
+> **To revive:** set both constants to `true`, then deploy `hosting:marathon-club`
+> and `functions:cardBatchCapture,functions:cardBatchReadJob,functions:cardBatchReadRetry`.
+> Every device on a login with `deviceCodeRequired` then needs its code again,
+> and a quarantine flag that is still set takes effect again (check Mirror Fleet first).
+
 Every device on MC's shared login needs a personal 4-digit code (PR #647).
 Design: `functions/lib/device-enrolment.cjs` (top of file) and `src/device/enrolment.js`.
 
@@ -12,7 +27,7 @@ Design: `functions/lib/device-enrolment.cjs` (top of file) and `src/device/enrol
 | People, devices, codes, attempts, email queue | `/device_enrolment/*` — no client read; the admin screen goes through `deviceEnrolmentAdmin` |
 | Admin screen | store app → **Device Codes** tile (`#admin/devices`) — Junid, or MC's device if MC's code was made with "Can make and revoke codes" |
 
-**Off switch:** remove `/users/{mcUid}/deviceCodeRequired`. Every device on MC's login works as before at once, with or without the rules below.
+**Off switch (per login, while the feature is live):** remove `/users/{mcUid}/deviceCodeRequired`. Every device on MC's login works as before at once, with or without the rules below.
 
 ## One-time setup (done at deploy, 2026-09-25)
 
