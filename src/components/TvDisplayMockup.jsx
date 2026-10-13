@@ -29,7 +29,7 @@ import { showBlackFridayTape } from "./tv/blackFridayTape";
 // the white numbers read. The earlier concrete wall (queue-wall.jpg) stays in
 // assets but is no longer imported.
 import wallPhoto from "../assets/tv/queue-wall-sneakers.jpg";
-const WALL_DIM = "linear-gradient(180deg, rgba(8,6,6,0.62) 0%, rgba(8,6,6,0.42) 45%, rgba(8,6,6,0.5) 100%)";
+const WALL_DIM = "linear-gradient(180deg, rgba(8,6,6,0.5) 0%, rgba(8,6,6,0.18) 40%, rgba(8,6,6,0.28) 100%)";
 
 const STAGE_W = 1920;
 const STAGE_H = 1080;
@@ -432,9 +432,9 @@ const BOARD_CSS = `
              0 0 50px 8px rgba(220,128,56,0.36), 0 0 95px 14px rgba(200,112,46,0.18);
   --qb-neon-soft: 0 0 0 1px rgba(255,210,148,0.70), 0 0 6px rgba(255,186,110,0.45),
              0 0 18px rgba(240,150,70,0.28), 0 0 40px rgba(220,128,56,0.14); }
-.qb-stage { --qb-blur: 28px; --qb-sat: 0.8; --qb-bri: 0.72;
-  --qb-glass-top: rgba(255,255,255,0.07); --qb-glass-mid: rgba(255,255,255,0.02); --qb-glass-bot: rgba(255,255,255,0.015);
-  --qb-frost: rgba(14,13,12,0.44); }
+.qb-stage { --qb-blur: 14px; --qb-sat: 1.05; --qb-bri: 0.92;
+  --qb-glass-top: rgba(255,255,255,0.10); --qb-glass-mid: rgba(255,255,255,0.04); --qb-glass-bot: rgba(255,255,255,0.03);
+  --qb-frost: rgba(14,13,12,0.16); }
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
   transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat; }
 
@@ -511,7 +511,7 @@ const BOARD_CSS = `
 .qb-meta { display: flex; align-items: center; gap: 14px; width: 118px; flex-shrink: 0; }
 .qb-meta svg { flex-shrink: 0; }
 .qb-meta-text { font-weight: 500; font-size: 16.5px; color: ${COLORS.soft}; white-space: nowrap;
-  font-variant-numeric: tabular-nums; }
+  font-variant-numeric: tabular-nums; text-shadow: 0 1px 6px rgba(0,0,0,0.55); }
 .qb-dot { position: relative; display: inline-block; width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
 /* The newest order's dot breathes a ring outward. */
 .qb-dot-live::after { content: ""; position: absolute; inset: -1px; border-radius: 50%;
