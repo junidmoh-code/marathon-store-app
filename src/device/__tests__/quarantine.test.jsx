@@ -12,7 +12,7 @@
 //   · never over a job: a busy device waits, and the moment it is idle the
 //     message appears;
 //   · the clear reaches the device live and takes the message down.
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, beforeAll, afterAll, vi } from "vitest";
 import React from "react";
 import TestRenderer, { act } from "react-test-renderer";
 
@@ -46,6 +46,12 @@ const {
   quarantineRecord,
 } = await import("../quarantine");
 const DeviceQuarantine = (await import("../DeviceQuarantine.jsx")).default;
+// The gated behaviour, tested with the device gates ON. They ship paused
+// (src/device/deviceGatesSwitch.js); the paused behaviour is pinned in
+// deviceGatesPaused.test.jsx.
+const { setDeviceGatesForTest } = await import("../deviceGatesSwitch.js");
+beforeAll(() => setDeviceGatesForTest(true));
+afterAll(() => setDeviceGatesForTest(null));
 
 // A fake database: a map of path → value, and the listeners on each path.
 function fakeDb(initial = {}) {

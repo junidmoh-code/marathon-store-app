@@ -18,6 +18,7 @@ import {
   OWNER_NAME, readCachedQuarantine, shouldShowNow, watchQuarantine, firebaseSubscribe,
 } from "./quarantine";
 import { isUpdateBusy } from "../update/updateChecker";
+import { deviceGatesOn } from "./deviceGatesSwitch";
 
 const CHECK_EVERY_MS = 1000;
 
@@ -155,6 +156,11 @@ function Quarantine({ auth, subscribe = firebaseSubscribe, busy = isUpdateBusy }
   return typeof document !== "undefined" && document.body ? createPortal(screen, document.body) : screen;
 }
 
+// PAUSED (2026-10-13, src/device/deviceGatesSwitch.js): while the device gates
+// are off nothing is mounted — no listener, no overlay, no inert app — so a
+// device whose flag is still set at /mirror_switch/quarantine works normally.
+// The flag itself is kept for if the feature is revived.
 export default function DeviceQuarantine(props) {
+  if (!deviceGatesOn()) return null;
   return <FailOpen><Quarantine {...props} /></FailOpen>;
 }

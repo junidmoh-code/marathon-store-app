@@ -48,6 +48,7 @@ import {
   QUARANTINE_NODE, quarantinePath, quarantineRecord, quarantineVerdict,
 } from "../../device/quarantine";
 import { DEVICE_REJECTS_NODE, tallyDeviceRejects } from "../../device/deviceRejects";
+import { deviceGatesOn } from "../../device/deviceGatesSwitch";
 
 // ── REJECTS PER DEVICE (2026-09-25) ──────────────────────────────────────────
 // How many times each phone pressed Out of Stock / Reject, from the per-device
@@ -214,7 +215,9 @@ function DeviceRow({ d, now, mirrorOff, onToggleOff, busy, quarantined = false, 
       </div>
       {quarantined && (
         <div style={{ fontSize: 12.5, color: "#ffd60a", marginTop: 3, fontWeight: 600 }}>
-          QUARANTINED — this device shows "Show this screen to Junid" until released
+          {deviceGatesOn()
+            ? 'QUARANTINED — this device shows "Show this screen to Junid" until released'
+            : "QUARANTINED (paused) — the flag is kept, but the device works normally while device gates are paused"}
         </div>
       )}
       {rejectsReady === true && (() => {
@@ -500,6 +503,11 @@ export default function MirrorFleetCard({ authUser, onExit }) {
         {offError && <div style={{ marginTop: 10, color: "#ff453a", fontSize: 13 }}>Could not change that device: {offError}</div>}
       </div>
 
+      {!deviceGatesOn() && (
+        <div data-testid="quarantine-paused" style={{ marginTop: 12, color: "#ffd60a", fontSize: 13 }}>
+          Device quarantine is paused (src/device/deviceGatesSwitch.js). A flag set here is saved but does nothing until it is revived.
+        </div>
+      )}
       {flagsReady === false && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Cannot read the quarantine list, so the quarantine buttons are hidden.</div>}
       {flagError && <div style={{ marginTop: 12, color: "#ff453a", fontSize: 13 }}>Could not change the quarantine: {flagError}</div>}
       {rejects.ready === true && (() => {

@@ -3,7 +3,7 @@
 // flag is cached by src/device/quarantine.js) is paused even when the live
 // read cannot answer — offline is exactly when a quarantined phone would
 // otherwise slip a reject through.
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, beforeAll, afterAll, vi } from "vitest";
 
 const mem = new Map();
 globalThis.localStorage = {
@@ -19,6 +19,12 @@ vi.mock("../enrolment", () => ({ getDeviceIdentity: () => null }));
 
 const { thisDevicePaused } = await import("../rejectCount");
 const { writeCachedQuarantine } = await import("../quarantine");
+// The gated behaviour, tested with the device gates ON. They ship paused
+// (src/device/deviceGatesSwitch.js); the paused behaviour is pinned in
+// deviceGatesPaused.test.jsx.
+const { setDeviceGatesForTest } = await import("../deviceGatesSwitch.js");
+beforeAll(() => setDeviceGatesForTest(true));
+afterAll(() => setDeviceGatesForTest(null));
 const PHONE = "2964c145-ecad-4f61-9f7a-304231af0e01";
 
 describe("thisDevicePaused", () => {
