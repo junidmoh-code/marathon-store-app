@@ -23,10 +23,13 @@ import { serverNowMs } from "../utils/serverTime";
 import { buildBoard, clockText, dateText, pageRows } from "./tv/queueBoardRows";
 import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
 import { showBlackFridayTape } from "./tv/blackFridayTape";
-// The wall: Junid's photo (concrete, window light, the lit MARATHON / STORE
-// OPERATIONS sign), 1920×1080, with the clock that was painted into the
-// original retouched out — the live clock is drawn in its place.
-import wallPhoto from "../assets/tv/queue-wall.jpg";
+// The wall: Junid's sneaker-room photo (Nike box walls, the reader in the
+// middle), 1920×1080. It carries no sign, so the lit MARATHON / STORE
+// OPERATIONS sign is drawn on top, and the photo is dimmed so the glass and
+// the white numbers read. The earlier concrete wall (queue-wall.jpg) stays in
+// assets but is no longer imported.
+import wallPhoto from "../assets/tv/queue-wall-sneakers.jpg";
+const WALL_DIM = "linear-gradient(180deg, rgba(8,6,6,0.62) 0%, rgba(8,6,6,0.42) 45%, rgba(8,6,6,0.5) 100%)";
 
 const STAGE_W = 1920;
 const STAGE_H = 1080;
@@ -333,10 +336,13 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
 
         <div
           className="qb-stage"
-          style={{ transform: `translate(-50%, -50%) scale(${scale})`, backgroundImage: `url(${wallPhoto})` }}
+          style={{ transform: `translate(-50%, -50%) scale(${scale})`, backgroundImage: `${WALL_DIM}, url(${wallPhoto})` }}
         >
           {/* The sign is part of the photo; this heading is for screen readers. */}
-          <h1 className="qb-sr">Marathon store operations</h1>
+          <h1 className="qb-sign">
+            <span className="qb-sign-main">MARATHON</span>
+            <span className="qb-sign-sub">STORE OPERATIONS</span>
+          </h1>
           <BoardClock />
 
           <main className="qb-cols">
@@ -406,6 +412,13 @@ const BOARD_CSS = `
 }
 .qb-wall { position: absolute; inset: -40px; background-size: cover; background-position: center; background-repeat: no-repeat;
   filter: blur(28px) brightness(0.5); }
+.qb-sign { position: absolute; left: 0; right: 0; top: 46px; margin: 0; text-align: center; pointer-events: none; }
+.qb-sign-main { display: block; padding-left: 0.46em; font-family: ${FONT_BODY}; font-weight: 500; font-stretch: 88%;
+  font-size: 80px; line-height: 1; letter-spacing: 0.46em; color: #FFF6EA;
+  text-shadow: 0 0 4px rgba(255,236,206,0.95), 0 0 14px rgba(255,196,122,0.85), 0 0 32px rgba(240,150,70,0.6),
+               0 0 70px rgba(220,128,56,0.4); }
+.qb-sign-sub { display: block; margin-top: 24px; padding-left: 1.1em; font-family: ${FONT_BODY}; font-weight: 400;
+  font-size: 18px; letter-spacing: 1.1em; color: rgba(255,246,234,0.92); text-shadow: 0 0 10px rgba(255,200,140,0.5); }
 .qb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
 
 /* Glass: Apple-style clear glass. The wall stays visible through each panel,
@@ -434,7 +447,10 @@ const BOARD_CSS = `
 
 /* ── Glass columns ─────────────────────────────────────────────────────────── */
 .qb-cols { position: absolute; left: 101px; top: 220px; width: 1732px; height: 655px;
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  display: grid; grid-template-columns: 1fr 1fr 44px 1fr 1fr; gap: 12px; }
+/* A window between Ready and Out of stock, so the reader in the photo shows. */
+.qb-cols > .qb-col:nth-child(3) { grid-column: 4; }
+.qb-cols > .qb-col:nth-child(4) { grid-column: 5; }
 .qb-col { position: relative; min-width: 0; border-radius: 6px; padding: 32px 24px 0;
   background:
     linear-gradient(180deg, rgba(255,250,244,0.05) 0%, rgba(255,250,244,0) 14%),
@@ -471,7 +487,7 @@ const BOARD_CSS = `
 .qb-col-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 14px; height: 62px; padding: 0 4px; }
 .qb-col-head svg { flex-shrink: 0; filter: drop-shadow(0 0 8px var(--qb-accent)); }
 .qb-col-titles { flex: 1; min-width: 0; }
-.qb-col-title { font-weight: 700; font-size: 18px; letter-spacing: 0.2px; font-stretch: 86%; line-height: 1.15; white-space: nowrap;
+.qb-col-title { font-weight: 700; font-size: 18px; letter-spacing: 0.2px; font-stretch: 80%; line-height: 1.15; white-space: nowrap;
   overflow: hidden; text-overflow: clip; color: #FBF7F1; }
 .qb-col-sub { margin-top: 10px; font-weight: 500; font-size: 12px; letter-spacing: 2.6px; font-stretch: 92%; white-space: nowrap;
   overflow: hidden; text-overflow: clip; color: ${COLORS.soft}; }
