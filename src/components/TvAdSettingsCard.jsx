@@ -10,6 +10,7 @@ import { ref, update } from "firebase/database";
 import { ref as storageRef, uploadBytes, getDownloadURL, deleteObject } from "firebase/storage";
 import { database, storage, auth } from "../firebase";
 import { useTvAdSettings } from "../utils/tvAdSettings";
+import TvBackgroundsSection from "./TvBackgroundsSection";
 
 const FONT = "-apple-system, BlinkMacSystemFont, sans-serif";
 
@@ -230,6 +231,8 @@ export default function TvAdSettingsCard({ onExit }) {
               </div>
             </div>
           </div>
+
+          <TvBackgroundsSection />
 
         </div>
       )}

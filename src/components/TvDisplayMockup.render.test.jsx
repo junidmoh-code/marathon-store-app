@@ -41,9 +41,29 @@ const setUrl = (search) => {
 beforeEach(() => { listeners.length = 0; setUrl(""); });
 afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
-test("the board's own reads are .info/connected only", () => {
+test("the board's own reads are the background settings and .info/connected only", () => {
   act(() => { create(<TvDisplayMockup orders={[]} specials={[]} />); });
-  expect(listeners.map((l) => l.path)).toEqual([".info/connected"]);
+  expect(listeners.map((l) => l.path).sort()).toEqual([".info/connected", "settings/tvBackgrounds"]);
+});
+
+test("the chosen background fades in only once it has loaded; a missing node keeps the built-in wall", () => {
+  const loads = [];
+  vi.stubGlobal("Image", class { set src(v) { this._src = v; loads.push(this); } get src() { return this._src; } });
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  const bg = () => byClass(tree, "qb-bg-photo").map((n) => n.props.style.backgroundImage);
+  const builtIn = bg();
+  expect(builtIn).toHaveLength(1);
+  const feed = listeners.find((l) => l.path === "settings/tvBackgrounds");
+  act(() => { feed.cb(snap(null)); });
+  expect(bg()).toEqual(builtIn);
+  act(() => { feed.cb(snap({ defaultId: "b", photos: {
+    a: { url: "https://x/a.jpg", addedAt: 1 }, b: { url: "https://x/b.jpg", addedAt: 2 },
+  } })); });
+  expect(bg()).toEqual(builtIn);                          // still loading — no switch yet
+  expect(loads.map((i) => i.src)).toEqual(["https://x/b.jpg"]);
+  act(() => { loads[0].onload(); });
+  expect(bg()).toEqual([builtIn[0], "url(https://x/b.jpg)"]); // old under, new fading in on top
 });
 
 test("live orders fill their columns: newest five first, full total, then the next page", () => {
@@ -128,4 +148,25 @@ test("the stage fills the screen edge to edge without ever cutting off the board
     expect(1080 * stageScale(vw, vh, true)).toBeLessThanOrEqual(vh + 1e-9);
   }
   expect(stageScale(1920, 1080, true)).toBeCloseTo(1);   // a 16:9 TV is unchanged
+});
+
+test("until Black Friday the tape crosses the floor and the connection status moves under the clock", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-20T10:00:00Z"));
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  expect(byClass(tree, "qb-tape")).toHaveLength(1);
+  expect(byClass(tree, "qb-tape-band")).toHaveLength(2);
+  expect(byClass(tree, "qb-footer")).toHaveLength(0);
+  expect(byClass(tree, "qb-status-top")[0].findAll((n) => n.props.className === "qb-conn")).toHaveLength(1);
+});
+
+test("from Black Friday the tape is gone and the footer is back", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-27T08:00:00Z"));
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  expect(byClass(tree, "qb-tape")).toHaveLength(0);
+  expect(byClass(tree, "qb-status-top")).toHaveLength(0);
+  expect(byClass(tree, "qb-footer")[0].findAll((n) => n.props.className === "qb-conn")).toHaveLength(1);
 });

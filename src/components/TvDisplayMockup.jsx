@@ -22,10 +22,15 @@ import TvAdOverlay from "./TvAdOverlay";
 import { serverNowMs } from "../utils/serverTime";
 import { buildBoard, clockText, dateText, pageRows } from "./tv/queueBoardRows";
 import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
-// The wall: Junid's photo (concrete, window light, the lit MARATHON / STORE
-// OPERATIONS sign), 1920×1080, with the clock that was painted into the
-// original retouched out — the live clock is drawn in its place.
-import wallPhoto from "../assets/tv/queue-wall.jpg";
+import { showBlackFridayTape } from "./tv/blackFridayTape";
+import { useTvBackgrounds, pickTvBackground } from "../utils/tvBackgrounds";
+// The wall: Junid's sneaker-room photo (Nike box walls, the reader in the
+// middle), 1920×1080. It carries no sign, so the lit MARATHON / STORE
+// OPERATIONS sign is drawn on top, and the photo is dimmed so the glass and
+// the white numbers read. The earlier concrete wall (queue-wall.jpg) stays in
+// assets but is no longer imported.
+import wallPhoto from "../assets/tv/queue-wall-sneakers.jpg";
+const WALL_DIM = "linear-gradient(180deg, rgba(8,6,6,0.5) 0%, rgba(8,6,6,0.18) 40%, rgba(8,6,6,0.28) 100%)";
 
 const STAGE_W = 1920;
 const STAGE_H = 1080;
@@ -242,9 +247,68 @@ function ConnectionStatus({ connected }) {
   );
 }
 
+// Junid's Black Friday teaser: two black barrier tapes crossing the floor, the
+// words scrolling in opposite directions. Each strip is six identical units
+// and slides exactly one unit (a sixth of itself) per loop, so the seam never
+// shows whatever width the font lands at. Six, not five: at the far end of a
+// loop the strip is still five units long, which outruns the 2400 px band in
+// both scroll directions with a unit to spare.
+function BlackFridayTape() {
+  const strip = Array.from({ length: 6 }, (_, i) => (
+    <span className="qb-tape-unit" key={i}><b>BLACK FRIDAY</b><i>COMING SOON</i></span>
+  ));
+  return (
+    <div className="qb-tape" role="img" aria-label="Black Friday coming soon">
+      <div className="qb-tape-band qb-tape-back"><div className="qb-tape-strip">{strip}</div></div>
+      <div className="qb-tape-band qb-tape-front"><div className="qb-tape-strip">{strip}</div></div>
+    </div>
+  );
+}
+
+// The wall behind the glass: the photo the TV Ad card picked (/settings/
+// tvBackgrounds — one default, or a rotation on server time so every TV
+// agrees), else the built-in sneaker room. Rotation is checked every 5 s.
+function useBoardBackground() {
+  const cfg = useTvBackgrounds();
+  const [nowMs, setNowMs] = useState(() => serverNowMs());
+  const rotating = cfg?.mode === "rotate" && cfg.photos.length > 1;
+  useEffect(() => {
+    if (!rotating) return undefined;
+    const t = setInterval(() => setNowMs(serverNowMs()), 5000);
+    return () => clearInterval(t);
+  }, [rotating]);
+  const picked = cfg ? pickTvBackground(cfg, nowMs) : null;
+  return picked?.url || wallPhoto;
+}
+
+// Two layers only (a TV has little memory to spare for full-HD photos): the
+// photo on screen, and the next one fading in over it. The next photo is
+// loaded BEFORE it starts to fade, so a change is a 1.5 s crossfade and never a
+// flash of half-loaded image; a photo that fails to load is skipped and the
+// current one stays.
+function BoardBackground({ url }) {
+  const [layers, setLayers] = useState(() => ({ under: null, top: url }));
+  useEffect(() => {
+    if (url === layers.top) return undefined;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => { if (!cancelled) setLayers((l) => ({ under: l.top, top: url })); };
+    img.src = url;
+    return () => { cancelled = true; img.onload = null; };
+  }, [url, layers.top]);
+  return (
+    <div className="qb-bg" aria-hidden="true">
+      {layers.under && <div key={`u:${layers.under}`} className="qb-bg-photo" style={{ backgroundImage: `url(${layers.under})` }} />}
+      <div key={`t:${layers.top}`} className="qb-bg-photo qb-bg-in" style={{ backgroundImage: `url(${layers.top})` }} />
+      <div className="qb-bg-dim" />
+    </div>
+  );
+}
+
 export default function TvDisplayMockup({ orders, specials, onExit }) {
   const hasSpecials = !!(specials && specials.length > 0);
   const scale = useStageScale(hasSpecials);
+  const backgroundUrl = useBoardBackground();
 
   // "2h ago" ages against server time; re-derived every 30 s.
   const [nowMs, setNowMs] = useState(() => serverNowMs());
@@ -256,6 +320,9 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
   // ?demo=1 draws the mockup's dummy orders instead of the live ones. Read once
   // per page load; it changes nothing but what is drawn.
   const [demo] = useState(() => isDemoMode());
+  // Until Black Friday the tape runs across the floor where the footer sits, so
+  // the connection status moves up under the clock for those weeks.
+  const tape = showBlackFridayTape(nowMs);
   // Busy columns page through every order, a page of five every PAGE_MS.
   const [pageTick, setPageTick] = useState(0);
   useEffect(() => {
@@ -309,26 +376,40 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
       <div className="qb-viewport">
         {/* Only visible on an extreme screen shape (see stageScale): the same
             wall, blurred, filling whatever the stage does not cover. */}
-        <div className="qb-wall" aria-hidden="true" style={{ backgroundImage: `url(${wallPhoto})` }} />
+        <div className="qb-wall" aria-hidden="true" style={{ backgroundImage: `url(${backgroundUrl})` }} />
 
         <div
           className="qb-stage"
-          style={{ transform: `translate(-50%, -50%) scale(${scale})`, backgroundImage: `url(${wallPhoto})` }}
+          style={{ transform: `translate(-50%, -50%) scale(${scale})` }}
         >
+          <BoardBackground url={backgroundUrl} />
           {/* The sign is part of the photo; this heading is for screen readers. */}
-          <h1 className="qb-sr">Marathon store operations</h1>
+          <h1 className="qb-sign">
+            <span className="qb-sign-main">MARATHON</span>
+            <span className="qb-sign-sub">STORE OPERATIONS</span>
+          </h1>
           <BoardClock />
 
           <main className="qb-cols">
             {COLUMNS.map((c) => <Column key={c.id} column={c} data={board[c.id]} pageTick={pageTick} />)}
           </main>
 
-          <footer className="qb-footer">
-            <span className="qb-footer-brand">MARATHON</span>
-            {demo && <span className="qb-demo">DEMO</span>}
-            <span className="qb-footer-line" />
-            <ConnectionStatus connected={connected} />
-          </footer>
+          {tape ? (
+            <>
+              <div className="qb-status-top">
+                {demo && <span className="qb-demo">DEMO</span>}
+                <ConnectionStatus connected={connected} />
+              </div>
+              <BlackFridayTape />
+            </>
+          ) : (
+            <footer className="qb-footer">
+              <span className="qb-footer-brand">MARATHON</span>
+              {demo && <span className="qb-demo">DEMO</span>}
+              <span className="qb-footer-line" />
+              <ConnectionStatus connected={connected} />
+            </footer>
+          )}
 
           {/* Specials advertising, when any is running, sits on the floor band
               under the board — content, so it shows whenever /specials has one.
@@ -374,8 +455,20 @@ const BOARD_CSS = `
   font-family: ${FONT_BODY};
   -webkit-font-smoothing: antialiased;
 }
+.qb-bg { position: absolute; inset: 0; overflow: hidden; }
+.qb-bg-photo { position: absolute; inset: 0; background-size: cover; background-position: center; background-repeat: no-repeat; }
+.qb-bg-in { animation: qb-bg-in 1.5s ease both; }
+@keyframes qb-bg-in { from { opacity: 0; } to { opacity: 1; } }
+.qb-bg-dim { position: absolute; inset: 0; background: ${WALL_DIM}; }
 .qb-wall { position: absolute; inset: -40px; background-size: cover; background-position: center; background-repeat: no-repeat;
   filter: blur(28px) brightness(0.5); }
+.qb-sign { position: absolute; left: 0; right: 0; top: 46px; margin: 0; text-align: center; pointer-events: none; }
+.qb-sign-main { display: block; padding-left: 0.46em; font-family: ${FONT_BODY}; font-weight: 500; font-stretch: 88%;
+  font-size: 80px; line-height: 1; letter-spacing: 0.46em; color: #FFF6EA;
+  text-shadow: 0 0 4px rgba(255,236,206,0.95), 0 0 14px rgba(255,196,122,0.85), 0 0 32px rgba(240,150,70,0.6),
+               0 0 70px rgba(220,128,56,0.4); }
+.qb-sign-sub { display: block; margin-top: 24px; padding-left: 1.1em; font-family: ${FONT_BODY}; font-weight: 400;
+  font-size: 18px; letter-spacing: 1.1em; color: rgba(255,246,234,0.92); text-shadow: 0 0 10px rgba(255,200,140,0.5); }
 .qb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
 
 /* Glass: Apple-style clear glass. The wall stays visible through each panel,
@@ -389,9 +482,9 @@ const BOARD_CSS = `
              0 0 50px 8px rgba(220,128,56,0.36), 0 0 95px 14px rgba(200,112,46,0.18);
   --qb-neon-soft: 0 0 0 1px rgba(255,210,148,0.70), 0 0 6px rgba(255,186,110,0.45),
              0 0 18px rgba(240,150,70,0.28), 0 0 40px rgba(220,128,56,0.14); }
-.qb-stage { --qb-blur: 28px; --qb-sat: 0.8; --qb-bri: 0.72;
-  --qb-glass-top: rgba(255,255,255,0.07); --qb-glass-mid: rgba(255,255,255,0.02); --qb-glass-bot: rgba(255,255,255,0.015);
-  --qb-frost: rgba(14,13,12,0.44); }
+.qb-stage { --qb-blur: 4px; --qb-sat: 1.05; --qb-bri: 0.9;
+  --qb-glass-top: rgba(255,255,255,0.10); --qb-glass-mid: rgba(255,255,255,0.03); --qb-glass-bot: rgba(255,255,255,0.02);
+  --qb-frost: rgba(14,13,12,0.12); }
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
   transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat; }
 
@@ -404,7 +497,10 @@ const BOARD_CSS = `
 
 /* ── Glass columns ─────────────────────────────────────────────────────────── */
 .qb-cols { position: absolute; left: 101px; top: 220px; width: 1732px; height: 655px;
-  display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+  display: grid; grid-template-columns: 1fr 1fr 44px 1fr 1fr; gap: 12px; }
+/* A window between Ready and Out of stock, so the reader in the photo shows. */
+.qb-cols > .qb-col:nth-child(3) { grid-column: 4; }
+.qb-cols > .qb-col:nth-child(4) { grid-column: 5; }
 .qb-col { position: relative; min-width: 0; border-radius: 6px; padding: 32px 24px 0;
   background:
     linear-gradient(180deg, rgba(255,250,244,0.05) 0%, rgba(255,250,244,0) 14%),
@@ -441,7 +537,7 @@ const BOARD_CSS = `
 .qb-col-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 14px; height: 62px; padding: 0 4px; }
 .qb-col-head svg { flex-shrink: 0; filter: drop-shadow(0 0 8px var(--qb-accent)); }
 .qb-col-titles { flex: 1; min-width: 0; }
-.qb-col-title { font-weight: 700; font-size: 18px; letter-spacing: 0.2px; font-stretch: 86%; line-height: 1.15; white-space: nowrap;
+.qb-col-title { font-weight: 700; font-size: 18px; letter-spacing: 0.2px; font-stretch: 80%; line-height: 1.15; white-space: nowrap;
   overflow: hidden; text-overflow: clip; color: #FBF7F1; }
 .qb-col-sub { margin-top: 10px; font-weight: 500; font-size: 12px; letter-spacing: 2.6px; font-stretch: 92%; white-space: nowrap;
   overflow: hidden; text-overflow: clip; color: ${COLORS.soft}; }
@@ -465,7 +561,7 @@ const BOARD_CSS = `
 .qb-meta { display: flex; align-items: center; gap: 14px; width: 118px; flex-shrink: 0; }
 .qb-meta svg { flex-shrink: 0; }
 .qb-meta-text { font-weight: 500; font-size: 16.5px; color: ${COLORS.soft}; white-space: nowrap;
-  font-variant-numeric: tabular-nums; }
+  font-variant-numeric: tabular-nums; text-shadow: 0 1px 6px rgba(0,0,0,0.55); }
 .qb-dot { position: relative; display: inline-block; width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
 /* The newest order's dot breathes a ring outward. */
 .qb-dot-live::after { content: ""; position: absolute; inset: -1px; border-radius: 50%;
@@ -490,6 +586,33 @@ const BOARD_CSS = `
 .qb-demo { font-size: 11px; font-weight: 700; letter-spacing: 3px; color: ${COLORS.amber};
   border: 1px solid ${COLORS.amber}88; border-radius: 3px; padding: 3px 7px 3px 10px; }
 
+/* ── Black Friday tape ─────────────────────────────────────────────────────
+   Glossy black vinyl, wider than the stage so both ends run off the screen,
+   crossing just under the fifth row. Drawn after the columns (over their
+   bottom edge, like tape stuck across the glass) and before the specials rail. */
+.qb-status-top { position: absolute; right: 152px; top: 168px; display: flex; align-items: center; gap: 14px; }
+.qb-status-top .qb-conn { font-size: 13px; color: rgba(251,247,241,0.8); text-shadow: 0 1px 6px rgba(0,0,0,0.4); }
+.qb-tape { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
+.qb-tape-band { position: absolute; left: -240px; width: ${STAGE_W + 480}px; height: 78px; top: 868px;
+  overflow: hidden; transform-origin: 50% 50%;
+  background: linear-gradient(180deg, #3b3b3d 0%, #141415 8%, #060606 42%, #000 68%, #131314 92%, #2e2e30 100%);
+  box-shadow: 0 22px 34px rgba(0,0,0,0.6), 0 5px 10px rgba(0,0,0,0.55),
+              inset 0 1px 0 rgba(255,255,255,0.28), inset 0 -1px 0 rgba(255,255,255,0.12); }
+.qb-tape-band::after { content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: linear-gradient(180deg, rgba(255,255,255,0.10) 0%, rgba(255,255,255,0) 30%),
+              linear-gradient(97deg, rgba(255,255,255,0) 34%, rgba(255,255,255,0.09) 46%, rgba(255,255,255,0) 58%); }
+.qb-tape-front { transform: rotate(4.2deg); }
+.qb-tape-back  { transform: rotate(-4.2deg); filter: brightness(0.82); }
+.qb-tape-strip { display: flex; align-items: center; height: 100%; width: max-content;
+  animation: qb-tape-run 18s linear infinite; will-change: transform; }
+.qb-tape-back .qb-tape-strip { animation-direction: reverse; }
+.qb-tape-unit { flex: none; display: flex; align-items: center; gap: 34px; padding: 0 17px;
+  font-family: ${FONT_BODY}; font-weight: 800; font-stretch: 62%; font-size: 52px; line-height: 1;
+  letter-spacing: 0.5px; white-space: nowrap; }
+.qb-tape-unit b { font-weight: 800; color: #FAFAFA; }
+.qb-tape-unit i { font-style: normal; color: #E3141B; }
+@keyframes qb-tape-run { from { transform: translateX(0); } to { transform: translateX(calc(-100% / 6)); } }
+
 /* The rail is a fixed 160 px band; the floor under the footer is 140 px, so it
    is drawn at 7/8 size (a 2194 px-wide band scaled to exactly the stage width). */
 .qb-specials { position: absolute; left: 0; right: 0; top: ${STAGE_H - 140}px; height: 140px; overflow: hidden; }
@@ -503,6 +626,6 @@ const BOARD_CSS = `
 
 @media (prefers-reduced-motion: reduce) {
   .qb-col::before, .qb-rule::after, .qb-dot-live::after { animation: none; display: none; }
-  .qb-col::after, .qb-row { animation: none; }
+  .qb-col::after, .qb-row, .qb-tape-strip, .qb-bg-in { animation: none; }
 }
 `;
