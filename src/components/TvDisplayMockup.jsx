@@ -378,6 +378,12 @@ const BOARD_CSS = `
    orange); a white tint, brightest at the top, gives it a glassy lift, and a
    thin dark veil keeps white text legible over the sunlit corners. Tuned side
    by side against the mockup. */
+.qb-stage {
+  --qb-neon: 0 0 0 2px rgba(255,253,250,0.95), 0 0 4px 2px rgba(255,248,238,0.85),
+             0 0 12px 3px rgba(227,198,175,0.80), 0 0 26px 5px rgba(190,146,111,0.62),
+             0 0 50px 8px rgba(163,114,76,0.42), 0 0 95px 14px rgba(163,114,76,0.20);
+  --qb-neon-soft: 0 0 0 1px rgba(255,253,250,0.65), 0 0 6px rgba(227,198,175,0.45),
+             0 0 18px rgba(190,146,111,0.28), 0 0 40px rgba(163,114,76,0.14); }
 .qb-stage { --qb-blur: 28px; --qb-sat: 0.8; --qb-bri: 0.78;
   --qb-glass-top: rgba(255,255,255,0.16); --qb-glass-mid: rgba(255,255,255,0.07); --qb-glass-bot: rgba(255,255,255,0.06);
   --qb-frost: rgba(22,22,24,0.30); }
@@ -401,24 +407,21 @@ const BOARD_CSS = `
     linear-gradient(170deg, var(--qb-glass-top) 0%, var(--qb-glass-mid) 40%, var(--qb-glass-bot) 100%);
   -webkit-backdrop-filter: blur(var(--qb-blur)) saturate(var(--qb-sat)) brightness(var(--qb-bri));
           backdrop-filter: blur(var(--qb-blur)) saturate(var(--qb-sat)) brightness(var(--qb-bri));
-  box-shadow:
-    0 0 0 1px rgba(255,236,214,0.28),
-    0 0 14px rgba(255,214,160,0.35),
-    0 0 40px rgba(255,190,120,0.18),
-    0 -6px 30px rgba(255,214,160,0.16),
+  /* Neon edge, lit like the MARATHON sign above it. Colours sampled from the
+     sign in the photo: white core (254,254,252) → cream glow (227,198,175) →
+     amber halo (190,146,111 fading to 163,114,76). */
+  box-shadow: var(--qb-neon),
     0 40px 80px rgba(0,0,0,0.45),
-    inset 0 1px 0 rgba(255,246,232,0.65),
-    inset 0 10px 24px -12px rgba(255,236,206,0.35),
-    inset 1px 0 0 rgba(255,246,232,0.30),
-    inset 0 0 50px rgba(255,226,190,0.05);
+    inset 0 0 2px rgba(255,253,250,0.55),
+    inset 0 0 12px rgba(227,198,175,0.30),
+    inset 0 0 30px rgba(190,146,111,0.12);
   overflow: hidden; isolation: isolate; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .qb-col { background: linear-gradient(162deg, rgba(92,84,76,0.9), rgba(34,31,29,0.94)); }
 }
 /* Lit rim: a gradient border, brightest on the top-left edges facing the window. */
-.qb-col::after { content: ""; position: absolute; inset: 0; border-radius: 6px; padding: 1.5px; pointer-events: none;
-  background: linear-gradient(170deg, rgba(255,248,234,1) 0%, rgba(255,240,220,0.80) 16%,
-              rgba(255,236,214,0.55) 45%, rgba(255,236,214,0.50) 75%, rgba(255,240,222,0.75) 100%);
+.qb-col::after { content: ""; position: absolute; inset: 0; border-radius: 6px; padding: 2px; pointer-events: none;
+  background: rgba(255,253,250,0.95);
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude;
   animation: qb-rim 7s ease-in-out infinite; animation-delay: calc(var(--qb-i) * -1.6s); }
@@ -427,7 +430,7 @@ const BOARD_CSS = `
   background: linear-gradient(100deg, transparent 0%, rgba(255,232,200,0.0) 20%, rgba(255,232,200,0.10) 50%, rgba(255,232,200,0) 80%, transparent 100%);
   transform: translateX(0) rotate(14deg); z-index: 0;
   animation: qb-sheen 12s ease-in-out infinite; animation-delay: calc(var(--qb-i) * 1.1s); }
-@keyframes qb-rim   { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
+@keyframes qb-rim   { 0%, 100% { opacity: 0.88; } 50% { opacity: 1; } }
 @keyframes qb-sheen { 0% { transform: translateX(0) rotate(14deg); } 55%, 100% { transform: translateX(560%) rotate(14deg); } }
 
 .qb-col-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 14px; height: 62px; padding: 0 4px; }
@@ -473,8 +476,8 @@ const BOARD_CSS = `
   border-radius: 5px;
   background: linear-gradient(180deg, rgba(120,110,100,0.30), rgba(40,36,33,0.42));
   -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
-  box-shadow: 0 0 0 1px rgba(255,236,214,0.16), 0 0 18px rgba(255,206,150,0.12),
-              inset 0 1px 0 rgba(255,246,232,0.30), 0 20px 40px rgba(0,0,0,0.35); }
+  box-shadow: var(--qb-neon-soft), 0 20px 40px rgba(0,0,0,0.35),
+              inset 0 0 10px rgba(227,198,175,0.18); }
 .qb-footer-brand { font-weight: 500; font-size: 13px; letter-spacing: 6px; color: rgba(251,247,241,0.88); }
 .qb-footer-line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255,244,230,0.35), rgba(255,244,230,0.18)); }
 .qb-conn { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 500;
