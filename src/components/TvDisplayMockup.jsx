@@ -373,13 +373,14 @@ const BOARD_CSS = `
   filter: blur(28px) brightness(0.5); }
 .qb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
 
-/* Glass: FROSTED neutral-grey (the mockup's panels are grey, R≈B). A heavy
-   blur diffuses the photo's sunlight into a soft glow where it sits behind a
-   panel, desaturated so it reads pale rather than orange; a faint white frost
-   gives the milky look. Tuned side by side against the mockup. */
-.qb-stage { --qb-blur: 44px; --qb-sat: 0.35; --qb-bri: 1;
-  --qb-glass-top: rgba(52,52,52,0.54); --qb-glass-mid: rgba(40,40,40,0.58); --qb-glass-bot: rgba(44,44,44,0.44);
-  --qb-frost: rgba(255,252,248,0.085); }
+/* Glass: Apple-style clear glass. The wall stays visible through each panel,
+   blurred and neutral (colour held near 0.8 so the sunlight doesn't turn
+   orange); a white tint, brightest at the top, gives it a glassy lift, and a
+   thin dark veil keeps white text legible over the sunlit corners. Tuned side
+   by side against the mockup. */
+.qb-stage { --qb-blur: 28px; --qb-sat: 0.8; --qb-bri: 0.78;
+  --qb-glass-top: rgba(255,255,255,0.16); --qb-glass-mid: rgba(255,255,255,0.07); --qb-glass-bot: rgba(255,255,255,0.06);
+  --qb-frost: rgba(22,22,24,0.30); }
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
   transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat; }
 
