@@ -43,7 +43,7 @@ afterEach(() => { vi.useRealTimers(); vi.unstubAllGlobals(); });
 
 test("the board's own reads are the background settings and .info/connected only", () => {
   act(() => { create(<TvDisplayMockup orders={[]} specials={[]} />); });
-  expect(listeners.map((l) => l.path).sort()).toEqual([".info/connected", "settings/tvBackgrounds"]);
+  expect(listeners.map((l) => l.path).sort()).toEqual([".info/connected", "settings/tvBackgrounds", "settings/tvPromo"]);
 });
 
 test("the chosen background fades in only once it has loaded; a missing node keeps the built-in wall", () => {
@@ -169,4 +169,19 @@ test("from Black Friday the tape is gone and the footer is back", () => {
   expect(byClass(tree, "qb-tape")).toHaveLength(0);
   expect(byClass(tree, "qb-status-top")).toHaveLength(0);
   expect(byClass(tree, "qb-footer")[0].findAll((n) => n.props.className === "qb-conn")).toHaveLength(1);
+});
+
+test("the promo switch: off brings the footer back; photo mode shows the uploaded banner in the tape's place", () => {
+  vi.useFakeTimers();
+  vi.setSystemTime(new Date("2026-11-20T10:00:00Z"));
+  let tree;
+  act(() => { tree = create(<TvDisplayMockup orders={[]} specials={[]} />); });
+  const feed = listeners.find((l) => l.path === "settings/tvPromo");
+  act(() => { feed.cb(snap({ enabled: false })); });
+  expect(byClass(tree, "qb-tape")).toHaveLength(0);
+  expect(byClass(tree, "qb-footer")).toHaveLength(1);
+  act(() => { feed.cb(snap({ enabled: true, style: "photo", photoUrl: "https://x/banner.webp" })); });
+  expect(byClass(tree, "qb-tape")).toHaveLength(0);
+  expect(byClass(tree, "qb-promo-photo")[0].props.style.backgroundImage).toBe("url(https://x/banner.webp)");
+  expect(byClass(tree, "qb-footer")).toHaveLength(0);
 });

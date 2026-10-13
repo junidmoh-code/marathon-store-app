@@ -189,12 +189,15 @@ export default function TvBackgroundsSection() {
         <input type="file" accept="image/*" multiple onChange={onFiles} disabled={!!uploading || room <= 0} style={{ display: "none" }} />
       </label>
 
-      {cfg.photos.length > 1 && (
+      {cfg.photos.length > 0 && (
         <>
           <div style={{ display: "flex", gap: 8 }}>
             {modeBtn("default", "Default photo")}
             {modeBtn("rotate", "Rotate photos")}
           </div>
+          {cfg.mode === "rotate" && cfg.photos.length < 2 && (
+            <div style={muted}>Add a second photo and they will start rotating.</div>
+          )}
           {cfg.mode === "rotate" && (
             <div>
               <div style={{ ...muted, color: "rgba(255,255,255,0.6)", marginBottom: 6 }}>Change photo every</div>
