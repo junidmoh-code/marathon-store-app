@@ -72,12 +72,12 @@ describe("queue board rows", () => {
     expect(col.rows[0].meta).toBe("2h ago");
   });
 
-  it("Incoming shows the SAST time placed; Tomorrow never prints a clock time", () => {
+  it("Incoming shows how long ago it was placed; Tomorrow never prints a clock time", () => {
     const board = buildBoard([
-      { id: "040", status: "incoming", createdAt: "2026-10-13T10:43:00Z" },
+      { id: "040", status: "incoming", createdAt: "2026-10-13T11:52:00Z" },
       { id: "050", status: "coming_tomorrow", createdAt: iso(10), comingTomorrowAt: iso(1) },
     ], NOW);
-    expect(board.incoming.rows[0].meta).toBe("12:43");
+    expect(board.incoming.rows[0].meta).toBe("8m ago");
     expect(board.tomorrow.rows[0].meta).toBe("Tomorrow");
   });
 

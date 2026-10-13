@@ -9,9 +9,9 @@ const demoRows = (list) => list.map(([number, meta]) => ({ key: `demo:${number}`
 // shows the board paging through them; each total is its row count.
 const demoColumn = (list) => { const rows = demoRows(list); return { total: rows.length, rows }; };
 export const DEMO_BOARD = {
-  incoming: demoColumn([["L-366", "12:43"], ["L-365", "12:37"], ["L-364", "12:21"], ["L-363", "11:58"], ["L-362", "11:44"],
-                        ["L-361", "11:30"], ["L-360", "11:12"], ["L-359", "10:58"], ["L-357", "10:41"], ["L-356", "10:25"],
-                        ["L-355", "10:09"], ["L-354", "09:52"]]),
+  incoming: demoColumn([["L-366", "just now"], ["L-365", "6m ago"], ["L-364", "22m ago"], ["L-363", "45m ago"], ["L-362", "59m ago"],
+                        ["L-361", "1h ago"], ["L-360", "1h ago"], ["L-359", "1h ago"], ["L-357", "2h ago"], ["L-356", "2h ago"],
+                        ["L-355", "2h ago"], ["L-354", "2h ago"]]),
   ready:    demoColumn([["071", "2h ago"], ["064", "3h ago"], ["065", "4h ago"], ["047", "5h ago"], ["039", "6h ago"],
                         ["031", "6h ago"], ["028", "7h ago"], ["022", "7h ago"]]),
   oos:      demoColumn([["L-358", "2h ago"], ["L-352", "4h ago"], ["L-349", "5h ago"]]),

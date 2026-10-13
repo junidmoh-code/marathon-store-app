@@ -76,14 +76,14 @@ export function agoText(ts, nowMs) {
 }
 
 // What the right-hand side of a row says, per column.
-//  incoming → the time it was placed ("12:43")
+//  incoming → how long ago it was placed ("8m ago") — the wait a customer
+//    actually wants to know, and a stuck order stands out from across the room
 //  ready / oos → how long ago it got there ("2h ago")
 //  tomorrow → "Tomorrow". An order on hold for tomorrow carries NO pickup time
 //    (comingTomorrowAt is only when staff put it on hold), so the board does not
 //    print a clock time a customer could mistake for a collection slot.
 export function rowMeta(o, columnId, nowMs) {
   const ts = columnStamp(o, columnId);
-  if (columnId === "incoming") return clockText(ts);
   if (columnId === "tomorrow") return "Tomorrow";
   return agoText(ts, nowMs);
 }
