@@ -5,8 +5,9 @@
 // the Hub 2 hold, the 8-min ready/out-of-stock and 15-min tomorrow auto-clear,
 // layby pulls — is decided upstream in App.jsx's TvWithAutoCollect, and the
 // bandwidth-scoped listener (useTvOrders' key range) is upstream of that. This
-// file is the look: a 1920×1080 stage — concrete wall, warm window light, four
-// glass columns — scaled to whatever the TV's viewport is, never scrolling.
+// file is the look: a 1920×1080 stage — Junid's concrete-wall photo with its lit
+// MARATHON sign, four glass columns with lit rims — scaled to whatever the TV's
+// viewport is, never scrolling.
 //
 // Columns: Incoming (incoming) · Ready for pickup (ready) · Out of stock
 // (out_of_stock) · Scheduled for tomorrow (coming_tomorrow — the warehouse's
@@ -21,13 +22,16 @@ import TvAdOverlay from "./TvAdOverlay";
 import { serverNowMs } from "../utils/serverTime";
 import { buildBoard, clockText, dateText, pageRows } from "./tv/queueBoardRows";
 import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
+// The wall: Junid's photo (concrete, window light, the lit MARATHON / STORE
+// OPERATIONS sign), 1920×1080, with the clock that was painted into the
+// original retouched out — the live clock is drawn in its place.
+import wallPhoto from "../assets/tv/queue-wall.jpg";
 
 const STAGE_W = 1920;
 const STAGE_H = 1080;
 const PAGE_MS = 8000;
 
 const FONT_BODY    = "'Archivo', 'Helvetica Neue', Arial, sans-serif";
-const FONT_DISPLAY = "'Oswald', 'Arial Narrow', 'Helvetica Neue', sans-serif";
 
 const COLORS = {
   red:   "#E5484D",
@@ -102,14 +106,15 @@ function numberSize(n) {
   return 46;
 }
 
-function Row({ row, column }) {
+function Row({ row, column, index, live }) {
   return (
-    <div className="qb-row">
+    <div className="qb-row" style={{ animationDelay: `${index * 70}ms` }}>
       <span className="qb-num" style={{ fontSize: numberSize(row.number) }}>{row.number}</span>
       <span className="qb-meta">
         {column.marker === "clock"
           ? <ClockIcon color={COLORS.soft} size={22} />
-          : <span className="qb-dot" style={{ background: column.accent, boxShadow: `0 0 10px ${column.accent}88` }} />}
+          : <span className={live ? "qb-dot qb-dot-live" : "qb-dot"}
+                  style={{ background: column.accent, boxShadow: `0 0 10px ${column.accent}aa`, color: column.accent }} />}
         <span className="qb-meta-text">{row.meta}</span>
       </span>
       <Chevron color={COLORS.soft} />
@@ -121,7 +126,8 @@ function Column({ column, data, pageTick }) {
   const { Icon } = column;
   const { page, pages, rows } = pageRows(data, pageTick);
   return (
-    <section className="qb-col" aria-label={column.title}>
+    <section className="qb-col" aria-label={column.title}
+             style={{ "--qb-i": COLUMNS.indexOf(column), "--qb-accent": column.accent }}>
       <header className="qb-col-head">
         <Icon color={column.accent} size={46} strokeWidth={1.6} />
         <div className="qb-col-titles">
@@ -130,9 +136,11 @@ function Column({ column, data, pageTick }) {
         </div>
         <div className="qb-col-count">{data.total}</div>
       </header>
-      <div className="qb-rule" style={{ background: column.accent, boxShadow: `0 0 14px ${column.accent}66` }} />
+      <div className="qb-rule" style={{ background: column.accent, boxShadow: `0 0 16px ${column.accent}88, 0 0 3px ${column.accent}` }} />
       <div className="qb-rows">
-        {rows.map((row) => <Row key={row.key} row={row} column={column} />)}
+        {rows.map((row, i) => (
+          <Row key={row.key} row={row} column={column} index={i} live={page === 0 && i === 0} />
+        ))}
       </div>
       {pages > 1 && (
         <div className="qb-pages" aria-hidden="true">
@@ -281,27 +289,18 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
     <>
       <link rel="preconnect" href="https://fonts.googleapis.com" />
       <link rel="preconnect" href="https://fonts.gstatic.com" crossOrigin="" />
-      <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600;700;800&family=Oswald:wght@300;400&display=swap" rel="stylesheet" />
+      <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet" />
       <style>{BOARD_CSS}</style>
       <div className="qb-viewport">
-        <div className="qb-wall" aria-hidden="true">
-          <div className="qb-wall-texture" />
-          <div className="qb-wall-seams" />
-          <div className="qb-window" />
-          <div className="qb-sun" />
-          <div className="qb-beams" />
-          <div className="qb-strip" />
-          <div className="qb-floor" />
-        </div>
+        {/* Letterbox fill for a viewport that isn't 16:9: the same wall, blurred. */}
+        <div className="qb-letterbox" aria-hidden="true" style={{ backgroundImage: `url(${wallPhoto})` }} />
 
         <div
           className="qb-stage"
-          style={{ transform: `translate(-50%, -50%) scale(${scale})` }}
+          style={{ transform: `translate(-50%, -50%) scale(${scale})`, backgroundImage: `url(${wallPhoto})` }}
         >
-          <header className="qb-brand">
-            <div className="qb-brand-word">MARATHON</div>
-            <div className="qb-brand-sub">STORE<span className="qb-brand-gap" />OPERATIONS</div>
-          </header>
+          {/* The sign is part of the photo; this heading is for screen readers. */}
+          <h1 className="qb-sr">Marathon store operations</h1>
           <BoardClock />
 
           <main className="qb-cols">
@@ -348,149 +347,121 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
 }
 
 // ─── STYLES ───────────────────────────────────────────────────────────────────
-// One stylesheet, all class names prefixed qb- (queue board). The wall is pure
-// CSS (no image download on a kiosk that reloads on every deploy).
-const NOISE_SVG =
-  "url(\"data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='260' height='260'>" +
-  "<filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='3' stitchTiles='stitch'/>" +
-  "<feColorMatrix values='0 0 0 0 0.5  0 0 0 0 0.47  0 0 0 0 0.44  0 0 0 0.55 0'/></filter>" +
-  "<rect width='100%' height='100%' filter='url(%23n)'/></svg>\")";
-
+// One stylesheet, all class names prefixed qb- (queue board). The wall is the
+// photo on the stage itself, so the glass sits on exactly the light it was
+// designed against. Motion is slow and transform/opacity-only (compositor work,
+// no layout), and stops entirely under prefers-reduced-motion.
 const BOARD_CSS = `
 .qb-viewport {
   position: fixed; inset: 0; overflow: hidden;
-  background: #14110f; color: ${COLORS.text};
+  background: #120f0d; color: ${COLORS.text};
   font-family: ${FONT_BODY};
   -webkit-font-smoothing: antialiased;
 }
-.qb-wall { position: absolute; inset: 0; overflow: hidden; pointer-events: none;
-  background:
-    radial-gradient(ellipse 70% 60% at 50% 12%, rgba(84,74,64,0.55), transparent 70%),
-    linear-gradient(180deg, #36302a 0%, #2b2622 40%, #211d1a 72%, #171412 100%);
-}
-.qb-wall-texture { position: absolute; inset: 0; background-image: ${NOISE_SVG};
-  background-size: 260px 260px; opacity: 0.55; mix-blend-mode: overlay; }
-.qb-wall-seams { position: absolute; left: 0; right: 0; top: 0; height: 84%;
-  background:
-    repeating-linear-gradient(90deg, transparent 0 calc(12.5% - 2px), rgba(0,0,0,0.28) calc(12.5% - 2px) calc(12.5% - 1px), rgba(255,235,210,0.05) calc(12.5% - 1px) 12.5%),
-    repeating-linear-gradient(180deg, transparent 0 calc(33.3% - 2px), rgba(0,0,0,0.18) calc(33.3% - 2px) 33.3%);
-}
-.qb-window { position: absolute; left: 0; top: 0; bottom: 14%; width: 4.2%;
-  background:
-    linear-gradient(90deg, rgba(8,7,6,0.92) 0 8%, transparent 8% 82%, rgba(8,7,6,0.95) 82%),
-    linear-gradient(180deg, rgba(8,7,6,0.9) 0 1.5%, transparent 1.5%),
-    radial-gradient(ellipse 120% 30% at 40% 30%, rgba(110,120,60,0.45), transparent 70%),
-    radial-gradient(ellipse 120% 30% at 60% 62%, rgba(90,104,52,0.40), transparent 70%),
-    linear-gradient(180deg, rgba(255,214,150,0.30), rgba(160,150,90,0.20) 45%, rgba(60,62,38,0.36));
-  filter: blur(0.6px);
-}
-.qb-sun { position: absolute; inset: 0;
-  background:
-    radial-gradient(ellipse 55% 70% at 8% 18%, rgba(255,196,128,0.34), transparent 65%),
-    radial-gradient(ellipse 40% 50% at 30% 0%, rgba(255,210,150,0.18), transparent 70%);
-}
-.qb-beams { position: absolute; left: -10%; top: -20%; width: 80%; height: 120%;
-  background: repeating-linear-gradient(118deg,
-    transparent 0 70px, rgba(255,205,145,0.24) 70px 150px, transparent 150px 190px,
-    rgba(255,205,145,0.15) 190px 230px, transparent 230px 320px);
-  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 32% 40%, #000 25%, transparent 78%);
-          mask-image: radial-gradient(ellipse 70% 60% at 32% 40%, #000 25%, transparent 78%);
-  filter: blur(8px);
-}
-.qb-strip { position: absolute; right: 2.6%; top: 0; bottom: 13%; width: 5px;
-  background: linear-gradient(180deg, rgba(255,224,170,0.95), rgba(255,200,130,0.75));
-  box-shadow: 0 0 18px 6px rgba(255,190,110,0.45), 0 0 70px 24px rgba(255,170,90,0.18);
-  border-radius: 3px;
-}
-/* Polished concrete: the wall's light reflected as soft vertical smears. */
-.qb-floor { position: absolute; left: 0; right: 0; bottom: 0; height: 14%; overflow: hidden;
-  background: linear-gradient(180deg, #3b342d 0%, #29231f 28%, #171411 100%);
-  box-shadow: inset 0 1px 0 rgba(255,220,180,0.16);
-}
-.qb-floor::before { content: ""; position: absolute; inset: -20px;
-  background:
-    linear-gradient(90deg, transparent 0 1.5%, rgba(255,215,160,0.16) 2.5%, transparent 4.5%),
-    linear-gradient(90deg, transparent 0 18%, rgba(255,225,190,0.10) 21%, transparent 25%),
-    linear-gradient(90deg, transparent 0 41%, rgba(255,225,190,0.08) 45%, transparent 49%),
-    linear-gradient(90deg, transparent 0 64%, rgba(255,225,190,0.08) 68%, transparent 72%),
-    linear-gradient(90deg, transparent 0 94.5%, rgba(255,200,130,0.42) 97.2%, transparent 99.4%);
-  filter: blur(12px);
-  -webkit-mask-image: linear-gradient(180deg, #000, transparent 95%);
-          mask-image: linear-gradient(180deg, #000, transparent 95%); }
-.qb-floor::after { content: ""; position: absolute; inset: 0;
-  background: radial-gradient(ellipse 60% 120% at 50% 0%, rgba(255,215,160,0.10), transparent 70%); }
+.qb-letterbox { position: absolute; inset: -40px; background-size: cover; background-position: center;
+  filter: blur(24px) brightness(0.55); }
+.qb-sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
 
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
-  transform-origin: 50% 50%; }
+  transform-origin: 50% 50%; background-size: ${STAGE_W}px ${STAGE_H}px; background-repeat: no-repeat;
+  box-shadow: 0 0 120px rgba(0,0,0,0.6); }
 
-.qb-brand { position: absolute; left: 0; right: 0; top: 46px; text-align: center; }
-.qb-brand-word { font-family: ${FONT_DISPLAY}; font-weight: 400; font-size: 92px; line-height: 1.05;
-  letter-spacing: 46px; padding-left: 46px; color: #FFF6E8;
-  text-shadow: 0 0 2px rgba(255,244,226,0.9), 0 0 18px rgba(255,214,160,0.65),
-               0 0 44px rgba(255,170,90,0.38), 0 0 90px rgba(255,150,70,0.18); }
-.qb-brand-sub { margin-top: 16px; font-family: ${FONT_BODY}; font-weight: 500; font-size: 17px;
-  letter-spacing: 15px; padding-left: 15px; color: rgba(255,246,232,0.88);
-  text-shadow: 0 0 10px rgba(255,200,140,0.25); }
-.qb-brand-gap { display: inline-block; width: 22px; }
-
-.qb-clock { position: absolute; right: 158px; top: 78px; text-align: right; }
+.qb-clock { position: absolute; right: 152px; top: 64px; text-align: right; }
 .qb-clock-time { font-family: ${FONT_BODY}; font-weight: 300; font-size: 60px; line-height: 1;
-  letter-spacing: 1px; color: #FBF7F1; font-variant-numeric: tabular-nums; }
-.qb-clock-date { margin-top: 12px; font-size: 13px; font-weight: 600; letter-spacing: 3px;
-  color: rgba(251,247,241,0.82); }
+  letter-spacing: 1px; color: #FBF7F1; font-variant-numeric: tabular-nums;
+  text-shadow: 0 0 18px rgba(255,220,180,0.25), 0 2px 10px rgba(0,0,0,0.35); }
+.qb-clock-date { margin-top: 13px; font-size: 13px; font-weight: 600; letter-spacing: 3px;
+  color: rgba(251,247,241,0.86); text-shadow: 0 1px 6px rgba(0,0,0,0.4); }
 
+/* ── Glass columns ─────────────────────────────────────────────────────────── */
 .qb-cols { position: absolute; left: 101px; top: 220px; width: 1732px; height: 655px;
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
 .qb-col { position: relative; min-width: 0; border-radius: 6px; padding: 32px 24px 0;
-  background: linear-gradient(180deg, rgba(92,86,80,0.36) 0%, rgba(58,54,50,0.42) 55%, rgba(44,41,38,0.48) 100%);
-  border: 1px solid rgba(255,244,230,0.24);
-  box-shadow: 0 34px 70px rgba(0,0,0,0.42), 0 6px 18px rgba(0,0,0,0.25),
-              inset 0 1px 0 rgba(255,255,255,0.20), inset 0 0 40px rgba(255,236,210,0.04);
-  -webkit-backdrop-filter: blur(16px) saturate(115%);
-          backdrop-filter: blur(16px) saturate(115%);
-  overflow: hidden; }
+  background:
+    linear-gradient(180deg, rgba(255,240,220,0.10) 0%, rgba(255,240,220,0) 14%),
+    linear-gradient(162deg, rgba(120,110,100,0.30) 0%, rgba(58,52,47,0.42) 30%, rgba(30,27,25,0.62) 68%, rgba(22,20,18,0.70) 100%);
+  -webkit-backdrop-filter: blur(16px) saturate(120%) brightness(0.8);
+          backdrop-filter: blur(16px) saturate(120%) brightness(0.8);
+  box-shadow:
+    0 0 0 1px rgba(255,236,214,0.28),
+    0 0 14px rgba(255,214,160,0.35),
+    0 0 40px rgba(255,190,120,0.18),
+    0 -6px 30px rgba(255,214,160,0.16),
+    0 40px 80px rgba(0,0,0,0.45),
+    inset 0 1px 0 rgba(255,246,232,0.65),
+    inset 0 10px 24px -12px rgba(255,236,206,0.35),
+    inset 1px 0 0 rgba(255,246,232,0.30),
+    inset 0 0 50px rgba(255,226,190,0.05);
+  overflow: hidden; isolation: isolate; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
-  .qb-col { background: linear-gradient(180deg, rgba(70,65,60,0.86), rgba(42,39,36,0.9)); }
+  .qb-col { background: linear-gradient(162deg, rgba(92,84,76,0.9), rgba(34,31,29,0.94)); }
 }
-.qb-col::before { content: ""; position: absolute; inset: 0; pointer-events: none;
-  background: linear-gradient(125deg, rgba(255,236,210,0.10) 0%, transparent 38%); }
-.qb-col-head { position: relative; display: flex; align-items: center; gap: 18px; height: 62px; padding: 0 4px; }
-.qb-col-head svg { flex-shrink: 0; }
+/* Lit rim: a gradient border, brightest on the top-left edges facing the window. */
+.qb-col::after { content: ""; position: absolute; inset: 0; border-radius: 6px; padding: 1.5px; pointer-events: none;
+  background: linear-gradient(165deg, rgba(255,246,228,1) 0%, rgba(255,228,190,0.75) 14%,
+              rgba(255,214,170,0.30) 42%, rgba(255,214,170,0.20) 72%, rgba(255,232,204,0.65) 100%);
+  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor; mask-composite: exclude;
+  animation: qb-rim 7s ease-in-out infinite; animation-delay: calc(var(--qb-i) * -1.6s); }
+/* Light sweeping across the glass, staggered column to column. */
+.qb-col::before { content: ""; position: absolute; top: -30%; bottom: -30%; left: -70%; width: 45%; pointer-events: none;
+  background: linear-gradient(100deg, transparent 0%, rgba(255,232,200,0.0) 20%, rgba(255,232,200,0.10) 50%, rgba(255,232,200,0) 80%, transparent 100%);
+  transform: translateX(0) rotate(14deg); z-index: 0;
+  animation: qb-sheen 12s ease-in-out infinite; animation-delay: calc(var(--qb-i) * 1.1s); }
+@keyframes qb-rim   { 0%, 100% { opacity: 0.78; } 50% { opacity: 1; } }
+@keyframes qb-sheen { 0% { transform: translateX(0) rotate(14deg); } 55%, 100% { transform: translateX(560%) rotate(14deg); } }
+
+.qb-col-head { position: relative; z-index: 1; display: flex; align-items: center; gap: 16px; height: 62px; padding: 0 4px; }
+.qb-col-head svg { flex-shrink: 0; filter: drop-shadow(0 0 8px var(--qb-accent)); }
 .qb-col-titles { flex: 1; min-width: 0; }
-.qb-col-title { font-weight: 700; font-size: 16.5px; letter-spacing: 0.4px; line-height: 1.15; white-space: nowrap;
-  overflow: hidden; text-overflow: clip;
-  color: #FBF7F1; }
+.qb-col-title { font-weight: 700; font-size: 16px; letter-spacing: 0.2px; line-height: 1.15; white-space: nowrap;
+  overflow: hidden; text-overflow: clip; color: #FBF7F1; }
 .qb-col-sub { margin-top: 9px; font-weight: 500; font-size: 11px; letter-spacing: 2.4px; white-space: nowrap;
-  overflow: hidden; text-overflow: clip;
-  color: ${COLORS.soft}; }
+  overflow: hidden; text-overflow: clip; color: ${COLORS.soft}; }
 .qb-col-count { font-weight: 600; font-size: 46px; line-height: 1; color: #FBF7F1;
-  font-variant-numeric: tabular-nums; padding-left: 4px; flex-shrink: 0; }
-.qb-rule { height: 3px; margin: 26px 0 6px; border-radius: 2px; }
-.qb-rows { position: relative; }
+  font-variant-numeric: tabular-nums; padding-left: 4px; flex-shrink: 0;
+  text-shadow: 0 0 16px rgba(255,236,214,0.25); }
+.qb-rule { position: relative; z-index: 1; height: 3px; margin: 26px 0 6px; border-radius: 2px; overflow: hidden; }
+.qb-rule::after { content: ""; position: absolute; top: 0; bottom: 0; left: -30%; width: 30%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.75), transparent);
+  animation: qb-rule 6s ease-in-out infinite; animation-delay: calc(var(--qb-i) * 0.9s); }
+@keyframes qb-rule { 0% { transform: translateX(0); } 45%, 100% { transform: translateX(440%); } }
+
+.qb-rows { position: relative; z-index: 1; }
 .qb-row { height: 90px; display: flex; align-items: center; gap: 14px; padding: 0 6px 0 8px;
-  border-bottom: 1px solid rgba(255,244,230,0.12); }
+  border-bottom: 1px solid rgba(255,244,230,0.13);
+  animation: qb-row-in 0.6s cubic-bezier(.2,.7,.2,1) both; }
+@keyframes qb-row-in { from { opacity: 0; transform: translateY(14px); } to { opacity: 1; transform: none; } }
 .qb-num { flex: 1; min-width: 0; font-weight: 800; letter-spacing: -0.5px; line-height: 1;
   color: #FFFFFF; white-space: nowrap; overflow: hidden; text-overflow: clip;
-  text-shadow: 0 2px 12px rgba(0,0,0,0.35); }
+  text-shadow: 0 0 22px rgba(255,236,214,0.18), 0 2px 12px rgba(0,0,0,0.4); }
 .qb-meta { display: flex; align-items: center; gap: 14px; width: 118px; flex-shrink: 0; }
 .qb-meta svg { flex-shrink: 0; }
 .qb-meta-text { font-weight: 500; font-size: 16.5px; color: ${COLORS.soft}; white-space: nowrap;
   font-variant-numeric: tabular-nums; }
-.qb-pages { position: absolute; left: 0; right: 0; bottom: 22px; display: flex; justify-content: center; gap: 10px; }
-.qb-page-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,244,230,0.25); }
-.qb-dot { display: inline-block; width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+.qb-dot { position: relative; display: inline-block; width: 11px; height: 11px; border-radius: 50%; flex-shrink: 0; }
+/* The newest order's dot breathes a ring outward. */
+.qb-dot-live::after { content: ""; position: absolute; inset: -1px; border-radius: 50%;
+  border: 2px solid currentColor; opacity: 0; animation: qb-ping 2.4s ease-out infinite; }
+@keyframes qb-ping { 0% { transform: scale(1); opacity: 0.8; } 80%, 100% { transform: scale(2.8); opacity: 0; } }
 
-.qb-footer { position: absolute; left: 101px; top: 883px; width: 1732px; height: 52px;
-  display: flex; align-items: center; gap: 22px; padding: 0 32px 0 18px; box-sizing: border-box;
-  border-radius: 4px;
-  background: linear-gradient(180deg, rgba(255,240,220,0.06), rgba(255,240,220,0.02));
-  border-top: 1px solid rgba(255,240,220,0.10); }
-.qb-footer-brand { font-weight: 500; font-size: 13px; letter-spacing: 6px; color: rgba(251,247,241,0.85); }
+.qb-pages { position: absolute; z-index: 1; left: 0; right: 0; bottom: 22px; display: flex; justify-content: center; gap: 10px; }
+.qb-page-dot { width: 8px; height: 8px; border-radius: 50%; background: rgba(255,244,230,0.25); transition: background .4s; }
+
+/* ── Footer ledge ──────────────────────────────────────────────────────────── */
+.qb-footer { position: absolute; left: 101px; top: 884px; width: 1732px; height: 50px;
+  display: flex; align-items: center; gap: 22px; padding: 0 32px 0 20px; box-sizing: border-box;
+  border-radius: 5px;
+  background: linear-gradient(180deg, rgba(120,110,100,0.30), rgba(40,36,33,0.42));
+  -webkit-backdrop-filter: blur(10px); backdrop-filter: blur(10px);
+  box-shadow: 0 0 0 1px rgba(255,236,214,0.16), 0 0 18px rgba(255,206,150,0.12),
+              inset 0 1px 0 rgba(255,246,232,0.30), 0 20px 40px rgba(0,0,0,0.35); }
+.qb-footer-brand { font-weight: 500; font-size: 13px; letter-spacing: 6px; color: rgba(251,247,241,0.88); }
+.qb-footer-line { flex: 1; height: 1px; background: linear-gradient(90deg, rgba(255,244,230,0.35), rgba(255,244,230,0.18)); }
+.qb-conn { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 500;
+  color: rgba(251,247,241,0.9); white-space: nowrap; }
 .qb-demo { font-size: 11px; font-weight: 700; letter-spacing: 3px; color: ${COLORS.amber};
   border: 1px solid ${COLORS.amber}88; border-radius: 3px; padding: 3px 7px 3px 10px; }
-.qb-footer-line { flex: 1; height: 1px; background: rgba(255,244,230,0.28); }
-.qb-conn { display: flex; align-items: center; gap: 12px; font-size: 14px; font-weight: 500;
-  color: rgba(251,247,241,0.88); white-space: nowrap; }
 
 /* The rail is a fixed 160 px band; the floor under the footer is 140 px, so it
    is drawn at 7/8 size (a 2194 px-wide band scaled to exactly the stage width). */
@@ -502,4 +473,9 @@ const BOARD_CSS = `
   transition: opacity .3s; -webkit-tap-highlight-color: transparent;
   background: rgba(0,0,0,0.45); border: 1px solid rgba(255,255,255,0.35); padding: 0;
   color: #fff; font-size: 20px; line-height: 1; font-weight: 300; }
+
+@media (prefers-reduced-motion: reduce) {
+  .qb-col::before, .qb-rule::after, .qb-dot-live::after { animation: none; display: none; }
+  .qb-col::after, .qb-row { animation: none; }
+}
 `;
