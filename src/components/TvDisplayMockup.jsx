@@ -248,11 +248,13 @@ function ConnectionStatus({ connected }) {
 }
 
 // Junid's Black Friday teaser: two black barrier tapes crossing the floor, the
-// words scrolling in opposite directions. Each strip is five identical units
-// and slides exactly one unit (a fifth of itself) per loop, so the seam never
-// shows whatever width the font lands at.
+// words scrolling in opposite directions. Each strip is six identical units
+// and slides exactly one unit (a sixth of itself) per loop, so the seam never
+// shows whatever width the font lands at. Six, not five: at the far end of a
+// loop the strip is still five units long, which outruns the 2400 px band in
+// both scroll directions with a unit to spare.
 function BlackFridayTape() {
-  const strip = Array.from({ length: 5 }, (_, i) => (
+  const strip = Array.from({ length: 6 }, (_, i) => (
     <span className="qb-tape-unit" key={i}><b>BLACK FRIDAY</b><i>COMING SOON</i></span>
   ));
   return (
@@ -609,7 +611,7 @@ const BOARD_CSS = `
   letter-spacing: 0.5px; white-space: nowrap; }
 .qb-tape-unit b { font-weight: 800; color: #FAFAFA; }
 .qb-tape-unit i { font-style: normal; color: #E3141B; }
-@keyframes qb-tape-run { from { transform: translateX(0); } to { transform: translateX(-20%); } }
+@keyframes qb-tape-run { from { transform: translateX(0); } to { transform: translateX(calc(-100% / 6)); } }
 
 /* The rail is a fixed 160 px band; the floor under the footer is 140 px, so it
    is drawn at 7/8 size (a 2194 px-wide band scaled to exactly the stage width). */
