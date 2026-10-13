@@ -121,7 +121,7 @@ function Column({ column, data }) {
   return (
     <section className="qb-col" aria-label={column.title}>
       <header className="qb-col-head">
-        <Icon color={column.accent} size={50} strokeWidth={1.6} />
+        <Icon color={column.accent} size={46} strokeWidth={1.6} />
         <div className="qb-col-titles">
           <div className="qb-col-title">{column.title}</div>
           <div className="qb-col-sub">{column.subtitle}</div>
@@ -348,11 +348,14 @@ const BOARD_CSS = `
     repeating-linear-gradient(90deg, transparent 0 calc(12.5% - 2px), rgba(0,0,0,0.28) calc(12.5% - 2px) calc(12.5% - 1px), rgba(255,235,210,0.05) calc(12.5% - 1px) 12.5%),
     repeating-linear-gradient(180deg, transparent 0 calc(33.3% - 2px), rgba(0,0,0,0.18) calc(33.3% - 2px) 33.3%);
 }
-.qb-window { position: absolute; left: 0; top: 0; bottom: 14%; width: 5.2%;
+.qb-window { position: absolute; left: 0; top: 0; bottom: 14%; width: 4.2%;
   background:
-    linear-gradient(90deg, rgba(10,9,8,0.9) 0 10%, transparent 10% 86%, rgba(10,9,8,0.92) 86%),
-    linear-gradient(180deg, rgba(255,214,150,0.55), rgba(150,140,80,0.35) 45%, rgba(70,72,40,0.45));
-  filter: blur(1px);
+    linear-gradient(90deg, rgba(8,7,6,0.92) 0 8%, transparent 8% 82%, rgba(8,7,6,0.95) 82%),
+    linear-gradient(180deg, rgba(8,7,6,0.9) 0 1.5%, transparent 1.5%),
+    radial-gradient(ellipse 120% 30% at 40% 30%, rgba(110,120,60,0.45), transparent 70%),
+    radial-gradient(ellipse 120% 30% at 60% 62%, rgba(90,104,52,0.40), transparent 70%),
+    linear-gradient(180deg, rgba(255,214,150,0.30), rgba(160,150,90,0.20) 45%, rgba(60,62,38,0.36));
+  filter: blur(0.6px);
 }
 .qb-sun { position: absolute; inset: 0;
   background:
@@ -361,10 +364,10 @@ const BOARD_CSS = `
 }
 .qb-beams { position: absolute; left: -10%; top: -20%; width: 80%; height: 120%;
   background: repeating-linear-gradient(118deg,
-    transparent 0 70px, rgba(255,205,145,0.16) 70px 150px, transparent 150px 190px,
-    rgba(255,205,145,0.10) 190px 230px, transparent 230px 320px);
-  -webkit-mask-image: radial-gradient(ellipse 60% 55% at 30% 35%, #000 20%, transparent 75%);
-          mask-image: radial-gradient(ellipse 60% 55% at 30% 35%, #000 20%, transparent 75%);
+    transparent 0 70px, rgba(255,205,145,0.24) 70px 150px, transparent 150px 190px,
+    rgba(255,205,145,0.15) 190px 230px, transparent 230px 320px);
+  -webkit-mask-image: radial-gradient(ellipse 70% 60% at 32% 40%, #000 25%, transparent 78%);
+          mask-image: radial-gradient(ellipse 70% 60% at 32% 40%, #000 25%, transparent 78%);
   filter: blur(8px);
 }
 .qb-strip { position: absolute; right: 2.6%; top: 0; bottom: 13%; width: 5px;
@@ -372,14 +375,23 @@ const BOARD_CSS = `
   box-shadow: 0 0 18px 6px rgba(255,190,110,0.45), 0 0 70px 24px rgba(255,170,90,0.18);
   border-radius: 3px;
 }
-.qb-floor { position: absolute; left: 0; right: 0; bottom: 0; height: 14%;
-  background:
-    repeating-linear-gradient(90deg, transparent 0 7%, rgba(255,214,160,0.07) 7% 8%, transparent 8% 12.5%),
-    linear-gradient(180deg, #3a332c 0%, #241f1b 30%, #15120f 100%);
-  box-shadow: inset 0 2px 0 rgba(255,220,180,0.10);
+/* Polished concrete: the wall's light reflected as soft vertical smears. */
+.qb-floor { position: absolute; left: 0; right: 0; bottom: 0; height: 14%; overflow: hidden;
+  background: linear-gradient(180deg, #3b342d 0%, #29231f 28%, #171411 100%);
+  box-shadow: inset 0 1px 0 rgba(255,220,180,0.16);
 }
+.qb-floor::before { content: ""; position: absolute; inset: -20px;
+  background:
+    linear-gradient(90deg, transparent 0 1.5%, rgba(255,215,160,0.16) 2.5%, transparent 4.5%),
+    linear-gradient(90deg, transparent 0 18%, rgba(255,225,190,0.10) 21%, transparent 25%),
+    linear-gradient(90deg, transparent 0 41%, rgba(255,225,190,0.08) 45%, transparent 49%),
+    linear-gradient(90deg, transparent 0 64%, rgba(255,225,190,0.08) 68%, transparent 72%),
+    linear-gradient(90deg, transparent 0 94.5%, rgba(255,200,130,0.42) 97.2%, transparent 99.4%);
+  filter: blur(12px);
+  -webkit-mask-image: linear-gradient(180deg, #000, transparent 95%);
+          mask-image: linear-gradient(180deg, #000, transparent 95%); }
 .qb-floor::after { content: ""; position: absolute; inset: 0;
-  background: radial-gradient(ellipse 60% 120% at 50% 0%, rgba(255,215,160,0.12), transparent 70%); }
+  background: radial-gradient(ellipse 60% 120% at 50% 0%, rgba(255,215,160,0.10), transparent 70%); }
 
 .qb-stage { position: absolute; left: 50%; top: 50%; width: ${STAGE_W}px; height: ${STAGE_H}px;
   transform-origin: 50% 50%; }
@@ -402,7 +414,7 @@ const BOARD_CSS = `
 
 .qb-cols { position: absolute; left: 101px; top: 220px; width: 1732px; height: 655px;
   display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
-.qb-col { position: relative; min-width: 0; border-radius: 6px; padding: 32px 26px 0;
+.qb-col { position: relative; min-width: 0; border-radius: 6px; padding: 32px 24px 0;
   background: linear-gradient(180deg, rgba(92,86,80,0.36) 0%, rgba(58,54,50,0.42) 55%, rgba(44,41,38,0.48) 100%);
   border: 1px solid rgba(255,244,230,0.24);
   box-shadow: 0 34px 70px rgba(0,0,0,0.42), 0 6px 18px rgba(0,0,0,0.25),
@@ -415,15 +427,15 @@ const BOARD_CSS = `
 }
 .qb-col::before { content: ""; position: absolute; inset: 0; pointer-events: none;
   background: linear-gradient(125deg, rgba(255,236,210,0.10) 0%, transparent 38%); }
-.qb-col-head { position: relative; display: flex; align-items: center; gap: 20px; height: 62px; padding: 0 4px; }
+.qb-col-head { position: relative; display: flex; align-items: center; gap: 18px; height: 62px; padding: 0 4px; }
 .qb-col-head svg { flex-shrink: 0; }
 .qb-col-titles { flex: 1; min-width: 0; }
-.qb-col-title { font-weight: 700; font-size: 18.5px; letter-spacing: 0.6px; line-height: 1.15; white-space: nowrap;
+.qb-col-title { font-weight: 700; font-size: 16.5px; letter-spacing: 0.4px; line-height: 1.15; white-space: nowrap;
   color: #FBF7F1; }
-.qb-col-sub { margin-top: 9px; font-weight: 500; font-size: 11.5px; letter-spacing: 2.6px; white-space: nowrap;
+.qb-col-sub { margin-top: 9px; font-weight: 500; font-size: 11px; letter-spacing: 2.4px; white-space: nowrap;
   color: ${COLORS.soft}; }
 .qb-col-count { font-weight: 500; font-size: 46px; line-height: 1; color: #FBF7F1;
-  font-variant-numeric: tabular-nums; padding-left: 6px; }
+  font-variant-numeric: tabular-nums; padding-left: 4px; flex-shrink: 0; }
 .qb-rule { height: 3px; margin: 26px 0 6px; border-radius: 2px; }
 .qb-rows { position: relative; }
 .qb-row { height: 90px; display: flex; align-items: center; gap: 14px; padding: 0 6px 0 8px;
