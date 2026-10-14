@@ -22,7 +22,7 @@ import TvAdOverlay from "./TvAdOverlay";
 import { serverNowMs } from "../utils/serverTime";
 import { buildBoard, clockText, dateText, pageRows } from "./tv/queueBoardRows";
 import { DEMO_BOARD, isDemoMode } from "./tv/queueBoardDemo";
-import { showBlackFridayTape } from "./tv/blackFridayTape";
+import { useTvPromo, tvPromoMode } from "../utils/tvPromo";
 import { useTvBackgrounds, pickTvBackground } from "../utils/tvBackgrounds";
 // The wall: Junid's sneaker-room photo (Nike box walls, the reader in the
 // middle), 1920×1080. It carries no sign, so the lit MARATHON / STORE
@@ -320,9 +320,11 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
   // ?demo=1 draws the mockup's dummy orders instead of the live ones. Read once
   // per page load; it changes nothing but what is drawn.
   const [demo] = useState(() => isDemoMode());
-  // Until Black Friday the tape runs across the floor where the footer sits, so
-  // the connection status moves up under the clock for those weeks.
-  const tape = showBlackFridayTape(nowMs);
+  // The promo banner (TV Ad card → TV promo banner: the built-in Black Friday
+  // tape, an uploaded photo, or off) runs across the floor where the footer
+  // sits, so while it is up the connection status moves under the clock.
+  const promo = useTvPromo();
+  const promoMode = tvPromoMode(promo, nowMs);
   // Busy columns page through every order, a page of five every PAGE_MS.
   const [pageTick, setPageTick] = useState(0);
   useEffect(() => {
@@ -394,13 +396,16 @@ export default function TvDisplayMockup({ orders, specials, onExit }) {
             {COLUMNS.map((c) => <Column key={c.id} column={c} data={board[c.id]} pageTick={pageTick} />)}
           </main>
 
-          {tape ? (
+          {promoMode ? (
             <>
               <div className="qb-status-top">
                 {demo && <span className="qb-demo">DEMO</span>}
                 <ConnectionStatus connected={connected} />
               </div>
-              <BlackFridayTape />
+              {promoMode === "photo"
+                ? <div className="qb-promo-photo" role="img" aria-label={promo.name || "Promotion"}
+                    style={{ backgroundImage: `url(${promo.photoUrl})` }} />
+                : <BlackFridayTape />}
             </>
           ) : (
             <footer className="qb-footer">
@@ -590,6 +595,12 @@ const BOARD_CSS = `
    Glossy black vinyl, wider than the stage so both ends run off the screen,
    crossing just under the fifth row. Drawn after the columns (over their
    bottom edge, like tape stuck across the glass) and before the specials rail. */
+/* An uploaded banner sits in the tape's place: the floor band under the
+   fifth row, as wide as fits. A wide image (about 1920×300) fills it edge to
+   edge; transparent PNGs keep their transparency. */
+.qb-promo-photo { position: absolute; left: 0; right: 0; top: 780px; bottom: 0; pointer-events: none;
+  background-size: contain; background-position: center; background-repeat: no-repeat;
+  filter: drop-shadow(0 18px 28px rgba(0,0,0,0.55)); }
 .qb-status-top { position: absolute; right: 152px; top: 168px; display: flex; align-items: center; gap: 14px; }
 .qb-status-top .qb-conn { font-size: 13px; color: rgba(251,247,241,0.8); text-shadow: 0 1px 6px rgba(0,0,0,0.4); }
 .qb-tape { position: absolute; inset: 0; overflow: hidden; pointer-events: none; }
