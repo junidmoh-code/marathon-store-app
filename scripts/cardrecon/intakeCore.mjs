@@ -242,6 +242,10 @@ const NOT_A_SLIP = [
   /more text than a batch report/i,
   /pages — a batch report is one or two/i,
   /pages — more than any batch report/i,
+  // FNB documents that share the slip's file name but are not batches — see
+  // notABatchReport in functions/lib/card-recon-pdf.cjs.
+  /is a Transaction History report/i,
+  /"Banking Done" notice/i,
 ];
 
 /** "refused" (someone must look) or "unrelated" (it was never a slip). */

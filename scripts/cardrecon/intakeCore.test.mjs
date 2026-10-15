@@ -119,6 +119,19 @@ describe("classifyRefusal — a failing terminal must not be filed as noise", ()
       "That PDF is password-protected. Photograph the slip instead.",
     ]) expect(classifyRefusal(reason)).toBe("unrelated");
   });
+
+  it("files FNB's two not-a-batch documents as UNRELATED, in the parser's own words", () => {
+    // The sentences are taken from the parser itself, so a reworded refusal
+    // cannot quietly turn these back into red boxes.
+    const { parseSlipPdf } = require("../../functions/lib/card-recon-pdf.cjs");
+    const fixture = (n) => require(`../../functions/test/fixtures/card-recon-real/${n}.lines.json`);
+    const done = parseSlipPdf(fixture("20261014-67365901-b92-refused-banking-done-m553"));
+    const history = parseSlipPdf(fixture("20261011-67377843-bx-refused-transaction-history-m494"));
+    expect(done.unrelated).toBe(true);
+    expect(history.unrelated).toBe(true);
+    expect(classifyRefusal(done.reason)).toBe("unrelated");
+    expect(classifyRefusal(history.reason)).toBe("unrelated");
+  });
 });
 
 describe("the terminal's name is stamped at capture, never resolved later", () => {

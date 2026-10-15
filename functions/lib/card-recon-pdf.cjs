@@ -871,18 +871,54 @@ function readTxnBlock(block, batchNo) {
 
 /**
  * Does this banking report have the shape of a batch in which NO card was
- * taken? No section headings of its own (the TOTALS SUMMARY / CARD TOTALS
- * dividers aside), and not a single transaction block anywhere in it. The
- * caller still requires the printed TOTAL to be exactly zero.
+ * taken? No APPROVED section, not one approved transaction block, and a TOTALS
+ * SUMMARY / CARD TOTALS region. The caller still requires the printed TOTAL to
+ * be exactly zero.
+ *
+ * ── A FAILED ATTEMPT DOES NOT MAKE A BATCH NON-EMPTY ─────────────────────────
+ * Marathon Till 3 settled batch 91 on 13 Oct 2026 with "Total ZAR 0.00", no
+ * approved list, and a FAILED ATTEMPTS section holding one cancelled card
+ * ("Items: 1", "TSN:2 User Cancelled"). The first version of this rule refused
+ * any report carrying an Items count or a TSN line anywhere, so the empty batch
+ * was refused as "does not print an Items count" three times and never landed.
+ *
+ * So the test is WHERE those rows sit, not whether they exist: an Items count
+ * or a TSN line is allowed only inside a section whose own heading says it
+ * holds attempts that took no money (FAILED / DECLINED). Anything outside such
+ * a section — or an APPROVED heading anywhere, with or without a divider — is
+ * a report with transactions, and is not empty.
  */
+const NO_MONEY_SECTION = /\b(?:failed|declined)\b/i;
 function isEmptyBatchShape(rows) {
-  const txnSection = sectionStarts(rows).some((sec) => /transactions?\b/i.test(sec.heading));
-  if (txnSection) return false;
-  // …and a heading printed WITHOUT a divider above it (older firmware).
-  if (rows.some((r) => EMAILED.approved.test(r) || /^\s*declined transactions\b/i.test(r))) return false;
-  if (rows.some((r) => EMAILED.items.test(r))) return false;
-  if (rows.some((r) => BLOCK.tsnBatch.test(r) || /^\s*TSN\s*:/i.test(r))) return false;
+  if (rows.some((r) => EMAILED.approved.test(r))) return false;
+  const starts = sectionStarts(rows);
+  // Each row's section: the heading of the last section start at or above it.
+  const inNoMoneySection = (i) => {
+    let heading = null;
+    for (const sec of starts) { if (sec.at <= i) heading = sec.heading; else break; }
+    return heading !== null && NO_MONEY_SECTION.test(heading);
+  };
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const txnShaped = EMAILED.items.test(r) || BLOCK.tsnBatch.test(r) || /^\s*TSN\s*:/i.test(r);
+    if (txnShaped && !inNoMoneySection(i)) return false;
+  }
+  // A transaction section of any other name is not empty either.
+  if (starts.some((sec) => /transactions?\b/i.test(sec.heading) && !NO_MONEY_SECTION.test(sec.heading))) return false;
   return rows.some((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+}
+
+/** How many attempts the FAILED / DECLINED sections of an empty batch state. */
+function noMoneyAttemptCount(rows) {
+  const starts = sectionStarts(rows);
+  let total = 0;
+  starts.forEach((sec, k) => {
+    if (!NO_MONEY_SECTION.test(sec.heading)) return;
+    const to = k + 1 < starts.length ? starts[k + 1].at : rows.length;
+    const m = rows.slice(sec.at, to).map((r) => EMAILED.items.exec(r)).find(Boolean);
+    if (m) total += Number(m[1]);
+  });
+  return total;
 }
 
 /**
@@ -919,6 +955,10 @@ function emptyBatchExtraction(rows, { tid, batchNo }) {
       declined: [],
       declinedCount: null,
       declinedUnread: null,
+      // Cancelled or declined attempts the report printed beside its zero
+      // total. Not money; said on the record so a cashier's "I tried the card"
+      // can be seen to match.
+      failedAttempts: noMoneyAttemptCount(rows),
     },
   };
 }
@@ -1252,6 +1292,54 @@ function parseEmailedReport(rows) {
 // phrase a real batch report prints.
 const SETTLEMENT_FAILED = /\bsettlement\b[^.]{0,40}\b(?:fail(?:ed|ure)?|unsuccessful|not\s+completed|rejected)\b|\b(?:failed|unable)\s+to\s+settle\b|\bnot\s+(?:been\s+)?settled\b/i;
 
+// ─── TWO FNB DOCUMENTS THAT ARE NOT BATCH REPORTS ────────────────────────────
+// Both arrive in the same mailbox with the same "FNB-Txn-Notification.pdf"
+// name, and both used to be refused as broken batch reports — a red box for a
+// terminal that had in fact reconciled. Neither carries a figure to record, so
+// they are named and set aside (the poller files them as "unrelated", the way
+// an invoice is), never read for money.
+//
+// "BANKING DONE" — a "Banking Report for Batch N" whose whole body is
+//   "Banking Done: All transactions have already been banked." Marathon Till 3
+//   sent one for batches 81, 82, 84, 89, 90 (twice) and 92 between 21 Sept and
+//   14 Oct 2026, each AFTER the real report of that batch had been recorded. It
+//   is recognised only when the document carries no totals region and no
+//   transaction row at all, so a real report that happens to print the phrase
+//   is still read as one.
+//
+// "TRANSACTION HISTORY REPORT FOR <date>" — a printout requested on the
+//   terminal for a date range. It lists transactions across batches ("Batch:30"
+//   inside a report "for 2026-09-19") and names no batch of its own, so it
+//   cannot be a batch's record. Marathon Till 1 sent three.
+const BANKING_DONE = /^\s*banking done\b/i;
+const ALREADY_BANKED = /already\s+been\s+banked/i;
+const TXN_HISTORY = /^\s*transaction history report\b/i;
+
+/**
+ * A document this path must not read for money, or null. The `unrelated` flag
+ * tells the caller it was never a batch report — see classifyRefusal in
+ * scripts/cardrecon/intakeCore.mjs, which files these words the same way.
+ */
+function notABatchReport(rows) {
+  if (rows.some((r) => TXN_HISTORY.test(r))) {
+    return {
+      ok: false, unrelated: true,
+      reason: "That PDF is a Transaction History report (a date-range printout from the terminal), not a batch report — there is nothing in it to record. The terminal's batch reports are what reconcile.",
+    };
+  }
+  const text = rows.join(" ");
+  const hasFigures = rows.some((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r)
+    || EMAILED.items.test(r) || /^\s*TSN\s*:/i.test(r) || BLOCK.amount.test(r));
+  if (rows.some((r) => BANKING_DONE.test(r)) && ALREADY_BANKED.test(text) && !hasFigures) {
+    const title = rows.map((r) => EMAILED.title.exec(r)).find(Boolean);
+    return {
+      ok: false, unrelated: true,
+      reason: `That PDF is FNB's "Banking Done" notice${title ? ` for batch ${title[1]}` : ""} — every transaction had already been banked, so it carries no figures and there is nothing to record. It is not a batch report.`,
+    };
+  }
+  return null;
+}
+
 /**
  * Read whichever of the two reports this is.
  *
@@ -1276,6 +1364,8 @@ function parseSlipPdf(lines) {
       reason: "That email is a settlement-failure notice from the bank, not a batch report — the batch did not settle, so there is nothing to record. The terminal will report the batch once it settles; if it does not, call FNB Merchant Services.",
     };
   }
+  const notice = notABatchReport(rows);
+  if (notice) return notice;
   const format = detectReportFormat(rows);
   if (format === "emailed") return parseEmailedReport(rows);
   if (format === "printed") return parsePrintedSlip(rows);
@@ -1298,7 +1388,7 @@ function parseSlipPdf(lines) {
  */
 function readSlipPdfLines(lines) {
   const parsed = parseSlipPdf(lines);
-  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  if (!parsed.ok) return { ok: false, reason: parsed.reason, unrelated: parsed.unrelated === true };
   const extraction = parsed.extraction;
   // A terminal that prints a line twice must not be averaged away.
   const dedup = dedupeLines(extraction.lines);
@@ -1314,7 +1404,8 @@ function readSlipPdfLines(lines) {
 module.exports = {
   parseSlipPdf, readSlipPdfLines, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
-  sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, SETTLEMENT_FAILED,
+  sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, noMoneyAttemptCount, SETTLEMENT_FAILED,
+  notABatchReport,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
   // The email-intake path's seams: `field`/`fieldAll` read a labelled header row
   // (and every row that matches, which is how a file naming two terminals is

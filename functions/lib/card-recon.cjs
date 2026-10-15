@@ -575,7 +575,11 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   if (ex.emptyBatch === true) {
     if (reportFormat === "emailed" && !lines.length && ex.txnCount === 0 && ex.totalCents === 0
         && ex.purchasesCents === 0 && ex.cashCents === 0 && ex.refundsCents === 0) {
-      return { ok: true, warnings: ["This batch closed with no card transactions — recorded as R0.00. Any card sale the till rang since the previous batch shows as this batch's variance."] };
+      const warnings = ["This batch closed with no card transactions — recorded as R0.00. Any card sale the till rang since the previous batch shows as this batch's variance."];
+      if (Number.isInteger(ex.failedAttempts) && ex.failedAttempts > 0) {
+        warnings.push(`The terminal also printed ${ex.failedAttempts} failed attempt${ex.failedAttempts === 1 ? "" : "s"} (a cancelled or declined card) in this batch. No money moved on ${ex.failedAttempts === 1 ? "it" : "them"}.`);
+      }
+      return { ok: true, warnings };
     }
     return { ok: false, reason: "That report claims to be an empty batch but carries figures or lines. Nothing was recorded — tell Junid." };
   }
