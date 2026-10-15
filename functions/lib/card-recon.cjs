@@ -554,9 +554,13 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
         ? "That report's transactions span more than 7 days, which no single batch does — one of the dates was misread. Nothing was recorded — photograph the slip instead."
         : "The slip's Opened→Closed window is longer than 7 days — one of the dates was misread. Retake the header photo." };
     }
-    const days = Math.round((ex.closedAt - ex.openedAt) / DAY_MS);
+    // ROUNDED UP: a batch open for 7.2 days ran into its eighth day, and
+    // "ran 7 days" on a window the 7-day rule just let through reads as a
+    // contradiction (Trophy Till 1, 69-r6, 15 Oct 2026). Up, too, matches the
+    // over-ceiling refusal below.
+    const days = Math.ceil((ex.closedAt - ex.openedAt) / DAY_MS);
     if (ex.closedAt - ex.openedAt > MAX_LONG_BATCH_MS) {
-      return { ok: false, reason: `That report's transactions span ${Math.ceil((ex.closedAt - ex.openedAt) / DAY_MS)} days — longer than the ${MAX_LONG_BATCH_MS / DAY_MS} days one batch is compared against the till in one go. Nothing was recorded — tell Junid, so the terminal can be closed and the batch looked at by hand.` };
+      return { ok: false, reason: `That report's transactions span ${days} days — longer than the ${MAX_LONG_BATCH_MS / DAY_MS} days one batch is compared against the till in one go. Nothing was recorded — tell Junid, so the terminal can be closed and the batch looked at by hand.` };
     }
     longBatch.push(`This batch ran ${days} days — the terminal was not closed daily.`);
   }

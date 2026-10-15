@@ -36,7 +36,8 @@
 //        Done" notices and Transaction History reports set aside as not
 //        batches; an empty batch may carry FAILED ATTEMPTS; an emailed batch
 //        nobody closed may run past 7 days; totals-only when the list fails.
-const PARSER_VERSION = 2;
+//   3  — 15 Oct 2026: a long batch's "ran N days" rounds up (7.29 → 8).
+const PARSER_VERSION = 3;
 
 const {
   parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents,

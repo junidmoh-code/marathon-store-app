@@ -38,7 +38,15 @@ test("Trophy Till 1 batch 69 (15 Oct report) is recorded, with the long-batch wa
   assert.equal(e.txnCount, 64);
   assert.equal(e.lines.reduce((s, l) => s + l.amountCents, 0), e.totalCents, "the lines still sum to the printed total");
   assert.ok(e.closedAt - e.openedAt > MAX_WINDOW_MS);
-  assert.ok(out.warnings.includes("This batch ran 10 days — the terminal was not closed daily."), out.warnings.join(" | "));
+  assert.ok(out.warnings.includes("This batch ran 11 days — the terminal was not closed daily."), out.warnings.join(" | "));
+});
+
+test("a batch just past 7 days says it ran 8 — never \"7 days\" on a window the 7-day rule let through", () => {
+  // 12 Oct report: open 5 Oct 10:01 → printed 12 Oct, 7.29 days. Recorded on
+  // 15 Oct as 69-r6 with "ran 7 days" before the count was rounded up.
+  const out = readSlipPdfLines(real(SNAPSHOTS[0]));
+  assert.equal(out.ok, true, out.reason);
+  assert.ok(out.warnings.includes("This batch ran 8 days — the terminal was not closed daily."), out.warnings.join(" | "));
 });
 
 test("every daily snapshot of batch 69 EXTENDS the one before — so it supersedes, never doubles", () => {
