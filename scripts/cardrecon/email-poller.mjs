@@ -60,6 +60,7 @@ import { deliverNotices } from "./noticeCore.mjs";
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
   parseEnvText, classifyAttachment,
+  EVIDENCE_PATH, refusedPdfPath, evidenceRecord,
 } from "./intakeCore.mjs";
 // ── THE SECOND READER ────────────────────────────────────────────────────────
 // EFT payment notifications arrive in the SAME mailbox (customers enter it as
@@ -88,7 +89,7 @@ const admin = require("firebase-admin");
 // pdfjs-dist ships in functions' dependencies; the installer ensures it is
 // present in functions/node_modules on the mini.
 const { pdfToLines } = require("./cardRecon/pdfText.js");
-const { detectReportFormat } = require("./lib/card-recon-pdf.cjs");
+const { detectReportFormat, PARSER_VERSION } = require("./lib/card-recon-pdf.cjs");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -110,6 +111,10 @@ const SEEN_PATH = "card_batch_intake_seen";
 // terminal not reconciling is VISIBLE. With it, the tab can say which one it
 // is. (CodeRabbit, PR #510.)
 const STATUS_PATH = "card_batch_poll_status";
+// Where a refused attachment's original PDF is kept (owner-only — see
+// evidenceRecord in intakeCore.mjs). The project's default bucket, the same
+// one the callable stores slips in.
+const STORAGE_BUCKET = "marathon-club.firebasestorage.app";
 
 // A tick's ceiling. A backlog is drained a tick at a time rather than in one
 // run that holds the lock for an hour; the schedule is every few minutes.
@@ -643,6 +648,47 @@ async function run() {
   return 0;
 }
 
+/**
+ * Keep a refused message's evidence: each refused attachment's PDF in Storage
+ * and the lines it extracted, for the owner-only evidence node.
+ *
+ * BEST EFFORT, AND NEVER THE REASON A ROW IS LOST. A Storage outage or a PDF
+ * that will not extract costs the evidence, said in the record's `note` — the
+ * refusal itself is still written, because that row is what tells Junid a
+ * terminal did not reconcile.
+ */
+async function keepEvidence({ intakeId, refusedFiles }) {
+  const items = [];
+  const paths = new Map();
+  let n = 0;
+  for (const f of refusedFiles) {
+    const item = { filename: f.attachment.filename, reason: f.reason, lines: null, pdfPath: null, note: null };
+    const path = refusedPdfPath(intakeId, n++);
+    try {
+      await admin.storage().bucket(STORAGE_BUCKET).file(path).save(f.attachment.content, {
+        resumable: false,
+        contentType: "application/pdf",
+        metadata: { cacheControl: "private, max-age=0" },
+      });
+      item.pdfPath = path;
+      paths.set(f, path);
+    } catch (err) {
+      item.note = `the PDF could not be stored (${clip(err.message, 120)})`;
+      console.warn(`  ⚠ evidence: could not store ${path} (${err.message}) — the refusal is still recorded`);
+    }
+    try {
+      // The card path's own extraction (clustered lines) — what the callable read.
+      const out = await pdfToLines(f.attachment.content);
+      if (out.ok) item.lines = out.lines;
+      else item.note = [item.note, `no lines: ${clip(out.reason, 120)}`].filter(Boolean).join("; ");
+    } catch (err) {
+      item.note = [item.note, `no lines: ${clip(err.message, 120)}`].filter(Boolean).join("; ");
+    }
+    items.push(item);
+  }
+  return { record: evidenceRecord({ items, at: serverNowMs(), parserVersion: PARSER_VERSION }), paths };
+}
+
 async function handleMessage({ client, uid, db, getToken, cfg }) {
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0 };
   // imapflow takes a RANGE, and a range is a string ("12", "1:5") — not the
@@ -756,6 +802,10 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   }
 
   const results = badAttachments.map((r) => attachmentOutcome({ filename: r.filename, error: r.reason }));
+  // The push id is taken NOW, so a refused attachment's evidence can be filed
+  // under the same key as the row that reports it.
+  const intakeId = cfg.dryRun ? null : db.ref(INTAKE_PATH).push().key;
+  const refusedFiles = [];
   for (const attachment of take) {
     if (cfg.dryRun) {
       console.log(`  · would submit ${attachment.filename} (${attachment.content.length} bytes)`);
@@ -768,22 +818,31 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
       error = err.message;
     }
     const row = attachmentOutcome({ filename: attachment.filename, capture, error });
+    // The UNREDACTED reason travels to the owner-only evidence; the row keeps
+    // the redacted one.
+    if (row.outcome === "refused") refusedFiles.push({ attachment, row, reason: error || capture?.reason || row.reason });
     results.push(row);
     console.log(`  · ${row.filename}: ${row.outcome}${row.reason ? ` — ${row.reason}` : ` (batch ${row.batchKey} · ${row.tid})`}`);
   }
   if (cfg.dryRun) return empty;
 
+  const evidence = refusedFiles.length ? await keepEvidence({ intakeId, refusedFiles }) : null;
+  if (evidence) {
+    // The row says WHERE the PDF is and nothing about what it holds — before
+    // the record is built, because intakeRecord copies the rows.
+    for (const f of refusedFiles) f.row.evidence = evidence.paths.get(f) || null;
+  }
   const record = intakeRecord({ message, results, skipped, at: serverNowMs() });
-  // ONE UPDATE, TWO PATHS, ATOMICALLY. Written as two calls, a crash between
+  // ONE UPDATE, TWO (OR THREE) PATHS, ATOMICALLY. Written as two calls, a crash between
   // them leaves the outcome recorded and the claim still "claimed" — so half an
   // hour later the next tick retakes it, resubmits slips that are already in,
   // and files the duplicate-batch refusals as REFUSED. A false alarm on the one
   // feed whose whole value is that a refusal means something. A root update
   // with two absolute paths cannot half-happen.
-  const intakeId = db.ref(INTAKE_PATH).push().key;
   await db.ref().update({
     [`${INTAKE_PATH}/${intakeId}`]: record,
     [`${SEEN_PATH}/${message.key}`]: { state: "done", at: serverNowMs(), intakeId },
+    ...(evidence ? { [`${EVIDENCE_PATH}/${intakeId}`]: evidence.record } : {}),
   });
   // LAST, and deliberately: a message is only marked read once its outcome is
   // in the database. Crash before this and the next tick sees it again, which

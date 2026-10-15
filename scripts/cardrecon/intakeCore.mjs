@@ -337,3 +337,82 @@ export function claimDecision(claim, nowMs) {
   if (age > STALE_CLAIM_MS) return { take: true, why: "a previous run claimed this and never finished" };
   return { take: false, done: false, why: "another run is holding it" };
 }
+
+// ─── EVERY REFUSAL CARRIES ITS OWN EVIDENCE ──────────────────────────────────
+// Until 15 Oct 2026 a refused row stored a redacted sentence and nothing else,
+// so every refusal cost a dig through the mailbox to see what the file said —
+// and the refusals were each a NEW layout, so that dig was the whole diagnosis
+// every time (CARD-RECON-REFUSALS.md). Now the poller keeps, per refused
+// attachment, the original PDF in Storage and the lines it extracted.
+//
+// NOT ON THE INTAKE ROW. That node is read by every `card_recon` holder — the
+// managers — and is cleared for outcomes only (see the money redaction above).
+// The lines carry amounts, auth codes and RRNs. So they go to a sibling node
+// that is OWNER-ONLY, keyed by the same push id, and the PDF to an owner-only
+// Storage path. The row itself gains only the path string, which is useless
+// without the owner's read.
+//
+// CARD NUMBERS: FNB prints them masked (first six, last four). Kept to the LAST
+// FOUR here — enough to tell two cards apart while reading a refusal, and
+// nothing a BIN lookup can use. Any long digit run that passes the Luhn check
+// is withheld outright, in case some layout ever prints a number unmasked; a
+// merchant id line is exempt (MIDs are 15 digits and can pass Luhn by chance,
+// and the MID is exactly what a routing refusal needs to show).
+export const EVIDENCE_PATH = "card_batch_intake_evidence";
+export const REFUSED_PDF_PREFIX = "card_recon_refused";
+export const EVIDENCE_MAX_LINES = 600;
+export const EVIDENCE_MAX_LINE_CHARS = 160;
+export const EVIDENCE_MAX_ATTACHMENTS = 5;
+
+function luhn(digits) {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/** One extracted line, safe to keep: masked PANs cut to last four, no unmasked card number. */
+export function maskEvidenceLine(line) {
+  let s = String(line ?? "");
+  // One token, as FNB prints it: 518103******4436 → ******4436
+  s = s.replace(/\b\d{2,8}[*xX·•#]{2,}(\d{2,4})\b/g, (_, tail) => `******${tail}`);
+  // Grouped: 4111 11** **** 1111 → ******1111
+  s = s.replace(/\b\d{4} \d{0,2}[*xX·•#]{2,}(?: [*xX·•#]{4})+ (\d{4})\b/g, (_, last4) => `******${last4}`);
+  if (!/^\s*merchant\b/i.test(s)) {
+    s = s.replace(/\b(?:\d[ -]?){12,18}\d\b/g, (m) => (luhn(m.replace(/\D/g, "")) ? "[card number withheld]" : m));
+  }
+  return s.length > EVIDENCE_MAX_LINE_CHARS ? `${s.slice(0, EVIDENCE_MAX_LINE_CHARS - 1)}…` : s;
+}
+
+/** Where a refused attachment's PDF is kept: the first as {intakeId}.pdf, any more as -1, -2… */
+export function refusedPdfPath(intakeId, n = 0) {
+  return `${REFUSED_PDF_PREFIX}/${intakeId}${n ? `-${n}` : ""}.pdf`;
+}
+
+/**
+ * The owner-only evidence record for one message's refused attachments.
+ * @param {{items: {filename:string, reason:string, lines:string[]|null, pdfPath:string|null, note?:string}[], at:number, parserVersion:number|null}} input
+ */
+export function evidenceRecord({ items, at, parserVersion }) {
+  const list = (items || []).slice(0, EVIDENCE_MAX_ATTACHMENTS);
+  return {
+    at,
+    parserVersion: Number.isInteger(parserVersion) ? parserVersion : null,
+    attachments: list.map((it) => {
+      const lines = Array.isArray(it.lines) ? it.lines : [];
+      return {
+        filename: clip(it.filename, 120) || "(unnamed)",
+        // The FULL reason, money and all — this node is the owner's.
+        reason: clip(it.reason, 600),
+        pdfPath: it.pdfPath || null,
+        lineCount: lines.length,
+        lines: lines.length ? lines.slice(0, EVIDENCE_MAX_LINES).map(maskEvidenceLine) : null,
+        truncated: lines.length > EVIDENCE_MAX_LINES,
+        note: clip(it.note, 200),
+      };
+    }),
+  };
+}

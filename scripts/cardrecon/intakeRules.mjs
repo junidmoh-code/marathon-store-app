@@ -44,6 +44,13 @@ export const INTAKE_RULE_BLOCKS = {
     ".read": ownerOnly,
     ".write": "false",
   },
+  // What a REFUSED attachment said: the lines it extracted (card numbers cut
+  // to the last four) and the full, unredacted reason. Owner-only — this is
+  // the material the intake row above is cleared NOT to carry.
+  card_batch_intake_evidence: {
+    ".read": ownerOnly,
+    ".write": "false",
+  },
 };
 
 // Why each line is what it is. Printed under the block for the person pasting
@@ -79,7 +86,15 @@ card_batch_intake_seen is the dedupe ledger — one tiny row per message, no
   content. Owner-only because nobody needs to read it; the poller does not read
   it through rules either.
 
-".write": "false" on ALL THREE — the poller writes with the Admin SDK, which
+card_batch_intake_evidence is what a REFUSED attachment said — the lines it
+  extracted (masked PANs cut to the last four) and the unredacted reason —
+  keyed by the intake row's push id. Owner-only: it holds amounts, auth codes
+  and RRNs, which is exactly what card_batch_intake is cleared not to carry.
+  Without this rule the node is unreadable by every client (the poller writes
+  it with the Admin SDK), so nothing leaks before it is pasted; Junid's view
+  simply cannot show it yet.
+
+".write": "false" on ALL FOUR — the poller writes with the Admin SDK, which
   bypasses rules entirely. A false write rule is therefore not a restriction on
   the writer; it is a guarantee that NOTHING ELSE can write here. Without it,
   and being top-level nodes, they would answer to no rule at all.

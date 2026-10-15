@@ -20,6 +20,19 @@
 
 "use strict";
 
+// ─── THE PARSER'S VERSION ────────────────────────────────────────────────────
+// BUMP THIS ON EVERY CHANGE THAT CAN ALTER WHAT A PDF READS AS — this file,
+// card-recon.cjs's validateExtraction, or cardRecon/pdfText.js's line rules.
+// The callable reports it with every answer; the poller stamps it on every
+// intake row, and on each tick re-runs any refusal from the last 14 days that
+// an OLDER version judged (scripts/cardrecon/email-poller.mjs → retryStale).
+// That is what makes a fix reach the slips it was written for without anyone
+// re-running them by hand. The real-report corpus (test/card-recon-corpus*)
+// is what proves a bump did not move a file that was already accepted.
+//
+//   1  — 15 Oct 2026: first stamped version (refusal evidence kept).
+const PARSER_VERSION = 1;
+
 const {
   parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents,
   dedupeLines, validateExtraction,
@@ -1566,6 +1579,7 @@ function totalsOnlyOr(rows, reason) {
 }
 
 module.exports = {
+  PARSER_VERSION,
   parseSlipPdf, readSlipPdfLines, emailedTotalsOnly, totalsOnlyWarning, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
   sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, noMoneyAttemptCount, SETTLEMENT_FAILED,
