@@ -63,14 +63,27 @@ export function emailedArrivals(intakeNode, dayKey, dayOf) {
       ? rec.attachments
       : Object.values(rec?.attachments || {});
     for (const a of attachments) {
-      // RECORDED ONLY. A refused attachment is precisely the case a tick must
-      // not cover: the report arrived and did NOT reconcile, which is the
-      // failure this whole feature exists to make visible.
-      if (a?.outcome === "recorded" && a?.tid) out.add(String(a.tid));
+      // RECORDED, or a RE-SEND OF A BATCH ALREADY ON FILE. Any other refused
+      // attachment is precisely the case a tick must not cover: the report
+      // arrived and did NOT reconcile, which is the failure this whole feature
+      // exists to make visible.
+      if (a?.tid && (a?.outcome === "recorded" || isResend(a))) out.add(String(a.tid));
     }
   }
   return out;
 }
+
+// ─── A RE-SEND IS THE TERMINAL REPORTING, NOT FAILING ───────────────────────
+// "Batch #92 for this terminal is already captured" is the server saying the
+// report it was just sent is the SAME as the one on file. Since 15 Oct 2026
+// every other kind of disagreement with the record has its own sentence ("does
+// not agree with it", "recorded from its totals only…"), so this one now means
+// exactly: nothing new. A terminal with no card sales keeps re-sending its last
+// batch — Marathon Till 3 sent batch 92 again on 15 Oct — and that is the
+// terminal reporting, correctly, that nothing happened. It ticks; it is never
+// the red line. (Junid, 15 Oct 2026.)
+const RESEND = /already captured/i;
+const isResend = (a) => a?.outcome === "refused" && RESEND.test(String(a?.reason || ""));
 
 /**
  * The terminal named in a bank report's subject line, or null.
@@ -136,7 +149,7 @@ export function refusedArrivals(intakeNode, dayKey, dayOf) {
       ? rec.attachments
       : Object.values(rec?.attachments || {});
     for (const a of attachments) {
-      if (a?.outcome !== "refused") continue;
+      if (a?.outcome !== "refused" || isResend(a)) continue;
       // THE ROW'S OWN TID FIRST, and the subject only as a fallback.
       //
       // Refusals written before 19 Sept 2026 carry no TID at all — all 24 on
@@ -162,6 +175,62 @@ export function refusedArrivals(intakeNode, dayKey, dayOf) {
     }
   }
   return out;
+}
+
+// ─── A TILL THAT TOOK NO CARD TODAY IS CLEAN, WITH NOTHING TO WAIT FOR ──────
+// Junid, 15 Oct 2026: "if the till didn't have any card transaction, say clean
+// by default because there is nothing to compare." A report from such a till
+// can only ever say R0.00 against R0.00 in the POS, so the screen does not
+// wait for one: the till counts as clean the moment the day shows no card leg
+// on it, and a report that does come in later changes nothing.
+//
+// The POS is the authority here, read as the day's card legs per till — the
+// same /pos/paymentEvents rows the reconciliation itself counts. A single card
+// leg (a sale or a refund) means there is something to compare, and the till
+// waits for its report like any other.
+
+/**
+ * Which tills ("storeId/tillId") took a card payment in these events.
+ * @param {object|Array|null} events  the day's /pos/paymentEvents, as read
+ */
+export function tillsWithCardLegs(events) {
+  const out = new Set();
+  for (const e of Object.values(events || {})) {
+    if (!e || e.method !== "card" || !e.storeId || !e.tillId) continue;
+    if (!Number.isInteger(e.amount) || e.amount === 0) continue;
+    out.add(`${e.storeId}/${e.tillId}`);
+  }
+  return out;
+}
+
+/**
+ * Each card's state for the day, and the line at the top of the screen.
+ *
+ *   "in"      its report is in (recorded, or a re-send of the batch on file)
+ *   "no-card" no card leg on its till today — clean, nothing to wait for
+ *   "waiting" card was taken and the report has not come yet
+ *
+ * Until the day's payments have loaded (`cardTills` null) nobody is called
+ * clean for want of sales: a till with no report then simply waits.
+ *
+ * @returns {{ byTid: Map<string,"in"|"no-card"|"waiting">, total:number, clean:number, waiting:number, line:string }}
+ */
+export function daySummary(cards, { arrived, cardTills }) {
+  const byTid = new Map();
+  let clean = 0, waiting = 0;
+  for (const t of cards || []) {
+    let state;
+    if (arrived?.has(t.tid)) state = "in";
+    else if (cardTills && !cardTills.has(`${t.storeId}/${t.tillId}`)) state = "no-card";
+    else state = "waiting";
+    byTid.set(t.tid, state);
+    if (state === "waiting") waiting++; else clean++;
+  }
+  const total = byTid.size;
+  const line = !total ? ""
+    : waiting === 0 ? `All ${total} clean`
+    : `Waiting for ${waiting} · ${clean} clean`;
+  return { byTid, total, clean, waiting, line };
 }
 
 /** What this device captured by hand on `dayKey`. Never throws: a browser with

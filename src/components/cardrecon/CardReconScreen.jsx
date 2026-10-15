@@ -73,7 +73,7 @@
 // functions/cardRecon/cardRecon.js; this file is capture UX only.
 
 import React, { useEffect, useMemo, useRef, useState } from "react";
-import { ref as dbRef, onValue, query, orderByChild, limitToLast } from "firebase/database";
+import { ref as dbRef, onValue, query, orderByChild, limitToLast, startAt } from "firebase/database";
 import { httpsCallable } from "firebase/functions";
 import { database, functions, auth } from "../../firebase";
 import { ADMIN_EMAIL } from "../PermissionsContext";
@@ -81,7 +81,7 @@ import { decodeImageFile, isAcceptedImageFile, describePickedFile } from "../sho
 import { planPhotoIntake, payloadRefusal } from "./photoIntake";
 import { describeCallableError, describeDecodeError } from "./captureFailure";
 import { serverNowMs, saDateStringAt } from "../../utils/serverTime";
-import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture } from "./todaysArrivals";
+import { emailedArrivals, refusedArrivals, handCaptures, rememberHandCapture, tillsWithCardLegs, daySummary } from "./todaysArrivals";
 import { captureCards, cardsBySection, takesPhoto, typesTotal } from "./terminalRegistry";
 import { useMySections } from "../../utils/useMySections";
 import TerminalSettings from "./TerminalSettings";
@@ -165,6 +165,11 @@ const T = {
   cardDone: { background: "rgba(52,199,89,.07)", border: "1px solid rgba(52,199,89,.22)" },
   cardBusy: { background: "rgba(255,255,255,.03)", border: "1px solid rgba(255,255,255,.06)", cursor: "default" },
   name: { fontSize: 17.5, fontWeight: 600, letterSpacing: "-0.2px", color: "#E9EEFF" },
+  // The line under the date: "Waiting for 4 · 2 clean" / "All 6 clean".
+  summary: { fontSize: 15, fontWeight: 600, color: "rgba(233,238,255,.72)", marginTop: 10, letterSpacing: "-0.1px" },
+  summaryDone: { color: "#54D97F" },
+  // Under a card whose till took no card today.
+  noCard: { fontSize: 13, color: "rgba(84,217,127,.75)", margin: "-4px 4px 0" },
   tick: { width: 27, height: 27, borderRadius: 999, background: "rgba(52,199,89,.16)", color: "#54D97F",
           display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, fontWeight: 800 },
   camera: { opacity: 0.3, display: "block" },
@@ -288,6 +293,22 @@ export default function CardReconScreen({ onExit }) {
   }, []);
   const today = saDateStringAt(nowMs);
 
+  // ── THE DAY'S CARD LEGS, PER TILL — a till with none is clean, unwaited ────
+  // ONE bounded read: /pos/paymentEvents from SA midnight on, by the `at`
+  // index the reconciliation itself uses. Never the node. Until it answers,
+  // nobody is called clean for want of sales (cardTills stays null).
+  const [cardTills, setCardTills] = useState(null);
+  useEffect(() => {
+    const dayStartMs = Date.parse(`${today}T00:00:00+02:00`);
+    if (!Number.isFinite(dayStartMs)) return undefined;
+    setCardTills(null);
+    const off = onValue(
+      query(dbRef(database, "pos/paymentEvents"), orderByChild("at"), startAt(dayStartMs)),
+      (snap) => setCardTills(tillsWithCardLegs(snap.val())),
+      (err) => { setCardTills(null); console.warn("card recon: payment read failed", err?.code || err); });
+    return () => off();
+  }, [today]);
+
   // Hand captures are remembered per device (see todaysArrivals.js); this is
   // state rather than a read-through so a fresh capture ticks immediately.
   const [mine, setMine] = useState(() => handCaptures(saDateStringAt(serverNowMs())));
@@ -343,6 +364,13 @@ export default function CardReconScreen({ onExit }) {
   const refused = useMemo(
     () => refusedArrivals(intake, today, saDateStringAt),
     [intake, today]);
+
+  // Each card's state and the line at the top — see daySummary. Junid,
+  // 15 Oct 2026: "waiting for 4, 2 clean", then "6 clean" once the four are in;
+  // a till with no card sales is never waited for.
+  const summary = useMemo(
+    () => daySummary(terminalList, { arrived, cardTills }),
+    [terminalList, arrived, cardTills]);
 
   const setPhase = (tid, value) => setWork((prev) => {
     const next = { ...prev };
@@ -564,6 +592,9 @@ export default function CardReconScreen({ onExit }) {
         )}
       </div>
       <div style={T.day}>{dayLabel(nowMs)}</div>
+      {!settingsOpen && summary.line && (
+        <div style={{ ...T.summary, ...(summary.waiting === 0 ? T.summaryDone : null) }} aria-live="polite">{summary.line}</div>
+      )}
 
       {isOwner && settingsOpen && (
         <TerminalSettings terminals={terminals} onClose={() => setSettingsOpen(false)} />
@@ -592,7 +623,10 @@ export default function CardReconScreen({ onExit }) {
           const group = cardGroups.length > 1 ? cardGroups.find((g) => g.cards[0] === t) : null;
           const state = work[t.tid] || {};
           const busy = state.phase === "busy";
-          const done = arrived.has(t.tid);
+          // DONE = its report is in, OR its till took no card today — there is
+          // nothing to compare, so nothing to wait for.
+          const noCard = summary.byTid.get(t.tid) === "no-card";
+          const done = arrived.has(t.tid) || noCard;
           // AN EMAIL-ONLY TILL HAS NO CAMERA — set in the terminal settings.
           // Its card is the tick and nothing else: no input, nothing to tap.
           const camera = takesPhoto(t);
@@ -608,7 +642,7 @@ export default function CardReconScreen({ onExit }) {
               {busy ? <span style={T.working}>{state.sending ? "Sending…" : "Reading…"}</span>
                 /* A photo is RECEIVED, not yet read — the tick says so, and
                    says nothing about whether it read (that is Junid's). */
-                : done ? <span style={T.tick} aria-label={received.has(t.tid) ? "today's slip is received" : "today's report is in"}>✓</span>
+                : done ? <span style={T.tick} aria-label={received.has(t.tid) ? "today's slip is received" : noCard && !arrived.has(t.tid) ? "no card sales today — clean" : "today's report is in"}>✓</span>
                 /* Quiet on purpose: a till with nothing in raises no alarm,
                    only the hint that a photo is what it takes. Drawn rather
                    than typed — an emoji renders as a grey smudge at this
@@ -638,6 +672,9 @@ export default function CardReconScreen({ onExit }) {
                 </button>
               ) : (
                 <div style={{ ...cardStyle, ...T.cardStatic }}>{face}</div>
+              )}
+              {noCard && !busy && state.phase !== "failed" && (
+                <div style={T.noCard}>No card sales today — clean, nothing to reconcile.</div>
               )}
               {state.phase === "received" && <div style={T.received} role="status">Received</div>}
               {state.phase === "failed" && <div style={T.fail}>{state.reason}</div>}

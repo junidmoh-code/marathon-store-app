@@ -43,11 +43,14 @@ vi.mock("../../utils/useMySections", async () => {
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
   onValue: (refOrQuery, cb) => {
+    // The day's card legs never load here, so no till is "clean for want of
+    // sales" and every card behaves exactly as these tests expect.
+    if (String(refOrQuery?.path ?? "").includes("paymentEvents")) return () => {};
     const path = String(refOrQuery?.path ?? "");
     cb({ val: () => (path.includes("cardTerminals") ? LIVE_ESTATE : {}) });
     return () => {};
   },
-  query: (r) => r, orderByChild: () => {}, limitToLast: () => {},
+  query: (r) => r, orderByChild: () => {}, limitToLast: () => {}, startAt: () => {},
 }));
 vi.mock("firebase/functions", () => ({ httpsCallable: () => async () => ({ data: { ok: true } }) }));
 vi.mock("../../utils/serverTime", () => ({
