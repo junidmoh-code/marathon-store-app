@@ -584,7 +584,12 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
       reason: `The slip's figures don't add up as read (${formatCents(ex.purchasesCents)} purchases + ${formatCents(cash)} cash − ${formatCents(ex.refundsCents)} refunds ≠ ${formatCents(ex.totalCents)} total) — retake the totals photo.`,
     };
   }
-  if (!declaredTotal && (!Number.isInteger(ex.txnCount) || ex.txnCount < 0)) {
+  // A TOTALS-ONLY emailed report (card-recon-pdf.cjs → emailedTotalsOnly) may
+  // carry no count: its Items figure is exactly what would not read, and a
+  // count is never invented to fill the gap. Recorded as null, the way an
+  // unread count already is on a hand-declared batch.
+  const countUnread = summaryOnly && source === "pdf" && ex.totalsOnly === true && ex.txnCount == null;
+  if (!declaredTotal && !countUnread && (!Number.isInteger(ex.txnCount) || ex.txnCount < 0)) {
     return { ok: false, reason: "The printed Transactions count did not read cleanly — retake the header photo." };
   }
 
