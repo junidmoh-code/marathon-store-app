@@ -134,3 +134,32 @@ test("a mangled TOTAL is still a refusal, never a fallback", () => {
   const lines = without(/^Items: 5$/).map((x) => (x === "Total ZAR 2700.00" ? "Total ZAR 27O0.00" : x));
   refusesWithOriginal(lines, "mangled total");
 });
+
+// ── REVIEW FOLLOW-UPS ────────────────────────────────────────────────────────
+
+test("the totals-only window ignores a declined attempt outside the approved span", () => {
+  // Marathon Till 1 batch 32 prints a DECLINED section above its approved one.
+  const REAL_D = require("./fixtures/card-recon-real/20260923-67377843-b32-accepted-declined-m154.lines.json");
+  const full = readSlipPdfLines(REAL_D);
+  assert.equal(full.ok, true, full.reason);
+  const items = REAL_D.filter((l) => /^Items: \d+$/.test(l));
+  const approvedItems = items.at(-1);
+  const out = readSlipPdfLines(REAL_D.filter((l) => l !== approvedItems));
+  assert.equal(out.ok, true, out.reason);
+  assert.equal(out.summaryOnly, true);
+  assert.equal(out.extraction.openedAt, full.extraction.openedAt, "opens at the first APPROVED sale, as the full read does");
+  assert.equal(out.extraction.closedAt, full.extraction.closedAt);
+});
+
+test("a later report of a batch recorded TOTALS ONLY is not filed as a harmless re-send", async () => {
+  const { makeFakeDb } = require("./helpers/fake-rtdb.cjs");
+  const { resolveWriteFor } = require("../cardRecon/cardRecon.js");
+  const db = makeFakeDb({ card_batches: { trophy: { 67377843: { 44: { batchKey: "44", batchNo: 44, slip: { totalCents: 270000, windowSource: "stamps-to-print" } } } } } });
+  const changed = await resolveWriteFor(db, { storeId: "trophy", tid: "67377843", batchNo: "44", correction: false, lines: [{ tsn: 1, amountCents: 1 }], totalCents: 300000 });
+  assert.equal(changed.write.ok, false);
+  assert.match(changed.write.reason, /recorded from its totals only, and this later report of it states a different total/);
+  assert.doesNotMatch(changed.write.reason, /already captured/, "must not read as a re-send");
+  // The same total again IS a re-send.
+  const same = await resolveWriteFor(db, { storeId: "trophy", tid: "67377843", batchNo: "44", correction: false, lines: [], totalCents: 270000 });
+  assert.match(same.write.reason, /already captured/);
+});

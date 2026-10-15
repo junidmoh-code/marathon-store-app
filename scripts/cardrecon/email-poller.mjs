@@ -639,6 +639,7 @@ async function run() {
       const uidKeyOf = (uid) => `u:${String(client.mailbox?.uidValidity ?? "")}:${uid}`;
       const unprocessed = [];
       let pendingChanged = false;
+      const oldestRelease = Math.min(...Object.values(retryPending).filter(Number.isFinite));
       for (const c of candidates) {
         const keys = envelopeCandidateKeys({ messageId: c.messageId });
         // ── A MESSAGE RELEASED FOR RE-RUN (retryStale) bypasses the local
@@ -658,7 +659,13 @@ async function run() {
           unprocessed.push(c);
           continue;
         }
-        if (cache.entries[uidKeyOf(c.uid)]) continue;
+        // A uid marker cached BEFORE a pending release is not trusted: the
+        // envelope's Message-ID can differ from the parsed one the release is
+        // keyed by (or be absent), and then only the ledger can say whether
+        // this message is one of the released. Costs a ledger read per such
+        // message until the release is re-processed.
+        const uidCachedAt = cache.entries[uidKeyOf(c.uid)];
+        if (uidCachedAt && !(Number.isFinite(oldestRelease) && uidCachedAt < oldestRelease)) continue;
         if (!keys) { unprocessed.push(c); continue; }
         if (keys.some((k) => cache.entries[k])) continue;
         let done = false;
@@ -963,13 +970,23 @@ async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {}
   }
   if (cfg.dryRun) return empty;
 
-  const evidence = refusedFiles.length ? await keepEvidence({ intakeId, refusedFiles }) : null;
+  // Evidence is never the reason a message's outcome is not written: a throw
+  // here would leave the claim "claimed" and the next tick would re-submit
+  // slips this one already recorded.
+  let evidence = null;
+  if (refusedFiles.length) {
+    try { evidence = await keepEvidence({ intakeId, refusedFiles }); }
+    catch (err) { console.warn(`  ⚠ evidence could not be kept (${err.message}) — the outcome is still recorded`); }
+  }
   if (evidence) {
     // The row says WHERE the PDF is and nothing about what it holds — before
     // the record is built, because intakeRecord copies the rows.
     for (const f of refusedFiles) f.row.evidence = evidence.paths.get(f) || null;
   }
   const record = intakeRecord({ message, results, skipped, at: serverNowMs(), parserVersion: judgedVersion(versions) });
+  // A re-run says which row it re-ran, so an automatic re-run that got NO
+  // answer (a transport failure) is not released again every six hours.
+  if (releasedFrom[message.key]) record.rerunOf = releasedFrom[message.key];
   // ONE UPDATE, TWO (OR THREE) PATHS, ATOMICALLY. Written as two calls, a crash between
   // them leaves the outcome recorded and the claim still "claimed" — so half an
   // hour later the next tick retakes it, resubmits slips that are already in,

@@ -1338,8 +1338,8 @@ function parseEmailedReport(rows) {
 //   • the report prints no transaction timestamp at all, so no window exists
 //
 // THE WINDOW is the same derived one the full read uses, worked out from the
-// same exact text: the earliest and latest bare transaction timestamps below
-// the header, closing at the print time when that is later. Timestamps are
+// same exact text: the earliest and latest APPROVED transaction timestamps,
+// closing at the print time when that is later. Timestamps are
 // read whether or not the block around them parsed — a stamp is one line with
 // one fixed shape, and is not what failed.
 
@@ -1394,11 +1394,33 @@ function emailedTotalsOnly(rows, why) {
   const cash = figure(MONEY.cash, "cash figure");
   for (const f of [purchases, refunds, cash]) if (f.err) return no("one of its totals figures will not read");
 
-  // ── the window, from the stamps themselves ──
+  // ── the window, from the APPROVED transactions' own stamps ──
+  // The same span the full read uses: approved transactions only. A declined
+  // or failed attempt before the first sale or after the last is not trading
+  // the till rang, and must not widen the window the ledger is read over.
+  // The approved section is located by its heading (it is the Items count or
+  // a block inside it that failed, not the heading); with no such heading the
+  // stamps of every section that is not a no-money one are used, and the
+  // header's own print stamp is never among them.
   const firstDivider = rows.findIndex((r) => SECTION_DIVIDER.test(r));
-  const below = firstDivider >= 0 ? rows.slice(firstDivider) : [];
-  const stamps = below.map(parseEmailedStamp).filter((v) => v !== null);
-  if (!stamps.length) return no("it prints no transaction timestamps to place the batch in time");
+  const totalsAt = rows.findIndex((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+  const starts = sectionStarts(rows);
+  const approvedSec = approvedSection(rows, totalsAt);
+  let stampRows;
+  if (starts.some((sec) => /approved/i.test(sec.heading))) {
+    stampRows = rows.slice(approvedSec.from, approvedSec.to + 1);
+  } else {
+    const limit = totalsAt >= 0 ? totalsAt : rows.length;
+    stampRows = [];
+    for (let i = Math.max(firstDivider, 0); firstDivider >= 0 && i < limit; i++) {
+      let heading = null;
+      for (const sec of starts) { if (sec.at <= i) heading = sec.heading; else break; }
+      if (heading !== null && NO_MONEY_SECTION.test(heading)) continue;
+      stampRows.push(rows[i]);
+    }
+  }
+  const stamps = stampRows.map(parseEmailedStamp).filter((v) => v !== null);
+  if (!stamps.length) return no("it prints no approved-transaction timestamps to place the batch in time");
   const headerStamp = rows.slice(0, firstDivider >= 0 ? firstDivider : rows.length).map(parseEmailedStamp).find((v) => v !== null) ?? null;
   const labelledPrinted = field(rows, EMAILED.printed);
   const printedAt = headerStamp ?? (labelledPrinted ? parseSlipTimestamp(labelledPrinted) : null);
@@ -1408,8 +1430,7 @@ function emailedTotalsOnly(rows, why) {
 
   // The approved Items figure, if it is stated once — kept when it reads,
   // never made up when it does not.
-  const approved = approvedSection(rows, rows.findIndex((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r)));
-  const count = sectionItemCount(rows, approved, "approved");
+  const count = sectionItemCount(rows, approvedSec, "approved");
 
   return {
     ok: true,

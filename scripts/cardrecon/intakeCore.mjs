@@ -381,10 +381,13 @@ export function maskEvidenceLine(line) {
   let s = String(line ?? "");
   // One token, as FNB prints it: 518103******4436 → ******4436
   s = s.replace(/\b\d{2,8}[*xX·•#]{2,}(\d{2,4})\b/g, (_, tail) => `******${tail}`);
-  // Grouped: 4111 11** **** 1111 → ******1111
-  s = s.replace(/\b\d{4} \d{0,2}[*xX·•#]{2,}(?: [*xX·•#]{4})+ (\d{4})\b/g, (_, last4) => `******${last4}`);
+  // Grouped, any mix of digits and mask per group: 4111 11** **** 1111,
+  // 4111 1111 **** 1111 → ******1111
+  s = s.replace(/(?<![\d*xX·•#])(?:[\d*xX·•#]{4} ){3}(\d{4})(?!\d)/g, (m, last4) => (/[*xX·•#]/.test(m) ? `******${last4}` : m));
   if (!/^\s*merchant\b/i.test(s)) {
-    s = s.replace(/\b(?:\d[ -]?){12,18}\d\b/g, (m) => (luhn(m.replace(/\D/g, "")) ? "[card number withheld]" : m));
+    // Bounded by "not a digit" rather than a word boundary, so a number run
+    // into a label ("PAN4111…") is still seen.
+    s = s.replace(/(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/g, (m) => (luhn(m.replace(/\D/g, "")) ? "[card number withheld]" : m));
   }
   return s.length > EVIDENCE_MAX_LINE_CHARS ? `${s.slice(0, EVIDENCE_MAX_LINE_CHARS - 1)}…` : s;
 }
@@ -459,6 +462,11 @@ export function retryCandidates(rows, { nowMs, deployedVersion, windowMs = RETRY
     const stamp = Number(rec.receivedAt) || Number(rec.at) || 0;
     if (!stamp || nowMs - stamp > windowMs) continue;
     if (Number(rec.recorded) > 0 || !(Number(rec.refused) > 0)) continue;
+    // An automatic re-run that got no answer at all is not re-run again: the
+    // fault was the transport, not a parser, and a fresh row every six hours
+    // for a fortnight is noise. The next version bump does not revive it
+    // either — Junid's hand script remains for that.
+    if (rec.rerunOf && !Number.isInteger(rec.parserVersion)) continue;
     const judgedBy = Number.isInteger(rec.parserVersion) ? rec.parserVersion : 0;
     if (judgedBy >= deployedVersion) continue;
     const atts = Array.isArray(rec.attachments) ? rec.attachments : Object.values(rec.attachments || {});

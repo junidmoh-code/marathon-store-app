@@ -38,6 +38,12 @@ describe("maskEvidenceLine", () => {
     }
   });
 
+  it("catches the rarer shapes: eight digits shown, a number run into a label", () => {
+    expect(maskEvidenceLine("4111 1111 **** 1111")).toBe("******1111");
+    expect(maskEvidenceLine("PAN4111111111111111")).toBe("PAN[card number withheld]");
+    expect(maskEvidenceLine("2026 1015 1630 0001")).toBe("2026 1015 1630 0001");
+  });
+
   it("caps a line's length", () => {
     expect(maskEvidenceLine("x".repeat(500)).length).toBe(EVIDENCE_MAX_LINE_CHARS);
   });

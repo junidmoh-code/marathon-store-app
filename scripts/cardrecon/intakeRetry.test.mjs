@@ -51,6 +51,12 @@ describe("retryCandidates", () => {
     expect(retryCandidates({ "eftslip-x": row(), b: row({ messageKey: null }) }, { nowMs: NOW, deployedVersion: 2 })).toEqual([]);
   });
 
+  it("does not re-release an automatic re-run that got no answer at all", () => {
+    expect(retryCandidates({ a: row({ rerunOf: "-Pold", parserVersion: null }) }, { nowMs: NOW, deployedVersion: 2 })).toEqual([]);
+    // …but a re-run a real (older) parser judged is fair game for the next bump.
+    expect(retryCandidates({ a: row({ rerunOf: "-Pold", parserVersion: 1 }) }, { nowMs: NOW, deployedVersion: 2 }).length).toBe(1);
+  });
+
   it("does nothing when the deployed version is unknown", () => {
     expect(retryCandidates({ a: row() }, { nowMs: NOW, deployedVersion: undefined })).toEqual([]);
   });
@@ -106,6 +112,11 @@ describe("the poller's wiring", () => {
   it("a re-run's row links back to the refusal it replaces", () => {
     expect(src).toMatch(/\[`\$\{INTAKE_PATH\}\/\$\{releasedFrom\[message\.key\]\}\/retriedIntakeId`\]: intakeId/);
     expect(src).toMatch(/state\.releasedFrom\[c\.messageKey\] = c\.id;/);
+  });
+  it("distrusts a uid marker cached before a pending release, and guards the evidence step", () => {
+    expect(src).toMatch(/uidCachedAt < oldestRelease/);
+    expect(src).toMatch(/try \{ evidence = await keepEvidence\(/);
+    expect(src).toMatch(/record\.rerunOf = releasedFrom\[message\.key\]/);
   });
   it("keeps no evidence for a re-send of a batch already on file", () => {
     expect(src).toMatch(/if \(row\.outcome === "refused" && !duplicate\) refusedFiles\.push/);

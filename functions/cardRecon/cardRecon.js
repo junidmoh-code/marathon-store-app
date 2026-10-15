@@ -606,7 +606,7 @@ async function recordedIsEmptyBatch(db, storeId, tid, keys) {
  * one for a report that disagrees with the record, which is a thing somebody
  * has to look at.
  */
-async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines }) {
+async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, totalCents = null }) {
   const existingKeys = await readBatchKeysFor(db, storeId, tid, batchNo);
   let comparison = null;
   if (existingKeys.length && !correction) {
@@ -622,6 +622,21 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines })
     existingKeys, batchNo, correction,
     extends: comparison ? comparison.relation === "extends" : false,
   });
+  // ── A TOTALS-ONLY RECORD OF A BATCH THAT WAS STILL OPEN ──────────────────
+  // A batch recorded from its totals alone (card-recon-pdf.cjs →
+  // emailedTotalsOnly) has no lines, so a later, fuller report of the same
+  // open batch cannot be shown to extend it and is not let through. But it
+  // must not be filed as a harmless re-send either — "already captured" is
+  // what the feed and the automatic re-run both treat as nothing to do, and
+  // the later days' money would sit unrecorded behind it. A different total
+  // gets its own sentence, which stays red until Junid looks.
+  if (!write.ok && comparison && comparison.relation === "unknown" && Number.isInteger(totalCents) && existingKeys.length) {
+    const slip = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${existingKeys.at(-1)}/slip`).once("value")).val() || {};
+    if (/^stamps/.test(String(slip.windowSource || "")) && Number.isInteger(slip.totalCents) && slip.totalCents !== totalCents) {
+      return { existingKeys, comparison, write: { ok: false,
+        reason: `Batch #${batchNo} was recorded from its totals only, and this later report of it states a different total — the batch was probably still open when the first report came. Nothing was recorded — tell Junid.` } };
+    }
+  }
   if (!write.ok && comparison && comparison.reason &&
       (comparison.relation === "conflict" || comparison.relation === "shrinks")) {
     return { existingKeys, comparison, write: { ok: false,
@@ -1086,7 +1101,7 @@ async function handleExtract(db, request, opts = {}) {
   const batchNo = normaliseBatchNo(extraction.batchNo);
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!request.data.correction, lines: extraction.lines,
+    correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -1098,7 +1113,7 @@ async function handleExtract(db, request, opts = {}) {
     ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
-    tailFromMs: extraction.windowSource === "transactions-to-print"
+    tailFromMs: /-to-print$/.test(extraction.windowSource || "")
       ? extraction.lastTxnAt ?? null
       : null,
   });
@@ -1378,7 +1393,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
   const batchNo = normaliseBatchNo(extraction.batchNo);
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!request.data.correction, lines: extraction.lines,
+    correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -1389,7 +1404,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, 
     ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
-    tailFromMs: extraction.windowSource === "transactions-to-print"
+    tailFromMs: /-to-print$/.test(extraction.windowSource || "")
       ? extraction.lastTxnAt ?? null
       : null,
   });
@@ -1645,7 +1660,7 @@ async function handleSubmit(db, request) {
     ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
-    tailFromMs: extraction.windowSource === "transactions-to-print"
+    tailFromMs: /-to-print$/.test(extraction.windowSource || "")
       ? extraction.lastTxnAt ?? null
       : null,
   });
@@ -1668,7 +1683,7 @@ async function handleSubmit(db, request) {
   const tidRef = db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`);
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!draft.correction, lines: extraction.lines,
+    correction: !!draft.correction, lines: extraction.lines, totalCents: extraction.totalCents,
   });
   if (!write.ok) return reject(write.reason);
 
