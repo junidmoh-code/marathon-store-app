@@ -289,18 +289,29 @@ test("a single-transaction report still yields a usable window", () => {
   assert.equal(validateExtraction(ex, { source: "pdf" }).ok, true);
 });
 
-test("transactions spanning more than 7 days are refused, without mentioning a header", () => {
-  const lines = realReportLines().map((l) => l.replace(/^29-08-2026 1[0-9]:/, "29-09-2026 1$&".slice(0, 0) + "29-09-2026 1"));
+// A PDF's dates are exact text, so a span over 7 days is a batch nobody closed,
+// not a misread (card-recon-long-batch.test.cjs has the real case). The bound
+// that remains is the long-batch ceiling — and its refusal still must not send
+// anyone to re-photograph a header this report does not have.
+test("transactions spanning more than the long-batch ceiling are refused, without mentioning a header", () => {
   const stretched = realReportLines().map((l) => (/^29-08-2026 1[5-6]:/.test(l) ? l.replace("29-08-2026", "29-09-2026") : l));
   assert.ok(stretched.some((l, i) => l !== realReportLines()[i]), "the fixture edit did nothing");
   const out = parse(stretched);
   assert.equal(out.ok, true, `the READ should succeed; the window check is what refuses: ${out.reason}`);
   const v = validateExtraction(out.extraction, { source: "pdf" });
-  assert.equal(v.ok, false, "a month-long span is not one batch");
-  assert.match(v.reason, /more than 7 days/);
+  assert.equal(v.ok, false, "a month-long span is past the ceiling");
+  assert.match(v.reason, /span 32 days — longer than the 31 days/);
   assert.doesNotMatch(v.reason, /header/i, "a report with no header must not be told to re-photograph one");
   assert.doesNotMatch(v.reason, /Opened/);
-  void lines;
+});
+
+test("transactions spanning 8 days are recorded, with the long-batch warning", () => {
+  const stretched = realReportLines().map((l) => (/^29-08-2026 1[5-6]:/.test(l) ? l.replace("29-08-2026", "06-09-2026") : l));
+  const out = parse(stretched);
+  assert.equal(out.ok, true, out.reason);
+  const v = validateExtraction(out.extraction, { source: "pdf" });
+  assert.equal(v.ok, true, v.reason);
+  assert.ok(v.warnings.includes("This batch ran 8 days — the terminal was not closed daily."), v.warnings.join(" | "));
 });
 
 // ═══ EVERYTHING ELSE HOLDS ═══════════════════════════════════════════════════

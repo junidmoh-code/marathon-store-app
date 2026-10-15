@@ -455,6 +455,22 @@ const DECLARED_EXEMPT_FIELDS = ["totalCents", "purchasesCents", "txnCount", "tid
 // No FNB batch runs a week: a window wider than this is a misread date (or a
 // forged draft) and must never become the bounds of a ledger query.
 const MAX_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+// ── …EXCEPT WHEN NOBODY CLOSES IT ────────────────────────────────────────────
+// The 7-day rule is about MISREADING, and a PDF's dates are not read — they are
+// the document's own text. Trophy Till 1's terminal (TID 67325636) opened batch
+// 69 at 10:01 on 5 Oct 2026, the morning it was swapped in from Marathon PE
+// Till 1, and nobody closed it: FNB emailed a fuller report of the same batch
+// every afternoon, and from 12 Oct each one was refused as "one of the dates
+// was misread" when every date on it was exact. Four days of that till's card
+// money never reached /card_batches.
+//
+// So an EMAILED banking report read from its PDF may run longer — the record
+// says so in a warning — up to this ceiling, which is still a bound on the
+// ledger query it becomes (lib/card-expected.cjs) and is far past any batch a
+// till has left open. Photographs and typed captures keep the 7-day refusal:
+// there a long window really is the likeliest sign of a misread year.
+const MAX_LONG_BATCH_MS = 31 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 // Corrections are rare, deliberate acts; a chain this long is something else.
 const MAX_REVISIONS = 20;
 
@@ -528,10 +544,21 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
       ? "That report's last transaction is not after its first, so no window could be worked out. Nothing was recorded — photograph the slip instead."
       : "The slip's Closed time is not after its Opened time — check the header photo." };
   }
+  // A long batch that is REAL — see MAX_LONG_BATCH_MS. Said on the record,
+  // never refused: the dates came off the document's own text layer.
+  const longBatch = [];
   if (ex.closedAt - ex.openedAt > MAX_WINDOW_MS) {
-    return { ok: false, reason: derived
-      ? "That report's transactions span more than 7 days, which no single batch does — one of the dates was misread. Nothing was recorded — photograph the slip instead."
-      : "The slip's Opened→Closed window is longer than 7 days — one of the dates was misread. Retake the header photo." };
+    const exactDates = source === "pdf" && reportFormat === "emailed" && derived;
+    if (!exactDates) {
+      return { ok: false, reason: derived
+        ? "That report's transactions span more than 7 days, which no single batch does — one of the dates was misread. Nothing was recorded — photograph the slip instead."
+        : "The slip's Opened→Closed window is longer than 7 days — one of the dates was misread. Retake the header photo." };
+    }
+    const days = Math.round((ex.closedAt - ex.openedAt) / DAY_MS);
+    if (ex.closedAt - ex.openedAt > MAX_LONG_BATCH_MS) {
+      return { ok: false, reason: `That report's transactions span ${Math.ceil((ex.closedAt - ex.openedAt) / DAY_MS)} days — longer than the ${MAX_LONG_BATCH_MS / DAY_MS} days one batch is compared against the till in one go. Nothing was recorded — tell Junid, so the terminal can be closed and the batch looked at by hand.` };
+    }
+    longBatch.push(`This batch ran ${days} days — the terminal was not closed daily.`);
   }
   // Slip arithmetic: purchases + cash − refunds must equal TOTAL. refundsCents
   // is a POSITIVE magnitude by contract (the slip prints it bracketed); both it
@@ -561,8 +588,8 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
     return { ok: false, reason: "The printed Transactions count did not read cleanly — retake the header photo." };
   }
 
-  const warnings = [];
-  if (summaryOnly) return { ok: true, warnings: [...declaredWarnings, "Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
+  const warnings = [...longBatch];
+  if (summaryOnly) return { ok: true, warnings: [...longBatch, ...declaredWarnings, "Summary only — no transaction lines were captured, so no line-level match can run for this batch."] };
   // A declared total is only ever accepted summary-only (the callable forces
   // it): a slip that did not print its total did not print a whole roll either.
   if (declaredTotal) return { ok: false, reason: "A total declared by hand can only be recorded summary-only." };
@@ -575,7 +602,7 @@ function validateExtraction(ex, { summaryOnly = false, source = "photo", format 
   if (ex.emptyBatch === true) {
     if (reportFormat === "emailed" && !lines.length && ex.txnCount === 0 && ex.totalCents === 0
         && ex.purchasesCents === 0 && ex.cashCents === 0 && ex.refundsCents === 0) {
-      const warnings = ["This batch closed with no card transactions — recorded as R0.00. Any card sale the till rang since the previous batch shows as this batch's variance."];
+      const warnings = [...longBatch, "This batch closed with no card transactions — recorded as R0.00. Any card sale the till rang since the previous batch shows as this batch's variance."];
       if (Number.isInteger(ex.failedAttempts) && ex.failedAttempts > 0) {
         warnings.push(`The terminal also printed ${ex.failedAttempts} failed attempt${ex.failedAttempts === 1 ? "" : "s"} (a cancelled or declined card) in this batch. No money moved on ${ex.failedAttempts === 1 ? "it" : "them"}.`);
       }
@@ -1101,7 +1128,7 @@ function readPdfPayload(base64, maxBytes) {
 module.exports = {
   CARD_TERMINALS_PATH, CARD_BATCHES_PATH, CARD_BATCH_DRAFTS_PATH, DRAFT_TTL_MS,
   PHOTO_STORAGE_PREFIX, SAST_OFFSET_MS,
-  MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_REVISIONS,
+  MIN_KEY_FIELD_CONFIDENCE, MAX_WINDOW_MS, MAX_LONG_BATCH_MS, MAX_REVISIONS,
   parseSlipTimestamp, parseRandsToCents, formatCents,
   normaliseTid, readSlipTid, slipTidMatchesPicked, emptyBatchOpenedAt, normaliseBatchNo, normaliseMid, batchKeyFor, resolveBatchWrite, comparePriorCapture,
   planTypedCapture, sastDayIndexOf,
