@@ -20,7 +20,10 @@
 
 "use strict";
 
-const { parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents } = require("./card-recon.cjs");
+const {
+  parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents,
+  dedupeLines, validateExtraction,
+} = require("./card-recon.cjs");
 
 /** Collapse runs of whitespace; a PDF's text layer is full of them. */
 const tidy = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
@@ -1282,8 +1285,34 @@ function parseSlipPdf(lines) {
   };
 }
 
+/**
+ * THE WHOLE PURE PDF PATH, in one place: the lines a PDF yielded → the parse →
+ * the line dedupe → every validation. The callable runs exactly this (and then
+ * the parts that need the database: routing, the duplicate check, the
+ * expected figure), and so does the real-report corpus test — which is what
+ * makes that test a statement about production rather than about a copy of it.
+ *
+ * @param {string[]} lines  pdfToLines' output
+ * @returns {{ok:true, extraction:object, warnings:string[], summaryOnly:boolean}
+ *          | {ok:false, reason:string}}
+ */
+function readSlipPdfLines(lines) {
+  const parsed = parseSlipPdf(lines);
+  if (!parsed.ok) return { ok: false, reason: parsed.reason };
+  const extraction = parsed.extraction;
+  // A terminal that prints a line twice must not be averaged away.
+  const dedup = dedupeLines(extraction.lines);
+  if (!dedup.ok) return { ok: false, reason: dedup.reason };
+  extraction.lines = dedup.lines;
+  // Every refusal unchanged — only the confidence gate is skipped, because
+  // exact text has nothing to be confident about.
+  const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
+  if (!verdict.ok) return { ok: false, reason: verdict.reason };
+  return { ok: true, extraction, warnings: verdict.warnings, summaryOnly: false };
+}
+
 module.exports = {
-  parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
+  parseSlipPdf, readSlipPdfLines, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
   sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, SETTLEMENT_FAILED,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,

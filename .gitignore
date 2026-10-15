@@ -34,3 +34,7 @@ rules-live-backup-*.json
 # Census / model output — machine-local working data, regenerated on demand
 # (scripts/model-category-policy.mjs writes here). Never committed.
 var/
+
+# Real FNB reports from a terminal that is NOT the shop's (a stranger's batch
+# emailed to our mailbox). Kept on the mini for the corpus test; this repo is public.
+functions/test/fixtures/card-recon-real/private/
