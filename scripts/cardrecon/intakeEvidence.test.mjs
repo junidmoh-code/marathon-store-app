@@ -34,6 +34,8 @@ describe("maskEvidenceLine", () => {
   it("withholds a card number printed unmasked, but keeps the merchant id", () => {
     expect(maskEvidenceLine("PAN 4111111111111111")).toBe("PAN [card number withheld]");
     expect(maskEvidenceLine("Merchant: 100000001178101")).toBe("Merchant: 100000001178101");
+    // …but only the merchant id: a card number later on that line is still withheld.
+    expect(maskEvidenceLine("Merchant: 100000001178101 card 4111111111111111")).toBe("Merchant: 100000001178101 card [card number withheld]");
     // What a refusal needs to be readable is left alone.
     for (const l of ["RRN: 04Yewn059002", "Auth Code: 932966", "TSN:2 Batch:59", "Total: ZAR 900.00", "Terminal: 67365901"]) {
       expect(maskEvidenceLine(l)).toBe(l);

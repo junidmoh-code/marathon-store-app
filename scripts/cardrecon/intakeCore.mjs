@@ -384,11 +384,19 @@ export function maskEvidenceLine(line) {
   // Grouped, any mix of digits and mask per group: 4111 11** **** 1111,
   // 4111 1111 **** 1111 → ******1111
   s = s.replace(/(?<![\d*xX·•#])(?:[\d*xX·•#]{4} ){3}(\d{4})(?!\d)/g, (m, last4) => (/[*xX·•#]/.test(m) ? `******${last4}` : m));
-  if (!/^\s*merchant\b/i.test(s)) {
-    // Bounded by "not a digit" rather than a word boundary, so a number run
-    // into a label ("PAN4111…") is still seen.
-    s = s.replace(/(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/g, (m) => (luhn(m.replace(/\D/g, "")) ? "[card number withheld]" : m));
-  }
+  // ONLY the merchant id itself is exempt — the first number after a
+  // "Merchant" label — never the rest of that line, which still gets the
+  // card-number check like any other. (CodeRabbit, PR #726.)
+  const mid = /^\s*merchant\b[^0-9]*((?:\d[ -]?){12,18}\d)(?!\d)/i.exec(s);
+  const midDigits = mid ? mid[1].replace(/\D/g, "") : null;
+  let midKept = false;
+  // Bounded by "not a digit" rather than a word boundary, so a number run
+  // into a label ("PAN4111…") is still seen.
+  s = s.replace(/(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/g, (m) => {
+    const digits = m.replace(/\D/g, "");
+    if (!midKept && midDigits !== null && digits === midDigits) { midKept = true; return m; }
+    return luhn(digits) ? "[card number withheld]" : m;
+  });
   return s.length > EVIDENCE_MAX_LINE_CHARS ? `${s.slice(0, EVIDENCE_MAX_LINE_CHARS - 1)}…` : s;
 }
 

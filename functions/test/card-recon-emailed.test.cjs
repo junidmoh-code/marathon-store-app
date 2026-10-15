@@ -13,7 +13,7 @@
 const { test } = require("node:test");
 const assert = require("node:assert/strict");
 const {
-  parseSlipPdf, detectReportFormat, tidy, TXN_RE, parseEmailedStamp, sectionStarts, readTxnBlock,
+  parseSlipPdf, readSlipPdfLines, detectReportFormat, tidy, TXN_RE, parseEmailedStamp, sectionStarts, readTxnBlock,
 } = require("../lib/card-recon-pdf.cjs");
 const {
   validateExtraction, checkTsnContiguity, parseRandsToCents,
@@ -752,4 +752,41 @@ test("with no totals heading, the figures are sought below the transactions", ()
   assert.equal(out.extraction.totalCents, REAL_REPORT.totalCents, "not one transaction's total");
   assert.equal(out.extraction.purchasesCents, REAL_REPORT.totalCents);
   assert.equal(out.extraction.lines.length, REAL_REPORT.items);
+});
+
+
+// ═══ FIXTURE-FREE COVERAGE OF THE 15 OCT 2026 BRANCHES ════════════════════
+// The real reports these were built from are kept on the Mac mini only (the
+// repo is public), so their tests skip in CI. These pin the same branches with
+// generated lines, so a parser regression in them cannot pass CI unseen.
+// (CodeRabbit, PR #726.)
+
+test("a missing Items count falls back to totals only — the printed total, no count, no lines", () => {
+  const full = readSlipPdfLines(emailedLines().lines);
+  assert.equal(full.ok, true, full.reason);
+  const out = readSlipPdfLines(emailedLines().lines.filter((l) => !/^\s*Items:\s*\d+\s*$/.test(l)));
+  assert.equal(out.ok, true, out.reason);
+  assert.equal(out.summaryOnly, true);
+  assert.equal(out.extraction.totalCents, full.extraction.totalCents);
+  assert.equal(out.extraction.txnCount, null);
+  assert.deepEqual(out.extraction.lines, []);
+  assert.match(out.warnings[0], /^Totals only — /);
+});
+
+test("a Banking Done notice is set aside as not a batch report", () => {
+  const out = parseSlipPdf([
+    "Banking Report for Batch 92 of Terminal 67365901",
+    "Terminal: 67365901", "Batch: 92",
+    "______________________________",
+    "Banking Done:", "All transactions have already", "been banked.",
+  ]);
+  assert.equal(out.ok, false);
+  assert.equal(out.unrelated, true);
+  assert.match(out.reason, /"Banking Done" notice for batch 92/);
+});
+
+test("a Transaction History report is set aside as not a batch report", () => {
+  const out = parseSlipPdf(["Transaction History report for 2026-09-19", "Terminal: 67377843", "APPROVED TRANSACTIONS", "Items: 7"]);
+  assert.equal(out.ok, false);
+  assert.equal(out.unrelated, true);
 });

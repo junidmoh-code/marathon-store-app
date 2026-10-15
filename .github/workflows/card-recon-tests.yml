@@ -31,6 +31,10 @@ jobs:
       FIREBASE_DATABASE_EMULATOR_HOST: 127.0.0.1:9
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Tests only, never a push: keep the token out of .git/config while
+          # npm runs third-party install scripts. (CodeRabbit, PR #726.)
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
