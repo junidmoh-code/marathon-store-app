@@ -928,7 +928,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         documents.push({ lines: null, text: `[PDF "${clip(att.filename, 80)}" not read: more than ${MAX_EFT_PDFS} PDFs on one message]` });
         continue;
       }
-      const out = await pdfToLines(att.content);
+      // THE OLD LINE GROUPING, on purpose — the EFT readers were built against
+      // it. See the note on bucketLines in functions/cardRecon/pdfText.js.
+      const out = await pdfToLines(att.content, { grouping: "bucket" });
       if (!out.ok) {
         // AN ENVIRONMENTAL FAILURE MUST NOT BECOME A DURABLE REFUSAL. pdfjs
         // failing to LOAD is this machine's problem, not the document's — a
