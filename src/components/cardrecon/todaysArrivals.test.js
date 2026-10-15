@@ -157,6 +157,23 @@ describe("refusedArrivals", () => {
     expect(refusedArrivals(node, DAY, dayOf).get("67325636")).toBe("Second reason.");
   });
 
+  it("drops a refusal once it has been RE-RUN — the re-run's own row is the answer", () => {
+    // Marathon Till 3, 14 Oct 2026: a "Banking Done" notice refused at 22:17,
+    // re-run automatically under the next parser and set aside as not a batch
+    // report. The stamped original must stop showing; a re-run that refused
+    // again is a new row, and THAT one shows.
+    const base = refusal("Banking Report for Batch 92 of Terminal 67365901", "That banking report does not print an Items count.", at("22:17"));
+    // Released but not yet re-run: still red — a request is not an answer.
+    const asked = { ...base, retriedAt: at("23:00"), retriedBy: "auto-retry" };
+    expect(refusedArrivals({ asked }, DAY, dayOf).size).toBe(1);
+    const old = { ...asked, retriedIntakeId: "-Pnew" };
+    expect(refusedArrivals({ old }, DAY, dayOf).size).toBe(0);
+    // Junid's hand retry script has always meant "stop counting this one".
+    expect(refusedArrivals({ byHand: { ...base, retriedAt: at("23:00"), retriedBy: "retry-intake-message.mjs" } }, DAY, dayOf).size).toBe(0);
+    const again = refusal("Banking Report for Batch 92 of Terminal 67365901", "Still refused.", at("22:17"));
+    expect(refusedArrivals({ old, again }, DAY, dayOf).get("67365901")).toBe("Still refused.");
+  });
+
   it("ignores refusals from other days", () => {
     const node = { old: refusal("Banking Report for Batch 57 of Terminal 67325636", "…", Date.parse("2026-09-18T17:00:00+02:00")) };
     expect(refusedArrivals(node, DAY, dayOf).size).toBe(0);

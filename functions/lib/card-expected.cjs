@@ -53,7 +53,14 @@ const PAYMENT_EVENTS_PATH = "pos/paymentEvents";
 // never invent a sale, and money on the terminal with no leg at any time still
 // shows as a gap.
 const DERIVED_WINDOW_SLACK_MS = 10 * 60 * 1000;
-const { MAX_WINDOW_MS } = require("./card-recon.cjs");
+// THE LEDGER QUERY'S CEILING is the longest window ANY capture may validate
+// with: 7 days for a photo, MAX_LONG_BATCH_MS for an emailed report read from
+// its PDF (a terminal left open — see card-recon.cjs). Which of the two applies
+// is validateExtraction's decision; this is the backstop that keeps a bad
+// window from ever becoming an unbounded read. The query itself is the same
+// indexed range on `at` either way, so a long batch costs a proportionally
+// longer slice, never a whole-node read.
+const { MAX_LONG_BATCH_MS } = require("./card-recon.cjs");
 
 /**
  * Pure: fold payment-event rows into the expected-card summary for one till.
@@ -220,10 +227,10 @@ async function computeExpectedCard(db, { storeId, tillId, startMs, endMs, edgeMs
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     throw new Error("computeExpectedCard: bad window");
   }
-  // Defence in depth beside validateExtraction's own cap: no FNB batch runs a
-  // week, and a misread year must never become the bounds of a ledger query.
-  if (endMs - startMs > MAX_WINDOW_MS) {
-    throw new Error("computeExpectedCard: window exceeds the 7-day cap");
+  // Defence in depth beside validateExtraction's own caps: a misread year
+  // must never become the bounds of a ledger query.
+  if (endMs - startMs > MAX_LONG_BATCH_MS) {
+    throw new Error("computeExpectedCard: window exceeds the long-batch cap");
   }
   // The query is widened by edgeMs ONLY so the near-edge legs can be counted;
   // the window itself is unchanged, and the pure filter below still admits
@@ -254,7 +261,7 @@ async function cardLegsInWindow(db, { startMs, endMs, edgeMs = 0 }) {
   if (!Number.isFinite(startMs) || !Number.isFinite(endMs) || endMs <= startMs) {
     throw new Error("cardLegsInWindow: bad window");
   }
-  if (endMs - startMs > MAX_WINDOW_MS) throw new Error("cardLegsInWindow: window exceeds the 7-day cap");
+  if (endMs - startMs > MAX_LONG_BATCH_MS) throw new Error("cardLegsInWindow: window exceeds the long-batch cap");
   const snap = await db.ref(PAYMENT_EVENTS_PATH)
     .orderByChild("at").startAt(startMs - edgeMs).endAt(endMs + edgeMs)
     .once("value");

@@ -1,0 +1,56 @@
+name: Card recon tests
+
+# The card-recon PDF path and the mailbox poller's decisions. The real-report
+# corpus (functions/test/card-recon-corpus.test.cjs) is NOT in git — the files
+# print card numbers and this repo is public — so here it skips by name; it
+# runs on the Mac mini, where the reports live.
+#
+# Tests only. This workflow must never gain a deploy step — functions are
+# shared with marathon-pos-app and are deployed BY NAME, by hand; rules are
+# never deployed from CI. See DEPLOY-TRACKER.md.
+on:
+  pull_request:
+    paths:
+      - "functions/**"
+      - "scripts/cardrecon/**"
+      - ".github/workflows/card-recon-tests.yml"
+  push:
+    branches: [main]
+    paths:
+      - "functions/**"
+      - "scripts/cardrecon/**"
+
+jobs:
+  card-recon:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      # Any test that reaches for the database emulator gets a dead port, not
+      # the live project.
+      FIREBASE_DATABASE_EMULATOR_HOST: 127.0.0.1:9
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Tests only, never a push: keep the token out of .git/config while
+          # npm runs third-party install scripts. (CodeRabbit, PR #726.)
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: functions
+      - name: PDF path, real-report corpus, capture pipeline
+        working-directory: functions
+        run: >-
+          node --test
+          test/card-recon-corpus.test.cjs
+          test/card-recon-*.test.cjs
+          test/pdf-*.test.cjs
+          test/card-batch-supersede.test.cjs
+          test/card-expected.test.cjs
+      - run: npm ci
+        working-directory: scripts/cardrecon
+      - name: Mailbox poller decisions
+        working-directory: scripts/cardrecon
+        run: npx vitest run

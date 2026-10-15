@@ -34,3 +34,13 @@ rules-live-backup-*.json
 # Census / model output — machine-local working data, regenerated on demand
 # (scripts/model-category-policy.mjs writes here). Never committed.
 var/
+
+# REAL FNB BATCH REPORTS — the card-recon regression corpus. Kept on the Mac
+# mini ONLY: they print card numbers (first six, last four), auth codes and
+# RRNs, and this repo is public (Junid, 15 Oct 2026). The corpus tests skip
+# cleanly where the folder is absent, which is everywhere but the mini.
+functions/test/fixtures/card-recon-real/
+functions/test/fixtures/Till2FNB-Txn-Notification.expected.json
+functions/test/fixtures/Till2FNB-Txn-Notification.lines.json
+functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.expected.json
+functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.lines.json

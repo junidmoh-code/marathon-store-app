@@ -162,6 +162,8 @@ function makeFakeDb(initial = {}, hooks = {}) {
           if (hooks.afterWrite) await hooks.afterWrite(path, patch, state);
           return undefined;
         },
+        // remove(): exactly set(null), as in the SDK — empty parents go too.
+        async remove() { return self.set(null); },
         child(k) { return api.ref(`${path}/${k}`); },
         // transaction(fn): the RTDB wire shape a Cloud Function sees — the
         // FIRST callback runs on null (no local cache). Returning undefined

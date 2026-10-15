@@ -60,6 +60,8 @@ import { deliverNotices } from "./noticeCore.mjs";
 import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
   parseEnvText, classifyAttachment,
+  EVIDENCE_PATH, refusedPdfPath, evidenceRecord,
+  retryCandidates, sweepDue, judgedVersion, RETRY_WINDOW_MS, VERSION_CHECK_MS, PENDING_RETRY_MS,
 } from "./intakeCore.mjs";
 // ── THE SECOND READER ────────────────────────────────────────────────────────
 // EFT payment notifications arrive in the SAME mailbox (customers enter it as
@@ -88,7 +90,7 @@ const admin = require("firebase-admin");
 // pdfjs-dist ships in functions' dependencies; the installer ensures it is
 // present in functions/node_modules on the mini.
 const { pdfToLines } = require("./cardRecon/pdfText.js");
-const { detectReportFormat } = require("./lib/card-recon-pdf.cjs");
+const { detectReportFormat, PARSER_VERSION } = require("./lib/card-recon-pdf.cjs");
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO = resolve(HERE, "../..");
@@ -110,6 +112,10 @@ const SEEN_PATH = "card_batch_intake_seen";
 // terminal not reconciling is VISIBLE. With it, the tab can say which one it
 // is. (CodeRabbit, PR #510.)
 const STATUS_PATH = "card_batch_poll_status";
+// Where a refused attachment's original PDF is kept (owner-only — see
+// evidenceRecord in intakeCore.mjs). The project's default bucket, the same
+// one the callable stores slips in.
+const STORAGE_BUCKET = "marathon-club.firebasestorage.app";
 
 // A tick's ceiling. A backlog is drained a tick at a time rather than in one
 // run that holds the lock for an hour; the schedule is every few minutes.
@@ -275,6 +281,91 @@ function saveProcessedCache(cache) {
   catch (err) { console.warn(`⚠ could not write ${PROCESSED_CACHE_FILE} (${err.message}) — the ledger is the truth; this only costs re-reads`); }
 }
 
+// ─── THE AUTOMATIC RE-RUN ────────────────────────────────────────────────────
+// A fix to the parser used to reach the refusals it was written for only when
+// somebody ran retry-intake-message.mjs once per message. Now each intake row
+// carries the parser version that judged it, and when a deploy raises that
+// version the poller re-runs every refusal from the last fortnight an older
+// one judged — the same two moves the script makes (clear the claim, forget
+// the cached key), with nobody involved. The decisions are pure and tested
+// (retryCandidates / sweepDue in intakeCore.mjs); this is the IO.
+//
+// BANDWIDTH: the deployed version is ASKED FOR at most every 30 minutes (one
+// tiny callable answer), and the bounded intake query — orderByChild("at")
+// over the window, never the node — runs only when that version has risen or
+// six hours have passed. A quiet tick reads nothing.
+//
+// DURABILITY: a released message is remembered in this file BEFORE its claim
+// is cleared, and stays remembered until the scan sees it re-processed. The
+// local processed cache would otherwise still say "done" after a crash between
+// the two, and the message would never be looked at again.
+const RETRY_STATE_FILE = join(REPO, "logs", "card-recon-retry-state.json");
+function readRetryState() {
+  let state = {};
+  try { state = JSON.parse(readFileSync(RETRY_STATE_FILE, "utf8")) || {}; } catch { /* first run */ }
+  const now = Date.now();
+  const pending = {};
+  for (const [k, at] of Object.entries(state.pending || {})) {
+    if (Number.isFinite(at) && now - at <= PENDING_RETRY_MS) pending[k] = at;
+  }
+  // Which intake row each pending release came from, so the re-run's row can
+  // be linked back to it (retriedIntakeId) — see handleMessage.
+  const releasedFrom = {};
+  for (const [k, id] of Object.entries(state.releasedFrom || {})) if (k in pending && typeof id === "string") releasedFrom[k] = id;
+  return { ...state, pending, releasedFrom };
+}
+function writeRetryState(state) {
+  try { writeFileSync(RETRY_STATE_FILE, JSON.stringify(state)); }
+  catch (err) { console.warn(`⚠ could not write ${RETRY_STATE_FILE} (${err.message})`); }
+}
+
+/**
+ * Release every refusal an older parser judged, so this tick's scan re-runs
+ * it. Returns the pending map the scan must honour.
+ */
+async function retryStale({ db, getToken, cfg }) {
+  const state = readRetryState();
+  const now = serverNowMs();
+  if (!Number.isInteger(state.deployedVersion) || !(Number(state.checkedAt) > 0) || now - state.checkedAt > VERSION_CHECK_MS) {
+    try {
+      const v = await callCapture(await getToken(), { action: "version" });
+      if (Number.isInteger(v?.parserVersion)) state.deployedVersion = v.parserVersion;
+    } catch (err) {
+      // A callable from before this change has no "version" action: nothing
+      // is re-run until one that does is deployed.
+      console.warn(`⚠ could not ask the capture callable for its parser version (${err.message}) — no automatic re-run this time`);
+    }
+    state.checkedAt = now;
+  }
+  if (cfg.dryRun || !sweepDue(state, { deployedVersion: state.deployedVersion, nowMs: now })) {
+    if (!cfg.dryRun) writeRetryState(state);
+    return state.pending;
+  }
+  const windowMs = Math.min(RETRY_WINDOW_MS, cfg.lookbackDays * 86400000);
+  const snap = await db.ref(INTAKE_PATH).orderByChild("at").startAt(now - windowMs).once("value");
+  const candidates = retryCandidates(snap.val(), { nowMs: now, deployedVersion: state.deployedVersion, windowMs });
+  for (const c of candidates) {
+    state.pending[c.messageKey] = now;
+    state.releasedFrom[c.messageKey] = c.id;
+    writeRetryState(state);
+    // ONE update: the claim goes and the row is stamped together. The refused
+    // row STAYS — it is the record of the first attempt — but stops counting
+    // as outstanding; the re-run writes a row of its own.
+    await db.ref().update({
+      [`${SEEN_PATH}/${c.messageKey}`]: null,
+      [`${INTAKE_PATH}/${c.id}/retriedAt`]: now,
+      [`${INTAKE_PATH}/${c.id}/retriedBy`]: "auto-retry",
+      [`${INTAKE_PATH}/${c.id}/retriedForVersion`]: state.deployedVersion,
+    });
+    console.log(`  ↻ re-running intake ${c.id} — judged by an older parser than v${state.deployedVersion}`);
+  }
+  state.sweptVersion = state.deployedVersion;
+  state.sweptAt = now;
+  writeRetryState(state);
+  if (candidates.length) console.log(`· ${candidates.length} earlier refusal(s) released for re-run under parser v${state.deployedVersion}`);
+  return state.pending;
+}
+
 // ─── TIME ────────────────────────────────────────────────────────────────────
 // The RTDB server's clock, not this machine's. Everything stamped into the
 // database uses it: the mini is a Mac in a shop, and a record whose time came
@@ -385,11 +476,13 @@ async function captureOne(getToken, { attachment, message }) {
   // terminal, which left the capture screen unable to show it against any
   // card. The callable now stamps the TID onto every refusal it makes once the
   // file has been parsed; this carries it through.
-  if (!extract.ok) return { ok: false, reason: extract.reason, tid: extract.tid || null };
+  if (!extract.ok) return { ok: false, reason: extract.reason, tid: extract.tid || null, parserVersion: extract.parserVersion ?? null };
 
   const submit = await callCapture(await getToken(), { action: "submit", draftId: extract.draftId });
-  if (!submit.ok) return { ok: false, reason: submit.reason, tid: extract.review?.tid };
+  if (!submit.ok) return { ok: false, reason: submit.reason, tid: extract.review?.tid, parserVersion: submit.parserVersion ?? null };
   return {
+    // Which parser judged it — stamped on the intake row (see retryStale).
+    parserVersion: submit.parserVersion ?? extract.parserVersion ?? null,
     recorded: true,
     tid: extract.review?.tid || null,
     storeId: extract.review?.terminal?.storeId || null,
@@ -468,6 +561,17 @@ async function run() {
     }
   }
 
+  // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
+  // finds the released messages in this same tick. Never the tick's failure.
+  let retryPending = {};
+  try {
+    retryPending = await retryStale({ db, getToken, cfg });
+  } catch (err) {
+    console.warn(`⚠ the automatic re-run sweep failed (${err.message}) — it is tried again next time`);
+    retryPending = readRetryState().pending;
+  }
+  const releasedFrom = readRetryState().releasedFrom;
+
   const client = new ImapFlow({
     host: cfg.host, port: cfg.port, secure: true,
     auth: { user: cfg.user, pass: cfg.password },
@@ -534,9 +638,34 @@ async function run() {
       // once.
       const uidKeyOf = (uid) => `u:${String(client.mailbox?.uidValidity ?? "")}:${uid}`;
       const unprocessed = [];
+      let pendingChanged = false;
+      const oldestRelease = Math.min(...Object.values(retryPending).filter(Number.isFinite));
       for (const c of candidates) {
-        if (cache.entries[uidKeyOf(c.uid)]) continue;
         const keys = envelopeCandidateKeys({ messageId: c.messageId });
+        // ── A MESSAGE RELEASED FOR RE-RUN (retryStale) bypasses the local
+        // cache — which still says "done" — and asks the ledger directly.
+        const releasedAt = keys ? keys.map((k) => retryPending[k]).find(Number.isFinite) : undefined;
+        if (releasedAt !== undefined) {
+          const claim = (await db.ref(`${SEEN_PATH}/${keys[0]}`).once("value")).val();
+          if (claim?.state === "done") {
+            // Re-processed since the release (or the release never cleared
+            // it): either way, finished with.
+            if (Number(claim.at) >= releasedAt) { for (const k of keys) delete retryPending[k]; pendingChanged = true; }
+            continue;
+          }
+          for (const k of keys) delete cache.entries[k];
+          delete cache.entries[uidKeyOf(c.uid)];
+          cache.dirty = true;
+          unprocessed.push(c);
+          continue;
+        }
+        // A uid marker cached BEFORE a pending release is not trusted: the
+        // envelope's Message-ID can differ from the parsed one the release is
+        // keyed by (or be absent), and then only the ledger can say whether
+        // this message is one of the released. Costs a ledger read per such
+        // message until the release is re-processed.
+        const uidCachedAt = cache.entries[uidKeyOf(c.uid)];
+        if (uidCachedAt && !(Number.isFinite(oldestRelease) && uidCachedAt < oldestRelease)) continue;
         if (!keys) { unprocessed.push(c); continue; }
         if (keys.some((k) => cache.entries[k])) continue;
         let done = false;
@@ -552,7 +681,21 @@ async function run() {
         }
         if (!done) unprocessed.push(c);
       }
-      const take = unprocessed.slice(-MAX_MESSAGES_PER_TICK).map((c) => c.uid);
+      if (pendingChanged && !cfg.dryRun) writeRetryState({ ...readRetryState(), pending: retryPending });
+      // RE-RUNS GO FIRST, OLDEST FIRST. Daily reports of one open batch must
+      // be re-read in the order they were sent, or an earlier one meets the
+      // fuller one already recorded and is refused as "shrinks" (Trophy Till
+      // 1's batch 69 has five). Then the newest of everything else, as before;
+      // the tick handles the lot in mailbox order.
+      const isReleased = (c) => {
+        const keys = envelopeCandidateKeys({ messageId: c.messageId });
+        return !!keys && keys.some((k) => Number.isFinite(retryPending[k]));
+      };
+      const released = unprocessed.filter(isReleased).slice(0, MAX_MESSAGES_PER_TICK);
+      const others = unprocessed.filter((c) => !isReleased(c));
+      const room = MAX_MESSAGES_PER_TICK - released.length;
+      const take = [...released, ...(room > 0 ? others.slice(-room) : [])]
+        .map((c) => c.uid).sort((a, b) => a - b);
       scanned = take.length;
       if (!cfg.dryRun) saveProcessedCache(cache);
       if (!take.length) {
@@ -573,7 +716,7 @@ async function run() {
           // an attachment that will not decode, a capture call that times out —
           // each is recorded against that message and the next one still runs.
           try {
-            const result = await handleMessage({ client, uid, db, getToken, cfg });
+            const result = await handleMessage({ client, uid, db, getToken, cfg, releasedFrom });
             // `done` = this message's outcome is durably in the database (or
             // it was found already done) — safe to never download again. A
             // held claim, a dry run and a throw all stay un-cached, so the
@@ -643,7 +786,48 @@ async function run() {
   return 0;
 }
 
-async function handleMessage({ client, uid, db, getToken, cfg }) {
+/**
+ * Keep a refused message's evidence: each refused attachment's PDF in Storage
+ * and the lines it extracted, for the owner-only evidence node.
+ *
+ * BEST EFFORT, AND NEVER THE REASON A ROW IS LOST. A Storage outage or a PDF
+ * that will not extract costs the evidence, said in the record's `note` — the
+ * refusal itself is still written, because that row is what tells Junid a
+ * terminal did not reconcile.
+ */
+async function keepEvidence({ intakeId, refusedFiles }) {
+  const items = [];
+  const paths = new Map();
+  let n = 0;
+  for (const f of refusedFiles) {
+    const item = { filename: f.attachment.filename, reason: f.reason, lines: null, pdfPath: null, note: null };
+    const path = refusedPdfPath(intakeId, n++);
+    try {
+      await admin.storage().bucket(STORAGE_BUCKET).file(path).save(f.attachment.content, {
+        resumable: false,
+        contentType: "application/pdf",
+        metadata: { cacheControl: "private, max-age=0" },
+      });
+      item.pdfPath = path;
+      paths.set(f, path);
+    } catch (err) {
+      item.note = `the PDF could not be stored (${clip(err.message, 120)})`;
+      console.warn(`  ⚠ evidence: could not store ${path} (${err.message}) — the refusal is still recorded`);
+    }
+    try {
+      // The card path's own extraction (clustered lines) — what the callable read.
+      const out = await pdfToLines(f.attachment.content);
+      if (out.ok) item.lines = out.lines;
+      else item.note = [item.note, `no lines: ${clip(out.reason, 120)}`].filter(Boolean).join("; ");
+    } catch (err) {
+      item.note = [item.note, `no lines: ${clip(err.message, 120)}`].filter(Boolean).join("; ");
+    }
+    items.push(item);
+  }
+  return { record: evidenceRecord({ items, at: serverNowMs(), parserVersion: PARSER_VERSION }), paths };
+}
+
+async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {} }) {
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0 };
   // imapflow takes a RANGE, and a range is a string ("12", "1:5") — not the
   // number. Passing the raw uid works by coercion in some paths and silently
@@ -756,6 +940,12 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   }
 
   const results = badAttachments.map((r) => attachmentOutcome({ filename: r.filename, error: r.reason }));
+  // The push id is taken NOW, so a refused attachment's evidence can be filed
+  // under the same key as the row that reports it.
+  const intakeId = cfg.dryRun ? null : db.ref(INTAKE_PATH).push().key;
+  const refusedFiles = [];
+  // One per submitted attachment: the parser version that answered, or null.
+  const versions = [];
   for (const attachment of take) {
     if (cfg.dryRun) {
       console.log(`  · would submit ${attachment.filename} (${attachment.content.length} bytes)`);
@@ -767,23 +957,50 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     } catch (err) {
       error = err.message;
     }
+    versions.push(Number.isInteger(capture?.parserVersion) ? capture.parserVersion : null);
     const row = attachmentOutcome({ filename: attachment.filename, capture, error });
+    // The UNREDACTED reason travels to the owner-only evidence; the row keeps
+    // the redacted one.
+    // A re-send of a batch already on file is not kept: the recorded batch IS
+    // its evidence, and those are most of all refusals (CARD-RECON-REFUSALS.md).
+    const duplicate = /already captured/i.test(String(capture?.reason || ""));
+    if (row.outcome === "refused" && !duplicate) refusedFiles.push({ attachment, row, reason: error || capture?.reason || row.reason });
     results.push(row);
     console.log(`  · ${row.filename}: ${row.outcome}${row.reason ? ` — ${row.reason}` : ` (batch ${row.batchKey} · ${row.tid})`}`);
   }
   if (cfg.dryRun) return empty;
 
-  const record = intakeRecord({ message, results, skipped, at: serverNowMs() });
-  // ONE UPDATE, TWO PATHS, ATOMICALLY. Written as two calls, a crash between
+  // Evidence is never the reason a message's outcome is not written: a throw
+  // here would leave the claim "claimed" and the next tick would re-submit
+  // slips this one already recorded.
+  let evidence = null;
+  if (refusedFiles.length) {
+    try { evidence = await keepEvidence({ intakeId, refusedFiles }); }
+    catch (err) { console.warn(`  ⚠ evidence could not be kept (${err.message}) — the outcome is still recorded`); }
+  }
+  if (evidence) {
+    // The row says WHERE the PDF is and nothing about what it holds — before
+    // the record is built, because intakeRecord copies the rows.
+    for (const f of refusedFiles) f.row.evidence = evidence.paths.get(f) || null;
+  }
+  const record = intakeRecord({ message, results, skipped, at: serverNowMs(), parserVersion: judgedVersion(versions) });
+  // A re-run says which row it re-ran, so an automatic re-run that got NO
+  // answer (a transport failure) is not released again every six hours.
+  if (releasedFrom[message.key]) record.rerunOf = releasedFrom[message.key];
+  // ONE UPDATE, TWO (OR THREE) PATHS, ATOMICALLY. Written as two calls, a crash between
   // them leaves the outcome recorded and the claim still "claimed" — so half an
   // hour later the next tick retakes it, resubmits slips that are already in,
   // and files the duplicate-batch refusals as REFUSED. A false alarm on the one
   // feed whose whole value is that a refusal means something. A root update
   // with two absolute paths cannot half-happen.
-  const intakeId = db.ref(INTAKE_PATH).push().key;
   await db.ref().update({
     [`${INTAKE_PATH}/${intakeId}`]: record,
     [`${SEEN_PATH}/${message.key}`]: { state: "done", at: serverNowMs(), intakeId },
+    ...(evidence ? { [`${EVIDENCE_PATH}/${intakeId}`]: evidence.record } : {}),
+    // A RE-RUN LINKS BACK. The refused row it replaces stops showing only once
+    // this answer exists (todaysArrivals.js) — never merely because a re-run
+    // was asked for and might not have happened.
+    ...(releasedFrom[message.key] ? { [`${INTAKE_PATH}/${releasedFrom[message.key]}/retriedIntakeId`]: intakeId } : {}),
   });
   // LAST, and deliberately: a message is only marked read once its outcome is
   // in the database. Crash before this and the next tick sees it again, which
@@ -928,7 +1145,9 @@ async function handleEftMessage({ client, range, db, parsed, message, cfg, uid, 
         documents.push({ lines: null, text: `[PDF "${clip(att.filename, 80)}" not read: more than ${MAX_EFT_PDFS} PDFs on one message]` });
         continue;
       }
-      const out = await pdfToLines(att.content);
+      // THE OLD LINE GROUPING, on purpose — the EFT readers were built against
+      // it. See the note on bucketLines in functions/cardRecon/pdfText.js.
+      const out = await pdfToLines(att.content, { grouping: "bucket" });
       if (!out.ok) {
         // AN ENVIRONMENTAL FAILURE MUST NOT BECOME A DURABLE REFUSAL. pdfjs
         // failing to LOAD is this machine's problem, not the document's — a

@@ -1,0 +1,223 @@
+# Card recon — why emailed FNB reports were refused (evidence, 15 Oct 2026)
+
+Every non-recorded row at `/card_batch_intake` from 15 Sept to 15 Oct 2026
+(bounded query: `orderByChild("at").startAt(…)`), each joined to its original
+message in the mailbox, re-extracted with `pdfToLines`, and run through
+`parseSlipPdf` + `validateExtraction`. The whole mailbox was read the same way
+(258 PDFs: 251 batch reports, 7 bank payment notifications) to establish what
+the parser accepted before any change.
+
+## The suspected causes, tested
+
+| Suspected | Verdict |
+|---|---|
+| (a) `pdfText.js` splitting one printed line across a 1pt rounding boundary, separating `Items:` from its number | **Not the cause of any card refusal.** All 251 batch reports extract the same lines under the old 1pt bucket and under clustering. The bucket *did* split lines in 4 FNB **EFT payment notifications** (`Cur/Amount` / `ZAR30.00`), and the EFT reader was written against that split form — so the fix (clustering) is applied to the card path only, and the EFT reader keeps the old grouping by name. |
+| (b) the 7-day window refusing a real long batch | **Confirmed.** Trophy Till 1 (TID 67325636) batch 69 opened 5 Oct 10:01 SAST — the morning of the terminal swap — and was never closed. FNB emailed a fuller report of it every afternoon; from 12 Oct its own transactions span more than 7 days. The dates are exact text; nothing was misread. Batch 69 is already recorded as 69 → 69-r3 (5–7 Oct snapshots); the refused snapshots are fuller reports that supersede it. |
+| (c) refusals storing no evidence | **Confirmed** — every row below needed the mailbox to diagnose. |
+
+## What "does not print an Items count" actually was (Marathon Till 3, TID 67365901)
+
+Two different documents, neither of them a mis-split line:
+
+1. **"Banking Done" notices** — `Banking Report for Batch N` whose body is only
+   *"Banking Done: All transactions have already been banked."* No totals, no
+   transactions. Sent for batches 81, 82, 84, 89, 90 (×2) and 92, each of which
+   was already recorded from its real report. Nothing to record — these are
+   now filed as *not a batch report* instead of a refusal.
+2. **An empty batch with a FAILED ATTEMPTS section** — batch 91 (13 Oct):
+   `Total ZAR 0.00`, no approved transactions, one cancelled card attempt
+   (`TSN:2 User Cancelled`). The empty-batch rule refused it because the
+   failed-attempt section carries an `Items:` count and a TSN. Batch 91 is
+   **not recorded anywhere**; it is now recorded as an empty R0.00 batch.
+
+## Where the real files are
+
+Every PDF behind this table, its extracted lines and its expected result live in
+`functions/test/fixtures/card-recon-real/` **on the Mac mini only** — the
+folder is gitignored, because the files print card numbers (first six, last
+four), auth codes and RRNs and this repo is public. The regression corpus test
+(`functions/test/card-recon-corpus.test.cjs`) and the tests built on those
+files run there and skip, by name, everywhere else (CI included). The stranger
+terminal's files sit in its `private/` subfolder.
+
+## Refusals that were correct (left refused)
+
+* **Terminal 67364610** — *Zinkwazi Deep Sea Angling and Boating*, MID 610655.
+  Another business's terminal emailed this mailbox on 16–17 Sept (two batch
+  reports and a Transaction History report). The unregistered-terminal refusal
+  is right.
+* **74 "Batch #N … is already captured"** — FNB re-sends the same report
+  (afternoon and evening, sometimes 3–4 times). The duplicate guard is working;
+  nothing was lost. A *fuller* report of an open batch already supersedes on
+  its own (`comparePriorCapture`).
+
+## Tally
+
+| Real cause | Rows | Outcome after this change |
+|---|---:|---|
+| Re-send of a batch already recorded | 74 | unchanged — correct |
+| "Banking Done" notice (no figures) | 8 | filed as not-a-batch-report |
+| Old 10-page cap (raised 1 Oct; batches captured since) | 8 | already resolved |
+| Trophy Till 1 batch 69 open > 7 days | 5 | recorded (supersedes 69-r3) |
+| Transaction History report, not a batch | 4 | filed as not-a-batch-report (3 Marathon Till 1, 1 Zinkwazi) |
+| Empty batch with only FAILED ATTEMPTS | 3 | recorded once as R0.00 (two are re-sends) |
+| Another business's terminal | 2 | correct — left refused |
+| Empty batch before empty-batch support | 1 | already resolved 21 Sept |
+
+## Rules to paste (not applied by this change)
+
+**Realtime Database** — a new top-level sibling of `card_batch_intake`
+(also printed by `node scripts/cardrecon/print-card-intake-rule.mjs`):
+
+```json
+"card_batch_intake_evidence": {
+  ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  ".write": "false"
+}
+```
+
+Until it is pasted the node is unreadable to every client (the poller writes
+it with the Admin SDK), so nothing leaks; Junid's view just cannot show it yet.
+
+**Storage** — added to `storage.rules`, live on the next storage-rules deploy
+(or paste in the console):
+
+```
+match /card_recon_refused/{allPaths=**} {
+  allow read: if request.auth != null
+              && request.auth.token.email == "gunidmoh@gmail.com";
+  allow write: if false;
+}
+```
+
+## Follow-ups
+
+* **marathon-pos-app — "view PDF" on refused rows (Junid's Card Recon report
+  only).** Each refused attachment on `/card_batch_intake/{id}/attachments/n`
+  now carries `evidence: "card_recon_refused/{id}.pdf"`; open it with the
+  Storage SDK as Junid. The extracted lines and the unredacted reason are at
+  `/card_batch_intake_evidence/{id}` — read that ONE child by id, never the
+  node. Needs both rules above.
+* **The EFT reader still uses the old 1pt line grouping** (`grouping:
+  "bucket"`), which splits label and value on 4 real FNB payment
+  notifications. Moving it to clustering is a change to `eftBanks.mjs` with
+  those 4 files as its test set.
+* **Not re-run automatically:** a message where one attachment recorded and
+  another refused (re-running would duplicate the recorded one), refusals older
+  than the 14-day mailbox window, and plain "already captured" re-sends. The
+  hand script `retry-intake-message.mjs` still covers the first two.
+* No real report in the mailbox contains a refund, so refunds are covered by
+  the synthetic tests only; the first real one should join the corpus.
+
+## Every row
+
+Times are UTC as stored. Reasons are as the feed shows them (money redacted at
+write).
+
+| Received (UTC) | Till (TID) | Batch | Outcome | Reason shown | Real cause | Now | Intake row |
+|---|---|---|---|---|---|---|---|
+| 2026-09-15 15:04 | Marathon Till 1 (67377843) | 28 | unrelated | That PDF has 12 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P1_wyXMQSXWBFqYG7ty` |
+| 2026-09-15 15:10 | Marathon Till 3 (67365901) | 75 | refused | Batch #75 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1_wzmhdINnj6QAaWEO` |
+| 2026-09-16 15:20 | (not ours — Zinkwazi Deep Sea Angling) (67364610) | 1 | refused | Terminal 67364610 is not registered under /config/cardTerminals, so this batch has no till to b… | Another business’s terminal (Zinkwazi Deep Sea Angling, MID 610655) emailed this mailbox | Correct refusal — left refused | `-P1enfmpEMrj-WwsQDH3` |
+| 2026-09-16 15:20 | (not ours — Zinkwazi Deep Sea Angling) (67364610) | 1 | refused | Terminal 67364610 is not registered under /config/cardTerminals, so this batch has no till to b… | Another business’s terminal (Zinkwazi Deep Sea Angling, MID 610655) emailed this mailbox | Correct refusal — left refused | `-P1engGCe3qLQPC5-0ea` |
+| 2026-09-16 15:22 | Marathon Till 3 (67365901) | 76 | refused | Batch #76 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1eoOyIcQXFlWE9mMZD` |
+| 2026-09-17 14:28 | (not ours — Zinkwazi Deep Sea Angling) (67364610) | – | refused | That banking report does not state a batch number anywhere this could find it. If it is the rig… | A Transaction History report (a date-range printout requested on the terminal), not a batch settlement | Now filed as not-a-batch-report | `-P1jlXJ5dopL59ryyVBi` |
+| 2026-09-17 15:02 | Marathon Till 3 (67365901) | 77 | refused | Batch #77 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1jtLOGsczBiIJZfb4H` |
+| 2026-09-18 15:06 | Marathon Till 3 (67365901) | 78 | refused | Batch #78 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1p2y1f1zzXGhgaYJgd` |
+| 2026-09-18 15:09 | Trophy Till 1 (67325636) | 58 | refused | Batch #58 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1p3RW0d94rG5NGifUs` |
+| 2026-09-18 20:03 | Marathon Till 3 (67365901) | 78 | refused | Batch #78 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1q6WmNZ02XkrfE6a4o` |
+| 2026-09-19 14:19 | Marathon Till 1 (67377843) | – | refused | That banking report does not state a batch number anywhere this could find it. If it is the rig… | A Transaction History report (a date-range printout requested on the terminal), not a batch settlement | Now filed as not-a-batch-report | `-P1u1TBscKOL5EFDgweL` |
+| 2026-09-19 14:38 | Marathon Till 3 (67365901) | 79 | refused | Batch #79 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1u63I-hw6LGYijAHZZ` |
+| 2026-09-19 14:40 | Trophy Till 1 (67325636) | 58 | refused | Batch #58 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1u6VVSoh95hpfu4oeb` |
+| 2026-09-19 14:41 | Marathon Till 3 (67365901) | 79 | refused | Batch #79 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1u6yJNjlFgaAXmWVrf` |
+| 2026-09-19 14:43 | Marathon Till 3 (67365901) | 79 | refused | Batch #79 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1u6z539prAGZwQcrat` |
+| 2026-09-19 20:04 | Marathon Till 3 (67365901) | 79 | refused | Batch #79 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1vGVP6YN-E0O0Y25Ps` |
+| 2026-09-20 13:01 | Marathon Till 3 (67365901) | 80 | refused | Batch #80 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1yu4vb3EgbG_uwvaB1` |
+| 2026-09-20 13:02 | Trophy Till 1 (67325636) | 59 | refused | Batch #59 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1yuXglVM2FaT1GfZkA` |
+| 2026-09-20 13:14 | Marathon Till 1 (67377843) | 31 | refused | Batch #31 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P1yxGt0sSHVtB_etlTy` |
+| 2026-09-20 20:04 | Marathon Till 3 (67365901) | 80 | refused | Batch #80 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2-Q3ACMpgoGYSsO4NW` |
+| 2026-09-21 09:18 | Marathon Till 1 (67377843) | – | refused | That banking report does not state a batch number anywhere this could find it. If it is the rig… | A Transaction History report (a date-range printout requested on the terminal), not a batch settlement | Now filed as not-a-batch-report | `-P22FfefxgisdzkJ1i8N` |
+| 2026-09-21 15:02 | Marathon Till 1 (67377843) | 32 | refused | Batch #32 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P23UjBfUUCG8AY8odCe` |
+| 2026-09-21 15:08 | Trophy Till 1 (67325636) | 60 | refused | Batch #60 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P23W5bMQiBtBxzC6oEK` |
+| 2026-09-21 15:17 | Marathon Till 3 (67365901) | 81 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | Empty batch (no sections at all) — before empty-batch support existed | Already resolved (21 Sept, re-run by hand) | `-P23YNi3Bb0GDfRqZZZf` |
+| 2026-09-21 20:03 | Marathon Till 3 (67365901) | 81 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P24ZeoJSNErW1Cyp348` |
+| 2026-09-22 15:11 | Trophy Till 1 (67325636) | 61 | refused | Batch #61 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P28f2O1T1F0PQ1bwGJW` |
+| 2026-09-22 20:17 | Marathon Till 3 (67365901) | 81 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P29lLw5xI943coXn8zX` |
+| 2026-09-23 15:08 | Trophy Till 1 (67325636) | 62 | refused | Batch #62 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2Do5_mwirGqtM8Gc4x` |
+| 2026-09-23 15:09 | Marathon Till 3 (67365901) | 81 | refused | Batch #81 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2DoYEmJ_6_za1DnYBB` |
+| 2026-09-23 15:09 | Marathon Till 3 (67365901) | 81 | refused | Batch #81 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2DoYu0AdqkF8Ib4hum` |
+| 2026-09-23 15:19 | Marathon Till 3 (67365901) | 81 | refused | Batch #81 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2Dqq6oupHMSn8OY02p` |
+| 2026-09-23 20:27 | Marathon Till 3 (67365901) | 81 | refused | Batch #81 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2Ex9VWd1EeQ8VP7Led` |
+| 2026-09-24 14:06 | Trophy Till 1 (67325636) | 62 | unrelated | That PDF has 13 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P2IjlkVu-0TeXTbriSC` |
+| 2026-09-24 14:07 | Trophy Till 1 (67325636) | 62 | unrelated | That PDF has 13 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P2IjmTsIHYSwlQo4sh8` |
+| 2026-09-24 21:04 | Marathon Till 3 (67365901) | 82 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P2KE8tenPTVkjFn8lpY` |
+| 2026-09-25 15:23 | Marathon Till 3 (67365901) | 82 | refused | Batch #82 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2O9WvxmAG7Se5_gaoj` |
+| 2026-09-25 15:26 | Trophy Till 1 (67325636) | 63 | refused | Batch #63 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2OAQEK8D_rzOi3zN-j` |
+| 2026-09-25 20:03 | Marathon Till 3 (67365901) | 82 | refused | Batch #82 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2P9rTRYxJvr80jCm7a` |
+| 2026-09-26 14:26 | Marathon Till 3 (67365901) | 83 | refused | Batch #83 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2T67uhS0-xNSkg0rsk` |
+| 2026-09-26 14:27 | Trophy Till 1 (67325636) | 63 | unrelated | That PDF has 13 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P2T6_IUwmF7gFZY89ZF` |
+| 2026-09-26 14:28 | Trophy Till 1 (67325636) | 63 | unrelated | That PDF has 13 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P2T71ftfLCr6exiKcTo` |
+| 2026-09-27 13:26 | Marathon Till 3 (67365901) | 83 | refused | Batch #83 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2Y29glyyBzAqe2QnU2` |
+| 2026-09-28 15:11 | Marathon Till 3 (67365901) | 83 | refused | Batch #83 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2cZoYCbkNz1oiVF7oh` |
+| 2026-09-28 15:15 | Trophy Till 1 (67325636) | 65 | refused | Batch #65 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2c_j0G37IQjLtRXVVB` |
+| 2026-09-28 20:49 | Marathon Till 3 (67365901) | 83 | refused | Batch #83 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2dm11KGSRKgo6yEEEO` |
+| 2026-09-29 15:03 | Marathon Till 3 (67365901) | 84 | refused | Batch #84 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2hgo5RsxVYRY6eDmVb` |
+| 2026-09-29 15:05 | Trophy Till 1 (67325636) | 65 | refused | Batch #65 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2hhEcQWFuzEz1lWda-` |
+| 2026-09-29 20:29 | Marathon Till 3 (67365901) | 84 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P2irGFYNldlFl540csQ` |
+| 2026-09-30 15:00 | Marathon Till 3 (67365901) | 84 | refused | Batch #84 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2mpjNtqoXjiP6jKhm7` |
+| 2026-09-30 15:00 | Marathon Till 3 (67365901) | 84 | refused | Batch #84 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2mptJAg-y2azDZkbyM` |
+| 2026-09-30 15:02 | Trophy Till 1 (67325636) | 66 | refused | Batch #66 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2mpvpAVGHgmdTA4DTW` |
+| 2026-09-30 15:13 | Marathon Till 3 (67365901) | 84 | refused | Batch #84 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2msYO7joMzWZzgsScL` |
+| 2026-09-30 20:03 | Marathon Till 3 (67365901) | 84 | refused | Batch #84 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2nx3fxPgT5Y62y4pzN` |
+| 2026-10-01 15:01 | Marathon Till 3 (67365901) | 85 | refused | Batch #85 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2rzNHYPcJVAoaVnhOv` |
+| 2026-10-01 15:01 | Marathon Till 3 (67365901) | 85 | refused | Batch #85 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2rzNtm27_5ZnIK3ess` |
+| 2026-10-01 15:06 | Trophy Till 1 (67325636) | 66 | unrelated | That PDF has 16 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P2s-jkQYx63a0FIVz_L` |
+| 2026-10-01 15:07 | Trophy Till 1 (67325636) | 66 | unrelated | That PDF has 16 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P2s-kaf9TJnFQ1d3Ta7` |
+| 2026-10-01 15:08 | Marathon Till 1 (67377843) | 37 | refused | Batch #37 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2s-lEyuGAih7S7fs9w` |
+| 2026-10-01 15:09 | Marathon Till 1 (67377843) | 37 | refused | Batch #37 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2s0AYIc_c7QGdZYBI8` |
+| 2026-10-01 15:10 | Trophy Till 1 (67325636) | 66 | unrelated | That PDF has 16 pages — a batch report is one or two. Check it is the right file. | Long report hit the old 10-page cap (raised to 60 on 1 Oct); batch captured since | Already resolved | `-P2s0diFE6tNuPdUwTvn` |
+| 2026-10-01 20:08 | Marathon Till 3 (67365901) | 85 | refused | Batch #85 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2t4f4nhLgNMG1-kuYJ` |
+| 2026-10-02 15:25 | Marathon Till 3 (67365901) | 86 | refused | Batch #86 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2xDR0YINieP8WXwFBS` |
+| 2026-10-02 15:25 | Marathon Till 3 (67365901) | 86 | refused | Batch #86 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2xDRn0GUs38P91Jll3` |
+| 2026-10-02 15:25 | Marathon Till 3 (67365901) | 86 | refused | Batch #86 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2xDSRWMjm_rE449apJ` |
+| 2026-10-02 21:05 | Marathon Till 3 (67365901) | 86 | refused | Batch #86 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P2yR3TR9XpNo5kdGS4_` |
+| 2026-10-03 14:26 | Marathon Till 3 (67365901) | 87 | refused | Batch #87 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P319gF1NftYynX_9Sy-` |
+| 2026-10-03 14:26 | Marathon Till 3 (67365901) | 87 | refused | Batch #87 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P319grvWkfTHzxegC13` |
+| 2026-10-03 20:15 | Marathon Till 3 (67365901) | 87 | refused | Batch #87 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P32PAtrR7nK-alZawjB` |
+| 2026-10-04 20:04 | Marathon Till 3 (67365901) | 88 | refused | Batch #88 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P37WN-BEUSK79jLYUlG` |
+| 2026-10-05 14:57 | Marathon Till 3 (67365901) | 89 | refused | Batch #89 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3BZZCASQllGNu5hzh1` |
+| 2026-10-05 20:04 | Marathon Till 3 (67365901) | 89 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P3CesZ--LrwkCcucX_i` |
+| 2026-10-06 14:54 | Marathon Till 3 (67365901) | 89 | refused | Batch #89 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3GhlWBNUetTqU_nuHW` |
+| 2026-10-06 15:02 | Marathon Till 1 (67377843) | 40 | refused | Batch #40 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3Gj_g6Ja8DtsHvJEBW` |
+| 2026-10-06 15:12 | Marathon Till 3 (67365901) | 89 | refused | Batch #89 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3GlsnNynppfYIhk7gO` |
+| 2026-10-06 21:23 | Marathon Till 3 (67365901) | 89 | refused | Batch #89 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3I5UTuOa2fFT4XWQdI` |
+| 2026-10-07 14:58 | Marathon Till 1 (67377843) | 41 | refused | Batch #41 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3LsBzlfnWWp_YPzugp` |
+| 2026-10-07 14:58 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3LsD7-3HKFaW7Ftq_K` |
+| 2026-10-07 15:04 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3LtYqJktonan1A1Nvf` |
+| 2026-10-08 12:56 | Marathon Till 1 (67377843) | 42 | refused | Batch #42 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3Qa2NSfwVkZNd6Zfg-` |
+| 2026-10-08 12:57 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3Qa2xWcl4u3KvJvI9n` |
+| 2026-10-08 12:57 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3Qa3YrQ6Sr0Pr_B0kY` |
+| 2026-10-08 21:04 | Marathon Till 3 (67365901) | 90 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P3SKKsPhXSxDXxFQj8z` |
+| 2026-10-11 12:27 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3evsd5h8W8uX5zlrzw` |
+| 2026-10-11 12:31 | Marathon Till 1 (67377843) | – | refused | That banking report does not state a batch number anywhere this could find it. If it is the rig… | A Transaction History report (a date-range printout requested on the terminal), not a batch settlement | Now filed as not-a-batch-report | `-P3ewqhhSkV8UMKGO44R` |
+| 2026-10-11 20:03 | Marathon Till 3 (67365901) | 90 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P3gZGgq7UAxkQB5Nwy0` |
+| 2026-10-12 14:50 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3kaAI3LIuszdyK-tdj` |
+| 2026-10-12 14:50 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3kaApnPAJ-zz19AoLc` |
+| 2026-10-12 14:52 | Marathon Till 1 (67377843) | 43 | refused | Batch #43 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3kae81pmqEDNjNF-_V` |
+| 2026-10-12 14:57 | Trophy Till 1 (67325636) | 69 | refused | That report's transactions span more than 7 days, which no single batch does — one of the dates… | Batch 69 genuinely open since 5 Oct 10:01 (never closed after the terminal swap) — the dates were read exactly | Now recorded as a fuller report of batch 69, with a long-batch warning | `-P3kc-wEWiHdI2EcQb8i` |
+| 2026-10-12 21:33 | Marathon Till 3 (67365901) | 90 | refused | Batch #90 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3m1a9cuMftEzEYSUJa` |
+| 2026-10-13 14:38 | Marathon Till 1 (67377843) | 44 | refused | Batch #44 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3pgxbtCVxcbBXE1eSz` |
+| 2026-10-13 14:39 | Marathon Till 3 (67365901) | 91 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | Empty batch (Total ZAR 0.00) whose only section is FAILED ATTEMPTS (one cancelled card) | Now recorded as an empty R0.00 batch | `-P3phOv90dinyOhxKzTj` |
+| 2026-10-13 14:39 | Marathon Till 3 (67365901) | 91 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | Empty batch (Total ZAR 0.00) whose only section is FAILED ATTEMPTS (one cancelled card) | Now recorded as an empty R0.00 batch | `-P3pjEktLD1ro57qNb82` |
+| 2026-10-13 14:56 | Trophy Till 1 (67325636) | 69 | refused | That report's transactions span more than 7 days, which no single batch does — one of the dates… | Batch 69 genuinely open since 5 Oct 10:01 (never closed after the terminal swap) — the dates were read exactly | Now recorded as a fuller report of batch 69, with a long-batch warning | `-P3pmvD_W7Ybl85JMimW` |
+| 2026-10-13 15:14 | Trophy Till 1 (67325636) | 69 | refused | That report's transactions span more than 7 days, which no single batch does — one of the dates… | Batch 69 genuinely open since 5 Oct 10:01 (never closed after the terminal swap) — the dates were read exactly | Now recorded as a fuller report of batch 69, with a long-batch warning | `-P3ppENH3y7XbawUXXsA` |
+| 2026-10-13 20:03 | Marathon Till 3 (67365901) | 91 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | Empty batch (Total ZAR 0.00) whose only section is FAILED ATTEMPTS (one cancelled card) | Now recorded as an empty R0.00 batch | `-P3qrPNnt6wHPN7glM8U` |
+| 2026-10-14 14:53 | Marathon Till 1 (67377843) | 45 | refused | Batch #45 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3utu0XZD5UJ4oCuY4r` |
+| 2026-10-14 14:54 | Marathon Till 3 (67365901) | 92 | refused | Batch #92 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P3uuNUA6w2Yfs8RDqsv` |
+| 2026-10-14 15:00 | Trophy Till 1 (67325636) | 69 | refused | That report's transactions span more than 7 days, which no single batch does — one of the dates… | Batch 69 genuinely open since 5 Oct 10:01 (never closed after the terminal swap) — the dates were read exactly | Now recorded as a fuller report of batch 69, with a long-batch warning | `-P3uvjM_tCHyHttiqOMF` |
+| 2026-10-14 20:20 | Marathon Till 3 (67365901) | 92 | refused | That banking report does not print an Items count. If it is the right file, photograph the slip… | "Banking Done" notice — the batch was already banked; the PDF carries no figures | Now filed as not-a-batch-report (no red box) | `-P3w3rGwitEBI_qs1cEy` |
+| 2026-10-15 14:48 | Trophy Till 1 (67325636) | 69 | refused | That report's transactions span more than 7 days, which no single batch does — one of the dates… | Batch 69 genuinely open since 5 Oct 10:01 (never closed after the terminal swap) — the dates were read exactly | Now recorded as a fuller report of batch 69, with a long-batch warning | `-P4-1YeB_0dMx8nBs9O5` |
+| 2026-10-15 14:51 | Marathon Till 3 (67365901) | 92 | refused | Batch #92 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P4-2TAnf7Kn9GnAabt0` |
+| 2026-10-15 14:51 | Marathon Till 3 (67365901) | 92 | refused | Batch #92 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P4-2Tk76eHPv-PgD9Jk` |
+| 2026-10-15 14:53 | Marathon Till 1 (67377843) | 45 | refused | Batch #45 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P4-2VCgASVyDWwj8C8e` |
+| 2026-10-15 14:53 | Marathon Till 1 (67377843) | 45 | refused | Batch #45 for this terminal is already captured. If the earlier capture was wrong, resubmit as … | Re-send of a batch already recorded (FNB emails the same report more than once) | Correct refusal — nothing lost | `-P4-2vNrq24Q8XBkI7Ld` |

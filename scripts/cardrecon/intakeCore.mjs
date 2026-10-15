@@ -242,6 +242,10 @@ const NOT_A_SLIP = [
   /more text than a batch report/i,
   /pages — a batch report is one or two/i,
   /pages — more than any batch report/i,
+  // FNB documents that share the slip's file name but are not batches — see
+  // notABatchReport in functions/lib/card-recon-pdf.cjs.
+  /is a Transaction History report/i,
+  /"Banking Done" notice/i,
 ];
 
 /** "refused" (someone must look) or "unrelated" (it was never a slip). */
@@ -294,7 +298,7 @@ export function attachmentOutcome({ filename, capture, error }) {
  * it exists to answer is "did every terminal's report get in, and if not why
  * not". The evidence itself stays in /card_batches, which is owner-only.
  */
-export function intakeRecord({ message, results, skipped, at }) {
+export function intakeRecord({ message, results, skipped, at, parserVersion = null }) {
   const rows = results.map((r) => ({ ...r }));
   const refused = rows.filter((r) => r.outcome === "refused").length;
   const recorded = rows.filter((r) => r.outcome === "recorded").length;
@@ -314,6 +318,8 @@ export function intakeRecord({ message, results, skipped, at }) {
     // image). Kept as a count and a name list, not as rows.
     skipped: skipped.length ? skipped.map((s) => clip(s.filename, 120)).filter(Boolean).slice(0, 10) : null,
     state: refused > 0 ? "needs-attention" : "done",
+    // Which parser judged it — see retryCandidates. null = no answer at all.
+    parserVersion: Number.isInteger(parserVersion) ? parserVersion : null,
   };
 }
 
@@ -332,4 +338,172 @@ export function claimDecision(claim, nowMs) {
   const age = Number.isInteger(claim.at) ? nowMs - claim.at : Infinity;
   if (age > STALE_CLAIM_MS) return { take: true, why: "a previous run claimed this and never finished" };
   return { take: false, done: false, why: "another run is holding it" };
+}
+
+// ─── EVERY REFUSAL CARRIES ITS OWN EVIDENCE ──────────────────────────────────
+// Until 15 Oct 2026 a refused row stored a redacted sentence and nothing else,
+// so every refusal cost a dig through the mailbox to see what the file said —
+// and the refusals were each a NEW layout, so that dig was the whole diagnosis
+// every time (CARD-RECON-REFUSALS.md). Now the poller keeps, per refused
+// attachment, the original PDF in Storage and the lines it extracted.
+//
+// NOT ON THE INTAKE ROW. That node is read by every `card_recon` holder — the
+// managers — and is cleared for outcomes only (see the money redaction above).
+// The lines carry amounts, auth codes and RRNs. So they go to a sibling node
+// that is OWNER-ONLY, keyed by the same push id, and the PDF to an owner-only
+// Storage path. The row itself gains only the path string, which is useless
+// without the owner's read.
+//
+// CARD NUMBERS: FNB prints them masked (first six, last four). Kept to the LAST
+// FOUR here — enough to tell two cards apart while reading a refusal, and
+// nothing a BIN lookup can use. Any long digit run that passes the Luhn check
+// is withheld outright, in case some layout ever prints a number unmasked; a
+// merchant id line is exempt (MIDs are 15 digits and can pass Luhn by chance,
+// and the MID is exactly what a routing refusal needs to show).
+export const EVIDENCE_PATH = "card_batch_intake_evidence";
+export const REFUSED_PDF_PREFIX = "card_recon_refused";
+export const EVIDENCE_MAX_LINES = 600;
+export const EVIDENCE_MAX_LINE_CHARS = 160;
+export const EVIDENCE_MAX_ATTACHMENTS = 5;
+
+function luhn(digits) {
+  let sum = 0;
+  for (let i = 0; i < digits.length; i++) {
+    let d = Number(digits[digits.length - 1 - i]);
+    if (i % 2 === 1) { d *= 2; if (d > 9) d -= 9; }
+    sum += d;
+  }
+  return sum % 10 === 0;
+}
+
+/** One extracted line, safe to keep: masked PANs cut to last four, no unmasked card number. */
+export function maskEvidenceLine(line) {
+  let s = String(line ?? "");
+  // One token, as FNB prints it: 518103******4436 → ******4436
+  s = s.replace(/\b\d{2,8}[*xX·•#]{2,}(\d{2,4})\b/g, (_, tail) => `******${tail}`);
+  // Grouped, any mix of digits and mask per group: 4111 11** **** 1111,
+  // 4111 1111 **** 1111 → ******1111
+  s = s.replace(/(?<![\d*xX·•#])(?:[\d*xX·•#]{4} ){3}(\d{4})(?!\d)/g, (m, last4) => (/[*xX·•#]/.test(m) ? `******${last4}` : m));
+  // ONLY the merchant id itself is exempt — the first number after a
+  // "Merchant" label — never the rest of that line, which still gets the
+  // card-number check like any other. (CodeRabbit, PR #726.)
+  const mid = /^\s*merchant\b[^0-9]*((?:\d[ -]?){12,18}\d)(?!\d)/i.exec(s);
+  const midDigits = mid ? mid[1].replace(/\D/g, "") : null;
+  let midKept = false;
+  // Bounded by "not a digit" rather than a word boundary, so a number run
+  // into a label ("PAN4111…") is still seen.
+  s = s.replace(/(?<!\d)(?:\d[ -]?){12,18}\d(?!\d)/g, (m) => {
+    const digits = m.replace(/\D/g, "");
+    if (!midKept && midDigits !== null && digits === midDigits) { midKept = true; return m; }
+    return luhn(digits) ? "[card number withheld]" : m;
+  });
+  return s.length > EVIDENCE_MAX_LINE_CHARS ? `${s.slice(0, EVIDENCE_MAX_LINE_CHARS - 1)}…` : s;
+}
+
+/** Where a refused attachment's PDF is kept: the first as {intakeId}.pdf, any more as -1, -2… */
+export function refusedPdfPath(intakeId, n = 0) {
+  return `${REFUSED_PDF_PREFIX}/${intakeId}${n ? `-${n}` : ""}.pdf`;
+}
+
+/**
+ * The owner-only evidence record for one message's refused attachments.
+ * @param {{items: {filename:string, reason:string, lines:string[]|null, pdfPath:string|null, note?:string}[], at:number, parserVersion:number|null}} input
+ */
+export function evidenceRecord({ items, at, parserVersion }) {
+  const list = (items || []).slice(0, EVIDENCE_MAX_ATTACHMENTS);
+  return {
+    at,
+    parserVersion: Number.isInteger(parserVersion) ? parserVersion : null,
+    attachments: list.map((it) => {
+      const lines = Array.isArray(it.lines) ? it.lines : [];
+      return {
+        filename: clip(it.filename, 120) || "(unnamed)",
+        // The FULL reason, money and all — this node is the owner's.
+        reason: clip(it.reason, 600),
+        pdfPath: it.pdfPath || null,
+        lineCount: lines.length,
+        lines: lines.length ? lines.slice(0, EVIDENCE_MAX_LINES).map(maskEvidenceLine) : null,
+        truncated: lines.length > EVIDENCE_MAX_LINES,
+        note: clip(it.note, 200),
+      };
+    }),
+  };
+}
+
+// ─── A FIX REACHES THE SLIPS IT WAS WRITTEN FOR, BY ITSELF ───────────────────
+// Every intake row is stamped with the parser version the callable reported
+// when it judged the file (PARSER_VERSION in functions/lib/card-recon-pdf.cjs).
+// When a deploy raises that version, the poller re-runs every refusal from the
+// last fortnight that an older version judged — the same two moves
+// retry-intake-message.mjs makes by hand (clear the claim, forget the cached
+// key), minus the hand. The duplicate-batch refusal downstream still stops a
+// slip that DID land from landing twice.
+//
+// NOT RETRIED, deliberately:
+//   • a row that recorded anything — re-running it can only produce duplicate
+//     refusals or, worse, a second record of a sibling attachment;
+//   • a row whose every refusal is "already captured" — a re-send of a batch
+//     that is on file; no parser change makes it new;
+//   • a row already re-run (retriedAt), or one the current version judged;
+//   • the EFT reader's synthetic slip-loss rows (eftslip-…), whose key belongs
+//     to the payment message, not to a slip.
+export const RETRY_WINDOW_MS = 14 * 86400000;
+// How often the deployed version is asked for, and how often a sweep runs even
+// when it has not changed (to catch a row an old instance judged mid-deploy).
+export const VERSION_CHECK_MS = 30 * 60 * 1000;
+export const RESWEEP_MS = 6 * 60 * 60 * 1000;
+// A released message the scan has not yet re-processed is remembered this long.
+export const PENDING_RETRY_MS = 3 * 86400000;
+
+const DUPLICATE = /already captured/i;
+
+/**
+ * Which intake rows to re-run. Pure: `rows` is the bounded tail as read.
+ * @returns {{id:string, messageKey:string, messageId:string|null}[]}
+ */
+export function retryCandidates(rows, { nowMs, deployedVersion, windowMs = RETRY_WINDOW_MS }) {
+  if (!Number.isInteger(deployedVersion)) return [];
+  const out = [];
+  for (const [id, rec] of Object.entries(rows || {})) {
+    if (!rec || typeof rec !== "object" || id.startsWith("eftslip-")) continue;
+    if (!rec.messageKey || rec.retriedAt) continue;
+    const stamp = Number(rec.receivedAt) || Number(rec.at) || 0;
+    if (!stamp || nowMs - stamp > windowMs) continue;
+    if (Number(rec.recorded) > 0 || !(Number(rec.refused) > 0)) continue;
+    // An automatic re-run that got no answer at all is not re-run again: the
+    // fault was the transport, not a parser, and a fresh row every six hours
+    // for a fortnight is noise. The next version bump does not revive it
+    // either — Junid's hand script remains for that.
+    if (rec.rerunOf && !Number.isInteger(rec.parserVersion)) continue;
+    const judgedBy = Number.isInteger(rec.parserVersion) ? rec.parserVersion : 0;
+    if (judgedBy >= deployedVersion) continue;
+    const atts = Array.isArray(rec.attachments) ? rec.attachments : Object.values(rec.attachments || {});
+    const refusals = atts.filter((a) => a && a.outcome === "refused");
+    if (refusals.length && refusals.every((a) => DUPLICATE.test(String(a.reason || "")))) continue;
+    out.push({ id, messageKey: rec.messageKey, messageId: rec.messageId || null });
+  }
+  return out;
+}
+
+/**
+ * Is a sweep due? `state` is the poller's local retry state.
+ * @returns {boolean}
+ */
+export function sweepDue(state, { deployedVersion, nowMs }) {
+  if (!Number.isInteger(deployedVersion)) return false;
+  const swept = Number.isInteger(state?.sweptVersion) ? state.sweptVersion : 0;
+  if (deployedVersion > swept) return true;
+  return !(Number(state?.sweptAt) > 0) || nowMs - state.sweptAt > RESWEEP_MS;
+}
+
+/**
+ * The parser version a set of attachment outcomes was judged by: the LOWEST
+ * any of them reported, or null when one of them got no answer at all (a
+ * transport failure) — which then reads as "older than anything" and is
+ * re-run after the next deploy.
+ */
+export function judgedVersion(versions) {
+  const list = Array.isArray(versions) ? versions : [];
+  if (!list.length || list.some((v) => !Number.isInteger(v))) return null;
+  return Math.min(...list);
 }

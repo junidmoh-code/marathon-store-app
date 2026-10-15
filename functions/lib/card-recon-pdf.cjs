@@ -20,7 +20,28 @@
 
 "use strict";
 
-const { parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents } = require("./card-recon.cjs");
+// ─── THE PARSER'S VERSION ────────────────────────────────────────────────────
+// BUMP THIS ON EVERY CHANGE THAT CAN ALTER WHAT A PDF READS AS — this file,
+// card-recon.cjs's validateExtraction, or cardRecon/pdfText.js's line rules.
+// The callable reports it with every answer; the poller stamps it on every
+// intake row, and on each tick re-runs any refusal from the last 14 days that
+// an OLDER version judged (scripts/cardrecon/email-poller.mjs → retryStale).
+// That is what makes a fix reach the slips it was written for without anyone
+// re-running them by hand. The real-report corpus (test/card-recon-corpus*)
+// is what proves a bump did not move a file that was already accepted.
+//
+// Rows written before versions existed carry none, which reads as 0.
+//
+//   2  — 15 Oct 2026: lines clustered by gap, not a 1pt bucket; FNB "Banking
+//        Done" notices and Transaction History reports set aside as not
+//        batches; an empty batch may carry FAILED ATTEMPTS; an emailed batch
+//        nobody closed may run past 7 days; totals-only when the list fails.
+const PARSER_VERSION = 2;
+
+const {
+  parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents,
+  dedupeLines, validateExtraction,
+} = require("./card-recon.cjs");
 
 /** Collapse runs of whitespace; a PDF's text layer is full of them. */
 const tidy = (s) => String(s ?? "").replace(/\s+/g, " ").trim();
@@ -868,18 +889,54 @@ function readTxnBlock(block, batchNo) {
 
 /**
  * Does this banking report have the shape of a batch in which NO card was
- * taken? No section headings of its own (the TOTALS SUMMARY / CARD TOTALS
- * dividers aside), and not a single transaction block anywhere in it. The
- * caller still requires the printed TOTAL to be exactly zero.
+ * taken? No APPROVED section, not one approved transaction block, and a TOTALS
+ * SUMMARY / CARD TOTALS region. The caller still requires the printed TOTAL to
+ * be exactly zero.
+ *
+ * ── A FAILED ATTEMPT DOES NOT MAKE A BATCH NON-EMPTY ─────────────────────────
+ * Marathon Till 3 settled batch 91 on 13 Oct 2026 with "Total ZAR 0.00", no
+ * approved list, and a FAILED ATTEMPTS section holding one cancelled card
+ * ("Items: 1", "TSN:2 User Cancelled"). The first version of this rule refused
+ * any report carrying an Items count or a TSN line anywhere, so the empty batch
+ * was refused as "does not print an Items count" three times and never landed.
+ *
+ * So the test is WHERE those rows sit, not whether they exist: an Items count
+ * or a TSN line is allowed only inside a section whose own heading says it
+ * holds attempts that took no money (FAILED / DECLINED). Anything outside such
+ * a section — or an APPROVED heading anywhere, with or without a divider — is
+ * a report with transactions, and is not empty.
  */
+const NO_MONEY_SECTION = /\b(?:failed|declined)\b/i;
 function isEmptyBatchShape(rows) {
-  const txnSection = sectionStarts(rows).some((sec) => /transactions?\b/i.test(sec.heading));
-  if (txnSection) return false;
-  // …and a heading printed WITHOUT a divider above it (older firmware).
-  if (rows.some((r) => EMAILED.approved.test(r) || /^\s*declined transactions\b/i.test(r))) return false;
-  if (rows.some((r) => EMAILED.items.test(r))) return false;
-  if (rows.some((r) => BLOCK.tsnBatch.test(r) || /^\s*TSN\s*:/i.test(r))) return false;
+  if (rows.some((r) => EMAILED.approved.test(r))) return false;
+  const starts = sectionStarts(rows);
+  // Each row's section: the heading of the last section start at or above it.
+  const inNoMoneySection = (i) => {
+    let heading = null;
+    for (const sec of starts) { if (sec.at <= i) heading = sec.heading; else break; }
+    return heading !== null && NO_MONEY_SECTION.test(heading);
+  };
+  for (let i = 0; i < rows.length; i++) {
+    const r = rows[i];
+    const txnShaped = EMAILED.items.test(r) || BLOCK.tsnBatch.test(r) || /^\s*TSN\s*:/i.test(r);
+    if (txnShaped && !inNoMoneySection(i)) return false;
+  }
+  // A transaction section of any other name is not empty either.
+  if (starts.some((sec) => /transactions?\b/i.test(sec.heading) && !NO_MONEY_SECTION.test(sec.heading))) return false;
   return rows.some((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+}
+
+/** How many attempts the FAILED / DECLINED sections of an empty batch state. */
+function noMoneyAttemptCount(rows) {
+  const starts = sectionStarts(rows);
+  let total = 0;
+  starts.forEach((sec, k) => {
+    if (!NO_MONEY_SECTION.test(sec.heading)) return;
+    const to = k + 1 < starts.length ? starts[k + 1].at : rows.length;
+    const m = rows.slice(sec.at, to).map((r) => EMAILED.items.exec(r)).find(Boolean);
+    if (m) total += Number(m[1]);
+  });
+  return total;
 }
 
 /**
@@ -916,6 +973,10 @@ function emptyBatchExtraction(rows, { tid, batchNo }) {
       declined: [],
       declinedCount: null,
       declinedUnread: null,
+      // Cancelled or declined attempts the report printed beside its zero
+      // total. Not money; said on the record so a cashier's "I tried the card"
+      // can be seen to match.
+      failedAttempts: noMoneyAttemptCount(rows),
     },
   };
 }
@@ -928,6 +989,11 @@ function emptyBatchExtraction(rows, { tid, batchNo }) {
  */
 function parseEmailedReport(rows) {
   const bad = (reason) => ({ ok: false, reason });
+  // A refusal about the TRANSACTION LIST's structure — its Items count, a
+  // block that will not read — as opposed to the report's identity or its
+  // totals. Only these may fall back to a totals-only record; see
+  // emailedTotalsOnly.
+  const badList = (reason) => ({ ok: false, reason, listStructure: true });
 
   // ── identity: the title, cross-checked against the labelled rows ──
   let titleBatch = null, titleTid = null;
@@ -997,7 +1063,7 @@ function parseEmailedReport(rows) {
     // The wording for a report with no sections at all stays what it was: the
     // span is then the whole document and "the approved section" would name
     // something the reader cannot see.
-    return bad(approved.from === 0
+    return badList(approved.from === 0
       ? "That banking report does not print an Items count. If it is the right file, photograph the slip instead."
       : approvedCount.reason);
   }
@@ -1016,7 +1082,7 @@ function parseEmailedReport(rows) {
   for (const blk of blocks) {
     const read = readTxnBlock(blk, batchNo);
     if (read.skip) continue;    // a stamp with no TSN under it is not a transaction
-    if (read.err) return bad(read.err);
+    if (read.err) return badList(read.err);
     txns.push(read.txn);
   }
 
@@ -1051,7 +1117,7 @@ function parseEmailedReport(rows) {
   let declinedCount = null;
   if (declinedSpan) {
     const stated = sectionItemCount(rows, declinedSpan, "declined");
-    if (!stated.ok) return bad(stated.reason);
+    if (!stated.ok) return badList(stated.reason);
     declinedCount = stated.count;
     for (const blk of collectTxnBlocks(rows.slice(0, declinedSpan.to + 1), declinedSpan.from)) {
       const read = readTxnBlock(blk, batchNo);
@@ -1156,12 +1222,12 @@ function parseEmailedReport(rows) {
     // a non-zero TOTAL is one whose transactions this parser could not find,
     // and recording it as R0 would lose money.
     if (total.cents !== 0 || purchases.cents !== 0 || refunds.cents !== 0 || cash.cents !== 0) {
-      return bad("That banking report does not print an Items count. If it is the right file, photograph the slip instead.");
+      return badList("That banking report does not print an Items count. If it is the right file, photograph the slip instead.");
     }
     return emptyBatchExtraction(rows, { tid, batchNo });
   }
   if (!txns.length) {
-    return bad("No transactions could be read from that banking report. If it is the right file, photograph the slip instead.");
+    return badList("No transactions could be read from that banking report. If it is the right file, photograph the slip instead.");
   }
 
 
@@ -1245,9 +1311,212 @@ function parseEmailedReport(rows) {
   };
 }
 
+
+// ═══ TOTALS ONLY, WHEN THE TRANSACTION LIST WILL NOT READ ════════════════════
+//
+// Every past refusal of an emailed report was a new LAYOUT of the transaction
+// list — an Items count where it was not expected, a section nobody had seen,
+// a block shaped differently — while the two things that decide the money sat
+// there perfectly legible: WHICH batch (the title, cross-checked against the
+// labelled Terminal and Batch rows) and HOW MUCH (TOTALS SUMMARY and CARD
+// TOTALS, which print the same figures twice).
+//
+// So when the list is the only thing that failed, the batch is recorded from
+// its totals — summary-only, `linesCaptured:false`, with a warning naming why
+// the lines were not captured. That is LESS detail, never a different figure:
+// the total recorded is the one the report prints, read by the same strict
+// money reader, agreeing in both of the places the report prints it. A zero
+// variance then settles the batch as clean like any other (Junid's rule).
+//
+// NEVER, when any of these holds — each is a refusal exactly as before:
+//   • the identity is ambiguous — the title, the Terminal row and the Batch row
+//     must ALL be present and agree; a report missing one is refused
+//   • the two totals blocks are not both there, or disagree, or the purchases,
+//     cash and refunds do not add up to the total (validateExtraction)
+//   • a settlement-failure notice — refused by parseSlipPdf before any of this
+//   • the failure was about identity or money rather than the list's structure
+//   • the report prints no transaction timestamp at all, so no window exists
+//
+// THE WINDOW is the same derived one the full read uses, worked out from the
+// same exact text: the earliest and latest APPROVED transaction timestamps,
+// closing at the print time when that is later. Timestamps are
+// read whether or not the block around them parsed — a stamp is one line with
+// one fixed shape, and is not what failed.
+
+/** The rows of a totals block: from its heading to the next heading or the end. */
+function totalsBlockRows(rows, headingRe) {
+  const at = rows.findIndex((r) => headingRe.test(r));
+  if (at < 0) return null;
+  const nextHeading = rows.findIndex((r, i) => i > at && (EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r)));
+  return rows.slice(at, nextHeading > at ? nextHeading : rows.length);
+}
+
+/**
+ * The totals-only extraction for an emailed report whose list would not read.
+ *
+ * @param {string[]} rows  tidied rows
+ * @param {string} why     the list refusal, for the record's warning
+ * @returns {{ok:true, extraction:object, why:string} | {ok:false, reason:string}}
+ */
+function emailedTotalsOnly(rows, why) {
+  const no = (reason) => ({ ok: false, reason });
+  // ── identity: all three readings present, all agreeing ──
+  const title = rows.map((r) => EMAILED.title.exec(r)).find(Boolean);
+  const labelledTids = [...new Set(fieldAll(rows, EMAILED.tid).map(normaliseTid).filter(Boolean))];
+  const labelledBatches = [...new Set(fieldAll(rows, EMAILED.batchNo).map(normaliseBatchNo).filter((b) => b !== null))];
+  if (!title || labelledTids.length !== 1 || labelledBatches.length !== 1) {
+    return no("its terminal and batch are not each printed once in the title and once on their own rows");
+  }
+  const tid = normaliseTid(title[2]);
+  const batchNo = normaliseBatchNo(title[1]);
+  if (!tid || batchNo === null || labelledTids[0] !== tid || labelledBatches[0] !== batchNo) {
+    return no("its title and its Terminal/Batch rows do not agree");
+  }
+  // ── the money: both totals blocks, each stating the TOTAL, the same ──
+  const summary = totalsBlockRows(rows, EMAILED.totalsSummary);
+  const card = totalsBlockRows(rows, EMAILED.cardTotals);
+  if (!summary || !card) return no("it does not print both a TOTALS SUMMARY and a CARD TOTALS block");
+  const inSummary = moneyField(summary, MONEY.total, "TOTAL", { allowLabelSuffix: true });
+  const inCard = moneyField(card, MONEY.total, "TOTAL", { allowLabelSuffix: true });
+  if (!Number.isInteger(inSummary.cents) || !Number.isInteger(inCard.cents)) {
+    return no("its TOTAL is not printed cleanly in both totals blocks");
+  }
+  if (inSummary.cents !== inCard.cents) return no("its two totals blocks state different totals");
+  // Every money figure over the whole totals region, under the same rule as
+  // the full read: two disagreeing readings refuse, absent means zero.
+  const region = rows.slice(Math.min(rows.indexOf(summary[0]), rows.indexOf(card[0])));
+  const figure = (re, what) => {
+    const f = moneyField(region, re, what, { allowLabelSuffix: true });
+    return f.missing ? { cents: 0 } : f;
+  };
+  const purchases = figure(MONEY.purchases, "purchases figure");
+  const refunds = figure(MONEY.refunds, "refunds figure");
+  const cash = figure(MONEY.cash, "cash figure");
+  for (const f of [purchases, refunds, cash]) if (f.err) return no("one of its totals figures will not read");
+
+  // ── the window, from the APPROVED transactions' own stamps ──
+  // The same span the full read uses: approved transactions only. A declined
+  // or failed attempt before the first sale or after the last is not trading
+  // the till rang, and must not widen the window the ledger is read over.
+  // The approved section is located by its heading (it is the Items count or
+  // a block inside it that failed, not the heading); with no such heading the
+  // stamps of every section that is not a no-money one are used, and the
+  // header's own print stamp is never among them.
+  const firstDivider = rows.findIndex((r) => SECTION_DIVIDER.test(r));
+  const totalsAt = rows.findIndex((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r));
+  const starts = sectionStarts(rows);
+  const approvedSec = approvedSection(rows, totalsAt);
+  let stampRows;
+  if (starts.some((sec) => /approved/i.test(sec.heading))) {
+    stampRows = rows.slice(approvedSec.from, approvedSec.to + 1);
+  } else {
+    const limit = totalsAt >= 0 ? totalsAt : rows.length;
+    stampRows = [];
+    for (let i = Math.max(firstDivider, 0); firstDivider >= 0 && i < limit; i++) {
+      let heading = null;
+      for (const sec of starts) { if (sec.at <= i) heading = sec.heading; else break; }
+      if (heading !== null && NO_MONEY_SECTION.test(heading)) continue;
+      stampRows.push(rows[i]);
+    }
+  }
+  const stamps = stampRows.map(parseEmailedStamp).filter((v) => v !== null);
+  if (!stamps.length) return no("it prints no approved-transaction timestamps to place the batch in time");
+  const headerStamp = rows.slice(0, firstDivider >= 0 ? firstDivider : rows.length).map(parseEmailedStamp).find((v) => v !== null) ?? null;
+  const labelledPrinted = field(rows, EMAILED.printed);
+  const printedAt = headerStamp ?? (labelledPrinted ? parseSlipTimestamp(labelledPrinted) : null);
+  const openedAt = Math.min(...stamps);
+  const lastTxnAt = Math.max(...stamps);
+  const closesAtPrint = printedAt !== null && printedAt > lastTxnAt;
+
+  // The approved Items figure, if it is stated once — kept when it reads,
+  // never made up when it does not.
+  const count = sectionItemCount(rows, approvedSec, "approved");
+
+  return {
+    ok: true,
+    why,
+    extraction: {
+      mid: field(rows, EMAILED.mid),
+      mids: [...new Set(fieldAll(rows, EMAILED.mid).map(normaliseMid).filter(Boolean))],
+      tid, batchNo: String(batchNo),
+      openedAt, closedAt: closesAtPrint ? printedAt : lastTxnAt + 1, printedAt,
+      openedText: null, closedText: null,
+      txnCount: count.ok ? count.count : null,
+      purchasesCents: purchases.cents,
+      cashCents: cash.cents,
+      refundsCents: Math.abs(refunds.cents),
+      totalCents: inSummary.cents,
+      reconLine: field(rows, RE.reconLine),
+      confidence: null,
+      format: "emailed",
+      windowSource: closesAtPrint ? "stamps-to-print" : "stamps",
+      totalsOnly: true,
+      lastTxnAt,
+      lines: [],
+      declined: [],
+      declinedCount: null,
+      declinedUnread: null,
+    },
+  };
+}
+
+/** The record's sentence for a totals-only capture. */
+function totalsOnlyWarning(why) {
+  const clean = String(why || "").replace(/\s*(?:Nothing was recorded[^.]*\.|If it is the right file[^.]*\.|Photograph the slip instead\.|photograph the slip instead\.)\s*/gi, " ").trim();
+  return `Totals only — the transaction list could not be read (${clean || "its layout was not recognised"}), so this batch was recorded from the report's TOTALS SUMMARY and CARD TOTALS, which agree. No line-level match can run for it.`;
+}
+
 // "Settlement failed", "failed to settle", "settlement unsuccessful"… Never a
 // phrase a real batch report prints.
 const SETTLEMENT_FAILED = /\bsettlement\b[^.]{0,40}\b(?:fail(?:ed|ure)?|unsuccessful|not\s+completed|rejected)\b|\b(?:failed|unable)\s+to\s+settle\b|\bnot\s+(?:been\s+)?settled\b/i;
+
+// ─── TWO FNB DOCUMENTS THAT ARE NOT BATCH REPORTS ────────────────────────────
+// Both arrive in the same mailbox with the same "FNB-Txn-Notification.pdf"
+// name, and both used to be refused as broken batch reports — a red box for a
+// terminal that had in fact reconciled. Neither carries a figure to record, so
+// they are named and set aside (the poller files them as "unrelated", the way
+// an invoice is), never read for money.
+//
+// "BANKING DONE" — a "Banking Report for Batch N" whose whole body is
+//   "Banking Done: All transactions have already been banked." Marathon Till 3
+//   sent one for batches 81, 82, 84, 89, 90 (twice) and 92 between 21 Sept and
+//   14 Oct 2026, each AFTER the real report of that batch had been recorded. It
+//   is recognised only when the document carries no totals region and no
+//   transaction row at all, so a real report that happens to print the phrase
+//   is still read as one.
+//
+// "TRANSACTION HISTORY REPORT FOR <date>" — a printout requested on the
+//   terminal for a date range. It lists transactions across batches ("Batch:30"
+//   inside a report "for 2026-09-19") and names no batch of its own, so it
+//   cannot be a batch's record. Marathon Till 1 sent three.
+const BANKING_DONE = /^\s*banking done\b/i;
+const ALREADY_BANKED = /already\s+been\s+banked/i;
+const TXN_HISTORY = /^\s*transaction history report\b/i;
+
+/**
+ * A document this path must not read for money, or null. The `unrelated` flag
+ * tells the caller it was never a batch report — see classifyRefusal in
+ * scripts/cardrecon/intakeCore.mjs, which files these words the same way.
+ */
+function notABatchReport(rows) {
+  if (rows.some((r) => TXN_HISTORY.test(r))) {
+    return {
+      ok: false, unrelated: true,
+      reason: "That PDF is a Transaction History report (a date-range printout from the terminal), not a batch report — there is nothing in it to record. The terminal's batch reports are what reconcile.",
+    };
+  }
+  const text = rows.join(" ");
+  const hasFigures = rows.some((r) => EMAILED.totalsSummary.test(r) || EMAILED.cardTotals.test(r)
+    || EMAILED.items.test(r) || /^\s*TSN\s*:/i.test(r) || BLOCK.amount.test(r));
+  if (rows.some((r) => BANKING_DONE.test(r)) && ALREADY_BANKED.test(text) && !hasFigures) {
+    const title = rows.map((r) => EMAILED.title.exec(r)).find(Boolean);
+    return {
+      ok: false, unrelated: true,
+      reason: `That PDF is FNB's "Banking Done" notice${title ? ` for batch ${title[1]}` : ""} — every transaction had already been banked, so it carries no figures and there is nothing to record. It is not a batch report.`,
+    };
+  }
+  return null;
+}
 
 /**
  * Read whichever of the two reports this is.
@@ -1273,6 +1542,8 @@ function parseSlipPdf(lines) {
       reason: "That email is a settlement-failure notice from the bank, not a batch report — the batch did not settle, so there is nothing to record. The terminal will report the batch once it settles; if it does not, call FNB Merchant Services.",
     };
   }
+  const notice = notABatchReport(rows);
+  if (notice) return notice;
   const format = detectReportFormat(rows);
   if (format === "emailed") return parseEmailedReport(rows);
   if (format === "printed") return parsePrintedSlip(rows);
@@ -1282,10 +1553,63 @@ function parseSlipPdf(lines) {
   };
 }
 
+/**
+ * THE WHOLE PURE PDF PATH, in one place: the lines a PDF yielded → the parse →
+ * the line dedupe → every validation. The callable runs exactly this (and then
+ * the parts that need the database: routing, the duplicate check, the
+ * expected figure), and so does the real-report corpus test — which is what
+ * makes that test a statement about production rather than about a copy of it.
+ *
+ * @param {string[]} lines  pdfToLines' output
+ * @returns {{ok:true, extraction:object, warnings:string[], summaryOnly:boolean}
+ *          | {ok:false, reason:string}}
+ */
+function readSlipPdfLines(lines) {
+  const rows = (Array.isArray(lines) ? lines : []).map(tidy).filter(Boolean);
+  const parsed = parseSlipPdf(lines);
+  if (!parsed.ok) {
+    // The transaction list would not read; the totals may still settle it.
+    if (parsed.listStructure) return totalsOnlyOr(rows, parsed.reason);
+    return { ok: false, reason: parsed.reason, unrelated: parsed.unrelated === true };
+  }
+  const extraction = parsed.extraction;
+  // A terminal that prints a line twice must not be averaged away.
+  const dedup = dedupeLines(extraction.lines);
+  if (!dedup.ok) return extraction.format === "emailed" ? totalsOnlyOr(rows, dedup.reason) : { ok: false, reason: dedup.reason };
+  extraction.lines = dedup.lines;
+  // Every refusal unchanged — only the confidence gate is skipped, because
+  // exact text has nothing to be confident about.
+  const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
+  if (verdict.ok) return { ok: true, extraction, warnings: verdict.warnings, summaryOnly: false };
+  // WAS IT THE LIST, OR THE MONEY? Asked of the validator itself rather than
+  // of its wording: the same extraction, validated summary-only, skips exactly
+  // the line checks (the count against Items, TSN repeats, the lines summing to
+  // the total) and keeps every other one. If that passes, only the list failed.
+  if (extraction.format === "emailed" && !extraction.emptyBatch
+      && validateExtraction(extraction, { summaryOnly: true, source: "pdf" }).ok) {
+    return totalsOnlyOr(rows, verdict.reason);
+  }
+  return { ok: false, reason: verdict.reason };
+}
+
+/** Fall back to a totals-only record, or refuse with the ORIGINAL reason. */
+function totalsOnlyOr(rows, reason) {
+  const fb = emailedTotalsOnly(rows, reason);
+  if (!fb.ok) return { ok: false, reason };
+  const verdict = validateExtraction(fb.extraction, { summaryOnly: true, source: "pdf" });
+  if (!verdict.ok) return { ok: false, reason };
+  return {
+    ok: true, extraction: fb.extraction, summaryOnly: true,
+    warnings: [totalsOnlyWarning(reason), ...verdict.warnings.filter((w) => !/^Summary only/.test(w))],
+  };
+}
+
 module.exports = {
-  parseSlipPdf, parsePrintedSlip, parseEmailedReport, detectReportFormat,
+  PARSER_VERSION,
+  parseSlipPdf, readSlipPdfLines, emailedTotalsOnly, totalsOnlyWarning, parsePrintedSlip, parseEmailedReport, detectReportFormat,
   moneyField, looksLikeAmount, STRICT_AMOUNT, TXN_RE, BLOCK,
-  sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, SETTLEMENT_FAILED,
+  sectionStarts, approvedSection, declinedSection, sectionItemCount, isEmptyBatchShape, noMoneyAttemptCount, SETTLEMENT_FAILED,
+  notABatchReport,
   parseEmailedStamp, collectTxnBlocks, readTxnBlock, EMAILED, splitTxnMiddle, splitEmailedTxnMiddle, panSpanOf, tidy,
   // The email-intake path's seams: `field`/`fieldAll` read a labelled header row
   // (and every row that matches, which is how a file naming two terminals is

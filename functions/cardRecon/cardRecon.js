@@ -64,7 +64,7 @@ const {
   hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
   planTypedCapture,
 } = require("../lib/card-recon.cjs");
-const { parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
+const { readSlipPdfLines, PARSER_VERSION } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
 const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
@@ -606,7 +606,7 @@ async function recordedIsEmptyBatch(db, storeId, tid, keys) {
  * one for a report that disagrees with the record, which is a thing somebody
  * has to look at.
  */
-async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines }) {
+async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines, totalCents = null }) {
   const existingKeys = await readBatchKeysFor(db, storeId, tid, batchNo);
   let comparison = null;
   if (existingKeys.length && !correction) {
@@ -622,6 +622,21 @@ async function resolveWriteFor(db, { storeId, tid, batchNo, correction, lines })
     existingKeys, batchNo, correction,
     extends: comparison ? comparison.relation === "extends" : false,
   });
+  // ── A TOTALS-ONLY RECORD OF A BATCH THAT WAS STILL OPEN ──────────────────
+  // A batch recorded from its totals alone (card-recon-pdf.cjs →
+  // emailedTotalsOnly) has no lines, so a later, fuller report of the same
+  // open batch cannot be shown to extend it and is not let through. But it
+  // must not be filed as a harmless re-send either — "already captured" is
+  // what the feed and the automatic re-run both treat as nothing to do, and
+  // the later days' money would sit unrecorded behind it. A different total
+  // gets its own sentence, which stays red until Junid looks.
+  if (!write.ok && comparison && comparison.relation === "unknown" && Number.isInteger(totalCents) && existingKeys.length) {
+    const slip = (await db.ref(`${CARD_BATCHES_PATH}/${storeId}/${tid}/${existingKeys.at(-1)}/slip`).once("value")).val() || {};
+    if (/^stamps/.test(String(slip.windowSource || "")) && Number.isInteger(slip.totalCents) && slip.totalCents !== totalCents) {
+      return { existingKeys, comparison, write: { ok: false,
+        reason: `Batch #${batchNo} was recorded from its totals only, and this later report of it states a different total — the batch was probably still open when the first report came. Nothing was recorded — tell Junid.` } };
+    }
+  }
   if (!write.ok && comparison && comparison.reason &&
       (comparison.relation === "conflict" || comparison.relation === "shrinks")) {
     return { existingKeys, comparison, write: { ok: false,
@@ -920,7 +935,7 @@ async function handleExtract(db, request, opts = {}) {
     if (pickedTid) throw new HttpsError("invalid-argument", "An emailed slip has no picked till — its own TID is the routing key.");
     const intake = readIntake(request.data.intake);
     if (!intake) throw new HttpsError("invalid-argument", "An emailed capture must carry the source message id.");
-    return handleExtractPdf(db, request, { picked: null, pdf, source: chosen.source, intake });
+    return handleExtractPdf(db, request, { picked: null, pdf, source: chosen.source, intake, bucket: opts.bucket });
   }
   if (channel !== undefined && channel !== "app") {
     throw new HttpsError("invalid-argument", "Unknown capture channel.");
@@ -929,7 +944,7 @@ async function handleExtract(db, request, opts = {}) {
   const picked = normaliseTid(pickedTid);
   if (!picked) throw new HttpsError("invalid-argument", "Pick the till first.");
 
-  if (chosen.source === "pdf") return handleExtractPdf(db, request, { picked, pdf, source: chosen.source, intake: null });
+  if (chosen.source === "pdf") return handleExtractPdf(db, request, { picked, pdf, source: chosen.source, intake: null, bucket: opts.bucket });
   const decoded = photos.map(decodePhoto);
 
   // The terminal registry FIRST: an unmapped picked TID means setup, not OCR.
@@ -1086,7 +1101,7 @@ async function handleExtract(db, request, opts = {}) {
   const batchNo = normaliseBatchNo(extraction.batchNo);
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!request.data.correction, lines: extraction.lines,
+    correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -1098,7 +1113,7 @@ async function handleExtract(db, request, opts = {}) {
     ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
-    tailFromMs: extraction.windowSource === "transactions-to-print"
+    tailFromMs: /-to-print$/.test(extraction.windowSource || "")
       ? extraction.lastTxnAt ?? null
       : null,
   });
@@ -1241,7 +1256,7 @@ async function handleExtractPdf(db, request, opts) {
   return out;
 }
 
-async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }, seen) {
+async function handleExtractPdfBody(db, request, { picked, pdf, source, intake, bucket = null }, seen) {
   // Intactness, size and the magic bytes, all in one pure seam — see
   // readPdfPayload. A malformed upload is a sentence, never a transport error.
   const payload = readPdfPayload(pdf.base64, MAX_PDF_BYTES);
@@ -1275,9 +1290,16 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
 
   const text = await pdfToLines(buffer);
   if (!text.ok) return reject(text.reason);
-  const parsed = parseSlipPdf(text.lines);
-  if (!parsed.ok) return reject(parsed.reason);
-  const extraction = parsed.extraction;
+  // THE WHOLE PURE PDF PATH — parse, line dedupe, every validation, and the
+  // totals-only fallback when only the transaction list failed — in one call
+  // the real-report corpus test measures too (lib/card-recon-pdf.cjs).
+  const read = readSlipPdfLines(text.lines);
+  if (!read.ok) return reject(read.reason);
+  const extraction = read.extraction;
+  // TRUE only for an emailed report whose list would not read but whose
+  // identity and both totals blocks did: recorded summary-only, never with a
+  // figure the report does not print.
+  const summaryOnly = read.summaryOnly === true;
   // From here on every refusal can name its terminal — see handleExtractPdf.
   seen.tid = normaliseTid(extraction.tid) || null;
 
@@ -1357,20 +1379,21 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
   }
 
 
-  // Overlapping sections cannot happen in a single file, but a terminal that
-  // prints a line twice still must not be averaged away.
-  const dedup = dedupeLines(extraction.lines);
-  if (!dedup.ok) return reject(dedup.reason);
-  extraction.lines = dedup.lines;
-
-  // EVERY existing refusal, unchanged — only the confidence gate is skipped,
-  // because exact text has nothing to be confident about.
-  const verdict = validateExtraction(extraction, { summaryOnly: false, source: "pdf" });
+  // The dedupe and every validation already ran inside readSlipPdfLines — on
+  // the window the DOCUMENT gives. An empty batch's window may have just been
+  // widened back to the previous batch's close, so the window that will
+  // actually bound the ledger read is validated again here, before it is
+  // used. Every other capture validates identically the second time.
+  const verdict = validateExtraction(extraction, { summaryOnly, source: "pdf" });
   if (!verdict.ok) return reject(verdict.reason);
+  // The pure path's warnings (a totals-only note, the long-batch note) are
+  // the ones to keep: summary-only validation adds a generic line of its own
+  // that the totals-only warning already says better.
+  verdict.warnings = read.warnings;
   const batchNo = normaliseBatchNo(extraction.batchNo);
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!request.data.correction, lines: extraction.lines,
+    correction: !!request.data.correction, lines: extraction.lines, totalCents: extraction.totalCents,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -1381,7 +1404,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
     ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
-    tailFromMs: extraction.windowSource === "transactions-to-print"
+    tailFromMs: /-to-print$/.test(extraction.windowSource || "")
       ? extraction.lastTxnAt ?? null
       : null,
   });
@@ -1389,7 +1412,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
   const reconciledByTotals = totalsAgree(extraction, expected);
   const match = reconciledByTotals
     ? null
-    : await matchBatch(db, { extraction, terminal });
+    : await matchBatch(db, { extraction, terminal, summaryOnly });
 
   // A DERIVED WINDOW HAS NO SLACK, so say when legs land just outside it rather
   // than letting them show up only as a variance. This is a warning, never a
@@ -1434,7 +1457,8 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
   const draftRef = userDraftsRef.push();
   const draftId = draftRef.key;
   const pdfPath = `${PHOTO_STORAGE_PREFIX}/${draftId}/slip.pdf`;
-  await admin.storage().bucket(STORAGE_BUCKET).file(pdfPath).save(buffer, {
+  // `bucket` is a test seam only; production always stores to the real one.
+  await (bucket || admin.storage().bucket(STORAGE_BUCKET)).file(pdfPath).save(buffer, {
     resumable: false,
     contentType: "application/pdf",
     metadata: { cacheControl: "private, max-age=31536000, immutable" },
@@ -1446,7 +1470,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
     createdAt: Date.now(),
     expiresAt: Date.now() + DRAFT_TTL_MS,
     pickedTid: picked,
-    summaryOnly: false,
+    summaryOnly,
     correction: !!request.data.correction,
     warnings: warnings.length ? warnings : null,
     photoPaths: [],
@@ -1480,7 +1504,7 @@ async function handleExtractPdfBody(db, request, { picked, pdf, source, intake }
       reconLine: extraction.reconLine,
       confidence: null,
       lineCount: extraction.lines.length,
-      summaryOnly: false,
+      summaryOnly,
       capturedVia: "pdf",
       channel: intake ? "email" : "app",
       warnings,
@@ -1636,7 +1660,7 @@ async function handleSubmit(db, request) {
     ...slackFor(extraction),
     // Only a window that runs past its last transaction has a tail worth
     // reporting — see the tail note in lib/card-expected.cjs.
-    tailFromMs: extraction.windowSource === "transactions-to-print"
+    tailFromMs: /-to-print$/.test(extraction.windowSource || "")
       ? extraction.lastTxnAt ?? null
       : null,
   });
@@ -1659,7 +1683,7 @@ async function handleSubmit(db, request) {
   const tidRef = db.ref(`${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`);
   const { write } = await resolveWriteFor(db, {
     storeId: terminal.storeId, tid: extraction.tid, batchNo,
-    correction: !!draft.correction, lines: extraction.lines,
+    correction: !!draft.correction, lines: extraction.lines, totalCents: extraction.totalCents,
   });
   if (!write.ok) return reject(write.reason);
 
@@ -2099,6 +2123,10 @@ exports.cardBatchCapture = onCall(
       await assertEmailIntake(request);
       return recordNoticeResults(db, request.data?.results, Date.now());
     }
+    // ── WHICH PARSER IS LIVE — the poller asks, and re-runs every refusal an
+    // older one judged (scripts/cardrecon/intakeCore.mjs → retryCandidates).
+    // A number and nothing else.
+    if (action === "version") return { ok: true, parserVersion: PARSER_VERSION };
     if (action === "extract") {
       const out = await handleExtract(db, request);
       // Every refusal leaves its reason in the log, not only on the phone —
@@ -2106,7 +2134,9 @@ exports.cardBatchCapture = onCall(
       if (out && out.ok === false) {
         console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
       }
-      return out;
+      // Every answer says which parser gave it, so the row the poller writes
+      // can be re-run when a later one is deployed.
+      return out && typeof out === "object" ? { ...out, parserVersion: PARSER_VERSION } : out;
     }
     // ── A TYPED-TOTAL MACHINE — its own action, not a photo capture with the
     // photo missing. Keeping it off `extract` is deliberate: that path's first
@@ -2144,8 +2174,11 @@ exports.cardBatchCapture = onCall(
       if (out && out.ok === false) console.warn(refusalLogLine(picked, out.reason));
       return out;
     }
-    if (action === "submit") return handleSubmit(db, request);
-    throw new HttpsError("invalid-argument", "action must be 'receive', 'extract', 'typed' or 'submit'.");
+    if (action === "submit") {
+      const out = await handleSubmit(db, request);
+      return out && typeof out === "object" ? { ...out, parserVersion: PARSER_VERSION } : out;
+    }
+    throw new HttpsError("invalid-argument", "action must be 'receive', 'extract', 'typed', 'submit' or 'version'.");
   },
 );
 
@@ -2183,6 +2216,9 @@ exports.cardBatchReadRetry = onSchedule(
 
 // Exported for tests (pure-ish seams).
 exports.handleReceive = handleReceive;
+// The extract → submit pair, for the email-pipeline tests (fake RTDB + bucket).
+exports.handleExtract = handleExtract;
+exports.handleSubmit = handleSubmit;
 exports.processReadJob = processReadJob;
 exports.sweepReadJobs = sweepReadJobs;
 exports.listNotices = listNotices;

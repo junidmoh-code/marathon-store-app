@@ -62,6 +62,19 @@ service firebase.storage {
       allow write: if false;
     }
 
+    // A REFUSED emailed batch report, kept as evidence:
+    // card_recon_refused/{intakeId}.pdf — the original PDF the mailbox poller
+    // could not record, so Junid can see what the file said without digging
+    // through the mailbox. OWNER ONLY: a refused report carries the same masked
+    // PANs, auth codes and RRNs as the slips above, and managers see nothing of
+    // a refusal but its redacted sentence. Written by the poller with the Admin
+    // SDK; no client ever writes here.
+    match /card_recon_refused/{allPaths=**} {
+      allow read: if request.auth != null
+                  && request.auth.token.email == "gunidmoh@gmail.com";
+      allow write: if false;
+    }
+
     // Broadcast media. Public read so the broadcast VM can fetch
     // unauthenticated; write restricted to the admin email (tightened in
     // Phase 1.5 once Google Sign-In was live).
