@@ -3,7 +3,7 @@
 // ticking a till that has not reconciled (the manager stops looking), and
 // failing to tick one that has (the manager captures it twice).
 import { describe, it, expect } from "vitest";
-import { emailedArrivals, refusedArrivals, tidFromSubject, handCaptures, rememberHandCapture } from "./todaysArrivals";
+import { emailedArrivals, refusedArrivals, tidFromSubject, handCaptures, rememberHandCapture, tillsWithCardLegs, daySummary } from "./todaysArrivals";
 import { saDateStringAt } from "../../utils/serverTime";
 
 const day = saDateStringAt;
@@ -122,10 +122,10 @@ describe("refusedArrivals", () => {
     // The real case: Marathon Till 1, refused at 16:40, invisible all day.
     const node = {
       a: refusal("Banking Report for Batch 58 of Terminal 67325636",
-                 "Batch #58 for this terminal is already captured.", at("16:40")),
+                 "Batch #58 is already recorded, and this report does not agree with it.", at("16:40")),
     };
     const out = refusedArrivals(node, DAY, dayOf);
-    expect(out.get("67325636")).toContain("already captured");
+    expect(out.get("67325636")).toContain("does not agree");
   });
 
   it("prefers the row's own tid over the subject once the poller writes one", () => {
@@ -218,5 +218,68 @@ describe("tidFromSubject", () => {
     expect(tidFromSubject("Transaction History report for 2026-09-19")).toBe(null);
     expect(tidFromSubject("")).toBe(null);
     expect(tidFromSubject(null)).toBe(null);
+  });
+});
+
+
+describe("a re-send of a batch already on file is the terminal reporting, not failing", () => {
+  const DAY = "2026-10-15";
+  const dayOf = (ms) => new Date(ms + 2 * 3600 * 1000).toISOString().slice(0, 10);
+  const at = (hhmm) => Date.parse(`2026-10-15T${hhmm}:00+02:00`);
+  // Marathon Till 3, 15 Oct 2026: no card sales, so the terminal re-sent
+  // batch 92 (recorded the day before) and it was refused as a duplicate.
+  const resend = {
+    receivedAt: at("14:53"), subject: "Banking Report for Batch 92 of Terminal 67365901",
+    attachments: [{ outcome: "refused", tid: "67365901", reason: "Batch #92 for this terminal is already captured. If the earlier capture was wrong, resubmit as a correction — both records are kept." }],
+  };
+  it("ticks the till", () => {
+    expect(emailedArrivals({ resend }, DAY, dayOf).has("67365901")).toBe(true);
+  });
+  it("shows no red line for it", () => {
+    expect(refusedArrivals({ resend }, DAY, dayOf).size).toBe(0);
+  });
+  it("a refusal that is NOT a re-send still shows, and still does not tick", () => {
+    const real = { ...resend, attachments: [{ outcome: "refused", tid: "67365901", reason: "Batch #92 is already recorded… does not agree with it" }] };
+    // "already recorded … does not agree" is a disagreement, not a re-send.
+    real.attachments[0].reason = "Batch #92 was recorded from its totals only, and this later report of it states a different total.";
+    expect(emailedArrivals({ real }, DAY, dayOf).has("67365901")).toBe(false);
+    expect(refusedArrivals({ real }, DAY, dayOf).get("67365901")).toContain("different total");
+  });
+});
+
+describe("a till that took no card today is clean, and is not waited for", () => {
+  const cards = [
+    { tid: "A", storeId: "pe", tillId: "till-1" }, { tid: "B", storeId: "pe", tillId: "till-2" },
+    { tid: "C", storeId: "pe", tillId: "till-3" }, { tid: "D", storeId: "trophy", tillId: "till-1" },
+    { tid: "E", storeId: "trophy", tillId: "till-2" }, { tid: "F", storeId: "pine", tillId: "till-1" },
+  ];
+  const card = (storeId, tillId, amount = 5000) => ({ method: "card", storeId, tillId, amount, at: 1 });
+  // Four tills took card; till-3 at pe and till-2 at trophy took none.
+  const events = {
+    a: card("pe", "till-1"), b: card("pe", "till-2"), d: card("trophy", "till-1"), f: card("pine", "till-1"),
+    cash: { method: "cash", storeId: "pe", tillId: "till-3", amount: 9000, at: 1 },
+    zero: card("trophy", "till-2", 0),
+  };
+
+  it("finds the tills with a card leg — cash and zero legs do not count", () => {
+    expect([...tillsWithCardLegs(events)].sort()).toEqual(["pe/till-1", "pe/till-2", "pine/till-1", "trophy/till-1"]);
+  });
+
+  it("says 'Waiting for 4 · 2 clean' before any report is in", () => {
+    const s = daySummary(cards, { arrived: new Set(), cardTills: tillsWithCardLegs(events) });
+    expect(s.line).toBe("Waiting for 4 · 2 clean");
+    expect(s.byTid.get("C")).toBe("no-card");
+    expect(s.byTid.get("E")).toBe("no-card");
+  });
+
+  it("says 'All 6 clean' once the four are in — without the two zero-card reports", () => {
+    const s = daySummary(cards, { arrived: new Set(["A", "B", "D", "F"]), cardTills: tillsWithCardLegs(events) });
+    expect(s.line).toBe("All 6 clean");
+    expect(s.waiting).toBe(0);
+  });
+
+  it("calls nobody clean for want of sales until the day's payments have loaded", () => {
+    const s = daySummary(cards, { arrived: new Set(["A"]), cardTills: null });
+    expect(s.line).toBe("Waiting for 5 · 1 clean");
   });
 });

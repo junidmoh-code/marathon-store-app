@@ -93,7 +93,7 @@ describe("the store app is capture-only", () => {
     expect(offenders, offenders.join("\n")).toEqual([]);
   });
 
-  it("the card recon screen reads exactly two nodes, and each is named here on purpose", () => {
+  it("the card recon screen reads exactly three nodes, and each is named here on purpose", () => {
     // An ALLOW-LIST, not a ceiling. Each entry had to be argued for:
     //
     //   config/cardTerminals   the TID→till map the picker needs.
@@ -124,6 +124,17 @@ describe("the store app is capture-only", () => {
     // list again it means an owner-only surface has been put back on a
     // manager's handset.
     //
+    //   pos/paymentEvents      the day's card legs per till, read for ONE
+    //                          thing: whether a till took any card today. A
+    //                          till that took none is clean with nothing to
+    //                          wait for (Junid, 15 Oct 2026) — "Waiting for 4 ·
+    //                          2 clean". Only presence is used: no amount, no
+    //                          variance, no expected figure reaches the screen.
+    //                          The node is already every signed-in till's to
+    //                          read (it is the POS's own ledger), and the read
+    //                          is a bounded range from SA midnight, never the
+    //                          node — see the next test.
+    //
     // Everything else about a slip still goes to the callable and comes back as
     // an acknowledgement. A THIRD node appearing here is a change of policy and
     // must be made deliberately, in this list, with its reason.
@@ -140,7 +151,7 @@ describe("the store app is capture-only", () => {
     // feed — and the same node read twice is still one node. What this pins is
     // the SET of nodes this feature touches, which is the thing that must not
     // grow quietly.
-    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "config/cardTerminals"]);
+    expect([...new Set(reads)].sort()).toEqual(["card_batch_intake", "config/cardTerminals", "pos/paymentEvents"]);
   });
 
   it("the intake node is read as a bounded TAIL, never as a whole node", () => {
@@ -152,6 +163,15 @@ describe("the store app is capture-only", () => {
     const at = code.indexOf("card_batch_intake");
     expect(at, "the intake read has moved — this scan must follow it").toBeGreaterThan(-1);
     expect(code.slice(at, at + 200)).toMatch(/limitToLast/);
+  });
+
+  it("the day's payments are read as a bounded range from midnight, and only presence is used", () => {
+    const code = stripComments(readFileSync(resolve(root, "src/components/cardrecon/CardReconScreen.jsx"), "utf8"));
+    const at = code.indexOf('"pos/paymentEvents"');
+    expect(at).toBeGreaterThan(-1);
+    expect(code.slice(at, at + 160)).toMatch(/orderByChild\("at"\), startAt\(dayStartMs\)/);
+    // What reaches state is a SET OF TILLS, never an amount.
+    expect(code.slice(at, at + 260)).toMatch(/setCardTills\(tillsWithCardLegs\(snap\.val\(\)\)\)/);
   });
 
   it("the emailed-slip feed renders outcomes, never money", () => {

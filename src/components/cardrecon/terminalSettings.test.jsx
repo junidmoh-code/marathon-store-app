@@ -35,8 +35,9 @@ vi.mock("../../utils/useMySections", async () => {
 });
 vi.mock("firebase/database", () => ({
   ref: (_db, path) => ({ path }),
-  onValue: (r, cb) => { cb({ val: () => (String(r?.path).includes("cardTerminals") ? ESTATE : {}) }); return () => {}; },
-  query: (r) => r, orderByChild: () => {}, limitToLast: () => {},
+  // The day's card legs never load here, so no till is "clean for want of sales".
+  onValue: (r, cb) => { if (String(r?.path).includes("paymentEvents")) return () => {}; cb({ val: () => (String(r?.path).includes("cardTerminals") ? ESTATE : {}) }); return () => {}; },
+  query: (r) => r, orderByChild: () => {}, limitToLast: () => {}, startAt: () => {},
 }));
 vi.mock("firebase/functions", () => ({
   httpsCallable: (_f, name) => async (payload) => {
