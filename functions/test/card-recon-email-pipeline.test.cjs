@@ -70,7 +70,7 @@ test("Trophy Till 1 batch 69's 15 Oct report supersedes the recorded 5 Oct captu
   });
   const { extract, submit } = await viaEmail(db, realPdf("20261015-67325636-b69-refused-long-batch-m560"));
   assert.equal(extract.ok, true, extract.reason);
-  assert.ok(extract.review.warnings.includes("This batch ran 10 days — the terminal was not closed daily."));
+  assert.ok(extract.review.warnings.includes("This batch ran 11 days — the terminal was not closed daily."));
   assert.equal(submit.ok, true, submit.reason);
   assert.equal(submit.batchKey, "69-r2");
   const rec = (await db.ref("card_batches/pe/67325636/69-r2").once("value")).val();

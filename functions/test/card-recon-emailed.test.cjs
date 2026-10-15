@@ -305,13 +305,13 @@ test("transactions spanning more than the long-batch ceiling are refused, withou
   assert.doesNotMatch(v.reason, /Opened/);
 });
 
-test("transactions spanning 8 days are recorded, with the long-batch warning", () => {
+test("transactions spanning 8-and-a-bit days are recorded, with the long-batch warning (29 Aug–6 Sep: 9 days)", () => {
   const stretched = realReportLines().map((l) => (/^29-08-2026 1[5-6]:/.test(l) ? l.replace("29-08-2026", "06-09-2026") : l));
   const out = parse(stretched);
   assert.equal(out.ok, true, out.reason);
   const v = validateExtraction(out.extraction, { source: "pdf" });
   assert.equal(v.ok, true, v.reason);
-  assert.ok(v.warnings.includes("This batch ran 8 days — the terminal was not closed daily."), v.warnings.join(" | "));
+  assert.ok(v.warnings.includes("This batch ran 9 days — the terminal was not closed daily."), v.warnings.join(" | "));
 });
 
 // ═══ EVERYTHING ELSE HOLDS ═══════════════════════════════════════════════════
