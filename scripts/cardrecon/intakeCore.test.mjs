@@ -120,7 +120,9 @@ describe("classifyRefusal — a failing terminal must not be filed as noise", ()
     ]) expect(classifyRefusal(reason)).toBe("unrelated");
   });
 
-  it("files FNB's two not-a-batch documents as UNRELATED, in the parser's own words", () => {
+  // The real reports are kept on the Mac mini only (gitignored — public repo).
+  const HAVE_REAL = require("node:fs").existsSync(new URL("../../functions/test/fixtures/card-recon-real", import.meta.url));
+  it.skipIf(!HAVE_REAL)("files FNB's two not-a-batch documents as UNRELATED, in the parser's own words", () => {
     // The sentences are taken from the parser itself, so a reworded refusal
     // cannot quietly turn these back into red boxes.
     const { parseSlipPdf } = require("../../functions/lib/card-recon-pdf.cjs");

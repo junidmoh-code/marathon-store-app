@@ -14,9 +14,11 @@
 // --write`), and the diff it produces is the review: a refused file turning
 // accepted is a fix; an accepted file whose figures move is a regression.
 //
-// NO FULL CARD NUMBERS: FNB prints PANs masked (first six, last four) and the
-// files are committed as printed. Files from a terminal that is not the shop's
-// own go in private/ (gitignored) and are checked locally when present.
+// THE FILES ARE NOT IN GIT. They print card numbers (first six, last four),
+// auth codes and RRNs, and this repo is public — so the whole folder is
+// gitignored and lives on the Mac mini only (Junid, 15 Oct 2026). The tests
+// that read it skip, by name, wherever it is absent. Files from a terminal
+// that is not the shop's own go in its private/ subfolder.
 "use strict";
 
 const fs = require("node:fs");
@@ -39,7 +41,10 @@ const LEGACY = [
 function corpusFiles() {
   const list = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
     .filter((f) => f.endsWith(".pdf")).sort().map((f) => path.join(dir, f));
-  return [...LEGACY, ...list(DIR), ...list(path.join(DIR, "private"))];
+  // The two older PDFs are in git, but their expected results — which quote
+  // their lines — are not; they join the corpus only where those are present.
+  const legacy = LEGACY.filter((f) => fs.existsSync(expectedPath(f)));
+  return [...legacy, ...list(DIR), ...list(path.join(DIR, "private"))];
 }
 
 /**

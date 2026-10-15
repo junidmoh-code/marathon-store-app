@@ -1,8 +1,9 @@
 name: Card recon tests
 
-# The card-recon PDF path and the mailbox poller's decisions. Above all the
-# real-report corpus (functions/test/card-recon-corpus.test.cjs): a change
-# that moves an ACCEPTED emailed report's figures, window or lines fails here.
+# The card-recon PDF path and the mailbox poller's decisions. The real-report
+# corpus (functions/test/card-recon-corpus.test.cjs) is NOT in git — the files
+# print card numbers and this repo is public — so here it skips by name; it
+# runs on the Mac mini, where the reports live.
 #
 # Tests only. This workflow must never gain a deploy step — functions are
 # shared with marathon-pos-app and are deployed BY NAME, by hand; rules are

@@ -7,12 +7,17 @@
 // R2,700.00, 5 transactions), damaged one way at a time.
 "use strict";
 
-const { test } = require("node:test");
+const nodeTest = require("node:test");
+// THE REAL REPORTS LIVE ON THE MAC MINI ONLY (gitignored — the repo is public
+// and they print card numbers). Everywhere else these tests skip, by name.
+const HAVE_REAL = require("node:fs").existsSync(require("node:path").join(__dirname, "fixtures", "card-recon-real"));
+const SKIP_WHY = "real FNB reports are kept on the Mac mini only (functions/test/fixtures/card-recon-real/ is gitignored)";
+const test = (name, fn) => nodeTest.test(name, { skip: HAVE_REAL ? false : SKIP_WHY }, fn);
 const assert = require("node:assert/strict");
 const { readSlipPdfLines } = require("../lib/card-recon-pdf.cjs");
 const { buildBatchRecord } = require("../lib/card-recon.cjs");
 
-const REAL = require("./fixtures/card-recon-real/20261013-67377843-b44-accepted-m527.lines.json");
+const REAL = HAVE_REAL ? require("./fixtures/card-recon-real/20261013-67377843-b44-accepted-m527.lines.json") : [];
 const edit = (fn) => fn([...REAL]);
 const without = (re) => edit((l) => l.filter((x) => !re.test(x)));
 const swap = (from, to) => edit((l) => l.map((x) => (x === from ? to : x)));

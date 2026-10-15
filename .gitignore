@@ -35,6 +35,12 @@ rules-live-backup-*.json
 # (scripts/model-category-policy.mjs writes here). Never committed.
 var/
 
-# Real FNB reports from a terminal that is NOT the shop's (a stranger's batch
-# emailed to our mailbox). Kept on the mini for the corpus test; this repo is public.
-functions/test/fixtures/card-recon-real/private/
+# REAL FNB BATCH REPORTS — the card-recon regression corpus. Kept on the Mac
+# mini ONLY: they print card numbers (first six, last four), auth codes and
+# RRNs, and this repo is public (Junid, 15 Oct 2026). The corpus tests skip
+# cleanly where the folder is absent, which is everywhere but the mini.
+functions/test/fixtures/card-recon-real/
+functions/test/fixtures/Till2FNB-Txn-Notification.expected.json
+functions/test/fixtures/Till2FNB-Txn-Notification.lines.json
+functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.expected.json
+functions/test/fixtures/Till3-Batch81-Empty-FNB-Txn-Notification.lines.json

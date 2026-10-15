@@ -6,7 +6,12 @@
 // dates are the PDF's own text — nothing was misread. These use the real files.
 "use strict";
 
-const { test } = require("node:test");
+const nodeTest = require("node:test");
+// THE REAL REPORTS LIVE ON THE MAC MINI ONLY (gitignored — the repo is public
+// and they print card numbers). Everywhere else these tests skip, by name.
+const HAVE_REAL = require("node:fs").existsSync(require("node:path").join(__dirname, "fixtures", "card-recon-real"));
+const SKIP_WHY = "real FNB reports are kept on the Mac mini only (functions/test/fixtures/card-recon-real/ is gitignored)";
+const test = (name, fn) => nodeTest.test(name, { skip: HAVE_REAL ? false : SKIP_WHY }, fn);
 const assert = require("node:assert/strict");
 const { readSlipPdfLines, parseSlipPdf } = require("../lib/card-recon-pdf.cjs");
 const { validateExtraction, comparePriorCapture, MAX_WINDOW_MS, MAX_LONG_BATCH_MS } = require("../lib/card-recon.cjs");

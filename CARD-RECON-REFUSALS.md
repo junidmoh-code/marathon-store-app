@@ -30,14 +30,22 @@ Two different documents, neither of them a mis-split line:
    failed-attempt section carries an `Items:` count and a TSN. Batch 91 is
    **not recorded anywhere**; it is now recorded as an empty R0.00 batch.
 
+## Where the real files are
+
+Every PDF behind this table, its extracted lines and its expected result live in
+`functions/test/fixtures/card-recon-real/` **on the Mac mini only** — the
+folder is gitignored, because the files print card numbers (first six, last
+four), auth codes and RRNs and this repo is public. The regression corpus test
+(`functions/test/card-recon-corpus.test.cjs`) and the tests built on those
+files run there and skip, by name, everywhere else (CI included). The stranger
+terminal's files sit in its `private/` subfolder.
+
 ## Refusals that were correct (left refused)
 
 * **Terminal 67364610** — *Zinkwazi Deep Sea Angling and Boating*, MID 610655.
   Another business's terminal emailed this mailbox on 16–17 Sept (two batch
   reports and a Transaction History report). The unregistered-terminal refusal
-  is right. These files are kept locally under
-  `functions/test/fixtures/card-recon-real/private/` (gitignored — this repo is
-  public and the data is not the shop's).
+  is right.
 * **74 "Batch #N … is already captured"** — FNB re-sends the same report
   (afternoon and evening, sometimes 3–4 times). The duplicate guard is working;
   nothing was lost. A *fuller* report of an open batch already supersedes on

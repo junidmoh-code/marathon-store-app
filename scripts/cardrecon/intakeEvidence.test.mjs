@@ -2,7 +2,7 @@
 // last four, size-capped. Run against the REAL extracted lines of every file in
 // the corpus, so a layout that prints a PAN differently is caught here.
 import { describe, it, expect } from "vitest";
-import { readFileSync, readdirSync } from "node:fs";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import {
@@ -13,11 +13,13 @@ import { INTAKE_RULE_BLOCKS, OWNER } from "./intakeRules.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const CORPUS = join(HERE, "../../functions/test/fixtures/card-recon-real");
+// Kept on the Mac mini only (gitignored — public repo); skipped elsewhere.
+const HAVE_REAL = existsSync(CORPUS);
 const corpusLines = () => readdirSync(CORPUS).filter((f) => f.endsWith(".lines.json"))
   .flatMap((f) => JSON.parse(readFileSync(join(CORPUS, f), "utf8")));
 
 describe("maskEvidenceLine", () => {
-  it("leaves no BIN on any line of any real report — only the last four survive", () => {
+  it.skipIf(!HAVE_REAL)("leaves no BIN on any line of any real report — only the last four survive", () => {
     const lines = corpusLines();
     const masked = lines.filter((l) => /[*]{4,}\d{4}\b/.test(l));
     expect(masked.length, "the corpus does print masked PANs").toBeGreaterThan(100);
