@@ -61,6 +61,7 @@ import {
   messageKey, planMessage, attachmentOutcome, intakeRecord, claimDecision, clip,
   parseEnvText, classifyAttachment,
   EVIDENCE_PATH, refusedPdfPath, evidenceRecord,
+  retryCandidates, sweepDue, judgedVersion, RETRY_WINDOW_MS, VERSION_CHECK_MS, PENDING_RETRY_MS,
 } from "./intakeCore.mjs";
 // ── THE SECOND READER ────────────────────────────────────────────────────────
 // EFT payment notifications arrive in the SAME mailbox (customers enter it as
@@ -280,6 +281,86 @@ function saveProcessedCache(cache) {
   catch (err) { console.warn(`⚠ could not write ${PROCESSED_CACHE_FILE} (${err.message}) — the ledger is the truth; this only costs re-reads`); }
 }
 
+// ─── THE AUTOMATIC RE-RUN ────────────────────────────────────────────────────
+// A fix to the parser used to reach the refusals it was written for only when
+// somebody ran retry-intake-message.mjs once per message. Now each intake row
+// carries the parser version that judged it, and when a deploy raises that
+// version the poller re-runs every refusal from the last fortnight an older
+// one judged — the same two moves the script makes (clear the claim, forget
+// the cached key), with nobody involved. The decisions are pure and tested
+// (retryCandidates / sweepDue in intakeCore.mjs); this is the IO.
+//
+// BANDWIDTH: the deployed version is ASKED FOR at most every 30 minutes (one
+// tiny callable answer), and the bounded intake query — orderByChild("at")
+// over the window, never the node — runs only when that version has risen or
+// six hours have passed. A quiet tick reads nothing.
+//
+// DURABILITY: a released message is remembered in this file BEFORE its claim
+// is cleared, and stays remembered until the scan sees it re-processed. The
+// local processed cache would otherwise still say "done" after a crash between
+// the two, and the message would never be looked at again.
+const RETRY_STATE_FILE = join(REPO, "logs", "card-recon-retry-state.json");
+function readRetryState() {
+  let state = {};
+  try { state = JSON.parse(readFileSync(RETRY_STATE_FILE, "utf8")) || {}; } catch { /* first run */ }
+  const now = Date.now();
+  const pending = {};
+  for (const [k, at] of Object.entries(state.pending || {})) {
+    if (Number.isFinite(at) && now - at <= PENDING_RETRY_MS) pending[k] = at;
+  }
+  return { ...state, pending };
+}
+function writeRetryState(state) {
+  try { writeFileSync(RETRY_STATE_FILE, JSON.stringify(state)); }
+  catch (err) { console.warn(`⚠ could not write ${RETRY_STATE_FILE} (${err.message})`); }
+}
+
+/**
+ * Release every refusal an older parser judged, so this tick's scan re-runs
+ * it. Returns the pending map the scan must honour.
+ */
+async function retryStale({ db, getToken, cfg }) {
+  const state = readRetryState();
+  const now = serverNowMs();
+  if (!Number.isInteger(state.deployedVersion) || !(Number(state.checkedAt) > 0) || now - state.checkedAt > VERSION_CHECK_MS) {
+    try {
+      const v = await callCapture(await getToken(), { action: "version" });
+      if (Number.isInteger(v?.parserVersion)) state.deployedVersion = v.parserVersion;
+    } catch (err) {
+      // A callable from before this change has no "version" action: nothing
+      // is re-run until one that does is deployed.
+      console.warn(`⚠ could not ask the capture callable for its parser version (${err.message}) — no automatic re-run this time`);
+    }
+    state.checkedAt = now;
+  }
+  if (cfg.dryRun || !sweepDue(state, { deployedVersion: state.deployedVersion, nowMs: now })) {
+    if (!cfg.dryRun) writeRetryState(state);
+    return state.pending;
+  }
+  const windowMs = Math.min(RETRY_WINDOW_MS, cfg.lookbackDays * 86400000);
+  const snap = await db.ref(INTAKE_PATH).orderByChild("at").startAt(now - windowMs).once("value");
+  const candidates = retryCandidates(snap.val(), { nowMs: now, deployedVersion: state.deployedVersion, windowMs });
+  for (const c of candidates) {
+    state.pending[c.messageKey] = now;
+    writeRetryState(state);
+    // ONE update: the claim goes and the row is stamped together. The refused
+    // row STAYS — it is the record of the first attempt — but stops counting
+    // as outstanding; the re-run writes a row of its own.
+    await db.ref().update({
+      [`${SEEN_PATH}/${c.messageKey}`]: null,
+      [`${INTAKE_PATH}/${c.id}/retriedAt`]: now,
+      [`${INTAKE_PATH}/${c.id}/retriedBy`]: "auto-retry",
+      [`${INTAKE_PATH}/${c.id}/retriedForVersion`]: state.deployedVersion,
+    });
+    console.log(`  ↻ re-running intake ${c.id} — judged by an older parser than v${state.deployedVersion}`);
+  }
+  state.sweptVersion = state.deployedVersion;
+  state.sweptAt = now;
+  writeRetryState(state);
+  if (candidates.length) console.log(`· ${candidates.length} earlier refusal(s) released for re-run under parser v${state.deployedVersion}`);
+  return state.pending;
+}
+
 // ─── TIME ────────────────────────────────────────────────────────────────────
 // The RTDB server's clock, not this machine's. Everything stamped into the
 // database uses it: the mini is a Mac in a shop, and a record whose time came
@@ -390,11 +471,13 @@ async function captureOne(getToken, { attachment, message }) {
   // terminal, which left the capture screen unable to show it against any
   // card. The callable now stamps the TID onto every refusal it makes once the
   // file has been parsed; this carries it through.
-  if (!extract.ok) return { ok: false, reason: extract.reason, tid: extract.tid || null };
+  if (!extract.ok) return { ok: false, reason: extract.reason, tid: extract.tid || null, parserVersion: extract.parserVersion ?? null };
 
   const submit = await callCapture(await getToken(), { action: "submit", draftId: extract.draftId });
-  if (!submit.ok) return { ok: false, reason: submit.reason, tid: extract.review?.tid };
+  if (!submit.ok) return { ok: false, reason: submit.reason, tid: extract.review?.tid, parserVersion: submit.parserVersion ?? null };
   return {
+    // Which parser judged it — stamped on the intake row (see retryStale).
+    parserVersion: submit.parserVersion ?? extract.parserVersion ?? null,
     recorded: true,
     tid: extract.review?.tid || null,
     storeId: extract.review?.terminal?.storeId || null,
@@ -473,6 +556,16 @@ async function run() {
     }
   }
 
+  // ── RE-RUN WHAT AN OLDER PARSER REFUSED — before the scan, so the scan
+  // finds the released messages in this same tick. Never the tick's failure.
+  let retryPending = {};
+  try {
+    retryPending = await retryStale({ db, getToken, cfg });
+  } catch (err) {
+    console.warn(`⚠ the automatic re-run sweep failed (${err.message}) — it is tried again next time`);
+    retryPending = readRetryState().pending;
+  }
+
   const client = new ImapFlow({
     host: cfg.host, port: cfg.port, secure: true,
     auth: { user: cfg.user, pass: cfg.password },
@@ -539,9 +632,27 @@ async function run() {
       // once.
       const uidKeyOf = (uid) => `u:${String(client.mailbox?.uidValidity ?? "")}:${uid}`;
       const unprocessed = [];
+      let pendingChanged = false;
       for (const c of candidates) {
-        if (cache.entries[uidKeyOf(c.uid)]) continue;
         const keys = envelopeCandidateKeys({ messageId: c.messageId });
+        // ── A MESSAGE RELEASED FOR RE-RUN (retryStale) bypasses the local
+        // cache — which still says "done" — and asks the ledger directly.
+        const releasedAt = keys ? keys.map((k) => retryPending[k]).find(Number.isFinite) : undefined;
+        if (releasedAt !== undefined) {
+          const claim = (await db.ref(`${SEEN_PATH}/${keys[0]}`).once("value")).val();
+          if (claim?.state === "done") {
+            // Re-processed since the release (or the release never cleared
+            // it): either way, finished with.
+            if (Number(claim.at) >= releasedAt) { for (const k of keys) delete retryPending[k]; pendingChanged = true; }
+            continue;
+          }
+          for (const k of keys) delete cache.entries[k];
+          delete cache.entries[uidKeyOf(c.uid)];
+          cache.dirty = true;
+          unprocessed.push(c);
+          continue;
+        }
+        if (cache.entries[uidKeyOf(c.uid)]) continue;
         if (!keys) { unprocessed.push(c); continue; }
         if (keys.some((k) => cache.entries[k])) continue;
         let done = false;
@@ -557,6 +668,7 @@ async function run() {
         }
         if (!done) unprocessed.push(c);
       }
+      if (pendingChanged && !cfg.dryRun) writeRetryState({ ...readRetryState(), pending: retryPending });
       const take = unprocessed.slice(-MAX_MESSAGES_PER_TICK).map((c) => c.uid);
       scanned = take.length;
       if (!cfg.dryRun) saveProcessedCache(cache);
@@ -806,6 +918,8 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
   // under the same key as the row that reports it.
   const intakeId = cfg.dryRun ? null : db.ref(INTAKE_PATH).push().key;
   const refusedFiles = [];
+  // One per submitted attachment: the parser version that answered, or null.
+  const versions = [];
   for (const attachment of take) {
     if (cfg.dryRun) {
       console.log(`  · would submit ${attachment.filename} (${attachment.content.length} bytes)`);
@@ -817,6 +931,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     } catch (err) {
       error = err.message;
     }
+    versions.push(Number.isInteger(capture?.parserVersion) ? capture.parserVersion : null);
     const row = attachmentOutcome({ filename: attachment.filename, capture, error });
     // The UNREDACTED reason travels to the owner-only evidence; the row keeps
     // the redacted one.
@@ -832,7 +947,7 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     // the record is built, because intakeRecord copies the rows.
     for (const f of refusedFiles) f.row.evidence = evidence.paths.get(f) || null;
   }
-  const record = intakeRecord({ message, results, skipped, at: serverNowMs() });
+  const record = intakeRecord({ message, results, skipped, at: serverNowMs(), parserVersion: judgedVersion(versions) });
   // ONE UPDATE, TWO (OR THREE) PATHS, ATOMICALLY. Written as two calls, a crash between
   // them leaves the outcome recorded and the claim still "claimed" — so half an
   // hour later the next tick retakes it, resubmits slips that are already in,

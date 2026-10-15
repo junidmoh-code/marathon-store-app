@@ -298,7 +298,7 @@ export function attachmentOutcome({ filename, capture, error }) {
  * it exists to answer is "did every terminal's report get in, and if not why
  * not". The evidence itself stays in /card_batches, which is owner-only.
  */
-export function intakeRecord({ message, results, skipped, at }) {
+export function intakeRecord({ message, results, skipped, at, parserVersion = null }) {
   const rows = results.map((r) => ({ ...r }));
   const refused = rows.filter((r) => r.outcome === "refused").length;
   const recorded = rows.filter((r) => r.outcome === "recorded").length;
@@ -318,6 +318,8 @@ export function intakeRecord({ message, results, skipped, at }) {
     // image). Kept as a count and a name list, not as rows.
     skipped: skipped.length ? skipped.map((s) => clip(s.filename, 120)).filter(Boolean).slice(0, 10) : null,
     state: refused > 0 ? "needs-attention" : "done",
+    // Which parser judged it — see retryCandidates. null = no answer at all.
+    parserVersion: Number.isInteger(parserVersion) ? parserVersion : null,
   };
 }
 
@@ -415,4 +417,77 @@ export function evidenceRecord({ items, at, parserVersion }) {
       };
     }),
   };
+}
+
+// ─── A FIX REACHES THE SLIPS IT WAS WRITTEN FOR, BY ITSELF ───────────────────
+// Every intake row is stamped with the parser version the callable reported
+// when it judged the file (PARSER_VERSION in functions/lib/card-recon-pdf.cjs).
+// When a deploy raises that version, the poller re-runs every refusal from the
+// last fortnight that an older version judged — the same two moves
+// retry-intake-message.mjs makes by hand (clear the claim, forget the cached
+// key), minus the hand. The duplicate-batch refusal downstream still stops a
+// slip that DID land from landing twice.
+//
+// NOT RETRIED, deliberately:
+//   • a row that recorded anything — re-running it can only produce duplicate
+//     refusals or, worse, a second record of a sibling attachment;
+//   • a row whose every refusal is "already captured" — a re-send of a batch
+//     that is on file; no parser change makes it new;
+//   • a row already re-run (retriedAt), or one the current version judged;
+//   • the EFT reader's synthetic slip-loss rows (eftslip-…), whose key belongs
+//     to the payment message, not to a slip.
+export const RETRY_WINDOW_MS = 14 * 86400000;
+// How often the deployed version is asked for, and how often a sweep runs even
+// when it has not changed (to catch a row an old instance judged mid-deploy).
+export const VERSION_CHECK_MS = 30 * 60 * 1000;
+export const RESWEEP_MS = 6 * 60 * 60 * 1000;
+// A released message the scan has not yet re-processed is remembered this long.
+export const PENDING_RETRY_MS = 3 * 86400000;
+
+const DUPLICATE = /already captured/i;
+
+/**
+ * Which intake rows to re-run. Pure: `rows` is the bounded tail as read.
+ * @returns {{id:string, messageKey:string, messageId:string|null}[]}
+ */
+export function retryCandidates(rows, { nowMs, deployedVersion, windowMs = RETRY_WINDOW_MS }) {
+  if (!Number.isInteger(deployedVersion)) return [];
+  const out = [];
+  for (const [id, rec] of Object.entries(rows || {})) {
+    if (!rec || typeof rec !== "object" || id.startsWith("eftslip-")) continue;
+    if (!rec.messageKey || rec.retriedAt) continue;
+    const stamp = Number(rec.receivedAt) || Number(rec.at) || 0;
+    if (!stamp || nowMs - stamp > windowMs) continue;
+    if (Number(rec.recorded) > 0 || !(Number(rec.refused) > 0)) continue;
+    const judgedBy = Number.isInteger(rec.parserVersion) ? rec.parserVersion : 0;
+    if (judgedBy >= deployedVersion) continue;
+    const atts = Array.isArray(rec.attachments) ? rec.attachments : Object.values(rec.attachments || {});
+    const refusals = atts.filter((a) => a && a.outcome === "refused");
+    if (refusals.length && refusals.every((a) => DUPLICATE.test(String(a.reason || "")))) continue;
+    out.push({ id, messageKey: rec.messageKey, messageId: rec.messageId || null });
+  }
+  return out;
+}
+
+/**
+ * Is a sweep due? `state` is the poller's local retry state.
+ * @returns {boolean}
+ */
+export function sweepDue(state, { deployedVersion, nowMs }) {
+  if (!Number.isInteger(deployedVersion)) return false;
+  const swept = Number.isInteger(state?.sweptVersion) ? state.sweptVersion : 0;
+  if (deployedVersion > swept) return true;
+  return !(Number(state?.sweptAt) > 0) || nowMs - state.sweptAt > RESWEEP_MS;
+}
+
+/**
+ * The parser version a set of attachment outcomes was judged by: the LOWEST
+ * any of them reported, or null when one of them got no answer at all (a
+ * transport failure) — which then reads as "older than anything" and is
+ * re-run after the next deploy.
+ */
+export function judgedVersion(versions) {
+  const list = Array.isArray(versions) ? versions : [];
+  if (!list.length || list.some((v) => !Number.isInteger(v))) return null;
+  return Math.min(...list);
 }

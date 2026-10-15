@@ -64,7 +64,7 @@ const {
   hasDeclaredTotal, readDeclaredTotal, mayDeclareTotal, anchorDeclaredWindow,
   planTypedCapture,
 } = require("../lib/card-recon.cjs");
-const { readSlipPdfLines } = require("../lib/card-recon-pdf.cjs");
+const { readSlipPdfLines, PARSER_VERSION } = require("../lib/card-recon-pdf.cjs");
 const { routeEmailSlip, EMAIL_INTAKE_FLAG } = require("../lib/card-recon-email.cjs");
 const { pdfToLines } = require("./pdfText.js");
 const { computeExpectedCard, cardLegsInWindow, DERIVED_WINDOW_SLACK_MS } = require("../lib/card-expected.cjs");
@@ -2108,6 +2108,10 @@ exports.cardBatchCapture = onCall(
       await assertEmailIntake(request);
       return recordNoticeResults(db, request.data?.results, Date.now());
     }
+    // ── WHICH PARSER IS LIVE — the poller asks, and re-runs every refusal an
+    // older one judged (scripts/cardrecon/intakeCore.mjs → retryCandidates).
+    // A number and nothing else.
+    if (action === "version") return { ok: true, parserVersion: PARSER_VERSION };
     if (action === "extract") {
       const out = await handleExtract(db, request);
       // Every refusal leaves its reason in the log, not only on the phone —
@@ -2115,7 +2119,9 @@ exports.cardBatchCapture = onCall(
       if (out && out.ok === false) {
         console.warn(refusalLogLine(request.data?.pickedTid, out.reason));
       }
-      return out;
+      // Every answer says which parser gave it, so the row the poller writes
+      // can be re-run when a later one is deployed.
+      return out && typeof out === "object" ? { ...out, parserVersion: PARSER_VERSION } : out;
     }
     // ── A TYPED-TOTAL MACHINE — its own action, not a photo capture with the
     // photo missing. Keeping it off `extract` is deliberate: that path's first
@@ -2153,8 +2159,11 @@ exports.cardBatchCapture = onCall(
       if (out && out.ok === false) console.warn(refusalLogLine(picked, out.reason));
       return out;
     }
-    if (action === "submit") return handleSubmit(db, request);
-    throw new HttpsError("invalid-argument", "action must be 'receive', 'extract', 'typed' or 'submit'.");
+    if (action === "submit") {
+      const out = await handleSubmit(db, request);
+      return out && typeof out === "object" ? { ...out, parserVersion: PARSER_VERSION } : out;
+    }
+    throw new HttpsError("invalid-argument", "action must be 'receive', 'extract', 'typed', 'submit' or 'version'.");
   },
 );
 

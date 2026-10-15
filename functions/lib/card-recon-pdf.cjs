@@ -30,8 +30,13 @@
 // re-running them by hand. The real-report corpus (test/card-recon-corpus*)
 // is what proves a bump did not move a file that was already accepted.
 //
-//   1  — 15 Oct 2026: first stamped version (refusal evidence kept).
-const PARSER_VERSION = 1;
+// Rows written before versions existed carry none, which reads as 0.
+//
+//   2  — 15 Oct 2026: lines clustered by gap, not a 1pt bucket; FNB "Banking
+//        Done" notices and Transaction History reports set aside as not
+//        batches; an empty batch may carry FAILED ATTEMPTS; an emailed batch
+//        nobody closed may run past 7 days; totals-only when the list fails.
+const PARSER_VERSION = 2;
 
 const {
   parseSlipTimestamp, parseRandsToCents, normaliseTid, normaliseBatchNo, normaliseMid, formatCents,
