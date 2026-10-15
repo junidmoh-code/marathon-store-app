@@ -56,6 +56,51 @@ Two different documents, neither of them a mis-split line:
 | Another business's terminal | 2 | correct — left refused |
 | Empty batch before empty-batch support | 1 | already resolved 21 Sept |
 
+## Rules to paste (not applied by this change)
+
+**Realtime Database** — a new top-level sibling of `card_batch_intake`
+(also printed by `node scripts/cardrecon/print-card-intake-rule.mjs`):
+
+```json
+"card_batch_intake_evidence": {
+  ".read": "auth != null && auth.token.email === 'gunidmoh@gmail.com'",
+  ".write": "false"
+}
+```
+
+Until it is pasted the node is unreadable to every client (the poller writes
+it with the Admin SDK), so nothing leaks; Junid's view just cannot show it yet.
+
+**Storage** — added to `storage.rules`, live on the next storage-rules deploy
+(or paste in the console):
+
+```
+match /card_recon_refused/{allPaths=**} {
+  allow read: if request.auth != null
+              && request.auth.token.email == "gunidmoh@gmail.com";
+  allow write: if false;
+}
+```
+
+## Follow-ups
+
+* **marathon-pos-app — "view PDF" on refused rows (Junid's Card Recon report
+  only).** Each refused attachment on `/card_batch_intake/{id}/attachments/n`
+  now carries `evidence: "card_recon_refused/{id}.pdf"`; open it with the
+  Storage SDK as Junid. The extracted lines and the unredacted reason are at
+  `/card_batch_intake_evidence/{id}` — read that ONE child by id, never the
+  node. Needs both rules above.
+* **The EFT reader still uses the old 1pt line grouping** (`grouping:
+  "bucket"`), which splits label and value on 4 real FNB payment
+  notifications. Moving it to clustering is a change to `eftBanks.mjs` with
+  those 4 files as its test set.
+* **Not re-run automatically:** a message where one attachment recorded and
+  another refused (re-running would duplicate the recorded one), refusals older
+  than the 14-day mailbox window, and plain "already captured" re-sends. The
+  hand script `retry-intake-message.mjs` still covers the first two.
+* No real report in the mailbox contains a refund, so refunds are covered by
+  the synthetic tests only; the first real one should join the corpus.
+
 ## Every row
 
 Times are UTC as stored. Reasons are as the feed shows them (money redacted at

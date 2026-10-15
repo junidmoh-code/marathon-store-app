@@ -123,11 +123,15 @@ export function refusedArrivals(intakeNode, dayKey, dayOf) {
     const stamp = Number(rec?.receivedAt) || Number(rec?.at) || 0;
     if (!stamp || dayOf(stamp) !== dayKey) continue;
     // A REFUSAL THAT HAS BEEN RE-RUN is not the current answer. The poller
-    // re-runs every refusal an older parser judged (or Junid's retry script
-    // does), stamps the old row `retriedAt`, and the re-run writes a row of
-    // its own — recorded, set aside as not-a-batch-report, or refused again,
-    // in which case THAT row is the one shown here.
-    if (rec?.retriedAt) continue;
+    // re-runs every refusal an older parser judged and, when the re-run's own
+    // row is written, links it back (`retriedIntakeId`) — recorded, set aside
+    // as not-a-batch-report, or refused again, in which case THAT row is the
+    // one shown here. A release that has not produced an answer yet keeps the
+    // red box: asking for a re-run is not the same as getting one. (Junid's
+    // hand retry script stamps retriedAt only, and has always meant "stop
+    // counting this one".)
+    if (rec?.retriedIntakeId) continue;
+    if (rec?.retriedAt && rec?.retriedBy !== "auto-retry") continue;
     const attachments = Array.isArray(rec?.attachments)
       ? rec.attachments
       : Object.values(rec?.attachments || {});

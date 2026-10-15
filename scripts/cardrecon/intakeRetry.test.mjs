@@ -99,6 +99,17 @@ describe("the poller's wiring", () => {
     expect(src.indexOf("retryPending = await retryStale(")).toBeLessThan(src.indexOf("const client = new ImapFlow({\n    host: cfg.host"));
     expect(src).toMatch(/the automatic re-run sweep failed/);
   });
+  it("re-runs go first, oldest first, so an open batch's daily reports supersede in order", () => {
+    expect(src).toMatch(/const released = unprocessed\.filter\(isReleased\)/);
+    expect(src).toMatch(/\.map\(\(c\) => c\.uid\)\.sort\(\(a, b\) => a - b\)/);
+  });
+  it("a re-run's row links back to the refusal it replaces", () => {
+    expect(src).toMatch(/\[`\$\{INTAKE_PATH\}\/\$\{releasedFrom\[message\.key\]\}\/retriedIntakeId`\]: intakeId/);
+    expect(src).toMatch(/state\.releasedFrom\[c\.messageKey\] = c\.id;/);
+  });
+  it("keeps no evidence for a re-send of a batch already on file", () => {
+    expect(src).toMatch(/if \(row\.outcome === "refused" && !duplicate\) refusedFiles\.push/);
+  });
   it("stamps the row with the version the callable reported", () => {
     expect(src).toMatch(/parserVersion: judgedVersion\(versions\)/);
   });

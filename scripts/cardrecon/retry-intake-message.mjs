@@ -13,7 +13,9 @@
 // fixed somewhere other than the parser, or a message older than the window.
 //
 // This is that hand. It undoes exactly two things for ONE message: the claim
-// that says it is finished, and the \Seen flag that keeps it out of the search.
+// that says it is finished, and the \Seen flag (no longer consulted by the
+// search, which reads every message in the window — cleared for the human's
+// inbox only).
 // The next tick then treats it as new mail and puts it through the unchanged
 // capture path, where the duplicate-batch refusal is still waiting if the slip
 // did in fact land the first time.

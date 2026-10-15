@@ -308,7 +308,11 @@ function readRetryState() {
   for (const [k, at] of Object.entries(state.pending || {})) {
     if (Number.isFinite(at) && now - at <= PENDING_RETRY_MS) pending[k] = at;
   }
-  return { ...state, pending };
+  // Which intake row each pending release came from, so the re-run's row can
+  // be linked back to it (retriedIntakeId) — see handleMessage.
+  const releasedFrom = {};
+  for (const [k, id] of Object.entries(state.releasedFrom || {})) if (k in pending && typeof id === "string") releasedFrom[k] = id;
+  return { ...state, pending, releasedFrom };
 }
 function writeRetryState(state) {
   try { writeFileSync(RETRY_STATE_FILE, JSON.stringify(state)); }
@@ -342,6 +346,7 @@ async function retryStale({ db, getToken, cfg }) {
   const candidates = retryCandidates(snap.val(), { nowMs: now, deployedVersion: state.deployedVersion, windowMs });
   for (const c of candidates) {
     state.pending[c.messageKey] = now;
+    state.releasedFrom[c.messageKey] = c.id;
     writeRetryState(state);
     // ONE update: the claim goes and the row is stamped together. The refused
     // row STAYS — it is the record of the first attempt — but stops counting
@@ -565,6 +570,7 @@ async function run() {
     console.warn(`⚠ the automatic re-run sweep failed (${err.message}) — it is tried again next time`);
     retryPending = readRetryState().pending;
   }
+  const releasedFrom = readRetryState().releasedFrom;
 
   const client = new ImapFlow({
     host: cfg.host, port: cfg.port, secure: true,
@@ -669,7 +675,20 @@ async function run() {
         if (!done) unprocessed.push(c);
       }
       if (pendingChanged && !cfg.dryRun) writeRetryState({ ...readRetryState(), pending: retryPending });
-      const take = unprocessed.slice(-MAX_MESSAGES_PER_TICK).map((c) => c.uid);
+      // RE-RUNS GO FIRST, OLDEST FIRST. Daily reports of one open batch must
+      // be re-read in the order they were sent, or an earlier one meets the
+      // fuller one already recorded and is refused as "shrinks" (Trophy Till
+      // 1's batch 69 has five). Then the newest of everything else, as before;
+      // the tick handles the lot in mailbox order.
+      const isReleased = (c) => {
+        const keys = envelopeCandidateKeys({ messageId: c.messageId });
+        return !!keys && keys.some((k) => Number.isFinite(retryPending[k]));
+      };
+      const released = unprocessed.filter(isReleased).slice(0, MAX_MESSAGES_PER_TICK);
+      const others = unprocessed.filter((c) => !isReleased(c));
+      const room = MAX_MESSAGES_PER_TICK - released.length;
+      const take = [...released, ...(room > 0 ? others.slice(-room) : [])]
+        .map((c) => c.uid).sort((a, b) => a - b);
       scanned = take.length;
       if (!cfg.dryRun) saveProcessedCache(cache);
       if (!take.length) {
@@ -690,7 +709,7 @@ async function run() {
           // an attachment that will not decode, a capture call that times out —
           // each is recorded against that message and the next one still runs.
           try {
-            const result = await handleMessage({ client, uid, db, getToken, cfg });
+            const result = await handleMessage({ client, uid, db, getToken, cfg, releasedFrom });
             // `done` = this message's outcome is durably in the database (or
             // it was found already done) — safe to never download again. A
             // held claim, a dry run and a throw all stay un-cached, so the
@@ -801,7 +820,7 @@ async function keepEvidence({ intakeId, refusedFiles }) {
   return { record: evidenceRecord({ items, at: serverNowMs(), parserVersion: PARSER_VERSION }), paths };
 }
 
-async function handleMessage({ client, uid, db, getToken, cfg }) {
+async function handleMessage({ client, uid, db, getToken, cfg, releasedFrom = {} }) {
   const empty = { processed: false, recorded: 0, refused: 0, unrelated: 0 };
   // imapflow takes a RANGE, and a range is a string ("12", "1:5") — not the
   // number. Passing the raw uid works by coercion in some paths and silently
@@ -935,7 +954,10 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     const row = attachmentOutcome({ filename: attachment.filename, capture, error });
     // The UNREDACTED reason travels to the owner-only evidence; the row keeps
     // the redacted one.
-    if (row.outcome === "refused") refusedFiles.push({ attachment, row, reason: error || capture?.reason || row.reason });
+    // A re-send of a batch already on file is not kept: the recorded batch IS
+    // its evidence, and those are most of all refusals (CARD-RECON-REFUSALS.md).
+    const duplicate = /already captured/i.test(String(capture?.reason || ""));
+    if (row.outcome === "refused" && !duplicate) refusedFiles.push({ attachment, row, reason: error || capture?.reason || row.reason });
     results.push(row);
     console.log(`  · ${row.filename}: ${row.outcome}${row.reason ? ` — ${row.reason}` : ` (batch ${row.batchKey} · ${row.tid})`}`);
   }
@@ -958,6 +980,10 @@ async function handleMessage({ client, uid, db, getToken, cfg }) {
     [`${INTAKE_PATH}/${intakeId}`]: record,
     [`${SEEN_PATH}/${message.key}`]: { state: "done", at: serverNowMs(), intakeId },
     ...(evidence ? { [`${EVIDENCE_PATH}/${intakeId}`]: evidence.record } : {}),
+    // A RE-RUN LINKS BACK. The refused row it replaces stops showing only once
+    // this answer exists (todaysArrivals.js) — never merely because a re-run
+    // was asked for and might not have happened.
+    ...(releasedFrom[message.key] ? { [`${INTAKE_PATH}/${releasedFrom[message.key]}/retriedIntakeId`]: intakeId } : {}),
   });
   // LAST, and deliberately: a message is only marked read once its outcome is
   // in the database. Crash before this and the next tick sees it again, which
