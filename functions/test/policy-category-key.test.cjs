@@ -165,7 +165,8 @@ test("the paper-bag rule never reaches a product keyed to another category", () 
   assert.equal(policyCategoryKey({ categoryKey: "bags", name: "Paper bag Gucci green M" }), "paper-bags");
   assert.equal(policyCategoryKey({ categoryKey: "packaging", name: "Karl paper bag " }), "paper-bags");
   assert.equal(policyCategoryKey({ categoryKey: "paper-bags", name: "anything" }), "paper-bags");
-  assert.equal(policyCategoryKey({ name: "Timberland paperbag" }), "paper-bags", "keyless too");
+  assert.equal(policyCategoryKey({ name: "Timberland paperbag" }), null, "a keyless record is never folded in");
+  assert.equal(policyCategoryKey({ name: "Paperbag waist trousers", category: "Clothing" }), null);
 });
 
 // ── 2. THE PLAN: arming by the map, quantities only ──────────────────────────

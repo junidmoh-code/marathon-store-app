@@ -5,8 +5,8 @@
 //   node scripts/apply-paper-bag-policy.mjs --execute    # apply
 //
 // Scoped to paper bags ONLY: products the engine's own isPaperBag names (keyed
-// "paper-bags", or named paper bag / paperbag and filed under Bags, Packaging
-// or no category). Idempotent — every step reads the live state first and does
+// "paper-bags", or named paper bag / paperbag and filed under Bags or
+// Packaging). Idempotent — every step reads the live state first and does
 // only what is still missing, so a second run reports "nothing to do".
 //
 //   A. Taxonomy   /settings/productTaxonomy/cats/paper-bags, if absent. One
@@ -49,6 +49,7 @@ import fs from "fs";
 import { adminRequire } from "./adminRequire.mjs";
 
 const local = createRequire(import.meta.url);
+const networkRegistry = local("../functions/lib/network-registry.cjs");
 const admin = adminRequire(import.meta.url)("firebase-admin");
 const engine = local("../functions/lib/refill-engine.cjs");
 const writer = local("../functions/lib/category-policy-write.cjs");
@@ -78,6 +79,10 @@ const isObj = (v) => !!v && typeof v === "object" && !Array.isArray(v);
 const report = { mode: EXECUTE ? "execute" : "dry-run", at: new Date().toISOString(), steps: {} };
 const rollback = { at: report.at, categoryKeys: [], policyBefore: undefined, rows: [], cancelled: [] };
 const log = (...a) => console.log(...a);
+// Written after every step that changed something, so a failure part-way
+// still leaves the record of what had already been done.
+const ROLLBACK_FILE = `paper-bag-policy-rollback-${STAMP}.json`;
+const saveRollback = () => { if (EXECUTE) fs.writeFileSync(ROLLBACK_FILE, JSON.stringify(rollback, null, 1)); };
 const oneSize = (p) => { const s = (p?.sizes || []).map(String); return s.length === 0 || (s.length === 1 && s[0] === "_"); };
 const callWriter = (data) => writer.applyCategoryPolicy({ db, callerEmail: RUNNER, adminEmail: RUNNER, callerUid: null, data, nowMs: Date.now() });
 
@@ -108,6 +113,22 @@ async function main() {
       if (k) locks[l][pid] = k;
     }));
   }));
+
+  // ── ROUTING GUARD — re-keying must not move a paper bag to another hub ────
+  // The registry routes back stock per category (backStockFor). Paper bags
+  // leave "bags" for "paper-bags"; if any store routes Bags (or Packaging)
+  // somewhere other than where paper-bags would resolve, stop before writing.
+  const routeDrift = [];
+  for (const store of Object.keys(network?.backStock || {})) {
+    const now = networkRegistry.backStockFor(network, store, KEY, null);
+    for (const was of ["bags", "packaging"]) {
+      const before = networkRegistry.backStockFor(network, store, was, null);
+      if (before !== now) routeDrift.push({ store, from: was, before, after: now });
+    }
+  }
+  log(`\nROUTING — ${routeDrift.length ? `CHANGES: ${JSON.stringify(routeDrift)}` : "every store's paper-bag back stock stays where Bags/Packaging resolved it"}`);
+  report.steps.routing = routeDrift;
+  if (routeDrift.length && EXECUTE) throw new Error("re-keying would change a store's back-stock hub — stopped before any write");
 
   // ── A. TAXONOMY ────────────────────────────────────────────────────────────
   const bagsCat = cats?.bags || {};
@@ -144,6 +165,7 @@ async function main() {
       if (r.committed && r.snapshot.val() === KEY) { done++; rollback.categoryKeys.push({ pid, prev }); }
       else log(`   ! ${pid} not re-keyed — key is now ${JSON.stringify(r.snapshot.val())}`);
     }
+    saveRollback();
     log(`   ✓ ${done} re-keyed`);
   }
 
@@ -215,8 +237,9 @@ async function main() {
     let ok = 0;
     for (const e of rowPlan) {
       const r = await callWriter({ action: "setProductTargets", loc: e.loc, pid: e.pid, rows: e.rows, remove: e.remove, expected: e.expected, allowRemoveForeign: true });
-      if (r.ok) { ok++; rollback.rows.push({ loc: e.loc, pid: e.pid, before: e.expected, historyId: r.historyId || null }); }
+      if (r.ok) { ok++; rollback.rows.push({ loc: e.loc, pid: e.pid, before: e.expected, historyId: r.historyId || null }); saveRollback(); }
     }
+    saveRollback();
     log(`   ✓ ${ok}/${rowPlan.length} applied, one history entry each`);
   }
 
@@ -242,6 +265,15 @@ async function main() {
       }
     }
   }
+  // Lock-less open paper-bag requests (not raised by the engine's lock table —
+  // a first batch, a hold, a manual ask): listed, never cancelled here. An
+  // indexed createdAt window, not a whole-node read.
+  const lockedIds = new Set(rowLocs.flatMap((l) => Object.values(locks[l]).flatMap((bySize) => Object.values(bySize || {}).map((x) => x?.refillId))).filter(Boolean));
+  const since = new Date(Date.now() - 21 * 864e5).toISOString();
+  const recent = (await db.ref("refill_requests").orderByChild("createdAt").startAt(since).once("value")).val() || {};
+  const lockless = Object.entries(recent).filter(([id, r]) => r?.status === "open" && bags.includes(r.productId) && !lockedIds.has(id))
+    .map(([id, r]) => ({ refillId: id, dest: r.requestingLocation, qty: r.qty, createdAt: r.createdAt, name: products[r.productId]?.name, engine: !!r.createdFrom?.engine }));
+  for (const l of lockless) leftAlone.push({ ...l, why: "no engine lock (not an engine request) — left as it is" });
   log(`\nE. CANCEL — ${cancels.length} open engine paper-bag requests (${leftAlone.length} left alone)`);
   for (const c of cancels) log(`   ${c.refillId}  ${c.dest.padEnd(11)} ← ${String(c.source).padEnd(7)} x${String(c.qty).padEnd(3)} on hand ${String(c.onHand).padEnd(3)} new rule: ${c.newRule.padEnd(26)} ${c.name}`);
   for (const c of leftAlone) log(`   LEFT  ${c.refillId}  ${c.dest} x${c.qty} — ${c.why} — ${c.name}`);
@@ -270,6 +302,7 @@ async function main() {
       const lr = await db.ref(lockPath).transaction((cur) => (cur === null ? null : cur.refillId === c.refillId ? null : undefined));
       if (!lr.committed) log(`   ! ${c.refillId} lock now belongs to another request — left`);
       rollback.cancelled.push({ refillId: c.refillId, rr: c.rr, lock: c.lock, lockPath, orderId: c.orderId, order: c.order });
+      saveRollback();
       done++;
     }
     log(`   ✓ ${done}/${cancels.length} cancelled (cancelReason ${CANCEL_REASON})`);
@@ -315,11 +348,7 @@ async function main() {
   const out = `paper-bag-policy-${report.mode}-${STAMP}.json`;
   fs.writeFileSync(out, JSON.stringify(report, null, 1));
   log(`\nReport: ${out}`);
-  if (EXECUTE) {
-    const rb = `paper-bag-policy-rollback-${STAMP}.json`;
-    fs.writeFileSync(rb, JSON.stringify(rollback, null, 1));
-    log(`Rollback: ${rb}`);
-  }
+  if (EXECUTE) { saveRollback(); log(`Rollback: ${ROLLBACK_FILE}`); }
 }
 
 main().then(() => process.exit(0)).catch((e) => { console.error("FAILED:", e?.message || e, e?.details ? JSON.stringify(e.details) : ""); process.exit(1); });

@@ -473,9 +473,11 @@ function passThroughExcluded(product) {
 // Hub 2 keep 4, ask at 0 — and raised x1–x4.
 //
 // THE IDENTITY. A record keyed "paper-bags" is a paper bag. So is one whose
-// name says paper bag / paperbag and whose key is Bags, Packaging or absent —
-// the only three places paper bags have ever been filed (59 live records, 16
-// Oct: 52 Bags, 7 Packaging, no name match anywhere else, no handbag matching).
+// name says paper bag / paperbag and whose key is Bags or Packaging — the only
+// two places paper bags have ever been filed (59 live records, 16 Oct: 52
+// Bags, 7 Packaging, no name match anywhere else, no handbag matching). A
+// keyless record is NOT folded in: Add Product has required a key since #280,
+// and a keyless "paperbag waist" garment must never become packaging.
 // The name rule is what lets a NEW paper bag inherit the policy the moment it
 // exists, whichever of those it was filed under, with no per-product arming.
 // It never reaches a product keyed to any other category.
@@ -484,7 +486,7 @@ function passThroughExcluded(product) {
 // effectiveCategoryKey; pinned equal by test/policy-category-key.test.cjs.
 const PAPER_BAG_KEY = "paper-bags";
 const PAPER_BAG_NAME = /paper\s*-?\s*bag/i;
-const PAPER_BAG_FILED_UNDER = new Set(["", "bags", "packaging"]);
+const PAPER_BAG_FILED_UNDER = new Set(["bags", "packaging"]);
 function isPaperBag(product) {
   if (!product || typeof product !== "object") return false;
   const key = typeof product.categoryKey === "string" ? product.categoryKey.trim() : "";
@@ -1014,6 +1016,9 @@ function computeRefillPlan(snapshot) {
 
   // ── reconcile: close locks whose intent finished; flag stale ones (L6) ─────
   const closes = [];
+  // Paper-bag shop legs that Hub 2 sent SHORT (see the fulfilled close below):
+  // dest|pid|sizeKey → the deficit loop re-raises the gap past the ask-at line.
+  const shortSent = new Set();
   const resizes = [];   // owner approval 2026-07-13: open requests track reality, not history
   // PLAN-SIDE OBSERVABILITY (2026-07-28). PR #286 instrumented the APPLY drops,
   // but this suppression happens during PLANNING and reported nothing at all —
@@ -1278,6 +1283,21 @@ function computeRefillPlan(snapshot) {
           });
         } else if (orderIsOurs && order.clothingRefillStatus != null) {
           const wasFulfilled = order.clothingRefillStatus === "available";
+          // A SHOP LEG SENT SHORT, on a paper bag (Junid, 16 Oct 2026: "the
+          // remainder stays open"). A shop leg's fulfilment closes its R###
+          // order with whatever was typed (App.jsx: clothingRefilledQty), so
+          // there is no open line left to carry the remainder the way a Hub 2
+          // request carries it. The deficit loop re-raises the gap in this
+          // same plan instead — past the ask-at line, which would otherwise
+          // hold it back because the units that DID arrive lift the shelf
+          // above 10. Paper bags on an ask-at number only.
+          if (wasFulfilled) {
+            const sent = Number(order.clothingRefilledQty);
+            const asked = Number(order.qty) || lockQty(entry);
+            if (Number.isFinite(sent) && sent < asked && fullTopUpCell(products?.[pid], resolveTarget(ctx, dest, pid, size))) {
+              shortSent.add(`${dest}|${pid}|${sizeKey}`);
+            }
+          }
           closes.push({
             dest, pid, sizeKey, refillId: entry.refillId,
             reason: wasFulfilled ? "fulfilled" : "cancelled",
@@ -2066,7 +2086,8 @@ function computeRefillPlan(snapshot) {
         // Junid's own words for it. Identical in effect — a cell with anything
         // inbound never asks again below — but stated as the rule is stated.
         const bulk = fullTopUpCell(products?.[pid], t);
-        if (t.reorderPoint != null && (bulk ? have + inb : have) > t.reorderPoint) continue;
+        const shortRemainder = bulk && shortSent.has(`${dest}|${pid}|${sizeKey}`);
+        if (t.reorderPoint != null && (bulk ? have + inb : have) > t.reorderPoint && !shortRemainder) continue;
 
         belowTarget.push({ loc: dest, pid, size, have: q, target: t.target, inbound: inb, deficit });
 
@@ -2215,7 +2236,11 @@ function computeRefillPlan(snapshot) {
         // in THIS scan — two stores can never be sent after one physical unit.
         const srcKey = `${src}|${pid}|${sizeKey}`;
         const srcAvail = avail(cellQty(stock, src, pid, size)) - (sourceReserved.get(srcKey) || 0);
-        if (srcAvail <= 0) {
+        // A shop leg's remainder after a short send (shortSent) is raised even
+        // with Hub 2 empty: it is the open remainder of a request already
+        // made, and a bulk request stays open on an empty source (reconcile
+        // exempts it) until Hub 2's own top-up from Central lands.
+        if (srcAvail <= 0 && !shortRemainder) {
           const upstreamOfSrc = routes[src];   // e.g. central for hub2-sourced legs
           const upstreamAvail = upstreamOfSrc ? avail(cellQty(stock, upstreamOfSrc, pid, size)) : 0;
           // "Chain is flowing" must be TRUE, not hopeful: stock already on its
@@ -2285,11 +2310,11 @@ function computeRefillPlan(snapshot) {
           continue;
         }
 
-        // A full-top-up cell asks for the whole gap and claims only what the
-        // source physically has: a second destination is never promised units
-        // that do not exist, and this request is never shrunk to fit them.
+        // A full-top-up cell asks for the whole gap, whatever the source holds;
+        // it reserves the whole gap too, exactly as its lock will on every
+        // later scan, so a second destination waits behind it.
         const qty = bulk ? deficit : Math.min(deficit, srcAvail, maxUnits);
-        bump(sourceReserved, srcKey, bulk ? Math.min(deficit, srcAvail) : qty);   // claim the units within this scan
+        bump(sourceReserved, srcKey, qty);   // claim the units within this scan
         intents.push({
           dest, source: src, productId: pid, size, sizeKey,
           qty, priority: have < t.minQty ? "high" : "normal", mode,
@@ -2412,7 +2437,17 @@ function computeRefillPlan(snapshot) {
     errors.push(`intent refused: ${i.dest} ← ${i.source} for ${i.productId} ${i.size} — a shop refills from its hub`);
     return false;
   });
-  const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i));
+  // ── PAPER BAGS GET THEIR OWN CAP TOO (Junid, 16 Oct 2026) ─────────────────
+  // Same reasoning as footwear, and the same promise: a paper-bag top-up wave
+  // (51 requests on the first scan, modelled live) must not take a single slot
+  // of the 75 clothing shares, or clothing requests would be delayed by a
+  // policy that is not theirs. Paper bags are dealt from their own list under
+  // maxPaperBagIntentsPerRun (default 75) and appended; clothing's deal is the
+  // one it would be with no paper bag in the catalogue.
+  const isPaperBagIntent = (i) => isPaperBag(products?.[i.productId]);
+  const clothingIntents = routedIntents.filter((i) => !isFootwearIntent(i) && !isPaperBagIntent(i));
+  const paperBagIntents = routedIntents.filter((i) => !isFootwearIntent(i) && isPaperBagIntent(i));
+  const maxPaperBagIntents = Math.max(1, num(config?.maxPaperBagIntentsPerRun) || 75);
   const footwearIntents = routedIntents.filter(isFootwearIntent);
   const maxFootwearIntents = Math.max(1, num(config?.maxFootwearIntentsPerRun) || 25);
   // THE CAP IS MARATHON'S FIRST. The destinations config.routes names
@@ -2431,7 +2466,8 @@ function computeRefillPlan(snapshot) {
   };
   const plannedClothing = dealMarathonFirst(clothingIntents, maxIntents);
   const plannedFootwear = dealMarathonFirst(footwearIntents, maxFootwearIntents);
-  const plannedIntents = [...plannedClothing, ...plannedFootwear];
+  const plannedPaperBags = dealMarathonFirst(paperBagIntents, maxPaperBagIntents);
+  const plannedIntents = [...plannedClothing, ...plannedFootwear, ...plannedPaperBags];
   // ═══ A ROUTED-ROUND COUNT DISPUTE STAYS ON RECOUNT NEEDED (2026-09-23) ═════
   // A DISPUTED pass-through lands at the hub, and that arrival is — correctly
   // — what lifts the shop's reject streak so the shop can ask again. But the
@@ -2542,6 +2578,9 @@ function computeRefillPlan(snapshot) {
   }
   if (footwearIntents.length > maxFootwearIntents) {
     errors.push(`circuit breaker (footwear): ${footwearIntents.length} intents computed, capped to ${maxFootwearIntents}`);
+  }
+  if (paperBagIntents.length > maxPaperBagIntents) {
+    errors.push(`circuit breaker (paper bags): ${paperBagIntents.length} intents computed, capped to ${maxPaperBagIntents}`);
   }
 
   // ── inventory intelligence (plan §Inventory Intelligence — CLOTHING ONLY) ───
@@ -3040,6 +3079,9 @@ function computeRefillPlan(snapshot) {
       footwearIntentsPlanned: plannedFootwear.length,
       throttled: clothingIntents.length > maxIntents,
       footwearThrottled: footwearIntents.length > maxFootwearIntents,
+      paperBagIntentsComputed: paperBagIntents.length,
+      paperBagIntentsPlanned: plannedPaperBags.length,
+      paperBagThrottled: paperBagIntents.length > maxPaperBagIntents,
     },
     stats: { managedCells, footwearManagedCells, ...(Object.keys(resizeSuppressed).length ? { resizeSuppressed } : {}) },
     exceptions: {

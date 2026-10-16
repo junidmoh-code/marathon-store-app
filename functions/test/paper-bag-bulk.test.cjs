@@ -186,3 +186,67 @@ test("a paper bag on a number with NO ask-at is not a bulk cell: ordinary top-up
   const plan = computeRefillPlan(snap({ targets, stock: hub2Stock("keyed", 0, 2) }));
   assert.deepEqual(qtyFor(plan, "keyed", "hub2"), [2]);
 });
+
+// ── 6. A SHOP LEG SENT SHORT: the remainder is asked for again at once ───────
+// A shop leg's R### order closes with whatever Hub 2 typed (App.jsx writes
+// clothingRefilledQty), so nothing stays open on the line. Trophy asked for
+// 50, Hub 2 sent 30: Trophy now holds 30 — above ask-at 10 — and without the
+// re-raise would sit at 30 until it sold down to 10.
+const shopLeg = (sent, asked = 50) => ({
+  openIndex: { trophy: { keyed: { _: { refillId: "rrT", orderId: "R018-6", orderCreatedAt: iso(120), qty: asked, source: "hub2", createdAt: iso(120) } } } },
+  refillRequests: { rrT: { status: "open", productId: "keyed", size: "_", qty: asked, requestingLocation: "trophy", createdAt: iso(120), createdFrom: { engine: true, source: "hub2" } } },
+  orders: { "R018-6": { customerName: "Shop Refill", autoRefill: true, productId: "keyed", size: "_", qty: asked, createdAt: iso(120), status: "incoming", clothingRefillStatus: "available", clothingRefilledQty: sent } },
+});
+test("Hub 2 sends Trophy 30 of 50: the order closes fulfilled and the 20 is asked for again in the same scan", () => {
+  const plan = computeRefillPlan(snap({
+    ...shopLeg(30),
+    stock: { hub2: { keyed: { _: cell(15) } }, central: { keyed: { _: cell(200) } }, trophy: { keyed: { _: cell(30) } }, "marathon-pe": {} },
+  }));
+  assert.deepEqual(plan.closes.filter((c) => c.refillId === "rrT").map((c) => c.reason), ["fulfilled"]);
+  assert.deepEqual(qtyFor(plan, "keyed", "trophy"), [20], "keep 50 − 30 on hand, past the ask-at line, not capped at Hub 2's 15");
+});
+test("…and a FULL send closes with nothing re-raised", () => {
+  const plan = computeRefillPlan(snap({
+    ...shopLeg(50),
+    stock: { hub2: { keyed: { _: cell(15) } }, central: { keyed: { _: cell(200) } }, trophy: { keyed: { _: cell(50) } }, "marathon-pe": {} },
+  }));
+  assert.deepEqual(qtyFor(plan, "keyed", "trophy"), []);
+});
+test("…and a short send on a HANDBAG keeps today's behaviour: closed, nothing re-raised above its ask-at", () => {
+  const products = { ...PRODUCTS, keyed: { ...PRODUCTS.handbag, id: "keyed" } };
+  const targets = { trophy: { keyed: { _: { target: 6, minQty: 3, reorderPoint: 2 } } } };
+  const plan = computeRefillPlan(snap({
+    ...shopLeg(3, 6), products, targets,
+    stock: { hub2: { keyed: { _: cell(15) } }, central: { keyed: { _: cell(200) } }, trophy: { keyed: { _: cell(3) } }, "marathon-pe": {} },
+  }));
+  assert.deepEqual(qtyFor(plan, "keyed", "trophy"), []);
+});
+test("…and when Hub 2 sent ALL it had (now 0), the remainder is still raised and left open", () => {
+  const plan = computeRefillPlan(snap({
+    ...shopLeg(20),
+    stock: { hub2: { keyed: { _: cell(0) } }, central: { keyed: { _: cell(200) } }, trophy: { keyed: { _: cell(20) } }, "marathon-pe": {} },
+  }));
+  assert.deepEqual(qtyFor(plan, "keyed", "trophy"), [30]);
+  assert.deepEqual(qtyFor(plan, "keyed", "hub2"), [50], "and Hub 2 asks Central for its own 50");
+});
+
+// ── 7. THE CAP: paper bags never take a clothing slot ────────────────────────
+test("a paper-bag wave is dealt from its own cap: clothing keeps every one of its slots", () => {
+  const products = { ...PRODUCTS };
+  const stock = { hub2: {}, central: {}, "marathon-pe": {}, trophy: {} };
+  const targets = { hub2: {} };
+  for (let i = 0; i < 6; i++) {
+    products[`bag${i}`] = { id: `bag${i}`, name: `Paper bag test ${i}`, categoryKey: "paper-bags", ...BAG };
+    stock.central[`bag${i}`] = { _: cell(100) };
+    products[`tee${i}`] = { id: `tee${i}`, name: `Tee ${i}`, categoryKey: "t-shirts", productType: "clothing", sizes: ["M"] };
+    stock.central[`tee${i}`] = { M: cell(10) };
+    stock.hub2[`tee${i}`] = { M: cell(0) };
+    targets.hub2[`tee${i}`] = { M: { target: 3, minQty: 2 } };
+  }
+  const plan = computeRefillPlan(snap({ products, stock, targets, config: { maxIntentsPerRun: 4 } }));
+  const tees = plan.intents.filter((i) => i.productId.startsWith("tee")).length;
+  const bags = plan.intents.filter((i) => i.productId.startsWith("bag")).length;
+  assert.equal(tees, 4, "clothing gets all 4 of its slots");
+  assert.equal(bags, 6, "paper bags are dealt from their own cap (default 75)");
+  assert.equal(plan.policy.paperBagIntentsPlanned, 6);
+});
