@@ -35,12 +35,25 @@ const isStaffSlipRecord = (rec) => !!rec && !!rec.declaredTotal && rec.declaredT
  * report), "junid" (a total he typed, or a manual entry) or "staff" (a staff
  * slip)? The precedence is machine > junid > staff.
  */
+// Junid's sign-in — the same address the server's mayDeclareTotal checks.
+const JUNID_EMAIL = "gunidmoh@gmail.com";
+
 function authorityOf(rec) {
   if (!rec) return null;
   if (isStaffSlipRecord(rec)) return "staff";
-  if (rec.capturedVia === "manual" || rec.declaredTotal) return "junid";
+  // A MANUAL entry is Junid's alone (mayEnterManually). A typed total is his
+  // only when he typed it: on a typed-entry machine anyone with card_recon may
+  // type the evening's figure, and a manager's typed figure is staff typing —
+  // it does not outrank a staff slip (a later slip corrects it, as before).
+  if (rec.capturedVia === "manual") return "junid";
+  if (rec.declaredTotal) return rec.declaredTotal.byEmail === JUNID_EMAIL ? "junid" : "staff";
   return "machine";
 }
+
+// A staff member can send the slip again and again; each one stores a photo
+// and pays for a read. Beyond this many beside one record, the slip is
+// refused in words (no figure, no verdict) and Junid is the one to call.
+const MAX_SUPPORTING_SLIPS = 10;
 
 const photosOf = (rec) => (Array.isArray(rec && rec.photos) ? rec.photos : Object.values((rec && rec.photos) || {})).filter((p) => typeof p === "string");
 
@@ -54,6 +67,7 @@ const photosOf = (rec) => (Array.isArray(rec && rec.photos) ? rec.photos : Objec
 function shouldAttach(inForce, nowMs) {
   if (!inForce || !inForce.record || !inForce.record.slip) return false;
   if (!sameSastDay(Number(inForce.record.slip.closedAt), nowMs)) return false;
+  // Their own (or another staff member's) typed figure is corrected instead.
   return authorityOf(inForce.record) !== "staff";
 }
 
@@ -102,7 +116,27 @@ function carriedSlips(superseded, supersededKey, newClosedAt) {
   return Object.keys(out).length ? out : null;
 }
 
+/**
+ * The same-day records that took over from `fromKey`, oldest first, following
+ * `supersedes` — the chain a slip on `fromKey` must also sit on. `revisions` is
+ * every record of that batch ({batchKey: record}, one equalTo(batchNo) read).
+ */
+function sameDaySuccessors(revisions, fromKey) {
+  const all = Object.entries(revisions || {}).filter(([, r]) => r && typeof r === "object");
+  const out = [];
+  let at = fromKey;
+  let atRec = (all.find(([k]) => k === fromKey) || [])[1];
+  for (let guard = 0; atRec && guard < 1000; guard++) {
+    const next = all.filter(([, r]) => r.supersedes === at)
+      .sort((a, b) => (Number(a[1].revision) || 1) - (Number(b[1].revision) || 1)).at(-1);
+    if (!next || !sameSastDay(Number(atRec.slip && atRec.slip.closedAt), Number(next[1].slip && next[1].slip.closedAt))) break;
+    out.push(next[0]);
+    [at, atRec] = next;
+  }
+  return out;
+}
+
 module.exports = {
-  SUPPORTING_FIELD, STAFF_SLIP_VIA,
+  SUPPORTING_FIELD, STAFF_SLIP_VIA, JUNID_EMAIL, MAX_SUPPORTING_SLIPS, sameDaySuccessors,
   sameSastDay, isStaffSlipRecord, authorityOf, shouldAttach, buildSupportingSlip, carriedSlips, photosOf,
 };

@@ -40,7 +40,7 @@ const {
 } = require("../lib/card-unread.cjs");
 const { JOBS_PATH, DUE_PATH, dueKey } = require("../lib/card-read-jobs.cjs");
 // The capture path's own duplicate guard — the same function its submit calls.
-const { resolveWriteFor } = require("./cardRecon.js");
+const { resolveWriteFor, syncCarried } = require("./cardRecon.js");
 
 if (!admin.apps.length) {
   admin.initializeApp({ databaseURL: "https://marathon-club-default-rtdb.europe-west1.firebasedatabase.app" });
@@ -189,6 +189,9 @@ async function handleManualEntry(db, request, deps = {}) {
     return JSON.parse(JSON.stringify(record));
   });
   if (!txn.committed) return reject(`Batch #${batchNo} was captured by something else a moment ago — reload the report.`);
+  // A staff slip attached to the record this corrects while Junid was typing
+  // is brought across too (cardRecon.js attachSupportingSlip does the same from its side).
+  if (write.supersedes) await syncCarried(db, `${CARD_BATCHES_PATH}/${storeId}/${tid}`, write.supersedes, write.key);
 
   // ── THE AUDIT TRAIL ──────────────────────────────────────────────────────
   // The record carries `manual.original` too; this is the list of every hand

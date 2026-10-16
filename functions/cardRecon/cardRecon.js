@@ -75,7 +75,7 @@ const { loadNetwork } = require("../lib/network-load.cjs");
 const { readAccountSections, readSectionClaim, locationInSections } = require("../lib/section-access.cjs");
 const { tillAt } = require("../lib/card-terminal-placements.cjs");
 const { SLIP_SCOPE_FIELD, readSlipScope, slipScopeAllows } = require("../lib/card-slip-scope.cjs");
-const { SUPPORTING_FIELD, shouldAttach, authorityOf, buildSupportingSlip, carriedSlips } = require("../lib/card-supporting-slips.cjs");
+const { SUPPORTING_FIELD, MAX_SUPPORTING_SLIPS, shouldAttach, authorityOf, buildSupportingSlip, carriedSlips, sameDaySuccessors } = require("../lib/card-supporting-slips.cjs");
 const {
   JOBS_PATH, DUE_PATH, JOB_PHOTO_PREFIX, dueKey, dueCutoff, claimJob, classifyRun, nextStep, unreadReason,
 } = require("../lib/card-read-jobs.cjs");
@@ -1886,6 +1886,9 @@ async function handleSubmit(db, request) {
   if (!txn.committed) {
     return reject(`Batch #${batchNo} for this terminal was captured by someone else a moment ago.`);
   }
+  // A slip attached to the superseded record between the read above and this
+  // write is brought across now (attachSupportingSlip does the same from its side).
+  if (write.supersedes) await syncCarried(db, `${CARD_BATCHES_PATH}/${terminal.storeId}/${extraction.tid}`, write.supersedes, write.key);
   await draftRef.remove().catch(() => {});
 
   // CAPTURE ONLY — an acknowledgement, not a verdict. The manager learns that
@@ -1999,41 +2002,60 @@ async function handleSlip(db, request, deps = {}) {
 /**
  * A STAFF SLIP KEPT BESIDE A BETTER FIGURE — see lib/card-supporting-slips.cjs.
  * The photo is stored first, under its own id; then the slip goes onto the
- * record in force at {record}/supportingSlips/{slipId}, inside a transaction
- * on that one child so a record deleted meanwhile is not brought back. The
- * record's own figures are never touched. Then the photo is read in the
- * background, as for any staff slip. The reply is "Sent", nothing more.
+ * record in force at {record}/supportingSlips/{slipId}, in ONE transaction on
+ * that record: a record deleted meanwhile stays deleted (null in, null out),
+ * and the record's own figures are never touched. Then — because a better
+ * figure may have taken over from that record while this was in flight — the
+ * slip is copied along its same-day successors (propagateSlips), and every
+ * writer of a successor does the same from its side (syncCarried), so the slip
+ * always ends up on the record Junid sees. The reply is "Sent", nothing more.
  */
 async function attachSupportingSlip(db, request, { terminal, picked, inForce, photos, nowMs, bucket: bucketDep = null }) {
   const declared = readDeclaredTotal(request.data && request.data.declaredTotal);
   if (declared.err) return reject(declared.err);
-  const recordPath = `${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}/${inForce.key}`;
+  const tidPath = `${CARD_BATCHES_PATH}/${terminal.storeId}/${picked}`;
+  const recordPath = `${tidPath}/${inForce.key}`;
   const slipId = db.ref(`${recordPath}/${SUPPORTING_FIELD}`).push().key;
   const bucket = bucketDep || admin.storage().bucket(STORAGE_BUCKET);
   const paths = [];
-  for (let i = 0; i < photos.length; i++) {
-    const path = `${PHOTO_STORAGE_PREFIX}/slip-${slipId}/photo-${i}.jpg`;
-    await bucket.file(path).save(photos[i].buffer, {
-      resumable: false,
-      contentType: "image/jpeg",
-      metadata: { cacheControl: "private, max-age=31536000, immutable" },
-    });
-    paths.push(path);
-  }
-  const entry = buildSupportingSlip({
-    slipId, cents: declared.cents, photos: paths,
-    byUid: request.auth.uid, byEmail: request.auth.token?.email || null, nowMs,
-  });
-  // Only while the record exists: null in, null out (the cold-null rule), and
-  // the existence of the record is asked of the record, not of this child.
-  const exists = (await db.ref(`${recordPath}/batchKey`).once("value")).exists();
-  const txn = exists
-    ? await db.ref(`${recordPath}/${SUPPORTING_FIELD}/${slipId}`).transaction((cur) => (cur === null ? JSON.parse(JSON.stringify(entry)) : undefined))
-    : { committed: false };
-  if (!txn.committed) {
+  const cleanup = async () => {
     for (const path of paths) { try { await bucket.file(path).delete(); } catch { /* best effort */ } }
-    return reject("This till's record changed while the slip was being sent — nothing was kept. Send it again.");
+  };
+  let full = false;
+  try {
+    for (let i = 0; i < photos.length; i++) {
+      const path = `${PHOTO_STORAGE_PREFIX}/slip-${slipId}/photo-${i}.jpg`;
+      paths.push(path);
+      await bucket.file(path).save(photos[i].buffer, {
+        resumable: false,
+        contentType: "image/jpeg",
+        metadata: { cacheControl: "private, max-age=31536000, immutable" },
+      });
+    }
+    const entry = JSON.parse(JSON.stringify(buildSupportingSlip({
+      slipId, cents: declared.cents, photos: paths,
+      byUid: request.auth.uid, byEmail: request.auth.token?.email || null, nowMs,
+    })));
+    const txn = await db.ref(recordPath).transaction((cur) => {
+      if (cur === null) return null; // cold-null: never invent a record
+      const have = cur[SUPPORTING_FIELD] || {};
+      full = Object.keys(have).length >= MAX_SUPPORTING_SLIPS;
+      if (full) return undefined;
+      return { ...cur, [SUPPORTING_FIELD]: { ...have, [slipId]: entry } };
+    });
+    const after = txn.committed && txn.snapshot ? txn.snapshot.val() : null;
+    const kept = !!(after && after[SUPPORTING_FIELD] && after[SUPPORTING_FIELD][slipId]);
+    if (!kept) {
+      await cleanup();
+      return reject(full
+        ? "This till's slip has already been sent many times today — nothing more was kept. Tell Junid."
+        : "This till's record changed while the slip was being sent — nothing was kept. Send it again.");
+    }
+  } catch (err) {
+    await cleanup();
+    throw err;
   }
+  await propagateSlips(db, tidPath, inForce.key);
   console.log(`cardBatchCapture: slip attached picked=${picked} key=${inForce.key} slip=${slipId} (${authorityOf(inForce.record)} figure in force) by=${request.auth.uid}`);
   try {
     await queueSlipCheck(db, { terminal, picked, batchKey: inForce.key, nowMs, slip: { slipId, cents: declared.cents, photos: paths, by: request.auth.uid } });
@@ -2041,6 +2063,42 @@ async function attachSupportingSlip(db, request, { terminal, picked, inForce, ph
     console.error(`cardBatchCapture: slip check not queued for ${picked}/${inForce.key}/${slipId}: ${err && err.message}`);
   }
   return { ok: true, received: true };
+}
+
+/** Every record of the batch `key` belongs to — one indexed equalTo(batchNo) read. */
+async function batchRevisions(db, tidPath, key) {
+  const batchNo = Number(String(key).split("-")[0]);
+  if (!Number.isInteger(batchNo)) return {};
+  return (await db.ref(tidPath).orderByChild("batchNo").equalTo(batchNo).once("value")).val() || {};
+}
+
+/**
+ * Bring the slips carried from `fromKey` onto `toKey` (its same-day successor):
+ * any slip missing there is added, and a slip there without a photo read gets
+ * the source's. Never removes or rewrites what is there; never invents a record.
+ */
+async function syncCarried(db, tidPath, fromKey, toKey) {
+  if (!fromKey || !toKey || fromKey === toKey) return;
+  const from = (await db.ref(`${tidPath}/${fromKey}`).once("value")).val();
+  if (!from) return;
+  await db.ref(`${tidPath}/${toKey}`).transaction((cur) => {
+    if (cur === null) return null;
+    const want = carriedSlips(from, fromKey, Number(cur.slip && cur.slip.closedAt));
+    if (!want) return undefined;
+    const have = { ...(cur[SUPPORTING_FIELD] || {}) };
+    let changed = false;
+    for (const [id, s] of Object.entries(want)) {
+      if (!have[id]) { have[id] = s; changed = true; } else if (!have[id].photoRead && s.photoRead) { have[id] = { ...have[id], photoRead: s.photoRead }; changed = true; }
+    }
+    return changed ? JSON.parse(JSON.stringify({ ...cur, [SUPPORTING_FIELD]: have })) : undefined;
+  });
+}
+
+/** Copy the slips on `fromKey` along its same-day successors, oldest first. */
+async function propagateSlips(db, tidPath, fromKey) {
+  const chain = sameDaySuccessors(await batchRevisions(db, tidPath, fromKey), fromKey);
+  let prev = fromKey;
+  for (const next of chain) { await syncCarried(db, tidPath, prev, next); prev = next; }
 }
 
 // ─── THE STAFF SLIP'S PHOTO, READ IN THE BACKGROUND ──────────────────────────
@@ -2128,6 +2186,15 @@ async function writePhotoRead(db, job, read, nowMs) {
   // SUPPORTING slip's read goes on that slip, never on the record's figures.
   const at = job.slipId ? `${base}/${SUPPORTING_FIELD}/${job.slipId}` : base;
   await db.ref(at).transaction((cur) => (cur === null ? null : { ...cur, photoRead }));
+  // …and on the copies carried to the records that took over since the slip
+  // was queued (a machine report, Junid's correction): the read is the same
+  // slip's, and the card Junid sees is the successor's.
+  const tidPath = `${CARD_BATCHES_PATH}/${job.storeId}/${job.pickedTid}`;
+  const carriedId = job.slipId || `rec-${job.batchKey}`;
+  for (const key of sameDaySuccessors(await batchRevisions(db, tidPath, job.batchKey), job.batchKey)) {
+    await db.ref(`${tidPath}/${key}/${SUPPORTING_FIELD}/${carriedId}`)
+      .transaction((cur) => (cur === null ? null : { ...cur, photoRead }));
+  }
 }
 
 // ─── RECEIVED: THE SLIP IS KEPT, THE READ HAPPENS LATER ──────────────────────
@@ -2620,6 +2687,7 @@ exports.cardBatchReadRetry = onSchedule(
 exports.handleReceive = handleReceive;
 exports.handleSlip = handleSlip;
 exports.carriedSlipsFor = carriedSlipsFor;
+exports.syncCarried = syncCarried;
 exports.handleTypedCapture = handleTypedCapture;
 // The extract → submit pair, for the email-pipeline tests (fake RTDB + bucket).
 exports.handleExtract = handleExtract;

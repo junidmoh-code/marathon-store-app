@@ -202,3 +202,105 @@ test("the machine's report of the slip's filing number takes over, and the slip 
   const carried = await carriedSlipsFor(db, "pe", MT2, write.supersedes, NOW + 1800000);
   assert.deepEqual([carried["rec-545"].cents, carried["rec-545"].byUid], [2130000, "u-yasmin"]);
 });
+
+// ── review fixes (CodeRabbit + Sonnet, #731) ──────────────────────────────────
+
+const { syncCarried } = require("../cardRecon/cardRecon.js");
+const { MAX_SUPPORTING_SLIPS } = require("../lib/card-supporting-slips.cjs");
+// Junid's manual correction of #544, same day.
+const M544R2 = { ...M544, batchKey: "544-r2", revision: 2, supersedes: "544", autoSuperseded: false, capturedVia: "manual",
+  declaredTotal: { cents: 2140000, byUid: "junid", byEmail: "gunidmoh@gmail.com", at: NOW - 60000 },
+  slip: { ...M544.slip, totalCents: 2140000 } };
+
+test("a better figure lands while the slip is in flight: the slip still ends up on the record Junid sees", async () => {
+  let injected = false;
+  const db = makeFakeDb({
+    config: { cardTerminals: TERMINALS },
+    users: { [YASMIN.uid]: { cardSlipTills: { pe: { "till-2": true } } } },
+    card_batches: { pe: { [MT2]: { 544: M544 } } },
+  }, {
+    // Junid's correction is written between Yasmin's read of the record in
+    // force (#544) and her slip's transaction on it.
+    beforeRead: async (path, state) => {
+      if (!injected && path === `card_batches/pe/${MT2}/544`) {
+        injected = true;
+        state.root.card_batches.pe[MT2]["544-r2"] = structuredClone(M544R2);
+      }
+    },
+  });
+  assert.deepEqual(await slip(db, YASMIN, MT2, "21,300.00"), { ok: true, received: true });
+  assert.equal(injected, true);
+  const recs = await node(db, `card_batches/pe/${MT2}`);
+  const onR1 = Object.values(recs["544"].supportingSlips || {});
+  const onR2 = Object.values(recs["544-r2"].supportingSlips || {});
+  assert.equal(onR1.length, 1, "on the record it was sent against…");
+  assert.deepEqual(onR2.map((s) => [s.slipId, s.cents]), onR1.map((s) => [s.slipId, s.cents]), "…and on the one that took over");
+  assert.equal(recs["544-r2"].slip.totalCents, 2140000, "Junid's figure untouched");
+});
+
+test("the successor is written after the slip: its writer brings the slip across (syncCarried), never twice", async () => {
+  const withSlip = { ...M544, supportingSlips: { s1: { slipId: "s1", cents: 2130000, photos: ["cardRecon/slip-s1/photo-0.jpg"], at: NOW, photoRead: null } } };
+  const db = world({ pe: { [MT2]: { 544: withSlip, "544-r2": M544R2 } } });
+  await syncCarried(db, `card_batches/pe/${MT2}`, "544", "544-r2");
+  await syncCarried(db, `card_batches/pe/${MT2}`, "544", "544-r2");
+  const r2 = await node(db, `card_batches/pe/${MT2}/544-r2`);
+  assert.deepEqual(Object.keys(r2.supportingSlips), ["s1"]);
+  assert.equal(r2.slip.totalCents, 2140000);
+  // A later day's report is not this day's: nothing is carried across midnight.
+  const later = { ...M544R2, batchKey: "544-r3", revision: 3, supersedes: "544-r2", autoSuperseded: true, capturedVia: "pdf", declaredTotal: null,
+    slip: { ...M544.slip, closedAt: NOW + 24 * 3600000 } };
+  await db.ref(`card_batches/pe/${MT2}/544-r3`).set(later);
+  await syncCarried(db, `card_batches/pe/${MT2}`, "544-r2", "544-r3");
+  assert.equal((await node(db, `card_batches/pe/${MT2}/544-r3`)).supportingSlips, undefined);
+});
+
+test("the photo read reaches the carried copy on the record that took over", async () => {
+  const db = world({ pe: { [MT2]: { 544: M544 } } });
+  await slip(db, YASMIN, MT2, "21,300.00");
+  const [job] = Object.values(await node(db, "card_batch_jobs"));
+  // Junid corrects #544 before the background read runs; his write carries the slip.
+  const r2 = { ...M544R2, supportingSlips: (await node(db, `card_batches/pe/${MT2}/544`)).supportingSlips };
+  await db.ref(`card_batches/pe/${MT2}/544-r2`).set(r2);
+  const ocr = async () => ({ parsed: { tid: MT2, batchNo: "544", total: "R21,375.00", confidence: {} }, tokensIn: 1, tokensOut: 1, model: "gemini-test", attempts: 1 });
+  await processReadJob(db, job.jobId, { now: () => NOW + 60000, onArrival: true, loadPhotos: async () => [PHOTO], ocr });
+  const carried = (await node(db, `card_batches/pe/${MT2}/544-r2`)).supportingSlips[job.slipId];
+  assert.deepEqual([carried.photoRead.readCents, carried.photoRead.differs], [2137500, true]);
+});
+
+test(`at most ${MAX_SUPPORTING_SLIPS} slips beside one record: the next is refused in words, its photo removed`, async () => {
+  const many = Object.fromEntries(Array.from({ length: MAX_SUPPORTING_SLIPS }, (_, i) => [`s${i}`, { slipId: `s${i}`, cents: i }]));
+  const db = world({ pe: { [MT2]: { 544: { ...M544, supportingSlips: many } } } });
+  const b = bucket();
+  const out = await slip(db, YASMIN, MT2, "1.00", NOW, b);
+  assert.equal(out.ok, false);
+  assert.match(out.reason, /Tell Junid/);
+  assert.doesNotMatch(out.reason, /R\s?\d/, "no figure in the answer");
+  assert.equal(Object.keys((await node(db, `card_batches/pe/${MT2}/544`)).supportingSlips).length, MAX_SUPPORTING_SLIPS);
+  assert.deepEqual(b.deleted, b.saved);
+  assert.equal(await node(db, "card_batch_jobs"), null, "no paid read queued");
+});
+
+test("a manager's typed total is staff typing, not Junid's: a later staff slip corrects it, as before", () => {
+  const mgr = { ...T499, declaredTotal: { ...T499.declaredTotal, byEmail: "manager@marathon.internal" },
+    slip: { ...T499.slip, closedAt: SAST("2026-10-16T17:00:00") } };
+  assert.equal(authorityOf(mgr), "staff");
+  assert.equal(shouldAttach({ key: "500", record: mgr }, NOW), false);
+});
+
+test("a deleted record is never brought back by a slip", async () => {
+  let gone = false;
+  const db = makeFakeDb({
+    config: { cardTerminals: TERMINALS },
+    users: { [YASMIN.uid]: { cardSlipTills: { pe: { "till-2": true } } } },
+    card_batches: { pe: { [MT2]: { 544: M544 } } },
+  }, {
+    beforeRead: async (path, state) => {
+      if (!gone && path === `card_batches/pe/${MT2}/544`) { gone = true; delete state.root.card_batches.pe[MT2]["544"]; }
+    },
+  });
+  const b = bucket();
+  const out = await slip(db, YASMIN, MT2, "1.00", NOW, b);
+  assert.equal(out.ok, false);
+  assert.equal(await node(db, `card_batches/pe/${MT2}/544`), null);
+  assert.deepEqual(b.deleted, b.saved);
+});
